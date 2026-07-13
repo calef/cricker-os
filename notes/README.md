@@ -60,6 +60,9 @@ in the code or the conversation doesn't make sense, it belongs here.
 
 ## Design
 
+- [Deadlock](deadlock.md) — the four Coffman conditions, and why breaking *any one* makes
+  deadlock impossible. Every rule in our locking discipline is "pick a condition and destroy
+  it." Also: Rust does not save you from this, and the reason why is worth knowing.
 - [Locking](locking.md) — why a plain spinlock in a kernel with interrupts is a
   *guaranteed* deadlock on a single core, the two orderings that are the whole point, and
   why "restore" is not the same as "enable".
