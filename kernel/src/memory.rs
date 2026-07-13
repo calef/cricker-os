@@ -60,6 +60,11 @@ pub fn init(dtb_ptr: usize) {
     // *sum*: if a board has RAM at 0x4000_0000 and again at 0x8_0000_0000, we track
     // every frame between them and simply never free the hole. A bit of wasted bitmap
     // buys a much simpler index calculation.
+    for (i, r) in ram.iter().enumerate() {
+        *RAM[i].lock() = (r.start, r.size);
+    }
+    RAM_COUNT.store(ram.len(), core::sync::atomic::Ordering::Relaxed);
+
     let base = ram.iter().map(|r| r.start).min().unwrap();
     let top = ram.iter().map(|r| r.end()).max().unwrap();
     let total_frames = FrameAllocator::frames_in(top - base);
@@ -213,6 +218,19 @@ pub fn is_frame_used(frame: Frame) -> Option<bool> {
     ALLOCATOR.lock().as_ref()?.is_used(frame)
 }
 
+/// The RAM regions the device tree told us about.
+///
+/// The MMU needs these: with paging on, a physical address the kernel cannot *name* is a
+/// physical address it cannot use, and it must be able to touch any frame the allocator
+/// hands it (to zero a new page table, to fill a new user page).
+pub fn ram_regions() -> impl Iterator<Item = (u64, u64)> {
+    let n = RAM_COUNT.load(core::sync::atomic::Ordering::Relaxed);
+    (0..n).map(|i| {
+        let r = RAM[i].lock();
+        (r.0, r.1)
+    })
+}
+
 /// Where the frame bitmap landed, and how big it is. Test support.
 pub fn bitmap_region() -> (u64, u64) {
     (
@@ -229,6 +247,12 @@ pub fn initrd_region() -> Option<(u64, u64)> {
 }
 
 use core::sync::atomic::AtomicUsize;
+
+/// The RAM map, kept so the MMU can map it. Fixed-size because we have no heap.
+static RAM: [IrqSafeMutex<(u64, u64)>; MAX_REGIONS] =
+    [const { IrqSafeMutex::new((0, 0)) }; MAX_REGIONS];
+static RAM_COUNT: AtomicUsize = AtomicUsize::new(0);
+
 static BITMAP_START: AtomicUsize = AtomicUsize::new(0);
 static BITMAP_BYTES: AtomicUsize = AtomicUsize::new(0);
 static INITRD_START: AtomicUsize = AtomicUsize::new(0);

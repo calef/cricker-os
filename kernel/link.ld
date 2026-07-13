@@ -1,74 +1,91 @@
 /* cricker-os kernel image layout.
  *
- * QEMU's `virt` machine puts RAM at 0x4000_0000. Given `-kernel kernel.elf`, QEMU
- * reads our ELF program headers, copies each segment to the physical address named
- * there, sets PC to ENTRY, and lets go. That is the entire boot process.
+ * QEMU's `virt` machine puts RAM at 0x4000_0000. Given a flat arm64 Image, QEMU follows
+ * the Linux boot protocol: it loads us at RAM_base + text_offset, hands us a device tree
+ * pointer in x0, and lets go. See notes/boot-protocol.md and notes/linker-scripts.md.
  *
- * Nobody relocates us. Nobody gives us a stack. Nobody zeroes our .bss.
- * See notes/linker-scripts.md and notes/elf.md.
+ * Every section boundary here is exported, because milestone 4 maps each one with
+ * DIFFERENT permissions and the linker is the only thing that knows where they landed.
+ * They are all page-aligned for the same reason: MMU permissions are per-page, so a
+ * section sharing a page with another section cannot have its own permissions.
  */
 
 ENTRY(_start)
 
 SECTIONS
 {
-    /* 512 KiB into RAM. This number is NOT free to change: it must match the
-     * `text_offset` field in the arm64 Image header (image_header.s), because that
-     * field is what tells QEMU where to load us. 0x4000_0000 + 0x8_0000. */
+    /* 512 KiB into RAM. NOT free to change: it must match `text_offset` in the arm64
+     * Image header (image_header.s), which is what tells QEMU where to load us. */
     . = 0x40080000;
     __image_start = .;
 
     .text : ALIGN(4096) {
-        /* The arm64 Image header MUST be at byte 0 of the image: the entry point is
-         * the first byte, and QEMU reads the magic at a fixed offset from the start.
-         * KEEP() because nothing *calls* it, so dead-code elimination would otherwise
-         * delete the entire entry point. */
+        __text_start = .;
+        /* The Image header MUST be at byte 0 of the image, and _start with it. KEEP()
+         * because nothing *calls* it, so dead-code elimination would delete the entry
+         * point. */
         KEEP(*(.text.header))
         KEEP(*(.text.boot))
         *(.text .text.*)
+        . = ALIGN(4096);
+        __text_end = .;
     }
 
     .rodata : ALIGN(4096) {
+        __rodata_start = .;
         *(.rodata .rodata.*)
+        . = ALIGN(4096);
+        __rodata_end = .;
     }
 
     .data : ALIGN(4096) {
+        __data_start = .;
         *(.data .data.*)
+        . = ALIGN(4096);
+        __data_end = .;
     }
 
-    /* .bss occupies zero bytes in the file, so nothing loads it and nothing
-     * zeroes it. boot.s does that by hand, 8 bytes at a time, which is why both
-     * bounds must be 8-byte aligned. */
+    /* .bss occupies zero bytes in the file, so nothing loads it and nothing zeroes it.
+     * boot.s does that by hand, 8 bytes at a time, which is why both bounds must be
+     * 8-byte aligned. */
     .bss : ALIGN(4096) {
         __bss_start = .;
         *(.bss .bss.*)
         *(COMMON)
-        . = ALIGN(16);
+        . = ALIGN(4096);
         __bss_end = .;
     }
 
-    /* The boot stack. It grows DOWN, so __stack_top is the HIGH address and
-     * therefore comes *after* the reserved space. sp must be 16-byte aligned
-     * (notes/stack.md).
+    /* THE GUARD PAGE.
      *
-     * TODO(milestone 4): once the MMU is on, leave a page unmapped below
-     * __stack_bottom so that a stack overflow FAULTS instead of silently eating our
-     * .bss. This is not hypothetical: milestone 3 blew this stack with a 16 KiB array
-     * in a test, wrote through .bss and .data into .text, and hung the machine while
-     * printing something unrelated. There is a canary at __stack_bottom now
-     * (kernel/src/stack.rs), but a guard page is the real answer. See notes/stack.md. */
-    . = ALIGN(16);
+     * One page, deliberately LEFT UNMAPPED when we build the page tables. The stack grows
+     * down into it, and the MMU faults on the very first byte written past the end.
+     *
+     * This is the real fix for the milestone 3 incident, where a 16 KiB array on the stack
+     * walked straight through .bss, .data, and .text, and the kernel executed its own
+     * overwritten code. It hung for 150 seconds with no output and two of the three
+     * diagnoses along the way were wrong. See notes/stack.md.
+     *
+     * The canary in kernel/src/stack.rs stays, but it is a mitigation: it detects damage
+     * after the fact, and only if the overflow happened to write over the canary words. A
+     * guard page PREVENTS the damage, precisely, at the first byte, for free at runtime.
+     * That is the difference between an afternoon and an instant, legible fault. */
+    . = ALIGN(4096);
+    __stack_guard = .;
+    . += 4096;
+
+    /* The boot stack. Grows DOWN, so __stack_top is the HIGH address and comes AFTER the
+     * reserved space. sp must be 16-byte aligned (notes/stack.md). */
     __stack_bottom = .;
     . += 0x10000;              /* 64 KiB */
     __stack_top = .;
 
-    /* The `image_size` field of the arm64 Image header (image_header.s).
+    /* `image_size` for the arm64 Image header.
      *
-     * It deliberately runs all the way to __stack_top, not just to the end of .data.
-     * The flat binary itself stops after .data (since .bss occupies no file bytes),
-     * but this number tells the bootloader how much MEMORY we occupy. Understate it
-     * and QEMU will happily place the device tree blob on top of our .bss or our
-     * stack, and we will corrupt it the instant we push a stack frame. */
+     * Runs all the way to __stack_top, not just to the end of .data. The flat binary stops
+     * after .data (since .bss occupies no file bytes), but this number tells the bootloader
+     * how much MEMORY we occupy. Understate it and QEMU will place the device tree on top
+     * of our .bss or our stack, and we corrupt it on the first push. */
     __image_end = .;
     __image_size = __image_end - __image_start;
 

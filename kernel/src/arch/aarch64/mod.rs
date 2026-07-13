@@ -9,6 +9,7 @@ use core::arch::global_asm;
 
 pub mod exceptions;
 pub mod interrupts;
+pub mod mmu;
 pub mod semihosting;
 
 // The arm64 Image header. `_start` lands at byte 0 of the image, which is where QEMU

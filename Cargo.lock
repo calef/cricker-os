@@ -26,6 +26,7 @@ dependencies = [
  "aarch64-cpu",
  "dtb",
  "frames",
+ "paging",
  "spin",
  "tock-registers",
 ]

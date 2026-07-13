@@ -62,6 +62,10 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
     // in here is a fault, and a fault is now legible rather than fatal-and-silent.
     memory::init(dtb);
 
+    // And now the sketchiest moment in the kernel. The instant SCTLR_EL1.M is set, the very
+    // next instruction is fetched through the MMU. See arch/aarch64/mmu.rs.
+    arch::mmu::init();
+
     #[cfg(test)]
     test_main();
 
@@ -76,6 +80,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         println!("  stack top       : {:#018x}", stack_top());
         println!("  device tree     : {dtb:#018x}");
         memory::print_summary();
+        arch::mmu::print_summary();
 
         println!();
         println!("milestone 1: we are running our own code on a CPU with nothing underneath it.");
@@ -440,6 +445,114 @@ mod tests {
             );
             addr += FRAME_SIZE;
         }
+    }
+
+    // --- milestone 4: the MMU ---
+
+    /// The MMU is on, and we are still alive to say so.
+    #[test_case]
+    fn mmu_is_enabled() {
+        assert!(crate::arch::mmu::is_enabled(), "SCTLR_EL1.M is not set");
+    }
+
+    /// **The guard page must not be mapped.** That is its entire job.
+    ///
+    /// Verified at boot too (mmu::verify panics if it's mapped), but stated here as well
+    /// because it is the thing that closes the milestone 3 incident, and a protection you
+    /// only discover is missing *during* a stack overflow is no protection at all.
+    ///
+    /// Proven by deliberate overflow: FAR_EL1 comes back as exactly this address.
+    #[test_case]
+    fn the_guard_page_is_a_hole() {
+        use crate::arch::mmu;
+        assert_eq!(
+            mmu::translate(mmu::stack_guard()),
+            None,
+            "the guard page IS mapped: a stack overflow would silently eat .bss again"
+        );
+
+        // And the pages either side of it must be mapped, or we've put the hole in the
+        // wrong place and are protecting nothing.
+        assert!(mmu::translate(mmu::stack_guard() - 4096).is_some(), "below the guard");
+        assert!(mmu::translate(mmu::stack_bottom()).is_some(), "the stack itself");
+    }
+
+    /// W^X, checked against the tables the hardware is actually walking.
+    ///
+    /// Not a copy of what we intended: `translate` reads TTBR0_EL1 back out of the CPU and
+    /// walks from there.
+    #[test_case]
+    fn kernel_text_is_executable_and_not_writable() {
+        use crate::arch::mmu;
+
+        let (pa, flags) = mmu::translate(mmu::text_start()).expect(".text is not mapped");
+        assert_eq!(pa, mmu::text_start(), "identity map is not identity");
+
+        assert!(flags.is_kernel_executable(), ".text is not executable");
+        assert!(!flags.is_writable(), ".text is WRITABLE: W^X is broken");
+        assert!(!flags.is_user_executable(), ".text is executable by EL0");
+    }
+
+    /// Constants are read-only, and not executable by anyone.
+    #[test_case]
+    fn kernel_rodata_is_read_only_and_not_executable() {
+        use crate::arch::mmu;
+
+        let (_, flags) = mmu::translate(mmu::rodata_start()).expect(".rodata is not mapped");
+        assert!(!flags.is_writable(), ".rodata is writable");
+        assert!(!flags.is_kernel_executable(), ".rodata is executable");
+    }
+
+    /// The stack is writable and NOT executable.
+    #[test_case]
+    fn the_stack_is_writable_and_not_executable() {
+        use crate::arch::mmu;
+
+        let (_, flags) = mmu::translate(mmu::stack_bottom()).expect("stack is not mapped");
+        assert!(flags.is_writable());
+        assert!(
+            !flags.is_kernel_executable(),
+            "the stack is EXECUTABLE: data on the stack could be run as code"
+        );
+    }
+
+    /// The UART is device-typed.
+    ///
+    /// Map MMIO as normal memory and the CPU may cache it, reorder writes to it, merge two
+    /// writes into one, and speculatively read it. Speculatively reading a UART FIFO
+    /// register CONSUMES THE BYTE. See notes/page-tables.md.
+    #[test_case]
+    fn the_uart_is_mapped_as_device_memory() {
+        use crate::arch::mmu;
+
+        let (_, flags) = mmu::translate(0x0900_0000).expect("the UART is not mapped");
+
+        // AttrIndx, bits [4:2], must name the MAIR slot that says Device-nGnRnE.
+        let slot = (flags.bits() >> 2) & 0b111;
+        assert_eq!(slot, paging::mair::DEVICE, "the UART is not device memory");
+
+        assert!(flags.is_writable(), "we do need to write to it");
+        assert!(!flags.is_kernel_executable());
+    }
+
+    /// A frame from the allocator is still real, writable memory *through the MMU*.
+    ///
+    /// Before, this proved the bookkeeping matched physical RAM. Now it also proves the
+    /// identity map covers everything the allocator can hand out, which is a different and
+    /// newly-necessary claim: with paging on, a physical address the kernel cannot NAME is a
+    /// physical address it cannot use.
+    #[test_case]
+    fn an_allocated_frame_is_reachable_through_the_mmu() {
+        use crate::arch::mmu;
+
+        let frame = crate::memory::alloc().expect("out of memory");
+        let (pa, flags) = mmu::translate(frame.addr()).expect("allocated frame is NOT MAPPED");
+
+        assert_eq!(pa, frame.addr());
+        assert!(flags.is_writable());
+        assert!(!flags.is_kernel_executable(), "RAM is executable");
+
+        crate::memory::free(frame);
     }
 
     // --- locking (DECISIONS.md §9) ---
