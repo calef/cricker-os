@@ -2,13 +2,12 @@
 xtask = "run --quiet --package xtask --"
 
 # `cargo run -p kernel --target aarch64-unknown-none-softfloat` and
-# `cargo test -p kernel --target aarch64-unknown-none-softfloat` both work because
-# of this runner: cargo appends the built ELF path to the end of the command.
+# `cargo test -p kernel --target aarch64-unknown-none-softfloat` both work because of
+# this runner: cargo appends the built ELF path to the end of the command.
 #
-#   -machine virt      the fictional clean ARM board (notes/qemu.md)
-#   -cpu cortex-a72    ARMv8.0-A. No LSE atomics; see design/fat-binaries.md
-#   -nographic         no display window; wire the UART to this terminal
-#   -semihosting       lets the guest ask the host to exit with a status code,
-#                      which is how the test harness reports pass/fail
+# It is a script rather than a bare qemu invocation because QEMU only follows the
+# Linux arm64 boot protocol (and only hands us a device tree) for a flat `Image`, not
+# for an ELF. The script strips the ELF to a flat binary first. See
+# scripts/qemu-runner.sh and notes/boot-protocol.md.
 [target.aarch64-unknown-none-softfloat]
-runner = "qemu-system-aarch64 -machine virt -cpu cortex-a72 -nographic -semihosting -kernel"
+runner = "scripts/qemu-runner.sh"

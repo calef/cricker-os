@@ -10,8 +10,11 @@ use core::arch::global_asm;
 pub mod exceptions;
 pub mod semihosting;
 
-// The kernel's actual entry point. `_start` lands in section `.text.boot`, which
-// link.ld places first, at the ELF entry address QEMU jumps to.
+// The arm64 Image header. `_start` lands at byte 0 of the image, which is where QEMU
+// begins executing. It does nothing but branch to `_boot`.
+global_asm!(include_str!("image_header.s"));
+
+// The real entry point.
 global_asm!(include_str!("boot.s"));
 
 // The exception vector table. VBAR_EL1 will point here once `init` runs.

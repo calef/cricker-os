@@ -1,20 +1,20 @@
-// The first instructions cricker-os ever executes.
+// The kernel's real entry, reached by the `b _boot` in image_header.s.
 //
-// QEMU's `virt` machine hands us the CPU at EL1 with the MMU off, caches off, and
-// sp holding garbage.
+// QEMU's `virt` machine hands us the CPU at EL1 with the MMU off, caches off, sp
+// holding garbage, and (because we ship a flat arm64 Image) the device tree pointer
+// in x0.
 //
 // Everything here has to be assembly, because no Rust function can run until we
 // have a stack. See notes/stack.md and notes/reading-assembly.md.
 
 .section ".text.boot", "ax"
-.global _start
+.global _boot
 
-_start:
-    // The Linux arm64 boot protocol puts a Device Tree Blob pointer in x0. QEMU only
-    // does that for flat `Image` files, not for the ELF we currently ship, so today
-    // this is zero. Stash it anyway before we clobber x0 with system-register reads:
-    // it costs two instructions, it is correct, and milestone 2 will start feeding it.
-    // See notes/portability.md.
+_boot:
+    // The Linux arm64 boot protocol puts a Device Tree Blob pointer in x0, and now
+    // that we ship a flat Image with a proper header, QEMU actually gives us one.
+    // Stash it before we clobber x0 with system-register reads.
+    // See notes/boot-protocol.md.
     mov     x19, x0
 
     // Park every core but core 0. MPIDR_EL1's low byte is the core number.

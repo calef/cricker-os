@@ -36,9 +36,17 @@ mod testing;
 /// where arguments live. `dtb` arrives in `x0`. See notes/registers.md.
 ///
 /// `-> !` means this never returns, which is true: there is nowhere to return *to*.
+/// The physical address of the Device Tree Blob, as handed to us in `x0`.
+///
+/// We don't parse it yet. Stashing it here lets the tests assert that the boot
+/// protocol actually delivered one, which is the whole point of shipping a flat
+/// arm64 Image instead of an ELF. See notes/boot-protocol.md.
+pub static DTB: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
 #[unsafe(no_mangle)]
-#[cfg_attr(test, allow(unused_variables))] // `dtb` is only read by the banner
 pub extern "C" fn kernel_main(dtb: usize) -> ! {
+    DTB.store(dtb, core::sync::atomic::Ordering::Relaxed);
+
     // Console first, exceptions second, and the order is not arbitrary: the fault
     // handler's entire job is to print, so it is useless until the UART works. The
     // window between these two lines is the last place in the kernel where a fault
@@ -58,19 +66,12 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         println!("cricker-os");
         println!("  exception level : EL{}", CurrentEL.read(CurrentEL::EL));
         println!("  stack top       : {:#018x}", stack_top());
-
-        // QEMU only populates x0 with the DTB pointer when it uses the Linux boot
-        // protocol, which it picks for flat arm64 `Image` files. We ship an ELF, so
-        // it takes the bare-metal path and hands us nothing. See notes/portability.md.
-        if dtb == 0 {
-            println!("  device tree     : none (ELF boot; see notes/portability.md)");
-        } else {
-            println!("  device tree     : {dtb:#018x}");
-        }
+        println!("  device tree     : {dtb:#018x}");
 
         println!();
         println!("milestone 1: we are running our own code on a CPU with nothing underneath it.");
         println!("milestone 2: and when it goes wrong, we get told.");
+        println!("           : and the machine now tells us what it is, instead of us guessing.");
         println!();
     }
 
@@ -216,5 +217,48 @@ mod tests {
         }
 
         assert_eq!(got, sent, "the trap frame scrambled a register");
+    }
+
+    // --- the arm64 Image header ---
+
+    /// Proves the boot protocol actually delivered a device tree.
+    ///
+    /// This is the test that closes the correction from milestone 1. Back then we
+    /// shipped an ELF, QEMU took its bare-metal path, and `x0` arrived as zero. Now
+    /// we ship a flat binary carrying an arm64 Image header, QEMU recognizes it as a
+    /// kernel, follows the Linux boot protocol, and hands us a real pointer.
+    ///
+    /// A zero here means we have silently regressed to the ELF path, which would be
+    /// easy to do by editing the runner script and hard to notice any other way.
+    #[test_case]
+    fn device_tree_pointer_was_provided() {
+        use core::sync::atomic::Ordering;
+        assert_ne!(
+            crate::DTB.load(Ordering::Relaxed),
+            0,
+            "no DTB pointer in x0: did we fall back to booting as an ELF?"
+        );
+    }
+
+    /// Proves the pointer points at an actual device tree, not just at something.
+    ///
+    /// A nonzero pointer is necessary but not sufficient. Every flattened device tree
+    /// begins with the magic `0xd00dfeed`, stored **big-endian** (the format predates
+    /// the little-endian consensus and never changed), so we have to byte-swap on the
+    /// way in. If this passes, the machine is genuinely describing itself to us.
+    #[test_case]
+    fn device_tree_has_the_right_magic() {
+        use core::sync::atomic::Ordering;
+        let ptr = crate::DTB.load(Ordering::Relaxed) as *const u32;
+
+        // SAFETY: QEMU told us it put a device tree here, and the MMU is off, so this
+        // is a physical address we can read directly.
+        let magic = unsafe { core::ptr::read_volatile(ptr) };
+
+        assert_eq!(
+            u32::from_be(magic),
+            0xd00d_feed,
+            "no device tree magic at {ptr:p}"
+        );
     }
 }

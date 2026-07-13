@@ -12,12 +12,18 @@ ENTRY(_start)
 
 SECTIONS
 {
-    /* 128 KiB into RAM, following the ARM Linux image convention. */
+    /* 512 KiB into RAM. This number is NOT free to change: it must match the
+     * `text_offset` field in the arm64 Image header (image_header.s), because that
+     * field is what tells QEMU where to load us. 0x4000_0000 + 0x8_0000. */
     . = 0x40080000;
+    __image_start = .;
 
     .text : ALIGN(4096) {
-        /* _start MUST be first: it is where QEMU jumps. KEEP() because nothing
-         * *calls* _start, so dead-code elimination would otherwise delete it. */
+        /* The arm64 Image header MUST be at byte 0 of the image: the entry point is
+         * the first byte, and QEMU reads the magic at a fixed offset from the start.
+         * KEEP() because nothing *calls* it, so dead-code elimination would otherwise
+         * delete the entire entry point. */
+        KEEP(*(.text.header))
         KEEP(*(.text.boot))
         *(.text .text.*)
     }
@@ -52,6 +58,16 @@ SECTIONS
     __stack_bottom = .;
     . += 0x10000;              /* 64 KiB */
     __stack_top = .;
+
+    /* The `image_size` field of the arm64 Image header (image_header.s).
+     *
+     * It deliberately runs all the way to __stack_top, not just to the end of .data.
+     * The flat binary itself stops after .data (since .bss occupies no file bytes),
+     * but this number tells the bootloader how much MEMORY we occupy. Understate it
+     * and QEMU will happily place the device tree blob on top of our .bss or our
+     * stack, and we will corrupt it the instant we push a stack frame. */
+    __image_end = .;
+    __image_size = __image_end - __image_start;
 
     /DISCARD/ : {
         *(.comment)
