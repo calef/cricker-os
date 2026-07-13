@@ -274,6 +274,7 @@ pub fn is_enabled() -> bool {
 /// Reads `TTBR0_EL1` back out of the hardware, so this is the truth the CPU is using, not a
 /// copy of what we intended. That distinction is the point: it lets the tests check the
 /// tables the machine is actually walking.
+#[allow(dead_code)] // used by the tests, and by anyone debugging a mapping
 pub fn translate(va: u64) -> Option<(u64, Flags)> {
     let root = TTBR0_EL1.get_baddr();
 

@@ -37,6 +37,9 @@ in the code or the conversation doesn't make sense, it belongs here.
 
 ## Memory
 
+- [The heap](heap.md) — why the stack isn't enough (its lifetimes must nest, and a returned
+  Vec's don't), why fragmentation is the permanent enemy, and why Rust's ownership system is
+  really a heap-correctness checker.
 - [Physical memory](physical-memory.md) — the frame allocator. Why a bitmap and not a free
   list, the bootstrap problem (the allocator's first act is to allocate itself), and why
   `mark_used` rounds *outward*.

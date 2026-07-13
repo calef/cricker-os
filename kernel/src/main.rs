@@ -20,9 +20,12 @@
 #![test_runner(crate::testing::runner)]
 #![reexport_test_harness_main = "test_main"]
 
+extern crate alloc;
+
 mod arch;
 mod console;
 mod drivers;
+mod heap;
 mod memory;
 mod panic;
 mod stack;
@@ -66,6 +69,10 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
     // next instruction is fetched through the MMU. See arch/aarch64/mmu.rs.
     arch::mmu::init();
 
+    // The heap must come AFTER the MMU: it hands out addresses, and with paging on an
+    // address is only usable if something has mapped it. From here, `Vec` works.
+    heap::init();
+
     #[cfg(test)]
     test_main();
 
@@ -81,12 +88,14 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         println!("  device tree     : {dtb:#018x}");
         memory::print_summary();
         arch::mmu::print_summary();
+        heap::print_summary();
 
         println!();
         println!("milestone 1: we are running our own code on a CPU with nothing underneath it.");
         println!("milestone 2: and when it goes wrong, we get told.");
         println!("           : and the machine now tells us what it is, instead of us guessing.");
         println!("milestone 3: and we know which parts of it are ours to give away.");
+        println!("milestone 4: and nothing writable is executable, and Vec works again.");
         println!();
     }
 
@@ -553,6 +562,95 @@ mod tests {
         assert!(!flags.is_kernel_executable(), "RAM is executable");
 
         crate::memory::free(frame);
+    }
+
+    // --- milestone 4: the heap ---
+
+    /// `Vec` works. Not because we imported it: **because we built the heap it needed.**
+    ///
+    /// notes/no-std.md promised this at milestone 1 and this is the promise coming due. The
+    /// chain runs Vec -> #[global_allocator] -> our heap -> our frame allocator -> RAM we
+    /// read out of the device tree. Every link is ours.
+    #[test_case]
+    fn vec_works() {
+        use alloc::vec::Vec;
+
+        let mut v: Vec<u64> = Vec::new();
+        for i in 0..1000 {
+            v.push(i * 3);
+        }
+
+        // It reallocated several times getting here, which means it allocated, copied, and
+        // freed the old buffer. All of that went through code we wrote.
+        assert_eq!(v.len(), 1000);
+        assert_eq!(v[999], 2997);
+        assert_eq!(v.iter().sum::<u64>(), (0..1000u64).map(|i| i * 3).sum());
+    }
+
+    /// `Box` works, and the memory really is distinct.
+    #[test_case]
+    fn box_works() {
+        use alloc::boxed::Box;
+
+        let a = Box::new(0xdead_beefu64);
+        let b = Box::new(0xcafe_f00du64);
+
+        assert_eq!(*a, 0xdead_beef);
+        assert_eq!(*b, 0xcafe_f00d);
+        assert_ne!(&raw const *a, &raw const *b, "two Boxes at the same address");
+    }
+
+    /// `String` and `format!` work, which means `core::fmt` can now allocate.
+    #[test_case]
+    fn string_and_format_work() {
+        use alloc::format;
+
+        let s = format!("{:#x} and {}", 0x1234, "text");
+        assert_eq!(s, "0x1234 and text");
+    }
+
+    /// `BTreeMap` works. Milestone 7 wants one for the process table.
+    #[test_case]
+    fn btreemap_works() {
+        use alloc::collections::BTreeMap;
+
+        let mut m = BTreeMap::new();
+        for i in 0..100u32 {
+            m.insert(i, i * i);
+        }
+        assert_eq!(m.get(&12), Some(&144));
+        assert_eq!(m.len(), 100);
+    }
+
+    /// Memory actually comes back. A leak here compounds silently until the kernel dies.
+    #[test_case]
+    fn the_heap_does_not_leak() {
+        use alloc::vec::Vec;
+
+        let (before, _) = crate::heap::stats();
+
+        for _ in 0..200 {
+            let v: Vec<u8> = Vec::with_capacity(1024);
+            core::hint::black_box(&v);
+            // dropped here
+        }
+
+        let (after, _) = crate::heap::stats();
+        assert_eq!(after, before, "the heap leaked across 200 alloc/free cycles");
+    }
+
+    /// The heap lives in memory the MMU can actually reach.
+    #[test_case]
+    fn heap_memory_is_mapped_and_writable() {
+        use alloc::boxed::Box;
+        use crate::arch::mmu;
+
+        let b = Box::new(0u64);
+        let va = (&raw const *b) as u64;
+
+        let (_, flags) = mmu::translate(va).expect("heap memory is NOT MAPPED");
+        assert!(flags.is_writable(), "heap memory is not writable");
+        assert!(!flags.is_kernel_executable(), "the heap is EXECUTABLE");
     }
 
     // --- locking (DECISIONS.md §9) ---

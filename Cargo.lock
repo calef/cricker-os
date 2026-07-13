@@ -20,12 +20,17 @@ name = "frames"
 version = "0.1.0"
 
 [[package]]
+name = "heap"
+version = "0.1.0"
+
+[[package]]
 name = "kernel"
 version = "0.1.0"
 dependencies = [
  "aarch64-cpu",
  "dtb",
  "frames",
+ "heap",
  "paging",
  "spin",
  "tock-registers",

@@ -10,6 +10,7 @@ edition = "2024"
 aarch64-cpu = "10"
 dtb = { version = "0.1.0", path = "../crates/dtb" }
 frames = { version = "0.1.0", path = "../crates/frames" }
+heap = { version = "0.1.0", path = "../crates/heap" }
 paging = { version = "0.1.0", path = "../crates/paging" }
 spin = { version = "0.10", default-features = false, features = ["spin_mutex"] }
 
