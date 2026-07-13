@@ -60,6 +60,9 @@ in the code or the conversation doesn't make sense, it belongs here.
 
 ## Design
 
+- [Locking](locking.md) — why a plain spinlock in a kernel with interrupts is a
+  *guaranteed* deadlock on a single core, the two orderings that are the whole point, and
+  why "restore" is not the same as "enable".
 - [How portable kernels are written](portability.md) — what actually goes in `arch/` (a
   surprisingly short list), what can't be abstracted (the memory model), and why the second
   port should come early and be as alien as possible.

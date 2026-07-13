@@ -181,6 +181,10 @@ extern "C" fn exception_dispatch(frame: &mut TrapFrame, index: u64) {
 /// A kernel with a violated invariant has no business continuing, so this does not
 /// return. But it prints first, because a silent death teaches you nothing.
 fn fatal(frame: &TrapFrame, index: u64, esr: u64) -> ! {
+    // SAFETY: same reasoning as the panic handler. A fault taken mid-`println!` would
+    // otherwise deadlock on the console lock and we would print nothing at all.
+    unsafe { crate::console::force_unlock() };
+
     let class = (esr >> 26) & 0x3f;
     let name = VECTOR_NAMES
         .get(index as usize)

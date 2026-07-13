@@ -14,20 +14,20 @@
 #![allow(dead_code)]
 
 use crate::println;
+use crate::sync::IrqSafeMutex;
 use dtb::{Dtb, Region};
 use frames::{FRAME_SIZE, Frame, FrameAllocator, Stats};
-use spin::Mutex;
 
-/// TODO (milestone 5): this lock is not interrupt-safe.
+/// The frame allocator.
 ///
-/// Today there is one core and no interrupts, so a spinlock is a formality
-/// (DECISIONS.md §6). The moment an interrupt handler wants to allocate a frame while
-/// the interrupted code is holding this lock, we deadlock instantly and permanently:
-/// the handler spins waiting for a lock that only the code it interrupted can release.
+/// `IrqSafeMutex`, not a bare spinlock: an interrupt handler that tried to allocate while
+/// the interrupted code held this lock would spin forever waiting for code that cannot
+/// run. See sync.rs and DECISIONS.md §9.
 ///
-/// The fix is a lock that disables interrupts while held. We will need a written-down
-/// locking discipline before milestone 5, not after it.
-static ALLOCATOR: Mutex<Option<FrameAllocator<'static>>> = Mutex::new(None);
+/// The discipline that goes with it: **interrupt handlers do not allocate.** They record
+/// what happened and defer the work. The lock being interrupt-safe is the belt; that rule
+/// is the braces.
+static ALLOCATOR: IrqSafeMutex<Option<FrameAllocator<'static>>> = IrqSafeMutex::new(None);
 
 /// The most `/memory` nodes and `/memreserve` entries we'll cope with.
 ///

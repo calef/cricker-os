@@ -13,6 +13,11 @@ use core::panic::PanicInfo;
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
+    // SAFETY: we are dying. If we panicked while holding the console lock (a fault taken
+    // inside a print), taking it again here would hang and we would lose the one message
+    // that matters. Break it open. See sync.rs.
+    unsafe { crate::console::force_unlock() };
+
     println!();
     println!("[PANIC] {info}");
     crate::stack::warn_if_smashed();

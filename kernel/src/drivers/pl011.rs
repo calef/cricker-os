@@ -76,6 +76,11 @@ pub struct Pl011 {
     base: *mut RegisterBlock,
 }
 
+// SAFETY: the pointer names MMIO, not memory Rust manages. Moving the handle between
+// contexts is harmless; *concurrent use* is what needs excluding, and that is the lock's
+// job (see console.rs), not this type's.
+unsafe impl Send for Pl011 {}
+
 impl Pl011 {
     /// # Safety
     ///
