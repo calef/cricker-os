@@ -111,6 +111,19 @@ reread for months:
 - No sycophantic openers, no filler conclusions that restate what was just said.
 - Plain, direct language. Vary sentence length. Write like a person.
 
+## Never leave QEMU running
+
+A cricker-os kernel that has finished its work calls `arch::halt()`, which is `loop { wfi }`.
+It never exits. So QEMU never exits either, unless something kills it or the kernel asks the
+host to terminate via semihosting (which only the test build does).
+
+Two consequences:
+
+1. **Every interactive/demo QEMU run must be bounded** (see the note in Environment below).
+2. `halt()` must use **`wfi`, not `wfe`.** QEMU implements `wfi` as a real vCPU halt and the
+   host thread sleeps; it merely spins on `wfe`. A halted kernel using `wfe` burns **99.7% of
+   a host core**. With `wfi` it is 0.0%.
+
 ## Environment
 
 - macOS on Apple Silicon (itself aarch64, which is a nice coincidence: kernel assembly is
@@ -118,5 +131,13 @@ reread for months:
 - QEMU via Homebrew, `qemu-system-aarch64`
 - Rust nightly, pinned in `rust-toolchain.toml` (needed for `custom_test_frameworks`)
 - Target: `aarch64-unknown-none-softfloat`
-- `timeout(1)` does not exist on macOS. Use `perl -e 'alarm N; exec @ARGV' <cmd>` to bound a
-  QEMU run that would otherwise halt forever.
+- `timeout(1)` does not exist on macOS, and **`perl -e 'alarm N; exec @ARGV'` DOES NOT WORK
+  ON QEMU.** QEMU installs its own `SIGALRM` handler and swallows the alarm, so the process
+  runs forever. This is not theoretical: it leaked eleven QEMU processes over one day of
+  development, burning a combined 729% CPU, the oldest with eight hours of CPU time on it.
+
+  Use `scripts/qemu-bounded.sh <seconds> <cmd...>` instead. It uses SIGTERM, which QEMU does
+  honour, and it detaches the killer so it survives a pipeline whose reader (`head`) exits
+  early.
+
+  **After any session that ran QEMU, check `pgrep -x qemu-system-aarch64` and clean up.**

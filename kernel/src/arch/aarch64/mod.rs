@@ -32,10 +32,22 @@ pub fn init() {
 
 /// Park this core forever.
 ///
-/// `wfe` ("wait for event") sleeps the core at low power until something wakes it.
-/// The loop is there because "something" includes spurious wakeups.
+/// **`wfi`, not `wfe`, and the difference is not academic.**
+///
+/// `wfe` waits for an *event*: an `sev` from another core, or a lock release. QEMU's
+/// emulation treats it as little more than a hint, so `loop { wfe() }` keeps translating
+/// and executing, and a halted kernel burns **99.7% of a host CPU core**. We discovered
+/// this the way you'd expect: eleven abandoned QEMU processes cooking the laptop overnight
+/// at a combined 729%.
+///
+/// `wfi` waits for an *interrupt*, and QEMU implements it as an actual vCPU halt: the host
+/// thread sleeps. An idle kernel becomes genuinely idle.
+///
+/// It is also the more correct instruction for what we mean. We are not waiting for an
+/// event from a sibling core. We are idling until something interrupts us, of which there
+/// is currently nothing, which is exactly the point.
 pub fn halt() -> ! {
     loop {
-        aarch64_cpu::asm::wfe();
+        aarch64_cpu::asm::wfi();
     }
 }

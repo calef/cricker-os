@@ -75,6 +75,44 @@ real CPU with hardware assist. Much faster, but the guest must match the host
 architecture. QEMU can do this too (via KVM on Linux, HVF on macOS), but we don't need
 the speed and we do want the debuggability.
 
+## Two ways QEMU will burn your laptop
+
+Both of these bit us for real, over one day of development, and cost 729% of CPU overnight.
+
+### 1. An idle kernel is not idle
+
+`arch::halt()` is `loop { wfi }`. It **was** `loop { wfe }`, and the difference is enormous:
+
+| Instruction | Waits for | What QEMU does | Host CPU |
+|---|---|---|---|
+| `wfe` | an **event** (an `sev` from another core, a lock release) | treats it as a hint and keeps executing the loop | **99.7%** |
+| `wfi` | an **interrupt** | halts the vCPU; **the host thread sleeps** | **0.0%** |
+
+A halted kernel using `wfe` pins a host core forever. Use `wfi` for idling. It is also the
+semantically correct instruction: we are not waiting for a sibling core to signal us, we are
+idling until something interrupts us.
+
+### 2. QEMU swallows SIGALRM
+
+The obvious way to bound a run on macOS (which has no `timeout(1)`) is:
+
+```sh
+perl -e 'alarm 10; exec @ARGV' qemu-system-aarch64 ...     # DOES NOT WORK
+```
+
+**QEMU installs its own `SIGALRM` handler** (it uses timers internally), so the alarm is
+swallowed and the process runs forever. Every "bounded" run leaks a QEMU.
+
+QEMU *does* honour **SIGTERM**. Use `scripts/qemu-bounded.sh <seconds> <cmd...>`, which
+starts a detached killer that survives a pipeline whose reader (`head`) exits early. That
+last part matters: `qemu ... | head -20` leaves QEMU alive, because `head` closing the pipe
+does not kill a process that has stopped writing.
+
+**A kernel does not exit.** That is the root of it: `cargo test` terminates because the test
+build asks the host to exit via [semihosting](semihosting.md), but a normal boot halts
+forever, by design, exactly like real hardware. So every interactive run must be bounded, and
+`pgrep -x qemu-system-aarch64` is worth checking after a session.
+
 ---
 
 *Add to this file as new QEMU concepts come up.*

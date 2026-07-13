@@ -51,5 +51,11 @@ _boot:
     b       park
 
 park:
-    wfe                     // "wait for event": sleep this core at low power
-    b       park            // if something wakes it, go back to sleep
+    // wfi, not wfe: QEMU actually idles the host thread on wfi, and merely spins on wfe.
+    // A parked core that burns 100% of a host CPU is not parked. See arch/aarch64/mod.rs.
+    //
+    // When we do SMP bringup, secondary cores will be started via PSCI (which QEMU's virt
+    // machine supports) rather than woken from here with an sev, so nothing depends on this
+    // being wfe.
+    wfi
+    b       park
