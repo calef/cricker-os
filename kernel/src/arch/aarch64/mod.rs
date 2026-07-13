@@ -7,6 +7,8 @@
 
 use core::arch::global_asm;
 
+pub mod semihosting;
+
 // The kernel's actual entry point. `_start` lands in section `.text.boot`, which
 // link.ld places first, at the ELF entry address QEMU jumps to.
 global_asm!(include_str!("boot.s"));
