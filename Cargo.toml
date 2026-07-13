@@ -1,0 +1,7 @@
+[workspace]
+resolver = "3"
+members = ["kernel", "xtask"]
+
+# Note: we deliberately do NOT set `panic = "abort"` here. The bare-metal target
+# has abort baked in already, and setting it workspace-wide would break `cargo test`
+# for the host-side crates we plan to add (DECISIONS.md §7).
