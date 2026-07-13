@@ -1,0 +1,147 @@
+# cricker-os
+
+A small operating system for aarch64, written in Rust, from nothing.
+
+This is a learning project. The goal is not to produce a useful OS, it's to understand how
+operating systems actually work by building one, starting from the first instruction the
+CPU ever executes. If it ends up useful, that's a bonus.
+
+**Status: milestone 1.** It boots on QEMU, prints to a serial port, and passes its tests.
+
+```
+cricker-os
+  exception level : EL1
+  stack top       : 0x0000000040094000
+  device tree     : none (ELF boot; see notes/portability.md)
+
+milestone 1: we are running our own code on a CPU with nothing underneath it.
+```
+
+## Quick start
+
+You'll need [Rust](https://rustup.rs) (the toolchain file pins nightly and will install it
+for you) and QEMU:
+
+```bash
+brew install qemu          # or your platform's equivalent
+git clone https://github.com/<you>/cricker-os
+cd cricker-os
+
+cargo xtask run            # boot it
+cargo xtask test           # run the kernel's tests under QEMU
+cargo xtask objdump        # disassemble it
+cargo xtask gdb            # boot paused, waiting for a debugger on :1234
+```
+
+`cargo xtask run` boots the kernel on QEMU's `virt` machine and wires the emulated UART to
+your terminal. Ctrl-A then X quits QEMU.
+
+## What's here
+
+```
+kernel/
+  link.ld              where the image lives in memory, and what the linker exports to us
+  src/arch/aarch64/
+    boot.s             the first instructions the machine executes
+    semihosting.rs     how we ask QEMU to exit with a status code
+  src/drivers/pl011.rs the serial port
+  src/console.rs       print! / println!
+  src/testing.rs       the QEMU test harness
+xtask/                 build orchestration (build, run, test, gdb, objdump)
+notes/                 a concept glossary, written as questions came up
+design/                open proposals, not yet decided
+DECISIONS.md           what we chose, what we rejected, and why
+```
+
+## The notes are the point
+
+[`notes/`](notes/) is a running glossary written *while* building, not afterward. Every
+file in it exists because a specific question came up and the answer turned out to be
+load-bearing for code we actually wrote.
+
+If any of the code looks like noise, start with
+[**Reading aarch64 assembly**](notes/reading-assembly.md) and
+[**Registers**](notes/registers.md). The second one is the most fundamental thing in the
+repo: the register file *is* the CPU's state, in about 248 bytes, which is why context
+switches and interrupts work the way they do.
+
+Also in there: [what an MMU is](notes/mmu.md), [why the stack
+exists](notes/stack.md), [what `no_std` actually removes](notes/no-std.md), [what a linker
+script is for](notes/linker-scripts.md), [what QEMU is](notes/qemu.md), and [how portable
+kernels are structured](notes/portability.md).
+
+## The decisions
+
+Written down in [`DECISIONS.md`](DECISIONS.md) before any code, so the reasons survive
+contact with month four. The short version:
+
+| | |
+|---|---|
+| **Architecture** | aarch64. Clean exception model, sane MMU, real hardware at the end of the road, and none of x86's forty years of archaeology. |
+| **Target** | QEMU `virt` for daily work; a Raspberry Pi port as a deliberate later milestone. |
+| **Kernel shape** | Monolithic, but drivers never reach into kernel globals and the syscall surface stays narrow. Two cheap rules instead of speculatively trait-ifying everything. |
+| **Execution** | **Preemptive threads with real stacks.** Not async. See below. |
+| **SMP** | One core for now. Refactor when it hurts. |
+| **Testing** | QEMU harness plus host-testable pure-logic crates, from the first commit. |
+| **Process model** | **Deliberately undecided.** Unix-like vs. capability-based gets settled at milestone 7, on purpose, as a recorded hard decision point. |
+
+### Why not async/await
+
+Because it's a ceiling, not a tradeoff.
+
+A userspace process is an arbitrary ELF binary. It has its own stack, it never yields, and
+it will loop forever, because you will write a bug. Under cooperative scheduling one bad
+user program hangs the machine permanently, with no recovery.
+
+Real user mode *requires* per-thread stacks, a context switch that saves and restores the
+register file, and timer-driven preemption. Async doesn't defer that work. It forecloses
+it. So we build real threads first, and async can come back later in userspace, on top of
+them, exactly the way a real OS lets a program run Tokio.
+
+## Milestones
+
+The dividing line between "a Rust program that boots" and "an operating system" is
+milestone 7.
+
+| # | | |
+|---|---|---|
+| 1 | Boot to Rust, print to UART | ✅ |
+| 2 | Exception vectors, handlers, CPU feature detection | |
+| 3 | Physical frame allocator | |
+| 4 | MMU on: page tables, address spaces, kernel heap | |
+| 5 | GIC + timer interrupts | |
+| 6 | Kernel threads, context switch, scheduler | |
+| 7 | **User mode (EL0), syscalls, ELF loader** | |
+| 8 | virtio-blk + a read-only filesystem | |
+| 9 | Processes: spawn, exit, wait | |
+| 10 | A userspace shell that runs other binaries | |
+
+Deliberately out of scope for v1: SMP, a writable filesystem, networking, a GUI, dynamic
+linking, real hardware. Each multiplies debugging difficulty, and none teaches something
+the first ten don't already set up.
+
+## Things this project has already gotten wrong
+
+Kept here on purpose, because the corrections were the most instructive part.
+
+**QEMU does not hand you a device tree pointer in `x0`.** It only does that under the Linux
+boot protocol, which it selects for flat arm64 `Image` files. We ship an ELF, so it takes
+the bare-metal path and populates no registers. We found this out by printing `x0` and
+getting zero. See [notes/portability.md](notes/portability.md).
+
+**`bl` does not push a return address onto the stack.** That's x86. On aarch64 the return
+address goes into register `x30`, and the stack is where it gets *parked* when a function
+needs `x30` for a call of its own. See [notes/stack.md](notes/stack.md).
+
+## Reading
+
+- The **xv6 book** (MIT, ~100pp) for how a real Unix-shaped kernel is put together
+- [`rust-raspberrypi-OS-tutorials`](https://github.com/rust-embedded/rust-raspberrypi-OS-tutorials)
+  for aarch64 mechanics
+- The [OSDev wiki](https://wiki.osdev.org), as a reference rather than a tutorial
+- [Compiler Explorer](https://godbolt.org), set to Rust + aarch64. The fastest way to build
+  assembly intuition that exists.
+
+## License
+
+MIT
