@@ -1,0 +1,7 @@
+[package]
+name = "dtb"
+version = "0.1.0"
+edition = "2024"
+
+# no_std for the kernel, std for host tests. See the cfg_attr at the top of lib.rs.
+# This is what lets `cargo test -p dtb` run in milliseconds with no emulator.
