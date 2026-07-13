@@ -6,7 +6,7 @@
 //! See DECISIONS.md §7.
 //!
 //!     cargo xtask run      boot the kernel, print to this terminal
-//!     cargo xtask test     run the kernel's tests under QEMU
+//!     cargo xtask test     host tests (milliseconds), then the kernel under QEMU
 //!     cargo xtask gdb      boot paused, waiting for a debugger on :1234
 //!     cargo xtask objdump  disassemble the kernel
 //!     cargo xtask image    build the flat arm64 Image and dump its header
@@ -27,7 +27,7 @@ fn main() -> ExitCode {
     let ok = match cmd.as_str() {
         "build" => build(),
         "run" => cargo(&["run", "-p", "kernel", "--target", TARGET]),
-        "test" => cargo(&["test", "-p", "kernel", "--target", TARGET]),
+        "test" => test(),
         "gdb" => gdb(),
         "objdump" => objdump(),
         "image" => image(),
@@ -49,6 +49,21 @@ fn main() -> ExitCode {
 
 fn build() -> bool {
     cargo(&["build", "-p", "kernel", "--target", TARGET])
+}
+
+/// Host tests first, then the kernel under QEMU.
+///
+/// The host crates (`dtb`, `frames`) hold the pure logic and run in *milliseconds* with no
+/// emulator, so they fail fast and cheap. Only once they pass is it worth spending twenty
+/// seconds booting QEMU. See DECISIONS.md §7.
+fn test() -> bool {
+    eprintln!("--- host tests (pure logic, no emulator) ---");
+    if !cargo(&["test", "-p", "dtb", "-p", "frames"]) {
+        return false;
+    }
+    eprintln!();
+    eprintln!("--- kernel tests (QEMU) ---");
+    cargo(&["test", "-p", "kernel", "--target", TARGET])
 }
 
 /// Boot the kernel with QEMU frozen and a GDB stub listening.

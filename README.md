@@ -6,8 +6,9 @@ This is a learning project. The goal is not to produce a useful OS, it's to unde
 operating systems actually work by building one, starting from the first instruction the
 CPU ever executes. If it ends up useful, that's a bonus.
 
-**Status: milestone 2.** It boots on QEMU, prints to a serial port, catches its own faults
-and reports them legibly, and passes its tests.
+**Status: milestone 3.** It boots on QEMU, prints to a serial port, catches its own faults
+and reports them legibly, reads its memory map out of the device tree, and hands out physical
+memory a page at a time.
 
 ```
 cricker-os
@@ -67,6 +68,8 @@ kernel/
   src/console.rs       print! / println!
   src/testing.rs       the QEMU test harness
 scripts/qemu-runner.sh how the kernel actually gets booted (ELF -> flat Image -> QEMU)
+crates/dtb/            device tree parser        | pure logic, host-tested,
+crates/frames/         physical frame allocator  | milliseconds, no emulator
 xtask/                 build orchestration (build, run, test, gdb, objdump, image)
 notes/                 a concept glossary, written as questions came up
 design/                open proposals, not yet decided
@@ -127,7 +130,7 @@ milestone 7.
 |---|---|---|
 | 1 | Boot to Rust, print to UART | ✅ |
 | 2 | Exception vectors, handlers, legible fault reports | ✅ |
-| 3 | Physical frame allocator | |
+| 3 | Physical frame allocator, device tree parsing | ✅ |
 | 4 | MMU on: page tables, address spaces, kernel heap | |
 | 5 | GIC + timer interrupts | |
 | 6 | Kernel threads, context switch, scheduler | |
@@ -153,6 +156,14 @@ tests hold the line. See [notes/boot-protocol.md](notes/boot-protocol.md).
 **`bl` does not push a return address onto the stack.** That's x86. On aarch64 the return
 address goes into register `x30`, and the stack is where it gets *parked* when a function
 needs `x30` for a call of its own. See [notes/stack.md](notes/stack.md).
+
+**`into_iter()` on a big array is a kernel footgun.** Milestone 3 hung the machine for
+150 seconds with no output. `[Option<Frame>; 1024].into_iter().flatten()` moves 16 KiB by
+value, twice, onto a 64 KiB stack; `sp` walked through `.bss` and `.data` into `.text` and
+the kernel executed its own overwritten code. Two of the three diagnoses along the way were
+wrong. The write-up of *how it was actually found* (semihosting exit codes as bisection
+markers, because `println!` runs through the `.text` you just corrupted) is the most useful
+thing in [notes/stack.md](notes/stack.md).
 
 ## Reading
 

@@ -14,6 +14,9 @@ in the code or the conversation doesn't make sense, it belongs here.
 
 ## Devices
 
+- [The device tree](device-tree.md) — the machine describing itself. Everything in it is
+  big-endian, and the width of an address is declared by the *parent* node. Those are the
+  two things most likely to be silently wrong.
 - [The UART](uart.md) — the serial port, and why every kernel learns to drive one first.
   What "asynchronous" actually means (there is no clock wire), and a line-by-line read of
   our own PL011 driver.
@@ -34,6 +37,9 @@ in the code or the conversation doesn't make sense, it belongs here.
 
 ## Memory
 
+- [Physical memory](physical-memory.md) — the frame allocator. Why a bitmap and not a free
+  list, the bootstrap problem (the allocator's first act is to allocate itself), and why
+  `mark_used` rounds *outward*.
 - [The MMU](mmu.md) — virtual vs. physical addresses, page tables, the TLB, page faults,
   and why turning it on is the scariest moment in the kernel.
 

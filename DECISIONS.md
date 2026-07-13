@@ -114,7 +114,7 @@ boots" and "an operating system" is milestone 7.
 |----|------------------------------------------------|------------------------------------------|----|
 | 1  | Boot to Rust on QEMU `virt`, print to UART      | Freestanding binaries, linker scripts    | ✅ |
 | 2  | Exception vectors, handlers, fault reports      | ARM privilege model, exception dispatch  | ✅ |
-| 3  | Physical frame allocator from the memory map    | Where RAM actually comes from            |    |
+| 3  | Physical frame allocator from the memory map    | Where RAM actually comes from            | ✅ |
 | 4  | MMU on: page tables, address spaces, kernel heap| Virtual memory, `alloc` in `no_std`      |    |
 | 5  | GIC + timer interrupts                          | The preemption source                    |    |
 | 6  | Kernel threads, context switch, scheduler       | Stacks, register files, run queues       |    |

@@ -74,11 +74,98 @@ so touching it raises a page fault and you get a clean crash. That is what "stac
 overflow" *is*: you hit the guard page.
 
 **We don't have that.** We have 64 KiB reserved in a linker script and nothing below it
-but more of our own kernel. Blow the stack in cricker-os today and we will silently
-overwrite our own `.bss` and then behave insanely.
+but more of our own kernel. Blow the stack in cricker-os and we silently overwrite our own
+`.bss`, then `.data`, then `.text`, and then execute our own corrupted code.
 
 TODO (milestone 4): once the MMU is on, leave a page unmapped below the stack and get real
 overflow detection.
+
+---
+
+# The milestone 3 incident
+
+The paragraph above was written during milestone 1 as a hypothetical. It happened during
+milestone 3. Recording it in full, because how it was *diagnosed* is more useful than the
+bug.
+
+## The symptom
+
+A kernel test hung. Forever. Under a 150-second timeout, it never finished. No panic, no
+fault, no output. The last thing printed was the name of the test.
+
+## The bug
+
+```rust
+let mut taken = [None; 1024];        // [Option<Frame>; 1024] = 16 KiB
+...
+for frame in taken.into_iter().flatten() {
+    memory::free(frame);
+}
+```
+
+`into_iter()` on an array **moves it by value**. `flatten()` wraps the result in another
+struct, which gets moved again. In a debug build (no optimization, nothing elided) those
+copies are all real, and they all land on the stack:
+
+```
+  16 KiB   taken
++ 16 KiB   the array moved into core::array::IntoIter
++ 16 KiB   the IntoIter moved into Flatten
+--------
+  48 KiB   on a 64 KiB stack that already had frames on it
+```
+
+`sp` walked below `__stack_bottom`, through `.bss`, through `.data`, and into `.text`. The
+kernel then executed its own overwritten code, and hung.
+
+**`into_iter()` on a large array is a real kernel footgun.** Use `iter()` and borrow.
+
+## Three wrong turns, and what actually worked
+
+**Wrong turn 1: "it printed `sp=` and stopped, so it dies inside `println!`."** It didn't.
+That was QEMU's *unflushed stdout buffer* being discarded when the timeout killed it. The
+output we saw was simply the last thing that made it out of the buffer, not the last thing
+that executed. **Never infer a hang location from where output stops** unless you know the
+output is unbuffered.
+
+**Wrong turn 2: "the stack is fine."** A probe measured `headroom()` right after declaring
+the array and found plenty of room. True, and irrelevant: it measured *before* the three
+copies that actually blew it. **A measurement is only as good as where you put it.**
+
+**Wrong turn 3: diagnosing before bisecting.** Two hypotheses were argued from arithmetic
+before anyone bisected. Both were wrong.
+
+**What worked:** semihosting exit codes as markers.
+
+```rust
+memory::alloc_loop();
+semihosting::exit(31);      // do we even get here?
+memory::free_loop();
+```
+
+Exit code 31 came back. The alloc loop was fine; the free loop was the problem. That single
+bit of information was worth more than all the theorizing, and it took two minutes.
+
+**Why exit codes and not prints:** the failing kernel had corrupted `.text`, and
+`println!` runs through `core::fmt`, which lives in `.text`. Using the broken thing to
+diagnose the broken thing is circular. A semihosting exit is a single `hlt` instruction and
+two register writes ([semihosting.md](semihosting.md)). It works when almost nothing else
+does.
+
+## What we added
+
+A **canary**: four magic words at `__stack_bottom` (`kernel/src/stack.rs`), checked after
+every test, and in the panic handler and the fault handler.
+
+**And it did not catch this bug.** Be clear about that. The overflow destroyed `.text`
+before any check could run, so there was no surviving code to notice. The canary catches
+the *milder* case, where an overflow dips below the stack, corrupts `.bss`, and returns.
+That is worth having, and the after-each-test check pins the blame on the test that did it
+rather than on some later victim. But it is a mitigation, not a fix.
+
+**The fix is the guard page at milestone 4.** An unmapped page below `__stack_bottom` means
+the MMU faults on the *first* byte written past the end, before any damage. Precise, free
+at runtime, impossible to miss. That is the whole reason `link.ld` carries a TODO about it.
 
 ## `bl` does *not* push the return address (this is not x86)
 
