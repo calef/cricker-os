@@ -40,6 +40,9 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [Physical memory](physical-memory.md) — the frame allocator. Why a bitmap and not a free
   list, the bootstrap problem (the allocator's first act is to allocate itself), and why
   `mark_used` rounds *outward*.
+- [aarch64 page tables](page-tables.md) — the structure the MMU walks. The trap bits (AF,
+  PXN, AttrIndx), why W^X is enforced by construction, and the thing a failing host test
+  taught us: bits 63:48 aren't translated, they choose which TABLE to use.
 - [The MMU](mmu.md) — virtual vs. physical addresses, page tables, the TLB, page faults,
   and why turning it on is the scariest moment in the kernel.
 

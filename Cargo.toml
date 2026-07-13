@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["kernel", "xtask", "crates/dtb", "crates/frames"]
+members = ["kernel", "xtask", "crates/dtb", "crates/frames", "crates/paging"]
 
 # Note: we deliberately do NOT set `panic = "abort"` here. The bare-metal target
 # has abort baked in already, and setting it workspace-wide would break `cargo test`
