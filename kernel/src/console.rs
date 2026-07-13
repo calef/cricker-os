@@ -9,12 +9,20 @@ use core::fmt::Write;
 
 /// The PL011 on QEMU's `virt` machine.
 ///
-/// This address is a fact we *looked up*. The Device Tree Blob is the machine
-/// *telling us*, and the difference between those two is the difference between a
-/// kernel that runs on one board and a kernel that can be told what board it's on.
+/// **Hardcoded on purpose, and it should stay that way.** Not a TODO.
 ///
-/// TODO(milestone 2): parse this out of the DTB. The pointer is already being
-/// handed to `kernel_main`. See notes/portability.md.
+/// Everywhere else we insist the machine tell us what it is rather than guessing
+/// (notes/device-tree.md). The console is the one place we can't, and the reason is a
+/// chicken-and-egg: the device tree parser is the code most likely to have a bug, and
+/// `println!` is how you would debug it. So the console has to come up *before* the
+/// device tree is parsed, which means the console cannot depend on it.
+///
+/// The Raspberry Pi port will need a different constant here, and that is the correct
+/// shape: a per-board early-console address, chosen at compile time, that gets us far
+/// enough to read the tree that tells us everything else.
+///
+/// (The tree does carry it, incidentally: `/chosen/stdout-path = "/pl011@9000000"`.
+/// Worth reading *after* boot as a cross-check, but never worth depending on to boot.)
 const PL011_BASE: usize = 0x0900_0000;
 
 /// A handle to the console UART.

@@ -86,3 +86,38 @@ fn refuses_to_overflow_the_callers_slice() {
         other => panic!("expected TooManyRegions, got {other:?}"),
     }
 }
+
+// --- /chosen and the initrd ---
+
+const QEMU_VIRT_INITRD: &[u8] = include_bytes!("fixtures/qemu-virt-initrd.dtb");
+
+#[test]
+fn finds_the_initrd() {
+    let dtb = Dtb::from_bytes(QEMU_VIRT_INITRD).unwrap();
+    let initrd = dtb.initrd().unwrap().expect("this fixture has an initrd");
+
+    // The bootloader loaded a file into RAM and told us where. Nobody else protects it.
+    // If the frame allocator hands this memory out, the initrd is gone before milestone 8
+    // ever reads a byte of it.
+    assert_eq!(initrd.start, 0x4400_0000);
+    assert_eq!(initrd.end(), 0x4403_0d40);
+    assert_eq!(initrd.size, 200_000, "the fixture was made from a 200 KB file");
+}
+
+#[test]
+fn no_initrd_is_not_an_error() {
+    // The common case: nobody passed -initrd. `None`, not an error, and definitely not a
+    // zero-length region that the allocator then tries to reason about.
+    let dtb = Dtb::from_bytes(QEMU_VIRT).unwrap();
+    assert_eq!(dtb.initrd().unwrap(), None);
+}
+
+#[test]
+fn an_initrd_does_not_disturb_the_memory_map() {
+    // Regression guard: the /chosen walk and the /memory walk are separate passes over
+    // the same token stream. A bug in one must not corrupt the other.
+    let dtb = Dtb::from_bytes(QEMU_VIRT_INITRD).unwrap();
+    let mut regions = [Region { start: 0, size: 0 }; 8];
+    assert_eq!(dtb.memory_regions(&mut regions).unwrap(), 1);
+    assert_eq!(regions[0].start, 0x4000_0000);
+}

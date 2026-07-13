@@ -180,7 +180,16 @@ impl<'a> Dtb<'a> {
 
         let mut found = 0;
         let mut depth = 0i32;
-        let mut in_memory_node = false;
+
+        // The depth at which we entered a /memory node, or None.
+        //
+        // Tracking the *depth* rather than a bare "am I inside one" flag matters: a
+        // node's properties are the ones seen while `depth` equals the node's own depth.
+        // If a /memory node ever had a child, a bare flag would be cleared by the
+        // child's END_NODE and we'd stop reading the parent's remaining properties. No
+        // real device tree does this today, which is exactly why it would be a lurking
+        // bug rather than an obvious one.
+        let mut memory_at: Option<i32> = None;
         let mut at = self.off_struct;
 
         loop {
@@ -197,13 +206,16 @@ impl<'a> Dtb<'a> {
                     // `memory@<address>`. (There is also a `device_type = "memory"`
                     // property, which is the more correct check, but it arrives *after*
                     // the node name and the name is unambiguous in practice.)
-                    in_memory_node =
-                        depth == 2 && (name == b"memory" || name.starts_with(b"memory@"));
+                    if depth == 2 && (name == b"memory" || name.starts_with(b"memory@")) {
+                        memory_at = Some(depth);
+                    }
                 }
 
                 FDT_END_NODE => {
+                    if memory_at == Some(depth) {
+                        memory_at = None;
+                    }
                     depth -= 1;
-                    in_memory_node = false;
                 }
 
                 FDT_PROP => {
@@ -225,7 +237,7 @@ impl<'a> Dtb<'a> {
                         }
                     }
 
-                    if in_memory_node && name == b"reg" {
+                    if memory_at == Some(depth) && name == b"reg" {
                         found += self.decode_reg(
                             value_at,
                             len,
@@ -240,6 +252,88 @@ impl<'a> Dtb<'a> {
                 FDT_END => return Ok(found),
                 other => return Err(Error::BadToken(other)),
             }
+        }
+    }
+
+    /// The initial ramdisk, if the bootloader placed one.
+    ///
+    /// Declared in `/chosen` as `linux,initrd-start` and `linux,initrd-end`.
+    ///
+    /// **This memory is ours to protect.** The bootloader loaded a file into RAM for us
+    /// and told us where it put it. If we don't reserve it, the frame allocator hands it
+    /// out to the first caller and the initrd is destroyed before we ever read a byte of
+    /// it. Milestone 8 (a filesystem) and milestone 10 (a userspace shell to load) both
+    /// want this, and by then the bug would be far away from its cause.
+    pub fn initrd(&self) -> Result<Option<Region>, Error> {
+        let mut start: Option<u64> = None;
+        let mut end: Option<u64> = None;
+
+        let mut depth = 0i32;
+        let mut chosen_at: Option<i32> = None;
+        let mut at = self.off_struct;
+
+        loop {
+            let token = be32(self.bytes, at)?;
+            at += 4;
+
+            match token {
+                FDT_BEGIN_NODE => {
+                    let name = self.cstr(at)?;
+                    at += align4(name.len() + 1);
+                    depth += 1;
+                    if depth == 2 && name == b"chosen" {
+                        chosen_at = Some(depth);
+                    }
+                }
+
+                FDT_END_NODE => {
+                    if chosen_at == Some(depth) {
+                        chosen_at = None;
+                    }
+                    depth -= 1;
+                }
+
+                FDT_PROP => {
+                    let len = be32(self.bytes, at)? as usize;
+                    let name_off = be32(self.bytes, at + 4)? as usize;
+                    let value_at = at + 8;
+                    at = value_at + align4(len);
+
+                    if chosen_at == Some(depth) {
+                        match self.cstr(self.off_strings + name_off)? {
+                            b"linux,initrd-start" => start = Some(self.int(value_at, len)?),
+                            b"linux,initrd-end" => end = Some(self.int(value_at, len)?),
+                            _ => {}
+                        }
+                    }
+                }
+
+                FDT_NOP => {}
+                FDT_END => break,
+                other => return Err(Error::BadToken(other)),
+            }
+        }
+
+        Ok(match (start, end) {
+            // `initrd-end` is exclusive, so an empty initrd (start == end) is a "no".
+            (Some(s), Some(e)) if e > s => Some(Region {
+                start: s,
+                size: e - s,
+            }),
+            _ => None,
+        })
+    }
+
+    /// An integer property.
+    ///
+    /// The device tree spec lets these be either 32 or 64 bits wide, and **the only way
+    /// to tell is the property's length**. QEMU writes `linux,initrd-start` as 8 bytes;
+    /// a 32-bit platform writes 4. Assume one and you silently misread the other.
+    fn int(&self, at: usize, len: usize) -> Result<u64, Error> {
+        match len {
+            4 => Ok(be32(self.bytes, at)? as u64),
+            8 => Ok(be64(self.bytes, at)?),
+            _ => Err(Error::Truncated),
         }
     }
 

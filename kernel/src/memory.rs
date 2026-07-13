@@ -64,26 +64,66 @@ pub fn init(dtb_ptr: usize) {
     let top = ram.iter().map(|r| r.end()).max().unwrap();
     let total_frames = FrameAllocator::frames_in(top - base);
 
+    // Everything that is already spoken for, and must not be allocated or scribbled on.
+    //
+    // The initrd matters and is easy to miss: the bootloader loaded a file into RAM for
+    // us and told us where. Nobody else will protect it. Milestone 8 and 10 want to read
+    // it, and if the allocator hands that memory out first, the bug lands a long way from
+    // its cause.
+    let mut forbidden = [Region { start: 0, size: 0 }; MAX_REGIONS + 3];
+    let mut n = 0;
+
+    let mut claim = |r: Region| {
+        if r.size > 0 {
+            forbidden[n] = r;
+            n += 1;
+        }
+    };
+
+    claim(Region {
+        start: image_start(),
+        size: image_end() - image_start(),
+    });
+    claim(Region {
+        start: dtb_ptr as u64,
+        size: dtb.total_size() as u64,
+    });
+    if let Some(initrd) = dtb.initrd().expect("cannot read /chosen") {
+        INITRD_START.store(initrd.start as usize, core::sync::atomic::Ordering::Relaxed);
+        INITRD_SIZE.store(initrd.size as usize, core::sync::atomic::Ordering::Relaxed);
+        claim(initrd);
+    }
+    for r in reserved {
+        claim(*r);
+    }
+    let forbidden = &forbidden[..n];
+
     // --- the bootstrap problem ---
     //
     // The allocator needs somewhere to put its bitmap. We have no allocator.
     //
-    // The way out is to carve it, by hand, out of the very memory it is about to
-    // manage. We know where the kernel image ends (the linker told us), so we put the
-    // bitmap immediately after it, and then reserve those frames from itself.
+    // The way out is to carve it, by hand, out of the very memory it is about to manage,
+    // and then reserve those frames from itself. **The allocator's first act is to
+    // allocate itself.**
     //
-    // The allocator's first act is to allocate itself.
+    // We used to just drop it immediately after the kernel image and hope. That worked,
+    // but only by luck: `image_size` in the arm64 Image header stops at `__stack_top`,
+    // so everything past `__image_end` is memory we never told the bootloader we wanted.
+    // QEMU happens to place the DTB and the initrd 64 MiB higher up. Different firmware
+    // need not.
+    //
+    // So instead: scan RAM for the first frame-aligned run that clears everything above.
+    // Same answer in practice, but now it's proven rather than lucky, and it will keep
+    // being right on hardware we haven't met.
     let bitmap_bytes = FrameAllocator::bitmap_bytes(total_frames);
-    let bitmap_start = align_up(image_end(), FRAME_SIZE);
+    let bitmap_start = place_bitmap(bitmap_bytes as u64, ram, forbidden);
+    BITMAP_START.store(bitmap_start as usize, core::sync::atomic::Ordering::Relaxed);
+    BITMAP_BYTES.store(bitmap_bytes, core::sync::atomic::Ordering::Relaxed);
 
-    assert!(
-        bitmap_start + bitmap_bytes as u64 <= top,
-        "no room for a {bitmap_bytes}-byte bitmap after the kernel image"
-    );
-
-    // SAFETY: this memory is inside RAM, past the end of our image, and nothing else in
-    // the kernel touches it. We are about to mark it used so that nothing ever will.
-    // The reference is 'static because the allocator outlives everything.
+    // SAFETY: `place_bitmap` guarantees this range is inside a RAM region and overlaps
+    // nothing that is already spoken for. Nothing else in the kernel touches it, and we
+    // mark it used below so nothing ever will. 'static because the allocator outlives
+    // everything.
     let bitmap: &'static mut [u8] =
         unsafe { core::slice::from_raw_parts_mut(bitmap_start as *mut u8, bitmap_bytes) };
 
@@ -99,14 +139,41 @@ pub fn init(dtb_ptr: usize) {
 
     // And immediately take back everything that is already spoken for. Order matters:
     // free first, then reserve, because reserving is what has to win.
-    allocator.mark_used(image_start(), image_end() - image_start());
-    allocator.mark_used(bitmap_start, bitmap_bytes as u64);
-    allocator.mark_used(dtb_ptr as u64, dtb.total_size() as u64);
-    for r in reserved {
+    for r in forbidden {
         allocator.mark_used(r.start, r.size);
     }
+    allocator.mark_used(bitmap_start, bitmap_bytes as u64);
 
     *ALLOCATOR.lock() = Some(allocator);
+}
+
+/// Find somewhere to put the frame bitmap that overlaps nothing already spoken for.
+///
+/// Scans RAM in order and returns the first frame-aligned run of `need` bytes that clears
+/// every forbidden region. When a candidate collides, jump past the *end* of whatever it
+/// hit rather than nudging forward by a frame: the regions are large and stepping through
+/// a 200 KiB initrd one page at a time would be silly.
+fn place_bitmap(need: u64, ram: &[Region], forbidden: &[Region]) -> u64 {
+    for region in ram {
+        let mut candidate = align_up(region.start, FRAME_SIZE);
+
+        'scan: while candidate + need <= region.end() {
+            for f in forbidden {
+                if overlaps(candidate, need, f.start, f.size) {
+                    candidate = align_up(f.start + f.size, FRAME_SIZE);
+                    continue 'scan;
+                }
+            }
+            return candidate;
+        }
+    }
+
+    panic!("no room anywhere in RAM for a {need}-byte frame bitmap");
+}
+
+/// Do `[a, a+alen)` and `[b, b+blen)` share a byte?
+fn overlaps(a: u64, alen: u64, b: u64, blen: u64) -> bool {
+    a < b.saturating_add(blen) && b < a.saturating_add(alen)
 }
 
 pub fn alloc() -> Option<Frame> {
@@ -145,6 +212,27 @@ pub fn image_bounds() -> (u64, u64) {
 pub fn is_frame_used(frame: Frame) -> Option<bool> {
     ALLOCATOR.lock().as_ref()?.is_used(frame)
 }
+
+/// Where the frame bitmap landed, and how big it is. Test support.
+pub fn bitmap_region() -> (u64, u64) {
+    (
+        BITMAP_START.load(core::sync::atomic::Ordering::Relaxed) as u64,
+        BITMAP_BYTES.load(core::sync::atomic::Ordering::Relaxed) as u64,
+    )
+}
+
+/// The initrd, if the bootloader gave us one. Test support.
+pub fn initrd_region() -> Option<(u64, u64)> {
+    let start = INITRD_START.load(core::sync::atomic::Ordering::Relaxed) as u64;
+    let size = INITRD_SIZE.load(core::sync::atomic::Ordering::Relaxed) as u64;
+    (size > 0).then_some((start, size))
+}
+
+use core::sync::atomic::AtomicUsize;
+static BITMAP_START: AtomicUsize = AtomicUsize::new(0);
+static BITMAP_BYTES: AtomicUsize = AtomicUsize::new(0);
+static INITRD_START: AtomicUsize = AtomicUsize::new(0);
+static INITRD_SIZE: AtomicUsize = AtomicUsize::new(0);
 
 pub fn print_summary() {
     let Some(s) = stats() else {

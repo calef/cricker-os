@@ -384,6 +384,63 @@ mod tests {
         crate::memory::free(frame);
     }
 
+    /// The bitmap must not sit on top of anything already spoken for.
+    ///
+    /// We used to place it immediately after the kernel image and hope. That worked, but
+    /// only because QEMU happens to put the device tree 64 MiB higher up. `image_size` in
+    /// the arm64 Image header stops at `__stack_top`, so everything past `__image_end` is
+    /// memory we never told the bootloader we wanted, and different firmware need not
+    /// leave it alone. Now the placement is scanned and proven; this checks it.
+    #[test_case]
+    fn bitmap_overlaps_nothing() {
+        let (bstart, bsize) = crate::memory::bitmap_region();
+        assert!(bsize > 0, "bitmap has no size?");
+
+        let (istart, iend) = crate::memory::image_bounds();
+        assert!(
+            bstart + bsize <= istart || bstart >= iend,
+            "bitmap {bstart:#x}+{bsize:#x} overlaps the kernel image {istart:#x}..{iend:#x}"
+        );
+
+        let dtb = crate::DTB.load(core::sync::atomic::Ordering::Relaxed) as u64;
+        assert!(
+            bstart + bsize <= dtb || bstart >= dtb + 64 * 1024,
+            "bitmap {bstart:#x}+{bsize:#x} is sitting on the device tree at {dtb:#x}"
+        );
+
+        if let Some((istart, isize)) = crate::memory::initrd_region() {
+            assert!(
+                bstart + bsize <= istart || bstart >= istart + isize,
+                "bitmap {bstart:#x}+{bsize:#x} is sitting on the initrd"
+            );
+        }
+    }
+
+    /// If the bootloader gave us an initrd, the allocator must never hand it out.
+    ///
+    /// Only meaningful when QEMU is run with `-initrd`, which the default test run isn't.
+    /// It asserts the invariant when there IS one, and passes trivially when there isn't,
+    /// which is the right shape: the check exists so that the day someone adds `-initrd`
+    /// to the runner, this catches it rather than milestone 10 catching it.
+    #[test_case]
+    fn initrd_is_reserved_if_present() {
+        use frames::{FRAME_SIZE, Frame};
+
+        let Some((start, size)) = crate::memory::initrd_region() else {
+            return;
+        };
+
+        let mut addr = start - start % FRAME_SIZE;
+        while addr < start + size {
+            assert_eq!(
+                crate::memory::is_frame_used(Frame::from_addr(addr)),
+                Some(true),
+                "frame {addr:#x} is part of the initrd but is marked FREE"
+            );
+            addr += FRAME_SIZE;
+        }
+    }
+
     /// Proves the stack canary works, without actually smashing the stack.
     ///
     /// The runner checks this after every test (see testing.rs), so a test that blows the
