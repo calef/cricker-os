@@ -8,6 +8,12 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [QEMU](qemu.md) — the software computer we develop on. Why we need it, what the `virt`
   machine is, what each flag does.
 
+## Devices
+
+- [The UART](uart.md) — the serial port, and why every kernel learns to drive one first.
+  What "asynchronous" actually means (there is no clock wire), and a line-by-line read of
+  our own PL011 driver.
+
 ## Architecture
 
 - [Registers](registers.md) — 248 bytes of storage inside the CPU, and why that's the
@@ -37,6 +43,9 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [How portable kernels are written](portability.md) — what actually goes in `arch/` (a
   surprisingly short list), what can't be abstracted (the memory model), and why the second
   port should come early and be as alien as possible.
+- [Where cricker-os could actually run](target-hardware.md) — the ISA is almost never the
+  constraint. What decides bootability, why a Pi 4 is the next port, and why the port
+  *after* it should probably be a UEFI/ACPI machine rather than another Device Tree board.
 
 ## Build
 
