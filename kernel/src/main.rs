@@ -39,7 +39,12 @@ mod testing;
 #[unsafe(no_mangle)]
 #[cfg_attr(test, allow(unused_variables))] // `dtb` is only read by the banner
 pub extern "C" fn kernel_main(dtb: usize) -> ! {
+    // Console first, exceptions second, and the order is not arbitrary: the fault
+    // handler's entire job is to print, so it is useless until the UART works. The
+    // window between these two lines is the last place in the kernel where a fault
+    // still kills us silently.
     console::init();
+    arch::init();
 
     #[cfg(test)]
     test_main();
@@ -65,6 +70,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
 
         println!();
         println!("milestone 1: we are running our own code on a CPU with nothing underneath it.");
+        println!("milestone 2: and when it goes wrong, we get told.");
         println!();
     }
 
@@ -127,5 +133,88 @@ mod tests {
         use aarch64_cpu::registers::CurrentEL;
         use tock_registers::interfaces::Readable;
         assert_eq!(CurrentEL.read(CurrentEL::EL), 1);
+    }
+
+    // --- milestone 2 ---
+
+    /// Proves the vector table is installed, and that the hardware's alignment rule
+    /// is satisfied.
+    ///
+    /// The 2048-byte alignment is not a style preference. The CPU computes the target
+    /// of an exception as `VBAR_EL1 + offset`, and it assumes the low 11 bits of the
+    /// base are zero. A misaligned table sends every exception to a wrong address.
+    #[test_case]
+    fn vbar_el1_points_at_our_vector_table() {
+        use aarch64_cpu::registers::VBAR_EL1;
+        use tock_registers::interfaces::Readable;
+
+        unsafe extern "C" {
+            static exception_vectors: core::ffi::c_void;
+        }
+        let expected = (&raw const exception_vectors) as u64;
+
+        assert_eq!(VBAR_EL1.get(), expected, "VBAR_EL1 not installed");
+        assert_eq!(expected % 2048, 0, "vector table misaligned: {expected:#x}");
+    }
+
+    /// The real one: take an exception and come back from it.
+    ///
+    /// `brk #0` raises a synchronous exception. To reach the line after it, every
+    /// single piece of milestone 2 has to be correct: the vector table is where
+    /// VBAR_EL1 says, slot 4 (Current EL, SP_ELx, Synchronous) fires, SAVE_CONTEXT
+    /// writes a frame that matches `TrapFrame`, Rust decodes ESR_EL1 and recognizes
+    /// EC 0x3c, it advances ELR past the `brk` (which the hardware does NOT do for
+    /// us, unlike `svc`), RESTORE_CONTEXT puts the machine back, and `eret` returns
+    /// to exactly the right address.
+    ///
+    /// Get any of that wrong and you don't get a failing assertion. You get an
+    /// infinite loop, or a crash. So arriving here at all is most of the test.
+    #[test_case]
+    fn breakpoint_is_caught_and_execution_resumes() {
+        use crate::arch::exceptions::BRK_COUNT;
+        use core::sync::atomic::Ordering;
+
+        let before = BRK_COUNT.load(Ordering::Relaxed);
+
+        // SAFETY: this deliberately faults. We handle it.
+        unsafe { core::arch::asm!("brk #0") };
+
+        assert_eq!(
+            BRK_COUNT.load(Ordering::Relaxed),
+            before + 1,
+            "the handler didn't run, but we resumed anyway?"
+        );
+    }
+
+    /// Proves the trap frame actually round-trips a register.
+    ///
+    /// The previous test proves we *return*. This proves we return with the machine
+    /// intact, which is a different claim. Put a known value in a register, take an
+    /// exception, read it back.
+    ///
+    /// A bug in SAVE_CONTEXT/RESTORE_CONTEXT (a wrong offset, a swapped pair) would
+    /// scramble registers while still returning perfectly happily to the right
+    /// address. That is the nastiest possible failure: it corrupts a caller's state
+    /// and blames a completely innocent piece of code, thousands of instructions
+    /// later. This is the test that catches it.
+    #[test_case]
+    fn registers_survive_an_exception() {
+        let sent: u64 = 0xdead_beef_cafe_f00d;
+        let got: u64;
+
+        // SAFETY: deliberately faults; we handle it. x20 is callee-saved, so we tell
+        // the compiler we're clobbering it.
+        unsafe {
+            core::arch::asm!(
+                "mov x20, {sent}",
+                "brk #0",
+                "mov {got}, x20",
+                sent = in(reg) sent,
+                got = out(reg) got,
+                out("x20") _,
+            );
+        }
+
+        assert_eq!(got, sent, "the trap frame scrambled a register");
     }
 }

@@ -7,11 +7,25 @@
 
 use core::arch::global_asm;
 
+pub mod exceptions;
 pub mod semihosting;
 
 // The kernel's actual entry point. `_start` lands in section `.text.boot`, which
 // link.ld places first, at the ELF entry address QEMU jumps to.
 global_asm!(include_str!("boot.s"));
+
+// The exception vector table. VBAR_EL1 will point here once `init` runs.
+global_asm!(include_str!("vectors.s"));
+
+/// Bring the CPU into a state where the kernel can safely run.
+///
+/// Right now that means one thing: install the exception vectors, so that a fault
+/// produces a report instead of a silent death. Note the ordering constraint in
+/// `main.rs`: the console has to come up first, because the fault handler's whole
+/// job is to *print*.
+pub fn init() {
+    exceptions::init();
+}
 
 /// Park this core forever.
 ///
