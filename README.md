@@ -24,7 +24,7 @@ for you) and QEMU:
 
 ```bash
 brew install qemu          # or your platform's equivalent
-git clone https://github.com/<you>/cricker-os
+git clone https://github.com/calef/cricker-os
 cd cricker-os
 
 cargo xtask run            # boot it
