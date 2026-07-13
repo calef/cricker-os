@@ -12,11 +12,12 @@ and reports them legibly, and passes its tests.
 ```
 cricker-os
   exception level : EL1
-  stack top       : 0x0000000040094000
-  device tree     : none (ELF boot; see notes/portability.md)
+  stack top       : 0x0000000040097010
+  device tree     : 0x0000000044000000
 
 milestone 1: we are running our own code on a CPU with nothing underneath it.
 milestone 2: and when it goes wrong, we get told.
+           : and the machine now tells us what it is, instead of us guessing.
 ```
 
 When something faults, you get this instead of a silent death:
@@ -44,6 +45,7 @@ cd cricker-os
 cargo xtask run            # boot it
 cargo xtask test           # run the kernel's tests under QEMU
 cargo xtask objdump        # disassemble it
+cargo xtask image          # build the flat arm64 Image and dump its header
 cargo xtask gdb            # boot paused, waiting for a debugger on :1234
 ```
 
@@ -56,6 +58,7 @@ your terminal. Ctrl-A then X quits QEMU.
 kernel/
   link.ld              where the image lives in memory, and what the linker exports to us
   src/arch/aarch64/
+    image_header.s     64 bytes that make QEMU treat us as a kernel, not a blob
     boot.s             the first instructions the machine executes
     vectors.s          the exception vector table (shape dictated by silicon)
     exceptions.rs      the trap frame, ESR decoding, fault reports
@@ -63,7 +66,8 @@ kernel/
   src/drivers/pl011.rs the serial port
   src/console.rs       print! / println!
   src/testing.rs       the QEMU test harness
-xtask/                 build orchestration (build, run, test, gdb, objdump)
+scripts/qemu-runner.sh how the kernel actually gets booted (ELF -> flat Image -> QEMU)
+xtask/                 build orchestration (build, run, test, gdb, objdump, image)
 notes/                 a concept glossary, written as questions came up
 design/                open proposals, not yet decided
 DECISIONS.md           what we chose, what we rejected, and why
@@ -140,10 +144,11 @@ the first ten don't already set up.
 
 Kept here on purpose, because the corrections were the most instructive part.
 
-**QEMU does not hand you a device tree pointer in `x0`.** It only does that under the Linux
-boot protocol, which it selects for flat arm64 `Image` files. We ship an ELF, so it takes
-the bare-metal path and populates no registers. We found this out by printing `x0` and
-getting zero. See [notes/portability.md](notes/portability.md).
+**QEMU does not hand an ELF a device tree pointer in `x0`.** It only does that under the
+Linux boot protocol, which it selects for flat arm64 `Image` files. We shipped an ELF, so it
+took the bare-metal path and populated no registers. We found out by printing `x0` and
+getting zero. *Since fixed*: we now emit a flat binary with a 64-byte Image header, and two
+tests hold the line. See [notes/boot-protocol.md](notes/boot-protocol.md).
 
 **`bl` does not push a return address onto the stack.** That's x86. On aarch64 the return
 address goes into register `x30`, and the stack is where it gets *parked* when a function

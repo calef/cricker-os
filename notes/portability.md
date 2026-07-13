@@ -90,7 +90,7 @@ picked x86 first we'd have been building a landmine field for our future selves.
 ACPI vs. Device Tree is a difference in the whole *model* of how you learn what hardware
 exists. Much deeper than a shim.
 
-### The Device Tree, and a correction
+### The Device Tree, and a correction (now resolved)
 
 The DTB (Device Tree Blob) describes every device on the machine: where the UART is, where
 RAM starts and ends, where the interrupt controller lives, how many CPUs there are. It is
@@ -99,33 +99,23 @@ That difference is exactly the difference between a kernel that runs on one boar
 kernel that can be told what board it's on.
 
 **An earlier draft of this note claimed QEMU's `virt` machine passes a DTB pointer in `x0`
-at entry. That is wrong for us, and milestone 1 proved it: we printed `x0` and got zero.**
-
-The actual rule:
+at entry, full stop. That was wrong, and milestone 1 proved it: we printed `x0` and got
+zero.** The truth is conditional on what kind of file you hand QEMU.
 
 | What you hand `-kernel` | How QEMU boots it | `x0` at entry |
 |---|---|---|
-| flat arm64 `Image` (magic `ARM\x64` header), or uImage | **Linux boot protocol** | **DTB pointer** |
-| an **ELF** | bare-metal: copy segments, set PC, go | **not populated** (we observe 0) |
+| flat binary with an arm64 `Image` header | **Linux boot protocol** | **DTB pointer** |
+| an **ELF** | bare-metal: copy segments, set PC, go | **not populated** (we observed 0) |
 
-We ship an ELF (see [elf.md](elf.md) for why: symbols, DWARF, and the entry point travels
-with the file). So we get the bare-metal path and nobody hands us anything.
+Milestone 1 shipped an ELF, so we got the bare-metal path and nobody handed us anything.
 
-The DTB *does* exist. QEMU generates one for `virt` and it's dumpable:
+**Fixed.** We now emit a flat binary carrying a 64-byte arm64 Image header, QEMU recognizes
+it as a kernel, and `x0` arrives holding a real device tree pointer (`0x4400_0000` on
+`virt`). Two tests hold the line: one asserts the pointer is nonzero, one reads
+`0xd00dfeed` at it. See [boot-protocol.md](boot-protocol.md).
 
-```bash
-qemu-system-aarch64 -machine virt,dumpdtb=virt.dtb -cpu cortex-a72 -nographic
-dtc -I dtb -O dts virt.dtb
-```
-
-which confirms both facts we hardcoded (`pl011@9000000`, `memory@40000000`, 128 MiB).
-
-`boot.s` still stashes `x0` before clobbering it with `mrs x0, mpidr_el1`. It costs two
-instructions and it is *correct*; it's just receiving zero today.
-
-**TODO (milestone 2): emit a flat binary with an arm64 `Image` header** so QEMU uses the
-Linux boot protocol and actually hands us the DTB. This converges nicely with the Raspberry
-Pi port, which wants a flat `kernel8.img` anyway. Two birds.
+This also moves us toward the Pi, which boots a flat `kernel8.img` and has no use for an ELF
+at all. Not a detour from the port; the first step of it.
 
 ---
 

@@ -67,6 +67,9 @@ in the code or the conversation doesn't make sense, it belongs here.
   nobody zeroes our `.bss`, and where the stack comes from when there's no OS.
 - [ELF](elf.md) — the container the kernel ships in. Sections vs. segments, where the
   entry point lives, and what QEMU actually does with `-kernel` (almost nothing).
+- [The boot protocol](boot-protocol.md) — how QEMU decides whether you're a kernel or an
+  anonymous blob, and the 64-byte arm64 Image header that is the entire difference. Why
+  `text_offset` and the linker script must agree, and why the failure mode is silent.
 
 ---
 
@@ -74,11 +77,6 @@ in the code or the conversation doesn't make sense, it belongs here.
 
 Topics we've touched but not yet documented. Add as they come up:
 
-- Exception vectors and `VBAR_EL1`
-- The boot sequence: power-on to first Rust instruction
-- Interrupts vs. exceptions vs. syscalls (all one mechanism on aarch64)
 - The GIC (interrupt controller)
 - Context switching, and what a "register file" is
-- Stacks: why every thread needs its own
 - virtio
-- Semihosting
