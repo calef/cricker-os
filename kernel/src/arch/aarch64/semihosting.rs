@@ -5,9 +5,12 @@
 //! with a given process exit status. That is how `cargo test` learns whether the
 //! kernel's tests passed (DECISIONS.md §7).
 //!
-//! Requires QEMU's `-semihosting` flag. On real hardware with no debugger attached,
-//! the `hlt` traps and nothing happens, which is why `exit` falls through to a halt
-//! loop rather than pretending to diverge.
+//! It is worth seeing what this actually is: a trap instruction, an operation number
+//! in a register, arguments pointed to by another register, a result returned in a
+//! register. **That is a syscall**, and the kernel answering it is QEMU. Milestone 7
+//! builds the other side of exactly this shape. See notes/semihosting.md.
+//!
+//! Requires QEMU's `-semihosting` flag.
 
 // Only the test harness and the test-mode panic handler call this today, so a normal
 // `cargo build` sees it as dead. It isn't; it's just conditionally reachable.
@@ -33,9 +36,13 @@ pub fn exit(code: u32) -> ! {
     //   [1] = exit status
     let block = [ADP_STOPPED_APPLICATION_EXIT, code as u64];
 
-    // SAFETY: `hlt #0xf000` is the aarch64 semihosting trap. If a semihosting host
-    // is attached it never returns. If one isn't, it raises an exception we don't
-    // yet handle, or is ignored; either way we fall through to the halt below.
+    // SAFETY: `hlt #0xf000` is the aarch64 semihosting trap. With a host attached it
+    // never returns.
+    //
+    // Without one it raises a real exception, and since VBAR_EL1 is not yet set up we
+    // would jump to garbage and die silently. The halt() below would NOT be reached.
+    // That is a genuine hole; milestone 2 (exception vectors) closes it. It doesn't
+    // bite today only because we always run under QEMU with -semihosting.
     unsafe {
         core::arch::asm!(
             "hlt #0xf000",
@@ -44,6 +51,5 @@ pub fn exit(code: u32) -> ! {
         );
     }
 
-    // We only reach here if semihosting wasn't enabled. Nothing left to do.
     super::halt()
 }

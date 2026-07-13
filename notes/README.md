@@ -8,6 +8,10 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [QEMU](qemu.md) — the software computer we develop on. Why we need it, what the `virt`
   machine is, what each flag does.
 
+- [Semihosting](semihosting.md) — how the kernel asks QEMU to exit with a status code, so
+  that `cargo test` can read it. Also: it's a syscall ABI where the OS on the other side is
+  the emulator, which makes it a preview of milestone 7 running backwards.
+
 ## Devices
 
 - [The UART](uart.md) — the serial port, and why every kernel learns to drive one first.
