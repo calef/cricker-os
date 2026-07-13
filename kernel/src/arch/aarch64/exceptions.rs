@@ -222,6 +222,7 @@ fn fatal(frame: &TrapFrame, index: u64, esr: u64) -> ! {
         print_reg_row(frame, a);
     }
     println!();
+    crate::stack::warn_if_smashed();
 
     panic!("unhandled exception: {}", ec_name(class));
 }

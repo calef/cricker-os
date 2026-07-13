@@ -52,8 +52,11 @@ SECTIONS
      * (notes/stack.md).
      *
      * TODO(milestone 4): once the MMU is on, leave a page unmapped below
-     * __stack_bottom so that a stack overflow faults instead of silently eating
-     * our .bss. */
+     * __stack_bottom so that a stack overflow FAULTS instead of silently eating our
+     * .bss. This is not hypothetical: milestone 3 blew this stack with a 16 KiB array
+     * in a test, wrote through .bss and .data into .text, and hung the machine while
+     * printing something unrelated. There is a canary at __stack_bottom now
+     * (kernel/src/stack.rs), but a guard page is the real answer. See notes/stack.md. */
     . = ALIGN(16);
     __stack_bottom = .;
     . += 0x10000;              /* 64 KiB */

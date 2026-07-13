@@ -15,6 +15,7 @@ use core::panic::PanicInfo;
 fn panic(info: &PanicInfo) -> ! {
     println!();
     println!("[PANIC] {info}");
+    crate::stack::warn_if_smashed();
 
     #[cfg(test)]
     arch::semihosting::exit(arch::semihosting::EXIT_FAILURE);

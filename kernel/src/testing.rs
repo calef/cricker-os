@@ -21,6 +21,18 @@ impl<T: Fn()> Testable for T {
     fn run(&self) {
         print!("test {} ... ", core::any::type_name::<T>());
         self();
+
+        // A test that overflows the stack corrupts the kernel and then fails somewhere
+        // else entirely, often in a *later* test, or by hanging with no output at all.
+        // Checking here pins the blame on the test that actually did it.
+        //
+        // This is not hypothetical. It is how milestone 3 went. See notes/stack.md.
+        assert!(
+            crate::stack::intact(),
+            "this test smashed the stack (headroom: {})",
+            crate::stack::headroom()
+        );
+
         println!("ok");
     }
 }

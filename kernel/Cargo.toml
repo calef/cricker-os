@@ -8,6 +8,9 @@ edition = "2024"
 # `SCTLR_EL1.modify(SCTLR_EL1::M::Enable)` instead of hand-rolling `msr` and getting
 # a bit position wrong. DECISIONS.md §3.
 aarch64-cpu = "10"
+dtb = { version = "0.1.0", path = "../crates/dtb" }
+frames = { version = "0.1.0", path = "../crates/frames" }
+spin = { version = "0.10", default-features = false, features = ["spin_mutex"] }
 
 # Typed, compile-time-checked MMIO register blocks. An off-by-four in a device's
 # register layout becomes a build error instead of a mystery at runtime.

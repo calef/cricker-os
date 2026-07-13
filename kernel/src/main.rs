@@ -23,10 +23,19 @@
 mod arch;
 mod console;
 mod drivers;
+mod memory;
 mod panic;
+mod stack;
 
 #[cfg(test)]
 mod testing;
+
+/// The physical address of the Device Tree Blob, as handed to us in `x0`.
+///
+/// Stashed here so the tests can assert that the boot protocol actually delivered one,
+/// which is the whole point of shipping a flat arm64 Image instead of an ELF.
+/// See notes/boot-protocol.md.
+pub static DTB: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
 /// The kernel's Rust entry point, called from `_start` once we have a stack and a
 /// zeroed `.bss`.
@@ -36,13 +45,6 @@ mod testing;
 /// where arguments live. `dtb` arrives in `x0`. See notes/registers.md.
 ///
 /// `-> !` means this never returns, which is true: there is nowhere to return *to*.
-/// The physical address of the Device Tree Blob, as handed to us in `x0`.
-///
-/// We don't parse it yet. Stashing it here lets the tests assert that the boot
-/// protocol actually delivered one, which is the whole point of shipping a flat
-/// arm64 Image instead of an ELF. See notes/boot-protocol.md.
-pub static DTB: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
-
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_main(dtb: usize) -> ! {
     DTB.store(dtb, core::sync::atomic::Ordering::Relaxed);
@@ -53,6 +55,11 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
     // still kills us silently.
     console::init();
     arch::init();
+    stack::init();
+
+    // Now that faults are reportable, go find out how much RAM we actually have. A bug
+    // in here is a fault, and a fault is now legible rather than fatal-and-silent.
+    memory::init(dtb);
 
     #[cfg(test)]
     test_main();
@@ -67,11 +74,13 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         println!("  exception level : EL{}", CurrentEL.read(CurrentEL::EL));
         println!("  stack top       : {:#018x}", stack_top());
         println!("  device tree     : {dtb:#018x}");
+        memory::print_summary();
 
         println!();
         println!("milestone 1: we are running our own code on a CPU with nothing underneath it.");
         println!("milestone 2: and when it goes wrong, we get told.");
         println!("           : and the machine now tells us what it is, instead of us guessing.");
+        println!("milestone 3: and we know which parts of it are ours to give away.");
         println!();
     }
 
@@ -259,6 +268,158 @@ mod tests {
             u32::from_be(magic),
             0xd00d_feed,
             "no device tree magic at {ptr:p}"
+        );
+    }
+
+    // --- milestone 3: physical memory ---
+
+    /// Proves we read a plausible memory map out of the device tree.
+    ///
+    /// The allocator logic is tested exhaustively on the host (`cargo test -p frames`,
+    /// 14 tests, no emulator). What *only* the real machine can tell us is whether we
+    /// pointed it at the right memory, so that's all this checks.
+    #[test_case]
+    fn memory_map_came_from_the_device_tree() {
+        use frames::FRAME_SIZE;
+
+        let s = crate::memory::stats().expect("allocator not initialized");
+
+        // QEMU virt gives us 128 MiB by default. If this ever reads zero, or something
+        // absurd, we have misparsed `reg` (which is big-endian, and whose cell width is
+        // declared by the *parent* node, both of which are easy to get wrong).
+        let total_bytes = s.total as u64 * FRAME_SIZE;
+        assert_eq!(total_bytes, 128 * 1024 * 1024, "unexpected RAM size");
+
+        // Some memory must already be spoken for: at minimum the kernel image, the
+        // bitmap, and the device tree. A zero here means we reserved nothing, which
+        // means we are about to hand out our own code.
+        assert!(s.used > 0, "nothing is reserved?");
+        assert!(s.free() > 0, "no free memory at all?");
+    }
+
+    /// **The one that matters.** Every frame the kernel image touches must be reserved.
+    ///
+    /// This states the invariant `mark_used` exists to maintain, directly. Our image ends
+    /// at 0x40097010, which is not frame-aligned, so the last frame is only *partly*
+    /// ours. Round that end down instead of up and the frame stays free, the allocator
+    /// hands it out, something writes to it, and the tail of the kernel is quietly
+    /// overwritten. The crash lands somewhere else entirely, much later, in code that did
+    /// nothing wrong.
+    ///
+    /// Checking the bitmap directly is both stronger and cheaper than draining the
+    /// allocator: it covers *every* frame of the image, and it allocates nothing.
+    #[test_case]
+    fn every_frame_of_the_kernel_image_is_reserved() {
+        use frames::{FRAME_SIZE, Frame};
+
+        let (start, end) = crate::memory::image_bounds();
+        let mut addr = start - start % FRAME_SIZE; // round DOWN to the containing frame
+
+        while addr < end {
+            assert_eq!(
+                crate::memory::is_frame_used(Frame::from_addr(addr)),
+                Some(true),
+                "frame {addr:#x} overlaps the kernel image but is marked FREE"
+            );
+            addr += FRAME_SIZE;
+        }
+    }
+
+    /// And prove `alloc` actually respects that bitmap.
+    ///
+    /// Keep this array SMALL. It was `[Option<Frame>; 1024]` (16 KiB) on a 64 KiB stack,
+    /// and it silently overflowed into .bss, .data, and .text, and hung the machine while
+    /// printing something unrelated. See notes/stack.md. The canary catches that now, but
+    /// the right move is to not do it.
+    #[test_case]
+    fn allocator_never_hands_out_the_kernel() {
+        let mut taken = [None; 64];
+
+        for slot in taken.iter_mut() {
+            let Some(frame) = crate::memory::alloc() else {
+                break;
+            };
+            assert!(
+                !crate::memory::is_in_kernel_image(frame.addr()),
+                "allocator handed out {:#x}, which is inside the kernel image",
+                frame.addr()
+            );
+            *slot = Some(frame);
+        }
+
+        for frame in taken.into_iter().flatten() {
+            crate::memory::free(frame);
+        }
+    }
+
+    /// Proves a frame we were given is real, writable memory that nothing else owns.
+    ///
+    /// Host tests prove the *bookkeeping* is right. Only the machine can prove the
+    /// bookkeeping corresponds to actual RAM. Writing a pattern and reading it back is
+    /// the cheapest way to find out we've been handing out an MMIO hole.
+    #[test_case]
+    fn an_allocated_frame_is_real_memory() {
+        use frames::FRAME_SIZE;
+
+        let frame = crate::memory::alloc().expect("out of memory");
+        let ptr = frame.addr() as *mut u64;
+        let words = (FRAME_SIZE / 8) as usize;
+
+        // SAFETY: the allocator just gave us this frame, so we own it exclusively. The
+        // MMU is off, so the physical address is directly usable.
+        unsafe {
+            for i in 0..words {
+                core::ptr::write_volatile(ptr.add(i), 0xcafe_f00d_0000_0000 | i as u64);
+            }
+            for i in 0..words {
+                assert_eq!(
+                    core::ptr::read_volatile(ptr.add(i)),
+                    0xcafe_f00d_0000_0000 | i as u64,
+                    "frame {:#x} word {i} did not hold what we wrote",
+                    frame.addr()
+                );
+            }
+        }
+
+        crate::memory::free(frame);
+    }
+
+    /// Proves the stack canary works, without actually smashing the stack.
+    ///
+    /// The runner checks this after every test (see testing.rs), so a test that blows the
+    /// stack is now caught immediately and by name, rather than corrupting the kernel and
+    /// hanging somewhere unrelated. That is exactly how milestone 3 went wrong.
+    #[test_case]
+    fn stack_canary_is_intact_and_we_have_headroom() {
+        assert!(crate::stack::intact(), "stack canary is already dead");
+        assert!(
+            crate::stack::headroom() > 4096,
+            "less than 4 KiB of stack left: {}",
+            crate::stack::headroom()
+        );
+    }
+
+    /// Proves alloc and free actually balance, on the real memory map.
+    #[test_case]
+    fn alloc_and_free_balance() {
+        let before = crate::memory::stats().unwrap();
+
+        let a = crate::memory::alloc().unwrap();
+        let b = crate::memory::alloc_contiguous(8).unwrap();
+
+        assert_eq!(crate::memory::stats().unwrap().used, before.used + 9);
+
+        crate::memory::free(a);
+        for i in 0..8u64 {
+            crate::memory::free(frames::Frame::from_addr(
+                b.addr() + i * frames::FRAME_SIZE,
+            ));
+        }
+
+        assert_eq!(
+            crate::memory::stats().unwrap(),
+            before,
+            "frames leaked or were double-counted"
         );
     }
 }
