@@ -1,0 +1,14 @@
+[package]
+name = "kernel"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Typed wrappers over aarch64 system registers, so we write
+# `SCTLR_EL1.modify(SCTLR_EL1::M::Enable)` instead of hand-rolling `msr` and getting
+# a bit position wrong. DECISIONS.md §3.
+aarch64-cpu = "10"
+
+# Typed, compile-time-checked MMIO register blocks. An off-by-four in a device's
+# register layout becomes a build error instead of a mystery at runtime.
+tock-registers = "0.9"
