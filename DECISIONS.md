@@ -110,18 +110,18 @@ Not decisions yet. Proposals with real open questions, parked deliberately.
 Each rung is independently demoable. The dividing line between "a Rust program that
 boots" and "an operating system" is milestone 7.
 
-| #  | Milestone                                      | What it teaches                          |
-|----|------------------------------------------------|------------------------------------------|
-| 1  | Boot to Rust on QEMU `virt`, print to UART      | Freestanding binaries, linker scripts    |
-| 2  | Exception vectors, EL2 -> EL1 drop, handlers    | ARM privilege model, exception dispatch  |
-| 3  | Physical frame allocator from the memory map    | Where RAM actually comes from            |
-| 4  | MMU on: page tables, address spaces, kernel heap| Virtual memory, `alloc` in `no_std`      |
-| 5  | GIC + timer interrupts                          | The preemption source                    |
-| 6  | Kernel threads, context switch, scheduler       | Stacks, register files, run queues       |
-| 7  | **User mode (EL0), syscalls, ELF loader**       | **The actual OS boundary. Decision point.** |
-| 8  | virtio-blk driver + read-only filesystem        | Drivers, DMA, block I/O                  |
-| 9  | Processes: spawn, exit, wait                    | Process lifecycle                        |
-| 10 | A userspace shell that runs other binaries      | Proof the whole stack works              |
+| #  | Milestone                                      | What it teaches                          |    |
+|----|------------------------------------------------|------------------------------------------|----|
+| 1  | Boot to Rust on QEMU `virt`, print to UART      | Freestanding binaries, linker scripts    | ✅ |
+| 2  | Exception vectors, handlers, fault reports      | ARM privilege model, exception dispatch  | ✅ |
+| 3  | Physical frame allocator from the memory map    | Where RAM actually comes from            |    |
+| 4  | MMU on: page tables, address spaces, kernel heap| Virtual memory, `alloc` in `no_std`      |    |
+| 5  | GIC + timer interrupts                          | The preemption source                    |    |
+| 6  | Kernel threads, context switch, scheduler       | Stacks, register files, run queues       |    |
+| 7  | **User mode (EL0), syscalls, ELF loader**       | **The actual OS boundary. Decision point.** |    |
+| 8  | virtio-blk driver + read-only filesystem        | Drivers, DMA, block I/O                  |    |
+| 9  | Processes: spawn, exit, wait                    | Process lifecycle                        |    |
+| 10 | A userspace shell that runs other binaries      | Proof the whole stack works              |    |
 
 Deliberately out of scope for v1: SMP, a writable filesystem, networking, a GUI,
 dynamic linking, real hardware. Each multiplies debugging difficulty and none teaches

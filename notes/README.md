@@ -42,6 +42,10 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [`no_std`](no-std.md) — why the kernel can't use the standard library, what `core` still
   gives us, and how we earn each missing piece back by building the thing `std` assumed.
 
+- [Exceptions](exceptions.md) — faults, interrupts, and syscalls are **the same mechanism**
+  on aarch64, which is why we build the plumbing once. The vector table's shape is dictated
+  by silicon. Also: why `brk` needs `elr += 4` and `svc` doesn't.
+
 ## The point of all this
 
 - [Userspace](userspace.md) — what milestone 7 actually builds, and why it's the line

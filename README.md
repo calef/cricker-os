@@ -6,7 +6,8 @@ This is a learning project. The goal is not to produce a useful OS, it's to unde
 operating systems actually work by building one, starting from the first instruction the
 CPU ever executes. If it ends up useful, that's a bonus.
 
-**Status: milestone 1.** It boots on QEMU, prints to a serial port, and passes its tests.
+**Status: milestone 2.** It boots on QEMU, prints to a serial port, catches its own faults
+and reports them legibly, and passes its tests.
 
 ```
 cricker-os
@@ -15,6 +16,19 @@ cricker-os
   device tree     : none (ELF boot; see notes/portability.md)
 
 milestone 1: we are running our own code on a CPU with nothing underneath it.
+milestone 2: and when it goes wrong, we get told.
+```
+
+When something faults, you get this instead of a silent death:
+
+```
+[EXCEPTION]  Current EL, SP_ELx, Synchronous
+             Data abort from the same EL (EC 0x25)
+
+  ESR_EL1   0x0000000096000050   what happened
+  FAR_EL1   0x00000000dead0000   the address that faulted
+  ELR_EL1   0x0000000040081a40   the instruction that did it
+  SPSR_EL1  0x00000000400003c5   the state it was in
 ```
 
 ## Quick start
@@ -43,6 +57,8 @@ kernel/
   link.ld              where the image lives in memory, and what the linker exports to us
   src/arch/aarch64/
     boot.s             the first instructions the machine executes
+    vectors.s          the exception vector table (shape dictated by silicon)
+    exceptions.rs      the trap frame, ESR decoding, fault reports
     semihosting.rs     how we ask QEMU to exit with a status code
   src/drivers/pl011.rs the serial port
   src/console.rs       print! / println!
@@ -106,7 +122,7 @@ milestone 7.
 | # | | |
 |---|---|---|
 | 1 | Boot to Rust, print to UART | ✅ |
-| 2 | Exception vectors, handlers, CPU feature detection | |
+| 2 | Exception vectors, handlers, legible fault reports | ✅ |
 | 3 | Physical frame allocator | |
 | 4 | MMU on: page tables, address spaces, kernel heap | |
 | 5 | GIC + timer interrupts | |
