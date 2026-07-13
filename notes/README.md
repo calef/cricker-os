@@ -42,6 +42,12 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [`no_std`](no-std.md) — why the kernel can't use the standard library, what `core` still
   gives us, and how we earn each missing piece back by building the thing `std` assumed.
 
+## The point of all this
+
+- [Userspace](userspace.md) — what milestone 7 actually builds, and why it's the line
+  between "a Rust program that boots" and "an operating system." Three walls, all of them
+  hardware. **Read this to understand why the milestone order is what it is.**
+
 ## Design
 
 - [How portable kernels are written](portability.md) — what actually goes in `arch/` (a
