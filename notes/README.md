@@ -63,6 +63,9 @@ in the code or the conversation doesn't make sense, it belongs here.
 
 ## Build
 
+- [LLVM](llvm.md) — the thing that actually turns our Rust into aarch64. rustc is a
+  *frontend*; it emits LLVM IR and hands off. Explains why we get an ARM backend, a
+  cross-platform linker, and `llvm-objcopy` for free.
 - [Linker scripts](linker-scripts.md) — who decides what address your code lives at, why
   nobody zeroes our `.bss`, and where the stack comes from when there's no OS.
 - [ELF](elf.md) — the container the kernel ships in. Sections vs. segments, where the
