@@ -61,6 +61,21 @@ pub fn init(dtb_ptr: usize) {
         .expect("cannot read the memory reservations");
     let reserved = &reserved[..reserved_count];
 
+    // The interrupt controller. Two register blocks, and the order is part of the binding:
+    // distributor first, then the per-core CPU interface. Milestone 5 wants both.
+    {
+        let mut gic = [Region { start: 0, size: 0 }; 4];
+        let n = dtb
+            .node_reg(b"intc@", &mut gic)
+            .expect("cannot read the GIC's reg");
+        if n >= 2 {
+            *GIC_REGIONS.lock() = (
+                Some((gic[0].start, gic[0].size)),
+                Some((gic[1].start, gic[1].size)),
+            );
+        }
+    }
+
     // The whole span we have to be able to describe. Note this is the *span*, not the
     // *sum*: if a board has RAM at 0x4000_0000 and again at 0x8_0000_0000, we track
     // every frame between them and simply never free the hole. A bit of wasted bitmap
@@ -229,6 +244,20 @@ pub fn is_frame_used(frame: Frame) -> Option<bool> {
     ALLOCATOR.lock().as_ref()?.is_used(frame)
 }
 
+/// Where the interrupt controller is, as the device tree describes it.
+///
+/// (distributor, cpu_interface), both **physical**. Stashed at `init` because that is the only
+/// moment we have the device tree parsed, and milestone 5 needs it much later.
+pub fn gic_regions() -> Option<((u64, u64), (u64, u64))> {
+    let g = GIC_REGIONS.lock();
+    g.0.map(|d| {
+        (
+            d,
+            g.1.expect("a GIC with a distributor but no CPU interface"),
+        )
+    })
+}
+
 /// The RAM regions the device tree told us about.
 ///
 /// The MMU needs these: with paging on, a physical address the kernel cannot *name* is a
@@ -284,6 +313,10 @@ static RAM: IrqSafeMutex<RamMap> = IrqSafeMutex::new(
         count: 0,
     },
 );
+
+/// (distributor, cpu interface), each (base, size). Physical.
+static GIC_REGIONS: IrqSafeMutex<(Option<(u64, u64)>, Option<(u64, u64)>)> =
+    IrqSafeMutex::new(rank::RAM, (None, None));
 
 static BITMAP_START: AtomicUsize = AtomicUsize::new(0);
 static BITMAP_BYTES: AtomicUsize = AtomicUsize::new(0);

@@ -124,3 +124,53 @@ fn an_initrd_does_not_disturb_the_memory_map() {
     assert_eq!(dtb.memory_regions(&mut regions).unwrap(), 1);
     assert_eq!(regions[0].start, 0x4000_0000);
 }
+
+// --- finding a device by name ---
+
+#[test]
+fn finds_the_interrupt_controller() {
+    let dtb = Dtb::from_bytes(QEMU_VIRT).unwrap();
+    let mut regs = [Region { start: 0, size: 0 }; 4];
+
+    let n = dtb.node_reg(b"intc@", &mut regs).unwrap();
+
+    // The GIC has TWO register blocks, and the order is part of the binding.
+    assert_eq!(
+        n, 2,
+        "the GIC should have a distributor and a CPU interface"
+    );
+
+    assert_eq!(
+        regs[0],
+        Region {
+            start: 0x0800_0000,
+            size: 0x1_0000
+        }
+    ); // GICD, distributor
+    assert_eq!(
+        regs[1],
+        Region {
+            start: 0x0801_0000,
+            size: 0x1_0000
+        }
+    ); // GICC, CPU interface
+}
+
+#[test]
+fn finds_the_uart_the_console_hardcodes() {
+    // The console hardcodes 0x0900_0000 on purpose (it must come up before the DTB parser
+    // exists to debug it). But now we can *check* the hardcode against what the machine says,
+    // which is the cross-check that catches the day it changes.
+    let dtb = Dtb::from_bytes(QEMU_VIRT).unwrap();
+    let mut regs = [Region { start: 0, size: 0 }; 2];
+
+    assert_eq!(dtb.node_reg(b"pl011@", &mut regs).unwrap(), 1);
+    assert_eq!(regs[0].start, 0x0900_0000);
+}
+
+#[test]
+fn a_missing_node_is_zero_regions_not_an_error() {
+    let dtb = Dtb::from_bytes(QEMU_VIRT).unwrap();
+    let mut regs = [Region { start: 0, size: 0 }; 2];
+    assert_eq!(dtb.node_reg(b"nonesuch@", &mut regs).unwrap(), 0);
+}

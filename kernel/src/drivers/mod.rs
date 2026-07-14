@@ -5,4 +5,5 @@
 //! knows nothing about the rest of the kernel. That rule is cheap now and is what
 //! keeps the microkernel door open later. See DECISIONS.md §4.
 
+pub mod gic;
 pub mod pl011;

@@ -77,6 +77,8 @@ use core::sync::atomic::{AtomicU32, Ordering};
 ///        |
 ///   30  FRAMES, RAM     the physical memory map
 ///        |
+///   20  GIC             the interrupt controller
+///        |
 ///   10  CONSOLE         the leaf: everyone may take it, it takes nothing
 /// ```
 ///
@@ -102,6 +104,14 @@ pub mod rank {
     pub const SLAB: u32 = 50;
     pub const FRAMES: u32 = 30;
     pub const RAM: u32 = 30;
+
+    /// The interrupt controller.
+    ///
+    /// Taken by the IRQ handler, which by our own rule (DECISIONS.md §9) holds nothing and
+    /// allocates nothing. So it can sit low, just above the console: the handler may still
+    /// `println!` a diagnostic while holding it.
+    pub const GIC: u32 = 20;
+
     pub const CONSOLE: u32 = 10;
 
     /// Holding nothing.

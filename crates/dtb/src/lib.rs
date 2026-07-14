@@ -255,6 +255,80 @@ impl<'a> Dtb<'a> {
         }
     }
 
+    /// The `reg` regions of the first node whose name starts with `prefix`.
+    ///
+    /// Used to find the interrupt controller (`intc@8000000`) without hardcoding its address.
+    /// The GIC has **two** register blocks (a distributor and a per-CPU interface), so `reg`
+    /// here decodes to two regions, and the order is part of the binding: distributor first.
+    ///
+    /// Matching on a name prefix rather than the `compatible` string is a deliberate
+    /// simplification. `compatible` is the *correct* way to identify a device (`intc@...` is
+    /// just a conventional name), and a real driver would match `"arm,cortex-a15-gic"`. We
+    /// look at names because it is ten lines instead of forty and we have exactly one board.
+    /// Written down so the Pi port knows what to fix.
+    pub fn node_reg(&self, prefix: &[u8], out: &mut [Region]) -> Result<usize, Error> {
+        let mut address_cells = 2u32;
+        let mut size_cells = 1u32;
+
+        let mut depth = 0i32;
+        let mut target_at: Option<i32> = None;
+        let mut at = self.off_struct;
+
+        loop {
+            let token = be32(self.bytes, at)?;
+            at += 4;
+
+            match token {
+                FDT_BEGIN_NODE => {
+                    let name = self.cstr(at)?;
+                    at += align4(name.len() + 1);
+                    depth += 1;
+
+                    if depth == 2 && name.starts_with(prefix) && target_at.is_none() {
+                        target_at = Some(depth);
+                    }
+                }
+
+                FDT_END_NODE => {
+                    if target_at == Some(depth) {
+                        // We have walked the whole node. If it had a `reg` we already decoded
+                        // it; either way, stop looking.
+                        target_at = None;
+                    }
+                    depth -= 1;
+                }
+
+                FDT_PROP => {
+                    let len = be32(self.bytes, at)? as usize;
+                    let name_off = be32(self.bytes, at + 4)? as usize;
+                    let value_at = at + 8;
+                    at = value_at + align4(len);
+
+                    let name = self.cstr(self.off_strings + name_off)?;
+
+                    // The ROOT's cell counts. A device node may declare its own #address-cells
+                    // for its *children*, but its own `reg` is decoded with its PARENT's, and
+                    // for a node at depth 2 the parent is the root.
+                    if depth == 1 {
+                        match name {
+                            b"#address-cells" => address_cells = be32(self.bytes, value_at)?,
+                            b"#size-cells" => size_cells = be32(self.bytes, value_at)?,
+                            _ => {}
+                        }
+                    }
+
+                    if target_at == Some(depth) && name == b"reg" {
+                        return self.decode_reg(value_at, len, address_cells, size_cells, out);
+                    }
+                }
+
+                FDT_NOP => {}
+                FDT_END => return Ok(0),
+                other => return Err(Error::BadToken(other)),
+            }
+        }
+    }
+
     /// The initial ramdisk, if the bootloader placed one.
     ///
     /// Declared in `/chosen` as `linux,initrd-start` and `linux,initrd-end`.

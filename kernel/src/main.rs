@@ -73,6 +73,9 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
     // address is only usable if something has mapped it. From here, `Vec` works.
     heap::init();
 
+    // And now interrupts, which is where every lock in the kernel stops being a formality.
+    interrupts_init(dtb);
+
     #[cfg(test)]
     test_main();
 
@@ -89,6 +92,15 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         memory::print_summary();
         arch::mmu::print_summary();
         heap::print_summary();
+        {
+            use crate::arch::{interrupts, timer};
+            println!(
+                "  timer           : {} Hz tick, counter at {} MHz, interrupts {}",
+                timer::TICK_HZ,
+                timer::frequency() / 1_000_000,
+                if interrupts::enabled() { "ON" } else { "off" },
+            );
+        }
 
         println!();
         println!("milestone 1: we are running our own code on a CPU with nothing underneath it.");
@@ -96,10 +108,34 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         println!("           : and the machine now tells us what it is, instead of us guessing.");
         println!("milestone 3: and we know which parts of it are ours to give away.");
         println!("milestone 4: and nothing writable is executable, and Vec works again.");
-        println!();
+        println!("milestone 5: and the machine can now interrupt us. we are preemptible.");
     }
 
     arch::halt()
+}
+
+/// Bring up the interrupt controller and the timer, then **unmask interrupts**.
+///
+/// This is the line the whole locking discipline was written for. From here, a timer interrupt
+/// can land between any two instructions in the kernel, and every `IrqSafeMutex` starts
+/// actually masking something. See DECISIONS.md §9 and notes/locking.md.
+fn interrupts_init(_dtb: usize) {
+    use crate::arch::{interrupts, mmu, timer};
+    use crate::drivers::gic;
+
+    let ((gicd, _), (gicc, _)) = memory::gic_regions().expect("no interrupt controller in the DTB");
+
+    // The GIC lives in the direct map, like every other physical address the kernel names.
+    // SAFETY: the addresses came from the device tree, and `mmu::init` mapped both as DEVICE
+    // memory. Mapping them as normal memory would let the CPU cache and reorder writes to an
+    // interrupt controller, which is exactly as bad as it sounds.
+    unsafe { gic::init(mmu::phys_to_virt(gicd), mmu::phys_to_virt(gicc)) };
+
+    timer::init();
+
+    // The point of no return, in a much friendlier sense than the MMU's. After this, we are
+    // preemptible.
+    interrupts::enable();
 }
 
 /// Read `__stack_top` back out of the linker script, just to prove we can.

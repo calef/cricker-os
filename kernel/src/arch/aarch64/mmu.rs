@@ -178,6 +178,14 @@ where
     // the instant we switch tables, and a silent kernel cannot tell you why it is silent.
     direct_map(m, UART_BASE, UART_BASE + UART_SIZE, Flags::device())?;
 
+    // 6. The interrupt controller, also device memory, and its address comes from the device
+    // tree rather than a constant. Both blocks: the machine-wide distributor and the per-core
+    // CPU interface.
+    if let Some(((gicd, gicd_size), (gicc, gicc_size))) = memory::gic_regions() {
+        direct_map(m, gicd, gicd + gicd_size, Flags::device())?;
+        direct_map(m, gicc, gicc + gicc_size, Flags::device())?;
+    }
+
     Ok(())
 }
 

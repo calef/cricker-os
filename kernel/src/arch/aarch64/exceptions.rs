@@ -12,6 +12,8 @@
 //!
 //! See notes/exceptions.md.
 
+use super::timer;
+use crate::drivers::gic;
 use crate::println;
 use aarch64_cpu::asm::barrier;
 use aarch64_cpu::registers::{ESR_EL1, FAR_EL1, VBAR_EL1};
@@ -146,8 +148,24 @@ pub fn init() {
 ///
 /// `extern "C"` because assembly calls it: `frame` arrives in `x0`, `index` in `x1`,
 /// per AAPCS64. See notes/registers.md.
+/// Vector slot 5: Current EL, SP_ELx, IRQ. **The kernel being interrupted.**
+const VECTOR_IRQ_CURRENT: u64 = 5;
+/// Vector slot 9: Lower EL, AArch64, IRQ. Userspace being interrupted. Milestone 7.
+const VECTOR_IRQ_LOWER: u64 = 9;
+
 #[unsafe(no_mangle)]
 extern "C" fn exception_dispatch(frame: &mut TrapFrame, index: u64) {
+    // IRQ is dispatched by SLOT, not by ESR.
+    //
+    // ESR_EL1 describes a *synchronous* exception: what instruction did what wrong. An IRQ is
+    // asynchronous. It has nothing to do with the instruction it interrupted, and ESR_EL1 holds
+    // whatever the last synchronous exception left there. Reading it here would be reading a
+    // stale answer to a question nobody asked.
+    if index == VECTOR_IRQ_CURRENT || index == VECTOR_IRQ_LOWER {
+        handle_irq(frame);
+        return;
+    }
+
     let esr = ESR_EL1.get();
     let class = (esr >> 26) & 0x3f;
 
@@ -175,6 +193,47 @@ extern "C" fn exception_dispatch(frame: &mut TrapFrame, index: u64) {
         _ => fatal(frame, index, esr),
     }
 }
+
+/// Service one hardware interrupt.
+///
+/// **This runs with interrupts masked** (the hardware masks IRQ on entry to the vector), and it
+/// runs on whatever stack the interrupted code was using. DECISIONS.md §9 is the law here:
+/// **record and defer, do not do work.** Everything below is either an MMIO write or an atomic
+/// increment. Nothing allocates. Nothing takes a lock above rank GIC.
+fn handle_irq(_frame: &mut TrapFrame) {
+    // Reading IAR is what ACKNOWLEDGES the interrupt. It has a side effect, so exactly once.
+    let intid = gic::acknowledge();
+
+    // 1023: the GIC changed its mind between raising the line and us getting here. Do nothing,
+    // and in particular do NOT signal end-of-interrupt: completing an interrupt we never took
+    // corrupts the GIC's priority stack.
+    if intid == gic::SPURIOUS {
+        SPURIOUS_IRQS.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
+
+    match intid {
+        timer::TIMER_INTID => timer::tick(),
+        other => {
+            UNEXPECTED_IRQS.fetch_add(1, Ordering::Relaxed);
+            // A print is a diagnostic, not work. It takes the console lock (rank 10), which is
+            // below the GIC lock we just released, so the hierarchy permits it.
+            println!("[IRQ] unexpected interrupt {other}, ignoring");
+        }
+    }
+
+    // Until this is written, the GIC will not deliver another interrupt of equal or lower
+    // priority. Forget it and the timer fires exactly once and then never again.
+    gic::end_of_interrupt(intid);
+}
+
+/// Interrupts the GIC raised and then withdrew. Not an error; worth counting.
+#[allow(dead_code)]
+pub static SPURIOUS_IRQS: AtomicUsize = AtomicUsize::new(0);
+
+/// Interrupts we enabled but have no handler for. Definitely worth counting.
+#[allow(dead_code)]
+pub static UNEXPECTED_IRQS: AtomicUsize = AtomicUsize::new(0);
 
 /// Print everything we know and stop.
 ///
