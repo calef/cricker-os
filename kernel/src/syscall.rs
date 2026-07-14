@@ -93,5 +93,28 @@ fn invoke(
             }
             _ => Err(Error::BadMethod),
         },
+
+        Object::Irq(intid) => match method {
+            // WAIT blocks on the endpoint the kernel routed this interrupt to. The interrupt
+            // arrives as a message (sched::irq_notify), exactly like any other.
+            abi::irq::WAIT => {
+                if !cap.rights.allows(Rights::READ) {
+                    return Err(Error::NotPermitted);
+                }
+                let ep = sched::irq_route(intid).ok_or(Error::WrongObject)?;
+                let m = sched::ipc_recv(ep);
+                Ok(m[0] as i64)
+            }
+            // ACK re-enables the interrupt at the GIC. The kernel masked it when it fired; now
+            // that the driver has serviced the device, it is safe to let it fire again.
+            abi::irq::ACK => {
+                if !cap.rights.allows(Rights::READ) {
+                    return Err(Error::NotPermitted);
+                }
+                crate::drivers::gic::enable(intid);
+                Ok(0)
+            }
+            _ => Err(Error::BadMethod),
+        },
     }
 }

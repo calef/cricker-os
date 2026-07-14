@@ -66,7 +66,7 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [`no_std`](no-std.md) — why the kernel can't use the standard library, what `core` still
   gives us, and how we earn each missing piece back by building the thing `std` assumed.
 
-- [Interrupts: the GIC and the timer](interrupts.md) — the preemption source. Why the timer
+- [Interrupts: the GIC and the timer](interrupts.md) — the preemption source. Why the timer **9a**: and a hardware interrupt can become a message to a userspace driver.
   is a per-core PPI, why GIC priorities run backwards, and the bug we shipped: re-arming with
   a *relative* countdown silently lost 30% of our ticks.
 - [Exceptions](exceptions.md) — faults, interrupts, and syscalls are **the same mechanism**

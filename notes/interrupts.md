@@ -170,3 +170,82 @@ It is a strange thing to *assert*, until you notice: if that cost ever stopped b
 ---
 
 *Add to this file as new interrupt sources come up.*
+
+---
+
+# Milestone 9a: an interrupt becomes a message
+
+DECISIONS §10 promised this and notes/capabilities.md sketched it. Here it is.
+
+## The problem a userspace driver has with interrupts
+
+A driver at EL0 (milestone 8 put one there) cannot install an interrupt handler: handlers run at
+EL1, in the kernel's vector table, at a privilege the driver does not have. And the kernel cannot
+handle a device interrupt itself, because **it does not know what the device is** — that was the
+whole point of moving the driver out.
+
+So the interrupt has to reach the driver as something the driver *can* receive. It becomes a
+message.
+
+## The shape
+
+```
+  device raises INTID  ──►  kernel handle_irq:  mask INTID at the GIC
+                                                turn it into a notification
+                                                EOI
+                                                        │
+                       driver blocked in WAIT  ◄────────┘  wakes
+                                                │
+                       reads the device, quiets its interrupt
+                                                │
+                       invoke(irq_cap, ACK)  ──►  kernel: re-enable INTID at the GIC
+```
+
+The kernel's half does nothing device-specific. It masks the line, delivers a message, and later
+re-enables the line when the driver says the device is quiet. Everything that knows what a *virtio
+block device* is lives in userspace.
+
+## Why the interrupt gets masked the instant it fires
+
+Device interrupts are usually **level-triggered**: the device holds its interrupt line asserted
+until the driver does something to quiet it (for virtio, reads `InterruptStatus` and writes
+`InterruptACK`). If the kernel left the line enabled and just EOI'd, the GIC would see the line
+still asserted and **re-deliver immediately, forever** — an interrupt storm the machine never
+climbs out of, because the only code that can quiet the device is the driver, which never gets to
+run.
+
+So `handle_irq` masks the INTID at the distributor (`gic::disable`) the moment it fires. The driver
+services the device, then calls `ACK` on its `Irq` capability, and only then does the kernel
+re-enable the line (`gic::enable`). Until then the interrupt is held off. **This is exactly seL4's
+IRQHandler protocol**, and it is what lets a process that holds no privilege safely own an
+interrupt.
+
+## An interrupt is not a rendezvous
+
+IPC on an endpoint (milestone 7e) is synchronous: a sender waits for a receiver. An interrupt
+cannot wait. It fires whether or not the driver happens to be blocked in `WAIT` at that instant,
+and it must not be lost if the driver is a hair late.
+
+So the notification is **asynchronous**, and the mechanism is one counter: `Endpoint::pending`. If
+a thread is waiting, the interrupt wakes it. If not, `pending` is incremented, and the next `WAIT`
+drains it instead of blocking. An interrupt that fires one instruction before the driver calls
+`WAIT` is remembered, not dropped. There is a test named exactly that.
+
+## The capability
+
+`Object::Irq(intid)`. Its holder can:
+
+- `WAIT` — block until the interrupt fires (internally, `RECV` on the endpoint the kernel routed
+  the interrupt to).
+- `ACK` — re-enable the interrupt at the GIC, after quieting the device.
+
+A driver that holds this capability can receive one specific interrupt and nothing else. It cannot
+mask other interrupts, cannot touch the GIC directly, cannot see any other device's line. The
+authority is exactly one INTID, handed over deliberately.
+
+## Testing it with no device
+
+The whole path is exercised by a **software-generated interrupt** (SGI): `gic::send_sgi` raises
+INTID 1 from software, with no hardware behind it. A thread blocks in `WAIT`, the test raises the
+SGI, the handler routes it, the thread wakes. Deterministic, and it needs no disk. The virtio
+driver (9b) will use the same path with a real device interrupt in place of the SGI.

@@ -67,6 +67,11 @@ static VOLUNTARY_SWITCHES: AtomicU64 = AtomicU64::new(0);
 struct Endpoint {
     senders: VecDeque<Tid>,
     receivers: VecDeque<Tid>,
+    /// **Async signals that arrived with nobody waiting.** An interrupt is not a rendezvous: it
+    /// happens whether or not the driver is currently blocked in `RECV`, and it must not be
+    /// lost. So a signal delivered to an empty endpoint is *counted* here, and the next `RECV`
+    /// drains it instead of blocking. Zero for an ordinary synchronous endpoint, always.
+    pending: u32,
 }
 
 struct Scheduler {
@@ -278,6 +283,57 @@ fn reap(sched: &mut Scheduler) {
     }
 }
 
+/// intid -> endpoint id + 1 (0 means "not routed"). A hardware interrupt, delivered as a
+/// message to whoever holds the matching endpoint.
+///
+/// **A plain atomic array, read lock-free from the interrupt handler.** The handler runs in a
+/// context where taking a lock to *find out where to send the message* would be one more thing
+/// that can go wrong; a bounded array of atomics cannot. 256 covers every INTID we will see
+/// (SGIs 0-15, the timer PPI at 30, virtio SPIs in the 40s).
+const MAX_INTID: usize = 256;
+static IRQ_ROUTES: [core::sync::atomic::AtomicUsize; MAX_INTID] =
+    [const { core::sync::atomic::AtomicUsize::new(0) }; MAX_INTID];
+
+/// Route a hardware interrupt to an endpoint. From now on, when `intid` fires, whoever is
+/// blocked on `ep` wakes; if nobody is, the signal is remembered so it is not lost.
+pub fn bind_irq(intid: u32, ep: usize) {
+    assert!((intid as usize) < MAX_INTID, "intid {intid} out of range");
+    IRQ_ROUTES[intid as usize].store(ep + 1, Ordering::Release);
+}
+
+/// The endpoint an interrupt is routed to, if any. Read from the IRQ handler; lock-free.
+pub fn irq_route(intid: u32) -> Option<usize> {
+    if (intid as usize) >= MAX_INTID {
+        return None;
+    }
+    match IRQ_ROUTES[intid as usize].load(Ordering::Acquire) {
+        0 => None,
+        n => Some(n - 1),
+    }
+}
+
+/// **Deliver an interrupt as a message.** Called from the IRQ handler.
+///
+/// If a thread is blocked waiting on the endpoint, wake it. If not, count the signal so the
+/// next `RECV` returns immediately rather than blocking on an interrupt that already happened.
+/// **An interrupt is not a rendezvous**: it must not wait for a receiver, and it must not be
+/// lost if the receiver is briefly busy.
+///
+/// Safe to call from IRQ context: it takes the scheduler lock, which the interrupted code
+/// cannot have been holding, because `IrqSafeMutex` masks interrupts for exactly as long as it
+/// is held. See DECISIONS §9.
+pub fn irq_notify(ep: usize) {
+    let mut guard = SCHED.lock();
+    let sched = guard.as_mut().expect("no scheduler");
+
+    if let Some(waiter) = sched.endpoints[ep].receivers.pop_front() {
+        sched.threads.get_mut(&waiter).unwrap().mailbox = [1, 0, 0];
+        wake(sched, waiter);
+    } else {
+        sched.endpoints[ep].pending = sched.endpoints[ep].pending.saturating_add(1);
+    }
+}
+
 /// Create an IPC endpoint. Returns its id, which is what goes inside an `Object::Endpoint`.
 pub fn create_endpoint() -> usize {
     let mut guard = SCHED.lock();
@@ -342,7 +398,11 @@ pub fn ipc_recv(ep: usize) -> [u64; 3] {
         let sched = guard.as_mut().expect("no scheduler");
         let current = sched.current;
 
-        if let Some(sender) = sched.endpoints[ep].senders.pop_front() {
+        if sched.endpoints[ep].pending > 0 {
+            // An interrupt already fired while we were not waiting. Take it and do not block.
+            sched.endpoints[ep].pending -= 1;
+            Some([1, 0, 0])
+        } else if let Some(sender) = sched.endpoints[ep].senders.pop_front() {
             let msg = sched.threads.get(&sender).unwrap().mailbox;
             wake(sched, sender);
             Some(msg)
@@ -841,5 +901,89 @@ mod tests {
         for _ in 0..20 {
             super::yield_now();
         }
+    }
+
+    /// **An interrupt becomes a message.** DECISIONS §10 and notes/interrupts.md, executed.
+    ///
+    /// A thread blocks waiting on an interrupt it can only name through an endpoint. We raise the
+    /// interrupt from software (an SGI, so the test needs no device), the kernel's handler turns
+    /// it into a notification, and the blocked thread wakes. This is the exact path a userspace
+    /// driver will take when a real device interrupts, minus the device.
+    #[test_case]
+    fn an_interrupt_becomes_a_message() {
+        // An SGI: a software-triggerable interrupt with no hardware behind it.
+        const SGI: u32 = 1;
+
+        static WOKE: AtomicBool = AtomicBool::new(false);
+
+        let ep = super::create_endpoint();
+        super::bind_irq(SGI, ep);
+        crate::drivers::gic::enable(SGI);
+
+        super::spawn(move || {
+            super::ipc_recv(ep); // blocks until the interrupt fires
+            WOKE.store(true, Ordering::SeqCst);
+        })
+        .expect("spawn failed");
+
+        // Let the waiter run and block. It must NOT have woken: no interrupt yet.
+        for _ in 0..50 {
+            super::yield_now();
+        }
+        assert!(
+            !WOKE.load(Ordering::SeqCst),
+            "the thread woke before the interrupt fired",
+        );
+
+        // Fire it. The GIC delivers the SGI, handle_irq routes it to `ep`, the waiter wakes.
+        crate::drivers::gic::send_sgi(SGI);
+
+        for _ in 0..100 {
+            if WOKE.load(Ordering::SeqCst) {
+                break;
+            }
+            super::yield_now();
+        }
+        assert!(
+            WOKE.load(Ordering::SeqCst),
+            "a hardware interrupt fired and the thread waiting on it never woke",
+        );
+    }
+
+    /// A signal that arrives while nobody is waiting is **remembered, not lost.** An interrupt is
+    /// not a rendezvous: if it fires a hair before the driver calls `WAIT`, the driver must still
+    /// see it. The `pending` count is what closes that window.
+    #[test_case]
+    fn an_interrupt_that_arrives_before_the_wait_is_not_lost() {
+        const SGI: u32 = 2;
+
+        let ep = super::create_endpoint();
+        super::bind_irq(SGI, ep);
+        crate::drivers::gic::enable(SGI);
+
+        // Fire it with NOBODY waiting. The signal must be counted.
+        crate::drivers::gic::send_sgi(SGI);
+        // Give the interrupt time to be delivered and handled.
+        for _ in 0..20 {
+            super::yield_now();
+        }
+
+        static SAW: AtomicBool = AtomicBool::new(false);
+        super::spawn(move || {
+            super::ipc_recv(ep); // must return immediately: the signal is pending
+            SAW.store(true, Ordering::SeqCst);
+        })
+        .expect("spawn failed");
+
+        for _ in 0..50 {
+            if SAW.load(Ordering::SeqCst) {
+                break;
+            }
+            super::yield_now();
+        }
+        assert!(
+            SAW.load(Ordering::SeqCst),
+            "an interrupt that fired before the WAIT was lost",
+        );
     }
 }

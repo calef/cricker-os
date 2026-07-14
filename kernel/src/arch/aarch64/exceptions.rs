@@ -321,10 +321,21 @@ fn handle_irq(_frame: &mut TrapFrame) {
             crate::sched::on_tick();
         }
         other => {
-            UNEXPECTED_IRQS.fetch_add(1, Ordering::Relaxed);
-            // A print is a diagnostic, not work. It takes the console lock (rank 10), which is
-            // below the GIC lock we just released, so the hierarchy permits it.
-            println!("[IRQ] unexpected interrupt {other}, ignoring");
+            // Is this interrupt routed to a userspace driver? If so, **it becomes a message.**
+            //
+            // Mask it at the distributor first, then deliver the notification. A level-triggered
+            // device holds its interrupt line asserted until the driver quiets it, so if we left
+            // it enabled it would re-fire the instant we EOI, in an unbreakable storm. The driver
+            // re-enables it (its `Irq` capability's `ACK`) once it has serviced the device. This
+            // is exactly seL4's IRQHandler protocol, and it is what lets a driver that owns no
+            // privilege still own an interrupt. See notes/interrupts.md.
+            if let Some(ep) = crate::sched::irq_route(other) {
+                gic::disable(other);
+                crate::sched::irq_notify(ep);
+            } else {
+                UNEXPECTED_IRQS.fetch_add(1, Ordering::Relaxed);
+                println!("[IRQ] unexpected interrupt {other}, ignoring");
+            }
         }
     }
 

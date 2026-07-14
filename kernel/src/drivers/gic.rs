@@ -84,6 +84,11 @@ register_structs! {
         (0x400 => IPRIORITYR: [ReadWrite<u8>; 1024]),
         (0x800 => ITARGETSR: [ReadWrite<u8>; 1024]),
         (0xc00 => _reserved2),
+        /// Software Generated Interrupt Register. Writing here makes the GIC raise one of the
+        /// 16 SGIs (INTID 0-15) on a chosen set of cores. It is how one core pokes another, and
+        /// here it is how a test raises a controllable interrupt with no device attached.
+        (0xf00 => SGIR: WriteOnly<u32>),
+        (0xf04 => _reserved3),
         (0x1000 => @END),
     }
 }
@@ -185,6 +190,36 @@ pub fn enable(intid: u32) {
     if intid >= 32 {
         gic.gicd().ITARGETSR[intid as usize].set(1);
     }
+}
+
+/// Disable one interrupt source, at the distributor.
+///
+/// **This is how a userspace driver's interrupt gets masked the moment it fires**, so a
+/// level-triggered device that holds its line asserted cannot re-fire in a storm before the
+/// driver has had a chance to service it. The driver re-enables it (via its `Irq` capability's
+/// `ACK`) once it has quieted the device. See notes/interrupts.md.
+pub fn disable(intid: u32) {
+    let guard = GIC.lock();
+    let gic = guard.as_ref().expect("gic::disable before gic::init");
+
+    // ICENABLER is the mirror of ISENABLER: writing a 1-bit CLEARS the enable. Writing zeros
+    // does nothing, which is why enable and disable are two registers instead of one.
+    let reg = (intid / 32) as usize;
+    let bit = intid % 32;
+    gic.gicd().ICENABLER[reg].set(1 << bit);
+}
+
+/// Raise a Software Generated Interrupt (INTID 0-15) on core 0.
+///
+/// A controllable interrupt with no hardware behind it. The whole "an interrupt becomes a
+/// message" path can be tested with this: raise the SGI, watch a blocked thread wake.
+pub fn send_sgi(intid: u32) {
+    debug_assert!(intid < 16, "SGIs are INTID 0-15");
+    let guard = GIC.lock();
+    let gic = guard.as_ref().expect("gic::send_sgi before gic::init");
+
+    // SGIR: bits[3:0] the SGI id, bits[23:16] the target CPU list (bit 0 = core 0).
+    gic.gicd().SGIR.set((1 << 16) | intid);
 }
 
 /// Take the interrupt. **Reading `IAR` is what acknowledges it**, so this has a side effect

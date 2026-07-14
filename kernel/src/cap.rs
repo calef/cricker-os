@@ -29,6 +29,16 @@ pub enum Object {
     /// milestone 8 this is how a process reaches the console: it holds a `WRITE` capability on
     /// the console server's endpoint, and printing is sending.
     Endpoint(usize),
+
+    /// A hardware interrupt, by INTID.
+    ///
+    /// **The capability that lets a driver own an interrupt without owning any privilege.** Its
+    /// holder can `WAIT` for the interrupt (blocking until it fires) and `ACK` it (re-enabling it
+    /// at the GIC after the device has been serviced). The kernel's handler does nothing device-
+    /// specific: it masks the line and turns the interrupt into a message. Everything that knows
+    /// what the *device* is lives in the userspace driver. This is milestone 9's version of the
+    /// milestone-8 move (the console driver left; now the interrupt does too).
+    Irq(u32),
 }
 
 pub type Cap = caps::Cap<Object>;
@@ -44,5 +54,14 @@ pub fn endpoint_cap(ep: usize, rights: Rights) -> Cap {
     Cap {
         object: Object::Endpoint(ep),
         rights,
+    }
+}
+
+/// A capability naming a hardware interrupt. `READ` lets the holder `WAIT` and `ACK` it.
+#[allow(dead_code)] // first used by the virtio driver setup in 9b
+pub fn irq_cap(intid: u32) -> Cap {
+    Cap {
+        object: Object::Irq(intid),
+        rights: Rights::READ,
     }
 }
