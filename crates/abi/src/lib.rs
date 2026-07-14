@@ -52,8 +52,28 @@ pub mod console {
     /// `invoke(cap, WRITE, ptr, len, _)` -> bytes written.
     ///
     /// `ptr` is a **user** pointer, and the kernel will refuse it unless *the user itself* could
-    /// read it. See `syscall::copy_from_user`, and the confused deputy in notes/capabilities.md.
+    /// read it. See `syscall::user_slice`, and the confused deputy in notes/capabilities.md.
     pub const WRITE: u64 = 0;
+}
+
+/// Methods on an `Endpoint` capability. **This is IPC.**
+///
+/// An endpoint is a rendezvous point, and the two methods are the two sides of it. Which one you
+/// may call is a matter of *rights*, not of the endpoint: a capability with `WRITE` can `SEND`,
+/// one with `READ` can `RECV`. So the same object, handed out with different rights, is a
+/// one-way pipe in whichever direction each holder was trusted with. Neither side can do the
+/// other's job, and neither had to be told which end it is.
+pub mod endpoint {
+    /// `invoke(cap, SEND, w0, w1, w2)` -> 0. **Blocks until a receiver takes the message.**
+    ///
+    /// The three words travel in registers and never touch memory. That is the whole of the
+    /// fastpath, and it is DECISIONS §10's rule made real: *IPC carries control.* Bulk data will
+    /// move later by handing over a frame capability, not by copying bytes into a message.
+    pub const SEND: u64 = 0;
+
+    /// `invoke(cap, RECV, _, _, _)` -> w0, with w1 in x1 and w2 in x2. **Blocks until a message
+    /// arrives.**
+    pub const RECV: u64 = 1;
 }
 
 /// What went wrong. Returned as a **negative** `x0`.

@@ -55,6 +55,20 @@ static NEED_RESCHED: AtomicBool = AtomicBool::new(false);
 static PREEMPTIONS: AtomicU64 = AtomicU64::new(0);
 static VOLUNTARY_SWITCHES: AtomicU64 = AtomicU64::new(0);
 
+/// A synchronous IPC rendezvous point.
+///
+/// **At most one of these queues is ever non-empty.** A sender that finds a receiver waiting
+/// delivers immediately and neither blocks; a receiver that finds a sender waiting collects
+/// immediately. So a thread only ends up in a queue when *nobody* was waiting for it, and the
+/// two queues are two sides of the same coin: whichever kind of thread arrived first and had to
+/// wait. Keeping both is not redundant, it just spares us reasoning about which coin we are
+/// holding.
+#[derive(Default)]
+struct Endpoint {
+    senders: VecDeque<Tid>,
+    receivers: VecDeque<Tid>,
+}
+
 struct Scheduler {
     /// `Box` because the assembly writes through `&mut thread.context`, so a thread's address
     /// must never move. A `BTreeMap` reshuffles its nodes; a `Box`'s contents do not.
@@ -62,6 +76,9 @@ struct Scheduler {
     /// Ready to run, in order. Round robin: pop the front, push the back.
     ready: VecDeque<Tid>,
     current: Tid,
+    /// Every IPC endpoint. Indexed by the `usize` inside an `Object::Endpoint` capability, which
+    /// only the kernel mints, so the index is always in range.
+    endpoints: alloc::vec::Vec<Endpoint>,
 }
 
 /// Rank **above the allocators**, because `spawn` pushes into a `VecDeque` while holding this,
@@ -92,6 +109,7 @@ pub fn init() {
         // Capacity up front so `schedule()`'s push can never reallocate. See the rank note.
         ready: VecDeque::with_capacity(64),
         current: 0,
+        endpoints: alloc::vec::Vec::new(),
     });
 }
 
@@ -172,20 +190,33 @@ pub fn schedule() {
         reap(sched);
 
         let current = sched.current;
-        let finished = sched.threads.get(&current).map(|t| t.state) == Some(State::Finished);
+        let state = sched.threads.get(&current).map(|t| t.state);
+
+        // **Only a still-Running thread goes back on the ready queue.** A thread that reached
+        // here after marking itself `Blocked` (it is waiting for IPC) or `Finished` must not be
+        // rescheduled, and this one line is what makes blocking work: `schedule()` can be
+        // called from the timer IRQ *while* a thread is mid-way through blocking itself, and it
+        // must not undo that by helpfully requeueing it.
+        let runnable = state == Some(State::Running);
 
         let Some(next) = sched.ready.pop_front() else {
-            // Nobody else wants the CPU. Keep it — unless we are finished, in which case there
-            // is nothing left to run at all.
-            assert!(
-                !finished,
-                "the last thread exited and there is nothing to run"
-            );
-            crate::arch::interrupts::restore(was_enabled);
-            return;
+            // Nobody else wants the CPU.
+            if runnable {
+                // Keep it. A thread yielding into an empty run queue simply carries on.
+                crate::arch::interrupts::restore(was_enabled);
+                return;
+            }
+            // We are Blocked or Finished and there is nothing to switch to.
+            match state {
+                Some(State::Finished) => panic!("the last thread exited; nothing left to run"),
+                _ => panic!(
+                    "every thread is blocked on IPC: a deadlock, and a real one — no interrupt \
+                     will ever make an endpoint ready"
+                ),
+            }
         };
 
-        if !finished {
+        if runnable {
             sched.threads.get_mut(&current).unwrap().state = State::Ready;
             sched.ready.push_back(current); // round robin: back of the queue
         }
@@ -247,6 +278,92 @@ fn reap(sched: &mut Scheduler) {
     }
 }
 
+/// Create an IPC endpoint. Returns its id, which is what goes inside an `Object::Endpoint`.
+pub fn create_endpoint() -> usize {
+    let mut guard = SCHED.lock();
+    let sched = guard.as_mut().expect("no scheduler");
+    sched.endpoints.push(Endpoint::default());
+    sched.endpoints.len() - 1
+}
+
+/// Move a blocked thread back to the ready queue. Caller holds the lock.
+fn wake(sched: &mut Scheduler, tid: Tid) {
+    if let Some(t) = sched.threads.get_mut(&tid) {
+        if t.state == State::Blocked {
+            t.state = State::Ready;
+            sched.ready.push_back(tid);
+        }
+    }
+}
+
+/// **Send three words to an endpoint, blocking until a receiver takes them.**
+///
+/// The synchronous rendezvous, sender's half:
+///
+/// - **A receiver is already waiting.** Drop the message straight into its mailbox, wake it, and
+///   carry on. Nobody blocked; the rendezvous was instantaneous.
+/// - **Nobody is waiting.** Park the message in our own mailbox, join the endpoint's sender
+///   queue, mark ourselves `Blocked`, and `schedule()` away. A future receiver will reach into
+///   our mailbox, wake us, and we return from `schedule()` as if no time had passed.
+///
+/// Callable by a kernel thread directly (this function) or by a user thread through the `SEND`
+/// method on an endpoint capability (see syscall.rs). Same code underneath.
+pub fn ipc_send(ep: usize, msg: [u64; 3]) {
+    let block = {
+        let mut guard = SCHED.lock();
+        let sched = guard.as_mut().expect("no scheduler");
+        let current = sched.current;
+
+        if let Some(receiver) = sched.endpoints[ep].receivers.pop_front() {
+            sched.threads.get_mut(&receiver).unwrap().mailbox = msg;
+            wake(sched, receiver);
+            false
+        } else {
+            let me = sched.threads.get_mut(&current).unwrap();
+            me.mailbox = msg;
+            me.state = State::Blocked;
+            sched.endpoints[ep].senders.push_back(current);
+            true
+        }
+    };
+
+    // Block OUTSIDE the lock (rule 1), and only after we have already recorded ourselves as
+    // blocked, so a timer-driven `schedule()` in the gap does the right thing either way.
+    if block {
+        schedule();
+    }
+}
+
+/// **Receive three words from an endpoint, blocking until one arrives.** The mirror of
+/// [`ipc_send`].
+pub fn ipc_recv(ep: usize) -> [u64; 3] {
+    let immediate = {
+        let mut guard = SCHED.lock();
+        let sched = guard.as_mut().expect("no scheduler");
+        let current = sched.current;
+
+        if let Some(sender) = sched.endpoints[ep].senders.pop_front() {
+            let msg = sched.threads.get(&sender).unwrap().mailbox;
+            wake(sched, sender);
+            Some(msg)
+        } else {
+            sched.threads.get_mut(&current).unwrap().state = State::Blocked;
+            sched.endpoints[ep].receivers.push_back(current);
+            None
+        }
+    };
+
+    match immediate {
+        Some(msg) => msg,
+        None => {
+            schedule(); // blocks; a sender fills our mailbox and wakes us
+            let guard = SCHED.lock();
+            let sched = guard.as_ref().expect("no scheduler");
+            sched.threads.get(&sched.current).unwrap().mailbox
+        }
+    }
+}
+
 /// Look up a capability in the **current thread's** table.
 ///
 /// The lookup that is the security mechanism. `slot` came from userspace, in a register, and it
@@ -271,6 +388,18 @@ pub fn grant(cap: crate::cap::Cap) -> Result<u64, crate::cap::Error> {
     sched
         .threads
         .get_mut(&current)
+        .ok_or(crate::cap::Error::NoFreeSlot)?
+        .cspace
+        .insert(cap)
+}
+
+/// Hand a **specific** thread a capability. Used to wire up a scenario before the thread runs.
+pub fn grant_to(tid: Tid, cap: crate::cap::Cap) -> Result<u64, crate::cap::Error> {
+    let mut guard = SCHED.lock();
+    let sched = guard.as_mut().ok_or(crate::cap::Error::NoFreeSlot)?;
+    sched
+        .threads
+        .get_mut(&tid)
         .ok_or(crate::cap::Error::NoFreeSlot)?
         .cspace
         .insert(cap)
@@ -553,6 +682,164 @@ mod tests {
                 !flags.is_kernel_executable(),
                 "a thread stack is EXECUTABLE"
             );
+        }
+    }
+
+    /// **The rendezvous, receiver-first.** A thread blocks on an empty endpoint, and stays
+    /// blocked, and a *later* sender is what frees it — carrying the message.
+    #[test_case]
+    fn a_receiver_blocks_until_a_sender_arrives() {
+        static GOT: AtomicU64 = AtomicU64::new(0);
+        static RECEIVED: AtomicBool = AtomicBool::new(false);
+
+        let ep = super::create_endpoint();
+
+        super::spawn(move || {
+            let msg = super::ipc_recv(ep); // nobody is sending yet: this BLOCKS
+            GOT.store(msg[0], Ordering::SeqCst);
+            RECEIVED.store(true, Ordering::SeqCst);
+        })
+        .expect("spawn failed");
+
+        // Let the receiver run and block. It must NOT have received anything: there is no sender.
+        for _ in 0..50 {
+            super::yield_now();
+        }
+        assert!(
+            !RECEIVED.load(Ordering::SeqCst),
+            "a receiver returned from an endpoint nobody had sent to",
+        );
+
+        // Now send. This should hand the receiver its message and wake it.
+        super::ipc_send(ep, [0xABCD, 0, 0]);
+
+        for _ in 0..50 {
+            if RECEIVED.load(Ordering::SeqCst) {
+                break;
+            }
+            super::yield_now();
+        }
+        assert!(RECEIVED.load(Ordering::SeqCst), "the receiver never woke");
+        assert_eq!(GOT.load(Ordering::SeqCst), 0xABCD, "wrong message delivered");
+    }
+
+    /// **The rendezvous, sender-first.** The other order: a sender blocks on an endpoint with no
+    /// receiver, and a later receiver collects the parked message and wakes it.
+    #[test_case]
+    fn a_sender_blocks_until_a_receiver_arrives() {
+        static SENT_RETURNED: AtomicBool = AtomicBool::new(false);
+
+        let ep = super::create_endpoint();
+
+        super::spawn(move || {
+            super::ipc_send(ep, [0x1234, 0x5678, 0x9abc]); // nobody receiving yet: BLOCKS
+            SENT_RETURNED.store(true, Ordering::SeqCst);
+        })
+        .expect("spawn failed");
+
+        for _ in 0..50 {
+            super::yield_now();
+        }
+        assert!(
+            !SENT_RETURNED.load(Ordering::SeqCst),
+            "a send returned before anyone received it",
+        );
+
+        let msg = super::ipc_recv(ep); // collects the parked message, wakes the sender
+        assert_eq!(msg, [0x1234, 0x5678, 0x9abc], "wrong message received");
+
+        for _ in 0..50 {
+            if SENT_RETURNED.load(Ordering::SeqCst) {
+                break;
+            }
+            super::yield_now();
+        }
+        assert!(
+            SENT_RETURNED.load(Ordering::SeqCst),
+            "the sender never woke after its message was taken",
+        );
+    }
+
+    /// **A request and a reply, over two endpoints.** The shape milestone 8's console server
+    /// will have: a client sends a request and blocks for the answer; a server loops on the
+    /// request endpoint, does the work, and replies on the reply endpoint.
+    ///
+    /// All three message words survive the round trip, which is what proves the receiver's
+    /// `x1`/`x2` handling and the mailbox are correct end to end.
+    #[test_case]
+    fn a_request_gets_a_reply() {
+        static ANSWER: AtomicU64 = AtomicU64::new(0);
+        static DONE: AtomicBool = AtomicBool::new(false);
+
+        let req = super::create_endpoint();
+        let rep = super::create_endpoint();
+
+        // The server: receive n on `req`, send n + 1 back on `rep`.
+        super::spawn(move || {
+            let m = super::ipc_recv(req);
+            super::ipc_send(rep, [m[0] + 1, m[1], m[2]]);
+        })
+        .expect("spawn failed");
+
+        // The client.
+        super::spawn(move || {
+            super::ipc_send(req, [41, 0, 0]);
+            let answer = super::ipc_recv(rep);
+            ANSWER.store(answer[0], Ordering::SeqCst);
+            DONE.store(true, Ordering::SeqCst);
+        })
+        .expect("spawn failed");
+
+        for _ in 0..200 {
+            if DONE.load(Ordering::SeqCst) {
+                break;
+            }
+            super::yield_now();
+        }
+        assert!(DONE.load(Ordering::SeqCst), "the request/reply never completed");
+        assert_eq!(ANSWER.load(Ordering::SeqCst), 42, "the server computed the wrong answer");
+    }
+
+    /// A blocked thread is genuinely off the CPU: other threads keep running while it waits.
+    ///
+    /// If `Blocked` were not respected in `schedule()` — if a blocked thread were helpfully
+    /// requeued — this would still pass, so it is not the whole story (the two rendezvous tests
+    /// above are). But it is the cheap, direct statement of what blocking is *for*: a waiting
+    /// thread must not burn the CPU.
+    #[test_case]
+    fn other_threads_run_while_one_is_blocked() {
+        static PROGRESS: AtomicU64 = AtomicU64::new(0);
+        static STOP: AtomicBool = AtomicBool::new(false);
+
+        let ep = super::create_endpoint();
+
+        super::spawn(move || {
+            super::ipc_recv(ep); // blocks forever (nobody sends); must not starve the worker
+        })
+        .expect("spawn failed");
+
+        super::spawn(|| {
+            while !STOP.load(Ordering::SeqCst) {
+                PROGRESS.fetch_add(1, Ordering::SeqCst);
+                super::yield_now();
+            }
+        })
+        .expect("spawn failed");
+
+        for _ in 0..100 {
+            super::yield_now();
+        }
+        STOP.store(true, Ordering::SeqCst);
+
+        assert!(
+            PROGRESS.load(Ordering::SeqCst) > 0,
+            "a worker made no progress while another thread was blocked on IPC",
+        );
+
+        // Free the blocked receiver so it does not sit in the endpoint queue forever.
+        super::ipc_send(ep, [0, 0, 0]);
+        for _ in 0..20 {
+            super::yield_now();
         }
     }
 }

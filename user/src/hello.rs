@@ -41,8 +41,14 @@ static mut BSS_MARKER: u64 = 0;
 /// The capability we were handed. Slot 0, by convention, because somebody put it there.
 const CONSOLE: u64 = 0;
 
-/// A slot nobody put anything in.
-const EMPTY: u64 = 1;
+/// A slot nobody put anything in (unless we were handed an endpoint, in which case it is one).
+const EMPTY: u64 = 3;
+
+/// Where an endpoint SEND capability lands, if we were given one.
+const ENDPOINT: u64 = 1;
+
+/// The word this program sends over the endpoint. The server checks for exactly this.
+const HELLO_WORD: u64 = 0x5eed_1e55;
 
 /// The kernel's own `.text`, in the direct map. We know the address. **Knowing an address is not
 /// authority**, and this program is about to demonstrate that at some length.
@@ -102,6 +108,23 @@ pub extern "C" fn _start() -> ! {
 
     let done = b"      and it refused to read the kernel's memory on my behalf.\n";
     check(write(CONSOLE, done) == Ok(done.len() as i64));
+
+    // --- 5. IPC, IF we were handed an endpoint ---
+    //
+    // Slot 1 might hold a SEND capability on an endpoint. If it does, send a word across it, to
+    // whoever is listening on the other end. If it does not, `invoke` says `NoSuchSlot` and we
+    // simply move on: not every spawn of this program is given someone to talk to. Any *other*
+    // error would be a real bug (we asked to send and were told no for a reason we did not
+    // expect), and we die on it.
+    let sent = unsafe { invoke(ENDPOINT, abi::endpoint::SEND, HELLO_WORD, 0, 0) };
+    match Error::from_ret(sent) {
+        None => {
+            let m = b"      and sent a word to a server through slot 1.\n";
+            check(write(CONSOLE, m) == Ok(m.len() as i64));
+        }
+        Some(Error::NoSuchSlot) => {} // not handed an endpoint this time
+        Some(_) => fail(),
+    }
 
     // Everything held. Now spin, with no syscall, no yield and not one function call, so that the
     // only thing in the universe that can take the CPU back is a timer interrupt landing between

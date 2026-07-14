@@ -275,6 +275,13 @@ pub fn exec_elf(image: &[u8]) -> ! {
     exec_elf_with(image, true)
 }
 
+/// Load an ELF, hand it a console (slot 0) and a **SEND capability on `ep`** (slot 1), and run
+/// it. This is how a client is wired to a server: the endpoint is the only name it has for the
+/// thing on the other end, and `WRITE`-only means it can send and cannot receive.
+pub fn exec_elf_with_endpoint(image: &[u8], ep: usize) -> ! {
+    exec_elf_inner(image, true, Some(ep))
+}
+
 /// Load an ELF and become it, choosing whether to hand it a console.
 ///
 /// **`console: false` is not a test contrivance, it is the demonstration.** A program with no
@@ -282,6 +289,10 @@ pub fn exec_elf(image: &[u8]) -> ! {
 /// there is *nothing to invoke*, and `NoSuchSlot` is the answer. It cannot name the console,
 /// because naming a thing you were not handed is not an operation this kernel has.
 pub fn exec_elf_with(image: &[u8], console: bool) -> ! {
+    exec_elf_inner(image, console, None)
+}
+
+fn exec_elf_inner(image: &[u8], console: bool, endpoint: Option<usize>) -> ! {
     let (space, entry) = match load(image) {
         Ok(v) => v,
         Err(e) => {
@@ -301,6 +312,12 @@ pub fn exec_elf_with(image: &[u8], console: bool) -> ! {
     // thing to reach for. A capability system's "environment" is not a variable, it is this.
     if console {
         crate::sched::grant(crate::cap::console_cap()).expect("no free capability slot");
+    }
+    if let Some(ep) = endpoint {
+        // WRITE only: it may SEND and may not RECV. Lands in slot 1, the first free slot after
+        // the console.
+        crate::sched::grant(crate::cap::endpoint_cap(ep, crate::cap::Rights::WRITE))
+            .expect("no free capability slot");
     }
 
     enter_at(entry)
@@ -509,7 +526,7 @@ mod tests {
     };
     use crate::arch::timer;
     use crate::sched;
-    use core::sync::atomic::Ordering;
+    use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
     /// Spin the scheduler until `done()`, or give up. Returns whether it happened.
     fn wait_for(mut done: impl FnMut() -> bool) -> bool {
@@ -877,6 +894,49 @@ mod tests {
                 "slot {slot} is not empty in a thread nobody granted anything",
             );
         }
+    }
+
+    /// **A user program sends a word to a server it can only name.**
+    ///
+    /// The client holds one SEND capability on an endpoint, in slot 1, and no other way to reach
+    /// or even see the server. The server is a kernel thread blocked on RECV. This is the whole
+    /// of 7e end to end, across the EL0 boundary: the message `0x5eed_1e55` leaves a user
+    /// register, crosses the `svc`, rendezvouses in the scheduler, and lands in a server that the
+    /// client cannot address any other way.
+    #[test_case]
+    fn a_user_program_can_send_to_a_server_over_an_endpoint() {
+        static GOT: AtomicU64 = AtomicU64::new(0);
+        static DONE: AtomicBool = AtomicBool::new(false);
+
+        let ep = sched::create_endpoint();
+
+        sched::spawn(move || {
+            let msg = sched::ipc_recv(ep);
+            GOT.store(msg[0], Ordering::SeqCst);
+            DONE.store(true, Ordering::SeqCst);
+        })
+        .expect("spawn failed");
+
+        let faults = USER_FAULTS.load(Ordering::Relaxed);
+        sched::spawn(move || {
+            exec_elf_with_endpoint(initrd().expect("no initrd"), ep)
+        })
+        .expect("spawn failed");
+
+        assert!(
+            wait_for(|| DONE.load(Ordering::SeqCst)),
+            "the server never received the client's message",
+        );
+        assert_eq!(
+            GOT.load(Ordering::SeqCst),
+            0x5eed_1e55,
+            "the wrong word crossed the boundary",
+        );
+        assert_eq!(
+            USER_FAULTS.load(Ordering::Relaxed),
+            faults,
+            "the client faulted instead of sending cleanly",
+        );
     }
 
     /// A dead user thread's address space is freed, all of it, including its page tables.

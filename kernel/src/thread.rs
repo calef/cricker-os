@@ -190,6 +190,13 @@ impl Drop for KernelStack {
 pub enum State {
     Ready,
     Running,
+    /// **Waiting for an IPC rendezvous** that has not happened yet.
+    ///
+    /// A blocked thread is in no run queue and will not be scheduled. It sits in an endpoint's
+    /// wait queue instead, and the thread on the other side of that endpoint is the only thing
+    /// that will ever move it back to `Ready`. This is the state that makes "block until a
+    /// message arrives" a real thing a thread can do rather than a spin loop.
+    Blocked,
     Finished,
 }
 
@@ -236,6 +243,15 @@ pub struct Thread {
     /// It lives in kernel memory and userspace never sees a byte of it. Userspace sees an
     /// integer. That is the entire unforgeability mechanism, and it is a bounds check.
     pub cspace: crate::cap::CSpace,
+
+    /// **The IPC message this thread most recently sent or received.** Three words.
+    ///
+    /// A sender parks its message here before blocking; a receiver reads it here after being
+    /// woken. It is a `Thread` field rather than a stack local precisely because the rendezvous
+    /// happens across two threads at two different times: the sender deposits it and blocks, and
+    /// the receiver, running later, reaches into the sender's `Thread` to collect it. See
+    /// sched.rs.
+    pub mailbox: [u64; 3],
 }
 
 // SAFETY: a Thread is only ever touched under the scheduler's lock.
@@ -256,6 +272,7 @@ impl Thread {
             stack: None,
             space: None,
             cspace: crate::cap::CSpace::empty(),
+            mailbox: [0; 3],
         }
     }
 
@@ -299,6 +316,7 @@ impl Thread {
             stack: Some(stack),
             space: None, // a kernel thread until it calls `user::exec`
             cspace: crate::cap::CSpace::empty(), // and it can name nothing until it is handed something
+            mailbox: [0; 3],
         })
     }
 }

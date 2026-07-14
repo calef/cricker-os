@@ -46,7 +46,7 @@ pub fn dispatch(frame: &mut TrapFrame) {
             sched::yield_now();
             Ok(0)
         }
-        abi::SYS_INVOKE => invoke(frame.x[0], frame.x[1], frame.x[2], frame.x[3], frame.x[4]),
+        abi::SYS_INVOKE => invoke(frame, frame.x[0], frame.x[1], frame.x[2], frame.x[3], frame.x[4]),
         _ => Err(Error::BadSyscall),
     };
 
@@ -64,7 +64,14 @@ pub fn dispatch(frame: &mut TrapFrame) {
 /// *this thread's* table, which lives in kernel memory. An empty slot is `NoSuchSlot`: not
 /// "permission denied", but *there is nothing there*. That difference is what no-ambient-authority
 /// feels like from the inside.
-fn invoke(slot: u64, method: u64, a0: u64, a1: u64, _a2: u64) -> Result<i64, Error> {
+fn invoke(
+    frame: &mut TrapFrame,
+    slot: u64,
+    method: u64,
+    a0: u64,
+    a1: u64,
+    a2: u64,
+) -> Result<i64, Error> {
     let cap = sched::current_cap(slot).map_err(|_| Error::NoSuchSlot)?;
 
     match cap.object {
@@ -77,6 +84,34 @@ fn invoke(slot: u64, method: u64, a0: u64, a1: u64, _a2: u64) -> Result<i64, Err
                 let bytes = user_slice(a0, a1)?;
                 crate::console::write_bytes(bytes);
                 Ok(bytes.len() as i64)
+            }
+            _ => Err(Error::BadMethod),
+        },
+
+        Object::Endpoint(ep) => match method {
+            // SEND takes WRITE, RECV takes READ. The *same* endpoint, handed out with different
+            // rights, is a one-way pipe in whichever direction each holder was trusted with.
+            abi::endpoint::SEND => {
+                if !cap.rights.allows(Rights::WRITE) {
+                    return Err(Error::NotPermitted);
+                }
+                // The three words are already in registers. **Nothing is read from user memory**,
+                // so there is no pointer to validate and no confused-deputy question to ask. That
+                // is the fastpath, and it is why IPC carries control and not bulk data (§10).
+                sched::ipc_send(ep, [a0, a1, a2]);
+                Ok(0)
+            }
+            abi::endpoint::RECV => {
+                if !cap.rights.allows(Rights::READ) {
+                    return Err(Error::NotPermitted);
+                }
+                let msg = sched::ipc_recv(ep);
+                // Word 0 goes back the way every syscall result does, in x0 (dispatch writes it
+                // from our return value). Words 1 and 2 we place directly, because a syscall
+                // return is one register and a message is three.
+                frame.x[1] = msg[1];
+                frame.x[2] = msg[2];
+                Ok(msg[0] as i64)
             }
             _ => Err(Error::BadMethod),
         },

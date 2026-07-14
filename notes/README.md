@@ -81,7 +81,8 @@ in the code or the conversation doesn't make sense, it belongs here.
   descriptor that can point at *anything*. Unix already had them; it just also built a back door.
   The milestone 7 decision, and the confused deputy. **7d**: three syscalls, a capability is the
   only way to print, and `AT S1E0R` is how the kernel refuses to read its own memory on a user's
-  behalf.
+  behalf. **7e**: endpoints and synchronous IPC, and the scheduler learns a thread can be
+  `Blocked` waiting for a message it can only reach by a capability.
 
 - **7c update in [elf.md](elf.md)** — the kernel now *loads* one. An ELF names its own load
   address, so a hostile one names the kernel's; it is refused by a `Half::Low` guard that has

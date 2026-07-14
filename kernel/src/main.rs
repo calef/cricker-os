@@ -124,6 +124,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         println!("milestone 5: and the machine can now interrupt us. we are preemptible.");
         println!("milestone 6: and a thread that refuses to yield gets preempted anyway.");
         println!("milestone 7: and now it runs a binary it did not compile, unprivileged.");
+        println!("           : and that binary can talk to a server it can only name, not reach.");
         println!();
 
         // The whole argument, executable.
@@ -249,6 +250,37 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
                         }
                     );
                     println!("      and there is no other way to ask.");
+
+                    // 7e. The user program sends a word to a server it can only NAME.
+                    //
+                    // We create an endpoint, spawn a kernel-side server blocked on RECV, and hand
+                    // the client a SEND capability on that same endpoint in slot 1. The client
+                    // cannot reach the server, cannot see it, cannot name anything about it except
+                    // "the thing slot 1 sends to." That is the whole of what a capability is.
+                    //
+                    // (The server is a kernel thread today. At milestone 8 it becomes a userspace
+                    // console server, and this exact shape is how a user program will print.)
+                    use core::sync::atomic::AtomicU64;
+                    static SERVER_GOT: AtomicU64 = AtomicU64::new(0);
+
+                    let ep = sched::create_endpoint();
+
+                    sched::spawn(move || {
+                        let msg = sched::ipc_recv(ep); // blocks until the client sends
+                        SERVER_GOT.store(msg[0], Ordering::SeqCst);
+                    });
+
+                    sched::spawn(move || {
+                        user::exec_elf_with_endpoint(user::initrd().expect("no initrd"), ep)
+                    });
+                    timer::spin_for(timer::frequency() / 20);
+
+                    println!();
+                    println!(
+                        "      a server thread received {:#x} from a user program that holds",
+                        SERVER_GOT.load(Ordering::SeqCst),
+                    );
+                    println!("      one capability for it and no other way to find it.");
                 }
             }
 
