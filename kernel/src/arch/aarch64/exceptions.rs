@@ -182,7 +182,11 @@ extern "C" fn exception_dispatch(frame: &mut TrapFrame, index: u64) {
     let class = (esr >> 26) & 0x3f;
 
     match class {
-        ec::BRK64 => {
+        // NOTE THE GUARD. Without it, a `brk` from EL0 would be *stepped over* as if it were
+        // one of ours, and a user program could park a `brk` in a loop and burn the kernel's
+        // time forever, immortal. A breakpoint is a debugging affordance for code we trust.
+        // From EL0 it is a fault, and it falls through to `user_fault` below.
+        ec::BRK64 if !from_lower_el(index) => {
             // `brk` is a deliberate trap: a breakpoint the program asked for.
             //
             // The subtlety: ELR_EL1 points AT the `brk` instruction, not past it.

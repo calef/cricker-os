@@ -81,6 +81,10 @@ in the code or the conversation doesn't make sense, it belongs here.
   descriptor that can point at *anything*. Unix already had them; it just also built a back door.
   The milestone 7 decision, and the confused deputy.
 
+- **7c update in [elf.md](elf.md)** — the kernel now *loads* one. An ELF names its own load
+  address, so a hostile one names the kernel's; it is refused by a `Half::Low` guard that has
+  been sitting in `paging` since milestone 4, waiting for exactly this file.
+
 ## The point of all this
 
 - [Userspace](userspace.md) — the line. And as of 7a it is **real**: entering EL0 turns out to be

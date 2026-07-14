@@ -42,6 +42,7 @@ use crate::arch::mmu::{self, phys_to_ptr};
 use crate::memory;
 use alloc::vec::Vec;
 use frames::{FRAME_SIZE, Frame};
+use elf::Elf;
 use paging::{Flags, Half, MapError, Mapper};
 
 /// Where a user program's code goes. Low half, so the hardware walks `TTBR0`.
@@ -167,6 +168,125 @@ impl Drop for AddressSpace {
     }
 }
 
+/// Why a binary was refused.
+///
+/// **A bad user program must not be a kernel panic.** Every one of these is a thing a file can
+/// simply *say*, and the answer is to decline and kill the thread, not to take the machine down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoadError {
+    /// The file is not an aarch64 static ELF we are willing to run. See `elf::Error`.
+    NotLoadable(elf::Error),
+
+    /// It asked to be loaded somewhere it may not go.
+    ///
+    /// **Including a KERNEL address.** An ELF gets to name its own load address, so this is
+    /// exactly the thing a hostile binary tries: ask to be mapped over the kernel. It is
+    /// refused by construction rather than by a check, because the `Mapper` is built with
+    /// `Half::Low` and a high address is not a thing it can express (`MapError::WrongHalf`).
+    Unmappable(MapError),
+
+}
+
+/// Parse an ELF, build an address space, and put it in memory. Do **not** run it.
+///
+/// Split out from [`exec_elf`] on purpose: this is the part that can fail, so it is the part a
+/// test can call without dying.
+pub fn load(image: &[u8]) -> Result<(AddressSpace, u64), LoadError> {
+    let elf = Elf::parse(image).map_err(LoadError::NotLoadable)?;
+
+    let mut space = AddressSpace::new().ok_or(LoadError::Unmappable(MapError::OutOfFrames))?;
+
+    for seg in elf.segments() {
+        // **Honour what the file asked for, and not one bit more.**
+        //
+        // `elf` has already refused a segment that is both writable and executable, so these
+        // three are the only shapes that reach here, and each maps to exactly one `Flags`
+        // constructor. Note that a read-only segment gets `user_rodata`, not `user_data`: a
+        // loader that widens permissions is a loader you cannot reason about.
+        let flags = if seg.is_executable() {
+            Flags::user_code()
+        } else if seg.is_writable() {
+            Flags::user_data()
+        } else {
+            Flags::user_rodata()
+        };
+
+        let (start, end) = seg.page_range(FRAME_SIZE);
+
+        let mut va = start;
+        while va < end {
+            // `map_new` hands back a ZEROED page, which is what makes `.bss` free: the bytes
+            // between `filesz` and `memsz` are simply the ones we never copy over.
+            //
+            // Forgetting that is the classic ELF loader bug, and the consequence is a program
+            // whose `.bss` holds whoever used that frame last.
+            let page = space.map_new(va, flags).map_err(LoadError::Unmappable)?;
+
+            // Which of the file's bytes land in this page? Computed as an intersection rather
+            // than assumed, because `p_vaddr` need not be page-aligned.
+            let file_lo = seg.vaddr;
+            let file_hi = seg.vaddr + seg.data.len() as u64;
+            let lo = va.max(file_lo);
+            let hi = (va + FRAME_SIZE).min(file_hi);
+
+            if lo < hi {
+                let dst = (lo - va) as usize;
+                let src = (lo - file_lo) as usize;
+                let n = (hi - lo) as usize;
+                page[dst..dst + n].copy_from_slice(&seg.data[src..src + n]);
+            }
+
+            if seg.is_executable() {
+                sync_icache(page.as_ptr() as u64, FRAME_SIZE as usize);
+            }
+
+            va += FRAME_SIZE;
+        }
+    }
+
+    space
+        .map_new(USER_STACK_VA, Flags::user_data())
+        .map_err(LoadError::Unmappable)?;
+
+    Ok((space, elf.entry()))
+}
+
+/// The program QEMU loaded into RAM for us, found via the device tree.
+///
+/// **The same road Linux's initramfs travels.** Nothing about this binary is known to the kernel
+/// at build time: QEMU put a file somewhere in RAM and wrote the address into
+/// `/chosen/linux,initrd-start`, and `memory::init` read it there and told the frame allocator
+/// to keep its hands off. That reservation was written at milestone 3, for this.
+pub fn initrd() -> Option<&'static [u8]> {
+    let (start, size) = memory::initrd_region()?;
+
+    // SAFETY: the region came from the device tree, it is inside RAM, the frame allocator has
+    // been told it is forbidden, and the direct map names it. Nothing else will ever write here.
+    Some(unsafe {
+        core::slice::from_raw_parts(mmu::phys_to_virt(start) as *const u8, size as usize)
+    })
+}
+
+/// Load an ELF and become it. Never returns.
+///
+/// On a bad binary this kills the calling thread. **It does not panic.** A user program the
+/// kernel cannot load is a user program's problem.
+pub fn exec_elf(image: &[u8]) -> ! {
+    let (space, entry) = match load(image) {
+        Ok(v) => v,
+        Err(e) => {
+            crate::println!();
+            crate::println!("  refused to load a user program: {e:?}");
+            crate::println!("  the kernel is fine.");
+            crate::sched::exit();
+        }
+    };
+
+    crate::sched::adopt_address_space(space);
+
+    enter_at(entry)
+}
+
 /// Load a program, and become it. Never returns.
 ///
 /// # Safety
@@ -199,24 +319,14 @@ pub unsafe fn exec(program: &[u8]) -> ! {
     // we wrote the program into it.
     sync_icache(code.as_ptr() as u64, program.len());
 
-    // GIVE THE ADDRESS SPACE TO THE THREAD, and this is not bookkeeping.
-    //
-    // `TTBR0_EL1` is one register, and it is **global**. Threads are not. The first version of
-    // this code activated the address space here and left it, and the result was a bug worth
-    // the whole afternoon: a user thread was still spinning at EL0 when the *next* `exec`
-    // installed a different TTBR0. It kept running, at EL0, in **somebody else's address
-    // space**, where its own code page was a page of zeroes. It died executing them.
-    //
-    // An address space is a property of a thread, so the context switch has to carry it, the
-    // same way it carries a stack and a register file. `sched::schedule` now installs the
-    // incoming thread's root (or the empty reserved table, for a kernel thread) before it
-    // switches. See notes/userspace.md.
-    //
-    // And ownership does the rest for free: the `Thread` owns the `AddressSpace`, so when the
-    // reaper drops a dead thread it unmaps and frees the whole low half, exactly as it already
-    // does for the `KernelStack`. There is nothing to leak.
+
     crate::sched::adopt_address_space(space);
 
+    enter_at(USER_CODE_VA)
+}
+
+/// Drop to EL0 at `entry`, on a fresh stack. Never returns.
+fn enter_at(entry: u64) -> ! {
     // THE TRAPFRAME IS NOT AN ORDINARY LOCAL, and this cost us an afternoon.
     //
     // It must sit at the TOP OF THIS THREAD'S KERNEL STACK, because that is where the hardware
@@ -249,7 +359,7 @@ pub unsafe fn exec(program: &[u8]) -> ! {
     unsafe {
         frame.write(TrapFrame {
             x: [0; 31],
-            elr: USER_CODE_VA,      // ...where `eret` jumps
+            elr: entry,             // ...where `eret` jumps
             spsr: SPSR_EL0T,        // ...and the exception level it jumps to
             sp_el0: USER_STACK_TOP, // ...on the stack it will jump onto
         });
@@ -347,6 +457,12 @@ USER_OUTLAW_END:
 
 macro_rules! user_program {
     ($name:ident, $start:ident, $end:ident) => {
+        /// `allow(dead_code)` because 7c handed the demo over to the real ELF from the initrd,
+        /// and these hand-written programs are now exercised only by the tests. They stay
+        /// because they test things the real binary cannot: `outlaw` deliberately commits a
+        /// privilege violation, and `spin` is a program with no `.data`, no stack use, and
+        /// nothing but a loop, which is the purest form of DECISIONS §5's hostile binary.
+        #[allow(dead_code)]
         pub fn $name() -> &'static [u8] {
             unsafe extern "C" {
                 static $start: u8;
@@ -488,6 +604,161 @@ mod tests {
 
         // And we are here, running, having taken the CPU back from a program that never
         // offered it.
+    }
+
+    /// Forge an ELF64 header by hand, so a test can ask for something no linker would emit.
+    ///
+    /// The kernel has `alloc`, so this is thirty lines. It is worth every one of them: the ELF
+    /// **names its own load address**, and this is the file that names the kernel's.
+    fn forged_elf(vaddr: u64, flags: u32) -> alloc::vec::Vec<u8> {
+        const EHDR: usize = 64;
+        const PHDR: usize = 56;
+        let code: [u8; 16] = [0; 16];
+
+        let mut out = alloc::vec![0u8; EHDR + PHDR + code.len()];
+        out[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
+        out[4] = 2; // ELFCLASS64
+        out[5] = 1; // little-endian
+        out[6] = 1; // EV_CURRENT
+        out[16..18].copy_from_slice(&2u16.to_le_bytes()); // ET_EXEC
+        out[18..20].copy_from_slice(&183u16.to_le_bytes()); // EM_AARCH64
+        out[24..32].copy_from_slice(&vaddr.to_le_bytes()); // e_entry
+        out[32..40].copy_from_slice(&(EHDR as u64).to_le_bytes()); // e_phoff
+        out[54..56].copy_from_slice(&(PHDR as u16).to_le_bytes());
+        out[56..58].copy_from_slice(&1u16.to_le_bytes()); // e_phnum
+
+        let p = EHDR;
+        out[p..p + 4].copy_from_slice(&1u32.to_le_bytes()); // PT_LOAD
+        out[p + 4..p + 8].copy_from_slice(&flags.to_le_bytes());
+        out[p + 8..p + 16].copy_from_slice(&((EHDR + PHDR) as u64).to_le_bytes()); // p_offset
+        out[p + 16..p + 24].copy_from_slice(&vaddr.to_le_bytes()); // p_vaddr
+        out[p + 32..p + 40].copy_from_slice(&(code.len() as u64).to_le_bytes()); // p_filesz
+        out[p + 40..p + 48].copy_from_slice(&(code.len() as u64).to_le_bytes()); // p_memsz
+        out
+    }
+
+    /// **A binary that asks to be loaded over the kernel.**
+    ///
+    /// This is the attack. An ELF names its own load address, so a hostile one simply names
+    /// `0xffff_0000_4008_0000` and waits to see whether the loader is credulous.
+    ///
+    /// It is refused **by construction, not by a check we remembered to write**: the user
+    /// `Mapper` is built with `Half::Low`, and a high address is not a thing it can express. The
+    /// same `WrongHalf` guard has been in `paging` since milestone 4, put there because a *host*
+    /// test discovered that bits 63:48 are not translated. It has been waiting for this file.
+    #[test_case]
+    fn an_elf_that_asks_to_be_loaded_over_the_kernel_is_refused() {
+        let image = forged_elf(0xffff_0000_4008_0000, elf::PF_R | elf::PF_X);
+
+        assert_eq!(
+            load(&image).err(),
+            Some(LoadError::Unmappable(MapError::WrongHalf)),
+            "the kernel agreed to map a user program on top of itself",
+        );
+    }
+
+    /// And a binary asking for a page that is both writable and executable.
+    ///
+    /// Caught in `crates/elf`, on the host, in microseconds. But assert it end-to-end too: the
+    /// value of the host test is that it is fast, not that it is the only line of defence.
+    #[test_case]
+    fn an_elf_that_asks_for_a_writable_executable_page_is_refused() {
+        let image = forged_elf(0x40_0000, elf::PF_R | elf::PF_W | elf::PF_X);
+
+        assert_eq!(
+            load(&image).err(),
+            Some(LoadError::NotLoadable(elf::Error::WritableAndExecutable)),
+        );
+    }
+
+    /// Junk is refused, and refusing it does not take the kernel down.
+    #[test_case]
+    fn a_bad_binary_is_refused_rather_than_panicking() {
+        assert!(load(b"#!/bin/sh\necho hi\n").is_err());
+        assert!(load(&[]).is_err());
+        assert!(load(&[0u8; 4096]).is_err());
+        // And we are still executing, which is the assertion.
+    }
+
+    /// The initrd is there, and it is the program we built.
+    #[test_case]
+    fn the_initrd_holds_an_aarch64_executable() {
+        let image = initrd().expect("no initrd: was -initrd passed to QEMU?");
+        let e = elf::Elf::parse(image).expect("the initrd is not a loadable aarch64 ELF");
+
+        assert_eq!(e.entry(), 0x40_0000, "linked somewhere unexpected");
+
+        // Three segments, and NONE of them writable-and-executable.
+        let segs: alloc::vec::Vec<_> = e.segments().collect();
+        assert!(segs.len() >= 3, "expected .text, .rodata and .data");
+        assert!(segs.iter().any(|s| s.is_executable() && !s.is_writable()));
+        assert!(segs.iter().any(|s| s.is_writable() && !s.is_executable()));
+
+        // And one of them has a .bss: memsz > filesz. If this is not true, the test below is
+        // vacuous, and we would never know.
+        assert!(
+            segs.iter().any(|s| s.memsz as usize > s.data.len()),
+            "no segment has a .bss, so the zero-fill is untested",
+        );
+    }
+
+    /// **The whole of 7c.** A separately compiled binary, arriving in the initrd, running at EL0.
+    ///
+    /// The program checks its own image and speaks with the only two words it has: `svc` if
+    /// every expectation about its own memory holds, `brk` if not. **No data crosses the
+    /// boundary**, because there is no ABI yet and we are not going to invent one by accident.
+    ///
+    /// So `svc` and no fault means: `.text` executed, `.rodata` was readable, `.data` was copied
+    /// from the file, `.bss` was zeroed (the file does not contain those bytes), and the stack
+    /// worked well enough to recurse eight frames.
+    #[test_case]
+    fn a_real_elf_from_the_initrd_runs_at_el0_and_verifies_itself() {
+        let svc = SVC_COUNT.load(Ordering::Relaxed);
+        let faults = USER_FAULTS.load(Ordering::Relaxed);
+
+        sched::spawn(|| exec_elf(initrd().expect("no initrd"))).expect("spawn failed");
+
+        assert!(
+            wait_for(|| SVC_COUNT.load(Ordering::Relaxed) > svc),
+            "the program never reached its `svc`",
+        );
+        assert_eq!(
+            USER_FAULTS.load(Ordering::Relaxed),
+            faults,
+            "the program reached EL0 and then FAILED its own self-check: one of \
+             .text/.rodata/.data/.bss/stack was not what the ELF asked for",
+        );
+    }
+
+    /// The loader honours the file's permissions, and does not widen them.
+    ///
+    /// An ELF's `.rodata` segment is `PF_R` alone. The tempting shortcut is to map every
+    /// non-executable segment as `user_data()`, which is **writable** — quietly granting the
+    /// program authority its own file never asked for.
+    #[test_case]
+    fn a_read_only_segment_is_mapped_read_only() {
+        let image = initrd().expect("no initrd");
+        let (space, _) = load(image).expect("the initrd did not load");
+
+        let rodata = elf::Elf::parse(image)
+            .unwrap()
+            .segments()
+            .find(|s| s.is_readable() && !s.is_writable() && !s.is_executable())
+            .expect("the test binary has no read-only segment");
+
+        // Install it so we can ask the CPU's own tables, rather than our record of them.
+        // SAFETY: nothing is at EL0 right now; we are a kernel thread mid-test.
+        unsafe { mmu::activate_user(space.root()) };
+
+        let (_, flags) = mmu::translate_user(rodata.vaddr).expect(".rodata is not mapped at all");
+
+        assert!(flags.is_user_accessible(), "EL0 cannot read its own .rodata");
+        assert!(!flags.is_writable(), "the loader made .rodata WRITABLE");
+        assert!(!flags.is_user_executable(), ".rodata is executable at EL0");
+        assert!(!flags.is_kernel_executable(), ".rodata is executable at EL1");
+
+        mmu::deactivate_user();
+        drop(space);
     }
 
     /// A dead user thread's address space is freed, all of it, including its page tables.

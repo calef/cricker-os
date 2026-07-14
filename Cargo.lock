@@ -16,6 +16,10 @@ name = "dtb"
 version = "0.1.0"
 
 [[package]]
+name = "elf"
+version = "0.1.0"
+
+[[package]]
 name = "frames"
 version = "0.1.0"
 
@@ -29,6 +33,7 @@ version = "0.1.0"
 dependencies = [
  "aarch64-cpu",
  "dtb",
+ "elf",
  "frames",
  "heap",
  "paging",
@@ -56,6 +61,10 @@ name = "tock-registers"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b9e2fdb3a1e862c0661768b7ed25390811df1947a8acbfbefe09b47078d93c4"
+
+[[package]]
+name = "user"
+version = "0.1.0"
 
 [[package]]
 name = "xtask"

@@ -121,7 +121,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         println!("milestone 4: and nothing writable is executable, and Vec works again.");
         println!("milestone 5: and the machine can now interrupt us. we are preemptible.");
         println!("milestone 6: and a thread that refuses to yield gets preempted anyway.");
-        println!("milestone 7: and now it can be code we did not compile, running unprivileged.");
+        println!("milestone 7: and now it runs a binary it did not compile, unprivileged.");
         println!();
 
         // The whole argument, executable.
@@ -198,8 +198,44 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
                 0xffff_0000_4008_0000u64,
                 USER_FAULTS.load(Ordering::Relaxed) - faults0,
             );
+
+            // 7c. A real ELF, separately compiled, arriving in the initrd. The kernel has never
+            // seen it before this boot.
+            match user::initrd() {
+                None => println!("    initrd : none (no -initrd passed to QEMU)"),
+                Some(image) => {
+                    let svc0 = SVC_COUNT.load(Ordering::Relaxed);
+                    let f0 = USER_FAULTS.load(Ordering::Relaxed);
+
+                    println!(
+                        "    initrd : {} bytes at {:#x}, from the device tree",
+                        image.len(),
+                        memory::initrd_region().unwrap().0,
+                    );
+
+                    sched::spawn(|| {
+                        let image = user::initrd().expect("no initrd");
+                        user::exec_elf(image)
+                    });
+                    timer::spin_for(timer::frequency() / 20);
+
+                    let ran = SVC_COUNT.load(Ordering::Relaxed) > svc0;
+                    let died = USER_FAULTS.load(Ordering::Relaxed) > f0;
+
+                    println!(
+                        "    hello  : a real ELF, loaded from the initrd, {}",
+                        match (ran, died) {
+                            (true, false) => "ran and verified its own .text/.rodata/.data/.bss",
+                            (_, true) => "FAILED its self-check",
+                            _ => "never reached EL0",
+                        }
+                    );
+                }
+            }
+
             println!();
             println!("  the machine has run code it does not trust, and taken the CPU back.");
+            println!("  and it did not compile it, or link it, or ever see it before this boot.");
         }
     }
 

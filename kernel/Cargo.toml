@@ -9,6 +9,7 @@ edition = "2024"
 # a bit position wrong. DECISIONS.md §3.
 aarch64-cpu = "10"
 dtb = { version = "0.1.0", path = "../crates/dtb" }
+elf = { version = "0.1.0", path = "../crates/elf" }
 frames = { version = "0.1.0", path = "../crates/frames" }
 heap = { version = "0.1.0", path = "../crates/heap" }
 paging = { version = "0.1.0", path = "../crates/paging" }

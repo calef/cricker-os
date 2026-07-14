@@ -48,7 +48,46 @@ fn main() -> ExitCode {
 }
 
 fn build() -> bool {
-    cargo(&["build", "-p", "kernel", "--target", TARGET])
+    // The user program first: the kernel boots with it as an initrd, so it has to exist.
+    user() && cargo(&["build", "-p", "kernel", "--target", TARGET])
+}
+
+/// Build the userspace ELF that the kernel will load at milestone 7.
+///
+/// It is a **separate crate with its own linker script** (linked at `0x40_0000`, in the low half,
+/// where `TTBR0` lives), so it cannot accidentally share anything with the kernel. And it stays
+/// an **ELF**: the kernel's loader wants program headers, unlike the kernel itself, which QEMU
+/// wants as a flat image. See notes/elf.md.
+fn user() -> bool {
+    cargo(&["build", "-p", "user", "--target", TARGET])
+}
+
+/// The user ELF, which `scripts/qemu-runner.sh` passes to QEMU as `-initrd`.
+///
+/// **Deliberately the same road Linux's initramfs travels.** QEMU loads the file into RAM and
+/// writes its address into `/chosen/linux,initrd-start` in the device tree; the kernel finds it
+/// there (`memory::initrd_region`, built at milestone 3 for exactly this). Nothing about the
+/// binary is known to the kernel at build time, which is the entire point of milestone 7c.
+fn user_elf() -> String {
+    // ABSOLUTE, and that is not fussiness.
+    //
+    // Cargo runs the runner script with the working directory set to the **package** dir for
+    // `cargo test` and the workspace root for `cargo run`. A relative path therefore resolved
+    // under `cargo run` and silently did not under `cargo test`, so the tests booted with no
+    // initrd at all and the one that noticed was the one that panicked.
+    workspace_root()
+        .join(format!("target/{TARGET}/debug/hello"))
+        .display()
+        .to_string()
+}
+
+/// The repo root, from the *compile-time* location of this crate, so it does not depend on
+/// whatever directory cargo happens to hand us.
+fn workspace_root() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask has no parent directory")
+        .to_path_buf()
 }
 
 /// Host tests first, then the kernel under QEMU.
@@ -58,11 +97,19 @@ fn build() -> bool {
 /// seconds booting QEMU. See DECISIONS.md §7.
 fn test() -> bool {
     eprintln!("--- host tests (pure logic, no emulator) ---");
-    if !cargo(&["test", "-p", "dtb", "-p", "frames"]) {
+    // Every host crate, not just two. `paging`, `heap` and `slab` each carry real tests and
+    // were silently not being run here for four milestones.
+    if !cargo(&[
+        "test", "-p", "dtb", "-p", "elf", "-p", "frames", "-p", "heap", "-p", "paging", "-p",
+        "slab",
+    ]) {
         return false;
     }
     eprintln!();
     eprintln!("--- kernel tests (QEMU) ---");
+    if !user() {
+        return false;
+    }
     cargo(&["test", "-p", "kernel", "--target", TARGET])
 }
 
@@ -202,6 +249,10 @@ fn kernel_elf() -> String {
 }
 
 fn cargo(args: &[&str]) -> bool {
+    // The runner needs to know where the initrd is. Set it for every cargo invocation; the
+    // script ignores it when the file is not there (which is any build before `user` exists).
+    unsafe { std::env::set_var("CRICKER_INITRD", user_elf()) };
+
     run("cargo", args)
 }
 

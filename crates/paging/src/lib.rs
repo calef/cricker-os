@@ -206,6 +206,16 @@ impl Flags {
         Flags(AF | SH_INNER | attr_index(mair::NORMAL) | AP_RO_EL0 | PXN)
     }
 
+    /// User constants (milestone 7): readable by EL0, and **nothing else**.
+    ///
+    /// An ELF's `.rodata` segment is `PF_R` alone. Without this, the loader's only non-executable
+    /// choice is [`user_data`](Self::user_data), which is **writable** — so we would silently
+    /// grant the program more authority than its own file asked for. A loader that widens
+    /// permissions is a loader you cannot reason about.
+    pub const fn user_rodata() -> Self {
+        Flags(AF | SH_INNER | attr_index(mair::NORMAL) | AP_RO_EL0 | UXN | PXN)
+    }
+
     /// User data (milestone 7): read/write by EL0, never executable.
     pub const fn user_data() -> Self {
         Flags(AF | SH_INNER | attr_index(mair::NORMAL) | AP_RW_EL0 | UXN | PXN)
@@ -230,6 +240,53 @@ impl Flags {
 
     pub fn is_user_accessible(self) -> bool {
         self.0 & (1 << 6) != 0
+    }
+}
+
+#[cfg(test)]
+mod flag_tests {
+    use super::*;
+
+    /// **W^X, as a property of the type rather than of our discipline.**
+    ///
+    /// There is no constructor that returns a page which is both writable and executable, and
+    /// this asserts it over every constructor there is, so adding a bad one fails the build's
+    /// tests rather than shipping.
+    #[test]
+    fn nothing_is_both_writable_and_executable() {
+        for f in [
+            Flags::kernel_code(),
+            Flags::kernel_rodata(),
+            Flags::kernel_data(),
+            Flags::device(),
+            Flags::user_code(),
+            Flags::user_rodata(),
+            Flags::user_data(),
+        ] {
+            assert!(
+                !(f.is_writable() && (f.is_kernel_executable() || f.is_user_executable())),
+                "{f:?} is both writable and executable",
+            );
+        }
+    }
+
+    /// The three user mappings are exactly the three an ELF can ask for, and no more.
+    #[test]
+    fn user_rodata_is_readable_and_nothing_else() {
+        let f = Flags::user_rodata();
+        assert!(f.is_user_accessible(), "EL0 cannot read its own .rodata");
+        assert!(!f.is_writable(), "an ELF's .rodata is writable");
+        assert!(!f.is_user_executable(), "an ELF's .rodata is executable at EL0");
+        assert!(!f.is_kernel_executable(), "an ELF's .rodata is executable at EL1");
+    }
+
+    #[test]
+    fn user_code_is_not_executable_by_the_kernel() {
+        // PXN is not paranoia: a bug that jumped EL1 into a user page would otherwise execute
+        // user-controlled instructions at EL1, which is a total compromise. One bit.
+        assert!(!Flags::user_code().is_kernel_executable());
+        assert!(Flags::user_code().is_user_executable());
+        assert!(!Flags::user_code().is_writable());
     }
 }
 

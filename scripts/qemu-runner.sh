@@ -40,10 +40,21 @@ fi
 IMG="$ELF.img"
 "$OBJCOPY" -O binary "$ELF" "$IMG"
 
+# The userspace program rides in as an initrd, exactly the way Linux gets its initramfs: QEMU
+# loads the file into RAM and writes the address into /chosen/linux,initrd-start in the device
+# tree it generates. The kernel finds it there. Nothing about the binary is compiled into the
+# kernel. See notes/elf.md and kernel/src/memory.rs.
+INITRD=""
+if [ -n "$CRICKER_INITRD" ] && [ -f "$CRICKER_INITRD" ]; then
+    INITRD="-initrd $CRICKER_INITRD"
+fi
+
+# shellcheck disable=SC2086  # $INITRD is deliberately two words or none
 exec qemu-system-aarch64 \
     -machine virt \
     -cpu cortex-a72 \
     -nographic \
     -semihosting \
     -kernel "$IMG" \
+    $INITRD \
     "$@"
