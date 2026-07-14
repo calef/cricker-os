@@ -111,6 +111,22 @@ impl Heap {
         self.total - self.allocated
     }
 
+    /// How many blocks are on the free list.
+    ///
+    /// **This is the `n` in the O(n).** Both `alloc` (first fit) and `insert` (find the
+    /// address-sorted position) walk the list, so this number *is* the cost of an allocation
+    /// and the cost of a free. Worth measuring before optimizing anything.
+    pub fn free_blocks(&self) -> usize {
+        let mut n = 0;
+        let mut cur = self.head;
+        while let Some(b) = cur {
+            n += 1;
+            // SAFETY: a valid node on the list.
+            cur = unsafe { b.as_ref().next };
+        }
+        n
+    }
+
     /// First fit.
     ///
     /// Walks the list and takes the first block that can satisfy the request. Not the *best*

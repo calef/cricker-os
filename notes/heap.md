@@ -132,4 +132,88 @@ different thing.)*
 
 ---
 
+# The slab, and how we chose it
+
+## Measure before optimizing
+
+Both `alloc` (first fit) and `dealloc` (address-sorted insert) walk the free list, so **both are
+O(n) in the number of free blocks**. Before fixing that, we measured how large `n` actually gets
+(`crates/heap/tests/fragmentation.rs`):
+
+| Workload | free-list length |
+|---|---|
+| uniform 64 B, 1000 live | **1** |
+| mixed 16-256 B, freed out of order | **3** |
+| uniform 64 B, **every other one freed** | **1001** |
+
+So the O(n) is a **non-issue for most workloads** — coalescing keeps the list at one to three
+blocks — and catastrophic for exactly one shape: **many isolated, same-sized holes.**
+
+And that shape is what a kernel produces. Two thousand threads, half of them exit. A file
+descriptor table with gaps. Not hypothetical.
+
+## The trade nobody escapes
+
+**You cannot coalesce in O(1) without per-block metadata.**
+
+To merge with your physical neighbour you must know whether the block at `p + size` is free, and
+where the block before `p` begins. Neither is knowable without a header on **every** block,
+allocated ones included. That is why glibc carries 8-16 bytes of overhead per allocation.
+
+Our heap's virtue is **zero overhead on allocated memory**. Its price is the O(n).
+
+| Design | alloc | free | overhead/alloc | coalesces |
+|---|---|---|---|---|
+| `crates/heap`: address-sorted list | O(n) | O(n) | **0** | yes |
+| boundary tags + segregated lists (glibc) | O(1) | O(1) | 8-16 B | yes |
+| **`crates/slab`** (Linux SLUB) | **O(1)** | **O(1)** | **0** | *doesn't need to* |
+
+Read the third row carefully. **A slab holds objects of exactly one size**, so a freed object is
+immediately reusable by the next request of that size. Coalescing becomes **unnecessary rather
+than fast**, and the pathological case stops existing.
+
+That is why Linux uses SLUB for small allocations and the page allocator for large ones.
+
+## How ours works
+
+Eight size classes: 16, 32, 64, 128, 256, 512, 1024, 2048.
+
+Each class owns a free list of objects of *exactly* that size. Allocation pops the head. Free
+pushes onto the head. Both are a couple of pointer writes: **no search, no walk, no merge.**
+
+When a class runs dry it takes one 4 KiB page from the frame allocator and carves it into
+objects. The list node lives **inside the free object** — the same trick as the heap's free
+blocks, and for the same reason: a free object is by definition space nobody is using.
+
+**Alignment falls out for free.** A page is 4096-aligned, and an object of size `16 << i` sits at
+offset `k * (16 << i)` within it, so it is naturally aligned to its own size. The 256-byte class
+hands out 256-aligned objects without trying. (Which also sets the limit: a request for 16 bytes
+aligned to 4096 fits *no* class, and correctly falls through to the general heap.)
+
+## The split
+
+```
+alloc(layout):
+    <= 2 KiB, alignment a class can serve  ->  slab   (O(1) both ways)
+    everything else                        ->  heap   (coalescing free list)
+```
+
+**`alloc` and `dealloc` must agree about which one owns a block**, and they do, because both ask
+the same pure function of the `Layout`. Rust hands us the layout on *both* paths.
+
+C's `free(ptr)` gets no such thing, which is why C allocators need a header on every block just
+to remember its size. **We get it for nothing**, and it is a bigger deal than it looks: it is
+half the reason our heap can have zero per-allocation overhead at all.
+
+## What the slab does not do
+
+**Slabs are never returned to the frame allocator.** Once a page belongs to the 64-byte class it
+belongs to it forever, even if every object in it is free. Real SLUB tracks per-slab occupancy
+and frees empty ones.
+
+So memory is bounded by the **high-water mark** of each class, not by current usage. Fine for
+now; worth fixing if a class ever balloons.
+
+---
+
 *Add to this file as new allocator concepts come up.*

@@ -32,12 +32,17 @@ dependencies = [
  "frames",
  "heap",
  "paging",
+ "slab",
  "spin",
  "tock-registers",
 ]
 
 [[package]]
 name = "paging"
+version = "0.1.0"
+
+[[package]]
+name = "slab"
 version = "0.1.0"
 
 [[package]]

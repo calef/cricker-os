@@ -12,6 +12,7 @@ dtb = { version = "0.1.0", path = "../crates/dtb" }
 frames = { version = "0.1.0", path = "../crates/frames" }
 heap = { version = "0.1.0", path = "../crates/heap" }
 paging = { version = "0.1.0", path = "../crates/paging" }
+slab = { version = "0.1.0", path = "../crates/slab" }
 spin = { version = "0.10", default-features = false, features = ["spin_mutex"] }
 
 # Typed, compile-time-checked MMIO register blocks. An off-by-four in a device's
