@@ -140,6 +140,83 @@ right time. See the table in [heap.md](heap.md) — use-after-free, double-free,
 | `String` | 24 bytes (same) | `cap` bytes of UTF-8 |
 | `BTreeMap` | a couple of words | the nodes |
 
+## The rest of what `alloc` gave us
+
+All verified working in the kernel, not assumed:
+
+| | What it is | When we want it |
+|---|---|---|
+| `VecDeque<T>` | ring buffer / double-ended queue | **M5** UART receive queue, **M6** run queue |
+| `BinaryHeap<T>` | priority queue | **M5** timer wheel: "wake me at T", earliest first |
+| `Arc<T>` | shared ownership, **atomically** refcounted | **M7** `Arc<AddressSpace>`, `Arc<File>` |
+| `Rc<T>` | shared ownership, **not** thread-safe | never, in a kernel. See below. |
+| `BTreeSet<T>` | ordered set | |
+| `Cow<T>` | clone-on-write | |
+| `LinkedList<T>` | doubly linked list | almost never: cache-hostile, same argument as the B-tree above |
+| `[T]::sort()` | stable sort | it needs a **temporary buffer**, which is why it lives in `alloc` and not `core` |
+
+**`Arc` is the answer to "who frees this?" when the answer is "the last one out."** Milestone
+7 wants it badly: multiple threads in a process share one address space and one set of file
+descriptors.
+
+## The trap: VecDeque allocates, and interrupt handlers must not
+
+`VecDeque::push_back` **can allocate**. If the buffer is full it grows: allocate, copy, free.
+
+Which collides head-on with [DECISIONS.md](../DECISIONS.md) §9:
+
+> **Interrupt handlers do not allocate.**
+
+A UART receive handler pushing into a `VecDeque` would take the heap lock **in interrupt
+context**, and that is exactly the deadlock in [locking.md](locking.md).
+
+**So milestone 5 needs a fixed-capacity ring buffer that never allocates.** Either we write one
+(~40 lines, pure logic, host-testable) or we pull in `heapless`, which is a crate of exactly
+these: compile-time capacity, no allocator at all.
+
+Leaning toward writing it: a single-producer/single-consumer lock-free ring is genuinely
+instructive, and it is the one place where the weak-memory-ordering material in
+[portability.md](portability.md) stops being theoretical.
+
+## `Rc` vs `Arc`: the difference is a use-after-free
+
+`Rc` increments its refcount with a **plain, non-atomic** `count += 1`: a read, an add, a
+write.
+
+Two cores do that simultaneously. Both read 1. Both write 2. **An increment is lost.** The
+count says 2 while three things hold the value, the last two drops take it to zero, and memory
+that is still in use gets freed.
+
+An interrupt handler does it too, on **one** core: the interrupted code is halfway through the
+read-modify-write when the handler runs and does its own.
+
+Rust catches this — `Rc` is `!Send`, so the compiler refuses to move it across threads. But
+knowing *why* matters, because the compiler's protection ends at the boundary of what it can
+see, and a kernel spends a great deal of time outside that boundary.
+
+`Arc` uses an **atomic** read-modify-write. On our Cortex-A72 (ARMv8.0, no LSE) that is an
+`LDXR`/`STXR` retry loop rather than a single `CAS`, which is precisely the cliff
+[design/fat-binaries.md](../design/fat-binaries.md) is about.
+
+## What we still don't have, and the pattern in it
+
+| Missing | Why | Where it comes from |
+|---|---|---|
+| `HashMap` | needs a randomly-seeded hasher; a seed needs OS entropy | `hashbrown` crate, or just `BTreeMap` |
+| `Mutex`, `RwLock`, `Condvar` | these **block**, and blocking needs a scheduler to block *on* | **we build them at M6** |
+| `thread::spawn` | needs a scheduler | **M6** |
+| `Instant`, `SystemTime` | needs a clock | **M5** |
+| `File`, `Path`, `fs` | needs a filesystem | **M8** |
+| `TcpStream` | needs a network stack | out of scope |
+
+Read the third column. **Everything `std` has that we lack, we lack because it needs a kernel
+service we have not built.** Every gap is a milestone. Same shape as the table in
+[no-std.md](no-std.md), and still the honest map of where we are.
+
+(`core::time::Duration` already exists, incidentally: it is arithmetic on nanoseconds and needs
+nothing. It is `Instant` that needs hardware, because `Instant` means **now**, and nothing in
+`core` knows what time it is.)
+
 ---
 
 *Add to this file as new collections come up.*
