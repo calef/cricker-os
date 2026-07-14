@@ -73,6 +73,10 @@ use core::sync::atomic::{AtomicU32, Ordering};
 /// ## The hierarchy
 ///
 /// ```text
+///   60  SCHED           the run queue
+///        |
+///   55  STACK_VA        free thread-stack addresses
+///        |
 ///   50  HEAP, SLAB      the allocators
 ///        |
 ///   30  FRAMES, RAM     the physical memory map
@@ -100,6 +104,20 @@ use core::sync::atomic::{AtomicU32, Ordering};
 /// would have held RAM (30) while taking FRAMES (30), and `30 < 30` is false. The ranking
 /// would have failed it on the spot. (We happened to fix it for other reasons first.)
 pub mod rank {
+    /// The scheduler's run queue.
+    ///
+    /// **Above the allocators**, because `spawn` pushes into a `VecDeque` while holding it and
+    /// that push may allocate. `schedule()` itself never allocates (it pops one and pushes one,
+    /// so the deque cannot grow), which is what makes it safe to call from the timer interrupt
+    /// where DECISIONS.md §9 forbids allocation.
+    pub const SCHED: u32 = 60;
+
+    /// The free list of thread-stack virtual addresses.
+    ///
+    /// **Above the allocators** (it pushes into a `Vec`, which may allocate) and **below the
+    /// scheduler** (a `KernelStack`'s `Drop` runs from `reap`, which holds SCHED).
+    pub const STACK_VA: u32 = 55;
+
     pub const HEAP: u32 = 50;
     pub const SLAB: u32 = 50;
     pub const FRAMES: u32 = 30;

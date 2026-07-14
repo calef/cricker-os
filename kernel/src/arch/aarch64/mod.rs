@@ -23,6 +23,9 @@ global_asm!(include_str!("boot.s"));
 // The exception vector table. VBAR_EL1 will point here once `init` runs.
 global_asm!(include_str!("vectors.s"));
 
+// The context switch, and where a new thread begins. Milestone 6.
+global_asm!(include_str!("context.s"));
+
 /// Bring the CPU into a state where the kernel can safely run.
 ///
 /// Right now that means one thing: install the exception vectors, so that a fault

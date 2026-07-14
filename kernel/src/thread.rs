@@ -1,0 +1,292 @@
+//! Kernel threads.
+//!
+//! # What a thread actually is
+//!
+//! From notes/registers.md, milestone 1, before any of this existed:
+//!
+//! > **A thread is a stack plus a set of register values.** That is not a metaphor. It is the
+//! > complete and literal definition.
+//!
+//! And that is exactly what a [`Thread`] is here: a [`KernelStack`], and a single **stack
+//! pointer** naming the place on that stack where its registers are saved. Nothing else. The
+//! `context` field is 8 bytes, and it is the whole of a suspended thread's CPU state, because
+//! everything else is sitting on the stack it points at.
+//!
+//! # Every thread gets a guard page
+//!
+//! Milestone 3 blew the boot stack, wrote through `.bss` and `.data` into `.text`, and hung
+//! the machine for 150 seconds with no output. Milestone 4 gave the *boot* stack a guard page,
+//! and the same bug became an instant, precise fault naming the exact byte that went too far.
+//!
+//! Thread stacks get one too, and it is not decoration: **a thread stack is 16 KiB**, an eighth
+//! of the boot stack's, and threads are where deep recursion actually happens. This is the
+//! first non-test user of `mmu::map_page` / `mmu::unmap_page`, which we built at milestone 4
+//! ahead of any caller precisely so the discipline (break-before-make, an un-ignorable TLB
+//! flush) would be right the first time.
+
+use crate::arch::mmu::{self, KERNEL_VA_BASE};
+use crate::memory;
+use crate::sync::{IrqSafeMutex, rank};
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
+use frames::{FRAME_SIZE, Frame};
+use paging::Flags;
+
+pub type Tid = u64;
+
+/// 16 KiB. Four pages.
+///
+/// Linux uses 16 KiB per kernel thread on arm64, for the same reason: you have thousands of
+/// them and each one costs real memory. If that sounds tight, remember the guard page below
+/// it turns "too small" from a silent corruption into a legible fault.
+pub const STACK_PAGES: usize = 4;
+
+/// Where kernel thread stacks live, virtually.
+///
+/// Deliberately far above the direct map (which occupies `KERNEL_VA_BASE | pa` for every real
+/// physical address), so a stack address can never collide with the virtual *name* of a
+/// physical one. 64 GiB up, and RAM will not reach there for a while.
+const STACK_AREA: u64 = KERNEL_VA_BASE | 0x0000_0010_0000_0000;
+
+static NEXT_STACK_VA: AtomicU64 = AtomicU64::new(STACK_AREA);
+static NEXT_TID: AtomicU64 = AtomicU64::new(1);
+
+/// Stack address ranges from threads that have exited.
+///
+/// **Reusing these is not a micro-optimization.** Bump-allocating virtual addresses forever
+/// means every 2 MiB of address space consumed permanently costs an L2 and an L3 page table,
+/// because `unmap_page` frees the leaf mapping but leaves the intermediate tables standing (see
+/// the TODO on `paging::unmap`). Threads come and go; the tables would only ever accumulate.
+///
+/// Handing the address range back means a new thread lands in page tables that already exist,
+/// and the whole system reaches a steady state. A test asserts that a second batch of threads
+/// costs **exactly zero** additional frames.
+static FREE_STACK_VAS: IrqSafeMutex<Vec<u64>> = IrqSafeMutex::new(rank::STACK_VA, Vec::new());
+
+/// The callee-saved registers, as `switch_to` pushes them.
+///
+/// **This layout is a contract with `context.s`.** Twelve `u64`s, 96 bytes, in exactly this
+/// order. Reorder a field here and the assembly restores the wrong register into the wrong
+/// place, and the thread resumes with a frame pointer where its return address should be.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct Context {
+    /// `x19`. **Doubles as the argument to a brand-new thread**: `thread_trampoline` reads the
+    /// boxed closure out of it. A callee-saved register, chosen exactly because `switch_to`
+    /// restores it for us on the way in.
+    pub x19: u64,
+    pub x20: u64,
+    pub x21: u64,
+    pub x22: u64,
+    pub x23: u64,
+    pub x24: u64,
+    pub x25: u64,
+    pub x26: u64,
+    pub x27: u64,
+    pub x28: u64,
+    /// `x29`, the frame pointer. Zero for a new thread: it is the bottom of the backtrace.
+    pub x29: u64,
+    /// `x30`, the link register. **Where `switch_to`'s `ret` jumps.** For a new thread this is
+    /// `thread_trampoline`, which is how a thread that has never run gets started by the same
+    /// instruction that resumes one that has.
+    pub x30: u64,
+}
+
+const _: () = assert!(size_of::<Context>() == 96);
+
+unsafe extern "C" {
+    /// Save our callee-saved registers, swap `sp`, restore theirs, and `ret` into **their**
+    /// `x30`. See context.s: the last instruction returns to a different thread.
+    pub fn switch_to(prev_context: *mut *mut Context, next_context: *mut Context);
+
+    fn thread_trampoline();
+}
+
+/// A stack, with an unmapped page beneath it.
+pub struct KernelStack {
+    guard: u64,
+    bottom: u64,
+    top: u64,
+    frames: Vec<Frame>,
+}
+
+impl KernelStack {
+    pub fn new(pages: usize) -> Option<Self> {
+        // One page of virtual address space for the guard, plus the stack itself. The guard's
+        // VA is simply never mapped, which is the entire mechanism.
+        let span = (pages as u64 + 1) * FRAME_SIZE;
+
+        // Reuse a dead thread's address range if there is one, so the page tables covering it
+        // are already built. Only bump into fresh address space when there isn't.
+        let base = FREE_STACK_VAS
+            .lock()
+            .pop()
+            .unwrap_or_else(|| NEXT_STACK_VA.fetch_add(span, Ordering::Relaxed));
+
+        let guard = base;
+        let bottom = base + FRAME_SIZE;
+        let top = bottom + pages as u64 * FRAME_SIZE;
+
+        let mut frames = Vec::with_capacity(pages);
+        for i in 0..pages {
+            let frame = memory::alloc()?;
+            let va = bottom + i as u64 * FRAME_SIZE;
+
+            if mmu::map_page(va, frame.addr(), Flags::kernel_data()).is_err() {
+                memory::free(frame);
+                return None; // `frames` drops, and Drop below unmaps what we did map
+            }
+            frames.push(frame);
+        }
+
+        Some(KernelStack {
+            guard,
+            bottom,
+            top,
+            frames,
+        })
+    }
+
+    /// Where `sp` starts. The stack grows **down** from here (notes/stack.md).
+    pub fn top(&self) -> u64 {
+        self.top
+    }
+
+    /// The unmapped page below the stack. Test support.
+    #[allow(dead_code)]
+    pub fn guard(&self) -> u64 {
+        self.guard
+    }
+
+    /// The lowest usable byte. Test support.
+    #[allow(dead_code)]
+    pub fn bottom(&self) -> u64 {
+        self.bottom
+    }
+}
+
+impl Drop for KernelStack {
+    fn drop(&mut self) {
+        for (i, frame) in self.frames.iter().enumerate() {
+            let va = self.bottom + i as u64 * FRAME_SIZE;
+
+            // `unmap_page` discharges the TLB obligation with a real `tlbi`. It has to, and the
+            // reason is right here: this virtual address is about to be handed to a **different
+            // thread's stack**. A stale translation would let the new thread read — and write —
+            // the dead thread's saved registers. See notes/page-tables.md.
+            if mmu::unmap_page(va).is_ok() {
+                memory::free(*frame);
+            }
+        }
+
+        // Hand the address range back, so the next thread lands in page tables that already
+        // exist. The frames are freed above; this returns the *names*.
+        FREE_STACK_VAS.lock().push(self.guard);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum State {
+    Ready,
+    Running,
+    Finished,
+}
+
+pub struct Thread {
+    pub id: Tid,
+    pub state: State,
+
+    /// **The entire saved CPU state of this thread**: one stack pointer.
+    ///
+    /// Everything else lives on the stack it points at, pushed there by `switch_to`. Eight
+    /// bytes. That is what "a thread is a stack plus a set of register values" means when you
+    /// write it down.
+    pub context: *mut Context,
+
+    /// `None` for the boot thread, which runs on the stack `boot.s` set up and does not own it.
+    ///
+    /// Never *read*, and that is the point: it exists to be **dropped**. When the reaper removes
+    /// a finished `Thread` from the map, this field's `Drop` unmaps four pages, discharges the
+    /// TLB obligation, frees four frames, and hands the address range back. Ownership doing the
+    /// work, exactly as notes/heap.md described it: the compiler proving the free happens once,
+    /// at the right moment.
+    #[allow(dead_code)]
+    pub stack: Option<KernelStack>,
+}
+
+// SAFETY: a Thread is only ever touched under the scheduler's lock.
+unsafe impl Send for Thread {}
+
+impl Thread {
+    /// The thread we are already running on, at `sched::init`.
+    ///
+    /// It has no stack of its own (it uses the boot stack) and no saved context yet: the first
+    /// `switch_to` *away* from it is what fills that in. Which is the neat part — a thread's
+    /// context is written by the act of leaving it, so the boot thread needs no special case
+    /// beyond a null placeholder.
+    pub fn boot() -> Self {
+        Thread {
+            id: 0,
+            state: State::Running,
+            context: core::ptr::null_mut(),
+            stack: None,
+        }
+    }
+
+    /// A new thread, ready to run `f` the first time it is scheduled.
+    pub fn spawn(f: Box<dyn FnOnce() + Send + 'static>) -> Option<Self> {
+        let stack = KernelStack::new(STACK_PAGES)?;
+
+        // `Box<dyn FnOnce()>` is a **fat** pointer (data + vtable), two words, and we have one
+        // register to smuggle it through. So box it again: `Box<Box<dyn FnOnce()>>` is a thin
+        // pointer to a fat one, and fits in `x19`.
+        let boxed: Box<Box<dyn FnOnce() + Send>> = Box::new(f);
+        let arg = Box::into_raw(boxed) as u64;
+
+        // Fake a `switch_to` frame at the top of the fresh stack, so that the very same `ret`
+        // that resumes an existing thread also *starts* a new one. There is no separate "first
+        // run" path: the trampoline just happens to be what `x30` points at.
+        let context = (stack.top() - size_of::<Context>() as u64) as *mut Context;
+
+        // SAFETY: the stack was just mapped read/write, and this is inside it.
+        unsafe {
+            context.write(Context {
+                x19: arg, // the closure, for the trampoline
+                x20: 0,
+                x21: 0,
+                x22: 0,
+                x23: 0,
+                x24: 0,
+                x25: 0,
+                x26: 0,
+                x27: 0,
+                x28: 0,
+                x29: 0, // no caller: the backtrace ends here
+                x30: thread_trampoline as *const () as u64, // <- where `ret` will go
+            });
+        }
+
+        Some(Thread {
+            id: NEXT_TID.fetch_add(1, Ordering::Relaxed),
+            state: State::Ready,
+            context,
+            stack: Some(stack),
+        })
+    }
+}
+
+/// Where a new thread actually begins, in Rust.
+///
+/// Called by `thread_trampoline` with the boxed closure in `x0`.
+#[unsafe(no_mangle)]
+extern "C" fn thread_entry(arg: *mut ()) -> ! {
+    // SAFETY: `Thread::spawn` leaked exactly this box, and we are the only one who will ever
+    // claim it. Reconstructing it here is what makes the closure's memory get freed when the
+    // thread finishes, rather than leaking one per thread forever.
+    let f: Box<Box<dyn FnOnce() + Send>> = unsafe { Box::from_raw(arg as *mut _) };
+
+    f();
+
+    crate::sched::exit();
+}

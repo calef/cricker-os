@@ -269,7 +269,7 @@ boots" and "an operating system" is milestone 7.
 | 3  | Physical frame allocator from the memory map    | Where RAM actually comes from            | ✅ |
 | 4  | MMU on: page tables, address spaces, kernel heap| Virtual memory, `alloc` in `no_std`      | ✅ |
 | 5  | GIC + timer interrupts                          | The preemption source                    | ✅ |
-| 6  | Kernel threads, context switch, scheduler       | Stacks, register files, run queues       |    |
+| 6  | Kernel threads, context switch, scheduler       | Stacks, register files, run queues       | ✅ |
 | 7  | **User mode (EL0), syscalls, ELF loader**       | **The actual OS boundary. Decision point.** |    |
 | 8  | virtio-blk driver + read-only filesystem        | Drivers, DMA, block I/O                  |    |
 | 9  | Processes: spawn, exit, wait                    | Process lifecycle                        |    |

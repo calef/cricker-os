@@ -213,7 +213,13 @@ fn handle_irq(_frame: &mut TrapFrame) {
     }
 
     match intid {
-        timer::TIMER_INTID => timer::tick(),
+        timer::TIMER_INTID => {
+            timer::tick();
+            // RECORD. Do not switch here: we still hold nothing, but we are mid-handler and
+            // the GIC has not been told we are done. DECISIONS.md §9 — handlers record and
+            // defer. The deferral happens at the bottom of this function.
+            crate::sched::on_tick();
+        }
         other => {
             UNEXPECTED_IRQS.fetch_add(1, Ordering::Relaxed);
             // A print is a diagnostic, not work. It takes the console lock (rank 10), which is
@@ -225,6 +231,27 @@ fn handle_irq(_frame: &mut TrapFrame) {
     // Until this is written, the GIC will not deliver another interrupt of equal or lower
     // priority. Forget it and the timer fires exactly once and then never again.
     gic::end_of_interrupt(intid);
+
+    // --- and here is preemption ---
+    //
+    // We are still on the interrupted thread's kernel stack, with its full TrapFrame sitting
+    // below us (vectors.s saved it). `schedule()` may now switch to another thread entirely.
+    //
+    // When it does, this call does not return. It returns *in some other thread*, wherever
+    // that thread last called `switch_to`. We come back here only when somebody schedules us
+    // again — and then `exception_restore` pops the TrapFrame and `eret` resumes the
+    // instruction we interrupted, which never knew any of this happened.
+    //
+    // **That is the whole of preemption**, and it is four lines, because milestone 2 already
+    // built the hard part for a completely different reason.
+    //
+    // The EOI above must come first: switching away with the interrupt unacknowledged would
+    // leave the GIC refusing to deliver anything of equal or lower priority to the thread we
+    // switch *to*.
+    if crate::sched::take_need_resched() && crate::sched::is_running() {
+        crate::sched::count_preemption();
+        crate::sched::schedule();
+    }
 }
 
 /// Interrupts the GIC raised and then withdrew. Not an error; worth counting.

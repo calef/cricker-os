@@ -28,8 +28,10 @@ mod drivers;
 mod heap;
 mod memory;
 mod panic;
+mod sched;
 mod stack;
 mod sync;
+mod thread;
 
 #[cfg(test)]
 mod testing;
@@ -74,6 +76,10 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
     heap::init();
 
     // And now interrupts, which is where every lock in the kernel stops being a formality.
+    //
+    // The scheduler comes up FIRST, so that the very first timer tick already has somewhere to
+    // send a reschedule. Adopting the boot context as thread 0 costs one allocation.
+    sched::init();
     interrupts_init(dtb);
 
     #[cfg(test)]
@@ -100,6 +106,10 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
                 timer::frequency() / 1_000_000,
                 if interrupts::enabled() { "ON" } else { "off" },
             );
+            println!(
+                "  scheduler       : {} thread(s), round robin, preemptive",
+                sched::thread_count(),
+            );
         }
 
         println!();
@@ -109,6 +119,52 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         println!("milestone 3: and we know which parts of it are ours to give away.");
         println!("milestone 4: and nothing writable is executable, and Vec works again.");
         println!("milestone 5: and the machine can now interrupt us. we are preemptible.");
+        println!("milestone 6: and a thread that refuses to yield gets preempted anyway.");
+        println!();
+
+        // The whole argument, executable.
+        {
+            use crate::arch::timer;
+            use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+            static HOSTILE: AtomicU64 = AtomicU64::new(0);
+            static POLITE: AtomicU64 = AtomicU64::new(0);
+            static STOP: AtomicBool = AtomicBool::new(false);
+
+            // A thread whose entire body is a tight loop. No yield. No syscall. Not even a
+            // function call. Under ANY cooperative scheduler this owns the CPU forever and the
+            // machine is gone. This is the arbitrary ELF binary, in miniature.
+            sched::spawn(|| {
+                while !STOP.load(Ordering::Relaxed) {
+                    HOSTILE.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+
+            // A thread that also never yields, but would like a turn.
+            sched::spawn(|| {
+                while !STOP.load(Ordering::Relaxed) {
+                    POLITE.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+
+            let p0 = sched::preemptions();
+            timer::spin_for(timer::frequency() / 2); // half a second, doing nothing
+            STOP.store(true, Ordering::Relaxed);
+
+            println!("  half a second later, having spawned two threads that NEVER yield:");
+            println!();
+            println!(
+                "    thread 1 (hostile) : {:>10} iterations",
+                HOSTILE.load(Ordering::Relaxed)
+            );
+            println!(
+                "    thread 2 (polite)  : {:>10} iterations",
+                POLITE.load(Ordering::Relaxed)
+            );
+            println!("    preemptions        : {:>10}", sched::preemptions() - p0);
+            println!();
+            println!("  neither asked to be interrupted. both were.");
+        }
     }
 
     arch::halt()

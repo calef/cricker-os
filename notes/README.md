@@ -73,6 +73,10 @@ in the code or the conversation doesn't make sense, it belongs here.
   on aarch64, which is why we build the plumbing once. The vector table's shape is dictated
   by silicon. Also: why `brk` needs `elr += 4` and `svc` doesn't.
 
+- [Threads, the context switch, and preemption](threads.md) — a thread is a stack plus a set
+  of register values, and here that's literal: 8 bytes. The context switch is fifteen
+  instructions and **the last one returns into a different thread.**
+
 ## The point of all this
 
 - [Userspace](userspace.md) — what milestone 7 actually builds, and why it's the line
@@ -114,5 +118,4 @@ in the code or the conversation doesn't make sense, it belongs here.
 Topics we've touched but not yet documented. Add as they come up:
 
 - The GIC (interrupt controller)
-- Context switching, and what a "register file" is
 - virtio
