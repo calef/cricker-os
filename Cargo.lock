@@ -12,6 +12,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "abi"
+version = "0.1.0"
+
+[[package]]
+name = "caps"
+version = "0.1.0"
+
+[[package]]
 name = "dtb"
 version = "0.1.0"
 
@@ -32,6 +40,8 @@ name = "kernel"
 version = "0.1.0"
 dependencies = [
  "aarch64-cpu",
+ "abi",
+ "caps",
  "dtb",
  "elf",
  "frames",
@@ -65,6 +75,9 @@ checksum = "2b9e2fdb3a1e862c0661768b7ed25390811df1947a8acbfbefe09b47078d93c4"
 [[package]]
 name = "user"
 version = "0.1.0"
+dependencies = [
+ "abi",
+]
 
 [[package]]
 name = "xtask"

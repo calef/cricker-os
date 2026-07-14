@@ -272,6 +272,16 @@ pub fn initrd() -> Option<&'static [u8]> {
 /// On a bad binary this kills the calling thread. **It does not panic.** A user program the
 /// kernel cannot load is a user program's problem.
 pub fn exec_elf(image: &[u8]) -> ! {
+    exec_elf_with(image, true)
+}
+
+/// Load an ELF and become it, choosing whether to hand it a console.
+///
+/// **`console: false` is not a test contrivance, it is the demonstration.** A program with no
+/// console capability cannot print. Not "is denied when it tries": it holds an empty slot, so
+/// there is *nothing to invoke*, and `NoSuchSlot` is the answer. It cannot name the console,
+/// because naming a thing you were not handed is not an operation this kernel has.
+pub fn exec_elf_with(image: &[u8], console: bool) -> ! {
     let (space, entry) = match load(image) {
         Ok(v) => v,
         Err(e) => {
@@ -283,6 +293,15 @@ pub fn exec_elf(image: &[u8]) -> ! {
     };
 
     crate::sched::adopt_address_space(space);
+
+    // HAND IT ITS WORLD, and note how little that is.
+    //
+    // Slot 0: a console it may WRITE to, and may **not** GRANT onward. That is the entire set of
+    // things this process can name. There is no path it can say, no uid it can be, and no second
+    // thing to reach for. A capability system's "environment" is not a variable, it is this.
+    if console {
+        crate::sched::grant(crate::cap::console_cap()).expect("no free capability slot");
+    }
 
     enter_at(entry)
 }
@@ -416,10 +435,10 @@ core::arch::global_asm!(
 // Go to EL0, come back, go again. Proves the round trip, not just the departure.
 .global USER_HELLO_START
 USER_HELLO_START:
-    mov     x0,  #42
-    svc     #0                  // -> EL1, vector slot 8, ESR.EC = 0x15
-    mov     x0,  #43            // if we reach here, `eret` PUT US BACK at EL0
-    svc     #0
+    mov     x8,  #1             // SYS_YIELD. Until 7d a bare `svc` meant nothing; now the
+    svc     #0                  // syscall number is in x8, and 0 would mean SYS_EXIT.
+    mov     x8,  #1
+    svc     #0                  // if we reach here, `eret` PUT US BACK at EL0
 1:  b       1b                  // and now spin, so the timer can preempt us
 .global USER_HELLO_END
 USER_HELLO_END:
@@ -759,6 +778,105 @@ mod tests {
 
         mmu::deactivate_user();
         drop(space);
+    }
+
+    /// **The question the kernel must ask, asked of the hardware.**
+    ///
+    /// `AT S1E0R` means *translate this address as EL0 would, for a read*. One instruction, and
+    /// it is the difference between a kernel and a confused deputy.
+    ///
+    /// Note the precondition assertion. Without it the test is vacuous: "EL0 cannot read the
+    /// kernel's text" proves nothing if the kernel's text is not mapped in the first place.
+    #[test_case]
+    fn the_hardware_says_el0_cannot_read_the_kernels_memory() {
+        const KERNEL_TEXT: u64 = 0xffff_0000_4008_0000;
+
+        let (space, _) = load(initrd().expect("no initrd")).expect("the initrd did not load");
+
+        // SAFETY: nothing is at EL0; we are a kernel thread mid-test.
+        unsafe { mmu::activate_user(space.root()) };
+
+        // The precondition, and it is what gives the assertion below its teeth: that address IS
+        // mapped, and the KERNEL can read it. It reads it all day.
+        assert!(
+            mmu::translate(KERNEL_TEXT).is_some(),
+            "the kernel's text is not mapped, so this test proves nothing",
+        );
+
+        // And EL0 cannot. Not "we decline to"; the silicon says no.
+        assert!(
+            !mmu::user_can_read(KERNEL_TEXT),
+            "the hardware says EL0 could read the kernel's own text",
+        );
+        assert!(!mmu::user_can_write(KERNEL_TEXT));
+
+        // It can read its own code, or the check is a rubber stamp that says no to everything.
+        assert!(
+            mmu::user_can_read(0x40_0000),
+            "EL0 cannot read its own .text, so the check refuses everything and proves nothing",
+        );
+
+        // And not an address in its own half that nobody mapped.
+        assert!(!mmu::user_can_read(0x7000_0000));
+
+        mmu::deactivate_user();
+        drop(space);
+    }
+
+    /// **A program with the capability can print. The same program without it cannot.**
+    ///
+    /// The binary is byte-identical. Nothing about it changed. What changed is what it was
+    /// *handed*, and that is the entire content of DECISIONS §10.
+    ///
+    /// It reports by `brk`, which the kernel treats as a fault: the program expects `NoSuchSlot`
+    /// from an empty slot and expects `BadPointer` when it asks the kernel to read the kernel's
+    /// own memory, and it kills itself if either is wrong. So **no fault** means every one of
+    /// those held.
+    #[test_case]
+    fn a_capability_is_the_only_way_to_print() {
+        let image = initrd().expect("no initrd");
+
+        // With it.
+        let svc = SVC_COUNT.load(Ordering::Relaxed);
+        let faults = USER_FAULTS.load(Ordering::Relaxed);
+
+        sched::spawn(move || exec_elf(image)).expect("spawn failed");
+
+        assert!(
+            wait_for(|| SVC_COUNT.load(Ordering::Relaxed) > svc),
+            "the program never made a syscall",
+        );
+        assert_eq!(
+            USER_FAULTS.load(Ordering::Relaxed),
+            faults,
+            "the program printed, and then one of its expectations FAILED: an empty slot did not \
+             say NoSuchSlot, or the kernel agreed to read its own memory on the program's behalf",
+        );
+
+        // Without it. Same bytes. Empty table.
+        let faults = USER_FAULTS.load(Ordering::Relaxed);
+
+        sched::spawn(move || exec_elf_with(image, false)).expect("spawn failed");
+
+        assert!(
+            wait_for(|| USER_FAULTS.load(Ordering::Relaxed) > faults),
+            "a program with an EMPTY capability table printed anyway",
+        );
+    }
+
+    /// A thread can name nothing until somebody hands it something.
+    #[test_case]
+    fn a_new_thread_holds_no_capabilities() {
+        use crate::cap::Error;
+
+        // The current thread is a kernel thread, spawned by the harness, and was handed nothing.
+        for slot in 0..16 {
+            assert_eq!(
+                sched::current_cap(slot).err(),
+                Some(Error::NoSuchSlot),
+                "slot {slot} is not empty in a thread nobody granted anything",
+            );
+        }
     }
 
     /// A dead user thread's address space is freed, all of it, including its page tables.

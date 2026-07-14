@@ -201,22 +201,22 @@ extern "C" fn exception_dispatch(frame: &mut TrapFrame, index: u64) {
             frame.elr += 4;
         }
 
-        // `svc` from EL0. Userspace asking the kernel for something.
+        // `svc` from EL0. **The syscall.**
         //
-        // **And at 7a it asks for nothing at all**, deliberately. There is no syscall number,
-        // no argument convention, no ABI. The user program executes `svc #0`, the kernel
-        // counts it, and that is the entire interface.
-        //
-        // The restraint is the point. DECISIONS §8 said "if we find ourselves hacking in a
-        // syscall without having had that conversation, the plan has failed." We had the
-        // conversation (§10) and the answer was capabilities. So the syscall surface gets
-        // designed at 7d, deliberately, in one piece, with a capability table underneath it.
-        // Not accreted here because it was convenient.
+        // At 7a this arm did nothing but count, deliberately, because DECISIONS §8 said "if we
+        // find ourselves hacking in a syscall without having had that conversation, the plan has
+        // failed." We had the conversation (§10), chose capabilities, and 7d designed the whole
+        // surface at once against a capability table. It is three calls. See syscall.rs.
         //
         // Note ELR already points PAST the `svc`: the hardware advances it for us. Compare
         // `brk` above, where it points AT the instruction and we must step over it by hand.
+        //
+        // `dispatch` writes the result into `frame.x[0]`, and RESTORE_CONTEXT pops that into the
+        // register the user program is waiting on. **Writing to the trap frame is writing to the
+        // user's registers.**
         ec::SVC64 if from_lower_el(index) => {
             SVC_COUNT.fetch_add(1, Ordering::Relaxed);
+            crate::syscall::dispatch(frame);
         }
 
         // Anything else from EL0 is the user program being wrong.

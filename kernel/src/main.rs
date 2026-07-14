@@ -23,6 +23,7 @@
 extern crate alloc;
 
 mod arch;
+mod cap;
 mod console;
 mod drivers;
 mod heap;
@@ -31,6 +32,7 @@ mod panic;
 mod sched;
 mod stack;
 mod sync;
+mod syscall;
 mod thread;
 mod user;
 
@@ -199,43 +201,61 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
                 USER_FAULTS.load(Ordering::Relaxed) - faults0,
             );
 
-            // 7c. A real ELF, separately compiled, arriving in the initrd. The kernel has never
-            // seen it before this boot.
+            // 7c/7d. A real ELF, separately compiled, arriving in the initrd. The kernel has
+            // never seen it before this boot, and it holds exactly one capability.
             match user::initrd() {
                 None => println!("    initrd : none (no -initrd passed to QEMU)"),
                 Some(image) => {
-                    let svc0 = SVC_COUNT.load(Ordering::Relaxed);
-                    let f0 = USER_FAULTS.load(Ordering::Relaxed);
-
                     println!(
                         "    initrd : {} bytes at {:#x}, from the device tree",
                         image.len(),
                         memory::initrd_region().unwrap().0,
                     );
+                    println!();
 
-                    sched::spawn(|| {
-                        let image = user::initrd().expect("no initrd");
-                        user::exec_elf(image)
-                    });
+                    // With a console capability in slot 0.
+                    let svc0 = SVC_COUNT.load(Ordering::Relaxed);
+                    let f0 = USER_FAULTS.load(Ordering::Relaxed);
+
+                    sched::spawn(|| user::exec_elf(user::initrd().expect("no initrd")));
                     timer::spin_for(timer::frequency() / 20);
 
                     let ran = SVC_COUNT.load(Ordering::Relaxed) > svc0;
-                    let died = USER_FAULTS.load(Ordering::Relaxed) > f0;
+                    let ok = ran && USER_FAULTS.load(Ordering::Relaxed) == f0;
 
+                    println!();
+                    if ok {
+                        println!("      every one of its expectations held, including that one.");
+                    } else {
+                        println!("      FAILED: {}", if ran { "faulted" } else { "never reached EL0" });
+                    }
+
+                    // And now the same binary, handed NOTHING.
+                    let f1 = USER_FAULTS.load(Ordering::Relaxed);
+                    sched::spawn(|| {
+                        user::exec_elf_with(user::initrd().expect("no initrd"), false)
+                    });
+                    timer::spin_for(timer::frequency() / 20);
+                    let starved = USER_FAULTS.load(Ordering::Relaxed) > f1;
+
+                    println!();
+                    println!("      and spawned again with an EMPTY capability table, the very");
                     println!(
-                        "    hello  : a real ELF, loaded from the initrd, {}",
-                        match (ran, died) {
-                            (true, false) => "ran and verified its own .text/.rodata/.data/.bss",
-                            (_, true) => "FAILED its self-check",
-                            _ => "never reached EL0",
+                        "      same binary {}",
+                        if starved {
+                            "cannot print one byte. slot 0 holds nothing,"
+                        } else {
+                            "PRINTED ANYWAY, which is a bug,"
                         }
                     );
+                    println!("      and there is no other way to ask.");
                 }
             }
 
             println!();
             println!("  the machine has run code it does not trust, and taken the CPU back.");
-            println!("  and it did not compile it, or link it, or ever see it before this boot.");
+            println!("  it did not compile it, or link it, or ever see it before this boot.");
+            println!("  and it would not read its own memory on that code's behalf.");
         }
     }
 

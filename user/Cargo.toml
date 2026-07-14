@@ -8,3 +8,4 @@ name = "hello"
 path = "src/hello.rs"
 
 [dependencies]
+abi = { version = "0.1.0", path = "../crates/abi" }

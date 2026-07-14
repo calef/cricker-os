@@ -4,6 +4,8 @@ members = [
     "kernel",
     "xtask",
     "user",
+    "crates/abi",
+    "crates/caps",
     "crates/dtb",
     "crates/elf",
     "crates/frames",

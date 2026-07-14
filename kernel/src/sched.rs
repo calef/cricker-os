@@ -247,6 +247,35 @@ fn reap(sched: &mut Scheduler) {
     }
 }
 
+/// Look up a capability in the **current thread's** table.
+///
+/// The lookup that is the security mechanism. `slot` came from userspace, in a register, and it
+/// indexes an array that lives in kernel memory and that userspace has never seen. An empty slot
+/// is `NoSuchSlot`, which is not "permission denied": **there is nothing there.**
+pub fn current_cap(slot: u64) -> Result<crate::cap::Cap, crate::cap::Error> {
+    let guard = SCHED.lock();
+    let sched = guard.as_ref().ok_or(crate::cap::Error::NoSuchSlot)?;
+    sched
+        .threads
+        .get(&sched.current)
+        .ok_or(crate::cap::Error::NoSuchSlot)?
+        .cspace
+        .get(slot)
+}
+
+/// Hand the current thread a capability. **The only way authority ever enters a process.**
+pub fn grant(cap: crate::cap::Cap) -> Result<u64, crate::cap::Error> {
+    let mut guard = SCHED.lock();
+    let sched = guard.as_mut().ok_or(crate::cap::Error::NoFreeSlot)?;
+    let current = sched.current;
+    sched
+        .threads
+        .get_mut(&current)
+        .ok_or(crate::cap::Error::NoFreeSlot)?
+        .cspace
+        .insert(cap)
+}
+
 /// Hand the current thread an address space, and install it.
 ///
 /// From here the thread owns its low half: the reaper's `drop` will unmap and free it, and

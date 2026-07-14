@@ -225,6 +225,17 @@ pub struct Thread {
     /// Owned, so the reaper's `drop` unmaps and frees the entire address space when the thread
     /// dies. Same mechanism as `stack` above, and for the same reason.
     pub space: Option<crate::user::AddressSpace>,
+
+    /// **Everything this thread can name.**
+    ///
+    /// It starts **empty**, and that is the whole of DECISIONS §10 expressed as a field
+    /// initializer. Under Unix a fresh process inherits every file descriptor its parent held,
+    /// and can `open()` anything its uid permits. Here it can name *nothing at all* until
+    /// somebody hands it something.
+    ///
+    /// It lives in kernel memory and userspace never sees a byte of it. Userspace sees an
+    /// integer. That is the entire unforgeability mechanism, and it is a bounds check.
+    pub cspace: crate::cap::CSpace,
 }
 
 // SAFETY: a Thread is only ever touched under the scheduler's lock.
@@ -244,6 +255,7 @@ impl Thread {
             context: core::ptr::null_mut(),
             stack: None,
             space: None,
+            cspace: crate::cap::CSpace::empty(),
         }
     }
 
@@ -286,6 +298,7 @@ impl Thread {
             context,
             stack: Some(stack),
             space: None, // a kernel thread until it calls `user::exec`
+            cspace: crate::cap::CSpace::empty(), // and it can name nothing until it is handed something
         })
     }
 }

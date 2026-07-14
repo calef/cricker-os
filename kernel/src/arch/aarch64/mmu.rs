@@ -466,6 +466,85 @@ pub fn deactivate_user() {
     unsafe { set_ttbr0(reserved) };
 }
 
+/// **Could EL0 read this address?** Not "can the kernel", which is a different question with a
+/// different answer, and confusing the two is how a kernel leaks itself.
+///
+/// # The confused deputy, in our own kernel
+///
+/// A user program calls `write(console, ptr, len)`. `ptr` is a number *it chose*. It passes
+/// `0xffff_0000_4008_0000`, which is the kernel's own `.text`.
+///
+/// The kernel can read that address. It reads it all day. So if it simply dereferences the
+/// pointer, it will happily print its own memory **on the user's behalf, using its own
+/// authority** — and the user, who could not read one byte of it, gets all of it.
+///
+/// That is the compiler service overwriting the billing log (notes/capabilities.md). The deputy
+/// was confused about *whose authority it was acting under*, and no capability check catches it,
+/// because the capability to the console is perfectly genuine. **The authority that leaked was
+/// not the console's. It was the kernel's own.**
+///
+/// # And the hardware will just tell us
+///
+/// `AT S1E0R` means: *do the stage-1 translation of this address **as EL0 would**, for a read.*
+/// One instruction. The MMU picks `TTBR1` for a high address, walks the kernel's own tables,
+/// reads the `AP` bits, and reports a permission fault into `PAR_EL1` — the same "no" the
+/// hardware would have given the user program itself.
+///
+/// So we do not re-implement the permission model in software and hope it agrees with the
+/// silicon. **We ask the silicon.**
+pub fn user_can_read(va: u64) -> bool {
+    // SAFETY: address translation has no side effects beyond PAR_EL1.
+    unsafe { translate_as_el0(va, false) }
+}
+
+/// As [`user_can_read`], for a write. `AT S1E0W`.
+#[allow(dead_code)] // the first writing syscall is milestone 8's console server
+pub fn user_can_write(va: u64) -> bool {
+    // SAFETY: as above.
+    unsafe { translate_as_el0(va, true) }
+}
+
+/// # Safety
+/// Sound for any address. The result is advisory only in the sense that the mapping could change
+/// afterwards; see the note on TOCTOU in `syscall::user_slice`.
+unsafe fn translate_as_el0(va: u64, write: bool) -> bool {
+    // PAR_EL1 IS A SINGLE SHARED REGISTER, and between the `at` and the `mrs` we could be
+    // preempted by the timer, switched to another thread, and switched back with somebody else's
+    // translation result sitting in it. Masking interrupts for two instructions closes that, and
+    // it is the kind of window that produces a bug you would never reproduce.
+    let was_enabled = crate::arch::interrupts::disable();
+
+    let par: u64;
+    // SAFETY: `at` has no effect but to write PAR_EL1, which we read immediately.
+    unsafe {
+        if write {
+            core::arch::asm!(
+                "at s1e0w, {va}",
+                "isb",
+                "mrs {par}, par_el1",
+                va = in(reg) va,
+                par = out(reg) par,
+                options(nostack),
+            );
+        } else {
+            core::arch::asm!(
+                "at s1e0r, {va}",
+                "isb",
+                "mrs {par}, par_el1",
+                va = in(reg) va,
+                par = out(reg) par,
+                options(nostack),
+            );
+        }
+    }
+
+    crate::arch::interrupts::restore(was_enabled);
+
+    // PAR_EL1.F: bit 0. Set means the translation FAULTED, which is the hardware saying
+    // "EL0 could not have done this."
+    par & 1 == 0
+}
+
 /// The root of whatever user address space is currently installed, read back from the CPU.
 pub fn current_user_root() -> u64 {
     TTBR0_EL1.get_baddr()

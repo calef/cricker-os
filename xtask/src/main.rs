@@ -100,8 +100,8 @@ fn test() -> bool {
     // Every host crate, not just two. `paging`, `heap` and `slab` each carry real tests and
     // were silently not being run here for four milestones.
     if !cargo(&[
-        "test", "-p", "dtb", "-p", "elf", "-p", "frames", "-p", "heap", "-p", "paging", "-p",
-        "slab",
+        "test", "-p", "abi", "-p", "caps", "-p", "dtb", "-p", "elf", "-p", "frames", "-p",
+        "heap", "-p", "paging", "-p", "slab",
     ]) {
         return false;
     }
