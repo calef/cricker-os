@@ -114,11 +114,9 @@ impl Pl011 {
         r.IBRD.set(26);
         r.FBRD.set(3);
 
-        r.LCR_H
-            .write(LCR_H::WLEN::EightBit + LCR_H::FEN::SET);
+        r.LCR_H.write(LCR_H::WLEN::EightBit + LCR_H::FEN::SET);
 
-        r.CR
-            .write(CR::UARTEN::SET + CR::TXE::SET + CR::RXE::SET);
+        r.CR.write(CR::UARTEN::SET + CR::TXE::SET + CR::RXE::SET);
     }
 
     /// Write one byte, spinning until the transmit FIFO has room for it.

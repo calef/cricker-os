@@ -87,3 +87,23 @@ fn bottom() -> u64 {
     }
     (&raw const __stack_bottom) as u64
 }
+
+#[cfg(test)]
+mod tests {
+    //! Tests for stack overflow detection.
+
+    /// Proves the stack canary works, without actually smashing the stack.
+    ///
+    /// The runner checks this after every test (see testing.rs), so a test that blows the
+    /// stack is now caught immediately and by name, rather than corrupting the kernel and
+    /// hanging somewhere unrelated. That is exactly how milestone 3 went wrong.
+    #[test_case]
+    fn stack_canary_is_intact_and_we_have_headroom() {
+        assert!(crate::stack::intact(), "stack canary is already dead");
+        assert!(
+            crate::stack::headroom() > 4096,
+            "less than 4 KiB of stack left: {}",
+            crate::stack::headroom()
+        );
+    }
+}

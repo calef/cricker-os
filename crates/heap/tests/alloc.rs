@@ -58,7 +58,11 @@ fn allocations_do_not_overlap() {
         // SAFETY: still ours.
         unsafe {
             for j in 0..64 {
-                assert_eq!(*p.as_ptr().add(j), expected, "block {expected} was clobbered");
+                assert_eq!(
+                    *p.as_ptr().add(j),
+                    expected,
+                    "block {expected} was clobbered"
+                );
             }
         }
     }
@@ -81,7 +85,10 @@ fn freed_memory_comes_back() {
 fn running_out_returns_none_rather_than_panicking() {
     let mut h = heap_with(4096);
 
-    assert!(h.alloc(layout(8192, 8)).is_none(), "asked for more than exists");
+    assert!(
+        h.alloc(layout(8192, 8)).is_none(),
+        "asked for more than exists"
+    );
 
     // And the heap is still usable afterwards.
     assert!(h.alloc(layout(64, 8)).is_some());
@@ -92,7 +99,9 @@ fn alignment_is_honoured() {
     let mut h = heap_with(64 * 1024);
 
     for align in [16usize, 32, 64, 128, 256, 512, 1024, 2048, 4096] {
-        let p = h.alloc(layout(64, align)).unwrap_or_else(|| panic!("align {align}"));
+        let p = h
+            .alloc(layout(64, align))
+            .unwrap_or_else(|| panic!("align {align}"));
         assert_eq!(
             p.as_ptr() as usize % align,
             0,
@@ -263,7 +272,10 @@ fn growing_into_free_space_above_does_not_move_the_block() {
     // SAFETY: matching layout, and there is nothing but free space above.
     let moved = unsafe { !h.realloc_in_place(p, l, 2048) };
 
-    assert!(!moved, "realloc_in_place refused a growth into free space above it");
+    assert!(
+        !moved,
+        "realloc_in_place refused a growth into free space above it"
+    );
 
     // Same address. Not one byte was copied.
     assert_eq!(h.allocated(), 2048);
@@ -295,8 +307,15 @@ fn shrinking_never_copies_and_returns_the_tail() {
     // SAFETY: matching layout.
     let ok = unsafe { h.realloc_in_place(p, l, 1024) };
 
-    assert!(ok, "shrinking should always succeed: there is nothing to search for");
-    assert_eq!(h.allocated(), 1024, "the tail was not returned to the free list");
+    assert!(
+        ok,
+        "shrinking should always succeed: there is nothing to search for"
+    );
+    assert_eq!(
+        h.allocated(),
+        1024,
+        "the tail was not returned to the free list"
+    );
 
     // And the 3 KiB we handed back is genuinely usable again.
     assert!(h.alloc(layout(3072 - 16, 16)).is_some());
@@ -318,7 +337,11 @@ fn realloc_preserves_the_data_it_did_not_move() {
     // SAFETY: still ours, now 512 bytes.
     unsafe {
         for i in 0..256 {
-            assert_eq!(*p.as_ptr().add(i), 0x5a, "byte {i} changed during an in-place grow");
+            assert_eq!(
+                *p.as_ptr().add(i),
+                0x5a,
+                "byte {i} changed during an in-place grow"
+            );
         }
     }
 }

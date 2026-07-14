@@ -96,7 +96,9 @@ fn phys_to_ptr(pa: u64) -> *mut PageTable {
 ///
 /// We are already running at high virtual addresses when this is called.
 pub fn init() {
-    let root = memory::alloc().expect("no frame for the root page table").addr();
+    let root = memory::alloc()
+        .expect("no frame for the root page table")
+        .addr();
 
     // SAFETY: a fresh frame. Zero it before the hardware can ever walk it: a page table
     // full of whatever was in RAM is a set of pointers to nowhere, followed at speed.
@@ -182,7 +184,12 @@ where
 /// Map a range of *virtual* addresses to the physical ones they were linked against.
 ///
 /// Kernel sections: their VA is what the linker gave them, and the PA is that minus the base.
-fn map_range<A, P>(m: &mut Mapper<A, P>, va_start: u64, va_end: u64, flags: Flags) -> Result<(), MapError>
+fn map_range<A, P>(
+    m: &mut Mapper<A, P>,
+    va_start: u64,
+    va_end: u64,
+    flags: Flags,
+) -> Result<(), MapError>
 where
     A: FnMut() -> Option<u64>,
     P: Fn(u64) -> *mut PageTable,
@@ -195,7 +202,12 @@ where
 }
 
 /// Map a range of *physical* addresses into the direct map at `pa | KERNEL_VA_BASE`.
-fn direct_map<A, P>(m: &mut Mapper<A, P>, pa_start: u64, pa_end: u64, flags: Flags) -> Result<(), MapError>
+fn direct_map<A, P>(
+    m: &mut Mapper<A, P>,
+    pa_start: u64,
+    pa_end: u64,
+    flags: Flags,
+) -> Result<(), MapError>
 where
     A: FnMut() -> Option<u64>,
     P: Fn(u64) -> *mut PageTable,
@@ -224,8 +236,14 @@ where
         .translate(here)
         .expect("the code switching tables is not mapped: we would die on the next fetch");
     assert_eq!(pa, virt_to_phys(here), "our .text maps to the wrong frame");
-    assert!(flags.is_kernel_executable(), "our own .text is not executable");
-    assert!(!flags.is_writable(), "our own .text is writable: W^X is broken");
+    assert!(
+        flags.is_kernel_executable(),
+        "our own .text is not executable"
+    );
+    assert!(
+        !flags.is_writable(),
+        "our own .text is writable: W^X is broken"
+    );
 
     // The stack. The first thing after the switch is a function return.
     let sp: u64;
@@ -324,8 +342,8 @@ unsafe fn install(root: u64) {
     // SAFETY: TLB maintenance is always sound.
     unsafe {
         core::arch::asm!(
-            "tlbi vmalle1",  // invalidate all EL1 translations
-            "dsb ish",       // wait for it to finish, inner shareable domain
+            "tlbi vmalle1", // invalidate all EL1 translations
+            "dsb ish",      // wait for it to finish, inner shareable domain
             "isb",
             options(nostack),
         );
@@ -337,12 +355,7 @@ unsafe fn install(root: u64) {
     //
     // SAFETY: TLB maintenance is always sound.
     unsafe {
-        core::arch::asm!(
-            "tlbi vmalle1",
-            "dsb ish",
-            "isb",
-            options(nostack),
-        );
+        core::arch::asm!("tlbi vmalle1", "dsb ish", "isb", options(nostack),);
     }
 
     // If you are reading this line's output, we survived. The kernel is now running out of
@@ -475,3 +488,309 @@ linker_symbol!(bss_end, __bss_end);
 linker_symbol!(stack_guard, __stack_guard);
 linker_symbol!(stack_bottom, __stack_bottom);
 linker_symbol!(stack_top, __stack_top);
+
+#[cfg(test)]
+mod tests {
+    //! Tests for the MMU: the live page tables, W^X, the guard page, and TLB invalidation.
+    //!
+    //! `translate` reads `TTBR1_EL1` back out of the hardware, so these inspect the tables the CPU
+    //! is *actually walking*, not a copy of what we intended.
+
+    /// The MMU is on, and we are still alive to say so.
+    #[test_case]
+    fn mmu_is_enabled() {
+        assert!(crate::arch::mmu::is_enabled(), "SCTLR_EL1.M is not set");
+    }
+
+    /// The kernel is running at high virtual addresses, out of TTBR1.
+    ///
+    /// This is what makes milestone 7 possible: TTBR0 can be swapped per-process without
+    /// unmapping the kernel out from under itself. If the kernel lived in TTBR0, the first
+    /// context switch into a user process would delete the kernel.
+    #[test_case]
+    fn the_kernel_lives_in_the_high_half() {
+        use crate::arch::mmu::KERNEL_VA_BASE;
+
+        // Our own code.
+        let pc = crate::kernel_main as *const () as u64;
+        assert!(
+            pc >= KERNEL_VA_BASE,
+            "kernel .text is at {pc:#x}, not in the high half"
+        );
+
+        // Our stack.
+        let sp: u64;
+        // SAFETY: reads a register.
+        unsafe { core::arch::asm!("mov {}, sp", out(reg) sp, options(nomem, nostack)) };
+        assert!(
+            sp >= KERNEL_VA_BASE,
+            "the stack is at {sp:#x}, not in the high half"
+        );
+
+        // And a heap allocation.
+        let b = alloc::boxed::Box::new(0u64);
+        let heap = (&raw const *b) as u64;
+        assert!(
+            heap >= KERNEL_VA_BASE,
+            "the heap is at {heap:#x}, not in the high half"
+        );
+    }
+
+    /// **TTBR0 is free.** Nothing of ours lives at a low address any more.
+    ///
+    /// The point of the whole exercise. `mmu::init` sets EPD0, so a low address doesn't even
+    /// get a table walk: it faults. Which is what we want, because there is no userspace yet
+    /// and so nothing legitimate is down there.
+    #[test_case]
+    fn ttbr0_is_disabled_and_available_for_userspace() {
+        use aarch64_cpu::registers::TCR_EL1;
+        use tock_registers::interfaces::Readable;
+
+        assert_eq!(
+            TCR_EL1.read(TCR_EL1::EPD0),
+            1,
+            "TTBR0 walks are still enabled: a stale identity map may still be live"
+        );
+    }
+
+    /// The direct map: every physical address is nameable at `pa | KERNEL_VA_BASE`.
+    ///
+    /// This is how the kernel touches a frame the allocator just handed it. Without it, a
+    /// physical address the kernel cannot NAME is a physical address it cannot use.
+    #[test_case]
+    fn the_direct_map_reaches_physical_memory() {
+        use crate::arch::mmu::{phys_to_virt, virt_to_phys};
+
+        let frame = crate::memory::alloc().expect("out of memory");
+        let va = phys_to_virt(frame.addr());
+
+        assert_eq!(
+            virt_to_phys(va),
+            frame.addr(),
+            "the transform is not reversible"
+        );
+
+        let (pa, flags) = crate::arch::mmu::translate(va).expect("frame is NOT in the direct map");
+        assert_eq!(pa, frame.addr());
+        assert!(flags.is_writable());
+
+        // And it is real memory: write through the virtual name, read it back.
+        // SAFETY: the allocator just gave us this frame exclusively.
+        unsafe {
+            core::ptr::write_volatile(va as *mut u64, 0xfeed_face_cafe_f00d);
+            assert_eq!(
+                core::ptr::read_volatile(va as *const u64),
+                0xfeed_face_cafe_f00d
+            );
+        }
+
+        crate::memory::free(frame);
+    }
+
+    /// **The guard page must not be mapped.** That is its entire job.
+    ///
+    /// Verified at boot too (mmu::verify panics if it's mapped), but stated here as well
+    /// because it is the thing that closes the milestone 3 incident, and a protection you
+    /// only discover is missing *during* a stack overflow is no protection at all.
+    ///
+    /// Proven by deliberate overflow: FAR_EL1 comes back as exactly this address.
+    #[test_case]
+    fn the_guard_page_is_a_hole() {
+        use crate::arch::mmu;
+        assert_eq!(
+            mmu::translate(mmu::stack_guard()),
+            None,
+            "the guard page IS mapped: a stack overflow would silently eat .bss again"
+        );
+
+        // And the pages either side of it must be mapped, or we've put the hole in the
+        // wrong place and are protecting nothing.
+        assert!(
+            mmu::translate(mmu::stack_guard() - 4096).is_some(),
+            "below the guard"
+        );
+        assert!(
+            mmu::translate(mmu::stack_bottom()).is_some(),
+            "the stack itself"
+        );
+    }
+
+    /// W^X, checked against the tables the hardware is actually walking.
+    ///
+    /// Not a copy of what we intended: `translate` reads TTBR0_EL1 back out of the CPU and
+    /// walks from there.
+    #[test_case]
+    fn kernel_text_is_executable_and_not_writable() {
+        use crate::arch::mmu;
+
+        let (pa, flags) = mmu::translate(mmu::text_start()).expect(".text is not mapped");
+        assert_eq!(
+            pa,
+            mmu::virt_to_phys(mmu::text_start()),
+            ".text maps to the wrong frame"
+        );
+
+        assert!(flags.is_kernel_executable(), ".text is not executable");
+        assert!(!flags.is_writable(), ".text is WRITABLE: W^X is broken");
+        assert!(!flags.is_user_executable(), ".text is executable by EL0");
+    }
+
+    /// Constants are read-only, and not executable by anyone.
+    #[test_case]
+    fn kernel_rodata_is_read_only_and_not_executable() {
+        use crate::arch::mmu;
+
+        let (_, flags) = mmu::translate(mmu::rodata_start()).expect(".rodata is not mapped");
+        assert!(!flags.is_writable(), ".rodata is writable");
+        assert!(!flags.is_kernel_executable(), ".rodata is executable");
+    }
+
+    /// The stack is writable and NOT executable.
+    #[test_case]
+    fn the_stack_is_writable_and_not_executable() {
+        use crate::arch::mmu;
+
+        let (_, flags) = mmu::translate(mmu::stack_bottom()).expect("stack is not mapped");
+        assert!(flags.is_writable());
+        assert!(
+            !flags.is_kernel_executable(),
+            "the stack is EXECUTABLE: data on the stack could be run as code"
+        );
+    }
+
+    /// The UART is device-typed.
+    ///
+    /// Map MMIO as normal memory and the CPU may cache it, reorder writes to it, merge two
+    /// writes into one, and speculatively read it. Speculatively reading a UART FIFO
+    /// register CONSUMES THE BYTE. See notes/page-tables.md.
+    #[test_case]
+    fn the_uart_is_mapped_as_device_memory() {
+        use crate::arch::mmu;
+
+        // The UART lives in the direct map, like every other physical address the kernel
+        // names. Its raw physical address no longer exists as far as the CPU is concerned:
+        // TTBR0 is off.
+        let (_, flags) =
+            mmu::translate(mmu::phys_to_virt(0x0900_0000)).expect("the UART is not mapped");
+
+        // AttrIndx, bits [4:2], must name the MAIR slot that says Device-nGnRnE.
+        let slot = (flags.bits() >> 2) & 0b111;
+        assert_eq!(slot, paging::mair::DEVICE, "the UART is not device memory");
+
+        assert!(flags.is_writable(), "we do need to write to it");
+        assert!(!flags.is_kernel_executable());
+    }
+
+    /// A frame from the allocator is still real, writable memory *through the MMU*.
+    ///
+    /// Before, this proved the bookkeeping matched physical RAM. Now it also proves the
+    /// identity map covers everything the allocator can hand out, which is a different and
+    /// newly-necessary claim: with paging on, a physical address the kernel cannot NAME is a
+    /// physical address it cannot use.
+    #[test_case]
+    fn an_allocated_frame_is_reachable_through_the_mmu() {
+        use crate::arch::mmu;
+
+        let frame = crate::memory::alloc().expect("out of memory");
+        let va = mmu::phys_to_virt(frame.addr());
+        let (pa, flags) = mmu::translate(va).expect("allocated frame is NOT MAPPED");
+
+        assert_eq!(pa, frame.addr());
+        assert!(flags.is_writable());
+        assert!(!flags.is_kernel_executable(), "RAM is executable");
+
+        crate::memory::free(frame);
+    }
+
+    /// **Prove the TLB is actually invalidated on unmap.**
+    ///
+    /// This is the test for the landmine. Change a mapping without a `tlbi` and the CPU keeps
+    /// using the *cached* translation: memory reads back as the previous owner's data. It is a
+    /// security hole, and it is close to undebuggable, because the page tables **in memory are
+    /// correct** — the lie lives in a CPU cache you cannot inspect.
+    ///
+    /// So we make it observable:
+    ///
+    ///   1. map a spare VA to frame A, which holds 0xAAAA...
+    ///   2. **read it**, which is what populates the TLB
+    ///   3. unmap, and invalidate
+    ///   4. map the *same VA* to frame B, which holds 0xBBBB...
+    ///   5. read it again
+    ///
+    /// If step 5 returns 0xAAAA, the TLB is stale and we have exactly the bug. It must return
+    /// 0xBBBB.
+    #[test_case]
+    fn unmap_invalidates_the_tlb() {
+        use crate::arch::mmu::{self, phys_to_virt};
+        use paging::Flags;
+
+        const PATTERN_A: u64 = 0xaaaa_aaaa_aaaa_aaaa;
+        const PATTERN_B: u64 = 0xbbbb_bbbb_bbbb_bbbb;
+
+        // A high-half address well away from the direct map: physical 0xff00_0000 is not RAM
+        // (RAM is 0x4000_0000..0x4800_0000), so nothing is mapped here.
+        let test_va = mmu::KERNEL_VA_BASE | 0xff00_0000;
+        assert_eq!(
+            mmu::translate(test_va),
+            None,
+            "test address is already in use"
+        );
+
+        let a = crate::memory::alloc().expect("out of memory");
+        let b = crate::memory::alloc().expect("out of memory");
+
+        // SAFETY: two frames the allocator just gave us exclusively, reached via the direct
+        // map.
+        unsafe {
+            core::ptr::write_volatile(phys_to_virt(a.addr()) as *mut u64, PATTERN_A);
+            core::ptr::write_volatile(phys_to_virt(b.addr()) as *mut u64, PATTERN_B);
+        }
+
+        mmu::map_page(test_va, a.addr(), Flags::kernel_data()).expect("map A");
+
+        // SAFETY: just mapped, writable.
+        let seen = unsafe { core::ptr::read_volatile(test_va as *const u64) };
+        assert_eq!(seen, PATTERN_A, "the mapping didn't take");
+        // ^ that read is the point: it pulls the translation into the TLB.
+
+        let returned = mmu::unmap_page(test_va).expect("unmap");
+        assert_eq!(returned, a.addr(), "unmap returned the wrong frame");
+
+        mmu::map_page(test_va, b.addr(), Flags::kernel_data()).expect("map B");
+
+        // SAFETY: mapped again, to a different frame.
+        let seen = unsafe { core::ptr::read_volatile(test_va as *const u64) };
+
+        assert_eq!(
+            seen, PATTERN_B,
+            "STALE TLB: the same virtual address still reads the OLD frame's data. \
+             This is the bug that reads back another process's memory."
+        );
+
+        mmu::unmap_page(test_va).expect("cleanup");
+        crate::memory::free(a);
+        crate::memory::free(b);
+    }
+
+    /// Changing a mapping is forced through break-before-make.
+    #[test_case]
+    fn the_kernel_mapper_refuses_to_overwrite() {
+        use crate::arch::mmu;
+        use paging::{Flags, MapError};
+
+        let va = mmu::KERNEL_VA_BASE | 0xfe00_0000;
+        let f = crate::memory::alloc().unwrap();
+
+        mmu::map_page(va, f.addr(), Flags::kernel_data()).unwrap();
+
+        // aarch64 does not permit valid -> valid directly: it can raise a TLB conflict abort.
+        // The API makes it unrepresentable.
+        assert_eq!(
+            mmu::map_page(va, f.addr(), Flags::kernel_data()),
+            Err(MapError::AlreadyMapped)
+        );
+
+        mmu::unmap_page(va).unwrap();
+        crate::memory::free(f);
+    }
+}

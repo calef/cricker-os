@@ -101,7 +101,10 @@ fn finds_the_initrd() {
     // ever reads a byte of it.
     assert_eq!(initrd.start, 0x4400_0000);
     assert_eq!(initrd.end(), 0x4403_0d40);
-    assert_eq!(initrd.size, 200_000, "the fixture was made from a 200 KB file");
+    assert_eq!(
+        initrd.size, 200_000,
+        "the fixture was made from a 200 KB file"
+    );
 }
 
 #[test]

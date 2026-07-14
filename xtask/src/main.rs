@@ -106,7 +106,13 @@ fn objdump() -> bool {
     match llvm_tool("llvm-objdump") {
         Some(tool) => run(
             &tool,
-            &["-d", "--no-show-raw-insn", "-M", "no-aliases", &kernel_elf()],
+            &[
+                "-d",
+                "--no-show-raw-insn",
+                "-M",
+                "no-aliases",
+                &kernel_elf(),
+            ],
         ),
         None => false,
     }

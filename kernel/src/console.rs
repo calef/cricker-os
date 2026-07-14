@@ -76,3 +76,22 @@ macro_rules! println {
     () => ($crate::print!("\n"));
     ($($arg:tt)*) => ($crate::print!("{}\n", format_args!($($arg)*)));
 }
+
+#[cfg(test)]
+mod tests {
+    //! Tests for the console.
+
+    /// The panic path must be able to print even if the console lock is held.
+    ///
+    /// Otherwise a fault taken in the middle of a `println!` deadlocks in the fault
+    /// handler, and we lose the one message that mattered.
+    #[test_case]
+    fn console_lock_can_be_busted() {
+        // SAFETY: this is exactly the panic path's move, done deliberately.
+        unsafe { crate::console::force_unlock() };
+
+        // If force_unlock left the lock in a bad state, this hangs and the test times out
+        // rather than failing, which is its own kind of signal.
+        crate::println!("    (console still works after force_unlock)");
+    }
+}

@@ -85,7 +85,11 @@ fn mark_used_claims_partially_covered_frames() {
     // out, and something writes over the tail of the kernel.
     a.mark_used(BASE, FRAME_SIZE + 1);
 
-    assert_eq!(a.stats().used, 2, "must claim BOTH frames, not just the full one");
+    assert_eq!(
+        a.stats().used,
+        2,
+        "must claim BOTH frames, not just the full one"
+    );
 
     // And prove it by exhausting the allocator: neither frame may come back.
     let mut handed_out = Vec::new();
@@ -150,7 +154,11 @@ fn alloc_contiguous_returns_adjacent_frames() {
 
     for i in 0..4u64 {
         let f = Frame::from_addr(first.addr() + i * FRAME_SIZE);
-        assert_eq!(a.is_used(f), Some(true), "frame {i} of the run isn't marked");
+        assert_eq!(
+            a.is_used(f),
+            Some(true),
+            "frame {i} of the run isn't marked"
+        );
     }
 }
 

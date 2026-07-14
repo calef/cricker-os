@@ -129,3 +129,105 @@ impl<T> DerefMut for IrqSafeGuard<'_, T> {
         &mut self.guard
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Tests for the kernel's lock.
+    //!
+    //! `irq_safe_mutex_restores_rather_than_enables` is the important one, and it was verified
+    //! against a deliberately broken `restore()`: it fails with "dropping the guard ENABLED
+    //! interrupts inside an IRQ-disabled context". A test that cannot fail is not a test.
+
+    /// The lock must mask interrupts for as long as it is held.
+    ///
+    /// If it doesn't, a timer interrupt can land inside a critical section, try to take the
+    /// same lock, and spin forever waiting for code that cannot run until it returns. On one
+    /// core. Permanently. See notes/locking.md.
+    #[test_case]
+    fn irq_safe_mutex_masks_interrupts_while_held() {
+        use crate::arch::interrupts;
+        use crate::sync::IrqSafeMutex;
+
+        static M: IrqSafeMutex<u32> = IrqSafeMutex::new(7);
+
+        interrupts::enable();
+        assert!(interrupts::enabled(), "test setup: IRQs should be on");
+
+        {
+            let guard = M.lock();
+            assert_eq!(*guard, 7);
+            assert!(
+                !interrupts::enabled(),
+                "IRQs are still live while the lock is held: this is the deadlock"
+            );
+        }
+
+        assert!(
+            interrupts::enabled(),
+            "IRQs were not restored after the guard dropped"
+        );
+    }
+
+    /// **The important one.** The guard must RESTORE the previous state, not enable.
+    ///
+    /// A lock taken inside a context that already had interrupts masked (an interrupt
+    /// handler, or inside an outer lock) must not unmask them on release. Blindly enabling
+    /// would turn interrupts back on *inside an interrupt handler*, and the resulting fault
+    /// is one you will not enjoy explaining.
+    ///
+    /// This is exactly why Linux's is called `irqsave`/`irqrestore` rather than
+    /// `irqoff`/`irqon`, and it is the single easiest thing to get wrong here.
+    #[test_case]
+    fn irq_safe_mutex_restores_rather_than_enables() {
+        use crate::arch::interrupts;
+        use crate::sync::IrqSafeMutex;
+
+        static M: IrqSafeMutex<u32> = IrqSafeMutex::new(0);
+
+        // Pretend we are inside an interrupt handler: IRQs already masked.
+        let outer = interrupts::disable();
+        assert!(!interrupts::enabled());
+
+        {
+            let _guard = M.lock();
+            assert!(!interrupts::enabled());
+        }
+
+        assert!(
+            !interrupts::enabled(),
+            "dropping the guard ENABLED interrupts inside an IRQ-disabled context"
+        );
+
+        interrupts::restore(outer);
+    }
+
+    /// Nesting must not corrupt the state either.
+    #[test_case]
+    fn nested_locks_restore_correctly() {
+        use crate::arch::interrupts;
+        use crate::sync::IrqSafeMutex;
+
+        static A: IrqSafeMutex<u32> = IrqSafeMutex::new(1);
+        static B: IrqSafeMutex<u32> = IrqSafeMutex::new(2);
+
+        interrupts::enable();
+
+        {
+            let a = A.lock();
+            assert!(!interrupts::enabled());
+            {
+                let b = B.lock();
+                assert!(!interrupts::enabled());
+                assert_eq!(*a + *b, 3);
+            }
+            // The INNER guard dropped. It must not have re-enabled interrupts, because the
+            // outer one is still held.
+            assert!(
+                !interrupts::enabled(),
+                "the inner guard re-enabled IRQs while the outer lock is still held"
+            );
+        }
+
+        assert!(interrupts::enabled(), "the outer guard failed to restore");
+    }
+}

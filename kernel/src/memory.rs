@@ -326,3 +326,204 @@ fn image_end() -> u64 {
 fn align_up(value: u64, to: u64) -> u64 {
     value.div_ceil(to) * to
 }
+
+#[cfg(test)]
+mod tests {
+    //! Tests for the physical memory map and the frame allocator.
+    //!
+    //! The allocator's *logic* is tested exhaustively on the host (`cargo test -p frames`, 14
+    //! tests, no emulator). What only the real machine can tell us is whether we pointed it at the
+    //! right memory, and whether the frames it hands out are actually reachable. That is all these
+    //! check.
+
+    /// Proves we read a plausible memory map out of the device tree.
+    ///
+    /// The allocator logic is tested exhaustively on the host (`cargo test -p frames`,
+    /// 14 tests, no emulator). What *only* the real machine can tell us is whether we
+    /// pointed it at the right memory, so that's all this checks.
+    #[test_case]
+    fn memory_map_came_from_the_device_tree() {
+        use frames::FRAME_SIZE;
+
+        let s = crate::memory::stats().expect("allocator not initialized");
+
+        // QEMU virt gives us 128 MiB by default. If this ever reads zero, or something
+        // absurd, we have misparsed `reg` (which is big-endian, and whose cell width is
+        // declared by the *parent* node, both of which are easy to get wrong).
+        let total_bytes = s.total as u64 * FRAME_SIZE;
+        assert_eq!(total_bytes, 128 * 1024 * 1024, "unexpected RAM size");
+
+        // Some memory must already be spoken for: at minimum the kernel image, the
+        // bitmap, and the device tree. A zero here means we reserved nothing, which
+        // means we are about to hand out our own code.
+        assert!(s.used > 0, "nothing is reserved?");
+        assert!(s.free() > 0, "no free memory at all?");
+    }
+
+    /// **The one that matters.** Every frame the kernel image touches must be reserved.
+    ///
+    /// This states the invariant `mark_used` exists to maintain, directly. Our image ends
+    /// at 0x40097010, which is not frame-aligned, so the last frame is only *partly*
+    /// ours. Round that end down instead of up and the frame stays free, the allocator
+    /// hands it out, something writes to it, and the tail of the kernel is quietly
+    /// overwritten. The crash lands somewhere else entirely, much later, in code that did
+    /// nothing wrong.
+    ///
+    /// Checking the bitmap directly is both stronger and cheaper than draining the
+    /// allocator: it covers *every* frame of the image, and it allocates nothing.
+    #[test_case]
+    fn every_frame_of_the_kernel_image_is_reserved() {
+        use frames::{FRAME_SIZE, Frame};
+
+        let (start, end) = crate::memory::image_bounds();
+        let mut addr = start - start % FRAME_SIZE; // round DOWN to the containing frame
+
+        while addr < end {
+            assert_eq!(
+                crate::memory::is_frame_used(Frame::from_addr(addr)),
+                Some(true),
+                "frame {addr:#x} overlaps the kernel image but is marked FREE"
+            );
+            addr += FRAME_SIZE;
+        }
+    }
+
+    /// And prove `alloc` actually respects that bitmap.
+    ///
+    /// Keep this array SMALL. It was `[Option<Frame>; 1024]` (16 KiB) on a 64 KiB stack,
+    /// and it silently overflowed into .bss, .data, and .text, and hung the machine while
+    /// printing something unrelated. See notes/stack.md. The canary catches that now, but
+    /// the right move is to not do it.
+    #[test_case]
+    fn allocator_never_hands_out_the_kernel() {
+        let mut taken = [None; 64];
+
+        for slot in taken.iter_mut() {
+            let Some(frame) = crate::memory::alloc() else {
+                break;
+            };
+            assert!(
+                !crate::memory::is_in_kernel_image(frame.addr()),
+                "allocator handed out {:#x}, which is inside the kernel image",
+                frame.addr()
+            );
+            *slot = Some(frame);
+        }
+
+        for frame in taken.into_iter().flatten() {
+            crate::memory::free(frame);
+        }
+    }
+
+    /// Proves a frame we were given is real, writable memory that nothing else owns.
+    ///
+    /// Host tests prove the *bookkeeping* is right. Only the machine can prove the
+    /// bookkeeping corresponds to actual RAM. Writing a pattern and reading it back is
+    /// the cheapest way to find out we've been handing out an MMIO hole.
+    #[test_case]
+    fn an_allocated_frame_is_real_memory() {
+        use frames::FRAME_SIZE;
+
+        let frame = crate::memory::alloc().expect("out of memory");
+        // The allocator speaks physical; we must name it virtually to touch it.
+        let ptr = crate::arch::mmu::phys_to_virt(frame.addr()) as *mut u64;
+        let words = (FRAME_SIZE / 8) as usize;
+
+        // SAFETY: the allocator just gave us this frame, so we own it exclusively. The
+        // MMU is off, so the physical address is directly usable.
+        unsafe {
+            for i in 0..words {
+                core::ptr::write_volatile(ptr.add(i), 0xcafe_f00d_0000_0000 | i as u64);
+            }
+            for i in 0..words {
+                assert_eq!(
+                    core::ptr::read_volatile(ptr.add(i)),
+                    0xcafe_f00d_0000_0000 | i as u64,
+                    "frame {:#x} word {i} did not hold what we wrote",
+                    frame.addr()
+                );
+            }
+        }
+
+        crate::memory::free(frame);
+    }
+
+    /// The bitmap must not sit on top of anything already spoken for.
+    ///
+    /// We used to place it immediately after the kernel image and hope. That worked, but
+    /// only because QEMU happens to put the device tree 64 MiB higher up. `image_size` in
+    /// the arm64 Image header stops at `__stack_top`, so everything past `__image_end` is
+    /// memory we never told the bootloader we wanted, and different firmware need not
+    /// leave it alone. Now the placement is scanned and proven; this checks it.
+    #[test_case]
+    fn bitmap_overlaps_nothing() {
+        let (bstart, bsize) = crate::memory::bitmap_region();
+        assert!(bsize > 0, "bitmap has no size?");
+
+        let (istart, iend) = crate::memory::image_bounds();
+        assert!(
+            bstart + bsize <= istart || bstart >= iend,
+            "bitmap {bstart:#x}+{bsize:#x} overlaps the kernel image {istart:#x}..{iend:#x}"
+        );
+
+        let dtb = crate::DTB.load(core::sync::atomic::Ordering::Relaxed) as u64;
+        assert!(
+            bstart + bsize <= dtb || bstart >= dtb + 64 * 1024,
+            "bitmap {bstart:#x}+{bsize:#x} is sitting on the device tree at {dtb:#x}"
+        );
+
+        if let Some((istart, isize)) = crate::memory::initrd_region() {
+            assert!(
+                bstart + bsize <= istart || bstart >= istart + isize,
+                "bitmap {bstart:#x}+{bsize:#x} is sitting on the initrd"
+            );
+        }
+    }
+
+    /// If the bootloader gave us an initrd, the allocator must never hand it out.
+    ///
+    /// Only meaningful when QEMU is run with `-initrd`, which the default test run isn't.
+    /// It asserts the invariant when there IS one, and passes trivially when there isn't,
+    /// which is the right shape: the check exists so that the day someone adds `-initrd`
+    /// to the runner, this catches it rather than milestone 10 catching it.
+    #[test_case]
+    fn initrd_is_reserved_if_present() {
+        use frames::{FRAME_SIZE, Frame};
+
+        let Some((start, size)) = crate::memory::initrd_region() else {
+            return;
+        };
+
+        let mut addr = start - start % FRAME_SIZE;
+        while addr < start + size {
+            assert_eq!(
+                crate::memory::is_frame_used(Frame::from_addr(addr)),
+                Some(true),
+                "frame {addr:#x} is part of the initrd but is marked FREE"
+            );
+            addr += FRAME_SIZE;
+        }
+    }
+
+    /// Proves alloc and free actually balance, on the real memory map.
+    #[test_case]
+    fn alloc_and_free_balance() {
+        let before = crate::memory::stats().unwrap();
+
+        let a = crate::memory::alloc().unwrap();
+        let b = crate::memory::alloc_contiguous(8).unwrap();
+
+        assert_eq!(crate::memory::stats().unwrap().used, before.used + 9);
+
+        crate::memory::free(a);
+        for i in 0..8u64 {
+            crate::memory::free(frames::Frame::from_addr(b.addr() + i * frames::FRAME_SIZE));
+        }
+
+        assert_eq!(
+            crate::memory::stats().unwrap(),
+            before,
+            "frames leaked or were double-counted"
+        );
+    }
+}

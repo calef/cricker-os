@@ -46,7 +46,9 @@ fn mapper_in(
     }
 }
 
-fn mapper(budget: &Cell<usize>) -> Mapper<impl FnMut() -> Option<u64> + '_, fn(u64) -> *mut PageTable> {
+fn mapper(
+    budget: &Cell<usize>,
+) -> Mapper<impl FnMut() -> Option<u64> + '_, fn(u64) -> *mut PageTable> {
     mapper_in(Half::Low, budget)
 }
 
@@ -73,7 +75,8 @@ fn map_then_translate_round_trips() {
     let budget = Cell::new(16);
     let mut m = mapper(&budget);
 
-    m.map(0x4008_0000, 0x4008_0000, Flags::kernel_code()).unwrap();
+    m.map(0x4008_0000, 0x4008_0000, Flags::kernel_code())
+        .unwrap();
 
     let (pa, flags) = m.translate(0x4008_0000).expect("should be mapped");
     assert_eq!(pa, 0x4008_0000);
@@ -195,7 +198,8 @@ fn nearby_pages_share_their_intermediate_tables() {
     let budget = Cell::new(3); // exactly enough for ONE chain of L1+L2+L3
     let mut m = mapper(&budget);
 
-    m.map(0x4000_0000, 0x4000_0000, Flags::kernel_data()).unwrap();
+    m.map(0x4000_0000, 0x4000_0000, Flags::kernel_data())
+        .unwrap();
     assert_eq!(budget.get(), 0, "first mapping should consume L1+L2+L3");
 
     // The next page needs no new tables at all.
@@ -329,7 +333,11 @@ fn device_memory_is_typed_as_device_and_is_never_executable() {
     let f = Flags::device();
 
     let attr_slot = (f.bits() >> 2) & 0b111;
-    assert_eq!(attr_slot, mair::DEVICE, "MMIO is not typed as device memory");
+    assert_eq!(
+        attr_slot,
+        mair::DEVICE,
+        "MMIO is not typed as device memory"
+    );
 
     assert!(!f.is_kernel_executable());
     assert!(!f.is_user_executable());
