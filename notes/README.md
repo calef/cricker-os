@@ -3,6 +3,12 @@
 Running glossary for cricker-os. Written as concepts come up, not up front. If something
 in the code or the conversation doesn't make sense, it belongs here.
 
+## Start here
+
+- [**Acronyms**](acronyms.md) — every one this project has thrown at you, expanded, with a
+  link to the note that explains it properly. IRQ, GIC, PMR, ESR, TTBR, PXN, DAIF, BBM, and
+  the forty others. Look here first.
+
 ## Tooling
 
 - [QEMU](qemu.md) — the software computer we develop on. Why we need it, what the `virt`
