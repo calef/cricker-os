@@ -69,6 +69,45 @@ unsafe impl GlobalAlloc for LockedHeap {
             unsafe { self.0.lock().dealloc(p, layout) };
         }
     }
+
+    /// Try to resize in place before falling back to allocate-copy-free.
+    ///
+    /// **The default implementation of this method always copies**, and `Vec::push` doubling
+    /// is the most common allocation pattern in Rust. A `Vec` grown to 1000 elements
+    /// reallocates about ten times; without this, every one of those is a full `memcpy` of the
+    /// entire buffer *and* a block abandoned somewhere else, which is exactly the churn a
+    /// coalescing free list exists to prevent.
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let Some(p) = NonNull::new(ptr) else {
+            return core::ptr::null_mut();
+        };
+
+        // Scoped, because the lock is NOT reentrant: `self.alloc` below takes it again.
+        // Holding it across that call would deadlock against ourselves, which is the
+        // single-thread special case of DECISIONS.md §9.
+        {
+            let mut h = self.0.lock();
+            // SAFETY: the caller's contract on `GlobalAlloc::realloc`.
+            if unsafe { h.realloc_in_place(p, layout, new_size) } {
+                return ptr;
+            }
+        }
+
+        // Couldn't grow where it stands. Fall back to the honest way.
+        let Ok(new_layout) = Layout::from_size_align(new_size, layout.align()) else {
+            return core::ptr::null_mut();
+        };
+
+        // SAFETY: caller's contract, plus `new_layout` is valid.
+        unsafe {
+            let new_ptr = self.alloc(new_layout);
+            if !new_ptr.is_null() {
+                core::ptr::copy_nonoverlapping(ptr, new_ptr, layout.size().min(new_size));
+                self.dealloc(ptr, layout);
+            }
+            new_ptr
+        }
+    }
 }
 
 /// Take frames from the physical allocator and hand them to the heap.

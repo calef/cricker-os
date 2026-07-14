@@ -32,6 +32,7 @@
 #![cfg_attr(not(test), no_std)]
 
 use core::alloc::Layout;
+use core::cmp::Ordering;
 use core::ptr::NonNull;
 
 /// The smallest block we will ever track, and the alignment everything is rounded to.
@@ -155,6 +156,122 @@ impl Heap {
 
                 self.allocated += size;
                 return NonNull::new(alloc_start as *mut u8);
+            }
+
+            prev = cur;
+            cur = next;
+        }
+
+        None
+    }
+
+    /// Grow or shrink an allocation **without moving it**, if we can.
+    ///
+    /// Returns `false` if growth would need memory that isn't free directly above the block;
+    /// the caller then falls back to allocate-copy-free.
+    ///
+    /// # Why this matters more than it looks
+    ///
+    /// `GlobalAlloc`'s default `realloc` is *always* allocate-a-new-block, `memcpy`
+    /// everything, free the old one. And **`Vec::push` doubling is the most common allocation
+    /// pattern in Rust**: a `Vec` grown to 1000 elements reallocates about ten times, and the
+    /// default copies the entire buffer every single time.
+    ///
+    /// It is not only the copying. Every move **abandons a block and takes a new one
+    /// somewhere else**, which is exactly the churn a coalescing free list exists to prevent.
+    /// The allocator would be generating its own fragmentation, on the hottest path there is.
+    ///
+    /// Two cases we can serve without moving a byte:
+    ///
+    /// - **Shrinking**: return the tail to the free list. **No copy at all.** (The default
+    ///   `realloc` copies even when shrinking, which is simply silly.)
+    /// - **Growing into free space directly above**: absorb the neighbouring free block. This
+    ///   is the common case for a `Vec` that is the only thing growing, because its old buffer
+    ///   is adjacent to whatever it just freed.
+    ///
+    /// # Safety
+    /// `ptr` must have come from [`alloc`](Self::alloc) with an equal `layout`.
+    pub unsafe fn realloc_in_place(
+        &mut self,
+        ptr: NonNull<u8>,
+        layout: Layout,
+        new_size: usize,
+    ) -> bool {
+        let (old, _) = normalize(layout);
+
+        let Ok(new_layout) = Layout::from_size_align(new_size, layout.align()) else {
+            return false;
+        };
+        let (new, _) = normalize(new_layout);
+
+        let addr = ptr.as_ptr() as usize;
+
+        match new.cmp(&old) {
+            Ordering::Equal => true,
+
+            Ordering::Less => {
+                // Hand the tail back. Both sizes are multiples of MIN_BLOCK, so the tail is
+                // too, which means it can always hold a free-block header.
+                let returned = old - new;
+                // SAFETY: `[addr+new, addr+old)` is the tail of an allocation we own.
+                unsafe { self.insert(addr + new, returned) };
+                self.allocated -= returned;
+                true
+            }
+
+            Ordering::Greater => {
+                let need = new - old;
+
+                // Is the block immediately above us free, and big enough?
+                // SAFETY: we only unlink a block the list says is free.
+                let Some(found) = (unsafe { self.take_free_at(addr + old, need) }) else {
+                    return false;
+                };
+
+                // We took the whole neighbouring block. Give back whatever we didn't need.
+                let leftover = found - need;
+                if leftover > 0 {
+                    // SAFETY: still inside the block we just unlinked.
+                    unsafe { self.insert(addr + new, leftover) };
+                }
+
+                self.allocated += need;
+                true
+            }
+        }
+    }
+
+    /// Unlink the free block starting **exactly** at `addr`, if there is one of at least
+    /// `min_size` bytes. Returns its full size.
+    ///
+    /// The address-sorted list is what makes this cheap: we can stop the moment we pass
+    /// `addr`, rather than searching the whole list.
+    ///
+    /// # Safety
+    /// The list must be well-formed.
+    unsafe fn take_free_at(&mut self, addr: usize, min_size: usize) -> Option<usize> {
+        let mut prev: Option<NonNull<Block>> = None;
+        let mut cur = self.head;
+
+        while let Some(block) = cur {
+            let start = block.as_ptr() as usize;
+            if start > addr {
+                return None; // sorted: we've gone past it, so there is no block there
+            }
+
+            // SAFETY: a valid node on the list.
+            let (size, next) = unsafe {
+                let b = block.as_ref();
+                (b.size, b.next)
+            };
+
+            if start == addr {
+                if size < min_size {
+                    return None;
+                }
+                // SAFETY: `block` is on the list with `prev` before and `next` after.
+                unsafe { self.unlink(prev, block, next) };
+                return Some(size);
             }
 
             prev = cur;

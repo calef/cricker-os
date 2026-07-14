@@ -249,3 +249,107 @@ fn a_region_too_small_to_track_is_dropped_not_trusted() {
     assert_eq!(h.total(), 0);
     assert!(h.alloc(layout(8, 8)).is_none());
 }
+
+// --- realloc: the thing that makes Vec::push not pathological ---
+
+#[test]
+fn growing_into_free_space_above_does_not_move_the_block() {
+    // The common case for a Vec that is the only thing growing.
+    let mut h = heap_with(64 * 1024);
+
+    let l = layout(1024, 16);
+    let p = h.alloc(l).unwrap();
+
+    // SAFETY: matching layout, and there is nothing but free space above.
+    let moved = unsafe { !h.realloc_in_place(p, l, 2048) };
+
+    assert!(!moved, "realloc_in_place refused a growth into free space above it");
+
+    // Same address. Not one byte was copied.
+    assert_eq!(h.allocated(), 2048);
+}
+
+#[test]
+fn growing_when_blocked_fails_so_the_caller_can_fall_back() {
+    let mut h = heap_with(64 * 1024);
+
+    let l = layout(1024, 16);
+    let a = h.alloc(l).unwrap();
+    let _blocker = h.alloc(layout(16, 16)).unwrap(); // sits immediately above `a`
+
+    // SAFETY: matching layout.
+    let grew = unsafe { h.realloc_in_place(a, l, 2048) };
+
+    assert!(!grew, "grew in place over the top of another allocation");
+}
+
+#[test]
+fn shrinking_never_copies_and_returns_the_tail() {
+    // The default GlobalAlloc::realloc copies even when SHRINKING, which is simply silly.
+    let mut h = heap_with(64 * 1024);
+
+    let l = layout(4096, 16);
+    let p = h.alloc(l).unwrap();
+    assert_eq!(h.allocated(), 4096);
+
+    // SAFETY: matching layout.
+    let ok = unsafe { h.realloc_in_place(p, l, 1024) };
+
+    assert!(ok, "shrinking should always succeed: there is nothing to search for");
+    assert_eq!(h.allocated(), 1024, "the tail was not returned to the free list");
+
+    // And the 3 KiB we handed back is genuinely usable again.
+    assert!(h.alloc(layout(3072 - 16, 16)).is_some());
+}
+
+#[test]
+fn realloc_preserves_the_data_it_did_not_move() {
+    let mut h = heap_with(64 * 1024);
+
+    let l = layout(256, 16);
+    let p = h.alloc(l).unwrap();
+    // SAFETY: 256 bytes we own.
+    unsafe { std::ptr::write_bytes(p.as_ptr(), 0x5a, 256) };
+
+    // SAFETY: matching layout.
+    assert!(unsafe { h.realloc_in_place(p, l, 512) });
+
+    // Growing in place means the original bytes are exactly where they were.
+    // SAFETY: still ours, now 512 bytes.
+    unsafe {
+        for i in 0..256 {
+            assert_eq!(*p.as_ptr().add(i), 0x5a, "byte {i} changed during an in-place grow");
+        }
+    }
+}
+
+#[test]
+fn a_vec_shaped_growth_pattern_stays_in_place() {
+    // Simulate `Vec::push` doubling: 16 -> 32 -> 64 -> ... -> 8192, one allocation, nothing
+    // else competing for the space above it.
+    //
+    // WITHOUT realloc-in-place, every doubling is a fresh allocation plus a full memcpy plus
+    // a free, and each move abandons a block somewhere else. That is the allocator generating
+    // its own fragmentation on the hottest path in Rust.
+    let mut h = heap_with(64 * 1024);
+
+    let mut size = 16usize;
+    let mut l = layout(size, 16);
+    let p = h.alloc(l).unwrap();
+    let original = p.as_ptr();
+
+    let mut in_place = 0;
+    while size < 8192 {
+        let next = size * 2;
+        // SAFETY: matching layout each time.
+        if unsafe { h.realloc_in_place(p, l, next) } {
+            in_place += 1;
+        }
+        size = next;
+        l = layout(size, 16);
+    }
+
+    assert_eq!(in_place, 9, "some doublings had to move");
+    assert_eq!(p.as_ptr(), original, "the buffer moved");
+    assert_eq!(h.allocated(), 8192);
+}

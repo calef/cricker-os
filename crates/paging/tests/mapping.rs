@@ -344,3 +344,125 @@ fn mair_value_matches_the_slots() {
     assert_eq!((mair::VALUE >> (8 * mair::DEVICE)) & 0xff, 0x00);
     assert_eq!((mair::VALUE >> (8 * mair::NORMAL)) & 0xff, 0xff);
 }
+
+// --- unmap, and the TLB obligation you cannot forget ---
+
+#[test]
+fn unmap_removes_the_mapping_and_returns_the_frame() {
+    let budget = Cell::new(16);
+    let mut m = mapper(&budget);
+
+    m.map(0x1000, 0x4000_0000, Flags::kernel_data()).unwrap();
+    assert!(m.translate(0x1000).is_some());
+
+    let (pa, flush) = m.unmap(0x1000).unwrap();
+
+    // The frame comes BACK, it isn't dropped. The mapper doesn't own it: the caller took it
+    // from the frame allocator and the caller must give it back. Silently dropping it would
+    // leak a page per unmap, which at process teardown is a leak per page of every process
+    // that ever exits.
+    assert_eq!(pa, 0x4000_0000);
+    assert_eq!(m.translate(0x1000), None, "the mapping survived unmap");
+
+    // SAFETY: these tables were never installed in a TTBR, so the hardware has never walked
+    // them and no TLB entry can exist.
+    unsafe { flush.assume_no_stale_entry() };
+}
+
+#[test]
+fn the_tlb_obligation_names_the_address_it_is_about() {
+    let budget = Cell::new(16);
+    let mut m = mapper(&budget);
+
+    m.map(0x8000, 0x4000_0000, Flags::kernel_data()).unwrap();
+    let (_, flush) = m.unmap(0x8000).unwrap();
+
+    assert_eq!(flush.address(), 0x8000);
+
+    // And `flush()` hands the address to whatever the architecture wants to do with it. The
+    // paging crate stays pure: it emits no instructions.
+    let mut invalidated = None;
+    flush.flush(|va| invalidated = Some(va));
+    assert_eq!(invalidated, Some(0x8000));
+}
+
+#[test]
+fn unmapping_nothing_is_an_error_not_a_silent_success() {
+    let budget = Cell::new(16);
+    let mut m = mapper(&budget);
+
+    match m.unmap(0x1000) {
+        Err(MapError::NotMapped) => {}
+        other => panic!("expected NotMapped, got {other:?}"),
+    }
+}
+
+#[test]
+fn changing_a_mapping_is_forced_through_break_before_make() {
+    // On aarch64, changing a VALID descriptor directly into a different VALID descriptor is
+    // architecturally unsafe: it can raise a TLB conflict abort, and the hardware is permitted
+    // to do essentially anything.
+    //
+    // AlreadyMapped is what forces the legal sequence. You CANNOT overwrite; you must unmap
+    // (which hands you a TlbFlush you cannot ignore) and then map. The API cannot be used
+    // incorrectly, rather than merely documenting the rule and hoping.
+    let budget = Cell::new(16);
+    let mut m = mapper(&budget);
+
+    m.map(0x1000, 0x4000_0000, Flags::kernel_data()).unwrap();
+
+    // The illegal move is refused.
+    assert_eq!(
+        m.map(0x1000, 0x5000_0000, Flags::kernel_data()),
+        Err(MapError::AlreadyMapped),
+    );
+
+    // The legal one: BREAK...
+    let (old, flush) = m.unmap(0x1000).unwrap();
+    assert_eq!(old, 0x4000_0000);
+
+    // ...invalidate...
+    // SAFETY: not installed in any TTBR.
+    unsafe { flush.assume_no_stale_entry() };
+
+    // ...then MAKE.
+    m.map(0x1000, 0x5000_0000, Flags::kernel_data()).unwrap();
+    assert_eq!(m.translate(0x1000).unwrap().0, 0x5000_0000);
+}
+
+#[test]
+fn unmap_then_map_reuses_the_intermediate_tables() {
+    // unmap only clears the leaf. The L1/L2/L3 tables stay, so re-mapping into the same region
+    // costs no new frames.
+    //
+    // The flip side is the TODO on `unmap`: tearing down a whole address space must walk back
+    // up and return those tables, or every process exit leaks its page tables.
+    let budget = Cell::new(3); // exactly one chain of L1+L2+L3
+    let mut m = mapper(&budget);
+
+    m.map(0x1000, 0x4000_0000, Flags::kernel_data()).unwrap();
+    assert_eq!(budget.get(), 0);
+
+    let (_, flush) = m.unmap(0x1000).unwrap();
+    // SAFETY: not installed.
+    unsafe { flush.assume_no_stale_entry() };
+
+    // No frames left in the budget, and this still works: the tables were kept.
+    m.map(0x1000, 0x5000_0000, Flags::kernel_data())
+        .expect("intermediate tables were thrown away");
+}
+
+#[test]
+#[should_panic(expected = "TLB was never invalidated")]
+fn dropping_the_tlb_obligation_is_fatal() {
+    // #[must_use] catches `m.unmap(va);` as a bare statement. It does NOT catch
+    // `let (pa, _) = m.unmap(va)?;`, which is exactly the shape the mistake takes in real
+    // code. Rust has no linear types, so the only way to make "you must consume this"
+    // enforceable is to make NOT consuming it fail loudly.
+    let budget = Cell::new(16);
+    let mut m = mapper(&budget);
+    m.map(0x1000, 0x4000_0000, Flags::kernel_data()).unwrap();
+
+    let (_pa, _flush) = m.unmap(0x1000).unwrap();
+    // _flush drops here, un-discharged. Boom.
+}

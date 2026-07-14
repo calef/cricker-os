@@ -64,10 +64,13 @@ pub fn init(dtb_ptr: usize) {
     // *sum*: if a board has RAM at 0x4000_0000 and again at 0x8_0000_0000, we track
     // every frame between them and simply never free the hole. A bit of wasted bitmap
     // buys a much simpler index calculation.
-    for (i, r) in ram.iter().enumerate() {
-        *RAM[i].lock() = (r.start, r.size);
+    {
+        let mut map = RAM.lock();
+        for (i, r) in ram.iter().enumerate() {
+            map.regions[i] = (r.start, r.size);
+        }
+        map.count = ram.len();
     }
-    RAM_COUNT.store(ram.len(), core::sync::atomic::Ordering::Relaxed);
 
     let base = ram.iter().map(|r| r.start).min().unwrap();
     let top = ram.iter().map(|r| r.end()).max().unwrap();
@@ -231,11 +234,13 @@ pub fn is_frame_used(frame: Frame) -> Option<bool> {
 /// physical address it cannot use, and it must be able to touch any frame the allocator
 /// hands it (to zero a new page table, to fill a new user page).
 pub fn ram_regions() -> impl Iterator<Item = (u64, u64)> {
-    let n = RAM_COUNT.load(core::sync::atomic::Ordering::Relaxed);
-    (0..n).map(|i| {
-        let r = RAM[i].lock();
-        (r.0, r.1)
-    })
+    // Copy the whole map out under ONE lock acquisition, then iterate freely. 256 bytes.
+    //
+    // The alternative (an iterator that holds the lock, or takes it per element) would keep a
+    // kernel lock live across arbitrary caller code, with interrupts masked the whole time.
+    // That violates "keep critical sections short" (DECISIONS.md §9) for no benefit at all.
+    let map = *RAM.lock();
+    (0..map.count).map(move |i| map.regions[i])
 }
 
 /// Where the frame bitmap landed, and how big it is. Test support.
@@ -255,10 +260,26 @@ pub fn initrd_region() -> Option<(u64, u64)> {
 
 use core::sync::atomic::AtomicUsize;
 
-/// The RAM map, kept so the MMU can map it. Fixed-size because we have no heap.
-static RAM: [IrqSafeMutex<(u64, u64)>; MAX_REGIONS] =
-    [const { IrqSafeMutex::new((0, 0)) }; MAX_REGIONS];
-static RAM_COUNT: AtomicUsize = AtomicUsize::new(0);
+/// The RAM map, kept so the MMU can map it.
+///
+/// **One lock, not sixteen.** This started life as `[IrqSafeMutex<(u64, u64)>; 16]`, which was
+/// sixteen locks for one piece of data and took one of them *per element* while iterating.
+/// That got the concurrency story exactly backwards: this is not shared mutable state, it is a
+/// **constant that happens to be computed at boot**, written once while single-threaded and
+/// read forever after.
+///
+/// Fixed-size rather than a `Vec` because `memory::init` runs *before* the heap exists. It is
+/// the last place in the kernel with that excuse.
+#[derive(Clone, Copy)]
+struct RamMap {
+    regions: [(u64, u64); MAX_REGIONS],
+    count: usize,
+}
+
+static RAM: IrqSafeMutex<RamMap> = IrqSafeMutex::new(RamMap {
+    regions: [(0, 0); MAX_REGIONS],
+    count: 0,
+});
 
 static BITMAP_START: AtomicUsize = AtomicUsize::new(0);
 static BITMAP_BYTES: AtomicUsize = AtomicUsize::new(0);

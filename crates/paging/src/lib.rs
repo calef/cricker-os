@@ -285,14 +285,117 @@ impl Half {
     }
 }
 
+/// **Proof that a page table changed and the TLB may now be lying.**
+///
+/// # Why this type exists at all
+///
+/// The CPU caches translations in a TLB. Change a mapping without invalidating it and **the
+/// CPU keeps using the old translation**. Memory reads back as the *previous* owner's data.
+///
+/// That is a security hole, and it is close to undebuggable: the page tables *in memory are
+/// correct*. It is the CPU's private cache of them that is stale, and you cannot look at it.
+///
+/// So `unmap` doesn't just do the work and trust you to remember. It hands you an obligation.
+/// `#[must_use]` means dropping it on the floor is a compiler warning, and the only ways to
+/// discharge it are [`flush`](Self::flush) (do the invalidation) or
+/// [`assume_no_stale_entry`](Self::assume_no_stale_entry), which is `unsafe` and makes you say
+/// why.
+///
+/// # Break-before-make
+///
+/// The other half of the discipline, and the reason [`MapError::AlreadyMapped`] exists rather
+/// than `map` silently overwriting.
+///
+/// On aarch64, changing a **valid** descriptor directly into a *different* **valid**
+/// descriptor is architecturally unsafe: it can raise a TLB conflict abort, and the hardware
+/// is permitted to do essentially anything. You must go valid → invalid → invalidate → valid.
+///
+/// Refusing to overwrite an existing mapping is what forces that sequence: to change a
+/// mapping you must `unmap` (which yields one of these) and then `map`. **The API cannot be
+/// used incorrectly**, rather than merely documenting the rule and hoping.
+///
+/// # What does NOT need one
+///
+/// Mapping a page that was **invalid** before. ARMv8 does not permit the TLB to cache an entry
+/// that would fault, so there can be no stale entry to invalidate. That is why `map` returns
+/// `()` and not this, and why the kernel's 32768 boot-time mappings cost nothing extra.
+#[must_use = "a page table changed: the TLB MUST be invalidated, or the CPU keeps using the old \
+              translation and memory reads back as the previous owner's data"]
+#[derive(Debug, PartialEq, Eq)]
+pub struct TlbFlush {
+    va: u64,
+}
+
+impl TlbFlush {
+    /// Discharge the obligation by actually invalidating.
+    ///
+    /// The `paging` crate is pure logic and deliberately emits no instructions, so the caller
+    /// supplies the architecture's invalidate (on aarch64: `tlbi vaae1is`).
+    pub fn flush(self, invalidate: impl FnOnce(u64)) {
+        let va = self.va;
+        core::mem::forget(self); // discharged: do not run the Drop below
+        invalidate(va);
+    }
+
+    /// Discharge the obligation **without** invalidating.
+    ///
+    /// # Safety
+    ///
+    /// Only sound when the TLB provably cannot hold an entry for this address: e.g. these
+    /// tables are not installed in any TTBR yet, so the hardware has never walked them.
+    ///
+    /// If you are wrong, the failure is a stale translation, and the page tables will look
+    /// perfectly correct while you debug it.
+    pub unsafe fn assume_no_stale_entry(self) {
+        core::mem::forget(self);
+    }
+
+    pub fn address(&self) -> u64 {
+        self.va
+    }
+}
+
+/// **You cannot drop this on the floor.**
+///
+/// `#[must_use]` alone is not enough: it warns on `mapper.unmap(va);` as a statement, but says
+/// nothing about
+///
+/// ```ignore
+/// let (pa, _) = mapper.unmap(va)?;   // obligation destructured away, silently
+/// ```
+///
+/// which is exactly the shape the mistake takes in real code. Rust has no linear types, so the
+/// only way to make "you must consume this" enforceable is to make *not* consuming it fail
+/// loudly.
+///
+/// A panic is the right failure. The alternative is a stale TLB entry: memory that reads back
+/// as its previous owner's data, in a kernel whose page tables are *provably correct in
+/// memory*, because the lie lives in a CPU cache you cannot inspect. Better to die here, with
+/// the address in hand.
+impl Drop for TlbFlush {
+    fn drop(&mut self) {
+        panic!(
+            "page table changed at {:#x} but the TLB was never invalidated: \
+             the CPU is still using the old translation. \
+             Call .flush() or (unsafely) .assume_no_stale_entry().",
+            self.va
+        );
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MapError {
     /// Ran out of frames while building intermediate tables.
     OutOfFrames,
     /// The virtual or physical address is not 4 KiB aligned.
     Misaligned,
-    /// Something is already mapped here. Overwriting silently is how you lose a page and
-    /// never find out.
+    /// Something is already mapped here.
+    ///
+    /// **This error is load-bearing, not defensive.** Refusing to overwrite is what forces
+    /// break-before-make: to change a mapping you must `unmap` (which hands you a
+    /// [`TlbFlush`]) and then `map`. Silently overwriting would let you go valid → valid,
+    /// which aarch64 does not permit, *and* leak the old physical frame, which nothing would
+    /// ever notice.
     AlreadyMapped,
     /// This address belongs to the *other* half, or is non-canonical.
     ///
@@ -300,6 +403,8 @@ pub enum MapError {
     /// the hardware would never consult this table for that address. Catching it here turns
     /// a mystery into a compile-time-shaped error.
     WrongHalf,
+    /// Nothing is mapped at this address, so there is nothing to unmap.
+    NotMapped,
 }
 
 /// Builds page tables.
@@ -425,6 +530,56 @@ where
             self.map(va + i * PAGE_SIZE, pa + i * PAGE_SIZE, flags)?;
         }
         Ok(())
+    }
+
+    /// Remove a mapping, and return the physical frame it pointed at.
+    ///
+    /// The frame is returned rather than freed, because the mapper does not own it: the caller
+    /// took it from the frame allocator and the caller must give it back. Silently dropping it
+    /// would leak a page per unmap, which at process teardown is a leak per page of every
+    /// process that ever exits.
+    ///
+    /// Returns a [`TlbFlush`] you cannot ignore. See that type: the whole point is that this
+    /// is the operation you must not forget to follow up on.
+    ///
+    /// **TODO (milestone 7):** this leaves the intermediate L1/L2/L3 tables in place, even
+    /// when they become empty. Tearing down a whole address space wants to walk back up and
+    /// return those frames too, or every process exit leaks its page tables.
+    pub fn unmap(&mut self, va: u64) -> Result<(u64, TlbFlush), MapError> {
+        if !self.half.contains(va) {
+            return Err(MapError::WrongHalf);
+        }
+        if va % PAGE_SIZE != 0 {
+            return Err(MapError::Misaligned);
+        }
+
+        let mut table_pa = self.root;
+
+        for level in 0..LEVELS - 1 {
+            let i = index(va, level);
+            // SAFETY: per the type's contract.
+            let entry = unsafe { (*(self.phys_to_ptr)(table_pa)).entries[i] };
+            if entry & VALID == 0 {
+                return Err(MapError::NotMapped);
+            }
+            table_pa = entry & ADDR_MASK;
+        }
+
+        let i = index(va, LEVELS - 1);
+        // SAFETY: per the type's contract.
+        let entry = unsafe { &mut (*(self.phys_to_ptr)(table_pa)).entries[i] };
+
+        if *entry & VALID == 0 {
+            return Err(MapError::NotMapped);
+        }
+
+        let pa = *entry & ADDR_MASK;
+
+        // Break. The descriptor becomes invalid *before* anything else happens, which is the
+        // "break" half of break-before-make.
+        *entry = 0;
+
+        Ok((pa, TlbFlush { va }))
     }
 
     /// Walk the tables and report what a virtual address actually maps to.

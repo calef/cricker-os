@@ -343,6 +343,34 @@ unsafe fn install(root: u64) {
     // TTBR1, and TTBR0 is free.
 }
 
+/// Invalidate the TLB entry for one virtual address.
+///
+/// This is what discharges a `paging::TlbFlush`. The `paging` crate is pure logic and emits no
+/// instructions; the architecture supplies this.
+///
+///   `tlbi vaae1is`  — invalidate by **VA**, **A**ll ASIDs, **E1**, **I**nner **S**hareable.
+///
+/// The operand is the address shifted right by 12: the TLB is indexed by page, not by byte.
+///
+/// `dsb ish` afterwards because **TLB maintenance is not synchronous**. Without it, the next
+/// instruction may still be using the translation you just told the CPU to forget. And `isb`
+/// because instruction fetch may have already prefetched through the old mapping.
+pub fn flush_tlb(va: u64) {
+    // SAFETY: TLB maintenance is always sound. Getting it wrong means a stale translation, not
+    // memory unsafety in the Rust sense; but a stale translation IS memory unsafety in the
+    // sense that matters here.
+    unsafe {
+        core::arch::asm!(
+            "dsb ishst",             // our page table write must land first
+            "tlbi vaae1is, {page}",  // then forget the translation
+            "dsb ish",               // wait for every core to have done so
+            "isb",                   // and discard anything fetched through the old mapping
+            page = in(reg) va >> 12,
+            options(nostack),
+        );
+    }
+}
+
 pub fn is_enabled() -> bool {
     SCTLR_EL1.is_set(SCTLR_EL1::M)
 }
