@@ -25,6 +25,12 @@
 //!
 //! See notes/mmu.md and notes/page-tables.md.
 
+// map_page / unmap_page / flush_tlb exist ahead of their first non-test caller. They are the
+// API milestone 7 uses to build and tear down a process address space, and the discipline they
+// encode (break-before-make, an un-ignorable TLB obligation) is much cheaper to get right now
+// than to retrofit across twenty call sites. The kernel tests exercise all of them.
+#![allow(dead_code)]
+
 use crate::memory;
 use crate::println;
 use aarch64_cpu::asm::barrier;
@@ -341,6 +347,45 @@ unsafe fn install(root: u64) {
 
     // If you are reading this line's output, we survived. The kernel is now running out of
     // TTBR1, and TTBR0 is free.
+}
+
+/// The kernel's live page tables, as a `Mapper`.
+///
+/// Reads `TTBR1_EL1` back out of the hardware, so this walks what the CPU is actually walking,
+/// not a copy of what we intended.
+fn kernel_mapper() -> Mapper<impl FnMut() -> Option<u64>, fn(u64) -> *mut PageTable> {
+    let root = TTBR1_EL1.get_baddr();
+
+    // SAFETY: TTBR1_EL1 holds the root we installed, and the direct map makes `phys_to_ptr`
+    // valid for any frame.
+    unsafe {
+        Mapper::new(
+            root,
+            Half::High,
+            || memory::alloc().map(|f| f.addr()),
+            phys_to_ptr,
+        )
+    }
+}
+
+/// Map one page into the kernel's address space.
+///
+/// Refuses to overwrite an existing mapping (`MapError::AlreadyMapped`), which is what forces
+/// break-before-make: to *change* a mapping you must [`unmap_page`] first.
+pub fn map_page(va: u64, pa: u64, flags: Flags) -> Result<(), MapError> {
+    kernel_mapper().map(va, pa, flags)
+}
+
+/// Remove one page from the kernel's address space, and **invalidate the TLB**.
+///
+/// Returns the physical frame, which is the caller's to free: the mapper never owned it.
+///
+/// The `TlbFlush` obligation is discharged here, properly, with a real `tlbi`. It cannot be
+/// forgotten: dropping one un-discharged panics.
+pub fn unmap_page(va: u64) -> Result<u64, MapError> {
+    let (pa, flush) = kernel_mapper().unmap(va)?;
+    flush.flush(flush_tlb);
+    Ok(pa)
 }
 
 /// Invalidate the TLB entry for one virtual address.

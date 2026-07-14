@@ -135,6 +135,45 @@ one is a build failure rather than a security hole.
 | `user_code()` | read (**PXN**: no execute) | read + execute |
 | `user_data()` | read + write | read + write |
 
+## The TLB obligation
+
+Change a mapping without invalidating the TLB and **the CPU keeps using the old translation.**
+Memory reads back as the previous owner's data.
+
+That is a security hole, and it is close to undebuggable: **the page tables in memory are
+correct.** The lie lives in a CPU cache you cannot inspect.
+
+So `unmap` doesn't do the work and trust you to remember. It hands back a `TlbFlush`.
+
+`#[must_use]` alone is not enough. It warns on `mapper.unmap(va);` as a bare statement, but says
+nothing about
+
+```rust
+let (pa, _) = mapper.unmap(va)?;   // obligation destructured away, silently
+```
+
+which is exactly the shape the mistake takes in real code. **Rust has no linear types**, so the
+only way to make "you must consume this" enforceable is to make *not* consuming it fail loudly:
+`TlbFlush` has a `Drop` that panics. The only ways out are `.flush()` or the `unsafe`
+`.assume_no_stale_entry()`, which makes you say why.
+
+There is a kernel test that makes staleness *observable*: map a VA to frame A (holding
+`0xAAAA…`), **read it** (which is what populates the TLB), unmap, invalidate, map the same VA to
+frame B (holding `0xBBBB…`), and read again. If the second read returns `0xAAAA…`, the TLB is
+stale and we have exactly the bug that reads back another process's memory.
+
+## Break-before-make
+
+On aarch64, changing a **valid** descriptor directly into a *different* **valid** descriptor is
+architecturally unsafe. It can raise a TLB conflict abort, and the hardware is permitted to do
+essentially anything. The legal sequence is valid → **invalid** → invalidate → valid.
+
+`MapError::AlreadyMapped` is what forces it. **It is load-bearing, not defensive:** `map`
+refuses to overwrite, so to *change* a mapping you must `unmap` (which yields an obligation you
+cannot ignore) and then `map`.
+
+The API cannot be used incorrectly, rather than documenting the rule and hoping.
+
 ## Blocks: the optimization we haven't taken yet
 
 A **block** descriptor at L1 or L2 short-circuits the walk and maps a big contiguous region

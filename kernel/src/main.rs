@@ -738,6 +738,94 @@ mod tests {
         assert!(!flags.is_kernel_executable(), "the heap is EXECUTABLE");
     }
 
+    /// **Prove the TLB is actually invalidated on unmap.**
+    ///
+    /// This is the test for the landmine. Change a mapping without a `tlbi` and the CPU keeps
+    /// using the *cached* translation: memory reads back as the previous owner's data. It is a
+    /// security hole, and it is close to undebuggable, because the page tables **in memory are
+    /// correct** — the lie lives in a CPU cache you cannot inspect.
+    ///
+    /// So we make it observable:
+    ///
+    ///   1. map a spare VA to frame A, which holds 0xAAAA...
+    ///   2. **read it**, which is what populates the TLB
+    ///   3. unmap, and invalidate
+    ///   4. map the *same VA* to frame B, which holds 0xBBBB...
+    ///   5. read it again
+    ///
+    /// If step 5 returns 0xAAAA, the TLB is stale and we have exactly the bug. It must return
+    /// 0xBBBB.
+    #[test_case]
+    fn unmap_invalidates_the_tlb() {
+        use crate::arch::mmu::{self, phys_to_virt};
+        use paging::Flags;
+
+        const PATTERN_A: u64 = 0xaaaa_aaaa_aaaa_aaaa;
+        const PATTERN_B: u64 = 0xbbbb_bbbb_bbbb_bbbb;
+
+        // A high-half address well away from the direct map: physical 0xff00_0000 is not RAM
+        // (RAM is 0x4000_0000..0x4800_0000), so nothing is mapped here.
+        let test_va = mmu::KERNEL_VA_BASE | 0xff00_0000;
+        assert_eq!(mmu::translate(test_va), None, "test address is already in use");
+
+        let a = crate::memory::alloc().expect("out of memory");
+        let b = crate::memory::alloc().expect("out of memory");
+
+        // SAFETY: two frames the allocator just gave us exclusively, reached via the direct
+        // map.
+        unsafe {
+            core::ptr::write_volatile(phys_to_virt(a.addr()) as *mut u64, PATTERN_A);
+            core::ptr::write_volatile(phys_to_virt(b.addr()) as *mut u64, PATTERN_B);
+        }
+
+        mmu::map_page(test_va, a.addr(), Flags::kernel_data()).expect("map A");
+
+        // SAFETY: just mapped, writable.
+        let seen = unsafe { core::ptr::read_volatile(test_va as *const u64) };
+        assert_eq!(seen, PATTERN_A, "the mapping didn't take");
+        // ^ that read is the point: it pulls the translation into the TLB.
+
+        let returned = mmu::unmap_page(test_va).expect("unmap");
+        assert_eq!(returned, a.addr(), "unmap returned the wrong frame");
+
+        mmu::map_page(test_va, b.addr(), Flags::kernel_data()).expect("map B");
+
+        // SAFETY: mapped again, to a different frame.
+        let seen = unsafe { core::ptr::read_volatile(test_va as *const u64) };
+
+        assert_eq!(
+            seen, PATTERN_B,
+            "STALE TLB: the same virtual address still reads the OLD frame's data. \
+             This is the bug that reads back another process's memory."
+        );
+
+        mmu::unmap_page(test_va).expect("cleanup");
+        crate::memory::free(a);
+        crate::memory::free(b);
+    }
+
+    /// Changing a mapping is forced through break-before-make.
+    #[test_case]
+    fn the_kernel_mapper_refuses_to_overwrite() {
+        use crate::arch::mmu;
+        use paging::{Flags, MapError};
+
+        let va = mmu::KERNEL_VA_BASE | 0xfe00_0000;
+        let f = crate::memory::alloc().unwrap();
+
+        mmu::map_page(va, f.addr(), Flags::kernel_data()).unwrap();
+
+        // aarch64 does not permit valid -> valid directly: it can raise a TLB conflict abort.
+        // The API makes it unrepresentable.
+        assert_eq!(
+            mmu::map_page(va, f.addr(), Flags::kernel_data()),
+            Err(MapError::AlreadyMapped)
+        );
+
+        mmu::unmap_page(va).unwrap();
+        crate::memory::free(f);
+    }
+
     // --- locking (DECISIONS.md §9) ---
 
     /// The lock must mask interrupts for as long as it is held.
