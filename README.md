@@ -124,6 +124,18 @@ register file, and timer-driven preemption. Async doesn't defer that work. It fo
 it. So we build real threads first, and async can come back later in userspace, on top of
 them, exactly the way a real OS lets a program run Tokio.
 
+**Async's core assumption is "I compiled everything that runs." An operating system's entire
+purpose is to run code it did not compile.** That's why Embassy is excellent on a
+microcontroller and impossible here.
+
+And Go corroborates it the hard way. Goroutines were originally cooperative, yielding at
+function calls — and Go owns its compiler and compiles *every line that runs*. It still didn't
+work: a goroutine in a tight loop with no function calls never yields, and the garbage
+collector could never stop it. **Go 1.14 added asynchronous preemption**, which is a timer
+interrupt built in userspace out of signals. If a language that owns its entire toolchain
+couldn't get away with cooperative scheduling, a kernel running arbitrary ELF binaries
+certainly can't. See [DECISIONS.md](DECISIONS.md) §5.
+
 ## Milestones
 
 The dividing line between "a Rust program that boots" and "an operating system" is
