@@ -6,7 +6,7 @@ This is a learning project. The goal is not to produce a useful OS, it's to unde
 operating systems actually work by building one, starting from the first instruction the
 CPU ever executes. If it ends up useful, that's a bonus.
 
-**Status: milestone 7 complete.** It boots on QEMU, prints to a serial port, catches its
+**Status: milestone 8 complete.** The console driver runs in userspace. It boots on QEMU, prints to a serial port, catches its
 own faults and reports them legibly, reads its memory map out of the device tree, hands out
 physical memory a page at a time, and **runs with the MMU on**: kernel `.text` is read-execute,
 `.rodata` is read-only, nothing writable is executable, and there's a guard page under the
@@ -150,7 +150,7 @@ milestone 7.
 | 5 | GIC + timer interrupts | ✅ |
 | 6 | Kernel threads, context switch, scheduler | ✅ |
 | 7 | **EL0, address spaces, capabilities, ELF loader, IPC** | ✅ |
-| 8 | **The console driver leaves the kernel** | |
+| 8 | **The console driver leaves the kernel** | ✅ |
 | 9 | virtio-blk in userspace + a filesystem server | |
 | 10 | A process server, and a shell that spawns binaries | |
 | 11 | Untyped memory: the kernel stops allocating | |

@@ -61,20 +61,6 @@ pub unsafe fn force_unlock() {
     unsafe { CONSOLE.force_unlock() }
 }
 
-/// Write raw bytes. **Not `println!`**: these came from a user program and are not a format
-/// string, are not UTF-8 by contract, and are not ours to interpret.
-///
-/// The only thing the kernel does to a user's bytes is put them on the wire.
-pub fn write_bytes(bytes: &[u8]) {
-    // ONE lock acquisition for the whole write, not one per byte. Otherwise a kernel `println!`
-    // could splice itself into the middle of a user's line, and the UART is written a byte at a
-    // time, so "the middle of a line" means "the middle of a word."
-    let console = CONSOLE.lock();
-    for &b in bytes {
-        console.write_byte(b);
-    }
-}
-
 #[doc(hidden)]
 pub fn _print(args: core::fmt::Arguments) {
     // Writing to a UART cannot fail in any way we can act on, so drop the Result.

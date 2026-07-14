@@ -90,6 +90,9 @@ in the code or the conversation doesn't make sense, it belongs here.
 
 ## The point of all this
 
+- [The console driver leaves the kernel](userspace-drivers.md) — milestone 8: the console is now a
+  userspace process that owns the UART, reached by IPC, and the kernel is no longer on the data
+  path. The 7d confused-deputy bug is *dissolved*, not defended against.
 - [Userspace](userspace.md) — the line. And as of 7a it is **real**: entering EL0 turns out to be
   *returning from an exception that never happened*, and the two bugs on the way there were worth
   more than the code

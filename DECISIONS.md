@@ -459,7 +459,7 @@ boots" and "an operating system" is milestone 7.
 | 5  | GIC + timer interrupts                          | The preemption source                    | ✅ |
 | 6  | Kernel threads, context switch, scheduler       | Stacks, register files, run queues       | ✅ |
 | 7  | **EL0, address spaces, CSpaces, ELF loader, IPC** | **The actual OS boundary.** Decided in §10  | ✅ |
-| 8  | **The console driver LEAVES the kernel**        | The microkernel thesis, executable        |    |
+| 8  | **The console driver LEAVES the kernel**        | The microkernel thesis, executable        | ✅ |
 | 9  | virtio-blk in userspace + a filesystem server   | Userspace drivers, MMIO caps, IRQ-as-message, DMA |    |
 | 10 | A process server, and a shell that spawns binaries | Proof the whole stack works            |    |
 | 11 | Untyped memory: the kernel stops allocating     | §10's deferred axis. The allocators leave. |    |

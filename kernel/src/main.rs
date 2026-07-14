@@ -181,29 +181,18 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
             println!("  and now the other side of the boundary:");
             println!();
 
-            // A program that traps to the kernel, comes back, and traps again.
-            let svc0 = SVC_COUNT.load(Ordering::Relaxed);
-            sched::spawn(|| unsafe { user::exec(user::hello()) });
-            timer::spin_for(timer::frequency() / 20);
-
-            println!(
-                "    hello  : reached EL0, executed {} svc, returned to EL0 after each",
-                SVC_COUNT.load(Ordering::Relaxed) - svc0
-            );
-
-            // And a program that reaches for a kernel address.
+            // The privilege boundary, still real: a program that reaches for a kernel address is
+            // killed, and the kernel is not.
             let faults0 = USER_FAULTS.load(Ordering::Relaxed);
             sched::spawn(|| unsafe { user::exec(user::outlaw()) });
             timer::spin_for(timer::frequency() / 20);
-
             println!(
-                "    outlaw : touched {:#018x}, was killed, kernel survived ({} fault)",
+                "    outlaw : reached {:#018x}, was killed, kernel survived ({} fault)",
                 0xffff_0000_4008_0000u64,
                 USER_FAULTS.load(Ordering::Relaxed) - faults0,
             );
 
-            // 7c/7d. A real ELF, separately compiled, arriving in the initrd. The kernel has
-            // never seen it before this boot, and it holds exactly one capability.
+            // Milestone 8. The console driver is no longer in the kernel.
             match user::initrd() {
                 None => println!("    initrd : none (no -initrd passed to QEMU)"),
                 Some(image) => {
@@ -213,81 +202,25 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
                         memory::initrd_region().unwrap().0,
                     );
                     println!();
+                    println!("  the console driver now runs at EL0. what follows is printed by it:");
+                    println!();
 
-                    // With a console capability in slot 0.
-                    let svc0 = SVC_COUNT.load(Ordering::Relaxed);
-                    let f0 = USER_FAULTS.load(Ordering::Relaxed);
-
-                    sched::spawn(|| user::exec_elf(user::initrd().expect("no initrd")));
-                    timer::spin_for(timer::frequency() / 20);
-
-                    let ran = SVC_COUNT.load(Ordering::Relaxed) > svc0;
-                    let ok = ran && USER_FAULTS.load(Ordering::Relaxed) == f0;
+                    // Start the console SERVER as a user process that owns the UART, then a
+                    // CLIENT wired to it. The lines the client prints travel through a page it
+                    // shares with the server; the kernel never touches the bytes.
+                    let console = user::console_service::start(image);
+                    user::console_service::spawn_client(image, console);
+                    timer::spin_for(timer::frequency() / 10);
 
                     println!();
-                    if ok {
-                        println!("      every one of its expectations held, including that one.");
-                    } else {
-                        println!("      FAILED: {}", if ran { "faulted" } else { "never reached EL0" });
-                    }
-
-                    // And now the same binary, handed NOTHING.
-                    let f1 = USER_FAULTS.load(Ordering::Relaxed);
-                    sched::spawn(|| {
-                        user::exec_elf_with(user::initrd().expect("no initrd"), false)
-                    });
-                    timer::spin_for(timer::frequency() / 20);
-                    let starved = USER_FAULTS.load(Ordering::Relaxed) > f1;
-
-                    println!();
-                    println!("      and spawned again with an EMPTY capability table, the very");
-                    println!(
-                        "      same binary {}",
-                        if starved {
-                            "cannot print one byte. slot 0 holds nothing,"
-                        } else {
-                            "PRINTED ANYWAY, which is a bug,"
-                        }
-                    );
-                    println!("      and there is no other way to ask.");
-
-                    // 7e. The user program sends a word to a server it can only NAME.
-                    //
-                    // We create an endpoint, spawn a kernel-side server blocked on RECV, and hand
-                    // the client a SEND capability on that same endpoint in slot 1. The client
-                    // cannot reach the server, cannot see it, cannot name anything about it except
-                    // "the thing slot 1 sends to." That is the whole of what a capability is.
-                    //
-                    // (The server is a kernel thread today. At milestone 8 it becomes a userspace
-                    // console server, and this exact shape is how a user program will print.)
-                    use core::sync::atomic::AtomicU64;
-                    static SERVER_GOT: AtomicU64 = AtomicU64::new(0);
-
-                    let ep = sched::create_endpoint();
-
-                    sched::spawn(move || {
-                        let msg = sched::ipc_recv(ep); // blocks until the client sends
-                        SERVER_GOT.store(msg[0], Ordering::SeqCst);
-                    });
-
-                    sched::spawn(move || {
-                        user::exec_elf_with_endpoint(user::initrd().expect("no initrd"), ep)
-                    });
-                    timer::spin_for(timer::frequency() / 20);
-
-                    println!();
-                    println!(
-                        "      a server thread received {:#x} from a user program that holds",
-                        SERVER_GOT.load(Ordering::SeqCst),
-                    );
-                    println!("      one capability for it and no other way to find it.");
+                    println!("  ...and control is back in the kernel, which never saw those bytes.");
                 }
             }
 
             println!();
-            println!("  the machine has run code it does not trust, and taken the CPU back.");
-            println!("  it did not compile it, or link it, or ever see it before this boot.");
-            println!("  and it would not read its own memory on that code's behalf.");
+            println!("  a userspace program printed to the screen, and the kernel does not");
+            println!("  contain a line of code that puts a user's bytes on the wire.");
+            let _ = SVC_COUNT.load(Ordering::Relaxed);
         }
     }
 

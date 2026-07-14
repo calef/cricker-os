@@ -7,37 +7,28 @@
 
 /// Every kind of thing a process can be handed.
 ///
-/// **One entry, today.** That is not a placeholder, it is the shape of the argument: a process
-/// that has been handed a `Console` and nothing else can print, and **cannot express** anything
-/// further. There is no `open`, no path, no uid, and so no second thing for it to reach for.
+/// **One entry, and that is the milestone-8 result rather than a stub.** There used to be a
+/// `Console` variant: the kernel owned the PL011 and printed on a user's behalf. Milestone 8
+/// deleted it. The console is now a userspace server reached by `SEND` on an endpoint, so
+/// everything a process can name is an endpoint, and **the kernel no longer knows what a UART
+/// is** on any path a user program can take.
 ///
 /// The list grows deliberately, and each addition is a decision:
 ///
-/// - `Endpoint` at 7e, which is where IPC arrives and where processes can start talking to each
-///   other instead of only to the kernel.
-/// - `Frame` when shared memory does, because **IPC carries control and shared memory carries
-///   data** (§10), and a frame capability in a message is how the data moves without a copy.
+/// - `Frame`, when shared memory gets a capability of its own, because **IPC carries control and
+///   shared memory carries data** (§10). Today a shared buffer is mapped in at spawn time rather
+///   than handed over as a capability; a `Frame` object is what makes delegating memory a
+///   runtime operation.
 /// - `Untyped` at milestone 11, if we take §10's deferred axis, at which point the kernel stops
 ///   allocating and this enum stops being the interesting part of the system.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Object {
     /// An IPC endpoint, by id (an index into the scheduler's endpoint table).
     ///
-    /// **This is the variant milestone 8 turns the console into.** Today `Console` is served by
-    /// the kernel; at milestone 8 it becomes an `Endpoint` to a userspace console *server*, and
-    /// invoking it becomes an ordinary `SEND`. The machinery to make that possible is exactly
-    /// what 7e builds.
+    /// Invoking it is a `SEND` or a `RECV` (which one you may do is a matter of rights). Since
+    /// milestone 8 this is how a process reaches the console: it holds a `WRITE` capability on
+    /// the console server's endpoint, and printing is sending.
     Endpoint(usize),
-
-    /// The console.
-    ///
-    /// **Kernel-served, and only until milestone 8.** Today invoking this capability lands in the
-    /// kernel, which owns the PL011. At milestone 8 the driver leaves, this becomes an `Endpoint`
-    /// to a userspace console *server*, and **the kernel stops knowing what a UART is.**
-    ///
-    /// That is the milestone that proves §10 was real rather than a syscall table with an unusual
-    /// shape, and this variant is the thing it has to delete.
-    Console,
 }
 
 pub type Cap = caps::Cap<Object>;
@@ -53,15 +44,5 @@ pub fn endpoint_cap(ep: usize, rights: Rights) -> Cap {
     Cap {
         object: Object::Endpoint(ep),
         rights,
-    }
-}
-
-/// What a process gets when it is trusted with the console and nothing else.
-pub fn console_cap() -> Cap {
-    Cap {
-        object: Object::Console,
-        // WRITE, and **not GRANT**: it may print, and it may not lend the right to print to
-        // anyone else. Which is a distinction Unix cannot even express.
-        rights: Rights::WRITE,
     }
 }

@@ -1,160 +1,212 @@
-//! The first program cricker-os runs that it did not compile, talking to it through the first
-//! syscall interface cricker-os ever had.
+//! The initrd program. **One binary, two roles**, chosen by the argument the kernel puts in
+//! `x0` at `_start`, the way a real kernel hands a new process its argc.
 //!
-//! It arrives in the **initrd**, the way Linux gets its initramfs. Nothing about it is known to
-//! the kernel at build time.
+//! - **Role `CLIENT`**: an ordinary program that wants to print. It does not own a UART and
+//!   cannot reach one. It writes its text into a page it *shares* with the console server, and
+//!   sends the length over an endpoint. That is the whole of "printing" now.
 //!
-//! # It holds exactly one capability, and it can name nothing else
+//! - **Role `CONSOLE_SERVER`**: the console driver, **at EL0.** It owns a mapping of the PL011's
+//!   registers and a read-only view of the shared page. It loops: receive a length, copy that
+//!   many bytes from the shared page to the UART, acknowledge. This code used to be in the
+//!   kernel. Milestone 8 is the milestone where it left.
 //!
-//! Slot 0 is a `Console` it may `WRITE` to. That is the whole of its world. There is no path it
-//! can say, no uid it can be, no `open()` it can call. See DECISIONS.md §10.
+//! # Why the bytes travel in shared memory and the length travels in a message
 //!
-//! So the program's job is to go and find the edges of that world, and check they are where the
-//! kernel says they are:
-//!
-//!   1. Its own image is intact (`.text`, `.rodata`, `.data`, `.bss`, and a working stack).
-//!   2. It **can** print, through slot 0.
-//!   3. It **cannot** print through slot 1, which is empty. Not denied: *empty*.
-//!   4. It cannot talk the kernel into printing the kernel's own memory. **The confused deputy.**
-//!
-//! Any surprise and it executes `brk`, which the kernel treats as a fault and kills it. So "no
-//! fault" is a machine-checkable claim that every one of those held.
+//! DECISIONS §10: **IPC carries control, shared memory carries data.** The kernel is not in the
+//! data path at all. It never sees the bytes, never copies them, never validates a pointer into
+//! them. The confused-deputy problem that 7d had to defend against **cannot arise here**, because
+//! the thing that could be confused (a kernel doing I/O for a user) no longer exists. The
+//! architecture dissolved the bug.
 
 #![no_std]
 #![no_main]
 
-use abi::{Error, console};
+use abi::{Error, endpoint};
 
-/// In `.rodata`. Proves the read-only segment was mapped, and mapped *readable*.
+/// Roles, as passed in `x0` by the kernel.
+///
+/// One binary, several behaviours. The kernel chooses by the argument it puts in `x0`, the way a
+/// real kernel hands a new process its argv. A `SELF_CHECK` client needs no capabilities and no
+/// shared memory (it only inspects its own image), which is why the milestone-7 tests can spawn
+/// it bare; a `PRINTING` client needs the console endpoints and the shared page.
+const SELF_CHECK: u64 = 0;
+const CONSOLE_SERVER: u64 = 1;
+const PRINTING: u64 = 2;
+
+// --- the shared layout, known to both roles because they are the same binary ---
+
+/// The page shared between a client and the console server. The client writes text here; the
+/// server reads it. Mapped read/write in the client, read-only in the server.
+const SHARED_VA: u64 = 0x0000_0000_0060_0000;
+
+/// The PL011's registers, mapped into the **server only**, as device memory.
+const UART_VA: u64 = 0x0000_0000_0070_0000;
+const UART_DR: u64 = 0x00; // data register: write a byte to transmit it
+const UART_FR: u64 = 0x18; // flag register
+const UART_FR_TXFF: u32 = 1 << 5; // transmit FIFO full
+
+// --- capability slots, by convention (the kernel granted them in this order) ---
+
+/// Client: slot 0 sends the print request. Server: slot 0 receives it.
+const REQUEST: u64 = 0;
+/// Client: slot 1 receives the ack. Server: slot 1 sends it.
+const REPLY: u64 = 1;
+
+// --- markers, so the client can check its own image was loaded correctly ---
+
 #[unsafe(no_mangle)]
 static RODATA_MARKER: [u8; 4] = [0xc0, 0xff, 0xee, 0xd0];
-
-/// In `.data`. Proves the loader copied file contents, not just zeroes.
 #[unsafe(no_mangle)]
 static mut DATA_MARKER: u64 = 0x0000_c0ff_ee00_d0d0;
-
-/// In `.bss`, because it is zero. **Proves `memsz > filesz` was honoured.** The bytes for this
-/// are not in the ELF at all.
 #[unsafe(no_mangle)]
 static mut BSS_MARKER: u64 = 0;
 
-/// The capability we were handed. Slot 0, by convention, because somebody put it there.
-const CONSOLE: u64 = 0;
-
-/// A slot nobody put anything in (unless we were handed an endpoint, in which case it is one).
-const EMPTY: u64 = 3;
-
-/// Where an endpoint SEND capability lands, if we were given one.
-const ENDPOINT: u64 = 1;
-
-/// The word this program sends over the endpoint. The server checks for exactly this.
-const HELLO_WORD: u64 = 0x5eed_1e55;
-
-/// The kernel's own `.text`, in the direct map. We know the address. **Knowing an address is not
-/// authority**, and this program is about to demonstrate that at some length.
-const KERNEL_TEXT: u64 = 0xffff_0000_4008_0000;
-
 #[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
-    // --- 1. our own image ---
-    // .text ran, or we would not be here.
-    check(RODATA_MARKER == [0xc0, 0xff, 0xee, 0xd0]);
+pub extern "C" fn _start(role: u64) -> ! {
+    match role {
+        CONSOLE_SERVER => console_server(),
+        PRINTING => printing_client(),
+        SELF_CHECK => self_check_client(),
+        _ => self_check_client(),
+    }
+}
 
-    // SAFETY: single-threaded, and nobody else has this address space.
+/// The console driver, running at EL0, owning the UART.
+fn console_server() -> ! {
+    loop {
+        // Wait for a client to hand us a length. This BLOCKS until one sends.
+        let (len, _, _) = recv(REQUEST);
+
+        // Copy that many bytes from the shared page to the UART, one at a time, exactly as the
+        // kernel's PL011 driver used to. The difference is only where this code runs.
+        let shared = SHARED_VA as *const u8;
+        for i in 0..len {
+            // SAFETY: the shared page is mapped read-only in our address space, and `len` came
+            // from a client we then verify by writing at most one page. A malicious length is a
+            // read out of our OWN mapping, which faults US, not the kernel: a driver bug is a
+            // crashed process. (7c/§10.)
+            let byte = unsafe { core::ptr::read_volatile(shared.add(i as usize)) };
+            uart_put(byte);
+        }
+
+        // Acknowledge, so the client knows the buffer is free to reuse.
+        send(REPLY, len, 0, 0);
+    }
+}
+
+/// Prove our own image is intact. None of this needs a capability: it is all our own memory. A
+/// mismatch means the loader is broken, and we say so the only way we can, with a `brk` that the
+/// kernel turns into a fault.
+fn self_check() {
+    check(RODATA_MARKER == [0xc0, 0xff, 0xee, 0xd0]);
+    // SAFETY: single-threaded, sole owner of this address space.
     unsafe {
         check(core::ptr::read_volatile(&raw const DATA_MARKER) == 0x0000_c0ff_ee00_d0d0);
-        check(core::ptr::read_volatile(&raw const BSS_MARKER) == 0);
-
+        check(core::ptr::read_volatile(&raw const BSS_MARKER) == 0); // .bss was zeroed
         core::ptr::write_volatile(&raw mut BSS_MARKER, 1);
-        check(core::ptr::read_volatile(&raw const BSS_MARKER) == 1);
+        check(core::ptr::read_volatile(&raw const BSS_MARKER) == 1); // .data is writable
     }
     check(stack_works(7));
+}
 
-    // --- 2. we can print, because we were handed the right to ---
-    let msg = b"      hello from EL0, through a capability in slot 0.\n";
-    check(write(CONSOLE, msg) == Ok(msg.len() as i64));
+/// A program that checks its own image and then does nothing but exist. Needs no capabilities.
+/// This is the "a real ELF ran and verified itself" program the milestone-7 tests spawn bare.
+fn self_check_client() -> ! {
+    self_check();
 
-    // --- 3. and we cannot print through a slot nobody filled ---
-    //
-    // The answer is NoSuchSlot, and the word matters. It is not "permission denied", which would
-    // mean the console is over there and we are not allowed to touch it. **There is nothing
-    // there.** We cannot name the thing we did not get.
-    check(write(EMPTY, b"this should never appear") == Err(Error::NoSuchSlot));
+    // Make one syscall that needs no capability at all, to prove we reached EL0 and can trap
+    // back in. Yield is authority over ourselves; nobody has to grant it.
+    // SAFETY: `svc` traps to EL1; SYS_YIELD takes no arguments and cannot fail.
+    unsafe { core::arch::asm!("svc #0", in("x8") abi::SYS_YIELD, options(nostack, nomem)) };
 
-    // --- 4. the confused deputy ---
-    //
-    // We know exactly where the kernel's text is. We cannot read one byte of it: the MMU stops
-    // us, and we have already watched a sibling program die trying.
-    //
-    // So we do not try. **We ask the kernel to read it for us.** We hold a genuine console
-    // capability. Printing is a thing we are entitled to do. All we are doing is choosing the
-    // bytes, and the kernel can certainly read them.
-    //
-    // If it does, it will have leaked its own memory, on our behalf, using its own authority,
-    // and every check it performed will have passed. That is the confused deputy, and it is why
-    // capabilities alone are not enough: the kernel has to refuse to be *our* deputy for an
-    // address *we* could not touch.
-    let stolen = unsafe { core::slice::from_raw_parts(KERNEL_TEXT as *const u8, 64) };
-    check(write(CONSOLE, stolen) == Err(Error::BadPointer));
-
-    // ...and the same trick with a length instead of an address, in case the check was lazy
-    // about ranges rather than about pages.
-    let straddle = unsafe { core::slice::from_raw_parts((KERNEL_TEXT - 8) as *const u8, 64) };
-    check(write(CONSOLE, straddle) == Err(Error::BadPointer));
-
-    // And a wholly unmapped low address, which is our own half but not ours.
-    let unmapped = unsafe { core::slice::from_raw_parts(0x7000_0000u64 as *const u8, 16) };
-    check(write(CONSOLE, unmapped) == Err(Error::BadPointer));
-
-    let done = b"      and it refused to read the kernel's memory on my behalf.\n";
-    check(write(CONSOLE, done) == Ok(done.len() as i64));
-
-    // --- 5. IPC, IF we were handed an endpoint ---
-    //
-    // Slot 1 might hold a SEND capability on an endpoint. If it does, send a word across it, to
-    // whoever is listening on the other end. If it does not, `invoke` says `NoSuchSlot` and we
-    // simply move on: not every spawn of this program is given someone to talk to. Any *other*
-    // error would be a real bug (we asked to send and were told no for a reason we did not
-    // expect), and we die on it.
-    let sent = unsafe { invoke(ENDPOINT, abi::endpoint::SEND, HELLO_WORD, 0, 0) };
-    match Error::from_ret(sent) {
-        None => {
-            let m = b"      and sent a word to a server through slot 1.\n";
-            check(write(CONSOLE, m) == Ok(m.len() as i64));
-        }
-        Some(Error::NoSuchSlot) => {} // not handed an endpoint this time
-        Some(_) => fail(),
-    }
-
-    // Everything held. Now spin, with no syscall, no yield and not one function call, so that the
-    // only thing in the universe that can take the CPU back is a timer interrupt landing between
-    // two of these instructions. DECISIONS.md §5.
     loop {
         core::hint::spin_loop();
     }
 }
 
-/// Print, through a capability. `Ok(n)` or an `Error`.
-fn write(cap: u64, bytes: &[u8]) -> Result<i64, Error> {
-    let r = unsafe {
-        invoke(
-            cap,
-            console::WRITE,
-            bytes.as_ptr() as u64,
-            bytes.len() as u64,
-            0,
-        )
-    };
-    match Error::from_ret(r) {
-        Some(e) => Err(e),
-        None => Ok(r),
+/// A program that checks its own image and then prints, through the console server, using the
+/// endpoints and shared page the kernel handed it.
+fn printing_client() -> ! {
+    self_check();
+
+    // These cannot fail: this role is only ever spawned WITH the console, so `print` holds its
+    // capabilities. A failure would be a `brk`, which is what we want if the wiring is wrong.
+    check(print(b"      hello from EL0, printed by a driver that also runs at EL0.\n").is_ok());
+    check(print(b"      the kernel never saw these bytes.\n").is_ok());
+
+    // Done. Spin, so the timer can prove it still preempts us. No syscall, no yield, no call.
+    loop {
+        core::hint::spin_loop();
     }
 }
 
-/// The only way this program can act on anything outside itself.
+/// Print `bytes` by handing them to the console server through shared memory.
 ///
+/// Returns `Ok` if we hold the endpoints to reach the server, `Err(NoSuchSlot)` if we were not
+/// given them. The bytes go in the shared page; only the length crosses the endpoint.
+fn print(bytes: &[u8]) -> Result<(), Error> {
+    let n = bytes.len().min(4096);
+
+    // SAFETY: the shared page is mapped read/write in our address space. We own it between an
+    // ack and the next send, which the reply below is what guarantees.
+    let shared = SHARED_VA as *mut u8;
+    for (i, &b) in bytes[..n].iter().enumerate() {
+        unsafe { core::ptr::write_volatile(shared.add(i), b) };
+    }
+
+    // The length is the message. The data is already in place, shared, uncopied.
+    let r = unsafe { invoke(REQUEST, endpoint::SEND, n as u64, 0, 0) };
+    if let Some(e) = Error::from_ret(r) {
+        return Err(e); // e.g. NoSuchSlot: we were not handed a console
+    }
+
+    // Wait for the server to finish reading the buffer before we touch it again.
+    let (_ack, _, _) = recv(REPLY);
+    Ok(())
+}
+
+/// Write one byte to the UART we own, spinning while the transmit FIFO is full. **This is the
+/// driver.** It used to be `Pl011::write_byte` in the kernel.
+fn uart_put(byte: u8) {
+    // SAFETY: UART_VA is our device mapping of the PL011, established at spawn. The kernel
+    // configured the device at boot; we only transmit.
+    unsafe {
+        let fr = (UART_VA + UART_FR) as *const u32;
+        while core::ptr::read_volatile(fr) & UART_FR_TXFF != 0 {
+            core::hint::spin_loop();
+        }
+        core::ptr::write_volatile((UART_VA + UART_DR) as *mut u32, byte as u32);
+    }
+}
+
+// --- the two IPC primitives, over `svc` ---
+
+fn send(slot: u64, w0: u64, w1: u64, w2: u64) -> i64 {
+    // SAFETY: `svc` traps to EL1, which validates the capability in `slot`.
+    unsafe { invoke(slot, endpoint::SEND, w0, w1, w2) }
+}
+
+fn recv(slot: u64) -> (u64, u64, u64) {
+    let (mut w0, mut w1, mut w2): (u64, u64, u64);
+    // SAFETY: as above. RECV returns three words in x0/x1/x2.
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("x8") abi::SYS_INVOKE,
+            inlateout("x0") slot => w0,
+            in("x1") endpoint::RECV,
+            lateout("x1") w1,
+            lateout("x2") w2,
+            in("x3") 0u64,
+            in("x4") 0u64,
+            options(nostack),
+        );
+    }
+    (w0, w1, w2)
+}
+
 /// # Safety
-/// `svc` traps to EL1. The kernel validates everything; that is its job and the whole point.
+/// `svc` traps to EL1. The kernel validates everything, which is its whole job.
 unsafe fn invoke(cap: u64, method: u64, a0: u64, a1: u64, a2: u64) -> i64 {
     let ret: i64;
     unsafe {
@@ -172,7 +224,6 @@ unsafe fn invoke(cap: u64, method: u64, a0: u64, a1: u64, a2: u64) -> i64 {
     ret
 }
 
-/// Recurse a little, to prove `SP_EL0` points at real, writable memory.
 #[inline(never)]
 fn stack_works(n: u64) -> bool {
     let local = [n; 8];
@@ -183,11 +234,8 @@ fn stack_works(n: u64) -> bool {
     stack_works(n - 1)
 }
 
-/// **The only way this program can say "no".**
-///
-/// A `brk` from EL0 is a fault, and the kernel kills us for it. Which is exactly the signal we
-/// want: a failed expectation must be indistinguishable from a broken program, because it *is*
-/// one. The kernel needs no ABI to hear it, and no data crosses the boundary.
+/// The only way this program can say "no": a `brk`, which the kernel treats as a fault and kills
+/// us for. A failed check must be indistinguishable from a broken program, because it is one.
 fn check(ok: bool) {
     if !ok {
         fail();
@@ -195,7 +243,6 @@ fn check(ok: bool) {
 }
 
 fn fail() -> ! {
-    // SAFETY: this deliberately traps.
     unsafe { core::arch::asm!("brk #0", options(nostack, nomem)) };
     loop {}
 }

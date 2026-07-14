@@ -221,6 +221,20 @@ impl Flags {
         Flags(AF | SH_INNER | attr_index(mair::NORMAL) | AP_RW_EL0 | UXN | PXN)
     }
 
+    /// **User device memory (milestone 8): a driver's MMIO, at EL0.**
+    ///
+    /// This is the flag that lets a driver leave the kernel. A userspace console server holds a
+    /// mapping of the PL011's registers with *these* bits, and its EL0 stores go straight to the
+    /// hardware. Device-typed (so the CPU does not cache or reorder register writes, exactly as
+    /// [`device`](Self::device) for the kernel's own MMIO), user read/write, and never
+    /// executable.
+    ///
+    /// No `SH_INNER`: shareability is meaningless for device memory and the architecture ignores
+    /// the field. See the note on [`device`](Self::device).
+    pub const fn user_device() -> Self {
+        Flags(AF | attr_index(mair::DEVICE) | AP_RW_EL0 | UXN | PXN)
+    }
+
     pub const fn bits(self) -> u64 {
         self.0
     }
@@ -278,6 +292,16 @@ mod flag_tests {
         assert!(!f.is_writable(), "an ELF's .rodata is writable");
         assert!(!f.is_user_executable(), "an ELF's .rodata is executable at EL0");
         assert!(!f.is_kernel_executable(), "an ELF's .rodata is executable at EL1");
+    }
+
+    #[test]
+    fn user_device_is_device_typed_user_accessible_and_never_executable() {
+        let f = Flags::user_device();
+        assert!(f.is_user_accessible(), "a driver at EL0 cannot reach its own MMIO");
+        assert!(f.is_writable(), "a driver cannot write its MMIO");
+        assert!(!f.is_user_executable() && !f.is_kernel_executable());
+        // Device attr index, not normal: the CPU must not cache or reorder register writes.
+        assert_eq!(f.bits() & (0b111 << 2), (mair::DEVICE << 2), "not device-typed");
     }
 
     #[test]

@@ -224,6 +224,7 @@ pub fn slab_stats() -> (usize, usize) {
     (s.allocated(), s.capacity())
 }
 
+#[allow(dead_code)] // boot diagnostics, excluded from test builds
 pub fn print_summary() {
     let (heap_used, heap_total) = stats();
     let (slab_used, slab_cap) = slab_stats();

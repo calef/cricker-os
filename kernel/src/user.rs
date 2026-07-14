@@ -108,8 +108,40 @@ impl AddressSpace {
     /// map is for.
     pub fn map_new(&mut self, va: u64, flags: Flags) -> Result<&'static mut [u8], MapError> {
         let frame = memory::alloc().ok_or(MapError::OutOfFrames)?;
-        self.frames.push(frame);
+        self.frames.push(frame); // owned: freed when the address space dies
+        self.map_at(va, frame.addr(), flags)?;
 
+        // SAFETY: the frame is ours, freshly allocated, and the direct map is valid for it.
+        // 'static is a lie we tell for convenience and then keep: the frame outlives every use
+        // of this slice, because `Drop` is the only thing that frees it.
+        let page = unsafe {
+            core::slice::from_raw_parts_mut(
+                mmu::phys_to_virt(frame.addr()) as *mut u8,
+                FRAME_SIZE as usize,
+            )
+        };
+        page.fill(0);
+        Ok(page)
+    }
+
+    /// Map an **existing** physical page into this address space, at `va`, with `flags`.
+    ///
+    /// The frame is **not** recorded for freeing, because we do not own it: it is either a
+    /// device's MMIO (the PL011, for a console server) or a page **shared** with another address
+    /// space (a message buffer). Freeing MMIO is meaningless, and freeing a shared page when one
+    /// of its two holders dies would hand live memory to the allocator. So `Drop` leaves it
+    /// alone. The intermediate page tables reaching it *are* recorded, exactly as in `map_new`,
+    /// because those genuinely belong to this address space.
+    ///
+    /// This one function is what lets a driver leave the kernel: it is how the UART's registers
+    /// get into a userspace server's address space, and how a shared buffer gets into both a
+    /// client's and a server's.
+    pub fn map_physical(&mut self, va: u64, phys: u64, flags: Flags) -> Result<(), MapError> {
+        self.map_at(va, phys, flags)
+    }
+
+    /// Map `phys` at `va`. Intermediate tables are recorded for freeing; the target is not.
+    fn map_at(&mut self, va: u64, phys: u64, flags: Flags) -> Result<(), MapError> {
         let root = self.root.addr();
         let recorded = &mut self.frames;
 
@@ -129,19 +161,7 @@ impl AddressSpace {
             )
         };
 
-        mapper.map(va, frame.addr(), flags)?;
-
-        // SAFETY: the frame is ours, freshly allocated, and the direct map is valid for it.
-        // 'static is a lie we tell for convenience and then keep: the frame outlives every use
-        // of this slice, because `Drop` is the only thing that frees it.
-        let page = unsafe {
-            core::slice::from_raw_parts_mut(
-                mmu::phys_to_virt(frame.addr()) as *mut u8,
-                FRAME_SIZE as usize,
-            )
-        };
-        page.fill(0);
-        Ok(page)
+        mapper.map(va, phys, flags)
     }
 
     /// The physical address of the L0 table. What goes in `TTBR0_EL1`.
@@ -267,33 +287,52 @@ pub fn initrd() -> Option<&'static [u8]> {
     })
 }
 
-/// Load an ELF and become it. Never returns.
+/// A physical page to map into a new process's address space, at a chosen VA.
 ///
-/// On a bad binary this kills the calling thread. **It does not panic.** A user program the
-/// kernel cannot load is a user program's problem.
+/// The frame is **not** owned by the process (it is shared, or it is device MMIO), so it is not
+/// freed when the process dies. See [`AddressSpace::map_physical`].
+#[derive(Clone, Copy)]
+pub struct Mapping {
+    pub va: u64,
+    pub phys: u64,
+    pub flags: Flags,
+}
+
+/// **Everything a new process is handed at birth.** Its world, made explicit.
+///
+/// A capability system has no ambient environment: no inherited file descriptors, no `PATH`, no
+/// uid. So a process gets *exactly* what is in this struct and nothing else. The whole of what it
+/// can do is a function of `arg0`, `grants`, and `maps`, and reading a `Spawn` literal tells you
+/// the complete authority of the thing you are about to start.
+pub struct Spawn<'a> {
+    /// Lands in `x0` at `_start`. A tiny channel for "which role are you" that needs no
+    /// capability, the way a real kernel hands a new process its argc.
+    pub arg0: u64,
+    /// Capabilities, granted into slots 0, 1, 2, ... in order.
+    pub grants: &'a [crate::cap::Cap],
+    /// Extra pages: a shared buffer, a device's registers. Mapped after the ELF's own segments.
+    pub maps: &'a [Mapping],
+}
+
+/// Load the initrd program and become it, with nothing but a fresh stack. Never returns.
+#[allow(dead_code)] // the bare-client path, exercised by tests
+///
+/// The bare case: no capabilities, no extra mappings, no argument. It can run its own code and
+/// touch its own memory, and it can name nothing else in the system.
 pub fn exec_elf(image: &[u8]) -> ! {
-    exec_elf_with(image, true)
+    run(
+        image,
+        Spawn {
+            arg0: 0,
+            grants: &[],
+            maps: &[],
+        },
+    )
 }
 
-/// Load an ELF, hand it a console (slot 0) and a **SEND capability on `ep`** (slot 1), and run
-/// it. This is how a client is wired to a server: the endpoint is the only name it has for the
-/// thing on the other end, and `WRITE`-only means it can send and cannot receive.
-pub fn exec_elf_with_endpoint(image: &[u8], ep: usize) -> ! {
-    exec_elf_inner(image, true, Some(ep))
-}
-
-/// Load an ELF and become it, choosing whether to hand it a console.
-///
-/// **`console: false` is not a test contrivance, it is the demonstration.** A program with no
-/// console capability cannot print. Not "is denied when it tries": it holds an empty slot, so
-/// there is *nothing to invoke*, and `NoSuchSlot` is the answer. It cannot name the console,
-/// because naming a thing you were not handed is not an operation this kernel has.
-pub fn exec_elf_with(image: &[u8], console: bool) -> ! {
-    exec_elf_inner(image, console, None)
-}
-
-fn exec_elf_inner(image: &[u8], console: bool, endpoint: Option<usize>) -> ! {
-    let (space, entry) = match load(image) {
+/// Load the initrd program and become it, handed the world described by `spawn`. Never returns.
+pub fn run(image: &[u8], spawn: Spawn) -> ! {
+    let (mut space, entry) = match load(image) {
         Ok(v) => v,
         Err(e) => {
             crate::println!();
@@ -303,24 +342,24 @@ fn exec_elf_inner(image: &[u8], console: bool, endpoint: Option<usize>) -> ! {
         }
     };
 
+    // The extra pages go in BEFORE we hand the address space off: a shared message buffer, or a
+    // device's MMIO for a driver. This is the line that puts a UART into a userspace process.
+    for m in spawn.maps {
+        space
+            .map_physical(m.va, m.phys, m.flags)
+            .expect("could not map a Spawn page into the new address space");
+    }
+
     crate::sched::adopt_address_space(space);
 
-    // HAND IT ITS WORLD, and note how little that is.
-    //
-    // Slot 0: a console it may WRITE to, and may **not** GRANT onward. That is the entire set of
-    // things this process can name. There is no path it can say, no uid it can be, and no second
-    // thing to reach for. A capability system's "environment" is not a variable, it is this.
-    if console {
-        crate::sched::grant(crate::cap::console_cap()).expect("no free capability slot");
-    }
-    if let Some(ep) = endpoint {
-        // WRITE only: it may SEND and may not RECV. Lands in slot 1, the first free slot after
-        // the console.
-        crate::sched::grant(crate::cap::endpoint_cap(ep, crate::cap::Rights::WRITE))
-            .expect("no free capability slot");
+    // HAND IT ITS WORLD. Granted in order, so slot 0 is `grants[0]`, and reading the caller's
+    // `Spawn` literal tells you the entire authority of the process. There is no path it can
+    // say, no uid it can be. A capability system's "environment" is not a variable, it is this.
+    for &cap in spawn.grants {
+        crate::sched::grant(cap).expect("no free capability slot");
     }
 
-    enter_at(entry)
+    enter_at(entry, spawn.arg0)
 }
 
 /// Load a program, and become it. Never returns.
@@ -358,11 +397,16 @@ pub unsafe fn exec(program: &[u8]) -> ! {
 
     crate::sched::adopt_address_space(space);
 
-    enter_at(USER_CODE_VA)
+    enter_at(USER_CODE_VA, 0)
 }
 
-/// Drop to EL0 at `entry`, on a fresh stack. Never returns.
-fn enter_at(entry: u64) -> ! {
+/// Drop to EL0 at `entry`, on a fresh stack, with `arg0` in `x0`. Never returns.
+///
+/// `arg0` reaches `_start` as its first argument (AAPCS64 puts it in `x0`). It is how the kernel
+/// tells one binary which of several roles to play, the way a real kernel hands a new process
+/// its argc/argv. See the console server, which is the same ELF as its client with a different
+/// `arg0`.
+fn enter_at(entry: u64, arg0: u64) -> ! {
     // THE TRAPFRAME IS NOT AN ORDINARY LOCAL, and this cost us an afternoon.
     //
     // It must sit at the TOP OF THIS THREAD'S KERNEL STACK, because that is where the hardware
@@ -393,8 +437,10 @@ fn enter_at(entry: u64) -> ! {
     // aligned and TrapFrame is 272, a multiple of 16), EL0's code and stack are mapped, and
     // TTBR0 is installed.
     unsafe {
+        let mut x = [0u64; 31];
+        x[0] = arg0; // _start's first argument
         frame.write(TrapFrame {
-            x: [0; 31],
+            x,
             elr: entry,             // ...where `eret` jumps
             spsr: SPSR_EL0T,        // ...and the exception level it jumps to
             sp_el0: USER_STACK_TOP, // ...on the stack it will jump onto
@@ -517,6 +563,117 @@ macro_rules! user_program {
 user_program!(hello, USER_HELLO_START, USER_HELLO_END);
 user_program!(spin, USER_SPIN_START, USER_SPIN_END);
 user_program!(outlaw, USER_OUTLAW_START, USER_OUTLAW_END);
+
+/// Bringing the console driver up in userspace, and wiring a client to it.
+///
+/// **This is the milestone-8 payload.** It creates the shared machinery (two endpoints and a
+/// shared page), spawns the console *server* as a user process that owns the UART, and returns
+/// what a client needs to reach it. The server binary and the client binary are the *same ELF*,
+/// told apart by the argument in `x0`.
+#[allow(dead_code)] // the demo payload: exercised by the boot demo, mechanism unit-tested
+pub mod console_service {
+    use super::*;
+    use crate::cap::{Rights, endpoint_cap};
+
+    /// The PL011's physical address on QEMU `virt`. The kernel maps it for its own debug output;
+    /// here we hand a *second* mapping of the same registers to the userspace server. On real
+    /// hardware you would give the server exclusive ownership; in QEMU both mappings are fine,
+    /// and the kernel's is now used only for panics and boot, not for anyone's `print`.
+    const PL011_PHYS: u64 = 0x0900_0000;
+
+    /// Printing-client role (`x0`), matching user/src/hello.rs.
+    const ROLE_CLIENT: u64 = 2;
+    /// Console-server role.
+    const ROLE_SERVER: u64 = 1;
+
+    /// What a client needs to talk to the console server: two endpoints and the shared page.
+    #[derive(Clone, Copy)]
+    pub struct Console {
+        pub request: usize,
+        pub reply: usize,
+        pub shared_phys: u64,
+    }
+
+    /// Spawn the console server as a user process and return a handle for wiring up clients.
+    ///
+    /// The server holds: `RECV` on `request` (slot 0), `SEND` on `reply` (slot 1), the shared
+    /// page mapped **read-only** (it only reads what clients wrote), and the **UART's registers**
+    /// mapped as user device memory. That last mapping is the whole milestone: a driver, at EL0,
+    /// holding its hardware.
+    pub fn start(image: &'static [u8]) -> Console {
+        let request = crate::sched::create_endpoint();
+        let reply = crate::sched::create_endpoint();
+        let shared_phys = crate::memory::alloc()
+            .expect("no frame for the shared console buffer")
+            .addr();
+
+        // Zero the shared page so a client's first print cannot leak stale RAM.
+        // SAFETY: freshly allocated, reachable through the direct map, owned by nobody yet.
+        unsafe {
+            core::ptr::write_bytes(mmu::phys_to_virt(shared_phys) as *mut u8, 0, FRAME_SIZE as usize);
+        }
+
+        crate::sched::spawn(move || {
+            run(
+                image,
+                Spawn {
+                    arg0: ROLE_SERVER,
+                    grants: &[
+                        endpoint_cap(request, Rights::READ), // slot 0: RECV requests
+                        endpoint_cap(reply, Rights::WRITE),  // slot 1: SEND acks
+                    ],
+                    maps: &[
+                        Mapping {
+                            va: SHARED_VA,
+                            phys: shared_phys,
+                            flags: Flags::user_rodata(),
+                        },
+                        Mapping {
+                            va: UART_VA,
+                            phys: PL011_PHYS,
+                            flags: Flags::user_device(),
+                        },
+                    ],
+                },
+            )
+        })
+        .expect("could not spawn the console server");
+
+        Console {
+            request,
+            reply,
+            shared_phys,
+        }
+    }
+
+    /// Spawn a client wired to `console`: `SEND` on request (slot 0), `RECV` on reply (slot 1),
+    /// and the shared page mapped **read/write** (it writes the text it wants printed).
+    pub fn spawn_client(image: &'static [u8], console: Console) {
+        crate::sched::spawn(move || {
+            run(
+                image,
+                Spawn {
+                    arg0: ROLE_CLIENT,
+                    grants: &[
+                        endpoint_cap(console.request, Rights::WRITE), // slot 0: SEND
+                        endpoint_cap(console.reply, Rights::READ),    // slot 1: RECV ack
+                    ],
+                    maps: &[Mapping {
+                        va: SHARED_VA,
+                        phys: console.shared_phys,
+                        flags: Flags::user_data(),
+                    }],
+                },
+            )
+        })
+        .expect("could not spawn a console client");
+    }
+
+    /// The user VAs the client and server agree on. Kept here so the kernel and the binary have
+    /// one source of truth; they must match user/src/hello.rs.
+    const SHARED_VA: u64 = 0x0000_0000_0060_0000;
+    const UART_VA: u64 = 0x0000_0000_0070_0000;
+}
 
 #[cfg(test)]
 mod tests {
@@ -850,35 +1007,117 @@ mod tests {
     /// own memory, and it kills itself if either is wrong. So **no fault** means every one of
     /// those held.
     #[test_case]
-    fn a_capability_is_the_only_way_to_print() {
+    fn a_user_client_moves_data_through_shared_memory() {
+        // What the client prints first. Must match user/src/hello.rs.
+        const FIRST_LINE: &[u8] =
+            b"      hello from EL0, printed by a driver that also runs at EL0.\n";
+        const SHARED_VA: u64 = 0x0000_0000_0060_0000;
+
+        static CAPTURED: AtomicBool = AtomicBool::new(false);
+        static LEN: AtomicU64 = AtomicU64::new(0);
+        static mut BUF: [u8; 128] = [0; 128];
+
         let image = initrd().expect("no initrd");
+        let request = sched::create_endpoint();
+        let reply = sched::create_endpoint();
 
-        // With it.
-        let svc = SVC_COUNT.load(Ordering::Relaxed);
+        // The shared page, owned by the test (not by either address space), so `map_physical`
+        // will not free it. Deliberately leaked: the client spins forever, so there is no safe
+        // moment to reclaim it, and one page is a fine price for the test.
+        let shared = crate::memory::alloc().expect("no shared frame").addr();
+
+        // The server: a kernel thread that reads the shared page and records the first message.
+        sched::spawn(move || {
+            loop {
+                let m = sched::ipc_recv(request);
+                let len = m[0].min(128);
+                if !CAPTURED.load(Ordering::SeqCst) {
+                    // SAFETY: the shared frame is ours via the direct map; the client wrote `len`
+                    // bytes before sending. Single-threaded capture.
+                    let src = crate::arch::mmu::phys_to_virt(shared) as *const u8;
+                    let dst = &raw mut BUF as *mut u8;
+                    for i in 0..len as usize {
+                        // SAFETY: both pointers are in range; BUF is 128 bytes and len <= 128.
+                        unsafe { core::ptr::write_volatile(dst.add(i), core::ptr::read_volatile(src.add(i))) };
+                    }
+                    LEN.store(len, Ordering::SeqCst);
+                    CAPTURED.store(true, Ordering::SeqCst);
+                }
+                sched::ipc_send(reply, [0, 0, 0]); // ack, so the client reuses the buffer
+            }
+        })
+        .expect("spawn failed");
+
+        // The client: the real binary, client role, wired to the endpoints and the shared page.
         let faults = USER_FAULTS.load(Ordering::Relaxed);
-
-        sched::spawn(move || exec_elf(image)).expect("spawn failed");
+        sched::spawn(move || {
+            run(
+                image,
+                Spawn {
+                    arg0: 2, // printing-client role (matches user/src/hello.rs)
+                    grants: &[
+                        crate::cap::endpoint_cap(request, crate::cap::Rights::WRITE),
+                        crate::cap::endpoint_cap(reply, crate::cap::Rights::READ),
+                    ],
+                    maps: &[Mapping {
+                        va: SHARED_VA,
+                        phys: shared,
+                        flags: Flags::user_data(),
+                    }],
+                },
+            )
+        })
+        .expect("spawn failed");
 
         assert!(
-            wait_for(|| SVC_COUNT.load(Ordering::Relaxed) > svc),
-            "the program never made a syscall",
+            wait_for(|| CAPTURED.load(Ordering::SeqCst)),
+            "the server never received a message through shared memory",
         );
         assert_eq!(
             USER_FAULTS.load(Ordering::Relaxed),
             faults,
-            "the program printed, and then one of its expectations FAILED: an empty slot did not \
-             say NoSuchSlot, or the kernel agreed to read its own memory on the program's behalf",
+            "the client faulted instead of printing cleanly",
         );
 
-        // Without it. Same bytes. Empty table.
-        let faults = USER_FAULTS.load(Ordering::Relaxed);
+        let len = LEN.load(Ordering::SeqCst) as usize;
+        // SAFETY: written by the server thread, which stopped touching BUF once CAPTURED.
+        let got = unsafe { core::slice::from_raw_parts(&raw const BUF as *const u8, len) };
+        assert_eq!(got, FIRST_LINE, "the wrong bytes arrived through shared memory");
+    }
 
-        sched::spawn(move || exec_elf_with(image, false)).expect("spawn failed");
+    /// `map_physical` puts one physical frame into an address space at a chosen VA, with exactly
+    /// the permissions asked for and no more. The mechanism a driver leaves the kernel on.
+    #[test_case]
+    fn map_physical_maps_a_shared_frame_and_a_device_page() {
+        const DATA_VA: u64 = 0x0000_0000_0060_0000;
+        const DEV_VA: u64 = 0x0000_0000_0070_0000;
+        const PL011_PHYS: u64 = 0x0900_0000;
 
-        assert!(
-            wait_for(|| USER_FAULTS.load(Ordering::Relaxed) > faults),
-            "a program with an EMPTY capability table printed anyway",
-        );
+        let mut space = AddressSpace::new().expect("no address space");
+        let frame = crate::memory::alloc().expect("no frame").addr();
+
+        space
+            .map_physical(DATA_VA, frame, Flags::user_data())
+            .expect("shared map failed");
+        space
+            .map_physical(DEV_VA, PL011_PHYS, Flags::user_device())
+            .expect("device map failed");
+
+        // SAFETY: nothing is at EL0; we are a kernel thread mid-test.
+        unsafe { mmu::activate_user(space.root()) };
+
+        let (data_pa, data_f) = mmu::translate_user(DATA_VA).expect("shared page not mapped");
+        assert_eq!(data_pa, frame, "shared page maps the wrong frame");
+        assert!(data_f.is_user_accessible() && data_f.is_writable());
+        assert!(!data_f.is_user_executable());
+
+        let (dev_pa, dev_f) = mmu::translate_user(DEV_VA).expect("device page not mapped");
+        assert_eq!(dev_pa, PL011_PHYS, "device page maps the wrong physical address");
+        assert!(dev_f.is_user_accessible() && dev_f.is_writable());
+
+        mmu::deactivate_user();
+        crate::memory::free(Frame::from_addr(frame));
+        drop(space);
     }
 
     /// A thread can name nothing until somebody hands it something.
@@ -894,49 +1133,6 @@ mod tests {
                 "slot {slot} is not empty in a thread nobody granted anything",
             );
         }
-    }
-
-    /// **A user program sends a word to a server it can only name.**
-    ///
-    /// The client holds one SEND capability on an endpoint, in slot 1, and no other way to reach
-    /// or even see the server. The server is a kernel thread blocked on RECV. This is the whole
-    /// of 7e end to end, across the EL0 boundary: the message `0x5eed_1e55` leaves a user
-    /// register, crosses the `svc`, rendezvouses in the scheduler, and lands in a server that the
-    /// client cannot address any other way.
-    #[test_case]
-    fn a_user_program_can_send_to_a_server_over_an_endpoint() {
-        static GOT: AtomicU64 = AtomicU64::new(0);
-        static DONE: AtomicBool = AtomicBool::new(false);
-
-        let ep = sched::create_endpoint();
-
-        sched::spawn(move || {
-            let msg = sched::ipc_recv(ep);
-            GOT.store(msg[0], Ordering::SeqCst);
-            DONE.store(true, Ordering::SeqCst);
-        })
-        .expect("spawn failed");
-
-        let faults = USER_FAULTS.load(Ordering::Relaxed);
-        sched::spawn(move || {
-            exec_elf_with_endpoint(initrd().expect("no initrd"), ep)
-        })
-        .expect("spawn failed");
-
-        assert!(
-            wait_for(|| DONE.load(Ordering::SeqCst)),
-            "the server never received the client's message",
-        );
-        assert_eq!(
-            GOT.load(Ordering::SeqCst),
-            0x5eed_1e55,
-            "the wrong word crossed the boundary",
-        );
-        assert_eq!(
-            USER_FAULTS.load(Ordering::Relaxed),
-            faults,
-            "the client faulted instead of sending cleanly",
-        );
     }
 
     /// A dead user thread's address space is freed, all of it, including its page tables.

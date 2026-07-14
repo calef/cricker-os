@@ -492,6 +492,14 @@ pub fn deactivate_user() {
 ///
 /// So we do not re-implement the permission model in software and hope it agrees with the
 /// silicon. **We ask the silicon.**
+///
+/// `allow(dead_code)` since milestone 8: its caller was the kernel's `console::write`, which read
+/// a user's bytes on the user's behalf and needed this to avoid being a confused deputy. That
+/// syscall left the kernel when the console driver did (the data path is shared memory now, and
+/// the kernel is not on it). This primitive stays because the *next* syscall that takes a user
+/// pointer — a filesystem server's `read`, say — will need exactly it, and because notes/
+/// capabilities.md leans on it. It is kept, not speculative: the technique is load-bearing.
+#[allow(dead_code)]
 pub fn user_can_read(va: u64) -> bool {
     // SAFETY: address translation has no side effects beyond PAR_EL1.
     unsafe { translate_as_el0(va, false) }
