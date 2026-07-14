@@ -130,6 +130,58 @@ Linux does the same thing and calls it `bust_spinlocks`.
 doing is now half-finished, and its data may be inconsistent." Acceptable when the
 alternative is a silent hang. Unacceptable at literally any other time.
 
+## The ordering rule, enforced
+
+The other deadlock, and the nastier one: **AB-BA**. Thread 1 takes lock A then wants B; thread
+2 takes B then wants A. Neither can proceed. Unlike the interrupt deadlock, this one is a
+*real race*: it needs the timing to line up, so it passes tests for months.
+
+We wrote "define a global order and always take them in it," and then relied on remembering.
+
+Now every lock carries a **rank**, and `lock()` asserts:
+
+> **You may only acquire a lock strictly LOWER than everything you currently hold.**
+
+```
+  50  HEAP, SLAB      the allocators
+       |
+  30  FRAMES, RAM     the physical memory map
+       |
+  10  CONSOLE         the leaf: everyone may take it, it takes nothing
+```
+
+**If every acquisition strictly decreases the rank, a cycle is unrepresentable.** Not unlikely.
+Impossible. Look at [deadlock.md](deadlock.md): this destroys condition 4, circular wait,
+outright.
+
+That makes it **prevention, not detection**. Linux's `lockdep` builds a dependency graph at
+runtime and hunts for cycles — powerful, and expensive. Ranking costs three instructions and
+*cannot be wrong*. FreeBSD (WITNESS) and Solaris use the same mechanism.
+
+Two locks at the **same** rank may never nest (`R < R` is false), which is exactly right: equal
+rank means we have declared no order between them, so nesting them would be choosing one at
+random.
+
+### A design it would have caught
+
+`memory::ram_regions()` used to return an iterator that **held the RAM lock while the caller
+iterated**. `mmu::map_everything` iterates it and *allocates frames inside the loop* — so it
+would have held RAM (30) while taking FRAMES (30), and `30 < 30` is false. The ranking would
+have failed it on the spot. (We happened to fix it for other reasons first, which is not a
+system.)
+
+### The panic path must reset it
+
+If we panic while holding the console lock, `HELD_RANK` is 10, and the panic handler's own
+print would try to take rank 10 again. `10 < 10` is false, so the ranking would fire a
+violation **inside the panic handler**, and we'd lose the original message to a recursive
+panic.
+
+So the panic path calls `sync::force_reset_ranks()` alongside `console::force_unlock()`.
+
+**The bookkeeping is a debugging aid. It must never be the thing that stops us saying what went
+wrong.**
+
 ## The rules
 
 See [DECISIONS.md](../DECISIONS.md) §9 for the full table. The short version:

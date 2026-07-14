@@ -49,14 +49,115 @@
 use crate::arch::interrupts;
 use core::mem::ManuallyDrop;
 use core::ops::{Deref, DerefMut};
+use core::sync::atomic::{AtomicU32, Ordering};
 
-/// A spinlock that masks interrupts while it is held.
+/// # Lock ranking: the rule from DECISIONS.md §9, enforced by the machine
+///
+/// > Two locks? Define a global order and always take them in it. Otherwise **AB-BA
+/// > deadlock**, which is a *real* race and far nastier than the interrupt deadlock this
+/// > type's other half prevents.
+///
+/// We wrote that rule and then relied on discipline, which is to say on remembering. Now
+/// every lock carries a **rank**, and the rule is:
+///
+/// > **You may only acquire a lock strictly LOWER than everything you currently hold.**
+///
+/// If every acquisition strictly decreases the rank, a cycle is **unrepresentable**. Not
+/// unlikely. Impossible. That is why this is *prevention* and not *detection*: it kills the
+/// circular-wait condition outright ([notes/deadlock.md](../notes/deadlock.md)), rather than
+/// building a graph and hunting for cycles the way Linux's `lockdep` does.
+///
+/// FreeBSD (WITNESS) and Solaris use the same mechanism, for the same reason: it costs three
+/// instructions and it cannot be wrong.
+///
+/// ## The hierarchy
+///
+/// ```text
+///   50  HEAP, SLAB      the allocators
+///        |
+///   30  FRAMES, RAM     the physical memory map
+///        |
+///   10  CONSOLE         the leaf: everyone may take it, it takes nothing
+/// ```
+///
+/// Two locks at the **same** rank may never be nested (`R < R` is false), which is exactly
+/// right: equal rank means we have declared no order between them, so nesting them would be
+/// choosing one at random.
+///
+/// The nestings this permits, and they are the ones that actually happen:
+///
+/// - **SLAB (50) → FRAMES (30)**: a size class runs dry and takes a page from the frame
+///   allocator, while holding its own lock.
+/// - **anything → CONSOLE (10)**: a panic prints while holding a lock. Which is why the
+///   console must be the leaf, and why it takes nothing itself.
+///
+/// ## A design this would have caught
+///
+/// `memory::ram_regions()` used to be an iterator that held the RAM lock while the caller
+/// iterated. `mmu::map_everything` iterates it *and allocates frames inside the loop* — so it
+/// would have held RAM (30) while taking FRAMES (30), and `30 < 30` is false. The ranking
+/// would have failed it on the spot. (We happened to fix it for other reasons first.)
+pub mod rank {
+    pub const HEAP: u32 = 50;
+    pub const SLAB: u32 = 50;
+    pub const FRAMES: u32 = 30;
+    pub const RAM: u32 = 30;
+    pub const CONSOLE: u32 = 10;
+
+    /// Holding nothing.
+    pub const NONE: u32 = u32::MAX;
+}
+
+/// The lowest rank currently held on this core.
+///
+/// **Only ever touched with interrupts masked**, because `IrqSafeMutex::lock` masks them
+/// before updating this and `drop` restores them after. So on one core there is no concurrency
+/// on it at all, and the atomic is for `Sync`, not for synchronization.
+///
+/// TODO (SMP): this must become per-CPU. A second core would clobber it, and the ranking would
+/// start reporting violations that never happened, which is worse than not checking.
+static HELD_RANK: AtomicU32 = AtomicU32::new(rank::NONE);
+
+/// What is the lowest-ranked lock we currently hold? Test support.
+#[allow(dead_code)] // used by the tests, and by anyone debugging a lock-order violation
+pub fn current_rank() -> u32 {
+    HELD_RANK.load(Ordering::Relaxed)
+}
+
+/// Would taking a lock of this rank violate the hierarchy? Test support.
+///
+/// Exists because the violation itself is an `assert!`, and an assert in a kernel test is a
+/// dead kernel. This lets the tests check the *predicate* without pulling the trigger.
+#[allow(dead_code)]
+pub fn would_violate(rank: u32) -> bool {
+    rank >= current_rank()
+}
+
+/// Forget everything we thought we held.
+///
+/// # Safety
+///
+/// **Panic and fault paths only**, alongside `console::force_unlock`.
+///
+/// If we panic while holding the console lock (rank 10), then `HELD_RANK` is 10, and the panic
+/// handler's own attempt to print would try to take rank 10 again. `10 < 10` is false, so the
+/// ranking would fire a *lock-order violation panic inside the panic handler*, and we would
+/// lose the original message to a recursive panic.
+///
+/// The bookkeeping is a debugging aid. It must never be the thing that stops us saying what
+/// went wrong.
+pub unsafe fn force_reset_ranks() {
+    HELD_RANK.store(rank::NONE, Ordering::Relaxed);
+}
+
+/// A spinlock that masks interrupts while it is held, and enforces a global lock order.
 ///
 /// **Every lock in the kernel should be one of these.** See the discipline in
 /// DECISIONS.md §9, particularly: keep the critical section short, because interrupts are
 /// off for the whole of it.
 pub struct IrqSafeMutex<T> {
     inner: spin::Mutex<T>,
+    rank: u32,
 }
 
 // SAFETY: same reasoning as any mutex. The lock provides the exclusion.
@@ -64,9 +165,12 @@ unsafe impl<T: Send> Sync for IrqSafeMutex<T> {}
 unsafe impl<T: Send> Send for IrqSafeMutex<T> {}
 
 impl<T> IrqSafeMutex<T> {
-    pub const fn new(value: T) -> Self {
+    /// `rank` comes from [`rank`]. See that module: the number is not decoration, it is the
+    /// thing that makes an AB-BA deadlock unrepresentable.
+    pub const fn new(rank: u32, value: T) -> Self {
         Self {
             inner: spin::Mutex::new(value),
+            rank,
         }
     }
 
@@ -74,9 +178,24 @@ impl<T> IrqSafeMutex<T> {
         // ORDER: mask first, THEN acquire. Reversing these reintroduces the deadlock.
         let irqs_were_enabled = interrupts::disable();
 
+        // From here to the matching restore in `drop`, interrupts are off, so this core is the
+        // only thing that can touch HELD_RANK.
+        let held = HELD_RANK.load(Ordering::Relaxed);
+
+        assert!(
+            self.rank < held,
+            "LOCK ORDER VIOLATION: taking a rank-{} lock while holding rank {}. \
+             Locks must be acquired in strictly decreasing rank. See kernel/src/sync.rs.",
+            self.rank,
+            held,
+        );
+
+        HELD_RANK.store(self.rank, Ordering::Relaxed);
+
         IrqSafeGuard {
             guard: ManuallyDrop::new(self.inner.lock()),
             irqs_were_enabled,
+            previous_rank: held,
         }
     }
 
@@ -102,6 +221,7 @@ impl<T> IrqSafeMutex<T> {
 pub struct IrqSafeGuard<'a, T> {
     guard: ManuallyDrop<spin::MutexGuard<'a, T>>,
     irqs_were_enabled: bool,
+    previous_rank: u32,
 }
 
 impl<T> Drop for IrqSafeGuard<'_, T> {
@@ -111,6 +231,11 @@ impl<T> Drop for IrqSafeGuard<'_, T> {
         //
         // SAFETY: we drop the guard exactly once, here, and never touch it again.
         unsafe { ManuallyDrop::drop(&mut self.guard) };
+
+        // RESTORE the rank we found, not `NONE`. Exactly the same reasoning as the interrupt
+        // state one line below: a lock released inside an outer lock must not report that we
+        // are now holding nothing.
+        HELD_RANK.store(self.previous_rank, Ordering::Relaxed);
 
         // RESTORE, not enable. See the module docs.
         interrupts::restore(self.irqs_were_enabled);
@@ -146,9 +271,9 @@ mod tests {
     #[test_case]
     fn irq_safe_mutex_masks_interrupts_while_held() {
         use crate::arch::interrupts;
-        use crate::sync::IrqSafeMutex;
+        use crate::sync::{IrqSafeMutex, rank};
 
-        static M: IrqSafeMutex<u32> = IrqSafeMutex::new(7);
+        static M: IrqSafeMutex<u32> = IrqSafeMutex::new(rank::FRAMES, 7);
 
         interrupts::enable();
         assert!(interrupts::enabled(), "test setup: IRQs should be on");
@@ -180,9 +305,9 @@ mod tests {
     #[test_case]
     fn irq_safe_mutex_restores_rather_than_enables() {
         use crate::arch::interrupts;
-        use crate::sync::IrqSafeMutex;
+        use crate::sync::{IrqSafeMutex, rank};
 
-        static M: IrqSafeMutex<u32> = IrqSafeMutex::new(0);
+        static M: IrqSafeMutex<u32> = IrqSafeMutex::new(rank::FRAMES, 0);
 
         // Pretend we are inside an interrupt handler: IRQs already masked.
         let outer = interrupts::disable();
@@ -205,10 +330,13 @@ mod tests {
     #[test_case]
     fn nested_locks_restore_correctly() {
         use crate::arch::interrupts;
-        use crate::sync::IrqSafeMutex;
+        use crate::sync::{IrqSafeMutex, rank};
 
-        static A: IrqSafeMutex<u32> = IrqSafeMutex::new(1);
-        static B: IrqSafeMutex<u32> = IrqSafeMutex::new(2);
+        // A is taken first, so A must OUTRANK B. Before the ranking existed this test could
+        // nest any two locks in any order; now the hierarchy is part of the type's contract and
+        // the test has to declare which one is the outer.
+        static A: IrqSafeMutex<u32> = IrqSafeMutex::new(rank::SLAB, 1);
+        static B: IrqSafeMutex<u32> = IrqSafeMutex::new(rank::FRAMES, 2);
 
         interrupts::enable();
 
@@ -229,5 +357,116 @@ mod tests {
         }
 
         assert!(interrupts::enabled(), "the outer guard failed to restore");
+    }
+
+    // --- lock ranking (DECISIONS.md §9) ---
+
+    /// Holding nothing means anything may be taken.
+    #[test_case]
+    fn holding_nothing_permits_any_rank() {
+        use crate::sync::{current_rank, rank, would_violate};
+
+        assert_eq!(current_rank(), rank::NONE, "a previous test leaked a lock");
+        assert!(!would_violate(rank::HEAP));
+        assert!(!would_violate(rank::CONSOLE));
+    }
+
+    /// The rank tracker follows the locks.
+    #[test_case]
+    fn taking_a_lock_records_its_rank() {
+        use crate::sync::{IrqSafeMutex, current_rank, rank};
+
+        static M: IrqSafeMutex<u32> = IrqSafeMutex::new(rank::FRAMES, 0);
+
+        assert_eq!(current_rank(), rank::NONE);
+        {
+            let _g = M.lock();
+            assert_eq!(current_rank(), rank::FRAMES);
+        }
+        assert_eq!(
+            current_rank(),
+            rank::NONE,
+            "the guard did not restore the rank"
+        );
+    }
+
+    /// **The rule.** While holding a lock, you may only take a strictly LOWER one.
+    ///
+    /// If every acquisition strictly decreases, a cycle is *unrepresentable*. Not unlikely.
+    /// Impossible. That is why this is prevention rather than detection: it destroys the
+    /// circular-wait condition outright (notes/deadlock.md), instead of building a graph and
+    /// hunting for cycles the way Linux's lockdep does.
+    #[test_case]
+    fn the_hierarchy_permits_only_strictly_decreasing_ranks() {
+        use crate::sync::{IrqSafeMutex, rank, would_violate};
+
+        static FRAMES: IrqSafeMutex<u32> = IrqSafeMutex::new(rank::FRAMES, 0);
+
+        let _g = FRAMES.lock();
+
+        // Lower: fine. This is the panic path printing while holding the allocator.
+        assert!(
+            !would_violate(rank::CONSOLE),
+            "console must be takeable from anywhere"
+        );
+
+        // Higher: forbidden. Taking the heap while holding frames is the other half of an
+        // AB-BA deadlock waiting to be written.
+        assert!(
+            would_violate(rank::HEAP),
+            "rank 50 while holding rank 30 must be refused"
+        );
+
+        // EQUAL: also forbidden, and this is the subtle one. Same rank means we have declared
+        // no order between the two locks, so nesting them would be choosing one at random.
+        assert!(
+            would_violate(rank::RAM),
+            "two locks of equal rank must never nest: we never said which comes first"
+        );
+    }
+
+    /// Nesting restores the OUTER rank, not `NONE`.
+    ///
+    /// Exactly the same shape as the interrupt save/restore two lines away in `drop`, and wrong
+    /// in exactly the same way if you get it wrong: releasing an inner lock must not report
+    /// that we are now holding nothing, or the next acquisition would be checked against the
+    /// wrong ceiling.
+    #[test_case]
+    fn releasing_an_inner_lock_restores_the_outer_rank() {
+        use crate::sync::{IrqSafeMutex, current_rank, rank};
+
+        static OUTER: IrqSafeMutex<u32> = IrqSafeMutex::new(rank::SLAB, 0);
+        static INNER: IrqSafeMutex<u32> = IrqSafeMutex::new(rank::FRAMES, 0);
+
+        let _o = OUTER.lock();
+        assert_eq!(current_rank(), rank::SLAB);
+        {
+            let _i = INNER.lock();
+            assert_eq!(current_rank(), rank::FRAMES);
+        }
+        assert_eq!(
+            current_rank(),
+            rank::SLAB,
+            "dropping the inner guard reported that we hold nothing, while the outer lock is \
+             still held"
+        );
+    }
+
+    /// The one real nesting in the kernel actually happens, and is legal.
+    ///
+    /// A slab size class runs dry and takes a page from the frame allocator **while holding its
+    /// own lock**. SLAB (50) → FRAMES (30). If that were ever inverted, this would fire.
+    #[test_case]
+    fn the_slab_may_take_a_frame_while_holding_its_own_lock() {
+        use alloc::boxed::Box;
+
+        // Force a class to run dry: allocate enough 2 KiB objects to exhaust a page (two per
+        // page) and demand another. If SLAB -> FRAMES were a violation, the assert in
+        // `IrqSafeMutex::lock` would kill us right here.
+        let mut keep = alloc::vec::Vec::new();
+        for _ in 0..8 {
+            keep.push(Box::new([0u8; 2048]));
+        }
+        core::hint::black_box(&keep);
     }
 }

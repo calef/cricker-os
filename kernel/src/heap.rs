@@ -53,7 +53,7 @@
 use crate::arch::mmu::phys_to_virt;
 use crate::memory;
 use crate::println;
-use crate::sync::IrqSafeMutex;
+use crate::sync::{IrqSafeMutex, rank};
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::NonNull;
 use frames::FRAME_SIZE;
@@ -71,8 +71,8 @@ const HEAP_FRAMES: usize = 256;
 
 #[global_allocator]
 static ALLOCATOR: KernelAllocator = KernelAllocator {
-    slab: IrqSafeMutex::new(SlabAllocator::new()),
-    heap: IrqSafeMutex::new(Heap::new()),
+    slab: IrqSafeMutex::new(rank::SLAB, SlabAllocator::new()),
+    heap: IrqSafeMutex::new(rank::HEAP, Heap::new()),
 };
 
 /// `IrqSafeMutex`, not a bare spinlock, and the reason is DECISIONS.md §9: an interrupt handler

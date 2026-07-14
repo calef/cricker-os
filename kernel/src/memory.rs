@@ -15,7 +15,7 @@
 
 use crate::arch::mmu::{phys_to_virt, virt_to_phys};
 use crate::println;
-use crate::sync::IrqSafeMutex;
+use crate::sync::{IrqSafeMutex, rank};
 use dtb::{Dtb, Region};
 use frames::{FRAME_SIZE, Frame, FrameAllocator, Stats};
 
@@ -28,7 +28,8 @@ use frames::{FRAME_SIZE, Frame, FrameAllocator, Stats};
 /// The discipline that goes with it: **interrupt handlers do not allocate.** They record
 /// what happened and defer the work. The lock being interrupt-safe is the belt; that rule
 /// is the braces.
-static ALLOCATOR: IrqSafeMutex<Option<FrameAllocator<'static>>> = IrqSafeMutex::new(None);
+static ALLOCATOR: IrqSafeMutex<Option<FrameAllocator<'static>>> =
+    IrqSafeMutex::new(rank::FRAMES, None);
 
 /// The most `/memory` nodes and `/memreserve` entries we'll cope with.
 ///
@@ -276,10 +277,13 @@ struct RamMap {
     count: usize,
 }
 
-static RAM: IrqSafeMutex<RamMap> = IrqSafeMutex::new(RamMap {
-    regions: [(0, 0); MAX_REGIONS],
-    count: 0,
-});
+static RAM: IrqSafeMutex<RamMap> = IrqSafeMutex::new(
+    rank::RAM,
+    RamMap {
+        regions: [(0, 0); MAX_REGIONS],
+        count: 0,
+    },
+);
 
 static BITMAP_START: AtomicUsize = AtomicUsize::new(0);
 static BITMAP_BYTES: AtomicUsize = AtomicUsize::new(0);

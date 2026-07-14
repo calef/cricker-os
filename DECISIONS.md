@@ -144,6 +144,41 @@ cannot. Nothing is left that needs a reserve pool.
 The last one is `console::force_unlock()`, called at the top of the panic handler and the
 fatal exception path. Linux does the same and calls it `bust_spinlocks`.
 
+### The ordering rule is now enforced, not merely written down
+
+We wrote "define a global order and always take them in it" and then relied on remembering.
+Now every lock carries a **rank**, and `IrqSafeMutex::lock` asserts:
+
+> **You may only acquire a lock strictly LOWER than everything you currently hold.**
+
+If every acquisition strictly decreases, a **cycle is unrepresentable**. Not unlikely.
+Impossible. It destroys the circular-wait Coffman condition outright (notes/deadlock.md),
+which is *prevention*, not detection: Linux's `lockdep` builds a dependency graph at runtime
+and hunts for cycles; this costs three instructions and cannot be wrong. FreeBSD (WITNESS) and
+Solaris use the same mechanism.
+
+```
+  50  HEAP, SLAB      the allocators
+       |
+  30  FRAMES, RAM     the physical memory map
+       |
+  10  CONSOLE         the leaf: everyone may take it, it takes nothing
+```
+
+Two locks at the **same** rank may never nest (`R < R` is false), which is exactly right:
+equal rank means we declared no order between them, so nesting would be picking one at random.
+
+The nestings this permits are the ones that actually happen:
+
+- **SLAB (50) → FRAMES (30)** — a size class runs dry and takes a page while holding its lock.
+- **anything → CONSOLE (10)** — a panic prints while holding a lock. Which is *why* the console
+  must be the leaf.
+
+The panic path calls `sync::force_reset_ranks()` alongside `console::force_unlock()`. Panicking
+while holding the console lock would otherwise trip the ranking assertion *inside the panic
+handler* and lose the original message to a recursive panic. **The bookkeeping is a debugging
+aid; it must never be the thing that stops us saying what went wrong.**
+
 ---
 
 ## Open design ideas

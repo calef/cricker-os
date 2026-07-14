@@ -5,7 +5,7 @@
 //! `static mut CONSOLE`. The real state lives in the hardware, not in our memory.
 
 use crate::drivers::pl011::Pl011;
-use crate::sync::IrqSafeMutex;
+use crate::sync::{IrqSafeMutex, rank};
 use core::fmt::Write;
 
 /// The PL011 on QEMU's `virt` machine.
@@ -40,7 +40,8 @@ const PL011_BASE: usize = crate::arch::mmu::phys_to_virt(0x0900_0000) as usize;
 ///
 /// SAFETY: PL011_BASE is the documented UART address on QEMU `virt`, and nothing else in
 /// the kernel touches it.
-static CONSOLE: IrqSafeMutex<Pl011> = IrqSafeMutex::new(unsafe { Pl011::new(PL011_BASE) });
+static CONSOLE: IrqSafeMutex<Pl011> =
+    IrqSafeMutex::new(rank::CONSOLE, unsafe { Pl011::new(PL011_BASE) });
 
 pub fn init() {
     CONSOLE.lock().init();
