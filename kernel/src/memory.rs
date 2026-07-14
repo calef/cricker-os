@@ -13,6 +13,7 @@
 // kernel tests today, and milestone 4 (page tables) is the first non-test consumer.
 #![allow(dead_code)]
 
+use crate::arch::mmu::{phys_to_virt, virt_to_phys};
 use crate::println;
 use crate::sync::IrqSafeMutex;
 use dtb::{Dtb, Region};
@@ -41,7 +42,10 @@ pub fn init(dtb_ptr: usize) {
     // SAFETY: QEMU handed us this pointer in x0 under the Linux boot protocol, and two
     // tests assert that it is nonzero and carries the DTB magic. `from_ptr` re-checks
     // the magic before trusting anything else in the blob.
-    let dtb = unsafe { Dtb::from_ptr(dtb_ptr as *const u8) }.expect("device tree is unreadable");
+    // `dtb_ptr` is PHYSICAL: boot.s passed it straight through from x0, and QEMU speaks in
+    // physical addresses. We are running virtual now, so name it through the direct map.
+    let dtb = unsafe { Dtb::from_ptr(phys_to_virt(dtb_ptr as u64) as *const u8) }
+        .expect("device tree is unreadable");
 
     let mut ram = [Region { start: 0, size: 0 }; MAX_REGIONS];
     let ram_count = dtb
@@ -129,8 +133,11 @@ pub fn init(dtb_ptr: usize) {
     // nothing that is already spoken for. Nothing else in the kernel touches it, and we
     // mark it used below so nothing ever will. 'static because the allocator outlives
     // everything.
-    let bitmap: &'static mut [u8] =
-        unsafe { core::slice::from_raw_parts_mut(bitmap_start as *mut u8, bitmap_bytes) };
+    // `bitmap_start` is a physical address (it names frames). To *write* to it we need the
+    // virtual name for the same bytes.
+    let bitmap: &'static mut [u8] = unsafe {
+        core::slice::from_raw_parts_mut(phys_to_virt(bitmap_start) as *mut u8, bitmap_bytes)
+    };
 
     // Everything starts USED. Memory is guilty until proven innocent: a frame is only
     // handed out once someone has said "this is real RAM." Default-free would cheerfully
@@ -275,20 +282,24 @@ pub fn print_summary() {
     );
 }
 
-/// `__image_start` and `__image_end` are invented by the linker script, which is the
-/// only thing that knows where we ended up. See notes/linker-scripts.md.
+/// `__image_start` and `__image_end` are invented by the linker script, which is the only
+/// thing that knows where we ended up. See notes/linker-scripts.md.
+///
+/// **They are VIRTUAL addresses**, because the kernel is linked high. Everything in this
+/// module deals in *physical* frames, so we convert on the way in. Getting this backwards
+/// would reserve frames that don't exist and hand out the ones that hold our code.
 fn image_start() -> u64 {
     unsafe extern "C" {
         static __image_start: core::ffi::c_void;
     }
-    (&raw const __image_start) as u64
+    virt_to_phys((&raw const __image_start) as u64)
 }
 
 fn image_end() -> u64 {
     unsafe extern "C" {
         static __image_end: core::ffi::c_void;
     }
-    (&raw const __image_end) as u64
+    virt_to_phys((&raw const __image_end) as u64)
 }
 
 fn align_up(value: u64, to: u64) -> u64 {

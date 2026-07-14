@@ -6,11 +6,12 @@ This is a learning project. The goal is not to produce a useful OS, it's to unde
 operating systems actually work by building one, starting from the first instruction the
 CPU ever executes. If it ends up useful, that's a bonus.
 
-**Status: milestone 4, in progress.** It boots on QEMU, prints to a serial port, catches its
+**Status: milestone 4 complete.** It boots on QEMU, prints to a serial port, catches its
 own faults and reports them legibly, reads its memory map out of the device tree, hands out
 physical memory a page at a time, and **runs with the MMU on**: kernel `.text` is read-execute,
 `.rodata` is read-only, nothing writable is executable, and there's a guard page under the
-stack.
+stack. `Vec` and `Box` work, because we built the heap they needed. The kernel runs in the
+high half out of `TTBR1`, leaving `TTBR0` free for user processes.
 
 ```
 cricker-os
@@ -133,7 +134,7 @@ milestone 7.
 | 1 | Boot to Rust, print to UART | ✅ |
 | 2 | Exception vectors, handlers, legible fault reports | ✅ |
 | 3 | Physical frame allocator, device tree parsing | ✅ |
-| 4 | MMU on, W^X, guard page | 🚧 heap and higher-half still to come |
+| 4 | MMU on, W^X, guard page, kernel heap, higher-half | ✅ |
 | 5 | GIC + timer interrupts | |
 | 6 | Kernel threads, context switch, scheduler | |
 | 7 | **User mode (EL0), syscalls, ELF loader** | |

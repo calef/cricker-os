@@ -12,14 +12,33 @@
 
 ENTRY(_start)
 
+/* THE KERNEL IS LINKED HIGH AND LOADED LOW.
+ *
+ * Every symbol below is a VIRTUAL address in the top half. But `AT()` tells the loader to
+ * put the bytes at the PHYSICAL address, which is where QEMU actually loads a flat Image.
+ *
+ * So the ELF carries both: p_vaddr = 0xffff_0000_4008_0000, p_paddr = 0x4008_0000. objcopy
+ * lays the flat binary out by LMA, which is what QEMU reads.
+ *
+ * Which means the code in boot.s runs at a physical address while every absolute address
+ * baked into it is virtual. See boot.s and notes/higher-half.md for how it survives that.
+ *
+ * The base is 0xffff_0000_0000_0000, and the choice is not arbitrary: it touches only bits
+ * 63:48, which are NOT TRANSLATED. So a kernel virtual address and its physical address have
+ * identical page-table indices, VA = PA + KERNEL_VA_BASE is exact, and the boot map can be a
+ * single table serving as both the identity map and the high-half map. */
+KERNEL_VA_BASE = 0xffff000000000000;
+
+/* 512 KiB into RAM. NOT free to change: it must match `text_offset` in the arm64 Image
+ * header (image_header.s), which is what tells QEMU where to load us. */
+PHYS_START = 0x40080000;
+
 SECTIONS
 {
-    /* 512 KiB into RAM. NOT free to change: it must match `text_offset` in the arm64
-     * Image header (image_header.s), which is what tells QEMU where to load us. */
-    . = 0x40080000;
+    . = KERNEL_VA_BASE + PHYS_START;
     __image_start = .;
 
-    .text : ALIGN(4096) {
+    .text : AT(ADDR(.text) - KERNEL_VA_BASE) ALIGN(4096) {
         __text_start = .;
         /* The Image header MUST be at byte 0 of the image, and _start with it. KEEP()
          * because nothing *calls* it, so dead-code elimination would delete the entry
@@ -31,14 +50,14 @@ SECTIONS
         __text_end = .;
     }
 
-    .rodata : ALIGN(4096) {
+    .rodata : AT(ADDR(.rodata) - KERNEL_VA_BASE) ALIGN(4096) {
         __rodata_start = .;
         *(.rodata .rodata.*)
         . = ALIGN(4096);
         __rodata_end = .;
     }
 
-    .data : ALIGN(4096) {
+    .data : AT(ADDR(.data) - KERNEL_VA_BASE) ALIGN(4096) {
         __data_start = .;
         *(.data .data.*)
         . = ALIGN(4096);
@@ -48,7 +67,7 @@ SECTIONS
     /* .bss occupies zero bytes in the file, so nothing loads it and nothing zeroes it.
      * boot.s does that by hand, 8 bytes at a time, which is why both bounds must be
      * 8-byte aligned. */
-    .bss : ALIGN(4096) {
+    .bss : AT(ADDR(.bss) - KERNEL_VA_BASE) ALIGN(4096) {
         __bss_start = .;
         *(.bss .bss.*)
         *(COMMON)

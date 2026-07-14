@@ -79,12 +79,14 @@ pub fn init() {
     let first = memory::alloc_contiguous(HEAP_FRAMES)
         .expect("no contiguous run of frames for the kernel heap");
 
-    let start = first.addr() as usize;
+    // The allocator deals in PHYSICAL frames. The heap deals in addresses it can dereference.
+    // The direct map is the bridge.
+    let start = crate::arch::mmu::phys_to_virt(first.addr()) as usize;
     let size = HEAP_FRAMES * FRAME_SIZE as usize;
 
-    // SAFETY: `alloc_contiguous` gave us these frames exclusively, they are contiguous, and
-    // `mmu::init` identity-mapped all of RAM read/write, so this range is real, writable
-    // memory that nobody else owns.
+    // SAFETY: `alloc_contiguous` gave us these frames exclusively and contiguously, and
+    // `mmu::init` direct-mapped all of RAM read/write, so this range is real, writable memory
+    // that nobody else owns.
     unsafe { ALLOCATOR.0.lock().add_region(start, size) };
 }
 

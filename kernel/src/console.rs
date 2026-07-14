@@ -24,7 +24,11 @@ use core::fmt::Write;
 ///
 /// (The tree does carry it, incidentally: `/chosen/stdout-path = "/pl011@9000000"`.
 /// Worth reading *after* boot as a cross-check, but never worth depending on to boot.)
-const PL011_BASE: usize = 0x0900_0000;
+///
+/// **This is a virtual address.** The UART is physically at `0x0900_0000`, and it lives in
+/// the kernel's direct map at `pa | KERNEL_VA_BASE`. boot.s maps it before any Rust runs, and
+/// `mmu::init` preserves it, so this is valid from the kernel's first instruction.
+const PL011_BASE: usize = crate::arch::mmu::phys_to_virt(0x0900_0000) as usize;
 
 /// The console UART.
 ///

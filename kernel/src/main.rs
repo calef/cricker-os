@@ -273,10 +273,16 @@ mod tests {
     #[test_case]
     fn device_tree_has_the_right_magic() {
         use core::sync::atomic::Ordering;
-        let ptr = crate::DTB.load(Ordering::Relaxed) as *const u32;
 
-        // SAFETY: QEMU told us it put a device tree here, and the MMU is off, so this
-        // is a physical address we can read directly.
+        // DTB holds the PHYSICAL address QEMU gave us in x0. Since the kernel moved to the
+        // high half, TTBR0 is disabled and a low address does not exist: dereferencing it
+        // directly faults, which is exactly what we want and exactly what this line used to
+        // do. Name it through the direct map instead.
+        let pa = crate::DTB.load(Ordering::Relaxed) as u64;
+        let ptr = crate::arch::mmu::phys_to_virt(pa) as *const u32;
+
+        // SAFETY: QEMU put a device tree at that physical address, and the direct map makes
+        // it readable.
         let magic = unsafe { core::ptr::read_volatile(ptr) };
 
         assert_eq!(
@@ -377,7 +383,8 @@ mod tests {
         use frames::FRAME_SIZE;
 
         let frame = crate::memory::alloc().expect("out of memory");
-        let ptr = frame.addr() as *mut u64;
+        // The allocator speaks physical; we must name it virtually to touch it.
+        let ptr = crate::arch::mmu::phys_to_virt(frame.addr()) as *mut u64;
         let words = (FRAME_SIZE / 8) as usize;
 
         // SAFETY: the allocator just gave us this frame, so we own it exclusively. The
@@ -464,6 +471,75 @@ mod tests {
         assert!(crate::arch::mmu::is_enabled(), "SCTLR_EL1.M is not set");
     }
 
+    /// The kernel is running at high virtual addresses, out of TTBR1.
+    ///
+    /// This is what makes milestone 7 possible: TTBR0 can be swapped per-process without
+    /// unmapping the kernel out from under itself. If the kernel lived in TTBR0, the first
+    /// context switch into a user process would delete the kernel.
+    #[test_case]
+    fn the_kernel_lives_in_the_high_half() {
+        use crate::arch::mmu::KERNEL_VA_BASE;
+
+        // Our own code.
+        let pc = crate::kernel_main as *const () as u64;
+        assert!(pc >= KERNEL_VA_BASE, "kernel .text is at {pc:#x}, not in the high half");
+
+        // Our stack.
+        let sp: u64;
+        // SAFETY: reads a register.
+        unsafe { core::arch::asm!("mov {}, sp", out(reg) sp, options(nomem, nostack)) };
+        assert!(sp >= KERNEL_VA_BASE, "the stack is at {sp:#x}, not in the high half");
+
+        // And a heap allocation.
+        let b = alloc::boxed::Box::new(0u64);
+        let heap = (&raw const *b) as u64;
+        assert!(heap >= KERNEL_VA_BASE, "the heap is at {heap:#x}, not in the high half");
+    }
+
+    /// **TTBR0 is free.** Nothing of ours lives at a low address any more.
+    ///
+    /// The point of the whole exercise. `mmu::init` sets EPD0, so a low address doesn't even
+    /// get a table walk: it faults. Which is what we want, because there is no userspace yet
+    /// and so nothing legitimate is down there.
+    #[test_case]
+    fn ttbr0_is_disabled_and_available_for_userspace() {
+        use aarch64_cpu::registers::TCR_EL1;
+        use tock_registers::interfaces::Readable;
+
+        assert_eq!(
+            TCR_EL1.read(TCR_EL1::EPD0),
+            1,
+            "TTBR0 walks are still enabled: a stale identity map may still be live"
+        );
+    }
+
+    /// The direct map: every physical address is nameable at `pa | KERNEL_VA_BASE`.
+    ///
+    /// This is how the kernel touches a frame the allocator just handed it. Without it, a
+    /// physical address the kernel cannot NAME is a physical address it cannot use.
+    #[test_case]
+    fn the_direct_map_reaches_physical_memory() {
+        use crate::arch::mmu::{phys_to_virt, virt_to_phys};
+
+        let frame = crate::memory::alloc().expect("out of memory");
+        let va = phys_to_virt(frame.addr());
+
+        assert_eq!(virt_to_phys(va), frame.addr(), "the transform is not reversible");
+
+        let (pa, flags) = crate::arch::mmu::translate(va).expect("frame is NOT in the direct map");
+        assert_eq!(pa, frame.addr());
+        assert!(flags.is_writable());
+
+        // And it is real memory: write through the virtual name, read it back.
+        // SAFETY: the allocator just gave us this frame exclusively.
+        unsafe {
+            core::ptr::write_volatile(va as *mut u64, 0xfeed_face_cafe_f00d);
+            assert_eq!(core::ptr::read_volatile(va as *const u64), 0xfeed_face_cafe_f00d);
+        }
+
+        crate::memory::free(frame);
+    }
+
     /// **The guard page must not be mapped.** That is its entire job.
     ///
     /// Verified at boot too (mmu::verify panics if it's mapped), but stated here as well
@@ -495,7 +571,11 @@ mod tests {
         use crate::arch::mmu;
 
         let (pa, flags) = mmu::translate(mmu::text_start()).expect(".text is not mapped");
-        assert_eq!(pa, mmu::text_start(), "identity map is not identity");
+        assert_eq!(
+            pa,
+            mmu::virt_to_phys(mmu::text_start()),
+            ".text maps to the wrong frame"
+        );
 
         assert!(flags.is_kernel_executable(), ".text is not executable");
         assert!(!flags.is_writable(), ".text is WRITABLE: W^X is broken");
@@ -534,7 +614,11 @@ mod tests {
     fn the_uart_is_mapped_as_device_memory() {
         use crate::arch::mmu;
 
-        let (_, flags) = mmu::translate(0x0900_0000).expect("the UART is not mapped");
+        // The UART lives in the direct map, like every other physical address the kernel
+        // names. Its raw physical address no longer exists as far as the CPU is concerned:
+        // TTBR0 is off.
+        let (_, flags) = mmu::translate(mmu::phys_to_virt(0x0900_0000))
+            .expect("the UART is not mapped");
 
         // AttrIndx, bits [4:2], must name the MAIR slot that says Device-nGnRnE.
         let slot = (flags.bits() >> 2) & 0b111;
@@ -555,7 +639,8 @@ mod tests {
         use crate::arch::mmu;
 
         let frame = crate::memory::alloc().expect("out of memory");
-        let (pa, flags) = mmu::translate(frame.addr()).expect("allocated frame is NOT MAPPED");
+        let va = mmu::phys_to_virt(frame.addr());
+        let (pa, flags) = mmu::translate(va).expect("allocated frame is NOT MAPPED");
 
         assert_eq!(pa, frame.addr());
         assert!(flags.is_writable());

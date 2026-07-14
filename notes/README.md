@@ -43,6 +43,9 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [Physical memory](physical-memory.md) — the frame allocator. Why a bitmap and not a free
   list, the bootstrap problem (the allocator's first act is to allocate itself), and why
   `mark_used` rounds *outward*.
+- [The higher-half kernel](higher-half.md) — why the kernel MUST be in TTBR1 (or the first
+  context switch would delete it), and the two facts that let a kernel linked at a high
+  address boot from a low one: `adrp` is PC-relative, and bits 63:48 aren't translated.
 - [aarch64 page tables](page-tables.md) — the structure the MMU walks. The trap bits (AF,
   PXN, AttrIndx), why W^X is enforced by construction, and the thing a failing host test
   taught us: bits 63:48 aren't translated, they choose which TABLE to use.
