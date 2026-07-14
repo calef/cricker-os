@@ -77,6 +77,10 @@ in the code or the conversation doesn't make sense, it belongs here.
   of register values, and here that's literal: 8 bytes. The context switch is fifteen
   instructions and **the last one returns into a different thread.**
 
+- [Capabilities, and why the kernel has no `open()`](capabilities.md) — a capability is a file
+  descriptor that can point at *anything*. Unix already had them; it just also built a back door.
+  The milestone 7 decision, and the confused deputy.
+
 ## The point of all this
 
 - [Userspace](userspace.md) — what milestone 7 actually builds, and why it's the line
