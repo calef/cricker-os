@@ -54,6 +54,9 @@ in the code or the conversation doesn't make sense, it belongs here.
 
 ## Rust
 
+- [Vec, Box, String, BTreeMap](collections.md) — the four types the heap gave back. Why
+  `Box` is what makes a recursive type finite, why `Vec` doubles, why `&str` works in
+  `no_std` and `String` doesn't, and why a kernel uses `BTreeMap` and not `HashMap`.
 - [`no_std`](no-std.md) — why the kernel can't use the standard library, what `core` still
   gives us, and how we earn each missing piece back by building the thing `std` assumed.
 
