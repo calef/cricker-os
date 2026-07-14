@@ -17,7 +17,7 @@ use crate::drivers::gic;
 use crate::println;
 use aarch64_cpu::asm::barrier;
 use aarch64_cpu::registers::{ESR_EL1, FAR_EL1, VBAR_EL1};
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use tock_registers::interfaces::{Readable, Writeable};
 
 /// The interrupted CPU state, as saved by `SAVE_CONTEXT` in `vectors.s`.
@@ -43,9 +43,21 @@ pub struct TrapFrame {
     /// interrupted code was in. `eret` restores it.
     pub spsr: u64,
 
-    /// The frame must be a multiple of 16 bytes, because `sp` must stay 16-byte
-    /// aligned. See notes/stack.md.
-    _pad: u64,
+    /// **The user's stack pointer.** `SP_EL0`, which is a different register from the
+    /// `sp` the kernel is using.
+    ///
+    /// At EL1 we run with `SPSel=1`, so `sp` means `SP_EL1`, the thread's kernel stack.
+    /// Taking an exception from EL0 switches the hardware to `SP_EL1` and leaves `SP_EL0`
+    /// alone, so the user's stack pointer is simply still sitting there. It survives the
+    /// exception on its own.
+    ///
+    /// What it does **not** survive is a context switch to another *user* thread, which
+    /// would spend `SP_EL0` on its own stack and never give it back. So it travels in the
+    /// frame, with the thread.
+    ///
+    /// It cost nothing to add: it landed in the padding word the frame already had, which is
+    /// why the size assertion below is unchanged at 272.
+    pub sp_el0: u64,
 }
 
 // If this fails, `SAVE_CONTEXT` and `TrapFrame` have drifted apart, and the Rust side
@@ -185,13 +197,97 @@ extern "C" fn exception_dispatch(frame: &mut TrapFrame, index: u64) {
             frame.elr += 4;
         }
 
-        // Everything else is, for now, fatal. As the kernel grows, cases move out of
-        // `fatal` and into real handlers: IRQs at milestone 5, `svc` at milestone 7,
-        // and data aborts become page faults at milestone 4 (where most of them will
-        // be *recoverable*: the page was swapped out, or copy-on-write needs to
-        // duplicate it).
+        // `svc` from EL0. Userspace asking the kernel for something.
+        //
+        // **And at 7a it asks for nothing at all**, deliberately. There is no syscall number,
+        // no argument convention, no ABI. The user program executes `svc #0`, the kernel
+        // counts it, and that is the entire interface.
+        //
+        // The restraint is the point. DECISIONS §8 said "if we find ourselves hacking in a
+        // syscall without having had that conversation, the plan has failed." We had the
+        // conversation (§10) and the answer was capabilities. So the syscall surface gets
+        // designed at 7d, deliberately, in one piece, with a capability table underneath it.
+        // Not accreted here because it was convenient.
+        //
+        // Note ELR already points PAST the `svc`: the hardware advances it for us. Compare
+        // `brk` above, where it points AT the instruction and we must step over it by hand.
+        ec::SVC64 if from_lower_el(index) => {
+            SVC_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
+
+        // Anything else from EL0 is the user program being wrong.
+        //
+        // **It dies. The kernel does not.** That is the whole promise of a privilege boundary,
+        // and this is the first moment in the project's life that we can keep it.
+        _ if from_lower_el(index) => user_fault(frame, esr),
+
+        // Everything else is a KERNEL bug, and fatal. As the kernel grows, cases move out of
+        // `fatal` and into real handlers: IRQs at milestone 5, `svc` here, and data aborts
+        // become page faults if we ever do demand paging.
         _ => fatal(frame, index, esr),
     }
+}
+
+/// Did this exception come from a lower exception level, i.e. from EL0?
+///
+/// Slots 8-11 are "Lower EL, AArch64" (see `VECTOR_NAMES`). The distinction carries enormous
+/// weight: the **same** exception class means "a bug in the kernel, halt the machine" when it
+/// arrives at slot 4, and "a bug in the user program, kill it" when it arrives at slot 8.
+fn from_lower_el(index: u64) -> bool {
+    (8..=11).contains(&index)
+}
+
+/// How many `svc` instructions we have caught from EL0.
+pub static SVC_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// How many user threads have been killed for faulting.
+pub static USER_FAULTS: AtomicUsize = AtomicUsize::new(0);
+
+/// The `ESR_EL1` of the most recent user fault. Test support.
+pub static LAST_USER_FAULT_ESR: AtomicU64 = AtomicU64::new(0);
+
+/// The `FAR_EL1` of the most recent user fault. Test support.
+pub static LAST_USER_FAULT_FAR: AtomicU64 = AtomicU64::new(0);
+
+/// A user thread did something it is not allowed to do. Kill it.
+///
+/// # Why this can simply call `sched::exit()`
+///
+/// We are inside the exception handler, standing on the faulting thread's **kernel** stack,
+/// with its TrapFrame just below us. `exit()` marks the thread `Finished` and calls
+/// `schedule()`, which switches to somebody else and **never comes back**. `exception_restore`
+/// is never reached, the `eret` never happens, and the user program is simply not resumed.
+///
+/// The kernel stack we are standing on right now is freed by the **next** thread, which is
+/// precisely the reaper that milestone 6 built for a completely unrelated reason: a thread
+/// cannot free the stack it is standing on. See notes/threads.md.
+///
+/// So the mechanism behind "a driver bug is a crashed process, not a dead machine"
+/// (DECISIONS §10) was already sitting here, finished, before we knew we needed it.
+fn user_fault(frame: &TrapFrame, esr: u64) -> ! {
+    let class = (esr >> 26) & 0x3f;
+    let far = FAR_EL1.get();
+
+    USER_FAULTS.fetch_add(1, Ordering::Relaxed);
+    LAST_USER_FAULT_ESR.store(esr, Ordering::Relaxed);
+    LAST_USER_FAULT_FAR.store(far, Ordering::Relaxed);
+
+    crate::println!();
+    crate::println!(
+        "  user thread {} killed: {}",
+        crate::sched::current(),
+        ec_name(class),
+    );
+    crate::println!(
+        "    pc {:#018x}   far {:#018x}   user sp {:#018x}   esr {:#010x}",
+        frame.elr,
+        far,
+        frame.sp_el0,
+        esr,
+    );
+    crate::println!("  the kernel is fine.");
+
+    crate::sched::exit();
 }
 
 /// Service one hardware interrupt.

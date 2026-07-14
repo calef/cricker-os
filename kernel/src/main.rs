@@ -32,6 +32,7 @@ mod sched;
 mod stack;
 mod sync;
 mod thread;
+mod user;
 
 #[cfg(test)]
 mod testing;
@@ -120,6 +121,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         println!("milestone 4: and nothing writable is executable, and Vec works again.");
         println!("milestone 5: and the machine can now interrupt us. we are preemptible.");
         println!("milestone 6: and a thread that refuses to yield gets preempted anyway.");
+        println!("milestone 7: and now it can be code we did not compile, running unprivileged.");
         println!();
 
         // The whole argument, executable.
@@ -164,6 +166,40 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
             println!("    preemptions        : {:>10}", sched::preemptions() - p0);
             println!();
             println!("  neither asked to be interrupted. both were.");
+        }
+
+        // 7a. EL0.
+        {
+            use crate::arch::exceptions::{SVC_COUNT, USER_FAULTS};
+            use crate::arch::timer;
+            use core::sync::atomic::Ordering;
+
+            println!();
+            println!("  and now the other side of the boundary:");
+            println!();
+
+            // A program that traps to the kernel, comes back, and traps again.
+            let svc0 = SVC_COUNT.load(Ordering::Relaxed);
+            sched::spawn(|| unsafe { user::exec(user::hello()) });
+            timer::spin_for(timer::frequency() / 20);
+
+            println!(
+                "    hello  : reached EL0, executed {} svc, returned to EL0 after each",
+                SVC_COUNT.load(Ordering::Relaxed) - svc0
+            );
+
+            // And a program that reaches for a kernel address.
+            let faults0 = USER_FAULTS.load(Ordering::Relaxed);
+            sched::spawn(|| unsafe { user::exec(user::outlaw()) });
+            timer::spin_for(timer::frequency() / 20);
+
+            println!(
+                "    outlaw : touched {:#018x}, was killed, kernel survived ({} fault)",
+                0xffff_0000_4008_0000u64,
+                USER_FAULTS.load(Ordering::Relaxed) - faults0,
+            );
+            println!();
+            println!("  the machine has run code it does not trust, and taken the CPU back.");
         }
     }
 

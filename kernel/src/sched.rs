@@ -193,18 +193,32 @@ pub fn schedule() {
         sched.threads.get_mut(&next).unwrap().state = State::Running;
         sched.current = next;
 
+        // The incoming thread's low half. A kernel thread gets the empty reserved table, which
+        // makes every low address fault, which is exactly right: it has no business down there.
+        let next_root = sched.threads[&next]
+            .space
+            .as_ref()
+            .map(|s| s.root())
+            .unwrap_or_else(crate::arch::mmu::reserved_root);
+
         // Copy the two raw pointers out before the lock drops. The assembly writes through the
         // first and reads the second, and both threads' `Box`es keep their contents pinned.
         let prev_slot: *mut *mut Context = &mut sched.threads.get_mut(&current).unwrap().context;
         let next_ctx: *mut Context = sched.threads.get(&next).unwrap().context;
 
-        Some((prev_slot, next_ctx))
+        Some((prev_slot, next_ctx, next_root))
     };
     // Rule 1: THE LOCK IS RELEASED HERE, before the switch. Holding it across `switch_to` would
     // leave it held by a thread that is not running, and the next thread to want it would spin
     // forever waiting for a thread that can only be scheduled by taking the lock.
 
-    if let Some((prev_slot, next_ctx)) = switch {
+    if let Some((prev_slot, next_ctx, next_root)) = switch {
+        // Install the incoming thread's address space FIRST. `TTBR0_EL1` is one register, shared
+        // by everybody, and a thread that resumes at EL0 in the previous thread's low half is
+        // running a stranger's code. (No-ops, including no TLB flush, when the root is already
+        // right — which is every switch between two kernel threads.)
+        crate::arch::mmu::switch_user_root(next_root);
+
         // SAFETY: both pointers name live `Context`s owned by boxed `Thread`s in the map, and
         // interrupts are masked so nothing can reorder underneath us.
         //
@@ -231,6 +245,41 @@ fn reap(sched: &mut Scheduler) {
     for id in dead {
         sched.threads.remove(&id); // drops the Thread, drops the KernelStack, unmaps, frees
     }
+}
+
+/// Hand the current thread an address space, and install it.
+///
+/// From here the thread owns its low half: the reaper's `drop` will unmap and free it, and
+/// every context switch back to this thread will re-install it.
+pub fn adopt_address_space(space: crate::user::AddressSpace) {
+    let root = space.root();
+
+    {
+        let mut guard = SCHED.lock();
+        let sched = guard.as_mut().expect("no scheduler");
+        let current = sched.current;
+        sched.threads.get_mut(&current).expect("no current thread").space = Some(space);
+    }
+
+    crate::arch::mmu::switch_user_root(root);
+}
+
+/// The top of the current thread's kernel stack: **where its `TrapFrame` belongs.**
+///
+/// `None` for the boot thread, which runs on the stack `boot.s` set up and does not own it.
+///
+/// A user thread's TrapFrame is not an ordinary local. It must sit at exactly the address the
+/// vector table's `SAVE_CONTEXT` will rebuild it at when the user traps in, because `eret`
+/// leaves `SP_EL1` pointing just past it and the hardware does not consult our intentions.
+pub fn current_kernel_stack_top() -> Option<u64> {
+    let guard = SCHED.lock();
+    let sched = guard.as_ref()?;
+    sched
+        .threads
+        .get(&sched.current)?
+        .stack
+        .as_ref()
+        .map(|s| s.top())
 }
 
 pub fn current() -> Tid {

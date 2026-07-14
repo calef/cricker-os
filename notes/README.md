@@ -83,7 +83,9 @@ in the code or the conversation doesn't make sense, it belongs here.
 
 ## The point of all this
 
-- [Userspace](userspace.md) — what milestone 7 actually builds, and why it's the line
+- [Userspace](userspace.md) — the line. And as of 7a it is **real**: entering EL0 turns out to be
+  *returning from an exception that never happened*, and the two bugs on the way there were worth
+  more than the code
   between "a Rust program that boots" and "an operating system." Three walls, all of them
   hardware. **Read this to understand why the milestone order is what it is.**
 

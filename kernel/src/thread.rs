@@ -213,6 +213,18 @@ pub struct Thread {
     /// at the right moment.
     #[allow(dead_code)]
     pub stack: Option<KernelStack>,
+
+    /// The low half of memory, as far as this thread is concerned. `None` for a kernel thread,
+    /// which has no business at a low address at all.
+    ///
+    /// **`TTBR0_EL1` is one register and it is global; threads are not.** So the context switch
+    /// installs this on the way in, exactly as it installs a stack and a register file. A user
+    /// thread that kept running while another thread swapped `TTBR0` would find its own code
+    /// replaced by a stranger's, which is not a hypothetical: see notes/userspace.md.
+    ///
+    /// Owned, so the reaper's `drop` unmaps and frees the entire address space when the thread
+    /// dies. Same mechanism as `stack` above, and for the same reason.
+    pub space: Option<crate::user::AddressSpace>,
 }
 
 // SAFETY: a Thread is only ever touched under the scheduler's lock.
@@ -231,6 +243,7 @@ impl Thread {
             state: State::Running,
             context: core::ptr::null_mut(),
             stack: None,
+            space: None,
         }
     }
 
@@ -272,6 +285,7 @@ impl Thread {
             state: State::Ready,
             context,
             stack: Some(stack),
+            space: None, // a kernel thread until it calls `user::exec`
         })
     }
 }

@@ -34,7 +34,11 @@
 use crate::memory;
 use crate::println;
 use aarch64_cpu::asm::barrier;
-use aarch64_cpu::registers::{ID_AA64MMFR0_EL1, MAIR_EL1, SCTLR_EL1, TCR_EL1, TTBR1_EL1};
+use core::sync::atomic::{AtomicU64, Ordering};
+
+use aarch64_cpu::registers::{
+    ID_AA64MMFR0_EL1, MAIR_EL1, SCTLR_EL1, TCR_EL1, TTBR0_EL1, TTBR1_EL1,
+};
 use core::ffi::c_void;
 use paging::{Flags, Half, MapError, Mapper, PAGE_SIZE, PageTable, mair};
 use tock_registers::interfaces::{Readable, Writeable};
@@ -80,7 +84,7 @@ const UART_SIZE: u64 = 0x1000;
 /// The direct map. boot.s already established it (both TTBRs pointing at one table), and the
 /// fine-grained tables we build below preserve it, so this is valid from the first
 /// instruction of Rust to the last.
-fn phys_to_ptr(pa: u64) -> *mut PageTable {
+pub(crate) fn phys_to_ptr(pa: u64) -> *mut PageTable {
     phys_to_virt(pa) as *mut PageTable
 }
 
@@ -129,6 +133,9 @@ pub fn init() {
 
     // SAFETY: the map covers this function's code, its stack, and the UART. We checked.
     unsafe { install(root) };
+
+    // And give TTBR0 an empty table to walk, so a stray low address faults.
+    install_reserved_ttbr0();
 }
 
 /// Identity-map everything the kernel needs, each region with the tightest permissions that
@@ -325,10 +332,21 @@ unsafe fn install(root: u64) {
             + TCR_EL1::SH0::Inner
             + TCR_EL1::ORGN0::WriteBack_ReadAlloc_WriteAlloc_Cacheable
             + TCR_EL1::IRGN0::WriteBack_ReadAlloc_WriteAlloc_Cacheable
-            // TTBR0 is now OFF. The kernel is entirely in TTBR1, so nothing legitimate lives
-            // at a low address until userspace exists. Any access down there should fault,
-            // loudly, rather than walk a stale identity map we forgot to tear down.
-            + TCR_EL1::EPD0::DisableTTBR0Walks
+            // TTBR0 walks stay ENABLED, and TTBR0 points at an EMPTY table (see
+            // `RESERVED_TTBR0` below). We used to set EPD0 and disable walks entirely, which
+            // gave the same protection by a different route.
+            //
+            // The change is Linux's design, and the reason is milestone 7. A user address
+            // space is installed by writing TTBR0_EL1, and it is uninstalled by writing it
+            // back to the empty table. If protection came from EPD0 we would have to
+            // read-modify-write TCR_EL1 on **every context switch between a user thread and a
+            // kernel one**, and TCR is a register that controls the shape of translation
+            // itself. Poking it on a hot path to express "nobody is home" is a bad trade for a
+            // frame of memory.
+            //
+            // The guarantee is unchanged: a stray low address from EL1 walks a table full of
+            // zeroes and takes a translation fault. There is a test.
+            + TCR_EL1::EPD0::EnableTTBR0Walks
             + TCR_EL1::T1SZ.val(16)
             + TCR_EL1::TG1::KiB_4
             + TCR_EL1::SH1::Inner
@@ -368,6 +386,108 @@ unsafe fn install(root: u64) {
 
     // If you are reading this line's output, we survived. The kernel is now running out of
     // TTBR1, and TTBR0 is free.
+}
+
+/// An empty L0 table, installed in `TTBR0_EL1` whenever no user address space is active.
+///
+/// **"Nobody is home" is a page table, not a control bit.** A low address from EL1 walks this,
+/// finds a zeroed descriptor, and takes a translation fault, which is exactly the protection
+/// we want while there is no userspace. And swapping a user address space in or out is then a
+/// single `msr ttbr0_el1`, with no read-modify-write of TCR_EL1 on the context-switch path.
+///
+/// One frame, spent once, to keep TCR_EL1 out of the hot path forever.
+static RESERVED_TTBR0: AtomicU64 = AtomicU64::new(0);
+
+/// Allocate and install the empty TTBR0 root. Called at the end of `init`.
+fn install_reserved_ttbr0() {
+    let root = memory::alloc().expect("no frame for the reserved TTBR0 root").addr();
+
+    // SAFETY: a fresh frame, and nothing walks it until the `msr` below.
+    unsafe {
+        (*phys_to_ptr(root)).entries = [0; paging::ENTRIES];
+    }
+
+    RESERVED_TTBR0.store(root, Ordering::Relaxed);
+
+    // SAFETY: the table is zeroed, so every translation through it faults. That is the point.
+    unsafe { set_ttbr0(root) };
+}
+
+/// Point `TTBR0_EL1` at `root` and throw away every stale low-half translation.
+///
+/// # The TLB flush is not optional and not a nicety
+///
+/// We have **no ASIDs yet**: every address space uses ASID 0. So the TLB cannot tell one
+/// process's `0x40_0000` from another's, and a stale entry would hand a new process the
+/// *previous* process's memory. That is not a performance bug, it is the whole privilege
+/// boundary falling over.
+///
+/// `tlbi vmalle1is` is the sledgehammer: it discards **all** EL1 translations, including the
+/// kernel's, which we then re-walk for nothing. ASIDs are the fix (tag each entry with the
+/// address space that owns it, flush nothing on switch), and they are a milestone 7c job. This
+/// is correct, and it is slow, and we know which is which.
+///
+/// # Safety
+/// `root` must be a page-aligned L0 table whose descriptors are all valid or all zero.
+unsafe fn set_ttbr0(root: u64) {
+    // Our writes to the table must be visible to the page-table walker, which is a separate
+    // observer and is not bound by program order.
+    barrier::dsb(barrier::SY);
+
+    TTBR0_EL1.set_baddr(root);
+    barrier::isb(barrier::SY);
+
+    // SAFETY: TLB maintenance is always sound.
+    unsafe {
+        core::arch::asm!(
+            "tlbi vmalle1is", // every EL1 translation, every core
+            "dsb ish",
+            "isb",
+            options(nostack),
+        );
+    }
+}
+
+/// Install a user address space. The low half of memory now means *that process*.
+///
+/// # Safety
+/// `root` must be a live L0 table built by a `Mapper` with `Half::Low`, and it must outlive
+/// every instruction executed at EL0 afterwards.
+pub unsafe fn activate_user(root: u64) {
+    unsafe { set_ttbr0(root) };
+}
+
+/// Uninstall whatever user address space was active. The low half means nothing again.
+pub fn deactivate_user() {
+    let reserved = RESERVED_TTBR0.load(Ordering::Relaxed);
+    debug_assert!(reserved != 0, "mmu::init has not run");
+
+    // SAFETY: the reserved table is zeroed, so this makes every low address fault.
+    unsafe { set_ttbr0(reserved) };
+}
+
+/// The root of whatever user address space is currently installed, read back from the CPU.
+pub fn current_user_root() -> u64 {
+    TTBR0_EL1.get_baddr()
+}
+
+/// The empty table that means "no process is running."
+pub fn reserved_root() -> u64 {
+    RESERVED_TTBR0.load(Ordering::Relaxed)
+}
+
+/// Install `root` as the live low half, **unless it is already installed**.
+///
+/// Called from the context switch, on every switch, which is why the early return matters:
+/// `set_ttbr0` throws away the entire EL1 TLB (we have no ASIDs yet), and two kernel threads
+/// taking turns must not pay for that. They both want the reserved table, so they both skip.
+pub fn switch_user_root(root: u64) {
+    if current_user_root() == root {
+        return;
+    }
+
+    // SAFETY: the caller passes either a live `AddressSpace` root or `reserved_root()`.
+    unsafe { set_ttbr0(root) };
 }
 
 /// The kernel's live page tables, as a `Mapper`.
@@ -441,11 +561,15 @@ pub fn is_enabled() -> bool {
     SCTLR_EL1.is_set(SCTLR_EL1::M)
 }
 
-/// Ask the *live* page tables what a virtual address maps to.
+/// Ask the live **kernel** page tables what a high virtual address maps to.
 ///
-/// Reads `TTBR0_EL1` back out of the hardware, so this is the truth the CPU is using, not a
-/// copy of what we intended. That distinction is the point: it lets the tests check the
-/// tables the machine is actually walking.
+/// Reads `TTBR1_EL1` back out of the hardware, so this is the truth the CPU is using, not a
+/// copy of what we intended. That distinction is the point: it lets the tests check the tables
+/// the machine is actually walking.
+///
+/// (The doc comment here used to say `TTBR0_EL1`, which the code has never read. Recorded
+/// rather than quietly fixed, per the house rule: the machine overrules the documentation, and
+/// it overrules us.)
 #[allow(dead_code)] // used by the tests, and by anyone debugging a mapping
 pub fn translate(va: u64) -> Option<(u64, Flags)> {
     let root = TTBR1_EL1.get_baddr();
@@ -453,6 +577,19 @@ pub fn translate(va: u64) -> Option<(u64, Flags)> {
     // SAFETY: TTBR1_EL1 holds the root we installed, and the direct map makes `phys_to_ptr`
     // valid.
     let mapper = unsafe { Mapper::new(root, Half::High, || None, phys_to_ptr) };
+    mapper.translate(va)
+}
+
+/// Ask the live **user** page tables what a low virtual address maps to.
+///
+/// Reads `TTBR0_EL1`, so it answers for whichever address space is installed right now, which
+/// is either a process's or the empty reserved table.
+#[allow(dead_code)] // used by the tests
+pub fn translate_user(va: u64) -> Option<(u64, Flags)> {
+    let root = TTBR0_EL1.get_baddr();
+
+    // SAFETY: TTBR0_EL1 holds a root we installed, and the direct map makes `phys_to_ptr` valid.
+    let mapper = unsafe { Mapper::new(root, Half::Low, || None, phys_to_ptr) };
     mapper.translate(va)
 }
 
@@ -546,19 +683,24 @@ mod tests {
 
     /// **TTBR0 is free.** Nothing of ours lives at a low address any more.
     ///
-    /// The point of the whole exercise. `mmu::init` sets EPD0, so a low address doesn't even
-    /// get a table walk: it faults. Which is what we want, because there is no userspace yet
-    /// and so nothing legitimate is down there.
+    /// The point of the whole exercise, and it is what makes milestone 7 possible: a user
+    /// address space can be installed and removed without unmapping the kernel out from under
+    /// itself.
+    ///
+    /// This asserts the **property** (a low address does not translate), not the *mechanism*.
+    /// It used to assert `EPD0 == 1`, and milestone 7a changed the mechanism to an empty
+    /// reserved table. A test written against the mechanism would have failed for no reason;
+    /// one written against the property still holds, and still catches a stale identity map.
     #[test_case]
-    fn ttbr0_is_disabled_and_available_for_userspace() {
-        use aarch64_cpu::registers::TCR_EL1;
-        use tock_registers::interfaces::Readable;
+    fn a_low_address_does_not_translate_when_no_process_is_running() {
+        use crate::arch::mmu::translate_user;
 
-        assert_eq!(
-            TCR_EL1.read(TCR_EL1::EPD0),
-            1,
-            "TTBR0 walks are still enabled: a stale identity map may still be live"
-        );
+        for va in [0x1000u64, 0x4008_0000, 0x0000_ffff_ffff_f000] {
+            assert!(
+                translate_user(va).is_none(),
+                "{va:#x} translates through TTBR0: a stale identity map may still be live",
+            );
+        }
     }
 
     /// The direct map: every physical address is nameable at `pa | KERNEL_VA_BASE`.

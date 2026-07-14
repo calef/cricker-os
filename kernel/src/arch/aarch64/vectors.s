@@ -53,12 +53,26 @@
     stp     x26, x27, [sp, #16 * 13]
     stp     x28, x29, [sp, #16 * 14]
 
-    // x1 and x2 are already safely on the stack, so they are ours to scribble on.
+    // x1, x2 and x3 are already safely on the stack, so they are ours to scribble on.
     mrs     x1,  elr_el1            // where the interrupted code will resume
     mrs     x2,  spsr_el1           // the processor state it was in
 
+    // SP_EL0: the USER stack pointer, and it is a physically different register.
+    //
+    // At EL1 we run with SPSel=1, so `sp` above means SP_EL1, the kernel stack. The
+    // hardware switched to it on the way in and never touched SP_EL0, so the user's
+    // stack pointer is still sitting there, intact, and nothing above saved it.
+    //
+    // It survives an exception on its own. It does NOT survive a context switch to
+    // another user thread, which would find its own SP_EL0 already spent. So it belongs
+    // in the frame, where it travels with the thread.
+    //
+    // (This costs nothing: it lands in the padding word the frame already had, so
+    // TrapFrame is still 272 bytes. See exceptions.rs.)
+    mrs     x3,  sp_el0
+
     stp     x30, x1,  [sp, #16 * 15]
-    str     x2,       [sp, #16 * 16]
+    stp     x2,  x3,  [sp, #16 * 16]
 .endm
 
 // Put it all back, exactly as it was.
@@ -67,11 +81,12 @@
 // the system registers FIRST, then overwrite the scratch registers with their real
 // saved values. Doing it the other way round would corrupt x1 and x2.
 .macro RESTORE_CONTEXT
-    ldr     x2,       [sp, #16 * 16]
+    ldp     x2,  x3,  [sp, #16 * 16]
     ldp     x30, x1,  [sp, #16 * 15]
 
     msr     spsr_el1, x2
     msr     elr_el1,  x1            // the handler may have CHANGED this. See exceptions.rs.
+    msr     sp_el0,   x3            // and the user's stack pointer goes back where it lives
 
     ldp     x0,  x1,  [sp, #16 * 0]
     ldp     x2,  x3,  [sp, #16 * 1]
@@ -130,8 +145,31 @@ exception_vectors:
     VECTOR_ENTRY 15
 
 // `eret` is the counterpart to the exception: it restores the processor state from
-// SPSR_EL1 and jumps to ELR_EL1, in one instruction. That includes dropping the
-// exception level, which is how milestone 7 will enter userspace.
+// SPSR_EL1 and jumps to ELR_EL1, in one instruction. That includes DROPPING THE
+// EXCEPTION LEVEL, because SPSR_EL1 carries the level to return to.
+//
+// Which is the whole of milestone 7a, and it is why there is so little new assembly here.
+.global exception_restore
 exception_restore:
     RESTORE_CONTEXT
     eret
+
+// ENTER USERSPACE, by returning from an exception that never happened.
+//
+//   x0 = a TrapFrame we FABRICATED, with SPSR = EL0t and ELR = the user's entry point.
+//
+// There is no "drop to EL0" instruction. There is only `eret`, which restores whatever
+// SPSR_EL1 says. So we do not need a new way down: we need a fake way back.
+//
+// This is the second time this project has pulled the same trick. `Thread::spawn` fakes a
+// `switch_to` frame so that the `ret` which RESUMES a thread also STARTS one
+// (notes/threads.md). Here we fake a TrapFrame so that the `eret` which RETURNS to
+// interrupted code also ENTERS userspace. Both times, the "start" path turned out to be the
+// "resume" path with a forged frame, and no new code at all.
+//
+// After the eret, SP_EL1 = x0 + 272: exactly where the next SAVE_CONTEXT will build its
+// frame when the user traps back in. The symmetry is not a coincidence, it is the contract.
+.global enter_userspace
+enter_userspace:
+    mov     sp,  x0
+    b       exception_restore
