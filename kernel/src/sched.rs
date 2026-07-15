@@ -55,6 +55,16 @@ static NEED_RESCHED: AtomicBool = AtomicBool::new(false);
 static PREEMPTIONS: AtomicU64 = AtomicU64::new(0);
 static VOLUNTARY_SWITCHES: AtomicU64 = AtomicU64::new(0);
 
+/// The idle thread's Tid, or `u64::MAX` before it exists.
+///
+/// **The thread that runs when nothing else can.** Before it existed, a moment where every thread
+/// was blocked waiting for I/O was a kernel panic; a driver blocked on a device interrupt with no
+/// other work to do would take the machine down. The idle thread parks the CPU in `wfi` until an
+/// interrupt makes something runnable, which is exactly what that situation calls for and what
+/// every real kernel does. It is never in the ready queue: the scheduler runs it only as a last
+/// resort, so it never competes with real work.
+static IDLE_TID: AtomicU64 = AtomicU64::new(u64::MAX);
+
 /// A synchronous IPC rendezvous point.
 ///
 /// **At most one of these queues is ever non-empty.** A sender that finds a receiver waiting
@@ -116,6 +126,25 @@ pub fn init() {
         current: 0,
         endpoints: alloc::vec::Vec::new(),
     });
+    drop(sched); // release before spawning, which takes the lock itself
+
+    // The idle thread. Its entire body is "wait for an interrupt, then let the scheduler look for
+    // work." It is deliberately kept OUT of the ready queue (see IDLE_TID): the scheduler picks it
+    // only when nothing else is runnable, so it never steals a turn from real work.
+    let idle = Thread::spawn(Box::new(|| {
+        loop {
+            crate::arch::wait_for_interrupt();
+            yield_now();
+        }
+    }))
+    .expect("could not create the idle thread");
+    let idle_id = idle.id;
+    IDLE_TID.store(idle_id, Ordering::Relaxed);
+
+    let mut sched = SCHED.lock();
+    let s = sched.as_mut().unwrap();
+    s.threads.insert(idle_id, Box::new(idle));
+    // NOT pushed onto `ready`: the idle thread is a fallback, not a peer.
 }
 
 pub fn spawn<F: FnOnce() + Send + 'static>(f: F) -> Option<Tid> {
@@ -183,11 +212,16 @@ pub fn schedule() {
     // frame — with the right `was_enabled` in it — is still sitting where we left it.
     let was_enabled = crate::arch::interrupts::disable();
 
-    let switch = {
+    // A labeled block, so every exit path leaves through the SAME point: the guard drops at the
+    // block's end and interrupts are restored ONCE, AFTER it. The earlier version called
+    // `interrupts::restore(was_enabled)` and `return` from *inside* this block, which re-enabled
+    // interrupts while still holding the scheduler lock — a one-instruction window in which a
+    // timer could fire, re-enter `schedule()`, and try to take a lock we already held. It was
+    // intermittent and it was real; see the lock-rank violation it produced.
+    let switch = 'decide: {
         let mut guard = SCHED.lock();
         let Some(sched) = guard.as_mut() else {
-            crate::arch::interrupts::restore(was_enabled);
-            return;
+            break 'decide None;
         };
 
         // Reap anything that finished. Safe *here* and nowhere else: whoever exited is no
@@ -204,24 +238,37 @@ pub fn schedule() {
         // must not undo that by helpfully requeueing it.
         let runnable = state == Some(State::Running);
 
-        let Some(next) = sched.ready.pop_front() else {
-            // Nobody else wants the CPU.
-            if runnable {
-                // Keep it. A thread yielding into an empty run queue simply carries on.
-                crate::arch::interrupts::restore(was_enabled);
-                return;
-            }
-            // We are Blocked or Finished and there is nothing to switch to.
-            match state {
-                Some(State::Finished) => panic!("the last thread exited; nothing left to run"),
-                _ => panic!(
-                    "every thread is blocked on IPC: a deadlock, and a real one — no interrupt \
-                     will ever make an endpoint ready"
-                ),
+        let idle_tid = IDLE_TID.load(Ordering::Relaxed);
+
+        let next = match sched.ready.pop_front() {
+            Some(t) => t,
+            None => {
+                if runnable {
+                    // Keep it. A thread yielding into an empty run queue simply carries on. (The
+                    // idle thread lands here too: nothing to do, so it wfi's again.) No switch.
+                    break 'decide None;
+                }
+                // Current is Blocked or Finished and the ready queue is empty. This is NOT a
+                // deadlock: a thread blocked on a device interrupt is waiting for an event that
+                // will arrive. Fall back to the idle thread, which wfi's until it does.
+                if idle_tid == u64::MAX || current == idle_tid {
+                    // No idle thread yet (before init finished), or the idle thread itself is
+                    // somehow not runnable, which cannot happen. Either way there is genuinely
+                    // nothing to run.
+                    match state {
+                        Some(State::Finished) => {
+                            panic!("the last thread exited; nothing left to run")
+                        }
+                        _ => panic!("nothing runnable and no idle thread"),
+                    }
+                }
+                idle_tid
             }
         };
 
-        if runnable {
+        // Requeue the outgoing thread if it can still run — but never the idle thread, which
+        // lives outside the ready queue.
+        if runnable && current != idle_tid {
             sched.threads.get_mut(&current).unwrap().state = State::Ready;
             sched.ready.push_back(current); // round robin: back of the queue
         }

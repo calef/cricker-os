@@ -20,6 +20,10 @@ name = "caps"
 version = "0.1.0"
 
 [[package]]
+name = "crickerfs"
+version = "0.1.0"
+
+[[package]]
 name = "dtb"
 version = "0.1.0"
 
@@ -82,3 +86,6 @@ dependencies = [
 [[package]]
 name = "xtask"
 version = "0.1.0"
+dependencies = [
+ "crickerfs",
+]

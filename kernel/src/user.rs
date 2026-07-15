@@ -308,6 +308,14 @@ pub struct Spawn<'a> {
     /// Lands in `x0` at `_start`. A tiny channel for "which role are you" that needs no
     /// capability, the way a real kernel hands a new process its argc.
     pub arg0: u64,
+    /// Lands in `x1`. A second scalar the process needs before it can name anything: the virtio
+    /// driver's DMA region physical address, which it must write into device descriptors and
+    /// cannot discover, because a process only knows virtual addresses.
+    pub arg1: u64,
+    /// Lands in `x2`. The virtio driver's device registers sit at a sub-page offset (slots are
+    /// 0x200 apart, pages are 0x1000), so we map the containing page and tell the driver where in
+    /// it the slot begins.
+    pub arg2: u64,
     /// Capabilities, granted into slots 0, 1, 2, ... in order.
     pub grants: &'a [crate::cap::Cap],
     /// Extra pages: a shared buffer, a device's registers. Mapped after the ELF's own segments.
@@ -324,6 +332,8 @@ pub fn exec_elf(image: &[u8]) -> ! {
         image,
         Spawn {
             arg0: 0,
+            arg1: 0,
+            arg2: 0,
             grants: &[],
             maps: &[],
         },
@@ -359,7 +369,7 @@ pub fn run(image: &[u8], spawn: Spawn) -> ! {
         crate::sched::grant(cap).expect("no free capability slot");
     }
 
-    enter_at(entry, spawn.arg0)
+    enter_at(entry, spawn.arg0, spawn.arg1, spawn.arg2)
 }
 
 /// Load a program, and become it. Never returns.
@@ -397,7 +407,7 @@ pub unsafe fn exec(program: &[u8]) -> ! {
 
     crate::sched::adopt_address_space(space);
 
-    enter_at(USER_CODE_VA, 0)
+    enter_at(USER_CODE_VA, 0, 0, 0)
 }
 
 /// Drop to EL0 at `entry`, on a fresh stack, with `arg0` in `x0`. Never returns.
@@ -406,7 +416,7 @@ pub unsafe fn exec(program: &[u8]) -> ! {
 /// tells one binary which of several roles to play, the way a real kernel hands a new process
 /// its argc/argv. See the console server, which is the same ELF as its client with a different
 /// `arg0`.
-fn enter_at(entry: u64, arg0: u64) -> ! {
+fn enter_at(entry: u64, arg0: u64, arg1: u64, arg2: u64) -> ! {
     // THE TRAPFRAME IS NOT AN ORDINARY LOCAL, and this cost us an afternoon.
     //
     // It must sit at the TOP OF THIS THREAD'S KERNEL STACK, because that is where the hardware
@@ -439,6 +449,8 @@ fn enter_at(entry: u64, arg0: u64) -> ! {
     unsafe {
         let mut x = [0u64; 31];
         x[0] = arg0; // _start's first argument
+        x[1] = arg1; // ...and its second
+        x[2] = arg2; // ...and its third
         frame.write(TrapFrame {
             x,
             elr: entry,             // ...where `eret` jumps
@@ -618,6 +630,8 @@ pub mod console_service {
                 image,
                 Spawn {
                     arg0: ROLE_SERVER,
+                    arg1: 0,
+                    arg2: 0,
                     grants: &[
                         endpoint_cap(request, Rights::READ), // slot 0: RECV requests
                         endpoint_cap(reply, Rights::WRITE),  // slot 1: SEND acks
@@ -654,6 +668,8 @@ pub mod console_service {
                 image,
                 Spawn {
                     arg0: ROLE_CLIENT,
+                    arg1: 0,
+                    arg2: 0,
                     grants: &[
                         endpoint_cap(console.request, Rights::WRITE), // slot 0: SEND
                         endpoint_cap(console.reply, Rights::READ),    // slot 1: RECV ack
@@ -673,6 +689,84 @@ pub mod console_service {
     /// one source of truth; they must match user/src/hello.rs.
     const SHARED_VA: u64 = 0x0000_0000_0060_0000;
     const UART_VA: u64 = 0x0000_0000_0070_0000;
+}
+
+/// Bringing the virtio block driver up in userspace.
+///
+/// **Milestone 9's headline.** The kernel enumerates the bus (kernel/src/virtio.rs) to find the
+/// block device, then hands a userspace driver everything it needs and nothing it does not: the
+/// device's registers, a DMA page, an interrupt, and an endpoint to report what it read. The
+/// kernel does not touch the device.
+#[allow(dead_code)] // the demo payload; the mechanism is unit-tested
+pub mod virtio_service {
+    use super::*;
+    use crate::cap::{Rights, endpoint_cap, irq_cap};
+
+    /// Where the driver expects its device registers and DMA page. Must match user/src/virtio.rs.
+    const MMIO_VA: u64 = 0x0000_0000_0080_0000;
+    const DMA_VA: u64 = 0x0000_0000_0090_0000;
+
+    const ROLE_VIRTIO_BLK: u64 = 3;
+
+    /// Start the driver. Returns the endpoint it will report its result on, or `None` if there is
+    /// no disk attached to enumerate.
+    pub fn start(image: &'static [u8]) -> Option<usize> {
+        let dev = crate::virtio::find_block_device()?;
+
+        // A DMA page: physical memory the device can reach, mapped into the driver, whose
+        // physical address the driver must know (a process sees only virtual addresses). We hand
+        // that physical address over in `arg1`.
+        let dma = crate::memory::alloc().expect("no DMA frame for the virtio driver").addr();
+        // SAFETY: fresh frame, reachable through the direct map. Zero it so stale RAM cannot look
+        // like a valid descriptor to the device before the driver writes the real ones.
+        unsafe {
+            core::ptr::write_bytes(mmu::phys_to_virt(dma) as *mut u8, 0, FRAME_SIZE as usize);
+        }
+
+        // Route the device's interrupt to an endpoint and enable it, so the driver's `WAIT` on
+        // its Irq capability will receive it. See milestone 9a.
+        let irq_ep = crate::sched::create_endpoint();
+        crate::sched::bind_irq(dev.intid, irq_ep);
+        crate::drivers::gic::enable(dev.intid);
+
+        // Where the driver reports the bytes it read.
+        let report = crate::sched::create_endpoint();
+
+        // A virtio-mmio slot is 0x200 bytes and NOT page-aligned, so we map the 4 KiB page that
+        // contains it and tell the driver the slot's offset within that page.
+        let mmio_page = dev.mmio_phys & !(FRAME_SIZE - 1);
+        let mmio_offset = dev.mmio_phys & (FRAME_SIZE - 1);
+
+        crate::sched::spawn(move || {
+            run(
+                image,
+                Spawn {
+                    arg0: ROLE_VIRTIO_BLK,
+                    arg1: dma,          // the DMA region's PHYSICAL address
+                    arg2: mmio_offset,  // where in the mapped page the slot begins
+                    grants: &[
+                        endpoint_cap(report, Rights::WRITE), // slot 0: SEND the result
+                        irq_cap(dev.intid),                  // slot 1: WAIT / ACK the interrupt
+                    ],
+                    maps: &[
+                        Mapping {
+                            va: MMIO_VA,
+                            phys: mmio_page,
+                            flags: Flags::user_device(),
+                        },
+                        Mapping {
+                            va: DMA_VA,
+                            phys: dma,
+                            flags: Flags::user_data(),
+                        },
+                    ],
+                },
+            )
+        })
+        .expect("could not spawn the virtio driver");
+
+        Some(report)
+    }
 }
 
 #[cfg(test)]
@@ -1055,6 +1149,8 @@ mod tests {
                 image,
                 Spawn {
                     arg0: 2, // printing-client role (matches user/src/hello.rs)
+                    arg1: 0,
+                    arg2: 0,
                     grants: &[
                         crate::cap::endpoint_cap(request, crate::cap::Rights::WRITE),
                         crate::cap::endpoint_cap(reply, crate::cap::Rights::READ),
@@ -1133,6 +1229,47 @@ mod tests {
                 "slot {slot} is not empty in a thread nobody granted anything",
             );
         }
+    }
+
+    /// **A userspace driver reads a file off a real virtio disk.** Milestone 9, end to end.
+    ///
+    /// The kernel enumerates the bus and hands a driver at EL0 the device registers, a DMA page,
+    /// and an interrupt. The driver sets up a virtqueue, reads the superblock by DMA, parses the
+    /// crickerfs directory, reads the `motd` file, and reports its first bytes. We check them
+    /// against the known contents, which proves real disk data crossed DMA and the EL0 boundary.
+    ///
+    /// It also proves the interrupt path (9a) carried the completion: `ROUTED_IRQS` counts device
+    /// interrupts turned into messages, and it must rise. And it proves the idle thread works: the
+    /// driver blocks waiting for that interrupt with nothing else to run, and the scheduler idles
+    /// rather than declaring a deadlock.
+    #[test_case]
+    fn a_userspace_driver_reads_a_file_from_a_virtio_disk() {
+        use crate::arch::exceptions::ROUTED_IRQS;
+
+        let report = match virtio_service::start(initrd().expect("no initrd")) {
+            Some(r) => r,
+            None => {
+                // No disk attached to this run. Nothing to test; do not fail.
+                crate::println!("    (no virtio disk attached; skipping)");
+                return;
+            }
+        };
+
+        let irqs_before = ROUTED_IRQS.load(Ordering::Relaxed);
+
+        // Blocks until the driver has done the whole read. If the driver faults, it never sends,
+        // and the scheduler idles; the QEMU-level timeout is the backstop.
+        let word = sched::ipc_recv(report)[0];
+
+        assert_eq!(
+            &word.to_le_bytes(),
+            b"cricker-",
+            "the driver reported the wrong file contents",
+        );
+        assert!(
+            ROUTED_IRQS.load(Ordering::Relaxed) > irqs_before,
+            "the read completed but no device interrupt was delivered as a message",
+        );
     }
 
     /// A dead user thread's address space is freed, all of it, including its page tables.

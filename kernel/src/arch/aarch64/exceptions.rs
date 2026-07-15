@@ -247,6 +247,9 @@ pub static SVC_COUNT: AtomicUsize = AtomicUsize::new(0);
 /// How many user threads have been killed for faulting.
 pub static USER_FAULTS: AtomicUsize = AtomicUsize::new(0);
 
+/// How many device/SGI interrupts were routed to a userspace endpoint. Bring-up diagnostic.
+pub static ROUTED_IRQS: AtomicUsize = AtomicUsize::new(0);
+
 /// The `ESR_EL1` of the most recent user fault. Test support.
 pub static LAST_USER_FAULT_ESR: AtomicU64 = AtomicU64::new(0);
 
@@ -330,6 +333,7 @@ fn handle_irq(_frame: &mut TrapFrame) {
             // is exactly seL4's IRQHandler protocol, and it is what lets a driver that owns no
             // privilege still own an interrupt. See notes/interrupts.md.
             if let Some(ep) = crate::sched::irq_route(other) {
+                ROUTED_IRQS.fetch_add(1, Ordering::Relaxed);
                 gic::disable(other);
                 crate::sched::irq_notify(ep);
             } else {

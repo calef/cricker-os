@@ -6,6 +6,7 @@ members = [
     "user",
     "crates/abi",
     "crates/caps",
+    "crates/crickerfs",
     "crates/dtb",
     "crates/elf",
     "crates/frames",

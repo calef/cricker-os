@@ -49,7 +49,19 @@ if [ -n "$CRICKER_INITRD" ] && [ -f "$CRICKER_INITRD" ]; then
     INITRD="-initrd $CRICKER_INITRD"
 fi
 
-# shellcheck disable=SC2086  # $INITRD is deliberately two words or none
+# Attach the crickerfs image as a virtio-blk device. `if=none` + `-device virtio-blk-device`
+# gives us a virtio-mmio block device on the `virt` machine, which is what the userspace driver
+# probes for and reads. Without a disk, the kernel simply finds no block device and says so.
+DISK=""
+if [ -n "$CRICKER_DISK" ] && [ -f "$CRICKER_DISK" ]; then
+    # force-legacy=false selects MODERN virtio-mmio (version 2), whose split register interface
+    # (separate physical addresses for the descriptor table and the two rings) is the current
+    # design and the one worth learning. Without it QEMU gives legacy (version 1), a different
+    # and older queue layout.
+    DISK="-global virtio-mmio.force-legacy=false -drive file=$CRICKER_DISK,if=none,format=raw,id=hd0,readonly=on -device virtio-blk-device,drive=hd0"
+fi
+
+# shellcheck disable=SC2086  # $INITRD and $DISK are deliberately word-split or empty
 exec qemu-system-aarch64 \
     -machine virt \
     -cpu cortex-a72 \
@@ -57,4 +69,5 @@ exec qemu-system-aarch64 \
     -semihosting \
     -kernel "$IMG" \
     $INITRD \
+    $DISK \
     "$@"

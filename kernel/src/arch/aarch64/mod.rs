@@ -57,3 +57,16 @@ pub fn halt() -> ! {
         aarch64_cpu::asm::wfi();
     }
 }
+
+/// Wait for one interrupt, then return. **The idle thread's whole body.**
+///
+/// When every other thread is blocked (all waiting on I/O, say), the scheduler runs the idle
+/// thread, which parks the CPU here until *something* interrupts: the timer, or the device a
+/// blocked driver is waiting on. The handler may wake a thread; when `wfi` returns, the idle
+/// thread yields and the scheduler picks up whatever became runnable.
+///
+/// `wfi`, not `wfe`, for the reason in `halt`: QEMU implements `wfi` as a real vCPU halt (the
+/// host thread sleeps), so an idle kernel is genuinely idle. See notes/scheduler and CLAUDE.md.
+pub fn wait_for_interrupt() {
+    aarch64_cpu::asm::wfi();
+}

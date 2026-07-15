@@ -35,6 +35,7 @@ mod sync;
 mod syscall;
 mod thread;
 mod user;
+mod virtio;
 
 #[cfg(test)]
 mod testing;
@@ -181,6 +182,33 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
             println!("  and now the other side of the boundary:");
             println!();
 
+            // Milestone 9: a virtio block device, driven from userspace.
+            match crate::virtio::find_block_device() {
+                None => println!("    virtio : no block device attached"),
+                Some(d) => {
+                    println!(
+                        "    virtio : block device at {:#x}, INTID {}, handing it to a driver at EL0",
+                        d.mmio_phys, d.intid,
+                    );
+                    if let Some(report) = user::virtio_service::start(image_for_virtio()) {
+                        // The driver reads block 0 and sends us its first 8 bytes. We check they
+                        // are the crickerfs magic, which proves real disk bytes crossed DMA and
+                        // the EL0 boundary. This RECV blocks until the driver has done the read.
+                        let word = sched::ipc_recv(report)[0];
+                        let head = word.to_le_bytes();
+                        println!();
+                        if &head == b"cricker-" {
+                            println!("      a driver at EL0 read the file 'motd' off a virtio disk,");
+                            println!("      through a crickerfs superblock it parsed itself,");
+                            println!("      woken by the device's interrupt delivered as a message.");
+                            println!("      the kernel issued no virtio command and touched no DMA.");
+                        } else {
+                            println!("      the driver reported {head:?}, not the motd contents");
+                        }
+                    }
+                }
+            }
+
             // The privilege boundary, still real: a program that reaches for a kernel address is
             // killed, and the kernel is not.
             let faults0 = USER_FAULTS.load(Ordering::Relaxed);
@@ -232,6 +260,12 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
 /// This is the line the whole locking discipline was written for. From here, a timer interrupt
 /// can land between any two instructions in the kernel, and every `IrqSafeMutex` starts
 /// actually masking something. See DECISIONS.md §9 and notes/locking.md.
+/// The initrd image, for the virtio service. Panics if absent (the demo checked `initrd()` above).
+#[cfg(not(test))]
+fn image_for_virtio() -> &'static [u8] {
+    user::initrd().expect("no initrd")
+}
+
 fn interrupts_init(_dtb: usize) {
     use crate::arch::{interrupts, mmu, timer};
     use crate::drivers::gic;

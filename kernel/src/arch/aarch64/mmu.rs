@@ -193,8 +193,22 @@ where
         direct_map(m, gicc, gicc + gicc_size, Flags::device())?;
     }
 
+    // 7. The virtio-mmio window, as device memory. **The kernel maps it only to ENUMERATE it**
+    // (read each slot's standardized ID registers and route the block device to its driver); it
+    // does not operate any device. That enumeration is a legitimate kernel/bootstrap role, the
+    // way firmware walks a PCI bus. The driver gets its own mapping of just its slot. See
+    // kernel/src/virtio.rs.
+    direct_map(m, VIRTIO_MMIO_BASE, VIRTIO_MMIO_BASE + VIRTIO_MMIO_SIZE, Flags::device())?;
+
     Ok(())
 }
+
+/// The virtio-mmio device window on QEMU `virt`: 32 slots of 0x200 bytes at 0x0a000000, with
+/// interrupts SPI 16..47 (INTID 48..79). Fixed by the machine, like [`UART_BASE`].
+pub const VIRTIO_MMIO_BASE: u64 = 0x0a00_0000;
+pub const VIRTIO_MMIO_SIZE: u64 = 32 * 0x200;
+/// SPI 16 becomes INTID 48 (SPIs start at 32). Slot `i` uses INTID `VIRTIO_IRQ_BASE + i`.
+pub const VIRTIO_IRQ_BASE: u32 = 48;
 
 /// Map a range of *virtual* addresses to the physical ones they were linked against.
 ///

@@ -88,6 +88,10 @@ in the code or the conversation doesn't make sense, it belongs here.
   address, so a hostile one names the kernel's; it is refused by a `Half::Low` guard that has
   been sitting in `paging` since milestone 4, waiting for exactly this file.
 
+- [virtio-blk, driven from userspace](virtio.md) — milestone 9: a real block device driven by a
+  process at EL0, with DMA, a virtqueue, and the completion arriving as an interrupt-message. Plus
+  the two scheduler bugs it flushed out: no idle thread, and interrupts restored under the lock.
+
 ## The point of all this
 
 - [The console driver leaves the kernel](userspace-drivers.md) — milestone 8: the console is now a

@@ -21,6 +21,8 @@
 #![no_std]
 #![no_main]
 
+mod virtio;
+
 use abi::{Error, endpoint};
 
 /// Roles, as passed in `x0` by the kernel.
@@ -32,6 +34,7 @@ use abi::{Error, endpoint};
 const SELF_CHECK: u64 = 0;
 const CONSOLE_SERVER: u64 = 1;
 const PRINTING: u64 = 2;
+const VIRTIO_BLK: u64 = 3;
 
 // --- the shared layout, known to both roles because they are the same binary ---
 
@@ -62,10 +65,11 @@ static mut DATA_MARKER: u64 = 0x0000_c0ff_ee00_d0d0;
 static mut BSS_MARKER: u64 = 0;
 
 #[unsafe(no_mangle)]
-pub extern "C" fn _start(role: u64) -> ! {
+pub extern "C" fn _start(role: u64, dma_phys: u64, mmio_offset: u64) -> ! {
     match role {
         CONSOLE_SERVER => console_server(),
         PRINTING => printing_client(),
+        VIRTIO_BLK => virtio::run(dma_phys, mmio_offset),
         SELF_CHECK => self_check_client(),
         _ => self_check_client(),
     }
