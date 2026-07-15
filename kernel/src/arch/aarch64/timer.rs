@@ -15,12 +15,12 @@
 //! | | |
 //! |---|---|
 //! | `CNTFRQ_EL0` | how fast the counter ticks. **Set by firmware, read by us.** QEMU says 62.5 MHz. |
-//! | `CNTPCT_EL0` | the counter itself: a 64-bit number that only ever goes up |
-//! | `CNTP_CVAL_EL0` | an **absolute deadline**. Fire when `CNTPCT_EL0` reaches this. |
-//! | `CNTP_TVAL_EL0` | a **relative countdown**, which is just `CVAL = CNTPCT + N`. A trap. |
-//! | `CNTP_CTL_EL0` | enable, mask, and a read-only "did it fire" bit |
+//! | `CNTVCT_EL0` | the counter itself: a 64-bit number that only ever goes up |
+//! | `CNTV_CVAL_EL0` | an **absolute deadline**. Fire when `CNTVCT_EL0` reaches this. |
+//! | `CNTV_TVAL_EL0` | a **relative countdown**, which is just `CVAL = CNTPCT + N`. A trap. |
+//! | `CNTV_CTL_EL0` | enable, mask, and a read-only "did it fire" bit |
 //!
-//! `CNTPCT_EL0` is what `Instant` is made of. It never wraps in any timescale that matters (at
+//! `CNTVCT_EL0` is what `Instant` is made of. It never wraps in any timescale that matters (at
 //! 62.5 MHz, 64 bits is about 9000 years) and it does not stop when interrupts are masked,
 //! which makes it the only honest way to measure a critical section.
 //!
@@ -59,19 +59,34 @@
 #![allow(dead_code)]
 
 use crate::drivers::gic;
-use aarch64_cpu::registers::{CNTFRQ_EL0, CNTP_CTL_EL0, CNTP_CVAL_EL0, CNTPCT_EL0};
+use aarch64_cpu::registers::{CNTFRQ_EL0, CNTV_CTL_EL0, CNTV_CVAL_EL0, CNTVCT_EL0};
 use core::sync::atomic::{AtomicU64, Ordering};
 use tock_registers::interfaces::{Readable, Writeable};
 
-/// The EL1 non-secure physical timer, as a GIC interrupt ID.
+/// The EL1 **virtual** timer, as a GIC interrupt ID.
 ///
-/// **A PPI, not an SPI**, and the device tree says so: `interrupts = <1 14 ...>` on the timer
-/// node, where type 1 means PPI and 14 is the PPI number. PPIs start at INTID 16, so
-/// `16 + 14 = 30`.
+/// **A PPI, not an SPI**, and the device tree says so: `interrupts = <1 11 ...>` on the timer
+/// node, where type 1 means PPI and 11 is the PPI number. PPIs start at INTID 16, so
+/// `16 + 11 = 27`.
 ///
 /// It *has* to be per-core. A timer that fired on only one core could not preempt threads
 /// running on the others, so every core has its own, wearing the same number.
-pub const TIMER_INTID: u32 = 30;
+///
+/// # Why the *virtual* timer, and not the physical one (INTID 30)
+///
+/// We used the physical timer (`CNTP_*`, INTID 30) through milestone 9, and it worked on QEMU's
+/// software CPU and would work on bare metal. It **traps under a hypervisor**: the physical timer
+/// belongs to EL2, and a guest at EL1 that writes `CNTP_CVAL_EL0` takes an "Unknown reason" trap
+/// (ESR EC 0x00). We found this the first time we booted under Apple's Hypervisor.framework on an
+/// M3, which is exactly the "which assumptions were secretly QEMU-shaped" moment DECISIONS.md and
+/// notes/portability.md anticipate for a new target, arriving early because HVF runs the real
+/// core.
+///
+/// The **virtual** timer (`CNTV_*`, INTID 27) is the one a guest is meant to use, and it is
+/// available at EL1 both on bare metal and under any hypervisor. So this is strictly more
+/// portable: it keeps working under QEMU/TCG, under HVF, and on a real board, with no
+/// per-environment branching. See notes/virtualization.md.
+pub const TIMER_INTID: u32 = 27;
 
 /// 100 Hz. Ten milliseconds per tick.
 ///
@@ -109,8 +124,8 @@ pub fn init() {
 /// `IMASK` clear means "and actually raise the interrupt line". The timer will happily count
 /// down and set its status bit with the interrupt masked; the mask only stops the line.
 fn start(interval: u64) {
-    CNTP_CVAL_EL0.set(CNTPCT_EL0.get() + interval);
-    CNTP_CTL_EL0.write(CNTP_CTL_EL0::ENABLE::SET + CNTP_CTL_EL0::IMASK::CLEAR);
+    CNTV_CVAL_EL0.set(CNTVCT_EL0.get() + interval);
+    CNTV_CTL_EL0.write(CNTV_CTL_EL0::ENABLE::SET + CNTV_CTL_EL0::IMASK::CLEAR);
 }
 
 /// Move the deadline forward by exactly one interval.
@@ -125,15 +140,15 @@ fn start(interval: u64) {
 /// trying to catch up on a debt we cannot pay. So we give up on the missed ticks and re-anchor
 /// the grid to now. Linux calls this the same thing every kernel calls it: dropping ticks.
 fn rearm(interval: u64) {
-    let now = CNTPCT_EL0.get();
-    let mut next = CNTP_CVAL_EL0.get() + interval;
+    let now = CNTVCT_EL0.get();
+    let mut next = CNTV_CVAL_EL0.get() + interval;
 
     if next <= now {
         MISSED_TICKS.fetch_add(1, Ordering::Relaxed);
         next = now + interval;
     }
 
-    CNTP_CVAL_EL0.set(next);
+    CNTV_CVAL_EL0.set(next);
 }
 
 /// Deadlines that had already passed by the time we re-armed. **Should be zero.** A nonzero
@@ -166,7 +181,7 @@ pub fn ticks() -> u64 {
 /// while interrupts are masked** — which is precisely what makes it the only honest way to
 /// measure how long a critical section held the CPU.
 pub fn now() -> u64 {
-    CNTPCT_EL0.get()
+    CNTVCT_EL0.get()
 }
 
 pub fn frequency() -> u64 {
@@ -223,9 +238,9 @@ mod tests {
 
     /// Ticks arrive at roughly the rate we asked for.
     ///
-    /// This is the test that caught the drift. We re-armed with `CNTP_TVAL_EL0` (a *relative*
+    /// This is the test that caught the drift. We re-armed with `CNTV_TVAL_EL0` (a *relative*
     /// countdown), so every period was `interval + handler latency`, the lateness compounded,
-    /// and 100 Hz became about 70 Hz. Silently. `CNTP_CVAL_EL0` puts the deadlines on a fixed
+    /// and 100 Hz became about 70 Hz. Silently. `CNTV_CVAL_EL0` puts the deadlines on a fixed
     /// grid and the rate is right.
     #[test_case]
     fn ticks_arrive_at_the_configured_rate() {
@@ -349,7 +364,7 @@ mod tests {
     ///   3. assert not one tick landed
     ///   4. release, and watch them resume
     ///
-    /// Step 2 works because `spin_for` reads `CNTPCT_EL0`, the hardware counter, which **keeps
+    /// Step 2 works because `spin_for` reads `CNTVCT_EL0`, the hardware counter, which **keeps
     /// counting while interrupts are masked**. A tick-based delay would simply hang here, which
     /// is its own kind of proof.
     #[test_case]

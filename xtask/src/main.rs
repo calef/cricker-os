@@ -26,7 +26,14 @@ fn main() -> ExitCode {
 
     let ok = match cmd.as_str() {
         "build" => build(),
-        "run" => cargo(&["run", "-p", "kernel", "--target", TARGET]),
+        "run" => {
+            // `cargo xtask run --hvf` boots under Apple's Hypervisor.framework instead of TCG.
+            if std::env::args().any(|a| a == "--hvf") {
+                unsafe { std::env::set_var("CRICKER_ACCEL", "hvf") };
+                eprintln!("--- booting under HVF (Apple Silicon hardware virtualization) ---");
+            }
+            cargo(&["run", "-p", "kernel", "--target", TARGET])
+        }
         "test" => test(),
         "gdb" => gdb(),
         "objdump" => objdump(),
@@ -126,6 +133,10 @@ fn workspace_root() -> std::path::PathBuf {
 /// emulator, so they fail fast and cheap. Only once they pass is it worth spending twenty
 /// seconds booting QEMU. See DECISIONS.md §7.
 fn test() -> bool {
+    // Tests always run under TCG. They exit via semihosting, which QEMU only intercepts in the
+    // TCG path; under HVF the `hlt #0xf000` traps to the guest and the harness hangs. TCG is also
+    // the right place for reproducible tests: deterministic, and identical on any host.
+    unsafe { std::env::remove_var("CRICKER_ACCEL") };
     eprintln!("--- host tests (pure logic, no emulator) ---");
     // Every host crate, not just two. `paging`, `heap` and `slab` each carry real tests and
     // were silently not being run here for four milestones.

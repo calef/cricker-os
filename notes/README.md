@@ -96,6 +96,11 @@ in the code or the conversation doesn't make sense, it belongs here.
   (console receive), and worker processes spawned on command. Proof the whole stack works, as a
   conversation between processes the kernel only routes.
 
+- [Running under virtualization on Apple Silicon](virtualization.md) — `cargo xtask run --hvf`
+  puts the kernel on the real M3 core via Apple's Hypervisor.framework. It found two QEMU-shaped
+  assumptions on the first boot: the physical timer (fixed, we use the virtual timer now) and
+  semihosting (emulation-only, so tests stay on TCG).
+
 ## The point of all this
 
 - [The console driver leaves the kernel](userspace-drivers.md) — milestone 8: the console is now a

@@ -120,3 +120,11 @@ at all. Not a detour from the port; the first step of it.
 ---
 
 *Add to this file as new portability concerns come up.*
+
+## A first rehearsal: hardware virtualization on the dev Mac
+
+Before the Raspberry Pi, there is a cheaper way to find our QEMU-shaped assumptions: run the kernel
+on the real Apple Silicon core under Hypervisor.framework (`cargo xtask run --hvf`). It runs the
+same `virt` devices but the real CPU, so it surfaces *CPU* assumptions while QEMU still holds the
+*devices*. It already caught one: we used the physical timer, which a hypervisor reserves, and
+switched to the virtual timer. See [virtualization.md](virtualization.md).

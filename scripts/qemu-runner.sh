@@ -62,9 +62,32 @@ if [ -n "$CRICKER_DISK" ] && [ -f "$CRICKER_DISK" ]; then
 fi
 
 # shellcheck disable=SC2086  # $INITRD and $DISK are deliberately word-split or empty
+# CPU and accelerator.
+#
+# By default we run under TCG (QEMU translates every aarch64 instruction), with an emulated
+# cortex-a72. That is deterministic and runs identically on any host, which is what the test
+# harness wants.
+#
+# Set CRICKER_ACCEL=hvf to run under Apple's Hypervisor.framework instead: HVF puts the kernel on
+# the real Apple Silicon core at guest EL1, using the hardware virtualization the chip already
+# has. The coincidence that makes this a flag and not a port is that the host and the guest are the
+# same ISA (aarch64). Two consequences:
+#
+#   - HVF runs the PHYSICAL core, so `-cpu host` is mandatory; you cannot ask for an emulated a72.
+#   - gic-version is PINNED to 2, so a future QEMU default cannot swap in a GICv3 our driver does
+#     not speak. QEMU emulates the GIC either way (Apple cores use their own AIC natively) and
+#     injects interrupts through HVF, so the MMIO GICv2 driver keeps working.
+if [ "$CRICKER_ACCEL" = "hvf" ]; then
+    MACHINE="virt,accel=hvf,gic-version=2"
+    CPU="host"
+else
+    MACHINE="virt,gic-version=2"
+    CPU="cortex-a72"
+fi
+
 exec qemu-system-aarch64 \
-    -machine virt \
-    -cpu cortex-a72 \
+    -machine "$MACHINE" \
+    -cpu "$CPU" \
     -display none \
     -serial stdio \
     -semihosting \
