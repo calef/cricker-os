@@ -42,6 +42,8 @@ const SHELL: u64 = 5;
 const WORKER: u64 = 6;
 const UNTYPED_DEMO: u64 = 7;
 const VIRTIO_ATTACK: u64 = 8;
+const GRANTER: u64 = 9;
+const RECEIVER: u64 = 10;
 
 // --- the shared layout, known to both roles because they are the same binary ---
 
@@ -88,6 +90,8 @@ pub extern "C" fn _start(role: u64, dma_phys: u64, _arg2: u64) -> ! {
         WORKER => shell::worker(),
         UNTYPED_DEMO => untyped_demo(),
         VIRTIO_ATTACK => virtio::run_attack(dma_phys),
+        GRANTER => granter(),
+        RECEIVER => receiver(),
         SELF_CHECK => self_check_client(),
         _ => self_check_client(),
     }
@@ -225,6 +229,83 @@ fn recv(slot: u64) -> (u64, u64, u64) {
         );
     }
     (w0, w1, w2)
+}
+
+/// Receive a data word and, if the sender delegated one, a capability. Returns `(w0, slot)`, where
+/// `slot` is where the received capability landed in our cspace, or `endpoint::NO_CAP` if none came.
+fn recv_cap(slot: u64) -> (u64, u64) {
+    let (mut w0, mut got): (u64, u64);
+    // SAFETY: `svc`. RECV_CAP returns the data word in x0 and the received slot (or NO_CAP) in x1.
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("x8") abi::SYS_INVOKE,
+            inlateout("x0") slot => w0,
+            in("x1") endpoint::RECV_CAP,
+            lateout("x1") got,
+            in("x2") 0u64,
+            in("x3") 0u64,
+            in("x4") 0u64,
+            options(nostack),
+        );
+    }
+    (w0, got)
+}
+
+/// **The delegation demo, granter's half.** Holds a channel to send over (slot 0) and a resource
+/// capability held `WRITE | GRANT` (slot 1). It passes the resource on, narrowed to `WRITE` so the
+/// receiver can use it but not lend it further. The whole point of a capability system, in four
+/// lines: authority a process holds, handed to another process, at runtime, with less power than it
+/// arrived with. See kernel/src/user.rs delegation_service.
+fn granter() -> ! {
+    const CHANNEL: u64 = 0;
+    const RESOURCE: u64 = 1;
+
+    // SAFETY: `svc`. Delegate RESOURCE, narrowed to WRITE (dropping GRANT), over CHANNEL.
+    unsafe { invoke(CHANNEL, endpoint::SEND_CAP, RESOURCE, abi::rights::WRITE, 0) };
+
+    exit(); // one-shot: our authority is passed on, so we leave and the kernel reaps us
+}
+
+/// **The delegation demo, receiver's half.** Holds the channel (slot 0), a report endpoint
+/// (slot 1), and a loopback endpoint (slot 2) it uses only to *attempt* re-delegation. It receives
+/// the delegated capability, proves it works by invoking it, then proves it cannot pass it on.
+fn receiver() -> ! {
+    const CHANNEL: u64 = 0;
+    const REPORT: u64 = 1;
+    const LOOPBACK: u64 = 2;
+    const USED_WORD: u64 = 0x5A; // must match kernel/src/user.rs delegation_service::USED_WORD
+
+    // Receive the delegated capability. It lands in a fresh slot of our own cspace; RECV_CAP tells
+    // us which one. We were never told the slot in advance: the kernel chose it and named it to us.
+    let (_data, got) = recv_cap(CHANNEL);
+    let received = got != endpoint::NO_CAP;
+
+    // Use it. A SEND on the received capability rendezvous with whoever holds the other end, which
+    // proves a capability minted for us by another process carries real authority.
+    if received {
+        send(got, USED_WORD, 0, 0);
+    }
+
+    // Try to pass it on. We hold it WITHOUT grant, so the kernel refuses before any rendezvous, and
+    // the invoke returns an error. LOOPBACK needs no receiver: the refusal happens at the check.
+    let redelegate = unsafe { invoke(LOOPBACK, endpoint::SEND_CAP, got, abi::rights::WRITE, 0) };
+    let refused = redelegate < 0;
+
+    // Verdict: bit 0 we received a capability, bit 1 re-delegation was refused. 0b11 is the story.
+    let code = (received as u64) | ((refused as u64) << 1);
+    send(REPORT, code, 0, 0);
+
+    exit(); // one-shot: reported, so we leave and the kernel reaps us
+}
+
+/// Terminate this process. The kernel reaps the thread and frees its whole address space.
+fn exit() -> ! {
+    // SAFETY: `svc`; SYS_EXIT never returns.
+    unsafe {
+        core::arch::asm!("svc #0", in("x8") abi::SYS_EXIT, in("x0") 0u64, options(nostack, nomem));
+    }
+    loop {}
 }
 
 /// # Safety

@@ -79,6 +79,33 @@ pub mod endpoint {
     /// `invoke(cap, RECV, _, _, _)` -> w0, with w1 in x1 and w2 in x2. **Blocks until a message
     /// arrives.**
     pub const RECV: u64 = 1;
+
+    /// `invoke(cap, SEND_CAP, cap_slot, rights, w0)` -> 0. **Delegate a capability.** Passes the
+    /// capability in the sender's `cap_slot`, narrowed to `rights` (see [`rights`]), plus one data
+    /// word, over this endpoint; blocks until a receiver takes it. The endpoint capability needs
+    /// `WRITE` (you may send here), and the *delegated* capability needs `GRANT` (you were trusted
+    /// to pass it on). `rights` may only narrow what the sender holds, never widen it. This is the
+    /// operation that makes cricker-os a capability system a process can actually compose in:
+    /// authority moves between processes at runtime instead of being wired by the kernel at spawn.
+    pub const SEND_CAP: u64 = 2;
+
+    /// `invoke(cap, RECV_CAP, _, _, _)` -> w0, with the received capability's new slot in x1, or
+    /// [`NO_CAP`] there if the message carried no capability. **Blocks until a message arrives.**
+    /// The received capability lands in a free slot of the receiver's own cspace, chosen by the
+    /// kernel; x1 is where. Needs `READ` on the endpoint.
+    pub const RECV_CAP: u64 = 3;
+
+    /// The x1 value from [`RECV_CAP`] when the message carried no capability.
+    pub const NO_CAP: u64 = u64::MAX;
+}
+
+/// The rights bits, matching `caps::Rights`, so userspace can name the rights to narrow a
+/// delegated capability to (the `rights` argument to [`endpoint::SEND_CAP`]) without depending on
+/// the kernel's `caps` crate.
+pub mod rights {
+    pub const READ: u64 = 1 << 0;
+    pub const WRITE: u64 = 1 << 1;
+    pub const GRANT: u64 = 1 << 2;
 }
 
 /// Methods on an `Irq` capability. **How a userspace driver owns an interrupt.**

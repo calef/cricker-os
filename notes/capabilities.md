@@ -270,6 +270,14 @@ has `WRITE` and not `GRANT`, so the program may print and may not lend printing 
 "the child inherits every fd" is the opposite default, and `FD_CLOEXEC` is the afterthought that
 tries to walk it back.
 
+For a long while `derive` and `GRANT` were true in the crate and unreachable from a running
+process: every capability was minted by the kernel and handed out at spawn, which made the kernel a
+central authority-granting oracle, the ambient-authority shape §10 warned against, only relocated.
+That is fixed. A process now **delegates a capability to another process over an IPC endpoint**
+(`SEND_CAP` / `RECV_CAP`), narrowing the rights on the way, and only if it holds `GRANT`. Authority
+composes between processes at runtime instead of being wired by the kernel once. See
+[delegation.md](delegation.md).
+
 ## A new process holds nothing
 
 `CSpace::empty()`, and every thread starts with one. That constructor **is** the decision. A Unix

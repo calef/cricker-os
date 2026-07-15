@@ -1019,6 +1019,76 @@ pub mod untyped_service {
     }
 }
 
+/// **Capability delegation: authority moves between processes at runtime.**
+///
+/// Every other capability in cricker-os is minted by the kernel and handed to a process at spawn.
+/// That made the kernel a central authority-granting oracle, which is the ambient-authority shape
+/// §10 argued against, just relocated. A capability system's defining move is that a process can
+/// pass authority it holds to another process, narrowing it on the way, and only if it was trusted
+/// to (`GRANT`). This wires the smallest scenario that exercises all three: a *granter* delegates a
+/// resource capability to a *receiver* over a channel, narrowed to `WRITE` (no `GRANT`); the
+/// receiver uses it and then cannot pass it on. See user/src/hello.rs granter()/receiver().
+#[cfg(test)]
+pub mod delegation_service {
+    use super::*;
+    use crate::cap::{Rights, endpoint_cap};
+
+    const ROLE_GRANTER: u64 = 9;
+    const ROLE_RECEIVER: u64 = 10;
+
+    /// The word the receiver sends back through the delegated capability, so a test can confirm a
+    /// capability minted by one process works when invoked by another.
+    pub const USED_WORD: u64 = 0x5A;
+
+    /// Spawn the pair and return `(resource endpoint, report endpoint)`. The granter delegates its
+    /// `resource` capability (held `WRITE | GRANT`) to the receiver, narrowed to `WRITE`. The
+    /// receiver `SEND`s [`USED_WORD`] on the received capability (a `RECV` on `resource` collects
+    /// it) and reports a two-bit verdict on `report`.
+    pub fn wire(image: &'static [u8]) -> (usize, usize) {
+        let channel = crate::sched::create_endpoint(); // granter SEND_CAP -> receiver RECV_CAP
+        let resource = crate::sched::create_endpoint(); // the capability being delegated
+        let loopback = crate::sched::create_endpoint(); // the receiver's refused re-delegation target
+        let report = crate::sched::create_endpoint(); // the receiver's verdict
+
+        crate::sched::spawn(move || {
+            run(
+                image,
+                Spawn {
+                    arg0: ROLE_GRANTER,
+                    arg1: 0,
+                    arg2: 0,
+                    grants: &[
+                        endpoint_cap(channel, Rights::WRITE), // slot 0: SEND_CAP over it
+                        endpoint_cap(resource, Rights::WRITE.union(Rights::GRANT)), // slot 1: delegate this
+                    ],
+                    maps: &[],
+                },
+            )
+        })
+        .expect("could not spawn the delegation granter");
+
+        crate::sched::spawn(move || {
+            run(
+                image,
+                Spawn {
+                    arg0: ROLE_RECEIVER,
+                    arg1: 0,
+                    arg2: 0,
+                    grants: &[
+                        endpoint_cap(channel, Rights::READ), // slot 0: RECV_CAP
+                        endpoint_cap(report, Rights::WRITE), // slot 1: report the verdict
+                        endpoint_cap(loopback, Rights::WRITE), // slot 2: attempt re-delegation here
+                    ],
+                    maps: &[],
+                },
+            )
+        })
+        .expect("could not spawn the delegation receiver");
+
+        (resource, report)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1690,6 +1760,42 @@ mod tests {
             before,
             "four user address spaces came and went and {} frames did not come back",
             used() as i64 - before as i64,
+        );
+    }
+
+    /// **Capability delegation, end to end.** A granter process passes a resource capability to a
+    /// receiver process over an IPC channel, narrowed to `WRITE`. Three things must hold, and this
+    /// checks all three: the receiver *gets* the capability, the receiver can *use* it (a
+    /// capability minted for it by another process works when it invokes it), and the receiver
+    /// *cannot pass it on* because it was handed the capability without `GRANT`. This is the
+    /// operation that makes the capability model composable by processes instead of brokered by the
+    /// kernel at spawn. See user/src/hello.rs and user::delegation_service.
+    #[test_case]
+    fn a_capability_can_be_delegated_over_ipc_and_grant_gates_re_delegation() {
+        let image = initrd().expect("no initrd");
+        let (resource, report) = delegation_service::wire(image);
+
+        // The receiver invoked the *delegated* capability to SEND this word. Collecting it here is
+        // proof the capability the granter minted for the receiver actually carries authority.
+        let used = sched::ipc_recv(resource)[0];
+        assert_eq!(
+            used,
+            delegation_service::USED_WORD,
+            "a delegated capability did not work when its recipient invoked it",
+        );
+
+        // The receiver's own two-bit verdict: bit 0 it received a capability, bit 1 the kernel
+        // refused its attempt to re-delegate a capability it holds without GRANT.
+        let verdict = sched::ipc_recv(report)[0];
+        assert_eq!(
+            verdict & 0b01,
+            0b01,
+            "the receiver never received the delegated capability",
+        );
+        assert_eq!(
+            verdict & 0b10,
+            0b10,
+            "a capability held WITHOUT grant was allowed to be re-delegated: rights did not gate it",
         );
     }
 }

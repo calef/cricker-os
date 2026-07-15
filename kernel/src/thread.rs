@@ -279,6 +279,12 @@ pub struct Thread {
     /// **A slot in a spawner's quota, or `None` for a thread nobody bounded.** Reaped with the
     /// thread, which is how the slot comes back. See [`QuotaToken`].
     pub quota: Option<QuotaToken>,
+
+    /// **A capability parked here mid-delegation.** When a thread does a capability-carrying send
+    /// (`SEND_CAP`) and no receiver is waiting, it blocks with the capability stashed here, exactly
+    /// as `mailbox` stashes the data words. The receiver, running later, reaches in, `take()`s it,
+    /// and inserts it into its own cspace. `None` for every ordinary send. See sched.rs.
+    pub outgoing_cap: Option<crate::cap::Cap>,
 }
 
 // SAFETY: a Thread is only ever touched under the scheduler's lock.
@@ -301,6 +307,7 @@ impl Thread {
             cspace: crate::cap::CSpace::empty(),
             mailbox: [0; 3],
             quota: None,
+            outgoing_cap: None,
         }
     }
 
@@ -346,6 +353,7 @@ impl Thread {
             cspace: crate::cap::CSpace::empty(), // and it can name nothing until it is handed something
             mailbox: [0; 3],
             quota: None,
+            outgoing_cap: None,
         })
     }
 }

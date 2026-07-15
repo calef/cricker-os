@@ -521,6 +521,99 @@ pub fn ipc_recv(ep: usize) -> [u64; 3] {
     }
 }
 
+/// The x1 value a `RECV_CAP` returns when no capability accompanied the message. Mirrors
+/// `abi::endpoint::NO_CAP`; kept here too so the scheduler names it without reaching into the ABI.
+const NO_CAP: u64 = u64::MAX;
+
+/// **Delegate a capability plus one data word to an endpoint.** The sender's half of a
+/// capability-carrying rendezvous, mirroring [`ipc_send`]. The one thing it adds: at the moment
+/// sender and receiver meet, `cap` moves out of the sender and into the receiver's cspace.
+///
+/// - **A receiver is already waiting.** Insert the capability into its cspace right now, record the
+///   slot in its mailbox alongside the data word, and wake it.
+/// - **Nobody is waiting.** Park the data word in our mailbox and the capability in `outgoing_cap`,
+///   join the sender queue, and block. A future receiver reaches in, takes the capability, and
+///   files it in its own cspace.
+///
+/// If the receiver's cspace is full the capability is dropped and the receiver sees `NO_CAP`; the
+/// data word still arrives. The syscall layer has already checked the sender may delegate this
+/// capability (it holds `GRANT`) and that the rights only narrow.
+pub fn ipc_send_cap(ep: usize, data: u64, cap: crate::cap::Cap) {
+    let block = {
+        let mut guard = SCHED.lock();
+        let sched = guard.as_mut().expect("no scheduler");
+        let current = sched.current;
+
+        if let Some(receiver) = sched.endpoints[ep].receivers.pop_front() {
+            let r = sched.threads.get_mut(&receiver).unwrap();
+            let slot = r.cspace.insert(cap).unwrap_or(NO_CAP);
+            r.mailbox = [data, slot, 0];
+            wake(sched, receiver);
+            false
+        } else {
+            let me = sched.threads.get_mut(&current).unwrap();
+            me.mailbox = [data, 0, 0];
+            me.outgoing_cap = Some(cap);
+            me.state = State::Blocked;
+            sched.endpoints[ep].senders.push_back(current);
+            true
+        }
+    };
+
+    if block {
+        schedule();
+    }
+}
+
+/// **Receive a data word and, if one was sent, a capability.** The mirror of [`ipc_send_cap`], and
+/// the receiver's half of delegation. Returns `[data, received_slot, 0]`, where `received_slot` is
+/// where an incoming capability landed in *our* cspace, or [`NO_CAP`] if the message carried none.
+///
+/// A capability-carrying send and this share the ordinary sender/receiver queues, so either side
+/// may arrive first, exactly as with the plain path.
+pub fn ipc_recv_cap(ep: usize) -> [u64; 3] {
+    let immediate = {
+        let mut guard = SCHED.lock();
+        let sched = guard.as_mut().expect("no scheduler");
+        let current = sched.current;
+
+        if sched.endpoints[ep].pending > 0 {
+            // An interrupt signal is not a delegation; it carries no capability.
+            sched.endpoints[ep].pending -= 1;
+            Some([1, NO_CAP, 0])
+        } else if let Some(sender) = sched.endpoints[ep].senders.pop_front() {
+            let data = sched.threads.get(&sender).unwrap().mailbox[0];
+            let cap = sched.threads.get_mut(&sender).unwrap().outgoing_cap.take();
+            let slot = match cap {
+                Some(c) => sched
+                    .threads
+                    .get_mut(&current)
+                    .unwrap()
+                    .cspace
+                    .insert(c)
+                    .unwrap_or(NO_CAP),
+                None => NO_CAP,
+            };
+            wake(sched, sender);
+            Some([data, slot, 0])
+        } else {
+            sched.threads.get_mut(&current).unwrap().state = State::Blocked;
+            sched.endpoints[ep].receivers.push_back(current);
+            None
+        }
+    };
+
+    match immediate {
+        Some(msg) => msg,
+        None => {
+            schedule(); // a capability-carrying sender fills our mailbox and wakes us
+            let guard = SCHED.lock();
+            let sched = guard.as_ref().expect("no scheduler");
+            sched.threads.get(&sched.current).unwrap().mailbox
+        }
+    }
+}
+
 /// Look up a capability in the **current thread's** table.
 ///
 /// The lookup that is the security mechanism. `slot` came from userspace, in a register, and it

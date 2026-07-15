@@ -83,6 +83,10 @@ in the code or the conversation doesn't make sense, it belongs here.
   only way to print, and `AT S1E0R` is how the kernel refuses to read its own memory on a user's
   behalf. **7e**: endpoints and synchronous IPC, and the scheduler learns a thread can be
   `Blocked` waiting for a message it can only reach by a capability.
+- [Delegating a capability](delegation.md) — a capability system where processes can't pass
+  capabilities isn't one. A process now delegates a capability to another over an IPC endpoint
+  (`SEND_CAP`/`RECV_CAP`), narrowing the rights, and only if it holds `GRANT`. Authority composes
+  between processes at runtime instead of being wired by the kernel at spawn.
 
 - **7c update in [elf.md](elf.md)** — the kernel now *loads* one. An ELF names its own load
   address, so a hostile one names the kernel's; it is refused by a `Half::Low` guard that has

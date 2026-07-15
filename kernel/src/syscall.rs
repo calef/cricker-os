@@ -102,6 +102,43 @@ fn invoke(
                 frame.x[2] = msg[2];
                 Ok(msg[0] as i64)
             }
+
+            // Delegation. `a0` is the slot of the capability to pass on, `a1` the rights to narrow
+            // it to, `a2` one data word. Two rights are in play and they are different questions:
+            // WRITE on *this* endpoint (may I send here?) and GRANT on the *delegated* capability
+            // (was I trusted to pass it on?). Without GRANT you may use a thing and not lend it.
+            abi::endpoint::SEND_CAP => {
+                if !cap.rights.allows(Rights::WRITE) {
+                    return Err(Error::NotPermitted);
+                }
+                let src = sched::current_cap(a0).map_err(|_| Error::NoSuchSlot)?;
+                if !src.rights.allows(Rights::GRANT) {
+                    return Err(Error::NotPermitted); // holder may not pass this on
+                }
+                let narrowed = Rights::from_bits(a1 as u32);
+                if !narrowed.is_subset_of(src.rights) {
+                    return Err(Error::NotPermitted); // delegation may only narrow, never widen
+                }
+                sched::ipc_send_cap(
+                    ep,
+                    a2,
+                    crate::cap::Cap {
+                        object: src.object,
+                        rights: narrowed,
+                    },
+                );
+                Ok(0)
+            }
+            abi::endpoint::RECV_CAP => {
+                if !cap.rights.allows(Rights::READ) {
+                    return Err(Error::NotPermitted);
+                }
+                let msg = sched::ipc_recv_cap(ep);
+                // x1 carries the slot the received capability landed in, or NO_CAP if the message
+                // brought none. The data word returns in x0 like every syscall result.
+                frame.x[1] = msg[1];
+                Ok(msg[0] as i64)
+            }
             _ => Err(Error::BadMethod),
         },
 

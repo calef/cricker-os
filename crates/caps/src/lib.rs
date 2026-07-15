@@ -45,6 +45,15 @@ impl Rights {
         self.0
     }
 
+    /// Rebuild rights from a raw bit pattern, keeping only defined bits. **The reverse of
+    /// [`bits`](Self::bits), for rights that crossed a boundary as an integer.** Delegation names
+    /// the rights to narrow a capability to by their bits (they travel in a syscall register), and
+    /// this turns those bits back into a `Rights` the subset check can vet. Undefined bits are
+    /// dropped, so a caller cannot conjure a right that does not exist.
+    pub const fn from_bits(bits: u32) -> Rights {
+        Rights(bits & Rights::ALL.0)
+    }
+
     pub const fn union(self, other: Rights) -> Rights {
         Rights(self.0 | other.0)
     }
