@@ -18,37 +18,23 @@
 use crate::{check, invoke, send};
 use abi::irq;
 
-// The kernel maps these at fixed user VAs (must match kernel/src/user.rs virtio_service). The
-// device's registers sit at a sub-page offset within the mapped page; the kernel passes that
-// offset in, and `run` folds it into the base once.
-const MMIO_PAGE_VA: u64 = 0x0000_0000_0080_0000;
+// The kernel maps the DMA page at this fixed VA (must match kernel/src/user.rs virtio_service).
+// The device REGISTERS are NOT mapped: we drive the device through a `Virtio` capability (slot 2),
+// so we cannot point it outside this DMA region. See kernel/src/virtio.rs.
 const DMA_VA: u64 = 0x0000_0000_0090_0000;
-
-/// The slot base, set once at the top of `run`. A driver only ever talks to one device.
-static mut MMIO_VA: u64 = 0;
 
 /// Capability slots the kernel handed us, by convention.
 const REPORT: u64 = 0; // SEND: report the result back to the kernel
 const IRQ: u64 = 1; // WAIT/ACK the device interrupt
+const VIRTIO: u64 = 2; // the device transport: read/write registers, set up the queue, submit
 
 // --- virtio-mmio v2 register offsets (bytes from the slot base) ---
 const MAGIC: u64 = 0x000;
 const DRIVER_FEATURES: u64 = 0x020;
 const DRIVER_FEATURES_SEL: u64 = 0x024;
-const QUEUE_SEL: u64 = 0x030;
-const QUEUE_NUM_MAX: u64 = 0x034;
-const QUEUE_NUM: u64 = 0x038;
-const QUEUE_READY: u64 = 0x044;
-const QUEUE_NOTIFY: u64 = 0x050;
 const INTERRUPT_STATUS: u64 = 0x060;
 const INTERRUPT_ACK: u64 = 0x064;
 const STATUS: u64 = 0x070;
-const QUEUE_DESC_LOW: u64 = 0x080;
-const QUEUE_DESC_HIGH: u64 = 0x084;
-const QUEUE_DRIVER_LOW: u64 = 0x090;
-const QUEUE_DRIVER_HIGH: u64 = 0x094;
-const QUEUE_DEVICE_LOW: u64 = 0x0a0;
-const QUEUE_DEVICE_HIGH: u64 = 0x0a4;
 
 // Status bits.
 const S_ACKNOWLEDGE: u32 = 1;
@@ -79,17 +65,16 @@ const OFF_STATUS: u64 = 0x600; // 1-byte status
 
 const BLOCK: usize = 512;
 
-fn base() -> u64 {
-    // SAFETY: written once at the top of `run`, before any register access, single-threaded.
-    unsafe { MMIO_VA }
-}
+/// Read a device register, through the kernel. Reads are DMA-safe, so any register is allowed.
 fn mr(off: u64) -> u32 {
-    // SAFETY: base() is our device mapping; every offset here is a valid v2 register.
-    unsafe { core::ptr::read_volatile((base() + off) as *const u32) }
+    // SAFETY: `svc`; the kernel validates the Virtio capability in slot 2.
+    unsafe { invoke(VIRTIO, abi::virtio::READ_REG, off, 0, 0) as u32 }
 }
+/// Write a DMA-*safe* device register (status, features, interrupt-ack) through the kernel. The
+/// queue-address and notify registers are NOT writable this way — the kernel owns them.
 fn mw(off: u64, v: u32) {
-    // SAFETY: as above.
-    unsafe { core::ptr::write_volatile((base() + off) as *mut u32, v) }
+    // SAFETY: `svc`.
+    unsafe { invoke(VIRTIO, abi::virtio::WRITE_REG, off, v as u64, 0) };
 }
 
 /// A `dmb ish`: order our normal-memory accesses to the queue against the device's, and against
@@ -110,43 +95,33 @@ fn dma_read<T: Copy>(off: u64) -> T {
 }
 
 /// Read block 0 of the disk into the DMA data buffer, then verify the crickerfs magic.
-pub fn run(dma_phys: u64, mmio_offset: u64) -> ! {
-    // SAFETY: single-threaded, before any register access.
-    unsafe { MMIO_VA = MMIO_PAGE_VA + mmio_offset };
+/// The virtio handshake and queue setup, shared by the real driver and the attack test. The queue
+/// is set up THROUGH THE KERNEL, which places the rings at fixed offsets in our DMA region and
+/// programs the device with those addresses — we never choose them.
+fn init() {
     check(mr(MAGIC) == 0x7472_6976); // "virt": we really are talking to a virtio device
 
-    // 1-4: reset, then walk the handshake the spec requires, in order.
     mw(STATUS, 0);
     mw(STATUS, S_ACKNOWLEDGE);
     mw(STATUS, S_ACKNOWLEDGE | S_DRIVER);
 
-    // Accept exactly VIRTIO_F_VERSION_1 and nothing else. We do not use any optional block
-    // feature, so the minimal negotiation is: low word 0, high word bit 32.
+    // Accept exactly VIRTIO_F_VERSION_1: low word 0, high word bit 32.
     mw(DRIVER_FEATURES_SEL, 0);
     mw(DRIVER_FEATURES, 0);
     mw(DRIVER_FEATURES_SEL, 1);
     mw(DRIVER_FEATURES, F_VERSION_1_HI);
 
     mw(STATUS, S_ACKNOWLEDGE | S_DRIVER | S_FEATURES_OK);
-    check(mr(STATUS) & S_FEATURES_OK != 0); // the device agreed to our feature set
+    check(mr(STATUS) & S_FEATURES_OK != 0);
 
-    // Set up virtqueue 0.
-    mw(QUEUE_SEL, 0);
-    check(mr(QUEUE_NUM_MAX) as usize >= QSIZE);
-    mw(QUEUE_NUM, QSIZE as u32);
-
-    let desc = dma_phys + OFF_DESC;
-    let avail = dma_phys + OFF_AVAIL;
-    let used = dma_phys + OFF_USED;
-    mw(QUEUE_DESC_LOW, desc as u32);
-    mw(QUEUE_DESC_HIGH, (desc >> 32) as u32);
-    mw(QUEUE_DRIVER_LOW, avail as u32);
-    mw(QUEUE_DRIVER_HIGH, (avail >> 32) as u32);
-    mw(QUEUE_DEVICE_LOW, used as u32);
-    mw(QUEUE_DEVICE_HIGH, (used >> 32) as u32);
-    mw(QUEUE_READY, 1);
+    // SAFETY: `svc`; the layout constants (OFF_DESC/AVAIL/USED) are the contract the kernel uses.
+    check(unsafe { invoke(VIRTIO, abi::virtio::SETUP_QUEUE, QSIZE as u64, 0, 0) } == 0);
 
     mw(STATUS, S_ACKNOWLEDGE | S_DRIVER | S_FEATURES_OK | S_DRIVER_OK);
+}
+
+pub fn run(dma_phys: u64) -> ! {
+    init();
 
     // Read block 0: the crickerfs superblock.
     read_block(dma_phys, 0);
@@ -172,6 +147,37 @@ pub fn run(dma_phys: u64, mmio_offset: u64) -> ! {
     }
     send(REPORT, u64::from_le_bytes(head), 0, 0);
 
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+/// **The attack, refused.** A malicious driver that points a descriptor at kernel memory and asks
+/// the device to write there. The kernel validates the descriptor on submit and refuses, so the
+/// device is never told to go and never touches the address. Reports 1 if the kernel refused
+/// (correct), 0 if the notify went through (a hole). Used by the security test.
+pub fn run_attack(dma_phys: u64) -> ! {
+    init();
+
+    // The forbidden target: the kernel's own image, which the device would happily DMA over if it
+    // were ever handed this address.
+    const KERNEL_ADDR: u64 = 0xffff_0000_4008_0000;
+
+    // A single descriptor pointing OUTSIDE our DMA region, marked device-writable.
+    write_desc(0, KERNEL_ADDR, 512, VIRTQ_DESC_F_WRITE, 0);
+
+    let idx: u16 = dma_read::<u16>(OFF_AVAIL + 2);
+    dma_write::<u16>(OFF_AVAIL + 4 + (idx as u64 % QSIZE as u64) * 2, 0);
+    barrier();
+    dma_write::<u16>(OFF_AVAIL + 2, idx.wrapping_add(1));
+    barrier();
+
+    // Submit. The kernel walks the descriptor, sees KERNEL_ADDR is outside our region, and refuses.
+    // SAFETY: `svc`.
+    let r = unsafe { invoke(VIRTIO, abi::virtio::NOTIFY, 0, 0, 0) };
+    send(REPORT, if r < 0 { 1 } else { 0 }, 0, 0); // 1 = refused (good), 0 = it went through (bad)
+
+    let _ = dma_phys;
     loop {
         core::hint::spin_loop();
     }
@@ -223,8 +229,12 @@ fn read_block(dma_phys: u64, sector: u64) {
     dma_write::<u16>(OFF_AVAIL + 2, idx.wrapping_add(1));
     barrier(); // idx must be visible before we notify
 
-    // Tell the device queue 0 has work.
-    mw(QUEUE_NOTIFY, 0);
+    // Submit THROUGH THE KERNEL. The kernel walks the descriptors we just published and, only if
+    // every one stays inside our DMA region, rings the device. If we pointed one outside our
+    // region, it returns an error and the device is never told to go. SAFETY: `svc`.
+    if unsafe { invoke(VIRTIO, abi::virtio::NOTIFY, 0, 0, 0) } < 0 {
+        report_code(0xE5); // the kernel refused our request (a descriptor escaped our region)
+    }
 
     // **Wait for the interrupt, as a message.** The device raises its line when it puts our
     // buffer on the used ring; the kernel (milestone 9a) masks the line, turns it into a

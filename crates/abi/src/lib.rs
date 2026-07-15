@@ -93,6 +93,24 @@ pub mod irq {
     pub const ACK: u64 = 1;
 }
 
+/// Methods on a `Virtio` capability. **How a driver operates a device it cannot point out of its
+/// own DMA region.** The kernel owns the queue addresses and the notify; the driver builds
+/// requests in its DMA region and submits through here.
+pub mod virtio {
+    /// `invoke(cap, READ_REG, off, _, _)` -> register value. Reads are DMA-safe, so any register.
+    pub const READ_REG: u64 = 0;
+    /// `invoke(cap, WRITE_REG, off, val, _)` -> 0. Only DMA-*safe* registers (status, features,
+    /// interrupt-ack); the queue-address and notify registers are refused (they go through the
+    /// validated paths below).
+    pub const WRITE_REG: u64 = 1;
+    /// `invoke(cap, SETUP_QUEUE, num, _, _)` -> 0. The kernel programs queue 0's ring addresses to
+    /// the fixed offsets in the driver's DMA region, so the driver never chooses them.
+    pub const SETUP_QUEUE: u64 = 2;
+    /// `invoke(cap, NOTIFY, _, _, _)` -> 0, or `DmaRefused` if a newly-published descriptor points
+    /// outside the driver's DMA region. On refusal the device is NOT told to go.
+    pub const NOTIFY: u64 = 3;
+}
+
 /// Methods on an `Untyped` capability. **How a process spends its own memory.**
 pub mod untyped {
     /// `invoke(cap, MAP, va, _, _)` -> 0. Retype one page out of the untyped and map it, writable,
@@ -132,6 +150,10 @@ pub enum Error {
     /// **The untyped region is exhausted.** The process ran out of the memory it was handed. The
     /// kernel is untouched: this is a budget, not a failure of the machine.
     OutOfMemory = -7,
+
+    /// **A device operation was refused.** For virtio `NOTIFY`, this means a descriptor pointed
+    /// outside the driver's DMA region and the device was not allowed to touch it.
+    DeviceRefused = -8,
 }
 
 impl Error {
@@ -144,6 +166,7 @@ impl Error {
             -5 => Error::BadMethod,
             -6 => Error::BadSyscall,
             -7 => Error::OutOfMemory,
+            -8 => Error::DeviceRefused,
             _ => return None,
         })
     }

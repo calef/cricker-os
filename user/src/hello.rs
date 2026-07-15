@@ -41,6 +41,7 @@ const INPUT: u64 = 4;
 const SHELL: u64 = 5;
 const WORKER: u64 = 6;
 const UNTYPED_DEMO: u64 = 7;
+const VIRTIO_ATTACK: u64 = 8;
 
 // --- the shared layout, known to both roles because they are the same binary ---
 
@@ -74,18 +75,19 @@ static mut BSS_MARKER: u64 = 0;
 pub(crate) static mut WORKER_ARG: u64 = 0;
 
 #[unsafe(no_mangle)]
-pub extern "C" fn _start(role: u64, dma_phys: u64, mmio_offset: u64) -> ! {
+pub extern "C" fn _start(role: u64, dma_phys: u64, _arg2: u64) -> ! {
     // The worker receives its argument in x1 (dma_phys is reused as a generic scalar here).
     unsafe { WORKER_ARG = dma_phys };
 
     match role {
         CONSOLE_SERVER => console_server(),
         PRINTING => printing_client(),
-        VIRTIO_BLK => virtio::run(dma_phys, mmio_offset),
+        VIRTIO_BLK => virtio::run(dma_phys),
         INPUT => input::run(),
         SHELL => shell::run(),
         WORKER => shell::worker(),
         UNTYPED_DEMO => untyped_demo(),
+        VIRTIO_ATTACK => virtio::run_attack(dma_phys),
         SELF_CHECK => self_check_client(),
         _ => self_check_client(),
     }

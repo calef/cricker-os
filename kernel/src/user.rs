@@ -704,10 +704,11 @@ pub mod console_service {
 #[allow(dead_code)] // the demo payload; the mechanism is unit-tested
 pub mod virtio_service {
     use super::*;
-    use crate::cap::{Rights, endpoint_cap, irq_cap};
+    use crate::cap::{Rights, endpoint_cap, irq_cap, virtio_cap};
 
-    /// Where the driver expects its device registers and DMA page. Must match user/src/virtio.rs.
-    const MMIO_VA: u64 = 0x0000_0000_0080_0000;
+    /// Where the driver expects its DMA page. Must match user/src/virtio.rs. The device registers
+    /// are NOT mapped to the driver any more: it drives the device through a `Virtio` capability,
+    /// so it cannot point the device outside this DMA region.
     const DMA_VA: u64 = 0x0000_0000_0090_0000;
 
     const ROLE_VIRTIO_BLK: u64 = 3;
@@ -738,38 +739,72 @@ pub mod virtio_service {
         // Where the driver reports the bytes it read.
         let report = crate::sched::create_endpoint();
 
-        // A virtio-mmio slot is 0x200 bytes and NOT page-aligned, so we map the 4 KiB page that
-        // contains it and tell the driver the slot's offset within that page.
-        let mmio_page = dev.mmio_phys & !(FRAME_SIZE - 1);
-        let mmio_offset = dev.mmio_phys & (FRAME_SIZE - 1);
+        // Register the device's transport with the kernel: the kernel owns the MMIO and the
+        // DMA-critical operations, and confines the device to this DMA region. The driver gets a
+        // `Virtio` capability, not the registers.
+        let vid = crate::virtio::register(dev.mmio_phys, dma, FRAME_SIZE);
 
         crate::sched::spawn(move || {
             run(
                 image,
                 Spawn {
                     arg0: ROLE_VIRTIO_BLK,
-                    arg1: dma,         // the DMA region's PHYSICAL address
-                    arg2: mmio_offset, // where in the mapped page the slot begins
+                    arg1: dma, // the DMA region's PHYSICAL address (still needed to build requests)
+                    arg2: 0,
                     grants: &[
                         endpoint_cap(report, Rights::WRITE), // slot 0: SEND the result
                         irq_cap(dev.intid),                  // slot 1: WAIT / ACK the interrupt
+                        virtio_cap(vid),                     // slot 2: drive the device, confined
                     ],
-                    maps: &[
-                        Mapping {
-                            va: MMIO_VA,
-                            phys: mmio_page,
-                            flags: Flags::user_device(),
-                        },
-                        Mapping {
-                            va: DMA_VA,
-                            phys: dma,
-                            flags: Flags::user_data(),
-                        },
-                    ],
+                    maps: &[Mapping {
+                        va: DMA_VA,
+                        phys: dma,
+                        flags: Flags::user_data(),
+                    }],
                 },
             )
         })
         .expect("could not spawn the virtio driver");
+
+        Some(report)
+    }
+
+    const ROLE_VIRTIO_ATTACK: u64 = 8;
+
+    /// Spawn a MALICIOUS driver that tries to DMA over kernel memory, for the security test. It
+    /// holds a real `Virtio` capability and its own DMA region, and points a descriptor at the
+    /// kernel image. Returns the endpoint on which it reports whether the kernel refused it.
+    pub fn start_attacker(image: &'static [u8]) -> Option<usize> {
+        let dev = crate::virtio::find_block_device()?;
+        let dma = crate::memory::alloc().expect("no DMA frame").addr();
+        // SAFETY: fresh frame via the direct map.
+        unsafe {
+            core::ptr::write_bytes(mmu::phys_to_virt(dma) as *mut u8, 0, FRAME_SIZE as usize);
+        }
+        let vid = crate::virtio::register(dev.mmio_phys, dma, FRAME_SIZE);
+        let report = crate::sched::create_endpoint();
+
+        crate::sched::spawn(move || {
+            run(
+                image,
+                Spawn {
+                    arg0: ROLE_VIRTIO_ATTACK,
+                    arg1: dma,
+                    arg2: 0,
+                    grants: &[
+                        endpoint_cap(report, Rights::WRITE),
+                        irq_cap(dev.intid), // slot 1 (unused by the attacker; keeps virtio at slot 2)
+                        virtio_cap(vid),    // slot 2
+                    ],
+                    maps: &[Mapping {
+                        va: DMA_VA,
+                        phys: dma,
+                        flags: Flags::user_data(),
+                    }],
+                },
+            )
+        })
+        .expect("could not spawn the virtio attacker");
 
         Some(report)
     }
@@ -1594,6 +1629,29 @@ mod tests {
             total - watermark < 4,
             "the untyped had {} pages left unspent; the process gave up early",
             total - watermark,
+        );
+    }
+
+    /// **The DMA-confinement fix, end to end.** A malicious driver at EL0 holds a real `Virtio`
+    /// capability and its own DMA region, and points a descriptor at the kernel's image, asking
+    /// the device to write there. Because the device has no IOMMU, this would succeed if the
+    /// driver could ring it directly. The kernel validates every descriptor on submit and refuses
+    /// this one, so the device is never told to go and never touches the kernel. The driver
+    /// reports `1` when it was refused.
+    #[test_case]
+    fn the_kernel_refuses_a_dma_descriptor_that_escapes_the_drivers_region() {
+        let report = match virtio_service::start_attacker(initrd().expect("no initrd")) {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no virtio disk attached; skipping)");
+                return;
+            }
+        };
+        let refused = sched::ipc_recv(report)[0];
+        assert_eq!(
+            refused, 1,
+            "a malicious driver's descriptor pointing at kernel memory was NOT refused: the \
+             device could have DMA'd over the kernel",
         );
     }
 

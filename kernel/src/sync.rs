@@ -117,6 +117,11 @@ pub mod rank {
     /// taken from a syscall that has no scheduler business.
     pub const UNTYPED: u32 = 58;
 
+    /// The virtio transport table (DMA confinement). Above the allocators for the same reason as
+    /// `UNTYPED`: registering a device grows a `Vec` under the lock. Taken from a syscall with no
+    /// other lock held.
+    pub const VIRTIO: u32 = 56;
+
     /// The free list of thread-stack virtual addresses.
     ///
     /// **Above the allocators** (it pushes into a `Vec`, which may allocate) and **below the

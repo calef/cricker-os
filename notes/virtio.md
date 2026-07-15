@@ -106,29 +106,22 @@ return from inside the locked block. All paths now leave through one point, the 
 follow, expensive to retrofit" ordering rule DECISIONS §9 is about, and we got it wrong for three
 milestones.
 
-## What a driver bug costs, again, and what a driver's *malice* costs
+## What a driver bug, and a driver's malice, cost
 
-The virtio driver is a process. A wrong descriptor, a mis-parsed superblock, a bad pointer into its
-own memory: each faults the driver alone (7a's `user_fault`), the kernel reports it on its debug
-UART, and the machine keeps running. Milestone 8 made that true for the console; milestone 9 makes
-it true for storage. That is the **fault** isolation, and it is real.
+The virtio driver is a process. A wrong descriptor into its own memory, a mis-parsed superblock, a
+bad pointer: each faults the driver alone (7a's `user_fault`), the kernel reports it, and the
+machine keeps running. That is fault isolation, and it was true from milestone 9.
 
-**Malice is a different story, and the honest version is worth stating.** There is no IOMMU on
-QEMU `virt`. The device is a second bus master that performs DMA against raw *physical* addresses,
-with **no MMU in front of it** — page-table permissions (W^X, the AP bits, the TTBR0/TTBR1 split,
-everything the rest of the kernel gets right) simply do not apply to the device. The driver writes
-the descriptor addresses. A *buggy* driver writes a wrong address that points at its own unmapped
-memory and faults itself. A *hostile* driver writes the physical address of the kernel image, or a
-page table, or another process's frame, and the device reads or writes it, silently, with nothing
-to fault. **Absent an IOMMU, the block driver is trusted with all of physical memory** — the same
-trust a monolithic kernel places in an in-kernel driver, just relocated to EL0.
-
-So milestone 9's isolation is a genuine win against driver *faults* and not against driver
-*malice*. The real fixes are an IOMMU (stage-2 DMA translation the kernel programs, not present on
-`virt` as configured) or putting the kernel back on the submission path to validate every
-descriptor address against the process's own DMA region. Both are deferred; naming the boundary is
-not. A security audit of this project flagged exactly this, and it is the single most severe item
-in the whole system.
+**Malice needed a second fix, and it now has one.** There is no IOMMU on QEMU `virt`: the device
+is a second bus master doing DMA against raw physical addresses, with no MMU in front of it, so
+page-table permissions do not apply to it. A hostile driver that could program the queue and ring
+the device itself could point a descriptor at the kernel image or another process's frames and the
+device would read or write it. So the kernel keeps the two DMA-critical powers — programming the
+ring addresses and the "go" signal — and **validates that every descriptor stays within the
+driver's own DMA region** before the device sees it. The driver operates the device through a
+`Virtio` capability (status, features, submit) but cannot aim it outside its region. A malicious
+descriptor pointing at kernel memory is refused, end to end, and the device is never told to go.
+See [dma.md](dma.md).
 
 ## What it prints
 

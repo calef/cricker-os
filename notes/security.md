@@ -67,12 +67,16 @@ pointer path at all. Corrected, and the historical `abi::console` methods are ma
 
 ## What is deferred, on purpose, and named honestly
 
-- **DMA has no IOMMU, so a *hostile* driver owns all of physical memory.** This is the single most
-  severe item in the system and it is inherent to the platform, not a coding defect. The virtio
-  device is a second bus master doing DMA against raw physical addresses with no MMU in front of
-  it, and the driver writes those addresses. Fault isolation (milestone 9) is real; malice
-  isolation is not, absent an IOMMU or a kernel that validates every descriptor. `notes/virtio.md`
-  now states this plainly rather than implying the isolation covers malice.
+- **DMA confinement — now closed by kernel-mediated validation.** This was the single most severe
+  item: the virtio device is a second bus master doing DMA against raw physical addresses with no
+  MMU in front of it, so a hostile driver could point a descriptor at the kernel and the device
+  would DMA over it. QEMU `virt` has no IOMMU that covers virtio-mmio, so the fix is software: the
+  kernel keeps the two DMA-critical powers (programming the queue's ring addresses and ringing the
+  device) and **validates that every descriptor stays within the driver's own DMA region** before
+  the device sees it. The driver drives the device through a `Virtio` capability and can no longer
+  aim it anywhere else. A malicious driver pointing a descriptor at the kernel image is now refused
+  end to end, and there is a test that proves it (and that the legit block read still works).
+  Fault isolation *and* malice isolation now hold. See notes/dma.md.
 - **Per-process resource limits: partially closed.** The spawn-exhaustion vector is now bounded
   by a per-spawner **quota** (at most N children alive at once, the slot returned when a child is
   reaped — see notes/quotas.md). A spawn flood or a pile of blocked-forever children is capped at

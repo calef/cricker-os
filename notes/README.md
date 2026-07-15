@@ -108,6 +108,9 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [Per-process resource quotas](quotas.md) — a spawner may have at most N children alive; the slot
   returns when a child is reaped, riding the thread's lifetime, so a spawn flood is bounded with no
   bookkeeping. Closes the audit's exhaustion vector.
+- [Confining DMA without an IOMMU](dma.md) — the device bypasses the MMU, so a hostile driver
+  could DMA over the kernel. Closed by kernel-mediated descriptor validation: the kernel owns the
+  ring addresses and the notify, and refuses any descriptor outside the driver's own DMA region.
 - [A security audit](security.md) — an adversarial four-part review of the whole kernel. The
   MMU and capability confinement held up; two panics on untrusted input were fixed; the DMA/no-IOMMU
   limitation and the missing resource quotas are named rather than hidden.

@@ -44,6 +44,15 @@ pub enum Object {
     /// what the *device* is lives in the userspace driver. This is milestone 9's version of the
     /// milestone-8 move (the console driver left; now the interrupt does too).
     Irq(u32),
+
+    /// A virtio device's **transport**, by id (into the kernel's virtio device table).
+    ///
+    /// The DMA-confinement capability. The device has no IOMMU, so the kernel keeps the two
+    /// DMA-critical powers — programming the queue's ring addresses and ringing the device — and
+    /// validates that every descriptor stays within the driver's own DMA region before the device
+    /// sees it. The holder drives the device (status, features, submit) through this, but cannot
+    /// point it outside its region. See kernel/src/virtio.rs.
+    Virtio(usize),
 }
 
 pub type Cap = caps::Cap<Object>;
@@ -75,6 +84,14 @@ pub fn irq_cap(intid: u32) -> Cap {
 pub fn untyped_cap(region: usize) -> Cap {
     Cap {
         object: Object::Untyped(region),
+        rights: Rights::WRITE,
+    }
+}
+
+/// A capability to a virtio device's transport. `WRITE` lets the holder operate it.
+pub fn virtio_cap(id: usize) -> Cap {
+    Cap {
+        object: Object::Virtio(id),
         rights: Rights::WRITE,
     }
 }
