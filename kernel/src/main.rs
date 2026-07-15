@@ -249,6 +249,14 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
             println!("  a userspace program printed to the screen, and the kernel does not");
             println!("  contain a line of code that puts a user's bytes on the wire.");
             let _ = SVC_COUNT.load(Ordering::Relaxed);
+
+            // Milestone 10: hand the terminal to a shell running at EL0, and let it run.
+            if let Some(image) = user::initrd() {
+                println!();
+                println!("  the rest of this session belongs to a shell at EL0:");
+                user::shell_service::start(image);
+                // The boot thread's work is done; the shell and its friends run until halt.
+            }
         }
     }
 

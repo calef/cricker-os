@@ -16,13 +16,17 @@
 #
 # QEMU *does* honour SIGTERM, so that's what we use: start the child, start a killer in
 # the background, and make sure the killer dies with us.
+#
+# Note the `<&0` on the child: a backgrounded command's stdin is otherwise redirected to
+# /dev/null by the shell (POSIX), which silently breaks piping input to QEMU's serial port.
+# We found that the hard way trying to drive the milestone-10 shell from a pipe.
 
 set -e
 
 SECONDS_LIMIT="$1"
 shift
 
-"$@" &
+"$@" <&0 &
 CHILD=$!
 
 # The killer. Detached, so it survives even if the shell is in a pipeline whose reader

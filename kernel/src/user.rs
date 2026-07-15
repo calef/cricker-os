@@ -769,6 +769,164 @@ pub mod virtio_service {
     }
 }
 
+/// Console **input** in userspace: the receive half of the terminal.
+#[allow(dead_code)]
+pub mod input_service {
+    use super::*;
+    use crate::cap::{Rights, endpoint_cap, irq_cap};
+
+    const UART_VA: u64 = 0x0000_0000_00a0_0000;
+    const LINE_VA: u64 = 0x0000_0000_00b0_0000;
+    const PL011_PHYS: u64 = 0x0900_0000;
+    /// The PL011 on QEMU `virt` is SPI 1, which is INTID 33 (SPIs start at 32).
+    const UART_INTID: u32 = 33;
+
+    /// Spawn the input driver in a given role, wired to the UART and its receive interrupt, and
+    /// return the endpoint it delivers completed lines on.
+    pub fn spawn_role(image: &'static [u8], role: u64) -> usize {
+        spawn_wired(image, role, None).0
+    }
+
+    /// Spawn the input driver, optionally sharing its line buffer with a reader at `line_va` in
+    /// that reader's address space. Returns (line endpoint, line-buffer physical address).
+    pub fn spawn_wired(
+        image: &'static [u8],
+        role: u64,
+        _reader: Option<()>,
+    ) -> (usize, u64) {
+        let line = crate::sched::create_endpoint();
+
+        let irq_ep = crate::sched::create_endpoint();
+        crate::sched::bind_irq(UART_INTID, irq_ep);
+        crate::drivers::gic::enable(UART_INTID);
+
+        // The line buffer the driver assembles into. Shared with the reader (the shell) later; a
+        // scratch page for the standalone validator.
+        let line_phys = crate::memory::alloc().expect("no line-buffer frame").addr();
+        // SAFETY: fresh frame, direct-mapped, owned by nobody yet.
+        unsafe {
+            core::ptr::write_bytes(mmu::phys_to_virt(line_phys) as *mut u8, 0, FRAME_SIZE as usize);
+        }
+
+        crate::sched::spawn(move || {
+            run(
+                image,
+                Spawn {
+                    arg0: role,
+                    arg1: 0,
+                    arg2: 0,
+                    grants: &[
+                        endpoint_cap(line, Rights::WRITE), // slot 0: SEND completed lines
+                        irq_cap(UART_INTID),               // slot 1: WAIT / ACK the RX interrupt
+                    ],
+                    maps: &[
+                        Mapping {
+                            va: UART_VA,
+                            phys: PL011_PHYS,
+                            flags: Flags::user_device(),
+                        },
+                        Mapping {
+                            va: LINE_VA,
+                            phys: line_phys,
+                            flags: Flags::user_data(),
+                        },
+                    ],
+                },
+            )
+        })
+        .expect("could not spawn the input driver");
+
+        (line, line_phys)
+    }
+}
+
+/// The shell, and everything it talks to. **Milestone 10: proof the whole stack works.**
+///
+/// Wires up four processes and the channels between them: the console server (output), the input
+/// driver (a line of text at a time), the shell itself, and a kernel-side spawn service that
+/// starts worker processes on the shell's request. When it returns, an interactive shell is
+/// running at EL0, and everything the user types is a conversation between processes.
+#[allow(dead_code)]
+pub mod shell_service {
+    use super::*;
+    use crate::cap::{Rights, endpoint_cap};
+
+    const OUT_VA: u64 = 0x0000_0000_0060_0000; // shell <-> console server
+    const LINE_VA: u64 = 0x0000_0000_00b0_0000; // shell <-> input driver
+
+    const ROLE_INPUT: u64 = 4;
+    const ROLE_SHELL: u64 = 5;
+    const ROLE_WORKER: u64 = 6;
+
+    pub fn start(image: &'static [u8]) {
+        // Output: the console server (milestone 8), and the shell as its client.
+        let console = console_service::start(image);
+
+        // Input: the receive driver (milestone 10), delivering lines on `line`.
+        let (line, line_phys) = input_service::spawn_wired(image, ROLE_INPUT, None);
+
+        // The shell asks for spawns here; it receives worker results here.
+        let spawn_ep = crate::sched::create_endpoint();
+        let result_ep = crate::sched::create_endpoint();
+
+        // The spawn service: a kernel thread that starts a worker process for each request. This
+        // is the kernel acting as the "process server"; a full capability system would compose
+        // spawn from Untyped/Tcb capabilities in userspace (milestone 11), but the shell does not
+        // care where the service lives, only that it can name it.
+        crate::sched::spawn(move || {
+            loop {
+                let n = crate::sched::ipc_recv(spawn_ep)[0];
+                crate::sched::spawn(move || {
+                    run(
+                        image,
+                        Spawn {
+                            arg0: ROLE_WORKER,
+                            arg1: n, // the worker's input
+                            arg2: 0,
+                            grants: &[endpoint_cap(result_ep, Rights::WRITE)],
+                            maps: &[],
+                        },
+                    )
+                })
+                .expect("could not spawn a worker");
+            }
+        })
+        .expect("could not spawn the process service");
+
+        // The shell itself.
+        crate::sched::spawn(move || {
+            run(
+                image,
+                Spawn {
+                    arg0: ROLE_SHELL,
+                    arg1: 0,
+                    arg2: 0,
+                    grants: &[
+                        endpoint_cap(console.request, Rights::WRITE), // 0: print
+                        endpoint_cap(console.reply, Rights::READ),    // 1: console ack
+                        endpoint_cap(line, Rights::READ),             // 2: read a line
+                        endpoint_cap(spawn_ep, Rights::WRITE),        // 3: request a spawn
+                        endpoint_cap(result_ep, Rights::READ),        // 4: worker result
+                    ],
+                    maps: &[
+                        Mapping {
+                            va: OUT_VA,
+                            phys: console.shared_phys,
+                            flags: Flags::user_data(),
+                        },
+                        Mapping {
+                            va: LINE_VA,
+                            phys: line_phys,
+                            flags: Flags::user_rodata(),
+                        },
+                    ],
+                },
+            )
+        })
+        .expect("could not spawn the shell");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1269,6 +1427,41 @@ mod tests {
         assert!(
             ROUTED_IRQS.load(Ordering::Relaxed) > irqs_before,
             "the read completed but no device interrupt was delivered as a message",
+        );
+    }
+
+    /// **The shell's `run` mechanism: spawn a process, get its answer.** Milestone 10's core.
+    ///
+    /// A worker process is started at EL0 with an argument, computes `n*n`, reports the result on
+    /// an endpoint it was handed, and exits. The whole lifecycle a shell drives when you type
+    /// `run n` — minus the interactive loop, which is exercised by the piped demo instead.
+    #[test_case]
+    fn a_spawned_worker_process_computes_and_reports() {
+        const ROLE_WORKER: u64 = 6;
+
+        let result = sched::create_endpoint();
+        let faults = USER_FAULTS.load(Ordering::Relaxed);
+
+        sched::spawn(move || {
+            run(
+                initrd().expect("no initrd"),
+                Spawn {
+                    arg0: ROLE_WORKER,
+                    arg1: 9, // the worker computes 9*9
+                    arg2: 0,
+                    grants: &[crate::cap::endpoint_cap(result, crate::cap::Rights::WRITE)],
+                    maps: &[],
+                },
+            )
+        })
+        .expect("spawn failed");
+
+        let answer = sched::ipc_recv(result)[0];
+        assert_eq!(answer, 81, "the spawned worker computed the wrong answer");
+        assert_eq!(
+            USER_FAULTS.load(Ordering::Relaxed),
+            faults,
+            "the worker faulted instead of computing cleanly",
         );
     }
 

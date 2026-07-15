@@ -92,6 +92,10 @@ in the code or the conversation doesn't make sense, it belongs here.
   process at EL0, with DMA, a virtqueue, and the completion arriving as an interrupt-message. Plus
   the two scheduler bugs it flushed out: no idle thread, and interrupts restored under the lock.
 
+- [A shell at EL0](shell.md) — milestone 10: an interactive shell, a userspace input driver
+  (console receive), and worker processes spawned on command. Proof the whole stack works, as a
+  conversation between processes the kernel only routes.
+
 ## The point of all this
 
 - [The console driver leaves the kernel](userspace-drivers.md) — milestone 8: the console is now a

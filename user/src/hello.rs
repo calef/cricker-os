@@ -21,6 +21,8 @@
 #![no_std]
 #![no_main]
 
+mod input;
+mod shell;
 mod virtio;
 
 use abi::{Error, endpoint};
@@ -35,6 +37,9 @@ const SELF_CHECK: u64 = 0;
 const CONSOLE_SERVER: u64 = 1;
 const PRINTING: u64 = 2;
 const VIRTIO_BLK: u64 = 3;
+const INPUT: u64 = 4;
+const SHELL: u64 = 5;
+const WORKER: u64 = 6;
 
 // --- the shared layout, known to both roles because they are the same binary ---
 
@@ -64,12 +69,21 @@ static mut DATA_MARKER: u64 = 0x0000_c0ff_ee00_d0d0;
 #[unsafe(no_mangle)]
 static mut BSS_MARKER: u64 = 0;
 
+/// The worker process's argument (n), delivered in `x1` at entry.
+pub(crate) static mut WORKER_ARG: u64 = 0;
+
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(role: u64, dma_phys: u64, mmio_offset: u64) -> ! {
+    // The worker receives its argument in x1 (dma_phys is reused as a generic scalar here).
+    unsafe { WORKER_ARG = dma_phys };
+
     match role {
         CONSOLE_SERVER => console_server(),
         PRINTING => printing_client(),
         VIRTIO_BLK => virtio::run(dma_phys, mmio_offset),
+        INPUT => input::run(),
+        SHELL => shell::run(),
+        WORKER => shell::worker(),
         SELF_CHECK => self_check_client(),
         _ => self_check_client(),
     }

@@ -65,7 +65,8 @@ fi
 exec qemu-system-aarch64 \
     -machine virt \
     -cpu cortex-a72 \
-    -nographic \
+    -display none \
+    -serial stdio \
     -semihosting \
     -kernel "$IMG" \
     $INITRD \
