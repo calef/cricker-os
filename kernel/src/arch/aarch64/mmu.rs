@@ -572,6 +572,32 @@ pub fn current_user_root() -> u64 {
     TTBR0_EL1.get_baddr()
 }
 
+/// Map one page at `va` into the **currently installed** user address space, pulling the leaf
+/// page and any intermediate page tables from `alloc`. Used by the untyped `MAP` syscall, where
+/// `alloc` hands out pages from the process's own untyped region rather than the kernel allocator.
+///
+/// # Safety
+/// The caller must be the thread that owns the installed address space (it is, being the one that
+/// made the syscall), and `alloc` must return zeroed, page-aligned physical pages.
+pub fn map_current_user_page(
+    va: u64,
+    flags: Flags,
+    mut alloc: impl FnMut() -> Option<u64>,
+) -> Result<(), MapError> {
+    let root = TTBR0_EL1.get_baddr();
+    let leaf = alloc().ok_or(MapError::OutOfFrames)?;
+
+    // SAFETY: `root` is the live low-half table this thread owns; Half::Low refuses a high
+    // address; the direct map makes `phys_to_ptr` valid for any page `alloc` returns.
+    let mut mapper = unsafe { Mapper::new(root, Half::Low, alloc, phys_to_ptr) };
+    mapper.map(va, leaf, flags)?;
+
+    // The page-table writes must be visible to the table walker before the process touches `va`.
+    // SAFETY: a barrier is always sound.
+    unsafe { core::arch::asm!("dsb ishst", "isb", options(nostack, nomem, preserves_flags)) };
+    Ok(())
+}
+
 /// The empty table that means "no process is running."
 pub fn reserved_root() -> u64 {
     RESERVED_TTBR0.load(Ordering::Relaxed)

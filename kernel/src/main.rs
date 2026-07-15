@@ -34,6 +34,7 @@ mod stack;
 mod sync;
 mod syscall;
 mod thread;
+mod untyped;
 mod user;
 mod virtio;
 
@@ -249,6 +250,24 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
             println!("  a userspace program printed to the screen, and the kernel does not");
             println!("  contain a line of code that puts a user's bytes on the wire.");
             let _ = SVC_COUNT.load(Ordering::Relaxed);
+
+            // Milestone 11: a process spends its own memory; the kernel allocates nothing.
+            if let Some(image) = user::initrd() {
+                if let Some((_region, report)) = user::untyped_service::start(image, 24) {
+                    sched::ipc_recv(report); // the process signals it is loaded and ready
+                    let before = memory::stats().unwrap().used;
+                    let mapped = sched::ipc_recv(report)[0]; // it maps until its untyped is spent
+                    let after = memory::stats().unwrap().used;
+                    println!();
+                    println!(
+                        "  milestone 11: a process mapped {mapped} pages out of an untyped it was handed,"
+                    );
+                    println!(
+                        "  and the kernel's used-frame count went {before} -> {after} (it did not move)."
+                    );
+                    println!("  a process cannot make the kernel allocate, so it cannot exhaust it.");
+                }
+            }
 
             // Milestone 10: hand the terminal to a shell running at EL0, and let it run.
             if let Some(image) = user::initrd() {

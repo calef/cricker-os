@@ -462,7 +462,7 @@ boots" and "an operating system" is milestone 7.
 | 8  | **The console driver LEAVES the kernel**        | The microkernel thesis, executable        | ✅ |
 | 9  | virtio-blk in userspace + a filesystem server   | Userspace drivers, MMIO caps, IRQ-as-message, DMA | ✅ |
 | 10 | A process server, and a shell that spawns binaries | Proof the whole stack works            | ✅ |
-| 11 | Untyped memory: the kernel stops allocating     | §10's deferred axis. The allocators leave. |    |
+| 11 | Untyped memory: the kernel stops allocating     | §10's deferred axis. The allocators leave. | ~ |
 
 Milestone 8 is the one that proves §10 was real. When it lands, **the kernel no longer knows
 what a UART is.** If we cannot take the console out, we did not build a microkernel; we built a

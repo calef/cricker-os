@@ -927,6 +927,42 @@ pub mod shell_service {
     }
 }
 
+/// Milestone 11: hand a process an untyped budget and let it spend it.
+#[allow(dead_code)]
+pub mod untyped_service {
+    use super::*;
+    use crate::cap::{Rights, endpoint_cap, untyped_cap};
+
+    const ROLE_UNTYPED_DEMO: u64 = 7;
+
+    /// Carve `pages` of memory into an untyped region, hand it to a fresh process, and return the
+    /// region id and the endpoint the process reports on. The kernel's ONE allocation is the
+    /// untyped itself; everything the process maps afterward spends that, not the allocator.
+    pub fn start(image: &'static [u8], pages: u64) -> Option<(usize, usize)> {
+        let region = crate::untyped::create(pages)?;
+        let report = crate::sched::create_endpoint();
+
+        crate::sched::spawn(move || {
+            run(
+                image,
+                Spawn {
+                    arg0: ROLE_UNTYPED_DEMO,
+                    arg1: 0,
+                    arg2: 0,
+                    grants: &[
+                        untyped_cap(region),                       // slot 0: the memory budget
+                        endpoint_cap(report, Rights::WRITE),       // slot 1: report the result
+                    ],
+                    maps: &[],
+                },
+            )
+        })
+        .expect("could not spawn the untyped demo");
+
+        Some((region, report))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1462,6 +1498,58 @@ mod tests {
             USER_FAULTS.load(Ordering::Relaxed),
             faults,
             "the worker faulted instead of computing cleanly",
+        );
+    }
+
+    /// **The kernel stops allocating.** Milestone 11's whole point, as one number.
+    ///
+    /// We carve an untyped region, then a process maps page after page out of it until the region
+    /// is exhausted. The assertion that matters: the kernel's used-frame count **does not change
+    /// while the process allocates**, because every page comes from the untyped, not the kernel
+    /// allocator. A process cannot make the kernel allocate, so it cannot exhaust kernel memory;
+    /// it runs out of its own budget and stops, cleanly, with the kernel untouched.
+    #[test_case]
+    fn a_process_spends_untyped_and_the_kernel_never_allocates() {
+        let used = || crate::memory::stats().expect("no allocator").used;
+
+        const PAGES: u64 = 24;
+        let (region, report) = untyped_service::start(initrd().expect("no initrd"), PAGES)
+            .expect("could not create the untyped region");
+
+        // The process sends a "ready" signal once it is fully loaded (its ELF and stack are
+        // kernel-allocated, like any process). We measure the frame count THERE, so the window we
+        // check contains only what it does next: map pages out of its untyped.
+        sched::ipc_recv(report); // ready
+        let baseline = used();
+        let faults = USER_FAULTS.load(Ordering::Relaxed);
+
+        let mapped = sched::ipc_recv(report)[0]; // the count, after it exhausted the untyped
+
+        assert_eq!(
+            used(),
+            baseline,
+            "the kernel allocated {} frames while a process mapped {mapped} pages: untyped is not \
+             backing the process's memory",
+            used() as i64 - baseline as i64,
+        );
+        assert!(mapped > 0, "the process mapped nothing");
+        assert_eq!(
+            USER_FAULTS.load(Ordering::Relaxed),
+            faults,
+            "the process faulted instead of exhausting its budget cleanly",
+        );
+
+        // And the untyped is genuinely spent: the process mapped until it ran dry.
+        let (watermark, total) = crate::untyped::usage(region).expect("region vanished");
+        assert_eq!(total, PAGES);
+        assert!(
+            watermark >= mapped,
+            "the process mapped {mapped} pages but the untyped only advanced {watermark}",
+        );
+        assert!(
+            total - watermark < 4,
+            "the untyped had {} pages left unspent; the process gave up early",
+            total - watermark,
         );
     }
 

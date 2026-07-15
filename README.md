@@ -153,7 +153,7 @@ milestone 7.
 | 8 | **The console driver leaves the kernel** | ✅ |
 | 9 | virtio-blk in userspace + a filesystem server | ✅ |
 | 10 | A process server, and a shell that spawns binaries | ✅ |
-| 11 | Untyped memory: the kernel stops allocating | |
+| 11 | Untyped memory: the kernel stops allocating | ~ |
 
 Deliberately out of scope for v1: SMP, a writable filesystem, networking, a GUI, dynamic
 linking, real hardware. Each multiplies debugging difficulty, and none teaches something

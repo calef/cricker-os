@@ -88,6 +88,15 @@ pub mod irq {
     pub const ACK: u64 = 1;
 }
 
+/// Methods on an `Untyped` capability. **How a process spends its own memory.**
+pub mod untyped {
+    /// `invoke(cap, MAP, va, _, _)` -> 0. Retype one page out of the untyped and map it, writable,
+    /// at `va` in the caller's own address space. The page and any page tables it needs both come
+    /// from the untyped; the kernel allocates nothing. Returns `OutOfMemory` when the untyped is
+    /// exhausted (the *process* is out of budget, not the kernel).
+    pub const MAP: u64 = 0;
+}
+
 /// What went wrong. Returned as a **negative** `x0`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i64)]
@@ -114,6 +123,10 @@ pub enum Error {
 
     /// The syscall number is not one of the three.
     BadSyscall = -6,
+
+    /// **The untyped region is exhausted.** The process ran out of the memory it was handed. The
+    /// kernel is untouched: this is a budget, not a failure of the machine.
+    OutOfMemory = -7,
 }
 
 impl Error {
@@ -125,6 +138,7 @@ impl Error {
             -4 => Error::BadPointer,
             -5 => Error::BadMethod,
             -6 => Error::BadSyscall,
+            -7 => Error::OutOfMemory,
             _ => return None,
         })
     }

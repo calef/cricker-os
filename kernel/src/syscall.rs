@@ -19,6 +19,7 @@
 //! # The interesting code in this file is not the dispatch. It is `user_slice`.
 
 use crate::arch::exceptions::TrapFrame;
+use crate::arch::mmu;
 use crate::cap::{Object, Rights};
 use crate::sched;
 use abi::Error;
@@ -90,6 +91,27 @@ fn invoke(
                 frame.x[1] = msg[1];
                 frame.x[2] = msg[2];
                 Ok(msg[0] as i64)
+            }
+            _ => Err(Error::BadMethod),
+        },
+
+        Object::Untyped(region) => match method {
+            abi::untyped::MAP => {
+                if !cap.rights.allows(Rights::WRITE) {
+                    return Err(Error::NotPermitted);
+                }
+                // Retype a page out of the untyped and map it, writable, at `a0` in the caller's
+                // own address space. Both the page and any page tables come from the untyped, so
+                // the KERNEL ALLOCATES NOTHING: `mmu::map_current_user_page`'s only source of
+                // memory is the closure below, which bumps the untyped's watermark.
+                let va = a0;
+                match mmu::map_current_user_page(va, paging::Flags::user_data(), || {
+                    crate::untyped::retype_page(region)
+                }) {
+                    Ok(()) => Ok(0),
+                    Err(paging::MapError::OutOfFrames) => Err(Error::OutOfMemory),
+                    Err(_) => Err(Error::BadPointer), // misaligned, already mapped, or wrong half
+                }
             }
             _ => Err(Error::BadMethod),
         },

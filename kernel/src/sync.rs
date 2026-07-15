@@ -112,6 +112,11 @@ pub mod rank {
     /// where DECISIONS.md §9 forbids allocation.
     pub const SCHED: u32 = 60;
 
+    /// Untyped memory regions (milestone 11). **Above the allocators**, because creating a region
+    /// grows a `Vec` (a heap allocation) while the lock is held. Below the scheduler, so it may be
+    /// taken from a syscall that has no scheduler business.
+    pub const UNTYPED: u32 = 58;
+
     /// The free list of thread-stack virtual addresses.
     ///
     /// **Above the allocators** (it pushes into a `Vec`, which may allocate) and **below the

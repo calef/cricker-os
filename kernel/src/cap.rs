@@ -30,6 +30,11 @@ pub enum Object {
     /// the console server's endpoint, and printing is sending.
     Endpoint(usize),
 
+    /// **Untyped memory** (milestone 11): a capability to a chunk of raw physical memory the
+    /// process may retype into pages. Invoking it grows the process's address space out of its
+    /// own budget, and the kernel allocates nothing to do it. See kernel/src/untyped.rs.
+    Untyped(usize),
+
     /// A hardware interrupt, by INTID.
     ///
     /// **The capability that lets a driver own an interrupt without owning any privilege.** Its
@@ -63,5 +68,13 @@ pub fn irq_cap(intid: u32) -> Cap {
     Cap {
         object: Object::Irq(intid),
         rights: Rights::READ,
+    }
+}
+
+/// A capability to an untyped memory region. `WRITE` lets the holder retype pages out of it.
+pub fn untyped_cap(region: usize) -> Cap {
+    Cap {
+        object: Object::Untyped(region),
+        rights: Rights::WRITE,
     }
 }

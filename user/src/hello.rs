@@ -40,6 +40,7 @@ const VIRTIO_BLK: u64 = 3;
 const INPUT: u64 = 4;
 const SHELL: u64 = 5;
 const WORKER: u64 = 6;
+const UNTYPED_DEMO: u64 = 7;
 
 // --- the shared layout, known to both roles because they are the same binary ---
 
@@ -84,6 +85,7 @@ pub extern "C" fn _start(role: u64, dma_phys: u64, mmio_offset: u64) -> ! {
         INPUT => input::run(),
         SHELL => shell::run(),
         WORKER => shell::worker(),
+        UNTYPED_DEMO => untyped_demo(),
         SELF_CHECK => self_check_client(),
         _ => self_check_client(),
     }
@@ -263,6 +265,57 @@ fn check(ok: bool) {
 fn fail() -> ! {
     unsafe { core::arch::asm!("brk #0", options(nostack, nomem)) };
     loop {}
+}
+
+/// Milestone 11: spend an untyped budget. This process holds a capability to a chunk of raw
+/// memory (slot 0) and a report endpoint (slot 1). It maps page after page out of that untyped
+/// into its own address space, writes and reads each one to prove it is real, and keeps going
+/// until the untyped is exhausted. Then it reports how many it mapped.
+///
+/// The whole point is what the KERNEL does while this runs: nothing. Every page here comes out of
+/// the untyped, so the kernel's free-frame count does not move. A test checks exactly that.
+fn untyped_demo() -> ! {
+    const UNTYPED: u64 = 0;
+    const REPORT: u64 = 1;
+    const BASE_VA: u64 = 0x0000_0000_00c0_0000;
+
+    // Signal that we are loaded and about to start spending the untyped. The test measures the
+    // kernel's frame count HERE, so it sees only what we do from now on: map from our untyped.
+    send(REPORT, 0, 0, 0);
+
+    let mut mapped: u64 = 0;
+    loop {
+        let va = BASE_VA + mapped * 4096;
+        // Retype a page out of our untyped and map it here. SAFETY: `svc`.
+        let r = unsafe { invoke(UNTYPED, abi::untyped::MAP, va, 0, 0) };
+        if let Some(e) = Error::from_ret(r) {
+            // OutOfMemory means our budget is spent. Any other error is a real bug.
+            if e != Error::OutOfMemory {
+                fail();
+            }
+            break;
+        }
+
+        // Prove the page is genuinely ours: write a marker, read it back.
+        let marker = 0xA11C_0000_0000_0000u64 | mapped;
+        // SAFETY: the kernel just mapped this page writable in our address space.
+        unsafe {
+            core::ptr::write_volatile(va as *mut u64, marker);
+            if core::ptr::read_volatile(va as *const u64) != marker {
+                fail();
+            }
+        }
+
+        mapped += 1;
+        if mapped > 100_000 {
+            fail(); // a bump allocator that never exhausts is a bug
+        }
+    }
+
+    send(REPORT, mapped, 0, 0);
+    loop {
+        core::hint::spin_loop();
+    }
 }
 
 #[panic_handler]
