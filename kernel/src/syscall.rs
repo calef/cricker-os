@@ -46,7 +46,9 @@ pub fn dispatch(frame: &mut TrapFrame) {
             sched::yield_now();
             Ok(0)
         }
-        abi::SYS_INVOKE => invoke(frame, frame.x[0], frame.x[1], frame.x[2], frame.x[3], frame.x[4]),
+        abi::SYS_INVOKE => invoke(
+            frame, frame.x[0], frame.x[1], frame.x[2], frame.x[3], frame.x[4],
+        ),
         _ => Err(Error::BadSyscall),
     };
 

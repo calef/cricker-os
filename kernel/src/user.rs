@@ -41,11 +41,12 @@ use crate::arch::exceptions::TrapFrame;
 use crate::arch::mmu::{self, phys_to_ptr};
 use crate::memory;
 use alloc::vec::Vec;
-use frames::{FRAME_SIZE, Frame};
 use elf::Elf;
+use frames::{FRAME_SIZE, Frame};
 use paging::{Flags, Half, MapError, Mapper};
 
 /// Where a user program's code goes. Low half, so the hardware walks `TTBR0`.
+#[cfg_attr(feature = "shell", allow(dead_code))]
 pub const USER_CODE_VA: u64 = 0x0000_0000_0040_0000;
 
 /// Where its stack goes. One page, and `sp` starts at the top of it: stacks grow down.
@@ -204,7 +205,6 @@ pub enum LoadError {
     /// refused by construction rather than by a check, because the `Mapper` is built with
     /// `Half::Low` and a high address is not a thing it can express (`MapError::WrongHalf`).
     Unmappable(MapError),
-
 }
 
 /// Parse an ELF, build an address space, and put it in memory. Do **not** run it.
@@ -376,6 +376,7 @@ pub fn run(image: &[u8], spawn: Spawn) -> ! {
 ///
 /// # Safety
 /// `program` must be position-independent aarch64 machine code that begins at its first byte.
+#[cfg_attr(feature = "shell", allow(dead_code))] // the hand-written demos live in the tour
 pub unsafe fn exec(program: &[u8]) -> ! {
     assert!(
         program.len() as u64 <= FRAME_SIZE,
@@ -403,7 +404,6 @@ pub unsafe fn exec(program: &[u8]) -> ! {
     // with the D-cache, so without this the CPU can fetch whatever was in that frame *before*
     // we wrote the program into it.
     sync_icache(code.as_ptr() as u64, program.len());
-
 
     crate::sched::adopt_address_space(space);
 
@@ -622,7 +622,11 @@ pub mod console_service {
         // Zero the shared page so a client's first print cannot leak stale RAM.
         // SAFETY: freshly allocated, reachable through the direct map, owned by nobody yet.
         unsafe {
-            core::ptr::write_bytes(mmu::phys_to_virt(shared_phys) as *mut u8, 0, FRAME_SIZE as usize);
+            core::ptr::write_bytes(
+                mmu::phys_to_virt(shared_phys) as *mut u8,
+                0,
+                FRAME_SIZE as usize,
+            );
         }
 
         crate::sched::spawn(move || {
@@ -716,7 +720,9 @@ pub mod virtio_service {
         // A DMA page: physical memory the device can reach, mapped into the driver, whose
         // physical address the driver must know (a process sees only virtual addresses). We hand
         // that physical address over in `arg1`.
-        let dma = crate::memory::alloc().expect("no DMA frame for the virtio driver").addr();
+        let dma = crate::memory::alloc()
+            .expect("no DMA frame for the virtio driver")
+            .addr();
         // SAFETY: fresh frame, reachable through the direct map. Zero it so stale RAM cannot look
         // like a valid descriptor to the device before the driver writes the real ones.
         unsafe {
@@ -742,8 +748,8 @@ pub mod virtio_service {
                 image,
                 Spawn {
                     arg0: ROLE_VIRTIO_BLK,
-                    arg1: dma,          // the DMA region's PHYSICAL address
-                    arg2: mmio_offset,  // where in the mapped page the slot begins
+                    arg1: dma,         // the DMA region's PHYSICAL address
+                    arg2: mmio_offset, // where in the mapped page the slot begins
                     grants: &[
                         endpoint_cap(report, Rights::WRITE), // slot 0: SEND the result
                         irq_cap(dev.intid),                  // slot 1: WAIT / ACK the interrupt
@@ -789,11 +795,7 @@ pub mod input_service {
 
     /// Spawn the input driver, optionally sharing its line buffer with a reader at `line_va` in
     /// that reader's address space. Returns (line endpoint, line-buffer physical address).
-    pub fn spawn_wired(
-        image: &'static [u8],
-        role: u64,
-        _reader: Option<()>,
-    ) -> (usize, u64) {
+    pub fn spawn_wired(image: &'static [u8], role: u64, _reader: Option<()>) -> (usize, u64) {
         let line = crate::sched::create_endpoint();
 
         let irq_ep = crate::sched::create_endpoint();
@@ -805,7 +807,11 @@ pub mod input_service {
         let line_phys = crate::memory::alloc().expect("no line-buffer frame").addr();
         // SAFETY: fresh frame, direct-mapped, owned by nobody yet.
         unsafe {
-            core::ptr::write_bytes(mmu::phys_to_virt(line_phys) as *mut u8, 0, FRAME_SIZE as usize);
+            core::ptr::write_bytes(
+                mmu::phys_to_virt(line_phys) as *mut u8,
+                0,
+                FRAME_SIZE as usize,
+            );
         }
 
         crate::sched::spawn(move || {
@@ -965,8 +971,8 @@ pub mod untyped_service {
                     arg1: 0,
                     arg2: 0,
                     grants: &[
-                        untyped_cap(region),                       // slot 0: the memory budget
-                        endpoint_cap(report, Rights::WRITE),       // slot 1: report the result
+                        untyped_cap(region),                 // slot 0: the memory budget
+                        endpoint_cap(report, Rights::WRITE), // slot 1: report the result
                     ],
                     maps: &[],
                 },
@@ -1248,10 +1254,16 @@ mod tests {
 
         let (_, flags) = mmu::translate_user(rodata.vaddr).expect(".rodata is not mapped at all");
 
-        assert!(flags.is_user_accessible(), "EL0 cannot read its own .rodata");
+        assert!(
+            flags.is_user_accessible(),
+            "EL0 cannot read its own .rodata"
+        );
         assert!(!flags.is_writable(), "the loader made .rodata WRITABLE");
         assert!(!flags.is_user_executable(), ".rodata is executable at EL0");
-        assert!(!flags.is_kernel_executable(), ".rodata is executable at EL1");
+        assert!(
+            !flags.is_kernel_executable(),
+            ".rodata is executable at EL1"
+        );
 
         mmu::deactivate_user();
         drop(space);
@@ -1341,7 +1353,12 @@ mod tests {
                     let dst = &raw mut BUF as *mut u8;
                     for i in 0..len as usize {
                         // SAFETY: both pointers are in range; BUF is 128 bytes and len <= 128.
-                        unsafe { core::ptr::write_volatile(dst.add(i), core::ptr::read_volatile(src.add(i))) };
+                        unsafe {
+                            core::ptr::write_volatile(
+                                dst.add(i),
+                                core::ptr::read_volatile(src.add(i)),
+                            )
+                        };
                     }
                     LEN.store(len, Ordering::SeqCst);
                     CAPTURED.store(true, Ordering::SeqCst);
@@ -1387,7 +1404,10 @@ mod tests {
         let len = LEN.load(Ordering::SeqCst) as usize;
         // SAFETY: written by the server thread, which stopped touching BUF once CAPTURED.
         let got = unsafe { core::slice::from_raw_parts(&raw const BUF as *const u8, len) };
-        assert_eq!(got, FIRST_LINE, "the wrong bytes arrived through shared memory");
+        assert_eq!(
+            got, FIRST_LINE,
+            "the wrong bytes arrived through shared memory"
+        );
     }
 
     /// `map_physical` puts one physical frame into an address space at a chosen VA, with exactly
@@ -1417,7 +1437,10 @@ mod tests {
         assert!(!data_f.is_user_executable());
 
         let (dev_pa, dev_f) = mmu::translate_user(DEV_VA).expect("device page not mapped");
-        assert_eq!(dev_pa, PL011_PHYS, "device page maps the wrong physical address");
+        assert_eq!(
+            dev_pa, PL011_PHYS,
+            "device page maps the wrong physical address"
+        );
         assert!(dev_f.is_user_accessible() && dev_f.is_writable());
 
         mmu::deactivate_user();
@@ -1490,11 +1513,11 @@ mod tests {
     fn a_spawned_worker_process_computes_and_reports() {
         const ROLE_WORKER: u64 = 6;
 
-    /// **How many children the shell may have alive at once.** The bound that stops a spawn flood
-    /// (or workers that block forever without exiting) from exhausting kernel memory: each live
-    /// child costs a `Thread`, a 16 KiB kernel stack, and an address space, and there can be at
-    /// most this many. A child returns its slot when it is reaped. See notes/quotas.md.
-    static SPAWN_QUOTA: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(8);
+        /// **How many children the shell may have alive at once.** The bound that stops a spawn flood
+        /// (or workers that block forever without exiting) from exhausting kernel memory: each live
+        /// child costs a `Thread`, a 16 KiB kernel stack, and an address space, and there can be at
+        /// most this many. A child returns its slot when it is reaped. See notes/quotas.md.
+        static SPAWN_QUOTA: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(8);
 
         let result = sched::create_endpoint();
         let faults = USER_FAULTS.load(Ordering::Relaxed);

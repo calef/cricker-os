@@ -55,7 +55,11 @@ pub fn find_block_device() -> Option<BlockDevice> {
         }
 
         // We require modern virtio (version 2); the register is read for the debug assertion.
-        debug_assert_eq!(read_reg(slot, REG_VERSION), 2, "expected modern virtio-mmio");
+        debug_assert_eq!(
+            read_reg(slot, REG_VERSION),
+            2,
+            "expected modern virtio-mmio"
+        );
 
         return Some(BlockDevice {
             mmio_phys: VIRTIO_MMIO_BASE + slot * SLOT_STRIDE,

@@ -198,7 +198,12 @@ where
     // does not operate any device. That enumeration is a legitimate kernel/bootstrap role, the
     // way firmware walks a PCI bus. The driver gets its own mapping of just its slot. See
     // kernel/src/virtio.rs.
-    direct_map(m, VIRTIO_MMIO_BASE, VIRTIO_MMIO_BASE + VIRTIO_MMIO_SIZE, Flags::device())?;
+    direct_map(
+        m,
+        VIRTIO_MMIO_BASE,
+        VIRTIO_MMIO_BASE + VIRTIO_MMIO_SIZE,
+        Flags::device(),
+    )?;
 
     Ok(())
 }
@@ -414,7 +419,9 @@ static RESERVED_TTBR0: AtomicU64 = AtomicU64::new(0);
 
 /// Allocate and install the empty TTBR0 root. Called at the end of `init`.
 fn install_reserved_ttbr0() {
-    let root = memory::alloc().expect("no frame for the reserved TTBR0 root").addr();
+    let root = memory::alloc()
+        .expect("no frame for the reserved TTBR0 root")
+        .addr();
 
     // SAFETY: a fresh frame, and nothing walks it until the `msr` below.
     unsafe {

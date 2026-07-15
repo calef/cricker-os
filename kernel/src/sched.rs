@@ -573,7 +573,11 @@ pub fn adopt_address_space(space: crate::user::AddressSpace) {
         let mut guard = SCHED.lock();
         let sched = guard.as_mut().expect("no scheduler");
         let current = sched.current;
-        sched.threads.get_mut(&current).expect("no current thread").space = Some(space);
+        sched
+            .threads
+            .get_mut(&current)
+            .expect("no current thread")
+            .space = Some(space);
     }
 
     crate::arch::mmu::switch_user_root(root);
@@ -877,7 +881,11 @@ mod tests {
             super::yield_now();
         }
         assert!(RECEIVED.load(Ordering::SeqCst), "the receiver never woke");
-        assert_eq!(GOT.load(Ordering::SeqCst), 0xABCD, "wrong message delivered");
+        assert_eq!(
+            GOT.load(Ordering::SeqCst),
+            0xABCD,
+            "wrong message delivered"
+        );
     }
 
     /// **The rendezvous, sender-first.** The other order: a sender blocks on an endpoint with no
@@ -953,8 +961,15 @@ mod tests {
             }
             super::yield_now();
         }
-        assert!(DONE.load(Ordering::SeqCst), "the request/reply never completed");
-        assert_eq!(ANSWER.load(Ordering::SeqCst), 42, "the server computed the wrong answer");
+        assert!(
+            DONE.load(Ordering::SeqCst),
+            "the request/reply never completed"
+        );
+        assert_eq!(
+            ANSWER.load(Ordering::SeqCst),
+            42,
+            "the server computed the wrong answer"
+        );
     }
 
     /// A blocked thread is genuinely off the CPU: other threads keep running while it waits.

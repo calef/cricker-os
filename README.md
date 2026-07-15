@@ -6,6 +6,18 @@ This is a learning project. The goal is not to produce a useful OS, it's to unde
 operating systems actually work by building one, starting from the first instruction the
 CPU ever executes. If it ends up useful, that's a bonus.
 
+## Try it
+
+```
+cargo xtask shell          # boot straight to an interactive shell at EL0
+cargo xtask shell --hvf    # ...on the real Apple Silicon core (instant boot)
+cargo xtask run            # the full milestone tour, then the shell
+cargo xtask test           # host tests, then the kernel under QEMU
+```
+
+At the `$` prompt: `help`, `echo hello`, `run 7` (spawns a process that computes 49). Quit with
+Ctrl-C, or `pkill qemu-system-aarch64` from another terminal.
+
 **Status: milestone 10 complete.** An interactive shell runs at EL0, spawning processes on command. It boots on QEMU, prints to a serial port, catches its
 own faults and reports them legibly, reads its memory map out of the device tree, hands out
 physical memory a page at a time, and **runs with the MMU on**: kernel `.text` is read-execute,

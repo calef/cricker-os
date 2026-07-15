@@ -117,165 +117,192 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
             );
         }
 
-        println!();
-        println!("milestone 1: we are running our own code on a CPU with nothing underneath it.");
-        println!("milestone 2: and when it goes wrong, we get told.");
-        println!("           : and the machine now tells us what it is, instead of us guessing.");
-        println!("milestone 3: and we know which parts of it are ours to give away.");
-        println!("milestone 4: and nothing writable is executable, and Vec works again.");
-        println!("milestone 5: and the machine can now interrupt us. we are preemptible.");
-        println!("milestone 6: and a thread that refuses to yield gets preempted anyway.");
-        println!("milestone 7: and now it runs a binary it did not compile, unprivileged.");
-        println!("           : and that binary can talk to a server it can only name, not reach.");
-        println!();
-
-        // The whole argument, executable.
+        // The milestone tour. Compiled out by `cargo xtask shell`, which boots straight to the
+        // interactive prompt below instead of scrolling all of this first.
+        #[cfg(not(feature = "shell"))]
         {
-            use crate::arch::timer;
-            use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-
-            static HOSTILE: AtomicU64 = AtomicU64::new(0);
-            static POLITE: AtomicU64 = AtomicU64::new(0);
-            static STOP: AtomicBool = AtomicBool::new(false);
-
-            // A thread whose entire body is a tight loop. No yield. No syscall. Not even a
-            // function call. Under ANY cooperative scheduler this owns the CPU forever and the
-            // machine is gone. This is the arbitrary ELF binary, in miniature.
-            sched::spawn(|| {
-                while !STOP.load(Ordering::Relaxed) {
-                    HOSTILE.fetch_add(1, Ordering::Relaxed);
-                }
-            });
-
-            // A thread that also never yields, but would like a turn.
-            sched::spawn(|| {
-                while !STOP.load(Ordering::Relaxed) {
-                    POLITE.fetch_add(1, Ordering::Relaxed);
-                }
-            });
-
-            let p0 = sched::preemptions();
-            timer::spin_for(timer::frequency() / 2); // half a second, doing nothing
-            STOP.store(true, Ordering::Relaxed);
-
-            println!("  half a second later, having spawned two threads that NEVER yield:");
             println!();
             println!(
-                "    thread 1 (hostile) : {:>10} iterations",
-                HOSTILE.load(Ordering::Relaxed)
+                "milestone 1: we are running our own code on a CPU with nothing underneath it."
             );
+            println!("milestone 2: and when it goes wrong, we get told.");
             println!(
-                "    thread 2 (polite)  : {:>10} iterations",
-                POLITE.load(Ordering::Relaxed)
+                "           : and the machine now tells us what it is, instead of us guessing."
             );
-            println!("    preemptions        : {:>10}", sched::preemptions() - p0);
-            println!();
-            println!("  neither asked to be interrupted. both were.");
-        }
-
-        // 7a. EL0.
-        {
-            use crate::arch::exceptions::{SVC_COUNT, USER_FAULTS};
-            use crate::arch::timer;
-            use core::sync::atomic::Ordering;
-
-            println!();
-            println!("  and now the other side of the boundary:");
+            println!("milestone 3: and we know which parts of it are ours to give away.");
+            println!("milestone 4: and nothing writable is executable, and Vec works again.");
+            println!("milestone 5: and the machine can now interrupt us. we are preemptible.");
+            println!("milestone 6: and a thread that refuses to yield gets preempted anyway.");
+            println!("milestone 7: and now it runs a binary it did not compile, unprivileged.");
+            println!(
+                "           : and that binary can talk to a server it can only name, not reach."
+            );
             println!();
 
-            // Milestone 9: a virtio block device, driven from userspace.
-            match crate::virtio::find_block_device() {
-                None => println!("    virtio : no block device attached"),
-                Some(d) => {
-                    println!(
-                        "    virtio : block device at {:#x}, INTID {}, handing it to a driver at EL0",
-                        d.mmio_phys, d.intid,
-                    );
-                    if let Some(report) = user::virtio_service::start(image_for_virtio()) {
-                        // The driver reads block 0 and sends us its first 8 bytes. We check they
-                        // are the crickerfs magic, which proves real disk bytes crossed DMA and
-                        // the EL0 boundary. This RECV blocks until the driver has done the read.
-                        let word = sched::ipc_recv(report)[0];
-                        let head = word.to_le_bytes();
-                        println!();
-                        if &head == b"cricker-" {
-                            println!("      a driver at EL0 read the file 'motd' off a virtio disk,");
-                            println!("      through a crickerfs superblock it parsed itself,");
-                            println!("      woken by the device's interrupt delivered as a message.");
-                            println!("      the kernel issued no virtio command and touched no DMA.");
-                        } else {
-                            println!("      the driver reported {head:?}, not the motd contents");
+            // The whole argument, executable.
+            {
+                use crate::arch::timer;
+                use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+                static HOSTILE: AtomicU64 = AtomicU64::new(0);
+                static POLITE: AtomicU64 = AtomicU64::new(0);
+                static STOP: AtomicBool = AtomicBool::new(false);
+
+                // A thread whose entire body is a tight loop. No yield. No syscall. Not even a
+                // function call. Under ANY cooperative scheduler this owns the CPU forever and the
+                // machine is gone. This is the arbitrary ELF binary, in miniature.
+                sched::spawn(|| {
+                    while !STOP.load(Ordering::Relaxed) {
+                        HOSTILE.fetch_add(1, Ordering::Relaxed);
+                    }
+                });
+
+                // A thread that also never yields, but would like a turn.
+                sched::spawn(|| {
+                    while !STOP.load(Ordering::Relaxed) {
+                        POLITE.fetch_add(1, Ordering::Relaxed);
+                    }
+                });
+
+                let p0 = sched::preemptions();
+                timer::spin_for(timer::frequency() / 2); // half a second, doing nothing
+                STOP.store(true, Ordering::Relaxed);
+
+                println!("  half a second later, having spawned two threads that NEVER yield:");
+                println!();
+                println!(
+                    "    thread 1 (hostile) : {:>10} iterations",
+                    HOSTILE.load(Ordering::Relaxed)
+                );
+                println!(
+                    "    thread 2 (polite)  : {:>10} iterations",
+                    POLITE.load(Ordering::Relaxed)
+                );
+                println!("    preemptions        : {:>10}", sched::preemptions() - p0);
+                println!();
+                println!("  neither asked to be interrupted. both were.");
+            }
+
+            // 7a. EL0.
+            {
+                use crate::arch::exceptions::{SVC_COUNT, USER_FAULTS};
+                use crate::arch::timer;
+                use core::sync::atomic::Ordering;
+
+                println!();
+                println!("  and now the other side of the boundary:");
+                println!();
+
+                // Milestone 9: a virtio block device, driven from userspace.
+                match crate::virtio::find_block_device() {
+                    None => println!("    virtio : no block device attached"),
+                    Some(d) => {
+                        println!(
+                            "    virtio : block device at {:#x}, INTID {}, handing it to a driver at EL0",
+                            d.mmio_phys, d.intid,
+                        );
+                        if let Some(report) = user::virtio_service::start(image_for_virtio()) {
+                            // The driver reads block 0 and sends us its first 8 bytes. We check they
+                            // are the crickerfs magic, which proves real disk bytes crossed DMA and
+                            // the EL0 boundary. This RECV blocks until the driver has done the read.
+                            let word = sched::ipc_recv(report)[0];
+                            let head = word.to_le_bytes();
+                            println!();
+                            if &head == b"cricker-" {
+                                println!(
+                                    "      a driver at EL0 read the file 'motd' off a virtio disk,"
+                                );
+                                println!("      through a crickerfs superblock it parsed itself,");
+                                println!(
+                                    "      woken by the device's interrupt delivered as a message."
+                                );
+                                println!(
+                                    "      the kernel issued no virtio command and touched no DMA."
+                                );
+                            } else {
+                                println!(
+                                    "      the driver reported {head:?}, not the motd contents"
+                                );
+                            }
                         }
                     }
                 }
-            }
 
-            // The privilege boundary, still real: a program that reaches for a kernel address is
-            // killed, and the kernel is not.
-            let faults0 = USER_FAULTS.load(Ordering::Relaxed);
-            sched::spawn(|| unsafe { user::exec(user::outlaw()) });
-            timer::spin_for(timer::frequency() / 20);
-            println!(
-                "    outlaw : reached {:#018x}, was killed, kernel survived ({} fault)",
-                0xffff_0000_4008_0000u64,
-                USER_FAULTS.load(Ordering::Relaxed) - faults0,
-            );
+                // The privilege boundary, still real: a program that reaches for a kernel address is
+                // killed, and the kernel is not.
+                let faults0 = USER_FAULTS.load(Ordering::Relaxed);
+                sched::spawn(|| unsafe { user::exec(user::outlaw()) });
+                timer::spin_for(timer::frequency() / 20);
+                println!(
+                    "    outlaw : reached {:#018x}, was killed, kernel survived ({} fault)",
+                    0xffff_0000_4008_0000u64,
+                    USER_FAULTS.load(Ordering::Relaxed) - faults0,
+                );
 
-            // Milestone 8. The console driver is no longer in the kernel.
-            match user::initrd() {
-                None => println!("    initrd : none (no -initrd passed to QEMU)"),
-                Some(image) => {
-                    println!(
-                        "    initrd : {} bytes at {:#x}, from the device tree",
-                        image.len(),
-                        memory::initrd_region().unwrap().0,
-                    );
-                    println!();
-                    println!("  the console driver now runs at EL0. what follows is printed by it:");
-                    println!();
+                // Milestone 8. The console driver is no longer in the kernel.
+                match user::initrd() {
+                    None => println!("    initrd : none (no -initrd passed to QEMU)"),
+                    Some(image) => {
+                        println!(
+                            "    initrd : {} bytes at {:#x}, from the device tree",
+                            image.len(),
+                            memory::initrd_region().unwrap().0,
+                        );
+                        println!();
+                        println!(
+                            "  the console driver now runs at EL0. what follows is printed by it:"
+                        );
+                        println!();
 
-                    // Start the console SERVER as a user process that owns the UART, then a
-                    // CLIENT wired to it. The lines the client prints travel through a page it
-                    // shares with the server; the kernel never touches the bytes.
-                    let console = user::console_service::start(image);
-                    user::console_service::spawn_client(image, console);
-                    timer::spin_for(timer::frequency() / 10);
+                        // Start the console SERVER as a user process that owns the UART, then a
+                        // CLIENT wired to it. The lines the client prints travel through a page it
+                        // shares with the server; the kernel never touches the bytes.
+                        let console = user::console_service::start(image);
+                        user::console_service::spawn_client(image, console);
+                        timer::spin_for(timer::frequency() / 10);
 
-                    println!();
-                    println!("  ...and control is back in the kernel, which never saw those bytes.");
+                        println!();
+                        println!(
+                            "  ...and control is back in the kernel, which never saw those bytes."
+                        );
+                    }
                 }
-            }
 
-            println!();
-            println!("  a userspace program printed to the screen, and the kernel does not");
-            println!("  contain a line of code that puts a user's bytes on the wire.");
-            let _ = SVC_COUNT.load(Ordering::Relaxed);
-
-            // Milestone 11: a process spends its own memory; the kernel allocates nothing.
-            if let Some(image) = user::initrd() {
-                if let Some((_region, report)) = user::untyped_service::start(image, 24) {
-                    sched::ipc_recv(report); // the process signals it is loaded and ready
-                    let before = memory::stats().unwrap().used;
-                    let mapped = sched::ipc_recv(report)[0]; // it maps until its untyped is spent
-                    let after = memory::stats().unwrap().used;
-                    println!();
-                    println!(
-                        "  milestone 11: a process mapped {mapped} pages out of an untyped it was handed,"
-                    );
-                    println!(
-                        "  and the kernel's used-frame count went {before} -> {after} (it did not move)."
-                    );
-                    println!("  a process cannot make the kernel allocate, so it cannot exhaust it.");
-                }
-            }
-
-            // Milestone 10: hand the terminal to a shell running at EL0, and let it run.
-            if let Some(image) = user::initrd() {
                 println!();
-                println!("  the rest of this session belongs to a shell at EL0:");
-                user::shell_service::start(image);
-                // The boot thread's work is done; the shell and its friends run until halt.
+                println!("  a userspace program printed to the screen, and the kernel does not");
+                println!("  contain a line of code that puts a user's bytes on the wire.");
+                let _ = SVC_COUNT.load(Ordering::Relaxed);
+
+                // Milestone 11: a process spends its own memory; the kernel allocates nothing.
+                if let Some(image) = user::initrd() {
+                    if let Some((_region, report)) = user::untyped_service::start(image, 24) {
+                        sched::ipc_recv(report); // the process signals it is loaded and ready
+                        let before = memory::stats().unwrap().used;
+                        let mapped = sched::ipc_recv(report)[0]; // it maps until its untyped is spent
+                        let after = memory::stats().unwrap().used;
+                        println!();
+                        println!(
+                            "  milestone 11: a process mapped {mapped} pages out of an untyped it was handed,"
+                        );
+                        println!(
+                            "  and the kernel's used-frame count went {before} -> {after} (it did not move)."
+                        );
+                        println!(
+                            "  a process cannot make the kernel allocate, so it cannot exhaust it."
+                        );
+                    }
+                }
             }
+        } // end of the milestone tour (#[cfg(not(feature = "shell"))])
+
+        // The interactive shell. **Always on: this is how you actually use the OS.** It brings up
+        // its own console (output) and input drivers, so it stands alone with the tour compiled
+        // out.
+        if let Some(image) = user::initrd() {
+            println!();
+            println!("cricker-os — an interactive shell at EL0. type `help`.");
+            user::shell_service::start(image);
+            // The boot thread's work is done; the shell and its friends run until halt.
         }
     }
 
@@ -289,6 +316,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
 /// actually masking something. See DECISIONS.md §9 and notes/locking.md.
 /// The initrd image, for the virtio service. Panics if absent (the demo checked `initrd()` above).
 #[cfg(not(test))]
+#[cfg_attr(feature = "shell", allow(dead_code))] // the virtio demo lives in the milestone tour
 fn image_for_virtio() -> &'static [u8] {
     user::initrd().expect("no initrd")
 }

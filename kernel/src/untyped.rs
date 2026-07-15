@@ -76,7 +76,11 @@ pub fn retype_page(region: usize) -> Option<u64> {
     // SAFETY: the page is inside a region we carved from the allocator and own exclusively; the
     // direct map reaches it. Zero it before anyone can read a stale descriptor out of it.
     unsafe {
-        core::ptr::write_bytes(crate::arch::mmu::phys_to_virt(phys) as *mut u8, 0, FRAME_SIZE as usize);
+        core::ptr::write_bytes(
+            crate::arch::mmu::phys_to_virt(phys) as *mut u8,
+            0,
+            FRAME_SIZE as usize,
+        );
     }
     Some(phys)
 }

@@ -5,7 +5,8 @@
 //! neatly into `cargo build`. This beats a Makefile because it's Rust and it composes.
 //! See DECISIONS.md §7.
 //!
-//!     cargo xtask run      boot the kernel, print to this terminal
+//!     cargo xtask run      boot the kernel (the milestone tour), print to this terminal
+//!     cargo xtask shell    boot straight to the interactive shell (add --hvf for the real core)
 //!     cargo xtask test     host tests (milliseconds), then the kernel under QEMU
 //!     cargo xtask gdb      boot paused, waiting for a debugger on :1234
 //!     cargo xtask objdump  disassemble the kernel
@@ -27,12 +28,18 @@ fn main() -> ExitCode {
     let ok = match cmd.as_str() {
         "build" => build(),
         "run" => {
-            // `cargo xtask run --hvf` boots under Apple's Hypervisor.framework instead of TCG.
-            if std::env::args().any(|a| a == "--hvf") {
-                unsafe { std::env::set_var("CRICKER_ACCEL", "hvf") };
-                eprintln!("--- booting under HVF (Apple Silicon hardware virtualization) ---");
-            }
-            cargo(&["run", "-p", "kernel", "--target", TARGET])
+            maybe_hvf();
+            // Build the disk and the initrd first: the kernel boots with them, and `cargo run`
+            // would not rebuild them on its own (the kernel does not depend on them in cargo).
+            mkdisk() && user() && cargo(&["run", "-p", "kernel", "--target", TARGET])
+        }
+        "shell" => {
+            // Boot straight to the interactive shell (the milestone tour compiled out).
+            maybe_hvf();
+            eprintln!("--- booting cricker-os to an interactive shell (type `help`, Ctrl-C to quit) ---");
+            mkdisk()
+                && user()
+                && cargo(&["run", "-p", "kernel", "--features", "shell", "--target", TARGET])
         }
         "test" => test(),
         "gdb" => gdb(),
@@ -42,7 +49,7 @@ fn main() -> ExitCode {
             if !other.is_empty() {
                 eprintln!("unknown command: {other}\n");
             }
-            eprintln!("usage: cargo xtask <build|run|test|gdb|objdump|image>");
+            eprintln!("usage: cargo xtask <build|run|shell|test|gdb|objdump|image> [--hvf]");
             return ExitCode::FAILURE;
         }
     };
@@ -76,6 +83,14 @@ fn user() -> bool {
 /// writes its address into `/chosen/linux,initrd-start` in the device tree; the kernel finds it
 /// there (`memory::initrd_region`, built at milestone 3 for exactly this). Nothing about the
 /// binary is known to the kernel at build time, which is the entire point of milestone 7c.
+/// If `--hvf` was passed, boot under Apple's Hypervisor.framework instead of TCG.
+fn maybe_hvf() {
+    if std::env::args().any(|a| a == "--hvf") {
+        unsafe { std::env::set_var("CRICKER_ACCEL", "hvf") };
+        eprintln!("--- on the real Apple Silicon core via Hypervisor.framework ---");
+    }
+}
+
 /// Where the crickerfs disk image is written.
 fn disk_path() -> String {
     workspace_root().join("target/crickerfs.img").display().to_string()
