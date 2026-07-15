@@ -38,10 +38,10 @@
 #![allow(dead_code)]
 
 use crate::sync::{IrqSafeMutex, rank};
-use crate::thread::{Context, State, Thread, Tid, switch_to};
+use crate::thread::{Context, QuotaToken, State, Thread, Tid, switch_to};
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, VecDeque};
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 /// Set by the timer handler. Read by the *return path* out of the handler.
 ///
@@ -159,6 +159,56 @@ pub fn spawn<F: FnOnce() + Send + 'static>(f: F) -> Option<Tid> {
     sched.threads.insert(id, Box::new(thread));
     sched.ready.push_back(id);
 
+    Some(id)
+}
+
+/// Spawn a thread against a **quota**: at most `budget` of these may be alive at once.
+///
+/// Reserving a slot is an atomic decrement; the slot lives inside the spawned `Thread` as a
+/// [`QuotaToken`] and comes back when the thread is reaped. Returns `None` if the budget is
+/// exhausted (too many children already alive) OR the kernel is out of memory — the caller cannot
+/// tell the two apart, and does not need to: either way it could not spawn, and it must degrade
+/// rather than panic. This is the bound that stops a spawn flood or a leaked-thread pile-up from
+/// exhausting kernel memory. See notes/quotas.md and notes/security.md.
+pub fn spawn_with_quota<F: FnOnce() + Send + 'static>(
+    budget: &'static AtomicU32,
+    f: F,
+) -> Option<Tid> {
+    // Reserve a slot: decrement only if there is one. A compare-exchange loop, so it is exactly
+    // one atomic decrement and it never dips below zero (returning `None` = "quota exhausted").
+    let mut remaining = budget.load(Ordering::Relaxed);
+    loop {
+        if remaining == 0 {
+            return None;
+        }
+        match budget.compare_exchange_weak(
+            remaining,
+            remaining - 1,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break,
+            Err(actual) => remaining = actual,
+        }
+    }
+
+    let mut thread = match Thread::spawn(Box::new(f)) {
+        Some(t) => t,
+        None => {
+            // Out of kernel memory. Give the reserved slot back, since no thread will hold it.
+            budget.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+    };
+    thread.quota = Some(QuotaToken::new(budget)); // returned to `budget` when the thread is reaped
+    let id = thread.id;
+
+    let mut guard = SCHED.lock();
+    let Some(sched) = guard.as_mut() else {
+        return None; // no scheduler: `thread` drops here and its QuotaToken returns the slot
+    };
+    sched.threads.insert(id, Box::new(thread));
+    sched.ready.push_back(id);
     Some(id)
 }
 
@@ -578,7 +628,7 @@ mod tests {
     //! `a_thread_that_never_yields_is_preempted_anyway` is the one this whole project has been
     //! arguing about since DECISIONS.md §5. Everything else here is scaffolding for it.
 
-    use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
     /// A spawned thread actually runs, and its closure's captured state comes with it.
     #[test_case]
@@ -995,6 +1045,66 @@ mod tests {
             WOKE.load(Ordering::SeqCst),
             "a hardware interrupt fired and the thread waiting on it never woke",
         );
+    }
+
+    /// **A spawn quota caps how many children a spawner can have alive, and replenishes on death.**
+    ///
+    /// This is the resource-exhaustion bound from the security audit: a process cannot make the
+    /// kernel spawn without limit. Two threads block on an endpoint nobody drains, holding their
+    /// slots; a budget of two is then exhausted and a third spawn is refused. Waking one lets it
+    /// exit and be reaped, which returns its slot, and a spawn succeeds again.
+    #[test_case]
+    fn a_spawn_quota_caps_live_children_and_replenishes_on_reap() {
+        use core::sync::atomic::AtomicU32;
+        static BUDGET: AtomicU32 = AtomicU32::new(2);
+
+        let ep = super::create_endpoint();
+
+        // Two children that block forever (nobody sends), each holding a quota slot.
+        assert!(
+            super::spawn_with_quota(&BUDGET, move || {
+                super::ipc_recv(ep);
+            })
+            .is_some(),
+            "first child should fit in the budget",
+        );
+        assert!(
+            super::spawn_with_quota(&BUDGET, move || {
+                super::ipc_recv(ep);
+            })
+            .is_some(),
+            "second child should fit in the budget",
+        );
+
+        // Let them run and block, so both slots are genuinely held.
+        for _ in 0..50 {
+            super::yield_now();
+        }
+
+        // The budget is spent: a third spawn is refused, not panicked, not over-committed.
+        assert!(
+            super::spawn_with_quota(&BUDGET, || {}).is_none(),
+            "the budget was exhausted but a third child spawned anyway",
+        );
+
+        // Wake one child. It returns from ipc_recv, its closure ends, it exits and is reaped,
+        // and its QuotaToken drops, returning the slot.
+        super::ipc_send(ep, [0, 0, 0]);
+        for _ in 0..100 {
+            super::yield_now();
+        }
+
+        // A slot is free again.
+        assert!(
+            super::spawn_with_quota(&BUDGET, || {}).is_some(),
+            "a child exited but its quota slot was never returned",
+        );
+
+        // Clean up: wake the other blocked child so it does not sit forever.
+        super::ipc_send(ep, [0, 0, 0]);
+        for _ in 0..50 {
+            super::yield_now();
+        }
     }
 
     /// A signal that arrives while nobody is waiting is **remembered, not lost.** An interrupt is

@@ -29,7 +29,7 @@ use crate::memory;
 use crate::sync::{IrqSafeMutex, rank};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use frames::{FRAME_SIZE, Frame};
 use paging::Flags;
 
@@ -200,6 +200,29 @@ pub enum State {
     Finished,
 }
 
+/// **A reserved slot in a spawner's resource budget, returned when this thread dies.**
+///
+/// A process (the shell, say) that spawns children can be given a quota: at most N children alive
+/// at once. Reserving a slot is an atomic decrement; a `QuotaToken` holds that reservation, and
+/// its `Drop` gives it back. Because the token lives inside the `Thread`, the slot is returned at
+/// exactly the moment the reaper drops the thread — a well-behaved child that exits frees its slot,
+/// and a child that blocks forever keeps holding it, which is correct: it is still consuming a
+/// thread, a stack, and an address space. This is what bounds kernel memory against a spawn flood
+/// or a leaked-thread accumulation without any per-tick bookkeeping. See notes/quotas.md.
+pub struct QuotaToken(&'static AtomicU32);
+
+impl QuotaToken {
+    pub fn new(budget: &'static AtomicU32) -> Self {
+        QuotaToken(budget)
+    }
+}
+
+impl Drop for QuotaToken {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 pub struct Thread {
     pub id: Tid,
     pub state: State,
@@ -252,6 +275,10 @@ pub struct Thread {
     /// the receiver, running later, reaches into the sender's `Thread` to collect it. See
     /// sched.rs.
     pub mailbox: [u64; 3],
+
+    /// **A slot in a spawner's quota, or `None` for a thread nobody bounded.** Reaped with the
+    /// thread, which is how the slot comes back. See [`QuotaToken`].
+    pub quota: Option<QuotaToken>,
 }
 
 // SAFETY: a Thread is only ever touched under the scheduler's lock.
@@ -273,6 +300,7 @@ impl Thread {
             space: None,
             cspace: crate::cap::CSpace::empty(),
             mailbox: [0; 3],
+            quota: None,
         }
     }
 
@@ -317,6 +345,7 @@ impl Thread {
             space: None, // a kernel thread until it calls `user::exec`
             cspace: crate::cap::CSpace::empty(), // and it can name nothing until it is handed something
             mailbox: [0; 3],
+            quota: None,
         })
     }
 }

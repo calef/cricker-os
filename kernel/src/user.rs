@@ -858,6 +858,12 @@ pub mod shell_service {
     const ROLE_SHELL: u64 = 5;
     const ROLE_WORKER: u64 = 6;
 
+    /// **How many children the shell may have alive at once.** The bound that stops a spawn flood
+    /// (or workers that block forever without exiting) from exhausting kernel memory: each live
+    /// child costs a `Thread`, a 16 KiB kernel stack, and an address space, and there can be at
+    /// most this many. A child returns its slot when it is reaped. See notes/quotas.md.
+    static SPAWN_QUOTA: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(8);
+
     pub fn start(image: &'static [u8]) {
         // Output: the console server (milestone 8), and the shell as its client.
         let console = console_service::start(image);
@@ -876,7 +882,7 @@ pub mod shell_service {
         crate::sched::spawn(move || {
             loop {
                 let n = crate::sched::ipc_recv(spawn_ep)[0];
-                let spawned = crate::sched::spawn(move || {
+                let spawned = crate::sched::spawn_with_quota(&SPAWN_QUOTA, move || {
                     run(
                         image,
                         Spawn {
@@ -1483,6 +1489,12 @@ mod tests {
     #[test_case]
     fn a_spawned_worker_process_computes_and_reports() {
         const ROLE_WORKER: u64 = 6;
+
+    /// **How many children the shell may have alive at once.** The bound that stops a spawn flood
+    /// (or workers that block forever without exiting) from exhausting kernel memory: each live
+    /// child costs a `Thread`, a 16 KiB kernel stack, and an address space, and there can be at
+    /// most this many. A child returns its slot when it is reaped. See notes/quotas.md.
+    static SPAWN_QUOTA: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(8);
 
         let result = sched::create_endpoint();
         let faults = USER_FAULTS.load(Ordering::Relaxed);

@@ -73,11 +73,12 @@ pointer path at all. Corrected, and the historical `abi::console` methods are ma
   it, and the driver writes those addresses. Fault isolation (milestone 9) is real; malice
   isolation is not, absent an IOMMU or a kernel that validates every descriptor. `notes/virtio.md`
   now states this plainly rather than implying the isolation covers malice.
-- **No per-process resource limits.** Untyped bounds a process's *pages*, but `Thread` structs,
-  16 KiB kernel stacks, endpoints, and capability tables still come from the kernel heap with no
-  quota. A process that drives spawns, or blocks workers forever on an endpoint it never drains,
-  accumulates kernel memory without bound (it now fails gracefully rather than panicking, but the
-  memory is still spent). Quotas are the untyped-kernel-objects continuation of milestone 11.
+- **Per-process resource limits: partially closed.** The spawn-exhaustion vector is now bounded
+  by a per-spawner **quota** (at most N children alive at once, the slot returned when a child is
+  reaped — see notes/quotas.md). A spawn flood or a pile of blocked-forever children is capped at
+  N threads/stacks/address spaces instead of unbounded. What remains unbounded is any *other*
+  kernel object a future syscall might create; the complete answer is the untyped-kernel-objects
+  model (a process's whole kernel footprint drawn from its own untyped), still ahead.
 - **No IPC timeouts and no revocation.** A thread blocked on an endpoint that never gets a peer is
   never reclaimed. This is the accumulation primitive above, and it is the seL4 depth (capability
   derivation tree, revocation) deliberately parked.

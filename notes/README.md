@@ -105,6 +105,9 @@ in the code or the conversation doesn't make sense, it belongs here.
   pages out of a capability to raw memory it was handed, and the kernel's free-frame count does not
   move while it allocates. A process cannot make the kernel allocate, so it cannot exhaust it.
 
+- [Per-process resource quotas](quotas.md) — a spawner may have at most N children alive; the slot
+  returns when a child is reaped, riding the thread's lifetime, so a spawn flood is bounded with no
+  bookkeeping. Closes the audit's exhaustion vector.
 - [A security audit](security.md) — an adversarial four-part review of the whole kernel. The
   MMU and capability confinement held up; two panics on untrusted input were fixed; the DMA/no-IOMMU
   limitation and the missing resource quotas are named rather than hidden.
