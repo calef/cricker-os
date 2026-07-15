@@ -443,6 +443,12 @@ Not decisions yet. Proposals with real open questions, parked deliberately.
   decided. Feature detection via the `ID_AA64ISAR*_EL1` registers is worth building at
   milestone 2 regardless.
 
+- [Driver domains, and the DMA-confinement design space](design/driver-domains.md) — the
+  principled version of the DMA hole we closed in software (notes/dma.md): run each driver in its
+  own VM with cricker-os as the hypervisor at EL2, and confine its DMA with the SMMU's stage-2. The
+  strongest driver isolation there is, and the opposite of a shortcut: it needs EL2, an SMMU
+  driver, and is impossible under HVF. Parked as the most interesting unbuilt direction.
+
 ---
 
 ## Milestones
