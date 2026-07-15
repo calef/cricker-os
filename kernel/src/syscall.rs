@@ -16,7 +16,15 @@
 //! handed.** The ABI lives in `crates/abi`, which both the kernel and every user program depend
 //! on, so the boundary is *one artifact* rather than two files that agree by luck.
 //!
-//! # The interesting code in this file is not the dispatch. It is `user_slice`.
+//! # No pointer ever crosses this boundary
+//!
+//! There used to be a `user_slice` here: the console `write` syscall took a `(ptr, len)` from
+//! userspace and the kernel read the user's memory, which is why it needed the `AT S1E0R`
+//! confused-deputy defence. Milestone 8 moved the console to a userspace server and deleted that
+//! path. Today every argument is a scalar in a register (a capability slot, a method, a `va`, a
+//! word), so the kernel follows no user pointer and there is no deputy to confuse. The primitive
+//! that made the old check possible, `mmu::user_can_read`, is kept for the next syscall that does
+//! take a user pointer.
 
 use crate::arch::exceptions::TrapFrame;
 use crate::arch::mmu;
@@ -105,6 +113,14 @@ fn invoke(
                 // the KERNEL ALLOCATES NOTHING: `mmu::map_current_user_page`'s only source of
                 // memory is the closure below, which bumps the untyped's watermark.
                 let va = a0;
+                // Reject the cheap failures BEFORE retyping a page for them: a non-page-aligned
+                // or non-low-half address can never be mapped, and without this pre-check each
+                // such attempt would silently spend a page of the process's own untyped (a
+                // self-inflicted budget leak the audit noted). An already-mapped `va` still costs
+                // one page, which is process-local and bounded by the untyped.
+                if va & 0xfff != 0 || (va >> 48) != 0 {
+                    return Err(Error::BadPointer);
+                }
                 match mmu::map_current_user_page(va, paging::Flags::user_data(), || {
                     crate::untyped::retype_page(region)
                 }) {

@@ -85,6 +85,12 @@ pub enum Error {
     SegmentsOverlap,
     /// The entry point is not inside any executable segment. The program cannot start.
     EntryNotExecutable,
+    /// **`p_vaddr + p_memsz` overflows.** A crafted segment can name a near-`u64::MAX` memsz to
+    /// wrap the address arithmetic; caught here so the entry check and page math cannot overflow.
+    AddressOverflow,
+    /// More program headers than we will look at. A real static executable has a handful; a huge
+    /// count is only good for making the O(n^2) overlap check stall.
+    TooManyProgramHeaders,
 }
 
 /// One `PT_LOAD` segment: what to map, where, and how.
@@ -122,7 +128,13 @@ impl Segment<'_> {
     /// The page-aligned range this segment touches: `[start, end)`.
     pub fn page_range(&self, page_size: u64) -> (u64, u64) {
         let start = self.vaddr & !(page_size - 1);
-        let end = (self.vaddr + self.memsz).div_ceil(page_size) * page_size;
+        // Saturating, so a hostile `memsz` cannot overflow this even though `Elf::parse` already
+        // rejects `vaddr + memsz` overflow (this type is `pub`, so it must be panic-free alone).
+        let end = self
+            .vaddr
+            .saturating_add(self.memsz)
+            .div_ceil(page_size)
+            .saturating_mul(page_size);
         (start, end)
     }
 }
@@ -177,6 +189,12 @@ impl<'a> Elf<'a> {
 
         if phentsize < PHDR_SIZE {
             return Err(Error::BadProgramHeaders);
+        }
+        // Bound the header count before the O(n^2) overlap check. A legitimate static executable
+        // has a few PT_LOAD segments; 65535 headers exist only to make validation stall.
+        const MAX_PHNUM: usize = 64;
+        if phnum > MAX_PHNUM {
+            return Err(Error::TooManyProgramHeaders);
         }
 
         // The bounds check on the program header table itself. `phoff` and `phnum` come out of
@@ -266,6 +284,12 @@ impl<'a> Elf<'a> {
         if end > self.bytes.len() {
             return Err(Error::SegmentOutOfBounds);
         }
+
+        // And the VIRTUAL range must not overflow. `p_memsz` is hostile too, and `vaddr + memsz`
+        // feeds the entry-in-segment check and `page_range`; a near-u64::MAX memsz would wrap
+        // them. With overflow-checks on (the shipping dev profile) that wrap is a PANIC, i.e. a
+        // crafted binary halting the kernel, which is exactly what this crate exists to prevent.
+        vaddr.checked_add(memsz).ok_or(Error::AddressOverflow)?;
 
         Ok(Some(Segment {
             vaddr,
@@ -517,6 +541,25 @@ mod tests {
             .seg(PF_R | PF_W, 0x40_0800, &[0xbb; 16], 16) // same 4 KiB page
             .build();
         assert_eq!(Elf::parse(&bytes).err(), Some(Error::SegmentsOverlap));
+    }
+
+    #[test]
+    fn a_segment_whose_address_range_overflows_is_refused() {
+        // filesz small (passes the file-bounds check), memsz enormous (passes memsz >= filesz), so
+        // only the vaddr+memsz overflow guard stands between this and a kernel panic.
+        let mut b = Builder::new().seg(PF_R | PF_X, 0x40_0000, &[0xaa; 16], u64::MAX);
+        b.entry = 0x40_0000;
+        // Must return an Err, and crucially must NOT panic on the overflow.
+        assert_eq!(Elf::parse(&b.build()).err(), Some(Error::AddressOverflow));
+    }
+
+    #[test]
+    fn too_many_program_headers_are_refused() {
+        let mut b = Builder::new();
+        for _ in 0..65 {
+            b = b.seg(PF_R | PF_X, 0x40_0000, &[0xaa; 8], 8);
+        }
+        assert_eq!(Elf::parse(&b.build()).err(), Some(Error::TooManyProgramHeaders));
     }
 
     #[test]

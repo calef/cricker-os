@@ -105,6 +105,10 @@ in the code or the conversation doesn't make sense, it belongs here.
   pages out of a capability to raw memory it was handed, and the kernel's free-frame count does not
   move while it allocates. A process cannot make the kernel allocate, so it cannot exhaust it.
 
+- [A security audit](security.md) — an adversarial four-part review of the whole kernel. The
+  MMU and capability confinement held up; two panics on untrusted input were fixed; the DMA/no-IOMMU
+  limitation and the missing resource quotas are named rather than hidden.
+
 ## The point of all this
 
 - [The console driver leaves the kernel](userspace-drivers.md) — milestone 8: the console is now a

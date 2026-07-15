@@ -876,7 +876,7 @@ pub mod shell_service {
         crate::sched::spawn(move || {
             loop {
                 let n = crate::sched::ipc_recv(spawn_ep)[0];
-                crate::sched::spawn(move || {
+                let spawned = crate::sched::spawn(move || {
                     run(
                         image,
                         Spawn {
@@ -887,11 +887,20 @@ pub mod shell_service {
                             maps: &[],
                         },
                     )
-                })
-                .expect("could not spawn a worker");
+                });
+                // **Do not panic on out-of-memory.** A spawn flood must degrade, not kill the
+                // machine: if the kernel is out of memory we cannot make the worker, so we tell
+                // the shell its request failed (a sentinel result) and carry on serving. The
+                // security audit flagged the old `.expect(...)` here as a userspace-triggerable
+                // kernel panic. (Per-process spawn quotas are the real fix and are deferred with
+                // untyped kernel objects; not panicking is the cheap, honest hardening.)
+                if spawned.is_none() {
+                    // u64::MAX is the "could not spawn" sentinel the shell recognises.
+                    crate::sched::ipc_send(result_ep, [u64::MAX, 0, 0]);
+                }
             }
         })
-        .expect("could not spawn the process service");
+        .expect("could not spawn the process service"); // once, at boot, not attacker-reachable
 
         // The shell itself.
         crate::sched::spawn(move || {

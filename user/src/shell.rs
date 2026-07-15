@@ -102,13 +102,17 @@ pub fn run() -> ! {
             // SAFETY: `svc`.
             unsafe { invoke(SPAWN, endpoint::SEND, n, 0, 0) };
             let answer = recv(RESULT).0;
-            print(b"  a spawned process at EL0 computed ");
-            print_num(n);
-            print(b"*");
-            print_num(n);
-            print(b" = ");
-            print_num(answer);
-            print(b"\n");
+            if answer == u64::MAX {
+                print(b"  could not spawn a process (the kernel is out of memory)\n");
+            } else {
+                print(b"  a spawned process at EL0 computed ");
+                print_num(n);
+                print(b"*");
+                print_num(n);
+                print(b" = ");
+                print_num(answer);
+                print(b"\n");
+            }
         } else if cmd.is_empty() {
             // blank line, just prompt again
         } else {

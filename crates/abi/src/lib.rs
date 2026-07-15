@@ -47,7 +47,12 @@ pub const SYS_INVOKE: u64 = 2;
 /// guess.** The kernel looks in *your* table, and if the slot is empty you get `NoSuchSlot`.
 pub type CapSlot = u64;
 
-/// Methods on a `Console` capability.
+/// Methods on a `Console` capability. **Historical: no longer wired up.**
+///
+/// Milestone 8 removed the kernel-served `Console` object (the console became a userspace server
+/// reached by an `Endpoint`). This constant is kept so the ABI's history is legible, but nothing
+/// in the kernel dispatches it any more.
+#[allow(dead_code)]
 pub mod console {
     /// `invoke(cap, WRITE, ptr, len, _)` -> bytes written.
     ///

@@ -528,7 +528,7 @@ pub fn user_can_write(va: u64) -> bool {
 
 /// # Safety
 /// Sound for any address. The result is advisory only in the sense that the mapping could change
-/// afterwards; see the note on TOCTOU in `syscall::user_slice`.
+/// afterwards; (the old `syscall::user_slice` reader that relied on this was removed in milestone 8).
 unsafe fn translate_as_el0(va: u64, write: bool) -> bool {
     // PAR_EL1 IS A SINGLE SHARED REGISTER, and between the `at` and the `mrs` we could be
     // preempted by the timer, switched to another thread, and switched back with somebody else's
