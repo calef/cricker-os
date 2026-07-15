@@ -18,7 +18,7 @@ Four processes, and the channels between them:
 - **The console server** (milestone 8) owns the UART transmit side and prints what it is sent.
 - **The input driver** (new) owns the UART receive side and its interrupt (INTID 33). It
   assembles a line character by character and hands each completed line to the shell.
-- **The shell** (new) reads a line, echoes it, and runs a command: `help`, `echo`, `run`.
+- **The shell** (new) reads a line and runs a command: `help`, `echo`, `run`.
 - **A worker** is spawned for each `run`. It computes, reports its answer to the shell, and
   **exits** — a whole process lifecycle driven by a line the user typed.
 
@@ -64,6 +64,21 @@ things in the harness, both recorded because they cost real time:
 - `-nographic` **multiplexes** the serial port with the QEMU monitor on stdio, and piped input was
   going to the monitor. Switched to `-display none -serial stdio`, which dedicates stdio to the
   serial port.
+
+## Echoing what you type
+
+The terminal runs in raw mode (QEMU hands the whole serial line to the guest), so nothing echoes
+locally: if the guest does not show a character back, you cannot see what you are typing. The
+**input driver** echoes each character as it reads it, and handles backspace visually (back,
+space, back). The shell does **not** echo the command afterward, or you would see it twice.
+
+This is safe against interleaving with the shell's output because of the synchronous handoff: while
+you type, the shell is blocked in `RECV` waiting for the line, so it is not writing the UART. The
+input driver echoes, sends the completed line, and only then does the shell wake, print its output,
+prompt, and block again. Prompt, your keystrokes, output, prompt: one writer at a time, in order.
+(An earlier version had the *shell* echo the whole line after Enter, to keep piped bulk input
+tidy. That left interactive typing invisible until you pressed Return, which is the wrong trade: a
+person needs to see each character as they type it.)
 
 ## Two things left honest rather than hidden
 

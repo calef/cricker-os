@@ -17,6 +17,7 @@ const FR: u64 = 0x18; // flags
 const IMSC: u64 = 0x38; // interrupt mask set/clear
 const ICR: u64 = 0x44; // interrupt clear
 const FR_RXFE: u32 = 1 << 4; // receive FIFO empty
+const FR_TXFF: u32 = 1 << 5; // transmit FIFO full
 const RXIM: u32 = 1 << 4; // receive interrupt
 
 const LINE: u64 = 0; // SEND: hand a completed line's length to the reader
@@ -30,6 +31,14 @@ fn rd(off: u64) -> u32 {
 fn wr(off: u64, v: u32) {
     // SAFETY: as above.
     unsafe { core::ptr::write_volatile((UART_VA + off) as *mut u32, v) }
+}
+
+/// Echo one byte to the terminal, spinning while the transmit FIFO is full.
+fn putc(c: u8) {
+    while rd(FR) & FR_TXFF != 0 {
+        core::hint::spin_loop();
+    }
+    wr(DR, c as u32);
 }
 
 /// Read lines forever, handing each to the reader over the `LINE` endpoint. The line's bytes are
@@ -61,14 +70,23 @@ fn drain(buf: *mut u8, mut n: usize) -> usize {
     while rd(FR) & FR_RXFE == 0 {
         let c = rd(DR) as u8;
         if c == b'\r' || c == b'\n' {
+            // Echo the newline so the shell's output starts on a fresh line, then hand over.
+            putc(b'\r');
+            putc(b'\n');
             send(LINE, n as u64, 0, 0); // blocks until the reader takes the line
             n = 0;
         } else if (c == 0x7f || c == 0x08) && n > 0 {
+            // Backspace: erase the character on screen (back, space, back) as well as in the line.
             n -= 1;
+            putc(0x08);
+            putc(b' ');
+            putc(0x08);
         } else if c >= 0x20 && n < LINE_MAX {
-            // No echo here: the shell echoes each command through the console server, so there is
-            // exactly one writer to the UART and the transcript stays in order. Echoing here too
-            // would interleave with the shell's output mid-line.
+            // **Echo as you type.** The terminal is in raw mode, so nothing echoes locally; the
+            // input driver is the only thing that can show a character back. This is safe against
+            // interleaving because the reader (the shell) is blocked waiting for the line while
+            // you type, so it is not writing the UART. See notes/shell.md.
+            putc(c);
             // SAFETY: n < LINE_MAX and the line page is mapped read/write.
             unsafe { core::ptr::write_volatile(buf.add(n), c) };
             n += 1;

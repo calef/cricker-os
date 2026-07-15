@@ -83,10 +83,8 @@ pub fn run() -> ! {
         print(b"$ ");
         let n = read_line(&mut line);
         let cmd = &line[..n];
-        // Echo the command through the console server, so the transcript shows what ran (the
-        // input driver does not echo; one writer to the UART keeps the output ordered).
-        print(cmd);
-        print(b"\n");
+        // No echo here: the input driver echoes each character as you type it (raw terminal), so
+        // echoing the whole line again would double it.
 
         if cmd == b"help" {
             print(b"  help        this text\n");
