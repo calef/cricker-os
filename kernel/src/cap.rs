@@ -15,10 +15,9 @@
 ///
 /// The list grows deliberately, and each addition is a decision:
 ///
-/// - `Frame`, when shared memory gets a capability of its own, because **IPC carries control and
-///   shared memory carries data** (§10). Today a shared buffer is mapped in at spawn time rather
-///   than handed over as a capability; a `Frame` object is what makes delegating memory a
-///   runtime operation.
+/// - `Frame` is now here, because **IPC carries control and shared memory carries data** (§10). A
+///   shared buffer used to be mapped in at spawn, wired once by the kernel; a `Frame` makes
+///   delegating memory a runtime operation a process does itself. See notes/frames.md.
 /// - `Untyped` at milestone 11, if we take §10's deferred axis, at which point the kernel stops
 ///   allocating and this enum stops being the interesting part of the system.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +43,19 @@ pub enum Object {
     /// what the *device* is lives in the userspace driver. This is milestone 9's version of the
     /// milestone-8 move (the console driver left; now the interrupt does too).
     Irq(u32),
+
+    /// **A physical page**, by its physical address, that the holder may map into its own address
+    /// space and delegate to others.
+    ///
+    /// The object §10 named as the shared-memory capability: *IPC carries control, shared memory
+    /// carries data*. A shared buffer used to be a page the kernel mapped into both parties at
+    /// spawn, wired once and never movable. A `Frame` makes it a runtime object instead: a process
+    /// retypes one out of its own untyped (`Untyped::RETYPE`), maps it (`Frame::MAP`), and hands it
+    /// (or a read-only view of it, since delegation narrows) to a peer over an endpoint. The peer
+    /// maps the *same physical page* and the two share memory, composed by the processes rather
+    /// than arranged for them. The address is the identity: a process can never forge one, because
+    /// the only ways to get a `Frame` are to retype it or be handed it, and both keep the object.
+    Frame(u64),
 
     /// A virtio device's **transport**, by id (into the kernel's virtio device table).
     ///
@@ -93,5 +105,15 @@ pub fn virtio_cap(id: usize) -> Cap {
     Cap {
         object: Object::Virtio(id),
         rights: Rights::WRITE,
+    }
+}
+
+/// A capability naming a physical page. `READ` lets the holder map it read-only, `WRITE` lets it
+/// map it read/write, `GRANT` lets it pass the page on. A freshly retyped frame gets all three;
+/// delegation narrows them (a read-only, non-lendable view is `READ` alone).
+pub fn frame_cap(phys: u64, rights: Rights) -> Cap {
+    Cap {
+        object: Object::Frame(phys),
+        rights,
     }
 }

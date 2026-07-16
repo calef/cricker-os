@@ -87,6 +87,10 @@ in the code or the conversation doesn't make sense, it belongs here.
   capabilities isn't one. A process now delegates a capability to another over an IPC endpoint
   (`SEND_CAP`/`RECV_CAP`), narrowing the rights, and only if it holds `GRANT`. Authority composes
   between processes at runtime instead of being wired by the kernel at spawn.
+- [Frame capabilities](frames.md) — shared memory a process owns rather than one the kernel wires
+  in. Retype a page out of untyped into a `Frame`, map it, and delegate a read-only view to a peer
+  that maps the same physical page. §10's "shared memory carries data," composed by the processes;
+  the IPC rendezvous that carries the frame is also the edge that orders the memory.
 
 - **7c update in [elf.md](elf.md)** — the kernel now *loads* one. An ELF names its own load
   address, so a hostile one names the kernel's; it is refused by a `Half::Low` guard that has

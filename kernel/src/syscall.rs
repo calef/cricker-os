@@ -168,6 +168,62 @@ fn invoke(
                     Err(_) => Err(Error::BadPointer), // misaligned, already mapped, or wrong half
                 }
             }
+            abi::untyped::RETYPE => {
+                if !cap.rights.allows(Rights::WRITE) {
+                    return Err(Error::NotPermitted);
+                }
+                // Retype a page into a Frame capability the caller now holds, instead of mapping it
+                // in one shot. The caller gets full rights on its own frame (read, write, and the
+                // right to pass it on); delegation is where those narrow. Nothing is mapped yet.
+                let phys = crate::untyped::retype_page(region).ok_or(Error::OutOfMemory)?;
+                let slot = sched::grant(crate::cap::frame_cap(
+                    phys,
+                    Rights::READ.union(Rights::WRITE).union(Rights::GRANT),
+                ))
+                .map_err(|_| Error::OutOfMemory)?; // cspace full
+                Ok(slot as i64)
+            }
+            _ => Err(Error::BadMethod),
+        },
+
+        Object::Frame(phys) => match method {
+            abi::frame::MAP => {
+                // a0 = va, a1 = writable (0/1), a2 = an untyped slot the page tables come from.
+                let va = a0;
+                if va & 0xfff != 0 || (va >> 48) != 0 {
+                    return Err(Error::BadPointer);
+                }
+                // A read/write mapping needs WRITE on the frame; a read-only one needs READ. This
+                // is where a delegated, narrowed frame is confined: a peer handed READ alone can
+                // map it to look, never to change it.
+                let flags = if a1 != 0 {
+                    if !cap.rights.allows(Rights::WRITE) {
+                        return Err(Error::NotPermitted);
+                    }
+                    paging::Flags::user_data()
+                } else {
+                    if !cap.rights.allows(Rights::READ) {
+                        return Err(Error::NotPermitted);
+                    }
+                    paging::Flags::user_rodata()
+                };
+                // Page tables come from an untyped the caller holds, so mapping a frame, like
+                // everything a process spends, comes out of its own budget and not the kernel's.
+                let ut = sched::current_cap(a2).map_err(|_| Error::NoSuchSlot)?;
+                let Object::Untyped(region) = ut.object else {
+                    return Err(Error::WrongObject);
+                };
+                if !ut.rights.allows(Rights::WRITE) {
+                    return Err(Error::NotPermitted);
+                }
+                match mmu::map_current_user_frame(va, phys, flags, || {
+                    crate::untyped::retype_page(region)
+                }) {
+                    Ok(()) => Ok(0),
+                    Err(paging::MapError::OutOfFrames) => Err(Error::OutOfMemory),
+                    Err(_) => Err(Error::BadPointer), // misaligned, already mapped, or wrong half
+                }
+            }
             _ => Err(Error::BadMethod),
         },
 

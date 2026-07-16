@@ -591,13 +591,31 @@ pub fn map_current_user_page(
     flags: Flags,
     mut alloc: impl FnMut() -> Option<u64>,
 ) -> Result<(), MapError> {
-    let root = TTBR0_EL1.get_baddr();
+    // The leaf is a fresh page from `alloc`; the page tables to reach it come from the same
+    // `alloc`. This is the Untyped::MAP path: everything, page and tables, out of one source.
     let leaf = alloc().ok_or(MapError::OutOfFrames)?;
+    map_current_user_frame(va, leaf, flags, alloc)
+}
+
+/// Map an **already-owned** physical page `phys` at `va` in the caller's address space, drawing
+/// only the intermediate page tables from `alloc`.
+///
+/// The `Frame::MAP` path. Unlike [`map_current_user_page`], the leaf is not freshly allocated: it
+/// is the page the frame capability names, which the caller already holds and which outlives this
+/// mapping. `alloc` supplies page-table nodes only, so a caller can point them at an untyped and
+/// keep the kernel out of the allocation entirely.
+pub fn map_current_user_frame(
+    va: u64,
+    phys: u64,
+    flags: Flags,
+    alloc: impl FnMut() -> Option<u64>,
+) -> Result<(), MapError> {
+    let root = TTBR0_EL1.get_baddr();
 
     // SAFETY: `root` is the live low-half table this thread owns; Half::Low refuses a high
     // address; the direct map makes `phys_to_ptr` valid for any page `alloc` returns.
     let mut mapper = unsafe { Mapper::new(root, Half::Low, alloc, phys_to_ptr) };
-    mapper.map(va, leaf, flags)?;
+    mapper.map(va, phys, flags)?;
 
     // The page-table writes must be visible to the table walker before the process touches `va`.
     // SAFETY: a barrier is always sound.

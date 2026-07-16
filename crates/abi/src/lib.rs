@@ -145,6 +145,23 @@ pub mod untyped {
     /// from the untyped; the kernel allocates nothing. Returns `OutOfMemory` when the untyped is
     /// exhausted (the *process* is out of budget, not the kernel).
     pub const MAP: u64 = 0;
+
+    /// `invoke(cap, RETYPE, _, _, _)` -> slot. Retype one page out of the untyped into a **`Frame`
+    /// capability** the caller now holds, and return the slot it landed in. Nothing is mapped: the
+    /// caller decides where to map it, and may delegate it first. This is the split that makes a
+    /// page a first-class, delegatable object rather than something mapped in one shot. `OutOfMemory`
+    /// when the untyped is exhausted or the caller's cspace is full.
+    pub const RETYPE: u64 = 1;
+}
+
+/// Methods on a `Frame` capability. **A physical page a process holds, maps, and shares.**
+pub mod frame {
+    /// `invoke(cap, MAP, va, writable, untyped_slot)` -> 0. Map this frame at `va` in the caller's
+    /// own address space. `writable` != 0 maps it read/write (needs `WRITE` on the frame); `0` maps
+    /// it read-only (needs `READ`). Page tables to reach `va` come from the untyped named by
+    /// `untyped_slot`, so the kernel allocates nothing. `BadPointer` for a misaligned or high `va`,
+    /// `OutOfMemory` when that untyped is exhausted.
+    pub const MAP: u64 = 0;
 }
 
 /// What went wrong. Returned as a **negative** `x0`.

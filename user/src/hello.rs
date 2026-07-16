@@ -44,6 +44,12 @@ const UNTYPED_DEMO: u64 = 7;
 const VIRTIO_ATTACK: u64 = 8;
 const GRANTER: u64 = 9;
 const RECEIVER: u64 = 10;
+const FRAME_PRODUCER: u64 = 11;
+const FRAME_CONSUMER: u64 = 12;
+
+/// The word the frame producer writes into a shared page and the consumer reads back through its
+/// own mapping of the same physical page. One binary, so one constant serves both roles.
+const FRAME_SENTINEL: u64 = 0xF00D_CAFE_D00D_1234;
 
 // --- the shared layout, known to both roles because they are the same binary ---
 
@@ -92,6 +98,8 @@ pub extern "C" fn _start(role: u64, dma_phys: u64, _arg2: u64) -> ! {
         VIRTIO_ATTACK => virtio::run_attack(dma_phys),
         GRANTER => granter(),
         RECEIVER => receiver(),
+        FRAME_PRODUCER => frame_producer(),
+        FRAME_CONSUMER => frame_consumer(),
         SELF_CHECK => self_check_client(),
         _ => self_check_client(),
     }
@@ -297,6 +305,72 @@ fn receiver() -> ! {
     send(REPORT, code, 0, 0);
 
     exit(); // one-shot: reported, so we leave and the kernel reaps us
+}
+
+/// **The frame demo, producer's half.** Retypes a page out of its own untyped into a `Frame`
+/// capability, maps it read/write, writes a sentinel, and hands the consumer a READ-only view of
+/// the *same physical page*. The kernel never copies the data and was never told these two
+/// processes would share memory: they composed the sharing themselves out of a capability.
+fn frame_producer() -> ! {
+    const UNTYPED: u64 = 0; // retype the frame and draw page tables from here
+    const CHANNEL: u64 = 1; // delegate the frame to the consumer over here
+    const FRAME_VA: u64 = 0x0000_0000_00A0_0000;
+
+    // Retype: a page out of our budget becomes a Frame capability we hold. Nothing is mapped yet.
+    // SAFETY: `svc`. The result is the slot the new capability landed in.
+    let frame = unsafe { invoke(UNTYPED, abi::untyped::RETYPE, 0, 0, 0) };
+    check(frame >= 0);
+
+    // Map it read/write; the page tables to reach FRAME_VA come from the same untyped.
+    // SAFETY: `svc`.
+    check(unsafe { invoke(frame as u64, abi::frame::MAP, FRAME_VA, 1, UNTYPED) } == 0);
+
+    // Write the sentinel the consumer will read back through its own mapping of this page.
+    // SAFETY: FRAME_VA is now a mapped, writable page in our address space.
+    unsafe { core::ptr::write_volatile(FRAME_VA as *mut u64, FRAME_SENTINEL) };
+
+    // Delegate a READ-only view: drop WRITE and GRANT on the way over. The rendezvous is also the
+    // synchronization edge that makes our write visible to the consumer. SAFETY: `svc`.
+    unsafe { invoke(CHANNEL, endpoint::SEND_CAP, frame as u64, abi::rights::READ, 0) };
+
+    exit();
+}
+
+/// **The frame demo, consumer's half.** Receives the delegated frame, maps the same physical page
+/// read-only, reads the producer's sentinel back (proof the memory is shared), and confirms it
+/// cannot map the page writable, because it was handed the frame with `READ` alone.
+fn frame_consumer() -> ! {
+    const CHANNEL: u64 = 0; // RECV_CAP the frame here
+    const UNTYPED: u64 = 1; // page tables for our own mappings come from here
+    const REPORT: u64 = 2; // report the verdict here
+    const FRAME_VA: u64 = 0x0000_0000_00A0_0000;
+    const RW_VA: u64 = 0x0000_0000_00B0_0000;
+
+    let (_data, frame) = recv_cap(CHANNEL);
+    let received = frame != endpoint::NO_CAP;
+
+    let mut read_ok = false;
+    let mut rw_refused = false;
+    if received {
+        // Map the shared page read-only and read the producer's sentinel through it.
+        // SAFETY: `svc`.
+        let mapped = unsafe { invoke(frame, abi::frame::MAP, FRAME_VA, 0, UNTYPED) } == 0;
+        if mapped {
+            // SAFETY: FRAME_VA is now a mapped, readable page.
+            let seen = unsafe { core::ptr::read_volatile(FRAME_VA as *const u64) };
+            read_ok = seen == FRAME_SENTINEL;
+        }
+
+        // Try to map it read/write. We hold it READ only, so the kernel refuses before mapping.
+        // SAFETY: `svc`.
+        let rw = unsafe { invoke(frame, abi::frame::MAP, RW_VA, 1, UNTYPED) };
+        rw_refused = rw < 0;
+    }
+
+    // Verdict: bit 0 we read the shared sentinel, bit 1 a writable mapping was refused.
+    let code = (read_ok as u64) | ((rw_refused as u64) << 1);
+    send(REPORT, code, 0, 0);
+    exit();
 }
 
 /// Terminate this process. The kernel reaps the thread and frees its whole address space.

@@ -1028,6 +1028,70 @@ pub mod untyped_service {
 /// to (`GRANT`). This wires the smallest scenario that exercises all three: a *granter* delegates a
 /// resource capability to a *receiver* over a channel, narrowed to `WRITE` (no `GRANT`); the
 /// receiver uses it and then cannot pass it on. See user/src/hello.rs granter()/receiver().
+/// **Frame capabilities: shared memory a process holds, maps, and delegates.**
+///
+/// The payoff of delegation applied to memory. A *producer* retypes a page out of its own untyped
+/// into a `Frame` capability, maps it, writes into it, and delegates a READ-only view to a
+/// *consumer*, which maps the same physical page and reads what the producer wrote. The kernel
+/// copies nothing and pre-arranges nothing: the two processes compose the sharing themselves, and
+/// the read-only narrowing means the consumer can look but not write. See user/src/hello.rs
+/// frame_producer()/frame_consumer().
+#[cfg(test)]
+pub mod frame_service {
+    use super::*;
+    use crate::cap::{Rights, endpoint_cap, untyped_cap};
+
+    const ROLE_PRODUCER: u64 = 11;
+    const ROLE_CONSUMER: u64 = 12;
+
+    /// Spawn the pair, each with its own untyped budget, and return the endpoint the consumer
+    /// reports its verdict on. Eight pages of untyped apiece covers one frame plus the page tables
+    /// each side needs to map it.
+    pub fn wire(image: &'static [u8]) -> usize {
+        let channel = crate::sched::create_endpoint();
+        let report = crate::sched::create_endpoint();
+        let prod_ut = crate::untyped::create(8).expect("no untyped for the frame producer");
+        let cons_ut = crate::untyped::create(8).expect("no untyped for the frame consumer");
+
+        crate::sched::spawn(move || {
+            run(
+                image,
+                Spawn {
+                    arg0: ROLE_PRODUCER,
+                    arg1: 0,
+                    arg2: 0,
+                    grants: &[
+                        untyped_cap(prod_ut),                 // slot 0: retype the frame + page tables
+                        endpoint_cap(channel, Rights::WRITE), // slot 1: delegate the frame
+                    ],
+                    maps: &[],
+                },
+            )
+        })
+        .expect("could not spawn the frame producer");
+
+        crate::sched::spawn(move || {
+            run(
+                image,
+                Spawn {
+                    arg0: ROLE_CONSUMER,
+                    arg1: 0,
+                    arg2: 0,
+                    grants: &[
+                        endpoint_cap(channel, Rights::READ), // slot 0: receive the frame
+                        untyped_cap(cons_ut),                // slot 1: page tables for its mappings
+                        endpoint_cap(report, Rights::WRITE), // slot 2: report the verdict
+                    ],
+                    maps: &[],
+                },
+            )
+        })
+        .expect("could not spawn the frame consumer");
+
+        report
+    }
+}
+
 #[cfg(test)]
 pub mod delegation_service {
     use super::*;
@@ -1796,6 +1860,31 @@ mod tests {
             verdict & 0b10,
             0b10,
             "a capability held WITHOUT grant was allowed to be re-delegated: rights did not gate it",
+        );
+    }
+
+    /// **Frame capabilities, end to end.** A producer retypes a page into a `Frame`, maps it, writes
+    /// a sentinel, and delegates a READ-only view to a consumer. Two things must hold: the consumer
+    /// reads the producer's sentinel through its *own* mapping of the same physical page (the memory
+    /// is genuinely shared, and the kernel copied nothing), and the consumer *cannot* map that page
+    /// writable, because it was handed the frame with `READ` alone. This is §10's "shared memory
+    /// carries data" done by the processes rather than wired by the kernel at spawn. See
+    /// user/src/hello.rs and user::frame_service.
+    #[test_case]
+    fn a_frame_capability_shares_a_page_and_a_read_only_view_cannot_write_it() {
+        let image = initrd().expect("no initrd");
+        let report = frame_service::wire(image);
+
+        let verdict = sched::ipc_recv(report)[0];
+        assert_eq!(
+            verdict & 0b01,
+            0b01,
+            "the consumer did not read the producer's sentinel through the shared frame: the page was not shared",
+        );
+        assert_eq!(
+            verdict & 0b10,
+            0b10,
+            "a frame delegated READ-only was mappable writable: rights did not confine the mapping",
         );
     }
 }
