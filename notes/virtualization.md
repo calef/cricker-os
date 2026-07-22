@@ -71,6 +71,28 @@ If we ever wanted a "real" shutdown that works under both, the answer is **PSCI*
 which the `virt` machine implements and which is a genuine power-off rather than a debugger hook.
 That is the honest replacement for the semihosting exit, and a good milestone-11-era cleanup.
 
+## PSCI brings the other cores up under HVF too (SMP step 2)
+
+§11's SMP bring-up starts each secondary core with a **PSCI `CPU_ON`** call, made via `hvc #0`
+(the conduit QEMU's `virt` declares in its `/psci` node). A fair question once semihosting turned
+out to be emulation-only: does an `hvc`-based firmware call survive the move to real hardware
+virtualization?
+
+It does. A bounded HVF boot under `-smp 4` prints `smp: 4 core(s) online` and runs the whole stack
+to the shell, on the M-series core. And the reason is the exact mirror of the semihosting story,
+which is what makes the pair worth keeping side by side:
+
+| Call | What it is | Survives HVF? |
+|---|---|---|
+| **Semihosting** (`hlt #0xf000`) | a *debugger hook* QEMU's TCG translator recognizes | **No.** Native execution runs the `hlt` on the real core; QEMU never sees it. |
+| **PSCI** (`hvc #0`) | a *real firmware standard* the machine implements | **Yes.** The `hvc` traps to the hypervisor (EL2), where QEMU emulates PSCI whether the guest runs under TCG or HVF. |
+
+Semihosting is a property of the *emulator*; PSCI is a property of the *machine*. That is why the
+test harness's semihosting exit is stuck on TCG while the SMP bring-up works on both. It is also
+why this note's own suggestion above (a real `SYSTEM_OFF` shutdown) is the right fix for the
+harness: `psci_cpu_on` already exists in `arch/aarch64`, so a `SYSTEM_OFF` sibling is a few lines,
+and it would work under HVF where semihosting cannot.
+
 ## Why this matters beyond the Mac
 
 HVF is a lower-stakes rehearsal for the Raspberry Pi port. Both are the same exercise: take the
