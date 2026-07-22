@@ -37,6 +37,7 @@
 // scheduler is expected to have, and milestone 7 (processes) is the first real consumer.
 #![allow(dead_code)]
 
+use crate::cpu;
 use crate::sync::{IrqSafeMutex, rank};
 use crate::thread::{Context, QuotaToken, State, Thread, Tid, switch_to};
 use alloc::boxed::Box;
@@ -88,8 +89,10 @@ struct Scheduler {
     /// `Box` because the assembly writes through `&mut thread.context`, so a thread's address
     /// must never move. A `BTreeMap` reshuffles its nodes; a `Box`'s contents do not.
     threads: BTreeMap<Tid, Box<Thread>>,
-    /// Ready to run, in order. Round robin: pop the front, push the back.
-    ready: VecDeque<Tid>,
+    /// The run queue is no longer here: it moved to per-CPU storage (`cpu::PerCpu::with_runq`,
+    /// DECISIONS.md §11 step 3a), because a single shared queue is the one thing every core would
+    /// contend on. `current` stays global for now; it becomes per-CPU in step 3b, when the
+    /// secondaries actually schedule and each needs its own running thread.
     current: Tid,
     /// Every IPC endpoint. Indexed by the `usize` inside an `Object::Endpoint` capability, which
     /// only the kernel mints, so the index is always in range.
@@ -121,12 +124,16 @@ pub fn init() {
 
     *sched = Some(Scheduler {
         threads,
-        // Capacity up front so `schedule()`'s push can never reallocate. See the rank note.
-        ready: VecDeque::with_capacity(64),
         current: 0,
         endpoints: alloc::vec::Vec::new(),
     });
     drop(sched); // release before spawning, which takes the lock itself
+
+    // Capacity up front on THIS core's run queue, so `schedule()`'s push can never reallocate
+    // (it runs from the timer IRQ, where DECISIONS.md §9 forbids allocation). Interrupts are
+    // still masked this early in boot, which is what `with_runq` requires. Each secondary does
+    // the same for its own queue when it comes online (step 3b).
+    cpu::current().with_runq(|q| q.reserve(64));
 
     // The idle thread. Its entire body is "wait for an interrupt, then let the scheduler look for
     // work." It is deliberately kept OUT of the ready queue (see IDLE_TID): the scheduler picks it
@@ -157,7 +164,9 @@ pub fn spawn<F: FnOnce() + Send + 'static>(f: F) -> Option<Tid> {
     let mut guard = SCHED.lock();
     let sched = guard.as_mut()?;
     sched.threads.insert(id, Box::new(thread));
-    sched.ready.push_back(id);
+    // Onto the spawning core's own queue. We hold SCHED, so interrupts are masked, which is what
+    // `with_runq` needs. (Step 3c will let a spawn target another core via its inbox.)
+    cpu::current().with_runq(|q| q.push_back(id));
 
     Some(id)
 }
@@ -208,7 +217,7 @@ pub fn spawn_with_quota<F: FnOnce() + Send + 'static>(
         return None; // no scheduler: `thread` drops here and its QuotaToken returns the slot
     };
     sched.threads.insert(id, Box::new(thread));
-    sched.ready.push_back(id);
+    cpu::current().with_runq(|q| q.push_back(id)); // this core's queue; SCHED held, IRQs masked
     Some(id)
 }
 
@@ -290,7 +299,7 @@ pub fn schedule() {
 
         let idle_tid = IDLE_TID.load(Ordering::Relaxed);
 
-        let next = match sched.ready.pop_front() {
+        let next = match cpu::current().with_runq(|q| q.pop_front()) {
             Some(t) => t,
             None => {
                 if runnable {
@@ -320,7 +329,7 @@ pub fn schedule() {
         // lives outside the ready queue.
         if runnable && current != idle_tid {
             sched.threads.get_mut(&current).unwrap().state = State::Ready;
-            sched.ready.push_back(current); // round robin: back of the queue
+            cpu::current().with_runq(|q| q.push_back(current)); // round robin: back of the queue
         }
 
         sched.threads.get_mut(&next).unwrap().state = State::Running;
@@ -444,7 +453,9 @@ fn wake(sched: &mut Scheduler, tid: Tid) {
     if let Some(t) = sched.threads.get_mut(&tid) {
         if t.state == State::Blocked {
             t.state = State::Ready;
-            sched.ready.push_back(tid);
+            // Onto this core's queue. Every caller (ipc_*, irq_notify) holds SCHED, so interrupts
+            // are masked. Step 3c makes this place the thread on the *right* core via its inbox.
+            cpu::current().with_runq(|q| q.push_back(tid));
         }
     }
 }

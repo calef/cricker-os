@@ -13,6 +13,9 @@
 //! `current`, idle thread, reschedule flag, and migration inbox.
 
 use crate::sync::rank;
+use crate::thread::Tid;
+use alloc::collections::VecDeque;
+use core::cell::UnsafeCell;
 use core::sync::atomic::AtomicU32;
 
 /// The most cores we support. QEMU `virt` gives us as many as we ask for with `-smp`; four is
@@ -28,13 +31,48 @@ pub struct PerCpu {
     /// mutability through the shared static, not for cross-core synchronization: no other core
     /// can reach *this* core's block on the lock path. See [`crate::sync`] and DECISIONS.md §9.
     pub held_rank: AtomicU32,
+
+    /// This core's run queue: the threads ready to run here, in round-robin order.
+    ///
+    /// **No cross-core lock, by design (DECISIONS.md §11).** Only this core ever touches its own
+    /// queue, and only with interrupts masked, which is exactly what makes the `UnsafeCell`
+    /// sound. That a remote core cannot even *name* this queue is the point: it forces cross-core
+    /// work movement onto the inbox/SGI path (step 3c) rather than letting one core reach into
+    /// another's queue. Access it through [`with_runq`](Self::with_runq).
+    runq: UnsafeCell<VecDeque<Tid>>,
 }
+
+// SAFETY: the only non-`Sync` field is `runq`, and the whole contract of this type is that a
+// `PerCpu` block is touched only by its owning core, with interrupts masked (see `with_runq`). No
+// two cores ever reach the same block, so there is no cross-core data race to guard against, and
+// the atomics handle this core's own interrupt-vs-mainline reentrancy on the fields that need it.
+unsafe impl Sync for PerCpu {}
 
 impl PerCpu {
     const fn new() -> Self {
         Self {
             held_rank: AtomicU32::new(rank::NONE),
+            runq: UnsafeCell::new(VecDeque::new()),
         }
+    }
+
+    /// Run `f` with exclusive access to this core's run queue.
+    ///
+    /// # Invariant
+    ///
+    /// The caller must have interrupts masked (asserted in debug builds). Combined with
+    /// single-owner access, that makes the `&mut` genuinely exclusive: this core cannot re-enter
+    /// through an interrupt mid-borrow, and no other core can reach this block at all. This is the
+    /// standard per-CPU pattern; the `UnsafeCell` is sound precisely because of that invariant.
+    /// Every caller today already holds `SCHED` (which masks interrupts) or has masked them
+    /// explicitly in `schedule()`.
+    pub fn with_runq<R>(&self, f: impl FnOnce(&mut VecDeque<Tid>) -> R) -> R {
+        debug_assert!(
+            !crate::arch::interrupts::enabled(),
+            "run queue touched with interrupts enabled: single-owner safety needs them masked",
+        );
+        // SAFETY: interrupts masked (asserted) and single-owner, so this `&mut` is exclusive.
+        f(unsafe { &mut *self.runq.get() })
     }
 }
 
