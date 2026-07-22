@@ -623,9 +623,16 @@ where
     /// Returns a [`TlbFlush`] you cannot ignore. See that type: the whole point is that this
     /// is the operation you must not forget to follow up on.
     ///
-    /// **TODO (milestone 7):** this leaves the intermediate L1/L2/L3 tables in place, even
-    /// when they become empty. Tearing down a whole address space wants to walk back up and
-    /// return those frames too, or every process exit leaks its page tables.
+    /// This clears only the L3 leaf and leaves the intermediate L1/L2/L3 tables standing, on
+    /// purpose. Break-before-make (changing a mapping) unmaps and immediately remaps the same
+    /// address, so freeing the tables here would only reallocate them a line later.
+    ///
+    /// A naive teardown-by-unmap *would* therefore leak a page table per address space. The
+    /// kernel does not do that. It never tears an address space down with `unmap` at all:
+    /// `user::AddressSpace` records every frame the mapper hands out (leaves and tables alike)
+    /// and, on drop, frees the whole set and discards the root. That is strictly cheaper than a
+    /// walk-back-up-and-reclaim would be (no tree walk, no per-leaf TLB flush), and it is why a
+    /// reclaiming `unmap` was considered and deliberately not built. See notes/teardown.md.
     pub fn unmap(&mut self, va: u64) -> Result<(u64, TlbFlush), MapError> {
         if !self.half.contains(va) {
             return Err(MapError::WrongHalf);

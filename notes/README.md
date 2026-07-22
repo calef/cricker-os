@@ -43,6 +43,9 @@ in the code or the conversation doesn't make sense, it belongs here.
 
 ## Memory
 
+- [Tearing down an address space](teardown.md) — two ways to reclaim page-table frames
+  (walk-and-reclaim vs record-all-frames), why a space that dies all at once wants the
+  second, why kernel stacks want neither, and how a stale TODO nearly grew an unused method.
 - [The heap and the slab](heap.md) — why the stack isn't enough (its lifetimes must nest, and a returned
   Vec's don't), why fragmentation is the permanent enemy, and why Rust's ownership system is
   really a heap-correctness checker.
