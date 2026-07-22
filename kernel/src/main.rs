@@ -31,6 +31,7 @@ mod heap;
 mod memory;
 mod panic;
 mod sched;
+mod smp;
 mod stack;
 mod sync;
 mod syscall;
@@ -93,6 +94,12 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
     // send a reschedule. Adopting the boot context as thread 0 costs one allocation.
     sched::init();
     interrupts_init(dtb);
+
+    // Bring the other cores online. They come up idle: step 2 proves the bring-up path works
+    // (PSCI, per-core stacks, the MMU replay), and leaves real multi-core scheduling to step 3.
+    // Core 0 has IRQs on by now, so it keeps ticking while it waits for the others to check in.
+    // See smp.rs and DECISIONS.md §11.
+    smp::bring_up_secondaries();
 
     #[cfg(test)]
     test_main();

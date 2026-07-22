@@ -173,6 +173,61 @@ park:
     wfi
     b       park
 
+// --- secondary core entry (SMP step 2, DECISIONS.md §11) ---
+//
+// PSCI CPU_ON starts a secondary HERE, at this PHYSICAL address, with the MMU off, at EL1,
+// exactly the way QEMU started core 0 at `_boot`. x0 holds the context word core 0 passed to
+// CPU_ON: this core's HIGH-VA stack top (unusable until the MMU is on, which is fine, nothing
+// below touches the stack before then).
+//
+// The crucial difference from `_boot`: the page tables already exist. Core 0 built `boot_l0`
+// and it is still sitting in .bss, so we do NOT rebuild it. We only replay the MMU-enable
+// (fact 1 in the header comment gets us the table's PA with `adrp`) and jump to the high half.
+.global secondary_boot
+secondary_boot:
+    mov     x19, x0                     // stash the stack-top VA for after the MMU is on
+
+    // Point at the boot tables core 0 already built. adrp yields the PA (PC-relative, MMU off).
+    adrp    x0, boot_l0
+    add     x0, x0, :lo12:boot_l0
+
+    ldr     x2, =BOOT_MAIR
+    msr     mair_el1, x2
+
+    ldr     x2, =BOOT_TCR
+    mrs     x3, id_aa64mmfr0_el1
+    and     x3, x3, #0xf                // PARange, per-core; claiming more than we have is UB
+    orr     x2, x2, x3, lsl #32
+    msr     tcr_el1, x2
+
+    // Both registers, same table, same reason as core 0 (header fact 2).
+    msr     ttbr0_el1, x0
+    msr     ttbr1_el1, x0
+
+    dsb     sy
+    isb
+    tlbi    vmalle1
+    dsb     ish
+    isb
+
+    mrs     x2, sctlr_el1
+    orr     x2, x2, #(1 << 0)           // M: MMU
+    orr     x2, x2, #(1 << 2)           // C: data cache
+    orr     x2, x2, #(1 << 12)          // I: instruction cache
+    msr     sctlr_el1, x2
+    isb
+
+    // Paging on. The high-VA stack top in x19 resolves now (TTBR1 maps the kernel image, and
+    // the coarse boot map covers all of low RAM where the image lives).
+    mov     sp, x19
+
+    // This core's id is MPIDR affinity 0: QEMU `virt` numbers cores 0..N there.
+    mrs     x0, mpidr_el1
+    and     x0, x0, #0xff
+
+    ldr     x1, =secondary_main         // the HIGH entry, x0 = cpu id
+    br      x1
+
 // The boot page tables. In .bss, so the zeroing loop above clears them for free.
 .section ".bss", "aw", @nobits
 .balign 4096

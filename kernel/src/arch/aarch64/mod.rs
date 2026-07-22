@@ -43,6 +43,41 @@ pub fn percpu() -> usize {
     TPIDR_EL1.get() as usize
 }
 
+/// PSCI `CPU_ON`: start a secondary core. Returns 0 on success, a negative PSCI error otherwise.
+///
+/// PSCI (Power State Coordination Interface) is the firmware call standard for turning ARM cores
+/// on and off. On QEMU `virt` the conduit is `hvc` (the `/psci` node's `method`), so we trap to
+/// the emulated firmware with `hvc #0`. Arguments follow the SMC calling convention: the function
+/// id in x0, then the target core's MPIDR, the PHYSICAL entry address it begins at (MMU off), and
+/// a context word that arrives in the new core's x0. `0xC400_0003` is `PSCI_CPU_ON` (64-bit).
+///
+/// TODO(portability): the conduit (`hvc` vs `smc`), the function id, and the CPU list all live in
+/// the device tree (`/psci`, `/cpus`). A portable version reads them instead of hardcoding QEMU
+/// virt's values, the way we insist everywhere else that the machine describe itself. See
+/// notes/device-tree.md and DECISIONS.md §11.
+pub fn psci_cpu_on(target_mpidr: u64, entry: u64, context: u64) -> i64 {
+    const PSCI_CPU_ON: u64 = 0xC400_0003;
+    let ret: i64;
+    // SAFETY: a defined firmware call. It starts the target core and returns a status in x0; it
+    // does not touch our memory. Per SMCCC, x0-x3 are results and x4-x17 are scratch, so all are
+    // marked clobbered; x18-x30 are preserved.
+    unsafe {
+        core::arch::asm!(
+            "hvc #0",
+            inout("x0") PSCI_CPU_ON => ret,
+            inout("x1") target_mpidr => _,
+            inout("x2") entry => _,
+            inout("x3") context => _,
+            lateout("x4") _, lateout("x5") _, lateout("x6") _, lateout("x7") _,
+            lateout("x8") _, lateout("x9") _, lateout("x10") _, lateout("x11") _,
+            lateout("x12") _, lateout("x13") _, lateout("x14") _, lateout("x15") _,
+            lateout("x16") _, lateout("x17") _,
+            options(nostack),
+        );
+    }
+    ret
+}
+
 /// Bring the CPU into a state where the kernel can safely run.
 ///
 /// Right now that means one thing: install the exception vectors, so that a fault

@@ -85,9 +85,14 @@ else
     CPU="cortex-a72"
 fi
 
+# Number of cores. Four by default, matching cpu::MAX_CPUS and the SMP tests (§11). QEMU brings
+# up core 0 running; the kernel starts the rest itself via PSCI CPU_ON (see smp.rs).
+SMP="${CRICKER_SMP:-4}"
+
 exec qemu-system-aarch64 \
     -machine "$MACHINE" \
     -cpu "$CPU" \
+    -smp "$SMP" \
     -display none \
     -serial stdio \
     -semihosting \
