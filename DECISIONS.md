@@ -468,15 +468,34 @@ boots" and "an operating system" is milestone 7.
 | 8  | **The console driver LEAVES the kernel**        | The microkernel thesis, executable        | ✅ |
 | 9  | virtio-blk in userspace + a filesystem server   | Userspace drivers, MMIO caps, IRQ-as-message, DMA | ✅ |
 | 10 | A process server, and a shell that spawns binaries | Proof the whole stack works            | ✅ |
-| 11 | Untyped memory: the kernel stops allocating     | §10's deferred axis. The allocators leave. | ~ |
+| 11 | Untyped memory: a process allocates, the kernel does not | §10's deferred axis, to the extent §10 intended. | ✅ |
 
 Milestone 8 is the one that proves §10 was real. When it lands, **the kernel no longer knows
 what a UART is.** If we cannot take the console out, we did not build a microkernel; we built a
 monolithic kernel with an unusual syscall table.
 
-Deliberately out of scope for v1: SMP, a writable filesystem, networking, a GUI,
-dynamic linking, real hardware. Each multiplies debugging difficulty and none teaches
-something the first ten don't already set up.
+Milestone 11 is complete *to its intent*, not to seL4's. The kernel still allocates its own
+page tables, TCBs, and endpoints from the heap; §10 chose that deliberately (Zircon's model).
+What 11 demonstrates is the half that was the point: a userspace process spends pages out of an
+`Untyped` capability and **the kernel's free-frame count does not move**, so a process cannot
+force the kernel to allocate, and kernel-memory exhaustion stops being an attack class. Taking
+the allocators out of the kernel entirely stays additive and unbuilt.
+
+### Beyond the plan (post-v1)
+
+The eleven milestones are the plan. Work since, in git order: a security audit
+(notes/security.md); per-process spawn quotas (notes/quotas.md); kernel-mediated DMA
+confinement, since QEMU `virt` has no IOMMU (notes/dma.md); capability delegation between
+processes via `SEND_CAP`/`RECV_CAP` (notes/delegation.md); and frame capabilities, shared
+memory a process owns and delegates (notes/frames.md).
+
+**Current direction: SMP.** The §6 refactor, deferred as "when it hurts." It is the first item
+to reopen something explicitly deferred, and it touches the scheduler and the locking core, so
+it gets its own decision entry (§11) before code.
+
+Deliberately out of scope for v1: a writable filesystem, networking, a GUI, dynamic linking.
+Each multiplies debugging difficulty and none teaches something the first ten don't already set
+up. SMP and real hardware, listed here originally, are now on the table.
 
 ## Reading
 

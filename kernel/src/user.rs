@@ -939,8 +939,9 @@ pub mod shell_service {
                 // machine: if the kernel is out of memory we cannot make the worker, so we tell
                 // the shell its request failed (a sentinel result) and carry on serving. The
                 // security audit flagged the old `.expect(...)` here as a userspace-triggerable
-                // kernel panic. (Per-process spawn quotas are the real fix and are deferred with
-                // untyped kernel objects; not panicking is the cheap, honest hardening.)
+                // kernel panic. (Per-process spawn quotas are the real fix, and they now exist as
+                // `QuotaToken` in thread.rs, so this path is bounded as well as panic-free. See
+                // notes/quotas.md. Not panicking remains the cheap, honest floor beneath the quota.)
                 if spawned.is_none() {
                     // u64::MAX is the "could not spawn" sentinel the shell recognises.
                     crate::sched::ipc_send(result_ep, [u64::MAX, 0, 0]);

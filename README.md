@@ -18,7 +18,9 @@ cargo xtask test           # host tests, then the kernel under QEMU
 At the `$` prompt: `help`, `echo hello`, `run 7` (spawns a process that computes 49). Quit with
 Ctrl-C, or `pkill qemu-system-aarch64` from another terminal.
 
-**Status: milestone 10 complete.** An interactive shell runs at EL0, spawning processes on command. It boots on QEMU, prints to a serial port, catches its
+**Status: milestone 11, plus post-v1 hardening.** An interactive shell runs at EL0, spawning
+processes on command, and the drivers it talks to (console, block, input) are themselves EL0
+processes the kernel only routes messages between. It boots on QEMU, prints to a serial port, catches its
 own faults and reports them legibly, reads its memory map out of the device tree, hands out
 physical memory a page at a time, and **runs with the MMU on**: kernel `.text` is read-execute,
 `.rodata` is read-only, nothing writable is executable, and there's a guard page under the
@@ -121,7 +123,7 @@ contact with month four. The short version:
 | **Execution** | **Preemptive threads with real stacks.** Not async. See below. |
 | **SMP** | One core for now. Refactor when it hurts. |
 | **Testing** | QEMU harness plus host-testable pure-logic crates, from the first commit. |
-| **Process model** | **Deliberately undecided.** Unix-like vs. capability-based gets settled at milestone 7, on purpose, as a recorded hard decision point. |
+| **Process model** | **Capability-based microkernel** (seL4/Zircon-shaped). Deferred to a hard decision point at milestone 7, then resolved there: no `open()`, no ambient authority, drivers are EL0 processes. See DECISIONS.md §10. |
 
 ### Why not async/await
 
@@ -165,11 +167,21 @@ milestone 7.
 | 8 | **The console driver leaves the kernel** | ✅ |
 | 9 | virtio-blk in userspace + a filesystem server | ✅ |
 | 10 | A process server, and a shell that spawns binaries | ✅ |
-| 11 | Untyped memory: the kernel stops allocating | ~ |
+| 11 | Untyped memory: the kernel stops allocating | ✅ * |
 
-Deliberately out of scope for v1: SMP, a writable filesystem, networking, a GUI, dynamic
-linking, real hardware. Each multiplies debugging difficulty, and none teaches something
-the first ten don't already set up.
+<sub>* The kernel still allocates its own page tables, TCBs, and endpoints from its heap,
+which is Zircon's model and deliberate (DECISIONS §10). What milestone 11 demonstrates is the
+other half: a userspace process spends pages out of an `Untyped` capability without the
+kernel's free-frame count moving, so a process cannot force the kernel to allocate.</sub>
+
+**Beyond the plan.** After milestone 11: a security audit, per-process spawn quotas,
+kernel-mediated DMA confinement (there is no IOMMU on QEMU `virt`), capability delegation
+between processes (`SEND_CAP`/`RECV_CAP`), and frame capabilities (shared memory a process
+owns and delegates). **In progress: SMP**, the §6 refactor deferred as "when it hurts."
+
+Deliberately out of scope for v1: a writable filesystem, networking, a GUI, dynamic linking.
+Each multiplies debugging difficulty, and none teaches something the first ten don't already
+set up. (SMP and real hardware, once out of scope, are now on the table.)
 
 ## Things this project has already gotten wrong
 
