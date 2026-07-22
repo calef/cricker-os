@@ -86,6 +86,9 @@ in the code or the conversation doesn't make sense, it belongs here.
   only way to print, and `AT S1E0R` is how the kernel refuses to read its own memory on a user's
   behalf. **7e**: endpoints and synchronous IPC, and the scheduler learns a thread can be
   `Blocked` waiting for a message it can only reach by a capability.
+- [Who does IPC name?](ipc-naming.md) — an endpoint, never the peer. The sender names a
+  channel it holds a capability to; the receiver is anonymous. No global namespace, which is
+  no-ambient-authority made concrete. Even a hardware interrupt names an endpoint.
 - [Delegating a capability](delegation.md) — a capability system where processes can't pass
   capabilities isn't one. A process now delegates a capability to another over an IPC endpoint
   (`SEND_CAP`/`RECV_CAP`), narrowing the rights, and only if it holds `GRANT`. Authority composes
