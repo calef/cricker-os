@@ -139,6 +139,10 @@ in the code or the conversation doesn't make sense, it belongs here.
 
 ## Design
 
+- [Why this isn't a general-purpose OS](why-not-general-purpose.md) — what an application
+  would actually hit (no POSIX/libc, no writable FS, no network, no GUI), why that's a
+  deliberate teaching-subset choice rather than a limit of the model (Fuchsia is a
+  general-purpose capability microkernel), and what it would take to grow toward one.
 - [Deadlock](deadlock.md) — the four Coffman conditions, and why breaking *any one* makes
   deadlock impossible. Every rule in our locking discipline is "pick a condition and destroy
   it." Also: Rust does not save you from this, and the reason why is worth knowing.
