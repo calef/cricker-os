@@ -25,6 +25,7 @@ extern crate alloc;
 mod arch;
 mod cap;
 mod console;
+mod cpu;
 mod drivers;
 mod heap;
 mod memory;
@@ -59,6 +60,12 @@ pub static DTB: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsiz
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_main(dtb: usize) -> ! {
     DTB.store(dtb, core::sync::atomic::Ordering::Relaxed);
+
+    // Per-CPU pointer FIRST, before anything takes a lock. The lock path reads this core's
+    // held-rank out of its per-CPU block, so `TPIDR_EL1` must point at that block before
+    // `console::init` (the first lock) runs. On one core this is pure setup with no visible
+    // effect; it is the foundation SMP is built on. See cpu.rs and DECISIONS.md §11.
+    cpu::init_this_cpu(0);
 
     // Console first, exceptions second, and the order is not arbitrary: the fault
     // handler's entire job is to print, so it is useless until the UART works. The

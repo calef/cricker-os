@@ -5,7 +5,9 @@
 //! sibling, and everything above `arch::` should be untouched. See
 //! notes/portability.md and DECISIONS.md §4.
 
+use aarch64_cpu::registers::TPIDR_EL1;
 use core::arch::global_asm;
+use tock_registers::interfaces::{Readable, Writeable};
 
 pub mod exceptions;
 pub mod interrupts;
@@ -25,6 +27,21 @@ global_asm!(include_str!("vectors.s"));
 
 // The context switch, and where a new thread begins. Milestone 6.
 global_asm!(include_str!("context.s"));
+
+/// Point `TPIDR_EL1` at this core's per-CPU block.
+///
+/// `TPIDR_EL1` is a scratch system register the architecture reserves for software's own use;
+/// the kernel keeps a per-core pointer in it and reads it back in one `mrs`. This is the
+/// standard aarch64 per-CPU base (Linux uses `TPIDR_EL1` identically). The portable side of
+/// this lives in `kernel/src/cpu.rs`; only the register touch belongs here (DECISIONS.md §4).
+pub fn set_percpu(ptr: usize) {
+    TPIDR_EL1.set(ptr as u64);
+}
+
+/// Read this core's per-CPU pointer back. One instruction.
+pub fn percpu() -> usize {
+    TPIDR_EL1.get() as usize
+}
 
 /// Bring the CPU into a state where the kernel can safely run.
 ///

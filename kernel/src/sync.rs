@@ -49,7 +49,7 @@
 use crate::arch::interrupts;
 use core::mem::ManuallyDrop;
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::Ordering;
 
 /// # Lock ranking: the rule from DECISIONS.md §9, enforced by the machine
 ///
@@ -146,20 +146,19 @@ pub mod rank {
     pub const NONE: u32 = u32::MAX;
 }
 
-/// The lowest rank currently held on this core.
+/// The lowest rank currently held is kept in **this core's per-CPU block**
+/// (`cpu::current().held_rank`), not a global.
 ///
-/// **Only ever touched with interrupts masked**, because `IrqSafeMutex::lock` masks them
-/// before updating this and `drop` restores them after. So on one core there is no concurrency
-/// on it at all, and the atomic is for `Sync`, not for synchronization.
+/// It used to be a single `static`. That was correct on one core and a bug on two: a second
+/// core taking a lock would clobber the first core's held-rank, and the ranking would start
+/// reporting violations that never happened, which is worse than not checking. Moving it
+/// per-CPU (DECISIONS.md §11, step 1) fixes that. It is still only ever touched by its owning
+/// core with interrupts masked, so the atomic is for interior mutability, not synchronization.
 ///
-/// TODO (SMP): this must become per-CPU. A second core would clobber it, and the ranking would
-/// start reporting violations that never happened, which is worse than not checking.
-static HELD_RANK: AtomicU32 = AtomicU32::new(rank::NONE);
-
 /// What is the lowest-ranked lock we currently hold? Test support.
 #[allow(dead_code)] // used by the tests, and by anyone debugging a lock-order violation
 pub fn current_rank() -> u32 {
-    HELD_RANK.load(Ordering::Relaxed)
+    crate::cpu::current().held_rank.load(Ordering::Relaxed)
 }
 
 /// Would taking a lock of this rank violate the hierarchy? Test support.
@@ -177,15 +176,16 @@ pub fn would_violate(rank: u32) -> bool {
 ///
 /// **Panic and fault paths only**, alongside `console::force_unlock`.
 ///
-/// If we panic while holding the console lock (rank 10), then `HELD_RANK` is 10, and the panic
-/// handler's own attempt to print would try to take rank 10 again. `10 < 10` is false, so the
-/// ranking would fire a *lock-order violation panic inside the panic handler*, and we would
-/// lose the original message to a recursive panic.
+/// If we panic while holding the console lock (rank 10), then this core's held-rank is 10, and
+/// the panic handler's own attempt to print would try to take rank 10 again. `10 < 10` is
+/// false, so the ranking would fire a *lock-order violation panic inside the panic handler*, and
+/// we would lose the original message to a recursive panic.
 ///
 /// The bookkeeping is a debugging aid. It must never be the thing that stops us saying what
-/// went wrong.
+/// went wrong. Resets only the calling core's block, which is exactly right: a fault is handled
+/// on the core that took it.
 pub unsafe fn force_reset_ranks() {
-    HELD_RANK.store(rank::NONE, Ordering::Relaxed);
+    crate::cpu::current().held_rank.store(rank::NONE, Ordering::Relaxed);
 }
 
 /// A spinlock that masks interrupts while it is held, and enforces a global lock order.
@@ -217,8 +217,9 @@ impl<T> IrqSafeMutex<T> {
         let irqs_were_enabled = interrupts::disable();
 
         // From here to the matching restore in `drop`, interrupts are off, so this core is the
-        // only thing that can touch HELD_RANK.
-        let held = HELD_RANK.load(Ordering::Relaxed);
+        // only thing that can touch its own held-rank.
+        let held_rank = &crate::cpu::current().held_rank;
+        let held = held_rank.load(Ordering::Relaxed);
 
         assert!(
             self.rank < held,
@@ -228,7 +229,7 @@ impl<T> IrqSafeMutex<T> {
             held,
         );
 
-        HELD_RANK.store(self.rank, Ordering::Relaxed);
+        held_rank.store(self.rank, Ordering::Relaxed);
 
         IrqSafeGuard {
             guard: ManuallyDrop::new(self.inner.lock()),
@@ -272,8 +273,9 @@ impl<T> Drop for IrqSafeGuard<'_, T> {
 
         // RESTORE the rank we found, not `NONE`. Exactly the same reasoning as the interrupt
         // state one line below: a lock released inside an outer lock must not report that we
-        // are now holding nothing.
-        HELD_RANK.store(self.previous_rank, Ordering::Relaxed);
+        // are now holding nothing. Interrupts are still masked here (restored below), so this
+        // core still owns its per-CPU block.
+        crate::cpu::current().held_rank.store(self.previous_rank, Ordering::Relaxed);
 
         // RESTORE, not enable. See the module docs.
         interrupts::restore(self.irqs_were_enabled);
