@@ -42,29 +42,34 @@ use crate::sync::{IrqSafeMutex, rank};
 use crate::thread::{Context, QuotaToken, State, Thread, Tid, switch_to};
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, VecDeque};
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-
-/// Set by the timer handler. Read by the *return path* out of the handler.
-///
-/// The handler itself does not switch — it **records** that a switch is wanted, which is
-/// DECISIONS.md §9 ("interrupt handlers record and defer") applied to the most important
-/// deferral in the kernel.
-static NEED_RESCHED: AtomicBool = AtomicBool::new(false);
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// How many times we have actually taken the CPU away from a thread. The number that says
 /// preemption is real.
 static PREEMPTIONS: AtomicU64 = AtomicU64::new(0);
 static VOLUNTARY_SWITCHES: AtomicU64 = AtomicU64::new(0);
 
-/// The idle thread's Tid, or `u64::MAX` before it exists.
+/// The thread running on **this core** right now.
 ///
-/// **The thread that runs when nothing else can.** Before it existed, a moment where every thread
-/// was blocked waiting for I/O was a kernel panic; a driver blocked on a device interrupt with no
-/// other work to do would take the machine down. The idle thread parks the CPU in `wfi` until an
-/// interrupt makes something runnable, which is exactly what that situation calls for and what
-/// every real kernel does. It is never in the ready queue: the scheduler runs it only as a last
-/// resort, so it never competes with real work.
-static IDLE_TID: AtomicU64 = AtomicU64::new(u64::MAX);
+/// Per-CPU as of §11 step 3b (`cpu::PerCpu::current`); it used to be one field on the global
+/// `Scheduler`. Reading it is a plain atomic load and needs no lock: it is this core's own slot.
+fn current_tid() -> Tid {
+    cpu::current().current.load(Ordering::Relaxed)
+}
+
+fn set_current_tid(tid: Tid) {
+    cpu::current().current.store(tid, Ordering::Relaxed);
+}
+
+/// This core's idle thread: **what runs when nothing else can.**
+///
+/// Before it existed, a moment where every thread was blocked waiting for I/O was a kernel panic.
+/// The idle thread parks the CPU in `wfi` until an interrupt makes something runnable. It is never
+/// in the ready queue: the scheduler runs it only as a last resort, so it never competes with real
+/// work. Per-CPU as of §11 step 3b, so an idle core parks in its own `wfi`.
+fn idle_tid() -> Tid {
+    cpu::current().idle.load(Ordering::Relaxed)
+}
 
 /// A synchronous IPC rendezvous point.
 ///
@@ -89,11 +94,11 @@ struct Scheduler {
     /// `Box` because the assembly writes through `&mut thread.context`, so a thread's address
     /// must never move. A `BTreeMap` reshuffles its nodes; a `Box`'s contents do not.
     threads: BTreeMap<Tid, Box<Thread>>,
-    /// The run queue is no longer here: it moved to per-CPU storage (`cpu::PerCpu::with_runq`,
-    /// DECISIONS.md §11 step 3a), because a single shared queue is the one thing every core would
-    /// contend on. `current` stays global for now; it becomes per-CPU in step 3b, when the
-    /// secondaries actually schedule and each needs its own running thread.
-    current: Tid,
+    /// Neither the run queue nor `current` live here any more: both moved to per-CPU storage
+    /// (`cpu::PerCpu`, DECISIONS.md §11 steps 3a and 3b), because a single shared queue and a
+    /// single "running thread" are exactly what every core would otherwise contend on and
+    /// overwrite. What stays is genuinely whole-machine: the thread table and the endpoints.
+    ///
     /// Every IPC endpoint. Indexed by the `usize` inside an `Object::Endpoint` capability, which
     /// only the kernel mints, so the index is always in range.
     endpoints: alloc::vec::Vec<Endpoint>,
@@ -124,10 +129,12 @@ pub fn init() {
 
     *sched = Some(Scheduler {
         threads,
-        current: 0,
         endpoints: alloc::vec::Vec::new(),
     });
     drop(sched); // release before spawning, which takes the lock itself
+
+    // This core (core 0) is running the boot thread, tid 0.
+    set_current_tid(0);
 
     // Capacity up front on THIS core's run queue, so `schedule()`'s push can never reallocate
     // (it runs from the timer IRQ, where DECISIONS.md §9 forbids allocation). Interrupts are
@@ -136,7 +143,7 @@ pub fn init() {
     cpu::current().with_runq(|q| q.reserve(64));
 
     // The idle thread. Its entire body is "wait for an interrupt, then let the scheduler look for
-    // work." It is deliberately kept OUT of the ready queue (see IDLE_TID): the scheduler picks it
+    // work." It is deliberately kept OUT of the ready queue (see cpu::PerCpu::idle): the scheduler picks it
     // only when nothing else is runnable, so it never steals a turn from real work.
     let idle = Thread::spawn(Box::new(|| {
         loop {
@@ -146,7 +153,7 @@ pub fn init() {
     }))
     .expect("could not create the idle thread");
     let idle_id = idle.id;
-    IDLE_TID.store(idle_id, Ordering::Relaxed);
+    cpu::current().idle.store(idle_id, Ordering::Relaxed);
 
     let mut sched = SCHED.lock();
     let s = sched.as_mut().unwrap();
@@ -232,7 +239,7 @@ pub fn exit() -> ! {
     {
         let mut guard = SCHED.lock();
         let sched = guard.as_mut().expect("exit before sched::init");
-        let current = sched.current;
+        let current = current_tid();
         if let Some(t) = sched.threads.get_mut(&current) {
             t.state = State::Finished;
         }
@@ -250,11 +257,11 @@ pub fn exit() -> ! {
 
 /// Called from the timer IRQ. **Records** that a switch is wanted; does not switch.
 pub fn on_tick() {
-    NEED_RESCHED.store(true, Ordering::Relaxed);
+    cpu::current().need_resched.store(true, Ordering::Relaxed);
 }
 
 pub fn take_need_resched() -> bool {
-    NEED_RESCHED.swap(false, Ordering::Relaxed)
+    cpu::current().need_resched.swap(false, Ordering::Relaxed)
 }
 
 /// Pick another thread and go there.
@@ -287,7 +294,7 @@ pub fn schedule() {
         // longer running, because we are.
         reap(sched);
 
-        let current = sched.current;
+        let current = current_tid();
         let state = sched.threads.get(&current).map(|t| t.state);
 
         // **Only a still-Running thread goes back on the ready queue.** A thread that reached
@@ -297,7 +304,7 @@ pub fn schedule() {
         // must not undo that by helpfully requeueing it.
         let runnable = state == Some(State::Running);
 
-        let idle_tid = IDLE_TID.load(Ordering::Relaxed);
+        let idle_tid = cpu::current().idle.load(Ordering::Relaxed);
 
         let next = match cpu::current().with_runq(|q| q.pop_front()) {
             Some(t) => t,
@@ -333,7 +340,7 @@ pub fn schedule() {
         }
 
         sched.threads.get_mut(&next).unwrap().state = State::Running;
-        sched.current = next;
+        set_current_tid(next);
 
         // The incoming thread's low half. A kernel thread gets the empty reserved table, which
         // makes every low address fault, which is exactly right: it has no business down there.
@@ -380,7 +387,7 @@ fn reap(sched: &mut Scheduler) {
     let dead: alloc::vec::Vec<Tid> = sched
         .threads
         .iter()
-        .filter(|(id, t)| **id != 0 && **id != sched.current && t.state == State::Finished)
+        .filter(|(id, t)| **id != 0 && **id != current_tid() && t.state == State::Finished)
         .map(|(id, _)| *id)
         .collect();
 
@@ -476,7 +483,7 @@ pub fn ipc_send(ep: usize, msg: [u64; 3]) {
     let block = {
         let mut guard = SCHED.lock();
         let sched = guard.as_mut().expect("no scheduler");
-        let current = sched.current;
+        let current = current_tid();
 
         if let Some(receiver) = sched.endpoints[ep].receivers.pop_front() {
             sched.threads.get_mut(&receiver).unwrap().mailbox = msg;
@@ -504,7 +511,7 @@ pub fn ipc_recv(ep: usize) -> [u64; 3] {
     let immediate = {
         let mut guard = SCHED.lock();
         let sched = guard.as_mut().expect("no scheduler");
-        let current = sched.current;
+        let current = current_tid();
 
         if sched.endpoints[ep].pending > 0 {
             // An interrupt already fired while we were not waiting. Take it and do not block.
@@ -527,7 +534,7 @@ pub fn ipc_recv(ep: usize) -> [u64; 3] {
             schedule(); // blocks; a sender fills our mailbox and wakes us
             let guard = SCHED.lock();
             let sched = guard.as_ref().expect("no scheduler");
-            sched.threads.get(&sched.current).unwrap().mailbox
+            sched.threads.get(&current_tid()).unwrap().mailbox
         }
     }
 }
@@ -553,7 +560,7 @@ pub fn ipc_send_cap(ep: usize, data: u64, cap: crate::cap::Cap) {
     let block = {
         let mut guard = SCHED.lock();
         let sched = guard.as_mut().expect("no scheduler");
-        let current = sched.current;
+        let current = current_tid();
 
         if let Some(receiver) = sched.endpoints[ep].receivers.pop_front() {
             let r = sched.threads.get_mut(&receiver).unwrap();
@@ -586,7 +593,7 @@ pub fn ipc_recv_cap(ep: usize) -> [u64; 3] {
     let immediate = {
         let mut guard = SCHED.lock();
         let sched = guard.as_mut().expect("no scheduler");
-        let current = sched.current;
+        let current = current_tid();
 
         if sched.endpoints[ep].pending > 0 {
             // An interrupt signal is not a delegation; it carries no capability.
@@ -620,7 +627,7 @@ pub fn ipc_recv_cap(ep: usize) -> [u64; 3] {
             schedule(); // a capability-carrying sender fills our mailbox and wakes us
             let guard = SCHED.lock();
             let sched = guard.as_ref().expect("no scheduler");
-            sched.threads.get(&sched.current).unwrap().mailbox
+            sched.threads.get(&current_tid()).unwrap().mailbox
         }
     }
 }
@@ -635,7 +642,7 @@ pub fn current_cap(slot: u64) -> Result<crate::cap::Cap, crate::cap::Error> {
     let sched = guard.as_ref().ok_or(crate::cap::Error::NoSuchSlot)?;
     sched
         .threads
-        .get(&sched.current)
+        .get(&current_tid())
         .ok_or(crate::cap::Error::NoSuchSlot)?
         .cspace
         .get(slot)
@@ -645,7 +652,7 @@ pub fn current_cap(slot: u64) -> Result<crate::cap::Cap, crate::cap::Error> {
 pub fn grant(cap: crate::cap::Cap) -> Result<u64, crate::cap::Error> {
     let mut guard = SCHED.lock();
     let sched = guard.as_mut().ok_or(crate::cap::Error::NoFreeSlot)?;
-    let current = sched.current;
+    let current = current_tid();
     sched
         .threads
         .get_mut(&current)
@@ -676,7 +683,7 @@ pub fn adopt_address_space(space: crate::user::AddressSpace) {
     {
         let mut guard = SCHED.lock();
         let sched = guard.as_mut().expect("no scheduler");
-        let current = sched.current;
+        let current = current_tid();
         sched
             .threads
             .get_mut(&current)
@@ -699,14 +706,14 @@ pub fn current_kernel_stack_top() -> Option<u64> {
     let sched = guard.as_ref()?;
     sched
         .threads
-        .get(&sched.current)?
+        .get(&current_tid())?
         .stack
         .as_ref()
         .map(|s| s.top())
 }
 
 pub fn current() -> Tid {
-    SCHED.lock().as_ref().map_or(0, |s| s.current)
+    current_tid()
 }
 
 pub fn thread_count() -> usize {

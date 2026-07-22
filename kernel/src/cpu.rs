@@ -16,7 +16,11 @@ use crate::sync::rank;
 use crate::thread::Tid;
 use alloc::collections::VecDeque;
 use core::cell::UnsafeCell;
-use core::sync::atomic::AtomicU32;
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
+
+/// A `current`/`idle` slot holding no thread. Tids are small integers from 0 up, so `u64::MAX`
+/// can never collide with a real one.
+pub const NO_TID: Tid = u64::MAX;
 
 /// The most cores we support. QEMU `virt` gives us as many as we ask for with `-smp`; four is
 /// what the tests will run. A fixed maximum lets the blocks be a static array, so they exist
@@ -31,6 +35,21 @@ pub struct PerCpu {
     /// mutability through the shared static, not for cross-core synchronization: no other core
     /// can reach *this* core's block on the lock path. See [`crate::sync`] and DECISIONS.md §9.
     pub held_rank: AtomicU32,
+
+    /// The thread currently running on this core (`NO_TID` before the core schedules).
+    ///
+    /// Was a single field on the global `Scheduler`; per-CPU as of §11 step 3b, because each core
+    /// runs a different thread. An atomic because a remote core may *read* it (the reaper checks
+    /// whether a thread is current on any core), even though only the owning core ever writes it.
+    pub current: AtomicU64,
+
+    /// This core's idle thread (`NO_TID` before it exists): what runs when this core's run queue
+    /// is empty. Each core gets its own, so an idle core parks in its *own* `wfi`.
+    pub idle: AtomicU64,
+
+    /// Set by this core's timer tick, read on this core's return from the IRQ. Per-CPU so one
+    /// core's tick cannot make another core reschedule. See DECISIONS.md §9's record-and-defer.
+    pub need_resched: AtomicBool,
 
     /// This core's run queue: the threads ready to run here, in round-robin order.
     ///
@@ -52,6 +71,9 @@ impl PerCpu {
     const fn new() -> Self {
         Self {
             held_rank: AtomicU32::new(rank::NONE),
+            current: AtomicU64::new(NO_TID),
+            idle: AtomicU64::new(NO_TID),
+            need_resched: AtomicBool::new(false),
             runq: UnsafeCell::new(VecDeque::new()),
         }
     }
