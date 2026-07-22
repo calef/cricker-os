@@ -62,6 +62,38 @@ This is DECISIONS.md §10's "shared memory carries data," composed by the proces
 than wired by the kernel at spawn. Read-only derivatives at send time: yes, and enforced all the way
 to the page-table bits.
 
+## What a read-only shared frame does and does NOT promise (the consumer's contract)
+
+This is the part that gets misremembered later, so it is worth stating as a contract rather than
+leaving as an emergent property of a tested mechanism.
+
+A read-only derivative is *share, not move* (above): the producer keeps `WRITE` and a **writable
+mapping of the same physical page.** So what the read-only bit actually delivers is narrow:
+
+> **It stops the *consumer* from writing the shared page. It does nothing to stop the *producer*
+> from writing it while the consumer reads.**
+
+The property is "the consumer cannot corrupt the shared page," **not** "the page is stable under
+the consumer's feet," and **not** "the data is trustworthy." A consumer that validates the page and
+then acts on it is exposed to the producer mutating it *after* the check (a TOCTOU). So, for a
+server reading a buffer shared by an untrusted client:
+
+1. **Take structural data from the message, never from the page.** A length, offset, count, or
+   index that you will compute on must ride the IPC message (registers, immutable once sent), not
+   live in the mutable shared page. Otherwise the producer edits it under you.
+2. **Copy-into-private-then-validate.** If you must validate content and then act on the validated
+   form, copy it into your own memory first and validate the copy. The shared page can change
+   between your check and your use.
+3. **Bound everything by the frame size yourself.** Never trust a producer-supplied count to stay
+   within the page.
+
+**The console server is the worked example, and it is safe *because* it follows this** (checked):
+the length rides the message (`recv(REQUEST)`), the shared page holds only bytes to print (a
+content TOCTOU just prints different bytes — benign), and an over-long length is a *read out of the
+server's own mapping* that faults the server, i.e. a crashed driver, not a corrupted kernel
+(user/src/hello.rs). A future server that read a length or offset *from the page*, or indexed on
+page contents, would not be safe, and the read-only bit would not save it.
+
 ## The end of the line: no revocation (yet)
 
 **A capability, once granted, cannot be retracted.** There is no capability-derivation tree, no

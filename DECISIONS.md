@@ -616,14 +616,28 @@ Not decisions yet. Proposals with real open questions, parked deliberately.
 
 - **Call/Reply IPC: a kernel-minted, one-shot reply capability** (notes/ipc-naming.md). IPC names
   an endpoint and the sender is anonymous, so a server cannot reply to a *specific* caller. Today
-  we wire an explicit reply endpoint per client at spawn, which only works for **static** client
-  topologies (the console server). seL4 mints a one-shot `Reply` cap on `Call` so a server can
-  answer whoever called, with a kernel-tracked call chain that also enables priority donation. We
-  can emulate reply-to-caller with `SEND_CAP` (the client passes a reply-endpoint cap in the
-  request), but *not* the one-shot safety or the call chain: those need a `Reply` object and a
-  `Call` method, which widen the §4 syscall surface and so should not be added speculatively.
-  **Trigger to build:** the first server that must serve clients it was not individually wired to (a
-  general RPC service). Deserves its own numbered decision when it lands.
+  we wire an explicit reply endpoint per client at spawn. seL4 mints a one-shot `Reply` cap on
+  `Call` so a server can answer whoever called, with a kernel-tracked call chain that also enables
+  priority donation. We can emulate reply-to-caller with `SEND_CAP` (the client passes a
+  reply-endpoint cap in the request), but *not* the one-shot safety or the call chain: those need a
+  `Reply` object and a `Call` method, which widen the §4 syscall surface and so should not be added
+  speculatively.
+
+  **Two triggers to build.** *Functional:* the first server that must serve clients it was not
+  individually wired to (a general RPC service). *Safety:* the first reply whose correctness depends
+  on going to **this** caller (caller-identity) or on being consumed **exactly once**. The
+  distinction matters because a pre-wired reply endpoint is reusable and nameable, so nothing
+  *structural* stops a reply reaching the wrong caller, a double reply, or a stale reply landing on
+  a client that moved on. A one-shot kernel-minted reply cap makes "exactly one reply, to exactly
+  this caller, consumed on use" a kernel guarantee instead of a server discipline.
+
+  **Where we stand today (checked, 2026-07-22):** safe, but by *convention*, not guarantee. The
+  console server shares one `reply` endpoint across clients yet is correct because it is
+  **single-threaded** and IPC is synchronous rendezvous: it handles one request-reply cycle at a
+  time, so the only client in `RECV(reply)` when it replies is the one it just served. Workers and
+  drivers use a **per-request** result endpoint (no sharing). The safety trigger fires the moment
+  either of those stops holding: a server **thread pool** on a shared reply path, or pipelined /
+  asynchronous requests. Deserves its own numbered decision when it lands.
 
 - **Capability revocation, and untyped reclamation** (notes/capability-lifecycle.md). A granted
   capability cannot be retracted: no capability-derivation tree, no refcount, no `revoke`
@@ -634,6 +648,17 @@ Not decisions yet. Proposals with real open questions, parked deliberately.
   the object from every holder; expensive and kernel-tracked, which is why it is a first-class
   object there and "the harder story parked for later" here. **Trigger to build:** needing to
   retract authority from a live, untrusted peer, or to reclaim untyped on process death.
+
+  **BLOCKING PRECONDITION on any reclamation work.** The "not a memory-safety hole" conclusion
+  rests entirely on one invariant: **retyped frames are spend-only and never returned to a reusable
+  pool.** So *any* future reclamation — wiring up `untyped::destroy`, a frame free-list, an
+  allocator that recycles, or the reclaim-on-process-death above — is **blocked on revocation
+  landing first.** The instant a shared frame can be reused while a peer still maps it, every
+  dangling mapping this entry calls "harmless" becomes a use-after-free. This is the classic seam:
+  two individually-correct changes, months apart, whose *interaction* is the hole. `untyped::destroy`
+  already exists, unused, as exactly that trap; it carries the same warning at the code, so the
+  person who eventually wires it (thinking about untyped accounting, not shared-frame lifetimes)
+  meets the precondition there too.
 
 ---
 

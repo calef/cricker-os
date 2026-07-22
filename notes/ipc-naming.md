@@ -130,10 +130,22 @@ designed here rather than left implicit. But building a kernel `Call`/`Reply` pr
 violate DECISIONS.md §4 (the syscall surface stays narrow; no abstraction before the requirement):
 every server we have has a static client topology and the two-endpoint pattern serves it.
 
-**Trigger to build it:** the first server that must answer clients it was not individually wired to
-(a general RPC service). At that point the right shape is a `Reply` object capability and a `Call`
-method on endpoints, one-shot, with the call chain — worth its own DECISIONS entry when it lands,
-because it widens the boundary §4 guards.
+**Two triggers to build it.** *Functional:* the first server that must answer clients it was not
+individually wired to (a general RPC service). *Safety:* the first reply whose correctness depends
+on going to **this** caller, or on being consumed **exactly once** — because a pre-wired reply
+endpoint is reusable and nameable, so nothing *structural* prevents a misrouted reply, a double
+reply, or a stale reply landing on a client that has moved on. A one-shot kernel-minted reply cap
+makes those kernel guarantees instead of server discipline. At that point the right shape is a
+`Reply` object capability and a `Call` method, one-shot, with the call chain — its own DECISIONS
+entry when it lands, because it widens the boundary §4 guards.
+
+**Safe today, by convention not by guarantee (checked 2026-07-22).** The console server shares one
+`reply` endpoint across clients yet is correct, because it is **single-threaded** and IPC is
+synchronous rendezvous: it runs one request-reply cycle at a time, so the only client parked in
+`RECV(reply)` when it replies is the one it just served. Workers and drivers avoid the question
+entirely with a **per-request** reply endpoint. Nothing in the kernel enforces either property; the
+safety trigger above fires the moment a server fields concurrent clients on a shared reply path (a
+thread pool, or pipelined requests).
 
 ## Family resemblance
 

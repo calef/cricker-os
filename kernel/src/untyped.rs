@@ -93,8 +93,25 @@ pub fn usage(region: usize) -> Option<(u64, u64)> {
 }
 
 /// Return a region's whole backing to the frame allocator. The region is emptied but its slot
-/// stays (indices are stable). For the demo we rarely call this; a real system reclaims on
-/// process death, and revocation of derived objects is the harder seL4 story parked for later.
+/// stays (indices are stable).
+///
+/// # TRIPWIRE: do not wire this (or any reclamation) up without revocation first
+///
+/// This function is currently **unused on purpose**, and that is load-bearing. Wiring it up (say,
+/// to run on process death) turns a *safe* gap into a use-after-free, and the two changes are far
+/// enough apart that the person who wires it will not be thinking about the reason it is unsafe.
+///
+/// The chain: a `Frame` retyped out of this region can be **shared** (a read-only derivative
+/// delegated to a peer, which maps the same physical page — see notes/capability-lifecycle.md).
+/// Address-space teardown deliberately does **not** free such a leaf (notes/teardown.md), so today
+/// a peer's mapping stays valid because these pages are **spend-only: never reclaimed**. The moment
+/// this `free` runs while a peer still maps one of these frames, that mapping dangles onto memory
+/// the allocator can hand out again. UAF.
+///
+/// So reclamation is **blocked on revocation**: before anything calls this, the kernel must be able
+/// to unmap a shared frame from *every* holder first (a capability-derivation tree + recursive
+/// revoke). That is the deferred work in DECISIONS.md "Open design ideas". Until then, keep this
+/// dead, or the no-revocation gap flips from a control limitation to a memory-safety hole.
 #[allow(dead_code)]
 pub fn destroy(region: usize) {
     let (base, pages) = {
