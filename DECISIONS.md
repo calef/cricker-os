@@ -614,6 +614,27 @@ Not decisions yet. Proposals with real open questions, parked deliberately.
   strongest driver isolation there is, and the opposite of a shortcut: it needs EL2, an SMMU
   driver, and is impossible under HVF. Parked as the most interesting unbuilt direction.
 
+- **Call/Reply IPC: a kernel-minted, one-shot reply capability** (notes/ipc-naming.md). IPC names
+  an endpoint and the sender is anonymous, so a server cannot reply to a *specific* caller. Today
+  we wire an explicit reply endpoint per client at spawn, which only works for **static** client
+  topologies (the console server). seL4 mints a one-shot `Reply` cap on `Call` so a server can
+  answer whoever called, with a kernel-tracked call chain that also enables priority donation. We
+  can emulate reply-to-caller with `SEND_CAP` (the client passes a reply-endpoint cap in the
+  request), but *not* the one-shot safety or the call chain: those need a `Reply` object and a
+  `Call` method, which widen the §4 syscall surface and so should not be added speculatively.
+  **Trigger to build:** the first server that must serve clients it was not individually wired to (a
+  general RPC service). Deserves its own numbered decision when it lands.
+
+- **Capability revocation, and untyped reclamation** (notes/capability-lifecycle.md). A granted
+  capability cannot be retracted: no capability-derivation tree, no refcount, no `revoke`
+  (untyped.rs). This is **not a memory-safety hole** — frames come from spend-only untyped and
+  teardown never frees a shared leaf, so a surviving peer maps valid, non-reused memory — but it
+  means you cannot *un-share* a frame from a live peer (only destroy the peer) and never *reclaim*
+  the page. seL4's mechanism is a capability-derivation tree plus a recursive `revoke` that unmaps
+  the object from every holder; expensive and kernel-tracked, which is why it is a first-class
+  object there and "the harder story parked for later" here. **Trigger to build:** needing to
+  retract authority from a live, untrusted peer, or to reclaim untyped on process death.
+
 ---
 
 ## Milestones
