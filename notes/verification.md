@@ -78,7 +78,7 @@ A proof is only as good as three things, and each is worth being blunt about:
 
 ## What is proved today
 
-Five harnesses in `crates/caps/src/lib.rs`, under `#[cfg(kani)]`:
+Seven harnesses in `crates/caps/src/lib.rs`, under `#[cfg(kani)]`:
 
 | Harness | Property |
 |---|---|
@@ -87,8 +87,15 @@ Five harnesses in `crates/caps/src/lib.rs`, under `#[cfg(kani)]`:
 | `from_bits_cannot_forge_a_right` | an attacker-controlled syscall register cannot conjure an undefined right |
 | `subset_matches_allows` | the two phrasings of the order agree, so a bug in one shows against the other |
 | `derive_never_widens_rights` | the central theorem, on the real `CSpace::derive` |
+| `a_deleted_capability_stays_deleted` | for every table state, once `delete` succeeds the slot answers `NoSuchSlot` to both `get` and a second `delete` (the consume-on-use mechanism behind the one-shot Reply) |
+| `delete_touches_only_its_slot` | deleting any slot leaves every other slot exactly as it was (consuming one caller's Reply cannot orphan another's) |
 
-Five in `crates/paging/src/lib.rs`, the address arithmetic under the four-level walk:
+The last two run over a *symbolic* table (every slot independently empty or holding a capability
+with symbolic object and rights), so "no state exists in which a consumed slot works again" is
+quantified over table states, not sampled.
+
+Eight in `crates/paging/src/lib.rs`, the address arithmetic under the four-level walk and the MMU
+isolation invariants (the last three, closing milestone 18's MMU step):
 
 | Harness | Property |
 |---|---|
@@ -97,6 +104,17 @@ Five in `crates/paging/src/lib.rs`, the address arithmetic under the four-level 
 | `the_offset_does_not_change_the_walk` | changing only the page offset leaves all four indices fixed: a whole 4 KiB page shares one leaf (page granularity) |
 | `distinct_pages_take_distinct_paths` | two page-aligned addresses with the same four indices are the same page (the arithmetic core of isolation) |
 | `the_two_halves_are_disjoint` | no address is in both `TTBR0` (low) and `TTBR1` (high) |
+| `the_user_va_gate_admits_only_the_aligned_low_half` | `is_user_page_va` equals the bit test the syscall layer used to hand-roll, and admits no address in the kernel's half |
+| `the_leaf_descriptor_keeps_address_and_permissions_apart` | the L3 descriptor `map` writes decomposes back into exactly the address and exactly the flags, for every representable physical page and every `Flags` constructor: no permission bit can redirect the address, no address bit can grant a permission |
+| `the_low_half_mapper_rejects_the_high_half_untouched` | for every address outside the low half (every kernel address included), `map`/`unmap`/`translate` on a `TTBR0` mapper reject before touching any memory (the harness gives the mapper a null root and a panicking frame source, so a touch is a proof failure) |
+
+The user-VA gate is a Phase-2-style extraction in miniature: `untyped::MAP` and `frame::MAP` both
+hand-rolled `va & 0xfff != 0 || (va >> 48) != 0`; both now call `paging::is_user_page_va`, so the
+gate the kernel runs is the gate that is proved. The descriptor harness leans on one assumption
+worth recording: `pa` is taken as representable (bits 47:12), which is the architecture's own
+descriptor format and true of every `pa` the kernel maps (frame allocator and untyped regions are
+bounded by RAM, far below 2^48). `Mapper::map` masks a wider `pa` silently; nothing can hand it
+one today, and if that ever changes the mask is where to add the check.
 
 Deliberately not proved: the `Mapper` round-trip (map a page, translate it back). This was
 considered and declined, not skipped. Kani only pays off on *symbolic* inputs, and here both ends are
@@ -135,7 +153,7 @@ near-`usize::MAX` offset from a corrupt blob returns `Truncated` instead of pani
 integration tests against a real QEMU device tree are unchanged, so the hardening is faithful. This
 is the elf lesson reused: prove (and here, harden) the loopless leaves; the walk stays on the tests.
 
-Five in `crates/ipc/src/lib.rs`, the synchronous-rendezvous state machine (the decision core of
+Six in `crates/ipc/src/lib.rs`, the synchronous-rendezvous state machine (the decision core of
 `sched.rs`'s `Endpoint`, extracted as pure logic):
 
 | Harness | Property |
@@ -143,6 +161,7 @@ Five in `crates/ipc/src/lib.rs`, the synchronous-rendezvous state machine (the d
 | `send_preserves_the_invariant` / `recv_...` / `signal_...` | every operation preserves "at most one wait queue is ever non-empty," the invariant the whole IPC design rests on |
 | `send_rendezvous_iff_a_receiver_waited` | a send rendezvouses exactly when a receiver was waiting, else blocks (no dropped message, no spurious block) |
 | `recv_drains_a_pending_signal_first` | a receive takes a pending async signal before a blocked sender, so a signal is never lost |
+| `a_collected_sender_is_forgotten` | once a receive collects a blocked sender, the endpoint holds no name for it in either queue and no later receive can produce it again (the endpoint half of the one-shot Reply) |
 
 These are inductive-step proofs: assume a valid state, apply one operation, check the invariant holds.
 A non-empty queue is modeled with a single waiter (the decision and the invariant depend only on
@@ -156,6 +175,29 @@ one-shot Reply that leaves a caller blocked. The full QEMU suite (102 tests, inc
 frame-delegation, and revocation tests) passes unchanged, so the rewire is faithful: the kernel's IPC
 path *is* the proved logic now, not a parallel copy of it. This is the first place a proof reaches all
 the way into the running kernel rather than staying in a host crate.
+
+**Phase 3, the one-shot Reply, needed no rewire at all.** "One reply, to this caller, exactly once"
+(DECISIONS §12) decomposes into three legs, and it is worth recording which kind of evidence each
+one rests on:
+
+1. **The endpoint forgets a collected caller** — `a_collected_sender_is_forgotten` in `crates/ipc`.
+   A `CALL`er queues as a sender and blocks; the server's receive pops it destructively, so from
+   that moment the kernel-minted Reply capability is the *only* name for the blocked caller
+   anywhere in the system. (The caller is never in the receiver queue: `ipc_call` does not `recv`,
+   and a blocked thread cannot run to enqueue itself again.)
+2. **Consume-on-use is final** — `a_deleted_capability_stays_deleted` and
+   `delete_touches_only_its_slot` in `crates/caps`. The syscall layer deletes the Reply capability
+   the instant it is invoked; the proofs say no table state exists in which the consumed slot can
+   be invoked again, and consuming one caller's Reply cannot disturb another's.
+3. **The capability cannot be duplicated or delegated** — structural, not a harness. There is no
+   syscall that copies a capability within a cspace (`CSpace::derive` is kernel-internal), and the
+   only cap-moving syscall, `SEND_CAP`, requires `GRANT`, which `reply_cap` deliberately never
+   mints. This leg lives in the shape of the syscall surface (§4: narrow and explicit), so it is
+   an inspection argument, backed end-to-end by the QEMU test in which the call server invokes its
+   Reply twice and the kernel refuses the second (`user/src/hello.rs`, `call_server`).
+
+No rewire because `caps::CSpace` and `ipc::Endpoint` already *are* the kernel's cspace and endpoint
+state; the proofs landed on code the kernel was running all along.
 
 Four in `crates/elf/src/lib.rs`:
 
@@ -222,9 +264,11 @@ not need it; same self-install pattern as `script/coverage`.
 - **Verify pure logic first.** The §7 host crates (`caps`, `paging`, `elf`, `frames`, the ASID
   allocator when it lands) are the frontier: small, allocation-light, already host-compiled. Bounded
   model checking is happiest there.
-- **Spread inward from the capability core**, the order §14 sets: `caps` now, then IPC (rendezvous,
-  one-shot reply), then the MMU isolation invariants. Each step proves a property the security story
-  currently rests on by argument.
+- **Spread inward from the capability core**, the order §14 sets: `caps`, then IPC (rendezvous,
+  one-shot reply), then the MMU isolation invariants. **All three steps are done** (milestone 18);
+  each proved a property the security story previously rested on by argument. The frontier now
+  moves with milestone 14: proving properties *of the kernel* at scale wants a kernel that does
+  not allocate.
 - **A harness that needs a huge bound is a design smell.** If a property needs Kani to explore an
   unbounded loop or a giant structure, that is often the code telling you the logic is not as local
   as it should be. Prefer refactoring the logic to shrinking the proof.

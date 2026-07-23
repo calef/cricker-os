@@ -777,7 +777,10 @@ the properties they state. That is the green light.
 Verification spreads **inward from the capability core**: the `caps` logic now, then IPC (the
 rendezvous and the one-shot reply), then the MMU isolation invariants. Pure-logic crates (§7) are the
 natural frontier because they already compile for the host; the proofs live behind `#[cfg(kani)]` and
-never touch an ordinary build.
+never touch an ordinary build. **(Milestone 18 delivered all three steps**: the rendezvous state
+machine is extracted and proved and the scheduler runs it; the one-shot Reply's mechanism is proved
+in `caps` and `ipc`; the MMU isolation invariants, including the user-VA gate the syscalls now call,
+are proved in `paging`. See notes/verification.md for what each proof says and what stays on tests.)
 
 ### What this resolves and what it changes
 
