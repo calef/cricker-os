@@ -117,6 +117,12 @@ const USED_OFF: u64 = 0x100; // 6 + 8*QSIZE
 const RING_END: u64 = USED_OFF + 6 + 8 * QSIZE as u64;
 
 const VIRTQ_DESC_F_NEXT: u16 = 1;
+/// Bit 2: this descriptor points at a **table of further descriptors** instead of a buffer. The
+/// validator walks the flat chain and never follows that inner table, so a descriptor carrying
+/// this flag would send the device to addresses we never checked. The kernel negotiates the
+/// feature that enables it off (see `sanitize_driver_features`) *and* refuses the flag here, so the
+/// confinement fails closed if that negotiation ever regresses.
+const VIRTQ_DESC_F_INDIRECT: u16 = 4;
 
 /// One block device the kernel operates the transport for.
 struct Device {
@@ -126,6 +132,11 @@ struct Device {
     /// The last available-ring index we have already validated and forwarded. Descriptors are
     /// only ever *added* by the driver, so we validate the new ones each notify.
     last_avail: u16,
+    /// Which 32-bit word of the feature bits the driver's next `DRIVER_FEATURES` write targets
+    /// (`DRIVER_FEATURES_SEL`: 0 = features 0..31, 1 = 32..63). Tracked so a feature write can have
+    /// the ring-layout features the validator cannot police stripped from whichever word carries
+    /// them. See `sanitize_driver_features`.
+    driver_features_sel: u32,
 }
 
 static DEVICES: IrqSafeMutex<Vec<Device>> = IrqSafeMutex::new(rank::VIRTIO, Vec::new());
@@ -140,6 +151,7 @@ pub fn register(mmio_phys: u64, dma_base: u64, dma_size: u64) -> usize {
         dma_base,
         dma_size,
         last_avail: 0,
+        driver_features_sel: 0,
     });
     devs.len() - 1
 }
@@ -181,6 +193,15 @@ fn validate_avail(
     read16: &dyn Fn(u64) -> u16,
     read64: &dyn Fn(u64) -> u64,
 ) -> bool {
+    // At most QSIZE descriptors can be newly available since the last validation: the available
+    // ring has only QSIZE slots, so a driver cannot have published more than that without the
+    // device consuming some. A larger jump in avail.idx is malformed or hostile, and walking it
+    // would spin this loop up to 65535 times under the caller's lock, with interrupts masked.
+    // Refuse it before touching a single descriptor. (wrapping_sub because avail.idx wraps at u16.)
+    if to_idx.wrapping_sub(from_idx) > QSIZE {
+        return false;
+    }
+
     let in_region = |addr: u64, len: u64| -> bool {
         // No overflow, and both ends inside the region.
         match addr.checked_add(len) {
@@ -209,6 +230,12 @@ fn validate_avail(
                 return false; // a descriptor points outside the driver's region
             }
             let flags = read16(base + 12);
+            // An indirect descriptor points at a table of descriptors this walk never validates, so
+            // the device would follow it out of the region. Refuse it. The feature is negotiated off
+            // as well; this is the belt to that suspenders, and it costs one branch.
+            if flags & VIRTQ_DESC_F_INDIRECT != 0 {
+                return false;
+            }
             if flags & VIRTQ_DESC_F_NEXT == 0 {
                 break;
             }
@@ -255,10 +282,51 @@ pub fn write_register(id: usize, off: u64, val: u32) -> Result<(), TransportErro
     if !SAFE.contains(&off) {
         return Err(TransportError::BadQueue);
     }
-    let devs = DEVICES.lock();
-    let dev = devs.get(id).ok_or(TransportError::NoDevice)?;
+    let mut devs = DEVICES.lock();
+    let dev = devs.get_mut(id).ok_or(TransportError::NoDevice)?;
+
+    // Feature negotiation is a two-step dance: the driver selects a 32-bit word with
+    // `DRIVER_FEATURES_SEL`, then writes that word with `DRIVER_FEATURES`. We remember the selector
+    // so the write can have the ring-layout features the validator cannot police stripped from
+    // whichever word carries them, before the device ever sees the value.
+    let val = match off {
+        REG_DRIVER_FEATURES_SEL => {
+            dev.driver_features_sel = val;
+            val
+        }
+        REG_DRIVER_FEATURES => sanitize_driver_features(dev.driver_features_sel, val),
+        _ => val,
+    };
+
     reg_write(dev.mmio_phys, off, val);
     Ok(())
+}
+
+/// Strip the ring-layout features the descriptor validator cannot police from a `DRIVER_FEATURES`
+/// word. `sel` is the word the driver selected: 0 = features 0..31, 1 = features 32..63.
+///
+/// Two features change **what the device reads descriptors from**, which is exactly the thing
+/// `validate_avail` assumes it controls:
+///
+/// - **`INDIRECT_DESC`** (bit 28, low word): a descriptor may point at a table of further
+///   descriptors. The validator walks the flat chain and never follows that table, so the inner
+///   descriptors reach the device unchecked.
+/// - **`RING_PACKED`** (bit 34, high word): the entire ring format changes. The validator
+///   understands only the split ring, so a packed ring would be read by the device and validated by
+///   nobody.
+///
+/// Forcing both off keeps every descriptor the device ever sees on the split-ring path the
+/// validator actually covers. The honest driver negotiates neither, so nothing legitimate breaks.
+/// The real cure (a shadow descriptor ring the driver cannot write) is the shape validation should
+/// take; until then this closes the reachable bypass. See notes/virtio.md.
+fn sanitize_driver_features(sel: u32, val: u32) -> u32 {
+    const F_INDIRECT_DESC_LO: u32 = 1 << 28; // feature bit 28
+    const F_RING_PACKED_HI: u32 = 1 << (34 - 32); // feature bit 34
+    match sel {
+        0 => val & !F_INDIRECT_DESC_LO,
+        1 => val & !F_RING_PACKED_HI,
+        _ => val,
+    }
 }
 
 /// Set up queue 0 with `num` entries, placing the rings at the fixed offsets in the DMA region.
@@ -384,6 +452,117 @@ mod tests {
         assert!(
             validate_avail(base, size, desc, avail, 0, 1, &read16, &read64),
             "a bounded cyclic chain with valid addresses should still validate (and terminate)",
+        );
+
+        crate::memory::free(frames::Frame::from_addr(frame));
+    }
+
+    /// **An indirect descriptor is refused even when it points inside the region.**
+    ///
+    /// This is the bypass the direct-descriptor attack test does not cover: a descriptor flagged
+    /// `INDIRECT` points at a *table* of further descriptors, and the validator never walks that
+    /// table. So the inner descriptors, which the device WILL follow, are unchecked. A wholly
+    /// in-region indirect descriptor still has to be refused, because it is not the descriptor the
+    /// device ultimately acts on.
+    #[test_case]
+    fn the_validator_refuses_an_indirect_descriptor() {
+        let frame = crate::memory::alloc().expect("no frame").addr();
+        let base = frame;
+        let size = frames::FRAME_SIZE;
+
+        let desc = base + DESC_OFF;
+        let avail = base + AVAIL_OFF;
+        let w16 =
+            |phys: u64, v: u16| unsafe { core::ptr::write_volatile(mmu::phys_to_virt(phys) as *mut u16, v) };
+        let w64 =
+            |phys: u64, v: u64| unsafe { core::ptr::write_volatile(mmu::phys_to_virt(phys) as *mut u64, v) };
+        let read16 = |p: u64| unsafe { core::ptr::read_volatile(mmu::phys_to_virt(p) as *const u16) };
+        let read64 = |p: u64| unsafe { core::ptr::read_volatile(mmu::phys_to_virt(p) as *const u64) };
+
+        // desc[0]: a legal in-region address and length, but flagged INDIRECT. The device would
+        // read the "table" at that address and follow ITS descriptors anywhere; we do not walk it,
+        // so the only safe answer is no.
+        w64(desc, base + 0x200); // addr: inside the region
+        w64(desc + 8, 128); // len: 128 bytes (8 inner descriptors), inside the region
+        w16(desc + 12, VIRTQ_DESC_F_INDIRECT);
+        w16(desc + 14, 0);
+        w16(avail + 4, 0); // ring[0] = head 0
+        w16(avail + 2, 1); // avail.idx = 1
+
+        assert!(
+            !validate_avail(base, size, desc, avail, 0, 1, &read16, &read64),
+            "an indirect descriptor was accepted: the device could follow its unvalidated table \
+             out of the DMA region",
+        );
+
+        crate::memory::free(frames::Frame::from_addr(frame));
+    }
+
+    /// **Feature negotiation strips the ring-layout features the validator cannot police.**
+    ///
+    /// A driver that asks for `INDIRECT_DESC` (bit 28) or `RING_PACKED` (bit 34) gets that bit
+    /// cleared before the device sees it, so the device never honours a descriptor format the
+    /// validator does not understand. Every other bit passes through untouched, so real device
+    /// features still negotiate.
+    #[test_case]
+    fn feature_negotiation_strips_indirect_and_packed() {
+        // Low word (sel 0): INDIRECT_DESC at bit 28 is cleared; unrelated bits survive.
+        let asked_lo = (1 << 28) | (1 << 5) | 1; // indirect + two blk feature bits
+        let got_lo = sanitize_driver_features(0, asked_lo);
+        assert_eq!(got_lo & (1 << 28), 0, "INDIRECT_DESC was not stripped");
+        assert_eq!(got_lo, (1 << 5) | 1, "a non-ring feature bit was disturbed");
+
+        // High word (sel 1): RING_PACKED is feature bit 34, i.e. bit 2 of the high word.
+        let asked_hi = (1 << 2) | 1; // packed + VERSION_1 (bit 32 = high-word bit 0)
+        let got_hi = sanitize_driver_features(1, asked_hi);
+        assert_eq!(got_hi & (1 << 2), 0, "RING_PACKED was not stripped");
+        assert_eq!(got_hi & 1, 1, "VERSION_1 must survive negotiation");
+    }
+
+    /// **A jump in `avail.idx` larger than the ring is refused, not walked.**
+    ///
+    /// The available ring holds only `QSIZE` slots, so at most `QSIZE` descriptors can be newly
+    /// available between notifies. A hostile driver that advances `avail.idx` by tens of thousands
+    /// would otherwise make the validator loop that many times, under the `DEVICES` lock with
+    /// interrupts masked. Every descriptor and ring slot here is individually valid, so the ONLY
+    /// thing that can refuse the oversized batch is the jump-size guard.
+    #[test_case]
+    fn the_validator_refuses_more_new_entries_than_the_ring_can_hold() {
+        let frame = crate::memory::alloc().expect("no frame").addr();
+        let base = frame;
+        let size = frames::FRAME_SIZE;
+
+        let desc = base + DESC_OFF;
+        let avail = base + AVAIL_OFF;
+        let w16 =
+            |phys: u64, v: u16| unsafe { core::ptr::write_volatile(mmu::phys_to_virt(phys) as *mut u16, v) };
+        let w64 =
+            |phys: u64, v: u64| unsafe { core::ptr::write_volatile(mmu::phys_to_virt(phys) as *mut u64, v) };
+        let read16 = |p: u64| unsafe { core::ptr::read_volatile(mmu::phys_to_virt(p) as *const u16) };
+        let read64 = |p: u64| unsafe { core::ptr::read_volatile(mmu::phys_to_virt(p) as *const u64) };
+
+        // Fill the whole ring with individually valid single-descriptor entries: desc[i] is an
+        // in-region 8-byte buffer, ring[i] = head i. With no size guard the walk would accept them.
+        for i in 0..QSIZE as u64 {
+            let d = desc + i * 16;
+            w64(d, base + 0x200 + i * 8); // addr: in-region
+            w64(d + 8, 8); // len: 8 bytes, in-region
+            w16(d + 12, 0); // flags: no NEXT, no INDIRECT
+            w16(d + 14, 0);
+            w16(avail + 4 + i * 2, i as u16); // ring[i] = head i
+        }
+
+        // Exactly QSIZE new entries is legal: the ring holds that many.
+        assert!(
+            validate_avail(base, size, desc, avail, 0, QSIZE, &read16, &read64),
+            "a batch of exactly QSIZE valid entries was refused",
+        );
+
+        // One more than the ring can hold is refused, though every descriptor is valid.
+        assert!(
+            !validate_avail(base, size, desc, avail, 0, QSIZE + 1, &read16, &read64),
+            "a jump of QSIZE+1 was walked instead of refused: a hostile avail.idx could spin the \
+             validator up to 65535 times with interrupts masked",
         );
 
         crate::memory::free(frames::Frame::from_addr(frame));

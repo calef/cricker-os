@@ -51,6 +51,11 @@ const QSIZE: usize = 8;
 // Descriptor flags.
 const VIRTQ_DESC_F_NEXT: u16 = 1;
 const VIRTQ_DESC_F_WRITE: u16 = 2; // device writes (i.e. our read buffer)
+const VIRTQ_DESC_F_INDIRECT: u16 = 4; // points at a table of further descriptors (attack test)
+
+// Feature bit 28 (low word): VIRTIO_RING_F_INDIRECT_DESC. The indirect attacker asks for it; the
+// kernel strips it during negotiation so the device never honours the flag above.
+const F_INDIRECT_DESC_LO: u32 = 1 << 28;
 
 // blk request types.
 const VIRTIO_BLK_T_IN: u32 = 0; // read
@@ -99,15 +104,24 @@ fn dma_read<T: Copy>(off: u64) -> T {
 /// is set up THROUGH THE KERNEL, which places the rings at fixed offsets in our DMA region and
 /// programs the device with those addresses — we never choose them.
 fn init() {
+    init_with_features(0);
+}
+
+/// The handshake, with `driver_features_lo` OR'd into the low feature word. The honest driver
+/// passes 0; the indirect attacker passes `F_INDIRECT_DESC_LO` to try to negotiate indirect
+/// descriptors (the kernel strips it, proving negotiation is filtered).
+fn init_with_features(driver_features_lo: u32) {
     check(mr(MAGIC) == 0x7472_6976); // "virt": we really are talking to a virtio device
 
     mw(STATUS, 0);
     mw(STATUS, S_ACKNOWLEDGE);
     mw(STATUS, S_ACKNOWLEDGE | S_DRIVER);
 
-    // Accept exactly VIRTIO_F_VERSION_1: low word 0, high word bit 32.
+    // Accept VIRTIO_F_VERSION_1 (high word bit 32), plus whatever the caller asked for in the low
+    // word. The kernel filters the low word, so a request for a ring-layout feature it cannot
+    // validate does not survive.
     mw(DRIVER_FEATURES_SEL, 0);
-    mw(DRIVER_FEATURES, 0);
+    mw(DRIVER_FEATURES, driver_features_lo);
     mw(DRIVER_FEATURES_SEL, 1);
     mw(DRIVER_FEATURES, F_VERSION_1_HI);
 
@@ -174,6 +188,47 @@ pub fn run_attack(dma_phys: u64) -> ! {
 
     // Submit. The kernel walks the descriptor, sees KERNEL_ADDR is outside our region, and refuses.
     // SAFETY: `svc`.
+    let r = unsafe { invoke(VIRTIO, abi::virtio::NOTIFY, 0, 0, 0) };
+    send(REPORT, if r < 0 { 1 } else { 0 }, 0, 0); // 1 = refused (good), 0 = it went through (bad)
+
+    let _ = dma_phys;
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+/// **The indirect-descriptor attack, refused.** The subtler cousin of `run_attack`: instead of a
+/// direct descriptor pointing at kernel memory (which the validator obviously refuses), this
+/// negotiates `INDIRECT_DESC` and submits a single descriptor flagged `INDIRECT`, whose *inner*
+/// table (in our own region) points the device at the kernel. A validator that walked only the
+/// flat chain would wave the outer descriptor through and let the device follow the table out. The
+/// kernel strips the feature during negotiation and refuses the flag on submit, so the device is
+/// never told to go. Reports 1 if refused (correct), 0 if the notify went through (a hole).
+pub fn run_attack_indirect(dma_phys: u64) -> ! {
+    // Ask for indirect descriptors. The kernel strips the bit, but we build the attack anyway to
+    // prove the validator refuses the flag even if the feature ever slipped through.
+    init_with_features(F_INDIRECT_DESC_LO);
+
+    const KERNEL_ADDR: u64 = 0xffff_0000_4008_0000;
+
+    // The indirect TABLE lives in our region (the header scratch area). Its one entry aims the
+    // device at kernel memory, device-writable.
+    dma_write::<u64>(OFF_HEADER, KERNEL_ADDR); // inner desc addr
+    dma_write::<u32>(OFF_HEADER + 8, 512); // inner desc len
+    dma_write::<u16>(OFF_HEADER + 12, VIRTQ_DESC_F_WRITE); // inner desc flags
+    dma_write::<u16>(OFF_HEADER + 14, 0); // inner desc next
+
+    // desc[0]: flagged INDIRECT, pointing at the in-region table above. Wholly in-region, so only
+    // the INDIRECT handling stands between this and a kernel-memory DMA.
+    write_desc(0, dma_phys + OFF_HEADER, 16, VIRTQ_DESC_F_INDIRECT, 0);
+
+    let idx: u16 = dma_read::<u16>(OFF_AVAIL + 2);
+    dma_write::<u16>(OFF_AVAIL + 4 + (idx as u64 % QSIZE as u64) * 2, 0);
+    barrier();
+    dma_write::<u16>(OFF_AVAIL + 2, idx.wrapping_add(1));
+    barrier();
+
+    // SAFETY: `svc`. The kernel refuses the indirect descriptor and never rings the device.
     let r = unsafe { invoke(VIRTIO, abi::virtio::NOTIFY, 0, 0, 0) };
     send(REPORT, if r < 0 { 1 } else { 0 }, 0, 0); // 1 = refused (good), 0 = it went through (bad)
 

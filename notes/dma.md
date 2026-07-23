@@ -68,8 +68,13 @@ can, at worst, corrupt itself.
 available ring from the last-validated index to the current one, and for each new head follows the
 descriptor chain, checking that every `addr..addr+len` (with overflow rejected) lies within
 `[dma_base, dma_base + dma_size)`. The chain walk is bounded by the queue size, so a malicious
-`next`-pointer cycle cannot hang the kernel. It is written to take the ring addresses and a
-read-word pair, so a test builds a fake region and exercises it directly.
+`next`-pointer cycle cannot hang the kernel. The *outer* walk is bounded too: the available ring
+holds only `QSIZE` slots, so a batch claiming more than `QSIZE` newly-available entries is malformed
+and refused before a single descriptor is touched. Without that guard a driver could set `avail.idx`
+tens of thousands past the last-validated index and spin the loop up to 65535 times, all under the
+`DEVICES` lock with interrupts masked (bounded, single-core, but a needless latency spike). It is
+written to take the ring addresses and a read-word pair, so a test builds a fake region and exercises
+it directly.
 
 ## The proof
 
@@ -83,9 +88,88 @@ Three tests, and one of them is the attack:
   image, and submits. The kernel refuses; the driver reports it.
 - `a_userspace_driver_reads_a_file_from_a_virtio_disk` — the legit path still reads a file off the
   disk through the validated transport.
+- `the_validator_refuses_an_indirect_descriptor` and `the_kernel_refuses_an_indirect_descriptor_escape`
+  — the indirect-descriptor bypass below, refused as a unit and end to end.
+- `feature_negotiation_strips_indirect_and_packed` — a driver asking for either ring-layout feature
+  gets the bit cleared before the device sees it.
 
 Verified the confinement can fail: with the region check stubbed to accept everything, the attack
 goes through and the end-to-end test fails.
+
+## Two ways the in-place check was still too weak
+
+A second read of the validator turned up a gap that the "walk the chain, check each address" story
+misses. The check assumes it sees every address the device will use. Two virtio features break that
+assumption, and both are negotiable by the driver, because the kernel passes `DRIVER_FEATURES`
+writes straight through.
+
+**Indirect descriptors (`VIRTIO_RING_F_INDIRECT_DESC`, feature bit 28).** A descriptor flagged
+`INDIRECT` does not describe a buffer. Its `addr` points at a *table* of more descriptors, and the
+device follows that table. The old validator only understood `NEXT` chains, so it treated the
+indirect descriptor as an ordinary buffer: it confirmed the table's address was in-region (it is,
+the attacker puts the table in its own region) and stopped. It never walked the inner descriptors,
+which is exactly where the attacker writes the kernel address. QEMU's virtio-blk offers this
+feature, so a malicious driver could negotiate it and escape. This one is reachable on the current
+target, not just on hypothetical async-DMA hardware.
+
+**Packed virtqueues (`VIRTIO_F_RING_PACKED`, feature bit 34).** The whole ring format changes. The
+validator understands only the split ring (separate descriptor table, available ring, used ring),
+so against a packed ring it would be reading the wrong bytes while the device reads a ring nobody
+checked.
+
+The fix has two layers, both cheap:
+
+1. **Refuse the features at negotiation.** `sanitize_driver_features` strips bit 28 from the low
+   feature word and bit 34 from the high word before the value reaches the device. Without the
+   negotiated feature, the spec forbids the driver from using it and QEMU rejects an `INDIRECT`
+   descriptor outright. The honest driver asks for neither, so nothing legitimate breaks.
+2. **Refuse the flag at validation.** `validate_avail` returns false on any descriptor carrying
+   `VIRTQ_DESC_F_INDIRECT`. With the feature already stripped no honest descriptor sets it, so this
+   costs one branch and makes the confinement fail closed if layer 1 ever regresses.
+
+The deeper lesson is that both of these, and the time-of-check/time-of-use question below, are the
+same shape of problem: **the validator reads descriptors out of memory the driver keeps mapped
+writable.** Patching each feature is treating symptoms. The cure is to stop reading from shared
+memory at all.
+
+## The residual race, and the complete fix: a shadow descriptor ring
+
+Even for a plain split ring with no fancy features, the check and the device's use are separated in
+time. The kernel validates the descriptors, then writes `QUEUE_NOTIFY`, then the device reads the
+descriptors. If the device reads them by its own asynchronous DMA (as real hardware does), the
+driver can change a descriptor's `addr` after the kernel validated it and before the device
+dereferences it. Validating memory the writer still controls is a time-of-check/time-of-use race by
+construction.
+
+On the current target it does not fire: the driver is a single EL0 thread that cannot run between
+the kernel's validation and its `QUEUE_NOTIFY` write, and QEMU's virtio-blk pops descriptors
+synchronously inside that MMIO write, capturing the addresses before any guest code resumes. So
+this is recorded as a design limit, not a live hole. On hardware where the device fetches
+descriptors asynchronously, it is real.
+
+The complete fix is a **shadow descriptor ring**:
+
+- Allocate a kernel-private page (not mapped into the driver) for the descriptor table and the
+  available ring.
+- In `SETUP_QUEUE`, program the device with the addresses of that private page instead of offsets
+  in the driver's region.
+- On `NOTIFY`, copy the driver's descriptors into the private ring, validate the copy, and only then
+  ring the device.
+
+Now the device reads descriptors the driver physically cannot touch, so there is nothing left to
+race. The data buffers stay in the driver's region (it has to fill and drain them), and that is
+fine: a driver racing its own buffer *contents* only corrupts its own I/O, never anyone else's
+memory, because the *addresses* the device uses are the validated copies. The used ring can stay
+shared too, since the device writes only indices and lengths there, not addresses. The copy also
+subsumes the feature problem: the copy step either refuses `INDIRECT`/packed or recursively copies
+and validates an indirect table, so there is one place that decides what the device is allowed to
+read.
+
+The cost is small (one page per device, a 128-byte copy per submit, the same validation against the
+copy), which is the real argument for doing it rather than masking feature bits forever. It is
+parked, not because it is hard, but because the current QEMU target does not exercise the race and
+the reachable bypass (indirect descriptors) is already closed above. When a target with asynchronous
+device DMA arrives, this is the change.
 
 ## The tradeoff, stated plainly
 

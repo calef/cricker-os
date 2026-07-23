@@ -46,6 +46,7 @@ const GRANTER: u64 = 9;
 const RECEIVER: u64 = 10;
 const FRAME_PRODUCER: u64 = 11;
 const FRAME_CONSUMER: u64 = 12;
+const VIRTIO_ATTACK_INDIRECT: u64 = 13;
 
 /// The word the frame producer writes into a shared page and the consumer reads back through its
 /// own mapping of the same physical page. One binary, so one constant serves both roles.
@@ -96,6 +97,7 @@ pub extern "C" fn _start(role: u64, dma_phys: u64, _arg2: u64) -> ! {
         WORKER => shell::worker(),
         UNTYPED_DEMO => untyped_demo(),
         VIRTIO_ATTACK => virtio::run_attack(dma_phys),
+        VIRTIO_ATTACK_INDIRECT => virtio::run_attack_indirect(dma_phys),
         GRANTER => granter(),
         RECEIVER => receiver(),
         FRAME_PRODUCER => frame_producer(),

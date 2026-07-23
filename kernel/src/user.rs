@@ -808,6 +808,48 @@ pub mod virtio_service {
 
         Some(report)
     }
+
+    const ROLE_VIRTIO_ATTACK_INDIRECT: u64 = 13;
+
+    /// Spawn a malicious driver that tries the **indirect-descriptor** escape: it negotiates
+    /// `INDIRECT_DESC` and submits one descriptor flagged indirect whose inner table aims the
+    /// device at the kernel image. Same wiring as [`start_attacker`], different role. The kernel
+    /// strips the feature and refuses the flag, so the attacker reports `1` (refused). Returns the
+    /// report endpoint.
+    pub fn start_attacker_indirect(image: &'static [u8]) -> Option<usize> {
+        let dev = crate::virtio::find_block_device()?;
+        let dma = crate::memory::alloc().expect("no DMA frame").addr();
+        // SAFETY: fresh frame via the direct map.
+        unsafe {
+            core::ptr::write_bytes(mmu::phys_to_virt(dma) as *mut u8, 0, FRAME_SIZE as usize);
+        }
+        let vid = crate::virtio::register(dev.mmio_phys, dma, FRAME_SIZE);
+        let report = crate::sched::create_endpoint();
+
+        crate::sched::spawn(move || {
+            run(
+                image,
+                Spawn {
+                    arg0: ROLE_VIRTIO_ATTACK_INDIRECT,
+                    arg1: dma,
+                    arg2: 0,
+                    grants: &[
+                        endpoint_cap(report, Rights::WRITE),
+                        irq_cap(dev.intid), // slot 1 (unused; keeps virtio at slot 2)
+                        virtio_cap(vid),    // slot 2
+                    ],
+                    maps: &[Mapping {
+                        va: DMA_VA,
+                        phys: dma,
+                        flags: Flags::user_data(),
+                    }],
+                },
+            )
+        })
+        .expect("could not spawn the indirect virtio attacker");
+
+        Some(report)
+    }
 }
 
 /// Console **input** in userspace: the receive half of the terminal.
@@ -1787,6 +1829,29 @@ mod tests {
             refused, 1,
             "a malicious driver's descriptor pointing at kernel memory was NOT refused: the \
              device could have DMA'd over the kernel",
+        );
+    }
+
+    /// **The indirect-descriptor escape, end to end.** The direct-descriptor test above proves the
+    /// obvious case. This proves the subtle one: a driver that negotiates `INDIRECT_DESC` and
+    /// submits an indirect descriptor whose inner table (in its own region) aims the device at the
+    /// kernel. A validator that walked only the flat chain would pass the outer descriptor and let
+    /// the device follow the table out. The kernel strips the feature and refuses the flag, so the
+    /// device is never rung. The driver reports `1` when it was refused.
+    #[test_case]
+    fn the_kernel_refuses_an_indirect_descriptor_escape() {
+        let report = match virtio_service::start_attacker_indirect(initrd().expect("no initrd")) {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no virtio disk attached; skipping)");
+                return;
+            }
+        };
+        let refused = sched::ipc_recv(report)[0];
+        assert_eq!(
+            refused, 1,
+            "an indirect descriptor whose inner table pointed at kernel memory was NOT refused: \
+             the device could have followed it out of the driver's region",
         );
     }
 
