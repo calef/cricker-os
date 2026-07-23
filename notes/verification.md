@@ -116,6 +116,20 @@ The allocator harnesses build a small allocator over a *symbolic* bitmap directl
 module is inside the crate, so it can reach the private fields), rather than through `new`, which
 fills the bitmap all-used. The scan loops are bounded by pinning `total = 8`, so `unwind(9)` suffices.
 
+Four in `crates/dtb/src/lib.rs`, the device-tree parser's leaf readers (the whole-parse token loop
+is the same BMC wall as ELF, so the leaves are what get proved):
+
+| Harness | Property |
+|---|---|
+| `be32_is_total` / `be64_is_total` | the big-endian readers never panic for any offset, even `usize::MAX` |
+| `be32_reads_big_endian_when_in_bounds` | an in-bounds read is exactly `bytes[at..at+4]`, MSB first |
+| `align4_rounds_up_to_a_multiple_of_four` | the padding helper rounds up correctly for any realistic length |
+
+`be32`/`be64` were *hardened* to reach totality: their `at + 4` / `at + 8` is now a checked add, so a
+near-`usize::MAX` offset from a corrupt blob returns `Truncated` instead of panicking. The 12
+integration tests against a real QEMU device tree are unchanged, so the hardening is faithful. This
+is the elf lesson reused: prove (and here, harden) the loopless leaves; the walk stays on the tests.
+
 Four in `crates/elf/src/lib.rs`:
 
 | Harness | Property |

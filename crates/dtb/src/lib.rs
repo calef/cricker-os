@@ -59,12 +59,17 @@ const MAGIC: u32 = 0xd00d_feed;
 const HEADER_LEN: usize = 40;
 
 fn be32(bytes: &[u8], at: usize) -> Result<u32, Error> {
-    let slice = bytes.get(at..at + 4).ok_or(Error::Truncated)?;
+    // `at + 4` is a checked add, not a bare one: `at` comes straight out of the (untrusted) blob,
+    // and a near-`usize::MAX` offset would otherwise panic on the overflow before `get` ever runs.
+    // Proved total in the verification module.
+    let end = at.checked_add(4).ok_or(Error::Truncated)?;
+    let slice = bytes.get(at..end).ok_or(Error::Truncated)?;
     Ok(u32::from_be_bytes(slice.try_into().unwrap()))
 }
 
 fn be64(bytes: &[u8], at: usize) -> Result<u64, Error> {
-    let slice = bytes.get(at..at + 8).ok_or(Error::Truncated)?;
+    let end = at.checked_add(8).ok_or(Error::Truncated)?;
+    let slice = bytes.get(at..end).ok_or(Error::Truncated)?;
     Ok(u64::from_be_bytes(slice.try_into().unwrap()))
 }
 
@@ -467,4 +472,67 @@ impl<'a> Dtb<'a> {
 /// Everything in the structure block is padded to a 4-byte boundary.
 fn align4(n: usize) -> usize {
     n.div_ceil(4) * 4
+}
+
+/// Machine-checked proofs of the device-tree parser's leaf readers (DECISIONS §14, milestone 18).
+///
+/// The device tree is untrusted boot input, and the whole-parse walk (a token loop over the
+/// structure block) is past what bounded model checking can do, the same wall the ELF parser hit
+/// (see notes/verification.md). So, as there, the leaves are proved: the big-endian readers every
+/// field goes through, and the padding helper. `be32`/`be64` were hardened with a checked add first,
+/// so they are now *total*; `align4` is proved correct for any realistic length (it can overflow
+/// only far above any device-tree size, and its callers pass node-name and property lengths).
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    /// Enough bytes to place a `be64` read at a few different offsets.
+    const N: usize = 12;
+
+    /// **`be32` is total: no offset panics.** For any bytes and any offset, `be32` returns `Ok` or
+    /// `Err(Truncated)`, never panicking, even at `usize::MAX` where the old `at + 4` would have
+    /// wrapped. This is the hardening proved.
+    #[kani::proof]
+    fn be32_is_total() {
+        let bytes: [u8; N] = kani::any();
+        let at: usize = kani::any();
+        let _ = be32(&bytes, at);
+    }
+
+    /// **`be64` is total: no offset panics.** As `be32`, for the 8-byte read.
+    #[kani::proof]
+    fn be64_is_total() {
+        let bytes: [u8; N] = kani::any();
+        let at: usize = kani::any();
+        let _ = be64(&bytes, at);
+    }
+
+    /// **An in-bounds `be32` reads four big-endian bytes.** When it returns `Ok`, the value is
+    /// exactly `bytes[at..at+4]` most-significant-byte first, so the endianness conversion the whole
+    /// crate depends on is correct, for every input.
+    #[kani::proof]
+    fn be32_reads_big_endian_when_in_bounds() {
+        let bytes: [u8; N] = kani::any();
+        let at: usize = kani::any();
+        if let Ok(v) = be32(&bytes, at) {
+            let expected = ((bytes[at] as u32) << 24)
+                | ((bytes[at + 1] as u32) << 16)
+                | ((bytes[at + 2] as u32) << 8)
+                | (bytes[at + 3] as u32);
+            assert_eq!(v, expected);
+        }
+    }
+
+    /// **`align4` rounds up to a multiple of four.** For any realistic length, `align4(n)` is a
+    /// multiple of 4, at least `n`, and less than `n + 4`. The bound is far above any device-tree
+    /// field length and only rules out the overflow point of the internal `* 4`.
+    #[kani::proof]
+    fn align4_rounds_up_to_a_multiple_of_four() {
+        let n: usize = kani::any();
+        kani::assume(n <= 1 << 60);
+        let a = align4(n);
+        assert!(a.is_multiple_of(4));
+        assert!(a >= n);
+        assert!(a < n + 4);
+    }
 }

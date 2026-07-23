@@ -32,3 +32,6 @@ cargo kani -p elf
 
 echo "==> kani: frames (the physical frame allocator)"
 cargo kani -p frames
+
+echo "==> kani: dtb (the device-tree parser's leaf readers)"
+cargo kani -p dtb
