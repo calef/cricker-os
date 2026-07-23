@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A quick follow-up push supersedes the in-flight run on the same ref, rather than queueing behind it.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: build + test (host + QEMU)
+    runs-on: ubuntu-latest
+    # A hung kernel means QEMU never exits and the runner would block until the 6-hour default.
+    # Fail loudly instead. Local runs finish in well under a minute once built.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # qemu-system-aarch64 ships in the qemu-system-arm package. It runs the kernel under TCG on
+      # the x86 runner (the same deterministic path `cargo xtask test` uses locally), and the
+      # kernel reports pass/fail by exiting through semihosting.
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-arm
+
+      # rust-toolchain.toml pins nightly plus rust-src, llvm-tools, and the bare-metal target
+      # (llvm-objcopy from llvm-tools is what scripts/qemu-runner.sh strips the ELF with). Install
+      # exactly that, so CI builds what a developer builds. rustup also honours the toml on first
+      # cargo use, but doing it explicitly keeps the logs and the cache step clean.
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install nightly --profile minimal
+          rustup component add --toolchain nightly rust-src llvm-tools
+          rustup target add --toolchain nightly aarch64-unknown-none-softfloat
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The pure-logic host crates run first (milliseconds, no emulator), then the kernel boots
+      # under QEMU. One command, the same one used locally. See xtask/src/main.rs and DECISIONS.md §7.
+      - name: cargo xtask test
+        run: cargo xtask test
+
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install rustfmt (pinned nightly)
+        run: rustup toolchain install nightly --profile minimal --component rustfmt
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clippy and the bare-metal target
+        run: |
+          rustup toolchain install nightly --profile minimal --component clippy
+          rustup target add --toolchain nightly aarch64-unknown-none-softfloat
+      - uses: Swatinem/rust-cache@v2
+
+      # The workspace has two worlds. The host crates (pure logic) and xtask build for the host,
+      # so lint them with --all-targets to cover their tests too. kernel and user are bare-metal
+      # `no_std` and only build for the aarch64 target, and --all-targets there would try to build
+      # the standard libtest harness, which does not exist for a no_std target. So they are linted
+      # separately, without --all-targets. -D warnings makes a lint a failure, not a note.
+      - name: clippy (host crates + xtask)
+        run: cargo clippy --workspace --exclude kernel --exclude user --all-targets -- -D warnings
+      - name: clippy (kernel + user, aarch64)
+        run: cargo clippy -p kernel -p user --target aarch64-unknown-none-softfloat -- -D warnings
