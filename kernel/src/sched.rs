@@ -41,7 +41,7 @@ use crate::cpu;
 use crate::sync::{IrqSafeMutex, rank};
 use crate::thread::{Context, QuotaToken, State, Thread, Tid, switch_to};
 use alloc::boxed::Box;
-use alloc::collections::{BTreeMap, VecDeque};
+use alloc::collections::BTreeMap;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// How many times we have actually taken the CPU away from a thread. The number that says
@@ -71,24 +71,15 @@ fn idle_tid() -> Tid {
     cpu::current().idle.load(Ordering::Relaxed)
 }
 
-/// A synchronous IPC rendezvous point.
+/// A synchronous IPC rendezvous point: the two wait queues and the pending-signal count.
 ///
-/// **At most one of these queues is ever non-empty.** A sender that finds a receiver waiting
-/// delivers immediately and neither blocks; a receiver that finds a sender waiting collects
-/// immediately. So a thread only ends up in a queue when *nobody* was waiting for it, and the
-/// two queues are two sides of the same coin: whichever kind of thread arrived first and had to
-/// wait. Keeping both is not redundant, it just spares us reasoning about which coin we are
-/// holding.
-#[derive(Default)]
-struct Endpoint {
-    senders: VecDeque<Tid>,
-    receivers: VecDeque<Tid>,
-    /// **Async signals that arrived with nobody waiting.** An interrupt is not a rendezvous: it
-    /// happens whether or not the driver is currently blocked in `RECV`, and it must not be
-    /// lost. So a signal delivered to an empty endpoint is *counted* here, and the next `RECV`
-    /// drains it instead of blocking. Zero for an ordinary synchronous endpoint, always.
-    pending: u32,
-}
+/// **The state machine is the `ipc` crate**, which owns the queues and the decision logic (send,
+/// recv, signal) and carries machine-checked proofs of its one invariant, "at most one wait queue is
+/// ever non-empty" (DECISIONS §14, milestone 18; notes/verification.md). This alias binds it to the
+/// kernel's `Tid`, so the six IPC functions below decide *what* to do by calling the proved logic and
+/// spend their own code only on the bookkeeping the queues cannot express (mailboxes, waking a thread
+/// onto a run queue, the one-shot Reply that leaves a caller blocked).
+type Endpoint = ipc::Endpoint<Tid>;
 
 struct Scheduler {
     /// `Box` because the assembly writes through `&mut thread.context`, so a thread's address
@@ -549,11 +540,10 @@ pub fn irq_notify(ep: usize) {
     let mut guard = SCHED.lock();
     let sched = guard.as_mut().expect("no scheduler");
 
-    if let Some(waiter) = sched.endpoints[ep].receivers.pop_front() {
+    // `signal` wakes a waiting receiver or counts the signal; it never blocks or joins a queue.
+    if let Some(waiter) = sched.endpoints[ep].signal() {
         sched.threads.get_mut(&waiter).unwrap().mailbox = [1, 0, 0];
         wake(sched, waiter);
-    } else {
-        sched.endpoints[ep].pending = sched.endpoints[ep].pending.saturating_add(1);
     }
 }
 
@@ -595,16 +585,19 @@ pub fn ipc_send(ep: usize, msg: [u64; 3]) {
         let sched = guard.as_mut().expect("no scheduler");
         let current = current_tid();
 
-        if let Some(receiver) = sched.endpoints[ep].receivers.pop_front() {
-            sched.threads.get_mut(&receiver).unwrap().mailbox = msg;
-            wake(sched, receiver);
-            false
-        } else {
-            let me = sched.threads.get_mut(&current).unwrap();
-            me.mailbox = msg;
-            me.state = State::Blocked;
-            sched.endpoints[ep].senders.push_back(current);
-            true
+        match sched.endpoints[ep].send(current) {
+            ipc::Send::Rendezvous(receiver) => {
+                sched.threads.get_mut(&receiver).unwrap().mailbox = msg;
+                wake(sched, receiver);
+                false
+            }
+            ipc::Send::Blocked => {
+                // `send` has already queued `current` as a sender; we record why it is parked.
+                let me = sched.threads.get_mut(&current).unwrap();
+                me.mailbox = msg;
+                me.state = State::Blocked;
+                true
+            }
         }
     };
 
@@ -623,29 +616,31 @@ pub fn ipc_recv(ep: usize) -> [u64; 3] {
         let sched = guard.as_mut().expect("no scheduler");
         let current = current_tid();
 
-        if sched.endpoints[ep].pending > 0 {
+        match sched.endpoints[ep].recv(current) {
             // An interrupt already fired while we were not waiting. Take it and do not block.
-            sched.endpoints[ep].pending -= 1;
-            Some([1, 0, 0])
-        } else if let Some(sender) = sched.endpoints[ep].senders.pop_front() {
-            let msg = sched.threads.get(&sender).unwrap().mailbox;
-            // A caller (its outgoing cap is the one-shot Reply the kernel minted for a CALL, §12) is
-            // awaiting a *reply*, which a plain RECV cannot furnish: only RECV_CAP delivers the reply
-            // capability. Deliver the words but leave the caller blocked rather than wake it with its
-            // own request masquerading as a reply. Serve CALL endpoints with RECV_CAP; a plain RECV
-            // here leaves the caller hung, the same no-timeout limitation as a reply that never comes.
-            let is_caller = matches!(
-                sched.threads.get(&sender).unwrap().outgoing_cap,
-                Some(c) if matches!(c.object, crate::cap::Object::Reply(_))
-            );
-            if !is_caller {
-                wake(sched, sender);
+            ipc::Recv::Signal => Some([1, 0, 0]),
+            ipc::Recv::FromSender(sender) => {
+                let msg = sched.threads.get(&sender).unwrap().mailbox;
+                // A caller (its outgoing cap is the one-shot Reply the kernel minted for a CALL, §12)
+                // is awaiting a *reply*, which a plain RECV cannot furnish: only RECV_CAP delivers the
+                // reply capability. Deliver the words but leave the caller blocked rather than wake it
+                // with its own request masquerading as a reply. Serve CALL endpoints with RECV_CAP; a
+                // plain RECV here leaves the caller hung, the same no-timeout limitation as a reply
+                // that never comes.
+                let is_caller = matches!(
+                    sched.threads.get(&sender).unwrap().outgoing_cap,
+                    Some(c) if matches!(c.object, crate::cap::Object::Reply(_))
+                );
+                if !is_caller {
+                    wake(sched, sender);
+                }
+                Some(msg)
             }
-            Some(msg)
-        } else {
-            sched.threads.get_mut(&current).unwrap().state = State::Blocked;
-            sched.endpoints[ep].receivers.push_back(current);
-            None
+            ipc::Recv::Blocked => {
+                // `recv` has already queued `current` as a receiver.
+                sched.threads.get_mut(&current).unwrap().state = State::Blocked;
+                None
+            }
         }
     };
 
@@ -683,19 +678,22 @@ pub fn ipc_send_cap(ep: usize, data: u64, cap: crate::cap::Cap) {
         let sched = guard.as_mut().expect("no scheduler");
         let current = current_tid();
 
-        if let Some(receiver) = sched.endpoints[ep].receivers.pop_front() {
-            let r = sched.threads.get_mut(&receiver).unwrap();
-            let slot = r.cspace.insert(cap).unwrap_or(NO_CAP);
-            r.mailbox = [data, slot, 0];
-            wake(sched, receiver);
-            false
-        } else {
-            let me = sched.threads.get_mut(&current).unwrap();
-            me.mailbox = [data, 0, 0];
-            me.outgoing_cap = Some(cap);
-            me.state = State::Blocked;
-            sched.endpoints[ep].senders.push_back(current);
-            true
+        match sched.endpoints[ep].send(current) {
+            ipc::Send::Rendezvous(receiver) => {
+                let r = sched.threads.get_mut(&receiver).unwrap();
+                let slot = r.cspace.insert(cap).unwrap_or(NO_CAP);
+                r.mailbox = [data, slot, 0];
+                wake(sched, receiver);
+                false
+            }
+            ipc::Send::Blocked => {
+                // `send` queued `current`; we park the data word and the capability to hand over.
+                let me = sched.threads.get_mut(&current).unwrap();
+                me.mailbox = [data, 0, 0];
+                me.outgoing_cap = Some(cap);
+                me.state = State::Blocked;
+                true
+            }
         }
     };
 
@@ -716,39 +714,39 @@ pub fn ipc_recv_cap(ep: usize) -> [u64; 3] {
         let sched = guard.as_mut().expect("no scheduler");
         let current = current_tid();
 
-        if sched.endpoints[ep].pending > 0 {
+        match sched.endpoints[ep].recv(current) {
             // An interrupt signal is not a delegation; it carries no capability.
-            sched.endpoints[ep].pending -= 1;
-            Some([1, NO_CAP, 0])
-        } else if let Some(sender) = sched.endpoints[ep].senders.pop_front() {
-            let msg = sched.threads.get(&sender).unwrap().mailbox;
-            let cap = sched.threads.get_mut(&sender).unwrap().outgoing_cap.take();
-            // A caller's outgoing cap is the one-shot Reply the kernel minted for its CALL (§12); a
-            // SEND_CAP sender's is the capability it chose to delegate. The difference is liveness: a
-            // caller stays blocked awaiting its reply, so it must NOT be woken here; a SEND_CAP
-            // sender's rendezvous is complete the moment we take the cap.
-            let is_reply =
-                matches!(cap, Some(c) if matches!(c.object, crate::cap::Object::Reply(_)));
-            let slot = match cap {
-                Some(c) => sched
-                    .threads
-                    .get_mut(&current)
-                    .unwrap()
-                    .cspace
-                    .insert(c)
-                    .unwrap_or(NO_CAP),
-                None => NO_CAP,
-            };
-            if !is_reply {
-                wake(sched, sender);
+            ipc::Recv::Signal => Some([1, NO_CAP, 0]),
+            ipc::Recv::FromSender(sender) => {
+                let msg = sched.threads.get(&sender).unwrap().mailbox;
+                let cap = sched.threads.get_mut(&sender).unwrap().outgoing_cap.take();
+                // A caller's outgoing cap is the one-shot Reply the kernel minted for its CALL (§12); a
+                // SEND_CAP sender's is the capability it chose to delegate. The difference is liveness:
+                // a caller stays blocked awaiting its reply, so it must NOT be woken here; a SEND_CAP
+                // sender's rendezvous is complete the moment we take the cap.
+                let is_reply =
+                    matches!(cap, Some(c) if matches!(c.object, crate::cap::Object::Reply(_)));
+                let slot = match cap {
+                    Some(c) => sched
+                        .threads
+                        .get_mut(&current)
+                        .unwrap()
+                        .cspace
+                        .insert(c)
+                        .unwrap_or(NO_CAP),
+                    None => NO_CAP,
+                };
+                if !is_reply {
+                    wake(sched, sender);
+                }
+                // x0 = word0, x1 = the delivered slot, x2 = word1 (a CALL's second word; 0 for a plain
+                // SEND_CAP, whose sender parked mailbox[1] = 0).
+                Some([msg[0], slot, msg[1]])
             }
-            // x0 = word0, x1 = the delivered slot, x2 = word1 (a CALL's second word; 0 for a plain
-            // SEND_CAP, whose sender parked mailbox[1] = 0).
-            Some([msg[0], slot, msg[1]])
-        } else {
-            sched.threads.get_mut(&current).unwrap().state = State::Blocked;
-            sched.endpoints[ep].receivers.push_back(current);
-            None
+            ipc::Recv::Blocked => {
+                sched.threads.get_mut(&current).unwrap().state = State::Blocked;
+                None
+            }
         }
     };
 
@@ -779,19 +777,24 @@ pub fn ipc_call(ep: usize, msg: [u64; 2]) -> [u64; 3] {
         let current = current_tid();
         let reply = crate::cap::reply_cap(current);
 
-        if let Some(receiver) = sched.endpoints[ep].receivers.pop_front() {
-            // A server is parked in RECV_CAP: hand it the reply cap and the two words now.
-            let r = sched.threads.get_mut(&receiver).unwrap();
-            let slot = r.cspace.insert(reply).unwrap_or(NO_CAP);
-            r.mailbox = [msg[0], slot, msg[1]];
-            wake(sched, receiver);
-        } else {
-            // No server yet. Park the words, and ride the reply cap in `outgoing_cap` so the eventual
-            // RECV_CAP hands it over and, seeing a Reply, leaves us blocked (see ipc_recv_cap).
-            let me = sched.threads.get_mut(&current).unwrap();
-            me.mailbox = [msg[0], msg[1], 0];
-            me.outgoing_cap = Some(reply);
-            sched.endpoints[ep].senders.push_back(current);
+        // `send` decides the rendezvous exactly as a plain SEND: a waiting server, or block. The
+        // difference is the caller *always* blocks awaiting the reply, whether or not it met a server.
+        match sched.endpoints[ep].send(current) {
+            ipc::Send::Rendezvous(receiver) => {
+                // A server is parked in RECV_CAP: hand it the reply cap and the two words now.
+                let r = sched.threads.get_mut(&receiver).unwrap();
+                let slot = r.cspace.insert(reply).unwrap_or(NO_CAP);
+                r.mailbox = [msg[0], slot, msg[1]];
+                wake(sched, receiver);
+            }
+            ipc::Send::Blocked => {
+                // No server yet; `send` queued us as a sender. Park the words and ride the reply cap
+                // in `outgoing_cap` so the eventual RECV_CAP hands it over and, seeing a Reply, leaves
+                // us blocked (see ipc_recv_cap).
+                let me = sched.threads.get_mut(&current).unwrap();
+                me.mailbox = [msg[0], msg[1], 0];
+                me.outgoing_cap = Some(reply);
+            }
         }
         // Either way we block until the reply arrives. We are NOT queued as a receiver; the Reply
         // capability, which carries our tid, is the only thing that can wake us.

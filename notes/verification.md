@@ -145,10 +145,17 @@ Five in `crates/ipc/src/lib.rs`, the synchronous-rendezvous state machine (the d
 | `recv_drains_a_pending_signal_first` | a receive takes a pending async signal before a blocked sender, so a signal is never lost |
 
 These are inductive-step proofs: assume a valid state, apply one operation, check the invariant holds.
-The queues are modeled as counts (the rendezvous decision depends only on whether a queue is empty).
-**Phase 2 is wiring:** make `sched.rs`'s IPC path *use* this proved logic rather than run a parallel
-copy, then re-verify the kernel under QEMU. This crate is the proved target that refactor aims at,
-delivered first because it is safe (no kernel change) where the rewire needs care.
+A non-empty queue is modeled with a single waiter (the decision and the invariant depend only on
+whether a queue is empty, never its length), which keeps the `VecDeque` reasoning tractable.
+
+**Phase 2 is done.** `kernel/src/sched.rs`'s six IPC functions no longer hand-roll the rendezvous
+branch six times; they call `ipc::Endpoint<Tid>` (the same generic type, so the queues are the
+kernel's real endpoint state, not a model kept in sync) for the *decision*, and spend their own code
+only on the bookkeeping the queues cannot express: mailboxes, waking a thread onto a run queue, the
+one-shot Reply that leaves a caller blocked. The full QEMU suite (102 tests, including the Call/Reply,
+frame-delegation, and revocation tests) passes unchanged, so the rewire is faithful: the kernel's IPC
+path *is* the proved logic now, not a parallel copy of it. This is the first place a proof reaches all
+the way into the running kernel rather than staying in a host crate.
 
 Four in `crates/elf/src/lib.rs`:
 

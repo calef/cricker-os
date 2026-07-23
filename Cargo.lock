@@ -54,6 +54,7 @@ dependencies = [
  "elf",
  "frames",
  "heap",
+ "ipc",
  "paging",
  "slab",
  "spin",
