@@ -249,6 +249,57 @@ mod verification {
         assert_eq!(a.is_subset_of(b), b.allows(a));
     }
 
+    /// A small table in an arbitrary state: every slot independently empty or holding a capability
+    /// with symbolic object and rights. Three slots is enough to exhibit "the slot in question, a
+    /// different slot, and an empty one" in every combination.
+    fn any_small_cspace() -> CSpace<u8> {
+        let mut cs: CSpace<u8> = CSpace::new(3);
+        for slot in 0..3u64 {
+            if kani::any() {
+                cs.put(
+                    slot,
+                    Cap {
+                        object: kani::any(),
+                        rights: Rights(kani::any()),
+                    },
+                )
+                .unwrap();
+            }
+        }
+        cs
+    }
+
+    /// **Consume-on-use is final.** For every table state and every slot (in bounds or not), once
+    /// `delete` succeeds the slot answers `NoSuchSlot` to both `get` and a second `delete`. This is
+    /// the mechanism that makes the one-shot Reply one-shot (DECISIONS §12): the syscall layer
+    /// deletes the Reply capability the instant it is invoked, and this proof says no state exists
+    /// in which the deleted slot can be invoked again.
+    #[kani::proof]
+    fn a_deleted_capability_stays_deleted() {
+        let mut cs = any_small_cspace();
+        let slot: u64 = kani::any();
+        if cs.delete(slot).is_ok() {
+            assert_eq!(cs.get(slot).err(), Some(Error::NoSuchSlot));
+            assert_eq!(cs.delete(slot).err(), Some(Error::NoSuchSlot));
+        }
+    }
+
+    /// **Delete is slot-local.** Deleting any slot, in bounds or not, leaves every other slot
+    /// exactly as it was. A server holding one-shot Reply capabilities for two callers consumes
+    /// one and must still hold the other, or answering caller A would silently orphan caller B.
+    #[kani::proof]
+    fn delete_touches_only_its_slot() {
+        let mut cs = any_small_cspace();
+        let victim: u64 = kani::any();
+        let other: u64 = kani::any();
+        kani::assume(victim != other);
+        kani::assume(other < 3);
+
+        let before = cs.get(other);
+        let _ = cs.delete(victim);
+        assert_eq!(cs.get(other), before);
+    }
+
     /// **The central theorem, on the real `CSpace::derive`.** For any source rights and any request,
     /// if the derive succeeds then the capability it stored holds no more than the source did, and
     /// holds exactly what was asked (no silent grant of more). There is no reachable input that

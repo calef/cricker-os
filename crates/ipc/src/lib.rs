@@ -176,6 +176,26 @@ mod verification {
             assert_eq!(e.recv(kani::any()), Recv::Signal);
         }
     }
+
+    /// **A collected sender is forgotten by the endpoint.** The endpoint half of the one-shot
+    /// Reply guarantee (DECISIONS §12): a `CALL`er queues as a sender and blocks; when a server's
+    /// receive collects it, the pop is destructive, so afterwards the endpoint holds no name for
+    /// the caller in either queue and no later receive can produce it again. From that moment the
+    /// kernel-minted Reply capability is the *only* name for the blocked caller anywhere, and the
+    /// caps side (consume-on-use, proved in `crates/caps`) makes that name single-use.
+    ///
+    /// One waiter covers the general case here as everywhere in this module, plus one fact the
+    /// queue cannot see: a blocked thread cannot run, so it cannot enqueue itself a second time.
+    /// Stated through emptiness rather than `contains` (the decision core only ever asks whether a
+    /// queue is empty, and `contains` hands the solver an unbounded scan for no added meaning).
+    #[kani::proof]
+    fn a_collected_sender_is_forgotten() {
+        let mut e = any_valid_endpoint();
+        if matches!(e.recv(kani::any()), Recv::FromSender(_)) {
+            assert!(e.senders.is_empty() && e.receivers.is_empty());
+            assert!(!matches!(e.recv(kani::any()), Recv::FromSender(_)));
+        }
+    }
 }
 
 #[cfg(test)]
