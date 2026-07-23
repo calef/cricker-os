@@ -24,7 +24,7 @@ worth building for the mechanism it teaches.
 | #  | Milestone | What it teaches / delivers |
 |----|-----------|----------------------------|
 | 12 | Call/Reply IPC: a one-shot reply capability | Reply-to-caller as a kernel guarantee; retires the per-client reply endpoint. **Built, §12.** |
-| 13 | Capability revocation + untyped reclamation | A derivation tree and recursive revoke; reclaim a page from a live peer |
+| 13 | Capability revocation + untyped reclamation | Unmap a page from every holder; reclaim a region safely. **Built (frame scope), §13.** |
 | 14 | Kernel objects from untyped: remove the kernel heap | Retype TCBs, endpoints, page tables; §10's deferred axis, finished |
 | 15 | Tagged address spaces (ASIDs) | Stop flushing the whole EL1 TLB on every user switch |
 | 16 | Real hardware + SMMU-backed driver isolation | The IOMMU makes driver isolation real; the shadow ring becomes belt-and-suspenders |
@@ -56,6 +56,11 @@ object), so it is a real decision, not a speculative add. This milestone turns t
 and gives it its own numbered §.
 
 ### 13. Capability revocation + untyped reclamation
+
+**Built (milestone 13), scoped to frame revocation; see DECISIONS §13.** The full derivation tree is
+deferred, the way the argument earlier in this file predicted: revoke-all-derivatives serves the
+reclamation triggers, and subtree granularity waits for a driver. The rest of this block is the
+proposal it was built from.
 
 **Deliverable.** A capability-derivation tree and a recursive `revoke` that unmaps an object from
 every holder, so authority can be retracted from a live peer and a page can finally be reclaimed.

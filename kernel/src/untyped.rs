@@ -92,27 +92,23 @@ pub fn usage(region: usize) -> Option<(u64, u64)> {
     regions.get(region).map(|r| (r.watermark, r.pages))
 }
 
-/// Return a region's whole backing to the frame allocator. The region is emptied but its slot
-/// stays (indices are stable).
+/// Return a region's whole backing to the frame allocator, **safely** (milestone 13). The region is
+/// emptied but its slot stays (indices are stable).
 ///
-/// # TRIPWIRE: do not wire this (or any reclamation) up without revocation first
+/// # This was a tripwire, and revocation is what disarmed it
 ///
-/// This function is currently **unused on purpose**, and that is load-bearing. Wiring it up (say,
-/// to run on process death) turns a *safe* gap into a use-after-free, and the two changes are far
-/// enough apart that the person who wires it will not be thinking about the reason it is unsafe.
+/// It used to be unused on purpose, because reclaiming a region while a peer still maps one of its
+/// frames dangles that mapping onto memory the allocator can hand out again: a use-after-free. The
+/// safety of the whole system rested on retyped frames being **spend-only, never reused**, so a
+/// surviving peer mapped valid, non-reused memory (notes/capability-lifecycle.md, notes/teardown.md).
 ///
-/// The chain: a `Frame` retyped out of this region can be **shared** (a read-only derivative
-/// delegated to a peer, which maps the same physical page — see notes/capability-lifecycle.md).
-/// Address-space teardown deliberately does **not** free such a leaf (notes/teardown.md), so today
-/// a peer's mapping stays valid because these pages are **spend-only: never reclaimed**. The moment
-/// this `free` runs while a peer still maps one of these frames, that mapping dangles onto memory
-/// the allocator can hand out again. UAF.
-///
-/// So reclamation is **blocked on revocation**: before anything calls this, the kernel must be able
-/// to unmap a shared frame from *every* holder first (a capability-derivation tree + recursive
-/// revoke). That is the deferred work in DECISIONS.md "Open design ideas". Until then, keep this
-/// dead, or the no-revocation gap flips from a control limitation to a memory-safety hole.
-#[allow(dead_code)]
+/// That precondition is now *met* rather than assumed. Before freeing anything, this revokes every
+/// mapped page in the region (revoke.rs, §13): each is unmapped from every address space that held
+/// it and every `Frame` capability to it is deleted. So "no live mapping survives" replaces
+/// "spend-only, never reused", and returning the pages to the allocator is safe. `REGIONS` is
+/// released before the revoke so revocation can take the scheduler lock (a higher rank) without
+/// inverting the order.
+#[allow(dead_code)] // called by the §13 tests; reclaim-on-process-death is the deferred wiring
 pub fn destroy(region: usize) {
     let (base, pages) = {
         let mut regions = REGIONS.lock();
@@ -124,6 +120,7 @@ pub fn destroy(region: usize) {
         r.watermark = 0;
         bp
     };
+    crate::revoke::revoke_region(base, pages * FRAME_SIZE);
     for i in 0..pages {
         memory::free(Frame::from_addr(base + i * FRAME_SIZE));
     }

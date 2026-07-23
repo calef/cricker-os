@@ -636,11 +636,39 @@ pub fn map_current_user_page(
     va: u64,
     flags: Flags,
     mut alloc: impl FnMut() -> Option<u64>,
-) -> Result<(), MapError> {
+) -> Result<u64, MapError> {
     // The leaf is a fresh page from `alloc`; the page tables to reach it come from the same
-    // `alloc`. This is the Untyped::MAP path: everything, page and tables, out of one source.
+    // `alloc`. This is the Untyped::MAP path: everything, page and tables, out of one source. The
+    // leaf's physical address is returned so the caller can record the mapping for revocation (§13).
     let leaf = alloc().ok_or(MapError::OutOfFrames)?;
-    map_current_user_frame(va, leaf, flags, alloc)
+    map_current_user_frame(va, leaf, flags, alloc)?;
+    Ok(leaf)
+}
+
+/// Unmap one page at `va` from the user address space rooted at `root`, discharging the TLB
+/// obligation. Returns the physical frame it pointed at, or `None` if nothing was mapped there.
+///
+/// Revocation (§13) uses this to pull a shared page out of *every* holder's address space, which is
+/// why it takes an explicit `root` rather than the installed one: the holder is usually some other
+/// process. The database that drives it forgets a root before its `AddressSpace` frees its tables,
+/// so `root` here is always a live low-half table.
+pub fn unmap_user_at(root: u64, va: u64) -> Option<u64> {
+    // SAFETY: `root` is a live L0 table built with `Half::Low`; the direct map makes `phys_to_ptr`
+    // valid; `unmap` allocates nothing.
+    let mut mapper = unsafe { Mapper::new(root, Half::Low, || None, phys_to_ptr) };
+    let (pa, flush) = mapper.unmap(va).ok()?;
+    flush.flush(flush_tlb);
+    Some(pa)
+}
+
+/// Ask the user page tables rooted at `root` what `va` maps to. Like [`translate_user`], but for an
+/// arbitrary root rather than the installed one, so revocation (and its tests) can inspect another
+/// address space. Reads the tables in memory; touches no register.
+#[allow(dead_code)] // used by the §13 tests
+pub fn translate_at(root: u64, va: u64) -> Option<(u64, Flags)> {
+    // SAFETY: `root` is an L0 table; the direct map makes `phys_to_ptr` valid.
+    let mapper = unsafe { Mapper::new(root, Half::Low, || None, phys_to_ptr) };
+    mapper.translate(va)
 }
 
 /// Map an **already-owned** physical page `phys` at `va` in the caller's address space, drawing

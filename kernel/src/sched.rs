@@ -818,6 +818,24 @@ pub fn ipc_reply(caller: Tid, msg: [u64; 2]) {
     }
 }
 
+/// Delete every `Frame` capability naming `phys` from every thread's cspace (§13). Part of
+/// revocation: once a frame is being revoked, no holder may keep a capability that could re-map it.
+/// The caller's own cap is deleted too, which is intended: a revoke destroys all access to the page.
+pub fn delete_frame_caps(phys: u64) {
+    let mut guard = SCHED.lock();
+    let Some(sched) = guard.as_mut() else {
+        return;
+    };
+    let target = crate::cap::Object::Frame(phys);
+    for t in sched.threads.values_mut() {
+        for slot in 0..t.cspace.len() as u64 {
+            if t.cspace.get(slot).is_ok_and(|c| c.object == target) {
+                let _ = t.cspace.delete(slot);
+            }
+        }
+    }
+}
+
 /// Remove a capability from the **current thread's** table. Used to consume a one-shot Reply
 /// capability the instant it is invoked (§12), which is what makes a second reply impossible.
 pub fn delete_current_cap(slot: u64) -> Result<(), crate::cap::Error> {

@@ -137,6 +137,12 @@ pub mod rank {
     /// scheduler** (a `KernelStack`'s `Drop` runs from `reap`, which holds SCHED).
     pub const STACK_VA: u32 = 55;
 
+    /// The revocation mapping database (§13): every mapping of an untyped-derived page, so a revoke
+    /// can unmap it from every holder before the page is reused. **Below the scheduler**, because a
+    /// revoke deletes Frame caps under SCHED and then unmaps under this; recorded from `Frame::MAP`
+    /// and `Untyped::MAP`, which hold no scheduler lock. See kernel/src/revoke.rs.
+    pub const MAPPINGS: u32 = 54;
+
     pub const HEAP: u32 = 50;
     pub const SLAB: u32 = 50;
 

@@ -173,6 +173,11 @@ impl AddressSpace {
 
 impl Drop for AddressSpace {
     fn drop(&mut self) {
+        // Drop this address space's entries from the revocation database (§13) before its page
+        // tables are freed and reused: a stale (root, va) would send a later revoke to walk tables
+        // that now belong to someone else.
+        crate::revoke::forget_root(self.root.addr());
+
         // If we are the live address space, stop being it BEFORE the frames go back on the free
         // list. Otherwise the TTBR0 the CPU is walking points at memory the allocator has
         // already handed to somebody else, and the next low-half access reads whatever they put
@@ -1253,6 +1258,40 @@ pub mod call_service {
     }
 }
 
+/// **Milestone 13: revoke a frame, at EL0.** One process with an untyped budget retypes a frame,
+/// maps it, revokes it, and reports whether the revoke deleted its own capability. See
+/// user/src/hello.rs revoke_demo().
+#[cfg(test)]
+pub mod revoke_service {
+    use super::*;
+    use crate::cap::{Rights, endpoint_cap, untyped_cap};
+
+    const ROLE_REVOKE_DEMO: u64 = 16;
+
+    /// Spawn the demo with an 8-page untyped budget; returns the endpoint it reports its verdict on.
+    pub fn wire(image: &'static [u8]) -> usize {
+        let region = crate::untyped::create(8).expect("no untyped for the revoke demo");
+        let report = crate::sched::create_endpoint();
+        crate::sched::spawn(move || {
+            run(
+                image,
+                Spawn {
+                    arg0: ROLE_REVOKE_DEMO,
+                    arg1: 0,
+                    arg2: 0,
+                    grants: &[
+                        untyped_cap(region),                 // slot 0: retype + page tables
+                        endpoint_cap(report, Rights::WRITE), // slot 1: report the verdict
+                    ],
+                    maps: &[],
+                },
+            )
+        })
+        .expect("could not spawn the revoke demo");
+        report
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2005,6 +2044,21 @@ mod tests {
         assert_eq!(
             one_shot, 1,
             "the server's second reply was NOT refused: the reply capability is not one-shot",
+        );
+    }
+
+    /// **Milestone 13: a process revokes a frame across the boundary.** It retypes a page, maps it,
+    /// then `REVOKE`s it; the kernel unmaps the page and deletes every capability to it, the
+    /// process's own included, so a second operation on that slot finds nothing there. This exercises
+    /// the REVOKE syscall path (rights, unmap, cap deletion). The multi-address-space unmapping and
+    /// the safe reclamation are proven directly in kernel/src/revoke.rs.
+    #[test_case]
+    fn a_process_revokes_a_frame_and_loses_the_capability() {
+        let report = revoke_service::wire(initrd().expect("no initrd"));
+        let verdict = sched::ipc_recv(report)[0];
+        assert_eq!(
+            verdict, 1,
+            "REVOKE did not both succeed and leave the frame slot empty",
         );
     }
 

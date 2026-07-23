@@ -94,11 +94,16 @@ server's own mapping* that faults the server, i.e. a crashed driver, not a corru
 (user/src/hello.rs). A future server that read a length or offset *from the page*, or indexed on
 page contents, would not be safe, and the read-only bit would not save it.
 
-## The end of the line: no revocation (yet)
+## Revocation (milestone 13)
 
-**A capability, once granted, cannot be retracted.** There is no capability-derivation tree, no
-refcount, no `revoke`. The only trace of the idea is `untyped.rs`: "revocation of derived objects is
-the harder seL4 story parked for later."
+**Built.** As of milestone 13 a `Frame` capability can be revoked: `Frame::REVOKE` unmaps the page
+from every holder and deletes every capability to it, and `untyped::destroy` reclaims a whole region
+safely. See DECISIONS §13 and revoke.rs. What follows is the design that led there, in the present
+tense of *before* it existed.
+
+Before milestone 13 a capability, once granted, could not be retracted: there was no
+capability-derivation tree, no refcount, no `revoke`. The only trace of the idea was `untyped.rs`:
+"revocation of derived objects is the harder seL4 story parked for later."
 
 The crucial thing is *what that does and does not cost*, because the lifetime makes it narrower than
 it sounds:

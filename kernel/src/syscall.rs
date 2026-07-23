@@ -194,7 +194,13 @@ fn invoke(
                 match mmu::map_current_user_page(va, paging::Flags::user_data(), || {
                     crate::untyped::retype_page(region)
                 }) {
-                    Ok(()) => Ok(0),
+                    Ok(phys) => {
+                        // Record the mapping so it can be revoked before the region is ever
+                        // reclaimed (§13). Untyped::MAP pages are process-private, but they still
+                        // must be unmapped before untyped::destroy frees the region under them.
+                        crate::revoke::record_mapping(phys, mmu::current_user_root(), va);
+                        Ok(0)
+                    }
                     Err(paging::MapError::OutOfFrames) => Err(Error::OutOfMemory),
                     Err(_) => Err(Error::BadPointer), // misaligned, already mapped, or wrong half
                 }
@@ -250,10 +256,27 @@ fn invoke(
                 match mmu::map_current_user_frame(va, phys, flags, || {
                     crate::untyped::retype_page(region)
                 }) {
-                    Ok(()) => Ok(0),
+                    Ok(()) => {
+                        // Record the mapping so a later REVOKE (or untyped::destroy) can pull this
+                        // page out of every holder before it is reused (§13).
+                        crate::revoke::record_mapping(phys, mmu::current_user_root(), va);
+                        Ok(0)
+                    }
                     Err(paging::MapError::OutOfFrames) => Err(Error::OutOfMemory),
                     Err(_) => Err(Error::BadPointer), // misaligned, already mapped, or wrong half
                 }
+            }
+
+            // Un-share: unmap this page from every holder and delete every capability to it,
+            // including the caller's own. Needs GRANT (you were trusted to lend the frame, so you
+            // may take it back); a read-only consumer, handed it without GRANT, cannot revoke the
+            // owner. Does not reclaim the page (untyped is spend-only); that is untyped::destroy. §13.
+            abi::frame::REVOKE => {
+                if !cap.rights.allows(Rights::GRANT) {
+                    return Err(Error::NotPermitted);
+                }
+                crate::revoke::revoke_frame(phys);
+                Ok(0)
             }
             _ => Err(Error::BadMethod),
         },

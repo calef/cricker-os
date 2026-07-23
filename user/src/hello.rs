@@ -49,6 +49,7 @@ const FRAME_CONSUMER: u64 = 12;
 const VIRTIO_ATTACK_INDIRECT: u64 = 13;
 const CALL_SERVER: u64 = 14;
 const CALL_CLIENT: u64 = 15;
+const REVOKE_DEMO: u64 = 16;
 
 /// The word the frame producer writes into a shared page and the consumer reads back through its
 /// own mapping of the same physical page. One binary, so one constant serves both roles.
@@ -102,6 +103,7 @@ pub extern "C" fn _start(role: u64, dma_phys: u64, _arg2: u64) -> ! {
         VIRTIO_ATTACK_INDIRECT => virtio::run_attack_indirect(dma_phys),
         CALL_SERVER => call_server(),
         CALL_CLIENT => call_client(),
+        REVOKE_DEMO => revoke_demo(),
         GRANTER => granter(),
         RECEIVER => receiver(),
         FRAME_PRODUCER => frame_producer(),
@@ -335,6 +337,36 @@ fn call_client() -> ! {
 
     let (r0, _r1) = call(EP, 40, 2); // expect 42 back
     send(REPORT, r0, 0, 0);
+    exit();
+}
+
+/// **The revoke demo, milestone 13.** Holds an untyped budget (slot 0) and a report endpoint (slot
+/// 1). It retypes a page, maps it, then `REVOKE`s it: the kernel unmaps the page and deletes every
+/// capability to it, this process's own included, so a second operation on the frame slot finds
+/// nothing there. Reports 1 if REVOKE succeeded and the slot is now empty. See kernel/src/user.rs
+/// revoke_service.
+fn revoke_demo() -> ! {
+    const UNTYPED: u64 = 0; // retype + page tables
+    const REPORT: u64 = 1;
+    const VA: u64 = 0x0000_0000_00c0_0000;
+
+    // Retype a page into a Frame capability we hold, then map it writable.
+    // SAFETY: `svc`. The result is the slot the new capability landed in.
+    let frame = unsafe { invoke(UNTYPED, abi::untyped::RETYPE, 0, 0, 0) };
+    check(frame >= 0);
+    let frame = frame as u64;
+    check(unsafe { invoke(frame, abi::frame::MAP, VA, 1, UNTYPED) } == 0);
+    // SAFETY: VA is now a mapped, writable page in our address space.
+    unsafe { core::ptr::write_volatile(VA as *mut u64, 0xABCD) };
+
+    // Revoke: unmap the page everywhere and delete every capability to it, ours included. The frame
+    // was retyped with GRANT, so we are allowed to. SAFETY: `svc`.
+    let revoked = unsafe { invoke(frame, abi::frame::REVOKE, 0, 0, 0) };
+    // Our Frame capability is gone now: a second operation on that slot must fail (NoSuchSlot). We
+    // do NOT touch VA again, which is unmapped and would fault. SAFETY: `svc`.
+    let after = unsafe { invoke(frame, abi::frame::MAP, VA, 1, UNTYPED) };
+
+    send(REPORT, if revoked == 0 && after < 0 { 1 } else { 0 }, 0, 0);
     exit();
 }
 

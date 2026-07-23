@@ -182,6 +182,14 @@ pub mod frame {
     /// `untyped_slot`, so the kernel allocates nothing. `BadPointer` for a misaligned or high `va`,
     /// `OutOfMemory` when that untyped is exhausted.
     pub const MAP: u64 = 0;
+
+    /// `invoke(cap, REVOKE, _, _, _)` -> 0. **Un-share this page** (milestone 13). Unmap it from every
+    /// address space that mapped it and delete every capability to it, including the caller's own, so
+    /// no holder can reach or re-map it. Needs `GRANT` (you were trusted to lend the frame, so you may
+    /// take it back; a read-only consumer handed it without `GRANT` cannot revoke the owner). It does
+    /// **not** reclaim the page: the untyped is spend-only, and `untyped::destroy` reclaims a whole
+    /// region. See DECISIONS §13 and notes/capability-lifecycle.md.
+    pub const REVOKE: u64 = 1;
 }
 
 /// What went wrong. Returned as a **negative** `x0`.

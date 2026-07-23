@@ -30,6 +30,7 @@ mod drivers;
 mod heap;
 mod memory;
 mod panic;
+mod revoke;
 mod sched;
 mod smp;
 mod stack;
