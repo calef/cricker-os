@@ -204,7 +204,9 @@ pub fn would_violate(rank: u32) -> bool {
 /// went wrong. Resets only the calling core's block, which is exactly right: a fault is handled
 /// on the core that took it.
 pub unsafe fn force_reset_ranks() {
-    crate::cpu::current().held_rank.store(rank::NONE, Ordering::Relaxed);
+    crate::cpu::current()
+        .held_rank
+        .store(rank::NONE, Ordering::Relaxed);
 }
 
 /// A spinlock that masks interrupts while it is held, and enforces a global lock order.
@@ -294,7 +296,9 @@ impl<T> Drop for IrqSafeGuard<'_, T> {
         // state one line below: a lock released inside an outer lock must not report that we
         // are now holding nothing. Interrupts are still masked here (restored below), so this
         // core still owns its per-CPU block.
-        crate::cpu::current().held_rank.store(self.previous_rank, Ordering::Relaxed);
+        crate::cpu::current()
+            .held_rank
+            .store(self.previous_rank, Ordering::Relaxed);
 
         // RESTORE, not enable. See the module docs.
         interrupts::restore(self.irqs_were_enabled);

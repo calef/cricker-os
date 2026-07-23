@@ -177,7 +177,9 @@ pub fn adopt_secondary_idle() {
 
     {
         let mut guard = SCHED.lock();
-        let sched = guard.as_mut().expect("adopt_secondary_idle before sched::init");
+        let sched = guard
+            .as_mut()
+            .expect("adopt_secondary_idle before sched::init");
         sched.threads.insert(id, Box::new(idle));
     }
 

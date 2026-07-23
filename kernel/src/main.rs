@@ -302,7 +302,9 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
                     println!(
                         "  and the kernel's used-frame count went {before} -> {after} (it did not move)."
                     );
-                    println!("  a process cannot make the kernel allocate, so it cannot exhaust it.");
+                    println!(
+                        "  a process cannot make the kernel allocate, so it cannot exhaust it."
+                    );
                 }
             }
         } // end of the milestone tour (#[cfg(not(feature = "shell"))])

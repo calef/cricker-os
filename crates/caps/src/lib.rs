@@ -258,7 +258,10 @@ mod tests {
         assert!(cs.derive(0, 2, Rights::READ).is_ok());
 
         // **Asking for WRITE when we only hold READ.**
-        assert_eq!(cs.derive(0, 3, Rights::WRITE).err(), Some(Error::CannotWiden));
+        assert_eq!(
+            cs.derive(0, 3, Rights::WRITE).err(),
+            Some(Error::CannotWiden)
+        );
         assert_eq!(cs.derive(0, 3, Rights::ALL).err(), Some(Error::CannotWiden));
 
         // And the failed derive left nothing behind.
@@ -308,7 +311,10 @@ mod tests {
         .unwrap();
 
         assert!(cs.get_with(0, Rights::READ).is_ok());
-        assert_eq!(cs.get_with(0, Rights::WRITE).err(), Some(Error::CannotWiden));
+        assert_eq!(
+            cs.get_with(0, Rights::WRITE).err(),
+            Some(Error::CannotWiden)
+        );
         assert_eq!(cs.get_with(9, Rights::READ).err(), Some(Error::NoSuchSlot));
     }
 

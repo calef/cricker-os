@@ -198,10 +198,7 @@ mod tests {
 
     #[test]
     fn write_then_read_round_trips() {
-        let files: [(&str, &[u8]); 2] = [
-            ("motd", b"welcome to cricker-os\n"),
-            ("empty", b""),
-        ];
+        let files: [(&str, &[u8]); 2] = [("motd", b"welcome to cricker-os\n"), ("empty", b"")];
         let mut img = vec![0u8; image_size(&files)];
         let n = write_image(&files, &mut img).unwrap();
         assert_eq!(n, img.len());
@@ -223,7 +220,10 @@ mod tests {
 
         let fs = Fs::parse(&img).unwrap();
         let after = fs.entries().iter().find(|e| e.name_eq("after")).unwrap();
-        assert_eq!(after.start_block, 3, "big took blocks 1-2, after should be at 3");
+        assert_eq!(
+            after.start_block, 3,
+            "big took blocks 1-2, after should be at 3"
+        );
         assert_eq!(fs.read("big").unwrap().len(), 600);
     }
 
@@ -255,6 +255,9 @@ mod tests {
         let data: &[u8] = b"x";
         let files: vec::Vec<(&str, &[u8])> = (0..16).map(|_| ("f", data)).collect();
         let mut img = vec![0u8; image_size(&files) + BLOCK];
-        assert_eq!(write_image(&files, &mut img).err(), Some(Error::TooManyFiles));
+        assert_eq!(
+            write_image(&files, &mut img).err(),
+            Some(Error::TooManyFiles)
+        );
     }
 }

@@ -55,7 +55,10 @@ impl Frame {
     /// # Panics
     /// If `addr` is not frame-aligned.
     pub const fn from_addr(addr: u64) -> Self {
-        assert!(addr.is_multiple_of(FRAME_SIZE), "address is not frame-aligned");
+        assert!(
+            addr.is_multiple_of(FRAME_SIZE),
+            "address is not frame-aligned"
+        );
         Frame(addr)
     }
 
@@ -120,7 +123,10 @@ impl<'a> FrameAllocator<'a> {
     /// # Panics
     /// If `bitmap` is too small, or `base` is not frame-aligned.
     pub fn new(base: u64, total: usize, bitmap: &'a mut [u8]) -> Self {
-        assert!(base.is_multiple_of(FRAME_SIZE), "base must be frame-aligned");
+        assert!(
+            base.is_multiple_of(FRAME_SIZE),
+            "base must be frame-aligned"
+        );
         assert!(
             bitmap.len() >= Self::bitmap_bytes(total),
             "bitmap too small: {} bytes for {} frames",

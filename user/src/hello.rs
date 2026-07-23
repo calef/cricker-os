@@ -333,7 +333,15 @@ fn frame_producer() -> ! {
 
     // Delegate a READ-only view: drop WRITE and GRANT on the way over. The rendezvous is also the
     // synchronization edge that makes our write visible to the consumer. SAFETY: `svc`.
-    unsafe { invoke(CHANNEL, endpoint::SEND_CAP, frame as u64, abi::rights::READ, 0) };
+    unsafe {
+        invoke(
+            CHANNEL,
+            endpoint::SEND_CAP,
+            frame as u64,
+            abi::rights::READ,
+            0,
+        )
+    };
 
     exit();
 }

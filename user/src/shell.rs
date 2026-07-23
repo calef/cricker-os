@@ -130,7 +130,9 @@ pub fn worker() -> ! {
     send(RESULT_SLOT, result, 0, 0);
     // Exit, rather than spin: this demonstrates the whole lifecycle. The kernel reaps us.
     // SAFETY: `svc`; SYS_EXIT never returns.
-    unsafe { core::arch::asm!("svc #0", in("x8") abi::SYS_EXIT, in("x0") 0u64, options(nostack, nomem)) };
+    unsafe {
+        core::arch::asm!("svc #0", in("x8") abi::SYS_EXIT, in("x0") 0u64, options(nostack, nomem))
+    };
     loop {
         core::hint::spin_loop();
     }

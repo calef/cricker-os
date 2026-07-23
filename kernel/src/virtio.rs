@@ -546,7 +546,14 @@ mod tests {
         );
 
         // --- the ATTACK: descriptor 1 points at kernel memory (the kernel image) ---
-        write_desc(desc, 1, 0xffff_0000_4008_0000, 512, VIRTQ_DESC_F_NEXT | 2, 2);
+        write_desc(
+            desc,
+            1,
+            0xffff_0000_4008_0000,
+            512,
+            VIRTQ_DESC_F_NEXT | 2,
+            2,
+        );
         assert!(
             !run(driver, size, shadow, 0, 1),
             "a descriptor pointing at kernel memory was NOT refused",
@@ -591,13 +598,20 @@ mod tests {
         w16(avail + 4, 0); // ring[0] = head 0
         w16(avail + 2, 1); // avail.idx = 1
 
-        assert!(run(driver, size, shadow, 0, 1), "a valid descriptor was rejected");
+        assert!(
+            run(driver, size, shadow, 0, 1),
+            "a valid descriptor was rejected"
+        );
         assert_eq!(
             r64(shadow_desc),
             good_addr,
             "the shadow did not receive the validated descriptor",
         );
-        assert_eq!(r16(shadow_avail + 2), 1, "the shadow avail.idx was not published");
+        assert_eq!(
+            r16(shadow_avail + 2),
+            1,
+            "the shadow avail.idx was not published"
+        );
 
         // The driver now aims its descriptor at kernel memory, AFTER the check. On async-DMA
         // hardware this is the race. The device reads the shadow, which must be untouched.

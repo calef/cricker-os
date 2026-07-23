@@ -36,10 +36,20 @@ fn main() -> ExitCode {
         "shell" => {
             // Boot straight to the interactive shell (the milestone tour compiled out).
             maybe_hvf();
-            eprintln!("--- booting cricker-os to an interactive shell (type `help`, Ctrl-C to quit) ---");
+            eprintln!(
+                "--- booting cricker-os to an interactive shell (type `help`, Ctrl-C to quit) ---"
+            );
             mkdisk()
                 && user()
-                && cargo(&["run", "-p", "kernel", "--features", "shell", "--target", TARGET])
+                && cargo(&[
+                    "run",
+                    "-p",
+                    "kernel",
+                    "--features",
+                    "shell",
+                    "--target",
+                    TARGET,
+                ])
         }
         "test" => test(),
         "gdb" => gdb(),
@@ -93,7 +103,10 @@ fn maybe_hvf() {
 
 /// Where the crickerfs disk image is written.
 fn disk_path() -> String {
-    workspace_root().join("target/crickerfs.img").display().to_string()
+    workspace_root()
+        .join("target/crickerfs.img")
+        .display()
+        .to_string()
 }
 
 /// Build the crickerfs disk image the virtio-blk driver will read.
@@ -104,8 +117,14 @@ fn disk_path() -> String {
 /// format has exactly one definition.
 fn mkdisk() -> bool {
     let files: [(&str, &[u8]); 2] = [
-        ("motd", b"cricker-os: read from a virtio disk, by a driver at EL0.\n"),
-        ("readme", b"this file came off a real block device through a userspace driver.\n"),
+        (
+            "motd",
+            b"cricker-os: read from a virtio disk, by a driver at EL0.\n",
+        ),
+        (
+            "readme",
+            b"this file came off a real block device through a userspace driver.\n",
+        ),
     ];
     let size = crickerfs::image_size(&files).max(64 * 1024); // pad to a friendly size
     let mut img = std::vec![0u8; size];
@@ -156,8 +175,25 @@ fn test() -> bool {
     // Every host crate, not just two. `paging`, `heap` and `slab` each carry real tests and
     // were silently not being run here for four milestones.
     if !cargo(&[
-        "test", "-p", "abi", "-p", "caps", "-p", "crickerfs", "-p", "dtb", "-p", "elf", "-p",
-        "frames", "-p", "heap", "-p", "paging", "-p", "slab",
+        "test",
+        "-p",
+        "abi",
+        "-p",
+        "caps",
+        "-p",
+        "crickerfs",
+        "-p",
+        "dtb",
+        "-p",
+        "elf",
+        "-p",
+        "frames",
+        "-p",
+        "heap",
+        "-p",
+        "paging",
+        "-p",
+        "slab",
     ]) {
         return false;
     }

@@ -293,18 +293,31 @@ mod flag_tests {
         let f = Flags::user_rodata();
         assert!(f.is_user_accessible(), "EL0 cannot read its own .rodata");
         assert!(!f.is_writable(), "an ELF's .rodata is writable");
-        assert!(!f.is_user_executable(), "an ELF's .rodata is executable at EL0");
-        assert!(!f.is_kernel_executable(), "an ELF's .rodata is executable at EL1");
+        assert!(
+            !f.is_user_executable(),
+            "an ELF's .rodata is executable at EL0"
+        );
+        assert!(
+            !f.is_kernel_executable(),
+            "an ELF's .rodata is executable at EL1"
+        );
     }
 
     #[test]
     fn user_device_is_device_typed_user_accessible_and_never_executable() {
         let f = Flags::user_device();
-        assert!(f.is_user_accessible(), "a driver at EL0 cannot reach its own MMIO");
+        assert!(
+            f.is_user_accessible(),
+            "a driver at EL0 cannot reach its own MMIO"
+        );
         assert!(f.is_writable(), "a driver cannot write its MMIO");
         assert!(!f.is_user_executable() && !f.is_kernel_executable());
         // Device attr index, not normal: the CPU must not cache or reorder register writes.
-        assert_eq!(f.bits() & (0b111 << 2), (mair::DEVICE << 2), "not device-typed");
+        assert_eq!(
+            f.bits() & (0b111 << 2),
+            (mair::DEVICE << 2),
+            "not device-typed"
+        );
     }
 
     #[test]

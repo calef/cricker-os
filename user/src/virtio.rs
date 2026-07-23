@@ -131,7 +131,10 @@ fn init_with_features(driver_features_lo: u32) {
     // SAFETY: `svc`; the layout constants (OFF_DESC/AVAIL/USED) are the contract the kernel uses.
     check(unsafe { invoke(VIRTIO, abi::virtio::SETUP_QUEUE, QSIZE as u64, 0, 0) } == 0);
 
-    mw(STATUS, S_ACKNOWLEDGE | S_DRIVER | S_FEATURES_OK | S_DRIVER_OK);
+    mw(
+        STATUS,
+        S_ACKNOWLEDGE | S_DRIVER | S_FEATURES_OK | S_DRIVER_OK,
+    );
 }
 
 pub fn run(dma_phys: u64) -> ! {
@@ -271,7 +274,13 @@ fn read_block(dma_phys: u64, sector: u64) {
     // desc[0]: header, device reads it.        NEXT -> 1
     write_desc(0, dma_phys + OFF_HEADER, 16, VIRTQ_DESC_F_NEXT, 1);
     // desc[1]: data buffer, device WRITES it.  NEXT -> 2
-    write_desc(1, dma_phys + OFF_DATA, BLOCK as u32, VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE, 2);
+    write_desc(
+        1,
+        dma_phys + OFF_DATA,
+        BLOCK as u32,
+        VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE,
+        2,
+    );
     // desc[2]: status byte, device WRITES it.  (end of chain)
     write_desc(2, dma_phys + OFF_STATUS, 1, VIRTQ_DESC_F_WRITE, 0);
 
@@ -331,4 +340,3 @@ fn write_desc(i: u64, addr: u64, len: u32, flags: u16, next: u16) {
     dma_write::<u16>(base + 12, flags);
     dma_write::<u16>(base + 14, next);
 }
-

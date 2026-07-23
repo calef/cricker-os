@@ -200,8 +200,12 @@ impl<'a> Elf<'a> {
         // The bounds check on the program header table itself. `phoff` and `phnum` come out of
         // the file, so they are hostile input, and `phoff + phnum * phentsize` is exactly the
         // kind of arithmetic that wraps.
-        let table_len = phnum.checked_mul(phentsize).ok_or(Error::BadProgramHeaders)?;
-        let table_end = phoff.checked_add(table_len).ok_or(Error::BadProgramHeaders)?;
+        let table_len = phnum
+            .checked_mul(phentsize)
+            .ok_or(Error::BadProgramHeaders)?;
+        let table_end = phoff
+            .checked_add(table_len)
+            .ok_or(Error::BadProgramHeaders)?;
         if table_end > bytes.len() {
             return Err(Error::BadProgramHeaders);
         }
@@ -467,10 +471,7 @@ mod tests {
             .seg(PF_R | PF_W | PF_X, 0x40_0000, &[0xaa; 16], 16)
             .build();
 
-        assert_eq!(
-            Elf::parse(&bytes).err(),
-            Some(Error::WritableAndExecutable),
-        );
+        assert_eq!(Elf::parse(&bytes).err(), Some(Error::WritableAndExecutable),);
     }
 
     /// A segment whose contents run off the end of the file.
@@ -483,14 +484,20 @@ mod tests {
         // genuinely exercise the bounds check on the FILE.
         let mut b = Builder::new().seg(PF_R | PF_X, 0x40_0000, &[0xaa; 16], 0x1000_0000);
         b.lie_about_filesz = Some(0x1000_0000);
-        assert_eq!(Elf::parse(&b.build()).err(), Some(Error::SegmentOutOfBounds));
+        assert_eq!(
+            Elf::parse(&b.build()).err(),
+            Some(Error::SegmentOutOfBounds)
+        );
     }
 
     #[test]
     fn an_offset_that_overflows_is_refused() {
         let mut b = Builder::new().seg(PF_R | PF_X, 0x40_0000, &[0xaa; 16], 16);
         b.lie_about_offset = Some(u64::MAX - 3); // p_offset + p_filesz wraps
-        assert_eq!(Elf::parse(&b.build()).err(), Some(Error::SegmentOutOfBounds));
+        assert_eq!(
+            Elf::parse(&b.build()).err(),
+            Some(Error::SegmentOutOfBounds)
+        );
     }
 
     #[test]
@@ -523,7 +530,10 @@ mod tests {
     fn an_entry_point_outside_every_executable_segment_is_refused() {
         let mut b = Builder::new().seg(PF_R | PF_X, 0x40_0000, &[0xaa; 16], 16);
         b.entry = 0x41_0000; // not in the code segment
-        assert_eq!(Elf::parse(&b.build()).err(), Some(Error::EntryNotExecutable));
+        assert_eq!(
+            Elf::parse(&b.build()).err(),
+            Some(Error::EntryNotExecutable)
+        );
     }
 
     /// An entry point inside a segment that is readable but NOT executable.
@@ -531,7 +541,10 @@ mod tests {
     fn an_entry_point_in_a_data_segment_is_refused() {
         let mut b = Builder::new().seg(PF_R | PF_W, 0x40_0000, &[0xaa; 16], 16);
         b.entry = 0x40_0000;
-        assert_eq!(Elf::parse(&b.build()).err(), Some(Error::EntryNotExecutable));
+        assert_eq!(
+            Elf::parse(&b.build()).err(),
+            Some(Error::EntryNotExecutable)
+        );
     }
 
     #[test]
@@ -559,7 +572,10 @@ mod tests {
         for _ in 0..65 {
             b = b.seg(PF_R | PF_X, 0x40_0000, &[0xaa; 8], 8);
         }
-        assert_eq!(Elf::parse(&b.build()).err(), Some(Error::TooManyProgramHeaders));
+        assert_eq!(
+            Elf::parse(&b.build()).err(),
+            Some(Error::TooManyProgramHeaders)
+        );
     }
 
     #[test]
@@ -580,7 +596,10 @@ mod tests {
     #[test]
     fn a_file_that_is_not_an_elf_at_all_is_refused() {
         assert_eq!(
-            Elf::parse(b"#!/bin/sh\necho hello\n#####################################################").err(),
+            Elf::parse(
+                b"#!/bin/sh\necho hello\n#####################################################"
+            )
+            .err(),
             Some(Error::BadMagic),
         );
     }

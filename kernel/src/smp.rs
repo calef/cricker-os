@@ -42,8 +42,9 @@ struct Stacks(core::cell::UnsafeCell<[[u8; SECONDARY_STACK_SIZE]; MAX_CPUS]>);
 // bytes. The cell exists to place the stacks in writable memory, not to share them.
 unsafe impl Sync for Stacks {}
 
-static SECONDARY_STACKS: Stacks =
-    Stacks(core::cell::UnsafeCell::new([[0; SECONDARY_STACK_SIZE]; MAX_CPUS]));
+static SECONDARY_STACKS: Stacks = Stacks(core::cell::UnsafeCell::new(
+    [[0; SECONDARY_STACK_SIZE]; MAX_CPUS],
+));
 
 /// How many secondaries have reached [`secondary_main`] and are idling.
 static ONLINE: AtomicUsize = AtomicUsize::new(0);
@@ -198,7 +199,10 @@ mod tests {
         while !all_ran() {
             crate::sched::yield_now();
             spins += 1;
-            assert!(spins < 5_000_000, "secondary cores did not run scheduled work in time");
+            assert!(
+                spins < 5_000_000,
+                "secondary cores did not run scheduled work in time"
+            );
         }
 
         for c in 1..MAX_CPUS {

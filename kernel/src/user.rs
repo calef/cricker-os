@@ -1182,8 +1182,8 @@ pub mod delegation_service {
                     arg1: 0,
                     arg2: 0,
                     grants: &[
-                        endpoint_cap(channel, Rights::READ), // slot 0: RECV_CAP
-                        endpoint_cap(report, Rights::WRITE), // slot 1: report the verdict
+                        endpoint_cap(channel, Rights::READ),   // slot 0: RECV_CAP
+                        endpoint_cap(report, Rights::WRITE),   // slot 1: report the verdict
                         endpoint_cap(loopback, Rights::WRITE), // slot 2: attempt re-delegation here
                     ],
                     maps: &[],

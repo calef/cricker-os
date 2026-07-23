@@ -226,7 +226,10 @@ impl SlabAllocator {
     /// Builds the list back-to-front so the objects come out in ascending address order, which
     /// costs nothing and makes the allocator's behaviour easier to read in a dump.
     fn grow(&mut self, class: usize, page: usize) {
-        debug_assert!(page.is_multiple_of(PAGE_SIZE), "slab pages must be page-aligned");
+        debug_assert!(
+            page.is_multiple_of(PAGE_SIZE),
+            "slab pages must be page-aligned"
+        );
 
         let size = class_size(class);
         let count = PAGE_SIZE / size;
