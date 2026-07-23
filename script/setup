@@ -1,0 +1,15 @@
+#!/bin/sh
+# script/setup: get the project ready to use from a fresh clone (or a clean slate).
+#
+# Installs dependencies, then builds so the first run is warm. After this, script/test,
+# script/server, and script/console all work. See notes/scripts.md.
+
+set -e
+cd "$(dirname "$0")/.."
+
+script/bootstrap
+
+echo "==> Building the kernel, the user program, and the disk image"
+cargo xtask build
+
+echo "==> Setup complete. Next: script/test, script/server, or script/console"

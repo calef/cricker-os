@@ -1,0 +1,14 @@
+#!/bin/sh
+# script/test: run the test suite (host-logic crates in milliseconds, then the kernel under
+# QEMU). The fast inner-loop command; it assumes script/setup has been run once. Extra args are
+# forwarded to `cargo xtask test`. See notes/scripts.md.
+
+set -e
+cd "$(dirname "$0")/.."
+
+if ! command -v qemu-system-aarch64 >/dev/null 2>&1; then
+    echo "script/test: qemu-system-aarch64 not found. Run script/setup first." >&2
+    exit 1
+fi
+
+cargo xtask test "$@"

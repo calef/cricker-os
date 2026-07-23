@@ -1,0 +1,57 @@
+#!/bin/sh
+# script/bootstrap: resolve every dependency the project needs to build and test.
+#
+# Part of the "Scripts to Rule Them All" set (see notes/scripts.md). Idempotent: it checks
+# for what is already present and installs only what is missing, so it is cheap to re-run and
+# safe to call from script/setup, script/update, and script/cibuild.
+
+set -e
+cd "$(dirname "$0")/.."
+
+os="$(uname -s)"
+
+# --- Rust toolchain -----------------------------------------------------------------------
+# rust-toolchain.toml pins the channel, its components, and the bare-metal target. We install
+# that exact toolchain rather than trusting first-cargo-use to pull the components in.
+if ! command -v rustup >/dev/null 2>&1; then
+    echo "==> Installing rustup"
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path
+    export PATH="$HOME/.cargo/bin:$PATH"
+fi
+
+channel="$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
+[ -n "$channel" ] || channel="nightly"
+
+echo "==> Ensuring Rust toolchain '$channel' (components + aarch64 target)"
+rustup toolchain install "$channel" --profile minimal
+rustup component add --toolchain "$channel" rust-src llvm-tools rustfmt clippy
+rustup target add --toolchain "$channel" aarch64-unknown-none-softfloat
+
+# --- QEMU ---------------------------------------------------------------------------------
+# The kernel runs under qemu-system-aarch64 (system emulation). See notes/qemu.md.
+if command -v qemu-system-aarch64 >/dev/null 2>&1; then
+    echo "==> QEMU present: $(qemu-system-aarch64 --version | head -1)"
+else
+    echo "==> Installing QEMU"
+    case "$os" in
+    Darwin)
+        if ! command -v brew >/dev/null 2>&1; then
+            echo "bootstrap: Homebrew not found; install it from https://brew.sh, then re-run." >&2
+            exit 1
+        fi
+        brew install qemu
+        ;;
+    Linux)
+        # qemu-system-arm carries qemu-system-aarch64; ipxe-qemu supplies efi-virtio.rom, the
+        # option ROM the -device virtio-blk-device (our disk) loads at startup.
+        sudo apt-get update
+        sudo apt-get install -y qemu-system-arm ipxe-qemu
+        ;;
+    *)
+        echo "bootstrap: unknown OS '$os'; install qemu-system-aarch64 by hand." >&2
+        exit 1
+        ;;
+    esac
+fi
+
+echo "==> Bootstrap complete"

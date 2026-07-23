@@ -11,6 +11,8 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Each job's real work is a script from script/ (the "Scripts to Rule Them All" set), so CI runs
+# exactly what a developer runs locally. See notes/scripts.md.
 jobs:
   test:
     name: build + test (host + QEMU)
@@ -20,34 +22,11 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-
-      # qemu-system-aarch64 ships in the qemu-system-arm package. It runs the kernel under TCG on
-      # the x86 runner (the same deterministic path `cargo xtask test` uses locally), and the
-      # kernel reports pass/fail by exiting through semihosting. ipxe-qemu supplies efi-virtio.rom,
-      # the option ROM the -device virtio-blk-device (our disk) makes QEMU load; without it QEMU
-      # refuses to start. We do NOT touch the runner to dodge the ROM, so CI runs the exact same
-      # QEMU command as a developer does.
-      - name: Install QEMU
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y qemu-system-arm ipxe-qemu
-
-      # rust-toolchain.toml pins nightly plus rust-src, llvm-tools, and the bare-metal target
-      # (llvm-objcopy from llvm-tools is what scripts/qemu-runner.sh strips the ELF with). Install
-      # exactly that, so CI builds what a developer builds. rustup also honours the toml on first
-      # cargo use, but doing it explicitly keeps the logs and the cache step clean.
-      - name: Install the pinned Rust toolchain
-        run: |
-          rustup toolchain install nightly --profile minimal
-          rustup component add --toolchain nightly rust-src llvm-tools
-          rustup target add --toolchain nightly aarch64-unknown-none-softfloat
-
       - uses: Swatinem/rust-cache@v2
-
-      # The pure-logic host crates run first (milliseconds, no emulator), then the kernel boots
-      # under QEMU. One command, the same one used locally. See xtask/src/main.rs and DECISIONS.md §7.
-      - name: cargo xtask test
-        run: cargo xtask test
+      # script/cibuild bootstraps the toolchain and QEMU (the same script/bootstrap a developer
+      # runs), then runs the host-logic crates and the kernel under QEMU (TCG), exiting through
+      # semihosting.
+      - run: script/cibuild
 
   fmt:
     name: rustfmt
@@ -56,8 +35,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install rustfmt (pinned nightly)
         run: rustup toolchain install nightly --profile minimal --component rustfmt
-      - name: cargo fmt --check
-        run: cargo fmt --all --check
+      - run: script/fmt
 
   clippy:
     name: clippy
@@ -69,13 +47,4 @@ jobs:
           rustup toolchain install nightly --profile minimal --component clippy
           rustup target add --toolchain nightly aarch64-unknown-none-softfloat
       - uses: Swatinem/rust-cache@v2
-
-      # The workspace has two worlds. The host crates (pure logic) and xtask build for the host,
-      # so lint them with --all-targets to cover their tests too. kernel and user are bare-metal
-      # `no_std` and only build for the aarch64 target, and --all-targets there would try to build
-      # the standard libtest harness, which does not exist for a no_std target. So they are linted
-      # separately, without --all-targets. -D warnings makes a lint a failure, not a note.
-      - name: clippy (host crates + xtask)
-        run: cargo clippy --workspace --exclude kernel --exclude user --all-targets -- -D warnings
-      - name: clippy (kernel + user, aarch64)
-        run: cargo clippy -p kernel -p user --target aarch64-unknown-none-softfloat -- -D warnings
+      - run: script/lint

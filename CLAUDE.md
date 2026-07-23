@@ -73,7 +73,10 @@ has failed.** Stop and raise it.
 
 ## Testing
 
-`cargo xtask test` boots the kernel under QEMU and reports pass/fail via semihosting.
+`script/test` (a thin wrapper over `cargo xtask test`) boots the kernel under QEMU and reports
+pass/fail via semihosting. The `script/*` commands are the normalized "Scripts to Rule Them All"
+front door (`setup`, `test`, `server`, `console`, ...); they delegate to `cargo xtask`, which is
+still the engine and exposes more (`gdb`, `objdump`, `image`). See notes/scripts.md.
 
 Tests should prove something specific that nothing else would have done for us. The four in
 `main.rs` are the model: `.bss` was zeroed (nobody else would have), `sp` is 16-byte aligned

@@ -1,0 +1,15 @@
+#!/bin/sh
+# script/update: bring the project up to date after fetching new code.
+#
+# Re-resolves dependencies (the pinned toolchain can change from one checkout to the next) and
+# rebuilds for the current tree. See notes/scripts.md.
+
+set -e
+cd "$(dirname "$0")/.."
+
+script/bootstrap
+
+echo "==> Rebuilding for the current checkout"
+cargo xtask build
+
+echo "==> Update complete"

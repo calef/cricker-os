@@ -1,0 +1,10 @@
+#!/bin/sh
+# script/console: "open a console for the application" — boot straight to the interactive shell
+# at EL0 in QEMU. For this project the console is literally a shell running as an unprivileged
+# process. Extra flags are forwarded (e.g. `script/console --hvf`). Ctrl-C quits. See
+# notes/scripts.md.
+
+set -e
+cd "$(dirname "$0")/.."
+
+exec cargo xtask shell "$@"

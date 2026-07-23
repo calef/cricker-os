@@ -9,11 +9,15 @@ CPU ever executes. If it ends up useful, that's a bonus.
 ## Try it
 
 ```
-cargo xtask shell          # boot straight to an interactive shell at EL0
-cargo xtask shell --hvf    # ...on the real Apple Silicon core (instant boot)
-cargo xtask run            # the full milestone tour, then the shell
-cargo xtask test           # host tests, then the kernel under QEMU
+script/setup               # one time: install the toolchain and QEMU, then build
+script/console             # boot straight to an interactive shell at EL0
+script/console --hvf       # ...on the real Apple Silicon core (instant boot)
+script/server              # the full milestone tour, then the shell
+script/test                # host tests, then the kernel under QEMU
 ```
+
+`script/*` is the normalized "Scripts to Rule Them All" front door; each is a thin wrapper over
+`cargo xtask`, which still does the work (`cargo xtask shell` and friends work too).
 
 At the `$` prompt: `help`, `echo hello`, `run 7` (spawns a process that computes 49). Quit with
 Ctrl-C, or `pkill qemu-system-aarch64` from another terminal.
@@ -52,23 +56,28 @@ When something faults, you get this instead of a silent death:
 
 ## Quick start
 
-You'll need [Rust](https://rustup.rs) (the toolchain file pins nightly and will install it
-for you) and QEMU:
-
 ```bash
-brew install qemu          # or your platform's equivalent
 git clone https://github.com/calef/cricker-os
 cd cricker-os
+script/setup               # installs the pinned Rust toolchain and QEMU, then builds
 
-cargo xtask run            # boot it
-cargo xtask test           # run the kernel's tests under QEMU
+script/server              # boot it
+script/test                # run the kernel's tests under QEMU
+script/console             # boot straight to the interactive shell
+```
+
+`script/server` boots the kernel on QEMU's `virt` machine and wires the emulated UART to your
+terminal. Ctrl-A then X quits QEMU.
+
+The `script/*` commands are the normalized entry points (the [Scripts to Rule Them
+All](https://github.com/github/scripts-to-rule-them-all) pattern, one interface across every
+repo). They are thin wrappers over `cargo xtask`, which still does the work and exposes the rest:
+
+```bash
 cargo xtask objdump        # disassemble it
 cargo xtask image          # build the flat arm64 Image and dump its header
 cargo xtask gdb            # boot paused, waiting for a debugger on :1234
 ```
-
-`cargo xtask run` boots the kernel on QEMU's `virt` machine and wires the emulated UART to
-your terminal. Ctrl-A then X quits QEMU.
 
 ## What's here
 
@@ -84,6 +93,7 @@ kernel/
   src/drivers/pl011.rs the serial port
   src/console.rs       print! / println!
   src/testing.rs       the QEMU test harness
+script/                normalized entry points (setup, test, server, console, ...) — thin xtask wrappers
 scripts/qemu-runner.sh how the kernel actually gets booted (ELF -> flat Image -> QEMU)
 crates/dtb/            device tree parser        | pure logic, host-tested,
 crates/frames/         physical frame allocator  | milliseconds, no emulator

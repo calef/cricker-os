@@ -18,6 +18,10 @@ in the code or the conversation doesn't make sense, it belongs here.
   that `cargo test` can read it. Also: it's a syscall ABI where the OS on the other side is
   the emulator, which makes it a preview of milestone 7 running backwards.
 
+- [The `script/` entry points](scripts.md) — the "Scripts to Rule Them All" front door:
+  `setup`, `test`, `server`, `console`, and friends, thin wrappers over `cargo xtask` so every
+  repo has the same first command. Also: why `script/` and `scripts/` both exist.
+
 ## Devices
 
 - [The device tree](device-tree.md) — the machine describing itself. Everything in it is

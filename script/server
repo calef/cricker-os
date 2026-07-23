@@ -1,0 +1,9 @@
+#!/bin/sh
+# script/server: "start the application" — boot the OS in QEMU (the milestone tour, then the
+# shell). An OS is what you start, so this is script/server. Extra flags are forwarded, e.g.
+# `script/server --hvf` to run on the real Apple Silicon core. Ctrl-C quits. See notes/scripts.md.
+
+set -e
+cd "$(dirname "$0")/.."
+
+exec cargo xtask run "$@"

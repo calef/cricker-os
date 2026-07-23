@@ -1,0 +1,9 @@
+#!/bin/sh
+# script/fmt: check formatting against the pinned rustfmt (the CI fmt gate, and a developer's
+# "am I formatted?" check). It does not rewrite files; run `cargo fmt` to apply. Not one of the
+# canonical "Scripts to Rule Them All", but it keeps the CI job a one-liner. See notes/scripts.md.
+
+set -e
+cd "$(dirname "$0")/.."
+
+cargo fmt --all --check

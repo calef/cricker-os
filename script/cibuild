@@ -1,0 +1,13 @@
+#!/bin/sh
+# script/cibuild: the entry point CI uses to run the tests on a clean machine.
+#
+# Unlike script/test, it provisions dependencies first, because a CI runner starts bare. This is
+# what the workflow's test job runs, so CI exercises the same bootstrap a developer does. The
+# lint and format checks are separate CI jobs (script/lint, script/fmt) so they fail fast and in
+# parallel. See notes/scripts.md and .github/workflows/ci.yml.
+
+set -e
+cd "$(dirname "$0")/.."
+
+script/bootstrap
+cargo xtask test
