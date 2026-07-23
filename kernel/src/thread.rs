@@ -363,6 +363,12 @@ impl Thread {
 /// Called by `thread_trampoline` with the boxed closure in `x0`.
 #[unsafe(no_mangle)]
 extern "C" fn thread_entry(arg: *mut ()) -> ! {
+    // We are a brand-new thread, resuming for the first time. The thread this core switched away
+    // from to start us may have finished; reap it now, off its stack, exactly as a resuming thread
+    // does after `switch_to`. A new thread does not pass through `schedule()`'s post-switch point,
+    // so this is the only place that reap happens for it. See sched::finish_switch.
+    crate::sched::finish_switch();
+
     // SAFETY: `Thread::spawn` leaked exactly this box, and we are the only one who will ever
     // claim it. Reconstructing it here is what makes the closure's memory get freed when the
     // thread finishes, rather than leaking one per thread forever.

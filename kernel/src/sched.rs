@@ -290,10 +290,6 @@ pub fn schedule() {
             break 'decide None;
         };
 
-        // Reap anything that finished. Safe *here* and nowhere else: whoever exited is no
-        // longer running, because we are.
-        reap(sched);
-
         let current = current_tid();
         let state = sched.threads.get(&current).map(|t| t.state);
 
@@ -342,6 +338,14 @@ pub fn schedule() {
         sched.threads.get_mut(&next).unwrap().state = State::Running;
         set_current_tid(next);
 
+        // If the thread we are leaving has finished, hand it to the incoming thread to reap AFTER
+        // the switch, when it is provably off its stack. Not here, and not by another core: we are
+        // still running on its stack this instant. `current` is the local (the outgoing tid);
+        // `set_current_tid` above already moved the per-CPU current to `next`. See finish_switch.
+        if state == Some(State::Finished) {
+            cpu::current().to_reap.store(current, Ordering::Relaxed);
+        }
+
         // The incoming thread's low half. A kernel thread gets the empty reserved table, which
         // makes every low address fault, which is exactly right: it has no business down there.
         let next_root = sched.threads[&next]
@@ -374,25 +378,37 @@ pub fn schedule() {
         // This call does not return here. It returns *in another thread*, at the point where
         // that thread last called `switch_to`. We come back only when somebody switches to us.
         unsafe { switch_to(prev_slot, next_ctx) };
+
+        // We are now the incoming thread, resuming. Reap whoever we switched away from, if it had
+        // finished: it is off its stack now, and we are on the same core that set `to_reap`.
+        finish_switch();
     }
 
     crate::arch::interrupts::restore(was_enabled);
 }
 
-/// Free the stacks of threads that have finished.
+/// Reap the thread this core just switched away from, if it had finished.
 ///
-/// Must run from a *different* thread than the one being reaped: dropping a `KernelStack`
-/// unmaps its pages, and a thread cannot unmap the stack it is standing on.
-fn reap(sched: &mut Scheduler) {
-    let dead: alloc::vec::Vec<Tid> = sched
-        .threads
-        .iter()
-        .filter(|(id, t)| **id != 0 && **id != current_tid() && t.state == State::Finished)
-        .map(|(id, _)| *id)
-        .collect();
-
-    for id in dead {
-        sched.threads.remove(&id); // drops the Thread, drops the KernelStack, unmaps, frees
+/// The safe half of the two-part reaper. `schedule()` records a finished outgoing thread in this
+/// core's `to_reap` *before* the switch; this runs on the incoming thread *after* the switch, when
+/// the outgoing thread is provably off its stack (its registers are saved and we are on a
+/// different stack). Dropping the `Thread` unmaps its stack and frees its address space, which is
+/// exactly why it must not happen while any core still stands on it.
+///
+/// Called from two places, because a thread can resume two ways: from `schedule()` (an existing
+/// thread returning from `switch_to`) and from `thread_entry` (a brand-new thread, which never
+/// passes through `schedule()`'s post-switch point). Both run on this core, so both see this core's
+/// `to_reap`. See DECISIONS.md §11 and thread.rs.
+pub(crate) fn finish_switch() {
+    let dead = cpu::current().to_reap.swap(cpu::NO_TID, Ordering::Relaxed);
+    if dead == cpu::NO_TID {
+        return;
+    }
+    let mut guard = SCHED.lock();
+    if let Some(sched) = guard.as_mut() {
+        // Drops the Thread: its KernelStack (unmap + free + return the VA range), its AddressSpace
+        // if any, and its QuotaToken. The one place all of that is safe, by construction.
+        sched.threads.remove(&dead);
     }
 }
 

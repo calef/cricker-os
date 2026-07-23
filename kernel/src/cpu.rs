@@ -51,6 +51,16 @@ pub struct PerCpu {
     /// core's tick cannot make another core reschedule. See DECISIONS.md §9's record-and-defer.
     pub need_resched: AtomicBool,
 
+    /// A finished thread this core just switched **away from**, waiting to be reaped by the thread
+    /// this core switched **to** (`NO_TID` when there is nothing to reap).
+    ///
+    /// The fix for the multi-core reaper race (DECISIONS.md §11): a finished thread cannot be freed
+    /// while any core is still switching off its stack. So it is not reaped by whoever notices it
+    /// finished; it is recorded here by its own core, before the switch, and reaped by its
+    /// successor *after* the switch, when it is provably off its stack. Only this core touches it,
+    /// with interrupts masked. See `sched::finish_switch`.
+    pub to_reap: AtomicU64,
+
     /// This core's run queue: the threads ready to run here, in round-robin order.
     ///
     /// **No cross-core lock, by design (DECISIONS.md §11).** Only this core ever touches its own
@@ -74,6 +84,7 @@ impl PerCpu {
             current: AtomicU64::new(NO_TID),
             idle: AtomicU64::new(NO_TID),
             need_resched: AtomicBool::new(false),
+            to_reap: AtomicU64::new(NO_TID),
             runq: UnsafeCell::new(VecDeque::new()),
         }
     }
