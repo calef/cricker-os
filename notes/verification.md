@@ -71,7 +71,10 @@ A proof is only as good as three things, and each is worth being blunt about:
    hardware, and `unsafe` that breaks Rust's assumptions is outside it. That is exactly why we verify
    the pure-logic crates (`caps`, `paging`'s arithmetic) and not the `arch/` assembly: the model is
    faithful where there is no hardware and no `unsafe`. It is also why §14 promises a *small verified
-   TCB with an unverified layer beneath it*, not a proof of the whole machine.
+   TCB with an unverified layer beneath it*, not a proof of the whole machine. **Concurrency is the
+   sharpest edge of this limit**: every queue and endpoint proof here is single-threaded, and the
+   wake-before-switch-out race (notes/intrusive-queues.md) lived precisely in the SMP interleaving
+   those proofs cannot see. Green harnesses and a real race coexisted; the flaky test found it.
 3. **The tool is trusted.** Kani, its CBMC backend, and the SAT solver could have bugs. They are
    small and widely used, and the solver emits a checkable certificate, but it is a trust assumption.
    seL4 minimizes even its proof checker; we do not, and that is a stated limit.
@@ -154,7 +157,10 @@ integration tests against a real QEMU device tree are unchanged, so the hardenin
 is the elf lesson reused: prove (and here, harden) the loopless leaves; the walk stays on the tests.
 
 Six in `crates/ipc/src/lib.rs`, the synchronous-rendezvous state machine (the decision core of
-`sched.rs`'s `Endpoint`, extracted as pure logic):
+`sched.rs`'s `Endpoint`, extracted as pure logic; **restated over the intrusive queues** at
+milestone 14 phase A.3, so the rewire did not demote proved code back to argued code — the same
+six properties, now over real `intrusive::Fifo`s with TCB-shaped nodes, composing with the
+`Fifo`'s own FIFO proof below):
 
 | Harness | Property |
 |---|---|

@@ -108,8 +108,12 @@ argued code. The decision core only ever asks "is the queue empty" and "pop the 
 proof surface is small either way; the intrusive version proves those over a fixed-capacity
 model of the link fields.
 
-**Recommendation: intrusive lists through the TCB**, because "queue full" is not a failure mode
-a kernel should have, and because it is the design every kernel we learn from converged on.
+**Decided and built: intrusive lists through the TCB**, because "queue full" is not a failure
+mode a kernel should have, and because it is the design every kernel we learn from converged on.
+Phase A.2 moved the run queues and inboxes (`crates/intrusive`); phase A.3 moved the endpoint
+wait queues and restated the `ipc` proofs over the intrusive structure. A.3 also surfaced and
+fixed the wake-before-switch-out race (see notes/intrusive-queues.md): being woken mid-switch
+is the same hazard as being freed mid-switch, and it now has the same successor-side fix.
 
 ## Decision D2: what replaces the thread table
 

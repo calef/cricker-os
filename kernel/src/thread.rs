@@ -291,14 +291,28 @@ pub struct Thread {
     /// and inserts it into its own cspace. `None` for every ordinary send. See sched.rs.
     pub outgoing_cap: Option<crate::cap::Cap>,
 
-    /// **The intrusive queue link** (milestone 14 phase A.2; notes/intrusive-queues.md). When this
-    /// thread is on a run queue or a migration inbox, this points at the next thread in it; null
-    /// otherwise. One link, so a thread can be on at most one queue, which is not a limitation but
-    /// the scheduler's state machine made physical: Ready threads are on exactly one queue,
-    /// Running/Blocked/Finished threads on none. Touched only by the queue that holds the thread,
-    /// under that queue's synchronization (a run queue: its own core, interrupts masked; an inbox:
-    /// its mutex).
+    /// **The intrusive queue link** (milestone 14 phases A.2/A.3; notes/intrusive-queues.md).
+    /// When this thread is on a run queue, a migration inbox, or an endpoint wait queue, this
+    /// points at the next thread in it; null otherwise. One link, so a thread can be on at most
+    /// one queue, which is not a limitation but the scheduler's state machine made physical:
+    /// Ready threads are on exactly one run queue or inbox, Blocked threads on at most one
+    /// endpoint queue, Running/Finished threads on none. Touched only by the queue that holds
+    /// the thread, under that queue's synchronization.
     pub(crate) next: *mut Thread,
+
+    /// **Still standing on a CPU.** Set (under `SCHED`) when a core schedules this thread in;
+    /// cleared by that core's *successor* thread in `finish_switch`, after the switch away has
+    /// saved this thread's context. In the window between "marked itself Blocked and released
+    /// the lock" and "its core actually switched off its stack", this is what tells a waker the
+    /// thread's saved context is still stale. See [`wake_pending`](Self::wake_pending) and
+    /// `cpu::PerCpu::switched_from`.
+    pub(crate) on_cpu: bool,
+
+    /// **A wake arrived while this thread was still switching out** (`on_cpu` was set). The
+    /// waker parks the wake here instead of queueing a thread whose context is stale; the
+    /// thread's own core completes it in `finish_switch`, when the context is provably saved.
+    /// Both touched only under `SCHED`.
+    pub(crate) wake_pending: bool,
 }
 
 // SAFETY: plain storage of the link, nothing else, which is all the queue's contract asks.
@@ -333,6 +347,8 @@ impl Thread {
             quota: None,
             outgoing_cap: None,
             next: core::ptr::null_mut(),
+            on_cpu: true, // adopted mid-run: this thread is standing on its CPU right now
+            wake_pending: false,
         }
     }
 
@@ -355,6 +371,8 @@ impl Thread {
             quota: None,
             outgoing_cap: None,
             next: core::ptr::null_mut(),
+            on_cpu: true, // adopted mid-run: this thread is standing on its CPU right now
+            wake_pending: false,
         }
     }
 
@@ -402,6 +420,8 @@ impl Thread {
             quota: None,
             outgoing_cap: None,
             next: core::ptr::null_mut(),
+            on_cpu: false,
+            wake_pending: false,
         })
     }
 }

@@ -51,15 +51,25 @@ pub struct PerCpu {
     /// core's tick cannot make another core reschedule. See DECISIONS.md §9's record-and-defer.
     pub need_resched: AtomicBool,
 
-    /// A finished thread this core just switched **away from**, waiting to be reaped by the thread
-    /// this core switched **to** (`NO_TID` when there is nothing to reap).
+    /// The thread this core just switched **away from**, to be finished up by the thread this
+    /// core switched **to** (`NO_TID` between switches). See `sched::finish_switch`.
     ///
-    /// The fix for the multi-core reaper race (DECISIONS.md §11): a finished thread cannot be freed
-    /// while any core is still switching off its stack. So it is not reaped by whoever notices it
-    /// finished; it is recorded here by its own core, before the switch, and reaped by its
-    /// successor *after* the switch, when it is provably off its stack. Only this core touches it,
-    /// with interrupts masked. See `sched::finish_switch`.
-    pub to_reap: AtomicU64,
+    /// Two races end here, both the same shape: something must not happen to a thread while any
+    /// core is still switching off its stack, so it is not done by whoever notices it is wanted;
+    /// it is recorded by the thread's own core before the switch and done by its successor
+    /// *after* the switch, when the thread is provably off its stack.
+    ///
+    /// - **Reaping** (the original, DECISIONS.md §11): a `Finished` predecessor is freed by its
+    ///   successor, never by a remote observer.
+    /// - **Deferred wakes** (milestone 14 phase A.3): a `Blocked` predecessor that a waker
+    ///   caught *mid-switch-out* (`Thread::on_cpu` still set, its saved context still stale) is
+    ///   not queued by the waker; the wake is parked in `Thread::wake_pending` and completed by
+    ///   the successor, after the context is real. Without this, a rendezvous or interrupt
+    ///   arriving in that window put the thread on a second core while its first was still
+    ///   running it: two cores in one thread, on a stale register file.
+    ///
+    /// Only this core touches it, with interrupts masked.
+    pub switched_from: AtomicU64,
 
     /// This core's run queue: the threads ready to run here, in round-robin order.
     ///
@@ -99,7 +109,7 @@ impl PerCpu {
             current: AtomicU64::new(NO_TID),
             idle: AtomicU64::new(NO_TID),
             need_resched: AtomicBool::new(false),
-            to_reap: AtomicU64::new(NO_TID),
+            switched_from: AtomicU64::new(NO_TID),
             runq: UnsafeCell::new(Fifo::new()),
             inbox: IrqSafeMutex::new(rank::INBOX, Fifo::new()),
         }

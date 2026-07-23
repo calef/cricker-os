@@ -46,6 +46,9 @@ version = "0.1.0"
 [[package]]
 name = "ipc"
 version = "0.1.0"
+dependencies = [
+ "intrusive",
+]
 
 [[package]]
 name = "kernel"
