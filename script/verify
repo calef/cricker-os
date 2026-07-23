@@ -29,3 +29,6 @@ cargo kani -p paging
 
 echo "==> kani: elf (the loader's front half, panic-free on hostile input)"
 cargo kani -p elf
+
+echo "==> kani: frames (the physical frame allocator)"
+cargo kani -p frames

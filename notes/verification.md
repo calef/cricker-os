@@ -102,6 +102,20 @@ Not yet proved, and the heavier next step: the `Mapper` itself, mapping a page a
 back, which reasons over built tables and a bounded frame pool rather than pure arithmetic. That is
 where the "bounded" tradeoff above starts to bite.
 
+Five in `crates/frames/src/lib.rs`, the physical frame allocator:
+
+| Harness | Property |
+|---|---|
+| `two_allocations_are_distinct` | over any bitmap, two back-to-back `alloc`s never return the same frame (the property isolation rests on: one physical page is never handed to two owners) |
+| `an_allocated_frame_is_aligned_and_in_range` | an allocated frame is frame-aligned and within `[base, base + total*FRAME_SIZE)` |
+| `index_of_inverts_frame_addressing` | frame address and bitmap index are inverses, so naming is unambiguous |
+| `containing_rounds_down_within_a_frame` | `Frame::containing` returns an aligned frame that holds the address |
+| `bitmap_bytes_covers_every_frame` | the bitmap is always sized to hold one bit per frame (no out-of-bounds in `get`/`set`) |
+
+The allocator harnesses build a small allocator over a *symbolic* bitmap directly (the `#[cfg(kani)]`
+module is inside the crate, so it can reach the private fields), rather than through `new`, which
+fills the bitmap all-used. The scan loops are bounded by pinning `total = 8`, so `unwind(9)` suffices.
+
 Four in `crates/elf/src/lib.rs`:
 
 | Harness | Property |

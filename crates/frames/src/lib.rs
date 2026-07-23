@@ -297,3 +297,103 @@ impl<'a> FrameAllocator<'a> {
         }
     }
 }
+
+/// Machine-checked proofs of the frame allocator (DECISIONS §14, milestone 18).
+///
+/// The allocator is the bottom of the memory hierarchy, so its correctness is the floor everything
+/// above it stands on. The flagship property is the one address-space isolation ultimately rests on:
+/// **`alloc` never hands the same physical frame out twice.** Because these harnesses live inside the
+/// crate, they build a small allocator over a *symbolic* bitmap directly, rather than through `new`
+/// (which fills the bitmap all-used). See notes/verification.md.
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    /// **`containing` rounds down to an aligned frame that holds the address.** For every address,
+    /// the frame it names is aligned, sits at or below the address, and the address is within the
+    /// 4 KiB it covers.
+    #[kani::proof]
+    fn containing_rounds_down_within_a_frame() {
+        let addr: u64 = kani::any();
+        let f = Frame::containing(addr);
+        assert!(f.addr().is_multiple_of(FRAME_SIZE));
+        assert!(f.addr() <= addr);
+        assert!(addr - f.addr() < FRAME_SIZE);
+    }
+
+    /// **The bitmap is always big enough.** `bitmap_bytes(n)` gives enough bytes to hold one bit per
+    /// frame, for every frame count. An undersized bitmap would index out of bounds in `get`/`set`.
+    #[kani::proof]
+    fn bitmap_bytes_covers_every_frame() {
+        let frames: usize = kani::any();
+        kani::assume(frames <= 1 << 40); // a real RAM frame count; keeps the `* 8` below in range
+        assert!(FrameAllocator::bitmap_bytes(frames) * 8 >= frames);
+    }
+
+    /// **Frame address and bitmap index are inverses.** A frame at `base + i * FRAME_SIZE`, for any
+    /// in-range `i`, maps back to index `i`. This is what makes the allocator's naming unambiguous:
+    /// no two indices share an address and no address is misfiled.
+    #[kani::proof]
+    fn index_of_inverts_frame_addressing() {
+        let base: u64 = kani::any();
+        let total: usize = kani::any();
+        kani::assume(base.is_multiple_of(FRAME_SIZE));
+        kani::assume(total <= 1 << 20);
+        kani::assume(base.checked_add(total as u64 * FRAME_SIZE).is_some());
+        let i: usize = kani::any();
+        kani::assume(i < total);
+
+        let mut bm = [0u8; 1]; // index_of reads only base and total, never the bitmap
+        let fa = FrameAllocator {
+            bitmap: &mut bm,
+            base,
+            total,
+            used: 0,
+            hint: 0,
+        };
+        let frame = Frame(base + i as u64 * FRAME_SIZE);
+        assert_eq!(fa.index_of(frame), Some(i));
+    }
+
+    /// **Two allocations are never the same frame.** Over any bitmap state, if two back-to-back
+    /// `alloc`s both succeed they return distinct physical frames. This is the property the whole
+    /// isolation story rests on: the allocator cannot hand one physical page to two owners.
+    #[kani::proof]
+    #[kani::unwind(9)]
+    fn two_allocations_are_distinct() {
+        let mut bm: [u8; 1] = kani::any(); // eight frames, arbitrary used/free pattern
+        let mut fa = FrameAllocator {
+            bitmap: &mut bm,
+            base: 0,
+            total: 8,
+            used: 0,
+            hint: 0,
+        };
+        let a = fa.alloc();
+        let b = fa.alloc();
+        if let (Some(fa), Some(fb)) = (a, b) {
+            assert_ne!(fa.addr(), fb.addr());
+        }
+    }
+
+    /// **An allocated frame is aligned and in range.** Whatever the bitmap holds, a frame `alloc`
+    /// returns is frame-aligned and lies within `[base, base + total * FRAME_SIZE)`.
+    #[kani::proof]
+    #[kani::unwind(9)]
+    fn an_allocated_frame_is_aligned_and_in_range() {
+        let mut bm: [u8; 1] = kani::any();
+        let base = 0x4000_0000u64; // an arbitrary aligned base
+        let mut fa = FrameAllocator {
+            bitmap: &mut bm,
+            base,
+            total: 8,
+            used: 0,
+            hint: 0,
+        };
+        if let Some(f) = fa.alloc() {
+            assert!(f.addr().is_multiple_of(FRAME_SIZE));
+            assert!(f.addr() >= base);
+            assert!(f.addr() < base + 8 * FRAME_SIZE);
+        }
+    }
+}
