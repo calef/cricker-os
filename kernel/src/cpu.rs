@@ -12,7 +12,7 @@
 //! piece of the per-CPU machinery. The block grows in step 3 to hold this core's run queue,
 //! `current`, idle thread, reschedule flag, and migration inbox.
 
-use crate::sync::rank;
+use crate::sync::{IrqSafeMutex, rank};
 use crate::thread::Tid;
 use alloc::collections::VecDeque;
 use core::cell::UnsafeCell;
@@ -69,6 +69,14 @@ pub struct PerCpu {
     /// work movement onto the inbox/SGI path (step 3c) rather than letting one core reach into
     /// another's queue. Access it through [`with_runq`](Self::with_runq).
     runq: UnsafeCell<VecDeque<Tid>>,
+
+    /// This core's migration inbox: threads handed to it by *other* cores (SMP step 3c).
+    ///
+    /// **The one cross-core scheduler structure**, and the reason the run queue needs no lock. To
+    /// give this core a thread, another core locks this and pushes a Tid, then sends a reschedule
+    /// SGI; this core drains it into its own run queue in the handler. A remote core touches only
+    /// the inbox, never the run queue. See [`inbox_of`] and `sched::drain_inbox`.
+    pub inbox: IrqSafeMutex<VecDeque<Tid>>,
 }
 
 // SAFETY: the only non-`Sync` field is `runq`, and the whole contract of this type is that a
@@ -86,6 +94,7 @@ impl PerCpu {
             need_resched: AtomicBool::new(false),
             to_reap: AtomicU64::new(NO_TID),
             runq: UnsafeCell::new(VecDeque::new()),
+            inbox: IrqSafeMutex::new(rank::INBOX, VecDeque::new()),
         }
     }
 
@@ -139,6 +148,12 @@ pub fn current() -> &'static PerCpu {
 pub fn id() -> usize {
     let base = PERCPU.as_ptr() as usize;
     (crate::arch::percpu() - base) / core::mem::size_of::<PerCpu>()
+}
+
+/// Another core's migration inbox, by id. This is the one place a core reaches into a *different*
+/// core's `PerCpu` block, and only the inbox (a real lock), never the run queue. See DECISIONS §11.
+pub fn inbox_of(id: usize) -> &'static IrqSafeMutex<VecDeque<Tid>> {
+    &PERCPU[id].inbox
 }
 
 #[cfg(test)]

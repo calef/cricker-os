@@ -7,9 +7,13 @@
 //! **Step 2** brought a core up "alive and idle" (bring-up path only). **Step 3b-ii** makes it a
 //! full scheduler participant: it adopts the kernel's fine map, becomes its own idle thread with
 //! its own run queue, brings up its GIC CPU interface and timer, and from then on schedules and is
-//! preempted like the boot core. Its run queue starts empty, so it runs its idle thread until work
-//! lands there. Placing work on *another* core's queue is step 3c (the inbox + SGI); until then a
-//! core only runs what it spawned itself.
+//! preempted like the boot core.
+//!
+//! **Step 3c** adds cross-core placement. A core's run queue is single-owner, so to give it a
+//! thread another core hands it through this core's **inbox** (the one cross-core scheduler
+//! structure) and fires the reschedule SGI; the target drains its inbox into its own queue in the
+//! handler. `sched::spawn_on(core, f)` is the primitive. (`spawn` itself still runs work on the
+//! calling core; wiring it to round-robin over `spawn_on` is the remaining load-balancing policy.)
 
 use crate::cpu::{self, MAX_CPUS};
 use crate::{arch, println};
@@ -44,11 +48,24 @@ static SECONDARY_STACKS: Stacks =
 /// How many secondaries have reached [`secondary_main`] and are idling.
 static ONLINE: AtomicUsize = AtomicUsize::new(0);
 
+/// How many cores are online: the boot core plus the secondaries that came up. Used to spread work
+/// (SMP step 3c) without baking in a core count.
+#[allow(dead_code)] // used by the SMP tests now, and by spawn's placement policy when it distributes
+pub fn online_count() -> usize {
+    ONLINE.load(Ordering::Acquire) + 1
+}
+
 /// Set by each secondary's probe thread, indexed by the core it actually ran on. The proof that a
 /// secondary schedules real work from its own queue, not just idles. See `secondary_main` step 5.
 #[cfg(test)]
 static RAN_ON: [core::sync::atomic::AtomicBool; MAX_CPUS] =
     [const { core::sync::atomic::AtomicBool::new(false) }; MAX_CPUS];
+
+/// Set by a probe placed on a specific core via `spawn_on`, indexed by the core it ran on. Proof
+/// that cross-core placement (the inbox + reschedule SGI) actually delivers work to a chosen core.
+#[cfg(test)]
+static SPREAD: [core::sync::atomic::AtomicU32; MAX_CPUS] =
+    [const { core::sync::atomic::AtomicU32::new(0) }; MAX_CPUS];
 
 /// The high-VA top of core `id`'s boot stack. Stacks grow down, so the top is base + size, and
 /// the 16-byte alignment `sp` requires comes from `Stack`'s `align(16)` and the size being a
@@ -188,6 +205,36 @@ mod tests {
             assert!(
                 RAN_ON[c].load(Ordering::Acquire),
                 "secondary core {c} never ran scheduled work",
+            );
+        }
+    }
+
+    /// **Work can be placed on any core from another core** (SMP step 3c). Core 0 uses `spawn_on`
+    /// to put a probe on each online core; a remote target is reached through its inbox and a
+    /// reschedule SGI. Each probe records the core it actually ran on, proving the migration path
+    /// delivers a thread to the chosen core.
+    #[test_case]
+    fn work_can_be_placed_on_every_core() {
+        let n = online_count();
+        for target in 0..n {
+            crate::sched::spawn_on(target, move || {
+                SPREAD[cpu::id()].fetch_add(1, Ordering::Release);
+            })
+            .expect("spawn_on failed");
+        }
+
+        let done = || (0..n).all(|c| SPREAD[c].load(Ordering::Acquire) > 0);
+        let mut spins = 0u64;
+        while !done() {
+            crate::sched::yield_now();
+            spins += 1;
+            assert!(spins < 5_000_000, "work placed on a core never ran there");
+        }
+
+        for c in 0..n {
+            assert!(
+                SPREAD[c].load(Ordering::Acquire) > 0,
+                "core {c} never ran work placed on it",
             );
         }
     }

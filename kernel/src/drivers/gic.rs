@@ -224,13 +224,16 @@ pub fn disable(intid: u32) {
 ///
 /// A controllable interrupt with no hardware behind it. The whole "an interrupt becomes a
 /// message" path can be tested with this: raise the SGI, watch a blocked thread wake.
-pub fn send_sgi(intid: u32) {
+pub fn send_sgi(intid: u32, target_cpu: usize) {
     debug_assert!(intid < 16, "SGIs are INTID 0-15");
+    debug_assert!(target_cpu < 8, "GICv2 SGIR targets at most 8 cores");
     let guard = GIC.lock();
     let gic = guard.as_ref().expect("gic::send_sgi before gic::init");
 
-    // SGIR: bits[3:0] the SGI id, bits[23:16] the target CPU list (bit 0 = core 0).
-    gic.gicd().SGIR.set((1 << 16) | intid);
+    // SGIR: bits[3:0] the SGI id, bits[23:16] the target CPU list (bit N = core N). This is how
+    // one core pokes another (SMP step 3c): a targeted SGI, delivered to that core's banked CPU
+    // interface, where its handler runs.
+    gic.gicd().SGIR.set((1 << (16 + target_cpu)) | intid);
 }
 
 /// Take the interrupt. **Reading `IAR` is what acknowledges it**, so this has a side effect

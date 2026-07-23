@@ -323,6 +323,11 @@ fn handle_irq(_frame: &mut TrapFrame) {
             // defer. The deferral happens at the bottom of this function.
             crate::sched::on_tick();
         }
+        crate::sched::RESCHED_SGI => {
+            // Another core handed us a thread (via our inbox) and poked us. Drain it onto our run
+            // queue and request a reschedule; the deferral at the bottom runs schedule(). SMP 3c.
+            crate::sched::drain_inbox();
+        }
         other => {
             // Is this interrupt routed to a userspace driver? If so, **it becomes a message.**
             //

@@ -112,6 +112,15 @@ pub mod rank {
     /// where DECISIONS.md §9 forbids allocation.
     pub const SCHED: u32 = 60;
 
+    /// A core's migration inbox (SMP step 3c). The one cross-core scheduler structure: another
+    /// core locks it to hand this core a thread, and this core drains it in its reschedule-SGI
+    /// handler. **Just below the scheduler**, because placing a thread on a remote core is done
+    /// while holding SCHED (it reads the thread table), and above the allocators, since a push may
+    /// grow the `VecDeque` (pre-reserved to avoid it, but the rank must still allow it). Inboxes
+    /// are all this one rank and are never nested: a core locks at most one inbox at a time (the
+    /// target's), so `R < R` being false forbids the only cycle. See DECISIONS.md §11.
+    pub const INBOX: u32 = 59;
+
     /// Untyped memory regions (milestone 11). **Above the allocators**, because creating a region
     /// grows a `Vec` (a heap allocation) while the lock is held. Below the scheduler, so it may be
     /// taken from a syscall that has no scheduler business.

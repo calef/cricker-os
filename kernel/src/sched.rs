@@ -141,6 +141,7 @@ pub fn init() {
     // still masked this early in boot, which is what `with_runq` requires. Each secondary does
     // the same for its own queue when it comes online (step 3b).
     cpu::current().with_runq(|q| q.reserve(64));
+    cpu::current().inbox.lock().reserve(64); // so a migration push never allocates (step 3c)
 
     // The idle thread. Its entire body is "wait for an interrupt, then let the scheduler look for
     // work." It is deliberately kept OUT of the ready queue (see cpu::PerCpu::idle): the scheduler picks it
@@ -186,6 +187,70 @@ pub fn adopt_secondary_idle() {
 
     // Capacity up front, so `schedule()`'s push never allocates. IRQs are masked this early.
     cpu::current().with_runq(|q| q.reserve(64));
+    cpu::current().inbox.lock().reserve(64); // migration target: a push must not allocate (§3c)
+}
+
+/// The reschedule / migration SGI. When one core hands another a thread (via its inbox), it fires
+/// this at the target; the target's handler drains its inbox and reschedules. INTID 0, distinct
+/// from the endpoint-bound test SGIs (1 and 2). SMP step 3c.
+pub const RESCHED_SGI: u32 = 0;
+
+/// Drain this core's migration inbox into its run queue, and request a reschedule.
+///
+/// Called from the reschedule-SGI handler: another core pushed one or more threads into our inbox
+/// and poked us. We move them onto our own (single-owner) run queue and set `need_resched`, so the
+/// handler's tail runs `schedule()` and picks them up. IRQ context, so interrupts are masked, which
+/// is what `with_runq` needs; we hold nothing else, so taking the inbox is rank-safe (§11).
+pub fn drain_inbox() {
+    let mut moved = false;
+    let mut inbox = cpu::current().inbox.lock();
+    while let Some(tid) = inbox.pop_front() {
+        cpu::current().with_runq(|q| q.push_back(tid));
+        moved = true;
+    }
+    drop(inbox);
+    if moved {
+        cpu::current().need_resched.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Put an already-created thread `id` onto core `target`'s run queue. Caller holds `SCHED`.
+///
+/// Local: straight onto our own queue (SCHED masks interrupts, which `with_runq` needs). Remote:
+/// into the target's inbox, and the SGI (sent after SCHED is released, by the caller) makes it
+/// drain. The inbox push under SCHED is rank-safe (INBOX < SCHED), and the inbox's own lock supplies
+/// the release/acquire that orders our thread-table insert before the target's drain (§11).
+fn place_on(target: usize, id: Tid) {
+    if target == cpu::id() {
+        cpu::current().with_runq(|q| q.push_back(id));
+    } else {
+        cpu::inbox_of(target).lock().push_back(id);
+    }
+}
+
+/// Spawn a thread and place it on a **specific** core (SMP step 3c).
+///
+/// The cross-core placement primitive. `spawn` puts work on the calling core; this puts it on
+/// `target`, which is what lets the machine actually spread load. A remote target is handed the
+/// thread through its inbox and then poked with the reschedule SGI. (Wiring `spawn` itself to
+/// round-robin over `target` is the trivial next step, once the mechanism is proven.)
+pub fn spawn_on<F: FnOnce() + Send + 'static>(target: usize, f: F) -> Option<Tid> {
+    let thread = Thread::spawn(Box::new(f))?;
+    let id = thread.id;
+    let remote = target != cpu::id();
+
+    {
+        let mut guard = SCHED.lock();
+        let sched = guard.as_mut()?;
+        sched.threads.insert(id, Box::new(thread));
+        place_on(target, id);
+    } // SCHED released here, before the SGI, so the target's schedule() can take it
+
+    if remote {
+        // Poke the target: its handler drains the inbox we just pushed to and reschedules.
+        crate::drivers::gic::send_sgi(RESCHED_SGI, target);
+    }
+    Some(id)
 }
 
 pub fn spawn<F: FnOnce() + Send + 'static>(f: F) -> Option<Tid> {
@@ -1202,7 +1267,7 @@ mod tests {
         );
 
         // Fire it. The GIC delivers the SGI, handle_irq routes it to `ep`, the waiter wakes.
-        crate::drivers::gic::send_sgi(SGI);
+        crate::drivers::gic::send_sgi(SGI, 0); // self (core 0) in the test
 
         for _ in 0..100 {
             if WOKE.load(Ordering::SeqCst) {
@@ -1288,7 +1353,7 @@ mod tests {
         crate::drivers::gic::enable(SGI);
 
         // Fire it with NOBODY waiting. The signal must be counted.
-        crate::drivers::gic::send_sgi(SGI);
+        crate::drivers::gic::send_sgi(SGI, 0); // self (core 0) in the test
         // Give the interrupt time to be delivered and handled.
         for _ in 0..20 {
             super::yield_now();
