@@ -13,9 +13,9 @@
 //! `current`, idle thread, reschedule flag, and migration inbox.
 
 use crate::sync::{IrqSafeMutex, rank};
-use crate::thread::Tid;
-use alloc::collections::VecDeque;
+use crate::thread::{Thread, Tid};
 use core::cell::UnsafeCell;
+use intrusive::Fifo;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
 
 /// A `current`/`idle` slot holding no thread. Tids are small integers from 0 up, so `u64::MAX`
@@ -63,20 +63,27 @@ pub struct PerCpu {
 
     /// This core's run queue: the threads ready to run here, in round-robin order.
     ///
+    /// **Intrusive** as of milestone 14 phase A.2 (notes/intrusive-queues.md): the queue is two
+    /// pointers, the links live inside the `Thread`s, and a push can neither allocate nor fail,
+    /// which retires the old pre-reserved-capacity apology to the IRQ path. Entries are TCB
+    /// pointers, not Tids: what a pop hands back is the thread itself, no lookup. The pointers
+    /// are kept alive by the queue discipline: a queued thread is `Ready`, and only `Finished`
+    /// threads are ever reaped.
+    ///
     /// **No cross-core lock, by design (DECISIONS.md §11).** Only this core ever touches its own
     /// queue, and only with interrupts masked, which is exactly what makes the `UnsafeCell`
     /// sound. That a remote core cannot even *name* this queue is the point: it forces cross-core
     /// work movement onto the inbox/SGI path (step 3c) rather than letting one core reach into
     /// another's queue. Access it through [`with_runq`](Self::with_runq).
-    runq: UnsafeCell<VecDeque<Tid>>,
+    runq: UnsafeCell<Fifo<Thread>>,
 
     /// This core's migration inbox: threads handed to it by *other* cores (SMP step 3c).
     ///
     /// **The one cross-core scheduler structure**, and the reason the run queue needs no lock. To
-    /// give this core a thread, another core locks this and pushes a Tid, then sends a reschedule
-    /// SGI; this core drains it into its own run queue in the handler. A remote core touches only
-    /// the inbox, never the run queue. See [`inbox_of`] and `sched::drain_inbox`.
-    pub inbox: IrqSafeMutex<VecDeque<Tid>>,
+    /// give this core a thread, another core locks this and pushes the TCB, then sends a
+    /// reschedule SGI; this core drains it into its own run queue in the handler. A remote core
+    /// touches only the inbox, never the run queue. See [`inbox_of`] and `sched::drain_inbox`.
+    pub inbox: IrqSafeMutex<Fifo<Thread>>,
 }
 
 // SAFETY: the only non-`Sync` field is `runq`, and the whole contract of this type is that a
@@ -93,8 +100,8 @@ impl PerCpu {
             idle: AtomicU64::new(NO_TID),
             need_resched: AtomicBool::new(false),
             to_reap: AtomicU64::new(NO_TID),
-            runq: UnsafeCell::new(VecDeque::new()),
-            inbox: IrqSafeMutex::new(rank::INBOX, VecDeque::new()),
+            runq: UnsafeCell::new(Fifo::new()),
+            inbox: IrqSafeMutex::new(rank::INBOX, Fifo::new()),
         }
     }
 
@@ -108,7 +115,7 @@ impl PerCpu {
     /// standard per-CPU pattern; the `UnsafeCell` is sound precisely because of that invariant.
     /// Every caller today already holds `SCHED` (which masks interrupts) or has masked them
     /// explicitly in `schedule()`.
-    pub fn with_runq<R>(&self, f: impl FnOnce(&mut VecDeque<Tid>) -> R) -> R {
+    pub fn with_runq<R>(&self, f: impl FnOnce(&mut Fifo<Thread>) -> R) -> R {
         debug_assert!(
             !crate::arch::interrupts::enabled(),
             "run queue touched with interrupts enabled: single-owner safety needs them masked",
@@ -152,7 +159,7 @@ pub fn id() -> usize {
 
 /// Another core's migration inbox, by id. This is the one place a core reaches into a *different*
 /// core's `PerCpu` block, and only the inbox (a real lock), never the run queue. See DECISIONS §11.
-pub fn inbox_of(id: usize) -> &'static IrqSafeMutex<VecDeque<Tid>> {
+pub fn inbox_of(id: usize) -> &'static IrqSafeMutex<Fifo<Thread>> {
     &PERCPU[id].inbox
 }
 

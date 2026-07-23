@@ -290,6 +290,25 @@ pub struct Thread {
     /// as `mailbox` stashes the data words. The receiver, running later, reaches in, `take()`s it,
     /// and inserts it into its own cspace. `None` for every ordinary send. See sched.rs.
     pub outgoing_cap: Option<crate::cap::Cap>,
+
+    /// **The intrusive queue link** (milestone 14 phase A.2; notes/intrusive-queues.md). When this
+    /// thread is on a run queue or a migration inbox, this points at the next thread in it; null
+    /// otherwise. One link, so a thread can be on at most one queue, which is not a limitation but
+    /// the scheduler's state machine made physical: Ready threads are on exactly one queue,
+    /// Running/Blocked/Finished threads on none. Touched only by the queue that holds the thread,
+    /// under that queue's synchronization (a run queue: its own core, interrupts masked; an inbox:
+    /// its mutex).
+    pub(crate) next: *mut Thread,
+}
+
+// SAFETY: plain storage of the link, nothing else, which is all the queue's contract asks.
+unsafe impl intrusive::Node for Thread {
+    fn next(&self) -> *mut Self {
+        self.next
+    }
+    fn set_next(&mut self, next: *mut Self) {
+        self.next = next;
+    }
 }
 
 // SAFETY: a Thread is only ever touched under the scheduler's lock.
@@ -313,6 +332,7 @@ impl Thread {
             mailbox: [0; 3],
             quota: None,
             outgoing_cap: None,
+            next: core::ptr::null_mut(),
         }
     }
 
@@ -334,6 +354,7 @@ impl Thread {
             mailbox: [0; 3],
             quota: None,
             outgoing_cap: None,
+            next: core::ptr::null_mut(),
         }
     }
 
@@ -380,6 +401,7 @@ impl Thread {
             mailbox: [0; 3],
             quota: None,
             outgoing_cap: None,
+            next: core::ptr::null_mut(),
         })
     }
 }

@@ -208,6 +208,16 @@ notes/generational-names.md):
 | `live_names_are_distinct_and_resolve_to_their_own_entry` | the `(generation, slot)` packing cannot alias two live entries |
 | `a_name_the_table_never_minted_resolves_to_nothing` | for any u64, resolution succeeds only on exactly a name the table issued |
 
+One in `crates/intrusive/src/lib.rs`, the scheduler's queue structure (milestone 14 phase A.2;
+see notes/intrusive-queues.md):
+
+| Harness | Property |
+|---|---|
+| `any_push_pop_interleaving_is_fifo_and_lossless` | the real `Fifo`, driven by a six-step *symbolic* operation sequence over three nodes, agrees with a trivially-correct model at every step: FIFO order, no node lost or invented, lengths agree, and no stale link is dereferenced |
+
+One harness rather than several because the operation-sequence shape subsumes the single-step
+properties: a push-preserves-X proof is the sequence of length one.
+
 Four in `crates/elf/src/lib.rs`:
 
 | Harness | Property |

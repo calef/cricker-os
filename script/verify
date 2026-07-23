@@ -41,3 +41,6 @@ cargo kani -p ipc
 
 echo "==> kani: slots (the generational thread table)"
 cargo kani -p slots
+
+echo "==> kani: intrusive (the scheduler's queue structure)"
+cargo kani -p intrusive

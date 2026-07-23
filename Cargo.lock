@@ -40,6 +40,10 @@ name = "heap"
 version = "0.1.0"
 
 [[package]]
+name = "intrusive"
+version = "0.1.0"
+
+[[package]]
 name = "ipc"
 version = "0.1.0"
 
@@ -54,6 +58,7 @@ dependencies = [
  "elf",
  "frames",
  "heap",
+ "intrusive",
  "ipc",
  "paging",
  "slab",

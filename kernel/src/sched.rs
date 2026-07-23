@@ -107,15 +107,15 @@ struct Scheduler {
     endpoints: alloc::vec::Vec<Endpoint>,
 }
 
-/// Rank **above the allocators**, because `spawn` pushes into a `VecDeque` while holding this,
-/// and that push may allocate.
+/// Rank **above the allocators**, because `spawn` boxes the new `Thread` while holding this
+/// (`insert_with` runs its closure, and the `Box::new` inside it, under the lock).
 ///
-/// `schedule()` itself never allocates: it pops one Tid and pushes one back, so the deque's
-/// length never exceeds its capacity and it cannot grow. That is what makes it safe to call
-/// from the timer interrupt, where DECISIONS.md §9 forbids allocation.
-///
-/// (A real kernel uses an **intrusive** list — the next-pointer lives inside the `Thread`
-/// itself — so the run queue can never allocate at all. Worth doing if this ever bites.)
+/// The queues stopped being a reason at milestone 14 phase A.2: they are **intrusive** now (the
+/// next-pointer lives inside the `Thread`), so a queue operation is a couple of pointer writes
+/// that cannot allocate, from the timer IRQ or anywhere else. §9's no-allocation-in-IRQ rule
+/// holds for `schedule()` by construction rather than by pre-reserved capacity. The parenthetical
+/// that used to sit here ("a real kernel uses an intrusive list; worth doing if this ever bites")
+/// is done; phase B removes the `Box` too, and with it this rank note.
 static SCHED: IrqSafeMutex<Option<Scheduler>> = IrqSafeMutex::new(rank::SCHED, None);
 
 /// Adopt the context we are already running in as thread 0.
@@ -147,12 +147,9 @@ pub fn init() {
     // This core (core 0) is running the boot thread.
     set_current_tid(boot_tid);
 
-    // Capacity up front on THIS core's run queue, so `schedule()`'s push can never reallocate
-    // (it runs from the timer IRQ, where DECISIONS.md §9 forbids allocation). Interrupts are
-    // still masked this early in boot, which is what `with_runq` requires. Each secondary does
-    // the same for its own queue when it comes online (step 3b).
-    cpu::current().with_runq(|q| q.reserve(64));
-    cpu::current().inbox.lock().reserve(64); // so a migration push never allocates (step 3c)
+    // (The run queue and inbox used to have capacity reserved here, so a push from the timer IRQ
+    // could never allocate. The queues are intrusive now — a push is two pointer writes and
+    // *cannot* allocate — so there is nothing to reserve. §9's rule became structural.)
 
     // The idle thread. Its entire body is "wait for an interrupt, then let the scheduler look for
     // work." It is deliberately kept OUT of the ready queue (see cpu::PerCpu::idle): the scheduler picks it
@@ -210,10 +207,7 @@ pub fn adopt_secondary_idle() {
     // This core is currently running that thread, and it is also this core's idle fallback.
     cpu::current().current.store(id, Ordering::Relaxed);
     cpu::current().idle.store(id, Ordering::Relaxed);
-
-    // Capacity up front, so `schedule()`'s push never allocates. IRQs are masked this early.
-    cpu::current().with_runq(|q| q.reserve(64));
-    cpu::current().inbox.lock().reserve(64); // migration target: a push must not allocate (§3c)
+    // (No queue capacity to reserve: the queues are intrusive and a push cannot allocate.)
 }
 
 /// The reschedule / migration SGI. When one core hands another a thread (via its inbox), it fires
@@ -230,8 +224,11 @@ pub const RESCHED_SGI: u32 = 0;
 pub fn drain_inbox() {
     let mut moved = false;
     let mut inbox = cpu::current().inbox.lock();
-    while let Some(tid) = inbox.pop_front() {
-        cpu::current().with_runq(|q| q.push_back(tid));
+    while let Some(thread) = inbox.pop_front() {
+        // SAFETY: the sender pushed a live Ready thread; popping it here is the only removal
+        // path, so it is on no other queue. Nothing is dereferenced: the handoff is pure
+        // pointer movement, which is why this needs no scheduler lock.
+        cpu::current().with_runq(|q| unsafe { q.push_back(thread) });
         moved = true;
     }
     drop(inbox);
@@ -240,17 +237,32 @@ pub fn drain_inbox() {
     }
 }
 
-/// Put an already-created thread `id` onto core `target`'s run queue. Caller holds `SCHED`.
+/// The raw TCB pointer of a live thread, for queueing (milestone 14 phase A.2). Caller holds
+/// `SCHED`.
+///
+/// The pointer's validity while queued is the queue discipline, stated once here: a thread is
+/// queued only when `Ready`, the reaper frees only `Finished` threads, and a thread is never both.
+/// The `Box` in the table pins the address (see `Scheduler::threads`), so a pointer taken here is
+/// good until the thread is popped, however many queue hops (inbox to run queue) it makes in
+/// between.
+fn tcb_ptr(sched: &mut Scheduler, tid: Tid) -> *mut Thread {
+    let t = sched.threads.get_mut(tid).expect("tcb_ptr of a dead thread");
+    &mut **t
+}
+
+/// Put an already-created thread onto core `target`'s run queue. Caller holds `SCHED`.
 ///
 /// Local: straight onto our own queue (SCHED masks interrupts, which `with_runq` needs). Remote:
 /// into the target's inbox, and the SGI (sent after SCHED is released, by the caller) makes it
 /// drain. The inbox push under SCHED is rank-safe (INBOX < SCHED), and the inbox's own lock supplies
 /// the release/acquire that orders our thread-table insert before the target's drain (§11).
-fn place_on(target: usize, id: Tid) {
+fn place_on(target: usize, thread: *mut Thread) {
     if target == cpu::id() {
-        cpu::current().with_runq(|q| q.push_back(id));
+        // SAFETY: `thread` is a live Ready thread (see tcb_ptr), on no other queue.
+        cpu::current().with_runq(|q| unsafe { q.push_back(thread) });
     } else {
-        cpu::inbox_of(target).lock().push_back(id);
+        // SAFETY: as above; the inbox mutex serializes access to the link.
+        unsafe { cpu::inbox_of(target).lock().push_back(thread) };
     }
 }
 
@@ -272,7 +284,7 @@ pub fn spawn_on<F: FnOnce() + Send + 'static>(target: usize, f: F) -> Option<Tid
             thread.id = tid;
             Box::new(thread)
         })?;
-        place_on(target, id);
+        place_on(target, tcb_ptr(sched, id));
         id
     }; // SCHED released here, before the SGI, so the target's schedule() can take it
 
@@ -298,7 +310,9 @@ pub fn spawn<F: FnOnce() + Send + 'static>(f: F) -> Option<Tid> {
     })?;
     // Onto the spawning core's own queue. We hold SCHED, so interrupts are masked, which is what
     // `with_runq` needs. (Step 3c will let a spawn target another core via its inbox.)
-    cpu::current().with_runq(|q| q.push_back(id));
+    let ptr = tcb_ptr(sched, id);
+    // SAFETY: freshly inserted, Ready, on no queue; see tcb_ptr for why it stays valid.
+    cpu::current().with_runq(|q| unsafe { q.push_back(ptr) });
 
     Some(id)
 }
@@ -353,7 +367,9 @@ pub fn spawn_with_quota<F: FnOnce() + Send + 'static>(
         thread.id = tid;
         Box::new(thread)
     })?;
-    cpu::current().with_runq(|q| q.push_back(id)); // this core's queue; SCHED held, IRQs masked
+    let ptr = tcb_ptr(sched, id);
+    // SAFETY: freshly inserted, Ready, on no queue; this core's queue, SCHED held, IRQs masked.
+    cpu::current().with_runq(|q| unsafe { q.push_back(ptr) });
     Some(id)
 }
 
@@ -432,7 +448,9 @@ pub fn schedule() {
         let idle_tid = cpu::current().idle.load(Ordering::Relaxed);
 
         let next = match cpu::current().with_runq(|q| q.pop_front()) {
-            Some(t) => t,
+            // SAFETY: only live Ready threads are ever queued; reading the id is the last thing
+            // that happens before the pointer is dropped in favor of the (validated) Tid.
+            Some(t) => unsafe { (*t).id },
             None => {
                 if runnable {
                     // Keep it. A thread yielding into an empty run queue simply carries on. (The
@@ -461,7 +479,9 @@ pub fn schedule() {
         // lives outside the ready queue.
         if runnable && current != idle_tid {
             sched.threads.get_mut(current).unwrap().state = State::Ready;
-            cpu::current().with_runq(|q| q.push_back(current)); // round robin: back of the queue
+            let ptr = tcb_ptr(sched, current);
+            // SAFETY: just marked Ready, coming off the CPU, on no queue. Round robin: the back.
+            cpu::current().with_runq(|q| unsafe { q.push_back(ptr) });
         }
 
         sched.threads.get_mut(next).unwrap().state = State::Running;
@@ -605,9 +625,11 @@ fn wake(sched: &mut Scheduler, tid: Tid) {
         && t.state == State::Blocked
     {
         t.state = State::Ready;
+        let ptr: *mut Thread = &mut **t;
         // Onto this core's queue. Every caller (ipc_*, irq_notify) holds SCHED, so interrupts
         // are masked. Step 3c makes this place the thread on the *right* core via its inbox.
-        cpu::current().with_runq(|q| q.push_back(tid));
+        // SAFETY: just transitioned Blocked -> Ready, so it was on no queue and now joins one.
+        cpu::current().with_runq(|q| unsafe { q.push_back(ptr) });
     }
 }
 

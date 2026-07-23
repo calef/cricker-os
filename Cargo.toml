@@ -13,6 +13,7 @@ members = [
     "crates/ipc",
     "crates/paging",
     "crates/heap",
+    "crates/intrusive",
     "crates/slab",
     "crates/slots",
 ]

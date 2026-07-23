@@ -144,6 +144,10 @@ in the code or the conversation doesn't make sense, it belongs here.
   fixed generational slot table (`crates/slots`). A Tid is `(generation, slot)`; a dead thread's
   name can never resolve again, even after slot reuse. Bounded like an array, safe like a
   never-reused counter, and the first step toward capability-only thread naming.
+- [Intrusive queues](intrusive-queues.md) — milestone 14 phase A.2: the run queues and migration
+  inboxes become intrusive (`crates/intrusive`); the link lives inside the TCB, a push is two
+  pointer writes that cannot allocate or fail, and a pop hands back the thread itself. One link
+  means one queue, which is the scheduler's state machine made physical.
 
 ## The point of all this
 
