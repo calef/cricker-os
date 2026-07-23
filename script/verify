@@ -23,3 +23,6 @@ fi
 # capability core toward IPC and the MMU invariants.
 echo "==> kani: caps (the capability model)"
 cargo kani -p caps
+
+echo "==> kani: paging (the address arithmetic)"
+cargo kani -p paging

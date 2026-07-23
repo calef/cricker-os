@@ -725,3 +725,84 @@ where
         ))
     }
 }
+
+/// Machine-checked proofs of the address arithmetic (DECISIONS §14, milestone 18).
+///
+/// The four-level walk is memory-safe and isolating only if the index math is right for *every*
+/// virtual address. These harnesses prove exactly that, symbolically, over all 2^64 addresses at
+/// once, rather than on the handful a test would pick. See notes/verification.md.
+///
+/// Scope: the pure *arithmetic* (`index`, `Half`). Proving the `Mapper` itself (build tables, then
+/// `translate` them back) means reasoning over built memory and a bounded frame pool; that is the
+/// heavier next step, noted in notes/verification.md, not done here.
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    /// **The walk never indexes past a table.** For every address and every level, the extracted
+    /// index is < 512, so `entries[index(va, level)]` is always in bounds. An index of 512+ would
+    /// read past a table into the next page: a memory-safety bug and an isolation break.
+    #[kani::proof]
+    fn index_is_always_in_bounds() {
+        let va: u64 = kani::any();
+        let level: usize = kani::any();
+        kani::assume(level < LEVELS);
+        assert!(index(va, level) < ENTRIES);
+    }
+
+    /// **The four indices and the offset tile the address exactly.** The bits each level selects,
+    /// plus the 12-bit page offset, reassemble the low 48 bits with nothing lost and nothing
+    /// overlapping. This is what proves the `39 - 9*level` shift arithmetic correct: if two levels
+    /// shared a bit, two different addresses could walk to one entry.
+    #[kani::proof]
+    fn the_indices_and_offset_tile_the_address() {
+        let va: u64 = kani::any();
+        let reconstructed = ((index(va, 0) as u64) << 39)
+            | ((index(va, 1) as u64) << 30)
+            | ((index(va, 2) as u64) << 21)
+            | ((index(va, 3) as u64) << 12)
+            | (va & (PAGE_SIZE - 1));
+        assert_eq!(reconstructed, va & 0x0000_ffff_ffff_ffff);
+    }
+
+    /// **Every byte of a page walks to the same leaf.** Changing only the 12-bit offset leaves all
+    /// four indices unchanged, so a whole 4 KiB page shares one leaf descriptor. That is "page
+    /// granularity", stated as a property of the index math.
+    #[kani::proof]
+    fn the_offset_does_not_change_the_walk() {
+        let va: u64 = kani::any();
+        let off: u64 = kani::any();
+        kani::assume(off < PAGE_SIZE);
+        let base = va & !(PAGE_SIZE - 1);
+        let inside = base | off;
+        assert_eq!(index(base, 0), index(inside, 0));
+        assert_eq!(index(base, 1), index(inside, 1));
+        assert_eq!(index(base, 2), index(inside, 2));
+        assert_eq!(index(base, 3), index(inside, 3));
+    }
+
+    /// **Distinct pages take distinct paths.** Two page-aligned addresses with the same four table
+    /// indices are the same page. So no two different pages ever reach the same leaf slot, which is
+    /// the arithmetic core of address-space isolation.
+    #[kani::proof]
+    fn distinct_pages_take_distinct_paths() {
+        let a: u64 = kani::any::<u64>() & 0x0000_ffff_ffff_f000;
+        let b: u64 = kani::any::<u64>() & 0x0000_ffff_ffff_f000;
+        kani::assume(
+            index(a, 0) == index(b, 0)
+                && index(a, 1) == index(b, 1)
+                && index(a, 2) == index(b, 2)
+                && index(a, 3) == index(b, 3),
+        );
+        assert_eq!(a, b);
+    }
+
+    /// **The two halves are disjoint.** No address belongs to both `TTBR0` (low) and `TTBR1`
+    /// (high); the top 16 bits decide, and all-zero and all-one are mutually exclusive. The
+    /// kernel/user split rests on this.
+    #[kani::proof]
+    fn the_two_halves_are_disjoint() {
+        let va: u64 = kani::any();
+        assert!(!(Half::Low.contains(va) && Half::High.contains(va)));
+    }
+}
