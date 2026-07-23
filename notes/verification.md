@@ -102,6 +102,45 @@ Not yet proved, and the heavier next step: the `Mapper` itself, mapping a page a
 back, which reasons over built tables and a bounded frame pool rather than pure arithmetic. That is
 where the "bounded" tradeoff above starts to bite.
 
+One in `crates/elf/src/lib.rs`:
+
+| Harness | Property |
+|---|---|
+| `page_range_is_panic_free_and_ordered` | for any `vaddr`/`memsz`, the saturating page arithmetic neither panics nor returns an inverted range (a `pub` helper that must be safe on its own) |
+
+## Where BMC hit a wall: the ELF parser
+
+The goal for `elf` was the big one: prove `Elf::parse` *total*, that no byte string, however hostile,
+makes it panic. A parser over attacker-controlled input is the textbook case for it, and a panic
+there is a crafted binary halting the kernel. It did not work, and the reason is worth keeping.
+
+Two things put it past bounded model checking:
+
+1. **A loop Kani bounds too loosely.** `parse` has an `O(n^2)` overlap check over up to
+   `MAX_PHNUM = 64` program headers. The real bound is far tighter (the header table must fit in the
+   file, which at any small input size allows one or two headers), but that bound is *nonlinear*
+   (`phoff + phnum * phentsize <= len`). Kani uses the *linear* `phnum <= 64` cap it can see for the
+   unwinding assertion, so it insists on unrolling 64 deep, and `unwind(65)` did not return in 7+
+   minutes.
+2. **Symbolic slice offsets.** `phoff` and each segment's `p_offset` come out of the file, so the
+   reads land at *symbolic positions* in a symbolic array. That is expensive for the solver's memory
+   model, and it did not return even after pinning the header count to a single segment to kill the
+   loop.
+
+So `parse` totality is deferred, honestly. The paths forward, in rough order of appeal:
+
+- **Factor the leaf arithmetic into a pure function** (given a header's raw fields, compute the
+  validated `Segment` or an error) and prove *that* panic-free. It has no loop and no symbolic slice
+  base, so BMC should handle it, and it is where the actual overflow/bounds risk lives.
+- **A loop-invariant tool (Verus).** Unbounded loops with an invariant are its home ground; this is
+  the concrete case that would justify bringing it in alongside Kani.
+- **Shrink `MAX_PHNUM`.** A smaller linear cap would let Kani unroll the loop, but changing product
+  code to suit the prover is the last resort, not the first.
+
+This is the "bounded" limit above, met in the wild rather than in the abstract. The parser is still
+covered by the by-example tests; what is missing is the "for *every* input" guarantee, and now the
+reason is written down instead of the gap being silent.
+
 ## Running it
 
 ```

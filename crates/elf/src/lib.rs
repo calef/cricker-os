@@ -328,6 +328,42 @@ fn u64le(b: &[u8], at: usize) -> u64 {
     u64::from_le_bytes(v)
 }
 
+/// Machine-checked proofs of the loader's front half (DECISIONS §14, milestone 18).
+///
+/// This crate exists to be panic-free on hostile input, and one piece of that is proved here. The
+/// larger claim, that `Elf::parse` is *total* (never panics) over every byte string, turned out to
+/// be past what bounded model checking can do at a useful input size, and that is written up rather
+/// than hidden. See notes/verification.md ("Where BMC hit a wall: the ELF parser").
+///
+/// The short version: `parse` has an `O(n^2)` overlap loop over up to `MAX_PHNUM = 64` program
+/// headers, and Kani bounds that loop by the linear 64 cap it can see rather than the tighter
+/// nonlinear table-size bound, so it must unroll 64 deep. Combined with symbolic slice offsets
+/// (`phoff` and `p_offset` place reads at symbolic positions in a symbolic array), the solver did
+/// not return in minutes, even after pinning the header count to a single segment. Totality here
+/// wants a loop-invariant tool (Verus) or the leaf arithmetic factored into a pure function provable
+/// on its own, both noted in the write-up. The tests below still cover the specific hostile files by
+/// example.
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    /// **`page_range` is panic-free and ordered for any segment.** `Segment` is `pub`, so its helper
+    /// must be safe on its own, without `parse`'s guarantees. For every `vaddr` and `memsz`,
+    /// including the near-`u64::MAX` values a hostile file names, the saturating arithmetic neither
+    /// panics nor returns an inverted range.
+    #[kani::proof]
+    fn page_range_is_panic_free_and_ordered() {
+        let seg = Segment {
+            vaddr: kani::any(),
+            memsz: kani::any(),
+            flags: kani::any(),
+            data: &[],
+        };
+        let (start, end) = seg.page_range(4096);
+        assert!(start <= end);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
