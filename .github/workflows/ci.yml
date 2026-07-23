@@ -23,11 +23,14 @@ jobs:
 
       # qemu-system-aarch64 ships in the qemu-system-arm package. It runs the kernel under TCG on
       # the x86 runner (the same deterministic path `cargo xtask test` uses locally), and the
-      # kernel reports pass/fail by exiting through semihosting.
+      # kernel reports pass/fail by exiting through semihosting. ipxe-qemu supplies efi-virtio.rom,
+      # the option ROM the -device virtio-blk-device (our disk) makes QEMU load; without it QEMU
+      # refuses to start. We do NOT touch the runner to dodge the ROM, so CI runs the exact same
+      # QEMU command as a developer does.
       - name: Install QEMU
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends qemu-system-arm
+          sudo apt-get install -y qemu-system-arm ipxe-qemu
 
       # rust-toolchain.toml pins nightly plus rust-src, llvm-tools, and the bare-metal target
       # (llvm-objcopy from llvm-tools is what scripts/qemu-runner.sh strips the ELF with). Install
