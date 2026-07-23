@@ -21,7 +21,7 @@ jobs:
     # Fail loudly instead. Local runs finish in well under a minute once built.
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
       # script/cibuild bootstraps the toolchain and QEMU (the same script/bootstrap a developer
       # runs), then runs the host-logic crates and the kernel under QEMU (TCG), exiting through
@@ -32,7 +32,7 @@ jobs:
     name: rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install rustfmt (pinned nightly)
         run: rustup toolchain install nightly --profile minimal --component rustfmt
       - run: script/fmt
@@ -41,7 +41,7 @@ jobs:
     name: clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install clippy and the bare-metal target
         run: |
           rustup toolchain install nightly --profile minimal --component clippy
@@ -53,7 +53,7 @@ jobs:
     name: coverage (host crates)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install llvm-tools (pinned nightly)
         run: rustup toolchain install nightly --profile minimal --component llvm-tools
       - uses: taiki-e/install-action@v2
@@ -72,7 +72,7 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload the lcov + HTML report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-report
           path: target/llvm-cov/
