@@ -124,6 +124,8 @@ fn a_virtual_address_can_differ_from_its_physical_one() {
 // --- the halves: the thing a failing test taught us ---
 
 #[test]
+// "TABLE" is shouted on purpose: bits 63:48 choose which table, not an index within one.
+#[allow(non_snake_case)]
 fn the_top_16_bits_are_not_translated_they_choose_the_TABLE() {
     // This is the crux of how a higher-half kernel works, and it is not what you'd guess.
     //

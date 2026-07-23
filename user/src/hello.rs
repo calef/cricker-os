@@ -381,7 +381,9 @@ fn exit() -> ! {
     unsafe {
         core::arch::asm!("svc #0", in("x8") abi::SYS_EXIT, in("x0") 0u64, options(nostack, nomem));
     }
-    loop {}
+    loop {
+        core::hint::spin_loop();
+    }
 }
 
 /// # Safety
@@ -423,7 +425,9 @@ fn check(ok: bool) {
 
 fn fail() -> ! {
     unsafe { core::arch::asm!("brk #0", options(nostack, nomem)) };
-    loop {}
+    loop {
+        core::hint::spin_loop();
+    }
 }
 
 /// Milestone 11: spend an untyped budget. This process holds a capability to a chunk of raw

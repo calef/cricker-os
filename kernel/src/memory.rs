@@ -315,8 +315,8 @@ static RAM: IrqSafeMutex<RamMap> = IrqSafeMutex::new(
 );
 
 /// (distributor, cpu interface), each (base, size). Physical.
-static GIC_REGIONS: IrqSafeMutex<(Option<(u64, u64)>, Option<(u64, u64)>)> =
-    IrqSafeMutex::new(rank::RAM, (None, None));
+type GicRegions = (Option<(u64, u64)>, Option<(u64, u64)>);
+static GIC_REGIONS: IrqSafeMutex<GicRegions> = IrqSafeMutex::new(rank::RAM, (None, None));
 
 static BITMAP_START: AtomicUsize = AtomicUsize::new(0);
 static BITMAP_BYTES: AtomicUsize = AtomicUsize::new(0);

@@ -272,7 +272,7 @@ fn validate_and_shadow(
             let src = driver_desc + d as u64 * 16;
             let addr = read64(src);
             let word = read64(src + 8);
-            let len = (word & 0xffff_ffff) as u64;
+            let len = word & 0xffff_ffff;
             let flags = ((word >> 32) & 0xffff) as u16;
             let next = ((word >> 48) & 0xffff) as u16;
 

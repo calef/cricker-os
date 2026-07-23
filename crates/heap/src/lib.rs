@@ -320,7 +320,9 @@ impl Heap {
     /// # Safety
     /// `[start, start+size)` must be memory this heap owns and nobody is using.
     unsafe fn insert(&mut self, start: usize, size: usize) {
-        debug_assert!(start % MIN_BLOCK == 0 && size % MIN_BLOCK == 0 && size >= MIN_BLOCK);
+        debug_assert!(
+            start.is_multiple_of(MIN_BLOCK) && size.is_multiple_of(MIN_BLOCK) && size >= MIN_BLOCK
+        );
 
         // Find the insertion point: the last block whose address is below ours.
         let mut prev: Option<NonNull<Block>> = None;

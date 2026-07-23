@@ -159,6 +159,9 @@ pub mod mair {
     ///
     /// - Slot 0 = `0x00` — Device-nGnRnE
     /// - Slot 1 = `0xff` — Normal, WB non-transient, RW-allocate, inner+outer
+    // `| 0x00` is spelled out on purpose: it is slot 0 (Device-nGnRnE). Writing both bytes keeps
+    // the one-byte-per-slot layout legible next to the doc above; clippy sees a no-op OR.
+    #[allow(clippy::identity_op)]
     pub const VALUE: u64 = (0xff << 8) | 0x00;
 }
 
@@ -551,7 +554,7 @@ where
             return Err(MapError::WrongHalf);
         }
 
-        if va % PAGE_SIZE != 0 || pa % PAGE_SIZE != 0 {
+        if !va.is_multiple_of(PAGE_SIZE) || !pa.is_multiple_of(PAGE_SIZE) {
             return Err(MapError::Misaligned);
         }
 
@@ -637,7 +640,7 @@ where
         if !self.half.contains(va) {
             return Err(MapError::WrongHalf);
         }
-        if va % PAGE_SIZE != 0 {
+        if !va.is_multiple_of(PAGE_SIZE) {
             return Err(MapError::Misaligned);
         }
 

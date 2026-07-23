@@ -1725,12 +1725,6 @@ mod tests {
     fn a_spawned_worker_process_computes_and_reports() {
         const ROLE_WORKER: u64 = 6;
 
-        /// **How many children the shell may have alive at once.** The bound that stops a spawn flood
-        /// (or workers that block forever without exiting) from exhausting kernel memory: each live
-        /// child costs a `Thread`, a 16 KiB kernel stack, and an address space, and there can be at
-        /// most this many. A child returns its slot when it is reaped. See notes/quotas.md.
-        static SPAWN_QUOTA: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(8);
-
         let result = sched::create_endpoint();
         let faults = USER_FAULTS.load(Ordering::Relaxed);
 

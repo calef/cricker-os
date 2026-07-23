@@ -565,13 +565,13 @@ pub fn create_endpoint() -> usize {
 
 /// Move a blocked thread back to the ready queue. Caller holds the lock.
 fn wake(sched: &mut Scheduler, tid: Tid) {
-    if let Some(t) = sched.threads.get_mut(&tid) {
-        if t.state == State::Blocked {
-            t.state = State::Ready;
-            // Onto this core's queue. Every caller (ipc_*, irq_notify) holds SCHED, so interrupts
-            // are masked. Step 3c makes this place the thread on the *right* core via its inbox.
-            cpu::current().with_runq(|q| q.push_back(tid));
-        }
+    if let Some(t) = sched.threads.get_mut(&tid)
+        && t.state == State::Blocked
+    {
+        t.state = State::Ready;
+        // Onto this core's queue. Every caller (ipc_*, irq_notify) holds SCHED, so interrupts
+        // are masked. Step 3c makes this place the thread on the *right* core via its inbox.
+        cpu::current().with_runq(|q| q.push_back(tid));
     }
 }
 
@@ -851,7 +851,7 @@ mod tests {
     //! `a_thread_that_never_yields_is_preempted_anyway` is the one this whole project has been
     //! arguing about since DECISIONS.md §5. Everything else here is scaffolding for it.
 
-    use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+    use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
     /// A spawned thread actually runs, and its closure's captured state comes with it.
     #[test_case]
