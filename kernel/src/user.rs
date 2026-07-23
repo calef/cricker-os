@@ -1967,8 +1967,14 @@ mod tests {
         // Warm up: the first user thread ever created pays for page tables in a region of
         // kernel VA that nothing has touched. Measure the STEADY state, which is the one that
         // has to hold forever.
-        sched::spawn(|| unsafe { exec(outlaw()) }).expect("spawn failed");
+        //
+        // Snapshot the fault count BEFORE spawning (as the loop below always did). The old
+        // order, spawn then snapshot, was a race: on SMP the outlaw can fault in that gap, the
+        // snapshot swallows its fault, and the wait below times out on a count that will never
+        // move again. Latent until milestone 14 phase A.2/A.3 made spawn-to-fault fast enough
+        // to lose the race about once in seven runs.
         let f0 = USER_FAULTS.load(Ordering::Relaxed);
+        sched::spawn(|| unsafe { exec(outlaw()) }).expect("spawn failed");
         assert!(wait_for(|| USER_FAULTS.load(Ordering::Relaxed) > f0));
         assert!(wait_for(|| sched::thread_count() <= baseline));
 
