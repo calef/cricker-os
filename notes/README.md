@@ -136,6 +136,9 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [A security audit](security.md) — an adversarial four-part review of the whole kernel. The
   MMU and capability confinement held up; two panics on untrusted input were fixed; the DMA/no-IOMMU
   limitation and the missing resource quotas are named rather than hidden.
+- [Machine-checked proofs (Kani)](verification.md) — the verification thesis (DECISIONS §14) in
+  practice: the capability model is proved for *every* input, not just tested on the cases we wrote.
+  Five harnesses in `caps`, run by `script/verify`, with the plan to spread inward to IPC and the MMU.
 
 ## The point of all this
 

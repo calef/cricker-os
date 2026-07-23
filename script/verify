@@ -1,0 +1,25 @@
+#!/bin/sh
+# script/verify: run the machine-checked proofs (Kani) over the pure-logic crates.
+#
+# This is the verification thesis in practice (DECISIONS §14): the security-critical logic is proved
+# for every input, not just tested on the cases we happened to write. Proof harnesses live behind
+# `#[cfg(kani)]`, so an ordinary build/test never compiles them; only this script sets that cfg.
+#
+# Kani is not part of script/bootstrap because it pulls its own nightly toolchain and a CBMC backend
+# (~a minute of download) that the kernel build does not need. This script installs it on first run,
+# the same self-install pattern script/coverage uses. Not one of the canonical scripts. See
+# notes/verification.md.
+
+set -e
+cd "$(dirname "$0")/.."
+
+if ! cargo kani --version >/dev/null 2>&1; then
+	echo "==> installing Kani (first run only)"
+	cargo install --locked kani-verifier
+	cargo kani setup
+fi
+
+# The crates carrying proof harnesses. Grow this list as verification spreads inward from the
+# capability core toward IPC and the MMU invariants.
+echo "==> kani: caps (the capability model)"
+cargo kani -p caps

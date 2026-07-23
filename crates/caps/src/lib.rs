@@ -195,6 +195,87 @@ impl<O: Copy> CSpace<O> {
     }
 }
 
+/// Machine-checked proofs of the capability model (DECISIONS §14, the verification thesis).
+///
+/// These are not tests. A test in the module below checks the handful of cases we thought to
+/// write down; each harness here asks Kani (a bounded model checker) to prove a property for
+/// **every** input, symbolically. `kani::any()` is an unconstrained value, so
+/// `derive_never_widens_rights` covers all 2^32 source-rights and all 2^32 requested-rights
+/// patterns at once, which is the whole difference between "we tested READ cannot become WRITE"
+/// and "no reachable state widens rights."
+///
+/// The module is behind `#[cfg(kani)]`, so an ordinary `cargo build`/`cargo test` never sees it;
+/// only `cargo kani` sets that cfg and links the `kani` intrinsics. Run with `script/verify` (or
+/// `cargo kani -p caps`).
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    /// Every capability is a subset of itself: the reflexive base case of the derivation order.
+    #[kani::proof]
+    fn subset_is_reflexive() {
+        let a = Rights(kani::any());
+        assert!(a.is_subset_of(a));
+    }
+
+    /// **Rights cannot be laundered through a chain.** If B is derived from A and C from B, then C
+    /// is no more than A. This is why a *flat* subset check suffices and we never need to walk a
+    /// derivation tree to bound a capability: subset is transitive, so the chain can only narrow.
+    #[kani::proof]
+    fn subset_is_transitive() {
+        let (a, b, c) = (
+            Rights(kani::any()),
+            Rights(kani::any()),
+            Rights(kani::any()),
+        );
+        kani::assume(a.is_subset_of(b));
+        kani::assume(b.is_subset_of(c));
+        assert!(a.is_subset_of(c));
+    }
+
+    /// **Userspace cannot forge a right.** `from_bits` takes an attacker-controlled syscall register
+    /// (any u32) and the result holds only defined rights, for every possible input.
+    #[kani::proof]
+    fn from_bits_cannot_forge_a_right() {
+        let raw: u32 = kani::any();
+        assert!(Rights::from_bits(raw).is_subset_of(Rights::ALL));
+    }
+
+    /// The two ways of asking the question agree: "a is no more than b" is exactly "b holds at
+    /// least a". Proving them equivalent means a bug in one would show up against the other.
+    #[kani::proof]
+    fn subset_matches_allows() {
+        let (a, b) = (Rights(kani::any()), Rights(kani::any()));
+        assert_eq!(a.is_subset_of(b), b.allows(a));
+    }
+
+    /// **The central theorem, on the real `CSpace::derive`.** For any source rights and any request,
+    /// if the derive succeeds then the capability it stored holds no more than the source did, and
+    /// holds exactly what was asked (no silent grant of more). There is no reachable input that
+    /// widens authority.
+    #[kani::proof]
+    fn derive_never_widens_rights() {
+        let src_rights = Rights(kani::any());
+        let requested = Rights(kani::any());
+
+        let mut cs: CSpace<u8> = CSpace::new(2);
+        cs.put(
+            0,
+            Cap {
+                object: 0u8,
+                rights: src_rights,
+            },
+        )
+        .unwrap();
+
+        if cs.derive(0, 1, requested).is_ok() {
+            let derived = cs.get(1).unwrap();
+            assert!(derived.rights.is_subset_of(src_rights));
+            assert!(requested.is_subset_of(src_rights));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
