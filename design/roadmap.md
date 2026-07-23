@@ -1,12 +1,12 @@
-# Post-v1 milestone roadmap (proposed)
+# Post-v1 milestone roadmap
 
-The eleven milestones in DECISIONS.md were the plan, and they are done. This is the proposed
-roadmap past them, drawn from the architecture discussion comparing Windows NT, macOS/XNU, and
-Linux, and from the gaps the code already flags. Nothing here is committed. It is a `design/`
-proposal like the others in this directory: a place to argue the cut and the order before any of it
-becomes a numbered milestone in DECISIONS.md.
+The eleven milestones in DECISIONS.md were the plan, and they are done. This is the roadmap past
+them. It began (see the git history of this file) as an uncommitted `design/` proposal drawn from the
+architecture discussion comparing Windows NT, macOS/XNU, and Linux. It now has a **committed
+destination**: DECISIONS §14, a verified-Rust capability microkernel that runs real workloads. That
+commitment re-ordered this list and resolved two of the forks it used to end with.
 
-Two facts shape the whole list.
+Three facts shape the whole list.
 
 **cricker-os already _is_ most of the clean-slate recommendation.** No fork (explicit `Spawn`
 endowment: reading one literal tells you a process's whole authority). Share-not-move frames with
@@ -14,25 +14,32 @@ rights narrowing at send. Endpoint-only naming, no way to name a receiver. Memor
 language property. So this roadmap is not "adopt the principles." It is "close the specific gaps
 between the principles and this code," and the gaps are few.
 
-**The goal is understanding, not reach** (CLAUDE.md). A milestone earns its place by what it
-*teaches*, not by what it lets the OS run. That is why the compatibility question below is framed as
-a study rather than a viability constraint, and why a perf item with no payoff on QEMU can still be
-worth building for the mechanism it teaches.
+**Understanding is the method, not a cap on ambition** (CLAUDE.md). The way we work is unchanged:
+write it together, explain the hardware, write the notes. What changed with §14 is that the work now
+serves a destination (the demonstrator), so a milestone earns its place by moving toward a *verified
+core running real confined workloads*, not only by what it teaches in isolation.
+
+**Verify inward from the capability core.** §14 makes verification the goal, and the frontier is the
+pure-logic §7 crates. The `caps` model is proved already (`script/verify`, notes/verification.md);
+IPC and the MMU invariants are next. This threads through the list rather than being one milestone.
 
 ## The milestones
 
-| #  | Milestone | What it teaches / delivers |
-|----|-----------|----------------------------|
-| 12 | Call/Reply IPC: a one-shot reply capability | Reply-to-caller as a kernel guarantee; retires the per-client reply endpoint. **Built, §12.** |
-| 13 | Capability revocation + untyped reclamation | Unmap a page from every holder; reclaim a region safely. **Built (frame scope), §13.** |
-| 14 | Kernel objects from untyped: remove the kernel heap | Retype TCBs, endpoints, page tables; §10's deferred axis, finished |
-| 15 | Tagged address spaces (ASIDs) | Stop flushing the whole EL1 TLB on every user switch |
-| 16 | Real hardware + SMMU-backed driver isolation | The IOMMU makes driver isolation real; the shadow ring becomes belt-and-suspenders |
-| 17 | Multikernel-leaning scheduler (research) | Partition the shared thread table and endpoints; message-passing where one lock now sits |
+| #  | Milestone | What it delivers | Serves §14 by |
+|----|-----------|------------------|---------------|
+| 12 | Call/Reply IPC: a one-shot reply capability | Reply-to-caller as a kernel guarantee. **Built, §12.** | the IPC the TCB must get right |
+| 13 | Capability revocation + untyped reclamation | Unmap a page from every holder; reclaim a region safely. **Built (frame scope), §13.** | safe teardown, a TCB property |
+| 18 | Verify the capability core, then spread inward | Machine-checked proofs of `caps`, then IPC, then MMU isolation | **the verification itself.** `caps` proved; IPC and MMU next |
+| 14 | Kernel objects from untyped: remove the kernel heap | Retype TCBs, endpoints, page tables; delete the kernel heap | **critical path:** a verifiable kernel cannot allocate |
+| 15 | Tagged address spaces (ASIDs) | 16-bit ASIDs, generation/rollover; stop flushing the whole EL1 TLB per switch | perf the real-workload path needs on real silicon |
+| 16 | Real hardware + SMMU-backed driver isolation | Port to an IOMMU-backed machine; confine driver DMA in silicon | isolation in hardware, under real workloads |
+| 19 | Run a real workload | A native-ABI workload first; Linux-compat or VM hosting later | **the "runs real workloads" half** of the thesis |
+| 17 | Multikernel-leaning scheduler (research, optional) | Partition the shared thread table and endpoints | optional; not on the thesis path |
 
-The order is capability-core first (12-14, the project's thesis), then the road to real machines
-(15-16), then optional research (17). Several of these already have their design worked out; the
-blocks below point at it.
+The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then
+the road to running real workloads on real machines (15, 16, 19), with the multikernel work (17) left
+as optional research. The competitor ambition stays parked (see the end of this file). Several
+milestones already have their design worked out; the blocks below point at it.
 
 ### 12. Call/Reply IPC: a one-shot reply capability
 
@@ -87,9 +94,11 @@ memory; the kernel's own objects still come from its heap. It is also the real p
 "small enough to verify" endgame: seL4's proof leans on a kernel that never allocates. Biggest item
 here, and the seL4 long tail by reputation.
 
-**Gated on a decision** (below): whether verifiability is actually the goal. If Rust-safety is the
-stopping point, this is a purity exercise with a real but smaller payoff (the kernel-heap-exhaustion
-class disappears entirely). If formal proof is the goal, it is on the critical path.
+**On the critical path (§14).** The gate this used to sit behind ("is verifiability actually the
+goal?") is resolved: it is. So this is no longer an optional purity win. A verifiable kernel cannot
+allocate dynamically, so removing the heap is a prerequisite for verifying the kernel at scale rather
+than only its pure-logic crates. It still also buys the smaller payoff on its own terms: the
+kernel-heap-exhaustion class disappears entirely.
 
 ### 15. Tagged address spaces (ASIDs)
 
@@ -136,24 +145,54 @@ This is a direction, not a commitment: keeping the one lock is a perfectly hones
 current scale, and worth saying so rather than feeling the machine is owed a message-passing thread
 table.
 
-## Two decisions this roadmap forces
+### 18. Verify the capability core, then spread inward
 
-Not milestones. Forks to settle, each gating work above.
+**Green-lit and started; see DECISIONS §14 and notes/verification.md.** This is the verification
+thesis as an actual work item rather than an aspiration.
 
-- **The verification endgame.** Is Rust's memory safety the stopping point, or is formal proof the
-  goal? Rust already removes the ~70% memory-safety CVE class with no proof and near-zero cost, which
-  is most of what verification buys in practice. Formal proof additionally buys functional
-  correctness and information-flow, and its prerequisite is milestone 14 (no kernel heap). Decide this
-  *before* 14, because it decides whether 14 is on the critical path or an optional purity win. For a
-  learning kernel, "Rust-safety is the floor, formal proof is out of scope" is a defensible answer,
-  and it is better stated out loud than drifted past.
+**Deliverable.** Machine-checked proofs (Kani) of the security-critical logic, spreading inward from
+the capability core. `crates/caps` is proved already: five harnesses covering "`derive` never widens
+rights," "userspace cannot forge a right," and the subset order's reflexivity and transitivity, each
+for *every* input rather than sampled cases (`script/verify`). Next, in order, IPC (the rendezvous
+and the one-shot reply) and the MMU isolation invariants.
 
-- **POSIX posture.** None, or a small personality built to *understand* why every clean-slate system
-  (Fuchsia's Starnix, Redox's relibc) keeps re-growing the old ABI. The discussion is right that
-  compatibility decides a *product's* reach, but this is not a product and reach does not bind us. So
-  the question is not "how much POSIX for adoption" but "is a minimal POSIX personality worth building
-  as a teaching exercise." Decide the intent before any compatibility code, so it stays a study and
-  not a slow slide toward a second kernel.
+**Why here.** It is the differentiator (§14), and it is cheap to start: the §7 pure-logic crates
+already compile for the host, and proofs live behind `#[cfg(kani)]` so they never touch an ordinary
+build. It also interlocks with 14: proving properties *of the kernel* (not just its logic crates) at
+scale wants a kernel that does not allocate.
+
+**Prior art.** seL4 (Isabelle/HOL refinement, verified C) is the mountain; we took the tractable path
+(bounded model checking, Rust). Verus is the deeper Rust option to revisit if a property needs
+unbounded proof.
+
+### 19. Run a real workload
+
+**Deliverable.** The "runs real workloads" half of §14: a real, unverified program running in
+confined userspace on the verified core. A **native-ABI** workload first (the leanest thing that
+proves the point), with a Linux-compat personality or VM hosting as later, larger options.
+
+**Why.** The thesis is not "a verified kernel" but "a verified kernel *that runs real workloads*."
+This is the milestone that makes the second half true, and it is what a demonstrator ultimately shows.
+
+**The sub-decision it carries.** What counts as the first "real workload," and by which ABI. Native
+first keeps the kernel pure and the surface small. A Linux-compat personality (Starnix / gVisor /
+WSL1 shape, a userspace server translating syscalls) is how a demonstrator eventually reaches
+existing software, and it is where the parked competitor ambition would begin. VM hosting (seL4's
+route) needs the EL2 work in design/driver-domains.md. Decide the first target before writing
+compat code, so it stays scoped.
+
+## One decision this roadmap still forces
+
+§14 resolved the verification-endgame fork (verification *is* the goal) and converted the old "POSIX
+posture" question into milestone 19's real-workload sub-decision (reach binds now that "real
+workloads" is committed). What remains open:
+
+- **When the demonstrator becomes a competitor, if ever.** §14 keeps a general-purpose competitor as
+  an explicit *later optionality*, parked until the demonstrator earns it. The trigger to reopen it is
+  concrete: a verified core that actually runs a real workload (milestone 19), plus a reason the
+  world needs another OS that the demonstrator has by then proved. Until both hold, competitor-shaped
+  work (broad driver coverage, a full Linux ABI, a package ecosystem) is out of scope, and saying so
+  keeps the demonstrator from sliding into a second, unfinished Linux.
 
 ## The rival worth understanding, not building
 
