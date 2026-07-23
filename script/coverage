@@ -1,0 +1,29 @@
+#!/bin/sh
+# script/coverage: line/region/function coverage for the host-testable logic crates.
+#
+# The kernel and user crates are bare-metal and only run under QEMU, where host instrumentation
+# does not reach; DECISIONS.md §7 deliberately keeps the testable logic in host crates, and this
+# measures exactly those (abi, caps, crickerfs, dtb, elf, frames, heap, paging, slab). Requires
+# cargo-llvm-cov. Not one of the canonical "Scripts to Rule Them All"; see notes/scripts.md.
+
+set -e
+cd "$(dirname "$0")/.."
+
+# Auto-install the one tool this script needs, the first time it is run. It lives here rather than
+# in script/bootstrap on purpose: bootstrap runs in the CI test job, which must not spend minutes
+# compiling a coverage tool it never uses. CI's coverage job installs a prebuilt binary instead.
+if ! cargo llvm-cov --version >/dev/null 2>&1; then
+    echo "==> Installing cargo-llvm-cov (first run only)"
+    cargo install cargo-llvm-cov
+fi
+
+# Run the host tests once under instrumentation (--no-report keeps the raw data), then render the
+# summary, an lcov file, and a browsable HTML report from that same data.
+cargo llvm-cov --workspace --exclude kernel --exclude user --exclude xtask --no-report
+cargo llvm-cov report --summary-only
+mkdir -p target/llvm-cov # the lcov --output-path parent must exist; --html creates its own
+cargo llvm-cov report --lcov --output-path target/llvm-cov/lcov.info
+cargo llvm-cov report --html
+
+echo "==> lcov: target/llvm-cov/lcov.info"
+echo "==> html: target/llvm-cov/html/index.html"

@@ -19,9 +19,15 @@ uses `cargo xtask` and that one uses `make` and the next uses `npm`.
 | `script/console` | Boot straight to the interactive shell at EL0. For this project the console is literally a shell running as an unprivileged process. |
 | `script/fmt` | Check formatting against the pinned rustfmt (a CI gate). |
 | `script/lint` | Run clippy across the workspace with warnings denied (a CI gate). |
+| `script/coverage` | Line/region/function coverage for the host-logic crates. Installs cargo-llvm-cov on first run. |
 
-`fmt` and `lint` are not part of the canonical set; they exist so the CI format and clippy jobs
-are one-liners.
+`fmt`, `lint`, and `coverage` are not part of the canonical set; they exist so the CI format,
+clippy, and coverage jobs are one-liners. `coverage` measures only the pure-logic host crates
+(`abi`, `caps`, `crickerfs`, `dtb`, `elf`, `frames`, `heap`, `paging`, `slab`): the kernel and user
+crates run under QEMU, out of reach of host instrumentation, which is the same reason DECISIONS.md
+§7 keeps the testable logic in host crates in the first place. It installs its own tool rather than
+leaning on `bootstrap`, so the CI test job (which runs `bootstrap`) never compiles a coverage tool
+it does not use.
 
 ## They are thin wrappers, on purpose
 
@@ -49,7 +55,7 @@ because CI has nothing to start with.
 
 ## CI leverages them
 
-`.github/workflows/ci.yml` runs three jobs whose actual work is a script: the test job runs
-`script/cibuild`, the format job runs `script/fmt`, the clippy job runs `script/lint`. So CI
-executes the same commands a developer does, and there is one place — these files — that defines
-what "test" and "lint" mean.
+`.github/workflows/ci.yml` runs four jobs whose actual work is a script: the test job runs
+`script/cibuild`, the format job runs `script/fmt`, the clippy job runs `script/lint`, and the
+coverage job runs `script/coverage`. So CI executes the same commands a developer does, and one
+place (these files) defines what "test", "lint", and "coverage" mean.

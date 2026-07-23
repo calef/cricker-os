@@ -48,3 +48,31 @@ jobs:
           rustup target add --toolchain nightly aarch64-unknown-none-softfloat
       - uses: Swatinem/rust-cache@v2
       - run: script/lint
+
+  coverage:
+    name: coverage (host crates)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install llvm-tools (pinned nightly)
+        run: rustup toolchain install nightly --profile minimal --component llvm-tools
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - uses: Swatinem/rust-cache@v2
+      # Measures the pure-logic host crates only; the kernel/user crates run under QEMU, out of
+      # reach of host instrumentation. Informational: it reports the numbers, it does not gate.
+      - run: script/coverage
+      - name: Publish the summary to the run
+        run: |
+          {
+            echo '### Coverage — host-logic crates'
+            echo '```'
+            cargo llvm-cov report --summary-only
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the lcov + HTML report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: target/llvm-cov/
