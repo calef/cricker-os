@@ -614,6 +614,10 @@ scalability (§9 parked those separately), and any balancing cleverer than round
 
 Not decisions yet. Proposals with real open questions, parked deliberately.
 
+The [post-v1 milestone roadmap](design/roadmap.md) sequences the buildable ones below into
+proposed numbered milestones (12+) and names the two decisions they force (the verification
+endgame, and POSIX posture). The entries here remain the detailed source for each.
+
 - [Microarchitecture-variant binaries](design/fat-binaries.md) — our targets straddle the
   ARMv8.0 / ARMv8.2 line (no LSE atomics on Cortex-A72, LSE on everything newer), and with
   no libc we can't lean on LLVM's `outline-atomics` to paper over it. Milestone 6 forces
