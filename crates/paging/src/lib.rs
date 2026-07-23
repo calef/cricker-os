@@ -279,11 +279,44 @@ mod flag_tests {
             Flags::user_code(),
             Flags::user_rodata(),
             Flags::user_data(),
+            Flags::user_device(),
         ] {
             assert!(
                 !(f.is_writable() && (f.is_kernel_executable() || f.is_user_executable())),
                 "{f:?} is both writable and executable",
             );
+        }
+    }
+
+    /// **The execute split, over every constructor there is.** Anything EL0 can reach is PXN
+    /// (the kernel never executes user-reachable memory, so a wild kernel jump into a user page
+    /// faults instead of running user-chosen instructions at EL1), and anything EL0 cannot reach
+    /// is UXN (userspace never executes kernel memory, even as defense in depth behind the AP
+    /// bits). Like the W^X test: adding a constructor that breaks the split fails the build's
+    /// tests rather than shipping.
+    #[test]
+    fn no_page_is_executable_across_the_privilege_split() {
+        for f in [
+            Flags::kernel_code(),
+            Flags::kernel_rodata(),
+            Flags::kernel_data(),
+            Flags::device(),
+            Flags::user_code(),
+            Flags::user_rodata(),
+            Flags::user_data(),
+            Flags::user_device(),
+        ] {
+            if f.is_user_accessible() {
+                assert!(
+                    !f.is_kernel_executable(),
+                    "{f:?} is user-reachable yet executable at EL1",
+                );
+            } else {
+                assert!(
+                    !f.is_user_executable(),
+                    "{f:?} is kernel-only yet executable at EL0",
+                );
+            }
         }
     }
 
@@ -380,6 +413,24 @@ impl Half {
             Half::High => 0xffff_0000_0000_0000,
         }
     }
+}
+
+/// **The user-VA gate: may EL0 ask for a mapping at `va` at all?**
+///
+/// True exactly when `va` is page-aligned and in the low ([`Half::Low`], `TTBR0`) half. The
+/// syscall layer runs this before spending anything on a user `MAP` request, for two reasons:
+///
+/// - **Isolation.** An admitted address is in the low half, so the request can only ever walk the
+///   process's own `TTBR0` tables. There is no address that passes this gate and lands in the
+///   kernel's half. (The halves are disjoint; that is proved.)
+/// - **Budget.** A rejected address is rejected *before* a page is retyped for it. The mapper
+///   would refuse a bad address anyway, but by then the page was already spent from the
+///   process's own untyped, a silent self-inflicted leak.
+///
+/// The kernel used to hand-roll this as bit tests at each syscall site; it now calls this, and
+/// the harness below proves the readable definition equals those bits for every address.
+pub const fn is_user_page_va(va: u64) -> bool {
+    Half::Low.contains(va) && va.is_multiple_of(PAGE_SIZE)
 }
 
 /// **Proof that a page table changed and the TLB may now be lying.**
@@ -804,5 +855,81 @@ mod verification {
     fn the_two_halves_are_disjoint() {
         let va: u64 = kani::any();
         assert!(!(Half::Low.contains(va) && Half::High.contains(va)));
+    }
+
+    /// **The user-VA gate admits exactly the aligned low half.** The readable definition equals
+    /// the bit test the syscall layer used to hand-roll, for every address; and every admitted
+    /// address is page-aligned and in the low half, never the high one. With the disjointness
+    /// proof above, this is the front door of isolation: no address a user `MAP` request can get
+    /// past the gate ever names the kernel's tables.
+    #[kani::proof]
+    fn the_user_va_gate_admits_only_the_aligned_low_half() {
+        let va: u64 = kani::any();
+        assert_eq!(is_user_page_va(va), va & 0xfff == 0 && va >> 48 == 0);
+        if is_user_page_va(va) {
+            assert!(Half::Low.contains(va) && !Half::High.contains(va));
+        }
+    }
+
+    /// **A leaf descriptor keeps the address and the permissions apart.** `map` writes
+    /// `(pa & ADDR_MASK) | flags | TABLE_OR_PAGE | VALID` and `translate` reads the two halves
+    /// back with masks. For every representable physical page and every flag set the kernel can
+    /// construct, both reads are exact: no permission bit can redirect the address, and no
+    /// address bit can grant a permission. If any `Flags` constructor ever grew a bit inside
+    /// `ADDR_MASK` (or the low type bits), mappings would silently point at the wrong frame or
+    /// carry rights nobody asked for; this proof is what fails instead.
+    ///
+    /// `pa` is assumed representable (bits 47:12 only). That is the physical contract, not a
+    /// dodge: descriptors have 36 address bits by architecture, and every `pa` the kernel maps
+    /// comes from a frame allocator or an untyped region, both bounded by RAM far below 2^48.
+    #[kani::proof]
+    fn the_leaf_descriptor_keeps_address_and_permissions_apart() {
+        let pa: u64 = kani::any();
+        kani::assume(pa & !ADDR_MASK == 0);
+
+        let all = [
+            Flags::kernel_code(),
+            Flags::kernel_rodata(),
+            Flags::kernel_data(),
+            Flags::device(),
+            Flags::user_code(),
+            Flags::user_rodata(),
+            Flags::user_data(),
+            Flags::user_device(),
+        ];
+        let i: usize = kani::any();
+        kani::assume(i < all.len());
+        let flags = all[i];
+
+        // The exact write `Mapper::map` performs at L3, and the exact reads `translate` performs.
+        let leaf = (pa & ADDR_MASK) | flags.bits() | TABLE_OR_PAGE | VALID;
+        assert_eq!(leaf & ADDR_MASK, pa);
+        assert_eq!(Flags(leaf & !ADDR_MASK & !VALID & !TABLE_OR_PAGE), flags);
+    }
+
+    /// **The user mapper refuses every address outside its half, and the reject path touches
+    /// nothing.** For all 2^64 - 2^48 addresses outside the low half, every kernel address
+    /// included, `map`, `unmap`, and `translate` on a `TTBR0` mapper reject before reading or
+    /// writing any memory: the mapper here has a null root and a frame source that panics, so
+    /// any touch on the reject path is a proof failure, not just a wrong answer.
+    #[kani::proof]
+    fn the_low_half_mapper_rejects_the_high_half_untouched() {
+        let va: u64 = kani::any();
+        kani::assume(!Half::Low.contains(va));
+
+        // SAFETY: for the Mapper's contract to matter, some path must dereference the root or
+        // call the allocator; the proof is that on these inputs none does.
+        let mut m = unsafe {
+            Mapper::new(
+                0,
+                Half::Low,
+                || -> Option<u64> { panic!("allocated a frame on a rejected mapping") },
+                |_| core::ptr::null_mut(),
+            )
+        };
+
+        assert_eq!(m.map(va, 0, Flags::user_data()).err(), Some(MapError::WrongHalf));
+        assert_eq!(m.unmap(va).err(), Some(MapError::WrongHalf));
+        assert!(m.translate(va).is_none());
     }
 }

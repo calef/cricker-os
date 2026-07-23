@@ -187,8 +187,10 @@ fn invoke(
                 // or non-low-half address can never be mapped, and without this pre-check each
                 // such attempt would silently spend a page of the process's own untyped (a
                 // self-inflicted budget leak the audit noted). An already-mapped `va` still costs
-                // one page, which is process-local and bounded by the untyped.
-                if va & 0xfff != 0 || (va >> 48) != 0 {
+                // one page, which is process-local and bounded by the untyped. The gate itself is
+                // proved: every address it admits is aligned and in the low half (see
+                // `paging::is_user_page_va` and its harness).
+                if !paging::is_user_page_va(va) {
                     return Err(Error::BadPointer);
                 }
                 match mmu::map_current_user_page(va, paging::Flags::user_data(), || {
@@ -227,7 +229,7 @@ fn invoke(
             abi::frame::MAP => {
                 // a0 = va, a1 = writable (0/1), a2 = an untyped slot the page tables come from.
                 let va = a0;
-                if va & 0xfff != 0 || (va >> 48) != 0 {
+                if !paging::is_user_page_va(va) {
                     return Err(Error::BadPointer);
                 }
                 // A read/write mapping needs WRITE on the frame; a read-only one needs READ. This
