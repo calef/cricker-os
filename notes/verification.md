@@ -98,9 +98,14 @@ Five in `crates/paging/src/lib.rs`, the address arithmetic under the four-level 
 | `distinct_pages_take_distinct_paths` | two page-aligned addresses with the same four indices are the same page (the arithmetic core of isolation) |
 | `the_two_halves_are_disjoint` | no address is in both `TTBR0` (low) and `TTBR1` (high) |
 
-Not yet proved, and the heavier next step: the `Mapper` itself, mapping a page and translating it
-back, which reasons over built tables and a bounded frame pool rather than pure arithmetic. That is
-where the "bounded" tradeoff above starts to bite.
+Deliberately not proved: the `Mapper` round-trip (map a page, translate it back). This was
+considered and declined, not skipped. Kani only pays off on *symbolic* inputs, and here both ends are
+dead: a concrete-address round-trip is a unit test Kani happens to execute (no gain over the tests
+already present), and a symbolic-address round-trip reasons over a built four-level page table, the
+"BMC over real memory" case that walls the same way the ELF parser did. And the invariants of the
+walk that actually matter, index-in-bounds, distinct pages take distinct paths, the lossless address
+split, are *already* proved in the `paging` arithmetic harnesses above. So the round-trip would burn
+the solver to re-cover proved ground or hit the wall. It stays covered by the host and kernel tests.
 
 Five in `crates/frames/src/lib.rs`, the physical frame allocator:
 
