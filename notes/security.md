@@ -80,10 +80,12 @@ pointer path at all. Corrected, and the historical `abi::console` methods are ma
   still bypassable two ways: an **indirect descriptor** aims the device at a table the validator
   never walked (reachable on QEMU, which offers the feature), and a **packed ring** swaps the format
   out from under it. Both are now stripped at feature negotiation and refused at validation, with
-  unit and end-to-end tests. The residual time-of-check/time-of-use race (the validator reads
-  descriptors the driver keeps mapped writable) does not fire on QEMU's synchronous device but would
-  on asynchronous-DMA hardware; the complete fix is a shadow descriptor ring, designed and parked.
-  See notes/dma.md.
+  unit and end-to-end tests. The residual time-of-check/time-of-use race (the validator read
+  descriptors the driver keeps mapped writable) is now closed too: the device reads a **shadow
+  descriptor ring** in kernel-private memory, filled by a validated copy on each notify, so it never
+  reads a descriptor the driver can mutate after the check. The driver's ABI is unchanged, the
+  end-to-end disk read still works through the copy, and a test points a descriptor at the kernel
+  after validation and confirms the shadow is untouched. See notes/dma.md.
 - **Per-process resource limits: partially closed.** The spawn-exhaustion vector is now bounded
   by a per-spawner **quota** (at most N children alive at once, the slot returned when a child is
   reaped — see notes/quotas.md). A spawn flood or a pile of blocked-forever children is capped at

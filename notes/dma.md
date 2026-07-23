@@ -64,17 +64,19 @@ can, at worst, corrupt itself.
 
 ## The validator
 
-`kernel/src/virtio.rs::validate_avail` is the security-critical code. On `NOTIFY` it walks the
+`kernel/src/virtio.rs::validate_and_shadow` is the security-critical code. On `NOTIFY` it walks the
 available ring from the last-validated index to the current one, and for each new head follows the
 descriptor chain, checking that every `addr..addr+len` (with overflow rejected) lies within
-`[dma_base, dma_base + dma_size)`. The chain walk is bounded by the queue size, so a malicious
-`next`-pointer cycle cannot hang the kernel. The *outer* walk is bounded too: the available ring
-holds only `QSIZE` slots, so a batch claiming more than `QSIZE` newly-available entries is malformed
-and refused before a single descriptor is touched. Without that guard a driver could set `avail.idx`
-tens of thousands past the last-validated index and spin the loop up to 65535 times, all under the
-`DEVICES` lock with interrupts masked (bounded, single-core, but a needless latency spike). It is
-written to take the ring addresses and a read-word pair, so a test builds a fake region and exercises
-it directly.
+`[dma_base, dma_base + dma_size)`. Each validated descriptor is *copied into the shadow ring the
+device reads* (see the shadow-ring section below); that copy, not the validation alone, is what
+closes the race. The chain walk is bounded by the queue size, so a malicious `next`-pointer cycle
+cannot hang the kernel. The *outer* walk is bounded too: the available ring holds only `QSIZE` slots,
+so a batch claiming more than `QSIZE` newly-available entries is malformed and refused before a
+single descriptor is touched. Without that guard a driver could set `avail.idx` tens of thousands
+past the last-validated index and spin the loop up to 65535 times, all under the `DEVICES` lock with
+interrupts masked (bounded, single-core, but a needless latency spike). It is written to take the
+driver and shadow ring addresses and read/write word pairs, so a test builds fake regions and
+exercises it directly.
 
 ## The proof
 
@@ -123,7 +125,7 @@ The fix has two layers, both cheap:
    feature word and bit 34 from the high word before the value reaches the device. Without the
    negotiated feature, the spec forbids the driver from using it and QEMU rejects an `INDIRECT`
    descriptor outright. The honest driver asks for neither, so nothing legitimate breaks.
-2. **Refuse the flag at validation.** `validate_avail` returns false on any descriptor carrying
+2. **Refuse the flag at validation.** The validator returns false on any descriptor carrying
    `VIRTQ_DESC_F_INDIRECT`. With the feature already stripped no honest descriptor sets it, so this
    costs one branch and makes the confinement fail closed if layer 1 ever regresses.
 
@@ -166,10 +168,33 @@ and validates an indirect table, so there is one place that decides what the dev
 read.
 
 The cost is small (one page per device, a 128-byte copy per submit, the same validation against the
-copy), which is the real argument for doing it rather than masking feature bits forever. It is
-parked, not because it is hard, but because the current QEMU target does not exercise the race and
-the reachable bypass (indirect descriptors) is already closed above. When a target with asynchronous
-device DMA arrives, this is the change.
+copy), which is the real argument for doing it rather than masking feature bits forever.
+
+**This is now built.** `Device` carries a `shadow_base` (one frame, allocated and zeroed in
+`register`, never mapped into the driver). `setup_queue` programs `QUEUE_DESC` and `QUEUE_DRIVER`
+(descriptor table and available ring) at the shadow page, and leaves `QUEUE_DEVICE` (the used ring)
+in the driver's region so the driver still reads its own completions. `validate_and_shadow` replaces
+the old in-place `validate_avail`: for each newly-available head it walks the driver's chain,
+validates every descriptor, and copies the validated bytes into the shadow at the same index, then
+mirrors the head into the shadow available ring and publishes the shadow's `avail.idx` last. A
+`dsb` (`arch::dma_wmb`) orders the shadow writes before the `QUEUE_NOTIFY`, because the device is a
+separate observer. The driver's ABI does not change at all: it still builds its rings at the same
+offsets in its own region and reads the same used ring, unaware that the device now reads a copy.
+
+The invariant that makes it airtight: **the kernel only ever writes a validated descriptor into the
+shadow.** So every descriptor the device can reach in the shadow has an in-region address, the
+device bounds its own chain walk to the queue size, and a descriptor the driver mutates after the
+check lands only in the driver's own copy, which nothing reads. `the_shadow_ring_is_immune_to_a_
+descriptor_mutated_after_validation` proves exactly that: validate, then point the driver's
+descriptor at the kernel, and assert the shadow still holds the validated address. The end-to-end
+disk read (`a_userspace_driver_reads_a_file_from_a_virtio_disk`) still passes, which is the proof
+the copy is functionally transparent: the device reads its descriptors from the shadow, DMAs into
+the driver's data buffers, and the driver gets its file.
+
+The feature-stripping and the `INDIRECT`-flag refusal stay as defence in depth in front of the
+copy. The copy step does not walk indirect tables, so it refuses the flag rather than recursively
+shadowing them, which is the simpler and stricter choice for a device that never needs indirect
+descriptors.
 
 ## The tradeoff, stated plainly
 

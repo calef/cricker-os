@@ -122,3 +122,15 @@ pub fn halt() -> ! {
 pub fn wait_for_interrupt() {
     aarch64_cpu::asm::wfi();
 }
+
+/// Order all prior normal-memory writes before the next device (MMIO) write.
+///
+/// The kernel builds a virtio descriptor ring in normal memory, then rings the device with an MMIO
+/// write. The device is a **separate observer** that reads that ring by DMA, so the ring stores
+/// must be globally visible before the "go" signal lands, or the device reads stale bytes. A `dsb`
+/// guarantees it. On QEMU DMA is coherent and the notify is processed synchronously, so this is
+/// effectively free; on real hardware it is load-bearing. Arch-specific by rule 1, so it lives here
+/// rather than in the transport (kernel/src/virtio.rs).
+pub fn dma_wmb() {
+    aarch64_cpu::asm::barrier::dsb(aarch64_cpu::asm::barrier::SY);
+}

@@ -137,6 +137,12 @@ struct Device {
     /// the ring-layout features the validator cannot police stripped from whichever word carries
     /// them. See `sanitize_driver_features`.
     driver_features_sel: u32,
+    /// Physical base of the **kernel-private shadow page**: the descriptor table and available ring
+    /// the *device* actually reads. The driver builds its own copies in its DMA region; on `notify`
+    /// the kernel validates those and copies them here, so the device only ever reads descriptors
+    /// the driver cannot touch. This is what closes the time-of-check/time-of-use race: the bytes
+    /// the device reads are the bytes the kernel validated. See notes/dma.md.
+    shadow_base: u64,
 }
 
 static DEVICES: IrqSafeMutex<Vec<Device>> = IrqSafeMutex::new(rank::VIRTIO, Vec::new());
@@ -145,6 +151,21 @@ static DEVICES: IrqSafeMutex<Vec<Device>> = IrqSafeMutex::new(rank::VIRTIO, Vec:
 /// goes inside an `Object::Virtio` capability. The driver never sees the MMIO; it drives the
 /// device through that capability.
 pub fn register(mmio_phys: u64, dma_base: u64, dma_size: u64) -> usize {
+    // The shadow page the device reads its rings from. One frame per device, kernel-owned and never
+    // mapped into the driver, so the driver cannot touch what the device sees.
+    let shadow_base = crate::memory::alloc()
+        .expect("no frame for the virtio shadow ring")
+        .addr();
+    // SAFETY: a fresh frame, reachable through the direct map, owned by nobody yet. Zero it so a
+    // stale word can never look like a valid descriptor before the first copy fills it.
+    unsafe {
+        core::ptr::write_bytes(
+            mmu::phys_to_virt(shadow_base) as *mut u8,
+            0,
+            frames::FRAME_SIZE as usize,
+        );
+    }
+
     let mut devs = DEVICES.lock();
     devs.push(Device {
         mmio_phys,
@@ -152,6 +173,7 @@ pub fn register(mmio_phys: u64, dma_base: u64, dma_size: u64) -> usize {
         dma_size,
         last_avail: 0,
         driver_features_sel: 0,
+        shadow_base,
     });
     devs.len() - 1
 }
@@ -175,23 +197,44 @@ fn dma_read64(phys: u64) -> u64 {
     unsafe { core::ptr::read_volatile(mmu::phys_to_virt(phys) as *const u64) }
 }
 
-/// **The security-critical check.** Given a descriptor-table base and an available-ring base in
-/// the DMA region, validate that every descriptor reachable from the newly-available heads
-/// (`from_idx .. to_idx`) points entirely within `[dma_base, dma_base + dma_size)`. Returns the
-/// new `last_avail` on success, or `None` if any descriptor escapes the region (or the chain is
-/// malformed).
+/// Write into the kernel-private shadow ring, through the direct map. The shadow page is a
+/// kernel-owned frame, so this is a plain store to memory only the kernel names.
+fn dma_write16(phys: u64, v: u16) {
+    unsafe { core::ptr::write_volatile(mmu::phys_to_virt(phys) as *mut u16, v) }
+}
+fn dma_write64(phys: u64, v: u64) {
+    unsafe { core::ptr::write_volatile(mmu::phys_to_virt(phys) as *mut u64, v) }
+}
+
+/// **The security-critical step: validate the driver's descriptors AND copy them into the shadow
+/// ring the device reads.**
 ///
-/// Written to take the ring/desc *physical addresses* and a `read16`/`read64` pair, so the same
-/// logic can be exercised by a test that builds a fake region in ordinary memory.
-fn validate_avail(
+/// For each newly-available head (`from_idx .. to_idx`), walk the chain in the *driver's* descriptor
+/// table, check every descriptor stays within `[dma_base, dma_base + dma_size)`, and copy the
+/// validated bytes into the *shadow* table at the same index. Then mirror the head into the shadow
+/// available ring, and finally publish the shadow's `avail.idx`. The device is programmed to read
+/// the shadow (see [`setup_queue`]), which the driver cannot write, so **the bytes the device acts
+/// on are exactly the bytes validated here** — mutating a descriptor after this returns changes only
+/// the driver's own copy, which nothing reads. That is what closes the time-of-check/time-of-use
+/// race an in-place check leaves open. Returns false, leaving the shadow's published index untouched,
+/// if any descriptor escapes the region, is indirect, or the chain is malformed.
+///
+/// Takes the driver and shadow ring *physical addresses* plus read/write word pairs, so a test can
+/// build both regions in ordinary memory and drive it directly.
+#[allow(clippy::too_many_arguments)]
+fn validate_and_shadow(
     dma_base: u64,
     dma_size: u64,
-    desc_phys: u64,
-    avail_phys: u64,
+    driver_desc: u64,
+    driver_avail: u64,
+    shadow_desc: u64,
+    shadow_avail: u64,
     from_idx: u16,
     to_idx: u16,
     read16: &dyn Fn(u64) -> u16,
     read64: &dyn Fn(u64) -> u64,
+    write16: &dyn Fn(u64, u16),
+    write64: &dyn Fn(u64, u64),
 ) -> bool {
     // At most QSIZE descriptors can be newly available since the last validation: the available
     // ring has only QSIZE slots, so a driver cannot have published more than that without the
@@ -214,38 +257,58 @@ fn validate_avail(
     let mut idx = from_idx;
     while idx != to_idx {
         let slot = (idx % QSIZE) as u64;
-        let head = read16(avail_phys + 4 + slot * 2);
+        let head = read16(driver_avail + 4 + slot * 2);
         if head >= QSIZE {
             return false; // head index out of the descriptor table
         }
 
-        // Walk the chain. Bounded by QSIZE, so a malicious `next` cycle cannot loop forever.
-        // desc[d] = { u64 addr @0; u32 len @8; u16 flags @12; u16 next @14 }.
+        // Walk the chain in the DRIVER's table, validate each descriptor, and copy the validated
+        // bytes into the SHADOW table. Bounded by QSIZE, so a `next` cycle cannot loop forever, and
+        // because we only ever copy a validated descriptor, every descriptor the device can reach in
+        // the shadow has an in-region address. desc[d] = { u64 addr @0; u32 len @8; u16 flags @12;
+        // u16 next @14 }; the len/flags/next share one 64-bit word we read and copy verbatim.
         let mut d = head;
         for _ in 0..QSIZE {
-            let base = desc_phys + d as u64 * 16;
-            let addr = read64(base);
-            let len = (read64(base + 8) & 0xffff_ffff) as u64; // the u32 len, low half of a word
-            if !in_region(addr, len) {
-                return false; // a descriptor points outside the driver's region
-            }
-            let flags = read16(base + 12);
-            // An indirect descriptor points at a table of descriptors this walk never validates, so
-            // the device would follow it out of the region. Refuse it. The feature is negotiated off
-            // as well; this is the belt to that suspenders, and it costs one branch.
+            let src = driver_desc + d as u64 * 16;
+            let addr = read64(src);
+            let word = read64(src + 8);
+            let len = (word & 0xffff_ffff) as u64;
+            let flags = ((word >> 32) & 0xffff) as u16;
+            let next = ((word >> 48) & 0xffff) as u16;
+
+            // An indirect descriptor points at a table we do not copy, so the device would follow it
+            // out of the region. Refuse it. (The feature is negotiated off as well; this fails
+            // closed if that ever regresses.)
             if flags & VIRTQ_DESC_F_INDIRECT != 0 {
                 return false;
             }
+            if !in_region(addr, len) {
+                return false; // a descriptor points outside the driver's region
+            }
+            if flags & VIRTQ_DESC_F_NEXT != 0 && next >= QSIZE {
+                return false; // a chain link out of the descriptor table
+            }
+
+            // Copy the validated descriptor into the shadow, byte-for-byte. From here the device
+            // reads this, not the driver's copy.
+            let dst = shadow_desc + d as u64 * 16;
+            write64(dst, addr);
+            write64(dst + 8, word);
+
             if flags & VIRTQ_DESC_F_NEXT == 0 {
                 break;
             }
-            d = read16(base + 14);
-            if d >= QSIZE {
-                return false;
-            }
+            d = next;
         }
+
+        // Mirror the head into the shadow available ring.
+        write16(shadow_avail + 4 + slot * 2, head);
         idx = idx.wrapping_add(1);
     }
+
+    // Publish LAST: the device reads the shadow's avail.idx to learn what is ready, so it must not
+    // advance until every descriptor it points at is already in the shadow.
+    write16(shadow_avail + 2, to_idx);
     true
 }
 
@@ -306,7 +369,7 @@ pub fn write_register(id: usize, off: u64, val: u32) -> Result<(), TransportErro
 /// word. `sel` is the word the driver selected: 0 = features 0..31, 1 = features 32..63.
 ///
 /// Two features change **what the device reads descriptors from**, which is exactly the thing
-/// `validate_avail` assumes it controls:
+/// `validate_and_shadow` assumes it controls:
 ///
 /// - **`INDIRECT_DESC`** (bit 28, low word): a descriptor may point at a table of further
 ///   descriptors. The validator walks the flat chain and never follows that table, so the inner
@@ -317,8 +380,9 @@ pub fn write_register(id: usize, off: u64, val: u32) -> Result<(), TransportErro
 ///
 /// Forcing both off keeps every descriptor the device ever sees on the split-ring path the
 /// validator actually covers. The honest driver negotiates neither, so nothing legitimate breaks.
-/// The real cure (a shadow descriptor ring the driver cannot write) is the shape validation should
-/// take; until then this closes the reachable bypass. See notes/virtio.md.
+/// The shadow descriptor ring ([`validate_and_shadow`]) is the structural fix that removes the
+/// underlying race; this stripping stays as defence in depth, so the transport refuses a format it
+/// cannot police even before a descriptor is built. See notes/dma.md.
 fn sanitize_driver_features(sel: u32, val: u32) -> u32 {
     const F_INDIRECT_DESC_LO: u32 = 1 << 28; // feature bit 28
     const F_RING_PACKED_HI: u32 = 1 << (34 - 32); // feature bit 34
@@ -329,9 +393,14 @@ fn sanitize_driver_features(sel: u32, val: u32) -> u32 {
     }
 }
 
-/// Set up queue 0 with `num` entries, placing the rings at the fixed offsets in the DMA region.
-/// The kernel programs the ring addresses, so the device's ring bases are always inside the
-/// region — the driver never gets to choose them.
+/// Set up queue 0 with `num` entries. The kernel programs the ring addresses, so the driver never
+/// gets to choose them:
+///
+/// - **Descriptor table and available ring** point at the kernel-private **shadow** page. The
+///   device reads its descriptors from memory the driver cannot write; the driver builds its own
+///   copies in its region and the kernel validates and copies them across on `notify`.
+/// - **Used ring** stays in the driver's region, so the driver reads completions directly. The
+///   device only ever *writes* indices and lengths there, never addresses, so nothing to confine.
 pub fn setup_queue(id: usize, num: u16) -> Result<(), TransportError> {
     let devs = DEVICES.lock();
     let dev = devs.get(id).ok_or(TransportError::NoDevice)?;
@@ -345,9 +414,9 @@ pub fn setup_queue(id: usize, num: u16) -> Result<(), TransportError> {
     }
     reg_write(dev.mmio_phys, REG_QUEUE_NUM, num as u32);
 
-    let desc = dev.dma_base + DESC_OFF;
-    let avail = dev.dma_base + AVAIL_OFF;
-    let used = dev.dma_base + USED_OFF;
+    let desc = dev.shadow_base + DESC_OFF; // the SHADOW descriptor table (device-read, kernel-owned)
+    let avail = dev.shadow_base + AVAIL_OFF; // the SHADOW available ring
+    let used = dev.dma_base + USED_OFF; // the used ring stays in the driver's region
     reg_write(dev.mmio_phys, REG_QUEUE_DESC_LOW, desc as u32);
     reg_write(dev.mmio_phys, REG_QUEUE_DESC_HIGH, (desc >> 32) as u32);
     reg_write(dev.mmio_phys, REG_QUEUE_DRIVER_LOW, avail as u32);
@@ -358,32 +427,42 @@ pub fn setup_queue(id: usize, num: u16) -> Result<(), TransportError> {
     Ok(())
 }
 
-/// **The validated "go".** Validate the descriptor chains the driver has newly published, and
-/// only if all of them stay within the driver's DMA region, ring the device. If any escapes, the
-/// device is NOT notified and the driver gets `DmaEscape`.
+/// **The validated "go".** Validate the descriptor chains the driver has newly published, copy the
+/// validated ones into the shadow ring the device reads, and only then ring the device. If any
+/// descriptor escapes the driver's DMA region, the shadow is not published, the device is NOT
+/// notified, and the driver gets `DmaEscape`.
 pub fn notify(id: usize) -> Result<(), TransportError> {
     let mut devs = DEVICES.lock();
     let dev = devs.get_mut(id).ok_or(TransportError::NoDevice)?;
 
-    let desc = dev.dma_base + DESC_OFF;
-    let avail = dev.dma_base + AVAIL_OFF;
-    let to_idx = dma_read16(avail + 2); // avail.idx
+    let driver_desc = dev.dma_base + DESC_OFF;
+    let driver_avail = dev.dma_base + AVAIL_OFF;
+    let shadow_desc = dev.shadow_base + DESC_OFF;
+    let shadow_avail = dev.shadow_base + AVAIL_OFF;
+    let to_idx = dma_read16(driver_avail + 2); // the driver's avail.idx
 
-    let ok = validate_avail(
+    let ok = validate_and_shadow(
         dev.dma_base,
         dev.dma_size,
-        desc,
-        avail,
+        driver_desc,
+        driver_avail,
+        shadow_desc,
+        shadow_avail,
         dev.last_avail,
         to_idx,
         &|p| dma_read16(p),
         &|p| dma_read64(p),
+        &|p, v| dma_write16(p, v),
+        &|p, v| dma_write64(p, v),
     );
     if !ok {
         return Err(TransportError::DmaEscape);
     }
     dev.last_avail = to_idx;
 
+    // The shadow writes above must be globally visible before the device is rung: the device is a
+    // separate observer that will read the shadow by DMA. See arch::dma_wmb.
+    crate::arch::dma_wmb();
     reg_write(dev.mmio_phys, REG_QUEUE_NOTIFY, 0);
     Ok(())
 }
@@ -392,110 +471,171 @@ pub fn notify(id: usize) -> Result<(), TransportError> {
 mod tests {
     use super::*;
 
-    /// Build a one-page fake DMA region in kernel memory and exercise `validate_avail` directly.
-    /// Proves the security-critical check: a descriptor pointing OUTSIDE the region is refused,
-    /// one inside is accepted, and a `next`-cycle cannot hang the validator.
+    // Read/write the direct map at a physical address. One set serves both the fake driver region
+    // and the fake shadow region below, since they take absolute addresses. Passed to
+    // `validate_and_shadow` as `&dyn Fn` (function items coerce).
+    fn r16(p: u64) -> u16 {
+        unsafe { core::ptr::read_volatile(mmu::phys_to_virt(p) as *const u16) }
+    }
+    fn r64(p: u64) -> u64 {
+        unsafe { core::ptr::read_volatile(mmu::phys_to_virt(p) as *const u64) }
+    }
+    fn w16(p: u64, v: u16) {
+        unsafe { core::ptr::write_volatile(mmu::phys_to_virt(p) as *mut u16, v) }
+    }
+    fn w64(p: u64, v: u64) {
+        unsafe { core::ptr::write_volatile(mmu::phys_to_virt(p) as *mut u64, v) }
+    }
+
+    /// Write descriptor `i` of the table at `desc`: { u64 addr; u32 len; u16 flags; u16 next }.
+    fn write_desc(desc: u64, i: u64, addr: u64, len: u32, flags: u16, next: u16) {
+        let d = desc + i * 16;
+        w64(d, addr);
+        w64(d + 8, len as u64); // len in the low half; flags/next written over the high half next
+        w16(d + 12, flags);
+        w16(d + 14, next);
+    }
+
+    /// A fake driver DMA region and a fake shadow region, each a real frame reached through the
+    /// direct map. Returns their physical bases and the region size. Free both with [`free_regions`].
+    fn two_regions() -> (u64, u64, u64) {
+        let driver = crate::memory::alloc().expect("no driver frame").addr();
+        let shadow = crate::memory::alloc().expect("no shadow frame").addr();
+        (driver, shadow, frames::FRAME_SIZE)
+    }
+    fn free_regions(driver: u64, shadow: u64) {
+        crate::memory::free(frames::Frame::from_addr(driver));
+        crate::memory::free(frames::Frame::from_addr(shadow));
+    }
+
+    /// Drive `validate_and_shadow` against the fake regions with the standard closures.
+    fn run(driver: u64, size: u64, shadow: u64, from: u16, to: u16) -> bool {
+        validate_and_shadow(
+            driver,
+            size,
+            driver + DESC_OFF,
+            driver + AVAIL_OFF,
+            shadow + DESC_OFF,
+            shadow + AVAIL_OFF,
+            from,
+            to,
+            &r16,
+            &r64,
+            &w16,
+            &w64,
+        )
+    }
+
+    /// Build a fake DMA region and exercise the security-critical check: a descriptor pointing
+    /// OUTSIDE the region is refused, one inside is accepted, and a `next`-cycle cannot hang it.
     #[test_case]
     fn the_validator_refuses_a_descriptor_that_escapes_the_dma_region() {
-        let frame = crate::memory::alloc().expect("no frame").addr();
-        let base = frame; // treat the frame as the "DMA region" (physical address)
-        let size = frames::FRAME_SIZE;
-
-        let desc = base + DESC_OFF;
-        let avail = base + AVAIL_OFF;
-        let w16 = |phys: u64, v: u16| unsafe {
-            core::ptr::write_volatile(mmu::phys_to_virt(phys) as *mut u16, v)
-        };
-        let w64 = |phys: u64, v: u64| unsafe {
-            core::ptr::write_volatile(mmu::phys_to_virt(phys) as *mut u64, v)
-        };
-        let write_desc = |i: u64, addr: u64, len: u32, flags: u16, next: u16| {
-            let d = desc + i * 16;
-            w64(d, addr);
-            w64(d + 8, len as u64); // len (u32) in the low half; high half unused here
-            w16(d + 12, flags);
-            w16(d + 14, next);
-        };
-
-        let read16 = |p: u64| unsafe { core::ptr::read_volatile(mmu::phys_to_virt(p) as *const u16) };
-        let read64 = |p: u64| unsafe { core::ptr::read_volatile(mmu::phys_to_virt(p) as *const u64) };
+        let (driver, shadow, size) = two_regions();
+        let desc = driver + DESC_OFF;
+        let avail = driver + AVAIL_OFF;
 
         // --- a GOOD chain: header + data + status, all inside the region ---
-        write_desc(0, base + 0x200, 16, VIRTQ_DESC_F_NEXT, 1);
-        write_desc(1, base + 0x400, 512, VIRTQ_DESC_F_NEXT, 2);
-        write_desc(2, base + 0x600, 1, 0, 0);
+        write_desc(desc, 0, driver + 0x200, 16, VIRTQ_DESC_F_NEXT, 1);
+        write_desc(desc, 1, driver + 0x400, 512, VIRTQ_DESC_F_NEXT, 2);
+        write_desc(desc, 2, driver + 0x600, 1, 0, 0);
         w16(avail + 4, 0); // ring[0] = head 0
         w16(avail + 2, 1); // avail.idx = 1
         assert!(
-            validate_avail(base, size, desc, avail, 0, 1, &read16, &read64),
+            run(driver, size, shadow, 0, 1),
             "a chain wholly inside the region was rejected",
         );
 
         // --- the ATTACK: descriptor 1 points at kernel memory (the kernel image) ---
-        write_desc(1, 0xffff_0000_4008_0000, 512, VIRTQ_DESC_F_NEXT | 2, 2);
+        write_desc(desc, 1, 0xffff_0000_4008_0000, 512, VIRTQ_DESC_F_NEXT | 2, 2);
         assert!(
-            !validate_avail(base, size, desc, avail, 0, 1, &read16, &read64),
+            !run(driver, size, shadow, 0, 1),
             "a descriptor pointing at kernel memory was NOT refused",
         );
 
         // --- a length that overflows the region by one byte ---
-        write_desc(1, base + size - 256, 512, VIRTQ_DESC_F_NEXT | 2, 2);
+        write_desc(desc, 1, driver + size - 256, 512, VIRTQ_DESC_F_NEXT | 2, 2);
         assert!(
-            !validate_avail(base, size, desc, avail, 0, 1, &read16, &read64),
+            !run(driver, size, shadow, 0, 1),
             "a descriptor running past the end of the region was NOT refused",
         );
 
         // --- a next-pointer cycle must terminate, not hang ---
-        write_desc(0, base + 0x200, 16, VIRTQ_DESC_F_NEXT, 1);
-        write_desc(1, base + 0x400, 16, VIRTQ_DESC_F_NEXT, 0); // 1 -> 0 -> 1 -> ...
-        // (This is a valid-address cycle; the QSIZE bound is what stops the walk.)
+        write_desc(desc, 0, driver + 0x200, 16, VIRTQ_DESC_F_NEXT, 1);
+        write_desc(desc, 1, driver + 0x400, 16, VIRTQ_DESC_F_NEXT, 0); // 1 -> 0 -> 1 -> ...
         assert!(
-            validate_avail(base, size, desc, avail, 0, 1, &read16, &read64),
+            run(driver, size, shadow, 0, 1),
             "a bounded cyclic chain with valid addresses should still validate (and terminate)",
         );
 
-        crate::memory::free(frames::Frame::from_addr(frame));
+        free_regions(driver, shadow);
+    }
+
+    /// **The shadow ring closes the time-of-check/time-of-use race.**
+    ///
+    /// Validate a good chain (which copies it into the shadow), then mutate the DRIVER's descriptor
+    /// to point at kernel memory, exactly as a device fetching descriptors asynchronously would let
+    /// a driver do after the check. The device reads the SHADOW, so the shadow must still hold the
+    /// validated, in-region address: the mutation touched only the driver's own copy, which nothing
+    /// reads. This is the whole reason the shadow ring exists.
+    #[test_case]
+    fn the_shadow_ring_is_immune_to_a_descriptor_mutated_after_validation() {
+        let (driver, shadow, size) = two_regions();
+        let desc = driver + DESC_OFF;
+        let avail = driver + AVAIL_OFF;
+        let shadow_desc = shadow + DESC_OFF;
+        let shadow_avail = shadow + AVAIL_OFF;
+
+        // One valid in-region descriptor, published as head 0.
+        let good_addr = driver + 0x200;
+        write_desc(desc, 0, good_addr, 512, 0, 0);
+        w16(avail + 4, 0); // ring[0] = head 0
+        w16(avail + 2, 1); // avail.idx = 1
+
+        assert!(run(driver, size, shadow, 0, 1), "a valid descriptor was rejected");
+        assert_eq!(
+            r64(shadow_desc),
+            good_addr,
+            "the shadow did not receive the validated descriptor",
+        );
+        assert_eq!(r16(shadow_avail + 2), 1, "the shadow avail.idx was not published");
+
+        // The driver now aims its descriptor at kernel memory, AFTER the check. On async-DMA
+        // hardware this is the race. The device reads the shadow, which must be untouched.
+        w64(desc, 0xffff_0000_4008_0000);
+        assert_eq!(
+            r64(shadow_desc),
+            good_addr,
+            "a post-validation write to the driver's descriptor reached the shadow the device \
+             reads: the TOCTOU race is open",
+        );
+
+        free_regions(driver, shadow);
     }
 
     /// **An indirect descriptor is refused even when it points inside the region.**
     ///
-    /// This is the bypass the direct-descriptor attack test does not cover: a descriptor flagged
-    /// `INDIRECT` points at a *table* of further descriptors, and the validator never walks that
-    /// table. So the inner descriptors, which the device WILL follow, are unchecked. A wholly
-    /// in-region indirect descriptor still has to be refused, because it is not the descriptor the
-    /// device ultimately acts on.
+    /// A descriptor flagged `INDIRECT` points at a *table* of further descriptors we do not copy
+    /// into the shadow, so the device would follow it out of the region. A wholly in-region
+    /// indirect descriptor still has to be refused, because it is not the descriptor the device
+    /// ultimately acts on.
     #[test_case]
     fn the_validator_refuses_an_indirect_descriptor() {
-        let frame = crate::memory::alloc().expect("no frame").addr();
-        let base = frame;
-        let size = frames::FRAME_SIZE;
+        let (driver, shadow, size) = two_regions();
+        let desc = driver + DESC_OFF;
+        let avail = driver + AVAIL_OFF;
 
-        let desc = base + DESC_OFF;
-        let avail = base + AVAIL_OFF;
-        let w16 =
-            |phys: u64, v: u16| unsafe { core::ptr::write_volatile(mmu::phys_to_virt(phys) as *mut u16, v) };
-        let w64 =
-            |phys: u64, v: u64| unsafe { core::ptr::write_volatile(mmu::phys_to_virt(phys) as *mut u64, v) };
-        let read16 = |p: u64| unsafe { core::ptr::read_volatile(mmu::phys_to_virt(p) as *const u16) };
-        let read64 = |p: u64| unsafe { core::ptr::read_volatile(mmu::phys_to_virt(p) as *const u64) };
-
-        // desc[0]: a legal in-region address and length, but flagged INDIRECT. The device would
-        // read the "table" at that address and follow ITS descriptors anywhere; we do not walk it,
-        // so the only safe answer is no.
-        w64(desc, base + 0x200); // addr: inside the region
-        w64(desc + 8, 128); // len: 128 bytes (8 inner descriptors), inside the region
-        w16(desc + 12, VIRTQ_DESC_F_INDIRECT);
-        w16(desc + 14, 0);
+        // desc[0]: a legal in-region address, but flagged INDIRECT.
+        write_desc(desc, 0, driver + 0x200, 128, VIRTQ_DESC_F_INDIRECT, 0);
         w16(avail + 4, 0); // ring[0] = head 0
         w16(avail + 2, 1); // avail.idx = 1
 
         assert!(
-            !validate_avail(base, size, desc, avail, 0, 1, &read16, &read64),
+            !run(driver, size, shadow, 0, 1),
             "an indirect descriptor was accepted: the device could follow its unvalidated table \
              out of the DMA region",
         );
 
-        crate::memory::free(frames::Frame::from_addr(frame));
+        free_regions(driver, shadow);
     }
 
     /// **Feature negotiation strips the ring-layout features the validator cannot police.**
@@ -523,48 +663,34 @@ mod tests {
     ///
     /// The available ring holds only `QSIZE` slots, so at most `QSIZE` descriptors can be newly
     /// available between notifies. A hostile driver that advances `avail.idx` by tens of thousands
-    /// would otherwise make the validator loop that many times, under the `DEVICES` lock with
-    /// interrupts masked. Every descriptor and ring slot here is individually valid, so the ONLY
-    /// thing that can refuse the oversized batch is the jump-size guard.
+    /// would otherwise make the walk loop that many times, under the `DEVICES` lock with interrupts
+    /// masked. Every descriptor and ring slot here is individually valid, so the ONLY thing that can
+    /// refuse the oversized batch is the jump-size guard.
     #[test_case]
     fn the_validator_refuses_more_new_entries_than_the_ring_can_hold() {
-        let frame = crate::memory::alloc().expect("no frame").addr();
-        let base = frame;
-        let size = frames::FRAME_SIZE;
+        let (driver, shadow, size) = two_regions();
+        let desc = driver + DESC_OFF;
+        let avail = driver + AVAIL_OFF;
 
-        let desc = base + DESC_OFF;
-        let avail = base + AVAIL_OFF;
-        let w16 =
-            |phys: u64, v: u16| unsafe { core::ptr::write_volatile(mmu::phys_to_virt(phys) as *mut u16, v) };
-        let w64 =
-            |phys: u64, v: u64| unsafe { core::ptr::write_volatile(mmu::phys_to_virt(phys) as *mut u64, v) };
-        let read16 = |p: u64| unsafe { core::ptr::read_volatile(mmu::phys_to_virt(p) as *const u16) };
-        let read64 = |p: u64| unsafe { core::ptr::read_volatile(mmu::phys_to_virt(p) as *const u64) };
-
-        // Fill the whole ring with individually valid single-descriptor entries: desc[i] is an
-        // in-region 8-byte buffer, ring[i] = head i. With no size guard the walk would accept them.
+        // Fill the whole ring with individually valid single-descriptor entries.
         for i in 0..QSIZE as u64 {
-            let d = desc + i * 16;
-            w64(d, base + 0x200 + i * 8); // addr: in-region
-            w64(d + 8, 8); // len: 8 bytes, in-region
-            w16(d + 12, 0); // flags: no NEXT, no INDIRECT
-            w16(d + 14, 0);
+            write_desc(desc, i, driver + 0x200 + i * 8, 8, 0, 0);
             w16(avail + 4 + i * 2, i as u16); // ring[i] = head i
         }
 
         // Exactly QSIZE new entries is legal: the ring holds that many.
         assert!(
-            validate_avail(base, size, desc, avail, 0, QSIZE, &read16, &read64),
+            run(driver, size, shadow, 0, QSIZE),
             "a batch of exactly QSIZE valid entries was refused",
         );
 
         // One more than the ring can hold is refused, though every descriptor is valid.
         assert!(
-            !validate_avail(base, size, desc, avail, 0, QSIZE + 1, &read16, &read64),
+            !run(driver, size, shadow, 0, QSIZE + 1),
             "a jump of QSIZE+1 was walked instead of refused: a hostile avail.idx could spin the \
              validator up to 65535 times with interrupts masked",
         );
 
-        crate::memory::free(frames::Frame::from_addr(frame));
+        free_regions(driver, shadow);
     }
 }
