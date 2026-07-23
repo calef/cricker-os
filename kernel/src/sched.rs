@@ -41,7 +41,6 @@ use crate::cpu;
 use crate::sync::{IrqSafeMutex, rank};
 use crate::thread::{Context, QuotaToken, State, Thread, Tid, switch_to};
 use alloc::boxed::Box;
-use alloc::collections::BTreeMap;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// How many times we have actually taken the CPU away from a thread. The number that says
@@ -81,10 +80,23 @@ fn idle_tid() -> Tid {
 /// onto a run queue, the one-shot Reply that leaves a caller blocked).
 type Endpoint = ipc::Endpoint<Tid>;
 
+/// The most threads that can be alive at once, whole machine (milestone 14 phase A). A documented
+/// limit of the image rather than a heap that can be exhausted: spawn past it fails cleanly, the
+/// same contract callers already have for out-of-memory. The table itself is ~2 KiB of pointers.
+const MAX_THREADS: usize = 128;
+
 struct Scheduler {
-    /// `Box` because the assembly writes through `&mut thread.context`, so a thread's address
-    /// must never move. A `BTreeMap` reshuffles its nodes; a `Box`'s contents do not.
-    threads: BTreeMap<Tid, Box<Thread>>,
+    /// The thread table: a fixed-capacity **generational** table (milestone 14 phase A; see
+    /// design/kernel-objects-from-untyped.md D2 and notes/generational-names.md). A `Tid` is the
+    /// table's name for the thread, `(generation, slot)` packed in a u64, so a dead thread's Tid
+    /// can never resolve again, even after its slot is reused. This replaced a
+    /// `BTreeMap<Tid, Box<Thread>>` fed by a global counter: lookups are now an index and a
+    /// compare, spawn no longer allocates map nodes, and the table is bounded.
+    ///
+    /// Still `Box` because the assembly writes through `&mut thread.context`, so a thread's
+    /// address must never move; the box pins it while table entries come and go around it.
+    /// Phase B replaces the box with a TCB page retyped from untyped, which pins it the same way.
+    threads: slots::Table<Box<Thread>, MAX_THREADS>,
     /// Neither the run queue nor `current` live here any more: both moved to per-CPU storage
     /// (`cpu::PerCpu`, DECISIONS.md §11 steps 3a and 3b), because a single shared queue and a
     /// single "running thread" are exactly what every core would otherwise contend on and
@@ -113,10 +125,18 @@ static SCHED: IrqSafeMutex<Option<Scheduler>> = IrqSafeMutex::new(rank::SCHED, N
 /// by the act of leaving it.
 pub fn init() {
     let mut sched = SCHED.lock();
-    let boot = Box::new(Thread::boot());
 
-    let mut threads = BTreeMap::new();
-    threads.insert(0, boot);
+    let mut threads = slots::Table::new();
+    // The table names the boot thread at insert. The first name a fresh table mints is 0 by
+    // construction (slot 0, generation 0), so "the boot thread is tid 0" survives, now as a
+    // property of the table rather than a hardcoded key.
+    let boot_tid = threads
+        .insert_with(|tid| {
+            let mut boot = Thread::boot();
+            boot.id = tid;
+            Box::new(boot)
+        })
+        .expect("a fresh table refused its first insert");
 
     *sched = Some(Scheduler {
         threads,
@@ -124,8 +144,8 @@ pub fn init() {
     });
     drop(sched); // release before spawning, which takes the lock itself
 
-    // This core (core 0) is running the boot thread, tid 0.
-    set_current_tid(0);
+    // This core (core 0) is running the boot thread.
+    set_current_tid(boot_tid);
 
     // Capacity up front on THIS core's run queue, so `schedule()`'s push can never reallocate
     // (it runs from the timer IRQ, where DECISIONS.md §9 forbids allocation). Interrupts are
@@ -144,13 +164,20 @@ pub fn init() {
         }
     }))
     .expect("could not create the idle thread");
-    let idle_id = idle.id;
-    cpu::current().idle.store(idle_id, Ordering::Relaxed);
 
     let mut sched = SCHED.lock();
     let s = sched.as_mut().unwrap();
-    s.threads.insert(idle_id, Box::new(idle));
+    let idle_id = s
+        .threads
+        .insert_with(|tid| {
+            let mut idle = idle;
+            idle.id = tid;
+            Box::new(idle)
+        })
+        .expect("thread table full at boot");
+    drop(sched);
     // NOT pushed onto `ready`: the idle thread is a fallback, not a peer.
+    cpu::current().idle.store(idle_id, Ordering::Relaxed);
 }
 
 /// Make **this (secondary) core** a scheduler participant.
@@ -164,15 +191,21 @@ pub fn init() {
 /// Interrupts must be masked (the caller has not enabled them yet), which is what `with_runq` needs.
 pub fn adopt_secondary_idle() {
     let idle = Thread::adopt_current();
-    let id = idle.id;
 
-    {
+    let id = {
         let mut guard = SCHED.lock();
         let sched = guard
             .as_mut()
             .expect("adopt_secondary_idle before sched::init");
-        sched.threads.insert(id, Box::new(idle));
-    }
+        sched
+            .threads
+            .insert_with(|tid| {
+                let mut idle = idle;
+                idle.id = tid;
+                Box::new(idle)
+            })
+            .expect("thread table full while bringing a core online")
+    };
 
     // This core is currently running that thread, and it is also this core's idle fallback.
     cpu::current().current.store(id, Ordering::Relaxed);
@@ -229,15 +262,19 @@ fn place_on(target: usize, id: Tid) {
 /// round-robin over `target` is the trivial next step, once the mechanism is proven.)
 pub fn spawn_on<F: FnOnce() + Send + 'static>(target: usize, f: F) -> Option<Tid> {
     let thread = Thread::spawn(Box::new(f))?;
-    let id = thread.id;
     let remote = target != cpu::id();
 
-    {
+    let id = {
         let mut guard = SCHED.lock();
         let sched = guard.as_mut()?;
-        sched.threads.insert(id, Box::new(thread));
+        let id = sched.threads.insert_with(|tid| {
+            let mut thread = thread;
+            thread.id = tid;
+            Box::new(thread)
+        })?;
         place_on(target, id);
-    } // SCHED released here, before the SGI, so the target's schedule() can take it
+        id
+    }; // SCHED released here, before the SGI, so the target's schedule() can take it
 
     if remote {
         // Poke the target: its handler drains the inbox we just pushed to and reschedules.
@@ -251,11 +288,14 @@ pub fn spawn<F: FnOnce() + Send + 'static>(f: F) -> Option<Tid> {
     // OUTSIDE the lock. Critical sections stay short (DECISIONS.md §9), and this one would
     // otherwise hold the scheduler across four page-table walks.
     let thread = Thread::spawn(Box::new(f))?;
-    let id = thread.id;
 
     let mut guard = SCHED.lock();
     let sched = guard.as_mut()?;
-    sched.threads.insert(id, Box::new(thread));
+    let id = sched.threads.insert_with(|tid| {
+        let mut thread = thread;
+        thread.id = tid;
+        Box::new(thread)
+    })?;
     // Onto the spawning core's own queue. We hold SCHED, so interrupts are masked, which is what
     // `with_runq` needs. (Step 3c will let a spawn target another core via its inbox.)
     cpu::current().with_runq(|q| q.push_back(id));
@@ -302,13 +342,17 @@ pub fn spawn_with_quota<F: FnOnce() + Send + 'static>(
         }
     };
     thread.quota = Some(QuotaToken::new(budget)); // returned to `budget` when the thread is reaped
-    let id = thread.id;
 
     let mut guard = SCHED.lock();
     let Some(sched) = guard.as_mut() else {
         return None; // no scheduler: `thread` drops here and its QuotaToken returns the slot
     };
-    sched.threads.insert(id, Box::new(thread));
+    // A full table is the same outcome as out-of-memory: `insert_with` never calls the closure,
+    // `thread` drops uncalled, and its QuotaToken hands the reserved slot back.
+    let id = sched.threads.insert_with(|tid| {
+        thread.id = tid;
+        Box::new(thread)
+    })?;
     cpu::current().with_runq(|q| q.push_back(id)); // this core's queue; SCHED held, IRQs masked
     Some(id)
 }
@@ -325,7 +369,7 @@ pub fn exit() -> ! {
         let mut guard = SCHED.lock();
         let sched = guard.as_mut().expect("exit before sched::init");
         let current = current_tid();
-        if let Some(t) = sched.threads.get_mut(&current) {
+        if let Some(t) = sched.threads.get_mut(current) {
             t.state = State::Finished;
         }
         // Deliberately NOT pushed back onto the ready queue, and deliberately not removed from
@@ -376,7 +420,7 @@ pub fn schedule() {
         };
 
         let current = current_tid();
-        let state = sched.threads.get(&current).map(|t| t.state);
+        let state = sched.threads.get(current).map(|t| t.state);
 
         // **Only a still-Running thread goes back on the ready queue.** A thread that reached
         // here after marking itself `Blocked` (it is waiting for IPC) or `Finished` must not be
@@ -416,11 +460,11 @@ pub fn schedule() {
         // Requeue the outgoing thread if it can still run — but never the idle thread, which
         // lives outside the ready queue.
         if runnable && current != idle_tid {
-            sched.threads.get_mut(&current).unwrap().state = State::Ready;
+            sched.threads.get_mut(current).unwrap().state = State::Ready;
             cpu::current().with_runq(|q| q.push_back(current)); // round robin: back of the queue
         }
 
-        sched.threads.get_mut(&next).unwrap().state = State::Running;
+        sched.threads.get_mut(next).unwrap().state = State::Running;
         set_current_tid(next);
 
         // If the thread we are leaving has finished, hand it to the incoming thread to reap AFTER
@@ -433,7 +477,7 @@ pub fn schedule() {
 
         // The incoming thread's low half. A kernel thread gets the empty reserved table, which
         // makes every low address fault, which is exactly right: it has no business down there.
-        let next_root = sched.threads[&next]
+        let next_root = sched.threads.get(next).unwrap()
             .space
             .as_ref()
             .map(|s| s.root())
@@ -441,8 +485,8 @@ pub fn schedule() {
 
         // Copy the two raw pointers out before the lock drops. The assembly writes through the
         // first and reads the second, and both threads' `Box`es keep their contents pinned.
-        let prev_slot: *mut *mut Context = &mut sched.threads.get_mut(&current).unwrap().context;
-        let next_ctx: *mut Context = sched.threads.get(&next).unwrap().context;
+        let prev_slot: *mut *mut Context = &mut sched.threads.get_mut(current).unwrap().context;
+        let next_ctx: *mut Context = sched.threads.get(next).unwrap().context;
 
         Some((prev_slot, next_ctx, next_root))
     };
@@ -493,7 +537,7 @@ pub(crate) fn finish_switch() {
     if let Some(sched) = guard.as_mut() {
         // Drops the Thread: its KernelStack (unmap + free + return the VA range), its AddressSpace
         // if any, and its QuotaToken. The one place all of that is safe, by construction.
-        sched.threads.remove(&dead);
+        sched.threads.remove(dead);
     }
 }
 
@@ -542,7 +586,7 @@ pub fn irq_notify(ep: usize) {
 
     // `signal` wakes a waiting receiver or counts the signal; it never blocks or joins a queue.
     if let Some(waiter) = sched.endpoints[ep].signal() {
-        sched.threads.get_mut(&waiter).unwrap().mailbox = [1, 0, 0];
+        sched.threads.get_mut(waiter).unwrap().mailbox = [1, 0, 0];
         wake(sched, waiter);
     }
 }
@@ -557,7 +601,7 @@ pub fn create_endpoint() -> usize {
 
 /// Move a blocked thread back to the ready queue. Caller holds the lock.
 fn wake(sched: &mut Scheduler, tid: Tid) {
-    if let Some(t) = sched.threads.get_mut(&tid)
+    if let Some(t) = sched.threads.get_mut(tid)
         && t.state == State::Blocked
     {
         t.state = State::Ready;
@@ -587,13 +631,13 @@ pub fn ipc_send(ep: usize, msg: [u64; 3]) {
 
         match sched.endpoints[ep].send(current) {
             ipc::Send::Rendezvous(receiver) => {
-                sched.threads.get_mut(&receiver).unwrap().mailbox = msg;
+                sched.threads.get_mut(receiver).unwrap().mailbox = msg;
                 wake(sched, receiver);
                 false
             }
             ipc::Send::Blocked => {
                 // `send` has already queued `current` as a sender; we record why it is parked.
-                let me = sched.threads.get_mut(&current).unwrap();
+                let me = sched.threads.get_mut(current).unwrap();
                 me.mailbox = msg;
                 me.state = State::Blocked;
                 true
@@ -620,7 +664,7 @@ pub fn ipc_recv(ep: usize) -> [u64; 3] {
             // An interrupt already fired while we were not waiting. Take it and do not block.
             ipc::Recv::Signal => Some([1, 0, 0]),
             ipc::Recv::FromSender(sender) => {
-                let msg = sched.threads.get(&sender).unwrap().mailbox;
+                let msg = sched.threads.get(sender).unwrap().mailbox;
                 // A caller (its outgoing cap is the one-shot Reply the kernel minted for a CALL, §12)
                 // is awaiting a *reply*, which a plain RECV cannot furnish: only RECV_CAP delivers the
                 // reply capability. Deliver the words but leave the caller blocked rather than wake it
@@ -628,7 +672,7 @@ pub fn ipc_recv(ep: usize) -> [u64; 3] {
                 // plain RECV here leaves the caller hung, the same no-timeout limitation as a reply
                 // that never comes.
                 let is_caller = matches!(
-                    sched.threads.get(&sender).unwrap().outgoing_cap,
+                    sched.threads.get(sender).unwrap().outgoing_cap,
                     Some(c) if matches!(c.object, crate::cap::Object::Reply(_))
                 );
                 if !is_caller {
@@ -638,7 +682,7 @@ pub fn ipc_recv(ep: usize) -> [u64; 3] {
             }
             ipc::Recv::Blocked => {
                 // `recv` has already queued `current` as a receiver.
-                sched.threads.get_mut(&current).unwrap().state = State::Blocked;
+                sched.threads.get_mut(current).unwrap().state = State::Blocked;
                 None
             }
         }
@@ -650,7 +694,7 @@ pub fn ipc_recv(ep: usize) -> [u64; 3] {
             schedule(); // blocks; a sender fills our mailbox and wakes us
             let guard = SCHED.lock();
             let sched = guard.as_ref().expect("no scheduler");
-            sched.threads.get(&current_tid()).unwrap().mailbox
+            sched.threads.get(current_tid()).unwrap().mailbox
         }
     }
 }
@@ -680,7 +724,7 @@ pub fn ipc_send_cap(ep: usize, data: u64, cap: crate::cap::Cap) {
 
         match sched.endpoints[ep].send(current) {
             ipc::Send::Rendezvous(receiver) => {
-                let r = sched.threads.get_mut(&receiver).unwrap();
+                let r = sched.threads.get_mut(receiver).unwrap();
                 let slot = r.cspace.insert(cap).unwrap_or(NO_CAP);
                 r.mailbox = [data, slot, 0];
                 wake(sched, receiver);
@@ -688,7 +732,7 @@ pub fn ipc_send_cap(ep: usize, data: u64, cap: crate::cap::Cap) {
             }
             ipc::Send::Blocked => {
                 // `send` queued `current`; we park the data word and the capability to hand over.
-                let me = sched.threads.get_mut(&current).unwrap();
+                let me = sched.threads.get_mut(current).unwrap();
                 me.mailbox = [data, 0, 0];
                 me.outgoing_cap = Some(cap);
                 me.state = State::Blocked;
@@ -718,8 +762,8 @@ pub fn ipc_recv_cap(ep: usize) -> [u64; 3] {
             // An interrupt signal is not a delegation; it carries no capability.
             ipc::Recv::Signal => Some([1, NO_CAP, 0]),
             ipc::Recv::FromSender(sender) => {
-                let msg = sched.threads.get(&sender).unwrap().mailbox;
-                let cap = sched.threads.get_mut(&sender).unwrap().outgoing_cap.take();
+                let msg = sched.threads.get(sender).unwrap().mailbox;
+                let cap = sched.threads.get_mut(sender).unwrap().outgoing_cap.take();
                 // A caller's outgoing cap is the one-shot Reply the kernel minted for its CALL (§12); a
                 // SEND_CAP sender's is the capability it chose to delegate. The difference is liveness:
                 // a caller stays blocked awaiting its reply, so it must NOT be woken here; a SEND_CAP
@@ -729,7 +773,7 @@ pub fn ipc_recv_cap(ep: usize) -> [u64; 3] {
                 let slot = match cap {
                     Some(c) => sched
                         .threads
-                        .get_mut(&current)
+                        .get_mut(current)
                         .unwrap()
                         .cspace
                         .insert(c)
@@ -744,7 +788,7 @@ pub fn ipc_recv_cap(ep: usize) -> [u64; 3] {
                 Some([msg[0], slot, msg[1]])
             }
             ipc::Recv::Blocked => {
-                sched.threads.get_mut(&current).unwrap().state = State::Blocked;
+                sched.threads.get_mut(current).unwrap().state = State::Blocked;
                 None
             }
         }
@@ -756,7 +800,7 @@ pub fn ipc_recv_cap(ep: usize) -> [u64; 3] {
             schedule(); // a capability-carrying sender fills our mailbox and wakes us
             let guard = SCHED.lock();
             let sched = guard.as_ref().expect("no scheduler");
-            sched.threads.get(&current_tid()).unwrap().mailbox
+            sched.threads.get(current_tid()).unwrap().mailbox
         }
     }
 }
@@ -782,7 +826,7 @@ pub fn ipc_call(ep: usize, msg: [u64; 2]) -> [u64; 3] {
         match sched.endpoints[ep].send(current) {
             ipc::Send::Rendezvous(receiver) => {
                 // A server is parked in RECV_CAP: hand it the reply cap and the two words now.
-                let r = sched.threads.get_mut(&receiver).unwrap();
+                let r = sched.threads.get_mut(receiver).unwrap();
                 let slot = r.cspace.insert(reply).unwrap_or(NO_CAP);
                 r.mailbox = [msg[0], slot, msg[1]];
                 wake(sched, receiver);
@@ -791,21 +835,21 @@ pub fn ipc_call(ep: usize, msg: [u64; 2]) -> [u64; 3] {
                 // No server yet; `send` queued us as a sender. Park the words and ride the reply cap
                 // in `outgoing_cap` so the eventual RECV_CAP hands it over and, seeing a Reply, leaves
                 // us blocked (see ipc_recv_cap).
-                let me = sched.threads.get_mut(&current).unwrap();
+                let me = sched.threads.get_mut(current).unwrap();
                 me.mailbox = [msg[0], msg[1], 0];
                 me.outgoing_cap = Some(reply);
             }
         }
         // Either way we block until the reply arrives. We are NOT queued as a receiver; the Reply
         // capability, which carries our tid, is the only thing that can wake us.
-        sched.threads.get_mut(&current).unwrap().state = State::Blocked;
+        sched.threads.get_mut(current).unwrap().state = State::Blocked;
     }
 
     schedule(); // returns once ipc_reply has filled our mailbox and woken us
 
     let guard = SCHED.lock();
     let sched = guard.as_ref().expect("no scheduler");
-    sched.threads.get(&current_tid()).unwrap().mailbox
+    sched.threads.get(current_tid()).unwrap().mailbox
 }
 
 /// **Reply: deliver two words to a blocked caller and wake it** (milestone 12). The other half of
@@ -815,7 +859,7 @@ pub fn ipc_call(ep: usize, msg: [u64; 2]) -> [u64; 3] {
 pub fn ipc_reply(caller: Tid, msg: [u64; 2]) {
     let mut guard = SCHED.lock();
     let sched = guard.as_mut().expect("no scheduler");
-    if let Some(t) = sched.threads.get_mut(&caller) {
+    if let Some(t) = sched.threads.get_mut(caller) {
         t.mailbox = [msg[0], msg[1], 0];
         wake(sched, caller);
     }
@@ -830,7 +874,7 @@ pub fn delete_frame_caps(phys: u64) {
         return;
     };
     let target = crate::cap::Object::Frame(phys);
-    for t in sched.threads.values_mut() {
+    for t in sched.threads.iter_mut() {
         for slot in 0..t.cspace.len() as u64 {
             if t.cspace.get(slot).is_ok_and(|c| c.object == target) {
                 let _ = t.cspace.delete(slot);
@@ -847,7 +891,7 @@ pub fn delete_current_cap(slot: u64) -> Result<(), crate::cap::Error> {
     let current = current_tid();
     sched
         .threads
-        .get_mut(&current)
+        .get_mut(current)
         .ok_or(crate::cap::Error::NoSuchSlot)?
         .cspace
         .delete(slot)
@@ -863,7 +907,7 @@ pub fn current_cap(slot: u64) -> Result<crate::cap::Cap, crate::cap::Error> {
     let sched = guard.as_ref().ok_or(crate::cap::Error::NoSuchSlot)?;
     sched
         .threads
-        .get(&current_tid())
+        .get(current_tid())
         .ok_or(crate::cap::Error::NoSuchSlot)?
         .cspace
         .get(slot)
@@ -876,7 +920,7 @@ pub fn grant(cap: crate::cap::Cap) -> Result<u64, crate::cap::Error> {
     let current = current_tid();
     sched
         .threads
-        .get_mut(&current)
+        .get_mut(current)
         .ok_or(crate::cap::Error::NoFreeSlot)?
         .cspace
         .insert(cap)
@@ -888,7 +932,7 @@ pub fn grant_to(tid: Tid, cap: crate::cap::Cap) -> Result<u64, crate::cap::Error
     let sched = guard.as_mut().ok_or(crate::cap::Error::NoFreeSlot)?;
     sched
         .threads
-        .get_mut(&tid)
+        .get_mut(tid)
         .ok_or(crate::cap::Error::NoFreeSlot)?
         .cspace
         .insert(cap)
@@ -907,7 +951,7 @@ pub fn adopt_address_space(space: crate::user::AddressSpace) {
         let current = current_tid();
         sched
             .threads
-            .get_mut(&current)
+            .get_mut(current)
             .expect("no current thread")
             .space = Some(space);
     }
@@ -927,7 +971,7 @@ pub fn current_kernel_stack_top() -> Option<u64> {
     let sched = guard.as_ref()?;
     sched
         .threads
-        .get(&current_tid())?
+        .get(current_tid())?
         .stack
         .as_ref()
         .map(|s| s.top())

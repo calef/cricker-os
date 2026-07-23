@@ -14,6 +14,7 @@ members = [
     "crates/paging",
     "crates/heap",
     "crates/slab",
+    "crates/slots",
 ]
 
 # Note: we deliberately do NOT set `panic = "abort"` here. The bare-metal target

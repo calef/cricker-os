@@ -138,7 +138,12 @@ in the code or the conversation doesn't make sense, it belongs here.
   limitation and the missing resource quotas are named rather than hidden.
 - [Machine-checked proofs (Kani)](verification.md) — the verification thesis (DECISIONS §14) in
   practice: the capability model is proved for *every* input, not just tested on the cases we wrote.
-  Five harnesses in `caps`, run by `script/verify`, with the plan to spread inward to IPC and the MMU.
+  Run by `script/verify`. Milestone 18 completed the spread inward: `caps`, then IPC (rendezvous and
+  the one-shot Reply), then the MMU isolation invariants, each proof landing on code the kernel runs.
+- [Generational names](generational-names.md) — milestone 14 phase A: the thread table becomes a
+  fixed generational slot table (`crates/slots`). A Tid is `(generation, slot)`; a dead thread's
+  name can never resolve again, even after slot reuse. Bounded like an array, safe like a
+  never-reused counter, and the first step toward capability-only thread naming.
 
 ## The point of all this
 

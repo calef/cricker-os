@@ -38,3 +38,6 @@ cargo kani -p dtb
 
 echo "==> kani: ipc (the rendezvous state machine)"
 cargo kani -p ipc
+
+echo "==> kani: slots (the generational thread table)"
+cargo kani -p slots

@@ -50,7 +50,12 @@ pub const STACK_PAGES: usize = 4;
 const STACK_AREA: u64 = KERNEL_VA_BASE | 0x0000_0010_0000_0000;
 
 static NEXT_STACK_VA: AtomicU64 = AtomicU64::new(STACK_AREA);
-static NEXT_TID: AtomicU64 = AtomicU64::new(1);
+
+/// The `id` a constructor writes before the scheduler's table has named the thread. Deliberately
+/// `u64::MAX` (= `cpu::NO_TID`), which the generational table can never mint, so a thread that
+/// somehow escaped naming resolves to nothing instead of to slot 0. Every insert path overwrites
+/// it via `Table::insert_with` (milestone 14 phase A; design/kernel-objects-from-untyped.md).
+pub const UNNAMED: Tid = u64::MAX;
 
 /// Stack address ranges from threads that have exited.
 ///
@@ -299,7 +304,7 @@ impl Thread {
     /// beyond a null placeholder.
     pub fn boot() -> Self {
         Thread {
-            id: 0,
+            id: UNNAMED, // named 0 by the table's first insert (see slots::Table)
             state: State::Running,
             context: core::ptr::null_mut(),
             stack: None,
@@ -315,13 +320,12 @@ impl Thread {
     /// [`boot`](Self::boot) does for core 0.
     ///
     /// Same shape as `boot`: no stack of its own (it runs on the core's `smp` boot stack), a null
-    /// context filled by the first `switch_to` away from it, `Running`. The difference is only the
-    /// id: core 0's boot thread is 0, and each secondary needs a fresh one. This becomes that core's
+    /// context filled by the first `switch_to` away from it, `Running`. This becomes that core's
     /// idle thread, so it is never in a run queue; the scheduler falls back to it when the core's
     /// queue is empty. See smp.rs and sched::adopt_secondary_idle.
     pub fn adopt_current() -> Self {
         Thread {
-            id: NEXT_TID.fetch_add(1, Ordering::Relaxed),
+            id: UNNAMED, // named at insert, like every thread
             state: State::Running,
             context: core::ptr::null_mut(),
             stack: None,
@@ -367,7 +371,7 @@ impl Thread {
         }
 
         Some(Thread {
-            id: NEXT_TID.fetch_add(1, Ordering::Relaxed),
+            id: UNNAMED, // named at insert, like every thread
             state: State::Ready,
             context,
             stack: Some(stack),

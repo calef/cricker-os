@@ -199,6 +199,15 @@ one rests on:
 No rewire because `caps::CSpace` and `ipc::Endpoint` already *are* the kernel's cspace and endpoint
 state; the proofs landed on code the kernel was running all along.
 
+Three in `crates/slots/src/lib.rs`, the generational thread table (milestone 14 phase A; see
+notes/generational-names.md):
+
+| Harness | Property |
+|---|---|
+| `a_removed_name_never_resolves_again` | once removed, a name fails `get`/`get_mut`/`remove` forever, even after its slot is reused (the stale-Tid safety that capability payloads will lean on) |
+| `live_names_are_distinct_and_resolve_to_their_own_entry` | the `(generation, slot)` packing cannot alias two live entries |
+| `a_name_the_table_never_minted_resolves_to_nothing` | for any u64, resolution succeeds only on exactly a name the table issued |
+
 Four in `crates/elf/src/lib.rs`:
 
 | Harness | Property |

@@ -57,6 +57,7 @@ dependencies = [
  "ipc",
  "paging",
  "slab",
+ "slots",
  "spin",
  "tock-registers",
 ]
@@ -67,6 +68,10 @@ version = "0.1.0"
 
 [[package]]
 name = "slab"
+version = "0.1.0"
+
+[[package]]
+name = "slots"
 version = "0.1.0"
 
 [[package]]

@@ -17,6 +17,7 @@ heap = { version = "0.1.0", path = "../crates/heap" }
 ipc = { version = "0.1.0", path = "../crates/ipc" }
 paging = { version = "0.1.0", path = "../crates/paging" }
 slab = { version = "0.1.0", path = "../crates/slab" }
+slots = { version = "0.1.0", path = "../crates/slots" }
 spin = { version = "0.12", default-features = false, features = ["spin_mutex"] }
 
 # Typed, compile-time-checked MMIO register blocks. An off-by-four in a device's
