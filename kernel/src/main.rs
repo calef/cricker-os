@@ -379,7 +379,9 @@ mod tests {
     /// Proves the harness itself works. If this fails, nothing else is meaningful.
     #[test_case]
     fn harness_runs() {
-        assert_eq!(1 + 1, 2);
+        // black_box so this is a real runtime check, not a constant clippy folds to `2 == 2`.
+        let two = core::hint::black_box(1) + core::hint::black_box(1);
+        assert_eq!(two, 2);
     }
 
     /// Proves `boot.s` zeroed `.bss`.

@@ -1,10 +1,12 @@
 #!/bin/sh
 # script/lint: run clippy across the workspace with warnings denied (the CI clippy gate).
 #
-# Two invocations, because the workspace has two worlds: the pure-logic host crates and xtask
-# build for the host (lint their tests too), while kernel and user are bare-metal no_std and only
-# build for the aarch64 target, where --all-targets would need a libtest that does not exist. Not
-# one of the canonical scripts, but it keeps the CI job a one-liner. See notes/scripts.md.
+# Two invocations, because the workspace has two worlds: the pure-logic host crates and xtask build
+# for the host, while kernel and user are bare-metal no_std and only build for the aarch64 target.
+# Both use --all-targets so test code is linted too; the kernel supplies its own test harness
+# (custom_test_frameworks) and the user bin opts its libtest target out (user/Cargo.toml), which is
+# what lets --all-targets work on the bare-metal target. Not one of the canonical scripts, but it
+# keeps the CI job a one-liner. See notes/scripts.md.
 
 set -e
 cd "$(dirname "$0")/.."
@@ -13,4 +15,4 @@ echo "==> clippy: host crates + xtask"
 cargo clippy --workspace --exclude kernel --exclude user --all-targets -- -D warnings
 
 echo "==> clippy: kernel + user (aarch64)"
-cargo clippy -p kernel -p user --target aarch64-unknown-none-softfloat -- -D warnings
+cargo clippy -p kernel -p user --target aarch64-unknown-none-softfloat --all-targets -- -D warnings

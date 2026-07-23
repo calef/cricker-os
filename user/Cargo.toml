@@ -6,6 +6,13 @@ edition = "2024"
 [[bin]]
 name = "hello"
 path = "src/hello.rs"
+# This is a bare-metal `no_std` binary with no unit tests, and the default test/bench targets link
+# libtest (`extern crate test`), which does not exist for the aarch64-unknown-none target. Turning
+# them off is what lets `cargo clippy --all-targets` (and any --all-targets build) work here instead
+# of failing to find crate `test`. The kernel keeps its test target because it supplies its own
+# harness via `custom_test_frameworks`.
+test = false
+bench = false
 
 [dependencies]
 abi = { version = "0.1.0", path = "../crates/abi" }

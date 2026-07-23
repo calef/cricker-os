@@ -890,10 +890,10 @@ mod tests {
         static COUNTS: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
         static STOP: AtomicBool = AtomicBool::new(false);
 
-        for i in 0..3usize {
+        for c in &COUNTS {
             crate::sched::spawn(move || {
                 while !STOP.load(Ordering::SeqCst) {
-                    COUNTS[i].fetch_add(1, Ordering::SeqCst);
+                    c.fetch_add(1, Ordering::SeqCst);
                     crate::sched::yield_now();
                 }
             })

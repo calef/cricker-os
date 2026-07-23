@@ -205,9 +205,9 @@ mod tests {
             );
         }
 
-        for c in 1..MAX_CPUS {
+        for (c, ran) in RAN_ON.iter().enumerate().skip(1) {
             assert!(
-                RAN_ON[c].load(Ordering::Acquire),
+                ran.load(Ordering::Acquire),
                 "secondary core {c} never ran scheduled work",
             );
         }
@@ -235,9 +235,9 @@ mod tests {
             assert!(spins < 5_000_000, "work placed on a core never ran there");
         }
 
-        for c in 0..n {
+        for (c, spread) in SPREAD.iter().enumerate().take(n) {
             assert!(
-                SPREAD[c].load(Ordering::Acquire) > 0,
+                spread.load(Ordering::Acquire) > 0,
                 "core {c} never ran work placed on it",
             );
         }
