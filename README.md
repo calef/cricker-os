@@ -177,7 +177,10 @@ kernel's free-frame count moving, so a process cannot force the kernel to alloca
 **Beyond the plan.** After milestone 11: a security audit, per-process spawn quotas,
 kernel-mediated DMA confinement (there is no IOMMU on QEMU `virt`), capability delegation
 between processes (`SEND_CAP`/`RECV_CAP`), and frame capabilities (shared memory a process
-owns and delegates). **In progress: SMP**, the §6 refactor deferred as "when it hurts."
+owns and delegates). **SMP** (the §6 refactor, "when it hurts"): four cores boot via PSCI and
+schedule preempted threads from per-CPU run queues, with cross-core work placement by an inbox
+plus a reschedule SGI (no shared run-queue lock). All under `-smp 4`, 91 kernel tests. The one
+piece left is making auto-distribution the default `spawn` policy; the migration mechanism is done.
 
 Deliberately out of scope for v1: a writable filesystem, networking, a GUI, dynamic linking.
 Each multiplies debugging difficulty, and none teaches something the first ten don't already

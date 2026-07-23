@@ -553,21 +553,34 @@ routing (`ITARGETSR`) stays on core 0: the only sources are the per-core timer P
 and virtio SPIs (one core fields them). The timer being a PPI means preemption is already per-core for
 free.
 
-### Build order
+### Build order (done, 2026-07-22)
 
-The migration path comes online *with* the queues, not after: there is no separate race-prone
-stealing phase to bolt on, because we are not stealing.
+The migration path came online *with* the queues, not after: there was no separate race-prone
+stealing phase to bolt on, because we are not stealing. All of this landed and passes under
+`-smp 4` (91 kernel tests):
 
-1. **Per-CPU infrastructure.** `TPIDR_EL1`, the `PerCpu` block, `cpu::current()`, `HELD_RANK` →
-   per-CPU. No behavior change on one core; the existing rank tests still pass. Provable in
-   isolation.
-2. **Secondary bring-up.** PSCI `CPU_ON`, per-core stacks, per-core GICC/timer init. Secondaries
-   come up and idle. N cores exist; core 0 still does all real work. A clean, demoable checkpoint.
-3. **Single-owner run queues + the inbox/SGI migration path.** Split `ready`/`current` per-CPU; each
-   core schedules its own queue; a thread reaches another core only via that core's inbox and an SGI.
-   Work now runs on all cores. This is the core of the milestone, and the message path is in from the
-   first cut.
-4. **Spreading policy + the memory-ordering audit**, woven through, not bolted on.
+1. **Per-CPU infrastructure** ✅ (3a, 3b-i). `TPIDR_EL1`, the `PerCpu` block, `cpu::current()`, and
+   `HELD_RANK` / run queue / `current` / `idle` / `need_resched` → per-CPU. Behavior-neutral on one
+   core, verified in isolation.
+2. **Secondary bring-up** ✅ (step 2). PSCI `CPU_ON`, per-core stacks. Cores come up and idle.
+3. **Secondaries schedule** ✅ (3b-ii). Per-core idle thread, GIC CPU interface, timer, and the fine
+   map; the reaper fixed to run after the switch, not during. Each core schedules from its own queue.
+4. **Cross-core migration** ✅ (3c). The inbox + reschedule SGI; `spawn_on(core, f)` places work on
+   any core. The memory-ordering invariant held: the inbox lock's release/acquire orders the handoff,
+   no extra barriers needed.
+
+**Remaining, and deliberately deferred:** wiring `spawn` itself to round-robin over `spawn_on` (auto
+load-balancing). The mechanism is done; making it the default placement policy would scatter the
+existing tests' threads across cores and make their yield-based synchronization timing-dependent, so
+it wants those tests audited first. Also still deferred (unchanged): per-CPU allocator caches for
+*scalability* (§9), which are a different problem from correctness.
+
+Three SMP-latent bugs, each invisible on one core, surfaced during 3b-ii and are recorded in that
+commit: `VBAR_EL1` is per-core (a secondary that never set it died silently on its first trap); the
+per-core boot stacks were an immutable `static` that landed in read-only `.rodata`, which only bit
+once the fine map enforced W^X; and a global tick counter, advanced by every core, broke "holding a
+lock masks *my* timer." The clean starting point (`IrqSafeMutex` already a real spinlock, every
+`tlbi` already inner-shareable) is why there were only three.
 
 ### Testing
 
