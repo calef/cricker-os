@@ -135,9 +135,40 @@ fn invoke(
                 }
                 let msg = sched::ipc_recv_cap(ep);
                 // x1 carries the slot the received capability landed in, or NO_CAP if the message
-                // brought none. The data word returns in x0 like every syscall result.
+                // brought none; x2 the second data word (a CALL's, or 0). x0 returns the first word.
                 frame.x[1] = msg[1];
+                frame.x[2] = msg[2];
                 Ok(msg[0] as i64)
+            }
+
+            // Call: send two words and block until replied. The kernel mints a one-shot Reply cap
+            // naming us into the server (delivered by its RECV_CAP); we return here only when the
+            // server invokes it. See §12 and notes/ipc-naming.md. Sending needs WRITE, like SEND.
+            abi::endpoint::CALL => {
+                if !cap.rights.allows(Rights::WRITE) {
+                    return Err(Error::NotPermitted);
+                }
+                let reply = sched::ipc_call(ep, [a0, a1]);
+                frame.x[1] = reply[1]; // r1; r0 returns in x0 below
+                Ok(reply[0] as i64)
+            }
+            _ => Err(Error::BadMethod),
+        },
+
+        // A one-shot reply to a specific caller (§12). Minted by the kernel at a CALL rendezvous,
+        // named by the caller's tid, consumed on use.
+        Object::Reply(tid) => match method {
+            abi::reply::REPLY => {
+                // Minted WRITE-only, so a narrowed derivative could not answer; and minted without
+                // GRANT, so it could not have been delegated here in the first place.
+                if !cap.rights.allows(Rights::WRITE) {
+                    return Err(Error::NotPermitted);
+                }
+                sched::ipc_reply(tid, [a0, a1]);
+                // One-shot: consume it, so a second reply is NoSuchSlot and the caller cannot be
+                // answered twice. This is the guarantee a pre-wired reply endpoint cannot make.
+                let _ = sched::delete_current_cap(slot);
+                Ok(0)
             }
             _ => Err(Error::BadMethod),
         },

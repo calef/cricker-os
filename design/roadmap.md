@@ -23,7 +23,7 @@ worth building for the mechanism it teaches.
 
 | #  | Milestone | What it teaches / delivers |
 |----|-----------|----------------------------|
-| 12 | Call/Reply IPC: a one-shot reply capability | Reply-to-caller as a kernel guarantee; retires the per-client reply endpoint |
+| 12 | Call/Reply IPC: a one-shot reply capability | Reply-to-caller as a kernel guarantee; retires the per-client reply endpoint. **Built, §12.** |
 | 13 | Capability revocation + untyped reclamation | A derivation tree and recursive revoke; reclaim a page from a live peer |
 | 14 | Kernel objects from untyped: remove the kernel heap | Retype TCBs, endpoints, page tables; §10's deferred axis, finished |
 | 15 | Tagged address spaces (ASIDs) | Stop flushing the whole EL1 TLB on every user switch |
@@ -35,6 +35,9 @@ The order is capability-core first (12-14, the project's thesis), then the road 
 blocks below point at it.
 
 ### 12. Call/Reply IPC: a one-shot reply capability
+
+**Built (milestone 12); see DECISIONS §12 and notes/ipc-naming.md.** The rest of this block is the
+proposal it was built from.
 
 **Deliverable.** A kernel-minted, single-use reply capability handed to a server on a `Call`, so it
 can answer *whoever* called without being individually wired to them, and can answer exactly once.

@@ -57,6 +57,16 @@ pub enum Object {
     /// the only ways to get a `Frame` are to retype it or be handed it, and both keep the object.
     Frame(u64),
 
+    /// **A one-shot reply channel to a blocked caller** (milestone 12), named by the caller's
+    /// thread id.
+    ///
+    /// The kernel mints one at a `CALL` rendezvous and hands it to the server. It is never
+    /// forgeable and nameable no other way, so invoking it delivers the reply to *exactly* that
+    /// caller and consumes the capability. "One reply, to this caller, exactly once" is therefore a
+    /// kernel guarantee rather than a server convention, which is the whole point of the object.
+    /// See DECISIONS §12 and notes/ipc-naming.md.
+    Reply(crate::thread::Tid),
+
     /// A virtio device's **transport**, by id (into the kernel's virtio device table).
     ///
     /// The DMA-confinement capability. The device has no IOMMU, so the kernel keeps the two
@@ -104,6 +114,16 @@ pub fn untyped_cap(region: usize) -> Cap {
 pub fn virtio_cap(id: usize) -> Cap {
     Cap {
         object: Object::Virtio(id),
+        rights: Rights::WRITE,
+    }
+}
+
+/// A one-shot reply capability naming the caller `tid` (milestone 12). Minted with `WRITE` (may
+/// answer) and **no `GRANT`** (cannot be delegated onward), so it is non-transferable as well as
+/// single-use. The kernel is the only minter, at a `CALL` rendezvous.
+pub fn reply_cap(tid: crate::thread::Tid) -> Cap {
+    Cap {
+        object: Object::Reply(tid),
         rights: Rights::WRITE,
     }
 }

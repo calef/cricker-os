@@ -89,14 +89,34 @@ pub mod endpoint {
     /// authority moves between processes at runtime instead of being wired by the kernel at spawn.
     pub const SEND_CAP: u64 = 2;
 
-    /// `invoke(cap, RECV_CAP, _, _, _)` -> w0, with the received capability's new slot in x1, or
-    /// [`NO_CAP`] there if the message carried no capability. **Blocks until a message arrives.**
-    /// The received capability lands in a free slot of the receiver's own cspace, chosen by the
-    /// kernel; x1 is where. Needs `READ` on the endpoint.
+    /// `invoke(cap, RECV_CAP, _, _, _)` -> w0, with the received capability's new slot in x1 and a
+    /// second data word in x2, or [`NO_CAP`] in x1 if the message carried no capability. **Blocks
+    /// until a message arrives.** The received capability lands in a free slot of the receiver's own
+    /// cspace, chosen by the kernel; x1 is where. This is also how a server receives a [`CALL`]: the
+    /// slot in x1 holds a one-shot [`reply`] capability naming the caller. Needs `READ`.
     pub const RECV_CAP: u64 = 3;
+
+    /// `invoke(cap, CALL, w0, w1, _)` -> r0, with r1 in x1. **Send two words and block until
+    /// replied.** The atomic send-and-wait a server can answer safely: at the rendezvous the kernel
+    /// mints a one-shot [`reply`] capability naming *this* caller and hands it to the server (through
+    /// [`RECV_CAP`]), so the server can answer a caller it was never wired to, exactly once, and only
+    /// that caller. Needs `WRITE`. Milestone 12; see notes/ipc-naming.md.
+    pub const CALL: u64 = 4;
 
     /// The x1 value from [`RECV_CAP`] when the message carried no capability.
     pub const NO_CAP: u64 = u64::MAX;
+}
+
+/// Methods on a `Reply` capability. **A one-shot answer to a specific caller.**
+///
+/// The kernel mints one on [`endpoint::CALL`] and hands it to the server through
+/// [`endpoint::RECV_CAP`]. It names the exact blocked caller, carries `WRITE` and no `GRANT` (so it
+/// cannot be passed on), and is consumed the instant it is used, so a server cannot reply twice,
+/// reply to the wrong caller, or hoard it. Those are kernel guarantees, not server discipline.
+pub mod reply {
+    /// `invoke(reply_cap, REPLY, r0, r1, _)` -> 0. Deliver `{r0, r1}` to the caller, wake it, and
+    /// consume this capability (a second use is [`Error::NoSuchSlot`]).
+    pub const REPLY: u64 = 0;
 }
 
 /// The rights bits, matching `caps::Rights`, so userspace can name the rights to narrow a

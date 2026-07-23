@@ -629,7 +629,18 @@ pub fn ipc_recv(ep: usize) -> [u64; 3] {
             Some([1, 0, 0])
         } else if let Some(sender) = sched.endpoints[ep].senders.pop_front() {
             let msg = sched.threads.get(&sender).unwrap().mailbox;
-            wake(sched, sender);
+            // A caller (its outgoing cap is the one-shot Reply the kernel minted for a CALL, §12) is
+            // awaiting a *reply*, which a plain RECV cannot furnish: only RECV_CAP delivers the reply
+            // capability. Deliver the words but leave the caller blocked rather than wake it with its
+            // own request masquerading as a reply. Serve CALL endpoints with RECV_CAP; a plain RECV
+            // here leaves the caller hung, the same no-timeout limitation as a reply that never comes.
+            let is_caller = matches!(
+                sched.threads.get(&sender).unwrap().outgoing_cap,
+                Some(c) if matches!(c.object, crate::cap::Object::Reply(_))
+            );
+            if !is_caller {
+                wake(sched, sender);
+            }
             Some(msg)
         } else {
             sched.threads.get_mut(&current).unwrap().state = State::Blocked;
@@ -710,8 +721,14 @@ pub fn ipc_recv_cap(ep: usize) -> [u64; 3] {
             sched.endpoints[ep].pending -= 1;
             Some([1, NO_CAP, 0])
         } else if let Some(sender) = sched.endpoints[ep].senders.pop_front() {
-            let data = sched.threads.get(&sender).unwrap().mailbox[0];
+            let msg = sched.threads.get(&sender).unwrap().mailbox;
             let cap = sched.threads.get_mut(&sender).unwrap().outgoing_cap.take();
+            // A caller's outgoing cap is the one-shot Reply the kernel minted for its CALL (§12); a
+            // SEND_CAP sender's is the capability it chose to delegate. The difference is liveness: a
+            // caller stays blocked awaiting its reply, so it must NOT be woken here; a SEND_CAP
+            // sender's rendezvous is complete the moment we take the cap.
+            let is_reply =
+                matches!(cap, Some(c) if matches!(c.object, crate::cap::Object::Reply(_)));
             let slot = match cap {
                 Some(c) => sched
                     .threads
@@ -722,8 +739,12 @@ pub fn ipc_recv_cap(ep: usize) -> [u64; 3] {
                     .unwrap_or(NO_CAP),
                 None => NO_CAP,
             };
-            wake(sched, sender);
-            Some([data, slot, 0])
+            if !is_reply {
+                wake(sched, sender);
+            }
+            // x0 = word0, x1 = the delivered slot, x2 = word1 (a CALL's second word; 0 for a plain
+            // SEND_CAP, whose sender parked mailbox[1] = 0).
+            Some([msg[0], slot, msg[1]])
         } else {
             sched.threads.get_mut(&current).unwrap().state = State::Blocked;
             sched.endpoints[ep].receivers.push_back(current);
@@ -740,6 +761,75 @@ pub fn ipc_recv_cap(ep: usize) -> [u64; 3] {
             sched.threads.get(&current_tid()).unwrap().mailbox
         }
     }
+}
+
+/// **Call: send two words and block until replied** (milestone 12). The atomic send-and-wait a
+/// one-shot reply capability makes safe. At the rendezvous the kernel mints a `Reply` capability
+/// naming *this* caller and hands it to the server (through [`ipc_recv_cap`]); we then block,
+/// discoverable **only** through that capability, until the server invokes it. Returns the reply
+/// words. See DECISIONS §12 and notes/ipc-naming.md.
+///
+/// If the server's cspace is full the reply cap is dropped (the server sees `NO_CAP`, exactly as a
+/// delegated cap would be) and, having no way to answer, the caller blocks until torn down: the same
+/// no-timeout limitation as a reply that never comes, and self-inflicted by the server.
+pub fn ipc_call(ep: usize, msg: [u64; 2]) -> [u64; 3] {
+    {
+        let mut guard = SCHED.lock();
+        let sched = guard.as_mut().expect("no scheduler");
+        let current = current_tid();
+        let reply = crate::cap::reply_cap(current);
+
+        if let Some(receiver) = sched.endpoints[ep].receivers.pop_front() {
+            // A server is parked in RECV_CAP: hand it the reply cap and the two words now.
+            let r = sched.threads.get_mut(&receiver).unwrap();
+            let slot = r.cspace.insert(reply).unwrap_or(NO_CAP);
+            r.mailbox = [msg[0], slot, msg[1]];
+            wake(sched, receiver);
+        } else {
+            // No server yet. Park the words, and ride the reply cap in `outgoing_cap` so the eventual
+            // RECV_CAP hands it over and, seeing a Reply, leaves us blocked (see ipc_recv_cap).
+            let me = sched.threads.get_mut(&current).unwrap();
+            me.mailbox = [msg[0], msg[1], 0];
+            me.outgoing_cap = Some(reply);
+            sched.endpoints[ep].senders.push_back(current);
+        }
+        // Either way we block until the reply arrives. We are NOT queued as a receiver; the Reply
+        // capability, which carries our tid, is the only thing that can wake us.
+        sched.threads.get_mut(&current).unwrap().state = State::Blocked;
+    }
+
+    schedule(); // returns once ipc_reply has filled our mailbox and woken us
+
+    let guard = SCHED.lock();
+    let sched = guard.as_ref().expect("no scheduler");
+    sched.threads.get(&current_tid()).unwrap().mailbox
+}
+
+/// **Reply: deliver two words to a blocked caller and wake it** (milestone 12). The other half of
+/// [`ipc_call`], reached by invoking the one-shot Reply capability, which carries the caller's `tid`.
+/// The caller is blocked awaiting exactly this. If it is already gone (it cannot be, while blocked,
+/// but be defensive), the reply is simply dropped.
+pub fn ipc_reply(caller: Tid, msg: [u64; 2]) {
+    let mut guard = SCHED.lock();
+    let sched = guard.as_mut().expect("no scheduler");
+    if let Some(t) = sched.threads.get_mut(&caller) {
+        t.mailbox = [msg[0], msg[1], 0];
+        wake(sched, caller);
+    }
+}
+
+/// Remove a capability from the **current thread's** table. Used to consume a one-shot Reply
+/// capability the instant it is invoked (§12), which is what makes a second reply impossible.
+pub fn delete_current_cap(slot: u64) -> Result<(), crate::cap::Error> {
+    let mut guard = SCHED.lock();
+    let sched = guard.as_mut().ok_or(crate::cap::Error::NoSuchSlot)?;
+    let current = current_tid();
+    sched
+        .threads
+        .get_mut(&current)
+        .ok_or(crate::cap::Error::NoSuchSlot)?
+        .cspace
+        .delete(slot)
 }
 
 /// Look up a capability in the **current thread's** table.
@@ -1190,6 +1280,104 @@ mod tests {
             ANSWER.load(Ordering::SeqCst),
             42,
             "the server computed the wrong answer"
+        );
+    }
+
+    /// **Milestone 12: a call gets a reply, over one endpoint, via a one-shot Reply cap.**
+    ///
+    /// The client `CALL`s and blocks; the server `RECV_CAP`s (receiving the request word plus a
+    /// kernel-minted `Reply` cap naming the caller), answers through that cap, and consumes it. One
+    /// endpoint, not the two the pre-`Call` pattern needs, and the server was never wired to this
+    /// client.
+    #[test_case]
+    fn a_call_gets_a_reply() {
+        static ANSWER: AtomicU64 = AtomicU64::new(0);
+        static DONE: AtomicBool = AtomicBool::new(false);
+
+        let ep = super::create_endpoint();
+
+        super::spawn(move || {
+            let m = super::ipc_recv_cap(ep); // [n, reply_slot, second_word]
+            let slot = m[1];
+            let crate::cap::Object::Reply(caller) = super::current_cap(slot).unwrap().object else {
+                panic!("RECV_CAP of a CALL did not deliver a Reply capability");
+            };
+            super::ipc_reply(caller, [m[0] + 1, 0]);
+            super::delete_current_cap(slot).expect("consume the one-shot reply");
+        })
+        .expect("spawn failed");
+
+        super::spawn(move || {
+            let r = super::ipc_call(ep, [41, 0]);
+            ANSWER.store(r[0], Ordering::SeqCst);
+            DONE.store(true, Ordering::SeqCst);
+        })
+        .expect("spawn failed");
+
+        for _ in 0..200 {
+            if DONE.load(Ordering::SeqCst) {
+                break;
+            }
+            super::yield_now();
+        }
+        assert!(DONE.load(Ordering::SeqCst), "the call never returned");
+        assert_eq!(ANSWER.load(Ordering::SeqCst), 42, "wrong reply");
+    }
+
+    /// **Milestone 12: a reply reaches the caller that called, not another.**
+    ///
+    /// Two clients call and block at once; the server answers each through *its* Reply cap. Client A
+    /// (sent 100) must get 111 and client B (sent 200) must get 211. A shared reply endpoint cannot
+    /// guarantee this: whichever client's `RECV` runs grabs the reply. The Reply cap, naming the
+    /// specific blocked caller, makes misrouting unrepresentable.
+    #[test_case]
+    fn a_reply_reaches_the_caller_that_called() {
+        static GOT_A: AtomicU64 = AtomicU64::new(0);
+        static GOT_B: AtomicU64 = AtomicU64::new(0);
+
+        let ep = super::create_endpoint();
+
+        // The server: field two calls, reply each caller its own word + 11, via its own cap.
+        super::spawn(move || {
+            for _ in 0..2 {
+                let m = super::ipc_recv_cap(ep);
+                let (word, slot) = (m[0], m[1]);
+                let crate::cap::Object::Reply(caller) = super::current_cap(slot).unwrap().object
+                else {
+                    panic!("not a reply cap");
+                };
+                super::ipc_reply(caller, [word + 11, 0]);
+                super::delete_current_cap(slot).unwrap();
+            }
+        })
+        .expect("spawn failed");
+
+        super::spawn(move || {
+            let r = super::ipc_call(ep, [100, 0]);
+            GOT_A.store(r[0], Ordering::SeqCst);
+        })
+        .expect("spawn failed");
+        super::spawn(move || {
+            let r = super::ipc_call(ep, [200, 0]);
+            GOT_B.store(r[0], Ordering::SeqCst);
+        })
+        .expect("spawn failed");
+
+        for _ in 0..300 {
+            if GOT_A.load(Ordering::SeqCst) != 0 && GOT_B.load(Ordering::SeqCst) != 0 {
+                break;
+            }
+            super::yield_now();
+        }
+        assert_eq!(
+            GOT_A.load(Ordering::SeqCst),
+            111,
+            "client A got the wrong caller's reply"
+        );
+        assert_eq!(
+            GOT_B.load(Ordering::SeqCst),
+            211,
+            "client B got the wrong caller's reply"
         );
     }
 

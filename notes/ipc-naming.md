@@ -87,10 +87,14 @@ receiver does `receivers.pop_front()` and wakes exactly that one; a `RECV` that 
 
 FIFO on both sides, on the endpoint, chosen deliberately and matching seL4.
 
-## The reply problem, and why we have no Reply capability (yet)
+## The reply problem, and the Reply capability (milestone 12)
 
-We do **not** have a Reply capability, and no `Call` (atomic send-and-wait) primitive. The
-endpoint methods are `SEND`, `RECV`, `SEND_CAP`, `RECV_CAP`, and that is all (`crates/abi`).
+**Built.** As of milestone 12 there is a one-shot Reply capability and a `CALL` method; see
+DECISIONS §12. What follows is the design that led there, kept because the reasoning is the point,
+and written in the present tense of *before* it existed.
+
+Before milestone 12 there was no Reply capability and no `Call` (atomic send-and-wait) primitive: the
+endpoint methods were `SEND`, `RECV`, `SEND_CAP`, `RECV_CAP`, and that was all (`crates/abi`).
 
 The gap is the direct consequence of the anonymity above. A server that `RECV`s a request has **no
 idea who sent it**, so it cannot reply to that specific caller. seL4 solves this with a

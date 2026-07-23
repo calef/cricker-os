@@ -47,6 +47,8 @@ const RECEIVER: u64 = 10;
 const FRAME_PRODUCER: u64 = 11;
 const FRAME_CONSUMER: u64 = 12;
 const VIRTIO_ATTACK_INDIRECT: u64 = 13;
+const CALL_SERVER: u64 = 14;
+const CALL_CLIENT: u64 = 15;
 
 /// The word the frame producer writes into a shared page and the consumer reads back through its
 /// own mapping of the same physical page. One binary, so one constant serves both roles.
@@ -98,6 +100,8 @@ pub extern "C" fn _start(role: u64, dma_phys: u64, _arg2: u64) -> ! {
         UNTYPED_DEMO => untyped_demo(),
         VIRTIO_ATTACK => virtio::run_attack(dma_phys),
         VIRTIO_ATTACK_INDIRECT => virtio::run_attack_indirect(dma_phys),
+        CALL_SERVER => call_server(),
+        CALL_CLIENT => call_client(),
         GRANTER => granter(),
         RECEIVER => receiver(),
         FRAME_PRODUCER => frame_producer(),
@@ -260,6 +264,78 @@ fn recv_cap(slot: u64) -> (u64, u64) {
         );
     }
     (w0, got)
+}
+
+/// **Call: send two words and block until replied** (milestone 12). Returns `(r0, r1)`. The kernel
+/// mints a one-shot reply capability naming us into the server, which answers through it.
+fn call(slot: u64, w0: u64, w1: u64) -> (u64, u64) {
+    let (mut r0, mut r1): (u64, u64);
+    // SAFETY: `svc`. x0 = the endpoint slot, x1 = CALL; the reply comes back as r0 in x0, r1 in x1.
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("x8") abi::SYS_INVOKE,
+            inlateout("x0") slot => r0,
+            inlateout("x1") endpoint::CALL => r1,
+            in("x2") w0,
+            in("x3") w1,
+            in("x4") 0u64,
+            options(nostack),
+        );
+    }
+    (r0, r1)
+}
+
+/// **Receive a call** (milestone 12): like [`recv_cap`], but also returns the second word (x2). The
+/// received slot holds a one-shot reply capability naming the caller; answer with
+/// `invoke(reply_slot, reply::REPLY, r0, r1, 0)`. Returns `(w0, reply_slot, w1)`.
+fn recv_call(slot: u64) -> (u64, u64, u64) {
+    let (mut w0, mut reply_slot, mut w1): (u64, u64, u64);
+    // SAFETY: `svc`. RECV_CAP returns w0 in x0, the delivered slot in x1, the second word in x2.
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("x8") abi::SYS_INVOKE,
+            inlateout("x0") slot => w0,
+            in("x1") endpoint::RECV_CAP,
+            lateout("x1") reply_slot,
+            lateout("x2") w1,
+            in("x3") 0u64,
+            in("x4") 0u64,
+            options(nostack),
+        );
+    }
+    (w0, reply_slot, w1)
+}
+
+/// **The Call/Reply server, milestone 12.** Holds `RECV` on a request endpoint (slot 0) and a report
+/// endpoint (slot 1). It answers one caller it was never individually wired to, then proves the
+/// reply capability is one-shot by trying to use it a second time and reporting that the kernel
+/// refused. See kernel/src/user.rs call_service.
+fn call_server() -> ! {
+    const EP: u64 = 0;
+    const REPORT: u64 = 1;
+
+    let (w0, reply_slot, w1) = recv_call(EP);
+    // Answer the caller: w0 + w1. This consumes the one-shot reply capability.
+    // SAFETY: `svc`; the kernel validates the reply capability in `reply_slot`.
+    check(unsafe { invoke(reply_slot, abi::reply::REPLY, w0 + w1, 0, 0) } == 0);
+    // A second reply on the same slot must fail: the cap was consumed on first use.
+    // SAFETY: `svc`.
+    let second = unsafe { invoke(reply_slot, abi::reply::REPLY, 0xBAD, 0, 0) };
+    send(REPORT, if second < 0 { 1 } else { 0 }, 0, 0); // 1 = refused (one-shot held), 0 = a hole
+    exit();
+}
+
+/// **The Call/Reply client, milestone 12.** Holds `WRITE` on the request endpoint (slot 0) and a
+/// report endpoint (slot 1). It calls with two words and reports the reply.
+fn call_client() -> ! {
+    const EP: u64 = 0;
+    const REPORT: u64 = 1;
+
+    let (r0, _r1) = call(EP, 40, 2); // expect 42 back
+    send(REPORT, r0, 0, 0);
+    exit();
 }
 
 /// **The delegation demo, granter's half.** Holds a channel to send over (slot 0) and a resource

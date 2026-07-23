@@ -1196,6 +1196,63 @@ pub mod delegation_service {
     }
 }
 
+/// **Milestone 12: Call/Reply, at EL0.** One request endpoint, a server that answers a caller it was
+/// never wired to, and the one-shot reply capability proven across the boundary. See
+/// user/src/hello.rs call_server()/call_client().
+#[cfg(test)]
+pub mod call_service {
+    use super::*;
+    use crate::cap::{Rights, endpoint_cap};
+
+    const ROLE_SERVER: u64 = 14;
+    const ROLE_CLIENT: u64 = 15;
+
+    /// Spawn the pair, sharing one request endpoint. Returns `(client reply report, server one-shot
+    /// report)`: the client publishes the reply it got, the server publishes whether a second reply
+    /// was refused.
+    pub fn wire(image: &'static [u8]) -> (usize, usize) {
+        let ep = crate::sched::create_endpoint(); // client CALL <-> server RECV_CAP
+        let call_report = crate::sched::create_endpoint();
+        let oneshot_report = crate::sched::create_endpoint();
+
+        crate::sched::spawn(move || {
+            run(
+                image,
+                Spawn {
+                    arg0: ROLE_SERVER,
+                    arg1: 0,
+                    arg2: 0,
+                    grants: &[
+                        endpoint_cap(ep, Rights::READ),              // slot 0: RECV calls
+                        endpoint_cap(oneshot_report, Rights::WRITE), // slot 1: report the verdict
+                    ],
+                    maps: &[],
+                },
+            )
+        })
+        .expect("could not spawn the call server");
+
+        crate::sched::spawn(move || {
+            run(
+                image,
+                Spawn {
+                    arg0: ROLE_CLIENT,
+                    arg1: 0,
+                    arg2: 0,
+                    grants: &[
+                        endpoint_cap(ep, Rights::WRITE),          // slot 0: CALL
+                        endpoint_cap(call_report, Rights::WRITE), // slot 1: report the reply
+                    ],
+                    maps: &[],
+                },
+            )
+        })
+        .expect("could not spawn the call client");
+
+        (call_report, oneshot_report)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1926,6 +1983,28 @@ mod tests {
             verdict & 0b10,
             0b10,
             "a capability held WITHOUT grant was allowed to be re-delegated: rights did not gate it",
+        );
+    }
+
+    /// **Milestone 12: a process calls a server it was never wired to, and the reply cap is
+    /// one-shot.** The client `CALL`s across the boundary; the server `RECV_CAP`s the request plus a
+    /// kernel-minted reply capability naming the caller, answers through it (the round trip through
+    /// the real syscall path), then tries to answer a second time and reports that the kernel
+    /// refused. This is what a pre-wired reply endpoint cannot guarantee.
+    #[test_case]
+    fn a_process_calls_a_server_and_the_reply_is_one_shot() {
+        let (call_report, oneshot_report) = call_service::wire(initrd().expect("no initrd"));
+
+        let reply = sched::ipc_recv(call_report)[0];
+        assert_eq!(
+            reply, 42,
+            "the CALL did not return the server's reply (40 + 2)"
+        );
+
+        let one_shot = sched::ipc_recv(oneshot_report)[0];
+        assert_eq!(
+            one_shot, 1,
+            "the server's second reply was NOT refused: the reply capability is not one-shot",
         );
     }
 
