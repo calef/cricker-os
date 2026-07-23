@@ -154,19 +154,30 @@ pub unsafe fn init(gicd: u64, gicc: u64) {
         gicc: gicc as *mut CpuInterface,
     };
 
-    // Distributor: on. This is machine-wide, and on a real SMP bringup only core 0 would do it.
+    // Distributor: on. This is machine-wide, so **only the boot core does it** (this function).
     gic.gicd().CTLR.write(GICD_CTLR::ENABLE::SET);
 
-    // CPU interface: let everything through, then turn it on.
+    *GIC.lock() = Some(gic);
+
+    // The boot core's own CPU interface. Every other core brings up its own via `init_this_cpu`.
+    init_this_cpu();
+}
+
+/// Bring up **this core's** GIC CPU interface. The distributor ([`init`]) is machine-wide and done
+/// once; the CPU interface is banked per core (same MMIO address, different hardware behind it), so
+/// each core must enable its own. Called by the boot core inside [`init`] and by every secondary as
+/// it comes online (DECISIONS.md §11).
+pub fn init_this_cpu() {
+    let guard = GIC.lock();
+    let gic = guard.as_ref().expect("gic::init_this_cpu before gic::init");
+
+    // Let everything through, then turn it on.
     //
-    // ORDER: the mask before the enable. The other way round leaves a window where the
-    // interface is live with whatever PMR the firmware left behind, which on a cold boot is
-    // often 0 — "deliver nothing" — and you spend an afternoon wondering why your timer is
-    // silent.
+    // ORDER: the mask before the enable. The other way round leaves a window where the interface is
+    // live with whatever PMR the firmware left behind, which on a cold boot is often 0 — "deliver
+    // nothing" — and you spend an afternoon wondering why your timer is silent.
     gic.gicc().PMR.set(PRIORITY_MASK);
     gic.gicc().CTLR.write(GICC_CTLR::ENABLE::SET);
-
-    *GIC.lock() = Some(gic);
 }
 
 /// Enable one interrupt source, and give it a priority.

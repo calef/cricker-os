@@ -1803,13 +1803,19 @@ mod tests {
     fn a_dead_user_thread_frees_its_whole_address_space() {
         let used = || crate::memory::stats().expect("no allocator").used;
 
+        // The steady-state thread count to return to after each spawned thread is reaped. It is
+        // NOT a constant: the boot thread and core 0's idle are two, plus one idle thread per
+        // secondary core (SMP, §11). Capture it dynamically so the test does not bake in a core
+        // count.
+        let baseline = sched::thread_count();
+
         // Warm up: the first user thread ever created pays for page tables in a region of
         // kernel VA that nothing has touched. Measure the STEADY state, which is the one that
         // has to hold forever.
         sched::spawn(|| unsafe { exec(outlaw()) }).expect("spawn failed");
         let f0 = USER_FAULTS.load(Ordering::Relaxed);
         assert!(wait_for(|| USER_FAULTS.load(Ordering::Relaxed) > f0));
-        assert!(wait_for(|| sched::thread_count() <= 2));
+        assert!(wait_for(|| sched::thread_count() <= baseline));
 
         let before = used();
 
@@ -1817,7 +1823,7 @@ mod tests {
             let f = USER_FAULTS.load(Ordering::Relaxed);
             sched::spawn(|| unsafe { exec(outlaw()) }).expect("spawn failed");
             assert!(wait_for(|| USER_FAULTS.load(Ordering::Relaxed) > f));
-            assert!(wait_for(|| sched::thread_count() <= 2));
+            assert!(wait_for(|| sched::thread_count() <= baseline));
         }
 
         assert_eq!(

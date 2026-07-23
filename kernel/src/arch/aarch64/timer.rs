@@ -58,6 +58,7 @@
 // and 8 will build on, and missed_ticks is a health counter. They are exercised by the tests.
 #![allow(dead_code)]
 
+use crate::cpu::{self, MAX_CPUS};
 use crate::drivers::gic;
 use aarch64_cpu::registers::{CNTFRQ_EL0, CNTV_CTL_EL0, CNTV_CVAL_EL0, CNTVCT_EL0};
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -97,7 +98,10 @@ pub const TIMER_INTID: u32 = 27;
 pub const TICK_HZ: u64 = 100;
 
 /// Every tick, forever. The heartbeat.
-static TICKS: AtomicU64 = AtomicU64::new(0);
+/// Per-CPU, because each core has its own timer (a banked PPI). A single global counter would be
+/// advanced by every core's tick, which breaks the "holding a lock masks *my* timer" invariant the
+/// tests check: a lock masks only the holding core's interrupts, not the others'. See DECISIONS §11.
+static TICKS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 
 /// Counter ticks between interrupts. Computed from `CNTFRQ_EL0`, never hardcoded: the
 /// frequency is a property of the board, and a hardcoded one would make our 10 ms into
@@ -144,7 +148,7 @@ fn rearm(interval: u64) {
     let mut next = CNTV_CVAL_EL0.get() + interval;
 
     if next <= now {
-        MISSED_TICKS.fetch_add(1, Ordering::Relaxed);
+        MISSED_TICKS[cpu::id()].fetch_add(1, Ordering::Relaxed);
         next = now + interval;
     }
 
@@ -154,10 +158,11 @@ fn rearm(interval: u64) {
 /// Deadlines that had already passed by the time we re-armed. **Should be zero.** A nonzero
 /// count means the handler is taking longer than a whole tick period, which is a real problem
 /// and not a rounding error.
-static MISSED_TICKS: AtomicU64 = AtomicU64::new(0);
+static MISSED_TICKS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 
+/// This core's missed ticks.
 pub fn missed_ticks() -> u64 {
-    MISSED_TICKS.load(Ordering::Relaxed)
+    MISSED_TICKS[cpu::id()].load(Ordering::Relaxed)
 }
 
 /// Called from the IRQ handler. **Must re-arm**, or the interrupt line stays high forever and
@@ -168,13 +173,13 @@ pub fn missed_ticks() -> u64 {
 /// work.** At milestone 6 this will also set a "reschedule wanted" flag, and the *scheduler*
 /// will act on it in normal context.
 pub fn tick() {
-    TICKS.fetch_add(1, Ordering::Relaxed);
+    TICKS[cpu::id()].fetch_add(1, Ordering::Relaxed);
     rearm(INTERVAL.load(Ordering::Relaxed));
 }
 
-/// Ticks since boot.
+/// This core's ticks since it started.
 pub fn ticks() -> u64 {
-    TICKS.load(Ordering::Relaxed)
+    TICKS[cpu::id()].load(Ordering::Relaxed)
 }
 
 /// The raw counter. Monotonic, never wraps in any timescale that matters, and **keeps counting

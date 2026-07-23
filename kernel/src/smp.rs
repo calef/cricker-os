@@ -1,14 +1,15 @@
-//! Bringing the other cores online (SMP step 2, DECISIONS.md §11).
+//! Bringing the other cores online (SMP steps 2 and 3b, DECISIONS.md §11).
 //!
 //! Core 0 starts each secondary with a PSCI `CPU_ON`, handing it a physical entry point
-//! (`secondary_boot` in boot.s) and its own stack. The secondary replays the MMU-enable, lands
-//! in [`secondary_main`], sets up its per-CPU pointer, records itself online, and idles.
+//! (`secondary_boot` in boot.s) and its own stack. The secondary replays the MMU-enable and lands
+//! in [`secondary_main`].
 //!
-//! **Step 2 deliberately stops at "alive and idle."** The secondaries do no scheduling: that
-//! would need the per-CPU run queues of step 3, and a timer tick into today's single global
-//! scheduler would be a bug. So a secondary comes up with interrupts masked and waits. What we
-//! prove here is only that the bring-up path works: the cores execute our code, on their own
-//! stacks, through the MMU, and check in.
+//! **Step 2** brought a core up "alive and idle" (bring-up path only). **Step 3b-ii** makes it a
+//! full scheduler participant: it adopts the kernel's fine map, becomes its own idle thread with
+//! its own run queue, brings up its GIC CPU interface and timer, and from then on schedules and is
+//! preempted like the boot core. Its run queue starts empty, so it runs its idle thread until work
+//! lands there. Placing work on *another* core's queue is step 3c (the inbox + SGI); until then a
+//! core only runs what it spawned itself.
 
 use crate::cpu::{self, MAX_CPUS};
 use crate::{arch, println};
@@ -22,24 +23,40 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 /// notes/stack.md.
 const SECONDARY_STACK_SIZE: usize = 64 * 1024;
 
-#[repr(C, align(16))]
-struct Stack([u8; SECONDARY_STACK_SIZE]);
-
 /// One boot stack per core. Slot 0 is unused (core 0 has its own from link.ld); slots
-/// `1..MAX_CPUS` belong to the secondaries. Static, so the stacks exist before any allocator and
-/// live at kernel-image (high) virtual addresses the coarse boot map already covers.
-static SECONDARY_STACKS: [Stack; MAX_CPUS] =
-    [const { Stack([0; SECONDARY_STACK_SIZE]) }; MAX_CPUS];
+/// `1..MAX_CPUS` belong to the secondaries.
+///
+/// **The `UnsafeCell` is load-bearing, and not for interior mutability the usual way.** An
+/// immutable `static` of plain arrays lands in **`.rodata`**, which the fine kernel map makes
+/// **read-only** (W^X) — and a stack you cannot write is not a stack. That bug is invisible on the
+/// coarse boot map (where `.rodata` is writable) and fires the instant a secondary adopts the fine
+/// map. The `UnsafeCell` forces the stacks into writable `.bss` instead. See DECISIONS.md §11.
+#[repr(C, align(16))]
+struct Stacks(core::cell::UnsafeCell<[[u8; SECONDARY_STACK_SIZE]; MAX_CPUS]>);
+
+// SAFETY: each core writes only its OWN slot, as its stack via SP, so no two cores mutate the same
+// bytes. The cell exists to place the stacks in writable memory, not to share them.
+unsafe impl Sync for Stacks {}
+
+static SECONDARY_STACKS: Stacks =
+    Stacks(core::cell::UnsafeCell::new([[0; SECONDARY_STACK_SIZE]; MAX_CPUS]));
 
 /// How many secondaries have reached [`secondary_main`] and are idling.
 static ONLINE: AtomicUsize = AtomicUsize::new(0);
+
+/// Set by each secondary's probe thread, indexed by the core it actually ran on. The proof that a
+/// secondary schedules real work from its own queue, not just idles. See `secondary_main` step 5.
+#[cfg(test)]
+static RAN_ON: [core::sync::atomic::AtomicBool; MAX_CPUS] =
+    [const { core::sync::atomic::AtomicBool::new(false) }; MAX_CPUS];
 
 /// The high-VA top of core `id`'s boot stack. Stacks grow down, so the top is base + size, and
 /// the 16-byte alignment `sp` requires comes from `Stack`'s `align(16)` and the size being a
 /// multiple of 16. See notes/stack.md.
 fn stack_top(id: usize) -> u64 {
-    let base = &SECONDARY_STACKS[id] as *const Stack as u64;
-    base + SECONDARY_STACK_SIZE as u64
+    // Slot `id` occupies [base + id*SIZE, base + (id+1)*SIZE); stacks grow down from the top.
+    let base = SECONDARY_STACKS.0.get() as u64;
+    base + (id as u64 + 1) * SECONDARY_STACK_SIZE as u64
 }
 
 unsafe extern "C" {
@@ -81,21 +98,55 @@ pub fn bring_up_secondaries() {
 }
 
 /// A secondary core's first Rust, called from `secondary_boot` once its MMU is on and it has a
-/// stack. `cpu_id` came from `MPIDR_EL1`.
+/// stack. `cpu_id` came from `MPIDR_EL1`. It turns the core into a full scheduler participant and
+/// then becomes that core's idle thread. (Step 3b-ii.)
 #[unsafe(no_mangle)]
 pub extern "C" fn secondary_main(cpu_id: usize) -> ! {
-    // FIRST, ahead of anything that could take a lock: point TPIDR_EL1 at this core's block, so
-    // the lock path can read this core's held-rank. See cpu.rs.
+    // 1. Per-CPU pointer first, ahead of anything that could take a lock (the lock path reads this
+    //    core's held-rank out of its PerCpu block). See cpu.rs.
     cpu::init_this_cpu(cpu_id);
 
-    // Announce presence. Release so a core observing the count (with Acquire) also sees this
-    // core's setup. This `fetch_add` is the whole of step 2's observable behaviour.
-    ONLINE.fetch_add(1, Ordering::Release);
+    // 2. This core's exception vectors. VBAR_EL1 is per-core, so a secondary that never sets it
+    //    jumps to a garbage vector on its first fault or timer tick and dies silently (and, if it
+    //    died holding a lock, hangs the others). Set it before anything can trap. The vector table
+    //    lives in kernel .text, mapped in both the coarse boot map and the fine map, so this is
+    //    valid on either side of the switch below.
+    arch::init();
 
-    // Idle with interrupts masked. We deliberately do NOT enable this core's timer: a tick would
-    // call into the scheduler, which is still a single global (step 3 makes it per-CPU). So the
-    // core waits here until step 3 gives it a run queue and sends it work.
-    arch::halt();
+    // 3. Adopt the kernel's fine map. The coarse boot map reaches only the first 2 GiB of the high
+    //    half, not the thread-stack area 64 GiB up, so without this the core could not run a spawned
+    //    thread. See arch::mmu::init_secondary.
+    arch::mmu::init_secondary();
+
+    // 4. Become a scheduler participant: adopt the context we are on as this core's idle thread,
+    //    and reserve this core's run queue.
+    crate::sched::adopt_secondary_idle();
+
+    // 5. This core's interrupt hardware: its GIC CPU interface, then its timer (the PPI is banked,
+    //    so this arms THIS core's tick, which is this core's source of preemption).
+    crate::drivers::gic::init_this_cpu();
+    arch::timer::init();
+
+    // 6. (tests only) Prove this core schedules from its OWN queue by spawning a probe onto it.
+    //    There is no migration yet (step 3c), so it runs here; it records the core it ran on.
+    #[cfg(test)]
+    crate::sched::spawn(|| {
+        RAN_ON[cpu::id()].store(true, Ordering::Release);
+    })
+    .expect("a secondary could not spawn its probe");
+
+    // 7. Online (Release, so a core seeing the count also sees everything set up above), and from
+    //    the next line on, preemptible.
+    ONLINE.fetch_add(1, Ordering::Release);
+    arch::interrupts::enable();
+
+    // 8. This core's idle loop, which is now its idle thread's body. Yield first, so a freshly
+    //    queued thread (the probe, or later any migrated work) runs at once rather than waiting a
+    //    tick; then wfi parks the core until an interrupt makes something runnable.
+    loop {
+        crate::sched::yield_now();
+        arch::wait_for_interrupt();
+    }
 }
 
 #[cfg(test)]
@@ -113,5 +164,31 @@ mod tests {
             MAX_CPUS - 1,
             "not all secondary cores came online (is the runner passing -smp {MAX_CPUS}?)",
         );
+    }
+
+    /// **Every secondary actually runs scheduled work on its own core.** Each spawned a probe onto
+    /// its own run queue as it came online; the probe records the core it ran on. This is the proof
+    /// that a secondary is a real scheduler participant, not just idling, and it also exercises the
+    /// reaper on a secondary (the probe exits, and its successor reaps it).
+    ///
+    /// The probes run concurrently on their own cores; we wait for them, bounded, yielding so this
+    /// core does other work meanwhile rather than pure-spinning.
+    #[test_case]
+    fn every_secondary_runs_scheduled_work() {
+        let all_ran = || (1..MAX_CPUS).all(|c| RAN_ON[c].load(Ordering::Acquire));
+
+        let mut spins = 0u64;
+        while !all_ran() {
+            crate::sched::yield_now();
+            spins += 1;
+            assert!(spins < 5_000_000, "secondary cores did not run scheduled work in time");
+        }
+
+        for c in 1..MAX_CPUS {
+            assert!(
+                RAN_ON[c].load(Ordering::Acquire),
+                "secondary core {c} never ran scheduled work",
+            );
+        }
     }
 }

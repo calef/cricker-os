@@ -311,6 +311,28 @@ impl Thread {
         }
     }
 
+    /// Adopt the context a **secondary core** is already running on as a thread, the way
+    /// [`boot`](Self::boot) does for core 0.
+    ///
+    /// Same shape as `boot`: no stack of its own (it runs on the core's `smp` boot stack), a null
+    /// context filled by the first `switch_to` away from it, `Running`. The difference is only the
+    /// id: core 0's boot thread is 0, and each secondary needs a fresh one. This becomes that core's
+    /// idle thread, so it is never in a run queue; the scheduler falls back to it when the core's
+    /// queue is empty. See smp.rs and sched::adopt_secondary_idle.
+    pub fn adopt_current() -> Self {
+        Thread {
+            id: NEXT_TID.fetch_add(1, Ordering::Relaxed),
+            state: State::Running,
+            context: core::ptr::null_mut(),
+            stack: None,
+            space: None,
+            cspace: crate::cap::CSpace::empty(),
+            mailbox: [0; 3],
+            quota: None,
+            outgoing_cap: None,
+        }
+    }
+
     /// A new thread, ready to run `f` the first time it is scheduled.
     pub fn spawn(f: Box<dyn FnOnce() + Send + 'static>) -> Option<Self> {
         let stack = KernelStack::new(STACK_PAGES)?;

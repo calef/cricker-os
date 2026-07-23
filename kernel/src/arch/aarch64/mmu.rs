@@ -134,8 +134,54 @@ pub fn init() {
     // SAFETY: the map covers this function's code, its stack, and the UART. We checked.
     unsafe { install(root) };
 
+    // Remember the kernel's root so a secondary core can adopt the *same* fine map instead of
+    // running forever on the coarse boot map (which covers only the first 2 GiB of the high half,
+    // not the 64-GiB-up thread-stack area). See `init_secondary` and DECISIONS.md §11.
+    KERNEL_ROOT.store(root, Ordering::Relaxed);
+
     // And give TTBR0 an empty table to walk, so a stray low address faults.
     install_reserved_ttbr0();
+}
+
+/// The kernel's fine-map root (TTBR1), saved by [`init`] so secondaries can adopt it.
+static KERNEL_ROOT: AtomicU64 = AtomicU64::new(0);
+
+/// Bring a secondary core onto the kernel's own tables: the shared fine TTBR1 map, and the shared
+/// empty TTBR0 so a stray low address faults. The boot core must have run [`init`] first.
+///
+/// A secondary comes up (in `secondary_boot`) on the coarse boot map, which is enough to execute
+/// kernel code and reach its `.bss` boot stack and the UART, but **not** the thread-stack area far
+/// up the high half. This switches it to the same fine map the boot core built and verified, so all
+/// cores translate identically (W^X, the guard pages, the full direct map).
+pub fn init_secondary() {
+    let root = KERNEL_ROOT.load(Ordering::Relaxed);
+    debug_assert!(root != 0, "init_secondary before init");
+
+    // A secondary already has a working MMU: `secondary_boot` turned it on with the coarse boot map
+    // and a TCR/MAIR compatible with the fine map (same 4 KiB granule, same 48-bit VAs, same MAIR
+    // slots). So we do NOT re-run `install`, which rewrites TCR mid-execution and does more than a
+    // secondary needs. We only **repoint TTBR1** at the shared fine map and flush this core's TLB.
+    //
+    // SAFETY: the fine map covers this core's current code (kernel `.text`), its boot stack (in
+    // `.bss`), and the UART. The `isb` after the TTBR write makes it effective before the next
+    // fetch; the local `tlbi vmalle1` drops the coarse translations this core cached.
+    unsafe {
+        TTBR1_EL1.set_baddr(root);
+        core::arch::asm!(
+            "dsb ish",
+            "isb",
+            "tlbi vmalle1",
+            "dsb ish",
+            "isb",
+            options(nostack),
+        );
+    }
+
+    // Point this core's TTBR0 at the shared empty table, matching the boot core: no user space is
+    // active on it yet, so any low address must fault rather than hit the coarse identity map that
+    // `secondary_boot` left in TTBR0.
+    // SAFETY: RESERVED_TTBR0 is a zeroed L0 table the boot core allocated in `install_reserved_ttbr0`.
+    unsafe { set_ttbr0(RESERVED_TTBR0.load(Ordering::Relaxed)) };
 }
 
 /// Identity-map everything the kernel needs, each region with the tightest permissions that
@@ -642,10 +688,20 @@ pub fn switch_user_root(root: u64) {
     unsafe { set_ttbr0(root) };
 }
 
+/// Serializes mutation of the kernel's page tables across cores.
+///
+/// `kernel_mapper()` reads and writes the shared TTBR1 tables (walk, and read-modify-write to
+/// allocate an intermediate table on the way down). On one core the callers never raced; on SMP two
+/// cores spawning threads both map into these tables at once, which would corrupt them. This lock
+/// makes `map_page`/`unmap_page` mutually exclusive. See sync::rank::KERNEL_MMU for its place in the
+/// order (below the scheduler, above the allocators it calls).
+static KERNEL_MMU: crate::sync::IrqSafeMutex<()> =
+    crate::sync::IrqSafeMutex::new(crate::sync::rank::KERNEL_MMU, ());
+
 /// The kernel's live page tables, as a `Mapper`.
 ///
 /// Reads `TTBR1_EL1` back out of the hardware, so this walks what the CPU is actually walking,
-/// not a copy of what we intended.
+/// not a copy of what we intended. **Call only while holding [`KERNEL_MMU`].**
 fn kernel_mapper() -> Mapper<impl FnMut() -> Option<u64>, fn(u64) -> *mut PageTable> {
     let root = TTBR1_EL1.get_baddr();
 
@@ -666,6 +722,7 @@ fn kernel_mapper() -> Mapper<impl FnMut() -> Option<u64>, fn(u64) -> *mut PageTa
 /// Refuses to overwrite an existing mapping (`MapError::AlreadyMapped`), which is what forces
 /// break-before-make: to *change* a mapping you must [`unmap_page`] first.
 pub fn map_page(va: u64, pa: u64, flags: Flags) -> Result<(), MapError> {
+    let _guard = KERNEL_MMU.lock(); // exclusive: two cores must not mutate the tables at once
     kernel_mapper().map(va, pa, flags)
 }
 
@@ -676,6 +733,7 @@ pub fn map_page(va: u64, pa: u64, flags: Flags) -> Result<(), MapError> {
 /// The `TlbFlush` obligation is discharged here, properly, with a real `tlbi`. It cannot be
 /// forgotten: dropping one un-discharged panics.
 pub fn unmap_page(va: u64) -> Result<u64, MapError> {
+    let _guard = KERNEL_MMU.lock(); // exclusive: see map_page
     let (pa, flush) = kernel_mapper().unmap(va)?;
     flush.flush(flush_tlb);
     Ok(pa)

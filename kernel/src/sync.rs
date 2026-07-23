@@ -130,6 +130,16 @@ pub mod rank {
 
     pub const HEAP: u32 = 50;
     pub const SLAB: u32 = 50;
+
+    /// The kernel's own page tables (`mmu::map_page` / `unmap_page`).
+    ///
+    /// Single-core, `kernel_mapper()` needed no lock: the callers happened not to race. SMP breaks
+    /// that (two cores spawning threads both mutate the shared TTBR1 tables), so mapping is now
+    /// serialized. **Below the scheduler** (a `KernelStack`'s `Drop` unmaps from under `reap`, which
+    /// holds SCHED) and **below STACK_VA** (a stack's `new` maps pages), and **above the allocators**
+    /// (mapping allocates intermediate page-table frames). See DECISIONS.md §11.
+    pub const KERNEL_MMU: u32 = 45;
+
     pub const FRAMES: u32 = 30;
     pub const RAM: u32 = 30;
 

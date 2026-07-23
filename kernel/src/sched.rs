@@ -161,6 +161,33 @@ pub fn init() {
     // NOT pushed onto `ready`: the idle thread is a fallback, not a peer.
 }
 
+/// Make **this (secondary) core** a scheduler participant.
+///
+/// The boot core is set up by [`init`]; a secondary calls this once, as it comes online. It adopts
+/// the context it is already running on as this core's idle thread (`cpu::current`/`cpu::idle`), and
+/// reserves this core's run queue so `schedule()`'s push never allocates from the timer IRQ (§9),
+/// exactly as `init` does for the boot core. After this, the core's run queue is empty, so it runs
+/// its idle thread until work lands on the queue.
+///
+/// Interrupts must be masked (the caller has not enabled them yet), which is what `with_runq` needs.
+pub fn adopt_secondary_idle() {
+    let idle = Thread::adopt_current();
+    let id = idle.id;
+
+    {
+        let mut guard = SCHED.lock();
+        let sched = guard.as_mut().expect("adopt_secondary_idle before sched::init");
+        sched.threads.insert(id, Box::new(idle));
+    }
+
+    // This core is currently running that thread, and it is also this core's idle fallback.
+    cpu::current().current.store(id, Ordering::Relaxed);
+    cpu::current().idle.store(id, Ordering::Relaxed);
+
+    // Capacity up front, so `schedule()`'s push never allocates. IRQs are masked this early.
+    cpu::current().with_runq(|q| q.reserve(64));
+}
+
 pub fn spawn<F: FnOnce() + Send + 'static>(f: F) -> Option<Tid> {
     // Build the thread — which allocates a stack, maps four pages, and boxes the closure —
     // OUTSIDE the lock. Critical sections stay short (DECISIONS.md §9), and this one would
