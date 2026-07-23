@@ -135,6 +135,21 @@ near-`usize::MAX` offset from a corrupt blob returns `Truncated` instead of pani
 integration tests against a real QEMU device tree are unchanged, so the hardening is faithful. This
 is the elf lesson reused: prove (and here, harden) the loopless leaves; the walk stays on the tests.
 
+Five in `crates/ipc/src/lib.rs`, the synchronous-rendezvous state machine (the decision core of
+`sched.rs`'s `Endpoint`, extracted as pure logic):
+
+| Harness | Property |
+|---|---|
+| `send_preserves_the_invariant` / `recv_...` / `signal_...` | every operation preserves "at most one wait queue is ever non-empty," the invariant the whole IPC design rests on |
+| `send_rendezvous_iff_a_receiver_waited` | a send rendezvouses exactly when a receiver was waiting, else blocks (no dropped message, no spurious block) |
+| `recv_drains_a_pending_signal_first` | a receive takes a pending async signal before a blocked sender, so a signal is never lost |
+
+These are inductive-step proofs: assume a valid state, apply one operation, check the invariant holds.
+The queues are modeled as counts (the rendezvous decision depends only on whether a queue is empty).
+**Phase 2 is wiring:** make `sched.rs`'s IPC path *use* this proved logic rather than run a parallel
+copy, then re-verify the kernel under QEMU. This crate is the proved target that refactor aims at,
+delivered first because it is safe (no kernel change) where the rewire needs care.
+
 Four in `crates/elf/src/lib.rs`:
 
 | Harness | Property |

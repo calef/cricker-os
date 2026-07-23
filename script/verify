@@ -35,3 +35,6 @@ cargo kani -p frames
 
 echo "==> kani: dtb (the device-tree parser's leaf readers)"
 cargo kani -p dtb
+
+echo "==> kani: ipc (the rendezvous state machine)"
+cargo kani -p ipc
