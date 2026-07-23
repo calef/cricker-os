@@ -7,7 +7,7 @@ edition = "2024"
 # Typed wrappers over aarch64 system registers, so we write
 # `SCTLR_EL1.modify(SCTLR_EL1::M::Enable)` instead of hand-rolling `msr` and getting
 # a bit position wrong. DECISIONS.md §3.
-aarch64-cpu = "10"
+aarch64-cpu = "11"
 abi = { version = "0.1.0", path = "../crates/abi" }
 caps = { version = "0.1.0", path = "../crates/caps" }
 dtb = { version = "0.1.0", path = "../crates/dtb" }
