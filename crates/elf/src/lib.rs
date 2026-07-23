@@ -277,23 +277,11 @@ impl<'a> Elf<'a> {
         let filesz = u64le(ph, 32) as usize;
         let memsz = u64le(ph, 40);
 
-        if (memsz as usize) < filesz {
-            return Err(Error::SegmentTruncated);
-        }
-
-        // **The bounds check.** `p_offset` and `p_filesz` are hostile input.
-        let end = p_offset
-            .checked_add(filesz)
-            .ok_or(Error::SegmentOutOfBounds)?;
-        if end > self.bytes.len() {
-            return Err(Error::SegmentOutOfBounds);
-        }
-
-        // And the VIRTUAL range must not overflow. `p_memsz` is hostile too, and `vaddr + memsz`
-        // feeds the entry-in-segment check and `page_range`; a near-u64::MAX memsz would wrap
-        // them. With overflow-checks on (the shipping dev profile) that wrap is a PANIC, i.e. a
-        // crafted binary halting the kernel, which is exactly what this crate exists to prevent.
-        vaddr.checked_add(memsz).ok_or(Error::AddressOverflow)?;
+        // All the arithmetic a hostile program header can weaponize (offset + filesz within the
+        // file, vaddr + memsz without overflow) lives in `check_segment_bounds`, factored out as a
+        // pure, loopless function so it can be proved panic-free on its own. See the verification
+        // module and notes/verification.md.
+        let end = check_segment_bounds(self.bytes.len(), p_offset, filesz, vaddr, memsz)?;
 
         Ok(Some(Segment {
             vaddr,
@@ -312,6 +300,45 @@ impl<'a> Elf<'a> {
     pub fn segments(&self) -> impl Iterator<Item = Segment<'a>> + '_ {
         (0..self.phnum).filter_map(|i| self.segment_at(i).ok().flatten())
     }
+}
+
+/// The per-segment bounds and overflow checks, factored out of [`Elf::segment_at`] as pure
+/// arithmetic over a program header's raw fields and the file length. No slicing and no loop, which
+/// is what lets the verification module prove it panic-free, and its result in-bounds, for *every*
+/// field combination. The whole-parse proof cannot reach this (the header loop and symbolic slice
+/// offsets defeat bounded model checking); this is the decomposition that can. See
+/// notes/verification.md.
+///
+/// Returns the exclusive end offset of the segment's file data, so `[p_offset, end)` lies within a
+/// `file_len`-byte file, or the error the fields earn. Checks run in the same order as before the
+/// extraction, so the errors are identical and the tests are unchanged.
+fn check_segment_bounds(
+    file_len: usize,
+    p_offset: usize,
+    filesz: usize,
+    vaddr: u64,
+    memsz: u64,
+) -> Result<usize, Error> {
+    // The segment cannot claim less memory than it has bytes on disk.
+    if (memsz as usize) < filesz {
+        return Err(Error::SegmentTruncated);
+    }
+
+    // The file range must lie within the file. `p_offset` and `filesz` are hostile, so the add is
+    // checked rather than trusted.
+    let end = p_offset
+        .checked_add(filesz)
+        .ok_or(Error::SegmentOutOfBounds)?;
+    if end > file_len {
+        return Err(Error::SegmentOutOfBounds);
+    }
+
+    // The virtual range must not overflow: `vaddr + memsz` feeds the entry check and `page_range`,
+    // and a near-`u64::MAX` memsz would wrap them, a PANIC under the dev profile's overflow checks,
+    // i.e. a crafted binary halting the kernel.
+    vaddr.checked_add(memsz).ok_or(Error::AddressOverflow)?;
+
+    Ok(end)
 }
 
 fn u16le(b: &[u8], at: usize) -> u16 {
@@ -346,6 +373,50 @@ fn u64le(b: &[u8], at: usize) -> u64 {
 #[cfg(kani)]
 mod verification {
     use super::*;
+
+    /// **The per-segment bounds check never panics.** `check_segment_bounds` does the arithmetic a
+    /// hostile program header weaponizes (`offset + filesz`, `vaddr + memsz`). This proves it never
+    /// panics or overflows, for any file length and any field values. This is the leaf of the
+    /// parser's panic surface, factored out of the loop so bounded model checking can reach it (the
+    /// whole-parse proof cannot; see notes/verification.md).
+    #[kani::proof]
+    fn check_segment_bounds_never_panics() {
+        let _ = check_segment_bounds(
+            kani::any(),
+            kani::any(),
+            kani::any(),
+            kani::any(),
+            kani::any(),
+        );
+    }
+
+    /// **A passing check yields a valid, in-file range.** If `check_segment_bounds` returns
+    /// `Ok(end)` then `p_offset <= end <= file_len`, so the caller's slice `bytes[p_offset..end]` is
+    /// in bounds. This is the guarantee that makes `segment_at`'s slice safe, proved for every input,
+    /// which is what the intractable whole-parse totality proof was really reaching for.
+    #[kani::proof]
+    fn a_passing_check_yields_an_in_bounds_range() {
+        let file_len: usize = kani::any();
+        let p_offset: usize = kani::any();
+        if let Ok(end) =
+            check_segment_bounds(file_len, p_offset, kani::any(), kani::any(), kani::any())
+        {
+            assert!(p_offset <= end);
+            assert!(end <= file_len);
+        }
+    }
+
+    /// **A passing check guarantees the virtual range does not overflow.** If it returns `Ok`, then
+    /// `vaddr + memsz` did not wrap, so the later unchecked `seg.vaddr + seg.memsz` in `validate`
+    /// cannot panic. This proves the cross-function invariant by hand-off through the type.
+    #[kani::proof]
+    fn a_passing_check_has_no_address_overflow() {
+        let vaddr: u64 = kani::any();
+        let memsz: u64 = kani::any();
+        if check_segment_bounds(kani::any(), kani::any(), kani::any(), vaddr, memsz).is_ok() {
+            assert!(vaddr.checked_add(memsz).is_some());
+        }
+    }
 
     /// **`page_range` is panic-free and ordered for any segment.** `Segment` is `pub`, so its helper
     /// must be safe on its own, without `parse`'s guarantees. For every `vaddr` and `memsz`,

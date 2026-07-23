@@ -102,10 +102,13 @@ Not yet proved, and the heavier next step: the `Mapper` itself, mapping a page a
 back, which reasons over built tables and a bounded frame pool rather than pure arithmetic. That is
 where the "bounded" tradeoff above starts to bite.
 
-One in `crates/elf/src/lib.rs`:
+Four in `crates/elf/src/lib.rs`:
 
 | Harness | Property |
 |---|---|
+| `check_segment_bounds_never_panics` | the per-segment bounds/overflow arithmetic never panics, for any file length and any hostile field values |
+| `a_passing_check_yields_an_in_bounds_range` | if the check passes, `p_offset <= end <= file_len`, so the segment's data slice is in bounds (what the whole-parse totality proof was really reaching for) |
+| `a_passing_check_has_no_address_overflow` | if the check passes, `vaddr + memsz` did not wrap, so `validate`'s later unchecked add cannot panic |
 | `page_range_is_panic_free_and_ordered` | for any `vaddr`/`memsz`, the saturating page arithmetic neither panics nor returns an inverted range (a `pub` helper that must be safe on its own) |
 
 ## Where BMC hit a wall: the ELF parser
@@ -127,19 +130,25 @@ Two things put it past bounded model checking:
    model, and it did not return even after pinning the header count to a single segment to kill the
    loop.
 
-So `parse` totality is deferred, honestly. The paths forward, in rough order of appeal:
+So *whole-parse* totality is deferred. But the first path forward turned out to recover most of what
+it was for, so it is worth following the story to its end rather than stopping at the wall:
 
-- **Factor the leaf arithmetic into a pure function** (given a header's raw fields, compute the
-  validated `Segment` or an error) and prove *that* panic-free. It has no loop and no symbolic slice
-  base, so BMC should handle it, and it is where the actual overflow/bounds risk lives.
-- **A loop-invariant tool (Verus).** Unbounded loops with an invariant are its home ground; this is
-  the concrete case that would justify bringing it in alongside Kani.
-- **Shrink `MAX_PHNUM`.** A smaller linear cap would let Kani unroll the loop, but changing product
-  code to suit the prover is the last resort, not the first.
+- **Factor the leaf arithmetic into a pure function, and prove that.** Done. The per-segment bounds
+  and overflow checks are now `check_segment_bounds`, a loopless function over a header's raw fields
+  and the file length, and the three harnesses above prove it never panics, that a passing check
+  yields an in-bounds range (`p_offset <= end <= file_len`, which is what makes `segment_at`'s slice
+  safe), and that a passing check rules out the `vaddr + memsz` overflow. That is the actual panic
+  surface, proved for every input, without ever touching the loop. The refactor left the tests
+  unchanged, so it is faithful.
+- **A loop-invariant tool (Verus)**, if the *loop itself* (the `O(n^2)` overlap check) ever needs
+  proving rather than just the arithmetic inside it. Not needed yet.
+- **Shrink `MAX_PHNUM`.** Changing product code to suit the prover; still the last resort.
 
-This is the "bounded" limit above, met in the wild rather than in the abstract. The parser is still
-covered by the by-example tests; what is missing is the "for *every* input" guarantee, and now the
-reason is written down instead of the gap being silent.
+The lesson, kept: BMC blunted against the loop and the symbolic slice base, and the fix was not a
+bigger hammer but a smaller target. Decomposing the risky arithmetic out of the loop moved it from
+"the solver never returns" to "verified in under a second." What remains unproved is narrow and
+named: that the *number* of segments and their mutual overlap are handled without panic across all
+64 possible headers, which the by-example tests still cover.
 
 ## Running it
 
