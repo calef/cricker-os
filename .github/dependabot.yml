@@ -1,0 +1,30 @@
+# Dependabot keeps dependencies current by opening PRs, which CI then checks. Two ecosystems:
+# the Rust crates (Cargo) and the GitHub Actions the workflow pins. See
+# https://docs.github.com/code-security/dependabot.
+version: 2
+updates:
+  # --- Rust dependencies (the workspace root Cargo.toml / Cargo.lock) --------------------------
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    # Fold routine minor/patch bumps into a single PR so the queue stays quiet; a major bump
+    # (which can break the build) still gets its own PR to review on its own.
+    groups:
+      cargo-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # --- GitHub Actions used by .github/workflows/ci.yml ----------------------------------------
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns: ["*"]
