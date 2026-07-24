@@ -78,33 +78,38 @@ impl<T, const N: usize> Table<T, N> {
         Some(name)
     }
 
-    /// Resolve a name. `None` for a name whose entry was removed (however long ago), a name from
-    /// a previous occupant of the slot, or garbage. **Never** the wrong entry.
-    pub fn get(&self, name: u64) -> Option<&T> {
+    /// **The validated slot index behind a name**, or `None` exactly when the name is dead or
+    /// garbage. This is the first half of every lookup, exposed (milestone 14 phase B.2) because
+    /// the kernel stores TCBs in a parallel pool with pool slot i = table slot i, so the index
+    /// *is* the storage address. `get`/`get_mut`/`remove` are built on this, so every harness
+    /// that proves a stale name never resolves proves it for `slot_of` too.
+    pub fn slot_of(&self, name: u64) -> Option<usize> {
         let (slot, generation) = Self::unpack(name);
         if *self.gens.get(slot)? != generation {
             return None;
         }
+        self.slots[slot].as_ref()?;
+        Some(slot)
+    }
+
+    /// Resolve a name. `None` for a name whose entry was removed (however long ago), a name from
+    /// a previous occupant of the slot, or garbage. **Never** the wrong entry.
+    pub fn get(&self, name: u64) -> Option<&T> {
+        let slot = self.slot_of(name)?;
         self.slots[slot].as_ref()
     }
 
     pub fn get_mut(&mut self, name: u64) -> Option<&mut T> {
-        let (slot, generation) = Self::unpack(name);
-        if *self.gens.get(slot)? != generation {
-            return None;
-        }
+        let slot = self.slot_of(name)?;
         self.slots[slot].as_mut()
     }
 
     /// Remove and return the entry, bumping the slot's generation: from this moment `name` (and
     /// every copy of it, wherever it is held) resolves to `None`, forever.
     pub fn remove(&mut self, name: u64) -> Option<T> {
-        let (slot, generation) = Self::unpack(name);
-        if *self.gens.get(slot)? != generation {
-            return None;
-        }
+        let slot = self.slot_of(name)?;
         let value = self.slots[slot].take()?;
-        self.gens[slot] = generation.wrapping_add(1);
+        self.gens[slot] = self.gens[slot].wrapping_add(1);
         self.live -= 1;
         Some(value)
     }
@@ -121,6 +126,15 @@ impl<T, const N: usize> Table<T, N> {
     /// nothing on a hot path iterates.
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
         self.slots.iter_mut().filter_map(|s| s.as_mut())
+    }
+
+    /// The slot index of every live entry, in slot order; each index appears at most once. The
+    /// pool-backed kernel table iterates its parallel storage with this.
+    pub fn live_slots(&self) -> impl Iterator<Item = usize> + '_ {
+        self.slots
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| s.as_ref().map(|_| i))
     }
 }
 

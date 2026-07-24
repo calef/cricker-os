@@ -90,18 +90,97 @@ type Endpoint = ipc::Endpoint<Thread>;
 /// same contract callers already have for out-of-memory. The table itself is ~2 KiB of pointers.
 const MAX_THREADS: usize = 128;
 
+/// **The TCB pool** (milestone 14 phase B.2; notes/tcb.md): every `Thread` lives here, in BSS,
+/// from boot. Pool slot `i` is table slot `i`, so a Tid's low bits name the storage directly.
+/// A slot's address never changes, which supplies the pinning the per-thread `Box` used to buy:
+/// the context-switch assembly and the intrusive queues hold pointers into this array.
+///
+/// `MaybeUninit` because slots are dead between threads; the `Threads` table below is the single
+/// source of truth for which slots are alive, and every access goes through it.
+struct TcbPool {
+    slots: core::cell::UnsafeCell<[core::mem::MaybeUninit<Thread>; MAX_THREADS]>,
+}
+
+// SAFETY: reached only through `Threads`, whose instance lives inside the SCHED mutex, so table
+// access is serialized by that lock; the queues' raw pointers into the pool follow the intrusive
+// discipline documented at tcb_ptr.
+unsafe impl Sync for TcbPool {}
+
+static TCB_POOL: TcbPool = TcbPool {
+    slots: core::cell::UnsafeCell::new([const { core::mem::MaybeUninit::uninit() }; MAX_THREADS]),
+};
+
+/// The thread table: generational names (`crates/slots`, notes/generational-names.md) over the
+/// static [`TcbPool`]. The `slots::Table` tracks which slots live and mints the Tids; the pool
+/// holds the actual TCBs. `Box<Thread>` died here (milestone 14 phase B.2): spawn now writes the
+/// new `Thread` into its pool slot in place, and the reaper drops it in place.
+struct Threads {
+    names: slots::Table<(), MAX_THREADS>,
+}
+
+impl Threads {
+    const fn new() -> Self {
+        Self {
+            names: slots::Table::new(),
+        }
+    }
+
+    fn get(&self, tid: Tid) -> Option<&Thread> {
+        let i = self.names.slot_of(tid)?;
+        // SAFETY: the table says slot i is live, so it was initialized at insert and will not be
+        // dropped before `remove` kills the name; access is serialized by SCHED (see TcbPool).
+        Some(unsafe { (*TCB_POOL.slots.get())[i].assume_init_ref() })
+    }
+
+    fn get_mut(&mut self, tid: Tid) -> Option<&mut Thread> {
+        let i = self.names.slot_of(tid)?;
+        // SAFETY: as `get`, and `&mut self` carries SCHED's exclusivity.
+        Some(unsafe { (*TCB_POOL.slots.get())[i].assume_init_mut() })
+    }
+
+    /// Insert: the table claims a slot and mints the name, `f` builds the `Thread` (carrying its
+    /// own name), and the value is written into the pool slot in place.
+    fn insert_with(&mut self, f: impl FnOnce(Tid) -> Thread) -> Option<Tid> {
+        let tid = self.names.insert_with(|_| ())?;
+        let i = self.names.slot_of(tid).expect("just inserted");
+        // SAFETY: the slot was free until the line above claimed it, so nothing lives here;
+        // `write` moves the new Thread in without reading the dead bytes.
+        unsafe { (*TCB_POOL.slots.get())[i].write(f(tid)) };
+        Some(tid)
+    }
+
+    /// Remove and destroy: drop the TCB in place (its stack, address space, and quota token go
+    /// with it), then kill the name so no copy of the Tid ever resolves again.
+    fn remove(&mut self, tid: Tid) {
+        let Some(i) = self.names.slot_of(tid) else {
+            return;
+        };
+        // SAFETY: live per the table, exclusive per `&mut self`; the name dies on the next line,
+        // so nothing can reach the dropped bytes afterward.
+        unsafe { (*TCB_POOL.slots.get())[i].assume_init_drop() };
+        self.names.remove(tid);
+    }
+
+    fn len(&self) -> usize {
+        self.names.len()
+    }
+
+    /// Every live TCB, for whole-table sweeps (revocation). Disjoint `&mut`s: `live_slots`
+    /// yields each live index exactly once.
+    fn iter_mut(&mut self) -> impl Iterator<Item = &mut Thread> + '_ {
+        let pool = TCB_POOL.slots.get();
+        // SAFETY: each yielded index is live (initialized, not yet dropped) and distinct;
+        // `&mut self` carries SCHED's exclusivity across the whole iteration.
+        self.names
+            .live_slots()
+            .map(move |i| unsafe { (*pool)[i].assume_init_mut() })
+    }
+}
+
 struct Scheduler {
-    /// The thread table: a fixed-capacity **generational** table (milestone 14 phase A; see
-    /// design/kernel-objects-from-untyped.md D2 and notes/generational-names.md). A `Tid` is the
-    /// table's name for the thread, `(generation, slot)` packed in a u64, so a dead thread's Tid
-    /// can never resolve again, even after its slot is reused. This replaced a
-    /// `BTreeMap<Tid, Box<Thread>>` fed by a global counter: lookups are now an index and a
-    /// compare, spawn no longer allocates map nodes, and the table is bounded.
-    ///
-    /// Still `Box` because the assembly writes through `&mut thread.context`, so a thread's
-    /// address must never move; the box pins it while table entries come and go around it.
-    /// Phase B replaces the box with a TCB page retyped from untyped, which pins it the same way.
-    threads: slots::Table<Box<Thread>, MAX_THREADS>,
+    /// The thread table: generational names over the static TCB pool. See [`Threads`] and
+    /// [`TcbPool`] above; design/kernel-objects-from-untyped.md D2 records the path.
+    threads: Threads,
     /// Neither the run queue nor `current` live here any more: both moved to per-CPU storage
     /// (`cpu::PerCpu`, DECISIONS.md §11 steps 3a and 3b), because a single shared queue and a
     /// single "running thread" are exactly what every core would otherwise contend on and
@@ -122,15 +201,15 @@ struct Scheduler {
 /// capabilities), so this bounds creations over the kernel's lifetime, not concurrent use.
 const MAX_ENDPOINTS: usize = 256;
 
-/// Rank **above the allocators**, because `spawn` boxes the new `Thread` while holding this
-/// (`insert_with` runs its closure, and the `Box::new` inside it, under the lock).
+/// Rank **above the allocators**, because the reaper (`finish_switch`) drops a dead `Thread` in
+/// its pool slot while holding this, and that drop *frees*: the kernel stack's pages go back to
+/// the frame allocator through the kernel MMU lock, and the stack's VA range to its free list.
+/// Freeing takes the same locks allocating does, so the rank must sit above them.
 ///
-/// The queues stopped being a reason at milestone 14 phase A.2: they are **intrusive** now (the
-/// next-pointer lives inside the `Thread`), so a queue operation is a couple of pointer writes
-/// that cannot allocate, from the timer IRQ or anywhere else. §9's no-allocation-in-IRQ rule
-/// holds for `schedule()` by construction rather than by pre-reserved capacity. The parenthetical
-/// that used to sit here ("a real kernel uses an intrusive list; worth doing if this ever bites")
-/// is done; phase B removes the `Box` too, and with it this rank note.
+/// Nothing under this lock **allocates** any more (milestone 14 phase B.2): spawn writes the new
+/// `Thread` into a static pool slot, and the queues have been intrusive since A.2, so a queue
+/// operation is a couple of pointer writes, from the timer IRQ or anywhere else. §9's
+/// no-allocation-in-IRQ rule holds by construction.
 static SCHED: IrqSafeMutex<Option<Scheduler>> = IrqSafeMutex::new(rank::SCHED, None);
 
 /// Adopt the context we are already running in as thread 0.
@@ -141,7 +220,7 @@ static SCHED: IrqSafeMutex<Option<Scheduler>> = IrqSafeMutex::new(rank::SCHED, N
 pub fn init() {
     let mut sched = SCHED.lock();
 
-    let mut threads = slots::Table::new();
+    let mut threads = Threads::new();
     // The table names the boot thread at insert. The first name a fresh table mints is 0 by
     // construction (slot 0, generation 0), so "the boot thread is tid 0" survives, now as a
     // property of the table rather than a hardcoded key.
@@ -149,7 +228,7 @@ pub fn init() {
         .insert_with(|tid| {
             let mut boot = Thread::boot();
             boot.id = tid;
-            Box::new(boot)
+            boot
         })
         .expect("a fresh table refused its first insert");
 
@@ -185,7 +264,7 @@ pub fn init() {
         .insert_with(|tid| {
             let mut idle = idle;
             idle.id = tid;
-            Box::new(idle)
+            idle
         })
         .expect("thread table full at boot");
     drop(sched);
@@ -215,7 +294,7 @@ pub fn adopt_secondary_idle() {
             .insert_with(|tid| {
                 let mut idle = idle;
                 idle.id = tid;
-                Box::new(idle)
+                idle
             })
             .expect("thread table full while bringing a core online")
     };
@@ -262,8 +341,7 @@ pub fn drain_inbox() {
 /// the table pins the address (see `Scheduler::threads`), so a pointer taken here is good until
 /// the thread is popped, however many queue hops (inbox to run queue) it makes in between.
 fn tcb_ptr(sched: &mut Scheduler, tid: Tid) -> *mut Thread {
-    let t = sched.threads.get_mut(tid).expect("tcb_ptr of a dead thread");
-    &mut **t
+    sched.threads.get_mut(tid).expect("tcb_ptr of a dead thread")
 }
 
 /// Put an already-created thread onto core `target`'s run queue. Caller holds `SCHED`.
@@ -298,7 +376,7 @@ pub fn spawn_on<F: FnOnce() + Send + 'static>(target: usize, f: F) -> Option<Tid
         let id = sched.threads.insert_with(|tid| {
             let mut thread = thread;
             thread.id = tid;
-            Box::new(thread)
+            thread
         })?;
         place_on(target, tcb_ptr(sched, id));
         id
@@ -322,7 +400,7 @@ pub fn spawn<F: FnOnce() + Send + 'static>(f: F) -> Option<Tid> {
     let id = sched.threads.insert_with(|tid| {
         let mut thread = thread;
         thread.id = tid;
-        Box::new(thread)
+        thread
     })?;
     // Onto the spawning core's own queue. We hold SCHED, so interrupts are masked, which is what
     // `with_runq` needs. (Step 3c will let a spawn target another core via its inbox.)
@@ -381,7 +459,7 @@ pub fn spawn_with_quota<F: FnOnce() + Send + 'static>(
     // `thread` drops uncalled, and its QuotaToken hands the reserved slot back.
     let id = sched.threads.insert_with(|tid| {
         thread.id = tid;
-        Box::new(thread)
+        thread
     })?;
     let ptr = tcb_ptr(sched, id);
     // SAFETY: freshly inserted, Ready, on no queue; this core's queue, SCHED held, IRQs masked.
@@ -686,7 +764,7 @@ fn wake(sched: &mut Scheduler, tid: Tid) {
             return;
         }
         t.state = State::Ready;
-        let ptr: *mut Thread = &mut **t;
+        let ptr: *mut Thread = t;
         // Onto this core's queue. Every caller (ipc_*, irq_notify) holds SCHED, so interrupts
         // are masked. Step 3c makes this place the thread on the *right* core via its inbox.
         // SAFETY: just transitioned Blocked -> Ready, so it was on no queue and now joins one.

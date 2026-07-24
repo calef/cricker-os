@@ -22,9 +22,12 @@ trusted core. Expand the term when there is any doubt.
 
 ## Where TCBs live (the phase B.2 decision)
 
-Decided: a **static pool**, a MAX_THREADS-sized array in BSS, with the generational table's slot
-`i` being pool slot `i`, so a Tid's slot bits name the TCB's storage directly. The address of a
-slot never changes, which supplies the pinning the per-thread `Box` used to provide.
+Decided and built: a **static pool**, a MAX_THREADS-sized array in BSS, with the generational
+table's slot `i` being pool slot `i`, so a Tid's slot bits name the TCB's storage directly (the
+table's `slot_of` is the lookup, covered by the same proofs as `get`). The address of a slot
+never changes, which supplies the pinning the per-thread `Box` used to provide. Spawn writes the
+new `Thread` into its slot in place; the reaper drops it in place; nothing on the thread
+lifecycle allocates.
 
 The alternative was retyping TCB memory from a kernel-owned untyped region, seL4's shape. The
 contrast that decided it: both are a fixed chunk divided into TCB-sized slots; the difference is
