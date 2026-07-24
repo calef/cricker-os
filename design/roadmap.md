@@ -32,7 +32,7 @@ IPC and the MMU invariants are next. This threads through the list rather than b
 | 18 | Verify the capability core, then spread inward | Machine-checked proofs of `caps`, then IPC, then MMU isolation | **the verification itself.** **Built:** `caps`, IPC (rendezvous + one-shot Reply), and the MMU isolation invariants are all proved |
 | 14 | Kernel objects from untyped: remove the kernel heap | Retype TCBs, endpoints, page tables; delete the kernel heap | **critical path:** a verifiable kernel cannot allocate. **Built:** the kernel has no allocator; see design/kernel-objects-from-untyped.md |
 | 15 | Tagged address spaces (ASIDs) | 16-bit ASIDs, generation/rollover; stop flushing the whole EL1 TLB per switch | perf the real-workload path needs on real silicon. **Built** (8-bit fixed bitmap, no rollover: milestone 14's bounds made generations unnecessary; notes/asids.md) |
-| 21 | Performance measurement: benchmarks with teeth | Deterministic icount microbenchmarks, `script/bench`, a committed baseline that fails on regression | perf claims become measurements; regressions surface next to their cause |
+| 21 | Performance measurement: benchmarks with teeth | icount microbenchmarks + committed baseline that fails on regression; HVF-native runs for real magnitudes | perf claims become measurements; regressions surface next to their cause |
 | 16 | Real hardware + SMMU-backed driver isolation | Port to an IOMMU-backed machine; confine driver DMA in silicon | isolation in hardware, under real workloads |
 | 19 | Run a real workload | A native-ABI workload first; Linux-compat or VM hosting later | **the "runs real workloads" half** of the thesis |
 | 17 | Multikernel-leaning scheduler (research, optional) | Partition the shared thread table and endpoints | optional; not on the thesis path |
@@ -117,11 +117,24 @@ diffs against, failing loudly on regression. Updating the baseline is a delibera
 same commit that changes performance, so the baseline file's git history *is* the performance
 record, each delta next to its cause.
 
-**The honest limits, stated up front.** QEMU TCG models no caches and no TLB timing, so icount
-counts catch *path-length* regressions (an extra lock, an accidental O(n), a flush creeping
-back), not microarchitectural effects; milestone 15's actual TLB win stays unmeasured until
-real silicon. Milestone 16 inherits this harness and swaps the clock for the PMU cycle counter,
-which is when the numbers start meaning nanoseconds.
+**Two instruments, because one cannot do both jobs.**
+
+1. **icount (TCG): the regression teeth.** Deterministic instruction counts, tight thresholds,
+   the committed baseline, commit-gating. Catches path-length regressions (an extra lock, an
+   accidental O(n), a flush creeping back). Models no caches and no TLB, so magnitudes are
+   fiction; the counts are the point.
+2. **HVF: the real magnitudes.** On this host (Apple Silicon), `-accel hvf` runs the kernel
+   natively under Hypervisor.framework: real caches, real TLBs, `CNTVCT_EL0` at the hardware's
+   24 MHz. `script/bench --real` reports medians over repeated runs with loose bounds, not
+   gates: it is a real machine shared with a desktop OS, so the numbers are statistical.
+   This is where milestone 15's flush removal finally gets measured (an A/B flag restoring the
+   old `vmalle1is` quantifies it), and it is the aarch64-on-aarch64 coincidence paying off.
+
+Known limits: device-touching paths carry virtualization overhead under HVF (MMIO traps to the
+VMM), the PMU is not virtualized (cycle-exact counters wait for milestone 16's silicon, which
+inherits this harness and swaps the clock), and the first thing to validate is that QEMU's
+semihosting test-exit works under HVF at all; if not, the bench build reports over virtio
+instead.
 
 ### 15. Tagged address spaces (ASIDs)
 
