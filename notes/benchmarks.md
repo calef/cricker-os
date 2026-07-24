@@ -49,6 +49,30 @@ counter grain (~42 ns) means per-iteration ticks are coarse; totals over 1000+ i
 what to read. Cycle-exact PMU numbers arrive with milestone 16's real silicon, which inherits
 this harness and swaps the clock.
 
+## Calibration: what these numbers mean next to L4's
+
+IPC cost is *the* microkernel number because IPC multiplies through the whole architecture:
+Mach's ~100 us IPC discredited microkernels in the 1980s, and Liedtke's L4 rehabilitated them
+with ~250-cycle IPC on a 486, the "sub-microsecond" banner seL4's few-hundred-cycle fastpath
+still carries. Our ~705 ns round trip sounds like that club; two corrections before believing it:
+
+1. **Count cycles, not nanoseconds.** At ~3.2 GHz, 705 ns is ~2,200 cycles round trip, where an
+   L4-lineage fastpath does 300 to 600. Per cycle we are 4 to 7 times heavier, and honestly so:
+   we take the fully general path every time (scheduler lock, proved rendezvous, generational
+   Tid checks) and have deliberately built no fastpath. The nanoseconds look good because the
+   silicon is a monster.
+2. **Our bench excludes what theirs includes.** L4's numbers are user-to-user, traps included.
+   Ours ping-pongs kernel threads calling `sched::ipc_*` directly: no `svc`, no exception
+   entry, no trap frame. A true EL0-to-EL0 benchmark (the right follow-up; it needs one
+   `CNTKCTL_EL1` bit so EL0 can read the counter) will measure meaningfully higher.
+
+The hypervisor's tax on this particular path is small (no devices touched, so essentially no VM
+exits; the cost is indirect, via stage-2 TLB pressure and host cache pollution), which is
+precisely why the bench loops keep devices out. What the comparison legitimately supports: the
+Mach failure mode is nowhere in sight, the architecture is viable at this price on the general
+path, and whether a fastpath is ever worth its complexity is now a question for these
+measurements rather than for L4 envy.
+
 ## What the icount instrument cannot see
 
 Cache misses, TLB behavior, branch prediction: TCG models none of them, so a change that is
