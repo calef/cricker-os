@@ -40,7 +40,6 @@
 use crate::cpu;
 use crate::sync::{IrqSafeMutex, rank};
 use crate::thread::{Context, QuotaToken, State, Thread, Tid, switch_to};
-use alloc::boxed::Box;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// How many times we have actually taken the CPU away from a thread. The number that says
@@ -249,12 +248,12 @@ pub fn init() {
     // The idle thread. Its entire body is "wait for an interrupt, then let the scheduler look for
     // work." It is deliberately kept OUT of the ready queue (see cpu::PerCpu::idle): the scheduler picks it
     // only when nothing else is runnable, so it never steals a turn from real work.
-    let idle = Thread::spawn(Box::new(|| {
+    let idle = Thread::spawn(|| {
         loop {
             crate::arch::wait_for_interrupt();
             yield_now();
         }
-    }))
+    })
     .expect("could not create the idle thread");
 
     let mut sched = SCHED.lock();
@@ -367,7 +366,7 @@ fn place_on(target: usize, thread: *mut Thread) {
 /// thread through its inbox and then poked with the reschedule SGI. (Wiring `spawn` itself to
 /// round-robin over `target` is the trivial next step, once the mechanism is proven.)
 pub fn spawn_on<F: FnOnce() + Send + 'static>(target: usize, f: F) -> Option<Tid> {
-    let thread = Thread::spawn(Box::new(f))?;
+    let thread = Thread::spawn(f)?;
     let remote = target != cpu::id();
 
     let id = {
@@ -393,7 +392,7 @@ pub fn spawn<F: FnOnce() + Send + 'static>(f: F) -> Option<Tid> {
     // Build the thread — which allocates a stack, maps four pages, and boxes the closure —
     // OUTSIDE the lock. Critical sections stay short (DECISIONS.md §9), and this one would
     // otherwise hold the scheduler across four page-table walks.
-    let thread = Thread::spawn(Box::new(f))?;
+    let thread = Thread::spawn(f)?;
 
     let mut guard = SCHED.lock();
     let sched = guard.as_mut()?;
@@ -441,7 +440,7 @@ pub fn spawn_with_quota<F: FnOnce() + Send + 'static>(
         }
     }
 
-    let mut thread = match Thread::spawn(Box::new(f)) {
+    let mut thread = match Thread::spawn(f) {
         Some(t) => t,
         None => {
             // Out of kernel memory. Give the reserved slot back, since no thread will hold it.

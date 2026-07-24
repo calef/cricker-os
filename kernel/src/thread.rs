@@ -27,7 +27,6 @@
 use crate::arch::mmu::{self, KERNEL_VA_BASE};
 use crate::memory;
 use crate::sync::{IrqSafeMutex, rank};
-use alloc::boxed::Box;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use frames::{FRAME_SIZE, Frame};
 use paging::Flags;
@@ -412,25 +411,46 @@ impl Thread {
     }
 
     /// A new thread, ready to run `f` the first time it is scheduled.
-    pub fn spawn(f: Box<dyn FnOnce() + Send + 'static>) -> Option<Self> {
+    ///
+    /// **The closure lives on the new thread's own stack** (milestone 14 phase B.3): `spawn` is
+    /// generic, so `f` is moved at its concrete type into the top of the fresh stack, above the
+    /// faked switch frame. No heap, no vtable: `x19` carries the closure's address and `x20` a
+    /// monomorphized [`call_closure::<F>`] that knows how to call it. The old shape boxed the
+    /// closure twice (a `dyn` fat pointer does not fit one register); both allocations are gone,
+    /// and the memory is freed by being the thread's stack.
+    pub fn spawn<F: FnOnce() + Send + 'static>(f: F) -> Option<Self> {
+        // Bounds at compile time, per monomorphization: a capture that does not comfortably fit
+        // the stack is refused at build, not at runtime. 1 KiB is generous (captures here are a
+        // few words) while leaving the 16 KiB stack its headroom.
+        const {
+            assert!(
+                size_of::<F>() <= 1024,
+                "spawn closure captures more than 1 KiB; pass a reference to static state instead"
+            )
+        };
+        const { assert!(align_of::<F>() <= 16, "spawn closure over-aligned for a stack slot") };
+
         let stack = KernelStack::new()?;
 
-        // `Box<dyn FnOnce()>` is a **fat** pointer (data + vtable), two words, and we have one
-        // register to smuggle it through. So box it again: `Box<Box<dyn FnOnce()>>` is a thin
-        // pointer to a fat one, and fits in `x19`.
-        let boxed: Box<Box<dyn FnOnce() + Send>> = Box::new(f);
-        let arg = Box::into_raw(boxed) as u64;
+        // The closure's slot: at the very top of the stack, aligned down to 16 so the switch
+        // frame below it keeps `sp` 16-aligned (notes/stack.md). Bytes above the initial `sp`
+        // are never touched by the thread's own execution, so the value is safe there until
+        // `call_closure` moves it out.
+        let closure_at = (stack.top() - size_of::<F>() as u64) & !15;
 
-        // Fake a `switch_to` frame at the top of the fresh stack, so that the very same `ret`
-        // that resumes an existing thread also *starts* a new one. There is no separate "first
+        // SAFETY: inside the just-mapped stack; `write` moves `f` (no drop of the original).
+        unsafe { (closure_at as *mut F).write(f) };
+
+        // Fake a `switch_to` frame just below the closure, so that the very same `ret` that
+        // resumes an existing thread also *starts* a new one. There is no separate "first
         // run" path: the trampoline just happens to be what `x30` points at.
-        let context = (stack.top() - size_of::<Context>() as u64) as *mut Context;
+        let context = (closure_at - size_of::<Context>() as u64) as *mut Context;
 
         // SAFETY: the stack was just mapped read/write, and this is inside it.
         unsafe {
             context.write(Context {
-                x19: arg, // the closure, for the trampoline
-                x20: 0,
+                x19: closure_at, // where the closure lives, for the trampoline
+                x20: (call_closure::<F> as extern "C" fn(*mut ())) as usize as u64, // how to call it
                 x21: 0,
                 x22: 0,
                 x23: 0,
@@ -461,23 +481,34 @@ impl Thread {
     }
 }
 
+/// The monomorphized bridge between "an address on a stack" and "a closure of type `F`".
+///
+/// `Thread::spawn` erases the closure's type when it parks it on the new stack; this function,
+/// instantiated per closure type and passed through `x20`, is where the type comes back. It
+/// moves the closure out of its stack slot and calls it; the captures drop normally when the
+/// call returns.
+extern "C" fn call_closure<F: FnOnce()>(closure: *mut ()) {
+    // SAFETY: `closure` is the `F` that `Thread::spawn` placed on this very stack, and this is
+    // the single read of it: the slot is dead bytes afterward, above `sp`, touched by nobody.
+    let f = unsafe { (closure as *mut F).read() };
+    f();
+}
+
 /// Where a new thread actually begins, in Rust.
 ///
-/// Called by `thread_trampoline` with the boxed closure in `x0`.
+/// Called by `thread_trampoline` with the closure's stack address in `x0` and its monomorphized
+/// caller in `x1`. If the thread is torn down before it ever runs, the closure's destructors do
+/// not run (its captures are leaked in place); true of the boxed version before it, and fine for
+/// what kernel threads capture (ids, statics), but a real constraint worth knowing about.
 #[unsafe(no_mangle)]
-extern "C" fn thread_entry(arg: *mut ()) -> ! {
+extern "C" fn thread_entry(closure: *mut (), call: extern "C" fn(*mut ())) -> ! {
     // We are a brand-new thread, resuming for the first time. The thread this core switched away
     // from to start us may have finished; reap it now, off its stack, exactly as a resuming thread
     // does after `switch_to`. A new thread does not pass through `schedule()`'s post-switch point,
     // so this is the only place that reap happens for it. See sched::finish_switch.
     crate::sched::finish_switch();
 
-    // SAFETY: `Thread::spawn` leaked exactly this box, and we are the only one who will ever
-    // claim it. Reconstructing it here is what makes the closure's memory get freed when the
-    // thread finishes, rather than leaking one per thread forever.
-    let f: Box<Box<dyn FnOnce() + Send>> = unsafe { Box::from_raw(arg as *mut _) };
-
-    f();
+    call(closure);
 
     crate::sched::exit();
 }

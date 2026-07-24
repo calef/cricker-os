@@ -84,8 +84,11 @@ switch_to:
 // **fake** them: `Context::new` writes a frame onto the fresh stack with `x30` pointing here,
 // so the `ret` above lands on this instruction the first time the thread is scheduled.
 //
-// The thread's closure comes in `x19` — a callee-saved register, chosen precisely because
-// `switch_to` restores it for us on the way in.
+// The thread's closure lives on its own stack, just above the faked frame; its address comes
+// in `x19` and the (monomorphized) function that knows how to call it comes in `x20` — both
+// callee-saved registers, chosen precisely because `switch_to` restores them on the way in.
+// Two registers because the closure's concrete type was erased: the address alone says where,
+// the caller says how. See Thread::spawn (milestone 14 phase B.3).
 .global thread_trampoline
 thread_trampoline:
     // ENABLE INTERRUPTS.
@@ -100,8 +103,9 @@ thread_trampoline:
     // scheduler with extra steps, and an ironic way to lose this particular argument.
     msr     daifclr, #2
 
-    mov     x0,  x19            // the boxed closure
-    bl      thread_entry        // extern "C" fn(*mut ()) -> !  — never returns
+    mov     x0,  x19            // the closure, on this thread's own stack
+    mov     x1,  x20            // extern "C" fn(*mut ()): the closure's monomorphized caller
+    bl      thread_entry        // extern "C" fn(*mut (), fn(*mut ())) -> !  — never returns
 
     // thread_entry is `-> !`. If we somehow get here, stop rather than run off into whatever
     // happens to be next in memory.
