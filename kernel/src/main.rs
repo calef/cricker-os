@@ -20,14 +20,12 @@
 #![test_runner(crate::testing::runner)]
 #![reexport_test_harness_main = "test_main"]
 
-extern crate alloc;
 
 mod arch;
 mod cap;
 mod console;
 mod cpu;
 mod drivers;
-mod heap;
 mod memory;
 mod panic;
 mod revoke;
@@ -87,7 +85,6 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
 
     // The heap must come AFTER the MMU: it hands out addresses, and with paging on an
     // address is only usable if something has mapped it. From here, `Vec` works.
-    heap::init();
 
     // And now interrupts, which is where every lock in the kernel stops being a formality.
     //
@@ -117,7 +114,6 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         println!("  device tree     : {dtb:#018x}");
         memory::print_summary();
         arch::mmu::print_summary();
-        heap::print_summary();
         {
             use crate::arch::{interrupts, timer};
             println!(

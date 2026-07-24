@@ -73,11 +73,13 @@ use core::sync::atomic::Ordering;
 /// ## The hierarchy
 ///
 /// ```text
-///   60  SCHED           the run queue
+///   60  SCHED           the thread table and endpoints
+///        |
+///   59  INBOX, MAPPINGS the migration inboxes; the revocation registry
+///        |
+///   58  UNTYPED         the untyped regions
 ///        |
 ///   55  STACK_VA        free thread-stack addresses
-///        |
-///   50  HEAP, SLAB      the allocators
 ///        |
 ///   30  FRAMES, RAM     the physical memory map
 ///        |
@@ -86,14 +88,17 @@ use core::sync::atomic::Ordering;
 ///   10  CONSOLE         the leaf: everyone may take it, it takes nothing
 /// ```
 ///
+/// (The allocators' ranks, HEAP and SLAB at 50, left with the allocators: milestone 14 removed
+/// the kernel heap, and a lock that no longer exists needs no place in the order.)
+///
 /// Two locks at the **same** rank may never be nested (`R < R` is false), which is exactly
 /// right: equal rank means we have declared no order between them, so nesting them would be
 /// choosing one at random.
 ///
 /// The nestings this permits, and they are the ones that actually happen:
 ///
-/// - **SLAB (50) → FRAMES (30)**: a size class runs dry and takes a page from the frame
-///   allocator, while holding its own lock.
+/// - **MAPPINGS (59) → UNTYPED (58)**: recording a mapping retypes a log page from the paying
+///   process's own region, while holding the registry lock (milestone 14 phase C).
 /// - **anything → CONSOLE (10)**: a panic prints while holding a lock. Which is why the
 ///   console must be the leaf, and why it takes nothing itself.
 ///
@@ -104,47 +109,46 @@ use core::sync::atomic::Ordering;
 /// would have held RAM (30) while taking FRAMES (30), and `30 < 30` is false. The ranking
 /// would have failed it on the spot. (We happened to fix it for other reasons first.)
 pub mod rank {
-    /// The scheduler's run queue.
+    /// The thread table and the endpoints.
     ///
-    /// **Above the allocators**, because `spawn` pushes into a `VecDeque` while holding it and
-    /// that push may allocate. `schedule()` itself never allocates (it pops one and pushes one,
-    /// so the deque cannot grow), which is what makes it safe to call from the timer interrupt
-    /// where DECISIONS.md §9 forbids allocation.
+    /// **Above everything that frees**, because the reaper drops a dead thread's kernel stack
+    /// while holding it (frames back to the allocator, the VA range to its list). Nothing under
+    /// it allocates: the queues are intrusive and the TCBs are a static pool (milestone 14), so
+    /// `schedule()` is safe from the timer interrupt by construction (§9).
     pub const SCHED: u32 = 60;
 
     /// A core's migration inbox (SMP step 3c). The one cross-core scheduler structure: another
     /// core locks it to hand this core a thread, and this core drains it in its reschedule-SGI
     /// handler. **Just below the scheduler**, because placing a thread on a remote core is done
-    /// while holding SCHED (it reads the thread table), and above the allocators, since a push may
-    /// grow the `VecDeque` (pre-reserved to avoid it, but the rank must still allow it). Inboxes
-    /// are all this one rank and are never nested: a core locks at most one inbox at a time (the
-    /// target's), so `R < R` being false forbids the only cycle. See DECISIONS.md §11.
+    /// while holding SCHED (it reads the thread table). A push is two pointer writes (the
+    /// queues are intrusive) and cannot allocate. Inboxes are all this one rank and are never
+    /// nested: a core locks at most one inbox at a time (the target's), so `R < R` being false
+    /// forbids the only cycle. Shares the rank with MAPPINGS, with which it is also never
+    /// nested (inbox traffic is scheduling; the registry is syscalls and revocation).
     pub const INBOX: u32 = 59;
 
-    /// Untyped memory regions (milestone 11). **Above the allocators**, because creating a region
-    /// grows a `Vec` (a heap allocation) while the lock is held. Below the scheduler, so it may be
-    /// taken from a syscall that has no scheduler business.
+    /// Untyped memory regions (milestone 11; fixed table since 14 B.1). **Below MAPPINGS**, so
+    /// recording a mapping may retype a log page from the payer's region while the registry is
+    /// held (phase C). Below the scheduler, so it may be taken from a syscall that has no
+    /// scheduler business.
     pub const UNTYPED: u32 = 58;
 
-    /// The virtio transport table (DMA confinement). Above the allocators for the same reason as
-    /// `UNTYPED`: registering a device grows a `Vec` under the lock. Taken from a syscall with no
-    /// other lock held.
+    /// The virtio transport table (DMA confinement; fixed since 14 B.1). Taken from a syscall
+    /// with no other lock held; the rank records where that syscall sits, not any nesting need.
     pub const VIRTIO: u32 = 56;
 
-    /// The free list of thread-stack virtual addresses.
+    /// The free list of thread-stack virtual addresses (a fixed array since 14 B.1).
     ///
-    /// **Above the allocators** (it pushes into a `Vec`, which may allocate) and **below the
-    /// scheduler** (a `KernelStack`'s `Drop` runs from `reap`, which holds SCHED).
+    /// **Below the scheduler**, because a `KernelStack`'s `Drop` runs from the reaper, which
+    /// holds SCHED.
     pub const STACK_VA: u32 = 55;
 
-    /// The revocation mapping database (§13): every mapping of an untyped-derived page, so a revoke
-    /// can unmap it from every holder before the page is reused. **Below the scheduler**, because a
-    /// revoke deletes Frame caps under SCHED and then unmaps under this; recorded from `Frame::MAP`
-    /// and `Untyped::MAP`, which hold no scheduler lock. See kernel/src/revoke.rs.
-    pub const MAPPINGS: u32 = 54;
-
-    pub const HEAP: u32 = 50;
-    pub const SLAB: u32 = 50;
+    /// The revocation registry (§13; reworked at 14 phase C): which address spaces live, and
+    /// where their mapping logs are. **Above UNTYPED**, because recording a mapping retypes a
+    /// log page from the paying space's region under this lock. Never held together with SCHED
+    /// in either order: the capability sweep (SCHED) and the unmap sweep (this) run one after
+    /// the other, and the reaper drops address spaces outside SCHED (see finish_switch).
+    pub const MAPPINGS: u32 = 59;
 
     /// The kernel's own page tables (`mmu::map_page` / `unmap_page`).
     ///
@@ -404,7 +408,7 @@ mod tests {
         // A is taken first, so A must OUTRANK B. Before the ranking existed this test could
         // nest any two locks in any order; now the hierarchy is part of the type's contract and
         // the test has to declare which one is the outer.
-        static A: IrqSafeMutex<u32> = IrqSafeMutex::new(rank::SLAB, 1);
+        static A: IrqSafeMutex<u32> = IrqSafeMutex::new(rank::STACK_VA, 1);
         static B: IrqSafeMutex<u32> = IrqSafeMutex::new(rank::FRAMES, 2);
 
         interrupts::enable();
@@ -436,7 +440,7 @@ mod tests {
         use crate::sync::{current_rank, rank, would_violate};
 
         assert_eq!(current_rank(), rank::NONE, "a previous test leaked a lock");
-        assert!(!would_violate(rank::HEAP));
+        assert!(!would_violate(rank::KERNEL_MMU));
         assert!(!would_violate(rank::CONSOLE));
     }
 
@@ -482,7 +486,7 @@ mod tests {
         // Higher: forbidden. Taking the heap while holding frames is the other half of an
         // AB-BA deadlock waiting to be written.
         assert!(
-            would_violate(rank::HEAP),
+            would_violate(rank::KERNEL_MMU),
             "rank 50 while holding rank 30 must be refused"
         );
 
@@ -504,38 +508,21 @@ mod tests {
     fn releasing_an_inner_lock_restores_the_outer_rank() {
         use crate::sync::{IrqSafeMutex, current_rank, rank};
 
-        static OUTER: IrqSafeMutex<u32> = IrqSafeMutex::new(rank::SLAB, 0);
+        static OUTER: IrqSafeMutex<u32> = IrqSafeMutex::new(rank::STACK_VA, 0);
         static INNER: IrqSafeMutex<u32> = IrqSafeMutex::new(rank::FRAMES, 0);
 
         let _o = OUTER.lock();
-        assert_eq!(current_rank(), rank::SLAB);
+        assert_eq!(current_rank(), rank::STACK_VA);
         {
             let _i = INNER.lock();
             assert_eq!(current_rank(), rank::FRAMES);
         }
         assert_eq!(
             current_rank(),
-            rank::SLAB,
+            rank::STACK_VA,
             "dropping the inner guard reported that we hold nothing, while the outer lock is \
              still held"
         );
     }
 
-    /// The one real nesting in the kernel actually happens, and is legal.
-    ///
-    /// A slab size class runs dry and takes a page from the frame allocator **while holding its
-    /// own lock**. SLAB (50) → FRAMES (30). If that were ever inverted, this would fire.
-    #[test_case]
-    fn the_slab_may_take_a_frame_while_holding_its_own_lock() {
-        use alloc::boxed::Box;
-
-        // Force a class to run dry: allocate enough 2 KiB objects to exhaust a page (two per
-        // page) and demand another. If SLAB -> FRAMES were a violation, the assert in
-        // `IrqSafeMutex::lock` would kill us right here.
-        let mut keep = alloc::vec::Vec::new();
-        for _ in 0..8 {
-            keep.push(Box::new([0u8; 2048]));
-        }
-        core::hint::black_box(&keep);
-    }
 }

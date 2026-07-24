@@ -910,12 +910,13 @@ mod tests {
             "the stack is at {sp:#x}, not in the high half"
         );
 
-        // And a heap allocation.
-        let b = alloc::boxed::Box::new(0u64);
-        let heap = (&raw const *b) as u64;
+        // And a static. (This used to check a heap allocation too; the heap left at milestone
+        // 14, and statics were always the other kernel-owned memory worth the assertion.)
+        static IN_BSS: u64 = 0;
+        let addr = (&raw const IN_BSS) as u64;
         assert!(
-            heap >= KERNEL_VA_BASE,
-            "the heap is at {heap:#x}, not in the high half"
+            addr >= KERNEL_VA_BASE,
+            "a static is at {addr:#x}, not in the high half"
         );
     }
 

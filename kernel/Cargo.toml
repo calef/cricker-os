@@ -13,11 +13,9 @@ caps = { version = "0.1.0", path = "../crates/caps" }
 dtb = { version = "0.1.0", path = "../crates/dtb" }
 elf = { version = "0.1.0", path = "../crates/elf" }
 frames = { version = "0.1.0", path = "../crates/frames" }
-heap = { version = "0.1.0", path = "../crates/heap" }
 intrusive = { version = "0.1.0", path = "../crates/intrusive" }
 ipc = { version = "0.1.0", path = "../crates/ipc" }
 paging = { version = "0.1.0", path = "../crates/paging" }
-slab = { version = "0.1.0", path = "../crates/slab" }
 slots = { version = "0.1.0", path = "../crates/slots" }
 spin = { version = "0.12", default-features = false, features = ["spin_mutex"] }
 

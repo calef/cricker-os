@@ -103,6 +103,13 @@ impl AddressSpace {
         let region = crate::untyped::create(content_pages + AS_OVERHEAD)?;
         let root = crate::untyped::retype_page(region)?;
 
+        // Into the revocation registry (phase C): this is how a later revoke finds our mapping
+        // log, whose pages this same region will pay for. Full registry = no address space.
+        if !crate::revoke::register_space(root, region) {
+            crate::untyped::destroy(region);
+            return None;
+        }
+
         Some(AddressSpace {
             root: Frame::from_addr(root),
             region,
@@ -1435,14 +1442,15 @@ mod tests {
 
     /// Forge an ELF64 header by hand, so a test can ask for something no linker would emit.
     ///
-    /// The kernel has `alloc`, so this is thirty lines. It is worth every one of them: the ELF
-    /// **names its own load address**, and this is the file that names the kernel's.
-    fn forged_elf(vaddr: u64, flags: u32) -> alloc::vec::Vec<u8> {
+    /// A fixed buffer, since the kernel it tests has no heap (milestone 14 phase C): one ELF
+    /// header, one program header, sixteen bytes of code. The ELF **names its own load
+    /// address**, and this is the file that names the kernel's.
+    fn forged_elf(vaddr: u64, flags: u32) -> [u8; 136] {
         const EHDR: usize = 64;
         const PHDR: usize = 56;
         let code: [u8; 16] = [0; 16];
 
-        let mut out = alloc::vec![0u8; EHDR + PHDR + code.len()];
+        let mut out = [0u8; EHDR + PHDR + 16];
         out[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
         out[4] = 2; // ELFCLASS64
         out[5] = 1; // little-endian
@@ -1515,16 +1523,16 @@ mod tests {
 
         assert_eq!(e.entry(), 0x40_0000, "linked somewhere unexpected");
 
-        // Three segments, and NONE of them writable-and-executable.
-        let segs: alloc::vec::Vec<_> = e.segments().collect();
-        assert!(segs.len() >= 3, "expected .text, .rodata and .data");
-        assert!(segs.iter().any(|s| s.is_executable() && !s.is_writable()));
-        assert!(segs.iter().any(|s| s.is_writable() && !s.is_executable()));
+        // Three segments, and NONE of them writable-and-executable. Counted straight off the
+        // iterator: the kernel this test rides in has no heap to collect into (milestone 14).
+        assert!(e.segments().count() >= 3, "expected .text, .rodata and .data");
+        assert!(e.segments().any(|s| s.is_executable() && !s.is_writable()));
+        assert!(e.segments().any(|s| s.is_writable() && !s.is_executable()));
 
         // And one of them has a .bss: memsz > filesz. If this is not true, the test below is
         // vacuous, and we would never know.
         assert!(
-            segs.iter().any(|s| s.memsz as usize > s.data.len()),
+            e.segments().any(|s| s.memsz as usize > s.data.len()),
             "no segment has a .bss, so the zero-fill is untested",
         );
     }

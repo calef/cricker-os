@@ -200,7 +200,13 @@ fn invoke(
                         // Record the mapping so it can be revoked before the region is ever
                         // reclaimed (§13). Untyped::MAP pages are process-private, but they still
                         // must be unmapped before untyped::destroy frees the region under them.
-                        crate::revoke::record_mapping(phys, mmu::current_user_root(), va);
+                        // The record is paid from the caller's own address-space budget (phase
+                        // C); if it cannot afford the record, it cannot keep the mapping: an
+                        // unrecorded mapping is invisible to revocation, the §13 hole.
+                        if !crate::revoke::record_mapping(phys, mmu::current_user_root(), va) {
+                            mmu::unmap_user_at(mmu::current_user_root(), va);
+                            return Err(Error::OutOfMemory);
+                        }
                         Ok(0)
                     }
                     Err(paging::MapError::OutOfFrames) => Err(Error::OutOfMemory),
@@ -260,8 +266,12 @@ fn invoke(
                 }) {
                     Ok(()) => {
                         // Record the mapping so a later REVOKE (or untyped::destroy) can pull this
-                        // page out of every holder before it is reused (§13).
-                        crate::revoke::record_mapping(phys, mmu::current_user_root(), va);
+                        // page out of every holder before it is reused (§13). Unrecordable means
+                        // unmappable, at the mapper's own expense (phase C): see Untyped::MAP.
+                        if !crate::revoke::record_mapping(phys, mmu::current_user_root(), va) {
+                            mmu::unmap_user_at(mmu::current_user_root(), va);
+                            return Err(Error::OutOfMemory);
+                        }
                         Ok(0)
                     }
                     Err(paging::MapError::OutOfFrames) => Err(Error::OutOfMemory),

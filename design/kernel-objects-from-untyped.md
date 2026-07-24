@@ -101,12 +101,14 @@ requirements later.** What phase B builds instead, per the decisions:
   wiring untyped.rs deferred). One budget per process; when init arrives, only the region's
   provenance changes.
 
-**Phase C: charge the revocation database, then delete the heap.**
-Move mapping records out of the global `Vec` and into per-address-space storage paid from the
-owner's untyped. Then remove the `GlobalAlloc`, the slab, and `kernel/src/heap.rs` from the
-kernel build entirely (the heap and slab crates stay: they are host-tested logic and the notes
-tell their story). The kernel that boots after phase C cannot allocate, structurally: there is
-no allocator to call.
+**Phase C: charge the revocation database, then delete the heap. (Built; milestone complete.)**
+The mapping records moved into log pages retyped from each mapping process's own region, found
+through a fixed registry of live address spaces: the mapper pays for its own records, a mapping
+that cannot afford its record is refused (and unmapped), and the records are reclaimed with the
+region at teardown, so "forget this space" became one registry slot going empty. Then the
+`GlobalAlloc`, the slab wiring, and `kernel/src/heap.rs` were removed from the kernel build (the
+heap and slab crates stay: host-tested logic whose notes tell their story). **The kernel that
+boots after phase C cannot allocate, structurally: there is no allocator to call.**
 
 ## Decision D1: what replaces the IPC wait queues
 
