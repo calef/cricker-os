@@ -224,6 +224,15 @@ see notes/intrusive-queues.md):
 One harness rather than several because the operation-sequence shape subsumes the single-step
 properties: a push-preserves-X proof is the sequence of length one.
 
+Three in `crates/asid/src/lib.rs`, the TLB tag allocator (milestone 15; see notes/asids.md,
+including which half of the ASID contract stays on a hardware witness test rather than a proof):
+
+| Harness | Property |
+|---|---|
+| `the_kernel_asid_is_never_allocated` | no reachable state hands a user space ASID 0, the kernel's tag |
+| `two_live_asids_are_distinct` | live allocations never alias, from any symbolic state |
+| `free_releases_exactly_its_own_asid` | free clears its own bit and no other |
+
 Four in `crates/elf/src/lib.rs`:
 
 | Harness | Property |

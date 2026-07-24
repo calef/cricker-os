@@ -16,6 +16,10 @@ name = "abi"
 version = "0.1.0"
 
 [[package]]
+name = "asid"
+version = "0.1.0"
+
+[[package]]
 name = "caps"
 version = "0.1.0"
 
@@ -56,6 +60,7 @@ version = "0.1.0"
 dependencies = [
  "aarch64-cpu",
  "abi",
+ "asid",
  "caps",
  "dtb",
  "elf",

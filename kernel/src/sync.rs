@@ -162,6 +162,10 @@ pub mod rank {
     pub const FRAMES: u32 = 30;
     pub const RAM: u32 = 30;
 
+    /// The ASID allocator (milestone 15). Taken alone at address-space creation and teardown;
+    /// near the leaves because it needs nothing beneath it.
+    pub const ASIDS: u32 = 15;
+
     /// The interrupt controller.
     ///
     /// Taken by the IRQ handler, which by our own rule (DECISIONS.md §9) holds nothing and

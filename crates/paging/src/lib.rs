@@ -133,6 +133,15 @@ const AP_RW_EL0: u64 = 0b01 << 6;
 const AP_RO_EL1: u64 = 0b10 << 6;
 const AP_RO_EL0: u64 = 0b11 << 6;
 
+/// **Bit 11: not-global (`nG`).** A TLB entry from an `nG` mapping is tagged with the ASID that
+/// was live when the walk happened, and only matches lookups under that same ASID (milestone
+/// 15). Every *user* mapping sets it, which is what lets a context switch flush nothing: the
+/// old address space's entries simply stop matching. Kernel mappings leave it clear, global on
+/// purpose: the high half is the same for everyone, and re-walking it per ASID would waste the
+/// TLB. Forgetting this bit on a user mapping quietly reintroduces the bug ASIDs fix, one
+/// process reading another's translations, so the flag tests below pin it per constructor.
+const NG: u64 = 1 << 11;
+
 /// Bit 53: Privileged eXecute Never. The kernel may not execute this page.
 const PXN: u64 = 1 << 53;
 
@@ -206,7 +215,7 @@ impl Flags {
     /// execute *user-controlled instructions at EL1*. That is a total compromise, and PXN is
     /// one bit.
     pub const fn user_code() -> Self {
-        Flags(AF | SH_INNER | attr_index(mair::NORMAL) | AP_RO_EL0 | PXN)
+        Flags(AF | NG | SH_INNER | attr_index(mair::NORMAL) | AP_RO_EL0 | PXN)
     }
 
     /// User constants (milestone 7): readable by EL0, and **nothing else**.
@@ -216,12 +225,12 @@ impl Flags {
     /// grant the program more authority than its own file asked for. A loader that widens
     /// permissions is a loader you cannot reason about.
     pub const fn user_rodata() -> Self {
-        Flags(AF | SH_INNER | attr_index(mair::NORMAL) | AP_RO_EL0 | UXN | PXN)
+        Flags(AF | NG | SH_INNER | attr_index(mair::NORMAL) | AP_RO_EL0 | UXN | PXN)
     }
 
     /// User data (milestone 7): read/write by EL0, never executable.
     pub const fn user_data() -> Self {
-        Flags(AF | SH_INNER | attr_index(mair::NORMAL) | AP_RW_EL0 | UXN | PXN)
+        Flags(AF | NG | SH_INNER | attr_index(mair::NORMAL) | AP_RW_EL0 | UXN | PXN)
     }
 
     /// **User device memory (milestone 8): a driver's MMIO, at EL0.**
@@ -235,7 +244,7 @@ impl Flags {
     /// No `SH_INNER`: shareability is meaningless for device memory and the architecture ignores
     /// the field. See the note on [`device`](Self::device).
     pub const fn user_device() -> Self {
-        Flags(AF | attr_index(mair::DEVICE) | AP_RW_EL0 | UXN | PXN)
+        Flags(AF | NG | attr_index(mair::DEVICE) | AP_RW_EL0 | UXN | PXN)
     }
 
     pub const fn bits(self) -> u64 {
@@ -257,6 +266,12 @@ impl Flags {
 
     pub fn is_user_accessible(self) -> bool {
         self.0 & (1 << 6) != 0
+    }
+
+    /// Global mappings match TLB lookups under every ASID; non-global ones only under their
+    /// own. User mappings must be non-global (see [`NG`]); kernel mappings must be global.
+    pub fn is_global(self) -> bool {
+        self.0 & NG == 0
     }
 }
 
@@ -351,6 +366,30 @@ mod flag_tests {
             (mair::DEVICE << 2),
             "not device-typed"
         );
+    }
+
+    /// **The ASID tagging split** (milestone 15): everything EL0 can reach is non-global (its
+    /// TLB entries are tagged, so a context switch can flush nothing), and everything kernel-
+    /// only is global (the high half is identical for all, tag-free by design). A user
+    /// constructor that lost `nG` would quietly let one process hit another's translations.
+    #[test]
+    fn user_mappings_are_tagged_and_kernel_mappings_are_global() {
+        for f in [
+            Flags::kernel_code(),
+            Flags::kernel_rodata(),
+            Flags::kernel_data(),
+            Flags::device(),
+            Flags::user_code(),
+            Flags::user_rodata(),
+            Flags::user_data(),
+            Flags::user_device(),
+        ] {
+            assert_eq!(
+                f.is_global(),
+                !f.is_user_accessible(),
+                "{f:?} is on the wrong side of the ASID split",
+            );
+        }
     }
 
     #[test]

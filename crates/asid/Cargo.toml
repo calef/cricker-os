@@ -1,0 +1,9 @@
+[package]
+name = "asid"
+version = "0.1.0"
+edition = "2024"
+
+# `kani` is set only by `cargo kani` (script/verify), never by an ordinary build. Declaring it here
+# keeps unexpected_cfgs from flagging the `#[cfg(kani)]` proof module under -D warnings. See caps.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

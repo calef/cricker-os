@@ -44,3 +44,6 @@ cargo kani -p slots
 
 echo "==> kani: intrusive (the scheduler's queue structure)"
 cargo kani -p intrusive
+
+echo "==> kani: asid (the TLB tag allocator)"
+cargo kani -p asid

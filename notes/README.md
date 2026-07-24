@@ -151,6 +151,10 @@ in the code or the conversation doesn't make sense, it belongs here.
   inboxes become intrusive (`crates/intrusive`); the link lives inside the TCB, a push is two
   pointer writes that cannot allocate or fail, and a pop hands back the thread itself. One link
   means one queue, which is the scheduler's state machine made physical.
+- [ASIDs: tagged address spaces](asids.md) — milestone 15: every user mapping is `nG`, each
+  address space owns one ASID for life, the tag rides in TTBR0 with the root, and the context
+  switch flushes nothing. Why a bitmap suffices where Linux needs generations (milestone 14
+  bounded the spaces), and the witness test that would catch a broken tag.
 - [The TCB](tcb.md) — what a Thread Control Block is (our `Thread` struct, field by field), the
   acronym collision with Trusted Computing Base, and why TCBs live in a static pool rather than
   being retyped from kernel untyped (the phase B.2 decision: same machine behavior, and seL4's

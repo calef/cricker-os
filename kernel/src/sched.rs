@@ -598,7 +598,7 @@ pub fn schedule() {
         let next_root = sched.threads.get(next).unwrap()
             .space
             .as_ref()
-            .map(|s| s.root())
+            .map(|s| s.ttbr0())
             .unwrap_or_else(crate::arch::mmu::reserved_root);
 
         // Copy the two raw pointers out before the lock drops. The assembly writes through the
@@ -1130,7 +1130,7 @@ pub fn grant_to(tid: Tid, cap: crate::cap::Cap) -> Result<u64, crate::cap::Error
 /// From here the thread owns its low half: the reaper's `drop` will unmap and free it, and
 /// every context switch back to this thread will re-install it.
 pub fn adopt_address_space(space: crate::user::AddressSpace) {
-    let root = space.root();
+    let ttbr = space.ttbr0();
 
     {
         let mut guard = SCHED.lock();
@@ -1143,7 +1143,7 @@ pub fn adopt_address_space(space: crate::user::AddressSpace) {
             .space = Some(space);
     }
 
-    crate::arch::mmu::switch_user_root(root);
+    crate::arch::mmu::switch_user_root(ttbr);
 }
 
 /// The top of the current thread's kernel stack: **where its `TrapFrame` belongs.**

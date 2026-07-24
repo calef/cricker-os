@@ -5,6 +5,7 @@ members = [
     "xtask",
     "user",
     "crates/abi",
+    "crates/asid",
     "crates/caps",
     "crates/crickerfs",
     "crates/dtb",

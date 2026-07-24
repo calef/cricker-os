@@ -181,7 +181,7 @@ pub fn init_secondary() {
     // active on it yet, so any low address must fault rather than hit the coarse identity map that
     // `secondary_boot` left in TTBR0.
     // SAFETY: RESERVED_TTBR0 is a zeroed L0 table the boot core allocated in `install_reserved_ttbr0`.
-    unsafe { set_ttbr0(RESERVED_TTBR0.load(Ordering::Relaxed)) };
+    unsafe { set_ttbr0(ttbr0_value(RESERVED_TTBR0.load(Ordering::Relaxed), 0)) };
 }
 
 /// Identity-map everything the kernel needs, each region with the tightest permissions that
@@ -477,39 +477,55 @@ fn install_reserved_ttbr0() {
     RESERVED_TTBR0.store(root, Ordering::Relaxed);
 
     // SAFETY: the table is zeroed, so every translation through it faults. That is the point.
-    unsafe { set_ttbr0(root) };
+    unsafe { set_ttbr0(ttbr0_value(root, 0)) };
 }
 
-/// Point `TTBR0_EL1` at `root` and throw away every stale low-half translation.
+/// Compose the value `TTBR0_EL1` actually holds: the table root in the low bits, the ASID in
+/// bits 63:48. This composed value is what travels through the switch path, so the register
+/// write and the "already installed?" comparison are both one operation on one word.
+pub fn ttbr0_value(root: u64, asid: u16) -> u64 {
+    root | (asid as u64) << 48
+}
+
+/// Point `TTBR0_EL1` at a composed root-plus-ASID value ([`ttbr0_value`]). **No TLB flush.**
 ///
-/// # The TLB flush is not optional and not a nicety
+/// # Where the sledgehammer went (milestone 15)
 ///
-/// We have **no ASIDs yet**: every address space uses ASID 0. So the TLB cannot tell one
-/// process's `0x40_0000` from another's, and a stale entry would hand a new process the
-/// *previous* process's memory. That is not a performance bug, it is the whole privilege
-/// boundary falling over.
+/// This used to end in `tlbi vmalle1is`: every EL1 translation, every core, the kernel's
+/// included, on every context switch. It had to, because every address space ran as ASID 0 and
+/// the TLB could not tell one process's `0x40_0000` from another's; a stale entry would hand a
+/// new process the previous one's memory — the privilege boundary, not a performance bug.
 ///
-/// `tlbi vmalle1is` is the sledgehammer: it discards **all** EL1 translations, including the
-/// kernel's, which we then re-walk for nothing. ASIDs are the fix (tag each entry with the
-/// address space that owns it, flush nothing on switch), and they are a milestone 7c job. This
-/// is correct, and it is slow, and we know which is which.
+/// Now every user mapping is `nG` (tagged with the ASID that created it; see paging), each
+/// address space owns one ASID for life (`crates/asid`), and the tag rides in here with the
+/// root. The old space's entries stop *matching* instead of being discarded, the kernel's
+/// global entries were never in danger, and the switch flushes nothing. Invalidation happens at
+/// exactly two other places: revocation flushes by VA across all ASIDs, and address-space
+/// teardown flushes its ASID (`flush_asid`) before the number can be reused.
 ///
 /// # Safety
-/// `root` must be a page-aligned L0 table whose descriptors are all valid or all zero.
-unsafe fn set_ttbr0(root: u64) {
+/// The root inside `ttbr` must be a page-aligned L0 table whose descriptors are all valid or
+/// all zero, and the ASID must be the one that owns those mappings.
+unsafe fn set_ttbr0(ttbr: u64) {
     // Our writes to the table must be visible to the page-table walker, which is a separate
     // observer and is not bound by program order.
     barrier::dsb(barrier::SY);
 
-    TTBR0_EL1.set_baddr(root);
+    TTBR0_EL1.set(ttbr);
     barrier::isb(barrier::SY);
+}
 
+/// Discard every TLB entry tagged with `asid`, on every core. The teardown half of the ASID
+/// contract (crates/asid): after this, and only after this, the number may tag someone else.
+pub fn flush_asid(asid: u16) {
+    let arg = (asid as u64) << 48; // tlbi aside1is takes the ASID in bits 63:48
     // SAFETY: TLB maintenance is always sound.
     unsafe {
         core::arch::asm!(
-            "tlbi vmalle1is", // every EL1 translation, every core
+            "tlbi aside1is, {arg}",
             "dsb ish",
             "isb",
+            arg = in(reg) arg,
             options(nostack),
         );
     }
@@ -518,10 +534,11 @@ unsafe fn set_ttbr0(root: u64) {
 /// Install a user address space. The low half of memory now means *that process*.
 ///
 /// # Safety
-/// `root` must be a live L0 table built by a `Mapper` with `Half::Low`, and it must outlive
-/// every instruction executed at EL0 afterwards.
-pub unsafe fn activate_user(root: u64) {
-    unsafe { set_ttbr0(root) };
+/// `ttbr` must compose ([`ttbr0_value`]) a live L0 table built by a `Mapper` with `Half::Low`
+/// and the ASID that owns it, and the table must outlive every instruction executed at EL0
+/// afterwards.
+pub unsafe fn activate_user(ttbr: u64) {
+    unsafe { set_ttbr0(ttbr) };
 }
 
 /// Uninstall whatever user address space was active. The low half means nothing again.
@@ -529,8 +546,9 @@ pub fn deactivate_user() {
     let reserved = RESERVED_TTBR0.load(Ordering::Relaxed);
     debug_assert!(reserved != 0, "mmu::init has not run");
 
-    // SAFETY: the reserved table is zeroed, so this makes every low address fault.
-    unsafe { set_ttbr0(reserved) };
+    // SAFETY: the reserved table is zeroed, so this makes every low address fault. ASID 0: the
+    // kernel's own tag, permanently reserved by the allocator, never a user's.
+    unsafe { set_ttbr0(ttbr0_value(reserved, 0)) };
 }
 
 /// **Could EL0 read this address?** Not "can the kernel", which is a different question with a
@@ -697,23 +715,26 @@ pub fn map_current_user_frame(
     Ok(())
 }
 
-/// The empty table that means "no process is running."
+/// The empty table that means "no process is running", composed with the kernel's ASID 0,
+/// ready for [`switch_user_root`].
 pub fn reserved_root() -> u64 {
-    RESERVED_TTBR0.load(Ordering::Relaxed)
+    ttbr0_value(RESERVED_TTBR0.load(Ordering::Relaxed), 0)
 }
 
-/// Install `root` as the live low half, **unless it is already installed**.
+/// Install `ttbr` (a composed root + ASID) as the live low half, **unless already installed**.
 ///
-/// Called from the context switch, on every switch, which is why the early return matters:
-/// `set_ttbr0` throws away the entire EL1 TLB (we have no ASIDs yet), and two kernel threads
-/// taking turns must not pay for that. They both want the reserved table, so they both skip.
-pub fn switch_user_root(root: u64) {
-    if current_user_root() == root {
+/// Called from the context switch, on every switch. The early return compares the raw
+/// register, which carries the ASID too, so "same process" is one comparison; and since
+/// milestone 15 even the switch that does happen flushes nothing (see `set_ttbr0`), the early
+/// return is now about skipping two barriers rather than dodging a catastrophe.
+pub fn switch_user_root(ttbr: u64) {
+    if TTBR0_EL1.get() == ttbr {
         return;
     }
 
-    // SAFETY: the caller passes either a live `AddressSpace` root or `reserved_root()`.
-    unsafe { set_ttbr0(root) };
+    // SAFETY: the caller passes either a live `AddressSpace`'s composed value or
+    // `reserved_root()`.
+    unsafe { set_ttbr0(ttbr) };
 }
 
 /// Serializes mutation of the kernel's page tables across cores.

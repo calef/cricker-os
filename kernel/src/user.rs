@@ -80,6 +80,12 @@ unsafe extern "C" {
 /// throw the whole table away.
 pub struct AddressSpace {
     root: Frame,
+    /// **This address space's TLB tag, for life** (milestone 15; crates/asid). Every user
+    /// mapping is `nG`, so its TLB entries carry this number, and a context switch flushes
+    /// nothing: the other spaces' entries just stop matching. Freed at drop, after
+    /// `flush_asid` has made every entry so tagged vanish, which is what makes the number
+    /// reusable.
+    asid: u16,
     /// **The untyped region every page of this address space comes from** (milestone 14 phase
     /// B.4): the root table, the intermediate tables, and every owned leaf are retyped out of
     /// one region carved at creation. The region *is* the record of what this address space
@@ -110,8 +116,17 @@ impl AddressSpace {
             return None;
         }
 
+        // A TLB tag of our own (milestone 15). Cannot exhaust: the allocator holds 255 and the
+        // registry above admitted us, bounding live spaces at 160. The `?` is honesty, not a path.
+        let Some(asid) = ASIDS.lock().alloc() else {
+            crate::revoke::forget_root(root);
+            crate::untyped::destroy(region);
+            return None;
+        };
+
         Some(AddressSpace {
             root: Frame::from_addr(root),
+            asid,
             region,
         })
     }
@@ -175,11 +190,24 @@ impl AddressSpace {
         mapper.map(va, phys, flags)
     }
 
-    /// The physical address of the L0 table. What goes in `TTBR0_EL1`.
+    /// The physical address of the L0 table: what page-table walks (translate, unmap,
+    /// revocation) use. Not what goes in `TTBR0_EL1` any more; that is [`ttbr0`](Self::ttbr0),
+    /// which carries the ASID too.
+    #[cfg_attr(not(test), allow(dead_code))] // the walkers that use it live in the tests
     pub fn root(&self) -> u64 {
         self.root.addr()
     }
+
+    /// The composed `TTBR0_EL1` value: root plus this space's ASID, ready to install.
+    pub fn ttbr0(&self) -> u64 {
+        mmu::ttbr0_value(self.root.addr(), self.asid)
+    }
 }
+
+/// The machine's ASID allocator (milestone 15; the crate carries the proofs). Taken alone, at
+/// address-space creation and teardown, holding nothing else that matters; a leaf-adjacent rank.
+static ASIDS: crate::sync::IrqSafeMutex<asid::Allocator> =
+    crate::sync::IrqSafeMutex::new(crate::sync::rank::ASIDS, asid::Allocator::new());
 
 impl Drop for AddressSpace {
     fn drop(&mut self) {
@@ -202,6 +230,12 @@ impl Drop for AddressSpace {
         // run, root and tables and leaves alike, to the allocator. This is the
         // "reclaim-on-process-death" wiring §13 deferred; the frame list it replaced is gone.
         crate::untyped::destroy(self.region);
+
+        // The ASID contract (crates/asid): invalidate every TLB entry wearing our tag, THEN
+        // hand the number back. In the other order, the next owner of this ASID could hit our
+        // stale translations, which is exactly the bug tagging exists to prevent.
+        mmu::flush_asid(self.asid);
+        ASIDS.lock().free(self.asid);
     }
 }
 
@@ -1565,6 +1599,46 @@ mod tests {
         );
     }
 
+    /// **The milestone 15 witness: address spaces stay apart with NO flush on switch.**
+    ///
+    /// Two spaces map the *same* virtual address to different frames holding different bytes.
+    /// We install A and read through the VA (loading A's translation, tagged with A's ASID,
+    /// into the TLB), then install B, which since milestone 15 flushes nothing, and read
+    /// again. If user mappings were still global, or the ASID did not ride TTBR0, or two
+    /// spaces shared a tag, B's read would hit A's still-cached entry and see A's byte: one
+    /// process reading another's memory, the exact bug the sledgehammer flush used to prevent.
+    #[test_case]
+    fn asid_tagging_keeps_address_spaces_apart_without_flushes() {
+        let mut a = AddressSpace::new(2).expect("no space A");
+        let mut b = AddressSpace::new(2).expect("no space B");
+
+        let (asid_a, asid_b) = (a.ttbr0() >> 48, b.ttbr0() >> 48);
+        assert_ne!(asid_a, asid_b, "two live spaces share an ASID");
+        assert_ne!(asid_a, 0, "a user space got the kernel's ASID 0");
+        assert_ne!(asid_b, 0, "a user space got the kernel's ASID 0");
+
+        const VA: u64 = 0x40_0000;
+        a.map_new(VA, Flags::user_data()).expect("map A")[0] = 0xAA;
+        b.map_new(VA, Flags::user_data()).expect("map B")[0] = 0xBB;
+
+        // SAFETY: nothing is at EL0; we are a kernel thread mid-test, and each space outlives
+        // its activation. The reads go through the live TTBR0 translation, which is the point.
+        let (read_a, read_b) = unsafe {
+            mmu::activate_user(a.ttbr0());
+            let ra = core::ptr::read_volatile(VA as *const u8);
+            mmu::activate_user(b.ttbr0()); // milestone 15: this flushes NOTHING
+            let rb = core::ptr::read_volatile(VA as *const u8);
+            mmu::deactivate_user();
+            (ra, rb)
+        };
+
+        assert_eq!(read_a, 0xAA);
+        assert_eq!(
+            read_b, 0xBB,
+            "B read A's byte: a stale TLB entry crossed address spaces, so the nG/ASID              tagging is broken",
+        );
+    }
+
     /// The loader honours the file's permissions, and does not widen them.
     ///
     /// An ELF's `.rodata` segment is `PF_R` alone. The tempting shortcut is to map every
@@ -1583,7 +1657,7 @@ mod tests {
 
         // Install it so we can ask the CPU's own tables, rather than our record of them.
         // SAFETY: nothing is at EL0 right now; we are a kernel thread mid-test.
-        unsafe { mmu::activate_user(space.root()) };
+        unsafe { mmu::activate_user(space.ttbr0()) };
 
         let (_, flags) = mmu::translate_user(rodata.vaddr).expect(".rodata is not mapped at all");
 
@@ -1616,7 +1690,7 @@ mod tests {
         let (space, _) = load(initrd().expect("no initrd")).expect("the initrd did not load");
 
         // SAFETY: nothing is at EL0; we are a kernel thread mid-test.
-        unsafe { mmu::activate_user(space.root()) };
+        unsafe { mmu::activate_user(space.ttbr0()) };
 
         // The precondition, and it is what gives the assertion below its teeth: that address IS
         // mapped, and the KERNEL can read it. It reads it all day.
@@ -1762,7 +1836,7 @@ mod tests {
             .expect("device map failed");
 
         // SAFETY: nothing is at EL0; we are a kernel thread mid-test.
-        unsafe { mmu::activate_user(space.root()) };
+        unsafe { mmu::activate_user(space.ttbr0()) };
 
         let (data_pa, data_f) = mmu::translate_user(DATA_VA).expect("shared page not mapped");
         assert_eq!(data_pa, frame, "shared page maps the wrong frame");
