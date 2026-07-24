@@ -32,13 +32,14 @@ IPC and the MMU invariants are next. This threads through the list rather than b
 | 18 | Verify the capability core, then spread inward | Machine-checked proofs of `caps`, then IPC, then MMU isolation | **the verification itself.** **Built:** `caps`, IPC (rendezvous + one-shot Reply), and the MMU isolation invariants are all proved |
 | 14 | Kernel objects from untyped: remove the kernel heap | Retype TCBs, endpoints, page tables; delete the kernel heap | **critical path:** a verifiable kernel cannot allocate. **Built:** the kernel has no allocator; see design/kernel-objects-from-untyped.md |
 | 15 | Tagged address spaces (ASIDs) | 16-bit ASIDs, generation/rollover; stop flushing the whole EL1 TLB per switch | perf the real-workload path needs on real silicon. **Built** (8-bit fixed bitmap, no rollover: milestone 14's bounds made generations unnecessary; notes/asids.md) |
+| 21 | Performance measurement: benchmarks with teeth | Deterministic icount microbenchmarks, `script/bench`, a committed baseline that fails on regression | perf claims become measurements; regressions surface next to their cause |
 | 16 | Real hardware + SMMU-backed driver isolation | Port to an IOMMU-backed machine; confine driver DMA in silicon | isolation in hardware, under real workloads |
 | 19 | Run a real workload | A native-ABI workload first; Linux-compat or VM hosting later | **the "runs real workloads" half** of the thesis |
 | 17 | Multikernel-leaning scheduler (research, optional) | Partition the shared thread table and endpoints | optional; not on the thesis path |
 | 20 | A portable HAL, proven on a second architecture | Make `arch/` a real HAL; bring up RISC-V then x86_64 | the "portable verified core" claim; reach the demonstrator earns |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
-road to running real workloads on real machines (15, 16, 19), with the multikernel work (17) as
+road to running real workloads on real machines (15, 21, 16, 19), with the multikernel work (17) as
 optional research and the second-architecture port (20) as the reach the demonstrator earns, late and
 only after the core is proven. The broad competitor ambition stays parked (see the end of this file).
 Several milestones already have their design worked out; the blocks below point at it.
@@ -101,6 +102,26 @@ goal?") is resolved: it is. So this is no longer an optional purity win. A verif
 allocate dynamically, so removing the heap is a prerequisite for verifying the kernel at scale rather
 than only its pure-logic crates. It still also buys the smaller payoff on its own terms: the
 kernel-heap-exhaustion class disappears entirely.
+
+### 21. Performance measurement: benchmarks with teeth
+
+**Added 2026-07-23, prompted by milestone 15 shipping a performance win nothing measures.** The
+requirement, stated by Chris: identify performance issues, and identify the *introduction* of
+performance problems proximate to the changes that introduce them.
+
+**Deliverable.** In-kernel microbenchmarks over the paths a microkernel lives on (IPC round-trip,
+call/reply, context switch, spawn-to-reap, untyped map, null syscall), run under QEMU `-icount`
+so virtual time is a deterministic function of instructions executed; a `script/bench` entry
+point separate from `script/test`; and a **committed baseline** that `script/bench --check`
+diffs against, failing loudly on regression. Updating the baseline is a deliberate act in the
+same commit that changes performance, so the baseline file's git history *is* the performance
+record, each delta next to its cause.
+
+**The honest limits, stated up front.** QEMU TCG models no caches and no TLB timing, so icount
+counts catch *path-length* regressions (an extra lock, an accidental O(n), a flush creeping
+back), not microarchitectural effects; milestone 15's actual TLB win stays unmeasured until
+real silicon. Milestone 16 inherits this harness and swaps the clock for the PMU cycle counter,
+which is when the numbers start meaning nanoseconds.
 
 ### 15. Tagged address spaces (ASIDs)
 
