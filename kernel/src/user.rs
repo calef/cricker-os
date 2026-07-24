@@ -650,6 +650,7 @@ user_program!(outlaw, USER_OUTLAW_START, USER_OUTLAW_END);
 /// told apart by the argument in `x0`.
 #[allow(dead_code)] // the demo payload: exercised by the boot demo, mechanism unit-tested
 pub mod console_service {
+    use crate::sched::EpId;
     use super::*;
     use crate::cap::{Rights, endpoint_cap};
 
@@ -667,8 +668,8 @@ pub mod console_service {
     /// What a client needs to talk to the console server: two endpoints and the shared page.
     #[derive(Clone, Copy)]
     pub struct Console {
-        pub request: usize,
-        pub reply: usize,
+        pub request: EpId,
+        pub reply: EpId,
         pub shared_phys: u64,
     }
 
@@ -769,6 +770,7 @@ pub mod console_service {
 /// kernel does not touch the device.
 #[allow(dead_code)] // the demo payload; the mechanism is unit-tested
 pub mod virtio_service {
+    use crate::sched::EpId;
     use super::*;
     use crate::cap::{Rights, endpoint_cap, irq_cap, virtio_cap};
 
@@ -781,7 +783,7 @@ pub mod virtio_service {
 
     /// Start the driver. Returns the endpoint it will report its result on, or `None` if there is
     /// no disk attached to enumerate.
-    pub fn start(image: &'static [u8]) -> Option<usize> {
+    pub fn start(image: &'static [u8]) -> Option<EpId> {
         let dev = crate::virtio::find_block_device()?;
 
         // A DMA page: physical memory the device can reach, mapped into the driver, whose
@@ -840,7 +842,7 @@ pub mod virtio_service {
     /// Spawn a MALICIOUS driver that tries to DMA over kernel memory, for the security test. It
     /// holds a real `Virtio` capability and its own DMA region, and points a descriptor at the
     /// kernel image. Returns the endpoint on which it reports whether the kernel refused it.
-    pub fn start_attacker(image: &'static [u8]) -> Option<usize> {
+    pub fn start_attacker(image: &'static [u8]) -> Option<EpId> {
         let dev = crate::virtio::find_block_device()?;
         let dma = crate::memory::alloc().expect("no DMA frame").addr();
         // SAFETY: fresh frame via the direct map.
@@ -882,7 +884,7 @@ pub mod virtio_service {
     /// device at the kernel image. Same wiring as [`start_attacker`], different role. The kernel
     /// strips the feature and refuses the flag, so the attacker reports `1` (refused). Returns the
     /// report endpoint.
-    pub fn start_attacker_indirect(image: &'static [u8]) -> Option<usize> {
+    pub fn start_attacker_indirect(image: &'static [u8]) -> Option<EpId> {
         let dev = crate::virtio::find_block_device()?;
         let dma = crate::memory::alloc().expect("no DMA frame").addr();
         // SAFETY: fresh frame via the direct map.
@@ -921,6 +923,7 @@ pub mod virtio_service {
 /// Console **input** in userspace: the receive half of the terminal.
 #[allow(dead_code)]
 pub mod input_service {
+    use crate::sched::EpId;
     use super::*;
     use crate::cap::{Rights, endpoint_cap, irq_cap};
 
@@ -932,13 +935,13 @@ pub mod input_service {
 
     /// Spawn the input driver in a given role, wired to the UART and its receive interrupt, and
     /// return the endpoint it delivers completed lines on.
-    pub fn spawn_role(image: &'static [u8], role: u64) -> usize {
+    pub fn spawn_role(image: &'static [u8], role: u64) -> EpId {
         spawn_wired(image, role, None).0
     }
 
     /// Spawn the input driver, optionally sharing its line buffer with a reader at `line_va` in
     /// that reader's address space. Returns (line endpoint, line-buffer physical address).
-    pub fn spawn_wired(image: &'static [u8], role: u64, _reader: Option<()>) -> (usize, u64) {
+    pub fn spawn_wired(image: &'static [u8], role: u64, _reader: Option<()>) -> (EpId, u64) {
         let line = crate::sched::create_endpoint();
 
         let irq_ep = crate::sched::create_endpoint();
@@ -1095,6 +1098,7 @@ pub mod shell_service {
 /// Milestone 11: hand a process an untyped budget and let it spend it.
 #[allow(dead_code)]
 pub mod untyped_service {
+    use crate::sched::EpId;
     use super::*;
     use crate::cap::{Rights, endpoint_cap, untyped_cap};
 
@@ -1103,7 +1107,7 @@ pub mod untyped_service {
     /// Carve `pages` of memory into an untyped region, hand it to a fresh process, and return the
     /// region id and the endpoint the process reports on. The kernel's ONE allocation is the
     /// untyped itself; everything the process maps afterward spends that, not the allocator.
-    pub fn start(image: &'static [u8], pages: u64) -> Option<(usize, usize)> {
+    pub fn start(image: &'static [u8], pages: u64) -> Option<(usize, EpId)> {
         let region = crate::untyped::create(pages)?;
         let report = crate::sched::create_endpoint();
 
@@ -1147,6 +1151,7 @@ pub mod untyped_service {
 /// frame_producer()/frame_consumer().
 #[cfg(test)]
 pub mod frame_service {
+    use crate::sched::EpId;
     use super::*;
     use crate::cap::{Rights, endpoint_cap, untyped_cap};
 
@@ -1156,7 +1161,7 @@ pub mod frame_service {
     /// Spawn the pair, each with its own untyped budget, and return the endpoint the consumer
     /// reports its verdict on. Eight pages of untyped apiece covers one frame plus the page tables
     /// each side needs to map it.
-    pub fn wire(image: &'static [u8]) -> usize {
+    pub fn wire(image: &'static [u8]) -> EpId {
         let channel = crate::sched::create_endpoint();
         let report = crate::sched::create_endpoint();
         let prod_ut = crate::untyped::create(8).expect("no untyped for the frame producer");
@@ -1203,6 +1208,7 @@ pub mod frame_service {
 
 #[cfg(test)]
 pub mod delegation_service {
+    use crate::sched::EpId;
     use super::*;
     use crate::cap::{Rights, endpoint_cap};
 
@@ -1217,7 +1223,7 @@ pub mod delegation_service {
     /// `resource` capability (held `WRITE | GRANT`) to the receiver, narrowed to `WRITE`. The
     /// receiver `SEND`s [`USED_WORD`] on the received capability (a `RECV` on `resource` collects
     /// it) and reports a two-bit verdict on `report`.
-    pub fn wire(image: &'static [u8]) -> (usize, usize) {
+    pub fn wire(image: &'static [u8]) -> (EpId, EpId) {
         let channel = crate::sched::create_endpoint(); // granter SEND_CAP -> receiver RECV_CAP
         let resource = crate::sched::create_endpoint(); // the capability being delegated
         let loopback = crate::sched::create_endpoint(); // the receiver's refused re-delegation target
@@ -1262,11 +1268,70 @@ pub mod delegation_service {
     }
 }
 
+/// **Milestone 19a: a process mints an endpoint from its own memory, at EL0.** The maker holds
+/// an untyped budget and a channel; the peer holds the channel and a report line. Everything
+/// else, the endpoint itself included, is created at runtime by the maker out of its own pages
+/// and delegated. See user/src/hello.rs ep_maker()/ep_user().
+#[cfg(test)]
+pub mod retype_ep_service {
+    use crate::sched::EpId;
+    use super::*;
+    use crate::cap::{Rights, endpoint_cap, untyped_cap};
+
+    const ROLE_MAKER: u64 = 17;
+    const ROLE_USER: u64 = 18;
+
+    /// Spawn the pair; returns the report endpoint carrying the word that crossed the minted
+    /// endpoint.
+    pub fn wire(image: &'static [u8]) -> EpId {
+        let channel = crate::sched::create_endpoint();
+        let report = crate::sched::create_endpoint();
+        let region = crate::untyped::create(4).expect("no region for the maker's budget");
+
+        crate::sched::spawn(move || {
+            run(
+                image,
+                Spawn {
+                    arg0: ROLE_MAKER,
+                    arg1: 0,
+                    arg2: 0,
+                    grants: &[
+                        untyped_cap(region),                  // slot 0: the budget to mint from
+                        endpoint_cap(channel, Rights::WRITE), // slot 1: delegate the mint here
+                    ],
+                    maps: &[],
+                },
+            )
+        })
+        .expect("could not spawn the endpoint maker");
+
+        crate::sched::spawn(move || {
+            run(
+                image,
+                Spawn {
+                    arg0: ROLE_USER,
+                    arg1: 0,
+                    arg2: 0,
+                    grants: &[
+                        endpoint_cap(channel, Rights::READ), // slot 0: receive the delegation
+                        endpoint_cap(report, Rights::WRITE), // slot 1: report the word
+                    ],
+                    maps: &[],
+                },
+            )
+        })
+        .expect("could not spawn the endpoint user");
+
+        report
+    }
+}
+
 /// **Milestone 12: Call/Reply, at EL0.** One request endpoint, a server that answers a caller it was
 /// never wired to, and the one-shot reply capability proven across the boundary. See
 /// user/src/hello.rs call_server()/call_client().
 #[cfg(test)]
 pub mod call_service {
+    use crate::sched::EpId;
     use super::*;
     use crate::cap::{Rights, endpoint_cap};
 
@@ -1276,7 +1341,7 @@ pub mod call_service {
     /// Spawn the pair, sharing one request endpoint. Returns `(client reply report, server one-shot
     /// report)`: the client publishes the reply it got, the server publishes whether a second reply
     /// was refused.
-    pub fn wire(image: &'static [u8]) -> (usize, usize) {
+    pub fn wire(image: &'static [u8]) -> (EpId, EpId) {
         let ep = crate::sched::create_endpoint(); // client CALL <-> server RECV_CAP
         let call_report = crate::sched::create_endpoint();
         let oneshot_report = crate::sched::create_endpoint();
@@ -1324,13 +1389,14 @@ pub mod call_service {
 /// user/src/hello.rs revoke_demo().
 #[cfg(test)]
 pub mod revoke_service {
+    use crate::sched::EpId;
     use super::*;
     use crate::cap::{Rights, endpoint_cap, untyped_cap};
 
     const ROLE_REVOKE_DEMO: u64 = 16;
 
     /// Spawn the demo with an 8-page untyped budget; returns the endpoint it reports its verdict on.
-    pub fn wire(image: &'static [u8]) -> usize {
+    pub fn wire(image: &'static [u8]) -> EpId {
         let region = crate::untyped::create(8).expect("no untyped for the revoke demo");
         let report = crate::sched::create_endpoint();
         crate::sched::spawn(move || {
@@ -2094,6 +2160,23 @@ mod tests {
             before,
             "four user address spaces came and went and {} frames did not come back",
             used() as i64 - before as i64,
+        );
+    }
+
+    /// **Milestone 19a, end to end: an endpoint minted by a process out of its own memory
+    /// carries IPC between processes.** The maker retypes a page of its untyped into an endpoint
+    /// (`RETYPE_OBJ`), delegates a READ view to a peer it has never met, and sends a word into
+    /// it; the peer listens on the received capability and reports what arrived. No kernel
+    /// wiring created the endpoint: budget, mint, delegation, and rendezvous are all the
+    /// processes' own acts. The word arriving is the whole granular-construction story of 19a
+    /// working at EL0.
+    #[test_case]
+    fn a_process_can_mint_an_endpoint_and_ipc_flows_over_it() {
+        let report = retype_ep_service::wire(initrd().expect("no initrd"));
+        let word = sched::ipc_recv(report)[0];
+        assert_eq!(
+            word, 0x77,
+            "the word never crossed the process-minted endpoint",
         );
     }
 

@@ -187,18 +187,50 @@ struct Scheduler {
     ///
     /// Every IPC endpoint. Indexed by the `usize` inside an `Object::Endpoint` capability, which
     /// only the kernel mints, so the index is always in range.
-    /// Fixed capacity (milestone 14 phase B.1): an `Endpoint` shrank to two queue heads and a
-    /// counter at A.3, so the whole table is a few KiB and creating an endpoint touches no heap.
-    /// `MAX_ENDPOINTS` is a documented limit of the image, like `MAX_THREADS`.
-    endpoints: [Endpoint; MAX_ENDPOINTS],
-    /// How many endpoints exist. They are created and never destroyed (an endpoint id lives
-    /// inside capabilities), so this only grows; `create_endpoint` refuses past the cap.
-    endpoint_count: usize,
+    /// **The endpoint registry** (milestone 19a; design/init-and-granular-spawn.md). An endpoint
+    /// is page-resident now: it lives at the start of a page retyped from some untyped region
+    /// (a process's own, via `RETYPE_OBJ`, or the kernel's, via [`create_endpoint`]), and that
+    /// region is pinned so the page can never be freed under a blocked thread. The registry
+    /// entry is the page's physical address; the generational name (`crates/slots`, the same
+    /// machinery as Tids) is what an `Object::Endpoint` capability carries, so the day endpoints
+    /// can die, stale names will already fail safely.
+    endpoints: slots::Table<u64, MAX_ENDPOINTS>,
+    /// The kernel's own object region: where the kernel's endpoints (boot services, tests) are
+    /// retyped from, so every endpoint lives uniformly in a pinned page regardless of who paid.
+    /// Carved lazily on the first [`create_endpoint`].
+    kernel_ep_region: Option<usize>,
 }
 
-/// The most endpoints that can ever exist. Endpoint teardown does not exist yet (ids live in
-/// capabilities), so this bounds creations over the kernel's lifetime, not concurrent use.
+/// The most endpoints that can ever exist: the registry's bound. Endpoint teardown does not
+/// exist yet (regions hosting endpoints are pinned), so this caps creations over the kernel's
+/// lifetime, not concurrent use.
 const MAX_ENDPOINTS: usize = 256;
+
+/// An endpoint's name: a generational `slots` name over the endpoint registry (19a). What an
+/// `Object::Endpoint` capability carries. `u64` like a Tid, and stale-safe the same way.
+pub type EpId = u64;
+
+/// The pages the kernel carves for its own endpoints. 64 endpoints covers boot services plus
+/// every test in the suite; exhaustion panics in [`create_endpoint`] with the number to raise.
+const KERNEL_EP_PAGES: u64 = 64;
+
+/// The endpoint behind a name. Caller holds `SCHED`.
+///
+/// Panics on a name that does not resolve, which is the old array's bounds panic wearing the new
+/// naming: endpoint names reach here only out of kernel-minted capabilities, and endpoints are
+/// never destroyed (their regions are pinned), so a miss is kernel corruption, not user input.
+///
+/// The `'static` is the page's pinned-ness made into a lifetime: the page is never freed, the
+/// direct map always names it, and `SCHED` serializes every access to what it holds.
+fn endpoint_of(sched: &Scheduler, ep: EpId) -> &'static mut Endpoint {
+    let phys = *sched
+        .endpoints
+        .get(ep)
+        .expect("endpoint name did not resolve");
+    // SAFETY: retyped exclusively for this endpoint, region pinned (never freed), direct-mapped,
+    // and serialized by SCHED, which every caller holds.
+    unsafe { &mut *(crate::arch::mmu::phys_to_virt(phys) as *mut Endpoint) }
+}
 
 /// Rank **above the allocators**, because the reaper (`finish_switch`) drops a dead `Thread` in
 /// its pool slot while holding this, and that drop *frees*: the kernel stack's pages go back to
@@ -233,8 +265,8 @@ pub fn init() {
 
     *sched = Some(Scheduler {
         threads,
-        endpoints: [const { Endpoint::new() }; MAX_ENDPOINTS],
-        endpoint_count: 0,
+        endpoints: slots::Table::new(),
+        kernel_ep_region: None,
     });
     drop(sched); // release before spawning, which takes the lock itself
 
@@ -692,18 +724,19 @@ pub(crate) fn finish_switch() {
 /// that can go wrong; a bounded array of atomics cannot. 256 covers every INTID we will see
 /// (SGIs 0-15, the timer PPI at 30, virtio SPIs in the 40s).
 const MAX_INTID: usize = 256;
-static IRQ_ROUTES: [core::sync::atomic::AtomicUsize; MAX_INTID] =
-    [const { core::sync::atomic::AtomicUsize::new(0) }; MAX_INTID];
+static IRQ_ROUTES: [AtomicU64; MAX_INTID] = [const { AtomicU64::new(0) }; MAX_INTID];
 
 /// Route a hardware interrupt to an endpoint. From now on, when `intid` fires, whoever is
 /// blocked on `ep` wakes; if nobody is, the signal is remembered so it is not lost.
-pub fn bind_irq(intid: u32, ep: usize) {
+pub fn bind_irq(intid: u32, ep: EpId) {
     assert!((intid as usize) < MAX_INTID, "intid {intid} out of range");
+    // +1 so 0 keeps meaning "not routed". A name can never be u64::MAX (the registry mints
+    // (generation << 32) | slot with slot < 256), so the increment cannot wrap.
     IRQ_ROUTES[intid as usize].store(ep + 1, Ordering::Release);
 }
 
 /// The endpoint an interrupt is routed to, if any. Read from the IRQ handler; lock-free.
-pub fn irq_route(intid: u32) -> Option<usize> {
+pub fn irq_route(intid: u32) -> Option<EpId> {
     if (intid as usize) >= MAX_INTID {
         return None;
     }
@@ -723,12 +756,12 @@ pub fn irq_route(intid: u32) -> Option<usize> {
 /// Safe to call from IRQ context: it takes the scheduler lock, which the interrupted code
 /// cannot have been holding, because `IrqSafeMutex` masks interrupts for exactly as long as it
 /// is held. See DECISIONS §9.
-pub fn irq_notify(ep: usize) {
+pub fn irq_notify(ep: EpId) {
     let mut guard = SCHED.lock();
     let sched = guard.as_mut().expect("no scheduler");
 
     // `signal` wakes a waiting receiver or counts the signal; it never blocks or joins a queue.
-    if let Some(waiter) = sched.endpoints[ep].signal() {
+    if let Some(waiter) = endpoint_of(sched, ep).signal() {
         // SAFETY: only live Blocked threads sit on wait queues; reading the id revalidates it
         // through the table for everything after.
         let waiter = unsafe { (*waiter).id };
@@ -737,19 +770,48 @@ pub fn irq_notify(ep: usize) {
     }
 }
 
-/// Create an IPC endpoint. Returns its id, which is what goes inside an `Object::Endpoint`.
-///
-/// Panics when the fixed table is exhausted: every caller is the kernel or a test wiring a
-/// service, so exhaustion is a misconfigured image, not a runtime condition to recover from.
-pub fn create_endpoint() -> usize {
+/// Create an endpoint **in `region`'s memory** (milestone 19a): one page retyped and pinned, the
+/// endpoint at its start, a fresh generational name in the registry. The shared engine of the
+/// `RETYPE_OBJ` syscall and the kernel's own [`create_endpoint`]. `None` when the region is out
+/// of budget or the registry is full (in which case the retyped page is spent but unused: a
+/// process-local loss on its own budget, same as every failed spend since B.4).
+pub fn create_endpoint_from(region: usize) -> Option<EpId> {
     let mut guard = SCHED.lock();
-    let sched = guard.as_mut().expect("no scheduler");
-    assert!(
-        sched.endpoint_count < MAX_ENDPOINTS,
-        "out of endpoints: MAX_ENDPOINTS ({MAX_ENDPOINTS}) is a limit of the image"
-    );
-    sched.endpoint_count += 1;
-    sched.endpoint_count - 1
+    let sched = guard.as_mut()?;
+
+    // Rank: UNTYPED (58) under SCHED (60) is a legal descent; the pin rides in the same lock
+    // hold as the carve, so no destroy can race the page away (see retype_object_page).
+    let phys = crate::untyped::retype_object_page(region)?;
+
+    // The page arrives zeroed, and an all-zero Endpoint happens to be valid; write it explicitly
+    // anyway, because "happens to be" is the kind of truth that stops being one silently.
+    // SAFETY: fresh page, exclusively ours, direct-mapped.
+    unsafe { (crate::arch::mmu::phys_to_virt(phys) as *mut Endpoint).write(Endpoint::new()) };
+
+    sched.endpoints.insert_with(|_| phys)
+}
+
+/// Create an IPC endpoint on the kernel's own budget. Returns the name that goes inside an
+/// `Object::Endpoint`. The kernel's object region is carved lazily on first use and pinned like
+/// any other endpoint host.
+///
+/// Panics on exhaustion: every caller is the kernel or a test wiring a service, so running out
+/// is a misconfigured image (raise KERNEL_EP_PAGES or MAX_ENDPOINTS), not a runtime condition.
+pub fn create_endpoint() -> EpId {
+    let region = {
+        let mut guard = SCHED.lock();
+        let sched = guard.as_mut().expect("no scheduler");
+        match sched.kernel_ep_region {
+            Some(r) => r,
+            None => {
+                let r = crate::untyped::create(KERNEL_EP_PAGES)
+                    .expect("no memory for the kernel's endpoint region");
+                sched.kernel_ep_region = Some(r);
+                r
+            }
+        }
+    };
+    create_endpoint_from(region).expect("out of endpoints: raise KERNEL_EP_PAGES / MAX_ENDPOINTS")
 }
 
 /// Move a blocked thread back to the ready queue. Caller holds the lock.
@@ -789,7 +851,7 @@ fn wake(sched: &mut Scheduler, tid: Tid) {
 ///
 /// Callable by a kernel thread directly (this function) or by a user thread through the `SEND`
 /// method on an endpoint capability (see syscall.rs). Same code underneath.
-pub fn ipc_send(ep: usize, msg: [u64; 3]) {
+pub fn ipc_send(ep: EpId, msg: [u64; 3]) {
     let block = {
         let mut guard = SCHED.lock();
         let sched = guard.as_mut().expect("no scheduler");
@@ -798,7 +860,7 @@ pub fn ipc_send(ep: usize, msg: [u64; 3]) {
         let me = tcb_ptr(sched, current);
         // SAFETY: `me` is the running thread (live, on no queue), and if queued it stays live:
         // a thread queued on an endpoint is Blocked, which the reaper never touches. See tcb_ptr.
-        match unsafe { sched.endpoints[ep].send(me) } {
+        match unsafe { endpoint_of(sched, ep).send(me) } {
             ipc::Send::Rendezvous(receiver) => {
                 // SAFETY: wait-queue entries are live Blocked threads; the id revalidates it.
                 let receiver = unsafe { (*receiver).id };
@@ -825,7 +887,7 @@ pub fn ipc_send(ep: usize, msg: [u64; 3]) {
 
 /// **Receive three words from an endpoint, blocking until one arrives.** The mirror of
 /// [`ipc_send`].
-pub fn ipc_recv(ep: usize) -> [u64; 3] {
+pub fn ipc_recv(ep: EpId) -> [u64; 3] {
     let immediate = {
         let mut guard = SCHED.lock();
         let sched = guard.as_mut().expect("no scheduler");
@@ -833,7 +895,7 @@ pub fn ipc_recv(ep: usize) -> [u64; 3] {
 
         let me = tcb_ptr(sched, current);
         // SAFETY: as in ipc_send: the running thread, and Blocked-while-queued keeps it live.
-        match unsafe { sched.endpoints[ep].recv(me) } {
+        match unsafe { endpoint_of(sched, ep).recv(me) } {
             // An interrupt already fired while we were not waiting. Take it and do not block.
             ipc::Recv::Signal => Some([1, 0, 0]),
             ipc::Recv::FromSender(sender) => {
@@ -891,7 +953,7 @@ const NO_CAP: u64 = u64::MAX;
 /// If the receiver's cspace is full the capability is dropped and the receiver sees `NO_CAP`; the
 /// data word still arrives. The syscall layer has already checked the sender may delegate this
 /// capability (it holds `GRANT`) and that the rights only narrow.
-pub fn ipc_send_cap(ep: usize, data: u64, cap: crate::cap::Cap) {
+pub fn ipc_send_cap(ep: EpId, data: u64, cap: crate::cap::Cap) {
     let block = {
         let mut guard = SCHED.lock();
         let sched = guard.as_mut().expect("no scheduler");
@@ -899,7 +961,7 @@ pub fn ipc_send_cap(ep: usize, data: u64, cap: crate::cap::Cap) {
 
         let me = tcb_ptr(sched, current);
         // SAFETY: as in ipc_send.
-        match unsafe { sched.endpoints[ep].send(me) } {
+        match unsafe { endpoint_of(sched, ep).send(me) } {
             ipc::Send::Rendezvous(receiver) => {
                 // SAFETY: wait-queue entries are live Blocked threads; the id revalidates it.
                 let receiver = unsafe { (*receiver).id };
@@ -931,7 +993,7 @@ pub fn ipc_send_cap(ep: usize, data: u64, cap: crate::cap::Cap) {
 ///
 /// A capability-carrying send and this share the ordinary sender/receiver queues, so either side
 /// may arrive first, exactly as with the plain path.
-pub fn ipc_recv_cap(ep: usize) -> [u64; 3] {
+pub fn ipc_recv_cap(ep: EpId) -> [u64; 3] {
     let immediate = {
         let mut guard = SCHED.lock();
         let sched = guard.as_mut().expect("no scheduler");
@@ -939,7 +1001,7 @@ pub fn ipc_recv_cap(ep: usize) -> [u64; 3] {
 
         let me = tcb_ptr(sched, current);
         // SAFETY: as in ipc_send.
-        match unsafe { sched.endpoints[ep].recv(me) } {
+        match unsafe { endpoint_of(sched, ep).recv(me) } {
             // An interrupt signal is not a delegation; it carries no capability.
             ipc::Recv::Signal => Some([1, NO_CAP, 0]),
             ipc::Recv::FromSender(sender) => {
@@ -997,7 +1059,7 @@ pub fn ipc_recv_cap(ep: usize) -> [u64; 3] {
 /// If the server's cspace is full the reply cap is dropped (the server sees `NO_CAP`, exactly as a
 /// delegated cap would be) and, having no way to answer, the caller blocks until torn down: the same
 /// no-timeout limitation as a reply that never comes, and self-inflicted by the server.
-pub fn ipc_call(ep: usize, msg: [u64; 2]) -> [u64; 3] {
+pub fn ipc_call(ep: EpId, msg: [u64; 2]) -> [u64; 3] {
     {
         let mut guard = SCHED.lock();
         let sched = guard.as_mut().expect("no scheduler");
@@ -1008,7 +1070,7 @@ pub fn ipc_call(ep: usize, msg: [u64; 2]) -> [u64; 3] {
         // difference is the caller *always* blocks awaiting the reply, whether or not it met a server.
         let me = tcb_ptr(sched, current);
         // SAFETY: as in ipc_send; a caller queued here is Blocked until its Reply arrives.
-        match unsafe { sched.endpoints[ep].send(me) } {
+        match unsafe { endpoint_of(sched, ep).send(me) } {
             ipc::Send::Rendezvous(receiver) => {
                 // SAFETY: wait-queue entries are live Blocked threads; the id revalidates it.
                 let receiver = unsafe { (*receiver).id };
@@ -1532,6 +1594,44 @@ mod tests {
             ANSWER.load(Ordering::SeqCst),
             42,
             "the server computed the wrong answer"
+        );
+    }
+
+    /// **Milestone 19a: an endpoint retyped from a region carries IPC, and pins its region.**
+    /// The kernel-level half of the granular-construction story: `create_endpoint_from` carves a
+    /// page, the endpoint lives in it, rendezvous works over it exactly as over a kernel-wired
+    /// endpoint, and `untyped::destroy` refuses the now-pinned region, because freeing the page
+    /// under a live endpoint would dangle every queued thread. The refusal is measured, not
+    /// assumed: the allocator's free count must not move.
+    #[test_case]
+    fn a_retyped_endpoint_carries_ipc_and_pins_its_region() {
+        use core::sync::atomic::{AtomicU64, Ordering};
+        static GOT: AtomicU64 = AtomicU64::new(0);
+
+        let region = crate::untyped::create(2).expect("no region");
+        let ep = super::create_endpoint_from(region).expect("no endpoint from region");
+        let kernel_ep = super::create_endpoint();
+        assert_ne!(ep, kernel_ep, "registry names collide");
+
+        super::spawn(move || {
+            GOT.store(super::ipc_recv(ep)[0], Ordering::SeqCst);
+        })
+        .expect("spawn failed");
+        super::ipc_send(ep, [0x2A, 0, 0]);
+        for _ in 0..200 {
+            if GOT.load(Ordering::SeqCst) != 0 {
+                break;
+            }
+            super::yield_now();
+        }
+        assert_eq!(GOT.load(Ordering::SeqCst), 0x2A, "no rendezvous over the retyped endpoint");
+
+        let free_before = crate::memory::stats().unwrap().free();
+        crate::untyped::destroy(region);
+        assert_eq!(
+            crate::memory::stats().unwrap().free(),
+            free_before,
+            "destroy reclaimed a pinned region hosting a live endpoint",
         );
     }
 

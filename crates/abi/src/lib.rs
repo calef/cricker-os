@@ -122,6 +122,12 @@ pub mod reply {
 /// The rights bits, matching `caps::Rights`, so userspace can name the rights to narrow a
 /// delegated capability to (the `rights` argument to [`endpoint::SEND_CAP`]) without depending on
 /// the kernel's `caps` crate.
+/// Object types for [`untyped::RETYPE_OBJ`]: what a page of untyped becomes.
+pub mod objtype {
+    /// An IPC endpoint, page-resident, owned by the caller's budget (milestone 19a).
+    pub const ENDPOINT: u64 = 1;
+}
+
 pub mod rights {
     pub const READ: u64 = 1 << 0;
     pub const WRITE: u64 = 1 << 1;
@@ -172,6 +178,20 @@ pub mod untyped {
     /// page a first-class, delegatable object rather than something mapped in one shot. `OutOfMemory`
     /// when the untyped is exhausted or the caller's cspace is full.
     pub const RETYPE: u64 = 1;
+
+    /// `invoke(cap, RETYPE_OBJ, objtype, _, _)` -> slot. Retype one page out of the untyped into
+    /// a **kernel object** (milestone 19a; design/init-and-granular-spawn.md): the object lives
+    /// in that page, in the caller's own memory, and the returned slot holds a full-rights
+    /// capability to it. One object per page, deliberately (one memory rule for the whole object
+    /// family; packing is a later placement optimization).
+    ///
+    /// `objtype` names what to make (see [`objtype`](super::objtype)); 19a implements
+    /// `ENDPOINT`. A region that has produced a kernel object is **pinned**: `destroy` refuses
+    /// it, because live kernel objects (threads may be blocked on the endpoint) must not have
+    /// their page reclaimed from under them. Reclaiming object regions waits for object
+    /// revocation. `BadMethod` for an unknown objtype; `OutOfMemory` when the untyped is
+    /// exhausted, the object registry is full, or the caller's cspace is.
+    pub const RETYPE_OBJ: u64 = 2;
 }
 
 /// Methods on a `Frame` capability. **A physical page a process holds, maps, and shares.**

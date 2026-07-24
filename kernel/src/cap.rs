@@ -22,12 +22,13 @@
 ///   allocating and this enum stops being the interesting part of the system.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Object {
-    /// An IPC endpoint, by id (an index into the scheduler's endpoint table).
+    /// An IPC endpoint, by **generational name** (milestone 19a: an endpoint is page-resident,
+    /// and this is its `slots` name in the scheduler's registry, stale-safe like a Tid).
     ///
     /// Invoking it is a `SEND` or a `RECV` (which one you may do is a matter of rights). Since
     /// milestone 8 this is how a process reaches the console: it holds a `WRITE` capability on
     /// the console server's endpoint, and printing is sending.
-    Endpoint(usize),
+    Endpoint(crate::sched::EpId),
 
     /// **Untyped memory** (milestone 11): a capability to a chunk of raw physical memory the
     /// process may retype into pages. Invoking it grows the process's address space out of its
@@ -91,7 +92,7 @@ pub use caps::{Error, Rights};
 ///
 /// **`WRITE` lets the holder `SEND`; `READ` lets it `RECV`.** Hand the two ends of one endpoint
 /// out with opposite rights and you have a one-way pipe that neither side can run backwards.
-pub fn endpoint_cap(ep: usize, rights: Rights) -> Cap {
+pub fn endpoint_cap(ep: crate::sched::EpId, rights: Rights) -> Cap {
     Cap {
         object: Object::Endpoint(ep),
         rights,

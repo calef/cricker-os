@@ -35,6 +35,11 @@ struct Region {
     pages: u64,
     /// Pages handed out so far. A bump pointer, and the whole of the allocator.
     watermark: u64,
+    /// **A kernel object lives in this region** (milestone 19a): a page here was retyped into an
+    /// endpoint (later: an address space, a TCB), so [`destroy`] refuses the region. Freeing a
+    /// live endpoint's page would dangle every thread blocked on it; un-pinning waits for object
+    /// revocation, and the pin is the honest record of that debt.
+    pinned: bool,
 }
 
 /// The most untyped regions that can ever be created. Region ids live inside capabilities and
@@ -59,6 +64,7 @@ static REGIONS: IrqSafeMutex<Regions> = IrqSafeMutex::new(
             base: 0,
             pages: 0,
             watermark: 0,
+            pinned: false,
         }; MAX_REGIONS],
         count: 0,
     },
@@ -95,6 +101,7 @@ pub fn create(pages: u64) -> Option<usize> {
         base,
         pages,
         watermark: 0,
+        pinned: false,
     };
     regions.count += 1;
     Some(id)
@@ -119,6 +126,31 @@ pub fn retype_page(region: usize) -> Option<u64> {
 
     // SAFETY: the page is inside a region we carved from the allocator and own exclusively; the
     // direct map reaches it. Zero it before anyone can read a stale descriptor out of it.
+    unsafe {
+        core::ptr::write_bytes(
+            crate::arch::mmu::phys_to_virt(phys) as *mut u8,
+            0,
+            FRAME_SIZE as usize,
+        );
+    }
+    Some(phys)
+}
+
+/// **Retype one page for a kernel object, pinning the region in the same breath** (19a). Pin and
+/// carve happen under one hold of the region lock, so no `destroy` can slip between them and
+/// free a page that is about to hold an endpoint. Zeroed like every retyped page.
+pub fn retype_object_page(region: usize) -> Option<u64> {
+    let mut regions = REGIONS.lock();
+    let r = regions.get_mut(region)?;
+    if r.watermark >= r.pages {
+        return None; // exhausted: the caller is out of budget, and nothing was pinned for it
+    }
+    r.pinned = true;
+    let phys = r.base + r.watermark * FRAME_SIZE;
+    r.watermark += 1;
+    drop(regions);
+
+    // SAFETY: as retype_page: exclusively ours, direct-mapped; zero before anyone reads it.
     unsafe {
         core::ptr::write_bytes(
             crate::arch::mmu::phys_to_virt(phys) as *mut u8,
@@ -158,6 +190,12 @@ pub fn destroy(region: usize) {
         let Some(r) = regions.get_mut(region) else {
             return;
         };
+        // Pinned: a kernel object (an endpoint a thread may be blocked on) lives in one of these
+        // pages. Refusing is the whole safety story; see Region::pinned. The region stays
+        // spend-only and immortal, exactly as every region was before §13.
+        if r.pinned {
+            return;
+        }
         let bp = (r.base, r.pages);
         r.pages = 0;
         r.watermark = 0;

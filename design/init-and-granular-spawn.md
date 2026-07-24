@@ -57,8 +57,21 @@ names the space through the same registry revocation uses.
 
 ## The phases (each green before the next)
 
-- **19a: `RETYPE_OBJ(ENDPOINT)`.** The smallest object with the fewest new states; establishes
-  the retype-with-a-type pattern and its rights story.
+- **19a: `RETYPE_OBJ(ENDPOINT)`. (Built.)** The decision its arrival forced: endpoints are
+  **page-resident, one object per page** (sub-page packing examined on challenge and declined:
+  it saves immaterial memory, forks the memory rule per object type, and buys back occupancy
+  machinery exactly when endpoint revocation arrives; it remains a placement optimization
+  behind the registry). All endpoints, the kernel's included, now live at the start of a page
+  retyped from some untyped region, named generationally (`crates/slots`, the Tid machinery),
+  and their host regions are **pinned**: `destroy` refuses them, the recorded debt that
+  endpoint revocation will one day retire. Witnessed at both levels: a kernel test (rendezvous
+  over a retyped endpoint; a pinned region's destroy provably frees nothing) and an EL0 test in
+  which one process mints an endpoint from its own budget, delegates a READ view to a stranger,
+  and a word crosses an object no kernel wiring created. One incident for the record: the first
+  version wired the demo roles to constants 13/14, already taken by other demos; the compiler
+  said "unreachable pattern" at every build, the test pipeline swallowed it, and an hour of
+  kernel archaeology followed before running `script/lint`, which fails on exactly that
+  warning, would have named it instantly. Lint first, then instrument.
 - **19b: address spaces as objects.** `RETYPE_OBJ(ASPACE)` + `MAP_INTO` with named-untyped
   table budgets. The budget questions live here.
 - **19c: TCBs as objects.** `RETYPE_OBJ(TCB)`, `CONFIGURE`, `CAP_INSERT`, `START`, and the

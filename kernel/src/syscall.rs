@@ -213,6 +213,28 @@ fn invoke(
                     Err(_) => Err(Error::BadPointer), // misaligned, already mapped, or wrong half
                 }
             }
+            // Retype a page into a page-resident KERNEL OBJECT the caller now owns (19a):
+            // the object lives in the carved page, the region is pinned (a live endpoint's page
+            // must never be freed under a blocked thread), and the caller gets full rights on
+            // its own object, delegation narrowing them as ever.
+            abi::untyped::RETYPE_OBJ => {
+                if !cap.rights.allows(Rights::WRITE) {
+                    return Err(Error::NotPermitted);
+                }
+                match a0 {
+                    abi::objtype::ENDPOINT => {
+                        let ep =
+                            sched::create_endpoint_from(region).ok_or(Error::OutOfMemory)?;
+                        let slot = sched::grant(crate::cap::endpoint_cap(
+                            ep,
+                            Rights::READ.union(Rights::WRITE).union(Rights::GRANT),
+                        ))
+                        .map_err(|_| Error::OutOfMemory)?;
+                        Ok(slot as i64)
+                    }
+                    _ => Err(Error::BadMethod), // no such object type (ASPACE and TCB are 19b/19c)
+                }
+            }
             abi::untyped::RETYPE => {
                 if !cap.rights.allows(Rights::WRITE) {
                     return Err(Error::NotPermitted);

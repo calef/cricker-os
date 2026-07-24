@@ -50,6 +50,8 @@ const VIRTIO_ATTACK_INDIRECT: u64 = 13;
 const CALL_SERVER: u64 = 14;
 const CALL_CLIENT: u64 = 15;
 const REVOKE_DEMO: u64 = 16;
+const EP_MAKER: u64 = 17;
+const EP_USER: u64 = 18;
 
 /// The word the frame producer writes into a shared page and the consumer reads back through its
 /// own mapping of the same physical page. One binary, so one constant serves both roles.
@@ -108,6 +110,8 @@ pub extern "C" fn _start(role: u64, dma_phys: u64, _arg2: u64) -> ! {
         RECEIVER => receiver(),
         FRAME_PRODUCER => frame_producer(),
         FRAME_CONSUMER => frame_consumer(),
+        EP_MAKER => ep_maker(),
+        EP_USER => ep_user(),
         SELF_CHECK => self_check_client(),
         _ => self_check_client(),
     }
@@ -367,6 +371,46 @@ fn revoke_demo() -> ! {
     let after = unsafe { invoke(frame, abi::frame::MAP, VA, 1, UNTYPED) };
 
     send(REPORT, if revoked == 0 && after < 0 { 1 } else { 0 }, 0, 0);
+    exit();
+}
+
+/// **Minting an endpoint from our own memory, milestone 19a.** Holds an untyped budget (slot 0),
+/// a channel (slot 1), and nothing else. It retypes a page of its own untyped into a brand-new
+/// endpoint (`RETYPE_OBJ`), an object no kernel wiring created, then delegates a READ view of it
+/// over the channel and SENDs a word into it. If the kernel's object really works, a peer we
+/// have never met receives that word over an endpoint that did not exist a moment ago.
+fn ep_maker() -> ! {
+    const UNTYPED: u64 = 0;
+    const CHANNEL: u64 = 1;
+
+    // SAFETY: `svc`. Retype one page of our budget into an endpoint; the kernel returns the slot
+    // where our full-rights capability to it landed.
+    let ep = unsafe { invoke(UNTYPED, abi::untyped::RETYPE_OBJ, abi::objtype::ENDPOINT, 0, 0) };
+    check(ep >= 0);
+    let ep = ep as u64;
+
+    // Delegate a READ-only view (recv, never send) to whoever is on the channel; we keep WRITE.
+    // SAFETY: `svc`.
+    check(unsafe { invoke(CHANNEL, endpoint::SEND_CAP, ep, abi::rights::READ, 0) } == 0);
+
+    // Speak first through our own creation: blocks until the peer receives, which is the proof.
+    check(send(ep, 0x77, 0, 0) == 0);
+    exit();
+}
+
+/// **The peer, milestone 19a.** Holds the channel (slot 0) and a report endpoint (slot 1).
+/// Receives a capability to an endpoint that some other process minted out of its own memory,
+/// listens on it, and reports what arrives. It never saw an untyped and never asked the kernel
+/// to create anything: its authority to listen arrived entirely by delegation.
+fn ep_user() -> ! {
+    const CHANNEL: u64 = 0;
+    const REPORT: u64 = 1;
+
+    let (_w, slot) = recv_cap(CHANNEL);
+    check(slot != endpoint::NO_CAP);
+
+    let (w0, _, _) = recv(slot); // listen on the minted endpoint
+    send(REPORT, w0, 0, 0); // report the word that crossed it
     exit();
 }
 
