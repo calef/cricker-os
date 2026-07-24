@@ -1,0 +1,77 @@
+# Milestone 19: the init task, granular process construction, and the first real workload
+
+The working plan for milestone 19 (design/roadmap.md), and the record of its first decision,
+made 2026-07-24.
+
+## Decision 1: how init builds a process — granular, eyes open
+
+Two shapes were on the table. **Composite spawn**: init names a budget and an image, and the
+kernel runs its one proven build recipe (B.4's `exec`) paid from init's untyped; two or three
+new syscalls, no half-built states, the ELF parser stays in the kernel. **Granular** (seL4's
+shape): the kernel exports construction primitives and init parses ELFs and assembles processes
+itself; the parser leaves the trusted computing base, at the cost of the widest API this kernel
+has grown, designed today with one caller.
+
+The recommendation was composite-first on sequencing grounds (every deferred-until-a-customer
+mechanism in this project has come out better for waiting: revocation's tree, the CDT, RETYPE's
+object types). Chris initially chose granular to keep the option of running Linux programs;
+that reason was pushed back on and withdrawn, because **both shapes preserve that option** (the
+compat personality, when it exists, gets the primitives built against its real requirements
+either way). The decision was then re-made on the corrected premise, and granular won on its
+honest merit: **evicting the ELF parser from the trusted computing base this milestone**, the
+small-kernel thesis applied strictly, accepted with its costs in view:
+
+- a wide surface designed against one caller (init), with the compat personality's real needs
+  still unknown;
+- half-built processes become representable kernel states, and every invariant proved on the
+  assumption that processes appear whole gets re-audited;
+- a longer road to the first running workload.
+
+Recorded so the day the compat personality arrives and wants something different, the reasoning
+that got us here is legible rather than mysterious.
+
+## The surface (sketch: each operation is its own design conversation when its phase arrives)
+
+```text
+Untyped::RETYPE_OBJ (type)      endpoint | address space | TCB, out of the caller's untyped
+AddressSpace::MAP_INTO          map a frame into ANOTHER space; page tables paid by a
+                                caller-named untyped (the frame::MAP precedent: a2 names it)
+Tcb::CONFIGURE                  entry, stack pointer, bind an address space
+Tcb::CAP_INSERT                 install a capability into the child's cspace (GRANT-gated)
+Tcb::START                      make it runnable; refuses an unconfigured TCB
+```
+
+Naming leans on what milestone 14 built: a TCB capability carries a generational Tid (stale
+names fail safely, the D2 path's payload step arriving on schedule); an address-space capability
+names the space through the same registry revocation uses.
+
+## The invariants to re-audit (the cost we accepted, itemized)
+
+- **No start before whole.** `START` on a TCB with no address space or no entry must refuse;
+  the states are new, the refusal must be proved reachable-only-as-refusal.
+- **Teardown of the half-built.** A TCB configured but never started, an address space with
+  mappings but no thread: each must die cleanly through the existing reaper/destroy paths.
+- **Budgets under MAP_INTO.** The child's page tables come from a named untyped; exhaustion
+  mid-build must strand nothing unreclaimable.
+- **The queue discipline.** An unstarted TCB is in no queue and must be unreachable by wake.
+
+## The phases (each green before the next)
+
+- **19a: `RETYPE_OBJ(ENDPOINT)`.** The smallest object with the fewest new states; establishes
+  the retype-with-a-type pattern and its rights story.
+- **19b: address spaces as objects.** `RETYPE_OBJ(ASPACE)` + `MAP_INTO` with named-untyped
+  table budgets. The budget questions live here.
+- **19c: TCBs as objects.** `RETYPE_OBJ(TCB)`, `CONFIGURE`, `CAP_INSERT`, `START`, and the
+  half-built-state audit.
+- **19d: init.** The ELF parser moves to userspace (the `elf` crate already compiles anywhere;
+  init links it directly — the eviction that motivated this decision). `user.rs`'s service
+  construction migrates into init; the kernel's own loader shrinks to loading exactly one
+  program: init itself.
+- **19e: the workload.** Decision 2 (what runs first, native ABI) happens here, against a
+  system that can actually run it.
+
+## What stays deliberately unbuilt
+
+No CNode trees, no derivation tree, no sub-page object packing: unchanged deferrals. The
+kernel keeps its one-binary boot loader (for init) permanently; a kernel that can load nothing
+cannot boot to userspace at all.
