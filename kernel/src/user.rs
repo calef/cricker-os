@@ -46,6 +46,7 @@ use paging::{Flags, Half, MapError, Mapper};
 
 /// Where a user program's code goes. Low half, so the hardware walks `TTBR0`.
 #[cfg_attr(feature = "shell", allow(dead_code))]
+#[cfg_attr(feature = "bench", allow(dead_code))] // its users (exec, tour) sit outside the bench boot
 pub const USER_CODE_VA: u64 = 0x0000_0000_0040_0000;
 
 /// Where its stack goes. One page, and `sp` starts at the top of it: stacks grow down.
@@ -340,6 +341,7 @@ pub fn load(image: &[u8]) -> Result<(AddressSpace, u64), LoadError> {
 /// at build time: QEMU put a file somewhere in RAM and wrote the address into
 /// `/chosen/linux,initrd-start`, and `memory::init` read it there and told the frame allocator
 /// to keep its hands off. That reservation was written at milestone 3, for this.
+#[cfg_attr(feature = "bench", allow(dead_code))] // the bench boot runs no user programs
 pub fn initrd() -> Option<&'static [u8]> {
     let (start, size) = memory::initrd_region()?;
 
@@ -440,6 +442,7 @@ pub fn run(image: &[u8], spawn: Spawn) -> ! {
 /// # Safety
 /// `program` must be position-independent aarch64 machine code that begins at its first byte.
 #[cfg_attr(feature = "shell", allow(dead_code))] // the hand-written demos live in the tour
+#[cfg_attr(feature = "bench", allow(dead_code))] // the bench boot runs no user programs
 pub unsafe fn exec(program: &[u8]) -> ! {
     assert!(
         program.len() as u64 <= FRAME_SIZE,

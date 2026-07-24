@@ -52,6 +52,7 @@ fn main() -> ExitCode {
                 ])
         }
         "test" => test(),
+        "bench" => bench(),
         "gdb" => gdb(),
         "objdump" => objdump(),
         "image" => image(),
@@ -59,7 +60,10 @@ fn main() -> ExitCode {
             if !other.is_empty() {
                 eprintln!("unknown command: {other}\n");
             }
-            eprintln!("usage: cargo xtask <build|run|shell|test|gdb|objdump|image> [--hvf]");
+            eprintln!(
+                "usage: cargo xtask <build|run|shell|test|bench|gdb|objdump|image> [--hvf]"
+            );
+            eprintln!("       cargo xtask bench [--real] [--check] [--save]");
             return ExitCode::FAILURE;
         }
     };
@@ -203,6 +207,188 @@ fn test() -> bool {
         return false;
     }
     cargo(&["test", "-p", "kernel", "--target", TARGET])
+}
+
+/// The microbenchmarks (milestone 21; design/roadmap.md §21).
+///
+/// Two instruments:
+/// - default: TCG with `-icount`, where virtual time is a deterministic function of instructions
+///   executed. Counts are exact and reproducible; `--check` diffs them against
+///   `bench/baseline.txt` and fails on drift, `--save` rewrites the baseline (a deliberate act,
+///   committed alongside whatever changed the numbers).
+/// - `--real`: HVF, natively on the host core. Real caches and TLBs, statistical numbers,
+///   reported in nanoseconds, never gating.
+///
+/// The bench kernel never exits on its own (semihosting does not work under HVF; see `test`).
+/// We own the QEMU child, watch its output for `bench: done`, and kill it: one exit mechanism
+/// for both accelerators.
+fn bench() -> bool {
+    let real = std::env::args().any(|a| a == "--real");
+    let check = std::env::args().any(|a| a == "--check");
+    let save = std::env::args().any(|a| a == "--save");
+    if real && (check || save) {
+        eprintln!("bench: --real numbers are statistical and never gate; no --check/--save");
+        return false;
+    }
+
+    if !mkdisk()
+        || !user()
+        || !cargo(&[
+            "build",
+            "-p",
+            "kernel",
+            "--features",
+            "bench",
+            "--target",
+            TARGET,
+        ])
+    {
+        return false;
+    }
+
+    // Run the kernel through the same runner script as everything else, with the accelerator
+    // chosen by env and, for the deterministic instrument, icount pinning virtual time to the
+    // instruction stream (sleep=off: virtual time never waits for the wall clock).
+    let mut cmd = Command::new(RUNNER);
+    cmd.arg(kernel_elf());
+    if real {
+        cmd.env("CRICKER_ACCEL", "hvf");
+        eprintln!("--- bench: HVF, natively on the host core (statistical; medians matter) ---");
+    } else {
+        cmd.env_remove("CRICKER_ACCEL");
+        cmd.args(["-icount", "shift=0,sleep=off"]);
+        eprintln!("--- bench: TCG + icount (deterministic instruction-clocked counts) ---");
+    }
+    cmd.env("CRICKER_INITRD", user_elf());
+    cmd.env("CRICKER_DISK", disk_path());
+    cmd.stdout(std::process::Stdio::piped());
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("bench: failed to start {RUNNER}: {e}");
+            return false;
+        }
+    };
+
+    // Read lines until the guest says it is done, then kill it: it is parked in wfi and will
+    // never exit by itself (deliberately; see kernel/src/bench.rs).
+    use std::io::BufRead;
+    let stdout = child.stdout.take().expect("piped stdout");
+    let reader = std::io::BufReader::new(stdout);
+    let mut results: Vec<(String, u64, u64)> = Vec::new();
+    let mut cntfrq: u64 = 0;
+    let mut done = false;
+    for line in reader.lines() {
+        let Ok(line) = line else { break };
+        let Some(rest) = line.strip_prefix("bench: ") else {
+            continue;
+        };
+        if rest == "done" {
+            done = true;
+            break;
+        }
+        let parts: Vec<&str> = rest.split_whitespace().collect();
+        match parts.as_slice() {
+            ["cntfrq", hz] => cntfrq = hz.parse().unwrap_or(0),
+            [name, ticks, iters] => {
+                if let (Ok(t), Ok(i)) = (ticks.parse(), iters.parse()) {
+                    results.push((name.to_string(), t, i));
+                }
+            }
+            _ => {}
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+
+    if !done {
+        eprintln!("bench: QEMU ended before printing `bench: done`; no results");
+        return false;
+    }
+
+    // Report. icount counts are the regression currency; ns is computed for both instruments
+    // (fictional under icount, real under HVF) because a human wants a magnitude to look at.
+    eprintln!();
+    eprintln!(
+        "{:<14} {:>12} {:>8} {:>12} {:>10}",
+        "benchmark", "ticks", "iters", "ticks/iter", "ns/iter"
+    );
+    for (name, ticks, iters) in &results {
+        let per = ticks / iters;
+        let ns = (ticks * 1_000_000_000)
+            .checked_div(cntfrq)
+            .and_then(|v| v.checked_div(*iters))
+            .unwrap_or(0);
+        eprintln!("{name:<14} {ticks:>12} {iters:>8} {per:>12} {ns:>10}");
+    }
+    if !real {
+        eprintln!("(TCG+icount: ticks are deterministic; ns are fiction. --real for magnitudes.)");
+    }
+
+    let baseline_path = workspace_root().join("bench/baseline.txt");
+    if save {
+        let mut out = String::from(
+            "# bench/baseline.txt: deterministic icount tick counts (cargo xtask bench --save).
+             # Updating this file is a statement that a performance change is intended and
+             # understood; do it in the commit that causes the change. Checked by --check (2%).
+",
+        );
+        for (name, ticks, iters) in &results {
+            out.push_str(&format!("{name} {ticks} {iters}
+"));
+        }
+        if let Err(e) = std::fs::write(&baseline_path, out) {
+            eprintln!("bench: cannot write {}: {e}", baseline_path.display());
+            return false;
+        }
+        eprintln!("bench: baseline saved to {}", baseline_path.display());
+        return true;
+    }
+
+    if check {
+        let Ok(text) = std::fs::read_to_string(&baseline_path) else {
+            eprintln!(
+                "bench: no baseline at {} (run `cargo xtask bench --save` first)",
+                baseline_path.display()
+            );
+            return false;
+        };
+        let mut ok = true;
+        for line in text.lines().filter(|l| !l.starts_with('#')) {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            let [name, base, _iters] = parts.as_slice() else {
+                continue;
+            };
+            let base: u64 = base.parse().unwrap_or(0);
+            let Some((_, cur, _)) = results.iter().find(|(n, _, _)| n == name) else {
+                eprintln!("bench: CHECK FAIL {name}: in the baseline but not in this run");
+                ok = false;
+                continue;
+            };
+            // 2% either way, with a small absolute floor so tiny counts do not false-alarm.
+            let slack = (base / 50).max(64);
+            let (lo, hi) = (base.saturating_sub(slack), base + slack);
+            if *cur < lo || *cur > hi {
+                let delta = *cur as i64 - base as i64;
+                eprintln!(
+                    "bench: CHECK FAIL {name}: {cur} vs baseline {base} ({delta:+} ticks,                      allowed +-{slack})"
+                );
+                ok = false;
+            }
+        }
+        if ok {
+            eprintln!("bench: check passed (all within 2% of baseline)");
+        } else {
+            eprintln!();
+            eprintln!(
+                "bench: a benchmark moved. If intended, rerun with --save and commit the new                  baseline WITH the change that moved it."
+            );
+        }
+        return ok;
+    }
+
+    true
 }
 
 /// Boot the kernel with QEMU frozen and a GDB stub listening.

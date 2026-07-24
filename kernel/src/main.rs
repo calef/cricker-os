@@ -22,6 +22,8 @@
 
 
 mod arch;
+#[cfg(feature = "bench")]
+mod bench;
 mod cap;
 mod console;
 mod cpu;
@@ -102,7 +104,12 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
     #[cfg(test)]
     test_main();
 
-    #[cfg(not(test))]
+    // The benchmark boot (milestone 21, `script/bench`): run the microbenchmarks and halt,
+    // instead of the tour or the shell. Diverges, so everything below is untouched by it.
+    #[cfg(feature = "bench")]
+    bench::run();
+
+    #[cfg(not(any(test, feature = "bench")))]
     {
         use aarch64_cpu::registers::CurrentEL;
         use tock_registers::interfaces::Readable;
@@ -317,6 +324,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         }
     }
 
+    #[cfg(not(feature = "bench"))] // bench::run diverged above; this is everyone else's parking
     arch::halt()
 }
 
@@ -328,6 +336,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
 /// The initrd image, for the virtio service. Panics if absent (the demo checked `initrd()` above).
 #[cfg(not(test))]
 #[cfg_attr(feature = "shell", allow(dead_code))] // the virtio demo lives in the milestone tour
+#[cfg(not(feature = "bench"))] // tour-only, and the bench boot skips the tour
 fn image_for_virtio() -> &'static [u8] {
     user::initrd().expect("no initrd")
 }
@@ -357,6 +366,7 @@ fn interrupts_init(_dtb: usize) {
 /// it here so Rust can see it. Note that we want the *address of* the symbol, not
 /// its contents. There is no value there. See notes/linker-scripts.md.
 #[cfg(not(test))]
+#[cfg(not(feature = "bench"))] // tour-only, and the bench boot skips the tour
 fn stack_top() -> usize {
     unsafe extern "C" {
         static __stack_top: core::ffi::c_void;

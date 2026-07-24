@@ -1,0 +1,13 @@
+#!/bin/sh
+# script/bench: the performance microbenchmarks (milestone 21). Two instruments:
+#
+#   script/bench             deterministic icount counts (TCG); the regression currency
+#   script/bench --check     diff against bench/baseline.txt; FAILS on >2% drift
+#   script/bench --save      rewrite the baseline (do it in the commit that moved the numbers)
+#   script/bench --real      HVF: natively on the Apple Silicon core; real magnitudes, no gating
+#
+# See design/roadmap.md milestone 21 and notes/benchmarks.md.
+
+set -e
+cd "$(dirname "$0")/.."
+exec cargo xtask bench "$@"

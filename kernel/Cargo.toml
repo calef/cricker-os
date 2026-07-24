@@ -25,5 +25,7 @@ spin = { version = "0.12", default-features = false, features = ["spin_mutex"] }
 tock-registers = "0.10"
 
 [features]
+# The benchmark boot (milestone 21): run the microbenchmarks and halt. See script/bench.
+bench = []
 # Boot straight to the interactive shell, skipping the milestone tour. Used by cargo xtask shell.
 shell = []

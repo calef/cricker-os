@@ -151,6 +151,10 @@ in the code or the conversation doesn't make sense, it belongs here.
   inboxes become intrusive (`crates/intrusive`); the link lives inside the TCB, a push is two
   pointer writes that cannot allocate or fail, and a pop hands back the thread itself. One link
   means one queue, which is the scheduler's state machine made physical.
+- [Benchmarks with teeth](benchmarks.md) — milestone 21: two instruments, because gating and
+  truth exclude each other. Deterministic icount counts gate commits against a committed
+  baseline (`script/bench --check`); HVF runs the kernel natively on the M-series core for real
+  magnitudes. The first real numbers: IPC round trip ~705 ns, call/reply ~886 ns.
 - [ASIDs: tagged address spaces](asids.md) — milestone 15: every user mapping is `nG`, each
   address space owns one ASID for life, the tag rides in TTBR0 with the root, and the context
   switch flushes nothing. Why a bitmap suffices where Linux needs generations (milestone 14
