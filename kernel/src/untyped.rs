@@ -14,13 +14,15 @@
 //! can only run out of *its own* budget, and when it does, the retype fails and the kernel is
 //! untouched. That is the astonishing property, and `notes/untyped.md` shows the flat frame count.
 //!
-//! # What this is NOT, said plainly
+//! # Where the boundary sits now (updated across milestone 14)
 //!
-//! This converts **user memory** (a process's pages and their page tables) to untyped. The
-//! kernel's *own* objects (the `Thread` structs, the scheduler's collections, endpoints) still
-//! come from the kernel heap. Converting each of those is the same retype mechanism applied to a
-//! kernel object, and it is the long tail seL4 spent years on. What milestone 11 establishes is
-//! the mechanism and the property, for the memory a process spends.
+//! Milestone 11 converted the memory a process **asks for** (`Untyped::MAP` pages) to untyped.
+//! Milestone 14 phase B.4 converted the memory a process **is made of**: `exec` carves one
+//! region per process and the address space's root, tables, and image pages are all retyped
+//! from it, so teardown is [`destroy`] and the whole budget returns in one call. The kernel's
+//! own objects went fixed instead of untyped-backed (TCBs in a static pool, endpoints in a
+//! fixed table; notes/tcb.md records why retype earns nothing while the kernel is the only
+//! payer). What remains heap-backed is the revocation database, phase C's work.
 
 use crate::memory;
 use crate::sync::{IrqSafeMutex, rank};
@@ -37,9 +39,11 @@ struct Region {
 
 /// The most untyped regions that can ever be created. Region ids live inside capabilities and
 /// slots are never reused (`destroy` empties a region but keeps its slot), so this bounds
-/// creations over the kernel's lifetime. Phase B.4 makes one per process, so the bound tracks
-/// MAX_THREADS with room for the explicitly-created ones.
-const MAX_REGIONS: usize = 192;
+/// creations over the kernel's lifetime, not concurrent use. Phase B.4 gives every user
+/// process one, spent at exec and dead-slotted at teardown, so a long test run burns a slot
+/// per process it ever ran; 256 leaves the full suite headroom. Slot reuse (generational,
+/// like the thread table) is the known fix if this ever binds.
+const MAX_REGIONS: usize = 256;
 
 /// The untyped regions, in a fixed table (milestone 14 phase B.1): the kernel's own bookkeeping
 /// no longer grows either. Indexed by the `usize` inside an `Object::Untyped` capability.
@@ -148,7 +152,6 @@ pub fn usage(region: usize) -> Option<(u64, u64)> {
 /// "spend-only, never reused", and returning the pages to the allocator is safe. `REGIONS` is
 /// released before the revoke so revocation can take the scheduler lock (a higher rank) without
 /// inverting the order.
-#[allow(dead_code)] // called by the §13 tests; reclaim-on-process-death is the deferred wiring
 pub fn destroy(region: usize) {
     let (base, pages) = {
         let mut regions = REGIONS.lock();

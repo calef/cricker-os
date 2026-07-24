@@ -659,9 +659,15 @@ pub(crate) fn finish_switch() {
         return;
     };
     if t.state == State::Finished {
-        // Drops the Thread: its KernelStack (unmap + free + return the VA range), its AddressSpace
-        // if any, and its QuotaToken. The one place all of that is safe, by construction.
+        // Hoist the address space out BEFORE the in-place drop, to be torn down after the lock
+        // is released: its teardown is untyped::destroy (milestone 14 phase B.4), whose §13
+        // revocation sweep takes SCHED itself to delete stray Frame capabilities. Dropping it
+        // here would deadlock on our own lock. The rest of the Thread (stack, quota) still
+        // drops under SCHED, exactly as before.
+        let space = t.space.take();
         sched.threads.remove(prev);
+        drop(guard);
+        drop(space);
         return;
     }
     // The predecessor's context is saved now (we are running, so switch_to completed), so it is

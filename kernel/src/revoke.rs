@@ -110,8 +110,8 @@ mod tests {
     /// reclamation story rests on: a page may be reused only once no holder still maps it.
     #[test_case]
     fn revoke_unmaps_a_shared_page_from_every_address_space() {
-        let mut a = AddressSpace::new().expect("no space A");
-        let mut b = AddressSpace::new().expect("no space B");
+        let mut a = AddressSpace::new(2).expect("no space A");
+        let mut b = AddressSpace::new(2).expect("no space B");
         let shared = crate::memory::alloc().expect("no frame").addr();
         let (va_a, va_b) = (0x40_0000u64, 0x80_0000u64);
 
@@ -152,7 +152,7 @@ mod tests {
     /// mapping is gone, and the region's frames come back.
     #[test_case]
     fn destroy_unmaps_a_region_before_reclaiming_it() {
-        let mut space = AddressSpace::new().expect("no space");
+        let mut space = AddressSpace::new(2).expect("no space");
         let region = crate::untyped::create(4).expect("no region");
         let phys = crate::untyped::retype_page(region).expect("retype");
         let va = 0x40_0000u64;

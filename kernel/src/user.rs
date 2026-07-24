@@ -40,7 +40,6 @@
 use crate::arch::exceptions::TrapFrame;
 use crate::arch::mmu::{self, phys_to_ptr};
 use crate::memory;
-use alloc::vec::Vec;
 use elf::Elf;
 use frames::{FRAME_SIZE, Frame};
 use paging::{Flags, Half, MapError, Mapper};
@@ -81,23 +80,32 @@ unsafe extern "C" {
 /// throw the whole table away.
 pub struct AddressSpace {
     root: Frame,
-    frames: Vec<Frame>,
+    /// **The untyped region every page of this address space comes from** (milestone 14 phase
+    /// B.4): the root table, the intermediate tables, and every owned leaf are retyped out of
+    /// one region carved at creation. The region *is* the record of what this address space
+    /// owns, which is why there is no frame list: teardown is `untyped::destroy`, one call,
+    /// made safe by §13 revocation. The region has no capability minted for it, so userspace
+    /// can never retype or delegate from it; it is kernel bookkeeping with a budget.
+    region: usize,
 }
 
-impl AddressSpace {
-    pub fn new() -> Option<Self> {
-        let root = memory::alloc()?;
+/// Page-table-and-slack overhead an address space needs beyond its content pages: the L0 root,
+/// an L1 and L2, a handful of L3s (one per 2 MiB window touched, `Spawn` maps included), and
+/// margin. Sixteen pages = 64 KiB, generous for every process this kernel builds.
+const AS_OVERHEAD: u64 = 16;
 
-        // SAFETY: a fresh frame, reachable through the direct map, and nothing walks it until
-        // `activate`. Zero it first: a page table full of whatever was in RAM is a set of
-        // pointers to nowhere, followed at speed by the hardware.
-        unsafe {
-            (*phys_to_ptr(root.addr())).entries = [0; paging::ENTRIES];
-        }
+impl AddressSpace {
+    /// Carve this address space's budget: `content_pages` of expected leaves plus the
+    /// page-table overhead. Everything the address space ever owns comes out of this region,
+    /// and running out is a clean `OutOfFrames` at map time, spending nobody's memory but its
+    /// own. The region's pages are retyped zeroed, so the root needs no separate scrub.
+    pub fn new(content_pages: u64) -> Option<Self> {
+        let region = crate::untyped::create(content_pages + AS_OVERHEAD)?;
+        let root = crate::untyped::retype_page(region)?;
 
         Some(AddressSpace {
-            root,
-            frames: Vec::new(),
+            root: Frame::from_addr(root),
+            region,
         })
     }
 
@@ -108,20 +116,18 @@ impl AddressSpace {
     /// different from EL1's point of view. Two names for one frame, which is what the direct
     /// map is for.
     pub fn map_new(&mut self, va: u64, flags: Flags) -> Result<&'static mut [u8], MapError> {
-        let frame = memory::alloc().ok_or(MapError::OutOfFrames)?;
-        self.frames.push(frame); // owned: freed when the address space dies
-        self.map_at(va, frame.addr(), flags)?;
+        // Out of the address space's own region: the watermark is the ownership record, so
+        // there is nothing to push anywhere. `retype_page` hands the page back zeroed, which is
+        // what keeps `.bss` free for the loader.
+        let frame = crate::untyped::retype_page(self.region).ok_or(MapError::OutOfFrames)?;
+        self.map_at(va, frame, flags)?;
 
-        // SAFETY: the frame is ours, freshly allocated, and the direct map is valid for it.
-        // 'static is a lie we tell for convenience and then keep: the frame outlives every use
-        // of this slice, because `Drop` is the only thing that frees it.
+        // SAFETY: the frame is ours (retyped from our region), and the direct map is valid for
+        // it. 'static is a lie we tell for convenience and then keep: the frame outlives every
+        // use of this slice, because the region is freed only at `Drop`.
         let page = unsafe {
-            core::slice::from_raw_parts_mut(
-                mmu::phys_to_virt(frame.addr()) as *mut u8,
-                FRAME_SIZE as usize,
-            )
+            core::slice::from_raw_parts_mut(mmu::phys_to_virt(frame) as *mut u8, FRAME_SIZE as usize)
         };
-        page.fill(0);
         Ok(page)
     }
 
@@ -141,10 +147,11 @@ impl AddressSpace {
         self.map_at(va, phys, flags)
     }
 
-    /// Map `phys` at `va`. Intermediate tables are recorded for freeing; the target is not.
+    /// Map `phys` at `va`. Intermediate tables come from this address space's own region, so
+    /// they are covered by the one teardown call; the target page is whoever's it was.
     fn map_at(&mut self, va: u64, phys: u64, flags: Flags) -> Result<(), MapError> {
         let root = self.root.addr();
-        let recorded = &mut self.frames;
+        let region = self.region;
 
         // SAFETY: `root` is a zeroed L0 table. Half::Low, so the mapper refuses a high address:
         // mapping the kernel's half into TTBR0 would build a translation the hardware never
@@ -153,11 +160,7 @@ impl AddressSpace {
             Mapper::new(
                 root,
                 Half::Low,
-                || {
-                    let f = memory::alloc()?;
-                    recorded.push(f); // <- intermediate tables get freed too
-                    Some(f.addr())
-                },
+                || crate::untyped::retype_page(region),
                 phys_to_ptr,
             )
         };
@@ -187,10 +190,11 @@ impl Drop for AddressSpace {
             mmu::deactivate_user();
         }
 
-        for frame in self.frames.drain(..) {
-            memory::free(frame);
-        }
-        memory::free(self.root);
+        // One call: revoke anything delegated out of this region (nothing can be: the region
+        // has no capability, so userspace could never retype from it), then return the whole
+        // run, root and tables and leaves alike, to the allocator. This is the
+        // "reclaim-on-process-death" wiring §13 deferred; the frame list it replaced is gone.
+        crate::untyped::destroy(self.region);
     }
 }
 
@@ -219,7 +223,20 @@ pub enum LoadError {
 pub fn load(image: &[u8]) -> Result<(AddressSpace, u64), LoadError> {
     let elf = Elf::parse(image).map_err(LoadError::NotLoadable)?;
 
-    let mut space = AddressSpace::new().ok_or(LoadError::Unmappable(MapError::OutOfFrames))?;
+    // The budget, counted from the file before anything is carved: every segment's pages, plus
+    // one for the stack. (AS_OVERHEAD covers the tables.) A binary that lies about its size
+    // simply exhausts its own region and fails to map, spending nobody else's memory.
+    let content: u64 = elf
+        .segments()
+        .map(|seg| {
+            let (start, end) = seg.page_range(FRAME_SIZE);
+            (end - start) / FRAME_SIZE
+        })
+        .sum::<u64>()
+        + 1;
+
+    let mut space =
+        AddressSpace::new(content).ok_or(LoadError::Unmappable(MapError::OutOfFrames))?;
 
     for seg in elf.segments() {
         // **Honour what the file asked for, and not one bit more.**
@@ -388,7 +405,7 @@ pub unsafe fn exec(program: &[u8]) -> ! {
         "the 7a loader is one page. An ELF loader is 7c."
     );
 
-    let mut space = AddressSpace::new().expect("no memory for a user address space");
+    let mut space = AddressSpace::new(2).expect("no memory for a user address space");
 
     let code = space
         .map_new(USER_CODE_VA, Flags::user_code())
@@ -1726,7 +1743,7 @@ mod tests {
         const DEV_VA: u64 = 0x0000_0000_0070_0000;
         const PL011_PHYS: u64 = 0x0900_0000;
 
-        let mut space = AddressSpace::new().expect("no address space");
+        let mut space = AddressSpace::new(2).expect("no address space");
         let frame = crate::memory::alloc().expect("no frame").addr();
 
         space
