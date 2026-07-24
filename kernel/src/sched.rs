@@ -109,8 +109,18 @@ struct Scheduler {
     ///
     /// Every IPC endpoint. Indexed by the `usize` inside an `Object::Endpoint` capability, which
     /// only the kernel mints, so the index is always in range.
-    endpoints: alloc::vec::Vec<Endpoint>,
+    /// Fixed capacity (milestone 14 phase B.1): an `Endpoint` shrank to two queue heads and a
+    /// counter at A.3, so the whole table is a few KiB and creating an endpoint touches no heap.
+    /// `MAX_ENDPOINTS` is a documented limit of the image, like `MAX_THREADS`.
+    endpoints: [Endpoint; MAX_ENDPOINTS],
+    /// How many endpoints exist. They are created and never destroyed (an endpoint id lives
+    /// inside capabilities), so this only grows; `create_endpoint` refuses past the cap.
+    endpoint_count: usize,
 }
+
+/// The most endpoints that can ever exist. Endpoint teardown does not exist yet (ids live in
+/// capabilities), so this bounds creations over the kernel's lifetime, not concurrent use.
+const MAX_ENDPOINTS: usize = 256;
 
 /// Rank **above the allocators**, because `spawn` boxes the new `Thread` while holding this
 /// (`insert_with` runs its closure, and the `Box::new` inside it, under the lock).
@@ -145,7 +155,8 @@ pub fn init() {
 
     *sched = Some(Scheduler {
         threads,
-        endpoints: alloc::vec::Vec::new(),
+        endpoints: [const { Endpoint::new() }; MAX_ENDPOINTS],
+        endpoint_count: 0,
     });
     drop(sched); // release before spawning, which takes the lock itself
 
@@ -644,11 +655,18 @@ pub fn irq_notify(ep: usize) {
 }
 
 /// Create an IPC endpoint. Returns its id, which is what goes inside an `Object::Endpoint`.
+///
+/// Panics when the fixed table is exhausted: every caller is the kernel or a test wiring a
+/// service, so exhaustion is a misconfigured image, not a runtime condition to recover from.
 pub fn create_endpoint() -> usize {
     let mut guard = SCHED.lock();
     let sched = guard.as_mut().expect("no scheduler");
-    sched.endpoints.push(Endpoint::default());
-    sched.endpoints.len() - 1
+    assert!(
+        sched.endpoint_count < MAX_ENDPOINTS,
+        "out of endpoints: MAX_ENDPOINTS ({MAX_ENDPOINTS}) is a limit of the image"
+    );
+    sched.endpoint_count += 1;
+    sched.endpoint_count - 1
 }
 
 /// Move a blocked thread back to the ready queue. Caller holds the lock.
@@ -1287,7 +1305,7 @@ mod tests {
         use crate::arch::mmu;
         use crate::thread::{KernelStack, STACK_PAGES};
 
-        let stack = KernelStack::new(STACK_PAGES).expect("could not allocate a thread stack");
+        let stack = KernelStack::new().expect("could not allocate a thread stack");
 
         assert_eq!(
             mmu::translate(stack.guard()),

@@ -87,7 +87,6 @@ pub fn find_block_device() -> Option<BlockDevice> {
 // ---------------------------------------------------------------------------------------------
 
 use crate::sync::{IrqSafeMutex, rank};
-use alloc::vec::Vec;
 
 // virtio-mmio v2 registers the kernel drives.
 const REG_DEVICE_FEATURES_SEL: u64 = 0x014;
@@ -145,7 +144,33 @@ struct Device {
     shadow_base: u64,
 }
 
-static DEVICES: IrqSafeMutex<Vec<Device>> = IrqSafeMutex::new(rank::VIRTIO, Vec::new());
+/// The most virtio transports we will drive. QEMU's virt board exposes a handful of MMIO slots;
+/// eight is generous. Fixed (milestone 14 phase B.1): probing never allocates.
+const MAX_DEVICES: usize = 8;
+
+/// The device table, fixed. `get`/`get_mut` mirror the slice API the call sites already used.
+struct Devices {
+    entries: [Option<Device>; MAX_DEVICES],
+    count: usize,
+}
+
+impl Devices {
+    fn get(&self, i: usize) -> Option<&Device> {
+        self.entries.get(i)?.as_ref()
+    }
+
+    fn get_mut(&mut self, i: usize) -> Option<&mut Device> {
+        self.entries.get_mut(i)?.as_mut()
+    }
+}
+
+static DEVICES: IrqSafeMutex<Devices> = IrqSafeMutex::new(
+    rank::VIRTIO,
+    Devices {
+        entries: [const { None }; MAX_DEVICES],
+        count: 0,
+    },
+);
 
 /// Register the block device and its DMA region with the transport. Returns its id, which is what
 /// goes inside an `Object::Virtio` capability. The driver never sees the MMIO; it drives the
@@ -167,7 +192,9 @@ pub fn register(mmio_phys: u64, dma_base: u64, dma_size: u64) -> usize {
     }
 
     let mut devs = DEVICES.lock();
-    devs.push(Device {
+    assert!(devs.count < MAX_DEVICES, "more virtio devices than MAX_DEVICES");
+    let id = devs.count;
+    devs.entries[id] = Some(Device {
         mmio_phys,
         dma_base,
         dma_size,
@@ -175,7 +202,8 @@ pub fn register(mmio_phys: u64, dma_base: u64, dma_size: u64) -> usize {
         driver_features_sel: 0,
         shadow_base,
     });
-    devs.len() - 1
+    devs.count += 1;
+    id
 }
 
 fn reg_read(mmio_phys: u64, off: u64) -> u32 {

@@ -11,12 +11,12 @@
 //!
 //! Pure logic, so it compiles for the host and its tests run in milliseconds (DECISIONS §7).
 //! Nothing in here knows what a console is; the kernel supplies the object type.
+//!
+//! Allocation-free since milestone 14 phase B.1: the table is a const-generic array, so a
+//! cspace's size is part of its type and creating one cannot touch a heap. The kernel picks the
+//! size once (16, in kernel/src/cap.rs); the tests and proofs pick small ones.
 
 #![no_std]
-
-extern crate alloc;
-
-use alloc::vec::Vec;
 
 /// What you may do with a capability.
 ///
@@ -97,28 +97,30 @@ pub enum Error {
 /// capability spaces and costs a great deal of explanation. We do not need it, and a flat array
 /// is honest: it is an fd table with a type tag on each entry, which is exactly what a capability
 /// space *is*. If we ever need the sparse version, it is a change to this file and nothing else.
-pub struct CSpace<O> {
-    slots: Vec<Option<Cap<O>>>,
+pub struct CSpace<O, const N: usize> {
+    slots: [Option<Cap<O>>; N],
 }
 
-impl<O: Copy> CSpace<O> {
-    pub fn new(size: usize) -> Self {
-        CSpace {
-            slots: alloc::vec![None; size],
-        }
+impl<O: Copy, const N: usize> Default for CSpace<O, N> {
+    fn default() -> Self {
+        Self::new()
     }
+}
 
+impl<O: Copy, const N: usize> CSpace<O, N> {
     /// **A brand-new process holds nothing.**
     ///
     /// This is the whole decision, expressed as a constructor. Under Unix a fresh process
     /// inherits every fd its parent had and can `open()` anything its uid permits. Here it can
     /// name nothing at all until somebody hands it something.
-    pub fn empty() -> Self {
-        Self::new(16)
+    pub const fn new() -> Self {
+        CSpace {
+            slots: [const { None }; N],
+        }
     }
 
-    pub fn len(&self) -> usize {
-        self.slots.len()
+    pub const fn len(&self) -> usize {
+        N
     }
 
     pub fn is_empty(&self) -> bool {
@@ -252,8 +254,8 @@ mod verification {
     /// A small table in an arbitrary state: every slot independently empty or holding a capability
     /// with symbolic object and rights. Three slots is enough to exhibit "the slot in question, a
     /// different slot, and an empty one" in every combination.
-    fn any_small_cspace() -> CSpace<u8> {
-        let mut cs: CSpace<u8> = CSpace::new(3);
+    fn any_small_cspace() -> CSpace<u8, 3> {
+        let mut cs: CSpace<u8, 3> = CSpace::new();
         for slot in 0..3u64 {
             if kani::any() {
                 cs.put(
@@ -309,7 +311,7 @@ mod verification {
         let src_rights = Rights(kani::any());
         let requested = Rights(kani::any());
 
-        let mut cs: CSpace<u8> = CSpace::new(2);
+        let mut cs: CSpace<u8, 2> = CSpace::new();
         cs.put(
             0,
             Cap {
@@ -340,7 +342,7 @@ mod tests {
     /// **A new process holds nothing.** The decision, as an assertion.
     #[test]
     fn a_new_cspace_can_name_nothing() {
-        let cs: CSpace<Obj> = CSpace::empty();
+        let cs: CSpace<Obj, 16> = CSpace::new();
 
         assert!(cs.is_empty());
         for slot in 0..cs.len() as u64 {
@@ -351,7 +353,7 @@ mod tests {
     /// You cannot fabricate a capability. There is nothing to guess.
     #[test]
     fn an_unheld_slot_is_not_permission_denied_it_is_nothing() {
-        let mut cs: CSpace<Obj> = CSpace::empty();
+        let mut cs: CSpace<Obj, 16> = CSpace::new();
         cs.put(
             0,
             Cap {
@@ -374,7 +376,7 @@ mod tests {
     /// simply derive yourself a better capability from the one you have.
     #[test]
     fn derive_cannot_widen_rights() {
-        let mut cs: CSpace<Obj> = CSpace::empty();
+        let mut cs: CSpace<Obj, 16> = CSpace::new();
         cs.put(
             0,
             Cap {
@@ -403,7 +405,7 @@ mod tests {
     /// A narrowed capability names the **same object**. Delegation moves authority, not identity.
     #[test]
     fn a_derived_capability_names_the_same_object_with_less_authority() {
-        let mut cs: CSpace<Obj> = CSpace::empty();
+        let mut cs: CSpace<Obj, 16> = CSpace::new();
         cs.put(
             0,
             Cap {
@@ -426,13 +428,13 @@ mod tests {
     /// Deriving from an empty slot fails. You cannot lend what you do not hold.
     #[test]
     fn you_cannot_delegate_what_you_do_not_hold() {
-        let mut cs: CSpace<Obj> = CSpace::empty();
+        let mut cs: CSpace<Obj, 16> = CSpace::new();
         assert_eq!(cs.derive(3, 4, Rights::READ).err(), Some(Error::NoSuchSlot));
     }
 
     #[test]
     fn get_with_refuses_rights_you_do_not_have() {
-        let mut cs: CSpace<Obj> = CSpace::empty();
+        let mut cs: CSpace<Obj, 16> = CSpace::new();
         cs.put(
             0,
             Cap {
@@ -452,7 +454,7 @@ mod tests {
 
     #[test]
     fn deleting_a_capability_makes_the_object_unnameable() {
-        let mut cs: CSpace<Obj> = CSpace::empty();
+        let mut cs: CSpace<Obj, 16> = CSpace::new();
         cs.put(
             0,
             Cap {
@@ -479,7 +481,7 @@ mod tests {
 
     #[test]
     fn a_full_table_says_so() {
-        let mut cs: CSpace<Obj> = CSpace::new(2);
+        let mut cs: CSpace<Obj, 2> = CSpace::new();
         let cap = Cap {
             object: Obj::Console,
             rights: Rights::ALL,

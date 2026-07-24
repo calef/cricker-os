@@ -78,7 +78,12 @@ pub enum Object {
 }
 
 pub type Cap = caps::Cap<Object>;
-pub type CSpace = caps::CSpace<Object>;
+
+/// A thread's capability table: 16 slots, fixed at the type (milestone 14 phase B.1). The size
+/// was already the de-facto limit (`CSpace::empty()` made 16); now it is part of the type and
+/// creating a cspace cannot allocate. Growing it is a one-number change here, paid in TCB size.
+pub const CSPACE_SLOTS: usize = 16;
+pub type CSpace = caps::CSpace<Object, CSPACE_SLOTS>;
 
 pub use caps::{Error, Rights};
 

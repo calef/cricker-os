@@ -148,6 +148,10 @@ in the code or the conversation doesn't make sense, it belongs here.
   inboxes become intrusive (`crates/intrusive`); the link lives inside the TCB, a push is two
   pointer writes that cannot allocate or fail, and a pop hands back the thread itself. One link
   means one queue, which is the scheduler's state machine made physical.
+- [The TCB](tcb.md) — what a Thread Control Block is (our `Thread` struct, field by field), the
+  acronym collision with Trusted Computing Base, and why TCBs live in a static pool rather than
+  being retyped from kernel untyped (the phase B.2 decision: same machine behavior, and seL4's
+  retype only earns its ledger once userspace is the one paying).
 
 ## The point of all this
 

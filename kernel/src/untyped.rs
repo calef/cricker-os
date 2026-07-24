@@ -24,10 +24,10 @@
 
 use crate::memory;
 use crate::sync::{IrqSafeMutex, rank};
-use alloc::vec::Vec;
 use frames::{FRAME_SIZE, Frame};
 
 /// One untyped region: a run of physical pages, and how far into it we have retyped.
+#[derive(Clone, Copy)]
 struct Region {
     base: u64,
     pages: u64,
@@ -35,10 +35,40 @@ struct Region {
     watermark: u64,
 }
 
-/// The untyped regions. A `Vec` for the *table* is still heap (the kernel's own bookkeeping); the
-/// **memory the regions describe** is the thing that no longer comes from the allocator on the
-/// hot path. Indexed by the `usize` inside an `Object::Untyped` capability.
-static REGIONS: IrqSafeMutex<Vec<Region>> = IrqSafeMutex::new(rank::UNTYPED, Vec::new());
+/// The most untyped regions that can ever be created. Region ids live inside capabilities and
+/// slots are never reused (`destroy` empties a region but keeps its slot), so this bounds
+/// creations over the kernel's lifetime. Phase B.4 makes one per process, so the bound tracks
+/// MAX_THREADS with room for the explicitly-created ones.
+const MAX_REGIONS: usize = 192;
+
+/// The untyped regions, in a fixed table (milestone 14 phase B.1): the kernel's own bookkeeping
+/// no longer grows either. Indexed by the `usize` inside an `Object::Untyped` capability.
+struct Regions {
+    entries: [Region; MAX_REGIONS],
+    count: usize,
+}
+
+static REGIONS: IrqSafeMutex<Regions> = IrqSafeMutex::new(
+    rank::UNTYPED,
+    Regions {
+        entries: [Region {
+            base: 0,
+            pages: 0,
+            watermark: 0,
+        }; MAX_REGIONS],
+        count: 0,
+    },
+);
+
+impl Regions {
+    fn get(&self, i: usize) -> Option<&Region> {
+        (i < self.count).then(|| &self.entries[i])
+    }
+
+    fn get_mut(&mut self, i: usize) -> Option<&mut Region> {
+        (i < self.count).then(|| &mut self.entries[i])
+    }
+}
 
 /// Carve `pages` of physical memory out of the frame allocator, once, and make it an untyped
 /// region. **This is the kernel's one allocation for this memory** — the seL4 boundary, where all
@@ -48,12 +78,22 @@ pub fn create(pages: u64) -> Option<usize> {
     let base = memory::alloc_contiguous(pages as usize)?.addr();
 
     let mut regions = REGIONS.lock();
-    regions.push(Region {
+    if regions.count == MAX_REGIONS {
+        // Out of region slots: give the memory back rather than leak it. A bounded table is the
+        // point (B.1); the bound is sized so this is an image misconfiguration, not a runtime path.
+        for i in 0..pages {
+            memory::free(Frame::from_addr(base + i * FRAME_SIZE));
+        }
+        return None;
+    }
+    let id = regions.count;
+    regions.entries[id] = Region {
         base,
         pages,
         watermark: 0,
-    });
-    Some(regions.len() - 1)
+    };
+    regions.count += 1;
+    Some(id)
 }
 
 /// **Retype one page out of the region**, zeroed, returning its physical address. `None` when the

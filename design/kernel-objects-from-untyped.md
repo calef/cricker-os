@@ -76,12 +76,30 @@ this phase, but nothing on the spawn/IPC/exit path allocates. This is most of th
 work, it is where decision D1 (queues) and D2 (thread table) bind, and it is independently
 valuable: the hot paths become O(1) and heap-free even before retype lands.
 
-**Phase B: kernel objects from untyped (the syscall conversation).**
-`RETYPE` gains an object type: a process retypes a page of its own untyped into a TCB or an
-endpoint and receives the capability. `spawn` and `create_endpoint` stop reaching into a kernel
-pool. The initial task's objects come from a boot untyped the kernel carves once, which is how
-seL4 bootstraps too. This widens the syscall surface (§4), so it lands only after we have agreed
-on the shape.
+**Phase B: kernel objects stop touching the heap (decided 2026-07-23, after the conversation).**
+The original sketch here widened `RETYPE` with object types. The conversation found the sketch
+premature: no syscall lets a process create a thread or an endpoint today, so a user-facing
+retype would be API with no caller, and a user-created TCB is inert without a thread-control
+surface (configure, start, cap installation) whose requirements only the milestone 19 init task
+can supply. **Decided: the surface stays narrow; the API is designed against init's real
+requirements later.** What phase B builds instead, per the decisions:
+
+- **B.1** (no decisions): every kernel object gets a fixed shape. The cspace becomes a
+  const-generic array in `crates/caps`, `KernelStack`'s frame list an array, and the endpoint /
+  untyped-region / virtio / stack-VA tables fixed arrays.
+- **B.2**: TCBs move from `Box` to a **static pool** (BSS, MAX_THREADS slots; table slot i is
+  pool slot i). Retype-from-untyped was considered and declined while the kernel is the only
+  payer: sub-page packing would rebuild the slab in the milestone that deletes it (see
+  notes/tcb.md). The pool upgrades to retype-backed storage behind the table when init lands.
+- **B.3**: spawn's boxed closures move **onto the new thread's own stack**, above the trampoline
+  frame, at their concrete type (a monomorphized call shim in `x20`, the closure address in
+  `x19`, no vtable). Call sites unchanged; one reviewed unsafe region; invisible to userspace.
+  The fn-pointer alternative taxed every capturing call site forever to avoid one unsafe block.
+- **B.4**: `exec` carves a **per-process untyped region**; image pages and page tables come from
+  its watermark, `AddressSpace` records the region id instead of a frame list, and teardown is
+  `untyped::destroy`, which §13 revocation already makes safe (the "reclaim-on-process-death"
+  wiring untyped.rs deferred). One budget per process; when init arrives, only the region's
+  provenance changes.
 
 **Phase C: charge the revocation database, then delete the heap.**
 Move mapping records out of the global `Vec` and into per-address-space storage paid from the

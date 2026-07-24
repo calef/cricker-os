@@ -28,7 +28,6 @@ use crate::arch::mmu::{self, KERNEL_VA_BASE};
 use crate::memory;
 use crate::sync::{IrqSafeMutex, rank};
 use alloc::boxed::Box;
-use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use frames::{FRAME_SIZE, Frame};
 use paging::Flags;
@@ -67,7 +66,39 @@ pub const UNNAMED: Tid = u64::MAX;
 /// Handing the address range back means a new thread lands in page tables that already exist,
 /// and the whole system reaches a steady state. A test asserts that a second batch of threads
 /// costs **exactly zero** additional frames.
-static FREE_STACK_VAS: IrqSafeMutex<Vec<u64>> = IrqSafeMutex::new(rank::STACK_VA, Vec::new());
+static FREE_STACK_VAS: IrqSafeMutex<FreeVas> = IrqSafeMutex::new(rank::STACK_VA, FreeVas::new());
+
+/// A fixed stack of reusable stack-VA ranges (milestone 14 phase B.1). Bounded by construction:
+/// a range is pushed only when a thread dies and popped when one spawns, so the free count can
+/// never exceed the most threads that ever lived at once, which the scheduler caps at
+/// MAX_THREADS (= 128; sched.rs). The array is sized to that bound, and the debug assert is the
+/// cross-check.
+struct FreeVas {
+    vas: [u64; 128],
+    len: usize,
+}
+
+impl FreeVas {
+    const fn new() -> Self {
+        Self { vas: [0; 128], len: 0 }
+    }
+
+    fn pop(&mut self) -> Option<u64> {
+        if self.len == 0 {
+            return None;
+        }
+        self.len -= 1;
+        Some(self.vas[self.len])
+    }
+
+    fn push(&mut self, va: u64) {
+        debug_assert!(self.len < self.vas.len(), "more dead stack ranges than MAX_THREADS");
+        if self.len < self.vas.len() {
+            self.vas[self.len] = va;
+            self.len += 1;
+        } // else: leak the VA range rather than corrupt; unreachable per the bound above
+    }
+}
 
 /// The callee-saved registers, as `switch_to` pushes them.
 ///
@@ -109,18 +140,21 @@ unsafe extern "C" {
 }
 
 /// A stack, with an unmapped page beneath it.
+///
+/// The frame list is a fixed array (milestone 14 phase B.1): a kernel stack is always exactly
+/// [`STACK_PAGES`] frames, so there was never anything dynamic about it but the container.
 pub struct KernelStack {
     guard: u64,
     bottom: u64,
     top: u64,
-    frames: Vec<Frame>,
+    frames: [Option<Frame>; STACK_PAGES],
 }
 
 impl KernelStack {
-    pub fn new(pages: usize) -> Option<Self> {
+    pub fn new() -> Option<Self> {
         // One page of virtual address space for the guard, plus the stack itself. The guard's
         // VA is simply never mapped, which is the entire mechanism.
-        let span = (pages as u64 + 1) * FRAME_SIZE;
+        let span = (STACK_PAGES as u64 + 1) * FRAME_SIZE;
 
         // Reuse a dead thread's address range if there is one, so the page tables covering it
         // are already built. Only bump into fresh address space when there isn't.
@@ -131,10 +165,10 @@ impl KernelStack {
 
         let guard = base;
         let bottom = base + FRAME_SIZE;
-        let top = bottom + pages as u64 * FRAME_SIZE;
+        let top = bottom + STACK_PAGES as u64 * FRAME_SIZE;
 
-        let mut frames = Vec::with_capacity(pages);
-        for i in 0..pages {
+        let mut frames = [const { None }; STACK_PAGES];
+        for (i, slot) in frames.iter_mut().enumerate() {
             let frame = memory::alloc()?;
             let va = bottom + i as u64 * FRAME_SIZE;
 
@@ -142,7 +176,7 @@ impl KernelStack {
                 memory::free(frame);
                 return None; // `frames` drops, and Drop below unmaps what we did map
             }
-            frames.push(frame);
+            *slot = Some(frame);
         }
 
         Some(KernelStack {
@@ -174,6 +208,7 @@ impl KernelStack {
 impl Drop for KernelStack {
     fn drop(&mut self) {
         for (i, frame) in self.frames.iter().enumerate() {
+            let Some(frame) = frame else { continue };
             let va = self.bottom + i as u64 * FRAME_SIZE;
 
             // `unmap_page` discharges the TLB obligation with a real `tlbi`. It has to, and the
@@ -342,7 +377,7 @@ impl Thread {
             context: core::ptr::null_mut(),
             stack: None,
             space: None,
-            cspace: crate::cap::CSpace::empty(),
+            cspace: crate::cap::CSpace::new(),
             mailbox: [0; 3],
             quota: None,
             outgoing_cap: None,
@@ -366,7 +401,7 @@ impl Thread {
             context: core::ptr::null_mut(),
             stack: None,
             space: None,
-            cspace: crate::cap::CSpace::empty(),
+            cspace: crate::cap::CSpace::new(),
             mailbox: [0; 3],
             quota: None,
             outgoing_cap: None,
@@ -378,7 +413,7 @@ impl Thread {
 
     /// A new thread, ready to run `f` the first time it is scheduled.
     pub fn spawn(f: Box<dyn FnOnce() + Send + 'static>) -> Option<Self> {
-        let stack = KernelStack::new(STACK_PAGES)?;
+        let stack = KernelStack::new()?;
 
         // `Box<dyn FnOnce()>` is a **fat** pointer (data + vtable), two words, and we have one
         // register to smuggle it through. So box it again: `Box<Box<dyn FnOnce()>>` is a thin
@@ -415,7 +450,7 @@ impl Thread {
             context,
             stack: Some(stack),
             space: None, // a kernel thread until it calls `user::exec`
-            cspace: crate::cap::CSpace::empty(), // and it can name nothing until it is handed something
+            cspace: crate::cap::CSpace::new(), // and it can name nothing until it is handed something
             mailbox: [0; 3],
             quota: None,
             outgoing_cap: None,
