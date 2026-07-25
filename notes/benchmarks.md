@@ -80,26 +80,36 @@ count-neutral but cache-hostile passes `--check` silently. That is the known lim
 the roadmap block too; the `--real` numbers are the net that catches what counts cannot, read by
 a human rather than a gate.
 
-## A correction: the counts are codegen-sensitive, so "attributable to the commit" was too strong
+## A correction: the counts drift across builds, so "attributable to the commit" was too strong
 
 The original milestone-21 note said a count change "is a change in a code path, attributable to the
-commit that made it." Building the EL0 primitive suite showed that is only half true, and the honest
-half is worth writing down. icount is deterministic **per binary** (byte-identical runs, verified
-twice). But the counts are sensitive to **codegen layout**, not just to the measured code: adding an
-unrelated program (`elbench`, `coremark`) changed the compiler's inlining and placement decisions and
-moved the icount of *untouched* benchmarks by a few percent. `yield_switch` went 1543111 (milestone
-21) → 1754561 → 1637572 across this session's commits, none of which touched the yield path; the
-non-monotonic swing is the tell. Two forces are mixed in there: a **real** path-length increase from
-the 19f object-capability refactor (the scheduler and thread hot paths genuinely grew), and **codegen
-noise** of a few percent from unrelated edits.
+commit that made it." Building the EL0 primitive suite disproved the attribution half, and the
+machine's verdict is worth writing down (milestone 25 folds in the fix).
 
-So the 2% gate catches real regressions in the code it measures, but it also fires on phantom drift
-when an unrelated change perturbs codegen, and a re-baseline then bundles both. The counts remain
-useful (a large or directional move is real and worth investigating), but "this delta is exactly this
-commit's doing" is not something the instrument can promise. Candidate fixes for later: pin the hot
-paths' layout, or measure per-operation deltas that cancel the fixed overhead, or lean more on the
-`--real` medians where a few-percent codegen shuffle is in the noise anyway. Recorded here rather than
-quietly re-baselined, because the machine overruled the claim.
+icount is deterministic **per binary** (byte-identical runs, verified twice). It is **not** stable
+across different binaries. Adding the `null_syscall_el0` bench (which touches no other benchmark's
+code) moved `yield_switch` -7% and `ipc_rtt` +1.8% at the same time. Two controlled facts pin the
+mechanism:
+
+- A **dead** function added to `bench.rs` moved nothing. So it is not raw code *layout* (addresses
+  don't change instruction counts anyway).
+- The shifts are **non-uniform and opposite in sign** across benchmarks. So it is not a common-mode
+  offset that could be subtracted out.
+
+What is left is the compiler's **whole-crate decisions**: adding live code that calls into shared
+functions (`sched::spawn`, `user::run`) changes inlining and monomorphization elsewhere, so *other*
+functions' executed-instruction counts move, each its own way. Mixed into the session's drift was
+also a **real** increase from the 19f object-capability refactor (the scheduler and thread hot paths
+genuinely grew); the point is that the instrument cannot separate that from the codegen churn.
+
+**The fix (milestone 25):** demote `--check` from a 2% gate to a **coarse 10% tripwire**. It still
+catches a gross regression ("you 3x'd IPC"), which is real value, but it no longer pretends to
+attribute a 3% wiggle to the commit in front of it. The **`--real` medians, read by a human, are the
+fine signal**, and a few-percent codegen shuffle is already in their noise. Ideas we did *not* take,
+and why: pinning hot-path layout (fragile, and layout was not even the cause); per-operation deltas
+that cancel fixed overhead (the shift is in the measured body, not fixed overhead, so it would not
+cancel); common-mode subtraction (the shifts are not common-mode). Recorded here rather than quietly
+re-baselined, because the machine overruled the claim.
 
 ## Compute vs. OS primitives: two benchmarks that measure different things (milestone 19e)
 

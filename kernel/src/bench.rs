@@ -10,11 +10,13 @@
 //! # The two instruments (design/roadmap.md §21)
 //!
 //! - **icount (default):** QEMU virtual time is a deterministic function of instructions
-//!   executed, so these counter deltas are *exact and reproducible*: the same kernel prints the
-//!   same numbers every run. A change in a number is a change in a code path, attributable to
-//!   the commit that made it. `bench/baseline.txt` pins the numbers; `script/bench --check`
-//!   fails on drift. Magnitudes are fiction (TCG models no caches, no TLB); the counts are the
-//!   point.
+//!   executed, so these counter deltas are *exact and reproducible per binary*: the same kernel
+//!   prints the same numbers every run. But they are NOT stable across *different* binaries: adding
+//!   unrelated live code shifts even untouched benchmarks by several percent, non-uniformly, because
+//!   the compiler remakes whole-crate inlining and monomorphization decisions (notes/benchmarks.md
+//!   has the measurement). So `bench/baseline.txt` + `--check` is a **coarse tripwire** (10%) for a
+//!   gross regression, not a fine attributor. Magnitudes are fiction anyway (TCG models no caches);
+//!   the `--real` medians are the fine signal.
 //! - **HVF (`--real`):** the kernel runs natively on the host core; real caches, real TLBs, the
 //!   hardware counter at its real frequency. Magnitudes are true, determinism is gone (a shared
 //!   desktop machine underneath), so real runs report and never gate.
