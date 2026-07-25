@@ -187,7 +187,7 @@ isolation is proved, its code is W^X, capabilities are unforgeable), and a compr
 unchecked, and its *authority* is broad, so within that authority a corrupted init can do real harm
 (endow malicious children, deny the system it was meant to start).
 
-**Deliverable, two halves.**
+**Deliverable, three halves.**
 
 1. **Verify init before it runs.** A measured or secure boot step: the kernel (or a boot stage
    ahead of it) checks init's hash, or a signature over it, before dropping to EL0 at its entry.
@@ -198,14 +198,46 @@ unchecked, and its *authority* is broad, so within that authority a corrupted in
    process-construction to smaller, less-privileged sub-servers, so init's own authority is
    minimal and short-lived (build the first servers, then drop the untyped). The less init holds,
    the less a broken init costs.
+3. **Supervise, don't relaunch-in-kernel.** What happens when init (or any server) *fails*, as
+   distinct from being corrupted. The failure of init degrades to a **halt, never a breach**
+   (the kernel's guarantees hold regardless), so the only open question is availability: halt, or
+   recover? The answer is neither a bare halt nor a kernel that relaunches init.
+
+   - **Not kernel-relaunch.** Relaunching init from the kernel re-imports the loader we just
+     evicted (milestone 19) plus *restart policy* (retries, backoff, escalation) into the trusted
+     core, and it crash-loops on a deterministic fault (init panics on a bad ELF; relaunch hits
+     the same bug). Restart is policy, and policy does not belong in the kernel.
+   - **The mechanism/policy split, as everywhere else.** Add one small *mechanism* to the kernel:
+     a **fault/death notification** — when a thread faults or exits, the kernel delivers a message
+     to an endpoint held by whoever holds the capability to supervise it. Capability-gated (you
+     can supervise a thread only if you were granted its fault endpoint), mechanism-only. This is
+     seL4's fault endpoint.
+   - **Policy lives in a userspace supervision tree.** init builds the system, wires supervisors,
+     and either becomes a *minimal* root supervisor (so small it essentially cannot fail) or steps
+     back. A sub-server that dies is restarted by *its* supervisor with whatever policy it wants
+     (bounded retries, fall-back, give-up), in userspace. Failures below the root are contained
+     and restartable; only the death of the irreducible root supervisor halts, which is the
+     fail-closed floor, pushed as high and as small as possible.
+   - **This also dissolves the SPOF.** init-during-boot stays a single point of failure (if it
+     cannot build the system, halt is correct — nothing to recover to). init-*after*-boot stops
+     being one: it is either a trivial root or gone, and failures below it are supervised.
+
+   The one kernel primitive this adds (the fault endpoint) is worth its own numbered decision when
+   19d.2/22 make it concrete; recorded here so the design (halt is the floor, supervision is the
+   answer, the kernel never runs restart policy) is on the record rather than in a conversation.
 
 **The reach tail.** Beyond verifying init's *bytes*, verifying init's *behaviour* is the natural
 next layer inward for the §14 thesis: init is small and privileged enough to be worth proving, once
-the kernel's proofs are done. Recorded as the direction, not committed.
+the kernel's proofs are done. Recorded as the direction, not committed. (Distinct from supervision
+above: proof buys *safety*, supervision buys *availability*; init's failure mode is availability, so
+supervision is the load-bearing answer and proof is the optional reach.)
 
 **Prior art.** seL4 + a verified boot chain (measured boot, or CapDL-driven system initialisers
 whose output is checkable); the general secure/measured-boot literature (TPM/PCR measurement,
-signed boot images).
+signed boot images). For the supervision half: seL4 fault endpoints (the kernel turns a fault into
+a message a supervisor holds); MINIX 3's reincarnation server (a userspace process that restarts
+dead drivers, not the kernel); Erlang/OTP supervision trees and "let it crash" (decades of evidence
+that restart policy wants to be a rich userspace thing, not a kernel reflex).
 
 ### 17. Multikernel-leaning scheduler (research, optional)
 
