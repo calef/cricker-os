@@ -437,6 +437,18 @@ pub fn initrd() -> Option<&'static [u8]> {
     })
 }
 
+/// The bytes of the program named `name` inside the initrd archive (milestone 19f). The initrd is a
+/// crickerfs image carrying init plus the programs init loads. The milestone tour and the
+/// kernel-side service demos still run a role of the one `hello` binary, so they ask for `"init"`;
+/// `spawn_init` and `boot_via_init` instead take the whole archive, because init parses the rest
+/// itself. Returns `None` if there is no initrd, it will not parse, or it holds no such program.
+// Used by the milestone tour, the kernel-wired virtio/console/shell demos, and the tests that load
+// a user program; dead only in the bench boot, which runs no user programs.
+#[cfg_attr(feature = "bench", allow(dead_code))]
+pub fn program(name: &str) -> Option<&'static [u8]> {
+    crickerfs::Fs::parse(initrd()?).ok()?.read(name)
+}
+
 /// A physical page to map into a new process's address space, at a chosen VA.
 ///
 /// The frame is **not** owned by the process (it is shared, or it is device MMIO), so it is not
@@ -533,7 +545,25 @@ pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
     crate::drivers::gic::enable(UART_RX_INTID);
 
     crate::sched::spawn(move || {
-        let elf = match Elf::parse(image) {
+        // The initrd is a crickerfs archive (milestone 19f), not a bare ELF: it carries init plus
+        // the programs init will load. The kernel reads only the one entry it must, "init". This is
+        // the same "honest residue" as before (something has to load the first program), now naming
+        // that program through a fixed archive index instead of assuming it sits at offset 0. Every
+        // other program is init's to parse. See notes/init-and-loading.md.
+        let init_bytes = match crickerfs::Fs::parse(image) {
+            Ok(fs) => match fs.read("init") {
+                Some(bytes) => bytes,
+                None => {
+                    crate::println!("  boot archive has no 'init' program");
+                    crate::sched::exit();
+                }
+            },
+            Err(e) => {
+                crate::println!("  boot archive is not a crickerfs image: {e:?}");
+                crate::sched::exit();
+            }
+        };
+        let elf = match Elf::parse(init_bytes) {
             Ok(e) => e,
             Err(e) => {
                 crate::println!("  init image is not loadable: {e:?}");
@@ -1698,6 +1728,14 @@ mod tests {
     use crate::sched;
     use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+    /// The `init` program's ELF bytes, pulled out of the initrd archive by name (milestone 19f). A
+    /// test that loads a real user program wants the program's bytes, not the whole crickerfs
+    /// archive; only the `spawn_init` tests pass the archive, because init parses it itself. Named
+    /// to avoid the module's `hello` (a tiny hand-written 7a program, `user_program!` at the top).
+    fn init_image() -> &'static [u8] {
+        program("init").expect("no init program in the initrd archive")
+    }
+
     /// Spin the scheduler until `done()`, or give up. Returns whether it happened.
     fn wait_for(mut done: impl FnMut() -> bool) -> bool {
         for _ in 0..2000 {
@@ -1890,7 +1928,7 @@ mod tests {
     /// The initrd is there, and it is the program we built.
     #[test_case]
     fn the_initrd_holds_an_aarch64_executable() {
-        let image = initrd().expect("no initrd: was -initrd passed to QEMU?");
+        let image = init_image();
         let e = elf::Elf::parse(image).expect("the initrd is not a loadable aarch64 ELF");
 
         assert_eq!(e.entry(), 0x40_0000, "linked somewhere unexpected");
@@ -1923,7 +1961,7 @@ mod tests {
         let svc = SVC_COUNT.load(Ordering::Relaxed);
         let faults = USER_FAULTS.load(Ordering::Relaxed);
 
-        sched::spawn(|| exec_elf(initrd().expect("no initrd"))).expect("spawn failed");
+        sched::spawn(|| exec_elf(init_image())).expect("spawn failed");
 
         assert!(
             wait_for(|| SVC_COUNT.load(Ordering::Relaxed) > svc),
@@ -1984,7 +2022,7 @@ mod tests {
     /// program authority its own file never asked for.
     #[test_case]
     fn a_read_only_segment_is_mapped_read_only() {
-        let image = initrd().expect("no initrd");
+        let image = init_image();
         let (space, _) = load(image).expect("the initrd did not load");
 
         let rodata = elf::Elf::parse(image)
@@ -2025,7 +2063,7 @@ mod tests {
     fn the_hardware_says_el0_cannot_read_the_kernels_memory() {
         const KERNEL_TEXT: u64 = 0xffff_0000_4008_0000;
 
-        let (space, _) = load(initrd().expect("no initrd")).expect("the initrd did not load");
+        let (space, _) = load(init_image()).expect("the initrd did not load");
 
         // SAFETY: nothing is at EL0; we are a kernel thread mid-test.
         unsafe { mmu::activate_user(space.ttbr0()) };
@@ -2077,7 +2115,7 @@ mod tests {
         static LEN: AtomicU64 = AtomicU64::new(0);
         static mut BUF: [u8; 128] = [0; 128];
 
-        let image = initrd().expect("no initrd");
+        let image = init_image();
         let request = sched::create_endpoint();
         let reply = sched::create_endpoint();
 
@@ -2223,7 +2261,7 @@ mod tests {
     fn a_userspace_driver_reads_a_file_from_a_virtio_disk() {
         use crate::arch::exceptions::ROUTED_IRQS;
 
-        let report = match virtio_service::start(initrd().expect("no initrd")) {
+        let report = match virtio_service::start(init_image()) {
             Some(r) => r,
             None => {
                 // No disk attached to this run. Nothing to test; do not fail.
@@ -2263,7 +2301,7 @@ mod tests {
 
         sched::spawn(move || {
             run(
-                initrd().expect("no initrd"),
+                init_image(),
                 Spawn {
                     arg0: ROLE_WORKER,
                     arg1: 9, // the worker computes 9*9
@@ -2296,7 +2334,7 @@ mod tests {
         let used = || crate::memory::stats().expect("no allocator").used;
 
         const PAGES: u64 = 24;
-        let (region, report) = untyped_service::start(initrd().expect("no initrd"), PAGES)
+        let (region, report) = untyped_service::start(init_image(), PAGES)
             .expect("could not create the untyped region");
 
         // The process sends a "ready" signal once it is fully loaded (its ELF and stack are
@@ -2344,7 +2382,7 @@ mod tests {
     /// reports `1` when it was refused.
     #[test_case]
     fn the_kernel_refuses_a_dma_descriptor_that_escapes_the_drivers_region() {
-        let report = match virtio_service::start_attacker(initrd().expect("no initrd")) {
+        let report = match virtio_service::start_attacker(init_image()) {
             Some(r) => r,
             None => {
                 crate::println!("    (no virtio disk attached; skipping)");
@@ -2367,7 +2405,7 @@ mod tests {
     /// device is never rung. The driver reports `1` when it was refused.
     #[test_case]
     fn the_kernel_refuses_an_indirect_descriptor_escape() {
-        let report = match virtio_service::start_attacker_indirect(initrd().expect("no initrd")) {
+        let report = match virtio_service::start_attacker_indirect(init_image()) {
             Some(r) => r,
             None => {
                 crate::println!("    (no virtio disk attached; skipping)");
@@ -2689,7 +2727,7 @@ mod tests {
     /// the kernel enforces break-before-make inside the space it built. Verdict 0b111 or bust.
     #[test_case]
     fn a_process_can_build_an_address_space_from_el0() {
-        let report = aspace_service::wire(initrd().expect("no initrd"));
+        let report = aspace_service::wire(init_image());
         let verdict = sched::ipc_recv(report)[0];
         assert_eq!(
             verdict, 0b111,
@@ -2706,7 +2744,7 @@ mod tests {
     /// working at EL0.
     #[test_case]
     fn a_process_can_mint_an_endpoint_and_ipc_flows_over_it() {
-        let report = retype_ep_service::wire(initrd().expect("no initrd"));
+        let report = retype_ep_service::wire(init_image());
         let word = sched::ipc_recv(report)[0];
         assert_eq!(
             word, 0x77,
@@ -2723,7 +2761,7 @@ mod tests {
     /// kernel at spawn. See user/src/hello.rs and user::delegation_service.
     #[test_case]
     fn a_capability_can_be_delegated_over_ipc_and_grant_gates_re_delegation() {
-        let image = initrd().expect("no initrd");
+        let image = init_image();
         let (resource, report) = delegation_service::wire(image);
 
         // The receiver invoked the *delegated* capability to SEND this word. Collecting it here is
@@ -2757,7 +2795,7 @@ mod tests {
     /// refused. This is what a pre-wired reply endpoint cannot guarantee.
     #[test_case]
     fn a_process_calls_a_server_and_the_reply_is_one_shot() {
-        let (call_report, oneshot_report) = call_service::wire(initrd().expect("no initrd"));
+        let (call_report, oneshot_report) = call_service::wire(init_image());
 
         let reply = sched::ipc_recv(call_report)[0];
         assert_eq!(
@@ -2779,7 +2817,7 @@ mod tests {
     /// the safe reclamation are proven directly in kernel/src/revoke.rs.
     #[test_case]
     fn a_process_revokes_a_frame_and_loses_the_capability() {
-        let report = revoke_service::wire(initrd().expect("no initrd"));
+        let report = revoke_service::wire(init_image());
         let verdict = sched::ipc_recv(report)[0];
         assert_eq!(
             verdict, 1,
@@ -2796,7 +2834,7 @@ mod tests {
     /// user/src/hello.rs and user::frame_service.
     #[test_case]
     fn a_frame_capability_shares_a_page_and_a_read_only_view_cannot_write_it() {
-        let image = initrd().expect("no initrd");
+        let image = init_image();
         let report = frame_service::wire(image);
 
         let verdict = sched::ipc_recv(report)[0];

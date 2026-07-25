@@ -105,15 +105,55 @@ fn build() -> bool {
 /// an **ELF**: the kernel's loader wants program headers, unlike the kernel itself, which QEMU
 /// wants as a flat image. See notes/elf.md.
 fn user() -> bool {
-    cargo(&["build", "-p", "user", "--target", TARGET])
+    cargo(&["build", "-p", "user", "--target", TARGET]) && mkinitrd()
 }
 
-/// The user ELF, which `scripts/qemu-runner.sh` passes to QEMU as `-initrd`.
+/// Where the packed initrd archive is written.
+fn initrd_path() -> String {
+    workspace_root()
+        .join("target/initrd.img")
+        .display()
+        .to_string()
+}
+
+/// Pack the built user ELF into the initrd archive the kernel hands init (milestone 19f).
 ///
-/// **Deliberately the same road Linux's initramfs travels.** QEMU loads the file into RAM and
-/// writes its address into `/chosen/linux,initrd-start` in the device tree; the kernel finds it
-/// there (`memory::initrd_region`, built at milestone 3 for exactly this). Nothing about the
-/// binary is known to the kernel at build time, which is the entire point of milestone 7c.
+/// The initrd is a **crickerfs image**, the same format the virtio disk uses, so one parser serves
+/// both the RAM archive and the disk. Today it holds one program, `init` (the `hello` binary, which
+/// the kernel loads and init re-enters at other roles); 19f.2 adds distinct entries. The kernel
+/// reads the `init` entry to boot; init parses the rest itself. Generated, not checked in, exactly
+/// like the disk and the flat kernel image: a blob in git is a blob nobody can review.
+fn mkinitrd() -> bool {
+    let hello = match std::fs::read(user_elf()) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("mkinitrd: cannot read {}: {e}", user_elf());
+            return false;
+        }
+    };
+    let files: [(&str, &[u8]); 1] = [("init", &hello)];
+    let size = crickerfs::image_size(&files);
+    let mut img = std::vec![0u8; size];
+    if crickerfs::write_image(&files, &mut img).is_err() {
+        eprintln!("mkinitrd: could not build the initrd archive");
+        return false;
+    }
+    if let Err(e) = std::fs::write(initrd_path(), &img) {
+        eprintln!("mkinitrd: could not write {}: {e}", initrd_path());
+        return false;
+    }
+    true
+}
+
+/// The packed initrd archive ([`initrd_path`]) is what `scripts/qemu-runner.sh` passes to QEMU as
+/// `-initrd` (milestone 19f); the raw user ELF ([`user_elf`]) is only the input `mkinitrd` packs.
+///
+/// **Deliberately the same road Linux's initramfs travels**, now literally an archive like theirs.
+/// QEMU loads the file into RAM and writes its address into `/chosen/linux,initrd-start` in the
+/// device tree; the kernel finds it there (`memory::initrd_region`, built at milestone 3 for
+/// exactly this). Nothing about the contents is known to the kernel at build time, which is the
+/// entire point of milestone 7c.
+///
 /// If `--hvf` was passed, boot under Apple's Hypervisor.framework instead of TCG.
 fn maybe_hvf() {
     if std::env::args().any(|a| a == "--hvf") {
@@ -276,7 +316,7 @@ fn bench() -> bool {
         cmd.args(["-icount", "shift=0,sleep=off"]);
         eprintln!("--- bench: TCG + icount (deterministic instruction-clocked counts) ---");
     }
-    cmd.env("CRICKER_INITRD", user_elf());
+    cmd.env("CRICKER_INITRD", initrd_path());
     cmd.env("CRICKER_DISK", disk_path());
     cmd.stdout(std::process::Stdio::piped());
 
@@ -546,7 +586,7 @@ fn kernel_elf() -> String {
 fn cargo(args: &[&str]) -> bool {
     // The runner needs to know where the initrd is. Set it for every cargo invocation; the
     // script ignores it when the file is not there (which is any build before `user` exists).
-    unsafe { std::env::set_var("CRICKER_INITRD", user_elf()) };
+    unsafe { std::env::set_var("CRICKER_INITRD", initrd_path()) };
     unsafe { std::env::set_var("CRICKER_DISK", disk_path()) };
 
     run("cargo", args)

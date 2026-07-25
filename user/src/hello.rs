@@ -391,6 +391,22 @@ fn revoke_demo() -> ! {
 
 /// Where the kernel maps the initrd into init (must match user.rs INITRD_VA).
 const INITRD_VA: u64 = 0x2000_0000;
+
+/// The bytes of the program named `name` in the initrd (milestone 19f). The initrd is a crickerfs
+/// archive the kernel maps read-only at [`INITRD_VA`]; init indexes it by name rather than treating
+/// the whole blob as a single ELF. `initrd_len` (the archive length) arrives in `x1` at entry.
+/// Returns `None` if the archive will not parse or holds no such program.
+///
+/// Through 19f.1 every program is still a role of *this* binary, so callers look up `"init"` (the
+/// binary the kernel loaded) and enter it at a different role; 19f.2 adds distinct entries a caller
+/// can name directly (`"worker"` and so on).
+fn program(initrd_len: u64, name: &str) -> Option<&'static [u8]> {
+    // SAFETY: the kernel mapped `initrd_len` bytes of the initrd, read-only, at INITRD_VA. It is
+    // reserved RAM that outlives every process, so the 'static lifetime is honest.
+    let archive =
+        unsafe { core::slice::from_raw_parts(INITRD_VA as *const u8, initrd_len as usize) };
+    crickerfs::Fs::parse(archive).ok()?.read(name)
+}
 /// The init role that builds a device-driver child (milestone 19d.2); matches kernel test wiring.
 const INIT_DEV: u64 = 23;
 /// The init role that brings up the real console server and prints through it (milestone 19d.2b).
@@ -447,8 +463,8 @@ fn init_boot(_x1: u64) -> ! {
     const LINE_VA: u64 = 0x00b0_0000; // input writes lines here; shell reads them
     const DEV: u64 = abi::aspace::MAP_RO; // mode arg ignored for a DeviceFrame cap
 
-    let image = unsafe { core::slice::from_raw_parts(INITRD_VA as *const u8, initrd_len as usize) };
-    let Ok(elf) = elf::Elf::parse(image) else { halt_forever() };
+    let Some(init_bytes) = program(initrd_len, "init") else { halt_forever() };
+    let Ok(elf) = elf::Elf::parse(init_bytes) else { halt_forever() };
 
     // The endpoints and shared pages init owns and hands out. Endpoints come from retype with full
     // rights, so init keeps RWG and delegates narrowed views.
@@ -546,9 +562,8 @@ fn init_irq(initrd_len: u64) -> ! {
     const REPORT: u64 = 1;
     const TEST_IRQ: u64 = 3; // the Irq cap the kernel granted init (spawn_init)
 
-    // SAFETY: the kernel mapped the initrd read-only at INITRD_VA.
-    let image = unsafe { core::slice::from_raw_parts(INITRD_VA as *const u8, initrd_len as usize) };
-    let Ok(elf) = elf::Elf::parse(image) else { fail_report(REPORT) };
+    let Some(init_bytes) = program(initrd_len, "init") else { fail_report(REPORT) };
+    let Ok(elf) = elf::Elf::parse(init_bytes) else { fail_report(REPORT) };
 
     // The child gets the report endpoint (slot 0) and the interrupt (slot 1).
     let caps: &[(u64, u64)] = &[
@@ -571,9 +586,8 @@ fn init_worker(initrd_len: u64) -> ! {
     const UNTYPED: u64 = 0;
     const REPORT: u64 = 1;
 
-    // SAFETY: the kernel mapped the initrd read-only at INITRD_VA.
-    let image = unsafe { core::slice::from_raw_parts(INITRD_VA as *const u8, initrd_len as usize) };
-    let Ok(elf) = elf::Elf::parse(image) else { fail_report(REPORT) };
+    let Some(init_bytes) = program(initrd_len, "init") else { fail_report(REPORT) };
+    let Ok(elf) = elf::Elf::parse(init_bytes) else { fail_report(REPORT) };
 
     // The worker's whole authority: the report endpoint as its slot 0 (its RESULT_SLOT), so its
     // one SEND lands where the test (or, in the boot system, the shell) is waiting.
@@ -617,9 +631,11 @@ fn init_console(initrd_len: u64) -> ! {
     const CHILD_UART_VA: u64 = 0x0070_0000; // must match the console server's UART_VA
     const CONSOLE_SERVER_ROLE: u64 = 1;
 
-    // SAFETY: the kernel mapped the initrd read-only at INITRD_VA.
-    let image = unsafe { core::slice::from_raw_parts(INITRD_VA as *const u8, initrd_len as usize) };
-    let Ok(elf) = elf::Elf::parse(image) else {
+    let Some(init_bytes) = program(initrd_len, "init") else {
+        send(REPORT, 0, 0, 0);
+        exit();
+    };
+    let Ok(elf) = elf::Elf::parse(init_bytes) else {
         send(REPORT, 0, 0, 0);
         exit();
     };
@@ -676,9 +692,11 @@ fn init_build(initrd_len: u64, device: bool) -> ! {
     const UART_DEV: u64 = 2; // the UART device cap the kernel granted init (spawn_init)
     const CHILD_UART_VA: u64 = 0x0070_0000;
 
-    // SAFETY: the kernel mapped `initrd_len` bytes of the initrd, read-only, at INITRD_VA.
-    let image = unsafe { core::slice::from_raw_parts(INITRD_VA as *const u8, initrd_len as usize) };
-    let elf = match elf::Elf::parse(image) {
+    let Some(init_bytes) = program(initrd_len, "init") else {
+        send(REPORT, 0, 0, 0);
+        exit();
+    };
+    let elf = match elf::Elf::parse(init_bytes) {
         Ok(e) => e,
         Err(_) => {
             send(REPORT, 0, 0, 0);

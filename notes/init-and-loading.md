@@ -84,15 +84,36 @@ argument survives the crossing: the worker reports `n*n`, not `n` and not garbag
   standard shape (seL4's does the same); the child's mapping is never writable, so the child
   cannot rewrite its own code.
 
+## The initrd is an archive now (milestone 19f.1)
+
+Through 19d/19e the initrd *was* one ELF: the kernel parsed the whole blob as the init program, and
+init, to load a child, parsed that same blob again (children were roles of the one binary). 19f
+turns the blob into a **crickerfs archive**, the same named-file format the virtio disk uses, so one
+parser serves both the RAM archive and the disk. `cargo xtask` packs it (`mkinitrd`); it holds one
+entry today, `init`.
+
+Two readers changed, each in its own domain:
+
+- The **kernel** (`spawn_init`) reads the superblock, looks up the `"init"` entry, and loads *that*
+  as the ELF. This is the same honest residue as before ("something has to load the first program"),
+  now naming that program through a fixed archive index instead of assuming it sits at offset 0. The
+  kernel gains a crickerfs read, which is proportionate to the ELF parse it already does for init and
+  is bounded (a 512-byte superblock, count capped at 15). The milestone tour and the kernel-wired
+  demos load a program the same way, through `user::program("init")`.
+- **init** (`hello.rs` `program()`) parses `INITRD_VA` as a crickerfs archive and looks up a program
+  by name, rather than treating the whole blob as one ELF.
+
+Why the archive rides *beside* the kernel (handed in via the device tree) rather than baked into
+init's own image: this is the QNX-IFS / old-Linux-initrd lineage, and it keeps the "delivery, not a
+rebuild" property. You can swap userspace without rebuilding the kernel. seL4, our nearest relative,
+instead embeds a cpio of the app ELFs into its root task; we chose the delivered-archive side so the
+RAM boot and the eventual disk boot share one parser.
+
 ## What is not here yet
 
-The service migration (console, shell, the demo wiring in `user.rs`) still runs kernel-side;
-19d.2 moves it into init and retires the kernel's other loaders. And every program here is a
-*role* of one multi-tool binary (`hello`) selected by `x0`: init, the child, the console server
-are the same ELF loaded more than once. A real system has **distinct binaries per program**,
-each exactly its one job. That is not "the same mechanism with different bytes" as this note first
-claimed: it needs a **program-delivery mechanism** we do not have yet, because today the kernel
-hands init a single initrd blob. Delivering several named programs wants either a bundled archive
-(Linux-style initramfs, indexed by name) or loading from the `crickerfs` filesystem on the disk
-(programs as files, `exec`'d by path). That is milestone 19f (design/init-and-granular-spawn.md),
-and it is where "console server as its own binary" actually lands.
+Everything in the archive is still a *role* of the one `hello` binary (init, the child, the console
+server are the same ELF, entered at different `x0`). 19f.**2** adds the first genuinely distinct
+binary (its own crate, own linker script, own `_start`) as a second archive entry init loads by
+name, and 19f.3+ migrates console/input/shell the same way. That is where "console server as its own
+binary" lands. The service wiring that still runs kernel-side in the milestone tour is retired by the
+`initboot` path, which builds those services inside init.

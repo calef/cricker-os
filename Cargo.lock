@@ -62,6 +62,7 @@ dependencies = [
  "abi",
  "asid",
  "caps",
+ "crickerfs",
  "dtb",
  "elf",
  "frames",
@@ -102,6 +103,7 @@ name = "user"
 version = "0.1.0"
 dependencies = [
  "abi",
+ "crickerfs",
  "elf",
 ]
 

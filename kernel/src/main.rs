@@ -275,9 +275,12 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
 
                         // Start the console SERVER as a user process that owns the UART, then a
                         // CLIENT wired to it. The lines the client prints travel through a page it
-                        // shares with the server; the kernel never touches the bytes.
-                        let console = user::console_service::start(image);
-                        user::console_service::spawn_client(image, console);
+                        // shares with the server; the kernel never touches the bytes. The services
+                        // load a role of the `hello` binary, so they take the "init" entry of the
+                        // archive, not the whole initrd (19f).
+                        let prog = user::program("init").expect("no init program in the initrd");
+                        let console = user::console_service::start(prog);
+                        user::console_service::spawn_client(prog, console);
                         timer::spin_for(timer::frequency() / 10);
 
                         println!();
@@ -293,7 +296,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
                 let _ = SVC_COUNT.load(Ordering::Relaxed);
 
                 // Milestone 11: a process spends its own memory; the kernel allocates nothing.
-                if let Some(image) = user::initrd()
+                if let Some(image) = user::program("init")
                     && let Some((_region, report)) = user::untyped_service::start(image, 24)
                 {
                     sched::ipc_recv(report); // the process signals it is loaded and ready
@@ -330,7 +333,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         // It brings up its own console and input drivers kernel-side, so it stands alone with the
         // tour compiled out. `initboot` moves this bring-up into init above.
         #[cfg(not(feature = "initboot"))]
-        if let Some(image) = user::initrd() {
+        if let Some(image) = user::program("init") {
             println!();
             println!("cricker-os — an interactive shell at EL0. type `help`.");
             user::shell_service::start(image);
@@ -353,7 +356,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
 #[cfg_attr(any(feature = "shell", feature = "initboot"), allow(dead_code))]
 #[cfg(not(feature = "bench"))]
 fn image_for_virtio() -> &'static [u8] {
-    user::initrd().expect("no initrd")
+    user::program("init").expect("no init program in the initrd")
 }
 
 fn interrupts_init(_dtb: usize) {
