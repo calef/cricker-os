@@ -96,6 +96,10 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [Who does IPC name?](ipc-naming.md) — an endpoint, never the peer. The sender names a
   channel it holds a capability to; the receiver is anonymous. No global namespace, which is
   no-ambient-authority made concrete. Even a hardware interrupt names an endpoint.
+- [The native ABI](abi.md) — the contract a program runs against (milestone 19e, "Decision 2"):
+  one `svc` and four syscall numbers, the whole object world behind `SYS_INVOKE`, `_start(x0,x1,x2)`,
+  and how a program meets its capabilities by convention rather than discovery. Why we wrote the
+  convention down instead of building a BootInfo, and what a POSIX shim would cost (nothing, later).
 - [How authority moves, narrows, and ends](capability-lifecycle.md) — capabilities spread by
   copy-with-narrowing (never widening), `SEND_CAP` is share not move, the two independent
   narrowings (rights vs. GRANT), and why there's no revocation yet (a control gap, not a
