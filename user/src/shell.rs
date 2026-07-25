@@ -18,7 +18,7 @@
 //! and two shared pages: one with the console server (output), one with the input driver (the
 //! line buffer).
 
-use crate::{invoke, recv, send};
+use crate::{invoke, recv};
 use abi::endpoint;
 
 // Shared pages (must match the kernel's shell_service wiring).
@@ -119,33 +119,9 @@ pub fn run() -> ! {
     }
 }
 
-/// A worker process. Milestone 10's "binary": spawned on command, computes, reports, and exits.
-///
-/// It receives its input `n` in `x1` (the kernel's spawn service put it there), computes `n*n`,
-/// sends the answer to the shell on the result endpoint, and exits cleanly. A whole process
-/// lifecycle — spawn, run, report, exit — driven by a line the user typed.
-pub fn worker() -> ! {
-    let n = worker_arg();
-    let result = n.wrapping_mul(n);
-    send(RESULT_SLOT, result, 0, 0);
-    // Exit, rather than spin: this demonstrates the whole lifecycle. The kernel reaps us.
-    // SAFETY: `svc`; SYS_EXIT never returns.
-    unsafe {
-        core::arch::asm!("svc #0", in("x8") abi::SYS_EXIT, in("x0") 0u64, options(nostack, nomem))
-    };
-    loop {
-        core::hint::spin_loop();
-    }
-}
-
-/// The worker's result endpoint slot (the kernel grants exactly one capability).
-const RESULT_SLOT: u64 = 0;
-
-/// The worker's argument, delivered in `x1` at `_start` and stashed by the entry shim.
-fn worker_arg() -> u64 {
-    // SAFETY: written once by `_start` before this runs, single-threaded.
-    unsafe { crate::WORKER_ARG }
-}
+// The worker moved out of this binary at milestone 19f.2: it is its own program now
+// (`user/src/worker.rs`), loaded by init from the archive by name. The shell still asks init's
+// spawn service to build one via `run <n>`; it just no longer carries the worker's code itself.
 
 fn strip_prefix<'a>(s: &'a [u8], prefix: &[u8]) -> Option<&'a [u8]> {
     if s.len() >= prefix.len() && &s[..prefix.len()] == prefix {

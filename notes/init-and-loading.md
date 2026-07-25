@@ -109,11 +109,34 @@ rebuild" property. You can swap userspace without rebuilding the kernel. seL4, o
 instead embeds a cpio of the app ELFs into its root task; we chose the delivered-archive side so the
 RAM boot and the eventual disk boot share one parser.
 
+## The first distinct binary: the worker (milestone 19f.2)
+
+The worker is the first program that is **its own binary**, not a role of `hello`. It lives in
+`user/src/worker.rs`: its own `_start`, its own panic handler, ~30 lines, and not one line of hello's
+code. It shares the `user` package's `link.ld` (so it links at `0x40_0000` like hello), which is not
+a conflict because each program runs in its own address space. `mkinitrd` packs it as a second
+archive entry, `"worker"`, beside `"init"`.
+
+Every consumer that used to spawn "a role-6 worker of hello" now loads `"worker"` by name and starts
+it with `x0 = 0` (a standalone binary needs no role selector) and the input in `x1`:
+
+- init's `init_worker` and the initboot spawn service (`hello.rs`), for `run <n>`.
+- the kernel-side `shell_service` (the pre-initboot interactive shell), same `run <n>`.
+
+Removing the worker from `hello` is what proved the split was real: it broke every one of those call
+sites (a role-6 spawn fell through to hello's default arm and *faulted*), and fixing each to load
+`"worker"` is the migration. The hello binary no longer contains a worker at all. Two headless tests
+pin it: `a_spawned_worker_process_computes_and_reports` (kernel spawns the worker binary, gets 81)
+and `init_builds_a_worker_and_passes_it_an_argument` (init loads it by name, gets 49).
+
+The tiny syscall runtime in `worker.rs` (`invoke`/`send`/`exit`) is duplicated from hello on purpose.
+When 19f.3 splits the next binary, that second copy is the signal to lift a shared user-runtime
+crate, with the requirements known rather than guessed (DECISIONS: don't build the abstraction before
+the requirements are).
+
 ## What is not here yet
 
-Everything in the archive is still a *role* of the one `hello` binary (init, the child, the console
-server are the same ELF, entered at different `x0`). 19f.**2** adds the first genuinely distinct
-binary (its own crate, own linker script, own `_start`) as a second archive entry init loads by
-name, and 19f.3+ migrates console/input/shell the same way. That is where "console server as its own
-binary" lands. The service wiring that still runs kernel-side in the milestone tour is retired by the
-`initboot` path, which builds those services inside init.
+Console, input, and shell are still roles of `hello`. 19f.3+ migrates them into their own binaries
+the same way the worker went, which is where "console server as its own binary" lands. The
+kernel-side service wiring that the milestone tour still uses is retired by the `initboot` path,
+which builds those services inside init.

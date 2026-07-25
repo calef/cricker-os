@@ -131,7 +131,16 @@ fn mkinitrd() -> bool {
             return false;
         }
     };
-    let files: [(&str, &[u8]); 1] = [("init", &hello)];
+    let worker = match std::fs::read(worker_elf()) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("mkinitrd: cannot read {}: {e}", worker_elf());
+            return false;
+        }
+    };
+    // "init" is the hello binary (the kernel loads it, init re-enters it at other roles); "worker"
+    // is a distinct binary (19f.2) init loads by name. Both are entries in the one archive.
+    let files: [(&str, &[u8]); 2] = [("init", &hello), ("worker", &worker)];
     let size = crickerfs::image_size(&files);
     let mut img = std::vec![0u8; size];
     if crickerfs::write_image(&files, &mut img).is_err() {
@@ -209,6 +218,15 @@ fn user_elf() -> String {
     // initrd at all and the one that noticed was the one that panicked.
     workspace_root()
         .join(format!("target/{TARGET}/debug/hello"))
+        .display()
+        .to_string()
+}
+
+/// The worker ELF (milestone 19f.2), the second binary the `user` package builds. `mkinitrd` packs
+/// it into the archive under "worker"; init loads it by that name.
+fn worker_elf() -> String {
+    workspace_root()
+        .join(format!("target/{TARGET}/debug/worker"))
         .display()
         .to_string()
 }

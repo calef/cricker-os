@@ -1271,7 +1271,6 @@ pub mod shell_service {
 
     const ROLE_INPUT: u64 = 4;
     const ROLE_SHELL: u64 = 5;
-    const ROLE_WORKER: u64 = 6;
 
     /// **How many children the shell may have alive at once.** The bound that stops a spawn flood
     /// (or workers that block forever without exiting) from exhausting kernel memory: each live
@@ -1280,6 +1279,9 @@ pub mod shell_service {
     static SPAWN_QUOTA: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(8);
 
     pub fn start(image: &'static [u8]) {
+        // The worker is its own binary now (19f.2), loaded by name, not a role of `image` (hello).
+        let worker = program("worker").expect("no worker program in the initrd");
+
         // Output: the console server (milestone 8), and the shell as its client.
         let console = console_service::start(image);
 
@@ -1299,10 +1301,10 @@ pub mod shell_service {
                 let n = crate::sched::ipc_recv(spawn_ep)[0];
                 let spawned = crate::sched::spawn_with_quota(&SPAWN_QUOTA, move || {
                     run(
-                        image,
+                        worker,
                         Spawn {
-                            arg0: ROLE_WORKER,
-                            arg1: n, // the worker's input
+                            arg0: 0,  // no role selector: worker is its own binary
+                            arg1: n,  // the worker's input, in x1
                             arg2: 0,
                             grants: &[endpoint_cap(result_ep, Rights::WRITE)],
                             maps: &[],
@@ -1734,6 +1736,13 @@ mod tests {
     /// to avoid the module's `hello` (a tiny hand-written 7a program, `user_program!` at the top).
     fn init_image() -> &'static [u8] {
         program("init").expect("no init program in the initrd archive")
+    }
+
+    /// The `worker` program's ELF bytes (milestone 19f.2), a distinct binary in the archive, not a
+    /// role of the init/hello binary. `_start(x0, x1, x2)` reads its input in `x1` and needs no
+    /// role selector.
+    fn worker_image() -> &'static [u8] {
+        program("worker").expect("no worker program in the initrd archive")
     }
 
     /// Spin the scheduler until `done()`, or give up. Returns whether it happened.
@@ -2294,16 +2303,14 @@ mod tests {
     /// `run n` — minus the interactive loop, which is exercised by the piped demo instead.
     #[test_case]
     fn a_spawned_worker_process_computes_and_reports() {
-        const ROLE_WORKER: u64 = 6;
-
         let result = sched::create_endpoint();
         let faults = USER_FAULTS.load(Ordering::Relaxed);
 
         sched::spawn(move || {
             run(
-                init_image(),
+                worker_image(), // its own binary now (19f.2), not a role of hello
                 Spawn {
-                    arg0: ROLE_WORKER,
+                    arg0: 0, // no role selector; the input is in x1
                     arg1: 9, // the worker computes 9*9
                     arg2: 0,
                     grants: &[crate::cap::endpoint_cap(result, crate::cap::Rights::WRITE)],

@@ -14,6 +14,15 @@ path = "src/hello.rs"
 test = false
 bench = false
 
+# The worker (milestone 19f.2): the first program that is its own binary, not a role of `hello`.
+# It shares this package's `build.rs` link.ld (linked at 0x40_0000) but no code. Same test/bench
+# reasoning as above. `mkinitrd` packs it into the archive under the name "worker".
+[[bin]]
+name = "worker"
+path = "src/worker.rs"
+test = false
+bench = false
+
 [dependencies]
 abi = { version = "0.1.0", path = "../crates/abi" }
 crickerfs = { version = "0.1.0", path = "../crates/crickerfs" }

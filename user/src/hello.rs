@@ -39,7 +39,8 @@ const PRINTING: u64 = 2;
 const VIRTIO_BLK: u64 = 3;
 const INPUT: u64 = 4;
 const SHELL: u64 = 5;
-const WORKER: u64 = 6;
+// Role 6 was the worker; it is its own binary now (`user/src/worker.rs`, milestone 19f.2), so the
+// role and hello's `shell::worker()` are gone. init loads "worker" from the archive by name.
 const UNTYPED_DEMO: u64 = 7;
 const VIRTIO_ATTACK: u64 = 8;
 const GRANTER: u64 = 9;
@@ -90,21 +91,14 @@ static mut DATA_MARKER: u64 = 0x0000_c0ff_ee00_d0d0;
 #[unsafe(no_mangle)]
 static mut BSS_MARKER: u64 = 0;
 
-/// The worker process's argument (n), delivered in `x1` at entry.
-pub(crate) static mut WORKER_ARG: u64 = 0;
-
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(role: u64, dma_phys: u64, _arg2: u64) -> ! {
-    // The worker receives its argument in x1 (dma_phys is reused as a generic scalar here).
-    unsafe { WORKER_ARG = dma_phys };
-
     match role {
         CONSOLE_SERVER => console_server(),
         PRINTING => printing_client(),
         VIRTIO_BLK => virtio::run(dma_phys),
         INPUT => input::run(),
         SHELL => shell::run(),
-        WORKER => shell::worker(),
         UNTYPED_DEMO => untyped_demo(),
         VIRTIO_ATTACK => virtio::run_attack(dma_phys),
         VIRTIO_ATTACK_INDIRECT => virtio::run_attack_indirect(dma_phys),
@@ -456,7 +450,6 @@ fn init_boot(_x1: u64) -> ! {
     const ROLE_CONSOLE: u64 = 1;
     const ROLE_INPUT: u64 = 4;
     const ROLE_SHELL: u64 = 5;
-    const ROLE_WORKER: u64 = 6; // the worker the spawn service builds on `run <n>`
     const CON_SHARED_VA: u64 = 0x0060_0000; // console reads text here; shell writes it
     const CON_UART_VA: u64 = 0x0070_0000; // console's UART mapping
     const IN_UART_VA: u64 = 0x00a0_0000; // input driver's UART mapping
@@ -512,6 +505,11 @@ fn init_boot(_x1: u64) -> ! {
     check(tcb_start(shell, ROLE_SHELL, 0, 0) == 0);
     cap_delete(shell);
 
+    // The worker is its own binary (19f.2). Parse it once from the archive; every `run <n>` builds
+    // a fresh child from it. If it is missing or unparseable, `worker` is None and the service just
+    // answers "could not spawn" for every request.
+    let worker = program(initrd_len, "worker").and_then(|bytes| elf::Elf::parse(bytes).ok());
+
     // init stays alive as the real spawn service (19e). The shell SENDs `n` on `spawn_ep`; init
     // builds a worker endowed with `result_ep` (WRITE) as its slot 0 and starts it with `n` in x1
     // (the multi-arg START). The worker squares `n`, SENDs the answer straight to `result_ep`, and
@@ -521,9 +519,13 @@ fn init_boot(_x1: u64) -> ! {
     loop {
         let n = recv(spawn_ep).0; // blocks until the shell asks; x0 carries the argument
         let worker_caps: &[(u64, u64)] = &[(result_ep, abi::rights::WRITE)];
-        match build_child(UNTYPED, &elf, worker_caps, &[]) {
+        let built = worker
+            .as_ref()
+            .and_then(|w| build_child(UNTYPED, w, worker_caps, &[]).ok());
+        match built.ok_or(()) {
             Ok(w) => {
-                if tcb_start(w, ROLE_WORKER, n, 0) != 0 {
+                // x0 unused (standalone binary); the input is in x1.
+                if tcb_start(w, 0, n, 0) != 0 {
                     send(result_ep, u64::MAX, 0, 0);
                 }
                 cap_delete(w); // init's TCB cap; the worker keeps running until it exits
@@ -586,15 +588,18 @@ fn init_worker(initrd_len: u64) -> ! {
     const UNTYPED: u64 = 0;
     const REPORT: u64 = 1;
 
-    let Some(init_bytes) = program(initrd_len, "init") else { fail_report(REPORT) };
-    let Ok(elf) = elf::Elf::parse(init_bytes) else { fail_report(REPORT) };
+    // The worker is its own binary now (19f.2), loaded from the archive by name, not a role of this
+    // one. init parses it exactly as it parses any program it did not write.
+    let Some(worker_bytes) = program(initrd_len, "worker") else { fail_report(REPORT) };
+    let Ok(elf) = elf::Elf::parse(worker_bytes) else { fail_report(REPORT) };
 
-    // The worker's whole authority: the report endpoint as its slot 0 (its RESULT_SLOT), so its
-    // one SEND lands where the test (or, in the boot system, the shell) is waiting.
+    // The worker's whole authority: the report endpoint as its slot 0, so its one SEND lands where
+    // the test (or, in the boot system, the shell) is waiting.
     let caps: &[(u64, u64)] = &[(REPORT, abi::rights::WRITE)];
     let Ok(tcb) = build_child(UNTYPED, &elf, caps, &[]) else { fail_report(REPORT) };
-    // Role in x0, the worker's input in x1: the multi-arg START that 19e added.
-    check(tcb_start(tcb, WORKER, WORKER_INPUT, 0) == 0);
+    // x0 is unused (a standalone binary needs no role selector); the input is in x1 (the multi-arg
+    // START that 19e added).
+    check(tcb_start(tcb, 0, WORKER_INPUT, 0) == 0);
     exit();
 }
 
