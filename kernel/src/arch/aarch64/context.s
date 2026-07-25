@@ -124,6 +124,7 @@ user_entry_trampoline:
     msr     daifclr, #2         // enable interrupts (see thread_trampoline for why)
     mov     x0,  x19            // the EL0 entry address
     mov     x1,  x20            // the user stack pointer
-    bl      user_thread_entry   // extern "C" fn(u64, u64) -> !  — never returns
+    mov     x2,  x21            // the child's initial x0 (19d)
+    bl      user_thread_entry   // extern "C" fn(u64, u64, u64) -> !  — never returns
 1:  wfi
     b       1b

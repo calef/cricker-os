@@ -266,6 +266,14 @@ pub fn user_aspace_map(name: u64, va: u64, phys: u64, flags: Flags) -> Result<()
         mmu::unmap_user_at(space.root(), va);
         return Err(MapError::OutOfFrames);
     }
+    // A code page a loader just filled via data writes (milestone 19d): the instruction fetcher
+    // has its own cache and has never heard of those bytes. On aarch64 the I-cache is not
+    // coherent with the D-cache, so make it so now, via the frame's direct-map VA (any VA that
+    // maps the physical page works; caches are PIPT to the point of unification). Without this,
+    // the child fetches whatever was in the frame before the loader wrote its program.
+    if flags.is_user_executable() {
+        sync_icache(mmu::phys_to_virt(phys), FRAME_SIZE as usize);
+    }
     Ok(())
 }
 
@@ -362,13 +370,21 @@ pub fn load(image: &[u8]) -> Result<(AddressSpace, u64), LoadError> {
     let mut space =
         AddressSpace::new(content).ok_or(LoadError::Unmappable(MapError::OutOfFrames))?;
 
+    map_segments(&mut space, &elf)?;
+
+    space
+        .map_new(USER_STACK_VA, Flags::user_data())
+        .map_err(LoadError::Unmappable)?;
+
+    Ok((space, elf.entry()))
+}
+
+/// Lay an ELF's loadable segments into `space`, honouring their permissions exactly (milestone
+/// 19d factored this out of `load` so `spawn_init` shares it; init's userspace loader mirrors it).
+/// A read-only segment gets `user_rodata`, not `user_data`: a loader that widens permissions is
+/// a loader you cannot reason about. `.bss` is free because `map_new` zeroes every page.
+fn map_segments(space: &mut AddressSpace, elf: &Elf) -> Result<(), LoadError> {
     for seg in elf.segments() {
-        // **Honour what the file asked for, and not one bit more.**
-        //
-        // `elf` has already refused a segment that is both writable and executable, so these
-        // three are the only shapes that reach here, and each maps to exactly one `Flags`
-        // constructor. Note that a read-only segment gets `user_rodata`, not `user_data`: a
-        // loader that widens permissions is a loader you cannot reason about.
         let flags = if seg.is_executable() {
             Flags::user_code()
         } else if seg.is_writable() {
@@ -378,23 +394,16 @@ pub fn load(image: &[u8]) -> Result<(AddressSpace, u64), LoadError> {
         };
 
         let (start, end) = seg.page_range(FRAME_SIZE);
-
         let mut va = start;
         while va < end {
-            // `map_new` hands back a ZEROED page, which is what makes `.bss` free: the bytes
-            // between `filesz` and `memsz` are simply the ones we never copy over.
-            //
-            // Forgetting that is the classic ELF loader bug, and the consequence is a program
-            // whose `.bss` holds whoever used that frame last.
             let page = space.map_new(va, flags).map_err(LoadError::Unmappable)?;
 
-            // Which of the file's bytes land in this page? Computed as an intersection rather
-            // than assumed, because `p_vaddr` need not be page-aligned.
+            // Which of the file's bytes land in this page? An intersection, because `p_vaddr`
+            // need not be page-aligned.
             let file_lo = seg.vaddr;
             let file_hi = seg.vaddr + seg.data.len() as u64;
             let lo = va.max(file_lo);
             let hi = (va + FRAME_SIZE).min(file_hi);
-
             if lo < hi {
                 let dst = (lo - va) as usize;
                 let src = (lo - file_lo) as usize;
@@ -405,16 +414,10 @@ pub fn load(image: &[u8]) -> Result<(AddressSpace, u64), LoadError> {
             if seg.is_executable() {
                 sync_icache(page.as_ptr() as u64, FRAME_SIZE as usize);
             }
-
             va += FRAME_SIZE;
         }
     }
-
-    space
-        .map_new(USER_STACK_VA, Flags::user_data())
-        .map_err(LoadError::Unmappable)?;
-
-    Ok((space, elf.entry()))
+    Ok(())
 }
 
 /// The program QEMU loaded into RAM for us, found via the device tree.
@@ -485,6 +488,76 @@ pub fn exec_elf(image: &[u8]) -> ! {
             maps: &[],
         },
     )
+}
+
+/// Where the kernel maps the initrd read-only into init's address space (milestone 19d): init
+/// reads the ELF to parse it here. High enough not to collide with init's own segments (0x40_0000)
+/// or its stack (0x50_0000).
+#[cfg_attr(not(test), allow(dead_code))] // becomes the boot path at 19d.2; test-driven until then
+pub const INITRD_VA: u64 = 0x2000_0000;
+
+/// **Spawn the init task** (milestone 19d): load `image` as an ordinary user process, but also
+/// map the whole initrd read-only at [`INITRD_VA`] so init can parse it, and hand init a building
+/// budget (an untyped, slot 0) plus `report` (slot 1, `WRITE|GRANT` so init can endow a child).
+/// init enters with `x0` = `role` and `x1` = the initrd length. This is the one program the kernel
+/// still loads; init loads the rest (design/init-and-granular-spawn.md).
+#[cfg_attr(not(test), allow(dead_code))] // becomes the boot path at 19d.2; test-driven until then
+pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
+    let (initrd_start, initrd_len) = memory::initrd_region().expect("no initrd to hand init");
+    let initrd_pages = initrd_len.div_ceil(FRAME_SIZE);
+
+    crate::sched::spawn(move || {
+        let elf = match Elf::parse(image) {
+            Ok(e) => e,
+            Err(e) => {
+                crate::println!("  init image is not loadable: {e:?}");
+                crate::sched::exit();
+            }
+        };
+        // A region big enough for init's own segments, the initrd's page tables, and slack.
+        let content: u64 = elf
+            .segments()
+            .map(|seg| {
+                let (start, end) = seg.page_range(FRAME_SIZE);
+                (end - start) / FRAME_SIZE
+            })
+            .sum::<u64>()
+            + 1
+            + initrd_pages / 512
+            + 8;
+        let mut space = AddressSpace::new(content).expect("no memory for init");
+        map_segments(&mut space, &elf).expect("could not lay out init");
+        space
+            .map_new(USER_STACK_VA, Flags::user_data())
+            .expect("could not map init's stack");
+
+        // Map the initrd, one page at a time, read-only. These are reserved RAM pages the frame
+        // allocator does not own, so this maps rather than allocates.
+        for i in 0..initrd_pages {
+            space
+                .map_physical(
+                    INITRD_VA + i * FRAME_SIZE,
+                    initrd_start + i * FRAME_SIZE,
+                    Flags::user_rodata(),
+                )
+                .expect("could not map the initrd into init");
+        }
+
+        // init's building budget: a large untyped it retypes the child's aspace, frames, and TCB
+        // from. Sized for a full copy of the initrd program plus its tables and init's scratch.
+        let build_region = crate::untyped::create(768).expect("no building budget for init");
+
+        crate::sched::adopt_address_space(space);
+        crate::sched::grant(crate::cap::untyped_cap(build_region)).expect("grant untyped");
+        crate::sched::grant(crate::cap::endpoint_cap(
+            report,
+            crate::cap::Rights::WRITE.union(crate::cap::Rights::GRANT),
+        ))
+        .expect("grant report");
+
+        enter_frame(elf.entry(), USER_STACK_TOP, role, initrd_len, 0)
+    })
+    .expect("could not spawn init");
 }
 
 /// Load the initrd program and become it, handed the world described by `spawn`. Never returns.
@@ -569,8 +642,8 @@ pub unsafe fn exec(program: &[u8]) -> ! {
 /// scheduled thread rather than the one that called `START`. The address space is already
 /// installed (the context switch that scheduled us in used our `space` field). This is `enter_at`
 /// with a caller-chosen stack and zero args; `enter_at` is now the exec wrapper over it.
-pub fn enter_at_on_current(entry: u64, user_sp: u64) -> ! {
-    enter_frame(entry, user_sp, 0, 0, 0)
+pub fn enter_at_on_current(entry: u64, user_sp: u64, arg0: u64) -> ! {
+    enter_frame(entry, user_sp, arg0, 0, 0)
 }
 
 fn enter_at(entry: u64, arg0: u64, arg1: u64, arg2: u64) -> ! {
@@ -2345,6 +2418,29 @@ mod tests {
         crate::untyped::destroy(frame_region);
     }
 
+    /// **Milestone 19d: userspace init parses a real ELF and builds a running process from it.**
+    /// The kernel loads exactly one program, init (a role of the same binary), and hands it the
+    /// initrd mapped read-only plus a building budget and a report endpoint. init parses that
+    /// ELF *in userspace* (the `elf` crate, no longer in the kernel's trusted core) and loads it
+    /// as a child through the granular verbs: retype an address space, copy each segment into
+    /// retyped frames and map them, retype and endow a TCB, configure, start. The child runs code
+    /// the kernel never parsed and reports the agreed word. Receiving it is the whole thesis of
+    /// milestone 19 working end to end: a verified kernel that runs a workload it did not load.
+    #[test_case]
+    fn userspace_init_parses_an_elf_and_builds_a_running_child() {
+        const CHILD_WORD: u64 = 0xC0FFEE;
+        const INIT_ROLE: u64 = 20;
+
+        let report = crate::sched::create_endpoint();
+        spawn_init(initrd().expect("no initrd"), INIT_ROLE, report);
+
+        let word = crate::sched::ipc_recv(report)[0];
+        assert_eq!(
+            word, CHILD_WORD,
+            "init did not build a running child from the ELF it parsed in userspace",
+        );
+    }
+
     /// **Milestone 19c.3, the whole point: one process builds and starts another, and it runs.**
     /// The kernel drives the four verbs the way init eventually will: retype an address space and
     /// a TCB, map a code page (containing a hand-assembled EL0 stub) and a stack into the space,
@@ -2406,17 +2502,17 @@ mod tests {
 
         // Not before it is whole: START must refuse an unconfigured embryo.
         assert!(
-            crate::sched::start_tcb(tid).is_err(),
+            crate::sched::start_tcb(tid, 0).is_err(),
             "START ran a half-built thread (no address space, no entry)",
         );
 
         crate::sched::configure_tcb(tid, CODE_VA, STACK_VA + frames::FRAME_SIZE, aspace)
             .expect("configure");
-        crate::sched::start_tcb(tid).expect("start");
+        crate::sched::start_tcb(tid, 0).expect("start");
 
         // And starting twice must refuse: it is no longer an embryo.
         assert!(
-            crate::sched::start_tcb(tid).is_err(),
+            crate::sched::start_tcb(tid, 0).is_err(),
             "START ran a thread that was already running",
         );
 

@@ -115,14 +115,20 @@ names the space through the same registry revocation uses.
   test that builds a child entirely from the four verbs, with a hand-assembled EL0 stub for
   code, and receives the word the child SENDs through a capability it was granted: a thread no
   `spawn` created, running code no wiring wrote.
-- **19d: init.** The ELF parser moves to userspace (the `elf` crate already compiles anywhere;
-  init links it directly — the eviction that motivated this decision). `user.rs`'s service
-  construction migrates into init; the kernel's own loader shrinks to loading exactly one
-  program: init itself.
-
-  *(Remaining before 19d: the four verbs are kernel-driven and tested; 19d is the userspace init
-  that drives them with a real ELF, at which point the granular surface has its intended single
-  caller and the composite-vs-granular decision pays off.)*
+- **19d.1: init parses a real ELF in userspace and builds a running child. (Built.)** The `elf`
+  crate links into the user binary; `spawn_init` (the one program the kernel still loads) hands
+  init the initrd mapped read-only, a building untyped, and a report endpoint. init's `build_child`
+  mirrors the kernel's `map_segments` entirely through the granular verbs: retype an aspace, copy
+  each segment into retyped frames and `MAP_INTO` the child (a new `MAP_CODE` mode + kernel
+  I-cache sync for executable pages), retype and endow a TCB, configure, start. The child runs
+  code the kernel never parsed and reports home. `SYS_CAP_DELETE` was added (a loader recycles a
+  16-slot cspace over hundreds of frames); `START` gained an initial-`x0` so init tells a child
+  its role. Witnessed end to end: `userspace_init_parses_an_elf_and_builds_a_running_child`, four
+  clean runs. See notes/init-and-loading.md.
+- **19d.2: init becomes the boot path. (Remaining.)** Migrate `user.rs`'s service construction
+  (console, shell, the demos) into init and retire the kernel's other loaders, so `spawn_init` is
+  the boot path rather than a test-driven entry. The larger mechanical restructure; the thesis is
+  already proved by 19d.1.
 - **19e: the workload.** Decision 2 (what runs first, native ABI) happens here, against a
   system that can actually run it.
 

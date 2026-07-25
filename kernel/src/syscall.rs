@@ -46,6 +46,12 @@ pub fn dispatch(frame: &mut TrapFrame) {
             sched::yield_now();
             Ok(0)
         }
+        // Drop a capability from the caller's own cspace (milestone 19d). Deleting an empty slot
+        // is a no-op, not an error: a loader recycling slots should not have to track emptiness.
+        abi::SYS_CAP_DELETE => {
+            let _ = sched::delete_current_cap(frame.x[0]);
+            Ok(0)
+        }
         abi::SYS_INVOKE => invoke(
             frame, frame.x[0], frame.x[1], frame.x[2], frame.x[3], frame.x[4],
         ),
@@ -189,16 +195,28 @@ fn invoke(
                 let Object::Frame(phys) = frame.object else {
                     return Err(Error::WrongObject);
                 };
-                let flags = if a2 != 0 {
-                    if !frame.rights.allows(Rights::WRITE) {
-                        return Err(Error::NotPermitted);
+                // a2 chooses the shape: 0 read-only, 1 read/write, 2 executable code (19d, so a
+                // loader can lay down a child's .text). Code is W^X: user_code is RX, never
+                // writable, so mapping it needs only READ on the frame.
+                let flags = match a2 {
+                    abi::aspace::MAP_RW => {
+                        if !frame.rights.allows(Rights::WRITE) {
+                            return Err(Error::NotPermitted);
+                        }
+                        paging::Flags::user_data()
                     }
-                    paging::Flags::user_data()
-                } else {
-                    if !frame.rights.allows(Rights::READ) {
-                        return Err(Error::NotPermitted);
+                    abi::aspace::MAP_CODE => {
+                        if !frame.rights.allows(Rights::READ) {
+                            return Err(Error::NotPermitted);
+                        }
+                        paging::Flags::user_code()
                     }
-                    paging::Flags::user_rodata()
+                    _ => {
+                        if !frame.rights.allows(Rights::READ) {
+                            return Err(Error::NotPermitted);
+                        }
+                        paging::Flags::user_rodata()
+                    }
                 };
                 match crate::user::user_aspace_map(name, va, phys, flags) {
                     Ok(()) => Ok(0),
@@ -259,7 +277,7 @@ fn invoke(
                 if !cap.rights.allows(Rights::WRITE) {
                     return Err(Error::NotPermitted);
                 }
-                sched::start_tcb(tid)?;
+                sched::start_tcb(tid, a0)?; // a0 is the child's initial x0 (19d)
                 Ok(0)
             }
             _ => Err(Error::BadMethod),

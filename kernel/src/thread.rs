@@ -371,6 +371,11 @@ pub struct Thread {
     /// thread, which never drops to EL0 and runs its closure instead.
     pub(crate) entry: (u64, u64), // (entry_va, user_sp)
 
+    /// **The child's initial `x0`** (milestone 19d): the one word `START` hands the new EL0
+    /// thread in its first register, so a loader can tell a child which of a multi-role program
+    /// it is to be. 0 for a kernel thread and for a child that wants no argument.
+    pub(crate) start_arg: u64,
+
     /// **Did this thread's TCB page come from `kmem`** (recycle it on death) or from a user
     /// process's own region (leave it; the region reclaims it at destroy)? True for every
     /// kernel-created thread; false for a user-retyped TCB (19c.3). The page-origin half of the
@@ -413,6 +418,7 @@ impl Thread {
             on_cpu: true, // adopted mid-run: this thread is standing on its CPU right now
             wake_pending: false,
             entry: (0, 0), // a kernel thread; never enters EL0 by this path
+            start_arg: 0,
             tcb_kmem: true,
         }
     }
@@ -439,6 +445,7 @@ impl Thread {
             on_cpu: true, // adopted mid-run: this thread is standing on its CPU right now
             wake_pending: false,
             entry: (0, 0), // a kernel thread; never enters EL0 by this path
+            start_arg: 0,
             tcb_kmem: true,
         }
     }
@@ -511,6 +518,7 @@ impl Thread {
             on_cpu: false,
             wake_pending: false,
             entry: (0, 0), // a kernel thread; becomes a user process via exec, not this path
+            start_arg: 0,
             tcb_kmem: true,
         })
     }
@@ -534,6 +542,7 @@ impl Thread {
             on_cpu: false,
             wake_pending: false,
             entry: (0, 0),
+            start_arg: 0,
             tcb_kmem: false, // a user-retyped TCB page; the region owns it
         }
     }
@@ -552,9 +561,9 @@ impl Thread {
         // SAFETY: the stack was just mapped read/write, and this is inside it.
         unsafe {
             context.write(Context {
-                x19: entry,   // the trampoline moves this to elr
-                x20: user_sp, // ...and this to sp_el0
-                x21: 0,
+                x19: entry,          // the trampoline moves this to elr
+                x20: user_sp,        // ...and this to sp_el0
+                x21: self.start_arg, // ...and this to the child's first x0 (19d)
                 x22: 0,
                 x23: 0,
                 x24: 0,
@@ -584,9 +593,9 @@ unsafe extern "C" {
 /// drops to EL0 at `entry` on `user_sp`. The address space was installed by the context switch
 /// that scheduled us in (from our `space` field), so `TTBR0` already names it.
 #[unsafe(no_mangle)]
-extern "C" fn user_thread_entry(entry: u64, user_sp: u64) -> ! {
+extern "C" fn user_thread_entry(entry: u64, user_sp: u64, arg0: u64) -> ! {
     crate::sched::finish_switch();
-    crate::user::enter_at_on_current(entry, user_sp)
+    crate::user::enter_at_on_current(entry, user_sp, arg0)
 }
 
 /// The monomorphized bridge between "an address on a stack" and "a closure of type `F`".

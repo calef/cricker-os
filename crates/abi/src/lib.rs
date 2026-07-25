@@ -43,6 +43,13 @@ pub const SYS_EXIT: u64 = 0;
 pub const SYS_YIELD: u64 = 1;
 pub const SYS_INVOKE: u64 = 2;
 
+/// `cap_delete(slot)`: drop a capability from the caller's own cspace, freeing the slot
+/// (milestone 19d). The one capability-management operation the surface needs beyond `invoke`:
+/// a loader (init) retypes hundreds of frames through a 16-slot cspace and must recycle slots.
+/// Dropping a capability is authority over your *own* table, so like `exit` and `yield` it is a
+/// bare syscall, not an invocation on some object. Deleting an empty slot is a harmless no-op.
+pub const SYS_CAP_DELETE: u64 = 3;
+
 /// An index into the calling thread's capability table. **Not a pointer, not a handle you can
 /// guess.** The kernel looks in *your* table, and if the slot is empty you get `NoSuchSlot`.
 pub type CapSlot = u64;
@@ -176,6 +183,13 @@ pub mod aspace {
     /// paid from the space's own backing region; a mapping whose record cannot be afforded is
     /// refused and unmapped (`OutOfMemory`), never left invisible to revocation.
     pub const MAP_INTO: u64 = 0;
+
+    /// `MAP_INTO`'s third argument: how to map the frame. Read-only, read/write, or executable
+    /// code (milestone 19d, so a loader can lay down a child's `.text`). Code is W^X: mapped RX,
+    /// never writable, and the kernel makes the I-cache coherent with the loader's data writes.
+    pub const MAP_RO: u64 = 0;
+    pub const MAP_RW: u64 = 1;
+    pub const MAP_CODE: u64 = 2;
 }
 
 pub mod rights {

@@ -159,6 +159,11 @@ in the code or the conversation doesn't make sense, it belongs here.
   address space owns one ASID for life, the tag rides in TTBR0 with the root, and the context
   switch flushes nothing. Why a bitmap suffices where Linux needs generations (milestone 14
   bounded the spaces), and the witness test that would catch a broken tag.
+- [init, and loading a program from userspace](init-and-loading.md) — milestone 19d: the ELF
+  parser leaves the kernel for init, an ordinary confined program. How init loads a child through
+  the granular verbs (retype, copy-and-map each segment, endow, configure, start), why
+  SYS_CAP_DELETE exists (a loader recycles a 16-slot cspace over hundreds of frames), and the two
+  hardware details a userspace loader must respect (I-cache coherency, cross-space W^X).
 - [The kernel's own budget](kernel-budget.md) — milestone 19c.1: kernel stacks stop drawing
   open-endedly from the frame allocator and draw from one boot-carved region (`kmem`) with
   page recycling, so the kernel cannot spend beyond its carve. The three-round decision behind

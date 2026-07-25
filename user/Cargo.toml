@@ -16,3 +16,4 @@ bench = false
 
 [dependencies]
 abi = { version = "0.1.0", path = "../crates/abi" }
+elf = { version = "0.1.0", path = "../crates/elf" }

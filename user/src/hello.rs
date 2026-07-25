@@ -53,6 +53,8 @@ const REVOKE_DEMO: u64 = 16;
 const EP_MAKER: u64 = 17;
 const EP_USER: u64 = 18;
 const ASPACE_BUILDER: u64 = 19;
+const INIT: u64 = 20;
+const CHILD: u64 = 21;
 
 /// The word the frame producer writes into a shared page and the consumer reads back through its
 /// own mapping of the same physical page. One binary, so one constant serves both roles.
@@ -114,6 +116,8 @@ pub extern "C" fn _start(role: u64, dma_phys: u64, _arg2: u64) -> ! {
         EP_MAKER => ep_maker(),
         EP_USER => ep_user(),
         ASPACE_BUILDER => aspace_builder(),
+        INIT => init(dma_phys), // x1 carries the initrd length
+        CHILD => child(),
         SELF_CHECK => self_check_client(),
         _ => self_check_client(),
     }
@@ -374,6 +378,159 @@ fn revoke_demo() -> ! {
 
     send(REPORT, if revoked == 0 && after < 0 { 1 } else { 0 }, 0, 0);
     exit();
+}
+
+/// Where the kernel maps the initrd into init (must match user.rs INITRD_VA).
+const INITRD_VA: u64 = 0x2000_0000;
+/// The word a milestone-19d child reports through the endpoint init granted it.
+const CHILD_WORD: u64 = 0xC0FFEE;
+
+/// **The init task, milestone 19d.** The first program the kernel starts, and the one that
+/// starts the others: the ELF parser lives here, in userspace, not in the kernel. init holds a
+/// building untyped (slot 0) and a report endpoint (slot 1, `WRITE|GRANT`); the initrd is mapped
+/// read-only at [`INITRD_VA`], and its length arrives in `x1`.
+///
+/// It parses that ELF (the `elf` crate, linked into userspace) and loads it as a **child**: a
+/// second instance of this same program, entered at role [`CHILD`], built entirely by init out
+/// of its own budget through the granular verbs (retype an address space, copy each segment into
+/// retyped frames and map them in, retype a TCB, endow it, configure, start). The child reports
+/// a word home; receiving it proves init parsed a real ELF and built a running process, with the
+/// kernel never touching the child's bytes. See kernel/src/user.rs spawn_init.
+fn init(initrd_len: u64) -> ! {
+    const UNTYPED: u64 = 0;
+    const REPORT: u64 = 1;
+
+    // SAFETY: the kernel mapped `initrd_len` bytes of the initrd, read-only, at INITRD_VA.
+    let image = unsafe { core::slice::from_raw_parts(INITRD_VA as *const u8, initrd_len as usize) };
+    let elf = match elf::Elf::parse(image) {
+        Ok(e) => e,
+        Err(_) => {
+            send(REPORT, 0, 0, 0); // a zero word: parse failed (the test expects CHILD_WORD)
+            exit();
+        }
+    };
+
+    match build_child(UNTYPED, REPORT, &elf) {
+        Ok(child_tcb) => {
+            // Start the child at role CHILD; its first x0 is the role selector.
+            check(tcb_start(child_tcb, CHILD) == 0);
+        }
+        Err(_) => {
+            send(REPORT, 0, 0, 0); // build failed
+        }
+    }
+    exit();
+}
+
+/// **A milestone-19d child.** Built by init from an ELF init parsed, entered here with role
+/// [`CHILD`] in `x0`. Its whole authority is one capability init granted it in slot 0: a report
+/// endpoint. It SENDs the agreed word and exits, which is the observable proof that init's
+/// userspace load produced a running thread.
+fn child() -> ! {
+    const REPORT: u64 = 0; // init inserted the report cap as the child's first slot
+    send(REPORT, CHILD_WORD, 0, 0);
+    exit();
+}
+
+/// Build a child process from `elf`, out of `untyped`, endowing it with the report endpoint.
+/// Returns the child's TCB slot, ready to start. This is init's ELF loader, mirroring the
+/// kernel's `map_segments` but driven entirely through the granular syscall verbs.
+fn build_child(untyped: u64, report: u64, elf: &elf::Elf) -> Result<u64, ()> {
+    const PAGE: u64 = 4096;
+    const CHILD_STACK_VA: u64 = 0x0050_0000;
+    // A scratch window in init's own space where it maps each child frame to fill it.
+    let mut scratch = 0x1000_0000u64;
+
+    let aspace = retype_obj(untyped, abi::objtype::ASPACE)?;
+
+    for seg in elf.segments() {
+        let mode = if seg.is_executable() {
+            abi::aspace::MAP_CODE
+        } else if seg.is_writable() {
+            abi::aspace::MAP_RW
+        } else {
+            abi::aspace::MAP_RO
+        };
+        let (start, end) = seg.page_range(PAGE);
+        let mut va = start;
+        while va < end {
+            let frame = retype_frame(untyped)?;
+            // Map the frame writable in init's own space, fill it, then hand it to the child.
+            if unsafe { invoke(frame, abi::frame::MAP, scratch, 1, untyped) } != 0 {
+                return Err(());
+            }
+            // Zero the page (free .bss), then copy this page's slice of the segment's file bytes.
+            // SAFETY: `scratch` is a page we just mapped read/write in our own space.
+            let dst = unsafe { core::slice::from_raw_parts_mut(scratch as *mut u8, PAGE as usize) };
+            dst.fill(0);
+            let file_lo = seg.vaddr;
+            let file_hi = seg.vaddr + seg.data.len() as u64;
+            let lo = va.max(file_lo);
+            let hi = (va + PAGE).min(file_hi);
+            if lo < hi {
+                let d = (lo - va) as usize;
+                let sidx = (lo - file_lo) as usize;
+                let n = (hi - lo) as usize;
+                dst[d..d + n].copy_from_slice(&seg.data[sidx..sidx + n]);
+            }
+            // Into the child at the segment's own VA, with the segment's permissions.
+            if unsafe { invoke(aspace, abi::aspace::MAP_INTO, va, frame, mode) } != 0 {
+                return Err(());
+            }
+            // Done with this frame's capability; free the slot so the next retype reuses it.
+            cap_delete(frame);
+            scratch += PAGE;
+            va += PAGE;
+        }
+    }
+
+    // A stack for the child: one writable page, top just under CHILD_STACK_VA + PAGE.
+    let stack_frame = retype_frame(untyped)?;
+    if unsafe { invoke(aspace, abi::aspace::MAP_INTO, CHILD_STACK_VA, stack_frame, abi::aspace::MAP_RW) } != 0 {
+        return Err(());
+    }
+    cap_delete(stack_frame);
+
+    // The thread, endowed with the report endpoint (its slot 0), then configured and returned.
+    let tcb = retype_obj(untyped, abi::objtype::TCB)?;
+    // Insert the report cap (we hold WRITE|GRANT; give the child WRITE) as the child's slot 0.
+    if unsafe { invoke(tcb, abi::tcb::CAP_INSERT, report, abi::rights::WRITE, 0) } < 0 {
+        return Err(());
+    }
+    if unsafe { invoke(tcb, abi::tcb::CONFIGURE, elf.entry(), CHILD_STACK_VA + PAGE, aspace) } != 0 {
+        return Err(());
+    }
+    Ok(tcb)
+}
+
+/// Retype a kernel object (endpoint | aspace | tcb) out of `untyped`; returns its cap slot.
+fn retype_obj(untyped: u64, objtype: u64) -> Result<u64, ()> {
+    let r = unsafe { invoke(untyped, abi::untyped::RETYPE_OBJ, objtype, 0, 0) };
+    if r < 0 { Err(()) } else { Ok(r as u64) }
+}
+
+/// Retype a page of `untyped` into a Frame capability; returns its cap slot.
+fn retype_frame(untyped: u64) -> Result<u64, ()> {
+    let r = unsafe { invoke(untyped, abi::untyped::RETYPE, 0, 0, 0) };
+    if r < 0 { Err(()) } else { Ok(r as u64) }
+}
+
+/// Start a configured TCB, handing the child `arg0` as its first `x0`. Returns the syscall result.
+fn tcb_start(tcb: u64, arg0: u64) -> i64 {
+    unsafe { invoke(tcb, abi::tcb::START, arg0, 0, 0) }
+}
+
+/// Delete a capability from our own cspace, freeing the slot for reuse (milestone 19d).
+fn cap_delete(slot: u64) {
+    // SAFETY: `svc`; the kernel drops the slot from our table.
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("x8") abi::SYS_CAP_DELETE,
+            in("x0") slot,
+            options(nostack),
+        );
+    }
 }
 
 /// **Building another address space, milestone 19b.** Holds an untyped budget (slot 0) and a
