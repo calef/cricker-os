@@ -1289,7 +1289,7 @@ pub fn tcb_insert_cap(tid: Tid, cap: crate::cap::Cap) -> Result<u64, abi::Error>
 /// Refuses a TCB that is not an embryo, or one with no bound address space or no entry set: a
 /// half-built thread must never run. On success the thread gets its kernel stack and entry
 /// context and joins this core's run queue.
-pub fn start_tcb(tid: Tid, arg0: u64) -> Result<(), abi::Error> {
+pub fn start_tcb(tid: Tid, args: [u64; 3]) -> Result<(), abi::Error> {
     let mut guard = SCHED.lock();
     let sched = guard.as_mut().ok_or(abi::Error::NoSuchSlot)?;
     let t = sched.threads.get_mut(tid).ok_or(abi::Error::NoSuchSlot)?;
@@ -1302,7 +1302,7 @@ pub fn start_tcb(tid: Tid, arg0: u64) -> Result<(), abi::Error> {
     if t.space.is_none() || t.entry.0 == 0 {
         return Err(abi::Error::NotPermitted); // configure it first
     }
-    t.start_arg = arg0; // the child's first x0 (19d)
+    t.start_args = args; // the child's x0, x1, x2 (19d/19e)
     if !t.arm_for_start() {
         return Err(abi::Error::OutOfMemory); // no kernel stack to be had
     }

@@ -125,6 +125,8 @@ user_entry_trampoline:
     mov     x0,  x19            // the EL0 entry address
     mov     x1,  x20            // the user stack pointer
     mov     x2,  x21            // the child's initial x0 (19d)
-    bl      user_thread_entry   // extern "C" fn(u64, u64, u64) -> !  — never returns
+    mov     x3,  x22            // ...x1 (19e)
+    mov     x4,  x23            // ...x2
+    bl      user_thread_entry   // extern "C" fn(u64, u64, u64, u64, u64) -> !  — never returns
 1:  wfi
     b       1b

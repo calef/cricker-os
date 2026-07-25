@@ -43,12 +43,33 @@ at `INITRD_VA` so it can read the ELF. Its length arrives in `x1`.
    why `SYS_CAP_DELETE` exists.
 3. A stack frame, mapped read/write.
 4. `RETYPE_OBJ(TCB)`, `CAP_INSERT` the report endpoint as the child's slot 0, `CONFIGURE` (entry
-   from the ELF, the child's stack top, the aspace), `START` with `x0` = the child's role.
+   from the ELF, the child's stack top, the aspace), `START`. `START` carries the child's first
+   three registers: `x0` is the role (which of the multi-role binary this instance is), and `x1`,
+   `x2` are data the child needs before it can run. See "The argument to START" below.
 
 The child is a second instance of the same multi-role binary, entered at the `CHILD` role. It
 SENDs one word through the capability init granted it, and exits. Receiving that word is the proof:
 init parsed a real ELF and produced a running thread, and the kernel never looked at the child's
 bytes.
+
+## The argument to START (milestone 19e)
+
+Through 19d, `START` handed the child exactly one word, its role in `x0`, and that was enough:
+every child was pure code selected by identity. A *worker* breaks that. It computes `n*n`, and `n`
+has to reach it before it runs. So 19e widened `START` to carry `x0`, `x1`, `x2`, the way a
+function call carries arguments, and the loader passes the role in `x0` and the input in `x1`.
+
+The plumbing is one value carried through the whole thread-creation path. `START`'s three
+arguments land in `Thread::start_args` (`kernel/src/thread.rs`); `arm_for_start` writes them into
+the faked switch frame as `x21/x22/x23`; the EL0 trampoline (`context.s`
+`user_entry_trampoline`) moves those into `x0/x1/x2` right before dropping to the child's entry.
+The child sees them as the arguments to its `_start(x0, x1, x2)`.
+
+init's spawn service (the shell's `run <n>`) is the payoff: the shell SENDs `n`, init builds a
+worker endowed with a result endpoint and `START`s it with `n` in `x1`, the worker squares it and
+SENDs the answer straight to the endpoint the shell is waiting on. init only builds the pipe; it
+never sees the number. The kernel test `init_builds_a_worker_and_passes_it_an_argument` proves the
+argument survives the crossing: the worker reports `n*n`, not `n` and not garbage.
 
 ## Two hardware details a userspace loader must respect
 

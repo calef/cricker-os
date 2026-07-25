@@ -289,7 +289,7 @@ fn invoke(
                 if !cap.rights.allows(Rights::WRITE) {
                     return Err(Error::NotPermitted);
                 }
-                sched::start_tcb(tid, a0)?; // a0 is the child's initial x0 (19d)
+                sched::start_tcb(tid, [a0, a1, a2])?; // the child's x0, x1, x2 (19d/19e)
                 Ok(0)
             }
             _ => Err(Error::BadMethod),

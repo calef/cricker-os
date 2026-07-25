@@ -124,6 +124,7 @@ pub extern "C" fn _start(role: u64, dma_phys: u64, _arg2: u64) -> ! {
         INIT_IRQ => init_irq(dma_phys),
         IRQ_CHILD => irq_child(),
         INIT_BOOT => init_boot(dma_phys),
+        INIT_WORKER => init_worker(dma_phys),
         CHILD => child(),
         DEV_CHILD => dev_child(),
         SELF_CHECK => self_check_client(),
@@ -398,6 +399,11 @@ const INIT_CONSOLE: u64 = 24;
 const INIT_IRQ: u64 = 25;
 /// The init role that IS the boot path: brings up the console and announces the system (19d.2c).
 const INIT_BOOT: u64 = 27;
+/// The init role that builds a worker, passes it an argument via START, and reports its answer
+/// (milestone 19e: the first workload that needs START to carry data, not just a role).
+const INIT_WORKER: u64 = 28;
+/// The argument init hands its worker in the [`INIT_WORKER`] role; the worker returns its square.
+const WORKER_INPUT: u64 = 7;
 /// The word a milestone-19d child reports through the endpoint init granted it.
 const CHILD_WORD: u64 = 0xC0FFEE;
 
@@ -420,8 +426,8 @@ fn init(initrd_len: u64) -> ! {
 /// it builds the whole interactive system out of its own budget: a console server (output), an
 /// input driver (keystrokes, on the UART receive interrupt), and the shell, wired together with
 /// endpoints and shared pages init creates. The kernel wires none of it; init is the system
-/// builder. init then stays alive as a stub spawn service so the shell's `spawn` fails gracefully
-/// rather than hanging (real workers need START to pass more than one argument; a follow-on).
+/// builder. init then stays alive as the spawn service: `run <n>` in the shell asks init to build
+/// a worker that returns n*n, started with `n` in x1 (the multi-arg START of milestone 19e).
 fn init_boot(_x1: u64) -> ! {
     // Read the initrd length from x1 (passed by spawn_init); the arg name is generic in _start.
     // SAFETY: the kernel mapped the initrd read-only at INITRD_VA; its length is in x1.
@@ -434,6 +440,7 @@ fn init_boot(_x1: u64) -> ! {
     const ROLE_CONSOLE: u64 = 1;
     const ROLE_INPUT: u64 = 4;
     const ROLE_SHELL: u64 = 5;
+    const ROLE_WORKER: u64 = 6; // the worker the spawn service builds on `run <n>`
     const CON_SHARED_VA: u64 = 0x0060_0000; // console reads text here; shell writes it
     const CON_UART_VA: u64 = 0x0070_0000; // console's UART mapping
     const IN_UART_VA: u64 = 0x00a0_0000; // input driver's UART mapping
@@ -460,7 +467,7 @@ fn init_boot(_x1: u64) -> ! {
         (CON_UART_VA, UART_DEV, DEV),
     ];
     let Ok(con) = build_child(UNTYPED, &elf, con_caps, con_maps) else { halt_forever() };
-    check(tcb_start(con, ROLE_CONSOLE) == 0);
+    check(tcb_start(con, ROLE_CONSOLE, 0, 0) == 0);
     cap_delete(con);
 
     // 2. Input driver: waits on the UART receive interrupt, assembles lines, delivers them.
@@ -470,7 +477,7 @@ fn init_boot(_x1: u64) -> ! {
         (LINE_VA, line_buf, abi::aspace::MAP_RW),
     ];
     let Ok(input) = build_child(UNTYPED, &elf, in_caps, in_maps) else { halt_forever() };
-    check(tcb_start(input, ROLE_INPUT) == 0);
+    check(tcb_start(input, ROLE_INPUT, 0, 0) == 0);
     cap_delete(input);
 
     // 3. The shell: prints via the console, reads lines from input, and holds the spawn channel.
@@ -486,16 +493,29 @@ fn init_boot(_x1: u64) -> ! {
         (LINE_VA, line_buf, abi::aspace::MAP_RO),         // shell reads input lines
     ];
     let Ok(shell) = build_child(UNTYPED, &elf, sh_caps, sh_maps) else { halt_forever() };
-    check(tcb_start(shell, ROLE_SHELL) == 0);
+    check(tcb_start(shell, ROLE_SHELL, 0, 0) == 0);
     cap_delete(shell);
 
-    // init stays alive as a stub spawn service: the shell SENDs a spawn request on `spawn_ep` and
-    // waits for a result; init answers every request with the "could not spawn" sentinel, so the
-    // shell's `spawn` command degrades gracefully instead of blocking forever. (Real worker
-    // processes need START to carry the worker's argument, a follow-on.)
+    // init stays alive as the real spawn service (19e). The shell SENDs `n` on `spawn_ep`; init
+    // builds a worker endowed with `result_ep` (WRITE) as its slot 0 and starts it with `n` in x1
+    // (the multi-arg START). The worker squares `n`, SENDs the answer straight to `result_ep`, and
+    // exits; the shell, holding `result_ep` for READ, receives it. init never sees the answer, it
+    // only builds the pipe. If the budget is exhausted (worker pages are pinned and not reclaimed
+    // yet), init answers u64::MAX so the shell degrades gracefully instead of the shell hanging.
     loop {
-        let _ = recv(spawn_ep); // blocks until the shell asks
-        send(result_ep, u64::MAX, 0, 0); // u64::MAX = "could not spawn"
+        let n = recv(spawn_ep).0; // blocks until the shell asks; x0 carries the argument
+        let worker_caps: &[(u64, u64)] = &[(result_ep, abi::rights::WRITE)];
+        match build_child(UNTYPED, &elf, worker_caps, &[]) {
+            Ok(w) => {
+                if tcb_start(w, ROLE_WORKER, n, 0) != 0 {
+                    send(result_ep, u64::MAX, 0, 0);
+                }
+                cap_delete(w); // init's TCB cap; the worker keeps running until it exits
+            }
+            Err(_) => {
+                send(result_ep, u64::MAX, 0, 0); // out of budget: "could not spawn"
+            }
+        }
     }
 }
 
@@ -536,7 +556,31 @@ fn init_irq(initrd_len: u64) -> ! {
         (TEST_IRQ, abi::rights::READ), // WAIT/ACK the interrupt
     ];
     let Ok(tcb) = build_child(UNTYPED, &elf, caps, &[]) else { fail_report(REPORT) };
-    check(tcb_start(tcb, IRQ_CHILD) == 0);
+    check(tcb_start(tcb, IRQ_CHILD, 0, 0) == 0);
+    exit();
+}
+
+/// **init builds a worker and hands it an argument, milestone 19e.** The first workload that needs
+/// `START` to carry *data*, not just a role: every child before this took only its role in `x0`,
+/// but a worker computes on an input, and that input has to reach it. init builds a [`WORKER`]
+/// child endowed with the report endpoint (slot 0) and starts it with [`WORKER_INPUT`] in `x1`
+/// (the second `START` argument, new in 19e). The worker squares it and reports home. Receiving
+/// `WORKER_INPUT * WORKER_INPUT` proves the argument crossed the `START` boundary intact: the
+/// mechanism the interactive `run <n>` command and, later, real spawned services stand on.
+fn init_worker(initrd_len: u64) -> ! {
+    const UNTYPED: u64 = 0;
+    const REPORT: u64 = 1;
+
+    // SAFETY: the kernel mapped the initrd read-only at INITRD_VA.
+    let image = unsafe { core::slice::from_raw_parts(INITRD_VA as *const u8, initrd_len as usize) };
+    let Ok(elf) = elf::Elf::parse(image) else { fail_report(REPORT) };
+
+    // The worker's whole authority: the report endpoint as its slot 0 (its RESULT_SLOT), so its
+    // one SEND lands where the test (or, in the boot system, the shell) is waiting.
+    let caps: &[(u64, u64)] = &[(REPORT, abi::rights::WRITE)];
+    let Ok(tcb) = build_child(UNTYPED, &elf, caps, &[]) else { fail_report(REPORT) };
+    // Role in x0, the worker's input in x1: the multi-arg START that 19e added.
+    check(tcb_start(tcb, WORKER, WORKER_INPUT, 0) == 0);
     exit();
 }
 
@@ -598,7 +642,7 @@ fn init_console(initrd_len: u64) -> ! {
         (CHILD_UART_VA, UART_DEV, abi::aspace::MAP_RO),
     ];
     let Ok(tcb) = build_child(UNTYPED, &elf, caps, maps) else { fail_report(REPORT) };
-    check(tcb_start(tcb, CONSOLE_SERVER_ROLE) == 0);
+    check(tcb_start(tcb, CONSOLE_SERVER_ROLE, 0, 0) == 0);
 
     // Now init is the client. Write a line into the shared page, ask the server to print it.
     let msg = b"cricker-os: the console server was built and started by userspace init.
@@ -651,7 +695,7 @@ fn init_build(initrd_len: u64, device: bool) -> ! {
     match build_child(UNTYPED, &elf, caps, maps) {
         Ok(child_tcb) => {
             let role = if device { DEV_CHILD } else { CHILD };
-            check(tcb_start(child_tcb, role) == 0);
+            check(tcb_start(child_tcb, role, 0, 0) == 0);
         }
         Err(_) => {
             send(REPORT, 0, 0, 0);
@@ -809,9 +853,10 @@ fn retype_frame(untyped: u64) -> Result<u64, ()> {
     if r < 0 { Err(()) } else { Ok(r as u64) }
 }
 
-/// Start a configured TCB, handing the child `arg0` as its first `x0`. Returns the syscall result.
-fn tcb_start(tcb: u64, arg0: u64) -> i64 {
-    unsafe { invoke(tcb, abi::tcb::START, arg0, 0, 0) }
+/// Start a configured TCB, handing the child `arg0`, `arg1`, `arg2` as its first three registers.
+/// Returns the syscall result.
+fn tcb_start(tcb: u64, arg0: u64, arg1: u64, arg2: u64) -> i64 {
+    unsafe { invoke(tcb, abi::tcb::START, arg0, arg1, arg2) }
 }
 
 /// Delete a capability from our own cspace, freeing the slot for reuse (milestone 19d).

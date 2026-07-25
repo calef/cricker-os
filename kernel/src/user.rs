@@ -707,8 +707,8 @@ pub unsafe fn exec(program: &[u8]) -> ! {
 /// scheduled thread rather than the one that called `START`. The address space is already
 /// installed (the context switch that scheduled us in used our `space` field). This is `enter_at`
 /// with a caller-chosen stack and zero args; `enter_at` is now the exec wrapper over it.
-pub fn enter_at_on_current(entry: u64, user_sp: u64, arg0: u64) -> ! {
-    enter_frame(entry, user_sp, arg0, 0, 0)
+pub fn enter_at_on_current(entry: u64, user_sp: u64, arg0: u64, arg1: u64, arg2: u64) -> ! {
+    enter_frame(entry, user_sp, arg0, arg1, arg2)
 }
 
 fn enter_at(entry: u64, arg0: u64, arg1: u64, arg2: u64) -> ! {
@@ -2580,6 +2580,28 @@ mod tests {
         );
     }
 
+    /// **Milestone 19e: init builds a worker, passes it an argument, and gets the answer back.**
+    /// Every child before this took only its role in `x0`. A worker computes on an input, so 19e
+    /// widened `START` to carry three initial registers. init builds a worker, starts it with the
+    /// input in `x1`, and the worker squares it and reports. Receiving `n*n` (not `n`, not garbage)
+    /// proves the argument crossed `START` into a fresh EL0 thread's registers intact. This is the
+    /// mechanism a real spawn service runs on: a workload parameterized by data, not just identity.
+    #[test_case]
+    fn init_builds_a_worker_and_passes_it_an_argument() {
+        const INIT_WORKER_ROLE: u64 = 28;
+        const WORKER_INPUT: u64 = 7;
+
+        let report = crate::sched::create_endpoint();
+        spawn_init(initrd().expect("no initrd"), INIT_WORKER_ROLE, report);
+
+        let answer = crate::sched::ipc_recv(report)[0];
+        assert_eq!(
+            answer,
+            WORKER_INPUT * WORKER_INPUT,
+            "the worker did not receive its START argument: expected n*n back",
+        );
+    }
+
     /// **Milestone 19c.3, the whole point: one process builds and starts another, and it runs.**
     /// The kernel drives the four verbs the way init eventually will: retype an address space and
     /// a TCB, map a code page (containing a hand-assembled EL0 stub) and a stack into the space,
@@ -2641,17 +2663,17 @@ mod tests {
 
         // Not before it is whole: START must refuse an unconfigured embryo.
         assert!(
-            crate::sched::start_tcb(tid, 0).is_err(),
+            crate::sched::start_tcb(tid, [0; 3]).is_err(),
             "START ran a half-built thread (no address space, no entry)",
         );
 
         crate::sched::configure_tcb(tid, CODE_VA, STACK_VA + frames::FRAME_SIZE, aspace)
             .expect("configure");
-        crate::sched::start_tcb(tid, 0).expect("start");
+        crate::sched::start_tcb(tid, [0; 3]).expect("start");
 
         // And starting twice must refuse: it is no longer an embryo.
         assert!(
-            crate::sched::start_tcb(tid, 0).is_err(),
+            crate::sched::start_tcb(tid, [0; 3]).is_err(),
             "START ran a thread that was already running",
         );
 
