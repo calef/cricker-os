@@ -2425,6 +2425,30 @@ mod tests {
         crate::untyped::destroy(frame_region);
     }
 
+    /// **Milestone 19d.2b: userspace init brings up the real console server.** Past 19d.2a's
+    /// ID-read probe: init builds the *actual* print server as a child, wires it a request/reply
+    /// channel and a shared page and the UART, then plays the client, asking it to print a line.
+    /// The server prints to the real UART (visible in the QEMU log) and acks the length; init
+    /// reports that length. Receiving the exact message length proves a userspace-built console
+    /// works end to end: a driver init constructed, on a channel init created, driving hardware
+    /// init delegated. This is the shape the real boot path (19d.2c) uses.
+    #[test_case]
+    fn userspace_init_brings_up_the_console_server() {
+        // The message length the init_console role prints and the server acks. Kept in sync with
+        // user/src/hello.rs init_console (the b"..." there); a mismatch fails loudly, not silently.
+        const MSG_LEN: u64 = 72;
+        const INIT_CONSOLE_ROLE: u64 = 24;
+
+        let report = crate::sched::create_endpoint();
+        spawn_init(initrd().expect("no initrd"), INIT_CONSOLE_ROLE, report);
+
+        let acked = crate::sched::ipc_recv(report)[0];
+        assert_eq!(
+            acked, MSG_LEN,
+            "the init-built console server did not print-and-ack: {acked} bytes, expected {MSG_LEN}",
+        );
+    }
+
     /// **Milestone 19d.2: userspace init builds a device driver and hands it the hardware.**
     /// The step beyond 19d.1: not just a child, but a child that touches a *device*. init holds a
     /// UART **device capability** (a new delegatable authority to map MMIO device-typed), builds

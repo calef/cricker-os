@@ -137,8 +137,15 @@ names the space through the same registry revocation uses.
     PL011's PrimeCell id (`0xB105F00D`), proving the delegated device-typed mapping is a real view
     of the actual hardware. This turns "the kernel maps the UART" into "device access is a
     capability", the mechanism every real driver-under-init needs.
-  - **19d.2b: the drivers (console, input, virtio) as init-built children**, each on the 2a
-    mechanism, each green.
+  - **19d.2b: the drivers as init-built children**, each on the 2a mechanism, each green.
+    **Console: built.** init constructs the real console print server (not a probe), wires it a
+    request/reply channel and a shared page it created and the UART it delegated, then plays the
+    client: it writes a line, the server prints it to the real UART (visible in the log) and acks,
+    init reports the length. `build_child` was generalized to take caps-to-insert and pages-to-map,
+    the shape every init-built service needs. Witnessed by
+    `userspace_init_brings_up_the_console_server`. Input and virtio follow (virtio also needs IRQ
+    and transport capabilities delegated through init, the same "device access is a capability"
+    move applied to interrupts and the virtio transport).
   - **19d.2c: the shell wired to init-built services; retire the kernel's `run`/`Spawn` device
     wiring; `spawn_init` becomes the real (non-test) boot path.**
 - **19e: the workload.** Decision 2 (what runs first, native ABI) happens here, against a

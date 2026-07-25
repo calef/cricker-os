@@ -119,6 +119,7 @@ pub extern "C" fn _start(role: u64, dma_phys: u64, _arg2: u64) -> ! {
         ASPACE_BUILDER => aspace_builder(),
         INIT => init(dma_phys), // x1 carries the initrd length
         INIT_DEV => init_dev(dma_phys),
+        INIT_CONSOLE => init_console(dma_phys),
         CHILD => child(),
         DEV_CHILD => dev_child(),
         SELF_CHECK => self_check_client(),
@@ -387,6 +388,8 @@ fn revoke_demo() -> ! {
 const INITRD_VA: u64 = 0x2000_0000;
 /// The init role that builds a device-driver child (milestone 19d.2); matches kernel test wiring.
 const INIT_DEV: u64 = 23;
+/// The init role that brings up the real console server and prints through it (milestone 19d.2b).
+const INIT_CONSOLE: u64 = 24;
 /// The word a milestone-19d child reports through the endpoint init granted it.
 const CHILD_WORD: u64 = 0xC0FFEE;
 
@@ -403,6 +406,70 @@ const CHILD_WORD: u64 = 0xC0FFEE;
 /// kernel never touching the child's bytes. See kernel/src/user.rs spawn_init.
 fn init(initrd_len: u64) -> ! {
     init_build(initrd_len, false)
+}
+
+/// **init brings up the real console server, milestone 19d.2b.** The step past 19d.2a's ID-read
+/// probe: init builds the *actual* print server (role [`CONSOLE_SERVER`]) as a child and drives
+/// it. The server needs four things, and init provides all of them out of its own budget and the
+/// capabilities it holds: a request endpoint (the server RECVs a length on it), a reply endpoint
+/// (it ACKs), a shared page (the client writes text, the server reads it), and the UART's
+/// registers (device-typed, from 19d.2a). init then plays the client: it writes a line into the
+/// shared page, sends the length, the server prints it to the real UART and acks, and init reports
+/// the acked length home. The report proves the whole userspace-built console works: a driver init
+/// constructed, wired to a channel init created, driving hardware init delegated.
+fn init_console(initrd_len: u64) -> ! {
+    const UNTYPED: u64 = 0;
+    const REPORT: u64 = 1;
+    const UART_DEV: u64 = 2;
+    const SHARED_VA: u64 = 0x0060_0000; // must match the console server's SHARED_VA
+    const CHILD_UART_VA: u64 = 0x0070_0000; // must match the console server's UART_VA
+    const CONSOLE_SERVER_ROLE: u64 = 1;
+
+    // SAFETY: the kernel mapped the initrd read-only at INITRD_VA.
+    let image = unsafe { core::slice::from_raw_parts(INITRD_VA as *const u8, initrd_len as usize) };
+    let Ok(elf) = elf::Elf::parse(image) else {
+        send(REPORT, 0, 0, 0);
+        exit();
+    };
+
+    // The channel to the server, and a shared page to hand it the text.
+    let Ok(request) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else { fail_report(REPORT) };
+    let Ok(reply) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else { fail_report(REPORT) };
+    let Ok(shared) = retype_frame(UNTYPED) else { fail_report(REPORT) };
+
+    // Map the shared page read/write in init's own space, so init (the client) can write into it.
+    if unsafe { invoke(shared, abi::frame::MAP, SHARED_VA, 1, UNTYPED) } != 0 {
+        fail_report(REPORT);
+    }
+
+    // Build the server: slot 0 = request (READ, it receives), slot 1 = reply (WRITE, it acks);
+    // the shared page read-only and the UART device-typed, at the VAs the server expects.
+    let caps: &[(u64, u64)] = &[(request, abi::rights::READ), (reply, abi::rights::WRITE)];
+    let maps: &[(u64, u64, u64)] = &[
+        (SHARED_VA, shared, abi::aspace::MAP_RO),
+        (CHILD_UART_VA, UART_DEV, abi::aspace::MAP_RO),
+    ];
+    let Ok(tcb) = build_child(UNTYPED, &elf, caps, maps) else { fail_report(REPORT) };
+    check(tcb_start(tcb, CONSOLE_SERVER_ROLE) == 0);
+
+    // Now init is the client. Write a line into the shared page, ask the server to print it.
+    let msg = b"cricker-os: the console server was built and started by userspace init.
+";
+    // SAFETY: init mapped the shared page read/write at SHARED_VA above.
+    unsafe {
+        let dst = core::slice::from_raw_parts_mut(SHARED_VA as *mut u8, msg.len());
+        dst.copy_from_slice(msg);
+    }
+    check(send(request, msg.len() as u64, 0, 0) == 0); // the server prints, then acks on reply
+    let (acked, _, _) = recv(reply);
+    send(REPORT, acked, 0, 0); // report the length the server acknowledged
+    exit();
+}
+
+/// Report a build failure (word 0) and exit. A `-> !` helper so the `else` arms above read cleanly.
+fn fail_report(report: u64) -> ! {
+    send(report, 0, 0, 0);
+    exit();
 }
 
 /// A variant of init that builds the **device driver** child (19d.2): same loader, but it hands
@@ -427,8 +494,13 @@ fn init_build(initrd_len: u64, device: bool) -> ! {
         }
     };
 
-    let dev = if device { Some((UART_DEV, CHILD_UART_VA)) } else { None };
-    match build_child(UNTYPED, REPORT, &elf, dev) {
+    // The child's authority: its report endpoint at slot 0 (WRITE). A driver also gets the UART.
+    let caps: &[(u64, u64)] = &[(REPORT, abi::rights::WRITE)];
+    let no_maps: &[(u64, u64, u64)] = &[];
+    let dev_maps: &[(u64, u64, u64)] = &[(CHILD_UART_VA, UART_DEV, abi::aspace::MAP_RO)];
+    let maps = if device { dev_maps } else { no_maps };
+
+    match build_child(UNTYPED, &elf, caps, maps) {
         Ok(child_tcb) => {
             let role = if device { DEV_CHILD } else { CHILD };
             check(tcb_start(child_tcb, role) == 0);
@@ -475,12 +547,19 @@ fn child() -> ! {
     exit();
 }
 
-/// Build a child process from `elf`, out of `untyped`, endowing it with the report endpoint.
-/// `device` optionally maps a device MMIO cap (that init holds) into the child at a VA before it
-/// starts, which is how init hands a driver its registers (19d.2). Returns the child's TCB slot,
-/// ready to start. This is init's ELF loader, mirroring the kernel's `map_segments` but driven
-/// entirely through the granular syscall verbs.
-fn build_child(untyped: u64, report: u64, elf: &elf::Elf, device: Option<(u64, u64)>) -> Result<u64, ()> {
+/// Build a child process from `elf`, out of `untyped`. `caps` are inserted into the child's cspace
+/// at slots 0, 1, ... in order (each `(init_slot, rights)`: the capability init holds in
+/// `init_slot`, narrowed to `rights`). `maps` are extra pages mapped into the child before it
+/// starts (each `(child_va, init_slot, mode)`: init's Frame or DeviceFrame cap, mapped at
+/// `child_va` with a `MAP_*` mode) -- how init hands a driver its registers and a shared buffer
+/// (19d.2). Returns the child's TCB slot, ready to start. This is init's ELF loader, mirroring the
+/// kernel's `map_segments` but driven entirely through the granular verbs.
+fn build_child(
+    untyped: u64,
+    elf: &elf::Elf,
+    caps: &[(u64, u64)],
+    maps: &[(u64, u64, u64)],
+) -> Result<u64, ()> {
     const PAGE: u64 = 4096;
     const CHILD_STACK_VA: u64 = 0x0050_0000;
     // A scratch window in init's own space where it maps each child frame to fill it.
@@ -536,20 +615,20 @@ fn build_child(untyped: u64, report: u64, elf: &elf::Elf, device: Option<(u64, u
     }
     cap_delete(stack_frame);
 
-    // Hand the child its device registers, if it is a driver (19d.2): map the device MMIO cap
-    // init holds into the child, device-typed, at the agreed VA. The child accesses it directly;
-    // it never holds the device capability, only the mapping.
-    if let Some((dev_cap, dev_va)) = device
-        && unsafe { invoke(aspace, abi::aspace::MAP_INTO, dev_va, dev_cap, abi::aspace::MAP_RO) } != 0
-    {
-        return Err(());
+    // The extra mappings: a device's registers, a shared buffer. Each is a cap init holds, mapped
+    // into the child at the given VA. The child accesses them directly; it never holds the caps.
+    for &(va, init_slot, mode) in maps {
+        if unsafe { invoke(aspace, abi::aspace::MAP_INTO, va, init_slot, mode) } != 0 {
+            return Err(());
+        }
     }
 
-    // The thread, endowed with the report endpoint (its slot 0), then configured and returned.
+    // The thread, then its initial authority, one grant per slot in order, then configured.
     let tcb = retype_obj(untyped, abi::objtype::TCB)?;
-    // Insert the report cap (we hold WRITE|GRANT; give the child WRITE) as the child's slot 0.
-    if unsafe { invoke(tcb, abi::tcb::CAP_INSERT, report, abi::rights::WRITE, 0) } < 0 {
-        return Err(());
+    for &(init_slot, rights) in caps {
+        if unsafe { invoke(tcb, abi::tcb::CAP_INSERT, init_slot, rights, 0) } < 0 {
+            return Err(());
+        }
     }
     if unsafe { invoke(tcb, abi::tcb::CONFIGURE, elf.entry(), CHILD_STACK_VA + PAGE, aspace) } != 0 {
         return Err(());
