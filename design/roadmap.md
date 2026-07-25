@@ -38,15 +38,17 @@ IPC and the MMU invariants are next. This threads through the list rather than b
 | 17 | Multikernel-leaning scheduler (research, optional) | Partition the shared thread table and endpoints | optional; not on the thesis path |
 | 20 | A portable HAL, proven on a second architecture | Make `arch/` a real HAL; bring up RISC-V then x86_64 | the "portable verified core" claim; reach the demonstrator earns |
 | 22 | Trusted init: verify it, and shrink what a broken one can do | Measured/secure boot that checks init before running it; reduce init's authority so a compromise is bounded | **closes the thesis's own soft spot:** init is the privileged *unverified* component the whole system is built by |
-| 23 | Live component replacement: hot-swap a driver on a running system | Replace a running server/driver with a new version, no reboot: start new, revoke the old's device cap, redirect clients through a broker, tear the old down | **the flagship payoff of the design:** capabilities + userspace drivers make live upgrade process lifecycle, not kernel surgery |
+| 23 | A capability-routed component OS with live replacement | Every userspace component (driver, server, app) is a swappable, vendor-shippable unit behind a stable contract; operators replace them live, no reboot. The console hot-swap is instance one | **the flagship payoff and a product ambition:** competing vendor components, confined by the kernel and swapped live; the verified core is the one fixed thing |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19), with the multikernel work (17) as
 optional research and the second-architecture port (20) as the reach the demonstrator earns, late and
 only after the core is proven. **Trusted init (22) follows 19**, because it only has teeth once there
-*is* an init to verify and once real hardware (16) closes the in-RAM tampering window. **Live
-component replacement (23) is the late demonstrator payoff**, built on revocation (13/the CDT),
-supervision (22), and dedicated binaries (19f). The broad competitor ambition stays parked (see the
+*is* an init to verify and once real hardware (16) closes the in-RAM tampering window. **The capability-routed
+component OS (23) is the late destination**: the console hot-swap is instance one, built on
+revocation (13/the CDT), supervision (22), and dedicated binaries (19f); the general version (a
+component contract, state handoff, vendor confinement) is a product ambition the demonstrator
+earns, and it re-touches the parked competitor story below. The broad competitor ambition stays parked (see the
 end of this file).
 Several milestones already have their design worked out; the blocks below point at it.
 
@@ -242,41 +244,65 @@ a message a supervisor holds); MINIX 3's reincarnation server (a userspace proce
 dead drivers, not the kernel); Erlang/OTP supervision trees and "let it crash" (decades of evidence
 that restart policy wants to be a rich userspace thing, not a kernel reflex).
 
-### 23. Live component replacement: hot-swap a driver on a running system
+### 23. A capability-routed component OS with live replacement
 
-**The flagship payoff of the whole design, made concrete.** A client names an *endpoint*, never a
-peer (the milestone 7-8 decision), so a driver's identity is invisible to the code that uses it: any
-program that speaks the protocol and holds the device capability *is* the driver. That decoupling is
-what makes a running driver replaceable at all. A monolithic kernel does this with module
-unload/reload fragility or livepatch gymnastics; here a driver is a *process*, so replacing it live
-is process lifecycle, not kernel surgery.
+**The destination the design points at, and a product ambition.** A client names an *endpoint*,
+never a peer (the milestone 7-8 decision), so a component's identity is invisible to the code that
+uses it: any program that speaks the protocol and holds the right capabilities *is* the component.
+That decoupling is what makes running components replaceable at all, and it generalizes: the aim is
+a system where **every userspace component (driver, server, app) is a swappable, vendor-shippable
+unit behind a stable contract, and operators replace them live, no reboot** -- with the verified
+kernel as the one fixed thing underneath an entirely swappable userland. This is Fuchsia's shape
+(capability-routed components, stable protocol interfaces) on a verified core.
 
-**Deliverable.** Replace a running server (the console server is the worked example) with a
-different one, or a new version, **without a reboot**, and demonstrate a client that never notices.
-The four steps, each resting on machinery from earlier milestones:
+**Instance one: hot-swap the console server (the mechanism).** Replace a running server with a new
+version, no reboot, with a client that never notices. Four steps, each on earlier machinery:
 
-1. **Start the new server** (a supervisor builds it via the granular verbs, endows it with a fresh
-   set of endpoints).
+1. **Start the new server** (a supervisor builds it via the granular verbs, endows it fresh).
 2. **Revoke the old server's device capability** so there are never two owners of one device's
-   registers (the interleaving hazard). This is milestone 13's revocation, extended from frames to
-   *device* capabilities, which is where the deferred CDT (capability-derivation tree) finally earns
-   its keep.
-3. **Redirect clients through a broker.** Clients hold a cap to a stable *console broker* endpoint,
-   not to the server directly; the broker forwards to the current backend and re-points on a swap,
-   so the substitution is invisible to every client. A small userspace naming-service pattern.
-4. **Drain or drop in-flight requests and tear the old server down** (the reaper plus revocation
-   reclaim its memory).
+   registers (the interleaving hazard): milestone 13's revocation extended from frames to *device*
+   capabilities, where the deferred CDT (capability-derivation tree) finally earns its keep.
+3. **Redirect clients through a broker.** Clients hold a cap to a stable *broker* endpoint, not to
+   the server; the broker re-points on a swap, so substitution is invisible. A userspace naming
+   service.
+4. **Drain in-flight requests and tear the old server down** (the reaper plus revocation).
 
-**Why it is late, and why it is worth it.** It composes revocation (13/CDT), supervision (22, the
-orchestrator that decides *when* to swap and handles a swap that fails), and dedicated binaries
-(19f, so there is a distinct program to substitute). None of those alone is hot-swap; the milestone
-is assembling them into the demonstrator that *shows* the capability model's superpower, rather than
-only arguing it.
+**Generalising to all components: what the console case does not yet need.**
 
-**Prior art.** MINIX 3's reincarnation server (live driver replacement in userspace); QNX
-(hot-swappable drivers); Erlang/OTP hot code loading (a running system upgraded module by module).
-The common thread is exactly ours: components are isolated processes named through a level of
-indirection, so one can be swapped under the others.
+- **A uniform component contract + manifest.** Each component implements a stable protocol and
+  *declares the capabilities it needs* (this device, these endpoints), so any vendor's build is a
+  drop-in the supervisor wires from the manifest. This is seL4 CapDL / Fuchsia component-manifest
+  territory.
+- **State handoff (the crux).** The console is easy because it is near-stateless. A filesystem
+  server (open handles, caches, in-flight writes) or a network stack (live connections) cannot be
+  kill-and-restarted without losing state; live-swapping them needs a serialise-old / absorb-new
+  protocol over a supervisor-brokered channel. Prior art: Erlang/OTP `code_change`, VM live
+  migration, CRIU checkpoint/restore. This is where the real engineering is.
+- **Dependency-aware orchestration.** If B is a client of A, swapping A means quiesce B, swap,
+  resume; the supervisor (22) needs the dependency graph and a quiescence protocol.
+
+**The fixed core, stated honestly.** Two things are deliberately *not* hot-swapped this way, and
+that boundary is a feature. The **kernel** is the verified TCB enforcing everything; you do not
+live-swap it (changing it is a reboot; seamless kernel update is a separate, heavier problem). A
+**minimal init / root supervisor / broker** is the fixed point that makes swapping everything else
+possible -- pushed as tiny and stable as it can be, but you cannot swap the swapper infinitely.
+
+**Why this is the selling point, and safe.** Because the kernel confines every component to exactly
+the capabilities it was granted, **untrusted, competing vendor components run safely**: a Linux
+vendor kernel module is ring-0 and can do anything; a cricker-os vendor component is a confined
+process that can touch only what the operator handed it. A malicious console driver scribbles on the
+UART it was given and nothing else -- it cannot read another component's memory, forge authority, or
+reach the kernel. That is what makes "different vendors ship competing components, operators swap
+them live" not merely possible but *safe*, and it is the payoff of the capability model plus
+milestone 22's authority-minimisation. It also connects directly to the parked competitor ambition
+at the end of this file: this component model *is* a general-purpose product story, on the verified
+core the demonstrator earns first.
+
+**Prior art.** Fuchsia (the closest match: capability-routed, manifest-declared, swappable
+components); MINIX 3's reincarnation server (live driver replacement in userspace); QNX
+(hot-swappable drivers); Erlang/OTP hot code loading and supervision. The common thread is ours:
+components are isolated processes, named through indirection and confined by capability, so one can
+be swapped under the others.
 
 ### 17. Multikernel-leaning scheduler (research, optional)
 
