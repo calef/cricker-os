@@ -25,10 +25,9 @@
 //! flush) would be right the first time.
 
 use crate::arch::mmu::{self, KERNEL_VA_BASE};
-use crate::memory;
 use crate::sync::{IrqSafeMutex, rank};
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use frames::{FRAME_SIZE, Frame};
+use frames::FRAME_SIZE;
 use paging::Flags;
 
 pub type Tid = u64;
@@ -146,7 +145,12 @@ pub struct KernelStack {
     guard: u64,
     bottom: u64,
     top: u64,
-    frames: [Option<Frame>; STACK_PAGES],
+    /// The physical pages backing the stack, from the kernel's own budget (`kmem`, milestone
+    /// 19c.1). Physical addresses, not `Frame`s, because they belong to the kernel object
+    /// region and return to it (recycled) rather than to the frame allocator: the kernel's
+    /// stack spending is bounded by a boot carve now, not open-ended. `0` marks a page that was
+    /// never mapped (a partial-build failure path).
+    pages: [u64; STACK_PAGES],
 }
 
 impl KernelStack {
@@ -166,23 +170,28 @@ impl KernelStack {
         let bottom = base + FRAME_SIZE;
         let top = bottom + STACK_PAGES as u64 * FRAME_SIZE;
 
-        let mut frames = [const { None }; STACK_PAGES];
-        for (i, slot) in frames.iter_mut().enumerate() {
-            let frame = memory::alloc()?;
+        let mut pages = [0u64; STACK_PAGES];
+        for (i, slot) in pages.iter_mut().enumerate() {
+            // From the kernel's own budget (19c.1), recycled from dead stacks, not the frame
+            // allocator. This is what makes "the kernel cannot spend beyond its boot carve"
+            // true of stacks, the last open-ended kernel draw milestone 14 had not closed.
+            let Some(phys) = crate::kmem::page() else {
+                return None; // `pages` so far are recorded; Drop recycles what we did map
+            };
             let va = bottom + i as u64 * FRAME_SIZE;
 
-            if mmu::map_page(va, frame.addr(), Flags::kernel_data()).is_err() {
-                memory::free(frame);
-                return None; // `frames` drops, and Drop below unmaps what we did map
+            if mmu::map_page(va, phys, Flags::kernel_data()).is_err() {
+                crate::kmem::recycle(phys); // never mapped: straight back to the budget
+                return None; // Drop handles the earlier, mapped pages
             }
-            *slot = Some(frame);
+            *slot = phys;
         }
 
         Some(KernelStack {
             guard,
             bottom,
             top,
-            frames,
+            pages,
         })
     }
 
@@ -206,8 +215,10 @@ impl KernelStack {
 
 impl Drop for KernelStack {
     fn drop(&mut self) {
-        for (i, frame) in self.frames.iter().enumerate() {
-            let Some(frame) = frame else { continue };
+        for (i, &phys) in self.pages.iter().enumerate() {
+            if phys == 0 {
+                continue; // a page a failed build never mapped
+            }
             let va = self.bottom + i as u64 * FRAME_SIZE;
 
             // `unmap_page` discharges the TLB obligation with a real `tlbi`. It has to, and the
@@ -215,12 +226,12 @@ impl Drop for KernelStack {
             // thread's stack**. A stale translation would let the new thread read — and write —
             // the dead thread's saved registers. See notes/page-tables.md.
             if mmu::unmap_page(va).is_ok() {
-                memory::free(*frame);
+                crate::kmem::recycle(phys); // home to the kernel budget, not the frame allocator
             }
         }
 
         // Hand the address range back, so the next thread lands in page tables that already
-        // exist. The frames are freed above; this returns the *names*.
+        // exist. The physical pages were recycled above; this returns the *names*.
         FREE_STACK_VAS.lock().push(self.guard);
     }
 }

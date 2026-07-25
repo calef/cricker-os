@@ -159,6 +159,11 @@ in the code or the conversation doesn't make sense, it belongs here.
   address space owns one ASID for life, the tag rides in TTBR0 with the root, and the context
   switch flushes nothing. Why a bitmap suffices where Linux needs generations (milestone 14
   bounded the spaces), and the witness test that would catch a broken tag.
+- [The kernel's own budget](kernel-budget.md) — milestone 19c.1: kernel stacks stop drawing
+  open-endedly from the frame allocator and draw from one boot-carved region (`kmem`) with
+  page recycling, so the kernel cannot spend beyond its carve. The three-round decision behind
+  it, and the fact that collapsed it: a thread cannot swap the stack it runs on, so every
+  kernel stack is kernel-created and one budget covers all of them.
 - [The TCB](tcb.md) — what a Thread Control Block is (our `Thread` struct, field by field), the
   acronym collision with Trusted Computing Base, and why TCBs live in a static pool rather than
   being retyped from kernel untyped (the phase B.2 decision: same machine behavior, and seL4's

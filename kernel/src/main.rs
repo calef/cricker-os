@@ -25,6 +25,7 @@ mod arch;
 #[cfg(feature = "bench")]
 mod bench;
 mod cap;
+mod kmem;
 mod console;
 mod cpu;
 mod drivers;

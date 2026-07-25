@@ -1597,6 +1597,44 @@ mod tests {
         );
     }
 
+    /// **Milestone 19c.1: the kernel cannot spend beyond its boot carve, for stacks.** Spawn a
+    /// batch of threads and let them reap; the frame allocator's free count must return to
+    /// exactly where it started, because kernel stacks now come from the kernel's own budget
+    /// region (`kmem`, carved once) and recycle within it, not from the allocator. This is the
+    /// milestone-14 no-open-ended-kernel-spending thesis extended to the last thing it missed;
+    /// before 19c.1 this test would show four stacks' worth of frames gone per batch.
+    ///
+    /// The carve itself happens on the very first spawn ever (the idle thread, at boot), so by
+    /// the time this test runs the region exists and steady state is flat.
+    #[test_case]
+    fn kernel_stacks_do_not_touch_the_frame_allocator_in_steady_state() {
+        use core::sync::atomic::{AtomicU64, Ordering};
+        static REAPED: AtomicU64 = AtomicU64::new(0);
+
+        let baseline = super::thread_count();
+        // Warm up: reach steady state (first spawn after boot may still be settling VAs).
+        for _ in 0..2 {
+            super::spawn(|| {}).expect("warmup spawn");
+            while super::thread_count() > baseline {
+                super::yield_now();
+            }
+        }
+
+        let free_before = crate::memory::stats().unwrap().free();
+        REAPED.store(0, Ordering::SeqCst);
+        for _ in 0..6 {
+            super::spawn(|| {}).expect("spawn failed");
+            while super::thread_count() > baseline {
+                super::yield_now();
+            }
+        }
+        assert_eq!(
+            crate::memory::stats().unwrap().free(),
+            free_before,
+            "six threads came and went and the frame allocator's count moved: a kernel stack              is still drawing from the allocator instead of the kernel budget",
+        );
+    }
+
     /// **Milestone 19a: an endpoint retyped from a region carries IPC, and pins its region.**
     /// The kernel-level half of the granular-construction story: `create_endpoint_from` carves a
     /// page, the endpoint lives in it, rendezvous works over it exactly as over a kernel-wired

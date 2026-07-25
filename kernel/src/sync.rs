@@ -77,7 +77,7 @@ use core::sync::atomic::Ordering;
 ///        |
 ///   60  SCHED           the thread table and endpoints
 ///        |
-///   59  INBOX, MAPPINGS the migration inboxes; the revocation registry
+///   59  INBOX, MAPPINGS, KMEM   inboxes; the revocation registry; the kernel object budget
 ///        |
 ///   58  UNTYPED         the untyped regions
 ///        |
@@ -140,6 +140,14 @@ pub mod rank {
     /// held (phase C). Below the scheduler, so it may be taken from a syscall that has no
     /// scheduler business.
     pub const UNTYPED: u32 = 58;
+
+    /// The kernel's own object budget (milestone 19c.1): `kmem`, the region kernel stacks draw
+    /// from. **Above UNTYPED** (it carves and retypes from its region while holding this lock,
+    /// so KMEM -> UNTYPED must strictly decrease) and **below SCHED** (a stack's `new`/`Drop`
+    /// runs from spawn and the reaper, which hold SCHED). Shares rank 59 with INBOX and
+    /// MAPPINGS, never nested with either: inbox traffic is scheduling, the mapping registry is
+    /// user bookkeeping, and this is the kernel buying its own pages.
+    pub const KMEM: u32 = 59;
 
     /// The virtio transport table (DMA confinement; fixed since 14 B.1). Taken from a syscall
     /// with no other lock held; the rank records where that syscall sits, not any nesting need.

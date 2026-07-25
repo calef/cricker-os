@@ -87,8 +87,17 @@ names the space through the same registry revocation uses.
   flags, `revoke_frame` reaches into the built space, the pinned region's destroy frees
   nothing) and EL0 (a process retypes a space and a frame from its own budget, maps one into
   the other, and break-before-make holds inside the space it built).
-- **19c: TCBs as objects.** `RETYPE_OBJ(TCB)`, `CONFIGURE`, `CAP_INSERT`, `START`, and the
-  half-built-state audit.
+- **19c.1: kernel stacks move to the kernel's own budget. (Built.)** The kernel-stack payer
+  question, decided across three rounds (notes/kernel-budget.md): not creator-paid-per-process
+  but kernel-budget-paid from a boot-carved `kmem` region with recycling, because a thread
+  cannot swap the stack it runs on, so every kernel stack is kernel-created and one budget
+  covers all. This extends milestone 14's no-open-ended-kernel-spending thesis to its last
+  uncovered draw; a steady-state test proves the frame count is flat across spawn/reap. The
+  owned-vs-borrowed `KernelStack` split feared in the debate turned out to be zero lines: one
+  owner. Split out as its own green step before TCB objects, so stack-sourcing and embryo TCB
+  states are not two delicate changes in one breath.
+- **19c.2: TCBs as objects.** `RETYPE_OBJ(TCB)`, `CONFIGURE`, `CAP_INSERT`, `START` (which uses
+  19c.1's stack machinery), and the half-built-state audit.
 - **19d: init.** The ELF parser moves to userspace (the `elf` crate already compiles anywhere;
   init links it directly — the eviction that motivated this decision). `user.rs`'s service
   construction migrates into init; the kernel's own loader shrinks to loading exactly one
