@@ -803,6 +803,13 @@ are proved in `paging`. See notes/verification.md for what each proof says and w
 - **Still a learning project.** The destination is committed; the method (write it together, explain
   the hardware, write the notes) is unchanged. A demonstrator he cannot explain is a failed
   demonstrator.
+- **init is the privileged unverified component, and that is a known soft spot.** "Verified core,
+  confined unverified workloads" is honest about the *kernel*, but init (which builds every other
+  process) is unverified and privileged. The kernel confines it and a compromised init cannot break
+  the kernel or escape confinement; but init's bytes are loaded unsigned today and its authority is
+  broad. Milestone 22 (design/roadmap.md) is where this is closed: verify init before it runs, and
+  shrink what a broken one can do. Recorded here so the thesis is not read as claiming more than it
+  proves.
 
 ---
 

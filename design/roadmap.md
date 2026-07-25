@@ -34,14 +34,17 @@ IPC and the MMU invariants are next. This threads through the list rather than b
 | 15 | Tagged address spaces (ASIDs) | 16-bit ASIDs, generation/rollover; stop flushing the whole EL1 TLB per switch | perf the real-workload path needs on real silicon. **Built** (8-bit fixed bitmap, no rollover: milestone 14's bounds made generations unnecessary; notes/asids.md) |
 | 21 | Performance measurement: benchmarks with teeth | icount microbenchmarks + committed baseline that fails on regression; HVF-native runs for real magnitudes | perf claims become measurements; regressions surface next to their cause. **Built**; notes/benchmarks.md |
 | 16 | Real hardware + SMMU-backed driver isolation | Port to an IOMMU-backed machine; confine driver DMA in silicon | isolation in hardware, under real workloads |
-| 19 | Run a real workload | A native-ABI workload first; Linux-compat or VM hosting later | **the "runs real workloads" half** of the thesis. **Started**: granular construction decided, eyes open; design/init-and-granular-spawn.md |
+| 19 | Run a real workload | A native-ABI workload first; Linux-compat or VM hosting later | **the "runs real workloads" half** of the thesis. **Built through 19d.1** (granular verbs + userspace init that parses an ELF and builds a running child); 19d.2 (init becomes the boot path) and 19e (the workload) remain. design/init-and-granular-spawn.md |
 | 17 | Multikernel-leaning scheduler (research, optional) | Partition the shared thread table and endpoints | optional; not on the thesis path |
 | 20 | A portable HAL, proven on a second architecture | Make `arch/` a real HAL; bring up RISC-V then x86_64 | the "portable verified core" claim; reach the demonstrator earns |
+| 22 | Trusted init: verify it, and shrink what a broken one can do | Measured/secure boot that checks init before running it; reduce init's authority so a compromise is bounded | **closes the thesis's own soft spot:** init is the privileged *unverified* component the whole system is built by |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19), with the multikernel work (17) as
 optional research and the second-architecture port (20) as the reach the demonstrator earns, late and
-only after the core is proven. The broad competitor ambition stays parked (see the end of this file).
+only after the core is proven. **Trusted init (22) follows 19**, because it only has teeth once there
+*is* an init to verify and once real hardware (16) closes the in-RAM tampering window. The broad
+competitor ambition stays parked (see the end of this file).
 Several milestones already have their design worked out; the blocks below point at it.
 
 ### 12. Call/Reply IPC: a one-shot reply capability
@@ -166,6 +169,43 @@ shaped so it can sit behind either.
 
 **Prior art.** design/driver-domains.md already works the principled version (a driver per VM,
 cricker-os as an EL2 hypervisor, SMMU stage-2). Hardware-gated, and impossible under HVF.
+
+**Also closes an integrity window (milestone 22's precondition).** Before DMA is confined in
+silicon, a malicious device can DMA over any RAM the kernel has not walled off, *including the
+initrd holding init before the kernel has loaded and measured it*. Software confinement (the shadow
+ring) governs a driver the kernel already trusts to run; it does nothing about a device corrupting
+init's bytes at rest. So verifying init (22) is only airtight once 16 removes the way to tamper with
+it underneath the check.
+
+### 22. Trusted init: verify it, and shrink what a broken one can do
+
+**The soft spot this closes.** §14 promises "a verified core that confines unverified workloads."
+init is unverified, but it is not a *typical* workload: it holds the process-construction authority
+and builds every other process. At runtime the kernel confines it as well as anything (MMU
+isolation is proved, its code is W^X, capabilities are unforgeable), and a compromised init
+**cannot break the kernel or escape confinement**. But its *bytes* are currently loaded unsigned and
+unchecked, and its *authority* is broad, so within that authority a corrupted init can do real harm
+(endow malicious children, deny the system it was meant to start).
+
+**Deliverable, two halves.**
+
+1. **Verify init before it runs.** A measured or secure boot step: the kernel (or a boot stage
+   ahead of it) checks init's hash, or a signature over it, before dropping to EL0 at its entry.
+   Today `spawn_init` loads whatever initrd it is handed. seL4's high-assurance deployments do
+   exactly this for the root task; it is the single biggest gap between "verified kernel" and
+   "trustworthy system."
+2. **Shrink the blast radius.** Reduce what a compromised init can do: hand most
+   process-construction to smaller, less-privileged sub-servers, so init's own authority is
+   minimal and short-lived (build the first servers, then drop the untyped). The less init holds,
+   the less a broken init costs.
+
+**The reach tail.** Beyond verifying init's *bytes*, verifying init's *behaviour* is the natural
+next layer inward for the §14 thesis: init is small and privileged enough to be worth proving, once
+the kernel's proofs are done. Recorded as the direction, not committed.
+
+**Prior art.** seL4 + a verified boot chain (measured boot, or CapDL-driven system initialisers
+whose output is checkable); the general secure/measured-boot literature (TPM/PCR measurement,
+signed boot images).
 
 ### 17. Multikernel-leaning scheduler (research, optional)
 
