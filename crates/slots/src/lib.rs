@@ -136,6 +136,13 @@ impl<T, const N: usize> Table<T, N> {
             .enumerate()
             .filter_map(|(i, s)| s.as_ref().map(|_| i))
     }
+
+    /// Every live entry by shared reference, in slot order. For a table whose values *are* the
+    /// storage (the kernel's page-resident TCB table stores a `*mut Thread` per name), this is
+    /// how the caller reaches each without a second lookup.
+    pub fn values(&self) -> impl Iterator<Item = &T> + '_ {
+        self.slots.iter().filter_map(|s| s.as_ref())
+    }
 }
 
 impl<T, const N: usize> Default for Table<T, N> {

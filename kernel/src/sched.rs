@@ -89,96 +89,103 @@ type Endpoint = ipc::Endpoint<Thread>;
 /// same contract callers already have for out-of-memory. The table itself is ~2 KiB of pointers.
 const MAX_THREADS: usize = 128;
 
-/// **The TCB pool** (milestone 14 phase B.2; notes/tcb.md): every `Thread` lives here, in BSS,
-/// from boot. Pool slot `i` is table slot `i`, so a Tid's low bits name the storage directly.
-/// A slot's address never changes, which supplies the pinning the per-thread `Box` used to buy:
-/// the context-switch assembly and the intrusive queues hold pointers into this array.
+/// The thread table: generational names (`crates/slots`, notes/generational-names.md) over
+/// **page-resident** TCBs (milestone 19c.2). Each `Thread` lives at the start of one page from
+/// the kernel's own budget (`kmem`), so the static `MAX_THREADS`-sized BSS pool that B.2 built
+/// as a scaffold is gone: the kernel reserves no per-thread memory it hasn't been handed, the
+/// last uncovered corner of milestone 14's no-open-ended-spending thesis. B.2 named this moment
+/// ("the pool upgrades to retype-backed storage behind the table when init lands"); this is it.
 ///
-/// `MaybeUninit` because slots are dead between threads; the `Threads` table below is the single
-/// source of truth for which slots are alive, and every access goes through it.
-struct TcbPool {
-    slots: core::cell::UnsafeCell<[core::mem::MaybeUninit<Thread>; MAX_THREADS]>,
-}
+/// A page's address never changes (direct-mapped, and its `kmem` region is pinned), which
+/// supplies the pinning the per-thread `Box` and then the pool both provided: the context-switch
+/// assembly and the intrusive queues hold pointers straight into these pages. The table stores
+/// the pointer; the generational name is what everything else carries (stale-safe as ever).
+///
+/// 19c.3 will let a user process retype a TCB from *its own* untyped by the same mechanism, the
+/// page merely coming from a different budget; kernel threads keep drawing from `kmem`.
+/// A TCB pointer that may cross cores. The pointer itself moving between cores is harmless: the
+/// `Thread` it names is touched only under `SCHED` (which serializes all table access) and, for
+/// its queue link, under the intrusive discipline at [`tcb_ptr`]. This is the same soundness the
+/// old static `TcbPool`'s `unsafe impl Sync` rested on, now attached to the pointer the table
+/// stores rather than a separate array.
+#[derive(Clone, Copy)]
+struct TcbPtr(*mut Thread);
 
-// SAFETY: reached only through `Threads`, whose instance lives inside the SCHED mutex, so table
-// access is serialized by that lock; the queues' raw pointers into the pool follow the intrusive
-// discipline documented at tcb_ptr.
-unsafe impl Sync for TcbPool {}
+// SAFETY: see the type's doc; sending the pointer is sound because dereferencing it is gated.
+unsafe impl Send for TcbPtr {}
 
-static TCB_POOL: TcbPool = TcbPool {
-    slots: core::cell::UnsafeCell::new([const { core::mem::MaybeUninit::uninit() }; MAX_THREADS]),
-};
-
-/// The thread table: generational names (`crates/slots`, notes/generational-names.md) over the
-/// static [`TcbPool`]. The `slots::Table` tracks which slots live and mints the Tids; the pool
-/// holds the actual TCBs. `Box<Thread>` died here (milestone 14 phase B.2): spawn now writes the
-/// new `Thread` into its pool slot in place, and the reaper drops it in place.
 struct Threads {
-    names: slots::Table<(), MAX_THREADS>,
+    table: slots::Table<TcbPtr, MAX_THREADS>,
 }
 
 impl Threads {
     const fn new() -> Self {
         Self {
-            names: slots::Table::new(),
+            table: slots::Table::new(),
         }
     }
 
     fn get(&self, tid: Tid) -> Option<&Thread> {
-        let i = self.names.slot_of(tid)?;
-        // SAFETY: the table says slot i is live, so it was initialized at insert and will not be
-        // dropped before `remove` kills the name; access is serialized by SCHED (see TcbPool).
-        Some(unsafe { (*TCB_POOL.slots.get())[i].assume_init_ref() })
+        let p = self.table.get(tid)?.0;
+        // SAFETY: a pointer we stored at insert, into a live kmem page not yet recycled (remove
+        // kills the name before recycling); SCHED serializes access.
+        Some(unsafe { &*p })
     }
 
     fn get_mut(&mut self, tid: Tid) -> Option<&mut Thread> {
-        let i = self.names.slot_of(tid)?;
+        let p = self.table.get(tid)?.0;
         // SAFETY: as `get`, and `&mut self` carries SCHED's exclusivity.
-        Some(unsafe { (*TCB_POOL.slots.get())[i].assume_init_mut() })
+        Some(unsafe { &mut *p })
     }
 
-    /// Insert: the table claims a slot and mints the name, `f` builds the `Thread` (carrying its
-    /// own name), and the value is written into the pool slot in place.
+    /// Insert: claim a page from the kernel budget, build the `Thread` (carrying its own minted
+    /// name) into it, and store the pointer under that name. `None` (page recycled, `f` never
+    /// run) if the budget or the table is exhausted.
     fn insert_with(&mut self, f: impl FnOnce(Tid) -> Thread) -> Option<Tid> {
-        let tid = self.names.insert_with(|_| ())?;
-        let i = self.names.slot_of(tid).expect("just inserted");
-        // SAFETY: the slot was free until the line above claimed it, so nothing lives here;
-        // `write` moves the new Thread in without reading the dead bytes.
-        unsafe { (*TCB_POOL.slots.get())[i].write(f(tid)) };
-        Some(tid)
+        let page = crate::kmem::page()?;
+        let ptr = crate::arch::mmu::phys_to_virt(page) as *mut Thread;
+        let name = self.table.insert_with(|tid| {
+            // SAFETY: a fresh, exclusively-ours page; `write` moves the Thread in, no drop of
+            // uninitialized bytes.
+            unsafe { ptr.write(f(tid)) };
+            TcbPtr(ptr)
+        });
+        if name.is_none() {
+            crate::kmem::recycle(page); // table full: the page never held a live Thread
+        }
+        name
     }
 
     /// Remove and destroy: drop the TCB in place (its stack, address space, and quota token go
-    /// with it), then kill the name so no copy of the Tid ever resolves again.
+    /// with it), kill the name so no copy of the Tid ever resolves again, then recycle the page.
     fn remove(&mut self, tid: Tid) {
-        let Some(i) = self.names.slot_of(tid) else {
+        let Some(&TcbPtr(ptr)) = self.table.get(tid) else {
             return;
         };
-        // SAFETY: live per the table, exclusive per `&mut self`; the name dies on the next line,
-        // so nothing can reach the dropped bytes afterward.
-        unsafe { (*TCB_POOL.slots.get())[i].assume_init_drop() };
-        self.names.remove(tid);
+        // SAFETY: live per the table, exclusive per `&mut self`. Drop first (runs KernelStack's
+        // unmap-and-recycle, AddressSpace teardown, the QuotaToken), then kill the name, then
+        // the page goes home: nothing can reach the dropped Thread afterward.
+        unsafe { core::ptr::drop_in_place(ptr) };
+        self.table.remove(tid);
+        crate::kmem::recycle(crate::arch::mmu::virt_to_phys(ptr as u64));
     }
 
     fn len(&self) -> usize {
-        self.names.len()
+        self.table.len()
     }
 
-    /// Every live TCB, for whole-table sweeps (revocation). Disjoint `&mut`s: `live_slots`
-    /// yields each live index exactly once.
+    /// Every live TCB, for whole-table sweeps (revocation). Each live name resolves to a
+    /// distinct page pointer, so the `&mut`s are disjoint.
     fn iter_mut(&mut self) -> impl Iterator<Item = &mut Thread> + '_ {
-        let pool = TCB_POOL.slots.get();
-        // SAFETY: each yielded index is live (initialized, not yet dropped) and distinct;
-        // `&mut self` carries SCHED's exclusivity across the whole iteration.
-        self.names
-            .live_slots()
-            .map(move |i| unsafe { (*pool)[i].assume_init_mut() })
+        // SAFETY: each stored pointer is a distinct live page (one page per thread), and
+        // `&mut self` carries SCHED's exclusivity across the whole sweep.
+        self.table.values().map(|&TcbPtr(p)| unsafe { &mut *p })
     }
 }
 
 struct Scheduler {
-    /// The thread table: generational names over the static TCB pool. See [`Threads`] and
-    /// [`TcbPool`] above; design/kernel-objects-from-untyped.md D2 records the path.
+    /// The thread table: generational names over page-resident TCBs. See [`Threads`];
+    /// design/kernel-objects-from-untyped.md D2 records the path, notes/tcb.md the storage.
     threads: Threads,
     /// Neither the run queue nor `current` live here any more: both moved to per-CPU storage
     /// (`cpu::PerCpu`, DECISIONS.md §11 steps 3a and 3b), because a single shared queue and a
