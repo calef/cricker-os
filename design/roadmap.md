@@ -37,13 +37,15 @@ IPC and the MMU invariants are next. This threads through the list rather than b
 | 19 | Run a real workload | A native-ABI workload first; Linux-compat or VM hosting later | **the "runs real workloads" half** of the thesis. **Built through 19d.2b** (granular verbs, userspace init loads a real ELF, device capabilities, an init-built console server); 19d.2c (init as the real boot path), 19f (dedicated binaries delivered as named programs), and 19e (the workload) remain. design/init-and-granular-spawn.md |
 | 17 | Multikernel-leaning scheduler (research, optional) | Partition the shared thread table and endpoints | optional; not on the thesis path |
 | 20 | A portable HAL, proven on a second architecture | Make `arch/` a real HAL; bring up RISC-V then x86_64 | the "portable verified core" claim; reach the demonstrator earns |
+| 24 | A second aarch64 *board*: Virtualization.framework (optional) | Boot under Apple's Virtualization.framework, not QEMU's `virt`: a virtio-console driver (VZ has no PL011), VZ's interrupt/memory layout and boot handoff, device discovery through the machine VZ presents | proves the `arch/` **board** boundary on a second machine of the *same* ISA (cheaper than 16's silicon, distinct from 20's second ISA), and lets cricker-os run under the same VMM as macOS/Linux guests. Optional; portability exercise, **not** a benchmarking prerequisite (guest-internal microbenchmarks are VMM-independent) |
 | 22 | Trusted init: verify it, and shrink what a broken one can do | Measured/secure boot that checks init before running it; reduce init's authority so a compromise is bounded | **closes the thesis's own soft spot:** init is the privileged *unverified* component the whole system is built by |
 | 23 | A capability-routed component OS with live replacement | Every userspace component (driver, server, app) is a swappable, vendor-shippable unit behind a stable contract; operators replace them live, no reboot. The console hot-swap is instance one; a durable queue-broker decouples component lifecycles (opt-in per channel, for latency) | **the flagship payoff and a product ambition:** competing vendor components, confined by the kernel and swapped live; the verified core is the one fixed thing |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19), with the multikernel work (17) as
-optional research and the second-architecture port (20) as the reach the demonstrator earns, late and
-only after the core is proven. **Trusted init (22) follows 19**, because it only has teeth once there
+optional research, the second-architecture port (20) as the reach the demonstrator earns, and the
+second-*board* port (24, Virtualization.framework) as an optional same-ISA portability exercise, all
+late and only after the core is proven. **Trusted init (22) follows 19**, because it only has teeth once there
 *is* an init to verify and once real hardware (16) closes the in-RAM tampering window. **The capability-routed
 component OS (23) is the late destination**: the console hot-swap is instance one, built on
 revocation (13/the CDT), supervision (22), and dedicated binaries (19f); the general version (a
