@@ -23,6 +23,14 @@ path = "src/worker.rs"
 test = false
 bench = false
 
+# The console server (milestone 19f.3): the second program lifted out of `hello`. `mkinitrd` packs
+# it under "console"; init loads it by name.
+[[bin]]
+name = "console"
+path = "src/console.rs"
+test = false
+bench = false
+
 [dependencies]
 abi = { version = "0.1.0", path = "../crates/abi" }
 crickerfs = { version = "0.1.0", path = "../crates/crickerfs" }

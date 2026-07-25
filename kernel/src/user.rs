@@ -923,10 +923,9 @@ pub mod console_service {
     /// and the kernel's is now used only for panics and boot, not for anyone's `print`.
     const PL011_PHYS: u64 = 0x0900_0000;
 
-    /// Printing-client role (`x0`), matching user/src/hello.rs.
+    /// Printing-client role (`x0`), matching user/src/hello.rs. (The server is its own binary now,
+    /// 19f.3, so it has no role; only the demo client is still a role of hello.)
     const ROLE_CLIENT: u64 = 2;
-    /// Console-server role.
-    const ROLE_SERVER: u64 = 1;
 
     /// What a client needs to talk to the console server: two endpoints and the shared page.
     #[derive(Clone, Copy)]
@@ -942,7 +941,10 @@ pub mod console_service {
     /// page mapped **read-only** (it only reads what clients wrote), and the **UART's registers**
     /// mapped as user device memory. That last mapping is the whole milestone: a driver, at EL0,
     /// holding its hardware.
-    pub fn start(image: &'static [u8]) -> Console {
+    pub fn start() -> Console {
+        // The console server is its own binary now (19f.3), loaded from the archive by name rather
+        // than entered as a role of hello.
+        let image = program("console").expect("no console program in the initrd");
         let request = crate::sched::create_endpoint();
         let reply = crate::sched::create_endpoint();
         let shared_phys = crate::memory::alloc()
@@ -963,7 +965,7 @@ pub mod console_service {
             run(
                 image,
                 Spawn {
-                    arg0: ROLE_SERVER,
+                    arg0: 0, // no role selector: the console is its own binary
                     arg1: 0,
                     arg2: 0,
                     grants: &[
@@ -1283,7 +1285,7 @@ pub mod shell_service {
         let worker = program("worker").expect("no worker program in the initrd");
 
         // Output: the console server (milestone 8), and the shell as its client.
-        let console = console_service::start(image);
+        let console = console_service::start();
 
         // Input: the receive driver (milestone 10), delivering lines on `line`.
         let (line, line_phys) = input_service::spawn_wired(image, ROLE_INPUT, None);

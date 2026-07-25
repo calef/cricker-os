@@ -275,11 +275,11 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
 
                         // Start the console SERVER as a user process that owns the UART, then a
                         // CLIENT wired to it. The lines the client prints travel through a page it
-                        // shares with the server; the kernel never touches the bytes. The services
-                        // load a role of the `hello` binary, so they take the "init" entry of the
-                        // archive, not the whole initrd (19f).
+                        // shares with the server; the kernel never touches the bytes. The server is
+                        // its own binary now ("console", 19f.3); the demo client is still a role of
+                        // hello, so it takes the "init" entry of the archive.
                         let prog = user::program("init").expect("no init program in the initrd");
-                        let console = user::console_service::start(prog);
+                        let console = user::console_service::start();
                         user::console_service::spawn_client(prog, console);
                         timer::spin_for(timer::frequency() / 10);
 

@@ -119,10 +119,11 @@ fn initrd_path() -> String {
 /// Pack the built user ELF into the initrd archive the kernel hands init (milestone 19f).
 ///
 /// The initrd is a **crickerfs image**, the same format the virtio disk uses, so one parser serves
-/// both the RAM archive and the disk. Today it holds one program, `init` (the `hello` binary, which
-/// the kernel loads and init re-enters at other roles); 19f.2 adds distinct entries. The kernel
-/// reads the `init` entry to boot; init parses the rest itself. Generated, not checked in, exactly
-/// like the disk and the flat kernel image: a blob in git is a blob nobody can review.
+/// both the RAM archive and the disk. It holds `init` (the `hello` binary, which the kernel loads
+/// and init re-enters at its remaining roles) plus the distinct binaries lifted out of hello:
+/// `worker` (19f.2) and `console` (19f.3). The kernel reads the `init` entry to boot; init loads the
+/// rest by name. Generated, not checked in, exactly like the disk and the flat kernel image: a blob
+/// in git is a blob nobody can review.
 fn mkinitrd() -> bool {
     let hello = match std::fs::read(user_elf()) {
         Ok(bytes) => bytes,
@@ -131,16 +132,24 @@ fn mkinitrd() -> bool {
             return false;
         }
     };
-    let worker = match std::fs::read(worker_elf()) {
+    let worker = match std::fs::read(bin_elf("worker")) {
         Ok(bytes) => bytes,
         Err(e) => {
-            eprintln!("mkinitrd: cannot read {}: {e}", worker_elf());
+            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("worker"));
+            return false;
+        }
+    };
+    let console = match std::fs::read(bin_elf("console")) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("console"));
             return false;
         }
     };
     // "init" is the hello binary (the kernel loads it, init re-enters it at other roles); "worker"
-    // is a distinct binary (19f.2) init loads by name. Both are entries in the one archive.
-    let files: [(&str, &[u8]); 2] = [("init", &hello), ("worker", &worker)];
+    // and "console" are distinct binaries (19f.2, 19f.3) init loads by name. All are entries in the
+    // one archive.
+    let files: [(&str, &[u8]); 3] = [("init", &hello), ("worker", &worker), ("console", &console)];
     let size = crickerfs::image_size(&files);
     let mut img = std::vec![0u8; size];
     if crickerfs::write_image(&files, &mut img).is_err() {
@@ -222,11 +231,11 @@ fn user_elf() -> String {
         .to_string()
 }
 
-/// The worker ELF (milestone 19f.2), the second binary the `user` package builds. `mkinitrd` packs
-/// it into the archive under "worker"; init loads it by that name.
-fn worker_elf() -> String {
+/// The ELF path of a named binary the `user` package builds beside `hello` (milestone 19f.2+):
+/// `worker`, `console`, and so on. `mkinitrd` packs each into the archive under that same name.
+fn bin_elf(name: &str) -> String {
     workspace_root()
-        .join(format!("target/{TARGET}/debug/worker"))
+        .join(format!("target/{TARGET}/debug/{name}"))
         .display()
         .to_string()
 }

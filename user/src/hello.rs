@@ -5,10 +5,11 @@
 //!   cannot reach one. It writes its text into a page it *shares* with the console server, and
 //!   sends the length over an endpoint. That is the whole of "printing" now.
 //!
-//! - **Role `CONSOLE_SERVER`**: the console driver, **at EL0.** It owns a mapping of the PL011's
-//!   registers and a read-only view of the shared page. It loops: receive a length, copy that
-//!   many bytes from the shared page to the UART, acknowledge. This code used to be in the
-//!   kernel. Milestone 8 is the milestone where it left.
+//! - **The console driver, at EL0** (milestone 8: this code used to be in the kernel; milestone 8
+//!   is where it left). It owns a mapping of the PL011's registers and a read-only view of the
+//!   shared page, and loops: receive a length, copy that many bytes from the shared page to the
+//!   UART, acknowledge. It is its own binary now (`user/src/console.rs`, 19f.3), no longer a role
+//!   of hello, so hello keeps only the printing client that drives it.
 //!
 //! # Why the bytes travel in shared memory and the length travels in a message
 //!
@@ -34,7 +35,7 @@ use abi::{Error, endpoint};
 /// shared memory (it only inspects its own image), which is why the milestone-7 tests can spawn
 /// it bare; a `PRINTING` client needs the console endpoints and the shared page.
 const SELF_CHECK: u64 = 0;
-const CONSOLE_SERVER: u64 = 1;
+// Role 1 was the console server; it is its own binary now (`user/src/console.rs`, 19f.3).
 const PRINTING: u64 = 2;
 const VIRTIO_BLK: u64 = 3;
 const INPUT: u64 = 4;
@@ -65,15 +66,10 @@ const FRAME_SENTINEL: u64 = 0xF00D_CAFE_D00D_1234;
 
 // --- the shared layout, known to both roles because they are the same binary ---
 
-/// The page shared between a client and the console server. The client writes text here; the
-/// server reads it. Mapped read/write in the client, read-only in the server.
+/// The page shared between the printing client and the console server. The client writes text here;
+/// the server reads it. Mapped read/write in the client, read-only in the server. (The console
+/// server itself is its own binary now, `user/src/console.rs`, 19f.3; hello keeps only the client.)
 const SHARED_VA: u64 = 0x0000_0000_0060_0000;
-
-/// The PL011's registers, mapped into the **server only**, as device memory.
-const UART_VA: u64 = 0x0000_0000_0070_0000;
-const UART_DR: u64 = 0x00; // data register: write a byte to transmit it
-const UART_FR: u64 = 0x18; // flag register
-const UART_FR_TXFF: u32 = 1 << 5; // transmit FIFO full
 
 // --- capability slots, by convention (the kernel granted them in this order) ---
 
@@ -94,7 +90,6 @@ static mut BSS_MARKER: u64 = 0;
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(role: u64, dma_phys: u64, _arg2: u64) -> ! {
     match role {
-        CONSOLE_SERVER => console_server(),
         PRINTING => printing_client(),
         VIRTIO_BLK => virtio::run(dma_phys),
         INPUT => input::run(),
@@ -123,29 +118,6 @@ pub extern "C" fn _start(role: u64, dma_phys: u64, _arg2: u64) -> ! {
         DEV_CHILD => dev_child(),
         SELF_CHECK => self_check_client(),
         _ => self_check_client(),
-    }
-}
-
-/// The console driver, running at EL0, owning the UART.
-fn console_server() -> ! {
-    loop {
-        // Wait for a client to hand us a length. This BLOCKS until one sends.
-        let (len, _, _) = recv(REQUEST);
-
-        // Copy that many bytes from the shared page to the UART, one at a time, exactly as the
-        // kernel's PL011 driver used to. The difference is only where this code runs.
-        let shared = SHARED_VA as *const u8;
-        for i in 0..len {
-            // SAFETY: the shared page is mapped read-only in our address space, and `len` came
-            // from a client we then verify by writing at most one page. A malicious length is a
-            // read out of our OWN mapping, which faults US, not the kernel: a driver bug is a
-            // crashed process. (7c/§10.)
-            let byte = unsafe { core::ptr::read_volatile(shared.add(i as usize)) };
-            uart_put(byte);
-        }
-
-        // Acknowledge, so the client knows the buffer is free to reuse.
-        send(REPLY, len, 0, 0);
     }
 }
 
@@ -218,20 +190,6 @@ fn print(bytes: &[u8]) -> Result<(), Error> {
     // Wait for the server to finish reading the buffer before we touch it again.
     let (_ack, _, _) = recv(REPLY);
     Ok(())
-}
-
-/// Write one byte to the UART we own, spinning while the transmit FIFO is full. **This is the
-/// driver.** It used to be `Pl011::write_byte` in the kernel.
-fn uart_put(byte: u8) {
-    // SAFETY: UART_VA is our device mapping of the PL011, established at spawn. The kernel
-    // configured the device at boot; we only transmit.
-    unsafe {
-        let fr = (UART_VA + UART_FR) as *const u32;
-        while core::ptr::read_volatile(fr) & UART_FR_TXFF != 0 {
-            core::hint::spin_loop();
-        }
-        core::ptr::write_volatile((UART_VA + UART_DR) as *mut u32, byte as u32);
-    }
 }
 
 // --- the two IPC primitives, over `svc` ---
@@ -446,8 +404,8 @@ fn init_boot(_x1: u64) -> ! {
     const UART_DEV: u64 = 2;
     const UART_IRQ: u64 = 4;
 
-    // Roles and the VAs each one hardcodes (must match console_server/input.rs/shell.rs).
-    const ROLE_CONSOLE: u64 = 1;
+    // Roles and the VAs each program hardcodes. Console is its own binary now (19f.3), started with
+    // no role; input and shell are still roles of hello (their VAs must match input.rs/shell.rs).
     const ROLE_INPUT: u64 = 4;
     const ROLE_SHELL: u64 = 5;
     const CON_SHARED_VA: u64 = 0x0060_0000; // console reads text here; shell writes it
@@ -458,6 +416,9 @@ fn init_boot(_x1: u64) -> ! {
 
     let Some(init_bytes) = program(initrd_len, "init") else { halt_forever() };
     let Ok(elf) = elf::Elf::parse(init_bytes) else { halt_forever() };
+    // The console is its own binary (19f.3); input and shell are still roles of `elf` (hello).
+    let Some(con_bytes) = program(initrd_len, "console") else { halt_forever() };
+    let Ok(con_elf) = elf::Elf::parse(con_bytes) else { halt_forever() };
 
     // The endpoints and shared pages init owns and hands out. Endpoints come from retype with full
     // rights, so init keeps RWG and delegates narrowed views.
@@ -475,8 +436,8 @@ fn init_boot(_x1: u64) -> ! {
         (CON_SHARED_VA, con_shared, abi::aspace::MAP_RO),
         (CON_UART_VA, UART_DEV, DEV),
     ];
-    let Ok(con) = build_child(UNTYPED, &elf, con_caps, con_maps) else { halt_forever() };
-    check(tcb_start(con, ROLE_CONSOLE, 0, 0) == 0);
+    let Ok(con) = build_child(UNTYPED, &con_elf, con_caps, con_maps) else { halt_forever() };
+    check(tcb_start(con, 0, 0, 0) == 0); // no role selector: console is its own binary
     cap_delete(con);
 
     // 2. Input driver: waits on the UART receive interrupt, assembles lines, delivers them.
@@ -620,8 +581,9 @@ fn irq_child() -> ! {
 }
 
 /// **init brings up the real console server, milestone 19d.2b.** The step past 19d.2a's ID-read
-/// probe: init builds the *actual* print server (role [`CONSOLE_SERVER`]) as a child and drives
-/// it. The server needs four things, and init provides all of them out of its own budget and the
+/// probe: init builds the *actual* print server (its own `"console"` binary since 19f.3) as a child
+/// and drives it. The server needs four things, and init provides all of them out of its own budget
+/// and the
 /// capabilities it holds: a request endpoint (the server RECVs a length on it), a reply endpoint
 /// (it ACKs), a shared page (the client writes text, the server reads it), and the UART's
 /// registers (device-typed, from 19d.2a). init then plays the client: it writes a line into the
@@ -634,13 +596,14 @@ fn init_console(initrd_len: u64) -> ! {
     const UART_DEV: u64 = 2;
     const SHARED_VA: u64 = 0x0060_0000; // must match the console server's SHARED_VA
     const CHILD_UART_VA: u64 = 0x0070_0000; // must match the console server's UART_VA
-    const CONSOLE_SERVER_ROLE: u64 = 1;
 
-    let Some(init_bytes) = program(initrd_len, "init") else {
+    // The console server is its own binary now (19f.3): init loads "console" by name and builds it,
+    // rather than entering hello at a console role.
+    let Some(con_bytes) = program(initrd_len, "console") else {
         send(REPORT, 0, 0, 0);
         exit();
     };
-    let Ok(elf) = elf::Elf::parse(init_bytes) else {
+    let Ok(elf) = elf::Elf::parse(con_bytes) else {
         send(REPORT, 0, 0, 0);
         exit();
     };
@@ -663,7 +626,7 @@ fn init_console(initrd_len: u64) -> ! {
         (CHILD_UART_VA, UART_DEV, abi::aspace::MAP_RO),
     ];
     let Ok(tcb) = build_child(UNTYPED, &elf, caps, maps) else { fail_report(REPORT) };
-    check(tcb_start(tcb, CONSOLE_SERVER_ROLE, 0, 0) == 0);
+    check(tcb_start(tcb, 0, 0, 0) == 0); // no role selector: console is its own binary
 
     // Now init is the client. Write a line into the shared page, ask the server to print it.
     let msg = b"cricker-os: the console server was built and started by userspace init.

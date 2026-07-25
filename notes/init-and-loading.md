@@ -134,9 +134,29 @@ When 19f.3 splits the next binary, that second copy is the signal to lift a shar
 crate, with the requirements known rather than guessed (DECISIONS: don't build the abstraction before
 the requirements are).
 
+## The console server, its own binary (milestone 19f.3)
+
+"Console server as its own binary" was the headline 19f was aiming at, and here it is:
+`user/src/console.rs`, a distinct ELF init loads by the name `"console"`. It owns the UART and one
+request/reply channel, loops (receive a length, copy that many bytes from the shared page to the
+UART, ack), and holds nothing else. Same shape as the worker split: every consumer that entered
+hello at the console role now loads `"console"` and starts it with `x0 = 0`. There were three, in
+two domains:
+
+- the kernel-side `console_service::start` (`user.rs`), used by the milestone-8 tour and the
+  pre-initboot shell;
+- init's `init_console` (the userspace-built-console test) and the `init_boot` console child.
+
+hello lost the console entirely: the `console_server` function, `uart_put`, and the PL011 register
+constants are gone from it. hello keeps only the *printing client* that drives a console (a role, for
+the tour), because a client is agnostic to who serves it. The test
+`userspace_init_brings_up_the_console_server` still passes, now proving the `"console"` binary works
+end to end: init builds it, wires a channel, delegates the UART, and the line comes out.
+
 ## What is not here yet
 
-Console, input, and shell are still roles of `hello`. 19f.3+ migrates them into their own binaries
-the same way the worker went, which is where "console server as its own binary" lands. The
-kernel-side service wiring that the milestone tour still uses is retired by the `initboot` path,
-which builds those services inside init.
+Input and shell are still roles of `hello`; 19f.4+ moves them the same way. Splitting the third and
+fourth binaries is where the tiny `invoke`/`send`/`recv` runtime, now copied into worker and console,
+gets lifted into a shared user-runtime crate (deferred deliberately so the shared surface is known,
+not guessed). The kernel-side service wiring the milestone tour still uses is retired by the
+`initboot` path, which builds these services inside init.
