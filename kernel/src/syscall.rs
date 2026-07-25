@@ -209,6 +209,62 @@ fn invoke(
             _ => Err(Error::BadMethod),
         },
 
+        // A thread under construction (19c.3). WRITE on the TCB cap is the authority to shape
+        // and start it. Every method refuses a thread that is not an embryo, in the scheduler.
+        Object::Tcb(tid) => match method {
+            abi::tcb::CONFIGURE => {
+                if !cap.rights.allows(Rights::WRITE) {
+                    return Err(Error::NotPermitted);
+                }
+                // a2 is the aspace cap slot; it must be a WRITE Aspace cap, and it is consumed.
+                let aspace = sched::current_cap(a2).map_err(|_| Error::NoSuchSlot)?;
+                let Object::Aspace(aspace_name) = aspace.object else {
+                    return Err(Error::WrongObject);
+                };
+                if !aspace.rights.allows(Rights::WRITE) {
+                    return Err(Error::NotPermitted);
+                }
+                sched::configure_tcb(tid, a0, a1, aspace_name)?;
+                // Consume the aspace cap: it is the thread's now, and a second bind must not find
+                // it. (The space already left the registry, so the cap is inert regardless; this
+                // keeps the caller's cspace honest.)
+                let _ = sched::delete_current_cap(a2);
+                Ok(0)
+            }
+            abi::tcb::CAP_INSERT => {
+                if !cap.rights.allows(Rights::WRITE) {
+                    return Err(Error::NotPermitted);
+                }
+                // a0 = the cap to give the child, a1 = rights to narrow it to. GRANT-gated and
+                // narrowing-only, exactly as SEND_CAP: you may endow a child only with authority
+                // you were trusted to pass on, and only narrowed.
+                let src = sched::current_cap(a0).map_err(|_| Error::NoSuchSlot)?;
+                if !src.rights.allows(Rights::GRANT) {
+                    return Err(Error::NotPermitted);
+                }
+                let narrowed = Rights::from_bits(a1 as u32);
+                if !narrowed.is_subset_of(src.rights) {
+                    return Err(Error::NotPermitted);
+                }
+                let child_slot = sched::tcb_insert_cap(
+                    tid,
+                    crate::cap::Cap {
+                        object: src.object,
+                        rights: narrowed,
+                    },
+                )?;
+                Ok(child_slot as i64)
+            }
+            abi::tcb::START => {
+                if !cap.rights.allows(Rights::WRITE) {
+                    return Err(Error::NotPermitted);
+                }
+                sched::start_tcb(tid)?;
+                Ok(0)
+            }
+            _ => Err(Error::BadMethod),
+        },
+
         Object::Untyped(region) => match method {
             abi::untyped::MAP => {
                 if !cap.rights.allows(Rights::WRITE) {
@@ -281,7 +337,18 @@ fn invoke(
                         .map_err(|_| Error::OutOfMemory)?;
                         Ok(slot as i64)
                     }
-                    _ => Err(Error::BadMethod), // no such object type (TCB is 19c)
+                    // A thread (19c.3): the page holds an embryo TCB, born in no queue and not
+                    // runnable until CONFIGURE + START. The page is the creator's region's.
+                    abi::objtype::TCB => {
+                        let tid = sched::create_tcb(region).ok_or(Error::OutOfMemory)?;
+                        let slot = sched::grant(crate::cap::tcb_cap(
+                            tid,
+                            Rights::READ.union(Rights::WRITE).union(Rights::GRANT),
+                        ))
+                        .map_err(|_| Error::OutOfMemory)?;
+                        Ok(slot as i64)
+                    }
+                    _ => Err(Error::BadMethod), // no such object type
                 }
             }
             abi::untyped::RETYPE => {

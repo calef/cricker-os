@@ -238,6 +238,13 @@ impl Drop for KernelStack {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
+    /// **Retyped but not yet started** (milestone 19c.3): a TCB object a process has created
+    /// but not made runnable. It is in no run queue and no wait queue, and the scheduler never
+    /// picks it (only `Ready` threads are queued, and `wake` only touches `Blocked` ones), so
+    /// the queue discipline holds by this state alone. `START` turns it `Ready`; until then it
+    /// has no kernel stack and no saved context. This is the one representable half-built state,
+    /// and the half-built-state audit is the audit of what may and may not happen to it.
+    Embryo,
     Ready,
     Running,
     /// **Waiting for an IPC rendezvous** that has not happened yet.
@@ -358,6 +365,17 @@ pub struct Thread {
     /// thread's own core completes it in `finish_switch`, when the context is provably saved.
     /// Both touched only under `SCHED`.
     pub(crate) wake_pending: bool,
+
+    /// **Where this thread's EL0 execution begins** (milestone 19c.3), set by `Tcb::CONFIGURE`
+    /// on an embryo, consumed by `START` to build the entry context. `(0, 0)` for a kernel
+    /// thread, which never drops to EL0 and runs its closure instead.
+    pub(crate) entry: (u64, u64), // (entry_va, user_sp)
+
+    /// **Did this thread's TCB page come from `kmem`** (recycle it on death) or from a user
+    /// process's own region (leave it; the region reclaims it at destroy)? True for every
+    /// kernel-created thread; false for a user-retyped TCB (19c.3). The page-origin half of the
+    /// same owned-vs-borrowed question kernel stacks answered with "one owner" (notes/tcb.md).
+    pub(crate) tcb_kmem: bool,
 }
 
 // SAFETY: plain storage of the link, nothing else, which is all the queue's contract asks.
@@ -394,6 +412,8 @@ impl Thread {
             next: core::ptr::null_mut(),
             on_cpu: true, // adopted mid-run: this thread is standing on its CPU right now
             wake_pending: false,
+            entry: (0, 0), // a kernel thread; never enters EL0 by this path
+            tcb_kmem: true,
         }
     }
 
@@ -418,6 +438,8 @@ impl Thread {
             next: core::ptr::null_mut(),
             on_cpu: true, // adopted mid-run: this thread is standing on its CPU right now
             wake_pending: false,
+            entry: (0, 0), // a kernel thread; never enters EL0 by this path
+            tcb_kmem: true,
         }
     }
 
@@ -488,8 +510,83 @@ impl Thread {
             next: core::ptr::null_mut(),
             on_cpu: false,
             wake_pending: false,
+            entry: (0, 0), // a kernel thread; becomes a user process via exec, not this path
+            tcb_kmem: true,
         })
     }
+
+    /// **A TCB object, retyped but not started** (milestone 19c.3). No stack, no saved context,
+    /// no address space, no entry: `Embryo`. `CONFIGURE` fills in the space and entry, `START`
+    /// builds the stack and context and makes it `Ready`. `tcb_kmem` records that this TCB's
+    /// page is a user region's, not `kmem`'s, so the reaper leaves it for the region.
+    pub fn embryo() -> Self {
+        Thread {
+            id: UNNAMED,
+            state: State::Embryo,
+            context: core::ptr::null_mut(),
+            stack: None,
+            space: None,
+            cspace: crate::cap::CSpace::new(),
+            mailbox: [0; 3],
+            quota: None,
+            outgoing_cap: None,
+            next: core::ptr::null_mut(),
+            on_cpu: false,
+            wake_pending: false,
+            entry: (0, 0),
+            tcb_kmem: false, // a user-retyped TCB page; the region owns it
+        }
+    }
+
+    /// Build this embryo's kernel stack and entry context, making it ready to first run at EL0
+    /// (milestone 19c.3, the guts of `START`). The stack is kernel-owned (19c.1: a kernel stack
+    /// is kernel infrastructure whoever the thread serves); the context is a faked `switch_to`
+    /// frame whose trampoline drops to EL0 at `entry` on `user_sp`, exactly as `thread_trampoline`
+    /// starts a kernel thread's closure. `false` if no kernel stack could be built.
+    pub fn arm_for_start(&mut self) -> bool {
+        let Some(stack) = KernelStack::new() else {
+            return false;
+        };
+        let (entry, user_sp) = self.entry;
+        let context = (stack.top() - size_of::<Context>() as u64) as *mut Context;
+        // SAFETY: the stack was just mapped read/write, and this is inside it.
+        unsafe {
+            context.write(Context {
+                x19: entry,   // the trampoline moves this to elr
+                x20: user_sp, // ...and this to sp_el0
+                x21: 0,
+                x22: 0,
+                x23: 0,
+                x24: 0,
+                x25: 0,
+                x26: 0,
+                x27: 0,
+                x28: 0,
+                x29: 0,
+                x30: user_entry_trampoline as *const () as u64,
+            });
+        }
+        self.stack = Some(stack);
+        self.context = context;
+        true
+    }
+}
+
+unsafe extern "C" {
+    /// The EL0 entry trampoline (context.s): the mirror of `thread_trampoline` for a thread that
+    /// starts in userspace. `switch_to` restores `x19` = entry and `x20` = user sp, then this
+    /// enables interrupts and tail-calls `user_thread_entry`.
+    fn user_entry_trampoline();
+}
+
+/// Where a **user** thread starts, in Rust (milestone 19c.3): the EL0 mirror of `thread_entry`.
+/// Reaps whoever we switched away from (a new thread skips `schedule`'s post-switch point), then
+/// drops to EL0 at `entry` on `user_sp`. The address space was installed by the context switch
+/// that scheduled us in (from our `space` field), so `TTBR0` already names it.
+#[unsafe(no_mangle)]
+extern "C" fn user_thread_entry(entry: u64, user_sp: u64) -> ! {
+    crate::sched::finish_switch();
+    crate::user::enter_at_on_current(entry, user_sp)
 }
 
 /// The monomorphized bridge between "an address on a stack" and "a closure of type `F`".

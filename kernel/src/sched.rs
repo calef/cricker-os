@@ -143,17 +143,32 @@ impl Threads {
     /// run) if the budget or the table is exhausted.
     fn insert_with(&mut self, f: impl FnOnce(Tid) -> Thread) -> Option<Tid> {
         let page = crate::kmem::page()?;
+        // A kernel thread's TCB page is `kmem`'s and comes home to it at death; if the table is
+        // full it never held a Thread, so recycle now.
+        let name = self.insert_at(page, f);
+        if name.is_none() {
+            crate::kmem::recycle(page);
+        }
+        name
+    }
+
+    /// Insert a Thread that already has a page (milestone 19c.3): a user-retyped TCB, whose page
+    /// is its creator's region's, not `kmem`'s. On a full table the page is the region's to
+    /// account (spend-only), so nothing is recycled here.
+    fn insert_from_page(&mut self, page: u64, f: impl FnOnce(Tid) -> Thread) -> Option<Tid> {
+        self.insert_at(page, f)
+    }
+
+    /// The shared engine: write the built Thread into `page` and name it. The Thread carries its
+    /// own `tcb_kmem`, which `remove` reads to decide whether the page returns to `kmem`.
+    fn insert_at(&mut self, page: u64, f: impl FnOnce(Tid) -> Thread) -> Option<Tid> {
         let ptr = crate::arch::mmu::phys_to_virt(page) as *mut Thread;
-        let name = self.table.insert_with(|tid| {
+        self.table.insert_with(|tid| {
             // SAFETY: a fresh, exclusively-ours page; `write` moves the Thread in, no drop of
             // uninitialized bytes.
             unsafe { ptr.write(f(tid)) };
             TcbPtr(ptr)
-        });
-        if name.is_none() {
-            crate::kmem::recycle(page); // table full: the page never held a live Thread
-        }
-        name
+        })
     }
 
     /// Remove and destroy: drop the TCB in place (its stack, address space, and quota token go
@@ -162,12 +177,19 @@ impl Threads {
         let Some(&TcbPtr(ptr)) = self.table.get(tid) else {
             return;
         };
-        // SAFETY: live per the table, exclusive per `&mut self`. Drop first (runs KernelStack's
-        // unmap-and-recycle, AddressSpace teardown, the QuotaToken), then kill the name, then
-        // the page goes home: nothing can reach the dropped Thread afterward.
+        // Read the page's origin BEFORE the drop consumes the Thread. A kernel TCB's page goes
+        // home to `kmem`; a user TCB's page belongs to its region (spend-only, reclaimed only at
+        // region destroy), so the reaper leaves it.
+        // SAFETY: live per the table, exclusive per `&mut self`.
+        let from_kmem = unsafe { (*ptr).tcb_kmem };
+        // SAFETY: as above. Drop first (KernelStack's unmap-and-recycle, AddressSpace teardown,
+        // the QuotaToken), then kill the name, then the page goes home: nothing can reach the
+        // dropped Thread afterward.
         unsafe { core::ptr::drop_in_place(ptr) };
         self.table.remove(tid);
-        crate::kmem::recycle(crate::arch::mmu::virt_to_phys(ptr as u64));
+        if from_kmem {
+            crate::kmem::recycle(crate::arch::mmu::virt_to_phys(ptr as u64));
+        }
     }
 
     fn len(&self) -> usize {
@@ -1192,6 +1214,103 @@ pub fn grant_to(tid: Tid, cap: crate::cap::Cap) -> Result<u64, crate::cap::Error
         .ok_or(crate::cap::Error::NoFreeSlot)?
         .cspace
         .insert(cap)
+}
+
+/// **Retype a TCB out of `region`** (milestone 19c.3): an embryo thread, page-resident in a
+/// page of the creator's own untyped, in the thread table but in no queue and not runnable.
+/// Returns its Tid (what an `Object::Tcb` capability carries) or `None` if the region is out of
+/// budget or the table is full.
+pub fn create_tcb(region: usize) -> Option<Tid> {
+    let page = crate::untyped::retype_object_page(region)?;
+    let mut guard = SCHED.lock();
+    let sched = guard.as_mut()?;
+    let name = sched.threads.insert_from_page(page, |tid| {
+        let mut t = Thread::embryo();
+        t.id = tid;
+        t
+    });
+    // On a full table the page stays the region's (spend-only); nothing to recycle. The region
+    // is already pinned by retype_object_page, so its destroy is refused regardless.
+    name
+}
+
+/// **Configure an embryo** (milestone 19c.3): bind the address space named by `aspace_name`
+/// (moved out of the user-aspace registry into the TCB, so it now dies with the thread) and set
+/// the EL0 entry and user stack. Refuses anything but an `Embryo`, so a running thread cannot be
+/// reconfigured under itself. `Ok(())` or a reason.
+pub fn configure_tcb(tid: Tid, entry: u64, user_sp: u64, aspace_name: u64) -> Result<(), abi::Error> {
+    // Take the space out of the registry FIRST (outside SCHED: it takes the aspace lock, ranked
+    // above SCHED). If the TCB then turns out not to be a configurable embryo, put nothing back
+    // is wrong, so check the embryo state first, under SCHED, and only take the space once the
+    // bind will succeed.
+    {
+        let guard = SCHED.lock();
+        let sched = guard.as_ref().ok_or(abi::Error::NoSuchSlot)?;
+        let t = sched.threads.get(tid).ok_or(abi::Error::NoSuchSlot)?;
+        if t.state != State::Embryo {
+            return Err(abi::Error::WrongObject); // only an unstarted TCB may be configured
+        }
+    }
+    let space = crate::user::take_user_aspace(aspace_name).ok_or(abi::Error::NoSuchSlot)?;
+
+    let mut guard = SCHED.lock();
+    let sched = guard.as_mut().ok_or(abi::Error::NoSuchSlot)?;
+    let Some(t) = sched.threads.get_mut(tid) else {
+        // The TCB vanished between the checks (it cannot, without a teardown path, but be
+        // honest): give the space back to the registry rather than leak it.
+        drop(guard);
+        crate::user::readopt_user_aspace(space);
+        return Err(abi::Error::NoSuchSlot);
+    };
+    if t.state != State::Embryo {
+        drop(guard);
+        crate::user::readopt_user_aspace(space);
+        return Err(abi::Error::WrongObject);
+    }
+    t.space = Some(space);
+    t.entry = (entry, user_sp);
+    Ok(())
+}
+
+/// **Install a capability into an embryo's cspace** (milestone 19c.3): the child's initial
+/// authority, granted one slot at a time before it runs. Refuses a non-embryo. Returns the child
+/// slot the capability landed in.
+pub fn tcb_insert_cap(tid: Tid, cap: crate::cap::Cap) -> Result<u64, abi::Error> {
+    let mut guard = SCHED.lock();
+    let sched = guard.as_mut().ok_or(abi::Error::NoSuchSlot)?;
+    let t = sched.threads.get_mut(tid).ok_or(abi::Error::NoSuchSlot)?;
+    if t.state != State::Embryo {
+        return Err(abi::Error::WrongObject);
+    }
+    t.cspace.insert(cap).map_err(|_| abi::Error::OutOfMemory)
+}
+
+/// **Start an embryo** (milestone 19c.3): the no-start-before-whole gate, then make it runnable.
+/// Refuses a TCB that is not an embryo, or one with no bound address space or no entry set: a
+/// half-built thread must never run. On success the thread gets its kernel stack and entry
+/// context and joins this core's run queue.
+pub fn start_tcb(tid: Tid) -> Result<(), abi::Error> {
+    let mut guard = SCHED.lock();
+    let sched = guard.as_mut().ok_or(abi::Error::NoSuchSlot)?;
+    let t = sched.threads.get_mut(tid).ok_or(abi::Error::NoSuchSlot)?;
+
+    if t.state != State::Embryo {
+        return Err(abi::Error::WrongObject); // already started (or not a TCB)
+    }
+    // WHOLE, or refuse: a bound address space and an entry point. Either missing is a half-built
+    // thread, and starting it would drop to EL0 with no low half or no code.
+    if t.space.is_none() || t.entry.0 == 0 {
+        return Err(abi::Error::NotPermitted); // configure it first
+    }
+    if !t.arm_for_start() {
+        return Err(abi::Error::OutOfMemory); // no kernel stack to be had
+    }
+    t.state = State::Ready;
+    let ptr = tcb_ptr(sched, tid);
+    // SAFETY: freshly Ready, on no queue (it was an embryo, queued nowhere); SCHED held, IRQs
+    // masked, so this core's run queue is ours.
+    cpu::current().with_runq(|q| unsafe { q.push_back(ptr) });
+    Ok(())
 }
 
 /// Hand the current thread an address space, and install it.

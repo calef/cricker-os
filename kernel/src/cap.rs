@@ -75,6 +75,12 @@ pub enum Object {
     /// until TCBs arrive (19c).
     Aspace(u64),
 
+    /// **A thread under construction** (milestone 19c.3), by generational Tid: an embryo TCB a
+    /// process is assembling. `WRITE` lets the holder configure, grant into, and start it. The
+    /// Tid is stale-safe like every generational name, so a capability outliving its thread
+    /// resolves to nothing rather than to a stranger.
+    Tcb(crate::thread::Tid),
+
     /// A virtio device's **transport**, by id (into the kernel's virtio device table).
     ///
     /// The DMA-confinement capability. The device has no IOMMU, so the kernel keeps the two
@@ -128,6 +134,14 @@ pub fn virtio_cap(id: usize) -> Cap {
     Cap {
         object: Object::Virtio(id),
         rights: Rights::WRITE,
+    }
+}
+
+/// A capability naming a thread under construction (milestone 19c.3). Full rights at creation.
+pub fn tcb_cap(tid: crate::thread::Tid, rights: Rights) -> Cap {
+    Cap {
+        object: Object::Tcb(tid),
+        rights,
     }
 }
 

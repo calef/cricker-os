@@ -135,6 +135,34 @@ pub mod objtype {
     /// than seL4's per-call paging-structure objects, which belong to the explicitness this
     /// project deliberately did not copy.
     pub const ASPACE: u64 = 2;
+
+    /// A thread (milestone 19c.3): the retyped page holds the TCB, and the object is born an
+    /// **embryo**, in no queue and not runnable. It becomes a running thread only through
+    /// [`tcb::CONFIGURE`] (bind an address space, set entry and stack) and [`tcb::START`], with
+    /// [`tcb::CAP_INSERT`] granting its initial authority in between. A half-built TCB can never
+    /// run: `START` refuses one with no bound space or no entry.
+    pub const TCB: u64 = 3;
+}
+
+/// Methods on a `Tcb` capability (milestone 19c.3): **another thread, under construction.**
+/// Created by [`untyped::RETYPE_OBJ`] with [`objtype::TCB`].
+pub mod tcb {
+    /// `invoke(cap, CONFIGURE, entry, user_sp, aspace_slot)` -> 0. Bind the address space named
+    /// by the capability in `aspace_slot` (which is **consumed**: it becomes the thread's, and
+    /// dies with it), and set where EL0 execution begins and on what user stack. Needs `WRITE`
+    /// on the TCB cap and `WRITE` on the aspace cap. Only an unstarted (embryo) TCB.
+    pub const CONFIGURE: u64 = 0;
+
+    /// `invoke(cap, CAP_INSERT, cap_slot, rights, _)` -> child_slot. Copy the capability in the
+    /// caller's `cap_slot`, narrowed to `rights`, into the child's cspace, returning the slot it
+    /// landed in. The child's whole initial authority is built this way, one grant at a time,
+    /// before it runs. Needs `WRITE` on the TCB cap and `GRANT` on the inserted capability.
+    pub const CAP_INSERT: u64 = 1;
+
+    /// `invoke(cap, START, _, _, _)` -> 0. Make the thread runnable: it gets a kernel stack and
+    /// an entry context and joins the run queue. **Refuses a half-built thread** (no bound
+    /// address space, or no entry): a TCB must be whole before it runs. Needs `WRITE`.
+    pub const START: u64 = 2;
 }
 
 /// Methods on an `Aspace` capability (milestone 19b): **another process's memory, under

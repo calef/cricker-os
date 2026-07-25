@@ -96,12 +96,33 @@ names the space through the same registry revocation uses.
   owned-vs-borrowed `KernelStack` split feared in the debate turned out to be zero lines: one
   owner. Split out as its own green step before TCB objects, so stack-sourcing and embryo TCB
   states are not two delicate changes in one breath.
-- **19c.2: TCBs as objects.** `RETYPE_OBJ(TCB)`, `CONFIGURE`, `CAP_INSERT`, `START` (which uses
-  19c.1's stack machinery), and the half-built-state audit.
+- **19c.2: TCBs become page-resident; the static pool deleted. (Built.)** The "where do we
+  want to end up" question reversed the first recommendation: not a pooled TCB but page-resident,
+  no static pool, kernel TCBs from `kmem` and user TCBs (19c.3) from the creator's untyped. B.2
+  itself scheduled this ("the pool upgrades to retype-backed storage when init lands"). Pure
+  storage rework, behavior-preserving; the generational table already stored names not addresses,
+  so it was small.
+- **19c.3: TCBs as objects. (Built.)** `RETYPE_OBJ(TCB)` (page-resident, the creator's untyped
+  pays and is pinned), plus `CONFIGURE` (bind an aspace, consumed out of the 19b registry into
+  the TCB so it now dies with the thread; set entry and user stack), `CAP_INSERT` (GRANT-gated,
+  narrowing, the child's initial authority one grant at a time), and `START` (arm the kernel
+  stack via 19c.1, build the EL0 entry context, queue). A new `State::Embryo` and a
+  `user_entry_trampoline` (the EL0 mirror of `thread_trampoline`) carry it. **The half-built
+  audit, discharged:** no start before whole (`START` refuses an embryo with no space or no
+  entry), queue discipline (an embryo is in no queue and `START`-twice is refused), and a
+  user-built thread reaps cleanly through the existing reaper (its region-owned TCB page and
+  pinned aspace region stay for object revocation, the documented debt). Witnessed by a kernel
+  test that builds a child entirely from the four verbs, with a hand-assembled EL0 stub for
+  code, and receives the word the child SENDs through a capability it was granted: a thread no
+  `spawn` created, running code no wiring wrote.
 - **19d: init.** The ELF parser moves to userspace (the `elf` crate already compiles anywhere;
   init links it directly — the eviction that motivated this decision). `user.rs`'s service
   construction migrates into init; the kernel's own loader shrinks to loading exactly one
   program: init itself.
+
+  *(Remaining before 19d: the four verbs are kernel-driven and tested; 19d is the userspace init
+  that drives them with a real ELF, at which point the granular surface has its intended single
+  caller and the composite-vs-granular decision pays off.)*
 - **19e: the workload.** Decision 2 (what runs first, native ABI) happens here, against a
   system that can actually run it.
 

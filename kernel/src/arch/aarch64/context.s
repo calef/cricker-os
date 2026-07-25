@@ -111,3 +111,19 @@ thread_trampoline:
     // happens to be next in memory.
 1:  wfi
     b       1b
+
+// Where a brand-new USER thread begins (milestone 19c.3): the EL0 mirror of thread_trampoline.
+//
+// A thread retyped and started via the TCB object surface begins life at EL0, not in a kernel
+// closure. `Thread::arm_for_start` faked a switch frame whose x30 points here, with x19 = the
+// EL0 entry address and x20 = the user stack pointer, both restored by `switch_to` on the way
+// in. We enable interrupts (a brand-new thread has no SPSR to restore, exactly as above) and
+// tail-call the Rust half, which reaps our predecessor and drops to EL0.
+.global user_entry_trampoline
+user_entry_trampoline:
+    msr     daifclr, #2         // enable interrupts (see thread_trampoline for why)
+    mov     x0,  x19            // the EL0 entry address
+    mov     x1,  x20            // the user stack pointer
+    bl      user_thread_entry   // extern "C" fn(u64, u64) -> !  — never returns
+1:  wfi
+    b       1b

@@ -276,6 +276,22 @@ pub fn user_aspace_root(name: u64) -> Option<u64> {
     USER_SPACES.lock().get(name).map(|s| s.root())
 }
 
+/// **Take a user-built address space out of the registry** (milestone 19c.3): `Tcb::CONFIGURE`
+/// moves it into the TCB, so it stops being a standalone object and starts dying with the
+/// thread. `None` if the name does not resolve. This is what retires 19b's "immortal until 19c"
+/// note: a bound space is reaped, an unbound one still leaks until teardown wiring, which is the
+/// half-built audit's job.
+pub fn take_user_aspace(name: u64) -> Option<AddressSpace> {
+    USER_SPACES.lock().remove(name)
+}
+
+/// Put a space back into the registry (milestone 19c.3): the unwind path if `CONFIGURE` took a
+/// space and then could not bind it. It gets a fresh name; the caller's stale aspace cap will no
+/// longer resolve, which is correct (the operation failed, but the space is not lost).
+pub fn readopt_user_aspace(space: AddressSpace) -> Option<u64> {
+    USER_SPACES.lock().insert_with(|_| space)
+}
+
 impl Drop for AddressSpace {
     fn drop(&mut self) {
         // Drop this address space's entries from the revocation database (§13) before its page
@@ -548,7 +564,20 @@ pub unsafe fn exec(program: &[u8]) -> ! {
 /// tells one binary which of several roles to play, the way a real kernel hands a new process
 /// its argc/argv. See the console server, which is the same ELF as its client with a different
 /// `arg0`.
+/// Drop the **current** thread to EL0 at `entry` on `user_sp`, no arguments (milestone 19c.3).
+/// The entry path for a thread started through the TCB object surface, which runs on the freshly
+/// scheduled thread rather than the one that called `START`. The address space is already
+/// installed (the context switch that scheduled us in used our `space` field). This is `enter_at`
+/// with a caller-chosen stack and zero args; `enter_at` is now the exec wrapper over it.
+pub fn enter_at_on_current(entry: u64, user_sp: u64) -> ! {
+    enter_frame(entry, user_sp, 0, 0, 0)
+}
+
 fn enter_at(entry: u64, arg0: u64, arg1: u64, arg2: u64) -> ! {
+    enter_frame(entry, USER_STACK_TOP, arg0, arg1, arg2)
+}
+
+fn enter_frame(entry: u64, user_sp: u64, arg0: u64, arg1: u64, arg2: u64) -> ! {
     // THE TRAPFRAME IS NOT AN ORDINARY LOCAL, and this cost us an afternoon.
     //
     // It must sit at the TOP OF THIS THREAD'S KERNEL STACK, because that is where the hardware
@@ -586,8 +615,8 @@ fn enter_at(entry: u64, arg0: u64, arg1: u64, arg2: u64) -> ! {
         frame.write(TrapFrame {
             x,
             elr: entry,             // ...where `eret` jumps
-            spsr: SPSR_EL0T,        // ...and the exception level it jumps to
-            sp_el0: USER_STACK_TOP, // ...on the stack it will jump onto
+            spsr: SPSR_EL0T, // ...and the exception level it jumps to
+            sp_el0: user_sp, // ...on the stack it will jump onto (caller's choice, 19c.3)
         });
 
         enter_userspace(frame)
@@ -2314,6 +2343,88 @@ mod tests {
         // reclaims it whole, the already-revoked frame included. No manual free: the region
         // owns its pages, and freeing one twice is the allocator's double-free panic.
         crate::untyped::destroy(frame_region);
+    }
+
+    /// **Milestone 19c.3, the whole point: one process builds and starts another, and it runs.**
+    /// The kernel drives the four verbs the way init eventually will: retype an address space and
+    /// a TCB, map a code page (containing a hand-assembled EL0 stub) and a stack into the space,
+    /// insert a report endpoint into the child's cspace, configure the TCB (entry, stack, space),
+    /// and START it. The child, code no wiring wrote and a thread no `spawn` created, drops to
+    /// EL0, invokes the capability it was granted to SEND a word home, and exits. Receiving that
+    /// word proves every verb: the retype, the maps, the cap insert, the configure, the start,
+    /// and a real EL0 thread built from parts.
+    #[test_case]
+    fn a_process_can_build_start_and_run_a_child_thread() {
+        const CODE_VA: u64 = 0x40_0000;
+        const STACK_VA: u64 = 0x50_0000;
+        const REPORT_WORD: u64 = 0x42;
+
+        // The child's program, hand-assembled: SEND(slot 0, endpoint::SEND=0, REPORT_WORD),
+        // then EXIT. Nine instructions; the child's first granted cap lands in slot 0.
+        let code: [u32; 9] = [
+            0xD280_0000, // movz x0, #0        (report cap slot)
+            0xD280_0001, // movz x1, #0        (endpoint::SEND)
+            0xD280_0000 | ((REPORT_WORD as u32) << 5) | 2, // movz x2, #REPORT_WORD
+            0xD280_0003, // movz x3, #0
+            0xD280_0004, // movz x4, #0
+            0xD280_0000 | ((abi::SYS_INVOKE as u32) << 5) | 8, // movz x8, #SYS_INVOKE
+            0xD400_0001, // svc #0             (the SEND)
+            0xD280_0008, // movz x8, #0        (SYS_EXIT)
+            0xD400_0001, // svc #0             (exit; never returns)
+        ];
+
+        // The child's address space, and a region to carve its code and stack frames from.
+        let as_region = crate::untyped::create(8).expect("no aspace region");
+        let aspace = user_aspace_create(as_region).expect("no aspace");
+        let frames_region = crate::untyped::create(2).expect("no frame region");
+
+        let code_phys = crate::untyped::retype_page(frames_region).expect("no code frame");
+        // Write the program through the direct map, then make it coherent for the fetcher.
+        // SAFETY: a fresh frame we own, direct-mapped.
+        unsafe {
+            let dst = mmu::phys_to_virt(code_phys) as *mut u32;
+            for (i, &insn) in code.iter().enumerate() {
+                dst.add(i).write(insn);
+            }
+        }
+        sync_icache(mmu::phys_to_virt(code_phys), size_of_val(&code));
+        user_aspace_map(aspace, CODE_VA, code_phys, Flags::user_code()).expect("map code");
+
+        let stack_phys = crate::untyped::retype_page(frames_region).expect("no stack frame");
+        user_aspace_map(aspace, STACK_VA, stack_phys, Flags::user_data()).expect("map stack");
+
+        // The child's one authority: WRITE on a report endpoint, so it can SEND but not receive.
+        let report = crate::sched::create_endpoint();
+        let report_cap =
+            crate::cap::endpoint_cap(report, crate::cap::Rights::WRITE.union(crate::cap::Rights::GRANT));
+
+        // Build the thread from parts.
+        let tcb_region = crate::untyped::create(2).expect("no tcb region");
+        let tid = crate::sched::create_tcb(tcb_region).expect("no tcb");
+        let slot = crate::sched::tcb_insert_cap(tid, report_cap).expect("cap insert");
+        assert_eq!(slot, 0, "the child's first cap must land in slot 0 (the code assumes it)");
+
+        // Not before it is whole: START must refuse an unconfigured embryo.
+        assert!(
+            crate::sched::start_tcb(tid).is_err(),
+            "START ran a half-built thread (no address space, no entry)",
+        );
+
+        crate::sched::configure_tcb(tid, CODE_VA, STACK_VA + frames::FRAME_SIZE, aspace)
+            .expect("configure");
+        crate::sched::start_tcb(tid).expect("start");
+
+        // And starting twice must refuse: it is no longer an embryo.
+        assert!(
+            crate::sched::start_tcb(tid).is_err(),
+            "START ran a thread that was already running",
+        );
+
+        let got = crate::sched::ipc_recv(report)[0];
+        assert_eq!(
+            got, REPORT_WORD,
+            "the child never reported: a built-from-parts thread did not reach EL0 and run",
+        );
     }
 
     /// **Milestone 19b, end to end: a process constructs an address space from EL0.** The

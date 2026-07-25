@@ -37,13 +37,10 @@ it was not handed, the last corner of milestone 14's no-open-ended-spending thes
 now worth doing when B.2 said retype earned nothing: B.2's premise was "the kernel is the only
 payer," and 19c is exactly when that expires (init becomes a payer).
 
-The alternative was retyping TCB memory from a kernel-owned untyped region, seL4's shape. The
-contrast that decided it: both are a fixed chunk divided into TCB-sized slots; the difference is
-*who owns the chunk and who decides to spend it*. seL4's retype exists so **userspace** pays for
-kernel objects out of its own budget, which is what makes kernel-memory exhaustion structurally
-impossible there. We do not have that ownership boundary yet (no syscall creates threads), so
-the retype's only customer would be the kernel: the pool wearing a ledger. Worse, TCBs are
-sub-page, so honest retype needs either a page per TCB or sub-page occupancy tracking, which is
-the slab rebuilt under another name in the milestone that deletes the slab. The pool is the same
-machine behavior with less machinery, and it upgrades to retype-backed storage behind the table
-the day the init task (milestone 19) makes the ownership boundary real.
+On the page-granularity worry the pool decision leaned on: a TCB is sub-page, so page-residency
+"wastes" most of a page. That was a real reason to prefer the pool *while the kernel paid*, and
+it is not one now, because the page is paid by whoever owns the thread (a user thread's by its
+creator's untyped, a kernel thread's by `kmem`, both bounded budgets). Sub-page packing stays
+declined for the same reason it was for endpoints (19a): one memory rule for the whole object
+family, packing a later placement optimization behind the table, not a slab rebuilt in the
+milestone that deleted the slab.
