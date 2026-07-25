@@ -6,7 +6,9 @@
 # Both use --all-targets so test code is linted too; the kernel supplies its own test harness
 # (custom_test_frameworks) and the user bin opts its libtest target out (user/Cargo.toml), which is
 # what lets --all-targets work on the bare-metal target. Not one of the canonical scripts, but it
-# keeps the CI job a one-liner. See notes/scripts.md.
+# keeps the CI job a one-liner. It also lints each kernel boot-mode feature (shell/bench/initboot)
+# separately, because each compiles different code and a warning can hide in a configuration the
+# default build never compiles. See notes/scripts.md.
 
 set -e
 cd "$(dirname "$0")/.."
@@ -16,3 +18,14 @@ cargo clippy --workspace --exclude kernel --exclude user --all-targets -- -D war
 
 echo "==> clippy: kernel + user (aarch64)"
 cargo clippy -p kernel -p user --target aarch64-unknown-none-softfloat --all-targets -- -D warnings
+
+# The kernel's boot-mode features (shell, bench, initboot) each compile DIFFERENT code in and out:
+# `initboot` and `shell` drop the milestone tour, `bench` diverges before the boot entirely. So a
+# warning that only appears in one configuration -- e.g. dead code once the tour is compiled out --
+# is invisible to the default run above. Lint each feature build on its own. (A missed initboot
+# dead-code warning is exactly why this loop exists.) Bin only: the boot code these features gate
+# lives in the binary, not the test target (the boot block is `cfg(not(test))`).
+for feat in shell bench initboot; do
+    echo "==> clippy: kernel --features $feat (aarch64)"
+    cargo clippy -p kernel --features "$feat" --target aarch64-unknown-none-softfloat -- -D warnings
+done
