@@ -27,5 +27,8 @@ tock-registers = "0.10"
 [features]
 # The benchmark boot (milestone 21): run the microbenchmarks and halt. See script/bench.
 bench = []
+# The init boot (milestone 19d.2c): userspace init is the boot path and brings up the system's
+# console, rather than the kernel wiring services directly. See script/initboot / xtask.
+initboot = []
 # Boot straight to the interactive shell, skipping the milestone tour. Used by cargo xtask shell.
 shell = []

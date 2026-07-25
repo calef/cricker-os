@@ -123,6 +123,7 @@ pub extern "C" fn _start(role: u64, dma_phys: u64, _arg2: u64) -> ! {
         INIT_CONSOLE => init_console(dma_phys),
         INIT_IRQ => init_irq(dma_phys),
         IRQ_CHILD => irq_child(),
+        INIT_BOOT => init_boot(dma_phys),
         CHILD => child(),
         DEV_CHILD => dev_child(),
         SELF_CHECK => self_check_client(),
@@ -395,6 +396,8 @@ const INIT_DEV: u64 = 23;
 const INIT_CONSOLE: u64 = 24;
 /// The init role that builds an interrupt-driven child, to prove IRQ delegation (milestone 19d.2b).
 const INIT_IRQ: u64 = 25;
+/// The init role that IS the boot path: brings up the console and announces the system (19d.2c).
+const INIT_BOOT: u64 = 27;
 /// The word a milestone-19d child reports through the endpoint init granted it.
 const CHILD_WORD: u64 = 0xC0FFEE;
 
@@ -411,6 +414,55 @@ const CHILD_WORD: u64 = 0xC0FFEE;
 /// kernel never touching the child's bytes. See kernel/src/user.rs spawn_init.
 fn init(initrd_len: u64) -> ! {
     init_build(initrd_len, false)
+}
+
+/// **The boot init, milestone 19d.2c.** This is the program the kernel hands the machine to.
+/// It brings up the console server out of its own budget (exactly as [`init_console`]) and prints
+/// the system's greeting *through it* -- so the first words the operator sees come from a
+/// userspace driver init built, not from the kernel. The interactive completion (bringing up the
+/// input driver and the shell, wired to this console) is the same `build_child` composition; this
+/// establishes that init owns the boot and the console is its first service.
+fn init_boot(initrd_len: u64) -> ! {
+    const UNTYPED: u64 = 0;
+    const REPORT: u64 = 1;
+    const UART_DEV: u64 = 2;
+    const SHARED_VA: u64 = 0x0060_0000;
+    const CHILD_UART_VA: u64 = 0x0070_0000;
+    const CONSOLE_SERVER_ROLE: u64 = 1;
+
+    // SAFETY: the kernel mapped the initrd read-only at INITRD_VA.
+    let image = unsafe { core::slice::from_raw_parts(INITRD_VA as *const u8, initrd_len as usize) };
+    let Ok(elf) = elf::Elf::parse(image) else { fail_report(REPORT) };
+
+    let Ok(request) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else { fail_report(REPORT) };
+    let Ok(reply) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else { fail_report(REPORT) };
+    let Ok(shared) = retype_frame(UNTYPED) else { fail_report(REPORT) };
+    if unsafe { invoke(shared, abi::frame::MAP, SHARED_VA, 1, UNTYPED) } != 0 {
+        fail_report(REPORT);
+    }
+
+    let caps: &[(u64, u64)] = &[(request, abi::rights::READ), (reply, abi::rights::WRITE)];
+    let maps: &[(u64, u64, u64)] = &[
+        (SHARED_VA, shared, abi::aspace::MAP_RO),
+        (CHILD_UART_VA, UART_DEV, abi::aspace::MAP_RO),
+    ];
+    let Ok(tcb) = build_child(UNTYPED, &elf, caps, maps) else { fail_report(REPORT) };
+    check(tcb_start(tcb, CONSOLE_SERVER_ROLE) == 0);
+
+    // Announce the system through the console init just built.
+    let banner = b"cricker-os: userspace init owns the boot; this console is a driver it built.
+";
+    // SAFETY: init mapped the shared page read/write at SHARED_VA.
+    unsafe {
+        let dst = core::slice::from_raw_parts_mut(SHARED_VA as *mut u8, banner.len());
+        dst.copy_from_slice(banner);
+    }
+    check(send(request, banner.len() as u64, 0, 0) == 0);
+    let _ = recv(reply); // the console printed and acked
+
+    // The boot init's first job is done; the console server it built runs on. (The interactive
+    // build wires input + shell here.) Exit; the console persists as its own thread.
+    exit();
 }
 
 /// **init delegates an interrupt to a driver it builds, milestone 19d.2b.** The third and last

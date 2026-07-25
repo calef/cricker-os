@@ -314,9 +314,22 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
             }
         } // end of the milestone tour (#[cfg(not(feature = "shell"))])
 
-        // The interactive shell. **Always on: this is how you actually use the OS.** It brings up
-        // its own console (output) and input drivers, so it stands alone with the tour compiled
-        // out.
+        // **Milestone 19d.2c: userspace init is the boot path.** With `initboot`, the kernel
+        // stops wiring services itself: it hands off to init, which brings up the console (and,
+        // in the interactive build, input and the shell) out of its own budget through the
+        // granular verbs. This is the line that retires the kernel as the system's builder.
+        #[cfg(feature = "initboot")]
+        if let Some(image) = user::initrd() {
+            println!();
+            println!("cricker-os — handing the system to userspace init.");
+            user::boot_via_init(image);
+            // The boot thread's work is done; init and the services it builds run until halt.
+        }
+
+        // The interactive shell (the pre-19d.2c path). **This is how you actually use the OS.**
+        // It brings up its own console and input drivers kernel-side, so it stands alone with the
+        // tour compiled out. `initboot` moves this bring-up into init above.
+        #[cfg(not(feature = "initboot"))]
         if let Some(image) = user::initrd() {
             println!();
             println!("cricker-os — an interactive shell at EL0. type `help`.");

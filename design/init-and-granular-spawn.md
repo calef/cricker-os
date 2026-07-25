@@ -162,8 +162,15 @@ names the space through the same registry revocation uses.
       knows virtual addresses; disclosing a frame's physical address for DMA is milestone-16
       (IOMMU/DMA) territory, and `START` would also need to pass more than one initial argument.
       Deferred to land with 16.
-  - **19d.2c: the shell wired to init-built services; retire the kernel's `run`/`Spawn` device
-    wiring; `spawn_init` becomes the real (non-test) boot path.**
+  - **19d.2c: init becomes the boot path. (Core built.)** Behind the `initboot` feature the
+    kernel stops wiring services and hands the machine to init (`boot_via_init` -> `spawn_init`);
+    init brings up the console server out of its own budget and prints the system's greeting
+    *through it*, so the first words the operator sees come from a userspace driver init built,
+    not the kernel. Verified by a bounded `script/initboot` boot: the banner appears from the
+    init-built console. The **interactive completion** -- bringing up the input driver and the
+    shell wired to this console -- is the same `build_child` composition; it is left for
+    interactive validation (the automated harness cannot inject keystrokes, so the shell is
+    driven by hand via `script/initboot`, not a test). The default and test boots are unchanged.
 - **19f: dedicated binaries, delivered as named programs. (Planned.)** Everything through 19d.2 is
   still *one* multi-tool binary (`hello`) whose programs are roles selected by `x0`; init, the
   child, and the console server are the same ELF loaded more than once. A real system has a

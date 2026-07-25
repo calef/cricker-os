@@ -51,6 +51,23 @@ fn main() -> ExitCode {
                     TARGET,
                 ])
         }
+        "initboot" => {
+            // Milestone 19d.2c: boot with userspace init as the boot path (it brings up the
+            // console). Add --hvf for the real core.
+            maybe_hvf();
+            eprintln!("--- booting cricker-os via userspace init (Ctrl-C to quit) ---");
+            mkdisk()
+                && user()
+                && cargo(&[
+                    "run",
+                    "-p",
+                    "kernel",
+                    "--features",
+                    "initboot",
+                    "--target",
+                    TARGET,
+                ])
+        }
         "test" => test(),
         "bench" => bench(),
         "gdb" => gdb(),
@@ -61,7 +78,7 @@ fn main() -> ExitCode {
                 eprintln!("unknown command: {other}\n");
             }
             eprintln!(
-                "usage: cargo xtask <build|run|shell|test|bench|gdb|objdump|image> [--hvf]"
+                "usage: cargo xtask <build|run|shell|initboot|test|bench|gdb|objdump|image> [--hvf]"
             );
             eprintln!("       cargo xtask bench [--real] [--check] [--save]");
             return ExitCode::FAILURE;

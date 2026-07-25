@@ -587,6 +587,18 @@ pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
     .expect("could not spawn init");
 }
 
+/// **The init boot path** (milestone 19d.2c): spawn init at the boot role and return. init
+/// brings up the console out of its own budget and announces the system through it, so the
+/// system's first output comes from a userspace driver init built, not from the kernel. The
+/// report endpoint is unused on this path (init prints via the console it builds, not back to the
+/// kernel); it is created only to satisfy `spawn_init`'s shape.
+#[cfg(feature = "initboot")]
+pub fn boot_via_init(image: &'static [u8]) {
+    const INIT_BOOT_ROLE: u64 = 27;
+    let report = crate::sched::create_endpoint();
+    spawn_init(image, INIT_BOOT_ROLE, report);
+}
+
 /// Load the initrd program and become it, handed the world described by `spawn`. Never returns.
 pub fn run(image: &[u8], spawn: Spawn) -> ! {
     let (mut space, entry) = match load(image) {
