@@ -55,6 +55,7 @@ const EP_USER: u64 = 18;
 const ASPACE_BUILDER: u64 = 19;
 const INIT: u64 = 20;
 const CHILD: u64 = 21;
+const DEV_CHILD: u64 = 22;
 
 /// The word the frame producer writes into a shared page and the consumer reads back through its
 /// own mapping of the same physical page. One binary, so one constant serves both roles.
@@ -117,7 +118,9 @@ pub extern "C" fn _start(role: u64, dma_phys: u64, _arg2: u64) -> ! {
         EP_USER => ep_user(),
         ASPACE_BUILDER => aspace_builder(),
         INIT => init(dma_phys), // x1 carries the initrd length
+        INIT_DEV => init_dev(dma_phys),
         CHILD => child(),
+        DEV_CHILD => dev_child(),
         SELF_CHECK => self_check_client(),
         _ => self_check_client(),
     }
@@ -382,6 +385,8 @@ fn revoke_demo() -> ! {
 
 /// Where the kernel maps the initrd into init (must match user.rs INITRD_VA).
 const INITRD_VA: u64 = 0x2000_0000;
+/// The init role that builds a device-driver child (milestone 19d.2); matches kernel test wiring.
+const INIT_DEV: u64 = 23;
 /// The word a milestone-19d child reports through the endpoint init granted it.
 const CHILD_WORD: u64 = 0xC0FFEE;
 
@@ -397,28 +402,66 @@ const CHILD_WORD: u64 = 0xC0FFEE;
 /// a word home; receiving it proves init parsed a real ELF and built a running process, with the
 /// kernel never touching the child's bytes. See kernel/src/user.rs spawn_init.
 fn init(initrd_len: u64) -> ! {
+    init_build(initrd_len, false)
+}
+
+/// A variant of init that builds the **device driver** child (19d.2): same loader, but it hands
+/// the child the UART device capability it holds (slot 2). Entered at role [`INIT_DEV`].
+fn init_dev(initrd_len: u64) -> ! {
+    init_build(initrd_len, true)
+}
+
+fn init_build(initrd_len: u64, device: bool) -> ! {
     const UNTYPED: u64 = 0;
     const REPORT: u64 = 1;
+    const UART_DEV: u64 = 2; // the UART device cap the kernel granted init (spawn_init)
+    const CHILD_UART_VA: u64 = 0x0070_0000;
 
     // SAFETY: the kernel mapped `initrd_len` bytes of the initrd, read-only, at INITRD_VA.
     let image = unsafe { core::slice::from_raw_parts(INITRD_VA as *const u8, initrd_len as usize) };
     let elf = match elf::Elf::parse(image) {
         Ok(e) => e,
         Err(_) => {
-            send(REPORT, 0, 0, 0); // a zero word: parse failed (the test expects CHILD_WORD)
+            send(REPORT, 0, 0, 0);
             exit();
         }
     };
 
-    match build_child(UNTYPED, REPORT, &elf) {
+    let dev = if device { Some((UART_DEV, CHILD_UART_VA)) } else { None };
+    match build_child(UNTYPED, REPORT, &elf, dev) {
         Ok(child_tcb) => {
-            // Start the child at role CHILD; its first x0 is the role selector.
-            check(tcb_start(child_tcb, CHILD) == 0);
+            let role = if device { DEV_CHILD } else { CHILD };
+            check(tcb_start(child_tcb, role) == 0);
         }
         Err(_) => {
-            send(REPORT, 0, 0, 0); // build failed
+            send(REPORT, 0, 0, 0);
         }
     }
+    exit();
+}
+
+/// **A device driver child, milestone 19d.2.** Built by init exactly like [`child`], but init
+/// also mapped a device's MMIO (the PL011 UART) into this child's address space at `UART_VA`
+/// before starting it. This child reads the PL011's PrimeCell identification registers, whose
+/// values are the fixed `0xB105F00D` ("BIOS FOOD") every real PL011 returns, and reports them.
+/// Reading that constant proves the mapping is a real, device-typed view of the actual UART, not
+/// normal memory and not the wrong page: init delegated device authority and the driver used it.
+fn dev_child() -> ! {
+    const REPORT: u64 = 0; // init inserted the report cap as slot 0
+    const UART_VA: u64 = 0x0070_0000; // where init mapped the UART registers
+
+    // The four PrimeCell ID bytes live at 0xFF0, 0xFF4, 0xFF8, 0xFFC and read 0x0D,0xF0,0x05,0xB1.
+    // SAFETY: init mapped the UART, device-typed, at UART_VA before starting us; these are
+    // read-only ID registers, so reading them has no side effect.
+    let id = unsafe {
+        let base = UART_VA as *const u32;
+        let b0 = base.byte_add(0xFF0).read_volatile() & 0xFF;
+        let b1 = base.byte_add(0xFF4).read_volatile() & 0xFF;
+        let b2 = base.byte_add(0xFF8).read_volatile() & 0xFF;
+        let b3 = base.byte_add(0xFFC).read_volatile() & 0xFF;
+        (b3 << 24) | (b2 << 16) | (b1 << 8) | b0
+    };
+    send(REPORT, id as u64, 0, 0);
     exit();
 }
 
@@ -433,9 +476,11 @@ fn child() -> ! {
 }
 
 /// Build a child process from `elf`, out of `untyped`, endowing it with the report endpoint.
-/// Returns the child's TCB slot, ready to start. This is init's ELF loader, mirroring the
-/// kernel's `map_segments` but driven entirely through the granular syscall verbs.
-fn build_child(untyped: u64, report: u64, elf: &elf::Elf) -> Result<u64, ()> {
+/// `device` optionally maps a device MMIO cap (that init holds) into the child at a VA before it
+/// starts, which is how init hands a driver its registers (19d.2). Returns the child's TCB slot,
+/// ready to start. This is init's ELF loader, mirroring the kernel's `map_segments` but driven
+/// entirely through the granular syscall verbs.
+fn build_child(untyped: u64, report: u64, elf: &elf::Elf, device: Option<(u64, u64)>) -> Result<u64, ()> {
     const PAGE: u64 = 4096;
     const CHILD_STACK_VA: u64 = 0x0050_0000;
     // A scratch window in init's own space where it maps each child frame to fill it.
@@ -490,6 +535,15 @@ fn build_child(untyped: u64, report: u64, elf: &elf::Elf) -> Result<u64, ()> {
         return Err(());
     }
     cap_delete(stack_frame);
+
+    // Hand the child its device registers, if it is a driver (19d.2): map the device MMIO cap
+    // init holds into the child, device-typed, at the agreed VA. The child accesses it directly;
+    // it never holds the device capability, only the mapping.
+    if let Some((dev_cap, dev_va)) = device
+        && unsafe { invoke(aspace, abi::aspace::MAP_INTO, dev_va, dev_cap, abi::aspace::MAP_RO) } != 0
+    {
+        return Err(());
+    }
 
     // The thread, endowed with the report endpoint (its slot 0), then configured and returned.
     let tcb = retype_obj(untyped, abi::objtype::TCB)?;

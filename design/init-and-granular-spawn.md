@@ -125,10 +125,22 @@ names the space through the same registry revocation uses.
   16-slot cspace over hundreds of frames); `START` gained an initial-`x0` so init tells a child
   its role. Witnessed end to end: `userspace_init_parses_an_elf_and_builds_a_running_child`, four
   clean runs. See notes/init-and-loading.md.
-- **19d.2: init becomes the boot path. (Remaining.)** Migrate `user.rs`'s service construction
-  (console, shell, the demos) into init and retire the kernel's other loaders, so `spawn_init` is
-  the boot path rather than a test-driven entry. The larger mechanical restructure; the thesis is
-  already proved by 19d.1.
+- **19d.2: init becomes the boot path, incrementally. (In progress.)** Migrating service
+  construction into init, one service green before the next. The first step surfaced the real
+  blocker: every boot service needs *device* access, which the kernel wired at spawn with no
+  delegatable authority. So this splits:
+  - **19d.2a: device capabilities. (Built.)** `Object::DeviceFrame(phys)`, a delegatable
+    authority to map a specific device's MMIO **device-typed** (nGnRnE, uncacheable: a plain
+    `Frame` maps normal cacheable memory, which would corrupt MMIO). `MAP_INTO` accepts it. The
+    kernel mints one per known device (the UART) and grants it to init; init delegates it into a
+    driver child it builds and maps the registers in. Witnessed: an init-built driver reads the
+    PL011's PrimeCell id (`0xB105F00D`), proving the delegated device-typed mapping is a real view
+    of the actual hardware. This turns "the kernel maps the UART" into "device access is a
+    capability", the mechanism every real driver-under-init needs.
+  - **19d.2b: the drivers (console, input, virtio) as init-built children**, each on the 2a
+    mechanism, each green.
+  - **19d.2c: the shell wired to init-built services; retire the kernel's `run`/`Spawn` device
+    wiring; `spawn_init` becomes the real (non-test) boot path.**
 - **19e: the workload.** Decision 2 (what runs first, native ABI) happens here, against a
   system that can actually run it.
 

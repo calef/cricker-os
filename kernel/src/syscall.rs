@@ -192,31 +192,43 @@ fn invoke(
                     return Err(Error::BadPointer);
                 }
                 let frame = sched::current_cap(a1).map_err(|_| Error::NoSuchSlot)?;
-                let Object::Frame(phys) = frame.object else {
-                    return Err(Error::WrongObject);
-                };
-                // a2 chooses the shape: 0 read-only, 1 read/write, 2 executable code (19d, so a
-                // loader can lay down a child's .text). Code is W^X: user_code is RX, never
-                // writable, so mapping it needs only READ on the frame.
-                let flags = match a2 {
-                    abi::aspace::MAP_RW => {
+                // The mappable object is a Frame (normal memory) or a DeviceFrame (a device's
+                // MMIO, device-typed): the driver a userspace init builds gets its registers this
+                // way (19d.2). a2 chooses the shape for a Frame; a DeviceFrame is always
+                // device-typed read/write and needs WRITE on the cap.
+                let (phys, flags) = match frame.object {
+                    Object::DeviceFrame(phys) => {
                         if !frame.rights.allows(Rights::WRITE) {
                             return Err(Error::NotPermitted);
                         }
-                        paging::Flags::user_data()
+                        (phys, paging::Flags::user_device())
                     }
-                    abi::aspace::MAP_CODE => {
-                        if !frame.rights.allows(Rights::READ) {
-                            return Err(Error::NotPermitted);
-                        }
-                        paging::Flags::user_code()
+                    Object::Frame(phys) => {
+                        // 0 read-only, 1 read/write, 2 executable code (a loader's child .text).
+                        // Code is W^X: user_code is RX, never writable, so it needs only READ.
+                        let flags = match a2 {
+                            abi::aspace::MAP_RW => {
+                                if !frame.rights.allows(Rights::WRITE) {
+                                    return Err(Error::NotPermitted);
+                                }
+                                paging::Flags::user_data()
+                            }
+                            abi::aspace::MAP_CODE => {
+                                if !frame.rights.allows(Rights::READ) {
+                                    return Err(Error::NotPermitted);
+                                }
+                                paging::Flags::user_code()
+                            }
+                            _ => {
+                                if !frame.rights.allows(Rights::READ) {
+                                    return Err(Error::NotPermitted);
+                                }
+                                paging::Flags::user_rodata()
+                            }
+                        };
+                        (phys, flags)
                     }
-                    _ => {
-                        if !frame.rights.allows(Rights::READ) {
-                            return Err(Error::NotPermitted);
-                        }
-                        paging::Flags::user_rodata()
-                    }
+                    _ => return Err(Error::WrongObject),
                 };
                 match crate::user::user_aspace_map(name, va, phys, flags) {
                     Ok(()) => Ok(0),
@@ -448,6 +460,10 @@ fn invoke(
             }
             _ => Err(Error::BadMethod),
         },
+
+        // A device's MMIO page is passive: it is not invoked, only handed to MAP_INTO as the
+        // page to map (19d.2). Invoking it directly is a caller error.
+        Object::DeviceFrame(_) => Err(Error::BadMethod),
 
         Object::Virtio(id) => {
             if !cap.rights.allows(Rights::WRITE) {

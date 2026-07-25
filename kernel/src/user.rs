@@ -554,6 +554,13 @@ pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
             crate::cap::Rights::WRITE.union(crate::cap::Rights::GRANT),
         ))
         .expect("grant report");
+        // A device capability for the UART (slot 2), so init can build a driver and hand it the
+        // registers (19d.2). WRITE (device access) | GRANT (init delegates it to the driver).
+        crate::sched::grant(crate::cap::device_frame_cap(
+            0x0900_0000,
+            crate::cap::Rights::WRITE.union(crate::cap::Rights::GRANT),
+        ))
+        .expect("grant uart device");
 
         enter_frame(elf.entry(), USER_STACK_TOP, role, initrd_len, 0)
     })
@@ -2416,6 +2423,29 @@ mod tests {
         // reclaims it whole, the already-revoked frame included. No manual free: the region
         // owns its pages, and freeing one twice is the allocator's double-free panic.
         crate::untyped::destroy(frame_region);
+    }
+
+    /// **Milestone 19d.2: userspace init builds a device driver and hands it the hardware.**
+    /// The step beyond 19d.1: not just a child, but a child that touches a *device*. init holds a
+    /// UART **device capability** (a new delegatable authority to map MMIO device-typed), builds
+    /// a driver child, and maps the UART's registers into it. The child reads the PL011's
+    /// PrimeCell identification registers, whose value is the fixed `0xB105F00D` every real PL011
+    /// returns. Receiving that constant proves the whole chain: device access is a capability the
+    /// kernel minted and init delegated, `MAP_INTO` mapped it device-typed (not cached normal
+    /// memory, which would corrupt MMIO), and a userspace-init-built driver drove real hardware.
+    #[test_case]
+    fn userspace_init_builds_a_driver_that_reads_real_hardware() {
+        const PL011_PRIMECELL_ID: u64 = 0xB105_F00D;
+        const INIT_DEV_ROLE: u64 = 23;
+
+        let report = crate::sched::create_endpoint();
+        spawn_init(initrd().expect("no initrd"), INIT_DEV_ROLE, report);
+
+        let id = crate::sched::ipc_recv(report)[0];
+        assert_eq!(
+            id, PL011_PRIMECELL_ID,
+            "the init-built driver did not read the PL011's id: device delegation or the              device-typed mapping is broken",
+        );
     }
 
     /// **Milestone 19d: userspace init parses a real ELF and builds a running process from it.**

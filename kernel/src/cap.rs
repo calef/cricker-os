@@ -58,6 +58,16 @@ pub enum Object {
     /// the only ways to get a `Frame` are to retype it or be handed it, and both keep the object.
     Frame(u64),
 
+    /// **A device's MMIO page**, by physical address (milestone 19d.2): a delegatable authority
+    /// to map a *specific* device's registers, **device-typed** (nGnRnE, uncacheable, unreordered
+    /// — the only attributes MMIO tolerates). The kernel mints one per known device (it alone
+    /// knows device physical addresses) and hands it to init; init delegates it to the driver it
+    /// builds and maps it into that driver's space. This is what turns "the kernel maps the UART
+    /// at spawn" into "device access is a capability", so a userspace init can bring up drivers.
+    /// Distinct from `Frame` precisely because a `Frame` maps *normal cacheable* memory, which for
+    /// MMIO would let the CPU cache and reorder register accesses: catastrophic for a device.
+    DeviceFrame(u64),
+
     /// **A one-shot reply channel to a blocked caller** (milestone 12), named by the caller's
     /// thread id.
     ///
@@ -167,6 +177,15 @@ pub fn reply_cap(tid: crate::thread::Tid) -> Cap {
 /// A capability naming a physical page. `READ` lets the holder map it read-only, `WRITE` lets it
 /// map it read/write, `GRANT` lets it pass the page on. A freshly retyped frame gets all three;
 /// delegation narrows them (a read-only, non-lendable view is `READ` alone).
+/// A capability naming a device's MMIO page (milestone 19d.2). `WRITE` lets the holder map it
+/// (device access is read/write by nature); minted by the kernel for a known device.
+pub fn device_frame_cap(phys: u64, rights: Rights) -> Cap {
+    Cap {
+        object: Object::DeviceFrame(phys),
+        rights,
+    }
+}
+
 pub fn frame_cap(phys: u64, rights: Rights) -> Cap {
     Cap {
         object: Object::Frame(phys),
