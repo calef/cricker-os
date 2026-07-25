@@ -8,13 +8,14 @@
 //!
 //! Its whole authority is what init grants it: SEND on the line endpoint (slot 0), the RX interrupt
 //! capability (slot 1), the UART registers mapped device-typed, and a line buffer page. No role
-//! selector; a standalone binary needs none. The tiny `invoke`/`send` runtime is duplicated from
-//! hello for now; see notes/init-and-loading.md on lifting a shared user-runtime crate.
+//! selector; a standalone binary needs none. The syscall runtime (`invoke`/`send`) comes from the
+//! shared `user_rt` crate (19f.6).
 
 #![no_std]
 #![no_main]
 
 use abi::irq;
+use user_rt::{invoke, send};
 
 const UART_VA: u64 = 0x0000_0000_00a0_0000;
 const LINE_VA: u64 = 0x0000_0000_00b0_0000;
@@ -104,31 +105,6 @@ fn drain(buf: *mut u8, mut n: usize) -> usize {
         }
     }
     n
-}
-
-/// `SEND` three words on the endpoint capability in `slot`.
-fn send(slot: u64, w0: u64, w1: u64, w2: u64) -> i64 {
-    // SAFETY: `svc` traps to EL1, which validates the capability named by `slot`.
-    unsafe { invoke(slot, abi::endpoint::SEND, w0, w1, w2) }
-}
-
-/// # Safety
-/// `svc` traps to EL1. The kernel validates the capability and method; that is its whole job.
-unsafe fn invoke(cap: u64, method: u64, a0: u64, a1: u64, a2: u64) -> i64 {
-    let ret: i64;
-    unsafe {
-        core::arch::asm!(
-            "svc #0",
-            in("x8") abi::SYS_INVOKE,
-            inlateout("x0") cap => ret,
-            in("x1") method,
-            in("x2") a0,
-            in("x3") a1,
-            in("x4") a2,
-            options(nostack),
-        );
-    }
-    ret
 }
 
 #[panic_handler]

@@ -9,12 +9,13 @@
 //!
 //! It shares the `user` crate's `link.ld` (linked at `0x40_0000`, in its own address space, so the
 //! shared load address is not a conflict) but not one line of hello's code: a distinct ELF with its
-//! own `_start` and panic handler. The tiny runtime below (`invoke`/`send`/`exit`) is duplicated
-//! from hello on purpose. When 19f.3 splits the next binary, that second copy is the signal to lift
-//! a shared user-runtime crate, with the requirements finally known rather than guessed.
+//! own `_start` and panic handler. The syscall runtime (`send`/`exit`) comes from the shared
+//! `user_rt` crate, lifted out at 19f.6 once all the split binaries existed.
 
 #![no_std]
 #![no_main]
+
+use user_rt::{exit, send};
 
 /// The endpoint init grants the worker as its only capability (slot 0). Its one `SEND` goes here,
 /// straight to whoever is waiting (the kernel test, or the shell behind init's spawn service).
@@ -29,42 +30,6 @@ pub extern "C" fn _start(_x0: u64, n: u64, _x2: u64) -> ! {
     // Exit rather than spin: this is a whole process lifecycle (spawn, run, report, exit). The
     // kernel reaps the thread and frees the address space.
     exit();
-}
-
-/// `SEND` three words on the endpoint capability in `slot`.
-fn send(slot: u64, w0: u64, w1: u64, w2: u64) -> i64 {
-    // SAFETY: `svc` traps to EL1, which validates the capability named by `slot` before acting.
-    unsafe { invoke(slot, abi::endpoint::SEND, w0, w1, w2) }
-}
-
-/// Terminate this process.
-fn exit() -> ! {
-    // SAFETY: `svc`; SYS_EXIT never returns.
-    unsafe {
-        core::arch::asm!("svc #0", in("x8") abi::SYS_EXIT, in("x0") 0u64, options(nostack, nomem));
-    }
-    loop {
-        core::hint::spin_loop();
-    }
-}
-
-/// # Safety
-/// `svc` traps to EL1. The kernel validates the capability and method; that is its whole job.
-unsafe fn invoke(cap: u64, method: u64, a0: u64, a1: u64, a2: u64) -> i64 {
-    let ret: i64;
-    unsafe {
-        core::arch::asm!(
-            "svc #0",
-            in("x8") abi::SYS_INVOKE,
-            inlateout("x0") cap => ret,
-            in("x1") method,
-            in("x2") a0,
-            in("x3") a1,
-            in("x4") a2,
-            options(nostack),
-        );
-    }
-    ret
 }
 
 #[panic_handler]

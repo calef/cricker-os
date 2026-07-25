@@ -193,9 +193,25 @@ claim it "never loses the first character"; it does, under burst-piping. A user 
 prompt never hits it, and every line after the first is interrupt-driven and intact. The comment is
 corrected; fully closing the window is a separate input-driver fix, not part of the split.
 
+## The shared runtime, `user_rt` (milestone 19f.6)
+
+With the split done, the `invoke`/`send`/`recv`/`exit` runtime was copied verbatim into five binaries
+(hello and the four it shed). `crates/user_rt` is that runtime, lifted into one library crate all
+five now depend on: one `invoke` (the single syscall), and `send`/`recv`/`exit` built on it. The
+extraction waited on purpose until the split was complete, so the shared surface was known rather
+than guessed (the DECISIONS rule about not building an abstraction before its requirements exist).
+
+Two things deliberately stayed out of `user_rt`:
+
+- The `#[panic_handler]`. A panic handler is per-final-binary, and one in the shared library would be
+  forced on every program that links it and collide with any program (like hello) that wants its own.
+  Each binary keeps its own one-line handler; it is trivial, and it keeps the linking simple.
+- Device helpers (the UART `putc` and echo logic in the console and input drivers). Those are not
+  runtime, they are the program: they belong to the driver that owns the hardware.
+
 ## What is not here yet
 
-The `invoke`/`send`/`recv`/`exit` runtime is now copied verbatim into four binaries (worker, console,
-input, shell). The shared surface is finally known, so lifting it into a `user_rt` library crate is
-the natural next cleanup (19f.6). The kernel-side service wiring the milestone tour still uses is
-retired by the `initboot` path, which builds these services inside init.
+The milestone-tour service wiring the kernel still does (in `console_service`/`input_service`/
+`shell_service`) is the pre-init path; the `initboot` boot already retires it by building the whole
+system inside init from the archive binaries. Folding the tour onto that path, so the kernel has one
+way to reach userspace rather than two, is future cleanup, not a gap in the split.

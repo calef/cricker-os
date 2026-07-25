@@ -1,0 +1,7 @@
+[package]
+name = "user_rt"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+abi = { version = "0.1.0", path = "../abi" }

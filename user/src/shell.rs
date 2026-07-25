@@ -16,11 +16,13 @@
 //! - slot 4: a result endpoint (receive a spawned worker's answer).
 //!
 //! and two shared pages: one with the console server (output), one with the input driver (the line
-//! buffer). No role selector; a standalone binary needs none. The tiny `invoke`/`recv` runtime is
-//! duplicated from the other binaries for now; see notes/init-and-loading.md on the shared crate.
+//! buffer). No role selector; a standalone binary needs none. The syscall runtime (`invoke`/`recv`)
+//! comes from the shared `user_rt` crate (19f.6).
 
 #![no_std]
 #![no_main]
+
+use user_rt::{invoke, recv};
 
 // Shared pages (must match init's / the kernel shell_service's wiring).
 const OUT_VA: u64 = 0x0000_0000_0060_0000; // shared with the console server
@@ -137,45 +139,6 @@ fn parse_num(s: &[u8]) -> u64 {
         }
     }
     v
-}
-
-/// `RECV` three words, blocking until a sender arrives.
-fn recv(slot: u64) -> (u64, u64, u64) {
-    let (mut w0, mut w1, mut w2): (u64, u64, u64);
-    // SAFETY: `svc`. RECV returns three words in x0/x1/x2.
-    unsafe {
-        core::arch::asm!(
-            "svc #0",
-            in("x8") abi::SYS_INVOKE,
-            inlateout("x0") slot => w0,
-            in("x1") abi::endpoint::RECV,
-            lateout("x1") w1,
-            lateout("x2") w2,
-            in("x3") 0u64,
-            in("x4") 0u64,
-            options(nostack),
-        );
-    }
-    (w0, w1, w2)
-}
-
-/// # Safety
-/// `svc` traps to EL1. The kernel validates the capability and method; that is its whole job.
-unsafe fn invoke(cap: u64, method: u64, a0: u64, a1: u64, a2: u64) -> i64 {
-    let ret: i64;
-    unsafe {
-        core::arch::asm!(
-            "svc #0",
-            in("x8") abi::SYS_INVOKE,
-            inlateout("x0") cap => ret,
-            in("x1") method,
-            in("x2") a0,
-            in("x3") a1,
-            in("x4") a2,
-            options(nostack),
-        );
-    }
-    ret
 }
 
 #[panic_handler]

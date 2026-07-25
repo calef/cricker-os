@@ -25,6 +25,7 @@
 mod virtio;
 
 use abi::{Error, endpoint};
+use user_rt::{exit, invoke, recv, send};
 
 /// Roles, as passed in `x0` by the kernel.
 ///
@@ -188,31 +189,7 @@ fn print(bytes: &[u8]) -> Result<(), Error> {
     Ok(())
 }
 
-// --- the two IPC primitives, over `svc` ---
-
-fn send(slot: u64, w0: u64, w1: u64, w2: u64) -> i64 {
-    // SAFETY: `svc` traps to EL1, which validates the capability in `slot`.
-    unsafe { invoke(slot, endpoint::SEND, w0, w1, w2) }
-}
-
-fn recv(slot: u64) -> (u64, u64, u64) {
-    let (mut w0, mut w1, mut w2): (u64, u64, u64);
-    // SAFETY: as above. RECV returns three words in x0/x1/x2.
-    unsafe {
-        core::arch::asm!(
-            "svc #0",
-            in("x8") abi::SYS_INVOKE,
-            inlateout("x0") slot => w0,
-            in("x1") endpoint::RECV,
-            lateout("x1") w1,
-            lateout("x2") w2,
-            in("x3") 0u64,
-            in("x4") 0u64,
-            options(nostack),
-        );
-    }
-    (w0, w1, w2)
-}
+// The IPC primitives (send/recv/invoke/exit) come from the shared `user_rt` crate (19f.6).
 
 /// Receive a data word and, if the sender delegated one, a capability. Returns `(w0, slot)`, where
 /// `slot` is where the received capability landed in our cspace, or `endpoint::NO_CAP` if none came.
@@ -410,22 +387,48 @@ fn init_boot(_x1: u64) -> ! {
 
     // Every service init builds is now its own binary, loaded from the archive by name. init itself
     // is the only role of hello left on this path, and it loads nothing of hello into a child.
-    let Some(con_bytes) = program(initrd_len, "console") else { halt_forever() };
-    let Ok(con_elf) = elf::Elf::parse(con_bytes) else { halt_forever() };
-    let Some(in_bytes) = program(initrd_len, "input") else { halt_forever() };
-    let Ok(in_elf) = elf::Elf::parse(in_bytes) else { halt_forever() };
-    let Some(sh_bytes) = program(initrd_len, "shell") else { halt_forever() };
-    let Ok(sh_elf) = elf::Elf::parse(sh_bytes) else { halt_forever() };
+    let Some(con_bytes) = program(initrd_len, "console") else {
+        halt_forever()
+    };
+    let Ok(con_elf) = elf::Elf::parse(con_bytes) else {
+        halt_forever()
+    };
+    let Some(in_bytes) = program(initrd_len, "input") else {
+        halt_forever()
+    };
+    let Ok(in_elf) = elf::Elf::parse(in_bytes) else {
+        halt_forever()
+    };
+    let Some(sh_bytes) = program(initrd_len, "shell") else {
+        halt_forever()
+    };
+    let Ok(sh_elf) = elf::Elf::parse(sh_bytes) else {
+        halt_forever()
+    };
 
     // The endpoints and shared pages init owns and hands out. Endpoints come from retype with full
     // rights, so init keeps RWG and delegates narrowed views.
-    let Ok(request) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else { halt_forever() };
-    let Ok(reply) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else { halt_forever() };
-    let Ok(line) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else { halt_forever() };
-    let Ok(spawn_ep) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else { halt_forever() };
-    let Ok(result_ep) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else { halt_forever() };
-    let Ok(con_shared) = retype_frame(UNTYPED) else { halt_forever() };
-    let Ok(line_buf) = retype_frame(UNTYPED) else { halt_forever() };
+    let Ok(request) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else {
+        halt_forever()
+    };
+    let Ok(reply) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else {
+        halt_forever()
+    };
+    let Ok(line) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else {
+        halt_forever()
+    };
+    let Ok(spawn_ep) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else {
+        halt_forever()
+    };
+    let Ok(result_ep) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else {
+        halt_forever()
+    };
+    let Ok(con_shared) = retype_frame(UNTYPED) else {
+        halt_forever()
+    };
+    let Ok(line_buf) = retype_frame(UNTYPED) else {
+        halt_forever()
+    };
 
     // 1. Console server: reads text from the shared page, writes it to the UART.
     let con_caps: &[(u64, u64)] = &[(request, abi::rights::READ), (reply, abi::rights::WRITE)];
@@ -433,7 +436,9 @@ fn init_boot(_x1: u64) -> ! {
         (CON_SHARED_VA, con_shared, abi::aspace::MAP_RO),
         (CON_UART_VA, UART_DEV, DEV),
     ];
-    let Ok(con) = build_child(UNTYPED, &con_elf, con_caps, con_maps) else { halt_forever() };
+    let Ok(con) = build_child(UNTYPED, &con_elf, con_caps, con_maps) else {
+        halt_forever()
+    };
     check(tcb_start(con, 0, 0, 0) == 0); // no role selector: console is its own binary
     cap_delete(con);
 
@@ -443,7 +448,9 @@ fn init_boot(_x1: u64) -> ! {
         (IN_UART_VA, UART_DEV, DEV),
         (LINE_VA, line_buf, abi::aspace::MAP_RW),
     ];
-    let Ok(input) = build_child(UNTYPED, &in_elf, in_caps, in_maps) else { halt_forever() };
+    let Ok(input) = build_child(UNTYPED, &in_elf, in_caps, in_maps) else {
+        halt_forever()
+    };
     check(tcb_start(input, 0, 0, 0) == 0); // no role selector: input is its own binary
     cap_delete(input);
 
@@ -459,7 +466,9 @@ fn init_boot(_x1: u64) -> ! {
         (CON_SHARED_VA, con_shared, abi::aspace::MAP_RW), // OUT_VA: shell writes text here
         (LINE_VA, line_buf, abi::aspace::MAP_RO),         // shell reads input lines
     ];
-    let Ok(shell) = build_child(UNTYPED, &sh_elf, sh_caps, sh_maps) else { halt_forever() };
+    let Ok(shell) = build_child(UNTYPED, &sh_elf, sh_caps, sh_maps) else {
+        halt_forever()
+    };
     check(tcb_start(shell, 0, 0, 0) == 0); // no role selector: shell is its own binary
     cap_delete(shell);
 
@@ -522,15 +531,21 @@ fn init_irq(initrd_len: u64) -> ! {
     const REPORT: u64 = 1;
     const TEST_IRQ: u64 = 3; // the Irq cap the kernel granted init (spawn_init)
 
-    let Some(init_bytes) = program(initrd_len, "init") else { fail_report(REPORT) };
-    let Ok(elf) = elf::Elf::parse(init_bytes) else { fail_report(REPORT) };
+    let Some(init_bytes) = program(initrd_len, "init") else {
+        fail_report(REPORT)
+    };
+    let Ok(elf) = elf::Elf::parse(init_bytes) else {
+        fail_report(REPORT)
+    };
 
     // The child gets the report endpoint (slot 0) and the interrupt (slot 1).
     let caps: &[(u64, u64)] = &[
         (REPORT, abi::rights::WRITE),
         (TEST_IRQ, abi::rights::READ), // WAIT/ACK the interrupt
     ];
-    let Ok(tcb) = build_child(UNTYPED, &elf, caps, &[]) else { fail_report(REPORT) };
+    let Ok(tcb) = build_child(UNTYPED, &elf, caps, &[]) else {
+        fail_report(REPORT)
+    };
     check(tcb_start(tcb, IRQ_CHILD, 0, 0) == 0);
     exit();
 }
@@ -548,13 +563,19 @@ fn init_worker(initrd_len: u64) -> ! {
 
     // The worker is its own binary now (19f.2), loaded from the archive by name, not a role of this
     // one. init parses it exactly as it parses any program it did not write.
-    let Some(worker_bytes) = program(initrd_len, "worker") else { fail_report(REPORT) };
-    let Ok(elf) = elf::Elf::parse(worker_bytes) else { fail_report(REPORT) };
+    let Some(worker_bytes) = program(initrd_len, "worker") else {
+        fail_report(REPORT)
+    };
+    let Ok(elf) = elf::Elf::parse(worker_bytes) else {
+        fail_report(REPORT)
+    };
 
     // The worker's whole authority: the report endpoint as its slot 0, so its one SEND lands where
     // the test (or, in the boot system, the shell) is waiting.
     let caps: &[(u64, u64)] = &[(REPORT, abi::rights::WRITE)];
-    let Ok(tcb) = build_child(UNTYPED, &elf, caps, &[]) else { fail_report(REPORT) };
+    let Ok(tcb) = build_child(UNTYPED, &elf, caps, &[]) else {
+        fail_report(REPORT)
+    };
     // x0 is unused (a standalone binary needs no role selector); the input is in x1 (the multi-arg
     // START that 19e added).
     check(tcb_start(tcb, 0, WORKER_INPUT, 0) == 0);
@@ -606,9 +627,15 @@ fn init_console(initrd_len: u64) -> ! {
     };
 
     // The channel to the server, and a shared page to hand it the text.
-    let Ok(request) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else { fail_report(REPORT) };
-    let Ok(reply) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else { fail_report(REPORT) };
-    let Ok(shared) = retype_frame(UNTYPED) else { fail_report(REPORT) };
+    let Ok(request) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else {
+        fail_report(REPORT)
+    };
+    let Ok(reply) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else {
+        fail_report(REPORT)
+    };
+    let Ok(shared) = retype_frame(UNTYPED) else {
+        fail_report(REPORT)
+    };
 
     // Map the shared page read/write in init's own space, so init (the client) can write into it.
     if unsafe { invoke(shared, abi::frame::MAP, SHARED_VA, 1, UNTYPED) } != 0 {
@@ -622,7 +649,9 @@ fn init_console(initrd_len: u64) -> ! {
         (SHARED_VA, shared, abi::aspace::MAP_RO),
         (CHILD_UART_VA, UART_DEV, abi::aspace::MAP_RO),
     ];
-    let Ok(tcb) = build_child(UNTYPED, &elf, caps, maps) else { fail_report(REPORT) };
+    let Ok(tcb) = build_child(UNTYPED, &elf, caps, maps) else {
+        fail_report(REPORT)
+    };
     check(tcb_start(tcb, 0, 0, 0) == 0); // no role selector: console is its own binary
 
     // Now init is the client. Write a line into the shared page, ask the server to print it.
@@ -790,7 +819,16 @@ fn build_child(
     for k in 0..CHILD_STACK_PAGES {
         let stack_frame = retype_frame(untyped)?;
         let va = CHILD_STACK_VA - k * PAGE;
-        if unsafe { invoke(aspace, abi::aspace::MAP_INTO, va, stack_frame, abi::aspace::MAP_RW) } != 0 {
+        if unsafe {
+            invoke(
+                aspace,
+                abi::aspace::MAP_INTO,
+                va,
+                stack_frame,
+                abi::aspace::MAP_RW,
+            )
+        } != 0
+        {
             return Err(());
         }
         cap_delete(stack_frame);
@@ -811,7 +849,16 @@ fn build_child(
             return Err(());
         }
     }
-    if unsafe { invoke(tcb, abi::tcb::CONFIGURE, elf.entry(), CHILD_STACK_VA + PAGE, aspace) } != 0 {
+    if unsafe {
+        invoke(
+            tcb,
+            abi::tcb::CONFIGURE,
+            elf.entry(),
+            CHILD_STACK_VA + PAGE,
+            aspace,
+        )
+    } != 0
+    {
         return Err(());
     }
     Ok(tcb)
@@ -866,7 +913,15 @@ fn aspace_builder() -> ! {
     const VA: u64 = 0x0040_0000;
 
     // SAFETY: `svc` throughout.
-    let aspace = unsafe { invoke(UNTYPED, abi::untyped::RETYPE_OBJ, abi::objtype::ASPACE, 0, 0) };
+    let aspace = unsafe {
+        invoke(
+            UNTYPED,
+            abi::untyped::RETYPE_OBJ,
+            abi::objtype::ASPACE,
+            0,
+            0,
+        )
+    };
     let mut verdict = 0u64;
     if aspace >= 0 {
         verdict |= 1; // built a space out of our own pages
@@ -899,7 +954,15 @@ fn ep_maker() -> ! {
 
     // SAFETY: `svc`. Retype one page of our budget into an endpoint; the kernel returns the slot
     // where our full-rights capability to it landed.
-    let ep = unsafe { invoke(UNTYPED, abi::untyped::RETYPE_OBJ, abi::objtype::ENDPOINT, 0, 0) };
+    let ep = unsafe {
+        invoke(
+            UNTYPED,
+            abi::untyped::RETYPE_OBJ,
+            abi::objtype::ENDPOINT,
+            0,
+            0,
+        )
+    };
     check(ep >= 0);
     let ep = ep as u64;
 
@@ -1047,36 +1110,6 @@ fn frame_consumer() -> ! {
     let code = (read_ok as u64) | ((rw_refused as u64) << 1);
     send(REPORT, code, 0, 0);
     exit();
-}
-
-/// Terminate this process. The kernel reaps the thread and frees its whole address space.
-fn exit() -> ! {
-    // SAFETY: `svc`; SYS_EXIT never returns.
-    unsafe {
-        core::arch::asm!("svc #0", in("x8") abi::SYS_EXIT, in("x0") 0u64, options(nostack, nomem));
-    }
-    loop {
-        core::hint::spin_loop();
-    }
-}
-
-/// # Safety
-/// `svc` traps to EL1. The kernel validates everything, which is its whole job.
-unsafe fn invoke(cap: u64, method: u64, a0: u64, a1: u64, a2: u64) -> i64 {
-    let ret: i64;
-    unsafe {
-        core::arch::asm!(
-            "svc #0",
-            in("x8") abi::SYS_INVOKE,
-            inlateout("x0") cap => ret,
-            in("x1") method,
-            in("x2") a0,
-            in("x3") a1,
-            in("x4") a2,
-            options(nostack),
-        );
-    }
-    ret
 }
 
 #[inline(never)]

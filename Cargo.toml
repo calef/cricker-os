@@ -17,6 +17,7 @@ members = [
     "crates/intrusive",
     "crates/slab",
     "crates/slots",
+    "crates/user_rt",
 ]
 
 # Note: we deliberately do NOT set `panic = "abort"` here. The bare-metal target

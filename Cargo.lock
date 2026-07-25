@@ -105,6 +105,14 @@ dependencies = [
  "abi",
  "crickerfs",
  "elf",
+ "user_rt",
+]
+
+[[package]]
+name = "user_rt"
+version = "0.1.0"
+dependencies = [
+ "abi",
 ]
 
 [[package]]
