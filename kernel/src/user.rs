@@ -210,6 +210,72 @@ impl AddressSpace {
 static ASIDS: crate::sync::IrqSafeMutex<asid::Allocator> =
     crate::sync::IrqSafeMutex::new(crate::sync::rank::ASIDS, asid::Allocator::new());
 
+/// The most user-built address spaces alive at once (milestone 19b). They are immortal until
+/// 19c wires process death, so this bounds creations for now; the revocation registry's
+/// MAX_SPACES (160) leaves room for all of them beside the exec-built spaces.
+const MAX_USER_SPACES: usize = 32;
+
+/// **The user-aspace registry** (milestone 19b): the kernel-side records behind
+/// `Object::Aspace` capabilities, named generationally like everything since milestone 14. The
+/// `AddressSpace` in the slot is the same type exec builds, so every mechanism that works on a
+/// process's space (region-paid tables, revocation logs, ASID tagging) works on a user-built
+/// one identically. Entries are never removed in 19b; their `Drop` (which would destroy a
+/// region the creator still holds a capability to) stays dormant until 19c designs teardown.
+static USER_SPACES: crate::sync::IrqSafeMutex<slots::Table<AddressSpace, MAX_USER_SPACES>> =
+    crate::sync::IrqSafeMutex::new(crate::sync::rank::ASPACES, slots::Table::new());
+
+/// Create an address space **in and backed by** `region` (the `RETYPE_OBJ(ASPACE)` engine): the
+/// root page is retyped from it (pinning it, atomically with the carve), and the region becomes
+/// the space's table-and-record budget, exactly as for an exec-built space. `None` on an
+/// exhausted region, a full registry, or ASID exhaustion (unreachable; the type is honest).
+pub fn user_aspace_create(region: usize) -> Option<u64> {
+    let root = crate::untyped::retype_object_page(region)?;
+
+    if !crate::revoke::register_space(root, region) {
+        return None; // registry full; the carved page is spent, the caller's own loss (B.4 rule)
+    }
+    let Some(asid) = ASIDS.lock().alloc() else {
+        crate::revoke::forget_root(root);
+        return None;
+    };
+
+    let space = AddressSpace {
+        root: Frame::from_addr(root),
+        asid,
+        region,
+    };
+    let name = USER_SPACES.lock().insert_with(|_| space);
+    if name.is_none() {
+        // Undo the bookkeeping; the page stays spent on the caller's budget.
+        crate::revoke::forget_root(root);
+        ASIDS.lock().free(asid);
+    }
+    name
+}
+
+/// Map `phys` into the user-built space `name` at `va` (the `MAP_INTO` engine). Tables and the
+/// §13 record come from the space's own backing region; an unrecordable mapping is unmapped and
+/// refused, exactly as at the `frame::MAP` syscall, because a mapping revocation cannot see is
+/// the §13 use-after-free.
+pub fn user_aspace_map(name: u64, va: u64, phys: u64, flags: Flags) -> Result<(), MapError> {
+    let mut spaces = USER_SPACES.lock();
+    let space = spaces.get_mut(name).ok_or(MapError::NotMapped)?;
+
+    space.map_physical(va, phys, flags)?;
+    if !crate::revoke::record_mapping(phys, space.root(), va) {
+        mmu::unmap_user_at(space.root(), va);
+        return Err(MapError::OutOfFrames);
+    }
+    Ok(())
+}
+
+/// The root table of a user-built space, so tests can ask the walker what the space really
+/// maps. Test support only: nothing in the kernel navigates a user-built space by root.
+#[cfg(test)]
+pub fn user_aspace_root(name: u64) -> Option<u64> {
+    USER_SPACES.lock().get(name).map(|s| s.root())
+}
+
 impl Drop for AddressSpace {
     fn drop(&mut self) {
         // Drop this address space's entries from the revocation database (§13) before its page
@@ -1326,6 +1392,42 @@ pub mod retype_ep_service {
     }
 }
 
+/// **Milestone 19b: a process builds an address space, at EL0.** One role: an untyped budget
+/// and a report line; everything else it constructs. See user/src/hello.rs aspace_builder().
+#[cfg(test)]
+pub mod aspace_service {
+    use super::*;
+    use crate::cap::{Rights, endpoint_cap, untyped_cap};
+    use crate::sched::EpId;
+
+    const ROLE_BUILDER: u64 = 19;
+
+    /// Spawn the builder; returns the report endpoint carrying its verdict bits.
+    pub fn wire(image: &'static [u8]) -> EpId {
+        let report = crate::sched::create_endpoint();
+        let region = crate::untyped::create(8).expect("no region for the builder");
+
+        crate::sched::spawn(move || {
+            run(
+                image,
+                Spawn {
+                    arg0: ROLE_BUILDER,
+                    arg1: 0,
+                    arg2: 0,
+                    grants: &[
+                        untyped_cap(region),                 // slot 0: the budget
+                        endpoint_cap(report, Rights::WRITE), // slot 1: the verdict
+                    ],
+                    maps: &[],
+                },
+            )
+        })
+        .expect("could not spawn the aspace builder");
+
+        report
+    }
+}
+
 /// **Milestone 12: Call/Reply, at EL0.** One request endpoint, a server that answers a caller it was
 /// never wired to, and the one-shot reply capability proven across the boundary. See
 /// user/src/hello.rs call_server()/call_client().
@@ -2160,6 +2262,70 @@ mod tests {
             before,
             "four user address spaces came and went and {} frames did not come back",
             used() as i64 - before as i64,
+        );
+    }
+
+    /// **Milestone 19b: a user-built address space is a first-class citizen of every memory
+    /// mechanism.** Retype a space out of a region, map a frame into it, and check the three
+    /// things that make it real: the CPU's walker sees the mapping with the exact flags asked
+    /// for; §13 revocation reaches into the user-built space (the record was paid and filed, so
+    /// `revoke_frame` unmaps it there like anywhere); and destroying the pinned backing region
+    /// frees nothing while the space lives in it.
+    #[test_case]
+    fn a_user_built_aspace_maps_translates_and_revokes() {
+        let region = crate::untyped::create(8).expect("no region");
+        let name = user_aspace_create(region).expect("no aspace");
+        let root = user_aspace_root(name).expect("aspace has no root");
+
+        let frame_region = crate::untyped::create(2).expect("no frame region");
+        let phys = crate::untyped::retype_page(frame_region).expect("no frame");
+        let va = 0x40_0000u64;
+
+        user_aspace_map(name, va, phys, Flags::user_rodata()).expect("map_into failed");
+
+        let (mapped_pa, flags) = mmu::translate_at(root, va).expect("the walker sees no mapping");
+        assert_eq!(mapped_pa, phys, "mapped the wrong frame");
+        assert!(!flags.is_writable(), "asked read-only, got writable");
+        assert!(!flags.is_global(), "a user mapping in a built space must be ASID-tagged");
+
+        // Same va twice: refused, the break-before-make contract holds for built spaces too.
+        assert!(
+            user_aspace_map(name, va, phys, Flags::user_rodata()).is_err(),
+            "double-map at one va was allowed"
+        );
+
+        // The reach of §13: revoking the frame unmaps it from the space nobody exec'd.
+        crate::revoke::revoke_frame(phys);
+        assert!(
+            mmu::translate_at(root, va).is_none(),
+            "revocation does not reach a user-built address space",
+        );
+
+        // The pin: the backing region hosts a live root, so destroy must free nothing.
+        let free_before = crate::memory::stats().unwrap().free();
+        crate::untyped::destroy(region);
+        assert_eq!(
+            crate::memory::stats().unwrap().free(),
+            free_before,
+            "destroy reclaimed the region under a live user-built space",
+        );
+
+        // The frame region is unpinned (it only ever produced a plain frame), so destroy
+        // reclaims it whole, the already-revoked frame included. No manual free: the region
+        // owns its pages, and freeing one twice is the allocator's double-free panic.
+        crate::untyped::destroy(frame_region);
+    }
+
+    /// **Milestone 19b, end to end: a process constructs an address space from EL0.** The
+    /// builder retypes a space and a frame from its own budget, maps the frame in, and checks
+    /// the kernel enforces break-before-make inside the space it built. Verdict 0b111 or bust.
+    #[test_case]
+    fn a_process_can_build_an_address_space_from_el0() {
+        let report = aspace_service::wire(initrd().expect("no initrd"));
+        let verdict = sched::ipc_recv(report)[0];
+        assert_eq!(
+            verdict, 0b111,
+            "aspace build verdict {verdict:#b}: bit0 retype, bit1 map_into, bit2 double-map refused",
         );
     }
 

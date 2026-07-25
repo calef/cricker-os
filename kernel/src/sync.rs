@@ -73,6 +73,8 @@ use core::sync::atomic::Ordering;
 /// ## The hierarchy
 ///
 /// ```text
+///   61  ASPACES         user-built address spaces
+///        |
 ///   60  SCHED           the thread table and endpoints
 ///        |
 ///   59  INBOX, MAPPINGS the migration inboxes; the revocation registry
@@ -109,6 +111,12 @@ use core::sync::atomic::Ordering;
 /// would have held RAM (30) while taking FRAMES (30), and `30 < 30` is false. The ranking
 /// would have failed it on the spot. (We happened to fix it for other reasons first.)
 pub mod rank {
+    /// The user-built address spaces (milestone 19b): the registry behind `Object::Aspace`
+    /// capabilities. **Top of the order**: a `MAP_INTO` holds this while drawing page tables
+    /// from the space's region (UNTYPED, 58) and writing the revocation record (MAPPINGS, 59),
+    /// and it never touches the scheduler (capability grants happen after release).
+    pub const ASPACES: u32 = 61;
+
     /// The thread table and the endpoints.
     ///
     /// **Above everything that frees**, because the reaper drops a dead thread's kernel stack

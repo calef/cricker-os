@@ -68,6 +68,13 @@ pub enum Object {
     /// See DECISIONS §12 and notes/ipc-naming.md.
     Reply(crate::thread::Tid),
 
+    /// **An address space under construction** (milestone 19b), by generational name in the
+    /// user-aspace registry. The object itself is its L0 root page, resident in the page
+    /// retyped from its creator's untyped; the kernel-side record (ASID, backing region) sits
+    /// behind this name. `WRITE` lets the holder map frames into it; nothing can run in it
+    /// until TCBs arrive (19c).
+    Aspace(u64),
+
     /// A virtio device's **transport**, by id (into the kernel's virtio device table).
     ///
     /// The DMA-confinement capability. The device has no IOMMU, so the kernel keeps the two
@@ -121,6 +128,15 @@ pub fn virtio_cap(id: usize) -> Cap {
     Cap {
         object: Object::Virtio(id),
         rights: Rights::WRITE,
+    }
+}
+
+/// A capability naming an address space under construction (milestone 19b). Full rights at
+/// creation; delegation narrows, as everywhere.
+pub fn aspace_cap(name: u64, rights: Rights) -> Cap {
+    Cap {
+        object: Object::Aspace(name),
+        rights,
     }
 }
 

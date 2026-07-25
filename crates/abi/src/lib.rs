@@ -126,6 +126,28 @@ pub mod reply {
 pub mod objtype {
     /// An IPC endpoint, page-resident, owned by the caller's budget (milestone 19a).
     pub const ENDPOINT: u64 = 1;
+
+    /// An address space (milestone 19b): the retyped page **is the L0 root table**, and the
+    /// untyped it came from becomes the space's backing region, paying for every intermediate
+    /// page table and revocation record the space ever needs, exactly as an exec-built space's
+    /// region does (milestone 14 B.4). One budget model, decided on challenge: the seL4
+    /// principle (the user pays, the kernel allocates nothing) in this kernel's idiom, rather
+    /// than seL4's per-call paging-structure objects, which belong to the explicitness this
+    /// project deliberately did not copy.
+    pub const ASPACE: u64 = 2;
+}
+
+/// Methods on an `Aspace` capability (milestone 19b): **another process's memory, under
+/// construction.** Created by [`untyped::RETYPE_OBJ`] with [`objtype::ASPACE`]; nothing can run
+/// in it until TCBs arrive (19c), so today it is a structure you build and revocation can reach.
+pub mod aspace {
+    /// `invoke(cap, MAP_INTO, va, frame_slot, writable)` -> 0. Map the frame in `frame_slot`
+    /// into THIS address space at `va`, read-only or read/write. Needs `WRITE` on the aspace
+    /// capability; the frame capability needs `READ` for a read-only mapping, `WRITE` for a
+    /// writable one, the `frame::MAP` rule verbatim. Page tables and the revocation record are
+    /// paid from the space's own backing region; a mapping whose record cannot be afforded is
+    /// refused and unmapped (`OutOfMemory`), never left invisible to revocation.
+    pub const MAP_INTO: u64 = 0;
 }
 
 pub mod rights {

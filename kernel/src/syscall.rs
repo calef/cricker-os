@@ -173,6 +173,42 @@ fn invoke(
             _ => Err(Error::BadMethod),
         },
 
+        // Another process's memory, under construction (19b). WRITE on the aspace cap is the
+        // authority to shape it; the frame's own rights gate what kind of mapping, exactly as
+        // frame::MAP; the va gate is the proved paging::is_user_page_va, as everywhere.
+        Object::Aspace(name) => match method {
+            abi::aspace::MAP_INTO => {
+                if !cap.rights.allows(Rights::WRITE) {
+                    return Err(Error::NotPermitted);
+                }
+                let va = a0;
+                if !paging::is_user_page_va(va) {
+                    return Err(Error::BadPointer);
+                }
+                let frame = sched::current_cap(a1).map_err(|_| Error::NoSuchSlot)?;
+                let Object::Frame(phys) = frame.object else {
+                    return Err(Error::WrongObject);
+                };
+                let flags = if a2 != 0 {
+                    if !frame.rights.allows(Rights::WRITE) {
+                        return Err(Error::NotPermitted);
+                    }
+                    paging::Flags::user_data()
+                } else {
+                    if !frame.rights.allows(Rights::READ) {
+                        return Err(Error::NotPermitted);
+                    }
+                    paging::Flags::user_rodata()
+                };
+                match crate::user::user_aspace_map(name, va, phys, flags) {
+                    Ok(()) => Ok(0),
+                    Err(paging::MapError::OutOfFrames) => Err(Error::OutOfMemory),
+                    Err(_) => Err(Error::BadPointer), // misaligned, already mapped, unknown space
+                }
+            }
+            _ => Err(Error::BadMethod),
+        },
+
         Object::Untyped(region) => match method {
             abi::untyped::MAP => {
                 if !cap.rights.allows(Rights::WRITE) {
@@ -232,7 +268,20 @@ fn invoke(
                         .map_err(|_| Error::OutOfMemory)?;
                         Ok(slot as i64)
                     }
-                    _ => Err(Error::BadMethod), // no such object type (ASPACE and TCB are 19b/19c)
+                    // An address space (19b): the page becomes the L0 root, the untyped becomes
+                    // the space's backing region for tables and records (one budget model; see
+                    // the abi doc and design/init-and-granular-spawn.md).
+                    abi::objtype::ASPACE => {
+                        let name =
+                            crate::user::user_aspace_create(region).ok_or(Error::OutOfMemory)?;
+                        let slot = sched::grant(crate::cap::aspace_cap(
+                            name,
+                            Rights::READ.union(Rights::WRITE).union(Rights::GRANT),
+                        ))
+                        .map_err(|_| Error::OutOfMemory)?;
+                        Ok(slot as i64)
+                    }
+                    _ => Err(Error::BadMethod), // no such object type (TCB is 19c)
                 }
             }
             abi::untyped::RETYPE => {

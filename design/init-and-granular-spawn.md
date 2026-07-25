@@ -72,8 +72,21 @@ names the space through the same registry revocation uses.
   said "unreachable pattern" at every build, the test pipeline swallowed it, and an hour of
   kernel archaeology followed before running `script/lint`, which fails on exactly that
   warning, would have named it instantly. Lint first, then instrument.
-- **19b: address spaces as objects.** `RETYPE_OBJ(ASPACE)` + `MAP_INTO` with named-untyped
-  table budgets. The budget questions live here.
+- **19b: address spaces as objects. (Built.)** The retyped page **is the L0 root**, and the
+  budget question this phase carried was decided against this doc's own sketch, on challenge:
+  `MAP_INTO` does **not** take a per-call untyped. The untyped a space is retyped from becomes
+  its backing region, paying for tables and revocation records exactly as an exec-built space's
+  does (B.4), so one budget model covers every space and §13 revocation works unmodified. The
+  challenge ("isn't per-call seL4's way, and don't we borrow from seL4?") sharpened the
+  borrowing principle worth keeping: **we borrow seL4's guarantees, not its shapes** — seL4's
+  mapper-pays flavor is a corollary of explicit page-table objects we deliberately never
+  adopted, and a per-call override stays additive if a real customer ever appears. User-built
+  spaces sit in a generational registry as full `AddressSpace` values (ASID-tagged, revocation-
+  registered, region-pinned), immortal until 19c designs teardown, their dormant `Drop` noted as
+  a 19c audit item. Witnessed at both levels: kernel (the walker sees the mapping with exact
+  flags, `revoke_frame` reaches into the built space, the pinned region's destroy frees
+  nothing) and EL0 (a process retypes a space and a frame from its own budget, maps one into
+  the other, and break-before-make holds inside the space it built).
 - **19c: TCBs as objects.** `RETYPE_OBJ(TCB)`, `CONFIGURE`, `CAP_INSERT`, `START`, and the
   half-built-state audit.
 - **19d: init.** The ELF parser moves to userspace (the `elf` crate already compiles anywhere;

@@ -52,6 +52,7 @@ const CALL_CLIENT: u64 = 15;
 const REVOKE_DEMO: u64 = 16;
 const EP_MAKER: u64 = 17;
 const EP_USER: u64 = 18;
+const ASPACE_BUILDER: u64 = 19;
 
 /// The word the frame producer writes into a shared page and the consumer reads back through its
 /// own mapping of the same physical page. One binary, so one constant serves both roles.
@@ -112,6 +113,7 @@ pub extern "C" fn _start(role: u64, dma_phys: u64, _arg2: u64) -> ! {
         FRAME_CONSUMER => frame_consumer(),
         EP_MAKER => ep_maker(),
         EP_USER => ep_user(),
+        ASPACE_BUILDER => aspace_builder(),
         SELF_CHECK => self_check_client(),
         _ => self_check_client(),
     }
@@ -371,6 +373,39 @@ fn revoke_demo() -> ! {
     let after = unsafe { invoke(frame, abi::frame::MAP, VA, 1, UNTYPED) };
 
     send(REPORT, if revoked == 0 && after < 0 { 1 } else { 0 }, 0, 0);
+    exit();
+}
+
+/// **Building another address space, milestone 19b.** Holds an untyped budget (slot 0) and a
+/// report line (slot 1). It retypes part of its own memory into an address space, retypes a
+/// frame, maps the frame into the space it built, and proves the kernel keeps the rules there
+/// too: the same va twice is refused. Nothing can run in the built space yet (TCBs are 19c);
+/// what this witnesses is that a process can construct one at all.
+fn aspace_builder() -> ! {
+    const UNTYPED: u64 = 0;
+    const REPORT: u64 = 1;
+    const VA: u64 = 0x0040_0000;
+
+    // SAFETY: `svc` throughout.
+    let aspace = unsafe { invoke(UNTYPED, abi::untyped::RETYPE_OBJ, abi::objtype::ASPACE, 0, 0) };
+    let mut verdict = 0u64;
+    if aspace >= 0 {
+        verdict |= 1; // built a space out of our own pages
+        let frame = unsafe { invoke(UNTYPED, abi::untyped::RETYPE, 0, 0, 0) };
+        if frame >= 0 {
+            let mapped =
+                unsafe { invoke(aspace as u64, abi::aspace::MAP_INTO, VA, frame as u64, 1) };
+            if mapped == 0 {
+                verdict |= 2; // mapped our frame into the space we built
+            }
+            let again =
+                unsafe { invoke(aspace as u64, abi::aspace::MAP_INTO, VA, frame as u64, 1) };
+            if again < 0 {
+                verdict |= 4; // the same va twice was refused: break-before-make holds there too
+            }
+        }
+    }
+    send(REPORT, verdict, 0, 0);
     exit();
 }
 
