@@ -52,6 +52,14 @@ path = "src/coremark.rs"
 test = false
 bench = false
 
+# The EL0 microbenchmark program (primitive suite): self-times syscall/IPC primitives from EL0, the
+# lmbench way, so the numbers include the trap the kernel-side benchmarks skip. Run by the bench boot.
+[[bin]]
+name = "elbench"
+path = "src/elbench.rs"
+test = false
+bench = false
+
 [dependencies]
 abi = { version = "0.1.0", path = "../crates/abi" }
 coremark = { version = "0.1.0", path = "../crates/coremark" }

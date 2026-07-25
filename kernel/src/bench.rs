@@ -61,6 +61,7 @@ pub fn run() -> ! {
     spawn_reap();
     map_new();
     coremark_compute();
+    null_syscall_el0();
 
     println!("bench: done");
     // Parked, not exited: the host side saw the marker and tears QEMU down. `wfi`, so a
@@ -200,6 +201,38 @@ fn map_new() {
         }
     });
     drop(space); // teardown outside the timed window; it is spawn_reap's kind of cost, not map's
+}
+
+/// **Null syscall latency, measured from EL0 (the primitive suite).** The `bench:` lines above are
+/// kernel-internal, no trap. This one is what lmbench measures: the bench boot spawns the `elbench`
+/// EL0 program, which self-times a loop of the cheapest `svc` and reports `[ticks, iters]`; we print
+/// it in the same format. The gap between this and a hypothetical kernel-side null syscall is roughly
+/// the EL0<->EL1 boundary cost, which is the whole point of measuring here. See user/src/elbench.rs.
+fn null_syscall_el0() {
+    let image = match crate::user::program("elbench") {
+        Some(bytes) => bytes,
+        None => {
+            println!("bench: null_syscall skipped (no elbench in the initrd)");
+            return;
+        }
+    };
+    let report = sched::create_endpoint();
+    sched::spawn(move || {
+        crate::user::run(
+            image,
+            crate::user::Spawn {
+                arg0: 0,
+                arg1: 0,
+                arg2: 0,
+                grants: &[crate::cap::endpoint_cap(report, crate::cap::Rights::WRITE)],
+                maps: &[],
+            },
+        )
+    })
+    .expect("bench: could not spawn elbench");
+
+    let [ticks, iters, _] = sched::ipc_recv(report);
+    println!("bench: null_syscall {ticks} {iters}");
 }
 
 /// **The compute workload (milestone 19e), for the record.** Unlike the paths above, this touches

@@ -80,6 +80,27 @@ count-neutral but cache-hostile passes `--check` silently. That is the known lim
 the roadmap block too; the `--real` numbers are the net that catches what counts cannot, read by
 a human rather than a gate.
 
+## A correction: the counts are codegen-sensitive, so "attributable to the commit" was too strong
+
+The original milestone-21 note said a count change "is a change in a code path, attributable to the
+commit that made it." Building the EL0 primitive suite showed that is only half true, and the honest
+half is worth writing down. icount is deterministic **per binary** (byte-identical runs, verified
+twice). But the counts are sensitive to **codegen layout**, not just to the measured code: adding an
+unrelated program (`elbench`, `coremark`) changed the compiler's inlining and placement decisions and
+moved the icount of *untouched* benchmarks by a few percent. `yield_switch` went 1543111 (milestone
+21) → 1754561 → 1637572 across this session's commits, none of which touched the yield path; the
+non-monotonic swing is the tell. Two forces are mixed in there: a **real** path-length increase from
+the 19f object-capability refactor (the scheduler and thread hot paths genuinely grew), and **codegen
+noise** of a few percent from unrelated edits.
+
+So the 2% gate catches real regressions in the code it measures, but it also fires on phantom drift
+when an unrelated change perturbs codegen, and a re-baseline then bundles both. The counts remain
+useful (a large or directional move is real and worth investigating), but "this delta is exactly this
+commit's doing" is not something the instrument can promise. Candidate fixes for later: pin the hot
+paths' layout, or measure per-operation deltas that cancel the fixed overhead, or lean more on the
+`--real` medians where a few-percent codegen shuffle is in the noise anyway. Recorded here rather than
+quietly re-baselined, because the machine overruled the claim.
+
 ## Compute vs. OS primitives: two benchmarks that measure different things (milestone 19e)
 
 The microbenchmarks above are the *right* kind for a microkernel: IPC, context switch, the paths a

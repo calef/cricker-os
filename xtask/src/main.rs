@@ -167,16 +167,25 @@ fn mkinitrd() -> bool {
             return false;
         }
     };
+    let elbench = match std::fs::read(bin_elf("elbench")) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("elbench"));
+            return false;
+        }
+    };
     // "init" is the hello binary (the kernel loads it, init re-enters it at its remaining roles);
-    // "worker", "console", "input", "shell" are the split system binaries (19f.2-5), and "coremark"
-    // is the real compute workload (19e). init loads each by name. All are entries in the one archive.
-    let files: [(&str, &[u8]); 6] = [
+    // "worker", "console", "input", "shell" are the split system binaries (19f.2-5), "coremark" is
+    // the compute workload (19e), and "elbench" is the EL0 microbenchmark program (primitive suite).
+    // init (and the bench boot) load each by name. All are entries in the one archive.
+    let files: [(&str, &[u8]); 7] = [
         ("init", &hello),
         ("worker", &worker),
         ("console", &console),
         ("input", &input),
         ("shell", &shell),
         ("coremark", &coremark),
+        ("elbench", &elbench),
     ];
     let size = crickerfs::image_size(&files);
     let mut img = std::vec![0u8; size];
