@@ -1198,15 +1198,10 @@ pub mod input_service {
     /// The PL011 on QEMU `virt` is SPI 1, which is INTID 33 (SPIs start at 32).
     const UART_INTID: u32 = 33;
 
-    /// Spawn the input driver in a given role, wired to the UART and its receive interrupt, and
-    /// return the endpoint it delivers completed lines on.
-    pub fn spawn_role(image: &'static [u8], role: u64) -> EpId {
-        spawn_wired(image, role, None).0
-    }
-
-    /// Spawn the input driver, optionally sharing its line buffer with a reader at `line_va` in
-    /// that reader's address space. Returns (line endpoint, line-buffer physical address).
-    pub fn spawn_wired(image: &'static [u8], role: u64, _reader: Option<()>) -> (EpId, u64) {
+    /// Spawn the input driver, wired to the UART and its receive interrupt. Returns (line endpoint,
+    /// line-buffer physical address). The driver is its own binary now (19f.4), loaded by name.
+    pub fn spawn_wired() -> (EpId, u64) {
+        let image = program("input").expect("no input program in the initrd");
         let line = crate::sched::create_endpoint();
 
         let irq_ep = crate::sched::create_endpoint();
@@ -1229,7 +1224,7 @@ pub mod input_service {
             run(
                 image,
                 Spawn {
-                    arg0: role,
+                    arg0: 0, // no role selector: input is its own binary
                     arg1: 0,
                     arg2: 0,
                     grants: &[
@@ -1271,7 +1266,6 @@ pub mod shell_service {
     const OUT_VA: u64 = 0x0000_0000_0060_0000; // shell <-> console server
     const LINE_VA: u64 = 0x0000_0000_00b0_0000; // shell <-> input driver
 
-    const ROLE_INPUT: u64 = 4;
     const ROLE_SHELL: u64 = 5;
 
     /// **How many children the shell may have alive at once.** The bound that stops a spawn flood
@@ -1288,7 +1282,7 @@ pub mod shell_service {
         let console = console_service::start();
 
         // Input: the receive driver (milestone 10), delivering lines on `line`.
-        let (line, line_phys) = input_service::spawn_wired(image, ROLE_INPUT, None);
+        let (line, line_phys) = input_service::spawn_wired();
 
         // The shell asks for spawns here; it receives worker results here.
         let spawn_ep = crate::sched::create_endpoint();

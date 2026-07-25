@@ -22,7 +22,6 @@
 #![no_std]
 #![no_main]
 
-mod input;
 mod shell;
 mod virtio;
 
@@ -38,7 +37,7 @@ const SELF_CHECK: u64 = 0;
 // Role 1 was the console server; it is its own binary now (`user/src/console.rs`, 19f.3).
 const PRINTING: u64 = 2;
 const VIRTIO_BLK: u64 = 3;
-const INPUT: u64 = 4;
+// Role 4 was the input driver; it is its own binary now (`user/src/input.rs`, 19f.4).
 const SHELL: u64 = 5;
 // Role 6 was the worker; it is its own binary now (`user/src/worker.rs`, milestone 19f.2), so the
 // role and hello's `shell::worker()` are gone. init loads "worker" from the archive by name.
@@ -92,7 +91,6 @@ pub extern "C" fn _start(role: u64, dma_phys: u64, _arg2: u64) -> ! {
     match role {
         PRINTING => printing_client(),
         VIRTIO_BLK => virtio::run(dma_phys),
-        INPUT => input::run(),
         SHELL => shell::run(),
         UNTYPED_DEMO => untyped_demo(),
         VIRTIO_ATTACK => virtio::run_attack(dma_phys),
@@ -404,9 +402,9 @@ fn init_boot(_x1: u64) -> ! {
     const UART_DEV: u64 = 2;
     const UART_IRQ: u64 = 4;
 
-    // Roles and the VAs each program hardcodes. Console is its own binary now (19f.3), started with
-    // no role; input and shell are still roles of hello (their VAs must match input.rs/shell.rs).
-    const ROLE_INPUT: u64 = 4;
+    // Roles and the VAs each program hardcodes. Console and input are their own binaries now
+    // (19f.3, 19f.4), started with no role; the shell is still a role of hello (its VAs must match
+    // shell.rs).
     const ROLE_SHELL: u64 = 5;
     const CON_SHARED_VA: u64 = 0x0060_0000; // console reads text here; shell writes it
     const CON_UART_VA: u64 = 0x0070_0000; // console's UART mapping
@@ -416,9 +414,12 @@ fn init_boot(_x1: u64) -> ! {
 
     let Some(init_bytes) = program(initrd_len, "init") else { halt_forever() };
     let Ok(elf) = elf::Elf::parse(init_bytes) else { halt_forever() };
-    // The console is its own binary (19f.3); input and shell are still roles of `elf` (hello).
+    // Console and input are their own binaries (19f.3, 19f.4); only the shell is still a role of
+    // `elf` (hello).
     let Some(con_bytes) = program(initrd_len, "console") else { halt_forever() };
     let Ok(con_elf) = elf::Elf::parse(con_bytes) else { halt_forever() };
+    let Some(in_bytes) = program(initrd_len, "input") else { halt_forever() };
+    let Ok(in_elf) = elf::Elf::parse(in_bytes) else { halt_forever() };
 
     // The endpoints and shared pages init owns and hands out. Endpoints come from retype with full
     // rights, so init keeps RWG and delegates narrowed views.
@@ -446,8 +447,8 @@ fn init_boot(_x1: u64) -> ! {
         (IN_UART_VA, UART_DEV, DEV),
         (LINE_VA, line_buf, abi::aspace::MAP_RW),
     ];
-    let Ok(input) = build_child(UNTYPED, &elf, in_caps, in_maps) else { halt_forever() };
-    check(tcb_start(input, ROLE_INPUT, 0, 0) == 0);
+    let Ok(input) = build_child(UNTYPED, &in_elf, in_caps, in_maps) else { halt_forever() };
+    check(tcb_start(input, 0, 0, 0) == 0); // no role selector: input is its own binary
     cap_delete(input);
 
     // 3. The shell: prints via the console, reads lines from input, and holds the spawn channel.

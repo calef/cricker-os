@@ -31,6 +31,13 @@ path = "src/console.rs"
 test = false
 bench = false
 
+# The input driver (milestone 19f.4): the receive half of the terminal, lifted out of hello.
+[[bin]]
+name = "input"
+path = "src/input.rs"
+test = false
+bench = false
+
 [dependencies]
 abi = { version = "0.1.0", path = "../crates/abi" }
 crickerfs = { version = "0.1.0", path = "../crates/crickerfs" }

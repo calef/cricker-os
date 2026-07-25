@@ -153,10 +153,26 @@ the tour), because a client is agnostic to who serves it. The test
 `userspace_init_brings_up_the_console_server` still passes, now proving the `"console"` binary works
 end to end: init builds it, wires a channel, delegates the UART, and the line comes out.
 
+## The input driver, its own binary (milestone 19f.4)
+
+The receive half of the terminal, `user/src/input.rs`, lifted out of hello the same way. It owns the
+PL011 receive side and its RX interrupt, assembles a line character by character (echoing as it
+goes), and hands each completed line to the shell over IPC. Its consumers (init's `init_boot` child
+and the kernel-side `input_service::spawn_wired`) load `"input"` by name and start it with `x0 = 0`;
+`hello` lost the `input` module and role entirely.
+
+With this, the whole interactive stack runs on distinct binaries. Verified end to end by piping real
+keystrokes into QEMU's serial: typing `run 6` at the prompt, the **input** binary read and echoed the
+line, the shell (still a hello role) parsed it, init built the **worker** binary with the argument 6,
+the worker computed 36 and reported, and the **console** binary printed `6*6 = 36` back. Input,
+worker, and console, three separate programs, plus init and the shell, cooperating through
+capabilities and shared pages.
+
 ## What is not here yet
 
-Input and shell are still roles of `hello`; 19f.4+ moves them the same way. Splitting the third and
-fourth binaries is where the tiny `invoke`/`send`/`recv` runtime, now copied into worker and console,
-gets lifted into a shared user-runtime crate (deferred deliberately so the shared surface is known,
-not guessed). The kernel-side service wiring the milestone tour still uses is retired by the
-`initboot` path, which builds these services inside init.
+Only the **shell** is still a role of `hello`, and it is the most wired of the programs (console
+channel, line channel, spawn channel, result channel). Splitting it is 19f.5, and it is the natural
+moment to lift the `invoke`/`send`/`recv` runtime, now copied into worker, console, and input, into a
+shared user-runtime crate: after the shell, the shared surface is fully known (send, recv, invoke,
+exit, and the small UART echo helpers the two drivers share). The kernel-side service wiring the
+milestone tour still uses is retired by the `initboot` path, which builds these services inside init.

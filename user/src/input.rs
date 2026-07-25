@@ -1,12 +1,19 @@
-//! Console **input**, at EL0. The receive half of a terminal.
+//! Console **input**, at EL0: a whole program in one job (milestone 19f.4, split out of hello).
 //!
-//! Milestone 8 put console output in userspace; a shell also needs input. This driver owns the
-//! PL011's receive side and its receive interrupt (INTID 33). It assembles a line character by
-//! character, echoing as it goes, and hands each completed line to a reader (the shell) over IPC.
-//! A separate process from the output console server: each does one thing and blocks on one
-//! thing, which is what synchronous IPC wants.
+//! The receive half of a terminal. Milestone 8 put console *output* in userspace; a shell also
+//! needs input. This driver owns the PL011's receive side and its receive interrupt (INTID 33). It
+//! assembles a line character by character, echoing as it goes, and hands each completed line to a
+//! reader (the shell) over IPC. A separate process from the output console server: each does one
+//! thing and blocks on one thing, which is what synchronous IPC wants.
+//!
+//! Its whole authority is what init grants it: SEND on the line endpoint (slot 0), the RX interrupt
+//! capability (slot 1), the UART registers mapped device-typed, and a line buffer page. No role
+//! selector; a standalone binary needs none. The tiny `invoke`/`send` runtime is duplicated from
+//! hello for now; see notes/init-and-loading.md on lifting a shared user-runtime crate.
 
-use crate::send;
+#![no_std]
+#![no_main]
+
 use abi::irq;
 
 const UART_VA: u64 = 0x0000_0000_00a0_0000;
@@ -42,25 +49,26 @@ fn putc(c: u8) {
 }
 
 /// Read lines forever, handing each to the reader over the `LINE` endpoint. The line's bytes are
-/// left in the shared `LINE_VA` page for the reader to pick up.
-pub fn run() -> ! {
+/// left in the shared `LINE_VA` page for the reader to pick up. No arguments: a standalone binary.
+#[unsafe(no_mangle)]
+pub extern "C" fn _start(_x0: u64, _x1: u64, _x2: u64) -> ! {
     let buf = LINE_VA as *mut u8;
-    let mut n: usize = 0;
+    let mut n: usize;
 
     // Drain anything already in the FIFO by POLLING, before arming the interrupt. Input piped in
     // at boot is sitting in the FIFO already, and the first interrupt after arming can race with
     // it; polling first sidesteps that and is why the shell never loses the first character of a
     // piped command. See notes.
-    n = drain(buf, n);
+    n = drain(buf, 0);
     wr(IMSC, rd(IMSC) | RXIM);
 
     loop {
         // SAFETY: `svc`; the kernel validates the Irq capability in slot 1.
-        unsafe { crate::invoke(IRQ, irq::WAIT, 0, 0, 0) };
+        unsafe { invoke(IRQ, irq::WAIT, 0, 0, 0) };
         n = drain(buf, n);
         wr(ICR, 0x7ff); // clear the device interrupt
         // SAFETY: `svc`; re-enable the line at the GIC now that the device is quiet.
-        unsafe { crate::invoke(IRQ, irq::ACK, 0, 0, 0) };
+        unsafe { invoke(IRQ, irq::ACK, 0, 0, 0) };
     }
 }
 
@@ -93,4 +101,38 @@ fn drain(buf: *mut u8, mut n: usize) -> usize {
         }
     }
     n
+}
+
+/// `SEND` three words on the endpoint capability in `slot`.
+fn send(slot: u64, w0: u64, w1: u64, w2: u64) -> i64 {
+    // SAFETY: `svc` traps to EL1, which validates the capability named by `slot`.
+    unsafe { invoke(slot, abi::endpoint::SEND, w0, w1, w2) }
+}
+
+/// # Safety
+/// `svc` traps to EL1. The kernel validates the capability and method; that is its whole job.
+unsafe fn invoke(cap: u64, method: u64, a0: u64, a1: u64, a2: u64) -> i64 {
+    let ret: i64;
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("x8") abi::SYS_INVOKE,
+            inlateout("x0") cap => ret,
+            in("x1") method,
+            in("x2") a0,
+            in("x3") a1,
+            in("x4") a2,
+            options(nostack),
+        );
+    }
+    ret
+}
+
+#[panic_handler]
+fn panic(_: &core::panic::PanicInfo) -> ! {
+    // A driver bug is a dead driver: fault, and let the kernel turn it into a kill.
+    unsafe { core::arch::asm!("brk #0", options(nostack, nomem)) };
+    loop {
+        core::hint::spin_loop();
+    }
 }
