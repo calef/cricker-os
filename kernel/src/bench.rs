@@ -38,6 +38,7 @@ const IPC_ITERS: u64 = 1000;
 const CALL_ITERS: u64 = 1000;
 const SPAWN_ITERS: u64 = 64;
 const MAP_ITERS: u64 = 64;
+const COREMARK_ITERS: u64 = 256;
 
 /// Untimed shakeout before each measured loop: thread startup, first rendezvous, cold paths.
 const WARMUP: u64 = 32;
@@ -59,6 +60,7 @@ pub fn run() -> ! {
     call_reply();
     spawn_reap();
     map_new();
+    coremark_compute();
 
     println!("bench: done");
     // Parked, not exited: the host side saw the marker and tears QEMU down. `wfi`, so a
@@ -198,4 +200,18 @@ fn map_new() {
         }
     });
     drop(space); // teardown outside the timed window; it is spawn_reap's kind of cost, not map's
+}
+
+/// **The compute workload (milestone 19e), for the record.** Unlike the paths above, this touches
+/// no OS primitive: it is pure computation (the CoreMark-derived kernel, `crates/coremark`), so its
+/// cost is the *core's*, not cricker-os's. It is here because the same crate runs as an EL0 workload
+/// and later on macOS and Linux, and this line is where the cricker-os compute number is recorded,
+/// on the same two instruments as everything else. Running it in the kernel is fine: compute is
+/// privilege-independent, so this number equals the EL0 workload's. `SINK` keeps it live.
+fn coremark_compute() {
+    static SINK: AtomicU64 = AtomicU64::new(0);
+    timed("coremark", COREMARK_ITERS, || {
+        let crc = coremark::run(COREMARK_ITERS as u32);
+        SINK.store(crc as u64, Ordering::Relaxed);
+    });
 }
