@@ -416,56 +416,106 @@ fn init(initrd_len: u64) -> ! {
     init_build(initrd_len, false)
 }
 
-/// **The boot init, milestone 19d.2c.** This is the program the kernel hands the machine to.
-/// It brings up the console server out of its own budget (exactly as [`init_console`]) and prints
-/// the system's greeting *through it* -- so the first words the operator sees come from a
-/// userspace driver init built, not from the kernel. The interactive completion (bringing up the
-/// input driver and the shell, wired to this console) is the same `build_child` composition; this
-/// establishes that init owns the boot and the console is its first service.
-fn init_boot(initrd_len: u64) -> ! {
+/// **The boot init, milestone 19d.2c.** This is the program the kernel hands the machine to, and
+/// it builds the whole interactive system out of its own budget: a console server (output), an
+/// input driver (keystrokes, on the UART receive interrupt), and the shell, wired together with
+/// endpoints and shared pages init creates. The kernel wires none of it; init is the system
+/// builder. init then stays alive as a stub spawn service so the shell's `spawn` fails gracefully
+/// rather than hanging (real workers need START to pass more than one argument; a follow-on).
+fn init_boot(_x1: u64) -> ! {
+    // Read the initrd length from x1 (passed by spawn_init); the arg name is generic in _start.
+    // SAFETY: the kernel mapped the initrd read-only at INITRD_VA; its length is in x1.
+    let initrd_len = _x1;
     const UNTYPED: u64 = 0;
-    const REPORT: u64 = 1;
     const UART_DEV: u64 = 2;
-    const SHARED_VA: u64 = 0x0060_0000;
-    const CHILD_UART_VA: u64 = 0x0070_0000;
-    const CONSOLE_SERVER_ROLE: u64 = 1;
+    const UART_IRQ: u64 = 4;
 
-    // SAFETY: the kernel mapped the initrd read-only at INITRD_VA.
+    // Roles and the VAs each one hardcodes (must match console_server/input.rs/shell.rs).
+    const ROLE_CONSOLE: u64 = 1;
+    const ROLE_INPUT: u64 = 4;
+    const ROLE_SHELL: u64 = 5;
+    const CON_SHARED_VA: u64 = 0x0060_0000; // console reads text here; shell writes it
+    const CON_UART_VA: u64 = 0x0070_0000; // console's UART mapping
+    const IN_UART_VA: u64 = 0x00a0_0000; // input driver's UART mapping
+    const LINE_VA: u64 = 0x00b0_0000; // input writes lines here; shell reads them
+    const DEV: u64 = abi::aspace::MAP_RO; // mode arg ignored for a DeviceFrame cap
+
     let image = unsafe { core::slice::from_raw_parts(INITRD_VA as *const u8, initrd_len as usize) };
-    let Ok(elf) = elf::Elf::parse(image) else { fail_report(REPORT) };
+    let Ok(elf) = elf::Elf::parse(image) else { halt_forever() };
 
-    let Ok(request) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else { fail_report(REPORT) };
-    let Ok(reply) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else { fail_report(REPORT) };
-    let Ok(shared) = retype_frame(UNTYPED) else { fail_report(REPORT) };
-    if unsafe { invoke(shared, abi::frame::MAP, SHARED_VA, 1, UNTYPED) } != 0 {
-        fail_report(REPORT);
-    }
+    // The endpoints and shared pages init owns and hands out. Endpoints come from retype with full
+    // rights, so init keeps RWG and delegates narrowed views.
+    let Ok(request) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else { halt_forever() };
+    let Ok(reply) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else { halt_forever() };
+    let Ok(line) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else { halt_forever() };
+    let Ok(spawn_ep) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else { halt_forever() };
+    let Ok(result_ep) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else { halt_forever() };
+    let Ok(con_shared) = retype_frame(UNTYPED) else { halt_forever() };
+    let Ok(line_buf) = retype_frame(UNTYPED) else { halt_forever() };
 
-    let caps: &[(u64, u64)] = &[(request, abi::rights::READ), (reply, abi::rights::WRITE)];
-    let maps: &[(u64, u64, u64)] = &[
-        (SHARED_VA, shared, abi::aspace::MAP_RO),
-        (CHILD_UART_VA, UART_DEV, abi::aspace::MAP_RO),
+    // 1. Console server: reads text from the shared page, writes it to the UART.
+    let con_caps: &[(u64, u64)] = &[(request, abi::rights::READ), (reply, abi::rights::WRITE)];
+    let con_maps: &[(u64, u64, u64)] = &[
+        (CON_SHARED_VA, con_shared, abi::aspace::MAP_RO),
+        (CON_UART_VA, UART_DEV, DEV),
     ];
-    let Ok(tcb) = build_child(UNTYPED, &elf, caps, maps) else { fail_report(REPORT) };
-    check(tcb_start(tcb, CONSOLE_SERVER_ROLE) == 0);
+    let Ok(con) = build_child(UNTYPED, &elf, con_caps, con_maps) else { halt_forever() };
+    check(tcb_start(con, ROLE_CONSOLE) == 0);
+    cap_delete(con);
 
-    // Announce the system through the console init just built.
-    let banner = b"cricker-os: userspace init owns the boot; this console is a driver it built.
-";
-    // SAFETY: init mapped the shared page read/write at SHARED_VA.
-    unsafe {
-        let dst = core::slice::from_raw_parts_mut(SHARED_VA as *mut u8, banner.len());
-        dst.copy_from_slice(banner);
+    // 2. Input driver: waits on the UART receive interrupt, assembles lines, delivers them.
+    let in_caps: &[(u64, u64)] = &[(line, abi::rights::WRITE), (UART_IRQ, abi::rights::READ)];
+    let in_maps: &[(u64, u64, u64)] = &[
+        (IN_UART_VA, UART_DEV, DEV),
+        (LINE_VA, line_buf, abi::aspace::MAP_RW),
+    ];
+    let Ok(input) = build_child(UNTYPED, &elf, in_caps, in_maps) else { halt_forever() };
+    check(tcb_start(input, ROLE_INPUT) == 0);
+    cap_delete(input);
+
+    // 3. The shell: prints via the console, reads lines from input, and holds the spawn channel.
+    let sh_caps: &[(u64, u64)] = &[
+        (request, abi::rights::WRITE),
+        (reply, abi::rights::READ),
+        (line, abi::rights::READ),
+        (spawn_ep, abi::rights::WRITE),
+        (result_ep, abi::rights::READ),
+    ];
+    let sh_maps: &[(u64, u64, u64)] = &[
+        (CON_SHARED_VA, con_shared, abi::aspace::MAP_RW), // OUT_VA: shell writes text here
+        (LINE_VA, line_buf, abi::aspace::MAP_RO),         // shell reads input lines
+    ];
+    let Ok(shell) = build_child(UNTYPED, &elf, sh_caps, sh_maps) else { halt_forever() };
+    check(tcb_start(shell, ROLE_SHELL) == 0);
+    cap_delete(shell);
+
+    // init stays alive as a stub spawn service: the shell SENDs a spawn request on `spawn_ep` and
+    // waits for a result; init answers every request with the "could not spawn" sentinel, so the
+    // shell's `spawn` command degrades gracefully instead of blocking forever. (Real worker
+    // processes need START to carry the worker's argument, a follow-on.)
+    loop {
+        let _ = recv(spawn_ep); // blocks until the shell asks
+        send(result_ep, u64::MAX, 0, 0); // u64::MAX = "could not spawn"
     }
-    check(send(request, banner.len() as u64, 0, 0) == 0);
-    let _ = recv(reply); // the console printed and acked
-
-    // The boot init's first job is done; the console server it built runs on. (The interactive
-    // build wires input + shell here.) Exit; the console persists as its own thread.
-    exit();
 }
 
-/// **init delegates an interrupt to a driver it builds, milestone 19d.2b.** The third and last
+/// Halt this thread forever without exiting, for an init that has nothing left to do but whose
+/// exit would tear nothing useful down. A `-> !` helper the `else` arms above can fall into.
+fn halt_forever() -> ! {
+    loop {
+        yield_syscall();
+    }
+}
+
+/// Yield the CPU (used by halt_forever).
+fn yield_syscall() {
+    // SAFETY: `svc`; SYS_YIELD gives up the CPU.
+    unsafe {
+        core::arch::asm!("svc #0", in("x8") abi::SYS_YIELD, options(nostack));
+    }
+}
+
+/// **init delegates an interrupt to a driver it builds, milestone 19d.2b.**/// **init delegates an interrupt to a driver it builds, milestone 19d.2b.** The third and last
 /// delegatable device authority (after endpoints and device MMIO): an *interrupt capability*. init
 /// holds one for a test interrupt (slot 3, the kernel routed it); it builds a child and hands it
 /// that Irq cap, then starts the child. The child blocks in the interrupt's `WAIT` until the
@@ -660,8 +710,6 @@ fn build_child(
 ) -> Result<u64, ()> {
     const PAGE: u64 = 4096;
     const CHILD_STACK_VA: u64 = 0x0050_0000;
-    // A scratch window in init's own space where it maps each child frame to fill it.
-    let mut scratch = 0x1000_0000u64;
 
     let aspace = retype_obj(untyped, abi::objtype::ASPACE)?;
 
@@ -677,6 +725,10 @@ fn build_child(
         let mut va = start;
         while va < end {
             let frame = retype_frame(untyped)?;
+            // A fresh scratch VA in init's own space. Persistent across build_child calls: init
+            // never unmaps its scratch window, so a per-call reset would collide with the prior
+            // child's mappings (that was the 19d.2c multi-child bring-up bug).
+            let scratch = SCRATCH_NEXT.fetch_add(PAGE, core::sync::atomic::Ordering::Relaxed);
             // Map the frame writable in init's own space, fill it, then hand it to the child.
             if unsafe { invoke(frame, abi::frame::MAP, scratch, 1, untyped) } != 0 {
                 return Err(());
@@ -701,17 +753,21 @@ fn build_child(
             }
             // Done with this frame's capability; free the slot so the next retype reuses it.
             cap_delete(frame);
-            scratch += PAGE;
             va += PAGE;
         }
     }
 
-    // A stack for the child: one writable page, top just under CHILD_STACK_VA + PAGE.
-    let stack_frame = retype_frame(untyped)?;
-    if unsafe { invoke(aspace, abi::aspace::MAP_INTO, CHILD_STACK_VA, stack_frame, abi::aspace::MAP_RW) } != 0 {
-        return Err(());
+    // A multi-page stack for the child: the shell and drivers have deeper stacks than one page.
+    // Mapped growing down from CHILD_STACK_TOP; each page is its own retyped frame.
+    const CHILD_STACK_PAGES: u64 = 4;
+    for k in 0..CHILD_STACK_PAGES {
+        let stack_frame = retype_frame(untyped)?;
+        let va = CHILD_STACK_VA - k * PAGE;
+        if unsafe { invoke(aspace, abi::aspace::MAP_INTO, va, stack_frame, abi::aspace::MAP_RW) } != 0 {
+            return Err(());
+        }
+        cap_delete(stack_frame);
     }
-    cap_delete(stack_frame);
 
     // The extra mappings: a device's registers, a shared buffer. Each is a cap init holds, mapped
     // into the child at the given VA. The child accesses them directly; it never holds the caps.
@@ -733,6 +789,13 @@ fn build_child(
     }
     Ok(tcb)
 }
+
+/// init's ever-advancing scratch window: where it temporarily maps each child frame to fill it.
+/// Persistent across every `build_child` call because init never unmaps these; a per-call reset
+/// collides with a prior child's mappings. Starts below the initrd (0x2000_0000), room for
+/// thousands of pages before it reaches it.
+static SCRATCH_NEXT: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0x1000_0000);
 
 /// Retype a kernel object (endpoint | aspace | tcb) out of `untyped`; returns its cap slot.
 fn retype_obj(untyped: u64, objtype: u64) -> Result<u64, ()> {

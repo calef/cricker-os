@@ -136,9 +136,9 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
             );
         }
 
-        // The milestone tour. Compiled out by `cargo xtask shell`, which boots straight to the
-        // interactive prompt below instead of scrolling all of this first.
-        #[cfg(not(feature = "shell"))]
+        // The milestone tour. Compiled out by `cargo xtask shell` and `cargo xtask initboot`,
+        // which boot straight to the system instead of scrolling all of this first.
+        #[cfg(not(any(feature = "shell", feature = "initboot")))]
         {
             println!();
             println!(

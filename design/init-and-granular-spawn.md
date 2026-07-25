@@ -162,15 +162,22 @@ names the space through the same registry revocation uses.
       knows virtual addresses; disclosing a frame's physical address for DMA is milestone-16
       (IOMMU/DMA) territory, and `START` would also need to pass more than one initial argument.
       Deferred to land with 16.
-  - **19d.2c: init becomes the boot path. (Core built.)** Behind the `initboot` feature the
-    kernel stops wiring services and hands the machine to init (`boot_via_init` -> `spawn_init`);
-    init brings up the console server out of its own budget and prints the system's greeting
-    *through it*, so the first words the operator sees come from a userspace driver init built,
-    not the kernel. Verified by a bounded `script/initboot` boot: the banner appears from the
-    init-built console. The **interactive completion** -- bringing up the input driver and the
-    shell wired to this console -- is the same `build_child` composition; it is left for
-    interactive validation (the automated harness cannot inject keystrokes, so the shell is
-    driven by hand via `script/initboot`, not a test). The default and test boots are unchanged.
+  - **19d.2c: init becomes the boot path, whole interactive system. (Built.)** Behind the
+    `initboot` feature the kernel stops wiring services and hands the machine to init
+    (`boot_via_init` -> `spawn_init`). init then builds the **entire interactive system** out of
+    its own budget: the console server, the input driver (on the UART receive interrupt init
+    delegated), and the shell, wired together with endpoints and shared pages init created, plus
+    init staying alive as a stub spawn service. A bounded `script/initboot` boot reaches the
+    live shell prompt (`cricker-os shell ... $`), every service an init-built child; the kernel
+    wires none of it. Interactive typing is validated by hand (the harness cannot inject
+    keystrokes); the default, shell, bench, and test boots are unchanged, 105 tests still pass.
+
+    Two real bugs fixed in the bring-up, both recorded: **stack size** -- init loads whole ELFs
+    with deep call chains and the shell is a big program, so one page overflows; init now gets 8
+    stack pages and each child 4. **Scratch collision** -- `build_child` mapped each child's
+    frames into init's own scratch window to fill them, resetting the scratch VA per call, but
+    init never unmaps, so the second child collided with the first's mappings; a persistent
+    global scratch bump fixes it. The console-only core hid both because it built one child.
 - **19f: dedicated binaries, delivered as named programs. (Planned.)** Everything through 19d.2 is
   still *one* multi-tool binary (`hello`) whose programs are roles selected by `x0`; init, the
   child, and the console server are the same ELF loaded more than once. A real system has a

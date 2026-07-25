@@ -506,6 +506,16 @@ pub const INITRD_VA: u64 = 0x2000_0000;
 #[cfg_attr(not(test), allow(dead_code))]
 pub const INIT_TEST_SGI: u32 = 3;
 
+/// The PL011 receive interrupt on QEMU `virt`: SPI 1 = INTID 33. init routes and delegates it so
+/// the input driver it builds (19d.2c) can wait on keystrokes.
+#[cfg_attr(not(test), allow(dead_code))]
+pub const UART_RX_INTID: u32 = 33;
+
+/// Init's stack, in pages (19d.2c): init loads whole ELFs with deep call chains, so its stack is
+/// larger than an ordinary process's one page. 8 pages (32 KiB) is generous.
+#[cfg_attr(not(test), allow(dead_code))]
+const INIT_STACK_PAGES: u64 = 8;
+
 #[cfg_attr(not(test), allow(dead_code))] // becomes the boot path at 19d.2; test-driven until then
 pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
     let (initrd_start, initrd_len) = memory::initrd_region().expect("no initrd to hand init");
@@ -517,6 +527,10 @@ pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
     // endpoint even though the init-built child is not yet waiting; the child's WAIT drains it.
     crate::sched::bind_irq(INIT_TEST_SGI, crate::sched::create_endpoint());
     crate::drivers::gic::enable(INIT_TEST_SGI);
+    // And the UART receive interrupt (19d.2c): the input driver init builds waits on it. Route and
+    // enable it here, so init can delegate the Irq cap to that driver.
+    crate::sched::bind_irq(UART_RX_INTID, crate::sched::create_endpoint());
+    crate::drivers::gic::enable(UART_RX_INTID);
 
     crate::sched::spawn(move || {
         let elf = match Elf::parse(image) {
@@ -536,12 +550,18 @@ pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
             .sum::<u64>()
             + 1
             + initrd_pages / 512
+            + INIT_STACK_PAGES
             + 8;
         let mut space = AddressSpace::new(content).expect("no memory for init");
         map_segments(&mut space, &elf).expect("could not lay out init");
-        space
-            .map_new(USER_STACK_VA, Flags::user_data())
-            .expect("could not map init's stack");
+        // A multi-page stack: init loads whole ELFs with deep call chains (the loader loop,
+        // copy_from_slice, the elf parser), so one page overflows. Map INIT_STACK_PAGES down from
+        // USER_STACK_TOP; the entry sp is unchanged (USER_STACK_TOP).
+        for k in 0..INIT_STACK_PAGES {
+            space
+                .map_new(USER_STACK_VA - k * FRAME_SIZE, Flags::user_data())
+                .expect("could not map init's stack");
+        }
 
         // Map the initrd, one page at a time, read-only. These are reserved RAM pages the frame
         // allocator does not own, so this maps rather than allocates.
@@ -557,7 +577,7 @@ pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
 
         // init's building budget: a large untyped it retypes the child's aspace, frames, and TCB
         // from. Sized for a full copy of the initrd program plus its tables and init's scratch.
-        let build_region = crate::untyped::create(768).expect("no building budget for init");
+        let build_region = crate::untyped::create(2048).expect("no building budget for init");
 
         crate::sched::adopt_address_space(space);
         crate::sched::grant(crate::cap::untyped_cap(build_region)).expect("grant untyped");
@@ -581,6 +601,12 @@ pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
             crate::cap::Rights::READ.union(crate::cap::Rights::GRANT),
         ))
         .expect("grant test irq");
+        // The UART receive interrupt (slot 4), for the input driver init builds (19d.2c).
+        crate::sched::grant(crate::cap::irq_cap_rights(
+            UART_RX_INTID,
+            crate::cap::Rights::READ.union(crate::cap::Rights::GRANT),
+        ))
+        .expect("grant uart rx irq");
 
         enter_frame(elf.entry(), USER_STACK_TOP, role, initrd_len, 0)
     })
