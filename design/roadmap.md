@@ -38,13 +38,16 @@ IPC and the MMU invariants are next. This threads through the list rather than b
 | 17 | Multikernel-leaning scheduler (research, optional) | Partition the shared thread table and endpoints | optional; not on the thesis path |
 | 20 | A portable HAL, proven on a second architecture | Make `arch/` a real HAL; bring up RISC-V then x86_64 | the "portable verified core" claim; reach the demonstrator earns |
 | 22 | Trusted init: verify it, and shrink what a broken one can do | Measured/secure boot that checks init before running it; reduce init's authority so a compromise is bounded | **closes the thesis's own soft spot:** init is the privileged *unverified* component the whole system is built by |
+| 23 | Live component replacement: hot-swap a driver on a running system | Replace a running server/driver with a new version, no reboot: start new, revoke the old's device cap, redirect clients through a broker, tear the old down | **the flagship payoff of the design:** capabilities + userspace drivers make live upgrade process lifecycle, not kernel surgery |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19), with the multikernel work (17) as
 optional research and the second-architecture port (20) as the reach the demonstrator earns, late and
 only after the core is proven. **Trusted init (22) follows 19**, because it only has teeth once there
-*is* an init to verify and once real hardware (16) closes the in-RAM tampering window. The broad
-competitor ambition stays parked (see the end of this file).
+*is* an init to verify and once real hardware (16) closes the in-RAM tampering window. **Live
+component replacement (23) is the late demonstrator payoff**, built on revocation (13/the CDT),
+supervision (22), and dedicated binaries (19f). The broad competitor ambition stays parked (see the
+end of this file).
 Several milestones already have their design worked out; the blocks below point at it.
 
 ### 12. Call/Reply IPC: a one-shot reply capability
@@ -238,6 +241,42 @@ signed boot images). For the supervision half: seL4 fault endpoints (the kernel 
 a message a supervisor holds); MINIX 3's reincarnation server (a userspace process that restarts
 dead drivers, not the kernel); Erlang/OTP supervision trees and "let it crash" (decades of evidence
 that restart policy wants to be a rich userspace thing, not a kernel reflex).
+
+### 23. Live component replacement: hot-swap a driver on a running system
+
+**The flagship payoff of the whole design, made concrete.** A client names an *endpoint*, never a
+peer (the milestone 7-8 decision), so a driver's identity is invisible to the code that uses it: any
+program that speaks the protocol and holds the device capability *is* the driver. That decoupling is
+what makes a running driver replaceable at all. A monolithic kernel does this with module
+unload/reload fragility or livepatch gymnastics; here a driver is a *process*, so replacing it live
+is process lifecycle, not kernel surgery.
+
+**Deliverable.** Replace a running server (the console server is the worked example) with a
+different one, or a new version, **without a reboot**, and demonstrate a client that never notices.
+The four steps, each resting on machinery from earlier milestones:
+
+1. **Start the new server** (a supervisor builds it via the granular verbs, endows it with a fresh
+   set of endpoints).
+2. **Revoke the old server's device capability** so there are never two owners of one device's
+   registers (the interleaving hazard). This is milestone 13's revocation, extended from frames to
+   *device* capabilities, which is where the deferred CDT (capability-derivation tree) finally earns
+   its keep.
+3. **Redirect clients through a broker.** Clients hold a cap to a stable *console broker* endpoint,
+   not to the server directly; the broker forwards to the current backend and re-points on a swap,
+   so the substitution is invisible to every client. A small userspace naming-service pattern.
+4. **Drain or drop in-flight requests and tear the old server down** (the reaper plus revocation
+   reclaim its memory).
+
+**Why it is late, and why it is worth it.** It composes revocation (13/CDT), supervision (22, the
+orchestrator that decides *when* to swap and handles a swap that fails), and dedicated binaries
+(19f, so there is a distinct program to substitute). None of those alone is hot-swap; the milestone
+is assembling them into the demonstrator that *shows* the capability model's superpower, rather than
+only arguing it.
+
+**Prior art.** MINIX 3's reincarnation server (live driver replacement in userspace); QNX
+(hot-swappable drivers); Erlang/OTP hot code loading (a running system upgraded module by module).
+The common thread is exactly ours: components are isolated processes named through a level of
+indirection, so one can be swapped under the others.
 
 ### 17. Multikernel-leaning scheduler (research, optional)
 
