@@ -1,0 +1,9 @@
+[package]
+name = "coremark"
+version = "0.1.0"
+edition = "2024"
+
+# Pure `no_std` compute, no dependencies. The point is to be *portable*: this same crate compiles
+# for cricker-os (aarch64-unknown-none), and later for macOS and Linux, so the compute comparison
+# is one source on three OSs (notes/benchmarks.md, milestone 19e).
+[dependencies]

@@ -45,8 +45,16 @@ path = "src/shell.rs"
 test = false
 bench = false
 
+# The CoreMark workload (milestone 19e): the first real compute workload, run against the native ABI.
+[[bin]]
+name = "coremark"
+path = "src/coremark.rs"
+test = false
+bench = false
+
 [dependencies]
 abi = { version = "0.1.0", path = "../crates/abi" }
+coremark = { version = "0.1.0", path = "../crates/coremark" }
 crickerfs = { version = "0.1.0", path = "../crates/crickerfs" }
 elf = { version = "0.1.0", path = "../crates/elf" }
 user_rt = { version = "0.1.0", path = "../crates/user_rt" }

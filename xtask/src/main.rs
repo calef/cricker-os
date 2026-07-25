@@ -160,15 +160,23 @@ fn mkinitrd() -> bool {
             return false;
         }
     };
+    let coremark = match std::fs::read(bin_elf("coremark")) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("coremark"));
+            return false;
+        }
+    };
     // "init" is the hello binary (the kernel loads it, init re-enters it at its remaining roles);
-    // "worker", "console", "input", and "shell" are distinct binaries (19f.2-5) init loads by name.
-    // All are entries in the one archive.
-    let files: [(&str, &[u8]); 5] = [
+    // "worker", "console", "input", "shell" are the split system binaries (19f.2-5), and "coremark"
+    // is the real compute workload (19e). init loads each by name. All are entries in the one archive.
+    let files: [(&str, &[u8]); 6] = [
         ("init", &hello),
         ("worker", &worker),
         ("console", &console),
         ("input", &input),
         ("shell", &shell),
+        ("coremark", &coremark),
     ];
     let size = crickerfs::image_size(&files);
     let mut img = std::vec![0u8; size];

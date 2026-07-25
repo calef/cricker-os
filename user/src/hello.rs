@@ -111,6 +111,7 @@ pub extern "C" fn _start(role: u64, dma_phys: u64, _arg2: u64) -> ! {
         IRQ_CHILD => irq_child(),
         INIT_BOOT => init_boot(dma_phys),
         INIT_WORKER => init_worker(dma_phys),
+        INIT_COREMARK => init_coremark(dma_phys),
         CHILD => child(),
         DEV_CHILD => dev_child(),
         SELF_CHECK => self_check_client(),
@@ -345,6 +346,9 @@ const INIT_BOOT: u64 = 27;
 const INIT_WORKER: u64 = 28;
 /// The argument init hands its worker in the [`INIT_WORKER`] role; the worker returns its square.
 const WORKER_INPUT: u64 = 7;
+/// The init role that builds the CoreMark compute workload and reports the CRC it computed
+/// (milestone 19e: the first *real* workload, not a toy).
+const INIT_COREMARK: u64 = 29;
 /// The word a milestone-19d child reports through the endpoint init granted it.
 const CHILD_WORD: u64 = 0xC0FFEE;
 
@@ -579,6 +583,29 @@ fn init_worker(initrd_len: u64) -> ! {
     // x0 is unused (a standalone binary needs no role selector); the input is in x1 (the multi-arg
     // START that 19e added).
     check(tcb_start(tcb, 0, WORKER_INPUT, 0) == 0);
+    exit();
+}
+
+/// **init builds the CoreMark compute workload, milestone 19e: the first real workload.** Same shape
+/// as `init_worker`, but the child is the `"coremark"` binary and it computes something substantial
+/// (a CoreMark-derived run) rather than a toy square. init grants it the report endpoint (slot 0)
+/// and starts it; the workload runs a fixed iteration count and SENDs the run's CRC home. Receiving
+/// `coremark::PINNED_CRC_64` proves a real compute program ran correctly against the native ABI.
+fn init_coremark(initrd_len: u64) -> ! {
+    const UNTYPED: u64 = 0;
+    const REPORT: u64 = 1;
+
+    let Some(bytes) = program(initrd_len, "coremark") else {
+        fail_report(REPORT)
+    };
+    let Ok(elf) = elf::Elf::parse(bytes) else {
+        fail_report(REPORT)
+    };
+    let caps: &[(u64, u64)] = &[(REPORT, abi::rights::WRITE)];
+    let Ok(tcb) = build_child(UNTYPED, &elf, caps, &[]) else {
+        fail_report(REPORT)
+    };
+    check(tcb_start(tcb, 0, 0, 0) == 0); // no args: the workload's iteration count is fixed
     exit();
 }
 

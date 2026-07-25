@@ -79,3 +79,61 @@ Cache misses, TLB behavior, branch prediction: TCG models none of them, so a cha
 count-neutral but cache-hostile passes `--check` silently. That is the known limit, stated in
 the roadmap block too; the `--real` numbers are the net that catches what counts cannot, read by
 a human rather than a gate.
+
+## Compute vs. OS primitives: two benchmarks that measure different things (milestone 19e)
+
+The microbenchmarks above are the *right* kind for a microkernel: IPC, context switch, the paths a
+microkernel lives on. But "run a real workload" (19e) wanted a whole compute program, and thinking
+through how to compare it across OSs turned up a distinction worth pinning down, because it decides
+what any cross-OS comparison can and cannot show.
+
+**Compute is OS-independent.** A tight compute loop, once it is running in userspace, does not touch
+the OS: the CPU executes the same instructions no matter who scheduled it. So a compute benchmark
+(CoreMark, Dhrystone) run on cricker-os, macOS, and Linux on the same core comes out *nearly
+identical*, and the small gaps are compiler codegen or allocator noise, not OS quality. That is a
+real result ("we add no hidden compute overhead") but a null one by design. It cannot show OS
+strengths or liabilities, because the OS is not in the loop.
+
+**OS primitives are where an OS shows itself.** Syscall entry, context switch, IPC round-trip, page
+map, page fault, thread spawn: these *are* the OS, and they are what distinguish Linux from macOS
+from us. But the same source cannot measure them across three OSs, because "the same syscall" does
+not exist on all three: you invoke each OS's own primitive (`getpid` on Linux, a Mach/BSD call on
+macOS, our `svc` null-invoke). So the OS-revealing benchmark is a **matched harness per OS** (one
+metric definition, three native implementations), which is exactly what lmbench is and how the
+L4/seL4 papers compare to Linux. Our own microbenchmarks above are the cricker-os side of it.
+
+### The CoreMark workload (`crates/coremark`, `user/src/coremark.rs`)
+
+19e's real workload is CoreMark, the three work items of a CoreMark iteration (a linked-list sort, a
+small-matrix multiply, a state machine over a byte buffer), each folded into a CRC so the compiler
+cannot delete the work and a run self-validates. It runs as a spawned EL0 program against the native
+ABI: init builds the `"coremark"` binary, grants it one endpoint, and it computes and SENDs the run's
+CRC home. `coremark::PINNED_CRC_64` (`0x7954` for 64 iterations) is asserted by both the host crate
+test and the kernel test, so the same computation gives the same answer on the host and on the
+kernel's target, which is the property a cross-OS comparison rests on.
+
+It is a **Rust reimplementation, not EEMBC-certified CoreMark**: a certified score needs the
+unmodified reference C. The Rust choice buys the thing that matters for *our* comparison, that the
+identical source compiles for cricker-os, macOS, and Linux, so the compute run is one program on
+three OSs. This binary reports correctness, not yet a score; timing a run needs a userspace clock
+(enabling the EL0 virtual-counter read, as Linux does for its vDSO), which lands with the cross-OS
+suite rather than here.
+
+### The cross-OS comparison, when we build it
+
+- **Reuse an existing primitive suite** where one exists: **lmbench** on Linux and macOS (it builds
+  on both), **`sel4bench`** for seL4. We write the cricker-os side (the microbenchmarks above,
+  extended to match the metric set), not the whole thing.
+- **The peers.** seL4 is the direct one: a capability microkernel that targets the *same* QEMU
+  `aarch64 virt` machine we do, so it runs on the identical instrument (QEMU-HVF) and publishes
+  comparable cycle counts. L4Re/Fiasco and Genode are more effort for less marginal insight.
+- **Match the virtualization tier.** QEMU with `-accel hvf` *is* virtualization (Hypervisor.framework
+  on the real core), not emulation, so cricker-os and Linux run virtualized under QEMU-HVF; macOS runs
+  as a guest under Apple's Virtualization.framework (same underlying hypervisor, different VMM shell);
+  native macOS is the bare-metal ceiling reference. For guest-internal microbenchmarks the VMM layer
+  is off the hot path (no VM exit on a null syscall or context switch), so the QEMU-vs-VZ difference
+  is a footnote, not a confound.
+- **XNU is a hybrid, name it.** macOS's kernel has a Mach microkernel core but runs BSD and drivers
+  *in* the kernel, so most macOS syscalls are in-kernel BSD calls and Mach IPC is not on the hot path
+  the way our endpoints are. Comparing "our IPC" to "macOS syscall latency" measures two different
+  things; saying so is part of the honesty.

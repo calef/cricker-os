@@ -2642,6 +2642,27 @@ mod tests {
         );
     }
 
+    /// **Milestone 19e: init runs a real compute workload and it comes out right.** The worker's
+    /// `n*n` proved the mechanism; this proves a *substantial* program. init builds the `"coremark"`
+    /// binary (a CoreMark-derived run: list sort, matrix multiply, state machine, folded into a CRC),
+    /// starts it, and the workload SENDs the run's checksum home. Receiving `coremark::PINNED_CRC_64`
+    /// (`0x7954`, the value the host `coremark` test also pins) proves a real workload ran correctly
+    /// against the native ABI, and that the same computation gives the same answer on the kernel's
+    /// target as on the host, which is the property a cross-OS comparison will rest on.
+    #[test_case]
+    fn init_runs_the_coremark_workload_and_it_checks_out() {
+        const INIT_COREMARK_ROLE: u64 = 29;
+
+        let report = crate::sched::create_endpoint();
+        spawn_init(initrd().expect("no initrd"), INIT_COREMARK_ROLE, report);
+
+        let crc = crate::sched::ipc_recv(report)[0];
+        assert_eq!(
+            crc, coremark::PINNED_CRC_64 as u64,
+            "the CoreMark workload computed the wrong checksum",
+        );
+    }
+
     /// **Milestone 19c.3, the whole point: one process builds and starts another, and it runs.**
     /// The kernel drives the four verbs the way init eventually will: retype an address space and
     /// a TCB, map a code page (containing a hand-assembled EL0 stub) and a stack into the space,

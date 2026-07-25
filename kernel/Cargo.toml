@@ -11,6 +11,7 @@ aarch64-cpu = "11"
 abi = { version = "0.1.0", path = "../crates/abi" }
 asid = { version = "0.1.0", path = "../crates/asid" }
 caps = { version = "0.1.0", path = "../crates/caps" }
+coremark = { version = "0.1.0", path = "../crates/coremark" }
 crickerfs = { version = "0.1.0", path = "../crates/crickerfs" }
 dtb = { version = "0.1.0", path = "../crates/dtb" }
 elf = { version = "0.1.0", path = "../crates/elf" }
