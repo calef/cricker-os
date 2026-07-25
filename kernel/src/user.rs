@@ -501,10 +501,22 @@ pub const INITRD_VA: u64 = 0x2000_0000;
 /// budget (an untyped, slot 0) plus `report` (slot 1, `WRITE|GRANT` so init can endow a child).
 /// init enters with `x0` = `role` and `x1` = the initrd length. This is the one program the kernel
 /// still loads; init loads the rest (design/init-and-granular-spawn.md).
+/// The software-generated interrupt the kernel routes to init for the IRQ-delegation test
+/// (19d.2b): SGI 3, distinct from the scheduler's RESCHED (0) and the older endpoint SGIs (1, 2).
+#[cfg_attr(not(test), allow(dead_code))]
+pub const INIT_TEST_SGI: u32 = 3;
+
 #[cfg_attr(not(test), allow(dead_code))] // becomes the boot path at 19d.2; test-driven until then
 pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
     let (initrd_start, initrd_len) = memory::initrd_region().expect("no initrd to hand init");
     let initrd_pages = initrd_len.div_ceil(FRAME_SIZE);
+
+    // Route the test interrupt (19d.2b) BEFORE spawning init: the test raises the SGI as soon as
+    // this returns, and an interrupt that fires before it is routed is dropped ("unexpected
+    // interrupt"), not queued. Setting up the route here means the fire is counted on the routed
+    // endpoint even though the init-built child is not yet waiting; the child's WAIT drains it.
+    crate::sched::bind_irq(INIT_TEST_SGI, crate::sched::create_endpoint());
+    crate::drivers::gic::enable(INIT_TEST_SGI);
 
     crate::sched::spawn(move || {
         let elf = match Elf::parse(image) {
@@ -561,6 +573,14 @@ pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
             crate::cap::Rights::WRITE.union(crate::cap::Rights::GRANT),
         ))
         .expect("grant uart device");
+        // An interrupt capability (slot 3): the third delegatable device authority, so init can
+        // build an interrupt-driven driver (19d.2b). The route was set up above, before the spawn;
+        // this only grants init the Irq cap (a per-thread act). READ (WAIT/ACK) | GRANT (delegate).
+        crate::sched::grant(crate::cap::irq_cap_rights(
+            INIT_TEST_SGI,
+            crate::cap::Rights::READ.union(crate::cap::Rights::GRANT),
+        ))
+        .expect("grant test irq");
 
         enter_frame(elf.entry(), USER_STACK_TOP, role, initrd_len, 0)
     })
@@ -2423,6 +2443,33 @@ mod tests {
         // reclaims it whole, the already-revoked frame included. No manual free: the region
         // owns its pages, and freeing one twice is the allocator's double-free panic.
         crate::untyped::destroy(frame_region);
+    }
+
+    /// **Milestone 19d.2b: init delegates an interrupt to a driver it builds.** The last
+    /// delegatable device authority after endpoints and device MMIO: an interrupt capability.
+    /// init holds one for a test SGI (the kernel routed it), builds a child, hands it the Irq
+    /// cap, and starts it. The child blocks in the interrupt's WAIT; the test raises the SGI; the
+    /// interrupt is delivered as a message through the delegated capability, the child wakes and
+    /// reports. A hang would mean the interrupt never reached the init-built child, so a passing
+    /// test is the proof. Completes the "init delegates every authority kind" story the
+    /// interrupt-driven drivers (input, virtio) rest on.
+    #[test_case]
+    fn userspace_init_delegates_an_interrupt_to_a_child() {
+        const IRQ_WORD: u64 = 0x1590;
+        const INIT_IRQ_ROLE: u64 = 25;
+
+        let report = crate::sched::create_endpoint();
+        spawn_init(initrd().expect("no initrd"), INIT_IRQ_ROLE, report);
+
+        // Raise the test interrupt. The endpoint counts it if the child is not waiting yet (it is
+        // still being built), and the child's WAIT drains that pending signal, so there is no race.
+        crate::drivers::gic::send_sgi(INIT_TEST_SGI, crate::cpu::id());
+
+        let word = crate::sched::ipc_recv(report)[0];
+        assert_eq!(
+            word, IRQ_WORD,
+            "the interrupt never reached the init-built child through the delegated Irq cap",
+        );
     }
 
     /// **Milestone 19d.2b: userspace init brings up the real console server.** Past 19d.2a's

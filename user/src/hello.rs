@@ -56,6 +56,7 @@ const ASPACE_BUILDER: u64 = 19;
 const INIT: u64 = 20;
 const CHILD: u64 = 21;
 const DEV_CHILD: u64 = 22;
+const IRQ_CHILD: u64 = 26;
 
 /// The word the frame producer writes into a shared page and the consumer reads back through its
 /// own mapping of the same physical page. One binary, so one constant serves both roles.
@@ -120,6 +121,8 @@ pub extern "C" fn _start(role: u64, dma_phys: u64, _arg2: u64) -> ! {
         INIT => init(dma_phys), // x1 carries the initrd length
         INIT_DEV => init_dev(dma_phys),
         INIT_CONSOLE => init_console(dma_phys),
+        INIT_IRQ => init_irq(dma_phys),
+        IRQ_CHILD => irq_child(),
         CHILD => child(),
         DEV_CHILD => dev_child(),
         SELF_CHECK => self_check_client(),
@@ -390,6 +393,8 @@ const INITRD_VA: u64 = 0x2000_0000;
 const INIT_DEV: u64 = 23;
 /// The init role that brings up the real console server and prints through it (milestone 19d.2b).
 const INIT_CONSOLE: u64 = 24;
+/// The init role that builds an interrupt-driven child, to prove IRQ delegation (milestone 19d.2b).
+const INIT_IRQ: u64 = 25;
 /// The word a milestone-19d child reports through the endpoint init granted it.
 const CHILD_WORD: u64 = 0xC0FFEE;
 
@@ -406,6 +411,47 @@ const CHILD_WORD: u64 = 0xC0FFEE;
 /// kernel never touching the child's bytes. See kernel/src/user.rs spawn_init.
 fn init(initrd_len: u64) -> ! {
     init_build(initrd_len, false)
+}
+
+/// **init delegates an interrupt to a driver it builds, milestone 19d.2b.** The third and last
+/// delegatable device authority (after endpoints and device MMIO): an *interrupt capability*. init
+/// holds one for a test interrupt (slot 3, the kernel routed it); it builds a child and hands it
+/// that Irq cap, then starts the child. The child blocks in the interrupt's `WAIT` until the
+/// interrupt fires, then reports. Receiving the report proves init can build an interrupt-driven
+/// driver -- the mechanism the input and virtio drivers need for their completions.
+fn init_irq(initrd_len: u64) -> ! {
+    const UNTYPED: u64 = 0;
+    const REPORT: u64 = 1;
+    const TEST_IRQ: u64 = 3; // the Irq cap the kernel granted init (spawn_init)
+
+    // SAFETY: the kernel mapped the initrd read-only at INITRD_VA.
+    let image = unsafe { core::slice::from_raw_parts(INITRD_VA as *const u8, initrd_len as usize) };
+    let Ok(elf) = elf::Elf::parse(image) else { fail_report(REPORT) };
+
+    // The child gets the report endpoint (slot 0) and the interrupt (slot 1).
+    let caps: &[(u64, u64)] = &[
+        (REPORT, abi::rights::WRITE),
+        (TEST_IRQ, abi::rights::READ), // WAIT/ACK the interrupt
+    ];
+    let Ok(tcb) = build_child(UNTYPED, &elf, caps, &[]) else { fail_report(REPORT) };
+    check(tcb_start(tcb, IRQ_CHILD) == 0);
+    exit();
+}
+
+/// **An interrupt-driven child, milestone 19d.2b.** Holds a report endpoint (slot 0) and an
+/// interrupt capability (slot 1), both handed to it by init. It waits for the interrupt as a
+/// message, then reports the agreed word. Blocking here forever if the interrupt never arrives is
+/// the negative case: the test would hang, so a passing test is the interrupt being delivered
+/// through the capability init delegated.
+fn irq_child() -> ! {
+    const REPORT: u64 = 0;
+    const IRQ: u64 = 1;
+    const IRQ_WORD: u64 = 0x1590; // "IRQ 0" ish; any fixed value the test asserts
+
+    // SAFETY: `svc`; WAIT blocks until the interrupt the kernel routed for this cap fires.
+    let _ = unsafe { invoke(IRQ, abi::irq::WAIT, 0, 0, 0) };
+    send(REPORT, IRQ_WORD, 0, 0);
+    exit();
 }
 
 /// **init brings up the real console server, milestone 19d.2b.** The step past 19d.2a's ID-read

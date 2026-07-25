@@ -131,6 +131,16 @@ pub fn irq_cap(intid: u32) -> Cap {
     }
 }
 
+/// An interrupt capability with explicit rights (milestone 19d.2b): init holds one with `GRANT`
+/// so it can delegate the interrupt to a driver it builds.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn irq_cap_rights(intid: u32, rights: Rights) -> Cap {
+    Cap {
+        object: Object::Irq(intid),
+        rights,
+    }
+}
+
 /// A capability to an untyped memory region. `WRITE` lets the holder retype pages out of it.
 pub fn untyped_cap(region: usize) -> Cap {
     Cap {

@@ -137,15 +137,31 @@ names the space through the same registry revocation uses.
     PL011's PrimeCell id (`0xB105F00D`), proving the delegated device-typed mapping is a real view
     of the actual hardware. This turns "the kernel maps the UART" into "device access is a
     capability", the mechanism every real driver-under-init needs.
-  - **19d.2b: the drivers as init-built children**, each on the 2a mechanism, each green.
-    **Console: built.** init constructs the real console print server (not a probe), wires it a
-    request/reply channel and a shared page it created and the UART it delegated, then plays the
-    client: it writes a line, the server prints it to the real UART (visible in the log) and acks,
-    init reports the length. `build_child` was generalized to take caps-to-insert and pages-to-map,
-    the shape every init-built service needs. Witnessed by
-    `userspace_init_brings_up_the_console_server`. Input and virtio follow (virtio also needs IRQ
-    and transport capabilities delegated through init, the same "device access is a capability"
-    move applied to interrupts and the virtio transport).
+  - **19d.2b: the delegatable authorities a driver needs, each green.** The point of 2b turned
+    out to be proving init can delegate *every kind* of authority a driver needs, not re-loading
+    every driver. **Three, all built:**
+    - **Endpoints + device MMIO + an IPC protocol (the console).** init constructs the real
+      console print server, wires it a request/reply channel and a shared page it created and the
+      UART it delegated, then plays the client: writes a line, the server prints it to the real
+      UART (in the log) and acks, init reports the length. `build_child` was generalized to
+      caps-to-insert + pages-to-map, the shape every init-built service uses.
+      (`userspace_init_brings_up_the_console_server`.)
+    - **Interrupt capabilities (the last authority kind).** init holds an Irq cap for a routed
+      test interrupt, builds a child, delegates it the cap, starts it; the child blocks in `WAIT`,
+      the interrupt fires, and it is delivered as a message through the delegated capability.
+      (`userspace_init_delegates_an_interrupt_to_a_child`.) Bug found and fixed: the route must be
+      set up *before* the child could receive, and an interrupt that fires unrouted is dropped, not
+      queued -- so `spawn_init` routes before spawning init, and the pending-signal count carries
+      the early fire to the child's later `WAIT`.
+
+    **The two full drivers that remain, and their honest blockers (not 2b work):**
+    - **Input** is driven by host keystrokes the automated harness cannot inject, so it is built
+      and validated in the interactive boot (19d.2c), not an isolated test. Its mechanism (IRQ +
+      device MMIO delegation) is exactly the two proved above.
+    - **Virtio** needs the driver to know its DMA region's *physical* address, but a process only
+      knows virtual addresses; disclosing a frame's physical address for DMA is milestone-16
+      (IOMMU/DMA) territory, and `START` would also need to pass more than one initial argument.
+      Deferred to land with 16.
   - **19d.2c: the shell wired to init-built services; retire the kernel's `run`/`Spawn` device
     wiring; `spawn_init` becomes the real (non-test) boot path.**
 - **19f: dedicated binaries, delivered as named programs. (Planned.)** Everything through 19d.2 is
