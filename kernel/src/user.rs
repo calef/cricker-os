@@ -45,8 +45,8 @@ use frames::{FRAME_SIZE, Frame};
 use paging::{Flags, Half, MapError, Mapper};
 
 /// Where a user program's code goes. Low half, so the hardware walks `TTBR0`.
-#[cfg_attr(feature = "shell", allow(dead_code))]
-#[cfg_attr(feature = "bench", allow(dead_code))] // its users (exec, tour) sit outside the bench boot
+// Used by `exec` and the tour; the shell, initboot, and bench boots run neither.
+#[cfg_attr(any(feature = "shell", feature = "bench", feature = "initboot"), allow(dead_code))]
 pub const USER_CODE_VA: u64 = 0x0000_0000_0040_0000;
 
 /// Where its stack goes. One page, and `sp` starts at the top of it: stacks grow down.
@@ -661,8 +661,8 @@ pub fn run(image: &[u8], spawn: Spawn) -> ! {
 ///
 /// # Safety
 /// `program` must be position-independent aarch64 machine code that begins at its first byte.
-#[cfg_attr(feature = "shell", allow(dead_code))] // the hand-written demos live in the tour
-#[cfg_attr(feature = "bench", allow(dead_code))] // the bench boot runs no user programs
+// The hand-written demos live in the tour; the shell, initboot, and bench boots skip it.
+#[cfg_attr(any(feature = "shell", feature = "bench", feature = "initboot"), allow(dead_code))]
 pub unsafe fn exec(program: &[u8]) -> ! {
     assert!(
         program.len() as u64 <= FRAME_SIZE,

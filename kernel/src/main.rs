@@ -349,8 +349,9 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
 /// actually masking something. See DECISIONS.md §9 and notes/locking.md.
 /// The initrd image, for the virtio service. Panics if absent (the demo checked `initrd()` above).
 #[cfg(not(test))]
-#[cfg_attr(feature = "shell", allow(dead_code))] // the virtio demo lives in the milestone tour
-#[cfg(not(feature = "bench"))] // tour-only, and the bench boot skips the tour
+// Tour-only: the shell, initboot, and bench boots all skip the milestone tour where it is used.
+#[cfg_attr(any(feature = "shell", feature = "initboot"), allow(dead_code))]
+#[cfg(not(feature = "bench"))]
 fn image_for_virtio() -> &'static [u8] {
     user::initrd().expect("no initrd")
 }
