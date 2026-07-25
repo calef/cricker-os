@@ -2656,11 +2656,16 @@ mod tests {
         let report = crate::sched::create_endpoint();
         spawn_init(initrd().expect("no initrd"), INIT_COREMARK_ROLE, report);
 
-        let crc = crate::sched::ipc_recv(report)[0];
+        let [crc, ticks, freq] = crate::sched::ipc_recv(report);
         assert_eq!(
             crc, coremark::PINNED_CRC_64 as u64,
             "the CoreMark workload computed the wrong checksum",
         );
+        // The workload self-timed via CNTVCT_EL0. Nonzero ticks and a real frequency prove EL0 can
+        // read the virtual counter (CNTKCTL_EL1.EL0VCTEN), the foundation the primitive suite needs.
+        // (Under TCG the magnitude is icount fiction, but it still advances, so the read works.)
+        assert!(ticks > 0, "the workload's self-timing read a frozen counter");
+        assert!(freq > 0, "CNTFRQ_EL0 read as zero at EL0");
     }
 
     /// **Milestone 19c.3, the whole point: one process builds and starts another, and it runs.**

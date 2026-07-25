@@ -9,22 +9,27 @@
 //! against the native ABI (notes/abi.md): given a capability, it computes and reports.
 //!
 //! The compute lives in a portable crate on purpose, so the *identical* code later compiles for
-//! macOS and Linux and the compute comparison is one source on three OSs (notes/benchmarks.md). This
-//! binary reports correctness, not yet a score; timing a run needs a userspace clock, which lands
-//! with the cross-OS benchmark suite (it enables the EL0 counter read there).
+//! macOS and Linux and the compute comparison is one source on three OSs (notes/benchmarks.md).
+//!
+//! It **self-times**: it reads the virtual counter (`user_rt::now`) around the run, so it reports a
+//! real score, not just correctness. Under HVF those ticks are real nanoseconds; under TCG they are
+//! icount fiction (magnitudes are meaningless, the CRC is not). The report is three words:
+//! `[crc, ticks, freq]`, so the receiver can compute iterations per second without a second syscall.
 
 #![no_std]
 #![no_main]
 
-use user_rt::{exit, send};
+use user_rt::{cntfrq, exit, now, send};
 
-/// The endpoint init grants us (slot 0): we SEND the run's CRC here, then exit.
+/// The endpoint init grants us (slot 0): we SEND `[crc, ticks, freq]` here, then exit.
 const RESULT: u64 = 0;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(_x0: u64, _x1: u64, _x2: u64) -> ! {
+    let start = now();
     let crc = coremark::run(coremark::PINNED_ITERS);
-    send(RESULT, crc as u64, 0, 0);
+    let ticks = now().wrapping_sub(start);
+    send(RESULT, crc as u64, ticks, cntfrq());
     exit();
 }
 

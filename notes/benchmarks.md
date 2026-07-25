@@ -119,6 +119,26 @@ three OSs. This binary reports correctness, not yet a score; timing a run needs 
 (enabling the EL0 virtual-counter read, as Linux does for its vDSO), which lands with the cross-OS
 suite rather than here.
 
+### The measurement plane: kernel-side (gating) vs EL0 (cross-OS)
+
+A subtlety that decides comparability, found while starting the primitive suite. The microbenchmarks
+at the top of this note run in **kernel context**: the bench threads are kernel threads calling
+`sched::yield_now` and `sched::ipc_send/recv` directly, so they measure the kernel-internal path
+length of each operation. That is exactly right for their job (regression gating: a code-path change
+moves the count next to its commit). But it is **not** what lmbench measures. lmbench runs a
+*userspace* program making real syscalls, so its numbers include the EL0→EL1 trap and return that a
+kernel-side benchmark skips entirely.
+
+So the cross-OS primitive numbers have to be measured **from EL0**, a userspace program that self-
+times a loop of real `svc` syscalls, to be comparable to lmbench. That is why milestone 19e opened
+EL0 access to the virtual counter (`CNTKCTL_EL1.EL0VCTEN`; `user_rt::now`/`cntfrq`; notes/abi.md):
+userspace self-timing is the prerequisite for a fair comparison. The CoreMark workload is the first
+program to use it, self-timing its run and reporting `[crc, ticks, freq]`; the EL0 primitive
+benchmarks (null syscall, context switch, IPC round-trip, all measured the lmbench way) build on the
+same `user_rt::now`. The existing kernel-side suite stays, for gating; the EL0 suite is additive, for
+cross-OS honesty. The two will differ by roughly the trap cost, and that difference is itself a
+number worth having.
+
 ### The cross-OS comparison, when we build it
 
 - **Reuse an existing primitive suite** where one exists: **lmbench** on Linux and macOS (it builds

@@ -60,7 +60,7 @@
 
 use crate::cpu::{self, MAX_CPUS};
 use crate::drivers::gic;
-use aarch64_cpu::registers::{CNTFRQ_EL0, CNTV_CTL_EL0, CNTV_CVAL_EL0, CNTVCT_EL0};
+use aarch64_cpu::registers::{CNTFRQ_EL0, CNTKCTL_EL1, CNTV_CTL_EL0, CNTV_CVAL_EL0, CNTVCT_EL0};
 use core::sync::atomic::{AtomicU64, Ordering};
 use tock_registers::interfaces::{Readable, Writeable};
 
@@ -114,6 +114,19 @@ static INTERVAL: AtomicU64 = AtomicU64::new(0);
 pub fn init() {
     let freq = CNTFRQ_EL0.get();
     assert!(freq > 0, "firmware left CNTFRQ_EL0 at zero: no clock");
+
+    // Let EL0 read the virtual counter (`CNTVCT_EL0`) and `CNTFRQ_EL0`, so a userspace program can
+    // time *itself*, the way Linux exposes the counter to its vDSO. Without this the read traps.
+    //
+    // This is a deliberate, eyes-open exception to §10's no-ambient-authority rule (notes/abi.md).
+    // A monotonic counter grants no authority to *affect* anything, only to observe the passage of
+    // time; the cost is that it is a timing side channel, which every OS that offers userspace
+    // timing accepts. We accept it too, and we accept it *knowingly*, because the cross-OS primitive
+    // suite needs userspace self-timing to be comparable to lmbench (which measures from userspace).
+    // The physical counter and the timer registers stay trapped; only the virtual counter opens.
+    // `aarch64_cpu` gives CNTKCTL_EL1 no named fields, so set the bit by hand: EL0VCTEN is bit 1.
+    const EL0VCTEN: u64 = 1 << 1;
+    CNTKCTL_EL1.set(CNTKCTL_EL1.get() | EL0VCTEN);
 
     let interval = freq / TICK_HZ;
     INTERVAL.store(interval, Ordering::Relaxed);

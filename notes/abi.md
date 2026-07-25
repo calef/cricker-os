@@ -119,6 +119,24 @@ by the contract it was built to. That is the same shape seL4 uses for every task
 it is honest to call it a convention rather than dress it up as an API. The convention *is* the ABI;
 writing it down (here, and in each program's header comment) is what milestone 19e commits.
 
+## The one ambient thing: reading the clock (milestone 19e / the primitive suite)
+
+§10 says no ambient authority, and the object surface honors it: everything a program can *do* goes
+through a capability. There is exactly one deliberate exception, and it is a read, not a do: **EL0
+can read the virtual counter** (`CNTVCT_EL0`) and its frequency (`CNTFRQ_EL0`), via `user_rt::now`
+and `user_rt::cntfrq`, no syscall. The kernel opens this in `timer::init` (`CNTKCTL_EL1.EL0VCTEN`);
+without it the read traps.
+
+It is an exception made with eyes open. A monotonic counter grants no authority to *affect*
+anything, only to observe the passage of time, so it does not mint the kind of ambient authority §10
+rejects (which was about *reaching resources* you were not handed). What it does cost is a timing
+side channel, and that is a real cost every OS offering userspace timing accepts (Linux exposes the
+same counter to its vDSO). We accept it too, knowingly, because the cross-OS primitive suite needs
+userspace self-timing to be comparable to lmbench, which measures from userspace. The physical
+counter and the timer control registers stay trapped; only the virtual counter opens. A stricter
+build could revoke even this and route time through a capability; we have not, and this note is the
+record of why.
+
 ## What is deliberately deferred
 
 - **A BootInfo / self-describing environment.** A structured block the loader hands the program that

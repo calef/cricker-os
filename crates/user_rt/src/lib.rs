@@ -66,6 +66,29 @@ pub fn recv(slot: u64) -> (u64, u64, u64) {
     (w0, w1, w2)
 }
 
+/// The virtual counter, `CNTVCT_EL0`: a monotonic tick count for self-timing. Readable at EL0 only
+/// because the kernel opened `CNTKCTL_EL1.EL0VCTEN` (see kernel timer::init and notes/abi.md); the
+/// read is a plain register move, no syscall. Pair with [`cntfrq`] to turn tick deltas into seconds.
+pub fn now() -> u64 {
+    let t: u64;
+    // SAFETY: reading a system register the kernel made EL0-readable. No side effects.
+    unsafe {
+        core::arch::asm!("mrs {}, cntvct_el0", out(reg) t, options(nomem, nostack));
+    }
+    t
+}
+
+/// The counter frequency in Hz, `CNTFRQ_EL0`: how many [`now`] ticks make a second. Constant for the
+/// life of the machine (QEMU reports 62.5 MHz under TCG, the host's counter frequency under HVF).
+pub fn cntfrq() -> u64 {
+    let f: u64;
+    // SAFETY: reading a system register; EL0-readable once EL0VCTEN is set.
+    unsafe {
+        core::arch::asm!("mrs {}, cntfrq_el0", out(reg) f, options(nomem, nostack));
+    }
+    f
+}
+
 /// Terminate this process. The kernel reaps the thread and frees its whole address space. Never
 /// returns; the trailing spin is only there to satisfy the `-> !` type if `svc` ever came back.
 pub fn exit() -> ! {
