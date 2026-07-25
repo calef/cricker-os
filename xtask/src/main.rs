@@ -153,14 +153,22 @@ fn mkinitrd() -> bool {
             return false;
         }
     };
+    let shell = match std::fs::read(bin_elf("shell")) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("shell"));
+            return false;
+        }
+    };
     // "init" is the hello binary (the kernel loads it, init re-enters it at its remaining roles);
-    // "worker", "console", and "input" are distinct binaries (19f.2-4) init loads by name. All are
-    // entries in the one archive.
-    let files: [(&str, &[u8]); 4] = [
+    // "worker", "console", "input", and "shell" are distinct binaries (19f.2-5) init loads by name.
+    // All are entries in the one archive.
+    let files: [(&str, &[u8]); 5] = [
         ("init", &hello),
         ("worker", &worker),
         ("console", &console),
         ("input", &input),
+        ("shell", &shell),
     ];
     let size = crickerfs::image_size(&files);
     let mut img = std::vec![0u8; size];

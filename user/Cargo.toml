@@ -38,6 +38,13 @@ path = "src/input.rs"
 test = false
 bench = false
 
+# The shell (milestone 19f.5): the last program lifted out of hello, and the most wired.
+[[bin]]
+name = "shell"
+path = "src/shell.rs"
+test = false
+bench = false
+
 [dependencies]
 abi = { version = "0.1.0", path = "../crates/abi" }
 crickerfs = { version = "0.1.0", path = "../crates/crickerfs" }

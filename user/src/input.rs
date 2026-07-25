@@ -55,10 +55,13 @@ pub extern "C" fn _start(_x0: u64, _x1: u64, _x2: u64) -> ! {
     let buf = LINE_VA as *mut u8;
     let mut n: usize;
 
-    // Drain anything already in the FIFO by POLLING, before arming the interrupt. Input piped in
-    // at boot is sitting in the FIFO already, and the first interrupt after arming can race with
-    // it; polling first sidesteps that and is why the shell never loses the first character of a
-    // piped command. See notes.
+    // Drain anything already in the FIFO by POLLING, before arming the interrupt: input piped in at
+    // boot is sitting in the FIFO already, and the first interrupt after arming can race with it.
+    // This narrows the window but does NOT close it. A line burst-piped into QEMU during the few
+    // instructions between the driver starting and this drain running can still lose its leading
+    // character (verified at 19f.5: `printf 'help\n' | ...` before the prompt drops the 'h'). A real
+    // user typing after the prompt never hits it, and every line after the first is interrupt-driven
+    // and intact. Fully closing it needs the driver armed before any input can arrive. See notes.
     n = drain(buf, 0);
     wr(IMSC, rd(IMSC) | RXIM);
 

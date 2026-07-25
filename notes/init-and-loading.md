@@ -168,11 +168,34 @@ the worker computed 36 and reported, and the **console** binary printed `6*6 = 3
 worker, and console, three separate programs, plus init and the shell, cooperating through
 capabilities and shared pages.
 
+## The shell, its own binary (milestone 19f.5): the split is complete
+
+The last and most-wired program, `user/src/shell.rs`, lifted out of hello. It holds five capability
+slots (console request/reply, the input line endpoint, and the spawn/result endpoints) and two
+shared pages, reads a line, and prints. Its consumers (init's `init_boot` and the kernel-side
+`shell_service::start`) load `"shell"` by name and start it with `x0 = 0`.
+
+With the shell out, **hello contains none of the system's programs**. Every service is its own binary
+in the archive: `worker`, `console`, `input`, `shell`. hello keeps only init and the milestone-tour
+demo roles (the printing client, the virtio driver, the capability demos). On the `initboot` path
+init loads nothing of hello into a child at all; it builds the whole system from the four distinct
+binaries.
+
+Proven end to end by piping keystrokes into QEMU's serial on both interactive paths (kernel-side
+`shell` feature and `initboot`): typing `run 9` at the prompt, the input binary read and echoed it,
+the shell parsed it, init built the worker binary with 9, the worker computed 81, and the console
+binary printed `9*9 = 81`. Four separate programs plus init, cooperating through capabilities.
+
+One honest wrinkle surfaced: a line **burst-piped before the prompt appears** loses its first
+character, because the input driver arms its RX interrupt a few instructions after it starts and a
+pre-armed poll only narrows that window, it does not close it. The input driver's comment used to
+claim it "never loses the first character"; it does, under burst-piping. A user typing after the
+prompt never hits it, and every line after the first is interrupt-driven and intact. The comment is
+corrected; fully closing the window is a separate input-driver fix, not part of the split.
+
 ## What is not here yet
 
-Only the **shell** is still a role of `hello`, and it is the most wired of the programs (console
-channel, line channel, spawn channel, result channel). Splitting it is 19f.5, and it is the natural
-moment to lift the `invoke`/`send`/`recv` runtime, now copied into worker, console, and input, into a
-shared user-runtime crate: after the shell, the shared surface is fully known (send, recv, invoke,
-exit, and the small UART echo helpers the two drivers share). The kernel-side service wiring the
-milestone tour still uses is retired by the `initboot` path, which builds these services inside init.
+The `invoke`/`send`/`recv`/`exit` runtime is now copied verbatim into four binaries (worker, console,
+input, shell). The shared surface is finally known, so lifting it into a `user_rt` library crate is
+the natural next cleanup (19f.6). The kernel-side service wiring the milestone tour still uses is
+retired by the `initboot` path, which builds these services inside init.

@@ -1,27 +1,28 @@
-//! A shell, at EL0. **Proof the whole stack works.**
+//! A shell, at EL0: the last program lifted out of hello into its own binary (milestone 19f.5).
 //!
-//! It reads command lines from the input driver (milestone 10's receive side), prints through the
-//! console server (milestone 8), and spawns worker processes on command. Every layer under it is
-//! exercised at once: EL0, per-process address spaces, capabilities, IPC, and two userspace
-//! drivers. The kernel is a message router; everything the user sees is a conversation between
-//! processes.
+//! **Proof the whole stack works.** It reads command lines from the input driver (milestone 10's
+//! receive side), prints through the console server (milestone 8), and asks init to spawn worker
+//! processes on command. Every layer under it is exercised at once: EL0, per-process address
+//! spaces, capabilities, IPC, and two userspace drivers, all distinct binaries now. The kernel is a
+//! message router; everything the user sees is a conversation between processes.
 //!
 //! # The shell's world
 //!
-//! It holds, by convention (the kernel granted them in this order):
+//! It holds, by convention (init granted them in this order):
 //!
 //! - slot 0/1: the console server's request/reply endpoints (print).
 //! - slot 2: the input driver's line endpoint (read a line).
-//! - slot 3: a spawn endpoint (ask the kernel to start a worker).
+//! - slot 3: a spawn endpoint (ask init to start a worker).
 //! - slot 4: a result endpoint (receive a spawned worker's answer).
 //!
-//! and two shared pages: one with the console server (output), one with the input driver (the
-//! line buffer).
+//! and two shared pages: one with the console server (output), one with the input driver (the line
+//! buffer). No role selector; a standalone binary needs none. The tiny `invoke`/`recv` runtime is
+//! duplicated from the other binaries for now; see notes/init-and-loading.md on the shared crate.
 
-use crate::{invoke, recv};
-use abi::endpoint;
+#![no_std]
+#![no_main]
 
-// Shared pages (must match the kernel's shell_service wiring).
+// Shared pages (must match init's / the kernel shell_service's wiring).
 const OUT_VA: u64 = 0x0000_0000_0060_0000; // shared with the console server
 const LINE_VA: u64 = 0x0000_0000_00b0_0000; // shared with the input driver
 
@@ -32,8 +33,8 @@ const LINE: u64 = 2; // RECV a completed input line
 const SPAWN: u64 = 3; // SEND a spawn request
 const RESULT: u64 = 4; // RECV a worker's result
 
-/// Print a string through the console server: write it into the shared page, send the length,
-/// wait for the ack (which means the buffer is free again).
+/// Print a string through the console server: write it into the shared page, send the length, wait
+/// for the ack (which means the buffer is free again).
 fn print(s: &[u8]) {
     let n = s.len().min(4096);
     let out = OUT_VA as *mut u8;
@@ -42,7 +43,7 @@ fn print(s: &[u8]) {
         unsafe { core::ptr::write_volatile(out.add(i), b) };
     }
     // SAFETY: `svc`; the kernel validates the console capability.
-    unsafe { invoke(REQUEST, endpoint::SEND, n as u64, 0, 0) };
+    unsafe { invoke(REQUEST, abi::endpoint::SEND, n as u64, 0, 0) };
     recv(REPLY);
 }
 
@@ -61,8 +62,8 @@ fn print_num(mut v: u64) {
     print(&digits[i..]);
 }
 
-/// Read a command line from the input driver. The bytes land in the shared LINE page; we copy up
-/// to `out.len()` of them and return the count.
+/// Read a command line from the input driver. The bytes land in the shared LINE page; we copy up to
+/// `out.len()` of them and return the count.
 fn read_line(out: &mut [u8]) -> usize {
     let len = recv(LINE).0 as usize;
     let src = LINE_VA as *const u8;
@@ -74,7 +75,8 @@ fn read_line(out: &mut [u8]) -> usize {
     n
 }
 
-pub fn run() -> ! {
+#[unsafe(no_mangle)]
+pub extern "C" fn _start(_x0: u64, _x1: u64, _x2: u64) -> ! {
     print(b"\ncricker-os shell. every command below runs at EL0.\n");
     print(b"commands: help, echo <text>, run <n>\n");
 
@@ -95,10 +97,10 @@ pub fn run() -> ! {
             print(b"\n");
         } else if let Some(rest) = strip_prefix(cmd, b"run ") {
             let n = parse_num(rest);
-            // Ask the kernel's spawn service to start a worker computing n*n. It runs as its own
-            // EL0 process and reports back on the result endpoint we hold.
+            // Ask init's spawn service to start a worker computing n*n. It runs as its own EL0
+            // process (the "worker" binary) and reports back on the result endpoint we hold.
             // SAFETY: `svc`.
-            unsafe { invoke(SPAWN, endpoint::SEND, n, 0, 0) };
+            unsafe { invoke(SPAWN, abi::endpoint::SEND, n, 0, 0) };
             let answer = recv(RESULT).0;
             if answer == u64::MAX {
                 print(b"  could not spawn a process (the kernel is out of memory)\n");
@@ -119,10 +121,6 @@ pub fn run() -> ! {
     }
 }
 
-// The worker moved out of this binary at milestone 19f.2: it is its own program now
-// (`user/src/worker.rs`), loaded by init from the archive by name. The shell still asks init's
-// spawn service to build one via `run <n>`; it just no longer carries the worker's code itself.
-
 fn strip_prefix<'a>(s: &'a [u8], prefix: &[u8]) -> Option<&'a [u8]> {
     if s.len() >= prefix.len() && &s[..prefix.len()] == prefix {
         Some(&s[prefix.len()..])
@@ -139,4 +137,51 @@ fn parse_num(s: &[u8]) -> u64 {
         }
     }
     v
+}
+
+/// `RECV` three words, blocking until a sender arrives.
+fn recv(slot: u64) -> (u64, u64, u64) {
+    let (mut w0, mut w1, mut w2): (u64, u64, u64);
+    // SAFETY: `svc`. RECV returns three words in x0/x1/x2.
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("x8") abi::SYS_INVOKE,
+            inlateout("x0") slot => w0,
+            in("x1") abi::endpoint::RECV,
+            lateout("x1") w1,
+            lateout("x2") w2,
+            in("x3") 0u64,
+            in("x4") 0u64,
+            options(nostack),
+        );
+    }
+    (w0, w1, w2)
+}
+
+/// # Safety
+/// `svc` traps to EL1. The kernel validates the capability and method; that is its whole job.
+unsafe fn invoke(cap: u64, method: u64, a0: u64, a1: u64, a2: u64) -> i64 {
+    let ret: i64;
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("x8") abi::SYS_INVOKE,
+            inlateout("x0") cap => ret,
+            in("x1") method,
+            in("x2") a0,
+            in("x3") a1,
+            in("x4") a2,
+            options(nostack),
+        );
+    }
+    ret
+}
+
+#[panic_handler]
+fn panic(_: &core::panic::PanicInfo) -> ! {
+    unsafe { core::arch::asm!("brk #0", options(nostack, nomem)) };
+    loop {
+        core::hint::spin_loop();
+    }
 }

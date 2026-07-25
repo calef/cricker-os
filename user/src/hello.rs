@@ -22,7 +22,6 @@
 #![no_std]
 #![no_main]
 
-mod shell;
 mod virtio;
 
 use abi::{Error, endpoint};
@@ -38,9 +37,9 @@ const SELF_CHECK: u64 = 0;
 const PRINTING: u64 = 2;
 const VIRTIO_BLK: u64 = 3;
 // Role 4 was the input driver; it is its own binary now (`user/src/input.rs`, 19f.4).
-const SHELL: u64 = 5;
-// Role 6 was the worker; it is its own binary now (`user/src/worker.rs`, milestone 19f.2), so the
-// role and hello's `shell::worker()` are gone. init loads "worker" from the archive by name.
+// Role 5 was the shell; it is its own binary now (`user/src/shell.rs`, 19f.5).
+// Role 6 was the worker; it is its own binary now (`user/src/worker.rs`, 19f.2). init loads each of
+// these from the archive by name; hello keeps only the milestone-tour demo roles below.
 const UNTYPED_DEMO: u64 = 7;
 const VIRTIO_ATTACK: u64 = 8;
 const GRANTER: u64 = 9;
@@ -91,7 +90,6 @@ pub extern "C" fn _start(role: u64, dma_phys: u64, _arg2: u64) -> ! {
     match role {
         PRINTING => printing_client(),
         VIRTIO_BLK => virtio::run(dma_phys),
-        SHELL => shell::run(),
         UNTYPED_DEMO => untyped_demo(),
         VIRTIO_ATTACK => virtio::run_attack(dma_phys),
         VIRTIO_ATTACK_INDIRECT => virtio::run_attack_indirect(dma_phys),
@@ -402,24 +400,22 @@ fn init_boot(_x1: u64) -> ! {
     const UART_DEV: u64 = 2;
     const UART_IRQ: u64 = 4;
 
-    // Roles and the VAs each program hardcodes. Console and input are their own binaries now
-    // (19f.3, 19f.4), started with no role; the shell is still a role of hello (its VAs must match
-    // shell.rs).
-    const ROLE_SHELL: u64 = 5;
+    // The VAs each program hardcodes. Console, input, and shell are all their own binaries now
+    // (19f.3-5), each started with no role; the VAs must match console.rs/input.rs/shell.rs.
     const CON_SHARED_VA: u64 = 0x0060_0000; // console reads text here; shell writes it
     const CON_UART_VA: u64 = 0x0070_0000; // console's UART mapping
     const IN_UART_VA: u64 = 0x00a0_0000; // input driver's UART mapping
     const LINE_VA: u64 = 0x00b0_0000; // input writes lines here; shell reads them
     const DEV: u64 = abi::aspace::MAP_RO; // mode arg ignored for a DeviceFrame cap
 
-    let Some(init_bytes) = program(initrd_len, "init") else { halt_forever() };
-    let Ok(elf) = elf::Elf::parse(init_bytes) else { halt_forever() };
-    // Console and input are their own binaries (19f.3, 19f.4); only the shell is still a role of
-    // `elf` (hello).
+    // Every service init builds is now its own binary, loaded from the archive by name. init itself
+    // is the only role of hello left on this path, and it loads nothing of hello into a child.
     let Some(con_bytes) = program(initrd_len, "console") else { halt_forever() };
     let Ok(con_elf) = elf::Elf::parse(con_bytes) else { halt_forever() };
     let Some(in_bytes) = program(initrd_len, "input") else { halt_forever() };
     let Ok(in_elf) = elf::Elf::parse(in_bytes) else { halt_forever() };
+    let Some(sh_bytes) = program(initrd_len, "shell") else { halt_forever() };
+    let Ok(sh_elf) = elf::Elf::parse(sh_bytes) else { halt_forever() };
 
     // The endpoints and shared pages init owns and hands out. Endpoints come from retype with full
     // rights, so init keeps RWG and delegates narrowed views.
@@ -463,8 +459,8 @@ fn init_boot(_x1: u64) -> ! {
         (CON_SHARED_VA, con_shared, abi::aspace::MAP_RW), // OUT_VA: shell writes text here
         (LINE_VA, line_buf, abi::aspace::MAP_RO),         // shell reads input lines
     ];
-    let Ok(shell) = build_child(UNTYPED, &elf, sh_caps, sh_maps) else { halt_forever() };
-    check(tcb_start(shell, ROLE_SHELL, 0, 0) == 0);
+    let Ok(shell) = build_child(UNTYPED, &sh_elf, sh_caps, sh_maps) else { halt_forever() };
+    check(tcb_start(shell, 0, 0, 0) == 0); // no role selector: shell is its own binary
     cap_delete(shell);
 
     // The worker is its own binary (19f.2). Parse it once from the archive; every `run <n>` builds

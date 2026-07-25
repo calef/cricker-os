@@ -1266,17 +1266,16 @@ pub mod shell_service {
     const OUT_VA: u64 = 0x0000_0000_0060_0000; // shell <-> console server
     const LINE_VA: u64 = 0x0000_0000_00b0_0000; // shell <-> input driver
 
-    const ROLE_SHELL: u64 = 5;
-
     /// **How many children the shell may have alive at once.** The bound that stops a spawn flood
     /// (or workers that block forever without exiting) from exhausting kernel memory: each live
     /// child costs a `Thread`, a 16 KiB kernel stack, and an address space, and there can be at
     /// most this many. A child returns its slot when it is reaped. See notes/quotas.md.
     static SPAWN_QUOTA: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(8);
 
-    pub fn start(image: &'static [u8]) {
-        // The worker is its own binary now (19f.2), loaded by name, not a role of `image` (hello).
+    pub fn start() {
+        // Every program the shell stack needs is its own binary now (19f.2-5), loaded by name.
         let worker = program("worker").expect("no worker program in the initrd");
+        let shell = program("shell").expect("no shell program in the initrd");
 
         // Output: the console server (milestone 8), and the shell as its client.
         let console = console_service::start();
@@ -1322,12 +1321,12 @@ pub mod shell_service {
         })
         .expect("could not spawn the process service"); // once, at boot, not attacker-reachable
 
-        // The shell itself.
+        // The shell itself, its own binary now (19f.5).
         crate::sched::spawn(move || {
             run(
-                image,
+                shell,
                 Spawn {
-                    arg0: ROLE_SHELL,
+                    arg0: 0, // no role selector: shell is its own binary
                     arg1: 0,
                     arg2: 0,
                     grants: &[

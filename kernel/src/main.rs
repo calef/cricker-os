@@ -333,10 +333,10 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         // It brings up its own console and input drivers kernel-side, so it stands alone with the
         // tour compiled out. `initboot` moves this bring-up into init above.
         #[cfg(not(feature = "initboot"))]
-        if let Some(image) = user::program("init") {
+        if user::initrd().is_some() {
             println!();
             println!("cricker-os — an interactive shell at EL0. type `help`.");
-            user::shell_service::start(image);
+            user::shell_service::start();
             // The boot thread's work is done; the shell and its friends run until halt.
         }
     }
