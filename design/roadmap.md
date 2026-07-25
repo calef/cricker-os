@@ -38,7 +38,7 @@ IPC and the MMU invariants are next. This threads through the list rather than b
 | 17 | Multikernel-leaning scheduler (research, optional) | Partition the shared thread table and endpoints | optional; not on the thesis path |
 | 20 | A portable HAL, proven on a second architecture | Make `arch/` a real HAL; bring up RISC-V then x86_64 | the "portable verified core" claim; reach the demonstrator earns |
 | 22 | Trusted init: verify it, and shrink what a broken one can do | Measured/secure boot that checks init before running it; reduce init's authority so a compromise is bounded | **closes the thesis's own soft spot:** init is the privileged *unverified* component the whole system is built by |
-| 23 | A capability-routed component OS with live replacement | Every userspace component (driver, server, app) is a swappable, vendor-shippable unit behind a stable contract; operators replace them live, no reboot. The console hot-swap is instance one | **the flagship payoff and a product ambition:** competing vendor components, confined by the kernel and swapped live; the verified core is the one fixed thing |
+| 23 | A capability-routed component OS with live replacement | Every userspace component (driver, server, app) is a swappable, vendor-shippable unit behind a stable contract; operators replace them live, no reboot. The console hot-swap is instance one; a durable queue-broker decouples component lifecycles (opt-in per channel, for latency) | **the flagship payoff and a product ambition:** competing vendor components, confined by the kernel and swapped live; the verified core is the one fixed thing |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19), with the multikernel work (17) as
@@ -266,6 +266,39 @@ version, no reboot, with a client that never notices. Four steps, each on earlie
    the server; the broker re-points on a swap, so substitution is invisible. A userspace naming
    service.
 4. **Drain in-flight requests and tear the old server down** (the reaper plus revocation).
+
+**The broker as a queue, and its latency (the concern that governs where this is used).** The
+instance-one broker just re-points; the general form *buffers* -- a **durable queue server** that
+holds messages in its own budget while a backend is down (crashed, restarting under supervision, or
+being swapped), so a producer never blocks on an absent consumer and the new consumer drains the
+backlog. This is the OS analogue of a distributed message queue (Kafka/RabbitMQ): a stable, always-up
+broker decouples the *lifecycles* of the two ends, which is what makes crash-restart and live swap
+seamless rather than merely possible. The kernel does not change -- it keeps synchronous rendezvous
+(tiny, verified, no allocation); the queue is userspace policy, its buffer bounded by the server's
+own untyped, so a runaway producer hits backpressure or a drop policy, never unbounded kernel memory.
+
+Latency is the price, and it dictates where the queue is wired. Interposing a queue server turns one
+rendezvous (one IPC, one switch, register transfer) into **two IPCs, two switches, and a copy**
+through the server's buffer -- roughly a 2x IPC tax plus a scheduling hop. On a microkernel where
+IPC is the hot path, that is not paid everywhere:
+
+- **Opt-in per channel, never the default.** Direct synchronous rendezvous stays the fast path;
+  queuing is chosen only for channels that cross a lifecycle boundary (components that restart or
+  swap), where the decoupling is worth the tax.
+- **Pass-through when both ends are up.** The broker buffers only during the down window; in steady
+  state, with a live consumer waiting, it forwards directly, keeping the common case near direct IPC.
+- **A latency ladder, not one point.** Fastest: a shared-memory ring buffer + async notification
+  (the io_uring / virtio shape cricker-os *already runs* for device I/O; the notification primitive
+  is a generalisation of the endpoint's async-signal count) -- no middleman process, decouples in
+  rate. Middle: a queue-server process -- decouples lifecycle, one extra hop. Slowest: a durable
+  queue server that writes to storage -- survives its own crash. The rung is a per-channel choice.
+- **Measure it, do not argue it.** Milestone 21's benchmark harness is the instrument: add a
+  queued-IPC round trip beside the direct one, so the tax is a committed baseline number and a
+  regression in it surfaces proximate to its cause.
+
+Prior art for the queue itself: Mach ports (kernel message queues, macOS's foundation), Unix pipes,
+POSIX/SysV message queues, and every distributed broker (Kafka, RabbitMQ, SQS); the shared-memory
+ring variant is io_uring, DPDK, and virtio.
 
 **Generalising to all components: what the console case does not yet need.**
 
