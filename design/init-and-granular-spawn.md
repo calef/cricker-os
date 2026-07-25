@@ -148,6 +148,19 @@ names the space through the same registry revocation uses.
     move applied to interrupts and the virtio transport).
   - **19d.2c: the shell wired to init-built services; retire the kernel's `run`/`Spawn` device
     wiring; `spawn_init` becomes the real (non-test) boot path.**
+- **19f: dedicated binaries, delivered as named programs. (Planned.)** Everything through 19d.2 is
+  still *one* multi-tool binary (`hello`) whose programs are roles selected by `x0`; init, the
+  child, and the console server are the same ELF loaded more than once. A real system has a
+  distinct binary per program, each exactly its own job (and thus its own least authority). This
+  needs a **program-delivery mechanism**, not just a rebuild: the kernel hands init a single initrd
+  blob today, so delivering several named programs wants either a bundled archive (Linux-style
+  initramfs the kernel hands init, which init indexes by name) or loading from the `crickerfs`
+  filesystem on the virtio disk (programs as files, `exec`'d by path, like Unix `/bin`). The
+  filesystem route carries the classic bootstrap: reading the disk needs the virtio driver running,
+  which is itself a program to load, so a small initramfs brings up init plus the disk drivers,
+  which then mount the disk and load the rest. This is where "console server as its own binary"
+  lands, and it makes per-program least authority real. Prior art: Linux initramfs (cpio) then
+  pivot to the real root; every Unix's `/bin` plus an `exec` by path.
 - **19e: the workload.** Decision 2 (what runs first, native ABI) happens here, against a
   system that can actually run it.
 

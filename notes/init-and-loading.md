@@ -66,6 +66,12 @@ bytes.
 ## What is not here yet
 
 The service migration (console, shell, the demo wiring in `user.rs`) still runs kernel-side;
-19d.2 moves it into init and retires the kernel's other loaders. And the child here is loaded but
-init still copies the *whole* binary (one `.text` for all roles); a real system would load
-distinct programs, which is the same mechanism with different bytes.
+19d.2 moves it into init and retires the kernel's other loaders. And every program here is a
+*role* of one multi-tool binary (`hello`) selected by `x0`: init, the child, the console server
+are the same ELF loaded more than once. A real system has **distinct binaries per program**,
+each exactly its one job. That is not "the same mechanism with different bytes" as this note first
+claimed: it needs a **program-delivery mechanism** we do not have yet, because today the kernel
+hands init a single initrd blob. Delivering several named programs wants either a bundled archive
+(Linux-style initramfs, indexed by name) or loading from the `crickerfs` filesystem on the disk
+(programs as files, `exec`'d by path). That is milestone 19f (design/init-and-granular-spawn.md),
+and it is where "console server as its own binary" actually lands.
