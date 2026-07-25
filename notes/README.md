@@ -212,7 +212,8 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [Linker scripts](linker-scripts.md) — who decides what address your code lives at, why
   nobody zeroes our `.bss`, and where the stack comes from when there's no OS.
 - [ELF](elf.md) — the container the kernel ships in. Sections vs. segments, where the
-  entry point lives, and what QEMU actually does with `-kernel` (almost nothing).
+  entry point lives, what QEMU actually does with `-kernel` (almost nothing), and what a
+  magic number is (the `BadMagic` that caught the 19f archive fed to the ELF loader).
 - [The boot protocol](boot-protocol.md) — how QEMU decides whether you're a kernel or an
   anonymous blob, and the 64-byte arm64 Image header that is the entire difference. Why
   `text_offset` and the linker script must agree, and why the failure mode is silent.
