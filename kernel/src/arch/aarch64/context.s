@@ -91,18 +91,15 @@ switch_to:
 // the caller says how. See Thread::spawn (milestone 14 phase B.3).
 .global thread_trampoline
 thread_trampoline:
-    // ENABLE INTERRUPTS.
+    // We arrive here with IRQs masked (from the `schedule()` that switched to us, or the timer
+    // IRQ it ran inside). A brand-new thread has no SPSR to restore its interrupt state from, so
+    // it must unmask by hand — but **`thread_entry` does that, AFTER `finish_switch`**, not here.
     //
-    // Easy to miss, and fatal if you do. We usually arrive here from inside the timer IRQ
-    // handler, which the hardware entered with IRQs masked. Every *other* thread gets its
-    // interrupt state back from `eret` restoring SPSR_EL1 — but a brand-new thread has no
-    // SPSR to restore, because it was never interrupted. It has never run at all.
-    //
-    // Without this, the first thread we spawn runs with interrupts masked forever: it can
-    // never be preempted, and if it loops, the machine is gone. Which would be a cooperative
-    // scheduler with extra steps, and an ironic way to lose this particular argument.
-    msr     daifclr, #2
-
+    // Enabling IRQs *here*, before `finish_switch`, was a real, intermittent hang. `finish_switch`
+    // reaps the predecessor and completes any wake it deferred, reading this core's `switched_from`.
+    // A timer IRQ landing between an early unmask and `finish_switch` would run `schedule()`, which
+    // overwrites `switched_from` with *us*, and the predecessor is stranded: its `on_cpu` never
+    // clears, so every future wake for it is deferred forever. `finish_switch` must run masked.
     mov     x0,  x19            // the closure, on this thread's own stack
     mov     x1,  x20            // extern "C" fn(*mut ()): the closure's monomorphized caller
     bl      thread_entry        // extern "C" fn(*mut (), fn(*mut ())) -> !  — never returns
@@ -121,7 +118,9 @@ thread_trampoline:
 // tail-call the Rust half, which reaps our predecessor and drops to EL0.
 .global user_entry_trampoline
 user_entry_trampoline:
-    msr     daifclr, #2         // enable interrupts (see thread_trampoline for why)
+    // No early unmask here either (see thread_trampoline for the hang it caused). `finish_switch`
+    // runs masked inside `user_thread_entry`; the `eret` that drops us to EL0 restores an SPSR
+    // with IRQs enabled, so the EL0 thread is preemptible from its first instruction.
     mov     x0,  x19            // the EL0 entry address
     mov     x1,  x20            // the user stack pointer
     mov     x2,  x21            // the child's initial x0 (19d)

@@ -623,7 +623,13 @@ extern "C" fn thread_entry(closure: *mut (), call: extern "C" fn(*mut ())) -> ! 
     // from to start us may have finished; reap it now, off its stack, exactly as a resuming thread
     // does after `switch_to`. A new thread does not pass through `schedule()`'s post-switch point,
     // so this is the only place that reap happens for it. See sched::finish_switch.
+    //
+    // We arrive with IRQs masked (the trampoline no longer unmasks early — doing so before this
+    // call stranded the predecessor when a timer IRQ overwrote `switched_from`; see context.s).
+    // `finish_switch` therefore runs masked, as it must. Only now, once it has completed, do we
+    // unmask, so this kernel thread's closure is preemptible.
     crate::sched::finish_switch();
+    crate::arch::interrupts::enable();
 
     call(closure);
 

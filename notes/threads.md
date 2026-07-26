@@ -83,27 +83,43 @@ restores it on the way in.
 > `Box<dyn FnOnce()>` is a **fat** pointer (data + vtable), two words, and we have one register.
 > So box it twice: `Box<Box<dyn FnOnce()>>` is a *thin* pointer to a fat one, and fits.
 
-### The trampoline must unmask interrupts, and this is easy to miss
+### The trampoline must unmask interrupts, but AFTER `finish_switch`, not before
+
+A brand-new thread must unmask interrupts by hand: we arrive from inside the timer IRQ handler (or
+a `schedule()` that ran there), IRQs masked, and unlike a *resumed* thread there is no `SPSR_EL1`
+to restore the interrupt state from — the thread was never interrupted, it has never run at all.
+Without unmasking, the first thread you spawn runs with interrupts masked forever, never preempted:
+a cooperative scheduler with extra steps.
+
+The trap, and a real intermittent hang it caused (found by a watchdog dumping thread states, see
+notes/deadlock.md): the trampoline first called `thread_entry`, whose first act is `finish_switch`,
+and it unmasked interrupts **before** that call. `finish_switch` reaps the predecessor and completes
+any wake it deferred, by reading this core's `switched_from`. If a timer IRQ lands between an early
+unmask and `finish_switch`, it runs `schedule()`, which **overwrites `switched_from` with the fresh
+thread** — the predecessor is stranded. Its `on_cpu` never clears, so every future wake for it is
+deferred forever (`wake_pending` set, never completed). It blocks on some later IPC and never wakes.
+
+So the ordering is load-bearing:
 
 ```asm
 thread_trampoline:
-    msr  daifclr, #2        // <- ENABLE INTERRUPTS
-    mov  x0, x19
-    bl   thread_entry
+    // NO early unmask here.
+    bl   thread_entry          // finish_switch() runs FIRST, masked
+```
+```rust
+extern "C" fn thread_entry(...) {
+    finish_switch();                       // masked: nothing can overwrite switched_from
+    crate::arch::interrupts::enable();      // NOW unmask; the closure is preemptible
+    call(closure);
+}
 ```
 
-We usually arrive here **from inside the timer IRQ handler**, which the hardware entered with
-IRQs masked.
-
-Every *resumed* thread gets its interrupt state back from `eret` restoring `SPSR_EL1`. A
-brand-new thread has **no `SPSR` to restore** — it was never interrupted, because it has never
-run at all.
-
-Without that one instruction, the first thread you spawn runs with interrupts masked **forever**.
-It can never be preempted. If it loops, the machine is gone.
-
-Which would be a cooperative scheduler with extra steps, and an ironic way to lose this
-particular argument.
+For a **user** thread the unmask is even freer: `finish_switch` runs masked, and the `eret` that
+drops to EL0 restores an `SPSR` with IRQs on, so the EL0 thread is preemptible from its first
+instruction with no explicit `enable`. Same rule either way: **`finish_switch` runs masked.** The
+general statement is that the whole switch, from `schedule` masking IRQs to the successor's
+`finish_switch` completing, is one atomic region; a fresh thread's entry is inside that region and
+must not open it early.
 
 ## Preemption is four lines, because milestone 2 did the hard part
 
