@@ -108,6 +108,14 @@ impl<T: Node> Endpoint<T> {
         self.senders.is_empty() || self.receivers.is_empty()
     }
 
+    /// **No thread is blocked on this endpoint** (both wait queues empty). Object revocation asks
+    /// this before reclaiming an endpoint's region: an idle endpoint is torn down (its name goes
+    /// stale), while one with a blocked waiter blocks the reclaim, since freeing its page would
+    /// strand that thread. The pending signal count does not count: a signal holds no thread.
+    pub fn is_idle(&self) -> bool {
+        self.senders.is_empty() && self.receivers.is_empty()
+    }
+
     /// A sender `me` arrives. Rendezvous with a waiting receiver if there is one, otherwise `me`
     /// joins the sender queue (and the caller should block it).
     ///

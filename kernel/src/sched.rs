@@ -1261,8 +1261,10 @@ fn reap_region_objects(base: u64, end: u64) -> Result<(), ()> {
     // translated back. That is the whole test for "this object lives in the region".
     let page_of = |t: &Thread| crate::arch::mmu::virt_to_phys(t as *const Thread as u64);
 
-    // Refuse while any live thread still occupies the region: freeing its page would pull the
-    // stack, or the running address space, out from under a thread that can still be scheduled.
+    // --- Refuse phase: change nothing until every object in the region can be torn down. ---
+
+    // A live thread (Ready/Running/Blocked) in the region: freeing its page would pull the stack, or
+    // the running address space, out from under a thread that can still be scheduled.
     for t in sched.threads.iter_mut() {
         let phys = page_of(t);
         let live = matches!(t.state, State::Ready | State::Running | State::Blocked);
@@ -1270,9 +1272,24 @@ fn reap_region_objects(base: u64, end: u64) -> Result<(), ()> {
             return Err(());
         }
     }
+    // An endpoint with a thread blocked on it: reclaiming its page would strand that thread. This is
+    // the safe subset; error-return-to-the-waiter (the chosen richer semantic) is a deferred IPC-core
+    // change, so for now a blocked waiter refuses the reclaim, as a live thread does. An idle
+    // endpoint holds no thread and is torn down below.
+    for (_, &phys) in sched.endpoints.iter() {
+        if base <= phys && phys < end {
+            // SAFETY: the endpoint lives at `phys` (retyped for it), its region pinned until we free
+            // it, SCHED held. Reading its wait queues is sound.
+            let ep = unsafe { &*(crate::arch::mmu::phys_to_virt(phys) as *const Endpoint) };
+            if !ep.is_idle() {
+                return Err(());
+            }
+        }
+    }
 
-    // Collect the dead (`Embryo`/`Finished`) before removing any: `remove` mutates the table, so we
-    // cannot hold an iterator across it. At most `MAX_THREADS` names, which fit on the stack.
+    // --- Removal phase: every object in the region is reapable. ---
+
+    // Threads: collect before removing (`remove` mutates the table). Both Embryo and Finished go.
     let mut doomed = [0u64; MAX_THREADS];
     let mut n = 0;
     for t in sched.threads.iter_mut() {
@@ -1285,6 +1302,21 @@ fn reap_region_objects(base: u64, end: u64) -> Result<(), ()> {
     for &tid in &doomed[..n] {
         sched.threads.remove(tid);
     }
+
+    // Endpoints: the idle ones in the region. Removing bumps the name's generation, so every
+    // Endpoint capability to it fails to resolve; the page itself is freed by the enclosing destroy.
+    let mut doomed_eps = [0u64; MAX_ENDPOINTS];
+    let mut ne = 0;
+    for (name, &phys) in sched.endpoints.iter() {
+        if base <= phys && phys < end {
+            doomed_eps[ne] = name;
+            ne += 1;
+        }
+    }
+    for &name in &doomed_eps[..ne] {
+        sched.endpoints.remove(name);
+    }
+
     Ok(())
 }
 
@@ -1673,6 +1705,66 @@ mod tests {
             frames_before,
             "each create+destroy of a region must net zero frames",
         );
+    }
+
+    /// **Object revocation reclaims a region holding an idle endpoint.** An endpoint nobody is
+    /// blocked on is torn down with its region: removed from the registry (its name goes stale, so
+    /// every Endpoint capability to it fails), and its page returned. Frames back to baseline.
+    #[test_case]
+    fn reclaim_frees_a_regions_idle_endpoint() {
+        let frames_before = crate::memory::free_frames();
+        let region = crate::untyped::create(2).expect("region");
+        let _ep = crate::sched::create_endpoint_from(region).expect("endpoint from region");
+        assert!(
+            crate::memory::free_frames() < frames_before,
+            "creating the endpoint should have spent frames"
+        );
+        crate::sched::reclaim_region(region).expect("reclaim a region with only an idle endpoint");
+        assert_eq!(
+            crate::memory::free_frames(),
+            frames_before,
+            "the idle endpoint's region must return to baseline",
+        );
+    }
+
+    /// **A region whose endpoint has a blocked waiter refuses reclaim, and reclaims once it is
+    /// idle.** This is the safe subset of endpoint revocation: rather than wake a blocked waiter
+    /// with an error (the intended richer semantic, a deferred IPC-core change), reclaim refuses
+    /// while a thread is blocked on an endpoint in the region, exactly as it refuses a live thread.
+    #[test_case]
+    fn reclaim_refuses_a_region_whose_endpoint_has_a_waiter() {
+        static DONE: AtomicBool = AtomicBool::new(false);
+        DONE.store(false, Ordering::SeqCst);
+
+        let region = crate::untyped::create(2).expect("region");
+        let ep = crate::sched::create_endpoint_from(region).expect("endpoint from region");
+
+        // A thread that blocks receiving on the endpoint.
+        crate::sched::spawn(move || {
+            let _ = crate::sched::ipc_recv(ep);
+            DONE.store(true, Ordering::SeqCst);
+        })
+        .expect("spawn a waiter");
+
+        // Single core: one yield lets the waiter run and block on the recv.
+        crate::sched::yield_now();
+
+        assert!(
+            crate::sched::reclaim_region(region).is_err(),
+            "a region whose endpoint has a blocked waiter must refuse reclaim",
+        );
+
+        // Unblock the waiter (rendezvous), let it finish, and the endpoint goes idle.
+        crate::sched::ipc_send(ep, [7, 0, 0]);
+        for _ in 0..50 {
+            if DONE.load(Ordering::SeqCst) {
+                break;
+            }
+            crate::sched::yield_now();
+        }
+        assert!(DONE.load(Ordering::SeqCst), "the waiter never woke");
+
+        crate::sched::reclaim_region(region).expect("reclaim once the endpoint is idle again");
     }
 
     /// Several threads take turns.
