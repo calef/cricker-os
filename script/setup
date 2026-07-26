@@ -9,6 +9,15 @@ cd "$(dirname "$0")/.."
 
 script/bootstrap
 
+# Advance nightly to the latest. rust-toolchain.toml pins `channel = "nightly"`, which rustup treats
+# as sticky: it installs one nightly and never moves it again on its own. We deliberately do NOT pin a
+# dated nightly (we want to ride the toolchain and meet each rustfmt/clippy change as it lands), so the
+# job of staying current falls here. CI installs a fresh nightly every run, so it is always the leading
+# edge; this keeps a dev machine from silently trailing it. It lives in setup, not bootstrap, to keep
+# it off CI's path (CI needs no update; it starts fresh). See notes/scripts.md.
+echo "==> Advancing nightly to the latest (we ride nightly on purpose; this matches CI)"
+rustup update nightly
+
 echo "==> Building the kernel, the user program, and the disk image"
 cargo xtask build
 
