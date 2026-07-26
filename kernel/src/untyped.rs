@@ -129,11 +129,10 @@ pub fn split(parent: u64, pages: u64) -> Option<u64> {
     let base = {
         let mut regions = REGIONS.lock();
         let r = regions.get_mut(parent)?;
-        if pages == 0 || r.watermark + pages > r.pages {
-            return None; // zero, or beyond the parent's remaining budget
-        }
+        // The budget/overflow/progress check is the proved `regions` arithmetic (crates/regions, Kani).
+        let new_watermark = regions::split_new_watermark(r.pages, r.watermark, pages)?;
         let base = r.base + r.watermark * FRAME_SIZE;
-        r.watermark += pages;
+        r.watermark = new_watermark;
         r.children += 1;
         base
     };
@@ -258,39 +257,46 @@ pub fn unpin(region: u64) {
 /// released before the revoke so revocation can take the scheduler lock (a higher rank) without
 /// inverting the order.
 pub fn destroy(region: u64) {
-    let (base, pages, parent) = {
+    let (base, pages, parent, is_root) = {
         let regions = REGIONS.lock();
         let Some(r) = regions.get(region) else {
             return;
         };
-        // Pinned: a kernel object lives in one of these pages (object revocation unpins first).
-        // children: part of this run was split off to a child region that owns those pages, so
-        // freeing the whole run here would double-free them. Either way, refuse.
-        if r.pinned || r.children > 0 {
+        let is_root = r.parent == NO_PARENT;
+        // The refuse/root/child decision is the proved `regions::destroy_outcome` (crates/regions,
+        // Kani). Refuse means a live object pins it, or a child still owns part of its run; the LIFO
+        // input is irrelevant to a refusal, so a placeholder is fine here.
+        if regions::destroy_outcome(r.pinned, r.children, is_root, false, r.pages)
+            == regions::DestroyOutcome::Refused
+        {
             return;
         }
-        (r.base, r.pages, r.parent)
+        (r.base, r.pages, r.parent, is_root)
     };
     // Unmap any page still mapped anywhere before the pages leave this region, whether they go back
     // to the allocator (a root) or back to the parent's budget (a child); a returned page that a
     // peer still maps would be the §13 use-after-free either way.
     crate::revoke::revoke_region(base, pages * FRAME_SIZE);
 
-    if parent == NO_PARENT {
-        // A root region: its pages came from the frame allocator, so they go back to it.
+    if is_root {
+        // A root region: its pages came from the frame allocator, so they go back to it. The proved
+        // `destroy_outcome` guarantees only roots reach this path, which is what makes double-free
+        // impossible: a page reaches the allocator only through the one root that owns it.
         for i in 0..pages {
             memory::free(Frame::from_addr(base + i * FRAME_SIZE));
         }
     } else {
-        // A child region: its pages belong to the parent, not the allocator. Return them. If this
-        // child sits at the very top of the parent's watermark (the LIFO case), un-bump the parent
-        // so the run is re-splittable; otherwise it stays a hole in the parent until the parent is
-        // itself destroyed (which frees the whole run, holes included, exactly once). Either way,
-        // the parent's live-child count drops, so it can become destroyable again.
+        // A child region: its pages return to the parent, never the allocator. Compute the LIFO test
+        // against the parent's *current* watermark and apply the un-bump under one lock (no TOCTOU),
+        // with the amount the proved `destroy_outcome` dictates: the child's pages if it sits at the
+        // top of the parent's run (re-splittable), else 0 (a hole until the parent itself dies).
         let mut regions = REGIONS.lock();
         if let Some(p) = regions.get_mut(parent) {
-            if base + pages * FRAME_SIZE == p.base + p.watermark * FRAME_SIZE {
-                p.watermark -= pages; // LIFO: the run returns to the parent's unspent budget
+            let is_lifo_top = base + pages * FRAME_SIZE == p.base + p.watermark * FRAME_SIZE;
+            if let regions::DestroyOutcome::ReturnToParent { unbump } =
+                regions::destroy_outcome(false, 0, false, is_lifo_top, pages)
+            {
+                p.watermark -= unbump;
             }
             p.children = p.children.saturating_sub(1);
         }

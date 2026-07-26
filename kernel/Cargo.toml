@@ -19,6 +19,7 @@ frames = { version = "0.1.0", path = "../crates/frames" }
 intrusive = { version = "0.1.0", path = "../crates/intrusive" }
 ipc = { version = "0.1.0", path = "../crates/ipc" }
 paging = { version = "0.1.0", path = "../crates/paging" }
+regions = { version = "0.1.0", path = "../crates/regions" }
 slots = { version = "0.1.0", path = "../crates/slots" }
 spin = { version = "0.12", default-features = false, features = ["spin_mutex"] }
 

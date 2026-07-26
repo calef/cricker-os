@@ -27,6 +27,9 @@ cargo kani -p caps
 echo "==> kani: paging (the address arithmetic)"
 cargo kani -p paging
 
+echo "==> kani: regions (the untyped-region accounting, no double-free)"
+cargo kani -p regions
+
 echo "==> kani: elf (the loader's front half, panic-free on hostile input)"
 cargo kani -p elf
 

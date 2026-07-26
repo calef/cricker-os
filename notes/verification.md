@@ -97,6 +97,20 @@ The last two run over a *symbolic* table (every slot independently empty or hold
 with symbolic object and rights), so "no state exists in which a consumed slot works again" is
 quantified over table states, not sampled.
 
+Two in `crates/regions/src/lib.rs`, the untyped-region accounting behind object revocation
+(DECISIONS §16), where the scary property is **no double-free**:
+
+| Harness | Property |
+|---|---|
+| `split_stays_within_budget_and_progresses` | a successful carve advances the watermark by exactly `want` without overflow and never past the parent's budget, and strictly progresses, so consecutive carves are disjoint runs within the parent |
+| `destroy_never_frees_a_child_to_the_allocator` | a pinned or parent region refuses; a **root** frees to the allocator; a **child** *never* does, its pages return to the parent. So a page reaches the allocator only through the one root that owns it, exactly once |
+
+The second is the no-double-free crux, and the kernel (`untyped::split`, `untyped::destroy`) *calls*
+`regions::split_new_watermark` and `regions::destroy_outcome` rather than keeping a parallel copy, so
+the proved arithmetic is the arithmetic that runs. It is a Phase-2-style extraction: the pure page
+accounting is here (address-agnostic, in page units), the byte arithmetic and the I/O (freeing frames,
+un-bumping the parent) stay in the kernel around it.
+
 Eight in `crates/paging/src/lib.rs`, the address arithmetic under the four-level walk and the MMU
 isolation invariants (the last three, closing milestone 18's MMU step):
 
