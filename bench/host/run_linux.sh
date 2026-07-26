@@ -30,4 +30,4 @@ rm -rf "$WORK/iroot" && mkdir "$WORK/iroot" && cp "$WORK/init" "$WORK/iroot/init
     qemu-system-aarch64 -M virt,accel=hvf,gic-version=2 -cpu host -m 512 \
     -kernel "$KERNEL" -initrd "$WORK/initramfs.cpio" \
     -append "console=ttyAMA0 rdinit=/init panic=1 quiet loglevel=0" \
-    -display none -serial stdio 2>&1 | grep -E 'ns/iter|bench done'
+    -display none -serial stdio 2>&1 | grep -E '^linux'

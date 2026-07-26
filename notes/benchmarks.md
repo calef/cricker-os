@@ -208,14 +208,24 @@ userspace and implies `--real`), and compare on the same core:
 | metric | cricker-os **release** (HVF) | Linux (static musl, HVF) | macOS/XNU (native) |
 |---|---|---|---|
 | null syscall | **~27 ns** | ~139 ns | ~76 ns |
-| context switch | **~111 ns** | (host ring method, TODO) | |
+| context switch (per switch, derived) | **~28 ns** | ~415 ns | ~818 ns |
 | IPC round trip | **~337 ns** | ~1723 ns | ~2620 ns |
 
-**cricker-os wins both measured metrics decisively, and the comparison is fair**: same M-series core,
-same HVF tier as Linux, both optimized. It is **~5x faster than Linux at the null syscall** (27 vs
-139) and **~5x faster at the IPC round trip** (337 vs 1723), and it beats native macOS at both. These
-are seL4-class microkernel numbers, an IPC round trip in the low hundreds of nanoseconds, put next to
-the reference OS on the same silicon.
+**cricker-os wins all three, and the two clean ones win decisively**: same M-series core, same HVF
+tier as Linux, both optimized. It is **~5x faster than Linux at the null syscall** (27 vs 139) and
+**~5x faster at the IPC round trip** (337 vs 1723), and it beats native macOS at both. These are
+seL4-class microkernel numbers, an IPC round trip in the low hundreds of nanoseconds, put next to the
+reference OS on the same silicon.
+
+The **context switch** is the softest of the three and its number the least load-bearing. No OS lets
+you time a bare switch, so it is *derived*: on the host, `bench/host/ctx_switch.rs` measures a
+two-process pipe round trip (two switches plus two pipe passes) and subtracts a self-pipe pass (a
+`write`+`read` with no switch), leaving one switch = `round_trip/2 - self_pipe`. cricker-os's
+`ctx_switch` bench is a yield round trip (two switches plus two `SYS_YIELD`s); subtracting the trap
+(`~2 x null_syscall`) leaves ~28 ns per switch. The subtraction is approximate and the *mechanisms
+differ* (our lightweight yield versus a pipe pass), so read the ~15x gap to Linux as directional, not
+exact. It points the same way the other two do, and that consistency, three metrics, three methods,
+all favoring the minimal kernel, is the real signal.
 
 The story the debug build told first was the *opposite* at IPC, and the gap between them is the whole
 lesson. Debug cricker-os: null syscall ~42 ns, ctx switch ~692 ns, IPC ~2272 ns. So `-O0` was a ~1.5x

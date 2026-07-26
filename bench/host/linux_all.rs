@@ -22,6 +22,34 @@ unsafe extern "C" {
     fn _exit(code: i32) -> !;
 }
 
+/// A self-pipe pass (write a byte, read it back, no context switch), to subtract out of the round
+/// trip so what's left is the context switch. See bench/host/ctx_switch.rs for the method.
+fn self_pipe_pass() -> f64 {
+    let iters: u64 = 1_000_000;
+    let mut p = [0i32; 2];
+    unsafe { pipe(p.as_mut_ptr()) };
+    let mut b = [0u8; 1];
+    for _ in 0..10_000 {
+        unsafe {
+            write(p[1], b.as_ptr(), 1);
+            read(p[0], b.as_mut_ptr(), 1);
+        }
+    }
+    let t = Instant::now();
+    for _ in 0..iters {
+        unsafe {
+            write(p[1], b.as_ptr(), 1);
+            read(p[0], b.as_mut_ptr(), 1);
+        }
+    }
+    let ns = t.elapsed().as_nanos() as f64 / iters as f64;
+    unsafe {
+        close(p[0]);
+        close(p[1]);
+    }
+    ns
+}
+
 const SYS_GETPID: std::os::raw::c_long = 172; // aarch64 Linux
 const RB_POWER_OFF: i32 = 0x4321fedc_u32 as i32;
 
@@ -85,7 +113,13 @@ fn main() {
     // devtmpfs is auto-mounted by the kernel (CONFIG_DEVTMPFS_MOUNT), so /dev/console exists and PID
     // 1's stdout reaches the serial line: a plain println works.
     println!("linux null_syscall (raw getpid): {:.1} ns/iter", null_syscall());
-    println!("linux ipc_rtt (pipe round trip, 2 processes): {:.1} ns/iter", ipc_rtt());
+    let rt = ipc_rtt();
+    println!("linux ipc_rtt (pipe round trip, 2 processes): {rt:.1} ns/iter");
+    let p = self_pipe_pass();
+    println!(
+        "linux ctx_switch (derived): {:.1} ns  (round_trip {rt:.1}, self_pipe {p:.1})",
+        rt / 2.0 - p
+    );
     println!("linux: bench done, powering off");
     unsafe { reboot(RB_POWER_OFF) };
     loop {
