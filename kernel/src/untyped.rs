@@ -36,10 +36,16 @@ struct Region {
     /// Pages handed out so far. A bump pointer, and the whole of the allocator.
     watermark: u64,
     /// **A kernel object lives in this region** (milestone 19a): a page here was retyped into an
-    /// endpoint (later: an address space, a TCB), so [`destroy`] refuses the region. Freeing a
-    /// live endpoint's page would dangle every thread blocked on it; un-pinning waits for object
-    /// revocation, and the pin is the honest record of that debt.
+    /// endpoint (later: an address space, a TCB), so [`destroy`] refuses the region. Object
+    /// revocation clears this through [`unpin`] once the objects are torn down (`sched::reclaim_region`).
     pinned: bool,
+    /// **This region was carved into a child untyped** (via [`split`]), so part of its run now
+    /// belongs to a child region that will free those pages itself. [`destroy`] refuses a parent,
+    /// because freeing its whole run would double-free the child's pages. This is the no-CDT
+    /// stand-in for seL4's "an untyped with children cannot be revoked until the children are":
+    /// a single bool, never reset, so a split region is committed for the spawner's lifetime (the
+    /// tradeoff, recorded in DECISIONS.md: no return-of-pages-to-parent, the parent just commits).
+    has_children: bool,
 }
 
 /// The most untyped regions that can ever be created. Region ids live inside capabilities and
@@ -65,6 +71,7 @@ static REGIONS: IrqSafeMutex<Regions> = IrqSafeMutex::new(
             pages: 0,
             watermark: 0,
             pinned: false,
+            has_children: false,
         }; MAX_REGIONS],
         count: 0,
     },
@@ -102,9 +109,58 @@ pub fn create(pages: u64) -> Option<usize> {
         pages,
         watermark: 0,
         pinned: false,
+        has_children: false,
     };
     regions.count += 1;
     Some(id)
+}
+
+/// **Carve `pages` off `parent`'s unspent budget into a new child untyped region**, and return its
+/// index. seL4's untyped-retype-into-untyped: the subdivision that lets a spawner give each child
+/// its own independently-reclaimable region. The parent's watermark advances by `pages` (the run is
+/// spent from it, bump-only as ever) and the parent is marked `has_children`, so it can no longer be
+/// destroyed; the child is an ordinary region over that run, freeing its pages to the allocator at
+/// its own `destroy`. `None` if the parent is unknown, exhausted (`pages` beyond its remaining
+/// budget), asks for zero, or the region table is full.
+///
+/// **The tradeoff (DECISIONS.md):** a child does not return its pages to the parent (the bump
+/// allocator has no free list), so the parent is permanently committed once split. A spawner sizes
+/// its budget for the children it will ever carve. seL4 returns pages to the parent via its
+/// derivation tree, which we deliberately do not build.
+pub fn split(parent: usize, pages: u64) -> Option<usize> {
+    let base = {
+        let mut regions = REGIONS.lock();
+        let r = regions.get_mut(parent)?;
+        if pages == 0 || r.watermark + pages > r.pages {
+            return None; // zero, or beyond the parent's remaining budget
+        }
+        let base = r.base + r.watermark * FRAME_SIZE;
+        r.watermark += pages;
+        r.has_children = true;
+        base
+    };
+    // A new region entry over the carved run. If the table is full the run stays spent on the
+    // parent (bump-only, the B.4 rule): the caller loses that budget, nobody else's.
+    let mut regions = REGIONS.lock();
+    if regions.count == MAX_REGIONS {
+        return None;
+    }
+    let id = regions.count;
+    regions.entries[id] = Region {
+        base,
+        pages,
+        watermark: 0,
+        pinned: false,
+        has_children: false,
+    };
+    regions.count += 1;
+    Some(id)
+}
+
+/// Whether this region has been carved into a child untyped, so it cannot be reclaimed
+/// (`sched::reclaim_region` refuses it, as `destroy` does). `false` for an unknown index.
+pub fn has_children(region: usize) -> bool {
+    REGIONS.lock().get(region).is_some_and(|r| r.has_children)
 }
 
 /// **Retype one page out of the region**, zeroed, returning its physical address. `None` when the
@@ -212,10 +268,10 @@ pub fn destroy(region: usize) {
         let Some(r) = regions.get_mut(region) else {
             return;
         };
-        // Pinned: a kernel object (an endpoint a thread may be blocked on) lives in one of these
-        // pages. Refusing is the whole safety story; see Region::pinned. The region stays
-        // spend-only and immortal, exactly as every region was before §13.
-        if r.pinned {
+        // Pinned: a kernel object lives in one of these pages (object revocation unpins first).
+        // has_children: part of this run was split off to a child region that frees it itself, so
+        // freeing the whole run here would double-free the child's pages. Either way, refuse.
+        if r.pinned || r.has_children {
             return;
         }
         let bp = (r.base, r.pages);

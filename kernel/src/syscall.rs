@@ -395,6 +395,28 @@ fn invoke(
                 .map_err(|_| Error::OutOfMemory)?; // cspace full
                 Ok(slot as i64)
             }
+            // Carve a child untyped off this one (subdivision), so a spawner can give each child its
+            // own reclaimable region. `a0` is the child's page count. See untyped::split.
+            abi::untyped::SPLIT => {
+                if !cap.rights.allows(Rights::WRITE) {
+                    return Err(Error::NotPermitted);
+                }
+                let child = crate::untyped::split(region, a0).ok_or(Error::OutOfMemory)?;
+                let slot =
+                    sched::grant(crate::cap::untyped_cap(child)).map_err(|_| Error::OutOfMemory)?; // cspace full
+                Ok(slot as i64)
+            }
+            // Reclaim this region and every object retyped from it (object revocation): tear the
+            // objects down and return the memory. Refused (NotPermitted) while a live thread still
+            // occupies it, or if it has been split into children (destroy those first). Generational
+            // names make every capability to the reclaimed objects stale on next use.
+            abi::untyped::DESTROY => {
+                if !cap.rights.allows(Rights::WRITE) {
+                    return Err(Error::NotPermitted);
+                }
+                sched::reclaim_region(region).map_err(|_| Error::NotPermitted)?;
+                Ok(0)
+            }
             _ => Err(Error::BadMethod),
         },
 

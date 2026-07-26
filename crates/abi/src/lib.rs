@@ -250,12 +250,26 @@ pub mod untyped {
     /// family; packing is a later placement optimization).
     ///
     /// `objtype` names what to make (see [`objtype`](super::objtype)); 19a implements
-    /// `ENDPOINT`. A region that has produced a kernel object is **pinned**: `destroy` refuses
-    /// it, because live kernel objects (threads may be blocked on the endpoint) must not have
-    /// their page reclaimed from under them. Reclaiming object regions waits for object
-    /// revocation. `BadMethod` for an unknown objtype; `OutOfMemory` when the untyped is
-    /// exhausted, the object registry is full, or the caller's cspace is.
+    /// `ENDPOINT`. A region that has produced a kernel object is **pinned**: [`DESTROY`] reclaims
+    /// it (object revocation) once the objects are torn down. `BadMethod` for an unknown objtype;
+    /// `OutOfMemory` when the untyped is exhausted, the object registry is full, or the cspace is.
     pub const RETYPE_OBJ: u64 = 2;
+
+    /// `invoke(cap, SPLIT, pages, _, _)` -> slot. Carve `pages` off this untyped's unspent budget
+    /// into a **new child untyped**, and return the slot holding a full-rights capability to it.
+    /// seL4's untyped-retype-into-untyped: a spawner splits a child its own region so it can be
+    /// reclaimed independently. This untyped is then marked as having children and can no longer be
+    /// `DESTROY`ed (its pages are committed; the child frees them at its own `DESTROY`). `OutOfMemory`
+    /// when the budget or region table is exhausted or the cspace is full; `NotPermitted` without
+    /// `WRITE`.
+    pub const SPLIT: u64 = 3;
+
+    /// `invoke(cap, DESTROY, _, _, _)` -> 0. **Reclaim this region and every object retyped from
+    /// it** (object revocation, the region-owner's half). The objects are torn down and their pages
+    /// returned; every capability to them goes stale on next use (generational names, no derivation
+    /// tree to walk). `NotPermitted` while a live thread still occupies the region, or if it has
+    /// been `SPLIT` into children (destroy the children first), or without `WRITE`.
+    pub const DESTROY: u64 = 4;
 }
 
 /// Methods on a `Frame` capability. **A physical page a process holds, maps, and shares.**

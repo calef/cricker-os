@@ -1297,6 +1297,12 @@ fn reap_region_objects(base: u64, end: u64) -> Result<(), ()> {
 /// Must run outside any `Drop`, because the reap takes `SCHED` (see `reap_region_objects`); the
 /// `unpin` + `destroy` that follow are `SCHED`-free.
 pub fn reclaim_region(region: usize) -> Result<(), ()> {
+    // A region carved into children cannot be reclaimed: its child regions own part of its run and
+    // free those pages themselves. The owner must destroy the children first. Refuse before any
+    // teardown, so a refused reclaim leaves the region exactly as it was.
+    if crate::untyped::has_children(region) {
+        return Err(());
+    }
     let (base, size) = crate::untyped::region_bounds(region).ok_or(())?;
     // Threads first (SCHED), then any unbound address spaces (the aspace registry lock). Two
     // separate lock domains, sequenced, never nested: neither is held across the other. Bound
@@ -1602,6 +1608,48 @@ mod tests {
             crate::memory::free_frames(),
             frames_before,
             "reclaim must return the region's memory exactly to baseline"
+        );
+    }
+
+    /// **Untyped SPLIT carves a reclaimable child, and a split parent is committed.** Create a
+    /// region, carve it entirely into two children, and check the model: the parent now
+    /// `has_children` and cannot be reclaimed (the children own its run), while each child is an
+    /// ordinary region that retypes and reclaims on its own. With the parent fully delegated,
+    /// reclaiming both children returns all the memory to baseline (only the parent's region-table
+    /// slot is left behind, which generational region slots will fix). This is the subdivision that
+    /// lets a spawner give each child its own reclaimable region.
+    #[test_case]
+    fn split_carves_reclaimable_children_and_commits_the_parent() {
+        let frames_before = crate::memory::free_frames();
+
+        let parent = crate::untyped::create(8).expect("parent region");
+        let child_a = crate::untyped::split(parent, 4).expect("split child a");
+        let child_b = crate::untyped::split(parent, 4).expect("split child b");
+        assert_ne!(child_a, child_b, "children are distinct regions");
+
+        // Parent fully carved: no budget left, and it cannot be reclaimed while children own its run.
+        assert!(
+            crate::untyped::has_children(parent),
+            "the parent must record that it was split"
+        );
+        assert!(
+            crate::sched::reclaim_region(parent).is_err(),
+            "a region split into children must refuse reclaim",
+        );
+        assert!(
+            crate::untyped::split(parent, 1).is_none(),
+            "an exhausted parent cannot split further",
+        );
+
+        // A child is an ordinary region: retype a page from it, then reclaim it.
+        let _p = crate::untyped::retype_page(child_a).expect("retype a page from a child");
+        crate::sched::reclaim_region(child_a).expect("reclaim child a");
+        crate::sched::reclaim_region(child_b).expect("reclaim child b");
+
+        assert_eq!(
+            crate::memory::free_frames(),
+            frames_before,
+            "a fully-delegated parent's memory returns once its children are reclaimed",
         );
     }
 
