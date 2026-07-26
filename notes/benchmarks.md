@@ -192,6 +192,30 @@ kernel-side ones, are what compare to lmbench. All debug builds; the cross-OS co
 builds on all sides. These line up against lmbench's `lat_syscall` / `lat_ctx` / `lat_pipe` and
 `sel4bench`.
 
+### The first cross-OS number (null syscall: cricker-os vs macOS)
+
+`bench/host/null_syscall.rs` is the host side of the `null_syscall` metric: a raw `getpid` through
+the syscall gate (not libc's cached `getpid`, which never traps), run natively. On this M-series Mac:
+
+| | null syscall | build | tier |
+|---|---|---|---|
+| **cricker-os** | ~42 ns | debug | QEMU-HVF (guest EL1) |
+| **macOS (XNU)** | ~76 ns | release | native |
+
+cricker-os is **~1.8x faster at the syscall boundary than macOS**, and it wins from behind: a debug
+build (unoptimized, so slower than it will be) under virtualization (a tax it need not pay), against
+release-native XNU. Two things make the comparison fair despite the handicaps. A null syscall stays
+*inside the guest* (no VM exit), so HVF adds almost nothing to it, the tier gap is real for other
+metrics, not this one. And the debug handicap runs the wrong way: a release cricker-os would only
+widen the gap. The result is believable on its face: a minimal capability microkernel's trap path is
+`svc` -> decode -> reject, while XNU is a hybrid carrying the BSD syscall machinery (dispatch tables,
+entitlement and audit hooks) on every crossing. This is the shape of finding the suite is for: a place
+the microkernel design is genuinely leaner, quantified.
+
+It is one metric, and the honest caveats stand (debug vs release, virtualized vs native). Context
+switch and IPC will be less flattering, XNU's Mach IPC is off its hot path and its threads are
+mature, and that asymmetry is itself worth measuring.
+
 ### The cross-OS comparison, when we build it
 
 - **Reuse an existing primitive suite** where one exists: **lmbench** on Linux and macOS (it builds
