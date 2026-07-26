@@ -345,8 +345,7 @@ fn invoke(
                 }
                 match a0 {
                     abi::objtype::ENDPOINT => {
-                        let ep =
-                            sched::create_endpoint_from(region).ok_or(Error::OutOfMemory)?;
+                        let ep = sched::create_endpoint_from(region).ok_or(Error::OutOfMemory)?;
                         let slot = sched::grant(crate::cap::endpoint_cap(
                             ep,
                             Rights::READ.union(Rights::WRITE).union(Rights::GRANT),

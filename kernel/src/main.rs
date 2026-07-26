@@ -20,15 +20,14 @@
 #![test_runner(crate::testing::runner)]
 #![reexport_test_harness_main = "test_main"]
 
-
 mod arch;
 #[cfg(feature = "bench")]
 mod bench;
 mod cap;
-mod kmem;
 mod console;
 mod cpu;
 mod drivers;
+mod kmem;
 mod memory;
 mod panic;
 mod revoke;

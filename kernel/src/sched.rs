@@ -401,7 +401,10 @@ pub fn drain_inbox() {
 /// the table pins the address (see `Scheduler::threads`), so a pointer taken here is good until
 /// the thread is popped, however many queue hops (inbox to run queue) it makes in between.
 fn tcb_ptr(sched: &mut Scheduler, tid: Tid) -> *mut Thread {
-    sched.threads.get_mut(tid).expect("tcb_ptr of a dead thread")
+    sched
+        .threads
+        .get_mut(tid)
+        .expect("tcb_ptr of a dead thread")
 }
 
 /// Put an already-created thread onto core `target`'s run queue. Caller holds `SCHED`.
@@ -656,7 +659,10 @@ pub fn schedule() {
 
         // The incoming thread's low half. A kernel thread gets the empty reserved table, which
         // makes every low address fault, which is exactly right: it has no business down there.
-        let next_root = sched.threads.get(next).unwrap()
+        let next_root = sched
+            .threads
+            .get(next)
+            .unwrap()
             .space
             .as_ref()
             .map(|s| s.ttbr0())
@@ -708,7 +714,9 @@ pub fn schedule() {
 /// passes through `schedule()`'s post-switch point). Both run on this core, so both see this core's
 /// `to_reap`. See DECISIONS.md §11 and thread.rs.
 pub(crate) fn finish_switch() {
-    let prev = cpu::current().switched_from.swap(cpu::NO_TID, Ordering::Relaxed);
+    let prev = cpu::current()
+        .switched_from
+        .swap(cpu::NO_TID, Ordering::Relaxed);
     if prev == cpu::NO_TID {
         return;
     }
@@ -1238,7 +1246,12 @@ pub fn create_tcb(region: usize) -> Option<Tid> {
 /// (moved out of the user-aspace registry into the TCB, so it now dies with the thread) and set
 /// the EL0 entry and user stack. Refuses anything but an `Embryo`, so a running thread cannot be
 /// reconfigured under itself. `Ok(())` or a reason.
-pub fn configure_tcb(tid: Tid, entry: u64, user_sp: u64, aspace_name: u64) -> Result<(), abi::Error> {
+pub fn configure_tcb(
+    tid: Tid,
+    entry: u64,
+    user_sp: u64,
+    aspace_name: u64,
+) -> Result<(), abi::Error> {
     // Take the space out of the registry FIRST (outside SCHED: it takes the aspace lock, ranked
     // above SCHED). If the TCB then turns out not to be a configurable embryo, put nothing back
     // is wrong, so check the embryo state first, under SCHED, and only take the space once the
@@ -1826,7 +1839,11 @@ mod tests {
             }
             super::yield_now();
         }
-        assert_eq!(GOT.load(Ordering::SeqCst), 0x2A, "no rendezvous over the retyped endpoint");
+        assert_eq!(
+            GOT.load(Ordering::SeqCst),
+            0x2A,
+            "no rendezvous over the retyped endpoint"
+        );
 
         let free_before = crate::memory::stats().unwrap().free();
         crate::untyped::destroy(region);

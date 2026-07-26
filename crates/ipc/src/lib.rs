@@ -263,7 +263,10 @@ mod verification {
         match unsafe { e.send(&mut me) } {
             Send::Rendezvous(got) => {
                 assert!(had_receiver);
-                assert_eq!(got, receiver_ptr, "rendezvoused with a thread nobody queued");
+                assert_eq!(
+                    got, receiver_ptr,
+                    "rendezvoused with a thread nobody queued"
+                );
             }
             Send::Blocked => assert!(!had_receiver),
         }
@@ -300,10 +303,7 @@ mod verification {
         unsafe { seed(&mut e, &mut s, &mut r) };
         if matches!(unsafe { e.recv(&mut me) }, Recv::FromSender(_)) {
             assert!(e.senders.is_empty() && e.receivers.is_empty());
-            assert!(!matches!(
-                unsafe { e.recv(&mut me2) },
-                Recv::FromSender(_)
-            ));
+            assert!(!matches!(unsafe { e.recv(&mut me2) }, Recv::FromSender(_)));
         }
     }
 }

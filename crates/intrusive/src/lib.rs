@@ -154,9 +154,18 @@ mod verification {
     #[kani::proof]
     fn any_push_pop_interleaving_is_fifo_and_lossless() {
         let mut nodes = [
-            N { next: core::ptr::null_mut(), tag: 0 },
-            N { next: core::ptr::null_mut(), tag: 1 },
-            N { next: core::ptr::null_mut(), tag: 2 },
+            N {
+                next: core::ptr::null_mut(),
+                tag: 0,
+            },
+            N {
+                next: core::ptr::null_mut(),
+                tag: 1,
+            },
+            N {
+                next: core::ptr::null_mut(),
+                tag: 2,
+            },
         ];
         let ptrs: [*mut N; 3] = [&mut nodes[0], &mut nodes[1], &mut nodes[2]];
 

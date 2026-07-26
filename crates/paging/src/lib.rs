@@ -967,7 +967,10 @@ mod verification {
             )
         };
 
-        assert_eq!(m.map(va, 0, Flags::user_data()).err(), Some(MapError::WrongHalf));
+        assert_eq!(
+            m.map(va, 0, Flags::user_data()).err(),
+            Some(MapError::WrongHalf)
+        );
         assert_eq!(m.unmap(va).err(), Some(MapError::WrongHalf));
         assert!(m.translate(va).is_none());
     }

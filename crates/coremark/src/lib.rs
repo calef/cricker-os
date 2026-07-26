@@ -70,7 +70,8 @@ fn list_work(crc: u16, rng: &mut Rng) -> u16 {
         let v = data[i];
         let key = v & 0xff;
         let mut j = i;
-        while j > 0 && ((data[j - 1] & 0xff) > key || ((data[j - 1] & 0xff) == key && data[j - 1] > v))
+        while j > 0
+            && ((data[j - 1] & 0xff) > key || ((data[j - 1] & 0xff) == key && data[j - 1] > v))
         {
             data[j] = data[j - 1];
             j -= 1;
@@ -133,16 +134,16 @@ fn fsm_work(crc: u16, rng: &mut Rng) -> u16 {
         state = match state {
             // START
             0 => match ch {
-                b'0'..=b'9' => 1,       // -> INT
+                b'0'..=b'9' => 1, // -> INT
                 b'+' | b'-' | b'.' => 1,
-                _ => 4,                 // -> INVALID
+                _ => 4, // -> INVALID
             },
             // INT
             1 => match ch {
                 b'0'..=b'9' => 1,
-                b'.' => 2,              // -> FLOAT
-                b'e' | b'E' => 3,       // -> SCI
-                _ => 0,                 // -> START (delimiter)
+                b'.' => 2,        // -> FLOAT
+                b'e' | b'E' => 3, // -> SCI
+                _ => 0,           // -> START (delimiter)
             },
             // FLOAT
             2 => match ch {
@@ -214,7 +215,11 @@ mod tests {
         let b = run(50);
         assert_eq!(a, b, "same iteration count must give the same CRC");
         // More iterations must change the CRC (the work actually accumulates).
-        assert_ne!(run(50), run(51), "the CRC must depend on the iteration count");
+        assert_ne!(
+            run(50),
+            run(51),
+            "the CRC must depend on the iteration count"
+        );
     }
 
     /// Pin the CRC for a fixed small run, so a cross-OS port (or an accidental logic change) is

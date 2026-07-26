@@ -192,7 +192,10 @@ pub fn register(mmio_phys: u64, dma_base: u64, dma_size: u64) -> usize {
     }
 
     let mut devs = DEVICES.lock();
-    assert!(devs.count < MAX_DEVICES, "more virtio devices than MAX_DEVICES");
+    assert!(
+        devs.count < MAX_DEVICES,
+        "more virtio devices than MAX_DEVICES"
+    );
     let id = devs.count;
     devs.entries[id] = Some(Device {
         mmio_phys,

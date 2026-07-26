@@ -78,7 +78,10 @@ struct FreeVas {
 
 impl FreeVas {
     const fn new() -> Self {
-        Self { vas: [0; 128], len: 0 }
+        Self {
+            vas: [0; 128],
+            len: 0,
+        }
     }
 
     fn pop(&mut self) -> Option<u64> {
@@ -90,7 +93,10 @@ impl FreeVas {
     }
 
     fn push(&mut self, va: u64) {
-        debug_assert!(self.len < self.vas.len(), "more dead stack ranges than MAX_THREADS");
+        debug_assert!(
+            self.len < self.vas.len(),
+            "more dead stack ranges than MAX_THREADS"
+        );
         if self.len < self.vas.len() {
             self.vas[self.len] = va;
             self.len += 1;
@@ -468,7 +474,12 @@ impl Thread {
                 "spawn closure captures more than 1 KiB; pass a reference to static state instead"
             )
         };
-        const { assert!(align_of::<F>() <= 16, "spawn closure over-aligned for a stack slot") };
+        const {
+            assert!(
+                align_of::<F>() <= 16,
+                "spawn closure over-aligned for a stack slot"
+            )
+        };
 
         let stack = KernelStack::new()?;
 
@@ -561,8 +572,8 @@ impl Thread {
         // SAFETY: the stack was just mapped read/write, and this is inside it.
         unsafe {
             context.write(Context {
-                x19: entry,          // the trampoline moves this to elr
-                x20: user_sp,        // ...and this to sp_el0
+                x19: entry,              // the trampoline moves this to elr
+                x20: user_sp,            // ...and this to sp_el0
                 x21: self.start_args[0], // the trampoline moves these to x0, x1, x2 (19d/19e)
                 x22: self.start_args[1],
                 x23: self.start_args[2],

@@ -15,8 +15,8 @@
 use crate::sync::{IrqSafeMutex, rank};
 use crate::thread::{Thread, Tid};
 use core::cell::UnsafeCell;
-use intrusive::Fifo;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
+use intrusive::Fifo;
 
 /// A `current`/`idle` slot holding no thread. Tids are small integers from 0 up, so `u64::MAX`
 /// can never collide with a real one.

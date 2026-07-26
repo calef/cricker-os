@@ -117,11 +117,7 @@ pub fn forget_root(root: u64) {
 #[must_use]
 pub fn record_mapping(phys: u64, root: u64, va: u64) -> bool {
     let mut spaces = SPACES.lock();
-    let Some(space) = spaces
-        .iter_mut()
-        .flatten()
-        .find(|s| s.root == root)
-    else {
+    let Some(space) = spaces.iter_mut().flatten().find(|s| s.root == root) else {
         return false;
     };
 
@@ -327,7 +323,10 @@ mod tests {
         let mut refused = false;
         for i in 0..4096u64 {
             let va = 0x40_0000 + i * frames::FRAME_SIZE;
-            if space.map_physical(va, shared, Flags::user_rodata()).is_err() {
+            if space
+                .map_physical(va, shared, Flags::user_rodata())
+                .is_err()
+            {
                 refused = true; // ran out mapping: also a fine way for the budget to end
                 break;
             }

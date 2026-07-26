@@ -28,8 +28,8 @@
 //! division. Warmup iterations run untimed before each measurement so thread spawn and first
 //! rendezvous costs land outside the window.
 
-use crate::sched;
 use crate::println;
+use crate::sched;
 use aarch64_cpu::registers::{CNTFRQ_EL0, CNTVCT_EL0};
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tock_registers::interfaces::Readable;
@@ -140,8 +140,9 @@ fn call_reply() {
                 break;
             }
             let slot = m[1];
-            let crate::cap::Object::Reply(caller) =
-                sched::current_cap(slot).expect("bench: no reply cap").object
+            let crate::cap::Object::Reply(caller) = sched::current_cap(slot)
+                .expect("bench: no reply cap")
+                .object
             else {
                 panic!("bench: RECV_CAP of a CALL did not deliver a Reply capability");
             };
@@ -191,8 +192,7 @@ fn spawn_reap() {
 fn map_new() {
     static TOTAL: AtomicU64 = AtomicU64::new(0);
 
-    let mut space =
-        crate::user::AddressSpace::new(MAP_ITERS + 8).expect("bench: no address space");
+    let mut space = crate::user::AddressSpace::new(MAP_ITERS + 8).expect("bench: no address space");
     let base = 0x40_0000u64;
 
     timed("map_new", MAP_ITERS, || {

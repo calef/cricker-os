@@ -46,7 +46,10 @@ use paging::{Flags, Half, MapError, Mapper};
 
 /// Where a user program's code goes. Low half, so the hardware walks `TTBR0`.
 // Used by `exec` and the tour; the shell, initboot, and bench boots run neither.
-#[cfg_attr(any(feature = "shell", feature = "bench", feature = "initboot"), allow(dead_code))]
+#[cfg_attr(
+    any(feature = "shell", feature = "bench", feature = "initboot"),
+    allow(dead_code)
+)]
 pub const USER_CODE_VA: u64 = 0x0000_0000_0040_0000;
 
 /// Where its stack goes. One page, and `sp` starts at the top of it: stacks grow down.
@@ -149,7 +152,10 @@ impl AddressSpace {
         // it. 'static is a lie we tell for convenience and then keep: the frame outlives every
         // use of this slice, because the region is freed only at `Drop`.
         let page = unsafe {
-            core::slice::from_raw_parts_mut(mmu::phys_to_virt(frame) as *mut u8, FRAME_SIZE as usize)
+            core::slice::from_raw_parts_mut(
+                mmu::phys_to_virt(frame) as *mut u8,
+                FRAME_SIZE as usize,
+            )
         };
         Ok(page)
     }
@@ -692,7 +698,10 @@ pub fn run(image: &[u8], spawn: Spawn) -> ! {
 /// # Safety
 /// `program` must be position-independent aarch64 machine code that begins at its first byte.
 // The hand-written demos live in the tour; the shell, initboot, and bench boots skip it.
-#[cfg_attr(any(feature = "shell", feature = "bench", feature = "initboot"), allow(dead_code))]
+#[cfg_attr(
+    any(feature = "shell", feature = "bench", feature = "initboot"),
+    allow(dead_code)
+)]
 pub unsafe fn exec(program: &[u8]) -> ! {
     assert!(
         program.len() as u64 <= FRAME_SIZE,
@@ -782,7 +791,7 @@ fn enter_frame(entry: u64, user_sp: u64, arg0: u64, arg1: u64, arg2: u64) -> ! {
         x[2] = arg2; // ...and its third
         frame.write(TrapFrame {
             x,
-            elr: entry,             // ...where `eret` jumps
+            elr: entry,      // ...where `eret` jumps
             spsr: SPSR_EL0T, // ...and the exception level it jumps to
             sp_el0: user_sp, // ...on the stack it will jump onto (caller's choice, 19c.3)
         });
@@ -913,9 +922,9 @@ user_program!(outlaw, USER_OUTLAW_START, USER_OUTLAW_END);
 /// told apart by the argument in `x0`.
 #[allow(dead_code)] // the demo payload: exercised by the boot demo, mechanism unit-tested
 pub mod console_service {
-    use crate::sched::EpId;
     use super::*;
     use crate::cap::{Rights, endpoint_cap};
+    use crate::sched::EpId;
 
     /// The PL011's physical address on QEMU `virt`. The kernel maps it for its own debug output;
     /// here we hand a *second* mapping of the same registers to the userspace server. On real
@@ -1035,9 +1044,9 @@ pub mod console_service {
 /// kernel does not touch the device.
 #[allow(dead_code)] // the demo payload; the mechanism is unit-tested
 pub mod virtio_service {
-    use crate::sched::EpId;
     use super::*;
     use crate::cap::{Rights, endpoint_cap, irq_cap, virtio_cap};
+    use crate::sched::EpId;
 
     /// Where the driver expects its DMA page. Must match user/src/virtio.rs. The device registers
     /// are NOT mapped to the driver any more: it drives the device through a `Virtio` capability,
@@ -1188,9 +1197,9 @@ pub mod virtio_service {
 /// Console **input** in userspace: the receive half of the terminal.
 #[allow(dead_code)]
 pub mod input_service {
-    use crate::sched::EpId;
     use super::*;
     use crate::cap::{Rights, endpoint_cap, irq_cap};
+    use crate::sched::EpId;
 
     const UART_VA: u64 = 0x0000_0000_00a0_0000;
     const LINE_VA: u64 = 0x0000_0000_00b0_0000;
@@ -1298,8 +1307,8 @@ pub mod shell_service {
                     run(
                         worker,
                         Spawn {
-                            arg0: 0,  // no role selector: worker is its own binary
-                            arg1: n,  // the worker's input, in x1
+                            arg0: 0, // no role selector: worker is its own binary
+                            arg1: n, // the worker's input, in x1
                             arg2: 0,
                             grants: &[endpoint_cap(result_ep, Rights::WRITE)],
                             maps: &[],
@@ -1358,9 +1367,9 @@ pub mod shell_service {
 /// Milestone 11: hand a process an untyped budget and let it spend it.
 #[allow(dead_code)]
 pub mod untyped_service {
-    use crate::sched::EpId;
     use super::*;
     use crate::cap::{Rights, endpoint_cap, untyped_cap};
+    use crate::sched::EpId;
 
     const ROLE_UNTYPED_DEMO: u64 = 7;
 
@@ -1411,9 +1420,9 @@ pub mod untyped_service {
 /// frame_producer()/frame_consumer().
 #[cfg(test)]
 pub mod frame_service {
-    use crate::sched::EpId;
     use super::*;
     use crate::cap::{Rights, endpoint_cap, untyped_cap};
+    use crate::sched::EpId;
 
     const ROLE_PRODUCER: u64 = 11;
     const ROLE_CONSUMER: u64 = 12;
@@ -1468,9 +1477,9 @@ pub mod frame_service {
 
 #[cfg(test)]
 pub mod delegation_service {
-    use crate::sched::EpId;
     use super::*;
     use crate::cap::{Rights, endpoint_cap};
+    use crate::sched::EpId;
 
     const ROLE_GRANTER: u64 = 9;
     const ROLE_RECEIVER: u64 = 10;
@@ -1534,9 +1543,9 @@ pub mod delegation_service {
 /// and delegated. See user/src/hello.rs ep_maker()/ep_user().
 #[cfg(test)]
 pub mod retype_ep_service {
-    use crate::sched::EpId;
     use super::*;
     use crate::cap::{Rights, endpoint_cap, untyped_cap};
+    use crate::sched::EpId;
 
     const ROLE_MAKER: u64 = 17;
     const ROLE_USER: u64 = 18;
@@ -1627,9 +1636,9 @@ pub mod aspace_service {
 /// user/src/hello.rs call_server()/call_client().
 #[cfg(test)]
 pub mod call_service {
-    use crate::sched::EpId;
     use super::*;
     use crate::cap::{Rights, endpoint_cap};
+    use crate::sched::EpId;
 
     const ROLE_SERVER: u64 = 14;
     const ROLE_CLIENT: u64 = 15;
@@ -1685,9 +1694,9 @@ pub mod call_service {
 /// user/src/hello.rs revoke_demo().
 #[cfg(test)]
 pub mod revoke_service {
-    use crate::sched::EpId;
     use super::*;
     use crate::cap::{Rights, endpoint_cap, untyped_cap};
+    use crate::sched::EpId;
 
     const ROLE_REVOKE_DEMO: u64 = 16;
 
@@ -1939,7 +1948,10 @@ mod tests {
 
         // Three segments, and NONE of them writable-and-executable. Counted straight off the
         // iterator: the kernel this test rides in has no heap to collect into (milestone 14).
-        assert!(e.segments().count() >= 3, "expected .text, .rodata and .data");
+        assert!(
+            e.segments().count() >= 3,
+            "expected .text, .rodata and .data"
+        );
         assert!(e.segments().any(|s| s.is_executable() && !s.is_writable()));
         assert!(e.segments().any(|s| s.is_writable() && !s.is_executable()));
 
@@ -2493,7 +2505,10 @@ mod tests {
         let (mapped_pa, flags) = mmu::translate_at(root, va).expect("the walker sees no mapping");
         assert_eq!(mapped_pa, phys, "mapped the wrong frame");
         assert!(!flags.is_writable(), "asked read-only, got writable");
-        assert!(!flags.is_global(), "a user mapping in a built space must be ASID-tagged");
+        assert!(
+            !flags.is_global(),
+            "a user mapping in a built space must be ASID-tagged"
+        );
 
         // Same va twice: refused, the break-before-make contract holds for built spaces too.
         assert!(
@@ -2658,13 +2673,17 @@ mod tests {
 
         let [crc, ticks, freq] = crate::sched::ipc_recv(report);
         assert_eq!(
-            crc, coremark::PINNED_CRC_64 as u64,
+            crc,
+            coremark::PINNED_CRC_64 as u64,
             "the CoreMark workload computed the wrong checksum",
         );
         // The workload self-timed via CNTVCT_EL0. Nonzero ticks and a real frequency prove EL0 can
         // read the virtual counter (CNTKCTL_EL1.EL0VCTEN), the foundation the primitive suite needs.
         // (Under TCG the magnitude is icount fiction, but it still advances, so the read works.)
-        assert!(ticks > 0, "the workload's self-timing read a frozen counter");
+        assert!(
+            ticks > 0,
+            "the workload's self-timing read a frozen counter"
+        );
         assert!(freq > 0, "CNTFRQ_EL0 read as zero at EL0");
     }
 
@@ -2685,7 +2704,7 @@ mod tests {
         // The child's program, hand-assembled: SEND(slot 0, endpoint::SEND=0, REPORT_WORD),
         // then EXIT. Nine instructions; the child's first granted cap lands in slot 0.
         let code: [u32; 9] = [
-            0xD280_0000, // movz x0, #0        (report cap slot)
+            0xD280_0000,                                       // movz x0, #0        (report cap slot)
             0xD280_0001, // movz x1, #0        (endpoint::SEND)
             0xD280_0000 | ((REPORT_WORD as u32) << 5) | 2, // movz x2, #REPORT_WORD
             0xD280_0003, // movz x3, #0
@@ -2718,14 +2737,19 @@ mod tests {
 
         // The child's one authority: WRITE on a report endpoint, so it can SEND but not receive.
         let report = crate::sched::create_endpoint();
-        let report_cap =
-            crate::cap::endpoint_cap(report, crate::cap::Rights::WRITE.union(crate::cap::Rights::GRANT));
+        let report_cap = crate::cap::endpoint_cap(
+            report,
+            crate::cap::Rights::WRITE.union(crate::cap::Rights::GRANT),
+        );
 
         // Build the thread from parts.
         let tcb_region = crate::untyped::create(2).expect("no tcb region");
         let tid = crate::sched::create_tcb(tcb_region).expect("no tcb");
         let slot = crate::sched::tcb_insert_cap(tid, report_cap).expect("cap insert");
-        assert_eq!(slot, 0, "the child's first cap must land in slot 0 (the code assumes it)");
+        assert_eq!(
+            slot, 0,
+            "the child's first cap must land in slot 0 (the code assumes it)"
+        );
 
         // Not before it is whole: START must refuse an unconfigured embryo.
         assert!(

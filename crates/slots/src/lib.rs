@@ -236,7 +236,10 @@ mod tests {
         let mut t: Table<u32, 2> = Table::new();
         t.insert_with(|_| 1).unwrap();
         t.insert_with(|_| 2).unwrap();
-        assert_eq!(t.insert_with(|_| unreachable!("closure ran on a full table")), None);
+        assert_eq!(
+            t.insert_with(|_| unreachable!("closure ran on a full table")),
+            None
+        );
         assert_eq!(t.len(), 2);
     }
 

@@ -488,8 +488,10 @@ fn bench() -> bool {
 ",
         );
         for (name, ticks, iters) in &results {
-            out.push_str(&format!("{name} {ticks} {iters}
-"));
+            out.push_str(&format!(
+                "{name} {ticks} {iters}
+"
+            ));
         }
         if let Err(e) = std::fs::write(&baseline_path, out) {
             eprintln!("bench: cannot write {}: {e}", baseline_path.display());
