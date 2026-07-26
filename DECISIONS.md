@@ -972,6 +972,49 @@ still blocked (milestone 16) and compute is the honest "real workload" a program
 not Linux-compat: §10 records that a POSIX shim is *additive* and can come later without a rewrite, so
 there is no reason to pay for it before running something native.
 
+## 16. Object revocation: reclaim the objects a process built (extends §13)
+
+§13 revoked **frames**. This extends the same idea to **kernel objects** (TCBs, address spaces,
+endpoints), so a process can be torn back down and its memory returned, the reclamation a
+run-workloads-that-come-and-go system needs. Full reasoning in notes/object-revocation.md.
+
+### The model
+
+**Region ownership plus generational staleness, not a capability derivation tree.** An object's
+lifetime is its backing region's lifetime; reclaiming a region frees each object's registry slot, and
+because objects carry generational names (§14, `crates/slots`), every outstanding capability to them
+goes stale on next use with no capability to hunt. This is coarse (reclaim a region, kill every object
+in it at once; no per-delegation revocation) and that is the right authority semantic here. The CDT is
+a later, purely-additive layer if fine-grained revocation is ever wanted; the rework to add it is
+near-zero, because the per-object teardown and region reclamation it would call are what we build now.
+
+### The trigger, and the lock constraint that shaped it
+
+Reclamation is explicit: `Untyped::DESTROY`, invoked by the region **owner** (who holds the untyped
+cap), never automatic on thread exit, because a region belongs to its owner, not to the thread that
+occupies it, and reclaiming memory is an authority a capability system grants only through a capability
+held. Thread exit does the live-state teardown; the owner's destroy does the memory. `destroy` must
+never take `SCHED` (it is reachable from `AddressSpace::Drop` under the reaper's `SCHED`), so the
+`SCHED`-taking object reap is a separate caller-driven step and `destroy` stays `SCHED`-free.
+
+### Two new methods on the Untyped object (the surface stays three syscalls)
+
+- **`SPLIT`** carves a child untyped off a parent's budget (seL4's untyped-retype-into-untyped), so a
+  spawner gives each child its own reclaimable region. A split parent is marked and can no longer be
+  destroyed (freeing its run would double-free the child's pages). **The tradeoff, taken deliberately:**
+  a child does not return pages to the parent (the bump allocator has no free list), so a split parent
+  is committed for its lifetime; seL4 returns them via its CDT, which we do not build.
+- **`DESTROY`** reclaims a region and every object retyped from it. Refuses (NotPermitted) while a live
+  thread occupies it, an endpoint in it has a blocked waiter, or it has been split.
+
+### Also
+
+Region indices became **generational** (`destroy` reuses the slot), retiring the old cap where the
+kernel could create only 256 regions in its whole lifetime. Endpoint revocation landed as a **safe
+subset**: idle endpoints reclaim, a blocked waiter refuses the reclaim. The chosen richer semantic
+(wake the waiter with an error) needs surgery on the IPC rendezvous core and is a deferred follow-on,
+along with LIFO return-to-parent for `SPLIT` and the EL0 `lat_proc` spawn benchmark.
+
 ## Reading
 
 - **The seL4 manual**, and Klein et al., *seL4: Formal Verification of an OS Kernel* (SOSP'09)

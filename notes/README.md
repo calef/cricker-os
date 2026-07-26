@@ -104,6 +104,11 @@ in the code or the conversation doesn't make sense, it belongs here.
   copy-with-narrowing (never widening), `SEND_CAP` is share not move, the two independent
   narrowings (rights vs. GRANT), and why there's no revocation yet (a control gap, not a
   safety hole: spend-only untyped keeps shared frames valid).
+- [Object revocation: tearing a process back down](object-revocation.md) — reclaiming the TCBs,
+  address spaces, and endpoints a process built (extends §13 from frames to objects). Region
+  ownership plus generational staleness instead of a capability derivation tree, why destroy is
+  the owner's explicit act and must stay off the scheduler lock, `Untyped::SPLIT`/`DESTROY`, and
+  the generational region slots that make a repeatable spawn loop finally possible.
 - [Delegating a capability](delegation.md) — a capability system where processes can't pass
   capabilities isn't one. A process now delegates a capability to another over an IPC endpoint
   (`SEND_CAP`/`RECV_CAP`), narrowing the rights, and only if it holds `GRANT`. Authority composes
