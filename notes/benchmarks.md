@@ -228,10 +228,11 @@ can. A fair EL0 map that *does* provision a fresh page waits on retype-from-unty
 
 `bench/host/` holds the host side of each metric: `null_syscall.rs` (a raw `getpid` through the
 syscall gate, not libc's cached `getpid` which never traps), `ipc_rtt.rs` (a pipe round trip between
-two forked processes, lmbench's `lat_pipe`), `ctx_switch.rs` (the derived context switch), and
-`mmap.rs` (first-touch fault-in, lmbench's `lat_mmap`). Two ways to run them: natively on macOS
+two forked processes, lmbench's `lat_pipe`), `ctx_switch.rs` (the derived context switch),
+`mmap.rs` (first-touch fault-in, lmbench's `lat_mmap`), and `spawn.rs` (fork+exit, lmbench's
+`lat_proc`). Two ways to run them: natively on macOS
 (`rustc -O ... && ./bin`), and on **Linux at the same tier** as cricker-os, `bench/host/run_linux.sh`
-cross-compiles a static musl binary (`linux_all.rs`, the four metrics combined), packs it as `/init`
+cross-compiles a static musl binary (`linux_all.rs`, the five metrics combined), packs it as `/init`
 in a one-file initramfs, and boots it under QEMU-HVF, the exact machine cricker-os boots on. So Linux
 and cricker-os sit on the **same M-series core at the same virtualization tier**; native macOS is the
 bare-metal ceiling.
@@ -246,17 +247,33 @@ userspace and implies `--real`), and compare on the same core:
 | IPC round trip | **~337 ns** | ~1723 ns | ~2620 ns |
 | map a fresh page (provision + map) | ~552 ns (`map_new` + trap) | ~534 ns | ~556 ns |
 | map mechanism only (aliased, no zeroing) | ~91 ns (`map_el0`) | n/a (fault always zeroes) | n/a |
+| spawn (build + run + reap + reclaim) | **~7.7 µs** (`spawn_el0`) | ~19.7 µs (fork+exit) | ~291 µs (fork+exit) |
 
-**cricker-os wins the first three decisively and ties the fourth, and saying which is which is the
-point.** Same M-series core, same HVF tier as Linux, both optimized. It is **~5x faster than Linux at
-the null syscall** (27 vs 139) and **~5x faster at the IPC round trip** (337 vs 1723), and it beats
-native macOS at both. These are seL4-class microkernel numbers, an IPC round trip in the low hundreds
-of nanoseconds, next to the reference OS on the same silicon. **Map is a deliberate non-win**: provisioning
+**cricker-os wins four and ties one, and saying which is which is the point.** Same M-series core, same
+HVF tier as Linux, both optimized. It is **~5x faster than Linux at the null syscall** (27 vs 139) and
+**~5x faster at the IPC round trip** (337 vs 1723), it beats native macOS at both, and it builds a
+process faster than either (spawn, below). These are seL4-class microkernel numbers, an IPC round trip
+in the low hundreds of nanoseconds, next to the reference OS on the same silicon. **Map is a deliberate
+non-win**: provisioning
 a page is dominated by zeroing 4 KiB, which is bandwidth-bound and identical across the three, so all
 land near ~550 ns. The lean mapping *mechanism* (91 ns, measured by aliasing to strip the zeroing) is
 real and worth recording, but it is not a page an application can use, so it does not go in the win
 column. The map row above compares like with like (`map_new` provisions a fresh page, as the host fault
 does); the ~91 ns sits below it as the mechanism floor, not as a headline.
+
+**Spawn is a real win, and an honest caveat.** `spawn_el0` builds a whole child from EL0 (`SPLIT` a
+region, retype an address space and a TCB, map code and a stack, configure, start), runs it to exit,
+reaps it, and `DESTROY`s its region, all in a self-timed loop that only repeats because object
+revocation reclaims each child (notes/object-revocation.md). At ~7.7 µs it beats Linux `fork`+`exit`
+(~19.7 µs) by ~2.6x and macOS by ~38x, on the same core, and it does so while paying **more** boundary
+crossings than Unix: ~10 `svc`s per spawn against `fork`+`wait`'s two. That the heavier-trapping side
+still wins is the honest part of the result. The caveat is the operations differ: `fork` **duplicates**
+the parent (its address space copy-on-write, its descriptor table, its signal state), where cricker-os
+**builds a fresh minimal process from nothing**. A capability-microkernel process is a lighter object
+than a Unix one, so the gap is mostly that structural difference, not a faster version of the same work.
+We use `fork`+`exit`, not `fork`+`exec`, precisely to keep the Unix side as light as it gets (no binary
+loaded); it still carries the weight of duplication that cricker-os's from-scratch build does not. The
+number stands, with its meaning stated: building a process is cheap when a process is a small thing.
 
 The **context switch** is the softest of the three and its number the least load-bearing. No OS lets
 you time a bare switch, so it is *derived*: on the host, `bench/host/ctx_switch.rs` measures a

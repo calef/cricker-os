@@ -20,6 +20,7 @@ unsafe extern "C" {
     fn close(fd: i32) -> i32;
     fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, off: i64) -> *mut u8;
     fn munmap(addr: *mut u8, len: usize) -> i32;
+    fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
     fn reboot(cmd: i32) -> i32;
     fn _exit(code: i32) -> !;
 }
@@ -105,6 +106,28 @@ fn map_fault() -> f64 {
     go(50_000)
 }
 
+/// Process-creation latency, lmbench's `lat_proc` (fork+exit): the host side of `spawn_el0`. `fork`
+/// a child that exits at once, reap it. See bench/host/spawn.rs for the method and the caveat that
+/// this duplicates a Unix process where cricker-os builds a minimal one.
+fn spawn_fork_exit() -> f64 {
+    let iters: u64 = 2_000;
+    let go = |n: u64| -> f64 {
+        let t = Instant::now();
+        for _ in 0..n {
+            // SAFETY: fork takes no args; the child branch calls _exit and never returns.
+            let pid = unsafe { fork() };
+            if pid == 0 {
+                unsafe { _exit(0) };
+            }
+            let mut status = 0i32;
+            unsafe { waitpid(pid, &mut status, 0) };
+        }
+        t.elapsed().as_nanos() as f64 / n as f64
+    };
+    let _ = go(200); // warm
+    go(iters)
+}
+
 fn ipc_rtt() -> f64 {
     let iters: u64 = 200_000;
     let mut p2c = [0i32; 2];
@@ -159,6 +182,10 @@ fn main() {
         rt / 2.0 - p
     );
     println!("linux map (first-touch fault-in): {:.1} ns/page", map_fault());
+    println!(
+        "linux spawn (fork+exit+wait): {:.0} ns/iter",
+        spawn_fork_exit()
+    );
     println!("linux: bench done, powering off");
     unsafe { reboot(RB_POWER_OFF) };
     loop {
