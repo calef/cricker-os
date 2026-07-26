@@ -187,6 +187,10 @@ pub fn missed_ticks() -> u64 {
 /// will act on it in normal context.
 pub fn tick() {
     TICKS[cpu::id()].fetch_add(1, Ordering::Relaxed);
+    // Test builds only: watch for a hung test (a lost IPC wakeup) and fail fast with a diagnostic
+    // instead of blocking the run forever. Costs a couple of atomic loads per tick.
+    #[cfg(test)]
+    crate::testing::watchdog_tick();
     rearm(INTERVAL.load(Ordering::Relaxed));
 }
 

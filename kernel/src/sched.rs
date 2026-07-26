@@ -1361,6 +1361,43 @@ pub fn thread_count() -> usize {
     SCHED.lock().as_ref().map_or(0, |s| s.threads.len())
 }
 
+/// Print every thread's scheduler state, for diagnosing a hang. A lost IPC wakeup leaves a thread
+/// `Blocked` forever with nothing to wake it; this shows which thread, and the `on_cpu`/`wake_pending`
+/// flags that would reveal a botched wake-before-switch-out handoff. Takes SCHED, which is free when
+/// the hang is a blocked thread (not a lock deadlock). Used by the test watchdog.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn dump_threads() {
+    let mut guard = SCHED.lock();
+    let Some(sched) = guard.as_mut() else {
+        crate::println!("  dump_threads: no scheduler");
+        return;
+    };
+    crate::println!("--- thread dump (hang diagnostic) ---");
+    for t in sched.threads.iter_mut() {
+        crate::println!(
+            "  tid={:#06x} state={:?} on_cpu={} wake_pending={} has_outgoing_cap={}",
+            t.id,
+            t.state,
+            t.on_cpu,
+            t.wake_pending,
+            t.outgoing_cap.is_some(),
+        );
+    }
+    for c in 0..crate::smp::online_count() {
+        let pc = cpu::of(c);
+        let inbox_len = pc.inbox.lock().len();
+        crate::println!(
+            "  core {c}: current={:#06x} idle={:#06x} switched_from={:#06x} need_resched={} inbox_len={}",
+            pc.current.load(Ordering::Relaxed),
+            pc.idle.load(Ordering::Relaxed),
+            pc.switched_from.load(Ordering::Relaxed),
+            pc.need_resched.load(Ordering::Relaxed),
+            inbox_len,
+        );
+    }
+    crate::println!("--- end thread dump ---");
+}
+
 pub fn preemptions() -> u64 {
     PREEMPTIONS.load(Ordering::Relaxed)
 }

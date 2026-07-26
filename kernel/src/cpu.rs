@@ -173,6 +173,13 @@ pub fn inbox_of(id: usize) -> &'static IrqSafeMutex<Fifo<Thread>> {
     &PERCPU[id].inbox
 }
 
+/// Any core's block, by id, for read-only diagnostics (the hang dump). Reading another core's
+/// atomics is racy but best-effort, which is all a post-mortem dump needs.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn of(id: usize) -> &'static PerCpu {
+    &PERCPU[id]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
