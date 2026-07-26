@@ -1242,6 +1242,68 @@ pub fn create_tcb(region: usize) -> Option<Tid> {
     name
 }
 
+/// Tear down every kernel object whose backing page lies in `[base, end)`, so `untyped::destroy`
+/// can reclaim the region (object revocation). `Err` if a **live** thread (`Ready`/`Running`/
+/// `Blocked`) sits in the region: its owner must let it finish first, and the region stays pinned.
+/// `Embryo` and `Finished` threads are removed here (dropped, and their generational names killed,
+/// so every outstanding `Tcb` capability to them goes stale on its next use). Endpoints and address
+/// spaces are the later phases of this milestone.
+///
+/// Takes `SCHED`, so it must run **outside** any teardown `Drop`: this is the caller-driven half of
+/// revocation, and `untyped::destroy` is the `SCHED`-free half (which is why the reaper's
+/// `Drop` -> `destroy` path cannot deadlock against it). See `untyped::unpin`.
+fn reap_region_objects(base: u64, end: u64) -> Result<(), ()> {
+    let mut guard = SCHED.lock();
+    let Some(sched) = guard.as_mut() else {
+        return Err(());
+    };
+    // A TCB sits at the start of its page, so the page's physical address is the thread pointer
+    // translated back. That is the whole test for "this object lives in the region".
+    let page_of = |t: &Thread| crate::arch::mmu::virt_to_phys(t as *const Thread as u64);
+
+    // Refuse while any live thread still occupies the region: freeing its page would pull the
+    // stack, or the running address space, out from under a thread that can still be scheduled.
+    for t in sched.threads.iter_mut() {
+        let phys = page_of(t);
+        let live = matches!(t.state, State::Ready | State::Running | State::Blocked);
+        if base <= phys && phys < end && live {
+            return Err(());
+        }
+    }
+
+    // Collect the dead (`Embryo`/`Finished`) before removing any: `remove` mutates the table, so we
+    // cannot hold an iterator across it. At most `MAX_THREADS` names, which fit on the stack.
+    let mut doomed = [0u64; MAX_THREADS];
+    let mut n = 0;
+    for t in sched.threads.iter_mut() {
+        let phys = page_of(t);
+        if base <= phys && phys < end {
+            doomed[n] = t.id;
+            n += 1;
+        }
+    }
+    for &tid in &doomed[..n] {
+        sched.threads.remove(tid);
+    }
+    Ok(())
+}
+
+/// **Reclaim an untyped region and every object retyped from it** (object revocation, the region-
+/// ownership half). The owner, holding the untyped capability, reclaims: tear the region's objects
+/// down (refusing if any is still live), unpin, and return the memory. Generational names make
+/// every capability to the now-dead objects stale on next use, so there is no capability tree to
+/// walk and no copies to hunt (contrast seL4's CDT; DECISIONS records the choice).
+///
+/// Must run outside any `Drop`, because the reap takes `SCHED` (see `reap_region_objects`); the
+/// `unpin` + `destroy` that follow are `SCHED`-free.
+pub fn reclaim_region(region: usize) -> Result<(), ()> {
+    let (base, size) = crate::untyped::region_bounds(region).ok_or(())?;
+    reap_region_objects(base, base + size)?;
+    crate::untyped::unpin(region);
+    crate::untyped::destroy(region);
+    Ok(())
+}
+
 /// **Configure an embryo** (milestone 19c.3): bind the address space named by `aspace_name`
 /// (moved out of the user-aspace registry into the TCB, so it now dies with the thread) and set
 /// the EL0 entry and user stack. Refuses anything but an `Embryo`, so a running thread cannot be
@@ -1462,6 +1524,45 @@ mod tests {
             SAW.load(Ordering::SeqCst),
             0xdead_beef,
             "the closure's captured value did not survive the switch"
+        );
+    }
+
+    /// **Object revocation reclaims a region holding an unstarted TCB** (the smallest proof of the
+    /// mechanism). Retype a bare embryo into a fresh region, then `reclaim_region`: the TCB is torn
+    /// down (its table slot freed, its generational name dead), the region's memory returns, and the
+    /// free-frame count lands exactly where it began. No scheduler run, no address space, no reaper
+    /// timing: find the object, kill it, unpin, free. The larger cases (a started-then-exited
+    /// thread, its address space, the spawn-to-reap loop) build on this one.
+    #[test_case]
+    fn reclaim_frees_an_embryo_tcbs_region() {
+        let frames_before = crate::memory::free_frames();
+        let threads_before = crate::sched::thread_count();
+
+        let region = crate::untyped::create(2).expect("a fresh 2-page region");
+        let _tid = crate::sched::create_tcb(region).expect("retype a TCB from the region");
+
+        assert_eq!(
+            crate::sched::thread_count(),
+            threads_before + 1,
+            "the embryo should be in the table before reclaim"
+        );
+        assert!(
+            crate::memory::free_frames() < frames_before,
+            "creating the region should have spent frames"
+        );
+
+        crate::sched::reclaim_region(region)
+            .expect("reclaim a region whose only object is an unstarted TCB");
+
+        assert_eq!(
+            crate::sched::thread_count(),
+            threads_before,
+            "the TCB's table slot must be freed by reclaim"
+        );
+        assert_eq!(
+            crate::memory::free_frames(),
+            frames_before,
+            "reclaim must return the region's memory exactly to baseline"
         );
     }
 

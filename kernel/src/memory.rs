@@ -229,6 +229,13 @@ pub fn stats() -> Option<Stats> {
     Some(ALLOCATOR.lock().as_ref()?.stats())
 }
 
+/// Free frames right now. For tests that prove reclamation actually returns memory (the untyped
+/// flat-frame-count property, notes/untyped.md): a region reclaimed by object revocation should
+/// bring this exactly back to where it stood before the region was created.
+pub fn free_frames() -> usize {
+    ALLOCATOR.lock().as_ref().map_or(0, |a| a.stats().free())
+}
+
 /// Is this address inside the kernel image?
 pub fn is_in_kernel_image(addr: u64) -> bool {
     (image_start()..image_end()).contains(&addr)

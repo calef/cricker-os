@@ -168,6 +168,28 @@ pub fn usage(region: usize) -> Option<(u64, u64)> {
     regions.get(region).map(|r| (r.watermark, r.pages))
 }
 
+/// This region's physical span `(base, size_in_bytes)`, or `None` if the index is stale. Object
+/// revocation needs it to find which kernel objects live in the region (`sched::reclaim_region`
+/// scans the registries for TCB/endpoint/aspace pages that fall inside this span).
+pub fn region_bounds(region: usize) -> Option<(u64, u64)> {
+    let regions = REGIONS.lock();
+    regions.get(region).map(|r| (r.base, r.pages * FRAME_SIZE))
+}
+
+/// Clear a region's object pin, **after** its objects have been torn down. Object revocation
+/// (`sched::reclaim_region`): reap the objects with the scheduler lock, unpin, then `destroy`.
+///
+/// This is deliberately separate from `destroy`, and the split is not cosmetic. Tearing down a TCB
+/// needs `SCHED`; `destroy` must never take `SCHED`, because it is reachable from
+/// `AddressSpace::Drop`, which already runs under the reaper's `SCHED` (see `destroy`'s note). So
+/// the `SCHED`-taking reap is one call, and the `SCHED`-free `unpin` + `destroy` are the next.
+pub fn unpin(region: usize) {
+    let mut regions = REGIONS.lock();
+    if let Some(r) = regions.get_mut(region) {
+        r.pinned = false;
+    }
+}
+
 /// Return a region's whole backing to the frame allocator, **safely** (milestone 13). The region is
 /// emptied but its slot stays (indices are stable).
 ///
