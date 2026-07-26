@@ -19,7 +19,10 @@ fi
 
 # Run the host tests once under instrumentation (--no-report keeps the raw data), then render the
 # summary, an lcov file, and a browsable HTML report from that same data.
-cargo llvm-cov --workspace --exclude kernel --exclude user --exclude xtask --no-report
+# `user_rt` is excluded like kernel/user: it is aarch64-only inline asm (the EL0 syscall runtime), so
+# it does not build for the host at all, let alone run under host instrumentation. There is no host
+# logic to measure in it.
+cargo llvm-cov --workspace --exclude kernel --exclude user --exclude xtask --exclude user_rt --no-report
 cargo llvm-cov report --summary-only
 mkdir -p target/llvm-cov # the lcov --output-path parent must exist; --html creates its own
 cargo llvm-cov report --lcov --output-path target/llvm-cov/lcov.info

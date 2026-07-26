@@ -13,11 +13,15 @@
 set -e
 cd "$(dirname "$0")/.."
 
+# `user_rt` is excluded from the host pass along with kernel and user: it is the EL0 syscall runtime,
+# all aarch64 inline `asm!` (`in("x8")`, ...), so it only compiles for the aarch64 target. On an
+# aarch64 host (an Apple Silicon dev machine) it happens to build, but on CI's x86_64 host those
+# registers are "unknown register" errors. It is linted with the other bare-metal crates below.
 echo "==> clippy: host crates + xtask"
-cargo clippy --workspace --exclude kernel --exclude user --all-targets -- -D warnings
+cargo clippy --workspace --exclude kernel --exclude user --exclude user_rt --all-targets -- -D warnings
 
-echo "==> clippy: kernel + user (aarch64)"
-cargo clippy -p kernel -p user --target aarch64-unknown-none-softfloat --all-targets -- -D warnings
+echo "==> clippy: kernel + user + user_rt (aarch64)"
+cargo clippy -p kernel -p user -p user_rt --target aarch64-unknown-none-softfloat --all-targets -- -D warnings
 
 # The kernel's boot-mode features (shell, bench, initboot) each compile DIFFERENT code in and out:
 # `initboot` and `shell` drop the milestone tour, `bench` diverges before the boot entirely. So a

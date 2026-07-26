@@ -3,5 +3,13 @@ name = "user_rt"
 version = "0.1.0"
 edition = "2024"
 
+# aarch64-only inline asm, so no host test/bench/doctest targets: `--all-targets` on the bare-metal
+# target must not pull in libtest, which does not exist for aarch64-unknown-none. Same reasoning as
+# the user bins (user/Cargo.toml).
+[lib]
+test = false
+bench = false
+doctest = false
+
 [dependencies]
 abi = { version = "0.1.0", path = "../abi" }
