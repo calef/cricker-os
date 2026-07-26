@@ -96,7 +96,7 @@ pub struct AddressSpace {
     /// owns, which is why there is no frame list: teardown is `untyped::destroy`, one call,
     /// made safe by §13 revocation. The region has no capability minted for it, so userspace
     /// can never retype or delegate from it; it is kernel bookkeeping with a budget.
-    region: usize,
+    region: u64,
 }
 
 /// Page-table-and-slack overhead an address space needs beyond its content pages: the L0 root,
@@ -234,7 +234,7 @@ static USER_SPACES: crate::sync::IrqSafeMutex<slots::Table<AddressSpace, MAX_USE
 /// root page is retyped from it (pinning it, atomically with the carve), and the region becomes
 /// the space's table-and-record budget, exactly as for an exec-built space. `None` on an
 /// exhausted region, a full registry, or ASID exhaustion (unreachable; the type is honest).
-pub fn user_aspace_create(region: usize) -> Option<u64> {
+pub fn user_aspace_create(region: u64) -> Option<u64> {
     let root = crate::untyped::retype_object_page(region)?;
 
     if !crate::revoke::register_space(root, region) {
@@ -1403,7 +1403,7 @@ pub mod untyped_service {
     /// Carve `pages` of memory into an untyped region, hand it to a fresh process, and return the
     /// region id and the endpoint the process reports on. The kernel's ONE allocation is the
     /// untyped itself; everything the process maps afterward spends that, not the allocator.
-    pub fn start(image: &'static [u8], pages: u64) -> Option<(usize, EpId)> {
+    pub fn start(image: &'static [u8], pages: u64) -> Option<(u64, EpId)> {
         let region = crate::untyped::create(pages)?;
         let report = crate::sched::create_endpoint();
 

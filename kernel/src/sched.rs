@@ -227,7 +227,7 @@ struct Scheduler {
     /// The kernel's own object region: where the kernel's endpoints (boot services, tests) are
     /// retyped from, so every endpoint lives uniformly in a pinned page regardless of who paid.
     /// Carved lazily on the first [`create_endpoint`].
-    kernel_ep_region: Option<usize>,
+    kernel_ep_region: Option<u64>,
 }
 
 /// The most endpoints that can ever exist: the registry's bound. Endpoint teardown does not
@@ -812,7 +812,7 @@ pub fn irq_notify(ep: EpId) {
 /// `RETYPE_OBJ` syscall and the kernel's own [`create_endpoint`]. `None` when the region is out
 /// of budget or the registry is full (in which case the retyped page is spent but unused: a
 /// process-local loss on its own budget, same as every failed spend since B.4).
-pub fn create_endpoint_from(region: usize) -> Option<EpId> {
+pub fn create_endpoint_from(region: u64) -> Option<EpId> {
     let mut guard = SCHED.lock();
     let sched = guard.as_mut()?;
 
@@ -1228,7 +1228,7 @@ pub fn grant_to(tid: Tid, cap: crate::cap::Cap) -> Result<u64, crate::cap::Error
 /// page of the creator's own untyped, in the thread table but in no queue and not runnable.
 /// Returns its Tid (what an `Object::Tcb` capability carries) or `None` if the region is out of
 /// budget or the table is full.
-pub fn create_tcb(region: usize) -> Option<Tid> {
+pub fn create_tcb(region: u64) -> Option<Tid> {
     let page = crate::untyped::retype_object_page(region)?;
     let mut guard = SCHED.lock();
     let sched = guard.as_mut()?;
@@ -1296,7 +1296,7 @@ fn reap_region_objects(base: u64, end: u64) -> Result<(), ()> {
 ///
 /// Must run outside any `Drop`, because the reap takes `SCHED` (see `reap_region_objects`); the
 /// `unpin` + `destroy` that follow are `SCHED`-free.
-pub fn reclaim_region(region: usize) -> Result<(), ()> {
+pub fn reclaim_region(region: u64) -> Result<(), ()> {
     // A region carved into children cannot be reclaimed: its child regions own part of its run and
     // free those pages themselves. The owner must destroy the children first. Refuse before any
     // teardown, so a refused reclaim leaves the region exactly as it was.
@@ -1650,6 +1650,28 @@ mod tests {
             crate::memory::free_frames(),
             frames_before,
             "a fully-delegated parent's memory returns once its children are reclaimed",
+        );
+    }
+
+    /// **A destroyed region's table slot is reused** (generational regions). Create and destroy a
+    /// region far more times than the table has slots: without reuse the 257th `create` would fail
+    /// with the table full, the lifetime cap that made a long-running system untenable. With reuse
+    /// each `destroy` frees the slot, so one free slot serves the whole loop, and the free-frame
+    /// count nets to zero every iteration. This is the property that lets the kernel run workloads
+    /// that come and go without end.
+    #[test_case]
+    fn destroyed_region_slots_are_reused() {
+        let frames_before = crate::memory::free_frames();
+        // Comfortably more than MAX_REGIONS (256): without reuse this exhausts the table well before
+        // the end. With reuse, one freed slot serves every iteration.
+        for _ in 0..320 {
+            let r = crate::untyped::create(1).expect("a region slot must be reused, not exhausted");
+            crate::untyped::destroy(r);
+        }
+        assert_eq!(
+            crate::memory::free_frames(),
+            frames_before,
+            "each create+destroy of a region must net zero frames",
         );
     }
 

@@ -33,7 +33,7 @@ pub enum Object {
     /// **Untyped memory** (milestone 11): a capability to a chunk of raw physical memory the
     /// process may retype into pages. Invoking it grows the process's address space out of its
     /// own budget, and the kernel allocates nothing to do it. See kernel/src/untyped.rs.
-    Untyped(usize),
+    Untyped(u64),
 
     /// A hardware interrupt, by INTID.
     ///
@@ -142,7 +142,7 @@ pub fn irq_cap_rights(intid: u32, rights: Rights) -> Cap {
 }
 
 /// A capability to an untyped memory region. `WRITE` lets the holder retype pages out of it.
-pub fn untyped_cap(region: usize) -> Cap {
+pub fn untyped_cap(region: u64) -> Cap {
     Cap {
         object: Object::Untyped(region),
         rights: Rights::WRITE,

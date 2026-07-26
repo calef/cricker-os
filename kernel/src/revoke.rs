@@ -56,7 +56,7 @@ const _: () = assert!(size_of::<LogPage>() == frames::FRAME_SIZE as usize);
 /// records, and its newest log page.
 struct SpaceLog {
     root: u64,
-    region: usize,
+    region: u64,
     /// Physical address of the newest log page; 0 until the first record needs one.
     head: u64,
 }
@@ -83,7 +83,7 @@ unsafe fn log_page(phys: u64) -> &'static mut LogPage {
 
 /// Enter a newly created address space into the registry. `false` (and the caller should fail
 /// creation) if the registry is full.
-pub fn register_space(root: u64, region: usize) -> bool {
+pub fn register_space(root: u64, region: u64) -> bool {
     let mut spaces = SPACES.lock();
     let Some(slot) = spaces.iter_mut().find(|s| s.is_none()) else {
         return false;

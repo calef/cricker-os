@@ -34,7 +34,7 @@ const KERNEL_OBJ_PAGES: u64 = 768;
 struct Pool {
     /// The region id, once carved. Lazy: the first object need triggers the carve, which is
     /// early (the idle thread's stack) and cannot fragment-fail at that point.
-    region: Option<usize>,
+    region: Option<u64>,
     /// Dead object pages, ready for reuse. Bounded by the carve itself.
     free: [u64; KERNEL_OBJ_PAGES as usize],
     free_len: usize,

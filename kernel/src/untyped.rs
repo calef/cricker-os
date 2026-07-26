@@ -48,42 +48,35 @@ struct Region {
     has_children: bool,
 }
 
-/// The most untyped regions that can ever be created. Region ids live inside capabilities and
-/// slots are never reused (`destroy` empties a region but keeps its slot), so this bounds
-/// creations over the kernel's lifetime, not concurrent use. Phase B.4 gives every user
-/// process one, spent at exec and dead-slotted at teardown, so a long test run burns a slot
-/// per process it ever ran; 256 leaves the full suite headroom. Slot reuse (generational,
-/// like the thread table) is the known fix if this ever binds.
+/// The most untyped regions that can be live **at once**. Object revocation made region slots
+/// reusable (see [`Regions`]), so this now bounds concurrent regions, not creations over the
+/// kernel's lifetime the way the old count-based table did. A system that runs workloads which come
+/// and go can create regions without end, as long as no more than this many live at a time.
 const MAX_REGIONS: usize = 256;
 
-/// The untyped regions, in a fixed table (milestone 14 phase B.1): the kernel's own bookkeeping
-/// no longer grows either. Indexed by the `usize` inside an `Object::Untyped` capability.
+/// The untyped regions, a **generational table** (`crates/slots`, notes/generational-names.md).
+/// This is the reuse the old fixed count-based array lacked: [`destroy`] removes a region, which
+/// bumps its slot's generation, so every `Untyped` capability minted for that region stops
+/// resolving (stale-safe, the same machinery as Tids and endpoint names), and the slot is reused by
+/// the next `create`. What an `Object::Untyped` capability carries is the generational `u64` name.
 struct Regions {
-    entries: [Region; MAX_REGIONS],
-    count: usize,
+    table: slots::Table<Region, MAX_REGIONS>,
 }
 
 static REGIONS: IrqSafeMutex<Regions> = IrqSafeMutex::new(
     rank::UNTYPED,
     Regions {
-        entries: [Region {
-            base: 0,
-            pages: 0,
-            watermark: 0,
-            pinned: false,
-            has_children: false,
-        }; MAX_REGIONS],
-        count: 0,
+        table: slots::Table::new(),
     },
 );
 
 impl Regions {
-    fn get(&self, i: usize) -> Option<&Region> {
-        (i < self.count).then(|| &self.entries[i])
+    fn get(&self, name: u64) -> Option<&Region> {
+        self.table.get(name)
     }
 
-    fn get_mut(&mut self, i: usize) -> Option<&mut Region> {
-        (i < self.count).then(|| &mut self.entries[i])
+    fn get_mut(&mut self, name: u64) -> Option<&mut Region> {
+        self.table.get_mut(name)
     }
 }
 
@@ -91,28 +84,24 @@ impl Regions {
 /// region. **This is the kernel's one allocation for this memory** — the seL4 boundary, where all
 /// free RAM becomes untyped handed to the first process. Everything the owner does afterward
 /// spends this, not the allocator.
-pub fn create(pages: u64) -> Option<usize> {
+pub fn create(pages: u64) -> Option<u64> {
     let base = memory::alloc_contiguous(pages as usize)?.addr();
 
-    let mut regions = REGIONS.lock();
-    if regions.count == MAX_REGIONS {
-        // Out of region slots: give the memory back rather than leak it. A bounded table is the
-        // point (B.1); the bound is sized so this is an image misconfiguration, not a runtime path.
-        for i in 0..pages {
-            memory::free(Frame::from_addr(base + i * FRAME_SIZE));
-        }
-        return None;
-    }
-    let id = regions.count;
-    regions.entries[id] = Region {
+    let name = REGIONS.lock().table.insert_with(|_| Region {
         base,
         pages,
         watermark: 0,
         pinned: false,
         has_children: false,
-    };
-    regions.count += 1;
-    Some(id)
+    });
+    if name.is_none() {
+        // No free region slot: give the memory back rather than leak it. With reuse this is now a
+        // genuine concurrency limit (too many live regions), not a lifetime one.
+        for i in 0..pages {
+            memory::free(Frame::from_addr(base + i * FRAME_SIZE));
+        }
+    }
+    name
 }
 
 /// **Carve `pages` off `parent`'s unspent budget into a new child untyped region**, and return its
@@ -127,7 +116,7 @@ pub fn create(pages: u64) -> Option<usize> {
 /// allocator has no free list), so the parent is permanently committed once split. A spawner sizes
 /// its budget for the children it will ever carve. seL4 returns pages to the parent via its
 /// derivation tree, which we deliberately do not build.
-pub fn split(parent: usize, pages: u64) -> Option<usize> {
+pub fn split(parent: u64, pages: u64) -> Option<u64> {
     let base = {
         let mut regions = REGIONS.lock();
         let r = regions.get_mut(parent)?;
@@ -139,27 +128,20 @@ pub fn split(parent: usize, pages: u64) -> Option<usize> {
         r.has_children = true;
         base
     };
-    // A new region entry over the carved run. If the table is full the run stays spent on the
-    // parent (bump-only, the B.4 rule): the caller loses that budget, nobody else's.
-    let mut regions = REGIONS.lock();
-    if regions.count == MAX_REGIONS {
-        return None;
-    }
-    let id = regions.count;
-    regions.entries[id] = Region {
+    // A new region entry over the carved run. If the table has no free slot the run stays spent on
+    // the parent (bump-only, the B.4 rule): the caller loses that budget, nobody else's.
+    REGIONS.lock().table.insert_with(|_| Region {
         base,
         pages,
         watermark: 0,
         pinned: false,
         has_children: false,
-    };
-    regions.count += 1;
-    Some(id)
+    })
 }
 
 /// Whether this region has been carved into a child untyped, so it cannot be reclaimed
-/// (`sched::reclaim_region` refuses it, as `destroy` does). `false` for an unknown index.
-pub fn has_children(region: usize) -> bool {
+/// (`sched::reclaim_region` refuses it, as `destroy` does). `false` for an unknown or stale name.
+pub fn has_children(region: u64) -> bool {
     REGIONS.lock().get(region).is_some_and(|r| r.has_children)
 }
 
@@ -169,7 +151,7 @@ pub fn has_children(region: usize) -> bool {
 /// Zeroed because the caller may make this page a page table, where a stale descriptor is a
 /// pointer to nowhere followed at speed, and because a process should not see the previous
 /// contents of its own untyped.
-pub fn retype_page(region: usize) -> Option<u64> {
+pub fn retype_page(region: u64) -> Option<u64> {
     let mut regions = REGIONS.lock();
     let r = regions.get_mut(region)?;
 
@@ -195,7 +177,7 @@ pub fn retype_page(region: usize) -> Option<u64> {
 /// **Retype one page for a kernel object, pinning the region in the same breath** (19a). Pin and
 /// carve happen under one hold of the region lock, so no `destroy` can slip between them and
 /// free a page that is about to hold an endpoint. Zeroed like every retyped page.
-pub fn retype_object_page(region: usize) -> Option<u64> {
+pub fn retype_object_page(region: u64) -> Option<u64> {
     let mut regions = REGIONS.lock();
     let r = regions.get_mut(region)?;
     if r.watermark >= r.pages {
@@ -219,7 +201,7 @@ pub fn retype_object_page(region: usize) -> Option<u64> {
 
 /// How many pages the region has retyped, and its size. For the demo and tests.
 #[allow(dead_code)] // used by the property test
-pub fn usage(region: usize) -> Option<(u64, u64)> {
+pub fn usage(region: u64) -> Option<(u64, u64)> {
     let regions = REGIONS.lock();
     regions.get(region).map(|r| (r.watermark, r.pages))
 }
@@ -227,7 +209,7 @@ pub fn usage(region: usize) -> Option<(u64, u64)> {
 /// This region's physical span `(base, size_in_bytes)`, or `None` if the index is stale. Object
 /// revocation needs it to find which kernel objects live in the region (`sched::reclaim_region`
 /// scans the registries for TCB/endpoint/aspace pages that fall inside this span).
-pub fn region_bounds(region: usize) -> Option<(u64, u64)> {
+pub fn region_bounds(region: u64) -> Option<(u64, u64)> {
     let regions = REGIONS.lock();
     regions.get(region).map(|r| (r.base, r.pages * FRAME_SIZE))
 }
@@ -239,7 +221,7 @@ pub fn region_bounds(region: usize) -> Option<(u64, u64)> {
 /// needs `SCHED`; `destroy` must never take `SCHED`, because it is reachable from
 /// `AddressSpace::Drop`, which already runs under the reaper's `SCHED` (see `destroy`'s note). So
 /// the `SCHED`-taking reap is one call, and the `SCHED`-free `unpin` + `destroy` are the next.
-pub fn unpin(region: usize) {
+pub fn unpin(region: u64) {
     let mut regions = REGIONS.lock();
     if let Some(r) = regions.get_mut(region) {
         r.pinned = false;
@@ -262,7 +244,7 @@ pub fn unpin(region: usize) {
 /// "spend-only, never reused", and returning the pages to the allocator is safe. `REGIONS` is
 /// released before the revoke so revocation can take the scheduler lock (a higher rank) without
 /// inverting the order.
-pub fn destroy(region: usize) {
+pub fn destroy(region: u64) {
     let (base, pages) = {
         let mut regions = REGIONS.lock();
         let Some(r) = regions.get_mut(region) else {
@@ -274,13 +256,14 @@ pub fn destroy(region: usize) {
         if r.pinned || r.has_children {
             return;
         }
-        let bp = (r.base, r.pages);
-        r.pages = 0;
-        r.watermark = 0;
-        bp
+        (r.base, r.pages)
     };
     crate::revoke::revoke_region(base, pages * FRAME_SIZE);
     for i in 0..pages {
         memory::free(Frame::from_addr(base + i * FRAME_SIZE));
     }
+    // Remove the slot, bumping its generation: every `Untyped` capability minted for this region
+    // now fails to resolve, and the slot is reused by the next `create`. This is the lifetime-cap
+    // fix, the region table no longer fills up permanently the way the count-based one did.
+    REGIONS.lock().table.remove(region);
 }
