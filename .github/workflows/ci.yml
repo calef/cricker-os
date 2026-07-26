@@ -13,10 +13,19 @@ concurrency:
 
 # Each job's real work is a script from script/ (the "Scripts to Rule Them All" set), so CI runs
 # exactly what a developer runs locally. See notes/scripts.md.
+#
+# Every job runs on ubuntu-24.04-arm (a free aarch64 runner for public repos), not the x86_64
+# ubuntu-latest default, and that is deliberate. cricker-os targets aarch64; the host-logic crates
+# (paging, elf, frames, slab, the intrusive queue) run on the host in tests and on aarch64 on real
+# hardware. aarch64 is weakly ordered where x86_64 is TSO, so any accidental reliance on strong
+# ordering (a missing Acquire/Release, an assumed store-store order) passes on an x86_64 host and
+# only fails on real aarch64. Testing on aarch64 is the one place CI catches that class, which is
+# exactly the weak-ordering discipline DECISIONS.md rule 4 commits us to. It also makes CI match the
+# aarch64 dev machine, so "passes locally" means "passes in CI".
 jobs:
   test:
     name: build + test (host + QEMU)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     # A hung kernel means QEMU never exits and the runner would block until the 6-hour default.
     # Fail loudly instead. Local runs finish in well under a minute once built.
     timeout-minutes: 30
@@ -30,7 +39,7 @@ jobs:
 
   fmt:
     name: rustfmt
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
       - name: Install rustfmt (pinned nightly)
@@ -39,7 +48,7 @@ jobs:
 
   clippy:
     name: clippy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
       - name: Install clippy and the bare-metal target
@@ -51,7 +60,7 @@ jobs:
 
   coverage:
     name: coverage (host crates)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
       - name: Install llvm-tools (pinned nightly)
