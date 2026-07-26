@@ -39,14 +39,21 @@ struct Region {
     /// endpoint (later: an address space, a TCB), so [`destroy`] refuses the region. Object
     /// revocation clears this through [`unpin`] once the objects are torn down (`sched::reclaim_region`).
     pinned: bool,
-    /// **This region was carved into a child untyped** (via [`split`]), so part of its run now
-    /// belongs to a child region that will free those pages itself. [`destroy`] refuses a parent,
-    /// because freeing its whole run would double-free the child's pages. This is the no-CDT
-    /// stand-in for seL4's "an untyped with children cannot be revoked until the children are":
-    /// a single bool, never reset, so a split region is committed for the spawner's lifetime (the
-    /// tradeoff, recorded in DECISIONS.md: no return-of-pages-to-parent, the parent just commits).
-    has_children: bool,
+    /// **The region this one was [`split`] out of**, or [`NO_PARENT`] if it was [`create`]d from the
+    /// frame allocator (a root). A child's pages belong to its parent, so [`destroy`] returns them to
+    /// the parent (not the allocator); only a root frees to the allocator.
+    parent: u64,
+    /// **How many live children were split off this region.** A region with children cannot be
+    /// destroyed (freeing its whole run would double-free a child's pages). Unlike the old single
+    /// bool, this is a count, so a parent becomes destroyable again once its last child is reclaimed,
+    /// which is what lets a split parent be reclaimed rather than committed for its lifetime.
+    children: u32,
 }
+
+/// A [`Region::parent`] naming no parent: this region was created from the frame allocator, not
+/// split from another. `u64::MAX` never resolves as a `slots` name (its slot bits exceed
+/// `MAX_REGIONS`), so it is a safe sentinel.
+const NO_PARENT: u64 = u64::MAX;
 
 /// The most untyped regions that can be live **at once**. Object revocation made region slots
 /// reusable (see [`Regions`]), so this now bounds concurrent regions, not creations over the
@@ -92,7 +99,8 @@ pub fn create(pages: u64) -> Option<u64> {
         pages,
         watermark: 0,
         pinned: false,
-        has_children: false,
+        parent: NO_PARENT,
+        children: 0,
     });
     if name.is_none() {
         // No free region slot: give the memory back rather than leak it. With reuse this is now a
@@ -112,10 +120,11 @@ pub fn create(pages: u64) -> Option<u64> {
 /// its own `destroy`. `None` if the parent is unknown, exhausted (`pages` beyond its remaining
 /// budget), asks for zero, or the region table is full.
 ///
-/// **The tradeoff (DECISIONS.md):** a child does not return its pages to the parent (the bump
-/// allocator has no free list), so the parent is permanently committed once split. A spawner sizes
-/// its budget for the children it will ever carve. seL4 returns pages to the parent via its
-/// derivation tree, which we deliberately do not build.
+/// **Return-of-pages (DECISIONS.md §16):** a child destroyed at the top of the parent's watermark
+/// (the LIFO case, which a spawn-then-reap loop always is) gives its pages *back* to the parent's
+/// budget, so a split parent is not committed for its lifetime. A child freed out of order leaves a
+/// hole until the parent itself is destroyed. This is the LIFO half of seL4's return-to-parent,
+/// without the derivation tree that would handle the general case.
 pub fn split(parent: u64, pages: u64) -> Option<u64> {
     let base = {
         let mut regions = REGIONS.lock();
@@ -125,24 +134,28 @@ pub fn split(parent: u64, pages: u64) -> Option<u64> {
         }
         let base = r.base + r.watermark * FRAME_SIZE;
         r.watermark += pages;
-        r.has_children = true;
+        r.children += 1;
         base
     };
-    // A new region entry over the carved run. If the table has no free slot the run stays spent on
-    // the parent (bump-only, the B.4 rule): the caller loses that budget, nobody else's.
+    // A new region entry over the carved run, linked to its parent. If the table has no free slot the
+    // run stays spent on the parent (bump-only, the B.4 rule): the caller loses that budget, and the
+    // parent keeps the bumped `children` count (it can never drop to a destroyable zero, which is the
+    // honest record that a page of it is unaccounted). Practically unreachable, sized for headroom.
     REGIONS.lock().table.insert_with(|_| Region {
         base,
         pages,
         watermark: 0,
         pinned: false,
-        has_children: false,
+        parent,
+        children: 0,
     })
 }
 
-/// Whether this region has been carved into a child untyped, so it cannot be reclaimed
-/// (`sched::reclaim_region` refuses it, as `destroy` does). `false` for an unknown or stale name.
+/// Whether this region has live children (was split and they are not all reclaimed), so it cannot be
+/// reclaimed (`sched::reclaim_region` refuses it, as `destroy` does). `false` for an unknown or stale
+/// name. A parent with zero live children is destroyable again, the point of the count over a bool.
 pub fn has_children(region: u64) -> bool {
-    REGIONS.lock().get(region).is_some_and(|r| r.has_children)
+    REGIONS.lock().get(region).is_some_and(|r| r.children > 0)
 }
 
 /// **Retype one page out of the region**, zeroed, returning its physical address. `None` when the
@@ -245,25 +258,45 @@ pub fn unpin(region: u64) {
 /// released before the revoke so revocation can take the scheduler lock (a higher rank) without
 /// inverting the order.
 pub fn destroy(region: u64) {
-    let (base, pages) = {
-        let mut regions = REGIONS.lock();
-        let Some(r) = regions.get_mut(region) else {
+    let (base, pages, parent) = {
+        let regions = REGIONS.lock();
+        let Some(r) = regions.get(region) else {
             return;
         };
         // Pinned: a kernel object lives in one of these pages (object revocation unpins first).
-        // has_children: part of this run was split off to a child region that frees it itself, so
-        // freeing the whole run here would double-free the child's pages. Either way, refuse.
-        if r.pinned || r.has_children {
+        // children: part of this run was split off to a child region that owns those pages, so
+        // freeing the whole run here would double-free them. Either way, refuse.
+        if r.pinned || r.children > 0 {
             return;
         }
-        (r.base, r.pages)
+        (r.base, r.pages, r.parent)
     };
+    // Unmap any page still mapped anywhere before the pages leave this region, whether they go back
+    // to the allocator (a root) or back to the parent's budget (a child); a returned page that a
+    // peer still maps would be the §13 use-after-free either way.
     crate::revoke::revoke_region(base, pages * FRAME_SIZE);
-    for i in 0..pages {
-        memory::free(Frame::from_addr(base + i * FRAME_SIZE));
+
+    if parent == NO_PARENT {
+        // A root region: its pages came from the frame allocator, so they go back to it.
+        for i in 0..pages {
+            memory::free(Frame::from_addr(base + i * FRAME_SIZE));
+        }
+    } else {
+        // A child region: its pages belong to the parent, not the allocator. Return them. If this
+        // child sits at the very top of the parent's watermark (the LIFO case), un-bump the parent
+        // so the run is re-splittable; otherwise it stays a hole in the parent until the parent is
+        // itself destroyed (which frees the whole run, holes included, exactly once). Either way,
+        // the parent's live-child count drops, so it can become destroyable again.
+        let mut regions = REGIONS.lock();
+        if let Some(p) = regions.get_mut(parent) {
+            if base + pages * FRAME_SIZE == p.base + p.watermark * FRAME_SIZE {
+                p.watermark -= pages; // LIFO: the run returns to the parent's unspent budget
+            }
+            p.children = p.children.saturating_sub(1);
+        }
     }
-    // Remove the slot, bumping its generation: every `Untyped` capability minted for this region
-    // now fails to resolve, and the slot is reused by the next `create`. This is the lifetime-cap
-    // fix, the region table no longer fills up permanently the way the count-based one did.
+
+    // Remove the slot, bumping its generation: every `Untyped` capability minted for this region now
+    // fails to resolve, and the slot is reused by the next `create`/`split`.
     REGIONS.lock().table.remove(region);
 }

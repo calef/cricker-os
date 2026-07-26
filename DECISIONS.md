@@ -1000,10 +1000,13 @@ never take `SCHED` (it is reachable from `AddressSpace::Drop` under the reaper's
 ### Two new methods on the Untyped object (the surface stays three syscalls)
 
 - **`SPLIT`** carves a child untyped off a parent's budget (seL4's untyped-retype-into-untyped), so a
-  spawner gives each child its own reclaimable region. A split parent is marked and can no longer be
-  destroyed (freeing its run would double-free the child's pages). **The tradeoff, taken deliberately:**
-  a child does not return pages to the parent (the bump allocator has no free list), so a split parent
-  is committed for its lifetime; seL4 returns them via its CDT, which we do not build.
+  spawner gives each child its own reclaimable region. A parent with live children cannot be destroyed
+  (freeing its run would double-free a child's pages), tracked by a child count so the parent becomes
+  destroyable again once its children are gone. **Return-of-pages is LIFO:** a child destroyed at the
+  top of the parent's watermark gives its pages back to the parent's budget (un-bump), which is exactly
+  what a spawn-then-reap loop does, so a split parent is *not* committed for its lifetime; a child freed
+  out of order leaves a hole until the parent itself is destroyed. This is the LIFO half of seL4's
+  return-to-parent without the derivation tree that would handle the general case.
 - **`DESTROY`** reclaims a region and every object retyped from it. Refuses (NotPermitted) while a live
   thread occupies it, an endpoint in it has a blocked waiter, or it has been split.
 

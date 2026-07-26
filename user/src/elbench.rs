@@ -209,9 +209,9 @@ fn map_one(va: u64) -> i64 {
 }
 
 /// Spawn benchmark tuning. Each iteration builds a whole child from EL0 and reclaims it, so the
-/// count is modest (spawn is the heaviest primitive) and the budget must fund `CHILD_PAGES` per
-/// child (a split parent does not get its pages back, DECISIONS §16). The bench boot sizes the
-/// untyped for `(SPAWN_WARMUP + SPAWN_ITERS) * CHILD_PAGES` plus overhead.
+/// count is modest (spawn is the heaviest primitive). The child is split, run, and destroyed
+/// strictly LIFO, so `DESTROY` returns its pages to the budget (DECISIONS §16): only one child lives
+/// at a time, and the bench boot's untyped need only fund one child, not one per iteration.
 const SPAWN_ITERS: u64 = 100;
 const SPAWN_WARMUP: u64 = 8;
 const CHILD_PAGES: u64 = 10; // the child's aspace root + tables + one stack page + revoke records

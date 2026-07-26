@@ -88,14 +88,19 @@ untyped-retype-into-untyped). The child is independently reclaimable.
 
 The sub-decision this forced, recorded here because a naive version has a double-free trap: a child's
 pages are part of the parent's run, so if both the child and the parent were destroyed, the parent's
-`destroy` would free the child's pages a second time. The correct fix without a CDT is the simplest
-one: mark a split parent `has_children` and refuse to destroy it. The child is ordinary memory that
-frees to the allocator at its own destroy. **The tradeoff, deliberately taken:** a child does *not*
-return its pages to the parent (the bump allocator has no free list), so a split parent is committed
-for the spawner's lifetime; a spawner sizes its budget for the children it will ever carve. seL4
-returns pages to the parent through its derivation tree, which we do not build. A future refinement
-could add LIFO return-to-parent for the common strictly-nested case, if the parent commitment ever
-bites.
+`destroy` would free the child's pages a second time. The fix without a CDT: a parent counts its live
+children and refuses `destroy` while any remain (so it can never double-free a live child's pages),
+and a child returns its pages to the *parent*, not the allocator, when it is destroyed.
+
+**Return-of-pages is LIFO.** A child destroyed at the top of the parent's watermark gives its pages
+straight back to the parent's budget (the watermark un-bumps), so they are re-splittable. That is
+exactly what a spawn-then-reap loop does, split a child, run it, destroy it, split the next, so a split
+parent is *not* committed for its lifetime: the loop runs forever on a budget of one child. The
+benchmark proves it, a 100-iteration spawn loop runs on a 64-page budget that could hold only ~6
+children at once. A child freed *out of order* is not at the top, so its pages stay a hole in the
+parent until the parent itself is destroyed (which frees the whole run, holes included, exactly once).
+This is the LIFO half of seL4's return-to-parent; the general case is what a derivation tree buys, and
+we still do not build one.
 
 ## Region slots became generational, retiring the lifetime cap
 

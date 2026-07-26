@@ -219,11 +219,12 @@ const EL_IPC_CLIENT: u64 = 4;
 const EL_MAP: u64 = 5;
 const EL_SPAWN: u64 = 6;
 
-/// The spawner's untyped budget, in pages. Each child permanently spends `CHILD_PAGES` of it (a
-/// split parent does not get its pages back, DECISIONS §16), so this must fund
-/// `(SPAWN_WARMUP + SPAWN_ITERS)` children plus the shared code frame and page-table overhead.
-/// Mirrors elbench's SPAWN_* constants (8 + 100 warmup+timed, 10 pages each).
-const SPAWN_EL0_BUDGET: u64 = 1280;
+/// The spawner's untyped budget, in pages. **Small on purpose:** each child is split, run, and
+/// destroyed strictly LIFO, so its pages return to this budget (DECISIONS §16), and only one child
+/// lives at a time. The budget need only fund one child (`CHILD_PAGES`) plus the shared code frame
+/// and the scratch page tables, not one per iteration. That 64 funds a 100-iteration loop (which
+/// would need >1000 pages without return-to-parent) is itself the proof LIFO reclaim works.
+const SPAWN_EL0_BUDGET: u64 = 64;
 
 /// Warmup + timed map counts the bench boot must provision the target region for. `MAP_EL0_ITERS`
 /// **must equal** elbench's `MAP_ITERS` and `MAP_EL0_WARMUP` its `MAP_WARMUP`: the region is sized for
