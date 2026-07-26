@@ -66,6 +66,15 @@ pub fn recv(slot: u64) -> (u64, u64, u64) {
     (w0, w1, w2)
 }
 
+/// Give up the CPU (`SYS_YIELD`). Returns when the scheduler runs this thread again; if another
+/// thread is ready, control goes there and back, which is one context-switch round trip.
+pub fn yield_now() {
+    // SAFETY: `svc`; SYS_YIELD gives up the CPU and returns with nothing to clean up.
+    unsafe {
+        core::arch::asm!("svc #0", in("x8") abi::SYS_YIELD, options(nostack, nomem));
+    }
+}
+
 /// The virtual counter, `CNTVCT_EL0`: a monotonic tick count for self-timing. Readable at EL0 only
 /// because the kernel opened `CNTKCTL_EL1.EL0VCTEN` (see kernel timer::init and notes/abi.md); the
 /// read is a plain register move, no syscall. Pair with [`cntfrq`] to turn tick deltas into seconds.

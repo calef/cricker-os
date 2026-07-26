@@ -170,6 +170,21 @@ same `user_rt::now`. The existing kernel-side suite stays, for gating; the EL0 s
 cross-OS honesty. The two will differ by roughly the trap cost, and that difference is itself a
 number worth having.
 
+### The first EL0 numbers (cricker-os, M-series host, HVF, debug build)
+
+The `elbench` program (`user/src/elbench.rs`), spawned by the bench boot, self-times each primitive
+from EL0 and reports it as a normal bench line. So far:
+
+| primitive | HVF ns/iter | what one iteration is |
+|---|---|---|
+| `null_syscall` | ~43 | one `svc` that the kernel rejects immediately: trap + dispatch + return |
+| `ctx_switch` | ~693 | one `SYS_YIELD` to a peer *process* and back: two switches, address space included |
+
+The ratio is the sanity check: a context switch is ~16x a null syscall, which is right (two traps, the
+scheduler, two register save/restores, and a TTBR0/ASID change, versus one bare trap). Both are debug
+builds; the eventual cross-OS comparison wants release builds on all sides. These are the numbers that
+will line up against lmbench's `lat_syscall`/`lat_ctx` and `sel4bench`.
+
 ### The cross-OS comparison, when we build it
 
 - **Reuse an existing primitive suite** where one exists: **lmbench** on Linux and macOS (it builds

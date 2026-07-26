@@ -64,6 +64,7 @@ pub fn run() -> ! {
     map_new();
     coremark_compute();
     null_syscall_el0();
+    ctx_switch_el0();
 
     println!("bench: done");
     // Parked, not exited: the host side saw the marker and tears QEMU down. `wfi`, so a
@@ -205,25 +206,23 @@ fn map_new() {
     drop(space); // teardown outside the timed window; it is spawn_reap's kind of cost, not map's
 }
 
-/// **Null syscall latency, measured from EL0 (the primitive suite).** The `bench:` lines above are
-/// kernel-internal, no trap. This one is what lmbench measures: the bench boot spawns the `elbench`
-/// EL0 program, which self-times a loop of the cheapest `svc` and reports `[ticks, iters]`; we print
-/// it in the same format. The gap between this and a hypothetical kernel-side null syscall is roughly
-/// the EL0<->EL1 boundary cost, which is the whole point of measuring here. See user/src/elbench.rs.
-fn null_syscall_el0() {
-    let image = match crate::user::program("elbench") {
-        Some(bytes) => bytes,
-        None => {
-            println!("bench: null_syscall skipped (no elbench in the initrd)");
-            return;
-        }
+// Roles for the `elbench` EL0 program (must match user/src/elbench.rs). One binary, one micro-
+// measurement per role, chosen through `START`'s `arg0`.
+const EL_NULL_SYSCALL: u64 = 0;
+const EL_YIELDER: u64 = 1;
+const EL_CTX_SWITCH: u64 = 2;
+
+/// Spawn the `elbench` EL0 program in a given role, granting it `report` (slot 0) to answer on.
+/// `false` if there is no `elbench` in the initrd (the bench boot then skips that line).
+fn spawn_elbench(role: u64, report: sched::EpId) -> bool {
+    let Some(image) = crate::user::program("elbench") else {
+        return false;
     };
-    let report = sched::create_endpoint();
     sched::spawn(move || {
         crate::user::run(
             image,
             crate::user::Spawn {
-                arg0: 0,
+                arg0: role,
                 arg1: 0,
                 arg2: 0,
                 grants: &[crate::cap::endpoint_cap(report, crate::cap::Rights::WRITE)],
@@ -232,9 +231,42 @@ fn null_syscall_el0() {
         )
     })
     .expect("bench: could not spawn elbench");
+    true
+}
 
+/// **Null syscall latency, measured from EL0 (the primitive suite).** The `bench:` lines above are
+/// kernel-internal, no trap. This one is what lmbench measures: the bench boot spawns the `elbench`
+/// EL0 program, which self-times a loop of the cheapest `svc` and reports `[ticks, iters]`; we print
+/// it in the same format. The gap between this and a hypothetical kernel-side null syscall is roughly
+/// the EL0<->EL1 boundary cost, which is the whole point of measuring here. See user/src/elbench.rs.
+fn null_syscall_el0() {
+    let report = sched::create_endpoint();
+    if !spawn_elbench(EL_NULL_SYSCALL, report) {
+        println!("bench: null_syscall skipped (no elbench in the initrd)");
+        return;
+    }
     let [ticks, iters, _] = sched::ipc_recv(report);
     println!("bench: null_syscall {ticks} {iters}");
+}
+
+/// **Context switch latency, measured from EL0 (the primitive suite).** lmbench's `lat_ctx`. The
+/// bench boot spawns a *yielder* peer and a *timer*, two separate EL0 processes; the timer self-times
+/// a loop of `SYS_YIELD`, each handing the CPU to the peer and back, two switches per iteration, each
+/// an address-space change. With the boot thread blocked here on the report and only those two ready,
+/// the alternation is clean. See user/src/elbench.rs.
+fn ctx_switch_el0() {
+    let report = sched::create_endpoint();
+    // The peer first, so the timer always has something to switch to. It shares the report endpoint
+    // (it never sends on it); the spawn shape stays uniform.
+    if !spawn_elbench(EL_YIELDER, report) {
+        println!("bench: ctx_switch skipped (no elbench in the initrd)");
+        return;
+    }
+    if !spawn_elbench(EL_CTX_SWITCH, report) {
+        return;
+    }
+    let [ticks, iters, _] = sched::ipc_recv(report);
+    println!("bench: ctx_switch {ticks} {iters}");
 }
 
 /// **The compute workload (milestone 19e), for the record.** Unlike the paths above, this touches
