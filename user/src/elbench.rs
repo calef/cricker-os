@@ -183,10 +183,11 @@ fn map_bench() -> ! {
 
 /// One `MAP_INTO`: map the granted frame (slot `MAP_FRAME`) read-only into the granted space (slot
 /// `MAP_ASPACE`) at `va`. Read-only needs only READ on the frame cap, which is all we were granted.
+/// Returns the syscall result: 0 on success, a negative error otherwise.
 #[inline(never)]
-fn map_one(va: u64) {
+fn map_one(va: u64) -> i64 {
     // SAFETY: `svc`; the kernel validates the aspace and frame caps and the method before mapping.
-    let _ = unsafe {
+    unsafe {
         invoke(
             MAP_ASPACE,
             abi::aspace::MAP_INTO,
@@ -194,7 +195,7 @@ fn map_one(va: u64) {
             MAP_FRAME,
             abi::aspace::MAP_RO,
         )
-    };
+    }
 }
 
 /// One null syscall: `svc` with an unrecognized number. The kernel returns an error in `x0`, which

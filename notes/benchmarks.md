@@ -193,30 +193,48 @@ kernel-side ones, are what compare to lmbench. All debug builds; the cross-OS co
 builds on all sides. These line up against lmbench's `lat_syscall` / `lat_ctx` / `lat_pipe` and
 `sel4bench`.
 
-**Map (lmbench's `lat_mmap`) is the primitive that behaves differently from the other three**, and the
-difference taught two things. First, it *consumes resources per call*: every `MAP_INTO` writes a fresh
-page-table entry and a revocation record, both paid from the target space's untyped region, so unlike
-a null syscall or a yield it cannot loop forever. The loop is bounded (500 maps, one L3 table's worth),
-and its kernel-side twin `map_new` maps 64. Second, the *per-map cost depends on the iteration count*
-until it plateaus: `record_mapping` scans the head log page for a free slot on each insert, so the
-average scan grows with how full that page is and settles at ~half a page (a page holds ~256 records).
-64 maps was too few, both to beat HVF's counter noise (the per-map delta sat in the jitter, and the
-number even came out *below* the kernel-side twin, which is impossible) and to reach that plateau. 500
-fixes both. The scan is real map-path work, the analogue of Linux inserting a VMA/rmap entry, so it
-belongs in the number; it is not an artifact of aliasing one frame across every VA (the scan looks for
-free slots, not matching frames, so distinct pages would cost the same). Result: `map_el0` ~909 ns
-against the kernel-side `map_new` ~695 ns, the ~214 ns gap being the trap plus capability resolution
-plus the registry lookup that mapping into a named space (rather than a raw `AddressSpace`) adds.
+**Map (lmbench's `lat_mmap`) behaves differently from the other three, and it is the primitive where
+the honest answer is a tie, not a win.** It taught three things.
+
+First, it *consumes resources per call*: every `MAP_INTO` writes a page-table entry and a revocation
+record, paid from the target space's untyped region, so unlike a null syscall or a yield it cannot loop
+forever. The loop is bounded (500 maps, one L3 table's worth); the kernel-side twin `map_new` maps 64.
+And there is no unmap in the surface yet, so each VA is used once.
+
+Second, the debug and release numbers diverged by ~10x, far more than any other primitive, and that
+divergence is the whole lesson. `map_el0` **aliases one existing frame** at every VA, so it does no
+page allocation and no zeroing: it is trap + capability resolve + walk + PTE write + a `record_mapping`
+append. That append scans the head log page for a free slot, an ~128-entry linear walk on average, and
+in a debug build that unoptimized scan *dominated* the number (~909 ns). Release compiles the scan down
+to almost nothing, and the true cost of the mapping mechanism shows through: **~91 ns**. The kernel-side
+`map_new`, by contrast, is ~524 ns in release and barely moved from debug, because its cost is the 4 KiB
+**page zeroing** a fresh frame needs (`retype_page` hands back a zeroed page), which is memory-bandwidth
+bound and the optimizer cannot speed it up.
+
+Third, and this is why map is a tie: **`map_el0` and the host `lat_mmap` do not measure the same thing.**
+The host number is a first-touch page fault, which allocates and zeroes a fresh page; `map_el0` aliases
+a frame and skips both. So `map_el0` ~91 ns is the *pure mapping mechanism*, and it is genuinely lean,
+but it is not comparable to Linux's ~534 ns, most of which is the page zeroing our aliasing avoids. The
+apples-to-apples comparison is our `map_new` (fresh page, allocate + zero + map), ~524 ns, plus one trap
+(~28 ns) for the EL0 crossing the host's fault includes: ~552 ns, against Linux ~534 ns and macOS ~556
+ns. That is a **three-way tie**, and it makes sense: page provisioning is dominated by zeroing 4 KiB,
+which is the same silicon and the same bandwidth for all three. cricker-os's lean mechanism is real (the
+91 ns), but on the operation an application actually pays for, getting a usable page, it does not and
+cannot win, because the win would have to come from zeroing memory faster than the other two, and nobody
+can. A fair EL0 map that *does* provision a fresh page waits on retype-from-untyped reaching userspace
+(a later milestone); until then the kernel-side `map_new` is the honest stand-in for the comparison.
 
 ### The first cross-OS numbers (cricker-os vs Linux vs macOS)
 
 `bench/host/` holds the host side of each metric: `null_syscall.rs` (a raw `getpid` through the
-syscall gate, not libc's cached `getpid` which never traps) and `ipc_rtt.rs` (a pipe round trip
-between two forked processes, lmbench's `lat_pipe`). Two ways to run them: natively on macOS
+syscall gate, not libc's cached `getpid` which never traps), `ipc_rtt.rs` (a pipe round trip between
+two forked processes, lmbench's `lat_pipe`), `ctx_switch.rs` (the derived context switch), and
+`mmap.rs` (first-touch fault-in, lmbench's `lat_mmap`). Two ways to run them: natively on macOS
 (`rustc -O ... && ./bin`), and on **Linux at the same tier** as cricker-os, `bench/host/run_linux.sh`
-cross-compiles a static musl binary, packs it as `/init` in a one-file initramfs, and boots it under
-QEMU-HVF, the exact machine cricker-os boots on. So Linux and cricker-os sit on the **same M-series
-core at the same virtualization tier**; native macOS is the bare-metal ceiling.
+cross-compiles a static musl binary (`linux_all.rs`, the four metrics combined), packs it as `/init`
+in a one-file initramfs, and boots it under QEMU-HVF, the exact machine cricker-os boots on. So Linux
+and cricker-os sit on the **same M-series core at the same virtualization tier**; native macOS is the
+bare-metal ceiling.
 
 Run cricker-os optimized (`cargo xtask bench --release`, which builds an opt-level-3 kernel and
 userspace and implies `--real`), and compare on the same core:
@@ -226,12 +244,19 @@ userspace and implies `--real`), and compare on the same core:
 | null syscall | **~27 ns** | ~139 ns | ~76 ns |
 | context switch (per switch, derived) | **~28 ns** | ~415 ns | ~818 ns |
 | IPC round trip | **~337 ns** | ~1723 ns | ~2620 ns |
+| map a fresh page (provision + map) | ~552 ns (`map_new` + trap) | ~534 ns | ~556 ns |
+| map mechanism only (aliased, no zeroing) | ~91 ns (`map_el0`) | n/a (fault always zeroes) | n/a |
 
-**cricker-os wins all three, and the two clean ones win decisively**: same M-series core, same HVF
-tier as Linux, both optimized. It is **~5x faster than Linux at the null syscall** (27 vs 139) and
-**~5x faster at the IPC round trip** (337 vs 1723), and it beats native macOS at both. These are
-seL4-class microkernel numbers, an IPC round trip in the low hundreds of nanoseconds, put next to the
-reference OS on the same silicon.
+**cricker-os wins the first three decisively and ties the fourth, and saying which is which is the
+point.** Same M-series core, same HVF tier as Linux, both optimized. It is **~5x faster than Linux at
+the null syscall** (27 vs 139) and **~5x faster at the IPC round trip** (337 vs 1723), and it beats
+native macOS at both. These are seL4-class microkernel numbers, an IPC round trip in the low hundreds
+of nanoseconds, next to the reference OS on the same silicon. **Map is a deliberate non-win**: provisioning
+a page is dominated by zeroing 4 KiB, which is bandwidth-bound and identical across the three, so all
+land near ~550 ns. The lean mapping *mechanism* (91 ns, measured by aliasing to strip the zeroing) is
+real and worth recording, but it is not a page an application can use, so it does not go in the win
+column. The map row above compares like with like (`map_new` provisions a fresh page, as the host fault
+does); the ~91 ns sits below it as the mechanism floor, not as a headline.
 
 The **context switch** is the softest of the three and its number the least load-bearing. No OS lets
 you time a bare switch, so it is *derived*: on the host, `bench/host/ctx_switch.rs` measures a

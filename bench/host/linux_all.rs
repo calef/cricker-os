@@ -18,6 +18,8 @@ unsafe extern "C" {
     fn pipe(fds: *mut i32) -> i32;
     fn fork() -> i32;
     fn close(fd: i32) -> i32;
+    fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, off: i64) -> *mut u8;
+    fn munmap(addr: *mut u8, len: usize) -> i32;
     fn reboot(cmd: i32) -> i32;
     fn _exit(code: i32) -> !;
 }
@@ -65,6 +67,42 @@ fn null_syscall() -> f64 {
     }
     std::hint::black_box(acc);
     t.elapsed().as_nanos() as f64 / iters as f64
+}
+
+/// Page-map (fault-in) latency, lmbench's `lat_mmap`: the host side of cricker-os's `map_el0`. `mmap`
+/// a large anonymous region, then touch one byte per page; the first touch faults and the kernel
+/// installs the PTE. See bench/host/mmap.rs for the method and the two asymmetries to our `MAP_INTO`
+/// (fault vs syscall trigger; the host also allocates and zeroes a page where we alias one frame).
+fn map_fault() -> f64 {
+    const PAGE: usize = 4096;
+    const PROT_READ: i32 = 0x1;
+    const PROT_WRITE: i32 = 0x2;
+    const MAP_PRIVATE: i32 = 0x0002;
+    const MAP_ANONYMOUS: i32 = 0x20; // aarch64 Linux
+    let go = |pages: usize| -> f64 {
+        let len = pages * PAGE;
+        let p = unsafe {
+            mmap(
+                std::ptr::null_mut(),
+                len,
+                PROT_READ | PROT_WRITE,
+                MAP_PRIVATE | MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert!(p as isize != -1, "mmap failed");
+        let t = Instant::now();
+        for i in 0..pages {
+            // SAFETY: `p` covers `pages` pages; write the first byte of page i to fault it in.
+            unsafe { p.add(i * PAGE).write_volatile(1) };
+        }
+        let ns = t.elapsed().as_nanos() as f64 / pages as f64;
+        unsafe { munmap(p, len) };
+        ns
+    };
+    let _ = go(2_000); // warm the mmap/fault paths on a throwaway region; timed run gets a fresh one
+    go(50_000)
 }
 
 fn ipc_rtt() -> f64 {
@@ -120,6 +158,7 @@ fn main() {
         "linux ctx_switch (derived): {:.1} ns  (round_trip {rt:.1}, self_pipe {p:.1})",
         rt / 2.0 - p
     );
+    println!("linux map (first-touch fault-in): {:.1} ns/page", map_fault());
     println!("linux: bench done, powering off");
     unsafe { reboot(RB_POWER_OFF) };
     loop {
