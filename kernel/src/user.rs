@@ -2901,6 +2901,84 @@ mod tests {
         );
     }
 
+    /// **Spawn-to-reap repeats without leaking: the whole milestone's payoff.** Build, start, run,
+    /// exit, reap, and reclaim a region-backed EL0 child, in a loop. Every iteration returns the
+    /// free-frame count to the same baseline, and the region slots are reused (generational), so the
+    /// loop neither leaks memory nor exhausts the region table. This is the property "spawn's
+    /// prerequisite" was always about: not retype (that had shipped), but reclamation, so a workload
+    /// can come and go over and over. A few iterations under TCG is enough to catch any per-cycle
+    /// leak; the real magnitudes wait on the EL0 lat_proc benchmark.
+    #[test_case]
+    fn spawn_to_reap_repeats_without_leaking() {
+        const CODE_VA: u64 = 0x40_0000;
+        const STACK_VA: u64 = 0x50_0000;
+        const REPORT_WORD: u64 = 0x44;
+        let code: [u32; 9] = [
+            0xD280_0000,
+            0xD280_0001,
+            0xD280_0000 | ((REPORT_WORD as u32) << 5) | 2,
+            0xD280_0003,
+            0xD280_0004,
+            0xD280_0000 | ((abi::SYS_INVOKE as u32) << 5) | 8,
+            0xD400_0001,
+            0xD280_0008,
+            0xD400_0001,
+        ];
+
+        let report = crate::sched::create_endpoint();
+        let baseline = crate::memory::free_frames();
+
+        for round in 0..6 {
+            let threads_before = crate::sched::thread_count();
+
+            let as_region = crate::untyped::create(8).expect("aspace region");
+            let aspace = user_aspace_create(as_region).expect("aspace");
+            let code_phys = crate::untyped::retype_page(as_region).expect("code frame");
+            // SAFETY: a fresh frame we own, direct-mapped.
+            unsafe {
+                let dst = mmu::phys_to_virt(code_phys) as *mut u32;
+                for (i, &insn) in code.iter().enumerate() {
+                    dst.add(i).write(insn);
+                }
+            }
+            sync_icache(mmu::phys_to_virt(code_phys), size_of_val(&code));
+            user_aspace_map(aspace, CODE_VA, code_phys, Flags::user_code()).expect("map code");
+            let stack_phys = crate::untyped::retype_page(as_region).expect("stack frame");
+            user_aspace_map(aspace, STACK_VA, stack_phys, Flags::user_data()).expect("map stack");
+
+            let report_cap = crate::cap::endpoint_cap(
+                report,
+                crate::cap::Rights::WRITE.union(crate::cap::Rights::GRANT),
+            );
+            let tcb_region = crate::untyped::create(2).expect("tcb region");
+            let tid = crate::sched::create_tcb(tcb_region).expect("tcb");
+            crate::sched::tcb_insert_cap(tid, report_cap).expect("cap insert");
+            crate::sched::configure_tcb(tid, CODE_VA, STACK_VA + frames::FRAME_SIZE, aspace)
+                .expect("configure");
+            crate::sched::start_tcb(tid, [0; 3]).expect("start");
+
+            assert_eq!(
+                crate::sched::ipc_recv(report)[0],
+                REPORT_WORD,
+                "round {round}: the child never reported"
+            );
+            for _ in 0..100 {
+                if crate::sched::thread_count() == threads_before {
+                    break;
+                }
+                crate::sched::yield_now();
+            }
+            crate::sched::reclaim_region(tcb_region).expect("reclaim tcb region");
+            crate::sched::reclaim_region(as_region).expect("reclaim aspace region");
+
+            assert_eq!(
+                crate::memory::free_frames(),
+                baseline,
+                "round {round}: spawn-to-reap leaked; the cycle does not return to baseline",
+            );
+        }
+    }
+
     /// **Milestone 19b, end to end: a process constructs an address space from EL0.** The
     /// builder retypes a space and a frame from its own budget, maps the frame in, and checks
     /// the kernel enforces break-before-make inside the space it built. Verdict 0b111 or bust.
