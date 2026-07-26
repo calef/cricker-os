@@ -215,6 +215,11 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [Where cricker-os could actually run](target-hardware.md) — the ISA is almost never the
   constraint. What decides bootability, why a Pi 4 is the next port, and why the port
   *after* it should probably be a UEFI/ACPI machine rather than another Device Tree board.
+- [Porting to RISC-V](riscv-port.md) — the second-architecture port (milestone 20), the real
+  test of rule #1. The exact `arch/` boundary RISC-V must satisfy, the two HAL leaks it exposes
+  (`Context` is aarch64-shaped in portable code; the `paging` crate encodes the aarch64 descriptor
+  format), the RISC-V specifics (SBI, S-mode boot, Sv39, NS16550, PLIC/CLINT), and the incremental
+  plan from "compiles for riscv64" to "the capability core runs on a second ISA".
 
 ## Build
 
