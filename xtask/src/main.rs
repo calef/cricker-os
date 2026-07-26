@@ -468,7 +468,9 @@ fn bench() -> bool {
         "benchmark", "ticks", "iters", "ticks/iter", "ns/iter"
     );
     for (name, ticks, iters) in &results {
-        let per = ticks / iters;
+        // `checked_div`, not `/`: a benchmark that reports zero iterations (a skip, or a future
+        // diagnostic line) must not panic the whole harness after the run already happened.
+        let per = ticks.checked_div(*iters).unwrap_or(0);
         let ns = (ticks * 1_000_000_000)
             .checked_div(cntfrq)
             .and_then(|v| v.checked_div(*iters))
