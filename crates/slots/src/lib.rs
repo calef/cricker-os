@@ -143,6 +143,17 @@ impl<T, const N: usize> Table<T, N> {
     pub fn values(&self) -> impl Iterator<Item = &T> + '_ {
         self.slots.iter().filter_map(|s| s.as_ref())
     }
+
+    /// Every live entry with its current name, in slot order. For sweeps that must *remove* what
+    /// they find and so need the name, not just the value (object revocation: find every object
+    /// backed by a region, then remove it by name). `values`/`iter_mut` suffice when the caller
+    /// only needs the entry, as a TCB carries its own name and does not need this.
+    pub fn iter(&self) -> impl Iterator<Item = (u64, &T)> + '_ {
+        self.slots
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, s)| s.as_ref().map(|t| (Self::name(slot, self.gens[slot]), t)))
+    }
 }
 
 impl<T, const N: usize> Default for Table<T, N> {
@@ -229,6 +240,38 @@ mod tests {
         let mut t: Table<u64, 8> = Table::new();
         let name = t.insert_with(|n| n).unwrap();
         assert_eq!(t.get(name), Some(&name));
+    }
+
+    /// `iter` yields each live entry paired with the very name that resolves to it, and skips the
+    /// dead. This is what lets object revocation find every object backed by a region and then
+    /// remove it by name (an AddressSpace, unlike a Thread, does not carry its own name).
+    #[test]
+    fn iter_yields_names_that_resolve_to_their_entry() {
+        let mut t: Table<&str, 4> = Table::new();
+        let a = t.insert_with(|_| "a").unwrap();
+        let b = t.insert_with(|_| "b").unwrap();
+        let c = t.insert_with(|_| "c").unwrap();
+        t.remove(b); // a hole in the middle: iter must skip it
+
+        let (mut count, mut saw_a, mut saw_c) = (0, false, false);
+        for (name, &val) in t.iter() {
+            count += 1;
+            // Every name iter hands back resolves to exactly that entry.
+            assert_eq!(t.get(name), Some(&val));
+            match val {
+                "a" => {
+                    assert_eq!(name, a);
+                    saw_a = true;
+                }
+                "c" => {
+                    assert_eq!(name, c);
+                    saw_c = true;
+                }
+                other => panic!("iter yielded a removed or unknown entry: {other}"),
+            }
+        }
+        assert_eq!(count, 2, "iter must skip the removed slot");
+        assert!(saw_a && saw_c, "iter must yield every live entry");
     }
 
     #[test]

@@ -1298,7 +1298,11 @@ fn reap_region_objects(base: u64, end: u64) -> Result<(), ()> {
 /// `unpin` + `destroy` that follow are `SCHED`-free.
 pub fn reclaim_region(region: usize) -> Result<(), ()> {
     let (base, size) = crate::untyped::region_bounds(region).ok_or(())?;
+    // Threads first (SCHED), then any unbound address spaces (the aspace registry lock). Two
+    // separate lock domains, sequenced, never nested: neither is held across the other. Bound
+    // spaces need no step here, they died with their thread in the reap above.
     reap_region_objects(base, base + size)?;
+    crate::user::reap_aspaces_in_region(base, base + size);
     crate::untyped::unpin(region);
     crate::untyped::destroy(region);
     Ok(())
@@ -1558,6 +1562,41 @@ mod tests {
             crate::sched::thread_count(),
             threads_before,
             "the TCB's table slot must be freed by reclaim"
+        );
+        assert_eq!(
+            crate::memory::free_frames(),
+            frames_before,
+            "reclaim must return the region's memory exactly to baseline"
+        );
+    }
+
+    /// **Object revocation reclaims a region holding an unbound address space** (the address-space
+    /// case of piece 1's mechanism). Create a space in its own region, not bound to any TCB, then
+    /// reclaim: the space is torn down (its name goes stale, its ASID is freed by `Drop`) and the
+    /// region's memory returns exactly to baseline. This is what retires the "an unbound space
+    /// leaks" note the registry carried since 19b.
+    #[test_case]
+    fn reclaim_frees_an_unbound_address_spaces_region() {
+        let frames_before = crate::memory::free_frames();
+
+        let region = crate::untyped::create(8).expect("a fresh region");
+        let name =
+            crate::user::user_aspace_create(region).expect("an address space from the region");
+
+        assert!(
+            crate::user::user_aspace_root(name).is_some(),
+            "the space should resolve before reclaim"
+        );
+        assert!(
+            crate::memory::free_frames() < frames_before,
+            "creating the space should have spent frames"
+        );
+
+        crate::sched::reclaim_region(region).expect("reclaim the space's own region");
+
+        assert!(
+            crate::user::user_aspace_root(name).is_none(),
+            "the space's name must be stale after reclaim"
         );
         assert_eq!(
             crate::memory::free_frames(),

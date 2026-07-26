@@ -299,6 +299,33 @@ pub fn take_user_aspace(name: u64) -> Option<AddressSpace> {
     USER_SPACES.lock().remove(name)
 }
 
+/// **Tear down every user address space whose root page lies in `[base, end)`** (object revocation,
+/// the address-space case): each removed `AddressSpace` drops here, and its `Drop` forgets its
+/// revocation records and frees its ASID (its region's memory comes back at the enclosing
+/// `reclaim_region`, which unpins after this). This retires the "an unbound one still leaks" note on
+/// `take_user_aspace`: a space created but never bound into a TCB is reclaimed with its region.
+///
+/// Bound spaces are **not** here: `CONFIGURE` moved them out of this registry into a TCB, so they
+/// die with the thread (`Thread`'s drop), not through this sweep. Takes only the aspace-registry
+/// lock, no `SCHED`, so `sched::reclaim_region` runs it as a step separate from the thread reap.
+pub fn reap_aspaces_in_region(base: u64, end: u64) {
+    // Find-then-remove one at a time, never dropping an `AddressSpace` while holding the registry
+    // lock: its `Drop` takes the revocation, region, and ASID locks, and must not do so under ours.
+    loop {
+        let victim = {
+            let spaces = USER_SPACES.lock();
+            spaces.iter().find_map(|(name, space)| {
+                let root = space.root.addr();
+                (base <= root && root < end).then_some(name)
+            })
+        };
+        let Some(name) = victim else { break };
+        // `remove` returns the space; the registry lock is released at the `;`, then the space drops.
+        let space = USER_SPACES.lock().remove(name);
+        drop(space);
+    }
+}
+
 /// Put a space back into the registry (milestone 19c.3): the unwind path if `CONFIGURE` took a
 /// space and then could not bind it. It gets a fresh name; the caller's stale aspace cap will no
 /// longer resolve, which is correct (the operation failed, but the space is not lost).
