@@ -15,7 +15,7 @@
 #![no_std]
 #![no_main]
 
-use user_rt::{exit, now, send, yield_now};
+use user_rt::{exit, now, recv, send, yield_now};
 
 /// The endpoint the bench boot grants us (slot 0): we SEND `[ticks, iters, 0]` here per primitive.
 const REPORT: u64 = 0;
@@ -25,6 +25,20 @@ const REPORT: u64 = 0;
 const ROLE_NULL_SYSCALL: u64 = 0;
 const ROLE_YIELDER: u64 = 1;
 const ROLE_CTX_SWITCH: u64 = 2;
+const ROLE_IPC_SERVER: u64 = 3;
+const ROLE_IPC_CLIENT: u64 = 4;
+
+// IPC round-trip slots. The server holds two endpoints; the client holds three (report first, so
+// slot 0 stays "the endpoint I report on" across every reporting role).
+const SRV_REQUEST: u64 = 0; // server RECVs a request here
+const SRV_REPLY: u64 = 1; // server SENDs the reply here
+const CLI_REQUEST: u64 = 1; // client SENDs the request here (slot 0 is REPORT)
+const CLI_REPLY: u64 = 2; // client RECVs the reply here
+
+/// Iterations for the IPC round-trip loop. One iteration is a `SEND` to the server and a `RECV` of
+/// its reply: two rendezvous, four `svc`s (two on each side), two context switches. lmbench's
+/// `lat_pipe` shape, over our endpoints.
+const IPC_ITERS: u64 = 5_000;
 
 /// Iterations for the null-syscall loop. Big enough that the two `now()` reads are noise and the
 /// per-call cost averages cleanly; small enough that the loop is bearable under TCG (each `svc` is a
@@ -43,6 +57,8 @@ pub extern "C" fn _start(role: u64, _x1: u64, _x2: u64) -> ! {
         ROLE_NULL_SYSCALL => null_syscall_bench(),
         ROLE_YIELDER => yielder(),
         ROLE_CTX_SWITCH => ctx_switch_bench(),
+        ROLE_IPC_SERVER => ipc_server(),
+        ROLE_IPC_CLIENT => ipc_client(),
         _ => exit(),
     }
 }
@@ -87,6 +103,36 @@ fn ctx_switch_bench() -> ! {
     }
     let ticks = now().wrapping_sub(start);
     send(REPORT, ticks, CTX_ITERS, 0);
+    exit();
+}
+
+/// **The server half of the IPC round-trip benchmark.** Loops forever: RECV a request, SEND a reply.
+/// It BLOCKS on the RECV when idle (0% CPU, unlike the busy yielder), so it can loop unbounded and
+/// still park cleanly once the client is done; the bench boot halts and reaps it.
+fn ipc_server() -> ! {
+    loop {
+        let (n, _, _) = recv(SRV_REQUEST);
+        send(SRV_REPLY, n, 0, 0);
+    }
+}
+
+/// **IPC round-trip latency, measured from EL0.** lmbench's `lat_pipe`, over our endpoints. Each
+/// iteration is a SEND to the server and a RECV of its reply: two rendezvous, four `svc`s, two
+/// context switches. Self-timed; the bench boot spawns the server first so a request always meets a
+/// waiting receiver.
+fn ipc_client() -> ! {
+    // Warm up: pay the first rendezvous and any cold paths outside the timed loop.
+    for _ in 0..64 {
+        send(CLI_REQUEST, 1, 0, 0);
+        recv(CLI_REPLY);
+    }
+    let start = now();
+    for _ in 0..IPC_ITERS {
+        send(CLI_REQUEST, 1, 0, 0);
+        recv(CLI_REPLY);
+    }
+    let ticks = now().wrapping_sub(start);
+    send(REPORT, ticks, IPC_ITERS, 0);
     exit();
 }
 

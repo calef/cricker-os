@@ -177,13 +177,20 @@ from EL0 and reports it as a normal bench line. So far:
 
 | primitive | HVF ns/iter | what one iteration is |
 |---|---|---|
-| `null_syscall` | ~43 | one `svc` that the kernel rejects immediately: trap + dispatch + return |
-| `ctx_switch` | ~693 | one `SYS_YIELD` to a peer *process* and back: two switches, address space included |
+| `null_syscall` | ~42 | one `svc` that the kernel rejects immediately: trap + dispatch + return |
+| `ctx_switch` | ~692 | one `SYS_YIELD` to a peer *process* and back: two switches, address space included |
+| `ipc_rtt_el0` | ~2272 | a `SEND` to a server process and a `RECV` of its reply: two rendezvous, four `svc`s |
 
-The ratio is the sanity check: a context switch is ~16x a null syscall, which is right (two traps, the
-scheduler, two register save/restores, and a TTBR0/ASID change, versus one bare trap). Both are debug
-builds; the eventual cross-OS comparison wants release builds on all sides. These are the numbers that
-will line up against lmbench's `lat_syscall`/`lat_ctx` and `sel4bench`.
+Two sanity checks pass. A context switch is ~16x a null syscall (two traps, the scheduler, two
+register save/restores, and a TTBR0/ASID change, versus one bare trap). And the round trip lines up
+against its parts: ~two context switches (2 × 692) plus four traps (4 × 42) plus dispatch ≈ 2272.
+
+The EL0 round trip also has a kernel-side twin, the milestone-21 `ipc_rtt` (~951 ns), which measures
+the same rendezvous *without* the EL0↔EL1 crossings. The ~1.3 µs gap between them is exactly the trap
+cost of the four `svc`s a real round trip pays, which is the reason the EL0 numbers, not the
+kernel-side ones, are what compare to lmbench. All debug builds; the cross-OS comparison wants release
+builds on all sides. These line up against lmbench's `lat_syscall` / `lat_ctx` / `lat_pipe` and
+`sel4bench`.
 
 ### The cross-OS comparison, when we build it
 

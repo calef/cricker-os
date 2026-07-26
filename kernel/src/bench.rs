@@ -65,6 +65,7 @@ pub fn run() -> ! {
     coremark_compute();
     null_syscall_el0();
     ctx_switch_el0();
+    ipc_rtt_el0();
 
     println!("bench: done");
     // Parked, not exited: the host side saw the marker and tears QEMU down. `wfi`, so a
@@ -211,6 +212,8 @@ fn map_new() {
 const EL_NULL_SYSCALL: u64 = 0;
 const EL_YIELDER: u64 = 1;
 const EL_CTX_SWITCH: u64 = 2;
+const EL_IPC_SERVER: u64 = 3;
+const EL_IPC_CLIENT: u64 = 4;
 
 /// Spawn the `elbench` EL0 program in a given role, granting it `report` (slot 0) to answer on.
 /// `false` if there is no `elbench` in the initrd (the bench boot then skips that line).
@@ -267,6 +270,62 @@ fn ctx_switch_el0() {
     }
     let [ticks, iters, _] = sched::ipc_recv(report);
     println!("bench: ctx_switch {ticks} {iters}");
+}
+
+/// **IPC round-trip latency, measured from EL0 (the primitive suite).** lmbench's `lat_pipe`. Two
+/// EL0 processes and two endpoints: a server (RECV request, SEND reply) and a client that self-times
+/// a loop of SEND-then-RECV and reports. The server is spawned first so a request always meets a
+/// waiting receiver. Grants differ per role, so the spawns are inline rather than via `spawn_elbench`.
+fn ipc_rtt_el0() {
+    let Some(image) = crate::user::program("elbench") else {
+        println!("bench: ipc_rtt skipped (no elbench in the initrd)");
+        return;
+    };
+    let request = sched::create_endpoint();
+    let reply = sched::create_endpoint();
+    let report = sched::create_endpoint();
+    use crate::cap::{Rights, endpoint_cap};
+
+    sched::spawn(move || {
+        crate::user::run(
+            image,
+            crate::user::Spawn {
+                arg0: EL_IPC_SERVER,
+                arg1: 0,
+                arg2: 0,
+                grants: &[
+                    endpoint_cap(request, Rights::READ), // slot 0: RECV requests
+                    endpoint_cap(reply, Rights::WRITE),  // slot 1: SEND replies
+                ],
+                maps: &[],
+            },
+        )
+    })
+    .expect("bench: could not spawn the ipc server");
+
+    sched::spawn(move || {
+        crate::user::run(
+            image,
+            crate::user::Spawn {
+                arg0: EL_IPC_CLIENT,
+                arg1: 0,
+                arg2: 0,
+                grants: &[
+                    endpoint_cap(report, Rights::WRITE),  // slot 0: report the result
+                    endpoint_cap(request, Rights::WRITE), // slot 1: SEND requests
+                    endpoint_cap(reply, Rights::READ),    // slot 2: RECV replies
+                ],
+                maps: &[],
+            },
+        )
+    })
+    .expect("bench: could not spawn the ipc client");
+
+    let [ticks, iters, _] = sched::ipc_recv(report);
+    // Distinct from the kernel-side `ipc_rtt` above: this one crosses the EL0<->EL1 boundary on every
+    // send and recv, which is the whole point (comparable to lmbench). The gap between them is roughly
+    // the trap cost of the four svcs per round trip.
+    println!("bench: ipc_rtt_el0 {ticks} {iters}");
 }
 
 /// **The compute workload (milestone 19e), for the record.** Unlike the paths above, this touches
