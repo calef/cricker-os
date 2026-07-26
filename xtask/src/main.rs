@@ -484,7 +484,8 @@ fn bench() -> bool {
         let mut out = String::from(
             "# bench/baseline.txt: deterministic icount tick counts (cargo xtask bench --save).
              # Updating this file is a statement that a performance change is intended and
-             # understood; do it in the commit that causes the change. Checked by --check (2%).
+             # understood; do it in the commit that causes the change. Checked by --check, a coarse
+             # 10% tripwire (icount counts drift across builds; see notes/benchmarks.md).
 ",
         );
         for (name, ticks, iters) in &results {

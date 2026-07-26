@@ -66,6 +66,7 @@ pub fn run() -> ! {
     null_syscall_el0();
     ctx_switch_el0();
     ipc_rtt_el0();
+    map_el0();
 
     println!("bench: done");
     // Parked, not exited: the host side saw the marker and tears QEMU down. `wfi`, so a
@@ -214,6 +215,16 @@ const EL_YIELDER: u64 = 1;
 const EL_CTX_SWITCH: u64 = 2;
 const EL_IPC_SERVER: u64 = 3;
 const EL_IPC_CLIENT: u64 = 4;
+const EL_MAP: u64 = 5;
+
+/// Warmup + timed map counts the bench boot must provision the target region for. `MAP_EL0_ITERS`
+/// **must equal** elbench's `MAP_ITERS` and `MAP_EL0_WARMUP` its `MAP_WARMUP`: the region is sized for
+/// their sum plus page-table and record overhead, and if elbench asks for more maps than the region
+/// funds, the surplus fail (a cheap error return, not a real map) and skew the number. Kept here
+/// rather than shared because the two crates have no common header, the way EL_* mirror ROLE_*.
+const MAP_EL0_ITERS: u64 = 500;
+const MAP_EL0_WARMUP: u64 = 8;
+const MAP_EL0_OVERHEAD: u64 = 32;
 
 /// Spawn the `elbench` EL0 program in a given role, granting it `report` (slot 0) to answer on.
 /// `false` if there is no `elbench` in the initrd (the bench boot then skips that line).
@@ -326,6 +337,65 @@ fn ipc_rtt_el0() {
     // send and recv, which is the whole point (comparable to lmbench). The gap between them is roughly
     // the trap cost of the four svcs per round trip.
     println!("bench: ipc_rtt_el0 {ticks} {iters}");
+}
+
+/// **Map latency, measured from EL0 (the primitive suite).** lmbench's `lat_mmap`. Unlike the three
+/// above, the map path *consumes* resources per call, so the bench boot builds the target here rather
+/// than granting an endpoint: a fresh registry address space (its own untyped region as budget) and a
+/// single frame. `elbench` (EL_MAP) is granted a WRITE cap on that space and a READ cap on the frame,
+/// then times a loop of `invoke(aspace, MAP_INTO, va_i, frame, MAP_RO)`, aliasing the one frame at a
+/// fresh VA each iteration. The target is a separate space, not `elbench`'s own (a run()-adopted space
+/// is not in the registry MAP_INTO resolves), which is immaterial: the map path's cost is the same
+/// whoever owns the space. See user/src/elbench.rs.
+fn map_el0() {
+    let Some(image) = crate::user::program("elbench") else {
+        println!("bench: map_el0 skipped (no elbench in the initrd)");
+        return;
+    };
+    // The target space, backed by its own region. The region pays for the root, the intermediate
+    // tables, and the mapping-record log pages; the leaves are aliases of one frame, so they cost it
+    // nothing. Sized for the warmup plus timed maps plus that overhead.
+    let Some(region) = crate::untyped::create(MAP_EL0_WARMUP + MAP_EL0_ITERS + MAP_EL0_OVERHEAD)
+    else {
+        println!("bench: map_el0 skipped (no region)");
+        return;
+    };
+    let Some(name) = crate::user::user_aspace_create(region) else {
+        println!("bench: map_el0 skipped (no address space)");
+        return;
+    };
+    // One frame to alias-map, from its own one-page region so the aspace region stays pure overhead.
+    let Some(frame_region) = crate::untyped::create(1) else {
+        println!("bench: map_el0 skipped (no frame region)");
+        return;
+    };
+    let Some(phys) = crate::untyped::retype_page(frame_region) else {
+        println!("bench: map_el0 skipped (no frame)");
+        return;
+    };
+
+    let report = sched::create_endpoint();
+    use crate::cap::{Rights, aspace_cap, endpoint_cap, frame_cap};
+    sched::spawn(move || {
+        crate::user::run(
+            image,
+            crate::user::Spawn {
+                arg0: EL_MAP,
+                arg1: 0,
+                arg2: 0,
+                grants: &[
+                    endpoint_cap(report, Rights::WRITE), // slot 0: report the result
+                    aspace_cap(name, Rights::WRITE),     // slot 1: the space we map into
+                    frame_cap(phys, Rights::READ),       // slot 2: the frame we alias-map
+                ],
+                maps: &[],
+            },
+        )
+    })
+    .expect("bench: could not spawn the map bencher");
+
+    let [ticks, iters, _] = sched::ipc_recv(report);
+    println!("bench: map_el0 {ticks} {iters}");
 }
 
 /// **The compute workload (milestone 19e), for the record.** Unlike the paths above, this touches

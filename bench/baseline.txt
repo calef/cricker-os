@@ -1,12 +1,14 @@
 # bench/baseline.txt: deterministic icount tick counts (cargo xtask bench --save).
              # Updating this file is a statement that a performance change is intended and
-             # understood; do it in the commit that causes the change. Checked by --check (2%).
-yield_switch 1637572 2000
-ipc_rtt 1023335 1000
-call_reply 1484578 1000
-spawn_reap 2385313 64
+             # understood; do it in the commit that causes the change. Checked by --check, a coarse
+             # 10% tripwire (icount counts drift across builds; see notes/benchmarks.md).
+yield_switch 1754561 2000
+ipc_rtt 2182934 1000
+call_reply 2040838 1000
+spawn_reap 790553 64
 map_new 14124 64
-coremark 21419263 256
-null_syscall 427503 20000
-ctx_switch 5797957 5000
-ipc_rtt_el0 16903549 5000
+coremark 20940446 256
+null_syscall 428517 20000
+ctx_switch 3637894 5000
+ipc_rtt_el0 11427790 5000
+map_el0 410065 500

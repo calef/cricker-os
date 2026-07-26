@@ -165,8 +165,8 @@ times a loop of real `svc` syscalls, to be comparable to lmbench. That is why mi
 EL0 access to the virtual counter (`CNTKCTL_EL1.EL0VCTEN`; `user_rt::now`/`cntfrq`; notes/abi.md):
 userspace self-timing is the prerequisite for a fair comparison. The CoreMark workload is the first
 program to use it, self-timing its run and reporting `[crc, ticks, freq]`; the EL0 primitive
-benchmarks (null syscall, context switch, IPC round-trip, all measured the lmbench way) build on the
-same `user_rt::now`. The existing kernel-side suite stays, for gating; the EL0 suite is additive, for
+benchmarks (null syscall, context switch, IPC round-trip, page map, all measured the lmbench way)
+build on the same `user_rt::now`. The existing kernel-side suite stays, for gating; the EL0 suite is additive, for
 cross-OS honesty. The two will differ by roughly the trap cost, and that difference is itself a
 number worth having.
 
@@ -180,6 +180,7 @@ from EL0 and reports it as a normal bench line. So far:
 | `null_syscall` | ~42 | one `svc` that the kernel rejects immediately: trap + dispatch + return |
 | `ctx_switch` | ~692 | one `SYS_YIELD` to a peer *process* and back: two switches, address space included |
 | `ipc_rtt_el0` | ~2272 | a `SEND` to a server process and a `RECV` of its reply: two rendezvous, four `svc`s |
+| `map_el0` | ~909 | `invoke(aspace, MAP_INTO, va, frame, RO)`: trap + cap resolve + walk + PTE + record |
 
 Two sanity checks pass. A context switch is ~16x a null syscall (two traps, the scheduler, two
 register save/restores, and a TTBR0/ASID change, versus one bare trap). And the round trip lines up
@@ -191,6 +192,21 @@ cost of the four `svc`s a real round trip pays, which is the reason the EL0 numb
 kernel-side ones, are what compare to lmbench. All debug builds; the cross-OS comparison wants release
 builds on all sides. These line up against lmbench's `lat_syscall` / `lat_ctx` / `lat_pipe` and
 `sel4bench`.
+
+**Map (lmbench's `lat_mmap`) is the primitive that behaves differently from the other three**, and the
+difference taught two things. First, it *consumes resources per call*: every `MAP_INTO` writes a fresh
+page-table entry and a revocation record, both paid from the target space's untyped region, so unlike
+a null syscall or a yield it cannot loop forever. The loop is bounded (500 maps, one L3 table's worth),
+and its kernel-side twin `map_new` maps 64. Second, the *per-map cost depends on the iteration count*
+until it plateaus: `record_mapping` scans the head log page for a free slot on each insert, so the
+average scan grows with how full that page is and settles at ~half a page (a page holds ~256 records).
+64 maps was too few, both to beat HVF's counter noise (the per-map delta sat in the jitter, and the
+number even came out *below* the kernel-side twin, which is impossible) and to reach that plateau. 500
+fixes both. The scan is real map-path work, the analogue of Linux inserting a VMA/rmap entry, so it
+belongs in the number; it is not an artifact of aliasing one frame across every VA (the scan looks for
+free slots, not matching frames, so distinct pages would cost the same). Result: `map_el0` ~909 ns
+against the kernel-side `map_new` ~695 ns, the ~214 ns gap being the trap plus capability resolution
+plus the registry lookup that mapping into a named space (rather than a raw `AddressSpace`) adds.
 
 ### The first cross-OS numbers (cricker-os vs Linux vs macOS)
 
