@@ -289,8 +289,9 @@ It **cannot produce valid numbers here**, and the reason is worth recording beca
 constraint the roadmap called out for our own silicon-cycle plans.
 
 sel4bench times a **single operation** per sample (one `seL4_Call`, `RUNS` samples) and reads the
-**PMU cycle counter**, `PMCCNTR_EL0`, before and after. That needs a real, high-resolution cycle
-counter (~0.25 ns per tick at ~4 GHz). Neither virtualization mode on this host provides one:
+**PMU cycle counter**, `PMCCNTR_EL0`, before and after (notes/pmu.md explains the PMU and why it is the
+counter that does not survive virtualization). That needs a real, high-resolution cycle counter
+(~0.25 ns per tick at ~4 GHz). Neither virtualization mode on this host provides one:
 
 - **QEMU-TCG** does not model a cycle counter; `PMCCNTR` returns quantized junk (we saw 0 and 1000),
   and sel4bench's own stability check refuses to continue ("*Benchmarking overhead of a call is not

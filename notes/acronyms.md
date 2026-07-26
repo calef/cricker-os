@@ -65,6 +65,8 @@ The naming is systematic once you see it: `<thing>_EL<level>`.
 | **TCR** | **Translation Control Register** | How to walk them. Address size, granule, which TTBRs are live. |
 | **MAIR** | **Memory Attribute Indirection Register** | Eight slots saying what "memory type N" *means*. A descriptor says "look up slot N"; this says what N is. |
 | **MPIDR** | **MultiProcessor Affinity Register** | Which core am I? `boot.s` reads it to park cores 1..n. |
+| **PMU** | **Performance Monitoring Unit** | Per-core counting hardware for low-level events: cycles, cache misses, retired instructions. Its cycle counter (`PMCCNTR`) is the high-resolution clock cycle-accurate microbenchmarks use, and the one virtualization does not pass through. [pmu.md](pmu.md) |
+| `PMCCNTR` | **PMu Cycle CouNTeR** | Counts CPU clock cycles (~0.25 ns each near 4 GHz). Fine enough to time one operation, but counts cycles not time, and unavailable in a guest. Contrast `CNTVCT`, the coarse timer that *does* survive virtualization. [pmu.md](pmu.md) |
 | **CNTFRQ** | **CouNTer FReQuency** | How fast the counter ticks. Set by firmware. |
 | **CNTPCT** | **CouNTer Physical CounT** | The counter itself. Monotonic. **This is what `Instant` is made of.** |
 | **CNTP_CVAL** | Counter Physical **Compare VALue** | An **absolute** deadline. Use this. |
