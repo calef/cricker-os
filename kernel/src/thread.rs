@@ -372,6 +372,12 @@ pub struct Thread {
     /// Both touched only under `SCHED`.
     pub(crate) wake_pending: bool,
 
+    /// **This thread's blocking IPC was aborted by revocation** (object revocation): the endpoint it
+    /// was parked on was destroyed under it, so it was popped off, woken, and marked here. The syscall
+    /// layer reads-and-clears this after `ipc_recv`/`ipc_send` returns and hands the caller an error
+    /// (the endpoint is gone) instead of a message it never received. Touched only under `SCHED`.
+    pub(crate) ipc_aborted: bool,
+
     /// **Where this thread's EL0 execution begins** (milestone 19c.3), set by `Tcb::CONFIGURE`
     /// on an embryo, consumed by `START` to build the entry context. `(0, 0)` for a kernel
     /// thread, which never drops to EL0 and runs its closure instead.
@@ -423,6 +429,7 @@ impl Thread {
             next: core::ptr::null_mut(),
             on_cpu: true, // adopted mid-run: this thread is standing on its CPU right now
             wake_pending: false,
+            ipc_aborted: false,
             entry: (0, 0), // a kernel thread; never enters EL0 by this path
             start_args: [0; 3],
             tcb_kmem: true,
@@ -450,6 +457,7 @@ impl Thread {
             next: core::ptr::null_mut(),
             on_cpu: true, // adopted mid-run: this thread is standing on its CPU right now
             wake_pending: false,
+            ipc_aborted: false,
             entry: (0, 0), // a kernel thread; never enters EL0 by this path
             start_args: [0; 3],
             tcb_kmem: true,
@@ -528,6 +536,7 @@ impl Thread {
             next: core::ptr::null_mut(),
             on_cpu: false,
             wake_pending: false,
+            ipc_aborted: false,
             entry: (0, 0), // a kernel thread; becomes a user process via exec, not this path
             start_args: [0; 3],
             tcb_kmem: true,
@@ -552,6 +561,7 @@ impl Thread {
             next: core::ptr::null_mut(),
             on_cpu: false,
             wake_pending: false,
+            ipc_aborted: false,
             entry: (0, 0),
             start_args: [0; 3],
             tcb_kmem: false, // a user-retyped TCB page; the region owns it

@@ -108,12 +108,24 @@ impl<T: Node> Endpoint<T> {
         self.senders.is_empty() || self.receivers.is_empty()
     }
 
-    /// **No thread is blocked on this endpoint** (both wait queues empty). Object revocation asks
-    /// this before reclaiming an endpoint's region: an idle endpoint is torn down (its name goes
-    /// stale), while one with a blocked waiter blocks the reclaim, since freeing its page would
-    /// strand that thread. The pending signal count does not count: a signal holds no thread.
+    /// **No thread is blocked on this endpoint** (both wait queues empty). The pending signal count
+    /// does not count: a signal holds no thread.
     pub fn is_idle(&self) -> bool {
         self.senders.is_empty() && self.receivers.is_empty()
+    }
+
+    /// **Empty both wait queues, handing every blocked thread back to `f`** (object revocation): the
+    /// endpoint is about to be destroyed, so each waiter is popped off here (which frees its intrusive
+    /// link, so `f` may re-queue it onto a run queue) and the caller wakes it with an error. After
+    /// this both queues are empty, so [`is_idle`](Self::is_idle) holds and the one-queue invariant
+    /// trivially does.
+    pub fn drain_waiters(&mut self, mut f: impl FnMut(*mut T)) {
+        while let Some(w) = self.senders.pop_front() {
+            f(w);
+        }
+        while let Some(w) = self.receivers.pop_front() {
+            f(w);
+        }
     }
 
     /// A sender `me` arrives. Rendezvous with a waiting receiver if there is one, otherwise `me`

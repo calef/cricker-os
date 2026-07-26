@@ -94,6 +94,11 @@ fn invoke(
                 // so there is no pointer to validate and no confused-deputy question to ask. That
                 // is the fastpath, and it is why IPC carries control and not bulk data (§10).
                 sched::ipc_send(ep, [a0, a1, a2]);
+                // If the endpoint was revoked (stale, or reclaimed while we blocked), the send never
+                // happened: report it rather than a silent success. Object revocation, notes/.
+                if sched::take_ipc_aborted() {
+                    return Err(Error::NoSuchSlot);
+                }
                 Ok(0)
             }
             abi::endpoint::RECV => {
@@ -101,6 +106,9 @@ fn invoke(
                     return Err(Error::NotPermitted);
                 }
                 let msg = sched::ipc_recv(ep);
+                if sched::take_ipc_aborted() {
+                    return Err(Error::NoSuchSlot); // endpoint revoked; the message is a placeholder
+                }
                 // Word 0 goes back the way every syscall result does, in x0 (dispatch writes it
                 // from our return value). Words 1 and 2 we place directly, because a syscall
                 // return is one register and a message is three.
@@ -133,6 +141,9 @@ fn invoke(
                         rights: narrowed,
                     },
                 );
+                if sched::take_ipc_aborted() {
+                    return Err(Error::NoSuchSlot); // endpoint revoked; the delegation did not happen
+                }
                 Ok(0)
             }
             abi::endpoint::RECV_CAP => {
@@ -140,6 +151,9 @@ fn invoke(
                     return Err(Error::NotPermitted);
                 }
                 let msg = sched::ipc_recv_cap(ep);
+                if sched::take_ipc_aborted() {
+                    return Err(Error::NoSuchSlot); // endpoint revoked; the message is a placeholder
+                }
                 // x1 carries the slot the received capability landed in, or NO_CAP if the message
                 // brought none; x2 the second data word (a CALL's, or 0). x0 returns the first word.
                 frame.x[1] = msg[1];
@@ -155,6 +169,9 @@ fn invoke(
                     return Err(Error::NotPermitted);
                 }
                 let reply = sched::ipc_call(ep, [a0, a1]);
+                if sched::take_ipc_aborted() {
+                    return Err(Error::NoSuchSlot); // endpoint revoked; no call, no reply
+                }
                 frame.x[1] = reply[1]; // r1; r0 returns in x0 below
                 Ok(reply[0] as i64)
             }

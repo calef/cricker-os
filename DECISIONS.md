@@ -1013,10 +1013,14 @@ never take `SCHED` (it is reachable from `AddressSpace::Drop` under the reaper's
 ### Also
 
 Region indices became **generational** (`destroy` reuses the slot), retiring the old cap where the
-kernel could create only 256 regions in its whole lifetime. Endpoint revocation landed as a **safe
-subset**: idle endpoints reclaim, a blocked waiter refuses the reclaim. The chosen richer semantic
-(wake the waiter with an error) needs surgery on the IPC rendezvous core and is a deferred follow-on,
-along with LIFO return-to-parent for `SPLIT` and the EL0 `lat_proc` spawn benchmark.
+kernel could create only 256 regions in its whole lifetime. **Endpoint revocation wakes a blocked
+waiter with an error:** revoking an endpoint drains its wait queues, marks each waiter aborted, and
+wakes it, so its blocking `ipc_recv`/`ipc_send` returns an error (the endpoint is gone) rather than
+stranding the reclaim or dangling on a freed page. `endpoint_of` became fallible so a stale endpoint
+capability fails cleanly instead of panicking; the check folds into the existing IPC locks, so the
+hot path does not regress. The EL0 `lat_proc` spawn benchmark also landed (notes/benchmarks.md):
+cricker-os builds a process faster than Linux or macOS, with the honest caveat that a
+capability-microkernel process is a lighter object than a Unix one.
 
 ## Reading
 

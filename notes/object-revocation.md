@@ -111,20 +111,23 @@ generational `slots::Table`: `destroy` removes a region's slot, bumping its gene
 `Untyped` capability fails, the same stale-safety as everything else), and the next `create` reuses it.
 Now the bound is on *concurrent* regions. This is what turns a one-shot reclaim into a repeatable one.
 
-## Endpoints: the safe subset, and what waits
+## Endpoints: wake a blocked waiter with an error
 
 An endpoint in a reclaimed region has to be torn down too, or its page would be freed while the
-registry still points at it. An **idle** endpoint (no thread blocked on either wait queue,
-`ipc::Endpoint::is_idle`) is removed from the registry, its generational name going stale. An endpoint
-with a **blocked waiter** currently **refuses** the reclaim, exactly as a live thread does.
+registry still points at it. Revoking one **drains its wait queues**: each blocked thread is popped
+off (which frees its intrusive link), marked aborted, and woken, then the endpoint is removed from the
+registry, its generational name going stale. The woken thread's blocking `ipc_recv`/`ipc_send` returns
+an **error** (the endpoint is gone), not a message it never received, so a waiter blocked forever
+cannot pin a region forever, and the reclaim always makes progress.
 
-That refusal is the safe subset of the intended semantic. The chosen richer behaviour is to wake a
-blocked waiter with an *error return* (its IPC fails, its capability stale), so a waiter blocked
-forever cannot pin a region forever. But that needs surgery on the IPC rendezvous core, the block and
-wake path where the lost-wakeup hang once lived, to give `ipc_recv`/`ipc_send` an error channel.
-Refusing while a waiter is blocked closes the safety gap (no dangling waiter) without touching that
-core, and leaves error-return as a focused follow-on. The common case a spawner hits, an endpoint
-nobody is parked on, reclaims cleanly.
+The delicate part was the IPC core, the block-and-wake path where the lost-wakeup hang once lived. Two
+things made it safe without regressing the hot path. First, `endpoint_of` became **fallible**: a stale
+`Endpoint` capability (its endpoint reclaimed out from under a holder) used to reach a name that always
+resolved, so a miss panicked; now it returns `None` and the caller aborts cleanly. Second, the abort
+is routed through a **per-thread `ipc_aborted` flag** rather than changing `ipc_recv`/`ipc_send`'s
+return types (66 callers): the IPC primitive sets the flag inside its existing lock and the syscall
+layer reads-and-clears it, so no extra lock lands on the fast path and the IPC benchmark does not move.
+Kernel-side IPC callers never set the flag (their endpoints are never revoked), so they are untouched.
 
 ## What the tests prove
 
@@ -145,7 +148,7 @@ New EL0 methods on the `Untyped` object (the syscall boundary stays the three ca
 under `invoke`): `SPLIT` (subdivide) and `DESTROY` (reclaim). See `crates/abi` for the contract and
 DECISIONS.md for the record.
 
-Remaining follow-ons, all deliberately scoped out above: error-return for a blocked waiter (the IPC
--core change); LIFO return-of-pages-to-parent for `SPLIT`; and the EL0 spawn-to-reap benchmark
-(`lat_proc`) that would put cricker-os's spawn latency next to Linux's `fork`+`exec`, now that a
-repeatable spawn loop is finally possible.
+The follow-ons this note once listed are all done: the EL0 spawn benchmark (`lat_proc`, notes/
+benchmarks.md), LIFO return-of-pages-to-parent, and error-return for a blocked waiter (both above).
+What is left is the general, non-LIFO case of return-to-parent, which is what a full capability
+derivation tree buys, and we still have no reason to build one.

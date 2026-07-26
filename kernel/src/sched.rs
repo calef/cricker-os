@@ -243,22 +243,47 @@ pub type EpId = u64;
 /// every test in the suite; exhaustion panics in [`create_endpoint`] with the number to raise.
 const KERNEL_EP_PAGES: u64 = 64;
 
-/// The endpoint behind a name. Caller holds `SCHED`.
+/// The endpoint behind a name, or `None` if the name no longer resolves. Caller holds `SCHED`.
 ///
-/// Panics on a name that does not resolve, which is the old array's bounds panic wearing the new
-/// naming: endpoint names reach here only out of kernel-minted capabilities, and endpoints are
-/// never destroyed (their regions are pinned), so a miss is kernel corruption, not user input.
+/// This used to panic on a miss, because endpoints could not be destroyed (their regions stayed
+/// pinned), so a miss was kernel corruption. Object revocation made destruction real: a stale
+/// `Endpoint` capability (its endpoint reclaimed out from under a holder) is now ordinary user
+/// input, so this returns `None` and the callers turn that into a clean error rather than a panic.
 ///
-/// The `'static` is the page's pinned-ness made into a lifetime: the page is never freed, the
-/// direct map always names it, and `SCHED` serializes every access to what it holds.
-fn endpoint_of(sched: &Scheduler, ep: EpId) -> &'static mut Endpoint {
-    let phys = *sched
-        .endpoints
-        .get(ep)
-        .expect("endpoint name did not resolve");
-    // SAFETY: retyped exclusively for this endpoint, region pinned (never freed), direct-mapped,
-    // and serialized by SCHED, which every caller holds.
-    unsafe { &mut *(crate::arch::mmu::phys_to_virt(phys) as *mut Endpoint) }
+/// The `'static` is the page's pinned-ness made into a lifetime: while the name resolves the page is
+/// pinned and direct-mapped, and `SCHED` serializes every access to what it holds.
+fn endpoint_of(sched: &Scheduler, ep: EpId) -> Option<&'static mut Endpoint> {
+    let phys = *sched.endpoints.get(ep)?;
+    // SAFETY: retyped exclusively for this endpoint, its region pinned while the name resolves,
+    // direct-mapped, and serialized by SCHED, which every caller holds.
+    Some(unsafe { &mut *(crate::arch::mmu::phys_to_virt(phys) as *mut Endpoint) })
+}
+
+/// Mark the current thread's blocking IPC as aborted (a stale endpoint, or one revoked while it
+/// blocked): the syscall layer reads-and-clears this after the primitive returns and hands back an
+/// error. A helper because several IPC paths set it. Caller holds `SCHED`.
+fn set_ipc_aborted(sched: &mut Scheduler, tid: Tid) {
+    if let Some(t) = sched.threads.get_mut(tid) {
+        t.ipc_aborted = true;
+    }
+}
+
+/// **Read and clear the current thread's IPC-aborted flag** (object revocation). The syscall layer
+/// calls this right after an endpoint IPC primitive returns: `true` means the endpoint was stale, or
+/// revoked while the thread blocked on it, so the caller gets an error instead of the primitive's
+/// placeholder result. Kernel-side IPC callers never set it (their endpoints are never revoked), so
+/// they need not check it.
+pub fn take_ipc_aborted() -> bool {
+    let mut guard = SCHED.lock();
+    let Some(sched) = guard.as_mut() else {
+        return false;
+    };
+    let tid = current_tid();
+    sched
+        .threads
+        .get_mut(tid)
+        .map(|t| core::mem::take(&mut t.ipc_aborted))
+        .unwrap_or(false)
 }
 
 /// Rank **above the allocators**, because the reaper (`finish_switch`) drops a dead `Thread` in
@@ -797,8 +822,13 @@ pub fn irq_notify(ep: EpId) {
     let mut guard = SCHED.lock();
     let sched = guard.as_mut().expect("no scheduler");
 
-    // `signal` wakes a waiting receiver or counts the signal; it never blocks or joins a queue.
-    if let Some(waiter) = endpoint_of(sched, ep).signal() {
+    // `signal` wakes a waiting receiver or counts the signal; it never blocks or joins a queue. A
+    // stale name (the endpoint an interrupt was bound to has been revoked) is simply dropped: an
+    // interrupt with no live endpoint has nowhere to go, which is not an error.
+    let Some(endpoint) = endpoint_of(sched, ep) else {
+        return;
+    };
+    if let Some(waiter) = endpoint.signal() {
         // SAFETY: only live Blocked threads sit on wait queues; reading the id revalidates it
         // through the table for everything after.
         let waiter = unsafe { (*waiter).id };
@@ -895,9 +925,16 @@ pub fn ipc_send(ep: EpId, msg: [u64; 3]) {
         let current = current_tid();
 
         let me = tcb_ptr(sched, current);
+        // A stale endpoint (its region was revoked): mark this send aborted and do not block. The
+        // kernel-side `ipc_send` wrapper never hits this (its endpoints are never revoked); the
+        // syscall layer reads the flag and returns an error.
+        let Some(endpoint) = endpoint_of(sched, ep) else {
+            set_ipc_aborted(sched, current);
+            return;
+        };
         // SAFETY: `me` is the running thread (live, on no queue), and if queued it stays live:
         // a thread queued on an endpoint is Blocked, which the reaper never touches. See tcb_ptr.
-        match unsafe { endpoint_of(sched, ep).send(me) } {
+        match unsafe { endpoint.send(me) } {
             ipc::Send::Rendezvous(receiver) => {
                 // SAFETY: wait-queue entries are live Blocked threads; the id revalidates it.
                 let receiver = unsafe { (*receiver).id };
@@ -931,8 +968,15 @@ pub fn ipc_recv(ep: EpId) -> [u64; 3] {
         let current = current_tid();
 
         let me = tcb_ptr(sched, current);
+        // A stale endpoint (revoked): mark aborted and return a placeholder; the syscall layer sees
+        // the flag and errors. (A thread revoked *while blocked* below is handled the same way: the
+        // reaper sets the flag and wakes it, and it returns its stale mailbox for the layer to drop.)
+        let Some(endpoint) = endpoint_of(sched, ep) else {
+            set_ipc_aborted(sched, current);
+            return [0, 0, 0];
+        };
         // SAFETY: as in ipc_send: the running thread, and Blocked-while-queued keeps it live.
-        match unsafe { endpoint_of(sched, ep).recv(me) } {
+        match unsafe { endpoint.recv(me) } {
             // An interrupt already fired while we were not waiting. Take it and do not block.
             ipc::Recv::Signal => Some([1, 0, 0]),
             ipc::Recv::FromSender(sender) => {
@@ -997,8 +1041,12 @@ pub fn ipc_send_cap(ep: EpId, data: u64, cap: crate::cap::Cap) {
         let current = current_tid();
 
         let me = tcb_ptr(sched, current);
+        let Some(endpoint) = endpoint_of(sched, ep) else {
+            set_ipc_aborted(sched, current);
+            return; // stale endpoint: aborted, syscall layer errors
+        };
         // SAFETY: as in ipc_send.
-        match unsafe { endpoint_of(sched, ep).send(me) } {
+        match unsafe { endpoint.send(me) } {
             ipc::Send::Rendezvous(receiver) => {
                 // SAFETY: wait-queue entries are live Blocked threads; the id revalidates it.
                 let receiver = unsafe { (*receiver).id };
@@ -1037,8 +1085,12 @@ pub fn ipc_recv_cap(ep: EpId) -> [u64; 3] {
         let current = current_tid();
 
         let me = tcb_ptr(sched, current);
+        let Some(endpoint) = endpoint_of(sched, ep) else {
+            set_ipc_aborted(sched, current);
+            return [0, 0, 0]; // stale endpoint: aborted, syscall layer errors
+        };
         // SAFETY: as in ipc_send.
-        match unsafe { endpoint_of(sched, ep).recv(me) } {
+        match unsafe { endpoint.recv(me) } {
             // An interrupt signal is not a delegation; it carries no capability.
             ipc::Recv::Signal => Some([1, NO_CAP, 0]),
             ipc::Recv::FromSender(sender) => {
@@ -1106,8 +1158,12 @@ pub fn ipc_call(ep: EpId, msg: [u64; 2]) -> [u64; 3] {
         // `send` decides the rendezvous exactly as a plain SEND: a waiting server, or block. The
         // difference is the caller *always* blocks awaiting the reply, whether or not it met a server.
         let me = tcb_ptr(sched, current);
+        let Some(endpoint) = endpoint_of(sched, ep) else {
+            set_ipc_aborted(sched, current);
+            return [0, 0, 0]; // stale endpoint: aborted, syscall layer errors
+        };
         // SAFETY: as in ipc_send; a caller queued here is Blocked until its Reply arrives.
-        match unsafe { endpoint_of(sched, ep).send(me) } {
+        match unsafe { endpoint.send(me) } {
             ipc::Send::Rendezvous(receiver) => {
                 // SAFETY: wait-queue entries are live Blocked threads; the id revalidates it.
                 let receiver = unsafe { (*receiver).id };
@@ -1272,20 +1328,8 @@ fn reap_region_objects(base: u64, end: u64) -> Result<(), ()> {
             return Err(());
         }
     }
-    // An endpoint with a thread blocked on it: reclaiming its page would strand that thread. This is
-    // the safe subset; error-return-to-the-waiter (the chosen richer semantic) is a deferred IPC-core
-    // change, so for now a blocked waiter refuses the reclaim, as a live thread does. An idle
-    // endpoint holds no thread and is torn down below.
-    for (_, &phys) in sched.endpoints.iter() {
-        if base <= phys && phys < end {
-            // SAFETY: the endpoint lives at `phys` (retyped for it), its region pinned until we free
-            // it, SCHED held. Reading its wait queues is sound.
-            let ep = unsafe { &*(crate::arch::mmu::phys_to_virt(phys) as *const Endpoint) };
-            if !ep.is_idle() {
-                return Err(());
-            }
-        }
-    }
+    // Endpoints do not refuse: a thread blocked on an endpoint in the region is woken with an error
+    // (its IPC aborts, its cap now stale) rather than stranding the reclaim, in the removal phase.
 
     // --- Removal phase: every object in the region is reapable. ---
 
@@ -1303,8 +1347,11 @@ fn reap_region_objects(base: u64, end: u64) -> Result<(), ()> {
         sched.threads.remove(tid);
     }
 
-    // Endpoints: the idle ones in the region. Removing bumps the name's generation, so every
-    // Endpoint capability to it fails to resolve; the page itself is freed by the enclosing destroy.
+    // Endpoints: every endpoint in the region. Before removing one, wake any thread blocked on it
+    // with an error: drain its wait queues (which frees each waiter's intrusive link), mark each
+    // aborted, and wake it, so its blocked IPC returns an error rather than dangling on a freed page.
+    // Removing the name then bumps its generation, so every Endpoint capability to it fails to
+    // resolve, and the page is freed by the enclosing destroy.
     let mut doomed_eps = [0u64; MAX_ENDPOINTS];
     let mut ne = 0;
     for (name, &phys) in sched.endpoints.iter() {
@@ -1314,6 +1361,21 @@ fn reap_region_objects(base: u64, end: u64) -> Result<(), ()> {
         }
     }
     for &name in &doomed_eps[..ne] {
+        // Drain the endpoint's waiters. `endpoint_of` returns a `'static` reference, so it does not
+        // hold the `sched` borrow across the wakes below.
+        let mut waiters = [0u64; MAX_THREADS];
+        let mut nw = 0;
+        if let Some(endpoint) = endpoint_of(sched, name) {
+            endpoint.drain_waiters(|w| {
+                // SAFETY: wait-queue entries are live Blocked threads; the id revalidates it.
+                waiters[nw] = unsafe { (*w).id };
+                nw += 1;
+            });
+        }
+        for &tid in &waiters[..nw] {
+            set_ipc_aborted(sched, tid);
+            wake(sched, tid); // the link is free (drained), so wake queues it onto a run queue
+        }
         sched.endpoints.remove(name);
     }
 
@@ -1743,44 +1805,48 @@ mod tests {
         );
     }
 
-    /// **A region whose endpoint has a blocked waiter refuses reclaim, and reclaims once it is
-    /// idle.** This is the safe subset of endpoint revocation: rather than wake a blocked waiter
-    /// with an error (the intended richer semantic, a deferred IPC-core change), reclaim refuses
-    /// while a thread is blocked on an endpoint in the region, exactly as it refuses a live thread.
+    /// **A thread blocked on an endpoint wakes with an error when the endpoint is revoked.** Rather
+    /// than refuse the reclaim (the old safe subset) or strand the waiter, revocation drains the
+    /// endpoint's wait queue, marks each waiter aborted, and wakes it: the reclaim *succeeds*, and the
+    /// woken thread's blocking IPC reports the endpoint is gone (`take_ipc_aborted`) instead of
+    /// returning a message it never received. This is the richer semantic, folded into the IPC core.
     #[test_case]
-    fn reclaim_refuses_a_region_whose_endpoint_has_a_waiter() {
-        static DONE: AtomicBool = AtomicBool::new(false);
-        DONE.store(false, Ordering::SeqCst);
+    fn a_blocked_waiter_wakes_with_an_error_when_its_endpoint_is_revoked() {
+        static ABORTED: AtomicBool = AtomicBool::new(false);
+        static WOKE: AtomicBool = AtomicBool::new(false);
+        ABORTED.store(false, Ordering::SeqCst);
+        WOKE.store(false, Ordering::SeqCst);
 
         let region = crate::untyped::create(2).expect("region");
         let ep = crate::sched::create_endpoint_from(region).expect("endpoint from region");
 
-        // A thread that blocks receiving on the endpoint.
+        // A thread that blocks receiving on the endpoint, then records whether it was aborted.
         crate::sched::spawn(move || {
             let _ = crate::sched::ipc_recv(ep);
-            DONE.store(true, Ordering::SeqCst);
+            ABORTED.store(crate::sched::take_ipc_aborted(), Ordering::SeqCst);
+            WOKE.store(true, Ordering::SeqCst);
         })
         .expect("spawn a waiter");
 
         // Single core: one yield lets the waiter run and block on the recv.
         crate::sched::yield_now();
 
-        assert!(
-            crate::sched::reclaim_region(region).is_err(),
-            "a region whose endpoint has a blocked waiter must refuse reclaim",
-        );
+        // Reclaiming the endpoint's region now succeeds: the waiter is woken with an error, not left
+        // to strand the reclaim.
+        crate::sched::reclaim_region(region)
+            .expect("reclaim wakes the blocked waiter rather than refusing");
 
-        // Unblock the waiter (rendezvous), let it finish, and the endpoint goes idle.
-        crate::sched::ipc_send(ep, [7, 0, 0]);
         for _ in 0..50 {
-            if DONE.load(Ordering::SeqCst) {
+            if WOKE.load(Ordering::SeqCst) {
                 break;
             }
             crate::sched::yield_now();
         }
-        assert!(DONE.load(Ordering::SeqCst), "the waiter never woke");
-
-        crate::sched::reclaim_region(region).expect("reclaim once the endpoint is idle again");
+        assert!(WOKE.load(Ordering::SeqCst), "the revoked waiter never woke");
+        assert!(
+            ABORTED.load(Ordering::SeqCst),
+            "the woken waiter did not see its IPC aborted",
+        );
     }
 
     /// Several threads take turns.
