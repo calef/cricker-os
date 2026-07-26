@@ -67,6 +67,7 @@ pub fn run() -> ! {
     ctx_switch_el0();
     ipc_rtt_el0();
     map_el0();
+    spawn_el0();
 
     println!("bench: done");
     // Parked, not exited: the host side saw the marker and tears QEMU down. `wfi`, so a
@@ -216,6 +217,13 @@ const EL_CTX_SWITCH: u64 = 2;
 const EL_IPC_SERVER: u64 = 3;
 const EL_IPC_CLIENT: u64 = 4;
 const EL_MAP: u64 = 5;
+const EL_SPAWN: u64 = 6;
+
+/// The spawner's untyped budget, in pages. Each child permanently spends `CHILD_PAGES` of it (a
+/// split parent does not get its pages back, DECISIONS §16), so this must fund
+/// `(SPAWN_WARMUP + SPAWN_ITERS)` children plus the shared code frame and page-table overhead.
+/// Mirrors elbench's SPAWN_* constants (8 + 100 warmup+timed, 10 pages each).
+const SPAWN_EL0_BUDGET: u64 = 1280;
 
 /// Warmup + timed map counts the bench boot must provision the target region for. `MAP_EL0_ITERS`
 /// **must equal** elbench's `MAP_ITERS` and `MAP_EL0_WARMUP` its `MAP_WARMUP`: the region is sized for
@@ -396,6 +404,48 @@ fn map_el0() {
 
     let [ticks, iters, _] = sched::ipc_recv(report);
     println!("bench: map_el0 {ticks} {iters}");
+}
+
+/// **Spawn latency, measured from EL0 (the primitive suite).** lmbench's `lat_proc`, and the payoff
+/// of object revocation: a userspace spawner builds a whole child from EL0 through the granular verbs
+/// and, crucially, `DESTROY`s the child's region afterward, so the loop repeats. The bench boot hands
+/// the spawner three things: a big untyped budget (slot 1), a report endpoint to answer on (slot 0),
+/// and a child-done endpoint (slot 2, READ|WRITE|GRANT) it delegates a WRITE view of to each child.
+/// See user/src/elbench.rs.
+fn spawn_el0() {
+    let Some(image) = crate::user::program("elbench") else {
+        println!("bench: spawn_el0 skipped (no elbench in the initrd)");
+        return;
+    };
+    let Some(region) = crate::untyped::create(SPAWN_EL0_BUDGET) else {
+        println!("bench: spawn_el0 skipped (no budget)");
+        return;
+    };
+    let report = sched::create_endpoint();
+    let child_done = sched::create_endpoint();
+    use crate::cap::{Rights, endpoint_cap, untyped_cap};
+    sched::spawn(move || {
+        crate::user::run(
+            image,
+            crate::user::Spawn {
+                arg0: EL_SPAWN,
+                arg1: 0,
+                arg2: 0,
+                grants: &[
+                    endpoint_cap(report, Rights::WRITE), // slot 0: report the result home
+                    untyped_cap(region),                 // slot 1: the spawner's whole budget
+                    endpoint_cap(
+                        child_done,
+                        Rights::READ.union(Rights::WRITE).union(Rights::GRANT),
+                    ), // slot 2: children signal done; spawner recvs and delegates WRITE
+                ],
+                maps: &[],
+            },
+        )
+    })
+    .expect("bench: could not spawn the spawner");
+    let [ticks, iters, _] = sched::ipc_recv(report);
+    println!("bench: spawn_el0 {ticks} {iters}");
 }
 
 /// **The compute workload (milestone 19e), for the record.** Unlike the paths above, this touches

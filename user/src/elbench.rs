@@ -9,14 +9,14 @@
 //! `user_rt::now` (the virtual counter, EL0-readable since milestone 19e), and SENDs `[ticks, iters]`
 //! home on the one endpoint it was granted (slot 0). The bench boot prints it in the same
 //! machine-readable line the rest of the harness uses, so the icount baseline gates it and `--real`
-//! gives its true magnitude. Four primitives so far: null syscall, context switch, IPC round trip,
-//! and page map. Spawn waits on retype-from-untyped (a repeatable spawn loop needs fresh TCBs, which
-//! that milestone provides), so it is not here yet.
+//! gives its true magnitude. Five primitives: null syscall, context switch, IPC round trip, page
+//! map, and spawn. Spawn is the whole reason object revocation was built: the loop reclaims each
+//! child's region (`Untyped::DESTROY`) so it can repeat.
 
 #![no_std]
 #![no_main]
 
-use user_rt::{exit, invoke, now, recv, send, yield_now};
+use user_rt::{cap_delete, exit, invoke, now, recv, send, yield_now};
 
 /// The endpoint the bench boot grants us (slot 0): we SEND `[ticks, iters, 0]` here per primitive.
 const REPORT: u64 = 0;
@@ -29,6 +29,15 @@ const ROLE_CTX_SWITCH: u64 = 2;
 const ROLE_IPC_SERVER: u64 = 3;
 const ROLE_IPC_CLIENT: u64 = 4;
 const ROLE_MAP: u64 = 5;
+const ROLE_SPAWN: u64 = 6;
+
+// Spawn-benchmark slots. slot 0 REPORT (the final result home to the bench boot), slot 1 UNTYPED
+// (the spawner's whole budget), slot 2 CHILD_DONE (children SEND here, the spawner RECVs; it also
+// delegates a WRITE view to each child, so it needs READ|WRITE|GRANT). The shared code frame is
+// retyped at setup into whatever slot `grant` hands back.
+const SP_REPORT: u64 = 0;
+const SP_UNTYPED: u64 = 1;
+const SP_CHILD_DONE: u64 = 2;
 
 // Map-benchmark slots (slot 0 is always REPORT). The bench boot grants a WRITE cap on a target
 // address space and a READ cap on one frame; we map that frame at a fresh VA each iteration.
@@ -83,6 +92,7 @@ pub extern "C" fn _start(role: u64, _x1: u64, _x2: u64) -> ! {
         ROLE_IPC_SERVER => ipc_server(),
         ROLE_IPC_CLIENT => ipc_client(),
         ROLE_MAP => map_bench(),
+        ROLE_SPAWN => spawn_bench(),
         _ => exit(),
     }
 }
@@ -196,6 +206,139 @@ fn map_one(va: u64) -> i64 {
             abi::aspace::MAP_RO,
         )
     }
+}
+
+/// Spawn benchmark tuning. Each iteration builds a whole child from EL0 and reclaims it, so the
+/// count is modest (spawn is the heaviest primitive) and the budget must fund `CHILD_PAGES` per
+/// child (a split parent does not get its pages back, DECISIONS §16). The bench boot sizes the
+/// untyped for `(SPAWN_WARMUP + SPAWN_ITERS) * CHILD_PAGES` plus overhead.
+const SPAWN_ITERS: u64 = 100;
+const SPAWN_WARMUP: u64 = 8;
+const CHILD_PAGES: u64 = 10; // the child's aspace root + tables + one stack page + revoke records
+const CHILD_CODE_VA: u64 = 0x40_0000;
+const CHILD_STACK_VA: u64 = 0x50_0000;
+const SPAWN_SCRATCH_VA: u64 = 0x0100_0000; // where we map the shared code frame to write the stub
+const SPAWN_PAGE: u64 = 4096;
+
+/// The child's whole program, hand-assembled: `SEND(slot 0, endpoint::SEND, 1)` then `SYS_EXIT`.
+/// Its slot 0 is the `CHILD_DONE` endpoint the spawner inserts. Nine instructions, the same stub the
+/// kernel-side spawn tests use. Every child runs this identical code, which is why the spawner writes
+/// it into one shared frame and aliases that frame into each child rather than filling a fresh one.
+const CHILD_STUB: [u32; 9] = [
+    0xD280_0000,
+    0xD280_0001,
+    0xD280_0000 | (1u32 << 5) | 2, // movz x2, #1  (the done word)
+    0xD280_0003,
+    0xD280_0004,
+    0xD280_0000 | ((abi::SYS_INVOKE as u32) << 5) | 8,
+    0xD400_0001,
+    0xD280_0008,
+    0xD400_0001,
+];
+
+/// **Spawn latency, measured from EL0 (the primitive suite).** lmbench's `lat_proc`: the cost to
+/// build, start, run to exit, reap, and reclaim a whole child process, driven entirely from EL0
+/// through the granular verbs (`SPLIT` a region, retype an address space and a TCB, map code and a
+/// stack, configure, start), then `DESTROY` the child's region. This is the payoff of object
+/// revocation: without reclamation the loop could not repeat.
+fn spawn_bench() -> ! {
+    // One shared code frame, retyped from our OWN untyped so destroying a child never frees it. Map
+    // it writable in our own space, write the child stub once, and keep the cap to alias into every
+    // child. The kernel makes the icache coherent when we later map it as CODE into a child.
+    let code_frame = unsafe { invoke(SP_UNTYPED, abi::untyped::RETYPE, 0, 0, 0) } as u64;
+    unsafe { invoke(code_frame, abi::frame::MAP, SPAWN_SCRATCH_VA, 1, SP_UNTYPED) };
+    // SAFETY: SPAWN_SCRATCH_VA is a page we just mapped read/write into our own address space.
+    unsafe {
+        let dst = SPAWN_SCRATCH_VA as *mut u32;
+        for (i, &insn) in CHILD_STUB.iter().enumerate() {
+            dst.add(i).write(insn);
+        }
+    }
+
+    for _ in 0..SPAWN_WARMUP {
+        spawn_one(code_frame);
+    }
+    let start = now();
+    for _ in 0..SPAWN_ITERS {
+        spawn_one(code_frame);
+    }
+    let ticks = now().wrapping_sub(start);
+    send(SP_REPORT, ticks, SPAWN_ITERS, 0);
+    exit();
+}
+
+/// Build one child from EL0, run it to exit, and reclaim its region. `code_frame` is the shared,
+/// already-filled code page aliased into the child; everything else (address space, stack, TCB)
+/// comes from the child's own region so `DESTROY` reclaims it whole.
+#[inline(never)]
+fn spawn_one(code_frame: u64) {
+    // The child's own region, so it is independently reclaimable.
+    let child_ut = unsafe { invoke(SP_UNTYPED, abi::untyped::SPLIT, CHILD_PAGES, 0, 0) } as u64;
+    let aspace = unsafe {
+        invoke(
+            child_ut,
+            abi::untyped::RETYPE_OBJ,
+            abi::objtype::ASPACE,
+            0,
+            0,
+        )
+    } as u64;
+    // Alias the shared code frame as the child's code; a stack from the child's own region.
+    unsafe {
+        invoke(
+            aspace,
+            abi::aspace::MAP_INTO,
+            CHILD_CODE_VA,
+            code_frame,
+            abi::aspace::MAP_CODE,
+        )
+    };
+    let stack = unsafe { invoke(child_ut, abi::untyped::RETYPE, 0, 0, 0) } as u64;
+    unsafe {
+        invoke(
+            aspace,
+            abi::aspace::MAP_INTO,
+            CHILD_STACK_VA,
+            stack,
+            abi::aspace::MAP_RW,
+        )
+    };
+    cap_delete(stack);
+
+    // The thread: give it CHILD_DONE (narrowed to WRITE) in its slot 0, configure (which consumes
+    // the aspace cap), and start. The child drops to EL0, SENDs its done word, and exits.
+    let tcb = unsafe { invoke(child_ut, abi::untyped::RETYPE_OBJ, abi::objtype::TCB, 0, 0) } as u64;
+    unsafe {
+        invoke(
+            tcb,
+            abi::tcb::CAP_INSERT,
+            SP_CHILD_DONE,
+            abi::rights::WRITE,
+            0,
+        )
+    };
+    unsafe {
+        invoke(
+            tcb,
+            abi::tcb::CONFIGURE,
+            CHILD_CODE_VA,
+            CHILD_STACK_VA + SPAWN_PAGE,
+            aspace,
+        )
+    };
+    unsafe { invoke(tcb, abi::tcb::START, 0, 0, 0) };
+
+    // Wait for the child to run and signal, then reclaim its region. The retry covers the sliver
+    // between the child's SEND and its SYS_EXIT: DESTROY refuses a region with a still-live thread,
+    // so yield until the child has finished exiting.
+    let _ = recv(SP_CHILD_DONE);
+    while unsafe { invoke(child_ut, abi::untyped::DESTROY, 0, 0, 0) } != 0 {
+        yield_now();
+    }
+    // Free the slots this child used (the aspace cap was consumed by CONFIGURE) so the fixed cspace
+    // does not fill over the loop.
+    cap_delete(tcb);
+    cap_delete(child_ut);
 }
 
 /// One null syscall: `svc` with an unrecognized number. The kernel returns an error in `x0`, which

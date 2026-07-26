@@ -75,6 +75,21 @@ pub fn yield_now() {
     }
 }
 
+/// Drop the capability in `slot` from this thread's cspace (`SYS_CAP_DELETE`). Deleting an empty
+/// slot is a no-op. A program that retypes many objects (a loader, a spawner) frees each slot as
+/// soon as it is done with it, so its fixed cspace does not fill.
+pub fn cap_delete(slot: u64) {
+    // SAFETY: `svc`; SYS_CAP_DELETE frees a slot in the caller's own cspace, nothing to clean up.
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("x8") abi::SYS_CAP_DELETE,
+            in("x0") slot,
+            options(nostack, nomem),
+        );
+    }
+}
+
 /// The virtual counter, `CNTVCT_EL0`: a monotonic tick count for self-timing. Readable at EL0 only
 /// because the kernel opened `CNTKCTL_EL1.EL0VCTEN` (see kernel timer::init and notes/abi.md); the
 /// read is a plain register move, no syscall. Pair with [`cntfrq`] to turn tick deltas into seconds.
