@@ -2801,6 +2801,106 @@ mod tests {
         );
     }
 
+    /// **Object revocation, piece 3: a started thread and its bound address space are reclaimed
+    /// after it exits.** Build and start a child as above, but carve its code and stack from the
+    /// *same* region as its address space, so one region holds the child's whole world (root,
+    /// tables, code, stack) and its TCB is in another. Two properties: while the child is still
+    /// runnable, reclaiming its region is refused (a live thread occupies it, and its owner must let
+    /// it finish); once it has run, exited, and been reaped, both regions reclaim and the free-frame
+    /// count returns *exactly* to baseline. The bound address space died with the thread (the `Drop`
+    /// chain), leaving its region object-free for `reclaim_region` to unpin and free.
+    #[test_case]
+    fn reclaim_frees_a_started_then_exited_childs_regions() {
+        const CODE_VA: u64 = 0x40_0000;
+        const STACK_VA: u64 = 0x50_0000;
+        const REPORT_WORD: u64 = 0x43;
+
+        // SEND(slot 0, endpoint::SEND, REPORT_WORD) then EXIT, the same stub as the test above.
+        let code: [u32; 9] = [
+            0xD280_0000,
+            0xD280_0001,
+            0xD280_0000 | ((REPORT_WORD as u32) << 5) | 2,
+            0xD280_0003,
+            0xD280_0004,
+            0xD280_0000 | ((abi::SYS_INVOKE as u32) << 5) | 8,
+            0xD400_0001,
+            0xD280_0008,
+            0xD400_0001,
+        ];
+
+        // The report endpoint is created before the baseline: it lives in the kernel's own pinned
+        // endpoint region (never reclaimed here; endpoint revocation is a later piece), so it must
+        // not count against the frame accounting.
+        let report = crate::sched::create_endpoint();
+        let frames_before = crate::memory::free_frames();
+        let threads_before = crate::sched::thread_count();
+
+        // The child's whole address space in one region: root, tables, code, and stack.
+        let as_region = crate::untyped::create(8).expect("no aspace region");
+        let aspace = user_aspace_create(as_region).expect("no aspace");
+
+        let code_phys = crate::untyped::retype_page(as_region).expect("no code frame");
+        // SAFETY: a fresh frame we own, direct-mapped.
+        unsafe {
+            let dst = mmu::phys_to_virt(code_phys) as *mut u32;
+            for (i, &insn) in code.iter().enumerate() {
+                dst.add(i).write(insn);
+            }
+        }
+        sync_icache(mmu::phys_to_virt(code_phys), size_of_val(&code));
+        user_aspace_map(aspace, CODE_VA, code_phys, Flags::user_code()).expect("map code");
+
+        let stack_phys = crate::untyped::retype_page(as_region).expect("no stack frame");
+        user_aspace_map(aspace, STACK_VA, stack_phys, Flags::user_data()).expect("map stack");
+
+        let report_cap = crate::cap::endpoint_cap(
+            report,
+            crate::cap::Rights::WRITE.union(crate::cap::Rights::GRANT),
+        );
+        let tcb_region = crate::untyped::create(2).expect("no tcb region");
+        let tid = crate::sched::create_tcb(tcb_region).expect("no tcb");
+        crate::sched::tcb_insert_cap(tid, report_cap).expect("cap insert");
+        crate::sched::configure_tcb(tid, CODE_VA, STACK_VA + frames::FRAME_SIZE, aspace)
+            .expect("configure");
+        crate::sched::start_tcb(tid, [0; 3]).expect("start");
+
+        // Ready but not yet run (single core, we have not yielded): reclaiming its region must be
+        // refused while a live thread occupies it. The refusal leaves the region untouched.
+        assert!(
+            crate::sched::reclaim_region(tcb_region).is_err(),
+            "reclaim must refuse a region that still holds a live thread",
+        );
+
+        // Let it run: it SENDs the word and exits. Receiving proves it reached EL0.
+        let got = crate::sched::ipc_recv(report)[0];
+        assert_eq!(got, REPORT_WORD, "the child never reported");
+
+        // Let the reaper collect the now-Finished child (removed when it is switched away from).
+        for _ in 0..100 {
+            if crate::sched::thread_count() == threads_before {
+                break;
+            }
+            crate::sched::yield_now();
+        }
+        assert_eq!(
+            crate::sched::thread_count(),
+            threads_before,
+            "the exited child was never reaped",
+        );
+
+        // Both regions reclaim now: the TCB's, and the address space's (its bound space died with
+        // the thread, so the region is object-free, needing only unpin and free).
+        crate::sched::reclaim_region(tcb_region).expect("reclaim the TCB region after exit");
+        crate::sched::reclaim_region(as_region)
+            .expect("reclaim the address-space region after exit");
+
+        assert_eq!(
+            crate::memory::free_frames(),
+            frames_before,
+            "every frame the child used must come back to baseline",
+        );
+    }
+
     /// **Milestone 19b, end to end: a process constructs an address space from EL0.** The
     /// builder retypes a space and a frame from its own budget, maps the frame in, and checks
     /// the kernel enforces break-before-make inside the space it built. Verdict 0b111 or bust.
