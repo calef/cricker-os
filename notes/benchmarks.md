@@ -281,6 +281,52 @@ Unix pipe is a buffered byte stream through a kernel buffer, so this is our nati
 context switch still wants lmbench's ring method to isolate cleanly. `sel4bench` (the one peer that
 would tell us how close to the state of the art these numbers are) is the remaining comparison.
 
+### seL4: built and booting, but stopped by the PMU wall (deferred to real hardware)
+
+`sel4bench` was built (seL4 kernel + the benchmark app suite, for `qemu-arm-virt` aarch64, `RELEASE`
+and `FASTPATH` on, i.e. seL4 at its best) and it boots on this Mac under both QEMU-TCG and QEMU-HVF.
+It **cannot produce valid numbers here**, and the reason is worth recording because it is the same
+constraint the roadmap called out for our own silicon-cycle plans.
+
+sel4bench times a **single operation** per sample (one `seL4_Call`, `RUNS` samples) and reads the
+**PMU cycle counter**, `PMCCNTR_EL0`, before and after. That needs a real, high-resolution cycle
+counter (~0.25 ns per tick at ~4 GHz). Neither virtualization mode on this host provides one:
+
+- **QEMU-TCG** does not model a cycle counter; `PMCCNTR` returns quantized junk (we saw 0 and 1000),
+  and sel4bench's own stability check refuses to continue ("*Benchmarking overhead of a call is not
+  stable*").
+- **QEMU-HVF** on Apple Silicon does not virtualize the guest PMU, so `PMCCNTR` is unstable there too,
+  and the same check stops the run.
+
+The only counter HVF passes through is the architected virtual counter, `CNTVCT_EL0`, at the host's
+24 MHz `CNTFRQ`, which is **41 ns per tick**, far too coarse to resolve one ~50 ns IPC in a single
+shot. (`CONFIG_ALLOW_UNSTABLE_OVERHEAD` forces sel4bench past the check, but then the numbers are the
+same junk, so it buys nothing.)
+
+**This validates our own measurement design rather than undermining it.** Our bench works under HVF for
+exactly the reason sel4bench does not: we read `CNTVCT` (which HVF passes through) and we time a **loop
+of thousands** of operations per sample, so the coarse 41 ns tick is averaged away. sel4bench's
+single-shot-PMU method is precisely what cannot survive this virtualization tier. Getting a same-machine
+seL4 number would mean either rewriting sel4bench to our method (CNTVCT plus batched loops, real surgery
+on its measurement core) or giving it a real PMU.
+
+**So the seL4 comparison is deferred to real hardware**, which also aligns with the planned second-board
+port (design/roadmap.md milestone 24): a Raspberry Pi has a real PMU, sel4bench runs on it natively, and
+it is the board cricker-os is heading toward anyway. The build recipe, reproducible when a Pi is on hand
+(rebuild with the Pi `PLATFORM` instead of `qemu-arm-virt`), via the official seL4 Podman image:
+
+```
+podman pull docker.io/trustworthysystems/sel4        # ~3.6 GB, bundles repo/cmake/ninja/aarch64-gcc
+mkdir sel4bench && cd sel4bench
+podman run --rm -v "$PWD":/sel4bench:Z docker.io/trustworthysystems/sel4 bash -lc '
+  cd /sel4bench
+  repo init -u https://github.com/seL4/sel4bench-manifest.git && repo sync -j4
+  mkdir build && cd build
+  ../init-build.sh -DPLATFORM=qemu-arm-virt -DAARCH64=TRUE -DSIMULATION=TRUE   # -DPLATFORM=rpi4 for a Pi
+  ninja'
+# image at build/images/sel4benchapp-image-arm-qemu-arm-virt; run with build/simulate (qemu) or on the Pi
+```
+
 ### The cross-OS comparison, when we build it
 
 - **Reuse an existing primitive suite** where one exists: **lmbench** on Linux and macOS (it builds
