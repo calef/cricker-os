@@ -12,8 +12,12 @@
 //! **Step 3c** adds cross-core placement. A core's run queue is single-owner, so to give it a
 //! thread another core hands it through this core's **inbox** (the one cross-core scheduler
 //! structure) and fires the reschedule SGI; the target drains its inbox into its own queue in the
-//! handler. `sched::spawn_on(core, f)` is the primitive. (`spawn` itself still runs work on the
-//! calling core; wiring it to round-robin over `spawn_on` is the remaining load-balancing policy.)
+//! handler. `sched::spawn_on(core, f)` is the primitive.
+//!
+//! **Load balancing** is the last piece: `sched::spawn_balanced(f)` round-robins placement over the
+//! online cores (via `spawn_on`), so a batch of independent work fills the machine. `spawn` itself
+//! stays *local* placement on purpose, because much kernel work wants locality and placement is
+//! policy, not mechanism, in a microkernel; `spawn_balanced` is the explicit "spread it" call.
 
 use crate::cpu::{self, MAX_CPUS};
 use crate::{arch, println};
@@ -239,6 +243,42 @@ mod tests {
             assert!(
                 spread.load(Ordering::Acquire) > 0,
                 "core {c} never ran work placed on it",
+            );
+        }
+    }
+
+    /// **A balanced batch fills the whole machine** (SMP load balancing, the last piece of §11).
+    /// `spawn_balanced` round-robins placement over the online cores, so a batch larger than the core
+    /// count lands work on all of them without any explicit `spawn_on`. Each probe records the core it
+    /// ran on, and every online core must get some. This is the scaling demonstration: work offered to
+    /// the scheduler spreads across the cores instead of piling onto the caller.
+    #[test_case]
+    fn balanced_spawn_spreads_across_all_cores() {
+        static RAN: [core::sync::atomic::AtomicU32; MAX_CPUS] =
+            [const { core::sync::atomic::AtomicU32::new(0) }; MAX_CPUS];
+        for r in &RAN {
+            r.store(0, Ordering::Relaxed);
+        }
+
+        let n = online_count();
+        for _ in 0..(n * 4) {
+            crate::sched::spawn_balanced(|| {
+                RAN[cpu::id()].fetch_add(1, Ordering::Release);
+            })
+            .expect("spawn_balanced failed");
+        }
+
+        let done = || (0..n).all(|c| RAN[c].load(Ordering::Acquire) > 0);
+        let mut spins = 0u64;
+        while !done() {
+            crate::sched::yield_now();
+            spins += 1;
+            assert!(spins < 5_000_000, "balanced work did not reach every core");
+        }
+        for (c, ran) in RAN.iter().enumerate().take(n) {
+            assert!(
+                ran.load(Ordering::Acquire) > 0,
+                "core {c} got no balanced work",
             );
         }
     }

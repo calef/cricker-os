@@ -499,6 +499,24 @@ pub fn spawn<F: FnOnce() + Send + 'static>(f: F) -> Option<Tid> {
     Some(id)
 }
 
+/// Round-robin cursor for load-balanced spawning across the online cores (SMP).
+static NEXT_CORE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// **Load-balanced spawn** (SMP, the last piece of §11): place `f` on the next core in a round-robin
+/// over the online cores, so a batch of independent work spreads across all of them instead of piling
+/// onto the caller. Delegates to [`spawn_on`], which takes the fast local path when the chosen core is
+/// this one and otherwise reaches the target through its inbox and a reschedule SGI.
+///
+/// [`spawn`] deliberately stays *local* placement. Much kernel work wants locality or a predictable
+/// core (a driver's helper, an ordering-sensitive pair), and forcing balancing on it is the wrong
+/// default for a microkernel where placement is policy, not mechanism. This is the explicit "spread
+/// it" primitive; a userspace balancer is the eventual home of richer policy (least-loaded, affinity).
+pub fn spawn_balanced<F: FnOnce() + Send + 'static>(f: F) -> Option<Tid> {
+    let n = crate::smp::online_count();
+    let core = NEXT_CORE.fetch_add(1, core::sync::atomic::Ordering::Relaxed) % n;
+    spawn_on(core, f)
+}
+
 /// Spawn a thread against a **quota**: at most `budget` of these may be alive at once.
 ///
 /// Reserving a slot is an atomic decrement; the slot lives inside the spawned `Thread` as a
