@@ -2,42 +2,53 @@
 
 ## What this project is
 
-A hobby operating system for aarch64, in Rust, built from the first instruction. **It is a
-learning project.** Chris is an experienced software engineer and engineering leader, but
-new to OS internals and early in Rust (through ~chapter 5 of the book). The point is for
-him to understand how operating systems work, not to ship a product.
+A capability microkernel for aarch64, in Rust, built from the first instruction. **It is a
+demonstration OS** (DECISIONS.md §14): a verified-Rust capability microkernel that runs real
+workloads, built to stand next to Linux, macOS, and seL4 on the primitives that define an OS and
+win where a minimal kernel should. Chris is an experienced software engineer and engineering
+leader; on this project he is the **architect and reviewer**, not the line-by-line builder.
 
-That single fact should drive most of your judgment calls. **Velocity is not the goal.
-Understanding is.** A fast solution that leaves him unable to explain his own kernel is a
-failed solution.
+That should drive your judgment calls. **A complete, correct, well-documented, benchmarked
+milestone is the goal.** Proceed autonomously, produce whole pieces, and let Chris steer at the
+design forks.
+
+This began as a learning project and pivoted to a demonstrator, deliberately and on the record
+(2026-07-26). If you find the old "understanding is the goal, explain every line as we build it
+together" framing anywhere, it is stale; this file is the current word.
 
 ## How to work
 
-**Write code together, explaining as you go.** Chris chose this mode explicitly. Write
-working code, then explain the reasoning, the alternatives you rejected, and what the
-hardware is actually doing. He reads, questions, and redirects.
+**Default to autonomous execution.** Implement complete, correct, tested milestones; commit per
+proven piece (green tests first); push after green. You are building the demonstrator. Chris
+reviews architecture and outcomes, not every line.
 
-**Stop and explain whenever he asks, however basic the question.** He has interrupted
-mid-build to ask "what is a register?" and "what is the stack?" That is the project working
-as intended, not a detour from it. Answer properly, from the ground up, without
-condescension.
+**Stop and bring it to Chris only when it is genuinely his call:** a design fork not already
+decided, a test that will not pass after real effort, a hardware or external dependency, or the
+machine contradicting the plan. Otherwise proceed and report what you did.
 
-**Then write it down.** Every concept that comes up gets a note in `notes/`, indexed in
-`notes/README.md`. The glossary is written *while* building, not afterward. If you explain
-something substantial in chat and don't capture it, you've lost it.
+**Keep the documentation current, because a demonstrator's docs are part of the deliverable.**
+Every design decision goes in `DECISIONS.md`; every concept and finding gets a note in `notes/`,
+indexed in `notes/README.md`. Record the *why* and the honest caveats.
 
-**Push back when he's wrong, with a technical reason.** He picked async/await for the
-execution model and said it "sounded more tractable." The correct response was not to
-comply. It was to point out that cooperative scheduling *cannot run an arbitrary ELF
-binary* (it has its own stack, never yields, and will loop forever), so async doesn't defer
-the hard work, it forecloses it. He changed his mind and thanked us for it. Do that again
-when it's warranted. Do not cave to be agreeable, and do not manufacture disagreement to
-seem rigorous.
+**Benchmarks and cross-OS comparisons are first-class.** Measure, do not argue. State what each
+number means and where it is not apples-to-apples: the map "tie" (zeroing-bound) and the spawn
+"lighter object than a Unix process" caveats are the standard. An honest tie or loss recorded
+plainly is worth more than an overclaimed win, and it is what makes the wins credible.
 
-**Correct yourself loudly.** We told him QEMU passes a device tree pointer in `x0`. It
-doesn't. We found out by printing it and getting zero, and we fixed the note rather than
-quietly patching over it. Both the README and `notes/portability.md` record the error on
-purpose. The machine overrules the documentation, and it overrules us.
+**Push back when he's wrong, with a technical reason, and don't cave to be agreeable.** He once
+picked async/await because it "sounded more tractable"; the right response was to point out that
+cooperative scheduling cannot run an arbitrary ELF binary, so async forecloses the hard work rather
+than deferring it. He changed his mind. Do that again when warranted; do not manufacture
+disagreement to seem rigorous.
+
+**Correct yourself loudly.** We told him QEMU passes a device tree pointer in `x0`. It doesn't. We
+found out by printing it and getting zero, and fixed the note rather than quietly patching over it.
+The machine overrules the documentation, and it overrules you; when it does, fix the record on
+purpose.
+
+**Explain on request, however basic.** Autonomous by default does not mean opaque: if Chris asks
+"what is a register?" or "why does `destroy` avoid `SCHED`?", answer properly, from the ground up,
+and write it down.
 
 ## The rules that hold the codebase together
 
@@ -62,14 +73,14 @@ the requirements are known.
    we cannot develop hidden strong-ordering assumptions the way an x86-first project would.
    Don't squander it.
 
-## Milestone 7 is a hard decision point
+## The syscall surface is a boundary, not a habit
 
-The process model (Unix-like with fds and fork/exec, vs. capability-based like seL4) is
-**deliberately undecided**. Milestones 1-6 don't touch the syscall boundary, so the deferral
-is free until it isn't.
-
-**If you find yourself hacking in a syscall without having had that conversation, the plan
-has failed.** Stop and raise it.
+Milestone 7's process-model question is decided: capabilities, an `svc` + `x8` ABI with a narrow,
+explicit surface (DECISIONS §10, §16). The discipline that remains: the surface stays small and
+every method is deliberate. New methods are fine within the established capability model (object
+revocation added `Untyped::SPLIT` and `DESTROY` this way); **record each new method's semantics in
+`DECISIONS.md`, not just in code.** A method that does not fit the model, or a brand-new syscall
+number, is a design fork, raise it before building it.
 
 ## Testing
 
