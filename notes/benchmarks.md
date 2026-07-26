@@ -192,29 +192,36 @@ kernel-side ones, are what compare to lmbench. All debug builds; the cross-OS co
 builds on all sides. These line up against lmbench's `lat_syscall` / `lat_ctx` / `lat_pipe` and
 `sel4bench`.
 
-### The first cross-OS number (null syscall: cricker-os vs macOS)
+### The first cross-OS numbers (cricker-os vs macOS)
 
-`bench/host/null_syscall.rs` is the host side of the `null_syscall` metric: a raw `getpid` through
-the syscall gate (not libc's cached `getpid`, which never traps), run natively. On this M-series Mac:
+`bench/host/` holds the host side of each metric, run natively: `null_syscall.rs` (a raw `getpid`
+through the syscall gate, not libc's cached `getpid` which never traps) and `ipc_rtt.rs` (a pipe
+round trip between two forked processes, lmbench's `lat_pipe`). On this M-series Mac:
 
-| | null syscall | build | tier |
+| metric | cricker-os (debug, HVF) | macOS/XNU (native) | cricker-os vs macOS |
 |---|---|---|---|
-| **cricker-os** | ~42 ns | debug | QEMU-HVF (guest EL1) |
-| **macOS (XNU)** | ~76 ns | release | native |
+| null syscall | ~42 ns | ~76 ns | **~1.8x faster** |
+| IPC round trip | ~2272 ns | ~2620 ns | **~1.15x faster** |
 
-cricker-os is **~1.8x faster at the syscall boundary than macOS**, and it wins from behind: a debug
-build (unoptimized, so slower than it will be) under virtualization (a tax it need not pay), against
-release-native XNU. Two things make the comparison fair despite the handicaps. A null syscall stays
-*inside the guest* (no VM exit), so HVF adds almost nothing to it, the tier gap is real for other
-metrics, not this one. And the debug handicap runs the wrong way: a release cricker-os would only
-widen the gap. The result is believable on its face: a minimal capability microkernel's trap path is
-`svc` -> decode -> reject, while XNU is a hybrid carrying the BSD syscall machinery (dispatch tables,
-entitlement and audit hooks) on every crossing. This is the shape of finding the suite is for: a place
-the microkernel design is genuinely leaner, quantified.
+cricker-os wins both, and wins them **from behind**: a debug build (unoptimized, so slower than it
+will be) under virtualization (a tax it need not pay), against native XNU. The handicaps do not
+explain the result away. A null syscall and a context switch both stay *inside the guest* (no VM
+exit), so HVF adds almost nothing to either, the tier gap is real for device I/O, not these. And the
+debug handicap runs the wrong way: a release cricker-os would only widen the gaps.
 
-It is one metric, and the honest caveats stand (debug vs release, virtualized vs native). Context
-switch and IPC will be less flattering, XNU's Mach IPC is off its hot path and its threads are
-mature, and that asymmetry is itself worth measuring.
+The null-syscall result is believable on its face, our trap path is `svc` -> decode -> reject, while
+XNU is a hybrid carrying BSD syscall machinery (dispatch tables, entitlement and audit hooks) on every
+crossing. The IPC result is closer, as expected: a pipe round trip is dominated by the two context
+switches it shares with ours, and both kernels do those competently; the syscall-boundary edge is a
+smaller fraction of the whole. This is the shape of finding the suite is for: places the microkernel
+design is genuinely leaner, quantified.
+
+Honest caveats. Debug vs native-optimized, virtualized vs native (small for these guest-internal
+metrics). And a semantic one for IPC: our endpoint is a synchronous three-word rendezvous, while a
+Unix pipe is a buffered byte stream that copies through a kernel buffer, so we are comparing our
+native IPC to Unix's *standard* IPC (`lat_pipe`), not to XNU's fastest (a Mach port would likely beat
+the pipe). Context switch on the host still wants lmbench's ring method to isolate cleanly; that and
+Linux, the virtualized-tier macOS guest, and `sel4bench` are the rest of the comparison.
 
 ### The cross-OS comparison, when we build it
 
