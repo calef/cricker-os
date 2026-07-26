@@ -202,32 +202,33 @@ cross-compiles a static musl binary, packs it as `/init` in a one-file initramfs
 QEMU-HVF, the exact machine cricker-os boots on. So Linux and cricker-os sit on the **same M-series
 core at the same virtualization tier**; native macOS is the bare-metal ceiling.
 
-| metric | cricker-os (debug, HVF) | Linux (static musl, HVF) | macOS/XNU (native) |
+Run cricker-os optimized (`cargo xtask bench --release`, which builds an opt-level-3 kernel and
+userspace and implies `--real`), and compare on the same core:
+
+| metric | cricker-os **release** (HVF) | Linux (static musl, HVF) | macOS/XNU (native) |
 |---|---|---|---|
-| null syscall | **~42 ns** | ~139 ns | ~76 ns |
-| IPC round trip | ~2272 ns | **~1723 ns** | ~2620 ns |
+| null syscall | **~27 ns** | ~139 ns | ~76 ns |
+| context switch | **~111 ns** | (host ring method, TODO) | |
+| IPC round trip | **~337 ns** | ~1723 ns | ~2620 ns |
 
-The result is more honest than a clean sweep, and better for it.
+**cricker-os wins both measured metrics decisively, and the comparison is fair**: same M-series core,
+same HVF tier as Linux, both optimized. It is **~5x faster than Linux at the null syscall** (27 vs
+139) and **~5x faster at the IPC round trip** (337 vs 1723), and it beats native macOS at both. These
+are seL4-class microkernel numbers, an IPC round trip in the low hundreds of nanoseconds, put next to
+the reference OS on the same silicon.
 
-**Null syscall: cricker-os wins decisively, and the fair comparison confirms it.** 42 ns vs Linux's
-139 ns is the *apples-to-apples* one, same core, same HVF tier, both a bare `getpid`-class trap, and
-cricker-os is **~3.3x leaner**. It beats native macOS (76 ns) too. This is the capability
-microkernel's real, robust strength: the trap path is `svc` -> decode -> reject, while Linux carries
-its syscall entry (the table, seccomp/audit/ptrace gates) and XNU its BSD machinery on every
-crossing. cricker-os wins this even as a *debug* build, so it is not a measurement artifact.
+The story the debug build told first was the *opposite* at IPC, and the gap between them is the whole
+lesson. Debug cricker-os: null syscall ~42 ns, ctx switch ~692 ns, IPC ~2272 ns. So `-O0` was a ~1.5x
+tax on the bare syscall (which still won) but a **~6.7x tax on IPC** (which lost to Linux at 1723 ns
+until this). The heavier a path, the more the optimizer matters, and the IPC path, two context
+switches plus four traps plus the rendezvous, is heavy. The null-syscall win survived the debug
+handicap; the IPC win was hidden by it. Measuring both builds is why we can say which.
 
-**IPC round trip: mature Linux beats our debug build.** 1723 ns (Linux) < 2272 ns (cricker-os debug)
-< 2620 ns (macOS). Linux's pipe-plus-context-switch path is decades-tuned, and it shows; a round trip
-is dominated by the two context switches, not the trap, so our syscall edge is a small fraction of
-it. The load-bearing caveat is the **debug build**: cricker-os here is unoptimized (opt-level 0),
-which costs most on the heavier IPC path. Whether a *release* cricker-os catches or passes Linux at
-IPC is the open question this raises, and the reason a release comparison is the next thing to do.
-
-Honest caveats. The debug-vs-optimized gap (above), which the null-syscall win survives and the IPC
-number does not. A semantic one for IPC: our endpoint is a synchronous three-word rendezvous, a Unix
-pipe is a buffered byte stream through a kernel buffer, so this is our native IPC against Unix's
-*standard* IPC (`lat_pipe`), not XNU's fastest (a Mach port would likely beat the pipe). Still open:
-a release cricker-os, host context switch (lmbench's ring method to isolate it), and `sel4bench`.
+Honest caveats remain. A semantic one for IPC: our endpoint is a synchronous three-word rendezvous, a
+Unix pipe is a buffered byte stream through a kernel buffer, so this is our native IPC against Unix's
+*standard* IPC (`lat_pipe`), not XNU's fastest (a Mach port would likely beat the pipe). And the host
+context switch still wants lmbench's ring method to isolate cleanly. `sel4bench` (the one peer that
+would tell us how close to the state of the art these numbers are) is the remaining comparison.
 
 ### The cross-OS comparison, when we build it
 

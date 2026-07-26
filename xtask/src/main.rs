@@ -18,9 +18,34 @@
 //! gets booted, so there is exactly one place to get the QEMU flags wrong.
 
 use std::process::{Command, ExitCode};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const TARGET: &str = "aarch64-unknown-none-softfloat";
 const RUNNER: &str = "scripts/qemu-runner.sh";
+
+/// Whether this run builds optimized binaries. Only `bench --release` sets it (a fair cross-OS
+/// comparison wants an optimized kernel and userspace, not the debug default). Everything else stays
+/// debug: faster builds, and the tests and the tour want debuginfo and cheap rebuilds.
+static RELEASE: AtomicBool = AtomicBool::new(false);
+
+/// `"release"` or `"debug"`: the cargo profile directory the built artifacts land in.
+fn profile_dir() -> &'static str {
+    if RELEASE.load(Ordering::Relaxed) {
+        "release"
+    } else {
+        "debug"
+    }
+}
+
+/// Run `cargo <args>`, adding `--release` when this is a release run. For the build commands whose
+/// output profile must match `profile_dir()` (the kernel and user builds behind `bench --release`).
+fn cargo_profiled(args: &[&str]) -> bool {
+    let mut v = args.to_vec();
+    if RELEASE.load(Ordering::Relaxed) {
+        v.push("--release");
+    }
+    cargo(&v)
+}
 
 fn main() -> ExitCode {
     let cmd = std::env::args().nth(1).unwrap_or_default();
@@ -80,7 +105,7 @@ fn main() -> ExitCode {
             eprintln!(
                 "usage: cargo xtask <build|run|shell|initboot|test|bench|gdb|objdump|image> [--hvf]"
             );
-            eprintln!("       cargo xtask bench [--real] [--check] [--save]");
+            eprintln!("       cargo xtask bench [--real] [--release] [--check] [--save]");
             return ExitCode::FAILURE;
         }
     };
@@ -105,7 +130,7 @@ fn build() -> bool {
 /// an **ELF**: the kernel's loader wants program headers, unlike the kernel itself, which QEMU
 /// wants as a flat image. See notes/elf.md.
 fn user() -> bool {
-    cargo(&["build", "-p", "user", "--target", TARGET]) && mkinitrd()
+    cargo_profiled(&["build", "-p", "user", "--target", TARGET]) && mkinitrd()
 }
 
 /// Where the packed initrd archive is written.
@@ -263,7 +288,7 @@ fn user_elf() -> String {
     // under `cargo run` and silently did not under `cargo test`, so the tests booted with no
     // initrd at all and the one that noticed was the one that panicked.
     workspace_root()
-        .join(format!("target/{TARGET}/debug/hello"))
+        .join(format!("target/{TARGET}/{}/hello", profile_dir()))
         .display()
         .to_string()
 }
@@ -272,7 +297,7 @@ fn user_elf() -> String {
 /// `worker`, `console`, and so on. `mkinitrd` packs each into the archive under that same name.
 fn bin_elf(name: &str) -> String {
     workspace_root()
-        .join(format!("target/{TARGET}/debug/{name}"))
+        .join(format!("target/{TARGET}/{}/{name}", profile_dir()))
         .display()
         .to_string()
 }
@@ -344,17 +369,24 @@ fn test() -> bool {
 /// We own the QEMU child, watch its output for `bench: done`, and kill it: one exit mechanism
 /// for both accelerators.
 fn bench() -> bool {
-    let real = std::env::args().any(|a| a == "--real");
     let check = std::env::args().any(|a| a == "--check");
     let save = std::env::args().any(|a| a == "--save");
+    // `--release` builds an optimized kernel and userspace, for a fair cross-OS comparison (the debug
+    // default is fine for the icount gate, whose counts are path length, but not for magnitudes next
+    // to release Linux). Release changes instruction counts, so it never runs under icount and never
+    // gates: it implies `--real` (HVF magnitudes only).
+    let release = std::env::args().any(|a| a == "--release");
+    RELEASE.store(release, Ordering::Relaxed);
+    let real = release || std::env::args().any(|a| a == "--real");
     if real && (check || save) {
-        eprintln!("bench: --real numbers are statistical and never gate; no --check/--save");
+        let why = if release { "--release" } else { "--real" };
+        eprintln!("bench: {why} numbers are statistical and never gate; no --check/--save");
         return false;
     }
 
     if !mkdisk()
         || !user()
-        || !cargo(&[
+        || !cargo_profiled(&[
             "build",
             "-p",
             "kernel",
@@ -649,7 +681,7 @@ fn capture(program: &str, args: &[&str]) -> Option<String> {
 }
 
 fn kernel_elf() -> String {
-    format!("target/{TARGET}/debug/kernel")
+    format!("target/{TARGET}/{}/kernel", profile_dir())
 }
 
 fn cargo(args: &[&str]) -> bool {
