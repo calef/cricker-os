@@ -192,36 +192,42 @@ kernel-side ones, are what compare to lmbench. All debug builds; the cross-OS co
 builds on all sides. These line up against lmbench's `lat_syscall` / `lat_ctx` / `lat_pipe` and
 `sel4bench`.
 
-### The first cross-OS numbers (cricker-os vs macOS)
+### The first cross-OS numbers (cricker-os vs Linux vs macOS)
 
-`bench/host/` holds the host side of each metric, run natively: `null_syscall.rs` (a raw `getpid`
-through the syscall gate, not libc's cached `getpid` which never traps) and `ipc_rtt.rs` (a pipe
-round trip between two forked processes, lmbench's `lat_pipe`). On this M-series Mac:
+`bench/host/` holds the host side of each metric: `null_syscall.rs` (a raw `getpid` through the
+syscall gate, not libc's cached `getpid` which never traps) and `ipc_rtt.rs` (a pipe round trip
+between two forked processes, lmbench's `lat_pipe`). Two ways to run them: natively on macOS
+(`rustc -O ... && ./bin`), and on **Linux at the same tier** as cricker-os, `bench/host/run_linux.sh`
+cross-compiles a static musl binary, packs it as `/init` in a one-file initramfs, and boots it under
+QEMU-HVF, the exact machine cricker-os boots on. So Linux and cricker-os sit on the **same M-series
+core at the same virtualization tier**; native macOS is the bare-metal ceiling.
 
-| metric | cricker-os (debug, HVF) | macOS/XNU (native) | cricker-os vs macOS |
+| metric | cricker-os (debug, HVF) | Linux (static musl, HVF) | macOS/XNU (native) |
 |---|---|---|---|
-| null syscall | ~42 ns | ~76 ns | **~1.8x faster** |
-| IPC round trip | ~2272 ns | ~2620 ns | **~1.15x faster** |
+| null syscall | **~42 ns** | ~139 ns | ~76 ns |
+| IPC round trip | ~2272 ns | **~1723 ns** | ~2620 ns |
 
-cricker-os wins both, and wins them **from behind**: a debug build (unoptimized, so slower than it
-will be) under virtualization (a tax it need not pay), against native XNU. The handicaps do not
-explain the result away. A null syscall and a context switch both stay *inside the guest* (no VM
-exit), so HVF adds almost nothing to either, the tier gap is real for device I/O, not these. And the
-debug handicap runs the wrong way: a release cricker-os would only widen the gaps.
+The result is more honest than a clean sweep, and better for it.
 
-The null-syscall result is believable on its face, our trap path is `svc` -> decode -> reject, while
-XNU is a hybrid carrying BSD syscall machinery (dispatch tables, entitlement and audit hooks) on every
-crossing. The IPC result is closer, as expected: a pipe round trip is dominated by the two context
-switches it shares with ours, and both kernels do those competently; the syscall-boundary edge is a
-smaller fraction of the whole. This is the shape of finding the suite is for: places the microkernel
-design is genuinely leaner, quantified.
+**Null syscall: cricker-os wins decisively, and the fair comparison confirms it.** 42 ns vs Linux's
+139 ns is the *apples-to-apples* one, same core, same HVF tier, both a bare `getpid`-class trap, and
+cricker-os is **~3.3x leaner**. It beats native macOS (76 ns) too. This is the capability
+microkernel's real, robust strength: the trap path is `svc` -> decode -> reject, while Linux carries
+its syscall entry (the table, seccomp/audit/ptrace gates) and XNU its BSD machinery on every
+crossing. cricker-os wins this even as a *debug* build, so it is not a measurement artifact.
 
-Honest caveats. Debug vs native-optimized, virtualized vs native (small for these guest-internal
-metrics). And a semantic one for IPC: our endpoint is a synchronous three-word rendezvous, while a
-Unix pipe is a buffered byte stream that copies through a kernel buffer, so we are comparing our
-native IPC to Unix's *standard* IPC (`lat_pipe`), not to XNU's fastest (a Mach port would likely beat
-the pipe). Context switch on the host still wants lmbench's ring method to isolate cleanly; that and
-Linux, the virtualized-tier macOS guest, and `sel4bench` are the rest of the comparison.
+**IPC round trip: mature Linux beats our debug build.** 1723 ns (Linux) < 2272 ns (cricker-os debug)
+< 2620 ns (macOS). Linux's pipe-plus-context-switch path is decades-tuned, and it shows; a round trip
+is dominated by the two context switches, not the trap, so our syscall edge is a small fraction of
+it. The load-bearing caveat is the **debug build**: cricker-os here is unoptimized (opt-level 0),
+which costs most on the heavier IPC path. Whether a *release* cricker-os catches or passes Linux at
+IPC is the open question this raises, and the reason a release comparison is the next thing to do.
+
+Honest caveats. The debug-vs-optimized gap (above), which the null-syscall win survives and the IPC
+number does not. A semantic one for IPC: our endpoint is a synchronous three-word rendezvous, a Unix
+pipe is a buffered byte stream through a kernel buffer, so this is our native IPC against Unix's
+*standard* IPC (`lat_pipe`), not XNU's fastest (a Mach port would likely beat the pipe). Still open:
+a release cricker-os, host context switch (lmbench's ring method to isolate it), and `sel4bench`.
 
 ### The cross-OS comparison, when we build it
 
