@@ -72,6 +72,13 @@ else's kernel:
   (capability routing, component manifests) and for the "what would growing up look like"
   question in notes/why-not-general-purpose.md.
 
+## Calls on the record
+
+- **`pci` crate (2026-07-27): built, over `pci_types`.** Made during the overnight PCIe run
+  without the survey pass this note requires; recorded the next day in DECISIONS §18 with the
+  honest split: the host-testable closure shape and the witness tests favored building, the
+  rule favored reuse, and the omission of the pass is the actual lesson. Kept.
+
 ## The convention
 
 Every milestone design block in design/roadmap.md carries a **"Prior art"** section. The

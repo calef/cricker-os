@@ -1126,6 +1126,19 @@ virtio-pci unchanged. The three decisions the scope note flagged, resolved as it
    35..38, the highmem ECAM at 0x40_1000_0000). The per-arch cost was exactly the predicted
    constants-plus-map change, which is rule #1 doing its job on a whole subsystem.
 
+**Build-vs-reuse, recorded late.** The `pci` crate was built rather than adopting `pci_types`
+(the kernel-agnostic config-space/BAR/capability crate several Rust OS projects use), and the
+call was made without the survey pass the reuse convention (notes/prior-art.md) requires; this
+paragraph is the record arriving a day after the code, noted so the omission is visible rather
+than smoothed over. The defense, worth about sixty percent: the closure-injection shape (every
+function takes read/write closures, so the logic host-tests against a fake config space) and the
+witness tests wanted an API of our own, and the whole crate is ~400 lines covering exactly what
+we drive (type-0 headers, memory BARs, virtio vendor caps, the INTx swizzle). The counterweight:
+`pci_types` covers most of that decode, and under the rule as written, a maintained no_std crate
+should have been the default for peripheral plumbing outside the TCB. Verdict: keep ours (the
+swap would trade witness-tested, zero-churn code for a dependency, backwards at this point), and
+let the rule bind prospectively, milestone 16's parsing needs being the next real test.
+
 **What the kernel is on this bus:** with `-bios default`, OpenSBI does no PCI setup, so the kernel
 is the firmware: it sizes and places BARs itself. The hardcoded window/irq constants are held by
 host-run witnesses against the machine's own device tree (the ECAM `reg`, all sixteen
