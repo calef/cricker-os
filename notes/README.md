@@ -220,6 +220,9 @@ in the code or the conversation doesn't make sense, it belongs here.
   (`Context` is aarch64-shaped in portable code; the `paging` crate encodes the aarch64 descriptor
   format), the RISC-V specifics (SBI, S-mode boot, Sv39, NS16550, PLIC/CLINT), and the incremental
   plan from "compiles for riscv64" to "the capability core runs on a second ISA".
+- [Scoping RISC-V / aarch64 parity](riscv-parity-scope.md) — aarch64 is a strict superset once the
+  port proved the capability core; this scopes the remaining gap (SMP, an in-kernel test run,
+  virtio+DMA, the full boot/shell, benchmarks), what each proves, and the order to close them.
 
 ## Build
 
