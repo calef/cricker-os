@@ -140,6 +140,26 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
             arch::mmu::is_enabled(),
         );
 
+        // Dynamic kernel mapping self-test: map a fresh frame at an unused high-half VA, read it
+        // back through the tables, write and read through the mapping, then unmap it. Proves
+        // map_page / translate / unmap_page / flush_tlb, which the kernel stack allocator needs.
+        {
+            use paging::Flags;
+            let test_va = arch::mmu::KERNEL_VA_BASE + 0x1_0000_0000; // above the RAM direct map
+            let frame = memory::alloc().expect("no frame for the mmu self-test").addr();
+            arch::mmu::map_page(test_va, frame, Flags::kernel_data()).expect("map_page failed");
+            let (pa, flags) = arch::mmu::translate(test_va).expect("translate found nothing");
+            // SAFETY: we just mapped this VA read/write.
+            unsafe { (test_va as *mut u64).write_volatile(0xc0ffee) };
+            let readback = unsafe { (test_va as *const u64).read_volatile() };
+            let freed = arch::mmu::unmap_page(test_va).expect("unmap_page failed");
+            println!(
+                "  kmap test   : mapped {test_va:#x}->{pa:#x} (w:{}), rw={:#x}, unmapped->{freed:#x}",
+                flags.is_writable(),
+                readback,
+            );
+        }
+
         println!("  next: the capability core (user address spaces, the scheduler).");
         arch::halt();
     }

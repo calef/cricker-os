@@ -362,22 +362,55 @@ pub fn switch_user_root(satp: u64) {
     unimplemented!("riscv switch user satp: the MMU step")
 }
 
-/// Map one page into the kernel's own address space. The MMU step.
+/// Serializes edits to the kernel's live tables: two harts must not mutate them at once. Same role
+/// (and lock rank) as the aarch64 module's `KERNEL_MMU`.
+static KERNEL_MMU: crate::sync::IrqSafeMutex<()> =
+    crate::sync::IrqSafeMutex::new(crate::sync::rank::KERNEL_MMU, ());
+
+/// The kernel's live page tables, as a `Mapper` rooted at the saved fine-table root. Reads
+/// `KERNEL_ROOT` rather than `satp` back because both harts share one kernel root; **call only while
+/// holding [`KERNEL_MMU`].**
+#[allow(clippy::type_complexity)]
+fn kernel_mapper() -> Mapper<impl FnMut() -> Option<u64>, fn(u64) -> *mut PageTable, Sv39> {
+    let root = KERNEL_ROOT.load(Ordering::Relaxed);
+    // SAFETY: `root` is the fine kernel table built by `init`; the direct map makes `phys_to_ptr`
+    // valid for every table frame.
+    unsafe {
+        Mapper::new(
+            root,
+            Half::High,
+            || memory::alloc().map(|f| f.addr()),
+            phys_to_ptr,
+        )
+    }
+}
+
+/// Map one page into the kernel's own (high-half) address space.
 pub fn map_page(va: u64, pa: u64, flags: Flags) -> Result<(), MapError> {
-    let _ = (va, pa, flags);
-    unimplemented!("riscv map kernel page: the MMU step")
+    let _guard = KERNEL_MMU.lock(); // exclusive: two harts must not mutate the tables at once
+    kernel_mapper().map(va, pa, flags)
 }
 
-/// Unmap one page from the kernel's address space, returning the frame it named. The MMU step.
+/// Remove one page from the kernel's address space, invalidate the TLB, and return the physical
+/// frame (the caller's to free; the mapper never owned it). The `TlbFlush` obligation is discharged
+/// here with a real `sfence.vma`; dropping one un-discharged panics.
 pub fn unmap_page(va: u64) -> Result<u64, MapError> {
-    let _ = va;
-    unimplemented!("riscv unmap kernel page: the MMU step")
+    let _guard = KERNEL_MMU.lock(); // exclusive: see map_page
+    let (pa, flush) = kernel_mapper().unmap(va)?;
+    flush.flush(flush_tlb);
+    Ok(pa)
 }
 
-/// Discharge the TLB entry for one address (`sfence.vma va`). The MMU step.
+/// Invalidate the TLB entry for one virtual address. This is what discharges a `paging::TlbFlush`;
+/// the `paging` crate is pure logic and emits no instructions.
+///
+/// `sfence.vma rs1, rs2` with `rs1` = the address and `rs2` = `x0` (all ASIDs) invalidates that
+/// page's translation. Unlike aarch64's `tlbi`, `sfence.vma` also orders the preceding page-table
+/// write and completes locally, so no separate barrier is needed.
 pub fn flush_tlb(va: u64) {
-    let _ = va;
-    unimplemented!("riscv sfence.vma one address: the MMU step")
+    // SAFETY: TLB maintenance is always sound; getting it wrong means a stale translation, which is
+    // the memory-unsafety that matters here, not Rust unsafety.
+    unsafe { asm!("sfence.vma {}, zero", in(reg) va, options(nostack)) };
 }
 
 /// Whether paging is on: `satp`'s MODE field is not Bare (0). True from `boot.s`'s Sv39 switch on.
@@ -388,10 +421,10 @@ pub fn is_enabled() -> bool {
     satp >> 60 != 0
 }
 
-/// Translate a kernel virtual address through the installed tables. The MMU step.
+/// Translate a kernel virtual address through the live kernel tables.
 pub fn translate(va: u64) -> Option<(u64, Flags)> {
-    let _ = va;
-    unimplemented!("riscv translate kernel va: the MMU step")
+    let _guard = KERNEL_MMU.lock();
+    kernel_mapper().translate(va)
 }
 
 /// Translate a user virtual address through the installed user tables. The MMU step.
