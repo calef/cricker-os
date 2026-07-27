@@ -70,7 +70,8 @@ jobs:
           tool: cargo-llvm-cov
       - uses: Swatinem/rust-cache@v2
       # Measures the pure-logic host crates only; the kernel/user crates run under QEMU, out of
-      # reach of host instrumentation. Informational: it reports the numbers, it does not gate.
+      # reach of host instrumentation. Gates on the 80%-per-file line-coverage floor (the floor
+      # lives in script/coverage, next to the check itself); the report is still published below.
       - run: script/coverage
       - name: Publish the summary to the run
         run: |

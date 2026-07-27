@@ -1,5 +1,6 @@
 #!/bin/sh
-# script/coverage: line/region/function coverage for the host-testable logic crates.
+# script/coverage: line/region/function coverage for the host-testable logic crates, and the
+# 80%-per-file floor that CI gates on.
 #
 # The kernel and user crates are bare-metal and only run under QEMU, where host instrumentation
 # does not reach; DECISIONS.md §7 deliberately keeps the testable logic in host crates, and this
@@ -30,3 +31,30 @@ cargo llvm-cov report --html
 
 echo "==> lcov: target/llvm-cov/lcov.info"
 echo "==> html: target/llvm-cov/html/index.html"
+
+# --- The floor ----------------------------------------------------------------------------
+# Per FILE, not just the total. The workspace total sat comfortably above 80% while three
+# files were below it (one at 0%), which is exactly how a per-total gate hides a hole: a big
+# well-tested crate subsidizes an untested one. lcov's LF/LH records are lines-found and
+# lines-hit per file, so the check is a few lines of awk and needs no extra tooling.
+#
+# The floor is a floor, not a target: a file at 81% is not "done", and 100% is not the goal
+# (tests must prove something; see CLAUDE.md on filler tests). The gate exists to make a
+# regression loud, so the fix is a deliberate test or a deliberate, recorded exception here.
+floor=80
+awk -F: -v floor="$floor" '
+    /^SF:/ { file = $2 }
+    /^LF:/ { found = $2 }
+    /^LH:/ {
+        if (found > 0 && $2 * 100 < found * floor) {
+            printf "coverage: %s: %.1f%% line coverage is under the %d%% floor\n",
+                file, $2 * 100 / found, floor
+            failed = 1
+        }
+    }
+    END { exit failed }
+' target/llvm-cov/lcov.info || {
+    echo "==> coverage floor FAILED (see above; floor is ${floor}% of lines per file)"
+    exit 1
+}
+echo "==> coverage floor ok: every file is at or above ${floor}% line coverage"

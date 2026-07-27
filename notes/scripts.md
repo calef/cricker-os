@@ -19,7 +19,7 @@ uses `cargo xtask` and that one uses `make` and the next uses `npm`.
 | `script/console` | Boot straight to the interactive shell at EL0. For this project the console is literally a shell running as an unprivileged process. |
 | `script/fmt` | Check formatting against the pinned rustfmt (a CI gate). |
 | `script/lint` | Run clippy across the workspace with warnings denied (a CI gate). |
-| `script/coverage` | Line/region/function coverage for the host-logic crates. Installs cargo-llvm-cov on first run. |
+| `script/coverage` | Coverage for the host-logic crates, gated on an 80%-per-file line floor (a CI gate). Installs cargo-llvm-cov on first run. |
 
 `fmt`, `lint`, and `coverage` are not part of the canonical set; they exist so the CI format,
 clippy, and coverage jobs are one-liners. `coverage` measures only the pure-logic host crates
