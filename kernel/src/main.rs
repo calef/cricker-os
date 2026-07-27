@@ -132,7 +132,15 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
             f.addr(),
         );
 
-        println!("  next: fine-grained Sv39 tables, then the capability core.");
+        // Replace the coarse RWX boot table with fine-grained W^X Sv39 kernel tables. We keep
+        // running (and printing) across the satp switch, which proves the fine map covers this code.
+        arch::mmu::init();
+        println!(
+            "  paging      : fine-grained W^X Sv39 tables installed, satp switched (paging on: {})",
+            arch::mmu::is_enabled(),
+        );
+
+        println!("  next: the capability core (user address spaces, the scheduler).");
         arch::halt();
     }
 

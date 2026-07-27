@@ -9,11 +9,26 @@
 //! Until then the kernel runs bare (`satp = 0`, virtual == physical), so [`KERNEL_VA_BASE`] is 0 and
 //! [`phys_to_virt`]/[`virt_to_phys`] are the identity. The boot and console steps need nothing more.
 
-use paging::{Flags, MapError, PageTable, Sv39};
+use crate::memory;
+use core::arch::asm;
+use core::ffi::c_void;
+use core::sync::atomic::{AtomicU64, Ordering};
+use paging::{Flags, Half, MapError, Mapper, PAGE_SIZE, PageTable, Sv39};
 
 /// This architecture's page-table format. Portable code names it as `arch::mmu::Format` (see the
 /// aarch64 module's alias for why), so the user-VA gate and the user `Mapper` land on Sv39 here.
 pub type Format = Sv39;
+
+/// The UART, mapped as device memory in the direct map. Without it the machine goes silent the
+/// instant we switch off the coarse boot table.
+const UART_BASE: u64 = 0x1000_0000;
+const UART_SIZE: u64 = 0x1000;
+
+/// The `satp` MODE field value for Sv39 (bits 63:60).
+const SATP_MODE_SV39: u64 = 8 << 60;
+
+/// The kernel's fine-map root, saved by [`init`] so a secondary hart can adopt it.
+static KERNEL_ROOT: AtomicU64 = AtomicU64::new(0);
 
 /// The base of the kernel's virtual address space: the Sv39 high half (bits 63:38 all one, the sign
 /// extension of bit 38 = 1). Chosen exactly like aarch64's base so `VA = PA | KERNEL_VA_BASE` is
@@ -79,10 +94,179 @@ pub(crate) fn phys_to_ptr(pa: u64) -> *mut PageTable {
     phys_to_virt(pa) as *mut PageTable
 }
 
-/// Build the kernel's own page tables and turn the MMU on. The Sv39 step.
+/// Build the kernel's fine-grained Sv39 tables and switch `satp` to them, replacing the coarse RWX
+/// boot table (BOOT_PAGE_TABLE) that `boot.s` installed. The new tables are W^X: `.text` executable
+/// and read-only, `.rodata` read-only, everything else non-executable, the guard page unmapped.
+///
+/// We are already running in the high half on the boot table; the fine table maps the same kernel
+/// VAs to the same frames, so the `csrw satp` is seamless (the next instruction fetch resolves
+/// identically). This is the RISC-V counterpart of the aarch64 `mmu::init`, one register instead of
+/// the TTBR0/TTBR1 pair.
 pub fn init() {
-    unimplemented!("riscv MMU init (Sv39 root, direct map, high-half, satp): the MMU step")
+    let root = memory::alloc()
+        .expect("no frame for the root page table")
+        .addr();
+    // SAFETY: a fresh frame; zero it before the hardware can ever walk it.
+    unsafe {
+        (*phys_to_ptr(root)).entries = [0; paging::ENTRIES];
+    }
+
+    // SAFETY: `root` is zeroed and page-aligned; `phys_to_ptr` is valid because the boot table's
+    // direct-map gigapages cover all of RAM (so every frame the mapper allocates is addressable).
+    let mut mapper = unsafe {
+        Mapper::<_, _, Sv39>::new(
+            root,
+            Half::High,
+            || memory::alloc().map(|f| f.addr()),
+            phys_to_ptr,
+        )
+    };
+
+    map_everything(&mut mapper).expect("failed to build the kernel page tables");
+    verify(&mapper);
+
+    // SAFETY: the fine map covers this function's code, its stack, and the UART; we checked.
+    unsafe { install(root) };
+
+    KERNEL_ROOT.store(root, Ordering::Relaxed);
 }
+
+/// Switch `satp` to the Sv39 tables rooted at physical `root`, and flush the TLB.
+///
+/// # Safety
+/// `root` must be a complete Sv39 kernel map covering the currently-executing code, stack, and any
+/// memory touched before the next `sfence`; otherwise the instruction after the `csrw` faults.
+unsafe fn install(root: u64) {
+    let satp = SATP_MODE_SV39 | (root >> 12);
+    // SAFETY: caller's contract. sfence.vma before and after brackets the switch so no stale
+    // boot-table entry survives.
+    unsafe {
+        asm!(
+            "sfence.vma",
+            "csrw satp, {satp}",
+            "sfence.vma",
+            satp = in(reg) satp,
+            options(nostack),
+        );
+    }
+}
+
+/// Build every mapping the kernel needs: the direct map of RAM, the W^X kernel sections, the stack,
+/// and the UART. Mirrors the aarch64 `map_everything`.
+fn map_everything<A, P>(m: &mut Mapper<A, P, Sv39>) -> Result<(), MapError>
+where
+    A: FnMut() -> Option<u64>,
+    P: Fn(u64) -> *mut PageTable,
+{
+    // 1. The direct map: all of RAM at `pa | KERNEL_VA_BASE`, read/write, never executable, so the
+    //    kernel can touch any frame the allocator hands it. Skip the kernel image, whose sections
+    //    get tighter permissions below (the mapper refuses to overwrite, turning an ordering mistake
+    //    into an error rather than a silently-wrong permission).
+    let image_lo = virt_to_phys(image_start());
+    let image_hi = virt_to_phys(image_end());
+    for (start, size) in memory::ram_regions() {
+        let end = start + size;
+        direct_map(m, start, image_lo.min(end), Flags::kernel_data())?;
+        direct_map(m, image_hi.max(start), end, Flags::kernel_data())?;
+    }
+
+    // 2. The kernel image, section by section, at its linked VAs. W^X.
+    map_range(m, text_start(), text_end(), Flags::kernel_code())?;
+    map_range(m, rodata_start(), rodata_end(), Flags::kernel_rodata())?;
+    map_range(m, data_start(), bss_end(), Flags::kernel_data())?;
+
+    // 3. The guard page is deliberately NOT mapped (stack-overflow trap). Skip it.
+
+    // 4. The stack.
+    map_range(m, stack_bottom(), stack_top(), Flags::kernel_data())?;
+
+    // 5. The UART, device memory, in the direct map. Silence otherwise, the instant we switch.
+    direct_map(m, UART_BASE, UART_BASE + UART_SIZE, Flags::device())?;
+
+    Ok(())
+}
+
+/// Map a range of *virtual* addresses to the physical ones they were linked against.
+fn map_range<A, P>(
+    m: &mut Mapper<A, P, Sv39>,
+    va_start: u64,
+    va_end: u64,
+    flags: Flags,
+) -> Result<(), MapError>
+where
+    A: FnMut() -> Option<u64>,
+    P: Fn(u64) -> *mut PageTable,
+{
+    if va_end <= va_start {
+        return Ok(());
+    }
+    let pages = (va_end - va_start).div_ceil(PAGE_SIZE);
+    m.map_range(va_start, virt_to_phys(va_start), pages, flags)
+}
+
+/// Map a range of *physical* addresses into the direct map at `pa | KERNEL_VA_BASE`.
+fn direct_map<A, P>(
+    m: &mut Mapper<A, P, Sv39>,
+    pa_start: u64,
+    pa_end: u64,
+    flags: Flags,
+) -> Result<(), MapError>
+where
+    A: FnMut() -> Option<u64>,
+    P: Fn(u64) -> *mut PageTable,
+{
+    if pa_end <= pa_start {
+        return Ok(());
+    }
+    let pages = (pa_end - pa_start).div_ceil(PAGE_SIZE);
+    m.map_range(phys_to_virt(pa_start), pa_start, pages, flags)
+}
+
+/// Walk the tables in software and check the things that would kill us, before the hardware bets the
+/// machine on them. The RISC-V counterpart of the aarch64 `verify`.
+fn verify<A, P>(m: &Mapper<A, P, Sv39>)
+where
+    A: FnMut() -> Option<u64>,
+    P: Fn(u64) -> *mut PageTable,
+{
+    // The code we are executing right now must be mapped executable, or the instruction after the
+    // `csrw satp` never gets fetched.
+    let here = init as *const () as u64;
+    let (pa, flags) = m
+        .translate(here)
+        .expect("the code switching tables is not mapped: we would die on the next fetch");
+    assert_eq!(pa, virt_to_phys(here), "our .text maps to the wrong frame");
+    assert!(flags.is_kernel_executable(), "our own .text is not executable");
+    assert!(!flags.is_writable(), "our own .text is writable (W^X violated)");
+
+    // The UART, so `println!` keeps working across the switch.
+    assert!(
+        m.translate(phys_to_virt(UART_BASE)).is_some(),
+        "the UART is not mapped: the machine would go silent"
+    );
+}
+
+macro_rules! linker_symbol {
+    ($name:ident, $sym:ident) => {
+        fn $name() -> u64 {
+            unsafe extern "C" {
+                static $sym: c_void;
+            }
+            (&raw const $sym) as u64
+        }
+    };
+}
+
+linker_symbol!(image_start, __image_start);
+linker_symbol!(image_end, __image_end);
+linker_symbol!(text_start, __text_start);
+linker_symbol!(text_end, __text_end);
+linker_symbol!(rodata_start, __rodata_start);
+linker_symbol!(rodata_end, __rodata_end);
+linker_symbol!(data_start, __data_start);
+linker_symbol!(bss_end, __bss_end);
+linker_symbol!(stack_bottom, __stack_bottom);
+linker_symbol!(stack_top, __stack_top);
 
 /// Replay the kernel mapping on a secondary hart. The SMP + MMU step.
 pub fn init_secondary() {
@@ -196,10 +380,12 @@ pub fn flush_tlb(va: u64) {
     unimplemented!("riscv sfence.vma one address: the MMU step")
 }
 
-/// Whether paging is on (`satp` mode != Bare). The MMU step; false while bare.
+/// Whether paging is on: `satp`'s MODE field is not Bare (0). True from `boot.s`'s Sv39 switch on.
 pub fn is_enabled() -> bool {
-    // Honest even as a stub: until the MMU step runs, paging is off.
-    false
+    let satp: u64;
+    // SAFETY: reads a CSR. No side effects.
+    unsafe { asm!("csrr {}, satp", out(reg) satp, options(nomem, nostack, preserves_flags)) };
+    satp >> 60 != 0
 }
 
 /// Translate a kernel virtual address through the installed tables. The MMU step.
