@@ -43,7 +43,7 @@ of fragments. Their userspace is where the portable assets live:
 
 | Component | Fit | When |
 |---|---|---|
-| **RedoxFS** (`redoxfs` crate) | Best single candidate, **named in milestone 32 and audited** (notes/redoxfs-audit.md): the no_std core compiles for both bare-metal targets at 0.9.1, three imports from clean; port plan fixed in the roadmap block. | Milestone 32 |
+| **RedoxFS** (`redoxfs` crate) | Best single candidate, **named in milestone 32 and audited** (notes/redoxfs-audit.md): the no_std core compiles for both bare-metal targets at 0.9.1, two import lines from clean; port plan fixed in the roadmap block. | Milestone 32 |
 | **relibc** | Long shot; the only credible one if 19's "Linux-compat later" fork is taken. It has a platform layer targeting Linux and Redox; a third backend against our native ABI (notes/abi.md) is conceivable. The catch: it assumes fork/exec-ish process semantics that explicit-endowment `Spawn` deliberately does not provide. Note it, do not plan on it. | 19 compat fork, if taken |
 | **Userspace drivers** (NVMe, e1000, xHCI, ps2) | Reference implementations, not code. Written against Redox's scheme and IRQ model, but the register-level logic is the hard-won part and it reads well. | 16, 24 (real hardware) |
 | **ion, Orbital, pkgutils** | No. ion needs POSIX and we have a shell; the rest is out of scope. | never |

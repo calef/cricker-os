@@ -15,8 +15,9 @@ about **5,400 lines**, has zero `cfg(feature = "std")` gates in the operational 
 
 ## Proven by building
 
-With `--no-default-features` and three added `use alloc::vec::Vec` imports (bit rot in
-`filesystem.rs` and `record.rs`; upstream does not CI the no_std path):
+With `--no-default-features` and TWO added `use alloc::vec::Vec` lines, one each in
+`filesystem.rs` and `record.rs`, fixing three E0425 sites (with std on, the prelude supplies
+`Vec`; upstream does not CI the no_std path, so it bit-rotted):
 
 ```
 cargo build --no-default-features                                        ok
@@ -45,7 +46,8 @@ lz4_flex, seahash, bitflags, endian-num, base64ct, uuid-core, redox_syscall) com
    no allocator yet. This is the untyped-backed allocator milestone 27's PAL needs anyway;
    whichever milestone lands first builds it, the other inherits it. This is the largest cost,
    and it was already on the books.
-2. **The three-import patch**, worth offering upstream so the pin can eventually drop it.
+2. **The two-line import patch**, worth offering upstream (with a `--no-default-features` CI
+   check so it stays fixed) so the pin can eventually drop it.
 3. **Version pin at 0.9.1** with divergence recorded, per the vendored-engine discipline. One
    manifest wart to carry or upstream: `libc` is an unconditional dependency used only by the
    std binaries (harmless on `none` targets, proven, but it belongs behind the feature).

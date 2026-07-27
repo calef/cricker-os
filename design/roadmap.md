@@ -671,9 +671,10 @@ thesis: the kernel confining a serious component we did not write.
 **The port plan, fixed by the audit** (notes/redoxfs-audit.md; done against 0.9.1, by
 building, so the implementer starts here rather than rediscovering):
 
-1. **Pin 0.9.1**, vendor or patch-dep with exactly the audit's three `use alloc::vec::Vec`
-   imports (`filesystem.rs` x2, `record.rs` x1); offer the patch upstream so the pin can
-   eventually drop it. Build with `--no-default-features` on the workspace nightly; both
+1. **Pin 0.9.1**, vendor or patch-dep with the audit's patch: two added `use alloc::vec::Vec`
+   lines (one each in `filesystem.rs` and `record.rs`, fixing three E0425 sites; with std on,
+   the prelude supplied `Vec`, so the untested no_std path bit-rotted). Offer it upstream,
+   ideally with a `--no-default-features` CI check, so the pin can eventually drop it. Build with `--no-default-features` on the workspace nightly; both
    bare-metal targets are proven to compile.
 2. **The allocator comes first** and is shared work with 27's PAL: an untyped-backed
    `GlobalAlloc` in `user_rt`. The core is alloc-heavy; nothing else runs without this.
