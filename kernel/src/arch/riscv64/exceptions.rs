@@ -72,13 +72,10 @@ impl TrapFrame {
         x[11] = args[1]; // a1
         x[12] = args[2]; // a2
         x[2] = user_sp; // sp
-        // tp carries this hart's per-CPU pointer. Unlike aarch64's TPIDR_EL1 (a system register that
-        // survives the EL0 round trip), RISC-V's tp is a general register, so if the frame left it 0
-        // the sret would give U-mode tp=0 and the ecall trap handler would run with tp=0 and null-
-        // deref cpu::current(). So the frame carries the kernel tp through U-mode; the program does
-        // not use it, and it comes back intact on the trap. (A cleaner, leak-free fix restores tp in
-        // trap.s from a per-hart source; noted in notes/riscv-port.md.)
-        x[4] = crate::arch::percpu() as u64; // tp
+        // x[4] (tp) is left 0: U-mode gets no kernel pointer. RISC-V's tp is a general register (not
+        // a system register like aarch64's TPIDR_EL1), so the kernel per-CPU pointer must not ride in
+        // U-mode. trap.s restores the kernel tp from KERNEL_TP on the way in, so the handler's
+        // cpu::current() is valid without leaking a kernel address to userspace.
         TrapFrame {
             x,
             sepc: entry,

@@ -75,6 +75,13 @@ trap_entry:
     csrr    t0, sstatus
     sd      t0, 35*8(sp)
 
+    # Restore the kernel's tp (per-CPU pointer). tp is a general register on RISC-V, so a trap from
+    # U-mode arrives with the user's tp (0). The user's value is already saved in the frame above;
+    # reload the kernel's from KERNEL_TP so the handler's cpu::current() is valid. Harmless from
+    # S-mode (same value). Done here, after the frame save, so t0 is free to clobber.
+    la      t0, KERNEL_TP
+    ld      tp, 0(t0)
+
     mv      a0, sp
     call    riscv_trap_dispatch
     # fall through to trap_return

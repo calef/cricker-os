@@ -31,10 +31,19 @@ global_asm!(include_str!("context.s"));
 // The S-mode trap vector (the asm half of exceptions.rs): save the frame, dispatch, restore, sret.
 global_asm!(include_str!("trap.s"));
 
-/// Set this hart's per-CPU pointer. RISC-V's `tp` (thread pointer) is the direct analog of
-/// aarch64's `TPIDR_EL1`: a scratch register the kernel owns in S-mode and reads to find the
-/// current core's `PerCpu`. See `crate::percpu`.
+/// This hart's kernel per-CPU pointer, kept where `trap.s` can reload `tp` from it on a trap from
+/// U-mode. Unlike aarch64's `TPIDR_EL1` (a system register that survives an EL0 round trip), RISC-V's
+/// `tp` is a general register that U-mode owns, so the trap entry must restore the kernel's from a
+/// hart-private source rather than trust the register. **Single-hart for now:** one global holds hart
+/// 0's pointer; SMP wants a per-hart slot (the sscratch-trapframe approach), noted in riscv-port.md.
+#[unsafe(no_mangle)]
+static KERNEL_TP: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// Set this hart's per-CPU pointer. RISC-V's `tp` (thread pointer) is the analog of aarch64's
+/// `TPIDR_EL1`. It is a general register, so we also stash it in [`KERNEL_TP`] for the trap entry to
+/// restore after a U-mode round trip (see `crate::percpu` and trap.s).
 pub fn set_percpu(ptr: usize) {
+    KERNEL_TP.store(ptr, core::sync::atomic::Ordering::Relaxed);
     // SAFETY: writes a general register the kernel reserves for per-CPU data. No memory effect.
     unsafe { asm!("mv tp, {}", in(reg) ptr, options(nomem, nostack, preserves_flags)) };
 }
