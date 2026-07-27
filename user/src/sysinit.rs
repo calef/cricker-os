@@ -144,11 +144,7 @@ static SCRATCH_NEXT: core::sync::atomic::AtomicU64 =
 /// map `maps` (each `(child_va, our_slot, mode)`), retype a TCB, insert `caps` (each `(our_slot,
 /// rights)`) in order, configure at the entry. Returns the TCB slot, ready to start. The userspace
 /// ELF loader, driven entirely through the capability verbs.
-fn build_child(
-    elf: &elf::Elf,
-    caps: &[(u64, u64)],
-    maps: &[(u64, u64, u64)],
-) -> Result<u64, ()> {
+fn build_child(elf: &elf::Elf, caps: &[(u64, u64)], maps: &[(u64, u64, u64)]) -> Result<u64, ()> {
     let aspace = retype_obj(abi::objtype::ASPACE)?;
 
     for seg in elf.segments() {
@@ -191,7 +187,15 @@ fn build_child(
     for k in 0..CHILD_STACK_PAGES {
         let stack_frame = retype_frame()?;
         let va = CHILD_STACK_VA - k * PAGE;
-        if unsafe { invoke(aspace, abi::aspace::MAP_INTO, va, stack_frame, abi::aspace::MAP_RW) } != 0
+        if unsafe {
+            invoke(
+                aspace,
+                abi::aspace::MAP_INTO,
+                va,
+                stack_frame,
+                abi::aspace::MAP_RW,
+            )
+        } != 0
         {
             return Err(());
         }

@@ -188,7 +188,9 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
                     if let Err(e) = user::riscv_shell_boot(initrd, UART_IRQ) {
                         println!("  shell boot failed: {e:?}");
                     } else {
-                        println!("  shell: userspace init is building the console, input, and shell.");
+                        println!(
+                            "  shell: userspace init is building the console, input, and shell."
+                        );
                         println!();
                     }
                 }

@@ -1250,7 +1250,9 @@ pub fn riscv_shell_boot(archive: &'static [u8], uart_irq: u32) -> Result<(), Loa
     let initrd_pages = initrd_len.div_ceil(FRAME_SIZE);
 
     let fs = crickerfs::Fs::parse(archive).expect("initrd is not a crickerfs archive");
-    let init_bytes = fs.read("sysinit").expect("archive has no 'sysinit' program");
+    let init_bytes = fs
+        .read("sysinit")
+        .expect("archive has no 'sysinit' program");
     let elf = Elf::parse(init_bytes).map_err(LoadError::NotLoadable)?;
 
     // sysinit's address space: its segments, a deep stack (it runs an ELF loader that builds three
