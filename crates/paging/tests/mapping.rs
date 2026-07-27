@@ -7,8 +7,18 @@
 //!
 //! Runs in milliseconds. No emulator, no hardware, no MMU.
 
-use paging::{Flags, Half, MapError, Mapper, PAGE_SIZE, PageTable, index, mair};
+use paging::{Aarch64, Flags, Half, MapError, Mapper, PAGE_SIZE, PageFormat, PageTable};
 use std::cell::Cell;
+
+/// This host test suite drives the aarch64 format specifically (the format-neutral `Mapper`
+/// behaviour is identical for Sv39; the aarch64 encoding is what these older tests pin). The Sv39
+/// format's own arithmetic and round-trips are proved in `paging::sv39`.
+type Fmt = Aarch64;
+
+/// The `index` free function moved onto the format; alias it so the arithmetic tests read unchanged.
+fn index(va: u64, level: usize) -> usize {
+    Fmt::index(va, level)
+}
 
 /// A pretend physical frame allocator backed by the host heap.
 ///
@@ -29,10 +39,11 @@ fn phys_to_ptr(pa: u64) -> *mut PageTable {
     pa as *mut PageTable
 }
 
+#[allow(clippy::type_complexity)] // an opaque closure + fn pointer + format; no `type` alias without TAIT
 fn mapper_in(
     half: Half,
     budget: &Cell<usize>,
-) -> Mapper<impl FnMut() -> Option<u64> + '_, fn(u64) -> *mut PageTable> {
+) -> Mapper<impl FnMut() -> Option<u64> + '_, fn(u64) -> *mut PageTable, Fmt> {
     let root = Box::into_raw(Box::new(PageTable::new())) as u64;
     // SAFETY: `root` is a fresh, zeroed, 4 KiB-aligned table, and `phys_to_ptr` is the
     // identity, which is correct because these "physical" addresses ARE host addresses.
@@ -46,9 +57,10 @@ fn mapper_in(
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn mapper(
     budget: &Cell<usize>,
-) -> Mapper<impl FnMut() -> Option<u64> + '_, fn(u64) -> *mut PageTable> {
+) -> Mapper<impl FnMut() -> Option<u64> + '_, fn(u64) -> *mut PageTable, Fmt> {
     mapper_in(Half::Low, budget)
 }
 
@@ -145,10 +157,10 @@ fn the_top_16_bits_are_not_translated_they_choose_the_TABLE() {
     // Which means the kernel does not live in the high half because high addresses index
     // somewhere else. It lives there because TTBR1 IS A DIFFERENT SET OF TABLES, and the
     // hardware picks between TTBR0 and TTBR1 using exactly those untranslated top bits.
-    assert!(Half::High.contains(high));
-    assert!(Half::Low.contains(low));
-    assert!(!Half::Low.contains(high));
-    assert!(!Half::High.contains(low));
+    assert!(Fmt::in_half(Half::High, high));
+    assert!(Fmt::in_half(Half::Low, low));
+    assert!(!Fmt::in_half(Half::Low, high));
+    assert!(!Fmt::in_half(Half::High, low));
 }
 
 #[test]
@@ -177,8 +189,8 @@ fn non_canonical_addresses_belong_to_neither_half() {
     // Top bits neither all-zero nor all-one. There is no memory there and there never can
     // be: the hardware faults before it consults any table.
     let junk = 0x0001_0000_0000_0000u64;
-    assert!(!Half::Low.contains(junk));
-    assert!(!Half::High.contains(junk));
+    assert!(!Fmt::in_half(Half::Low, junk));
+    assert!(!Fmt::in_half(Half::High, junk));
 }
 
 #[test]
@@ -265,26 +277,8 @@ fn map_range_maps_every_page() {
     assert_eq!(m.translate(0x4000_0000 + 4 * PAGE_SIZE), None);
 }
 
-// --- the bits that will actually bite ---
-
-#[test]
-fn every_mapping_sets_the_access_flag() {
-    // Bit 10. If AF is clear, the FIRST access to the page raises an Access Flag fault
-    // instead of succeeding. The resulting fault looks nothing like "you forgot a bit,"
-    // which is why this is the most common aarch64 paging bug there is.
-    const AF: u64 = 1 << 10;
-
-    for flags in [
-        Flags::kernel_code(),
-        Flags::kernel_rodata(),
-        Flags::kernel_data(),
-        Flags::device(),
-        Flags::user_code(),
-        Flags::user_data(),
-    ] {
-        assert_ne!(flags.bits() & AF, 0, "AF not set in {flags:?}");
-    }
-}
+// --- the portable access-flag behaviour (the aarch64 bit encodings, AF and the MAIR slot, are
+// pinned by unit tests in paging::aarch64 where those constants are in scope) ---
 
 #[test]
 fn nothing_is_both_writable_and_executable() {
@@ -334,25 +328,10 @@ fn device_memory_is_typed_as_device_and_is_never_executable() {
     // for a device, because reading a FIFO register HAS A SIDE EFFECT.
     let f = Flags::device();
 
-    let attr_slot = (f.bits() >> 2) & 0b111;
-    assert_eq!(
-        attr_slot,
-        mair::DEVICE,
-        "MMIO is not typed as device memory"
-    );
-
+    assert!(f.is_device(), "MMIO is not typed as device memory");
     assert!(!f.is_kernel_executable());
     assert!(!f.is_user_executable());
     assert!(f.is_writable(), "we do need to write to the UART");
-}
-
-#[test]
-fn mair_value_matches_the_slots() {
-    // Slot 0 = 0x00 (Device-nGnRnE), slot 1 = 0xff (Normal WB). The descriptor's AttrIndx
-    // is an index INTO this register. If the two ever disagree, the UART gets mapped as
-    // cacheable normal memory and the machine behaves like it is haunted.
-    assert_eq!((mair::VALUE >> (8 * mair::DEVICE)) & 0xff, 0x00);
-    assert_eq!((mair::VALUE >> (8 * mair::NORMAL)) & 0xff, 0xff);
 }
 
 // --- unmap, and the TLB obligation you cannot forget ---

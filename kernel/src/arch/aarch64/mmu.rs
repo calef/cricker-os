@@ -40,7 +40,13 @@ use aarch64_cpu::registers::{
     ID_AA64MMFR0_EL1, MAIR_EL1, SCTLR_EL1, TCR_EL1, TTBR0_EL1, TTBR1_EL1,
 };
 use core::ffi::c_void;
-use paging::{Flags, Half, MapError, Mapper, PAGE_SIZE, PageTable, mair};
+use paging::aarch64::mair;
+use paging::{Aarch64, Flags, Half, MapError, Mapper, PAGE_SIZE, PageTable};
+
+/// This architecture's page-table format. Portable code that must name the format (the user-VA gate
+/// in syscall.rs, the user `Mapper` in user.rs) refers to it as `arch::mmu::Format`, so the choice
+/// of format lives in `arch/`, not in the portable kernel. See notes/riscv-port.md (leak #2).
+pub type Format = Aarch64;
 use tock_registers::interfaces::{Readable, Writeable};
 
 /// Where the kernel lives, virtually.
@@ -116,7 +122,7 @@ pub fn init() {
     // Half::High: these tables go in TTBR1_EL1. The mapper refuses a low address, which is
     // the check that would have caught a whole class of ghost bugs.
     let mut mapper = unsafe {
-        Mapper::new(
+        Mapper::<_, _, Aarch64>::new(
             root,
             Half::High,
             || memory::alloc().map(|f| f.addr()),
@@ -186,7 +192,7 @@ pub fn init_secondary() {
 
 /// Identity-map everything the kernel needs, each region with the tightest permissions that
 /// still let it work.
-fn map_everything<A, P>(m: &mut Mapper<A, P>) -> Result<(), MapError>
+fn map_everything<A, P>(m: &mut Mapper<A, P, Aarch64>) -> Result<(), MapError>
 where
     A: FnMut() -> Option<u64>,
     P: Fn(u64) -> *mut PageTable,
@@ -265,7 +271,7 @@ pub const VIRTIO_IRQ_BASE: u32 = 48;
 ///
 /// Kernel sections: their VA is what the linker gave them, and the PA is that minus the base.
 fn map_range<A, P>(
-    m: &mut Mapper<A, P>,
+    m: &mut Mapper<A, P, Aarch64>,
     va_start: u64,
     va_end: u64,
     flags: Flags,
@@ -283,7 +289,7 @@ where
 
 /// Map a range of *physical* addresses into the direct map at `pa | KERNEL_VA_BASE`.
 fn direct_map<A, P>(
-    m: &mut Mapper<A, P>,
+    m: &mut Mapper<A, P, Aarch64>,
     pa_start: u64,
     pa_end: u64,
     flags: Flags,
@@ -304,7 +310,7 @@ where
 /// The hardware is about to do exactly this walk, in silicon, for every memory access
 /// forever. Doing it once ourselves, while we can still print, is the difference between a
 /// legible failure and a machine that vanishes.
-fn verify<A, P>(m: &Mapper<A, P>)
+fn verify<A, P>(m: &Mapper<A, P, Aarch64>)
 where
     A: FnMut() -> Option<u64>,
     P: Fn(u64) -> *mut PageTable,
@@ -673,7 +679,7 @@ pub fn map_current_user_page(
 pub fn unmap_user_at(root: u64, va: u64) -> Option<u64> {
     // SAFETY: `root` is a live L0 table built with `Half::Low`; the direct map makes `phys_to_ptr`
     // valid; `unmap` allocates nothing.
-    let mut mapper = unsafe { Mapper::new(root, Half::Low, || None, phys_to_ptr) };
+    let mut mapper = unsafe { Mapper::<_, _, Aarch64>::new(root, Half::Low, || None, phys_to_ptr) };
     let (pa, flush) = mapper.unmap(va).ok()?;
     flush.flush(flush_tlb);
     Some(pa)
@@ -685,7 +691,7 @@ pub fn unmap_user_at(root: u64, va: u64) -> Option<u64> {
 #[allow(dead_code)] // used by the §13 tests
 pub fn translate_at(root: u64, va: u64) -> Option<(u64, Flags)> {
     // SAFETY: `root` is an L0 table; the direct map makes `phys_to_ptr` valid.
-    let mapper = unsafe { Mapper::new(root, Half::Low, || None, phys_to_ptr) };
+    let mapper = unsafe { Mapper::<_, _, Aarch64>::new(root, Half::Low, || None, phys_to_ptr) };
     mapper.translate(va)
 }
 
@@ -706,7 +712,7 @@ pub fn map_current_user_frame(
 
     // SAFETY: `root` is the live low-half table this thread owns; Half::Low refuses a high
     // address; the direct map makes `phys_to_ptr` valid for any page `alloc` returns.
-    let mut mapper = unsafe { Mapper::new(root, Half::Low, alloc, phys_to_ptr) };
+    let mut mapper = unsafe { Mapper::<_, _, Aarch64>::new(root, Half::Low, alloc, phys_to_ptr) };
     mapper.map(va, phys, flags)?;
 
     // The page-table writes must be visible to the table walker before the process touches `va`.
@@ -751,13 +757,16 @@ static KERNEL_MMU: crate::sync::IrqSafeMutex<()> =
 ///
 /// Reads `TTBR1_EL1` back out of the hardware, so this walks what the CPU is actually walking,
 /// not a copy of what we intended. **Call only while holding [`KERNEL_MMU`].**
-fn kernel_mapper() -> Mapper<impl FnMut() -> Option<u64>, fn(u64) -> *mut PageTable> {
+// The concrete Mapper type (an opaque closure plus a fn pointer plus the format) is unavoidably
+// verbose and cannot be a `type` alias without TAIT; the shape is the point, not a problem.
+#[allow(clippy::type_complexity)]
+fn kernel_mapper() -> Mapper<impl FnMut() -> Option<u64>, fn(u64) -> *mut PageTable, Aarch64> {
     let root = TTBR1_EL1.get_baddr();
 
     // SAFETY: TTBR1_EL1 holds the root we installed, and the direct map makes `phys_to_ptr`
     // valid for any frame.
     unsafe {
-        Mapper::new(
+        Mapper::<_, _, Aarch64>::new(
             root,
             Half::High,
             || memory::alloc().map(|f| f.addr()),
@@ -835,7 +844,7 @@ pub fn translate(va: u64) -> Option<(u64, Flags)> {
 
     // SAFETY: TTBR1_EL1 holds the root we installed, and the direct map makes `phys_to_ptr`
     // valid.
-    let mapper = unsafe { Mapper::new(root, Half::High, || None, phys_to_ptr) };
+    let mapper = unsafe { Mapper::<_, _, Aarch64>::new(root, Half::High, || None, phys_to_ptr) };
     mapper.translate(va)
 }
 
@@ -848,7 +857,7 @@ pub fn translate_user(va: u64) -> Option<(u64, Flags)> {
     let root = TTBR0_EL1.get_baddr();
 
     // SAFETY: TTBR0_EL1 holds a root we installed, and the direct map makes `phys_to_ptr` valid.
-    let mapper = unsafe { Mapper::new(root, Half::Low, || None, phys_to_ptr) };
+    let mapper = unsafe { Mapper::<_, _, Aarch64>::new(root, Half::Low, || None, phys_to_ptr) };
     mapper.translate(va)
 }
 
@@ -1083,9 +1092,9 @@ mod tests {
         let (_, flags) =
             mmu::translate(mmu::phys_to_virt(0x0900_0000)).expect("the UART is not mapped");
 
-        // AttrIndx, bits [4:2], must name the MAIR slot that says Device-nGnRnE.
-        let slot = (flags.bits() >> 2) & 0b111;
-        assert_eq!(slot, paging::mair::DEVICE, "the UART is not device memory");
+        // The UART must be device-typed (the aarch64 MAIR-slot encoding is checked in
+        // paging::aarch64; here we assert the portable property the kernel cares about).
+        assert!(flags.is_device(), "the UART is not device memory");
 
         assert!(flags.is_writable(), "we do need to write to it");
         assert!(!flags.is_kernel_executable());

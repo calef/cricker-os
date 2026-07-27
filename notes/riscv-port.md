@@ -43,13 +43,19 @@ The port is worth doing precisely because it finds where the abstraction leaked.
    names no register. RISC-V implements the same two constructors with its own set (`s0`..`s11` + `ra`,
    `a0`/`a1` for args) and `thread.rs` does not change.
 
-2. **The `paging` crate encodes the aarch64 descriptor format.** It looks generic (page-table math)
-   but its `Flags` are aarch64 descriptor bits (`AF`, `SH`, `AP_*`, `PXN`, `UXN`, `NG`, MAIR attr
-   index) and it assumes 4 levels. RISC-V Sv39 is 3 levels (Sv48 is 4) with a different PTE layout
-   (`V R W X U G A D` + PPN, no MAIR, no separate exec-never per privilege). Fix: a RISC-V page-table
-   format. Either a sibling `paging_riscv` module or generalize `paging` behind a trait that both
-   descriptor formats implement. The *arithmetic* (index extraction, the walk) is shared; the *bit
-   layout* is not.
+2. **The `paging` crate encoded the aarch64 descriptor format.** **Closed (the trait option, Chris's
+   call; DECISIONS §17).** `Flags` was aarch64 descriptor bits (`AF`, `SH`, `AP_*`, `PXN`, `UXN`, `NG`,
+   MAIR index) and the walk assumed 4 levels. Now: `Flags` is a format-neutral capability set (same
+   constructor/predicate API), a `PageFormat` trait captures the seam (`LEVELS`, the half split, and
+   is-present / extract-address / encode-table / encode-and-decode-leaf), the `Mapper` walk is written
+   once and generic over `F: PageFormat`, and `Aarch64` (4-level) and `Sv39` (3-level) each implement
+   it. The walk is proved once; each format carries its own Kani proofs of index-in-bounds,
+   address/permission separation, and the half split, so **RISC-V paging inherits the same formal
+   verification aarch64 has**. Base Sv39 has no device-memory PTE bit, so `CAP_DEVICE` rides in an RSW
+   software bit to keep the round-trip exact. Portable code names the running format as
+   `arch::mmu::Format`. aarch64 stayed green throughout (116 kernel tests, 37 paging host tests, both
+   `cargo clippy` passes clean). The Sv39 format is defined and proved; **wiring the RISC-V `mmu.rs` to
+   use it (real kernel tables + `satp` + the high-half) is the remaining MMU-step work.**
 
 3. **`user.rs` embedded the entire userspace-entry mechanism (the headline leak).** **Closed.** This
    was the big one the compile step surfaced, larger and more delicate than the other two because it

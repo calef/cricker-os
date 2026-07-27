@@ -170,7 +170,7 @@ impl AddressSpace {
         // mapping the kernel's half into TTBR0 would build a translation the hardware never
         // consults, and we would chase the ghost for hours.
         let mut mapper = unsafe {
-            Mapper::new(
+            Mapper::<_, _, crate::arch::mmu::Format>::new(
                 root,
                 Half::Low,
                 || crate::untyped::retype_page(region),

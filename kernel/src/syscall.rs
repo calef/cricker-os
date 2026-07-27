@@ -205,7 +205,7 @@ fn invoke(
                     return Err(Error::NotPermitted);
                 }
                 let va = a0;
-                if !paging::is_user_page_va(va) {
+                if !paging::is_user_page_va::<crate::arch::mmu::Format>(va) {
                     return Err(Error::BadPointer);
                 }
                 let frame = sched::current_cap(a1).map_err(|_| Error::NoSuchSlot)?;
@@ -329,7 +329,7 @@ fn invoke(
                 // one page, which is process-local and bounded by the untyped. The gate itself is
                 // proved: every address it admits is aligned and in the low half (see
                 // `paging::is_user_page_va` and its harness).
-                if !paging::is_user_page_va(va) {
+                if !paging::is_user_page_va::<crate::arch::mmu::Format>(va) {
                     return Err(Error::BadPointer);
                 }
                 match mmu::map_current_user_page(va, paging::Flags::user_data(), || {
@@ -441,7 +441,7 @@ fn invoke(
             abi::frame::MAP => {
                 // a0 = va, a1 = writable (0/1), a2 = an untyped slot the page tables come from.
                 let va = a0;
-                if !paging::is_user_page_va(va) {
+                if !paging::is_user_page_va::<crate::arch::mmu::Format>(va) {
                     return Err(Error::BadPointer);
                 }
                 // A read/write mapping needs WRITE on the frame; a read-only one needs READ. This

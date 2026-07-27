@@ -1022,6 +1022,46 @@ hot path does not regress. The EL0 `lat_proc` spawn benchmark also landed (notes
 cricker-os builds a process faster than Linux or macOS, with the honest caveat that a
 capability-microkernel process is a lighter object than a Unix one.
 
+## 17. The second architecture: RISC-V, and the page-table format trait
+
+The port to RISC-V (rv64, QEMU `virt`) is the first real test of rule #1 ("all architecture-specific
+code lives under `arch/`"), an assumption held on faith since milestone 1. RISC-V over x86_64 because
+it is clean-different rather than legacy-different: it exercises the HAL abstraction (a different
+trap, paging, interrupt, and firmware model) without the real-mode / GDT / IDT / APIC / UEFI tax.
+x86_64 is the third port. Full plan and findings: notes/riscv-port.md.
+
+The port found the `arch/` boundary was **almost** complete, and each leak it exposed was pushed under
+`arch/`, not bodged around:
+
+- **`thread::Context`** was aarch64-register-shaped in portable code. Now arch-owned, behind
+  intent-named constructors (`Context::for_kernel_thread`, `for_user_thread`); `thread.rs` names no
+  register.
+- **The userspace-entry path** (the EL0/U-mode trap frame, the enter-userspace glue, cache
+  coherence) lived in `user.rs`. Now `TrapFrame::for_user_entry`, `arch::enter_user`,
+  `arch::sync_icache`, `arch::current_sp` seams; the hand-written aarch64 demo programs are gated to
+  aarch64 (RISC-V reaches U-mode through the ELF loader).
+- **The `paging` crate** encoded the aarch64 descriptor format outright.
+
+**Decision on `paging` (the significant one, Chris steered it):** generalize behind a `PageFormat`
+trait rather than duplicate the walk or write a separate RISC-V pager. `Flags` became a
+format-neutral capability set (write / user / user-exec / kernel-exec / global / device) with the
+same constructor and predicate API; the `Mapper` walk (`map`/`unmap`/`translate`) is written once and
+generic over `F: PageFormat`; each format (`Aarch64`, `Sv39`) supplies only `LEVELS`, the half split,
+and the handful of encode/decode operations. **The walk is proved once and the encoding proved per
+format:** the aarch64 and Sv39 modules each carry Kani proofs of index-in-bounds, address/permission
+separation, and the half split, and the shared walk inherits both. The alternatives (a duplicated
+sibling module, or a fresh un-verified RISC-V pager) were rejected because only the trait gives RISC-V
+paging the same formal verification aarch64 has, which is the demonstrator's whole point. The cost was
+real (it touched a verified crate and every `Flags` consumer) but landed with aarch64 fully green.
+Base Sv39 has no device-memory PTE bit, so `CAP_DEVICE` rides in an RSW (software) bit to keep the
+`Flags` round-trip exact; real hardware would use Svpbmt. Portable code that must name the format (the
+user-VA gate, the user `Mapper`) refers to `arch::mmu::Format`, so the choice lives in `arch/`.
+
+RISC-V boots and prints today (S-mode entry, `.bss`, the `tp` per-CPU register, an NS16550 console,
+the OpenSBI device-tree handoff). The MMU (Sv39 tables + `satp`), traps (`stvec` + the syscall-ABI
+reconciliation), timer, and interrupt controller (PLIC, resolving the last leak: portable code still
+names `drivers::gic`) are the remaining work.
+
 ## Reading
 
 - **The seL4 manual**, and Klein et al., *seL4: Formal Verification of an OS Kernel* (SOSP'09)

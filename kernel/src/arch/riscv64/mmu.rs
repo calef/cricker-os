@@ -9,7 +9,11 @@
 //! Until then the kernel runs bare (`satp = 0`, virtual == physical), so [`KERNEL_VA_BASE`] is 0 and
 //! [`phys_to_virt`]/[`virt_to_phys`] are the identity. The boot and console steps need nothing more.
 
-use paging::{Flags, MapError, PageTable};
+use paging::{Flags, MapError, PageTable, Sv39};
+
+/// This architecture's page-table format. Portable code names it as `arch::mmu::Format` (see the
+/// aarch64 module's alias for why), so the user-VA gate and the user `Mapper` land on Sv39 here.
+pub type Format = Sv39;
 
 /// The base of the kernel's virtual address space. **Zero for now:** the kernel runs in bare mode
 /// through boot and console, so a kernel virtual address *is* its physical address. The Sv39 step
