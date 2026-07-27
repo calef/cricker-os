@@ -223,6 +223,10 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [Scoping RISC-V / aarch64 parity](riscv-parity-scope.md) — aarch64 is a strict superset once the
   port proved the capability core; this scopes the remaining gap (SMP, an in-kernel test run,
   virtio+DMA, the full boot/shell, benchmarks), what each proves, and the order to close them.
+- [Scoping a PCIe transport](pcie-transport-scope.md) — a PCI root complex (ECAM enumeration, BARs,
+  virtio-pci capability parsing, INTx via the PLIC) so a virtio disk can be driven over PCIe, the
+  transport QEMU's riscv `virt` and real hardware use. Portable (both boards are ECAM-generic); the
+  virtqueue/DMA-confinement machinery is reused. Unblocks parity C.
 
 ## Build
 
