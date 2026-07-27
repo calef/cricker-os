@@ -43,6 +43,8 @@ IPC and the MMU invariants are next. This threads through the list rather than b
 | 28 | A solid terminal: the line discipline as a component | Line editing, history, ANSI in/out, control characters, and a written terminal contract, as a **swappable userspace component** between the input/console drivers and applications; Ctrl-C as a capability-routed interrupt to the foreground process, not a Unix signal | a terminal with real behavior is a far better "instance one" for milestone 23's live component replacement than the raw echo loop, and 27's stdio semantics need a terminal that has semantics. Serial, deliberately; the display terminal is 29, and they must not be confused |
 | 29 | A display terminal (framebuffer, virtio-gpu) | An on-device terminal: a userspace virtio-gpu driver (arriving over **PCIe**, which the §18 transport just made reachable), a framebuffer component, font rendering, and a VT state engine maintaining the grid; input from a virtio keyboard | the first pixels the demonstrator ever puts on a screen, and the strongest form of the milestone-23 claim if the VT engine is **libghostty-vt** (zero-dependency, no-libc, no-alloc, C ABI, Zig): a vendor component in a foreign language, capability-confined and hot-swappable. Optional; well off the thesis path |
 | 30 | The network stack as a confined component | A userspace **virtio-net** driver behind the DMA confinement (extended to multi-queue: RX means the device writes INTO driver memory), and the TCP/IP stack itself (`smoltcp`) as a swappable userspace component with a capability-shaped socket contract; backs `std::net` for 27 | **the canonical microkernel component**, the one people ask about first when a minimal kernel claims to stand next to Linux; and milestone 23's most convincing instance, hot-swapping a network stack under open connections. The reuse call is the plan's easiest: the thesis is the kernel confining the stack, not the stack |
+| 31 | A capability shell: designation is authorization | The command line becomes a **grant expression**: naming a resource in a command IS the capability grant (`run wc report.txt` passes one readable file cap; `run wc` alone can read nothing, and the refusal is "no such capability", not EPERM); untyped budgets as first-class grants; a SHILL-style manifest per program checked at spawn; a `caps` command printing a process's whole endowment | **no-ambient-authority made user-visible**: the inversion of Unix's model at the one interface a human touches. Milestone 23's component contract in embryo, met first at the shell |
+| 32 | A real filesystem: RedoxFS behind a capability FS server | A write-capable block path, an FS-server **component** whose handles are capabilities from birth (open-by-path exists only INSIDE the server, relative to a granted directory cap), and **RedoxFS** as the on-disk engine, ported behind its own `Disk` trait over blk IPC | the flagship **userspace-reuse** story the prior-art note predicted: a real CoW filesystem we did not write, running confined; and the thing 31's per-file grants point at |
 | 25 | Cross-OS performance comparison (extends 21) | EL0-measured primitive benchmarks (syscall, context switch, IPC, map, spawn) the lmbench way, so the numbers include the trap the kernel-side benchmarks skip; then line them up against lmbench (Linux, macOS guests) and `sel4bench` (seL4), at a matched virtualization tier, with release builds. Fold in the icount codegen-sensitivity fix. | **turns perf claims into cross-OS numbers**: where does a Rust capability microkernel stand next to Linux, macOS's XNU, and seL4 on the primitives that define an OS. **Largely done**: four EL0 primitives (null syscall, context switch, IPC, page map) on both instruments, a release build path, and the three-way comparison (cricker-os vs Linux-under-HVF vs native macOS) with cricker-os winning null/IPC ~5x. `spawn` landed too (its real prerequisite was never retype, which had already shipped, but **object revocation**, reclaiming a child's TCB/aspace/endpoint so a spawn loop can repeat; that shipped as its own milestone, notes/object-revocation.md, and the EL0 `lat_proc` bench, `spawn_el0`, is in the suite and the committed baseline). **Remaining**: only `sel4bench` (built and booting for qemu-arm-virt, but it times single ops via the PMU cycle counter, which neither QEMU-TCG nor Apple HVF provides, so it is **deferred to real hardware**, the milestone-16 machine, which has a real PMU; this validates our CNTVCT + long-loop design). notes/benchmarks.md |
 | 22 | Trusted init: verify it, and shrink what a broken one can do | Measured/secure boot that checks init before running it; reduce init's authority so a compromise is bounded | **closes the thesis's own soft spot:** init is the privileged *unverified* component the whole system is built by |
 | 23 | A capability-routed component OS with live replacement | Every userspace component (driver, server, app) is a swappable, vendor-shippable unit behind a stable contract; operators replace them live, no reboot. The console hot-swap is instance one; a durable queue-broker decouples component lifecycles (opt-in per channel, for latency) | **the flagship payoff and a product ambition:** competing vendor components, confined by the kernel and swapped live; the verified core is the one fixed thing |
@@ -621,6 +623,62 @@ file). Testing is cheap: QEMU's user-mode networking NATs the guest with zero ho
 
 **Sequencing.** After the PCIe transport (done); the multi-queue confinement is the
 prerequisite piece and worth building first as its own tested step. Feeds 23 and 27. Effort L.
+
+### 31. A capability shell: designation is authorization
+
+**Deliverable.** Invert Unix's authority model at the command line. A Unix child inherits your
+entire authority; a cricker-os command line is a **grant expression**: every argument that
+designates a resource passes a narrowed capability, and nothing else flows. `run wc report.txt`
+grants exactly one readable file capability, because typing the name IS the grant (Miller's
+principle: designation is authorization); `run wc` alone spawns a process that can read
+nothing, and the failure is "you hold no such capability", legible, not EPERM. Untyped budgets
+become first-class grants (`run --mem 16 prog`), the most cricker-os-native piece of the
+inversion, with no Unix analog. From SHILL, adapted: a small **manifest** per program declaring
+its expected endowment (one readable file, one endpoint, N pages), checked at spawn, so a
+mismatch is a refusal at the prompt rather than a mystery hang; this is milestone 23's
+component contract in embryo. Introspection is a feature: a `caps` command prints a process's
+complete endowment, making §14's "reading one literal tells you a process's whole authority"
+interactively true.
+
+**Scoping constraint, honest.** File capabilities need something to point at; phase one grants
+what exists (program spawns, endpoints, frames, untyped, device caps), and per-file grants
+arrive with milestone 32's FS server, whose handles must be capability-shaped from birth partly
+BECAUSE this milestone will point at them.
+
+**Prior art and reuse.** Designs only; nothing portable. SHILL (OSDI 2014: capability
+contracts for scripts, on Capsicum) is the academic anchor; Mark Miller's object-capability
+line (E, CapDesk, Polaris) supplies the organizing principle; Plash is the Linux attempt worth
+reading as the mistake catalog. Feeds 23 and 22 (shrinking ambient authority, met at the human
+layer); sits behind 28's terminal contract. Effort M.
+
+### 32. A real filesystem: RedoxFS behind a capability FS server
+
+**Deliverable.** Three pieces. A **write-capable block path** (the driver and the confinement
+validator already speak both directions; the write verbs and tests are the new work). An
+**FS-server component** whose contract is capability-shaped from birth: a file handle is a
+capability; open-by-path exists only inside the server, resolved relative to a *granted
+directory capability*, so designation keeps flowing the 31 way and no global namespace ever
+appears. And **RedoxFS as the on-disk engine**: port the `redoxfs` core behind its own `Disk`
+trait, implemented over blk IPC.
+
+**Why RedoxFS.** The prior-art survey named it the best single candidate the day the reuse
+rule was written: a real CoW, transactional filesystem in Rust, MIT-licensed, shipping daily in
+Redox, and only loosely coupled to Redox's syscalls precisely because it also runs on
+Linux/FUSE, which is itself a gift (images can be created and inspected on the host with the
+same code that serves them on cricker-os). It is the flagship form of the userspace-reuse
+thesis: the kernel confining a serious component we did not write.
+
+**Risks, stated now.** (1) The core's std/alloc footprint needs auditing before the port is
+costed; the FUSE half is std and stays on the host, but the engine must run against our
+userspace runtime (encryption features off in phase one). (2) The write path is new on our
+side, driver through validator through tests, and errors there eat filesystems; the CoW design
+is forgiving, but the tests must include kill-mid-write. (3) Upstream coupling: pin a version,
+carry patches, and record divergence, the same discipline as any vendored engine.
+
+**Prior art and reuse.** RedoxFS is the reuse. Alternatives on the record: FAT (host interop
+and simplicity, no integrity story), littlefs (proven, C, wrong-language FFI for less gain
+than ghostty-vt would buy). Feeds 31 (per-file grants), 23 (a component with real state to
+hand off across a live swap, the hardest handoff case yet named), 27 (`std::fs`). Effort L.
 
 ## The rival worth understanding, not building
 

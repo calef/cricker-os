@@ -215,6 +215,8 @@ around verification and real workloads:
 | 28 | A solid terminal: the line discipline as a component | ahead (feeds 23, 27) |
 | 29 | A display terminal (framebuffer, virtio-gpu, libghostty-vt) | optional |
 | 30 | The network stack as a confined component (virtio-net, smoltcp) | ahead (feeds 23, 27) |
+| 31 | A capability shell: designation is authorization (SHILL-inspired) | ahead (feeds 22, 23) |
+| 32 | A real filesystem: RedoxFS behind a capability FS server | ahead (feeds 23, 27, 31) |
 
 Also built along the way, outside the numbering: a four-part adversarial security audit,
 per-process spawn quotas, kernel-mediated DMA confinement (QEMU `virt` has no IOMMU),

@@ -43,7 +43,7 @@ of fragments. Their userspace is where the portable assets live:
 
 | Component | Fit | When |
 |---|---|---|
-| **RedoxFS** (`redoxfs` crate) | Best single candidate. A real CoW filesystem that also compiles for Linux/FUSE, so it is only loosely coupled to Redox syscalls. If a persistent read-write FS server ever earns a milestone (crickerfs is an archive format, not that), porting redoxfs behind a capability-confined server beats writing one. | Post-19 |
+| **RedoxFS** (`redoxfs` crate) | Best single candidate, and now **named in milestone 32**: the on-disk engine behind a capability FS server, ported via its `Disk` trait over blk IPC. | Milestone 32 |
 | **relibc** | Long shot; the only credible one if 19's "Linux-compat later" fork is taken. It has a platform layer targeting Linux and Redox; a third backend against our native ABI (notes/abi.md) is conceivable. The catch: it assumes fork/exec-ish process semantics that explicit-endowment `Spawn` deliberately does not provide. Note it, do not plan on it. | 19 compat fork, if taken |
 | **Userspace drivers** (NVMe, e1000, xHCI, ps2) | Reference implementations, not code. Written against Redox's scheme and IRQ model, but the register-level logic is the hard-won part and it reads well. | 16, 24 (real hardware) |
 | **ion, Orbital, pkgutils** | No. ion needs POSIX and we have a shell; the rest is out of scope. | never |
@@ -68,6 +68,9 @@ else's kernel:
   component composition, CapDL for trusted init in milestone 22). Code reuse is nil (C,
   and their proofs are theirs), but every capability-model fork should check what seL4 did
   first. Already the habit; see the roadmap's Prior-art sections.
+- **SHILL / Plash / Polaris** (capability shells). Designs only, nothing portable: SHILL
+  (OSDI 2014) for per-script capability contracts, Miller's E/CapDesk/Polaris for designation-
+  is-authorization, Plash as the Linux mistake catalog. Named in milestone 31.
 - **smoltcp**. The no_std TCP/IP stack, kernel-agnostic and event-driven, proven across
   embedded Rust (Redox has shipped on it). Named in milestone 30 as the plan's easiest reuse
   call: the thesis is the kernel confining the network stack, never the stack itself.
