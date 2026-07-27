@@ -221,9 +221,13 @@ const SPAWN_SCRATCH_VA: u64 = 0x0100_0000; // where we map the shared code frame
 const SPAWN_PAGE: u64 = 4096;
 
 /// The child's whole program, hand-assembled: `SEND(slot 0, endpoint::SEND, 1)` then `SYS_EXIT`.
-/// Its slot 0 is the `CHILD_DONE` endpoint the spawner inserts. Nine instructions, the same stub the
-/// kernel-side spawn tests use. Every child runs this identical code, which is why the spawner writes
-/// it into one shared frame and aliases that frame into each child rather than filling a fresh one.
+/// Its slot 0 is the `CHILD_DONE` endpoint the spawner inserts. Nine instructions: `SEND` the done
+/// word (1) on the slot-0 endpoint, then `EXIT`. Every child runs this identical code, which is why
+/// the spawner writes it into one shared frame and aliases that frame into each child. Hand-assembled
+/// machine code, arch-gated: aarch64 `movz`/`svc`, RISC-V `li`/`ecall`.
+///
+/// aarch64: x0=slot 0, x1=SEND, x2=1, x8=SYS_INVOKE, svc; then x8=SYS_EXIT, svc.
+#[cfg(target_arch = "aarch64")]
 const CHILD_STUB: [u32; 9] = [
     0xD280_0000,
     0xD280_0001,
@@ -234,6 +238,21 @@ const CHILD_STUB: [u32; 9] = [
     0xD400_0001,
     0xD280_0008,
     0xD400_0001,
+];
+
+/// RISC-V: a0=slot 0, a1=SEND, a2=1, a3=a4=0, a7=SYS_INVOKE, ecall; then a7=SYS_EXIT, ecall.
+/// Each `li aN, imm` is `addi aN, x0, imm` = `(imm << 20) | (reg << 7) | 0x13`; `ecall` is 0x73.
+#[cfg(target_arch = "riscv64")]
+const CHILD_STUB: [u32; 9] = [
+    0x0000_0513,                                        // li a0, 0            (slot 0)
+    0x0000_0593 | ((abi::endpoint::SEND as u32) << 20), // li a1, SEND         (method)
+    0x0010_0613,                                        // li a2, 1            (the done word)
+    0x0000_0693,                                        // li a3, 0
+    0x0000_0713,                                        // li a4, 0
+    0x0000_0893 | ((abi::SYS_INVOKE as u32) << 20),     // li a7, SYS_INVOKE
+    0x0000_0073,                                        // ecall               (SEND)
+    0x0000_0893 | ((abi::SYS_EXIT as u32) << 20),       // li a7, SYS_EXIT
+    0x0000_0073,                                        // ecall               (EXIT)
 ];
 
 /// **Spawn latency, measured from EL0 (the primitive suite).** lmbench's `lat_proc`: the cost to
@@ -341,11 +360,12 @@ fn spawn_one(code_frame: u64) {
     cap_delete(child_ut);
 }
 
-/// One null syscall: `svc` with an unrecognized number. The kernel returns an error in `x0`, which
-/// we discard; we are timing the crossing, not the result.
+/// One null syscall: a trap with an unrecognized number. The kernel returns an error, which we
+/// discard; we are timing the crossing, not the result. aarch64 `svc` + `x8`, RISC-V `ecall` + `a7`.
 #[inline(never)]
 fn null_syscall() {
-    // SAFETY: `svc` traps to EL1; an unknown number is rejected with an error and no side effect.
+    // SAFETY: the trap is rejected (unknown number) with an error and no side effect.
+    #[cfg(target_arch = "aarch64")]
     unsafe {
         core::arch::asm!(
             "svc #0",
@@ -354,11 +374,27 @@ fn null_syscall() {
             options(nostack, nomem),
         );
     }
+    #[cfg(target_arch = "riscv64")]
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            in("a7") 0xFFFFu64,
+            lateout("a0") _,
+            options(nostack, nomem),
+        );
+    }
 }
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
-    unsafe { core::arch::asm!("brk #0", options(nostack, nomem)) };
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("brk #0", options(nostack, nomem))
+    };
+    #[cfg(target_arch = "riscv64")]
+    unsafe {
+        core::arch::asm!("ebreak", options(nostack, nomem))
+    };
     loop {
         core::hint::spin_loop();
     }

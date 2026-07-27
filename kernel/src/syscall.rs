@@ -262,7 +262,23 @@ fn invoke(
                     _ => return Err(Error::WrongObject),
                 };
                 match crate::user::user_aspace_map(name, va, phys, flags) {
-                    Ok(()) => Ok(0),
+                    Ok(()) => {
+                        // When userspace maps a frame it wrote executable (a spawner building a
+                        // child's code, MAP_CODE), the instruction fetcher must be made to see the
+                        // bytes the writer stored: RISC-V's `fence.i`, aarch64's dcache-clean +
+                        // icache-invalidate, both behind `sync_icache`. The kernel-side ELF loader
+                        // does this (user.rs map_segments); this is the userspace-built path, which
+                        // a fast spawn+reap loop (bench::spawn_el0) is the first thing to stress. A
+                        // child that fetches unsynced code takes an illegal-instruction fault at its
+                        // entry.
+                        if flags.is_user_executable() {
+                            crate::arch::sync_icache(
+                                crate::arch::mmu::phys_to_virt(phys),
+                                paging::PAGE_SIZE as usize,
+                            );
+                        }
+                        Ok(0)
+                    }
                     Err(paging::MapError::OutOfFrames) => Err(Error::OutOfMemory),
                     Err(_) => Err(Error::BadPointer), // misaligned, already mapped, unknown space
                 }

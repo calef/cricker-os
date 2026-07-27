@@ -180,6 +180,10 @@ fn initrd_riscv() -> bool {
             "worker",
             "--bin",
             "driver",
+            "--bin",
+            "elbench",
+            "--bin",
+            "coremark",
             "--target",
             RISCV_TARGET,
         ],
@@ -214,10 +218,31 @@ fn initrd_riscv() -> bool {
             return false;
         }
     };
+    let elbench = match std::fs::read(bin("elbench")) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("initrd-riscv: cannot read {}: {e}", bin("elbench"));
+            return false;
+        }
+    };
+    let coremark = match std::fs::read(bin("coremark")) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("initrd-riscv: cannot read {}: {e}", bin("coremark"));
+            return false;
+        }
+    };
 
     // `builder` is the first program the kernel loads, so it takes the archive's `init` entry;
-    // `worker` is the one `builder` loads by name; `driver` is the userspace UART interrupt driver.
-    let files: [(&str, &[u8]); 3] = [("init", &builder), ("worker", &worker), ("driver", &driver)];
+    // `worker` is the one `builder` loads by name; `driver` is the userspace UART interrupt driver;
+    // `elbench` and `coremark` are the benchmark workloads (loaded by name in the bench boot).
+    let files: [(&str, &[u8]); 5] = [
+        ("init", &builder),
+        ("worker", &worker),
+        ("driver", &driver),
+        ("elbench", &elbench),
+        ("coremark", &coremark),
+    ];
     let size = crickerfs::image_size(&files);
     let mut img = std::vec![0u8; size];
     if crickerfs::write_image(&files, &mut img).is_err() {

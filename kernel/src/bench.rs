@@ -30,9 +30,7 @@
 
 use crate::println;
 use crate::sched;
-use aarch64_cpu::registers::{CNTFRQ_EL0, CNTVCT_EL0};
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use tock_registers::interfaces::Readable;
 
 /// Iterations per benchmark. Fixed and part of the output, so a baseline is self-describing.
 const YIELD_ITERS: u64 = 2000;
@@ -46,16 +44,18 @@ const COREMARK_ITERS: u64 = 256;
 const WARMUP: u64 = 32;
 
 fn timed(name: &str, iters: u64, f: impl FnOnce()) {
-    let t0 = CNTVCT_EL0.get();
+    // The monotonic counter, through the arch abstraction: CNTVCT_EL0 on aarch64, `rdtime` on
+    // RISC-V. `frequency()` (printed by `run` as `cntfrq`) turns ticks into seconds.
+    let t0 = crate::arch::timer::now();
     f();
-    let t1 = CNTVCT_EL0.get();
+    let t1 = crate::arch::timer::now();
     println!("bench: {name} {} {iters}", t1 - t0);
 }
 
 /// Run every benchmark and halt. Never returns, never semihosts (see the module doc).
 pub fn run() -> ! {
     println!();
-    println!("bench: cntfrq {}", CNTFRQ_EL0.get());
+    println!("bench: cntfrq {}", crate::arch::timer::frequency());
 
     yield_switch();
     ipc_rtt();

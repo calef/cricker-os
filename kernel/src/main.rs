@@ -165,6 +165,12 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         arch::irq::init_this_cpu();
         smp::bring_up_secondaries();
 
+        // A bench build runs the primitive suite here and parks, instead of the tour. It needs the
+        // `elbench` and `coremark` programs in the initrd (cargo xtask initrd-riscv packs them). The
+        // RISC-V equivalent of the aarch64 boot's `#[cfg(feature = "bench")] bench::run()`.
+        #[cfg(feature = "bench")]
+        bench::run();
+
         // A test build runs the kernel suite right here and exits via semihosting, instead of the
         // demonstration tour below. Everything the tests need is now up: memory and the frame
         // allocator, the Sv39 paging, the scheduler and its idle thread, the timer, interrupts, and
