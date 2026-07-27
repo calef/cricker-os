@@ -497,8 +497,9 @@ workloads" is committed). What remains open:
 
 **Deliverable.** A custom rustc target (`aarch64-unknown-cricker` / `riscv64-unknown-cricker`,
 `-Zbuild-std` against a target spec first, a real target later if ever warranted) whose `std`
-compiles and links against the capability ABI (notes/abi.md). Concretely: implement std's `sys`
-platform layer over what a process already has. Allocation draws from the process's own untyped
+compiles and links against the capability ABI (notes/abi.md). Concretely: implement std's
+Platform Abstraction Layer (PAL, `library/std/src/sys/pal/*`), a **native** cricker-os backend
+over what a process already has, not a libc shim under the Unix one. Allocation draws from the process's own untyped
 (the `user_rt` heap growing into a real `GlobalAlloc`); `stdout`/`stderr` SEND to the console
 endpoint by slot convention; `Instant`/`SystemTime` read the virtual counter; `panic!` aborts (a
 fault the kernel reports) before unwinding is ever attempted; `thread::spawn` retypes a TCB, or
