@@ -1030,6 +1030,43 @@ pub fn riscv_capability_demo() -> u64 {
     crate::sched::ipc_recv(report)[0]
 }
 
+/// **Load and run a real compiled ELF at U-mode on RISC-V** (milestone 20, the user-ELF step).
+///
+/// Unlike [`riscv_capability_demo`], which copies a hand-written machine-code blob, this takes the
+/// bytes of the `worker` program (a Rust binary compiled to a riscv64 ELF, delivered as the initrd)
+/// and runs them through the kernel's *real* ELF loader. [`load`] parses the file, builds an address
+/// space with each `PT_LOAD` segment mapped W^X at the VA it names, and maps a stack; nothing here is
+/// riscv-specific except that the loader was just taught to accept `EM_RISCV`. The worker is granted
+/// WRITE on one endpoint as its slot 0, started with the input `n` in its second argument register
+/// (`a1`), squares it, and SENDs the answer home.
+///
+/// Receiving `n*n` proves the whole ELF path works on RISC-V: parse, segment mapping with correct
+/// permissions, the entry point, argument passing across the `START` boundary, and the endpoint
+/// SEND, all from a program the kernel did not hand-write. `load` is arch-neutral; this is the same
+/// code aarch64 runs, now on the RISC-V address space and trap path.
+#[cfg(target_arch = "riscv64")]
+pub fn riscv_worker_demo(worker: &[u8], n: u64) -> Result<u64, LoadError> {
+    // The kernel's real loader: parse, build the address space, map the W^X segments and a stack.
+    let (space, entry) = load(worker)?;
+    // `load` returns an owned AddressSpace; the TCB path binds one by registry name, so register it.
+    let aspace_name = readopt_user_aspace(space).expect("register the loaded aspace");
+
+    // The worker's one authority: WRITE on a report endpoint, which it will hold as slot 0.
+    let result = crate::sched::create_endpoint();
+    let result_cap = crate::cap::endpoint_cap(result, crate::cap::Rights::WRITE);
+
+    // Build the thread from parts: a TCB, the cap in slot 0, configure at the ELF's entry, start.
+    let tcb_region = crate::untyped::create(2).expect("no tcb region");
+    let tid = crate::sched::create_tcb(tcb_region).expect("no tcb");
+    let slot = crate::sched::tcb_insert_cap(tid, result_cap).expect("cap insert");
+    assert_eq!(slot, 0, "the worker's report cap must land in slot 0");
+    crate::sched::configure_tcb(tid, entry, USER_STACK_TOP, aspace_name).expect("configure");
+    // The worker reads its input from a1 (the second argument); a0 and a2 are unused.
+    crate::sched::start_tcb(tid, [0, n, 0]).expect("start");
+
+    Ok(crate::sched::ipc_recv(result)[0])
+}
+
 /// Bringing the console driver up in userspace, and wiring a client to it.
 ///
 /// **This is the milestone-8 payload.** It creates the shared machinery (two endpoints and a

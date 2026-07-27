@@ -237,6 +237,26 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
             );
         }
 
+        // A real compiled ELF at U-mode. Every user program so far was a hand-written machine-code
+        // blob; this one is the `worker` binary (Rust, compiled to a riscv64 ELF) delivered as the
+        // initrd, run through the kernel's real ELF loader: parse, map each segment W^X at the VA it
+        // names, map a stack, start at the entry with an argument. The worker squares its input and
+        // SENDs the answer on the one endpoint it was granted. Receiving n*n proves the whole ELF
+        // path (parse, segment mapping, entry, argument passing, endpoint SEND) works on RISC-V.
+        if let Some(worker) = user::initrd() {
+            const N: u64 = 7;
+            match user::riscv_worker_demo(worker, N) {
+                Ok(sq) => println!(
+                    "  user ELF    : loaded a {}-byte riscv ELF, ran worker({N}) at U-mode, it sent {sq} (expected {})",
+                    worker.len(),
+                    N * N,
+                ),
+                Err(e) => println!("  user ELF    : load failed: {e:?}"),
+            }
+        } else {
+            println!("  user ELF    : skipped (no -initrd passed to QEMU)");
+        }
+
         // Preemption: the property that separates a kernel from a runtime. Spawn two threads whose
         // entire body is a tight loop, no yield, no syscall, not even a function call. Under any
         // cooperative scheduler the first one owns the CPU forever. The S-mode timer fires every

@@ -21,6 +21,15 @@ shift
 # `virt` machine at 0x1000_0000; `-serial stdio` wires it to this terminal.
 SMP="${CRICKER_SMP:-1}"
 
+# The userspace program rides in as an initrd, exactly as on aarch64: QEMU loads the file into RAM
+# and writes its address into /chosen/linux,initrd-start in the device tree, where memory::init reads
+# it. Set CRICKER_INITRD to a riscv64 user ELF (or a crickerfs archive) to hand it to the kernel; the
+# milestone-20 boot loads and runs it at U-mode. Unset, the kernel prints "no -initrd" and moves on.
+INITRD=""
+if [ -n "$CRICKER_INITRD" ]; then
+    INITRD="-initrd $CRICKER_INITRD"
+fi
+
 exec qemu-system-riscv64 \
     -machine virt \
     -cpu rv64 \
@@ -30,4 +39,5 @@ exec qemu-system-riscv64 \
     -display none \
     -serial stdio \
     -kernel "$ELF" \
+    $INITRD \
     "$@"

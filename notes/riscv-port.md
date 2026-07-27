@@ -210,8 +210,23 @@ Finding these is the point; each gets pushed under `arch/`.
    saved a full frame for whichever the timer interrupted, and `schedule()` returns through
    `trap_return` to exactly the instruction it left.
 
-   **Remaining:** a real user ELF (needs a RISC-V init binary in the build), plus the PLIC (leak:
-   `drivers::gic`), for device interrupts.
+   **A real compiled ELF runs at U-mode too.** Every user program above is a hand-written
+   machine-code blob; the `worker` program is a Rust binary compiled to a riscv64 ELF, delivered as
+   the initrd (QEMU `-initrd`, read from `/chosen/linux,initrd-start` the same way Linux gets its
+   initramfs), and run through the kernel's *real* ELF loader: `user::load` parses the file, builds an
+   address space with each `PT_LOAD` segment mapped W^X at the VA it names, and maps a stack. The
+   worker is granted WRITE on one endpoint (slot 0), started with an input in `a1`, squares it, and
+   SENDs the answer home: "loaded a 13568-byte riscv ELF, ran worker(7) at U-mode, it sent 49". Three
+   small pieces made this work, each closing an aarch64 assumption: `user_rt` (the userspace syscall
+   runtime) grew a RISC-V ABI (`ecall`+`a7` beside `svc`+`x8`); the `elf` crate accepts the running
+   kernel's machine (`EXPECTED_MACHINE`, cfg-selected, symmetric: each kernel refuses the other's
+   ELF); and `worker.rs` arch-gated its one trap instruction (`ebreak` vs `brk`). The loader itself
+   (`load`, `map_segments`) was already arch-neutral and needed no change. This is the first RISC-V
+   userspace program the kernel did not hand-write.
+
+   **Remaining:** the PLIC (leak: `drivers::gic`), for device interrupts; and, if wanted, a richer
+   initrd (a crickerfs archive with an `init` that loads others by name, as aarch64 has) rather than
+   the single-ELF initrd the worker demo uses.
 
 The reward beyond the proof: when a real RISC-V board (a ~$70 StarFive VisionFive 2 / Milk-V Mars, or a
 rented Graviton later) is on hand, the QEMU-virt work transfers, because real boards use the same

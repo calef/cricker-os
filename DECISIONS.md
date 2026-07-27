@@ -1062,15 +1062,21 @@ per-CPU register, an NS16550 console, the OpenSBI device-tree handoff), the MMU 
 Sv39 tables + `satp`, the single-`satp` process model where every root carries the kernel high half),
 traps (`stvec`, the `sscratch` dance, the syscall-ABI reconciliation), the SBI timer, the scheduler
 and context switch, U-mode user programs making syscalls, a capability invocation (`SYS_INVOKE` →
-lookup → rights check → endpoint SEND) from U-mode, and **preemption** (the timer preempts a thread
-that never yields, DECISIONS §5). The port surfaced two RISC-V-specific bugs worth recording: `tp` is
+lookup → rights check → endpoint SEND) from U-mode, **preemption** (the timer preempts a thread that
+never yields, DECISIONS §5), and **a real compiled ELF at U-mode** (the `worker` Rust binary,
+delivered as the initrd and run through the kernel's arch-neutral ELF loader, squares an input and
+SENDs it home). The ELF step needed three small aarch64 assumptions closed: `user_rt` grew a RISC-V
+syscall ABI (`ecall`+`a7`), the `elf` crate accepts the running kernel's machine (a symmetric,
+cfg-selected `EXPECTED_MACHINE`, so each kernel refuses the other's binaries), and one trap
+instruction in the program was arch-gated; the loader itself was already portable. The port surfaced two RISC-V-specific bugs worth recording: `tp` is
 a general register, not a system register, so a U-mode trap must restore the kernel `tp` from a known
 source rather than trust it (notes/riscv-port.md); and the shallow TCB entry path let a trap frame
 placed at the top of the kernel stack overlap `enter_frame`'s own frame, fixed by placing the frame
-below the live `sp`. **Remaining:** a real user ELF (a RISC-V init binary in the build) and the PLIC,
-which resolves the last leak (portable code still names `drivers::gic` for the interrupt controller);
-the PLIC waits until RISC-V has a device interrupt to field, so the abstraction lands with a real
-second consumer rather than a speculative one.
+below the live `sp`. **Remaining:** the PLIC, which resolves the last leak
+(portable code still names `drivers::gic` for the interrupt controller); it waits until RISC-V has a
+device interrupt to field, so the abstraction lands with a real second consumer rather than a
+speculative one. Optionally, a richer initrd (a crickerfs archive with an `init` that loads others by
+name) rather than the single-ELF initrd the worker demo uses.
 
 ## Reading
 
