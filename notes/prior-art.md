@@ -79,6 +79,20 @@ else's kernel:
   honest split: the host-testable closure shape and the witness tests favored building, the
   rule favored reuse, and the omission of the pass is the actual lesson. Kept.
 
+- **`crickerfs` (2026-07-28): kept, over `tar-no-std`/ustar.** Weighed retroactively on
+  Chris's question, with the swap costed out. The format predates this note (a learning-era
+  artifact), but the keep decision is a fresh application of the rule: the kernel parses the
+  initrd itself, so the parser sits **inside the TCB**, which is exactly where the rule says
+  build; 263 lines we wrote and test beat someone else's header arithmetic on boot input.
+  The swap's real benefits (standard tooling, `tar tvf` inspection, ~260 lines retired) are
+  ergonomic, its cost is churn across the kernel boot path, four userspace binaries, and
+  every proof-of-real-bytes assertion (six sites assert the `cricker-` magic; tar has no
+  magic at offset 0). Revisit at **milestone 22** (trusted init): the initrd format must
+  change there anyway to carry measurements or signatures, and adopting ustar as the
+  container is nearly free inside a redesign that is happening regardless. Inspectability,
+  the one benefit worth having now, is purchasable as a ~30-line `xtask initrd-ls` without
+  touching the format.
+
 ## The convention
 
 Every milestone design block in design/roadmap.md carries a **"Prior art"** section. The
