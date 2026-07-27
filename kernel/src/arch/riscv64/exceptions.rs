@@ -166,14 +166,30 @@ extern "C" fn riscv_trap_dispatch(frame: &mut TrapFrame) {
     if scause & INTERRUPT != 0 {
         let code = scause & 0xff;
         match code as u32 {
-            // The S-mode timer: count the tick and rearm. Preemption will hang off this once the
-            // scheduler runs on RISC-V; for now it just proves the interrupt path works.
-            super::timer::TIMER_INTID => super::timer::tick(),
+            // The S-mode timer: count the tick, rearm, and RECORD that a reschedule is due. We do
+            // not switch here; we are mid-handler with a half-saved world. DECISIONS §9 says
+            // handlers record and the switch happens at a safe point, which is the deferral below.
+            super::timer::TIMER_INTID => {
+                super::timer::tick();
+                crate::sched::on_tick();
+            }
             // External (PLIC) and software interrupts arrive here once those steps enable them.
             // Nothing else is enabled yet, so anything else is unexpected.
             _ => {
                 SPURIOUS_IRQS.fetch_add(1, Ordering::Relaxed);
             }
+        }
+
+        // --- and here is preemption, the same four lines as aarch64 (see that file's handle_irq).
+        // If a tick asked for a reschedule and the scheduler is up, switch away now. `schedule()`
+        // saves this thread's kernel context and may not return until this thread is picked again;
+        // when it does, we fall through to `trap_return`, which restores `frame` and `sret`s back to
+        // exactly the instruction the timer interrupted. A thread that never yields is preempted
+        // anyway, which is the whole point (DECISIONS §5). It works for a U-mode thread and an
+        // S-mode kernel thread alike, because trap.s saved a full frame for whichever we interrupted.
+        if crate::sched::take_need_resched() && crate::sched::is_running() {
+            crate::sched::count_preemption();
+            crate::sched::schedule();
         }
         return;
     }

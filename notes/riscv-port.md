@@ -199,6 +199,17 @@ Finding these is the point; each gets pushed under `arch/`.
    to a garbage `sepc`. Fixed by placing the RISC-V trap frame just below the live `sp` (`sscratch`
    tracks it, so re-entries stay consistent).
 
+   **Preemption works too, and it is the property that separates a kernel from a runtime.** The
+   S-mode timer already fired every 10ms; the missing half was hanging a reschedule off it. Now
+   `riscv_trap_dispatch` records the tick (`sched::on_tick`) and defers the switch to the trap tail,
+   the same four lines as aarch64's `handle_irq`: `if take_need_resched() && is_running() {
+   count_preemption(); schedule(); }`. Two threads whose entire body is a tight loop (no yield, no
+   syscall, not even a call) both make progress: ~680k and ~666k iterations in 0.2s, 18 preemptions.
+   Under any cooperative scheduler the first would own the CPU forever. This is the RISC-V half of
+   DECISIONS §5, and it works for a U-mode thread and an S-mode kernel thread alike, because `trap.s`
+   saved a full frame for whichever the timer interrupted, and `schedule()` returns through
+   `trap_return` to exactly the instruction it left.
+
    **Remaining:** a real user ELF (needs a RISC-V init binary in the build), plus the PLIC (leak:
    `drivers::gic`), for device interrupts.
 

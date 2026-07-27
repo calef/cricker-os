@@ -237,6 +237,45 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
             );
         }
 
+        // Preemption: the property that separates a kernel from a runtime. Spawn two threads whose
+        // entire body is a tight loop, no yield, no syscall, not even a function call. Under any
+        // cooperative scheduler the first one owns the CPU forever. The S-mode timer fires every
+        // 10ms, riscv_trap_dispatch records the tick and defers a schedule() to the trap tail, and
+        // both threads make progress anyway. This is the RISC-V half of DECISIONS §5: an arbitrary
+        // binary that refuses to yield is preempted regardless. `STOP` lets them exit cleanly so
+        // nothing lingers past the demo. Interrupts have been unmasked since the timer step above.
+        {
+            use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+            static A: AtomicU64 = AtomicU64::new(0);
+            static B: AtomicU64 = AtomicU64::new(0);
+            static STOP: AtomicBool = AtomicBool::new(false);
+
+            sched::spawn(|| {
+                while !STOP.load(Ordering::Relaxed) {
+                    A.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+            sched::spawn(|| {
+                while !STOP.load(Ordering::Relaxed) {
+                    B.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+
+            let p0 = sched::preemptions();
+            arch::timer::spin_for(arch::timer::frequency() / 5); // ~0.2s, doing nothing but be preemptible
+            STOP.store(true, Ordering::Relaxed);
+            // Let the two spinners observe STOP and exit, so they are gone before we halt.
+            for _ in 0..8 {
+                sched::yield_now();
+            }
+            println!(
+                "  preemption  : two never-yield threads ran {} and {} iterations, {} preemptions (a thread that refuses to yield is preempted anyway)",
+                A.load(Ordering::Relaxed),
+                B.load(Ordering::Relaxed),
+                sched::preemptions() - p0,
+            );
+        }
+
         println!("cricker-os: the capability core runs on RISC-V.");
         arch::halt();
     }
