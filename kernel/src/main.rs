@@ -424,7 +424,9 @@ mod tests {
     ///
     /// aarch64 faults on a misaligned `sp` when it's used, so a bug here would show
     /// up as a mysterious early crash rather than as anything legible.
-    /// See notes/stack.md.
+    /// See notes/stack.md. Reads `sp` via an aarch64 instruction, so it is gated to
+    /// aarch64; RISC-V grows its own boot-sanity test when it boots (notes/riscv-port.md).
+    #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn stack_pointer_is_16_byte_aligned() {
         let sp: usize;
@@ -437,7 +439,10 @@ mod tests {
     ///
     /// QEMU's `virt` machine drops us at EL1 by default, which is exactly where a
     /// kernel belongs. If this ever reads EL2, we've been handed the hypervisor
-    /// level and will need to drop down ourselves. See notes/aarch64.md.
+    /// level and will need to drop down ourselves. See notes/aarch64.md. EL is an
+    /// aarch64 concept, so this is gated; the RISC-V analog (proving we booted in
+    /// S-mode, not M-mode) arrives with the RISC-V boot path.
+    #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn running_at_el1() {
         use aarch64_cpu::registers::CurrentEL;

@@ -14,3 +14,12 @@ mod aarch64;
 
 #[cfg(target_arch = "aarch64")]
 pub use aarch64::*;
+
+// The second architecture (milestone 20, notes/riscv-port.md). Its presence here, dispatched by
+// the same `cfg` and re-exported flat through the same surface, is the proof that rule #1 holds: a
+// new ISA is a new directory, not a diff across the kernel.
+#[cfg(target_arch = "riscv64")]
+mod riscv64;
+
+#[cfg(target_arch = "riscv64")]
+pub use riscv64::*;
