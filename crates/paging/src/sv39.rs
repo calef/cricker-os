@@ -160,7 +160,11 @@ mod tests {
         ] {
             let leaf = Sv39::leaf_entry(0x8020_0000, flags);
             assert_eq!(Sv39::entry_pa(leaf), 0x8020_0000);
-            assert_eq!(Sv39::leaf_flags(leaf), flags, "round-trip failed for {flags:?}");
+            assert_eq!(
+                Sv39::leaf_flags(leaf),
+                flags,
+                "round-trip failed for {flags:?}"
+            );
         }
     }
 }

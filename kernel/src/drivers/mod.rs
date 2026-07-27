@@ -13,7 +13,7 @@ pub mod gic;
 
 // The PL011 UART, aarch64's `virt` console. Used only by the console (via a compile-time alias), so
 // it gates cleanly. RISC-V's `virt` has an NS16550 instead.
-#[cfg(target_arch = "aarch64")]
-pub mod pl011;
 #[cfg(target_arch = "riscv64")]
 pub mod ns16550;
+#[cfg(target_arch = "aarch64")]
+pub mod pl011;

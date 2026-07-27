@@ -57,7 +57,6 @@ pub const USER_CODE_VA: u64 = 0x0000_0000_0040_0000;
 pub const USER_STACK_VA: u64 = 0x0000_0000_0050_0000;
 pub const USER_STACK_TOP: u64 = USER_STACK_VA + FRAME_SIZE;
 
-
 /// A user address space: an L0 table for `TTBR0`, and every frame that hangs off it.
 ///
 /// The `frames` vec holds **both** the pages we mapped and the intermediate page tables the
@@ -790,7 +789,18 @@ fn enter_frame(entry: u64, user_sp: u64, arg0: u64, arg1: u64, arg2: u64) -> ! {
     let top = crate::sched::current_kernel_stack_top()
         .expect("a user thread needs a kernel stack of its own to be trapped onto");
 
-    let frame = (top - size_of::<TrapFrame>() as u64) as *mut TrapFrame;
+    // Where the trap frame goes. aarch64 puts it at the very top of the kernel stack: its entry
+    // paths are deep enough that this function's own frame is already well below it. RISC-V's TCB
+    // entry path (trampoline -> user_thread_entry -> enter_frame) is shallow, so a frame at the top
+    // would OVERLAP and corrupt this function's stack (the `frame` pointer itself) as `frame.write`
+    // runs, sending the sret to a garbage sepc. Put it just below the live `sp` instead; `sscratch`
+    // is armed to `frame + size`, so every re-entry rebuilds it at the same spot. See
+    // notes/riscv-port.md.
+    #[cfg(target_arch = "aarch64")]
+    let slot = top - size_of::<TrapFrame>() as u64;
+    #[cfg(target_arch = "riscv64")]
+    let slot = (crate::arch::current_sp().min(top) - size_of::<TrapFrame>() as u64) & !15;
+    let frame = slot as *mut TrapFrame;
 
     // And prove it, rather than trusting the reasoning above. This is one check, once per
     // exec, against a bug whose symptom is a nested fault storm that eats the kernel image.
@@ -804,7 +814,11 @@ fn enter_frame(entry: u64, user_sp: u64, arg0: u64, arg1: u64, arg2: u64) -> ! {
     // user address space is installed. `arch` owns the register layout: we ask for a user-entry
     // frame and hand it back to `arch` to make the jump (notes/riscv-port.md, leak #3).
     unsafe {
-        frame.write(TrapFrame::for_user_entry(entry, user_sp, [arg0, arg1, arg2]));
+        frame.write(TrapFrame::for_user_entry(
+            entry,
+            user_sp,
+            [arg0, arg1, arg2],
+        ));
         enter_user(frame)
     }
 }
@@ -933,6 +947,87 @@ pub fn hello() -> &'static [u8] {
     let end = (&raw const USER_HELLO_END) as usize;
     // SAFETY: both symbols are in .rodata, in this image, emitted in this order.
     unsafe { core::slice::from_raw_parts(start as *const u8, end - start) }
+}
+
+/// The word the RISC-V reporter program SENDs home (matches the program below).
+#[cfg(target_arch = "riscv64")]
+pub const RISCV_REPORT_WORD: u64 = 0xC4;
+
+// A RISC-V reporter program: invoke the endpoint capability granted in slot 0 to SEND one word, then
+// exit. The syscall ABI (DECISIONS §17): a7 = number, a0.. = args; SYS_INVOKE takes (slot, method,
+// w0, w1, w2) in a0..a4. This exercises the capability boundary from U-mode, not just yield/exit.
+#[cfg(target_arch = "riscv64")]
+core::arch::global_asm!(
+    r#"
+.section .rodata.user_programs, "a"
+.balign 4
+.global USER_REPORTER_START
+USER_REPORTER_START:
+    li      a0, 0           // slot 0: the granted report capability
+    li      a1, 0           // endpoint::SEND
+    li      a2, 0xC4        // the word to send (RISCV_REPORT_WORD)
+    li      a3, 0
+    li      a4, 0
+    li      a7, 2           // SYS_INVOKE
+    ecall
+    li      a7, 0           // SYS_EXIT
+    ecall
+1:  j       1b              // never reached
+.global USER_REPORTER_END
+USER_REPORTER_END:
+"#
+);
+
+/// Build a user process from parts, grant it WRITE on a fresh endpoint in slot 0, run the RISC-V
+/// reporter program, and receive the word it SENDs. Returns the word (`RISCV_REPORT_WORD` on
+/// success). This is the RISC-V counterpart of the aarch64 build-start-run-a-child test: it proves
+/// the capability invocation path (`SYS_INVOKE` -> endpoint SEND) works from U-mode.
+#[cfg(target_arch = "riscv64")]
+pub fn riscv_capability_demo() -> u64 {
+    unsafe extern "C" {
+        static USER_REPORTER_START: u8;
+        static USER_REPORTER_END: u8;
+    }
+    let code = {
+        let start = (&raw const USER_REPORTER_START) as usize;
+        let end = (&raw const USER_REPORTER_END) as usize;
+        // SAFETY: both symbols are in .rodata, in this image, emitted in this order.
+        unsafe { core::slice::from_raw_parts(start as *const u8, end - start) }
+    };
+
+    // The child's address space and the frames for its code and stack.
+    let as_region = crate::untyped::create(8).expect("no aspace region");
+    let aspace = user_aspace_create(as_region).expect("no aspace");
+    let frames_region = crate::untyped::create(2).expect("no frame region");
+
+    let code_phys = crate::untyped::retype_page(frames_region).expect("no code frame");
+    // SAFETY: a fresh frame we own, direct-mapped; copy the program in and make it fetchable.
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            code.as_ptr(),
+            mmu::phys_to_virt(code_phys) as *mut u8,
+            code.len(),
+        );
+    }
+    crate::arch::sync_icache(mmu::phys_to_virt(code_phys), code.len());
+    user_aspace_map(aspace, USER_CODE_VA, code_phys, Flags::user_code()).expect("map code");
+
+    let stack_phys = crate::untyped::retype_page(frames_region).expect("no stack frame");
+    user_aspace_map(aspace, USER_STACK_VA, stack_phys, Flags::user_data()).expect("map stack");
+
+    // The child's one authority: WRITE on a report endpoint (it may SEND, not receive).
+    let report = crate::sched::create_endpoint();
+    let report_cap = crate::cap::endpoint_cap(report, crate::cap::Rights::WRITE);
+
+    // Build the thread from parts: a TCB, the cap in slot 0, then configure and start.
+    let tcb_region = crate::untyped::create(2).expect("no tcb region");
+    let tid = crate::sched::create_tcb(tcb_region).expect("no tcb");
+    let slot = crate::sched::tcb_insert_cap(tid, report_cap).expect("cap insert");
+    assert_eq!(slot, 0, "the reporter's cap must land in slot 0");
+    crate::sched::configure_tcb(tid, USER_CODE_VA, USER_STACK_TOP, aspace).expect("configure");
+    crate::sched::start_tcb(tid, [0; 3]).expect("start");
+
+    crate::sched::ipc_recv(report)[0]
 }
 
 /// Bringing the console driver up in userspace, and wiring a client to it.

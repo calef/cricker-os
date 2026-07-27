@@ -189,8 +189,18 @@ Finding these is the point; each gets pushed under `arch/`.
    leaks the kernel per-CPU address into U-mode's `tp`; the leak-free fix restores `tp` in `trap.s`
    from a per-hart source (the standard sscratch-trapframe approach), also needed for SMP.
 
-   **Remaining:** a user ELF and IPC/caps end to end (the same portable code that works on aarch64,
-   now on the RISC-V switch), plus the PLIC (leak: `drivers::gic`).
+   **IPC/caps work too:** a second program is built from parts (a TCB, a code and stack mapping, an
+   endpoint capability granted in slot 0), started, and it `SYS_INVOKE`s that cap to SEND a word home,
+   which the kernel receives: "a U-mode process invoked a cap and SENT 0xc4". That is the whole
+   capability boundary (cap lookup, rights check, IPC) from U-mode on RISC-V. One RISC-V-specific bug
+   surfaced there: the TCB entry path is *shallow* (trampoline → `user_thread_entry` → `enter_frame`),
+   so a trap frame placed at the very top of the kernel stack (fine for aarch64, whose entry paths are
+   deep) overlapped and corrupted `enter_frame`'s own frame as `frame.write` ran, sending the `sret`
+   to a garbage `sepc`. Fixed by placing the RISC-V trap frame just below the live `sp` (`sscratch`
+   tracks it, so re-entries stay consistent).
+
+   **Remaining:** a real user ELF (needs a RISC-V init binary in the build), plus the PLIC (leak:
+   `drivers::gic`), for device interrupts.
 
 The reward beyond the proof: when a real RISC-V board (a ~$70 StarFive VisionFive 2 / Milk-V Mars, or a
 rented Graviton later) is on hand, the QEMU-virt work transfers, because real boards use the same

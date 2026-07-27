@@ -146,7 +146,9 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         {
             use paging::Flags;
             let test_va = arch::mmu::KERNEL_VA_BASE + 0x1_0000_0000; // above the RAM direct map
-            let frame = memory::alloc().expect("no frame for the mmu self-test").addr();
+            let frame = memory::alloc()
+                .expect("no frame for the mmu self-test")
+                .addr();
             arch::mmu::map_page(test_va, frame, Flags::kernel_data()).expect("map_page failed");
             let (pa, flags) = arch::mmu::translate(test_va).expect("translate found nothing");
             // SAFETY: we just mapped this VA read/write.
@@ -220,6 +222,18 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
             let served = arch::exceptions::SVC_COUNT.load(Ordering::Relaxed) - before;
             println!(
                 "  userspace   : a program ran at U-mode and made {served} syscalls (yield/yield/exit via ecall)",
+            );
+        }
+
+        // The capability boundary: build a process from parts, grant it WRITE on an endpoint in slot
+        // 0, and run a program that SYS_INVOKEs that cap to SEND a word home. Receiving the exact word
+        // proves the whole capability path works from U-mode: the cap lookup, the rights check, and
+        // IPC, all on RISC-V.
+        {
+            let word = user::riscv_capability_demo();
+            println!(
+                "  capability  : a U-mode process invoked a cap and SENT {word:#x} (expected {:#x})",
+                user::RISCV_REPORT_WORD,
             );
         }
 

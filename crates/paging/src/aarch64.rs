@@ -192,7 +192,11 @@ mod tests {
     #[test]
     fn device_memory_encodes_the_device_mair_slot() {
         let leaf = Aarch64::leaf_entry(0x0900_0000, Flags::device());
-        assert_eq!((leaf >> 2) & 0b111, mair::DEVICE, "MMIO is not device-typed");
+        assert_eq!(
+            (leaf >> 2) & 0b111,
+            mair::DEVICE,
+            "MMIO is not device-typed"
+        );
     }
 
     /// **The MAIR value agrees with the slot numbers.** Slot 0 = 0x00 (Device-nGnRnE), slot 1 = 0xff
@@ -220,7 +224,11 @@ mod tests {
         ] {
             let leaf = Aarch64::leaf_entry(0x4000_0000, flags);
             assert_eq!(Aarch64::entry_pa(leaf), 0x4000_0000);
-            assert_eq!(Aarch64::leaf_flags(leaf), flags, "round-trip failed for {flags:?}");
+            assert_eq!(
+                Aarch64::leaf_flags(leaf),
+                flags,
+                "round-trip failed for {flags:?}"
+            );
         }
     }
 }

@@ -12,10 +12,10 @@ use core::fmt::Write;
 // abstraction ahead of a third requirement (DECISIONS.md, rules 2/3). aarch64's `virt` has a PL011;
 // RISC-V's has an NS16550. Both expose `new`/`init`/`impl Write`, so the console code below names
 // neither. See notes/riscv-port.md.
-#[cfg(target_arch = "aarch64")]
-use crate::drivers::pl011::Pl011 as ConsoleUart;
 #[cfg(target_arch = "riscv64")]
 use crate::drivers::ns16550::Ns16550 as ConsoleUart;
+#[cfg(target_arch = "aarch64")]
+use crate::drivers::pl011::Pl011 as ConsoleUart;
 
 /// The console UART's **physical** address on QEMU's `virt` machine.
 #[cfg(target_arch = "aarch64")]

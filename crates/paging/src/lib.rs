@@ -597,7 +597,10 @@ mod flag_tests {
     fn no_page_is_executable_across_the_privilege_split() {
         for f in ALL {
             if f.is_user_accessible() {
-                assert!(!f.is_kernel_executable(), "{f:?} user-reachable yet kernel-exec");
+                assert!(
+                    !f.is_kernel_executable(),
+                    "{f:?} user-reachable yet kernel-exec"
+                );
             } else {
                 assert!(!f.is_user_executable(), "{f:?} kernel-only yet user-exec");
             }

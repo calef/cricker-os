@@ -1,13 +1,12 @@
-//! **RISC-V virtual memory.** The Sv39/Sv48 page-table half of the `arch` contract.
+//! **RISC-V virtual memory.** The Sv39 page-table half of the `arch` contract.
 //!
-//! This is a scaffold for the compile milestone. The address arithmetic and the device-memory
-//! constants are real; everything that walks or edits a page table is a loud `unimplemented!()`,
-//! because doing it right is the Sv39 step, which is also where HAL leak #2 (the `paging` crate
-//! encodes the aarch64 descriptor format) gets resolved by factoring the format behind a trait. See
+//! The kernel lives in the Sv39 high half (`boot.s` does the higher-half transition on a coarse boot
+//! table; [`init`] then builds the fine-grained W^X kernel tables and switches `satp` to them). The
+//! page-table *format* (Sv39 descriptor bits, three levels) lives in `paging::Sv39` behind the
+//! `PageFormat` trait (HAL leak #2, DECISIONS §17); this module is the RISC-V glue: `satp`
+//! composition, the kernel and user mapping surface via `Mapper<_, _, Sv39>`, the single-`satp`
+//! address-space model (`share_kernel_half`), and TLB maintenance (`sfence.vma`). See
 //! notes/riscv-port.md.
-//!
-//! Until then the kernel runs bare (`satp = 0`, virtual == physical), so [`KERNEL_VA_BASE`] is 0 and
-//! [`phys_to_virt`]/[`virt_to_phys`] are the identity. The boot and console steps need nothing more.
 
 use crate::memory;
 use core::arch::asm;
@@ -260,8 +259,14 @@ where
         .translate(here)
         .expect("the code switching tables is not mapped: we would die on the next fetch");
     assert_eq!(pa, virt_to_phys(here), "our .text maps to the wrong frame");
-    assert!(flags.is_kernel_executable(), "our own .text is not executable");
-    assert!(!flags.is_writable(), "our own .text is writable (W^X violated)");
+    assert!(
+        flags.is_kernel_executable(),
+        "our own .text is not executable"
+    );
+    assert!(
+        !flags.is_writable(),
+        "our own .text is writable (W^X violated)"
+    );
 
     // The UART, so `println!` keeps working across the switch.
     assert!(
