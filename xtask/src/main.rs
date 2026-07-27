@@ -442,11 +442,22 @@ fn test() -> bool {
         return false;
     }
     eprintln!();
-    eprintln!("--- kernel tests (QEMU) ---");
+    eprintln!("--- kernel tests, aarch64 (QEMU) ---");
     if !user() || !mkdisk() {
         return false;
     }
-    cargo(&["test", "-p", "kernel", "--target", TARGET])
+    if !cargo(&["test", "-p", "kernel", "--target", TARGET]) {
+        return false;
+    }
+
+    // The same booted kernel test suite on the second architecture (parity workstream B). The
+    // portable tests (scheduler, capabilities, revocation, memory, sync) run on RISC-V's real Sv39
+    // kernel; the aarch64-specific ones (the userspace-exec suite, the SGI interrupt tests, and SMP)
+    // are gated to aarch64. RISC-V exits via the sifive_test finisher, same harness. See
+    // notes/riscv-parity-scope.md.
+    eprintln!();
+    eprintln!("--- kernel tests, riscv64 (QEMU) ---");
+    cargo(&["test", "-p", "kernel", "--target", RISCV_TARGET])
 }
 
 /// The microbenchmarks (milestone 21; design/roadmap.md §21).

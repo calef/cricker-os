@@ -2044,7 +2044,13 @@ pub mod revoke_service {
     }
 }
 
-#[cfg(test)]
+// The in-kernel userspace test suite is aarch64-specific: every test drives a hand-written aarch64
+// program (`outlaw`, `spin`, `forged_elf`) through `exec`, and reads aarch64 fault registers
+// (`ESR`/`FAR`). RISC-V's userspace path is exercised by the boot tour instead (the `worker`,
+// `builder`, and `driver` programs; see the riscv block in main.rs and notes/riscv-parity-scope.md).
+// Porting these to riscv would mean hand-writing 37 programs' worth of riscv machine code for no new
+// coverage of portable logic, so they stay aarch64.
+#[cfg(all(test, target_arch = "aarch64"))]
 mod tests {
     use super::*;
     use crate::arch::exceptions::{

@@ -78,6 +78,10 @@ pub fn init() {
 /// interrupt). Called from the trap dispatcher on `scause` = timer.
 pub fn tick() {
     TICKS.fetch_add(1, Ordering::Relaxed);
+    // In a test build, feed the hang watchdog: a lost IPC wakeup would otherwise block a test
+    // forever and the whole run would hang silently. Driven from the timer so it costs nothing.
+    #[cfg(test)]
+    crate::testing::watchdog_tick();
     sbi_set_timer(now() + interval());
 }
 

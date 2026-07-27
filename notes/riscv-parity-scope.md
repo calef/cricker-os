@@ -43,7 +43,20 @@ new kernel work rather than porting userspace.
 - **Proves:** the scheduler and capability model are SMP-safe on a second *weakly-ordered* ISA. The
   weak-memory discipline (built for ARM) should carry over; SMP is where it gets its second witness.
 
-### B. In-kernel test suite on RISC-V — M, low-medium risk. Highest value per effort.
+### B. In-kernel test suite on RISC-V — DONE.
+
+RISC-V now boots the kernel test harness and passes **51 portable tests** (`cargo xtask test` runs
+both arches: aarch64 116, riscv64 51). The gap is the aarch64-specific tests, gated off riscv: the
+userspace-exec suite in `user.rs` (37 tests driving hand-written aarch64 programs through `exec`), the
+SMP tests (workstream A), and the two SGI interrupt tests. Three real things surfaced: the
+`sifive_test` finisher (`0x10_0000`) had to be mapped device-typed and reached through the direct map
+(the boot tour halts via `wfi` and never exercised `semihosting::exit` under paging); the timer
+watchdog needed wiring into riscv `timer::tick`; and a genuine race — a timer tick landing inside
+`sched::init` ran the deferred `schedule()` before the idle thread was registered ("nothing runnable
+and no idle thread"), fixed by masking interrupts across init, which aarch64 gets for free by bringing
+the scheduler up before enabling interrupts. Original scoping below.
+
+### B (original scope). In-kernel test suite on RISC-V — M, low-medium risk. Highest value per effort.
 
 The 116 kernel tests boot under QEMU on aarch64 and signal pass/fail via semihosting exit. RISC-V has
 no in-kernel test run. **The hard part is already done:** `arch::semihosting::exit` exists on riscv

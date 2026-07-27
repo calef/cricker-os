@@ -171,7 +171,10 @@ pub extern "C" fn secondary_main(cpu_id: usize) -> ! {
     }
 }
 
-#[cfg(test)]
+// The SMP tests need more than one core online (the runner passes `-smp 4` on aarch64). RISC-V is
+// single-hart today, so they are gated to aarch64 until the RISC-V SMP work (parity workstream A,
+// notes/riscv-parity-scope.md) brings up secondary harts via SBI HSM and passes `-smp` to its runner.
+#[cfg(all(test, target_arch = "aarch64"))]
 mod tests {
     use super::*;
 

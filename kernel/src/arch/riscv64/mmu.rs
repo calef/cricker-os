@@ -213,6 +213,11 @@ where
         direct_map(m, start, start + size, Flags::device())?;
     }
 
+    // 7. The `sifive_test` finisher (0x10_0000), device memory: the MMIO word the test harness writes
+    // to exit QEMU (arch::semihosting::exit). One page. Harmless to map in every build; only the test
+    // build ever writes it. The boot tour halts with `wfi` and never touches it.
+    direct_map(m, 0x10_0000, 0x10_1000, Flags::device())?;
+
     Ok(())
 }
 

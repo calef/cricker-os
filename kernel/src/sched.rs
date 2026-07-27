@@ -2403,6 +2403,10 @@ mod tests {
     /// interrupt from software (an SGI, so the test needs no device), the kernel's handler turns
     /// it into a notification, and the blocked thread wakes. This is the exact path a userspace
     /// driver will take when a real device interrupts, minus the device.
+    ///
+    /// aarch64-only: it triggers via an SGI, a GIC concept. The same IRQ-to-message path is proven
+    /// on RISC-V by the boot tour's userspace UART driver (a real device interrupt through the PLIC).
+    #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn an_interrupt_becomes_a_message() {
         // An SGI: a software-triggerable interrupt with no hardware behind it.
@@ -2507,6 +2511,9 @@ mod tests {
     /// A signal that arrives while nobody is waiting is **remembered, not lost.** An interrupt is
     /// not a rendezvous: if it fires a hair before the driver calls `WAIT`, the driver must still
     /// see it. The `pending` count is what closes that window.
+    ///
+    /// aarch64-only: triggers via an SGI (see `an_interrupt_becomes_a_message`).
+    #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn an_interrupt_that_arrives_before_the_wait_is_not_lost() {
         const SGI: u32 = 2;

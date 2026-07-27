@@ -144,6 +144,28 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
             arch::mmu::is_enabled(),
         );
 
+        // The scheduler comes up before the tour (and, in a test build, before the tests): both
+        // need threads to switch between, and preemption needs somewhere to go. aarch64 brings it
+        // up in its main boot flow for the same reason.
+        //
+        // Interrupts have been on since the timer step above, so mask them across `sched::init`: a
+        // timer tick landing mid-init would run the deferred `schedule()` before the idle thread is
+        // registered, and hit "nothing runnable and no idle thread" (sched.rs). aarch64 gets this
+        // ordering for free by bringing the scheduler up before it ever enables interrupts.
+        let irqs = arch::interrupts::disable();
+        sched::init();
+        arch::interrupts::restore(irqs);
+
+        // A test build runs the kernel suite right here and exits via semihosting, instead of the
+        // demonstration tour below. Everything the tests need is now up: memory and the frame
+        // allocator, the Sv39 paging, the scheduler and its idle thread, the timer, and interrupts.
+        // This is the RISC-V equivalent of the `#[cfg(test)] test_main()` on the aarch64 boot path.
+        #[cfg(test)]
+        {
+            test_main();
+            arch::halt();
+        }
+
         // Dynamic kernel mapping self-test: map a fresh frame at an unused high-half VA, read it
         // back through the tables, write and read through the mapping, then unmap it. Proves
         // map_page / translate / unmap_page / flush_tlb, which the kernel stack allocator needs.
@@ -173,7 +195,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         {
             use core::sync::atomic::{AtomicU32, Ordering};
             static RAN: AtomicU32 = AtomicU32::new(0);
-            sched::init();
+            // sched::init() ran above (it is needed by both the tour and the test build).
             sched::spawn(|| {
                 RAN.fetch_add(1, Ordering::SeqCst);
             });
