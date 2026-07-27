@@ -132,10 +132,24 @@ pub static BRK_COUNT: AtomicUsize = AtomicUsize::new(0);
 const SPP: u64 = 1 << 8;
 /// The high bit of `scause`: set for an interrupt, clear for an exception.
 const INTERRUPT: u64 = 1 << 63;
+/// `scause` interrupt code for a supervisor external interrupt: a device raised a line into the
+/// PLIC, which routed it here. The RISC-V analog of an aarch64 IRQ exception carrying a GIC intid.
+const S_EXTERNAL: u32 = 9;
 /// `scause` exception code for `ecall` taken from U-mode: the syscall.
 const CAUSE_ECALL_U: u64 = 8;
 /// `scause` exception code for a breakpoint (`ebreak`).
 const CAUSE_BREAKPOINT: u64 = 3;
+
+/// Unmask supervisor external interrupts (`sie.SEIE`, bit 9): the PLIC's deliveries. The caller must
+/// have `sstatus.SIE` on (the timer step turned it on) for these to actually be taken, exactly as for
+/// the timer's `sie.STIE`. Setting this is what lets a device interrupt reach [`riscv_trap_dispatch`].
+pub fn enable_external() {
+    const SEIE: u64 = 1 << 9;
+    // SAFETY: setting sie.SEIE only unmasks the external-interrupt source; it takes effect under SIE.
+    unsafe {
+        core::arch::asm!("csrs sie, {}", in(reg) SEIE, options(nomem, nostack, preserves_flags))
+    };
+}
 
 /// Install the trap vector: `stvec` = [`trap_entry`], direct mode (all traps to one handler; the low
 /// two bits of `stvec` select the mode and must be 0, which trap.s's `.balign 4` guarantees).
@@ -173,8 +187,28 @@ extern "C" fn riscv_trap_dispatch(frame: &mut TrapFrame) {
                 super::timer::tick();
                 crate::sched::on_tick();
             }
-            // External (PLIC) and software interrupts arrive here once those steps enable them.
-            // Nothing else is enabled yet, so anything else is unexpected.
+            // A device interrupt, arrived through the PLIC. Claim it (which acknowledges and masks
+            // that source), and if it is routed to a userspace driver, deliver it as a message. The
+            // shape is exactly aarch64's handle_irq: mask the source, then notify. A level-triggered
+            // device holds its line asserted until the driver quiets it, so leaving the source live
+            // would re-fire in a storm; we `disable` it at the PLIC and the driver's ACK (or, in the
+            // kernel-side demo, an explicit re-enable) brings it back. `complete` ends the PLIC's
+            // claim so it will arbitrate the next interrupt. See notes/interrupts.md, drivers/plic.rs.
+            S_EXTERNAL => {
+                let source = crate::drivers::plic::claim();
+                if source != 0 {
+                    if let Some(ep) = crate::sched::irq_route(source) {
+                        ROUTED_IRQS.fetch_add(1, Ordering::Relaxed);
+                        crate::drivers::plic::disable(source);
+                        crate::sched::irq_notify(ep);
+                    } else {
+                        SPURIOUS_IRQS.fetch_add(1, Ordering::Relaxed);
+                    }
+                    crate::drivers::plic::complete(source);
+                }
+            }
+            // Software interrupts (IPI, via the CLINT) arrive here once SMP enables them. Nothing
+            // else is enabled yet, so anything else is unexpected.
             _ => {
                 SPURIOUS_IRQS.fetch_add(1, Ordering::Relaxed);
             }

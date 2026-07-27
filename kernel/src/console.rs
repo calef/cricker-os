@@ -59,6 +59,22 @@ pub fn init() {
     CONSOLE.lock().init();
 }
 
+/// Turn on the console UART's receive interrupt (RISC-V, milestone 20). After this the NS16550 raises
+/// its line into the PLIC whenever a keystroke is waiting. Paired with [`rx_read`], which drains it.
+/// riscv-only: the aarch64 console stays polling, and its `ConsoleUart` (a PL011) has no such method.
+#[cfg(target_arch = "riscv64")]
+pub fn rx_enable() {
+    CONSOLE.lock().enable_rx_interrupt();
+}
+
+/// Read a byte from the console UART if one is waiting, else `None` (RISC-V, milestone 20). Reading
+/// it clears the receive interrupt at the device. The interrupt-driven input path calls this after
+/// the PLIC delivers the notification.
+#[cfg(target_arch = "riscv64")]
+pub fn rx_read() -> Option<u8> {
+    CONSOLE.lock().read_byte()
+}
+
 /// Break the console lock open. **Panic and fault paths only.**
 ///
 /// # Safety

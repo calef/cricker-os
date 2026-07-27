@@ -206,6 +206,13 @@ where
     // 5. The UART, device memory, in the direct map. Silence otherwise, the instant we switch.
     direct_map(m, UART_BASE, UART_BASE + UART_SIZE, Flags::device())?;
 
+    // 6. The PLIC, device memory (milestone 20). Its base and size come from the device tree
+    // (memory::init parsed it before this ran). Device-typed like the UART; the interrupt handler
+    // and the boot demo reach it through the direct map. Absent on aarch64, so skip if unknown.
+    if let Some((start, size)) = memory::plic_region() {
+        direct_map(m, start, start + size, Flags::device())?;
+    }
+
     Ok(())
 }
 

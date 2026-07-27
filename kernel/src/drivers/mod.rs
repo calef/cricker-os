@@ -17,3 +17,8 @@ pub mod gic;
 pub mod ns16550;
 #[cfg(target_arch = "aarch64")]
 pub mod pl011;
+
+// The PLIC, RISC-V's interrupt controller (milestone 20). Gated to riscv: it is the PLIC analog of
+// the aarch64-only device-interrupt path. Pure MMIO Rust; takes its base and context from the caller.
+#[cfg(target_arch = "riscv64")]
+pub mod plic;

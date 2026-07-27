@@ -76,6 +76,18 @@ pub fn init(dtb_ptr: usize) {
         }
     }
 
+    // The RISC-V interrupt controller (milestone 20): the PLIC. aarch64 has no node by this name, so
+    // there the read finds nothing and `plic_region` stays None; the GIC above is its equivalent.
+    // One register block, unlike the GIC's distributor/CPU-interface pair.
+    {
+        let mut plic = [Region { start: 0, size: 0 }; 1];
+        if let Ok(n) = dtb.node_reg(b"plic@", &mut plic)
+            && n >= 1
+        {
+            *PLIC_REGION.lock() = Some((plic[0].start, plic[0].size));
+        }
+    }
+
     // The whole span we have to be able to describe. Note this is the *span*, not the
     // *sum*: if a board has RAM at 0x4000_0000 and again at 0x8_0000_0000, we track
     // every frame between them and simply never free the hole. A bit of wasted bitmap
@@ -277,6 +289,12 @@ pub fn gic_regions() -> Option<((u64, u64), (u64, u64))> {
     })
 }
 
+/// The PLIC's register block (start, size), both **physical**, from the device tree. `None` on
+/// aarch64 or before `init`. RISC-V's `mmu::init` maps it device-typed, like the GIC.
+pub fn plic_region() -> Option<(u64, u64)> {
+    *PLIC_REGION.lock()
+}
+
 /// The RAM regions the device tree told us about.
 ///
 /// The MMU needs these: with paging on, a physical address the kernel cannot *name* is a
@@ -336,6 +354,10 @@ static RAM: IrqSafeMutex<RamMap> = IrqSafeMutex::new(
 /// (distributor, cpu interface), each (base, size). Physical.
 type GicRegions = (Option<(u64, u64)>, Option<(u64, u64)>);
 static GIC_REGIONS: IrqSafeMutex<GicRegions> = IrqSafeMutex::new(rank::RAM, (None, None));
+
+/// The PLIC's single register block, from the device tree (milestone 20). `None` on aarch64 (no such
+/// node) and until `init` has run.
+static PLIC_REGION: IrqSafeMutex<Option<(u64, u64)>> = IrqSafeMutex::new(rank::RAM, None);
 
 static BITMAP_START: AtomicUsize = AtomicUsize::new(0);
 static BITMAP_BYTES: AtomicUsize = AtomicUsize::new(0);

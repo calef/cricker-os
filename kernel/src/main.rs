@@ -309,6 +309,51 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
             );
         }
 
+        // Device interrupts: the last piece of the interrupt story. Bring up the PLIC, route the
+        // UART receive interrupt to an endpoint, and turn a keystroke into a message. A key raises a
+        // line into the PLIC; the PLIC delivers a supervisor external interrupt; riscv_trap_dispatch
+        // claims it, masks the source, and notifies the bound endpoint; a kernel driver thread waiting
+        // there wakes, reads the byte, and re-arms the source. This is the aarch64 GIC input path
+        // (bind_irq / irq_notify, both arch-neutral) now delivered by the PLIC. The `cargo run` harness
+        // is non-interactive, so pipe a byte to QEMU's serial to see it: `printf A | ...`.
+        if let Some((plic_phys, _)) = memory::plic_region() {
+            const UART_IRQ: u32 = 10; // the NS16550's interrupt id on QEMU virt
+            const S_CONTEXT: usize = 1; // hart 0's supervisor context on QEMU virt (2*hart + 1)
+            // SAFETY: the PLIC is device-mapped in the direct map (mmu::map_everything); this is its VA.
+            unsafe { drivers::plic::init(arch::mmu::phys_to_virt(plic_phys) as usize, S_CONTEXT) };
+
+            let keys = sched::create_endpoint();
+            sched::bind_irq(UART_IRQ, keys);
+            // The driver: block until the UART interrupt is delivered, read the byte, re-arm.
+            sched::spawn(move || {
+                sched::ipc_recv(keys);
+                let byte = console::rx_read();
+                drivers::plic::enable(UART_IRQ); // the handler masked it; re-arm now that it is drained
+                match byte {
+                    Some(b) => println!(
+                        "  device IRQ  : a keystroke reached a kernel driver through the PLIC: {b:#04x} ({:?})",
+                        b as char,
+                    ),
+                    None => println!("  device IRQ  : an interrupt was delivered through the PLIC"),
+                }
+            });
+
+            // Arm it all: enable the source at the PLIC, the receive interrupt at the UART, and
+            // supervisor external interrupts in `sie`. A byte already in the RX FIFO fires at once.
+            drivers::plic::enable(UART_IRQ);
+            console::rx_enable();
+            arch::exceptions::enable_external();
+            println!(
+                "  device IRQ  : PLIC up, UART RX routed to an endpoint (pipe a byte to see it)"
+            );
+
+            // Give a piped byte a moment to be claimed and the driver a turn to report, before the
+            // banner. Interrupts are on, so this yields through the driver if the key already arrived.
+            for _ in 0..8 {
+                sched::yield_now();
+            }
+        }
+
         println!("cricker-os: the capability core runs on RISC-V.");
         arch::halt();
     }

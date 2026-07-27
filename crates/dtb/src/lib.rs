@@ -260,23 +260,33 @@ impl<'a> Dtb<'a> {
         }
     }
 
-    /// The `reg` regions of the first node whose name starts with `prefix`.
+    /// The `reg` regions of the first node whose name starts with `prefix`, searched at any depth.
     ///
-    /// Used to find the interrupt controller (`intc@8000000`) without hardcoding its address.
-    /// The GIC has **two** register blocks (a distributor and a per-CPU interface), so `reg`
-    /// here decodes to two regions, and the order is part of the binding: distributor first.
+    /// Used to find the interrupt controller without hardcoding its address: `intc@8000000` on the
+    /// aarch64 `virt` board (a direct child of the root), and `plic@c000000` on the RISC-V `virt`
+    /// board (nested under `/soc`). The GIC has **two** register blocks (a distributor and a per-CPU
+    /// interface), so its `reg` decodes to two regions, and the order is part of the binding:
+    /// distributor first. The PLIC has one.
     ///
-    /// Matching on a name prefix rather than the `compatible` string is a deliberate
-    /// simplification. `compatible` is the *correct* way to identify a device (`intc@...` is
-    /// just a conventional name), and a real driver would match `"arm,cortex-a15-gic"`. We
-    /// look at names because it is ten lines instead of forty and we have exactly one board.
-    /// Written down so the Pi port knows what to fix.
+    /// A node's `reg` is decoded with the `#address-cells`/`#size-cells` its **parent** declares, so
+    /// we carry those down a small per-depth stack rather than assuming the root's counts. That is
+    /// what lets the same function read a device nested under `/soc` (whose parent is `/soc`, not the
+    /// root) as well as one at the top level. QEMU happens to use 2/2 at both levels, but relying on
+    /// that would be a latent bug the moment a board differs.
+    ///
+    /// Matching on a name prefix rather than the `compatible` string is a deliberate simplification.
+    /// `compatible` is the *correct* way to identify a device (`intc@...` is just a conventional
+    /// name), and a real driver would match `"arm,cortex-a15-gic"` or `"riscv,plic0"`. We look at
+    /// names because it is short and we have exactly two boards. Written down for the Pi port.
     pub fn node_reg(&self, prefix: &[u8], out: &mut [Region]) -> Result<usize, Error> {
-        let mut address_cells = 2u32;
-        let mut size_cells = 1u32;
+        // #address-cells/#size-cells declared by the node at each depth, applying to its children.
+        // Depth 0 is the pre-root sentinel; the root is depth 1. Spec defaults are 2 and 1.
+        const MAX_DEPTH: usize = 16;
+        let mut acells = [2u32; MAX_DEPTH];
+        let mut scells = [1u32; MAX_DEPTH];
 
-        let mut depth = 0i32;
-        let mut target_at: Option<i32> = None;
+        let mut depth = 0usize;
+        let mut target_at: Option<usize> = None;
         let mut at = self.off_struct;
 
         loop {
@@ -288,8 +298,14 @@ impl<'a> Dtb<'a> {
                     let name = self.cstr(at)?;
                     at += align4(name.len() + 1);
                     depth += 1;
+                    // Inherit the parent's cell counts as this node's defaults, until/unless this
+                    // node declares its own (its props, processed below, come before its children).
+                    if depth < MAX_DEPTH {
+                        acells[depth] = acells[depth - 1];
+                        scells[depth] = scells[depth - 1];
+                    }
 
-                    if depth == 2 && name.starts_with(prefix) && target_at.is_none() {
+                    if depth >= 2 && name.starts_with(prefix) && target_at.is_none() {
                         target_at = Some(depth);
                     }
                 }
@@ -300,7 +316,7 @@ impl<'a> Dtb<'a> {
                         // it; either way, stop looking.
                         target_at = None;
                     }
-                    depth -= 1;
+                    depth = depth.saturating_sub(1);
                 }
 
                 FDT_PROP => {
@@ -311,19 +327,25 @@ impl<'a> Dtb<'a> {
 
                     let name = self.cstr(self.off_strings + name_off)?;
 
-                    // The ROOT's cell counts. A device node may declare its own #address-cells
-                    // for its *children*, but its own `reg` is decoded with its PARENT's, and
-                    // for a node at depth 2 the parent is the root.
-                    if depth == 1 {
+                    // Record the cell counts this node declares for its children (depth+1 will read
+                    // them off the stack). A node's own `reg`, decoded below, uses its PARENT's.
+                    if depth < MAX_DEPTH {
                         match name {
-                            b"#address-cells" => address_cells = be32(self.bytes, value_at)?,
-                            b"#size-cells" => size_cells = be32(self.bytes, value_at)?,
+                            b"#address-cells" => acells[depth] = be32(self.bytes, value_at)?,
+                            b"#size-cells" => scells[depth] = be32(self.bytes, value_at)?,
                             _ => {}
                         }
                     }
 
                     if target_at == Some(depth) && name == b"reg" {
-                        return self.decode_reg(value_at, len, address_cells, size_cells, out);
+                        // Decode with the parent's cells: the node one level up (depth - 1).
+                        return self.decode_reg(
+                            value_at,
+                            len,
+                            acells[depth - 1],
+                            scells[depth - 1],
+                            out,
+                        );
                     }
                 }
 
