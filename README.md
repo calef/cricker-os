@@ -139,7 +139,7 @@ contact with month four. The short version:
 
 | | |
 |---|---|
-| **Architecture** | aarch64 first: clean exception model, sane MMU, and weak memory ordering as a discipline rather than a hazard. riscv64 second, as the port that proves the `arch/` boundary is real. |
+| **Architecture** | Three declared targets: aarch64 (first: clean exception model, weak ordering as a discipline), riscv64 (at parity), x86_64 (declared, not started). **Parity is a gate, not an aspiration** (DECISIONS §19): a capability ships on every supported ISA under the same suite, or the gap is on the record. |
 | **Target** | QEMU `virt` (TCG and HVF) for daily work; real hardware is milestone 16. |
 | **Kernel shape** | **Capability microkernel** (seL4-shaped, decided at milestone 7): no `open()`, no ambient authority, drivers are EL0 processes, and since milestone 14 the kernel allocates nothing. See DECISIONS.md §10 and §14. |
 | **Execution** | **Preemptive threads with real stacks.** Not async. See below. |

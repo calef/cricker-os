@@ -65,6 +65,11 @@ These come from `DECISIONS.md`. They are cheap to follow and expensive to retrof
 
 3. **The syscall surface stays narrow and explicit.** It is a boundary, not a habit.
 
+5. **Architectural parity is a gate, not an aspiration** (DECISIONS §19). The targets are
+   aarch64, riscv64, and x86_64 (declared, not yet started). A kernel capability ships on every
+   supported architecture, proven by the same suite, or a scope note records the gap and the
+   plan. If a feature works on one ISA and silently not another, that is the bug.
+
 Rules 2 and 3 are what keep the microkernel option open. We are deliberately **not**
 speculatively trait-ifying every subsystem, because that builds the wrong abstraction before
 the requirements are known.
