@@ -126,6 +126,10 @@ in the code or the conversation doesn't make sense, it belongs here.
   process at EL0, with DMA, a virtqueue, and the completion arriving as an interrupt-message. Plus
   the two scheduler bugs it flushed out: no idle thread, and interrupts restored under the lock.
 
+- [PCIe, and driving a disk over it](pcie.md) — the PCIe transport (DECISIONS §18): ECAM, BARs,
+  the capability list, why the kernel is the firmware here (OpenSBI does no PCI), the transport
+  seam that runs one driver over two buses, and INTx through the PLIC. The hardcodes are held by
+  witnesses against the machine's own device tree.
 - [A shell at EL0](shell.md) — milestone 10: an interactive shell, a userspace input driver
   (console receive), and worker processes spawned on command. Proof the whole stack works, as a
   conversation between processes the kernel only routes.

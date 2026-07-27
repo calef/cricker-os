@@ -84,7 +84,7 @@ no in-kernel test run. **The hard part is already done:** `arch::semihosting::ex
   there is, and it aligns with the verified-Rust thesis. Do it first: cheap, and it makes every later
   parity claim checkable on riscv.
 
-### C. virtio-blk + on-disk filesystem — the "blocked" record was WRONG; see the correction below.
+### C. virtio-blk + on-disk filesystem — DONE, over BOTH transports; and the "blocked" record was WRONG (correction below).
 
 **Correction (2026-07-27, evening).** The blocker recorded below does not reproduce. Booting the
 riscv kernel with the runner's exact flags (QEMU 11.0.2, `-global virtio-mmio.force-legacy=false
@@ -99,6 +99,15 @@ disk file so this class of record cannot be manufactured again. The machine over
 documentation; the PCIe transport keeps its own justification (notes/pcie-transport-scope.md: the
 door to NVMe and real hardware) but is **not** a parity-C prerequisite. The original, wrong entry
 is kept below, unedited, because the correction is the instructive part.
+
+**Completed (2026-07-27, the same night).** Over mmio: the `blk` dedicated binary (the shared
+`virtio` module behind the 19f skeleton), `virtio_service` wiring unchanged, and the three disk
+tests (read, DMA-escape attacker, indirect attacker) green on riscv; found and fixed the PLIC
+boot-hart-lottery bug on the way (every plic::init site hardcoded context 1 while sie.SEIE was set
+on whatever hart OpenSBI elected). Then over PCIe as well: the PCIe transport (DECISIONS §18,
+notes/pcie.md) runs the byte-identical driver against the same image attached as virtio-blk-pci,
+with the completion arriving as INTx through the PLIC. **Every parity workstream (A-E) is now
+done; aarch64 and riscv64 are at feature parity, DMA confinement included.**
 
 ### C (superseded record). PARTIAL (kernel-side discovery done; blocked on QEMU transport).
 

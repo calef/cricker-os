@@ -1,5 +1,12 @@
 # Scoping a PCIe transport (and virtio-pci)
 
+**Built (2026-07-27): all four phases.** DECISIONS §18 records the decisions (INTx first, one
+driver behind a kernel-side transport seam, mmio stays on aarch64); notes/pcie.md is the
+after-the-build companion. One premise of this scope died on contact with the machine: parity C
+was never actually blocked on PCIe (see the correction in notes/riscv-parity-scope.md), so the
+transport was built on its own justification below, and C completed over both transports. The
+rest of this note is the scope as written before the build.
+
 Parity workstream C stalled because QEMU's riscv `virt` does not put a virtio-blk device on the
 virtio-mmio slots; it uses **PCIe**, the transport real hardware uses. This scopes a PCIe root
 complex and a virtio-pci transport as its own workstream. It is bigger than a virtio detail: a PCI

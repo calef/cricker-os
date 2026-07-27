@@ -1099,6 +1099,45 @@ user programs, capability invocation, userspace-built processes, and device inte
 unprivileged userspace driver. Rule #1 held: the second ISA was a new `arch/` directory, not a diff
 across the kernel, with no exceptions left in portable non-test code.
 
+## 18. The PCIe transport: one driver, two buses, the seam in the kernel
+
+**Decided 2026-07-27, built the same night** (notes/pcie.md, notes/pcie-transport-scope.md). A PCI
+root complex (ECAM enumeration, BAR placement, virtio-pci capability parsing, INTx through the
+PLIC) and a virtio transport seam, so the same userspace block driver runs over virtio-mmio and
+virtio-pci unchanged. The three decisions the scope note flagged, resolved as it recommended:
+
+1. **INTx before MSI-X.** Legacy INTx is a wire into the PLIC, which is exactly the interrupt
+   model the kernel already has (`bind_irq`, the `Irq` capability, WAIT/ACK). MSI-X is a later
+   enhancement for a device that needs many vectors; nothing tonight does.
+
+2. **One driver, two transports, and the seam lives in the kernel.** `virtio::Transport` answers
+   the virtio-mmio register vocabulary against whichever bus the device sits on; the pci variant
+   translates each name to the virtio-pci common-config layout, the read-to-ack ISR, and the
+   resolved notify doorbell. The mmio vocabulary is canonical because it is what `abi::virtio`
+   already exposes; nothing else about the choice is load-bearing. Everything above the seam (the
+   shadow ring, the validator, the queue-layout contract, the userspace driver) is one copy and
+   did not change. The security consequence is the point: the DMA confinement is written once and
+   polices both buses, and PCI Bus-Master Enable (DMA permission at the bus level) is granted
+   last, after the confined transport is fully described.
+
+3. **virtio-mmio stays.** aarch64's working, tested mmio path is not migrated; PCIe is the riscv
+   disk path and a proven-portable subsystem (the `pci` crate and the seam are arch-neutral; the
+   aarch64 wiring is a constants change when a PCIe device wants driving there).
+
+**What the kernel is on this bus:** with `-bios default`, OpenSBI does no PCI setup, so the kernel
+is the firmware: it sizes and places BARs itself. The hardcoded window/irq constants are held by
+host-run witnesses against the machine's own device tree (the ECAM `reg`, all sixteen
+`interrupt-map` entries), the UART's hardcode-with-a-witness pattern.
+
+**Correction, on the record.** Parity C was recorded as blocked ("QEMU's riscv virt has no mmio
+disk; it prefers PCIe"). It was not: the runners silently dropped `CRICKER_DISK` when the image
+file did not exist, the machine was asked nothing, and the honest-looking "device-id 0" readings
+were a diskless boot. Both runners now fail loudly on a missing disk file, parity C completed over
+mmio in an evening, and the PCIe transport kept its own justification (the door to NVMe and real
+NICs, the transport real hardware uses) rather than a manufactured one. The false record and its
+correction are kept in notes/riscv-parity-scope.md because the mechanism, a silent no-op
+manufacturing a plausible machine fact, is the instructive part.
+
 ## Reading
 
 - **The seL4 manual**, and Klein et al., *seL4: Formal Verification of an OS Kernel* (SOSP'09)
