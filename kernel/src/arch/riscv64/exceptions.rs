@@ -121,7 +121,7 @@ pub fn init() {
     unsafe extern "C" {
         fn trap_entry();
     }
-    let vector = trap_entry as usize;
+    let vector = trap_entry as *const () as usize;
     // SAFETY: `vector` is our 4-byte-aligned trap entry; writing stvec has no memory effect.
     unsafe { core::arch::asm!("csrw stvec, {}", in(reg) vector, options(nomem, nostack)) };
 }
