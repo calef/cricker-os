@@ -107,6 +107,21 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         let caught = arch::exceptions::self_test();
         println!("  traps       : stvec set; a breakpoint was caught and stepped over ({caught})");
 
+        // Timer + interrupts: arm the SBI timer, unmask interrupts, and let the S-mode timer
+        // interrupt fire for ~0.2 s. A nonzero tick count proves the whole interrupt path (SBI
+        // set_timer, sie.STIE, sstatus.SIE, the trap vector routing scause=timer to timer::tick).
+        arch::timer::init();
+        arch::interrupts::enable();
+        let start = arch::timer::now();
+        while arch::timer::now().wrapping_sub(start) < arch::timer::frequency() / 5 {
+            arch::wait_for_interrupt();
+        }
+        println!(
+            "  timer       : {} ticks in ~0.2s (SBI timer + S-mode interrupt at {} Hz)",
+            arch::timer::ticks(),
+            arch::timer::TICK_HZ,
+        );
+
         println!("  next: the capability core, as arch/riscv64 stops being stubs.");
         arch::halt();
     }

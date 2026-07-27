@@ -142,9 +142,17 @@ extern "C" fn riscv_trap_dispatch(frame: &mut TrapFrame) {
     let scause = frame.scause;
 
     if scause & INTERRUPT != 0 {
-        // Timer and external interrupts arrive here once the timer and PLIC steps enable them.
-        // Nothing is enabled yet, so a stray interrupt is unexpected; count it and return.
-        SPURIOUS_IRQS.fetch_add(1, Ordering::Relaxed);
+        let code = scause & 0xff;
+        match code as u32 {
+            // The S-mode timer: count the tick and rearm. Preemption will hang off this once the
+            // scheduler runs on RISC-V; for now it just proves the interrupt path works.
+            super::timer::TIMER_INTID => super::timer::tick(),
+            // External (PLIC) and software interrupts arrive here once those steps enable them.
+            // Nothing else is enabled yet, so anything else is unexpected.
+            _ => {
+                SPURIOUS_IRQS.fetch_add(1, Ordering::Relaxed);
+            }
+        }
         return;
     }
 
