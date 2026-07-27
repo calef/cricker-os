@@ -121,9 +121,10 @@ Finding these is the point; each gets pushed under `arch/`.
 
 - **Target:** `riscv64imac-unknown-none-elf`, the integer-only target, the analog of aarch64's
   `-softfloat` (no FP state in the kernel). It runs on QEMU virt's rv64gc CPU (imac is a subset).
-- **Linker:** a RISC-V `link.ld`. RAM base is `0x8000_0000`; OpenSBI loads the payload at
-  `0x8020_0000`. First cut can link low (physical, `satp=0` bare mode) so boot+console needs no MMU;
-  the high-half kernel VA comes with the Sv39 step.
+- **Linker:** `link-riscv.ld`. RAM base is `0x8000_0000`; OpenSBI loads the payload at `0x8020_0000`.
+  It links **high and loads low** (`AT()`), like the aarch64 script: the kernel lives in the Sv39
+  high half, and `boot.s` does the higher-half transition. (An earlier cut linked low / bare-mode for
+  the first boot+console; that was replaced when high-half landed.)
 - **Wiring:** `build.rs` selects the linker script by `CARGO_CFG_TARGET_ARCH`; `.cargo/config.toml`
   adds a `[target.riscv64imac-unknown-none-elf] runner` pointing at a new `scripts/qemu-runner-riscv.sh`
   (`qemu-system-riscv64 -machine virt -bios default -kernel <elf> -smp N -serial stdio ...`); `xtask`'s
@@ -147,21 +148,32 @@ Finding these is the point; each gets pushed under `arch/`.
    leak surfaced and was deferred, not fixed: portable code (`sched`, `smp`, `syscall`, `user`) names
    `drivers::gic` directly, an interrupt-controller coupling that the traps step resolves with a PLIC
    abstraction; until then the GIC driver stays un-gated (it compiles on riscv and is simply dead).
-3. **Traps.** `stvec` + the `TrapFrame` + a fault that prints instead of dying silently.
-4. **MMU (Sv39).** `satp`, the direct map, the high-half, the paging-format work. The biggest single
-   step. **In progress:** the paging-format work is done (leak #2), and the **higher-half boot
-   transition works** (Chris chose high-half, DECISIONS §17): the kernel links high / loads low, and
-   `boot.s` enters physically, points `satp` at a four-gigapage boot table (identity + high alias),
-   turns Sv39 on, and jumps to its own high-half alias. Proven by the console banner reporting a live
-   code address of `0xffffffc0_8020_xxxx` (`KERNEL_VA_BASE | physical`), i.e. the kernel is genuinely
-   executing in the Sv39 high half, not just reaching the UART through the identity alias.
-   **Remaining:** replace the coarse RWX boot table with fine-grained W^X kernel tables (via
-   `Mapper<_, _, Sv39>`), and implement the user-mapping surface and per-process `satp` switching
-   (which needs traps to exercise). The RISC-V single-`satp` model means every process root shares the
-   kernel's high-half top-level entries.
-5. **Timer + interrupts.** Sstc/CLINT + PLIC, preemption on RISC-V.
-6. **The capability core runs.** `caps`, IPC, the scheduler, the same code as aarch64, on RISC-V. The
-   payoff: one verified capability core, two ISAs, and rule #1 proven (or its leaks all closed).
+3. **Traps. Done.** `stvec` + the `TrapFrame` + trap.s (save 36 registers, dispatch on `scause`,
+   restore, `sret`). The syscall-ABI leak is resolved: `syscall.rs` reads the number and args through
+   `TrapFrame::{syscall_nr, arg, set_arg}`, so `ecall`'s a7/a0..a5 map without portable code naming a
+   register. Proven by a boot self-test: an `ebreak` is caught, `sepc` stepped past it, and `sret`
+   returns. First cut is S-mode traps on the current stack; the `sscratch` stack switch for U-mode
+   traps arrives with the user path.
+4. **MMU (Sv39). Done (kernel side).** The paging-format work (leak #2), the **higher-half boot
+   transition** (Chris chose high-half, DECISIONS §17; proven by the banner's live code address
+   `0xffffffc0_8020_xxxx`), the **fine-grained W^X kernel tables** (`mmu::init` via `Mapper<_, _,
+   Sv39>`, replacing the coarse RWX boot table, `satp` switched live with the console surviving), and
+   the **kernel mapping surface** (`map_page`/`unmap_page`/`translate`/`flush_tlb`, proven by a
+   map/write/read/unmap self-test). **Remaining:** the *user*-mapping surface and per-process `satp`
+   (the user path). The RISC-V single-`satp` model means every process root shares the kernel's
+   high-half top-level entries; `reserved_root`/`switch_user_root` already implement the kernel-thread
+   side of that.
+5. **Timer + interrupts. Timer done.** SBI TIME `set_timer` + `sie.STIE`, the dispatcher routes
+   `scause` = timer to `timer::tick`; proven by ~17 ticks in 0.2 s at 100 Hz. **Remaining:** the PLIC
+   (external/device interrupts), which also resolves the `drivers::gic` leak; it is exercised by the
+   userspace-driver path, so it lands with that.
+6. **The capability core runs. In progress.** The **scheduler and context switch run on RISC-V**:
+   `sched::init` + two spawned kernel threads + yield, proven by "2 of 2 kernel threads ran", which
+   exercises kernel-stack allocation, the initial `Context`, `context.s` (`switch_to` + the
+   trampolines), the run queue, yield, exit, and reap. **Remaining for full parity:** user address
+   spaces at U-mode (the user-mapping surface, the `sscratch` U-mode trap entry, `enter_user`'s
+   `sret`, a process root that shares the kernel high-half), then running a user ELF. IPC, caps, and
+   the scheduler are the same portable code that already works on aarch64, now on the RISC-V switch.
 
 The reward beyond the proof: when a real RISC-V board (a ~$70 StarFive VisionFive 2 / Milk-V Mars, or a
 rented Graviton later) is on hand, the QEMU-virt work transfers, because real boards use the same
