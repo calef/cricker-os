@@ -1463,11 +1463,11 @@ pub mod virtio_service {
 
     const ROLE_VIRTIO_BLK: u64 = 3;
 
-    /// Start the driver. Returns the endpoint it will report its result on, or `None` if there is
-    /// no disk attached to enumerate.
-    pub fn start(image: &'static [u8]) -> Option<EpId> {
-        let dev = crate::virtio::find_block_device()?;
-
+    /// Start the driver against a discovered transport. The shared body of [`start`] (mmio) and
+    /// [`start_pci`] (PCIe): everything from here on, the DMA region, the Irq routing, the
+    /// confined `Virtio` capability, the spawn, is bus-agnostic, which is the transport seam
+    /// doing its job.
+    fn wire(image: &'static [u8], transport: crate::virtio::Transport, intid: u32) -> EpId {
         // A DMA page: physical memory the device can reach, mapped into the driver, whose
         // physical address the driver must know (a process sees only virtual addresses). We hand
         // that physical address over in `arg1`.
@@ -1483,16 +1483,16 @@ pub mod virtio_service {
         // Route the device's interrupt to an endpoint and enable it, so the driver's `WAIT` on
         // its Irq capability will receive it. See milestone 9a.
         let irq_ep = crate::sched::create_endpoint();
-        crate::sched::bind_irq(dev.intid, irq_ep);
-        crate::arch::irq::enable(dev.intid);
+        crate::sched::bind_irq(intid, irq_ep);
+        crate::arch::irq::enable(intid);
 
         // Where the driver reports the bytes it read.
         let report = crate::sched::create_endpoint();
 
-        // Register the device's transport with the kernel: the kernel owns the MMIO and the
+        // Register the device's transport with the kernel: the kernel owns the registers and the
         // DMA-critical operations, and confines the device to this DMA region. The driver gets a
         // `Virtio` capability, not the registers.
-        let vid = crate::virtio::register(dev.mmio_phys, dma, FRAME_SIZE);
+        let vid = crate::virtio::register(transport, dma, FRAME_SIZE);
 
         crate::sched::spawn(move || {
             run(
@@ -1503,7 +1503,7 @@ pub mod virtio_service {
                     arg2: 0,
                     grants: &[
                         endpoint_cap(report, Rights::WRITE), // slot 0: SEND the result
-                        irq_cap(dev.intid),                  // slot 1: WAIT / ACK the interrupt
+                        irq_cap(intid),                      // slot 1: WAIT / ACK the interrupt
                         virtio_cap(vid),                     // slot 2: drive the device, confined
                     ],
                     maps: &[Mapping {
@@ -1516,7 +1516,39 @@ pub mod virtio_service {
         })
         .expect("could not spawn the virtio driver");
 
-        Some(report)
+        report
+    }
+
+    /// Start the driver against the virtio-mmio disk. Returns the endpoint it will report its
+    /// result on, or `None` if there is no disk attached to enumerate.
+    pub fn start(image: &'static [u8]) -> Option<EpId> {
+        let dev = crate::virtio::find_block_device()?;
+        Some(wire(
+            image,
+            crate::virtio::Transport::Mmio {
+                mmio_phys: dev.mmio_phys,
+            },
+            dev.intid,
+        ))
+    }
+
+    /// Start the SAME driver binary against the PCIe disk (the PCIe transport, P4): enumeration
+    /// and bring-up by kernel/src/pci.rs, INTx through the PLIC, the identical confinement. The
+    /// driver cannot tell which bus it is on, and that is the point.
+    #[cfg(target_arch = "riscv64")]
+    pub fn start_pci(image: &'static [u8]) -> Option<EpId> {
+        let d = crate::pci::find_block_device()?;
+        Some(wire(
+            image,
+            crate::virtio::Transport::Pci {
+                common: d.common,
+                notify_base: d.notify_base,
+                notify_mult: d.notify_mult,
+                notify_addr: 0,
+                isr: d.isr,
+            },
+            d.intid,
+        ))
     }
 
     const ROLE_VIRTIO_ATTACK: u64 = 8;
@@ -1531,7 +1563,13 @@ pub mod virtio_service {
         unsafe {
             core::ptr::write_bytes(mmu::phys_to_virt(dma) as *mut u8, 0, FRAME_SIZE as usize);
         }
-        let vid = crate::virtio::register(dev.mmio_phys, dma, FRAME_SIZE);
+        let vid = crate::virtio::register(
+            crate::virtio::Transport::Mmio {
+                mmio_phys: dev.mmio_phys,
+            },
+            dma,
+            FRAME_SIZE,
+        );
         let report = crate::sched::create_endpoint();
 
         crate::sched::spawn(move || {
@@ -1573,7 +1611,13 @@ pub mod virtio_service {
         unsafe {
             core::ptr::write_bytes(mmu::phys_to_virt(dma) as *mut u8, 0, FRAME_SIZE as usize);
         }
-        let vid = crate::virtio::register(dev.mmio_phys, dma, FRAME_SIZE);
+        let vid = crate::virtio::register(
+            crate::virtio::Transport::Mmio {
+                mmio_phys: dev.mmio_phys,
+            },
+            dma,
+            FRAME_SIZE,
+        );
         let report = crate::sched::create_endpoint();
 
         crate::sched::spawn(move || {
@@ -3583,6 +3627,39 @@ mod riscv_virtio_tests {
             refused, 1,
             "an indirect descriptor whose inner table pointed at kernel memory was NOT refused: \
              the device could have followed it out of the driver's region",
+        );
+    }
+
+    /// **The PCIe transport, end to end.** The identical driver binary reads the same file off
+    /// the disk QEMU attached as `virtio-blk-pci`: found by ECAM enumeration, BARs placed by the
+    /// kernel, registers reached through the virtio-pci common-config block, the completion
+    /// interrupt arriving as INTx through the PLIC (the swizzled line, so this is also P3's
+    /// proof), and the same shadow-ring confinement in the path. The driver cannot tell which
+    /// bus it is on; this test is the transport seam's contract, held against real device
+    /// behaviour on both sides.
+    #[test_case]
+    fn a_userspace_driver_reads_a_file_over_the_pcie_transport() {
+        use crate::arch::exceptions::ROUTED_IRQS;
+
+        let report = match virtio_service::start_pci(blk_image()) {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no virtio-pci disk on the bus; skipping)");
+                return;
+            }
+        };
+
+        let irqs_before = ROUTED_IRQS.load(Ordering::Relaxed);
+        let word = sched::ipc_recv(report)[0];
+
+        assert_eq!(
+            &word.to_le_bytes(),
+            b"cricker-",
+            "the driver reported the wrong file contents over pci",
+        );
+        assert!(
+            ROUTED_IRQS.load(Ordering::Relaxed) > irqs_before,
+            "the read completed but no INTx interrupt was delivered through the PLIC",
         );
     }
 }

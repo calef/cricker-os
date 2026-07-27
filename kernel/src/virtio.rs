@@ -106,6 +106,170 @@ const REG_QUEUE_DRIVER_LOW: u64 = 0x090;
 const REG_QUEUE_DRIVER_HIGH: u64 = 0x094;
 const REG_QUEUE_DEVICE_LOW: u64 = 0x0a0;
 const REG_QUEUE_DEVICE_HIGH: u64 = 0x0a4;
+// Driver-visible reads the pci transport synthesizes (see `Transport::read_reg`).
+const REG_MAGIC_RO: u64 = 0x000;
+const REG_VERSION_RO: u64 = 0x004;
+const REG_DEVICE_ID_RO: u64 = 0x008;
+const REG_DEVICE_FEATURES: u64 = 0x010;
+const REG_INTERRUPT_STATUS: u64 = 0x060;
+
+/// **The transport seam** (the PCIe workstream's P4; notes/pcie-transport-scope.md). Everything
+/// above this enum, the shadow ring, the validator, the queue layout contract, the userspace
+/// driver, speaks one register vocabulary: virtio-mmio's. The seam keeps it that way. A
+/// `Transport` answers that vocabulary against whichever bus the device actually sits on: the
+/// mmio variant is a passthrough to the slot's registers; the pci variant translates each name
+/// to the virtio-pci common-config layout (a different arrangement of the same registers), the
+/// ISR byte, and the notify doorbell. The userspace driver is byte-identical over both, and the
+/// DMA confinement neither knows nor cares which bus rang the device.
+///
+/// The mmio vocabulary is the seam's canonical language on purpose: it is the vocabulary the ABI
+/// already exposes to drivers (`abi::virtio`), and it is flat (offset -> register), which makes
+/// the translation table below legible. Nothing about the choice is load-bearing beyond that.
+pub enum Transport {
+    /// A virtio-mmio slot: the vocabulary IS this device's register block.
+    Mmio { mmio_phys: u64 },
+    /// A modern virtio-pci function, resolved by kernel/src/pci.rs: the common-config block, the
+    /// ISR byte, and the notify doorbell parameters, all physical addresses in a mapped BAR.
+    // Constructed only by kernel/src/pci.rs, which is riscv64-only today (that board's disk
+    // arrives over PCIe). On aarch64 the variant is dormant, not dead: the seam is portable and
+    // the aarch64 wiring is a constants-plus-map change when a PCIe device wants driving there.
+    #[cfg_attr(target_arch = "aarch64", allow(dead_code))]
+    Pci {
+        common: u64,
+        notify_base: u64,
+        notify_mult: u32,
+        /// Queue 0's resolved doorbell, computed at `setup_queue0` (it needs `queue_notify_off`,
+        /// which is only readable with the queue selected). Zero until then.
+        notify_addr: u64,
+        isr: u64,
+    },
+}
+
+// virtio-pci common-config offsets (virtio spec 4.1.4.3), the pci side of the translation.
+const PCI_DEVICE_FEATURE_SEL: u64 = 0x00;
+const PCI_DEVICE_FEATURE: u64 = 0x04;
+const PCI_DRIVER_FEATURE_SEL: u64 = 0x08;
+const PCI_DRIVER_FEATURE: u64 = 0x0c;
+const PCI_DEVICE_STATUS: u64 = 0x14;
+const PCI_QUEUE_SEL: u64 = 0x16;
+const PCI_QUEUE_SIZE: u64 = 0x18;
+const PCI_QUEUE_ENABLE: u64 = 0x1c;
+const PCI_QUEUE_NOTIFY_OFF: u64 = 0x1e;
+const PCI_QUEUE_DESC: u64 = 0x20;
+const PCI_QUEUE_DRIVER: u64 = 0x28;
+const PCI_QUEUE_DEVICE: u64 = 0x30;
+
+/// Volatile accessors at a physical address through the direct map, in the width the pci
+/// common-config block prescribes per register (it is packed; mmio is uniformly u32).
+fn pread<T: Copy>(phys: u64) -> T {
+    // SAFETY: the caller passes addresses inside a device-mapped BAR or mmio window.
+    unsafe { core::ptr::read_volatile(mmu::phys_to_virt(phys) as *const T) }
+}
+fn pwrite<T: Copy>(phys: u64, v: T) {
+    // SAFETY: as above.
+    unsafe { core::ptr::write_volatile(mmu::phys_to_virt(phys) as *mut T, v) }
+}
+
+impl Transport {
+    /// Answer a read in the mmio vocabulary.
+    fn read_reg(&self, off: u64) -> u32 {
+        match self {
+            Transport::Mmio { mmio_phys } => reg_read(*mmio_phys, off),
+            Transport::Pci { common, isr, .. } => match off {
+                // pci has no magic/version/device-id registers: identity was proved from config
+                // space (vendor/device id) before this transport existed. Synthesized so the
+                // driver's sanity checks mean the same thing on both buses.
+                REG_MAGIC_RO => 0x7472_6976,
+                REG_VERSION_RO => 2,
+                REG_DEVICE_ID_RO => 2,
+                REG_DEVICE_FEATURES => pread::<u32>(common + PCI_DEVICE_FEATURE),
+                // The ISR byte is read-to-ack at the device: the read itself deasserts INTx.
+                // Same bit 0 (queue interrupt) the mmio register reports.
+                REG_INTERRUPT_STATUS => pread::<u8>(*isr) as u32,
+                REG_STATUS => pread::<u8>(common + PCI_DEVICE_STATUS) as u32,
+                REG_QUEUE_NUM_MAX => {
+                    pwrite::<u16>(common + PCI_QUEUE_SEL, 0);
+                    pread::<u16>(common + PCI_QUEUE_SIZE) as u32
+                }
+                _ => 0,
+            },
+        }
+    }
+
+    /// Answer a write in the mmio vocabulary. Only the offsets the kernel itself writes and the
+    /// driver-safe set (`write_register`'s SAFE list) reach here.
+    fn write_reg(&mut self, off: u64, v: u32) {
+        match self {
+            Transport::Mmio { mmio_phys } => reg_write(*mmio_phys, off, v),
+            Transport::Pci { common, .. } => match off {
+                REG_DEVICE_FEATURES_SEL => pwrite::<u32>(*common + PCI_DEVICE_FEATURE_SEL, v),
+                REG_DRIVER_FEATURES_SEL => pwrite::<u32>(*common + PCI_DRIVER_FEATURE_SEL, v),
+                REG_DRIVER_FEATURES => pwrite::<u32>(*common + PCI_DRIVER_FEATURE, v),
+                REG_STATUS => pwrite::<u8>(*common + PCI_DEVICE_STATUS, v as u8),
+                // The ISR read already acknowledged; the mmio-style ack has no pci counterpart.
+                REG_INTERRUPT_ACK => {}
+                _ => {}
+            },
+        }
+    }
+
+    /// Queue 0's maximum size, as the device reports it.
+    fn queue_num_max(&self) -> u16 {
+        match self {
+            Transport::Mmio { mmio_phys } => {
+                reg_write(*mmio_phys, REG_QUEUE_SEL, 0);
+                reg_read(*mmio_phys, REG_QUEUE_NUM_MAX) as u16
+            }
+            Transport::Pci { .. } => self.read_reg(REG_QUEUE_NUM_MAX) as u16,
+        }
+    }
+
+    /// Program queue 0: its size and its three ring addresses, then mark it live. The addresses
+    /// are the kernel's choice (the shadow page and the driver's used ring); that this method is
+    /// the only way they reach the device is the confinement.
+    fn setup_queue0(&mut self, num: u16, desc: u64, avail: u64, used: u64) {
+        match self {
+            Transport::Mmio { mmio_phys } => {
+                let m = *mmio_phys;
+                reg_write(m, REG_QUEUE_SEL, 0);
+                reg_write(m, REG_QUEUE_NUM, num as u32);
+                reg_write(m, REG_QUEUE_DESC_LOW, desc as u32);
+                reg_write(m, REG_QUEUE_DESC_HIGH, (desc >> 32) as u32);
+                reg_write(m, REG_QUEUE_DRIVER_LOW, avail as u32);
+                reg_write(m, REG_QUEUE_DRIVER_HIGH, (avail >> 32) as u32);
+                reg_write(m, REG_QUEUE_DEVICE_LOW, used as u32);
+                reg_write(m, REG_QUEUE_DEVICE_HIGH, (used >> 32) as u32);
+                reg_write(m, REG_QUEUE_READY, 1);
+            }
+            Transport::Pci {
+                common,
+                notify_base,
+                notify_mult,
+                notify_addr,
+                ..
+            } => {
+                pwrite::<u16>(*common + PCI_QUEUE_SEL, 0);
+                pwrite::<u16>(*common + PCI_QUEUE_SIZE, num);
+                pwrite::<u64>(*common + PCI_QUEUE_DESC, desc);
+                pwrite::<u64>(*common + PCI_QUEUE_DRIVER, avail);
+                pwrite::<u64>(*common + PCI_QUEUE_DEVICE, used);
+                // The doorbell: notify_base + queue_notify_off * multiplier, readable only with
+                // the queue selected, so it is resolved here and remembered.
+                let off = pread::<u16>(*common + PCI_QUEUE_NOTIFY_OFF) as u64;
+                *notify_addr = *notify_base + off * (*notify_mult as u64);
+                pwrite::<u16>(*common + PCI_QUEUE_ENABLE, 1);
+            }
+        }
+    }
+
+    /// Ring the doorbell for queue 0. Only [`notify`] calls this, after validation.
+    fn notify_queue0(&self) {
+        match self {
+            Transport::Mmio { mmio_phys } => reg_write(*mmio_phys, REG_QUEUE_NOTIFY, 0),
+            Transport::Pci { notify_addr, .. } => pwrite::<u16>(*notify_addr, 0),
+        }
+    }
+}
 
 /// The fixed queue layout, a contract shared with the userspace driver (user/src/virtio.rs). The
 /// kernel places the rings at these offsets in the DMA region, so it always knows where they are.
@@ -126,7 +290,7 @@ const VIRTQ_DESC_F_INDIRECT: u16 = 4;
 
 /// One block device the kernel operates the transport for.
 struct Device {
-    mmio_phys: u64,
+    transport: Transport,
     dma_base: u64,
     dma_size: u64,
     /// The last available-ring index we have already validated and forwarded. Descriptors are
@@ -173,10 +337,10 @@ static DEVICES: IrqSafeMutex<Devices> = IrqSafeMutex::new(
     },
 );
 
-/// Register the block device and its DMA region with the transport. Returns its id, which is what
-/// goes inside an `Object::Virtio` capability. The driver never sees the MMIO; it drives the
-/// device through that capability.
-pub fn register(mmio_phys: u64, dma_base: u64, dma_size: u64) -> usize {
+/// Register the block device and its DMA region with the transport layer. Returns its id, which
+/// is what goes inside an `Object::Virtio` capability. The driver never sees the device's
+/// registers on either bus; it drives the device through that capability.
+pub fn register(transport: Transport, dma_base: u64, dma_size: u64) -> usize {
     // The shadow page the device reads its rings from. One frame per device, kernel-owned and never
     // mapped into the driver, so the driver cannot touch what the device sees.
     let shadow_base = crate::memory::alloc()
@@ -199,7 +363,7 @@ pub fn register(mmio_phys: u64, dma_base: u64, dma_size: u64) -> usize {
     );
     let id = devs.count;
     devs.entries[id] = Some(Device {
-        mmio_phys,
+        transport,
         dma_base,
         dma_size,
         last_avail: 0,
@@ -359,7 +523,7 @@ pub enum TransportError {
 pub fn read_register(id: usize, off: u64) -> Option<u32> {
     let devs = DEVICES.lock();
     let dev = devs.get(id)?;
-    Some(reg_read(dev.mmio_phys, off))
+    Some(dev.transport.read_reg(off))
 }
 
 /// Write one of the DMA-*safe* registers (status, features selection, interrupt ack). Refuses the
@@ -393,7 +557,7 @@ pub fn write_register(id: usize, off: u64, val: u32) -> Result<(), TransportErro
         _ => val,
     };
 
-    reg_write(dev.mmio_phys, off, val);
+    dev.transport.write_reg(off, val);
     Ok(())
 }
 
@@ -434,28 +598,20 @@ fn sanitize_driver_features(sel: u32, val: u32) -> u32 {
 /// - **Used ring** stays in the driver's region, so the driver reads completions directly. The
 ///   device only ever *writes* indices and lengths there, never addresses, so nothing to confine.
 pub fn setup_queue(id: usize, num: u16) -> Result<(), TransportError> {
-    let devs = DEVICES.lock();
-    let dev = devs.get(id).ok_or(TransportError::NoDevice)?;
+    let mut devs = DEVICES.lock();
+    let dev = devs.get_mut(id).ok_or(TransportError::NoDevice)?;
 
     if num == 0 || num > QSIZE || dev.dma_size < RING_END {
         return Err(TransportError::BadQueue);
     }
-    reg_write(dev.mmio_phys, REG_QUEUE_SEL, 0);
-    if (reg_read(dev.mmio_phys, REG_QUEUE_NUM_MAX) as u16) < num {
+    if dev.transport.queue_num_max() < num {
         return Err(TransportError::BadQueue);
     }
-    reg_write(dev.mmio_phys, REG_QUEUE_NUM, num as u32);
 
     let desc = dev.shadow_base + DESC_OFF; // the SHADOW descriptor table (device-read, kernel-owned)
     let avail = dev.shadow_base + AVAIL_OFF; // the SHADOW available ring
     let used = dev.dma_base + USED_OFF; // the used ring stays in the driver's region
-    reg_write(dev.mmio_phys, REG_QUEUE_DESC_LOW, desc as u32);
-    reg_write(dev.mmio_phys, REG_QUEUE_DESC_HIGH, (desc >> 32) as u32);
-    reg_write(dev.mmio_phys, REG_QUEUE_DRIVER_LOW, avail as u32);
-    reg_write(dev.mmio_phys, REG_QUEUE_DRIVER_HIGH, (avail >> 32) as u32);
-    reg_write(dev.mmio_phys, REG_QUEUE_DEVICE_LOW, used as u32);
-    reg_write(dev.mmio_phys, REG_QUEUE_DEVICE_HIGH, (used >> 32) as u32);
-    reg_write(dev.mmio_phys, REG_QUEUE_READY, 1);
+    dev.transport.setup_queue0(num, desc, avail, used);
     Ok(())
 }
 
@@ -495,7 +651,7 @@ pub fn notify(id: usize) -> Result<(), TransportError> {
     // The shadow writes above must be globally visible before the device is rung: the device is a
     // separate observer that will read the shadow by DMA. See arch::dma_wmb.
     crate::arch::dma_wmb();
-    reg_write(dev.mmio_phys, REG_QUEUE_NOTIFY, 0);
+    dev.transport.notify_queue0();
     Ok(())
 }
 
