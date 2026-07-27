@@ -84,7 +84,23 @@ no in-kernel test run. **The hard part is already done:** `arch::semihosting::ex
   there is, and it aligns with the verified-Rust thesis. Do it first: cheap, and it makes every later
   parity claim checkable on riscv.
 
-### C. virtio-blk + on-disk filesystem — PARTIAL (kernel-side discovery done; blocked on QEMU transport).
+### C. virtio-blk + on-disk filesystem — the "blocked" record was WRONG; see the correction below.
+
+**Correction (2026-07-27, evening).** The blocker recorded below does not reproduce. Booting the
+riscv kernel with the runner's exact flags (QEMU 11.0.2, `-global virtio-mmio.force-legacy=false
+-device virtio-blk-device`) finds a modern virtio-mmio block device at slot 7 (0x10008000, PLIC
+IRQ 8); `find_block_device` reports it and the kernel registers the transport. The most likely
+mechanism for the false record, stated as inference: both runners silently dropped the disk when
+`CRICKER_DISK` named a file that did not exist (`[ -f ]` guard), and no riscv xtask path builds
+`crickerfs.img`, so a riscv run on a clean target directory booted disklessly and every slot
+honestly read device-id 0 ("empty"). The conclusion "QEMU prefers PCIe for riscv" was reasonable
+and wrong; the machine was never asked the question. Both runners now fail loudly on a missing
+disk file so this class of record cannot be manufactured again. The machine overrules the
+documentation; the PCIe transport keeps its own justification (notes/pcie-transport-scope.md: the
+door to NVMe and real hardware) but is **not** a parity-C prerequisite. The original, wrong entry
+is kept below, unedited, because the correction is the instructive part.
+
+### C (superseded record). PARTIAL (kernel-side discovery done; blocked on QEMU transport).
 
 The kernel-side enumeration is arch-correct on RISC-V now: the virtio-mmio slot layout (32 slots
 0x200 apart on aarch64, 8 slots 0x1000 apart on riscv) moved into arch constants, the transport

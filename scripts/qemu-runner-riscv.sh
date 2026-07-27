@@ -35,8 +35,15 @@ fi
 # does: `if=none` + `-device virtio-blk-device` puts a block device in one of the `virt` machine's
 # virtio-mmio slots (0x1000_1000..), which virtio::find_block_device probes. force-legacy=false picks
 # modern virtio (version 2). Without a disk the kernel simply finds no block device and says so.
+#
+# A SET CRICKER_DISK naming a missing file is an error, not a silent no-op; see the same check in
+# qemu-runner.sh for why (it very likely manufactured the false parity-C blocker).
 DISK=""
-if [ -n "$CRICKER_DISK" ] && [ -f "$CRICKER_DISK" ]; then
+if [ -n "$CRICKER_DISK" ] && [ ! -f "$CRICKER_DISK" ]; then
+    echo "qemu-runner-riscv: CRICKER_DISK=$CRICKER_DISK does not exist (run mkdisk first)" >&2
+    exit 1
+fi
+if [ -n "$CRICKER_DISK" ]; then
     DISK="-global virtio-mmio.force-legacy=false -drive file=$CRICKER_DISK,if=none,format=raw,id=hd0,readonly=on -device virtio-blk-device,drive=hd0"
 fi
 

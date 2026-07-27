@@ -52,8 +52,17 @@ fi
 # Attach the crickerfs image as a virtio-blk device. `if=none` + `-device virtio-blk-device`
 # gives us a virtio-mmio block device on the `virt` machine, which is what the userspace driver
 # probes for and reads. Without a disk, the kernel simply finds no block device and says so.
+#
+# A SET CRICKER_DISK naming a missing file is an error, not a silent no-op. The old behaviour
+# (quietly booting diskless) had the kernel truthfully reporting "no block device", which reads
+# like a machine fact when it is actually a build-order mistake; it very likely produced the
+# false "riscv virt has no mmio disk" record in notes/riscv-parity-scope.md.
 DISK=""
-if [ -n "$CRICKER_DISK" ] && [ -f "$CRICKER_DISK" ]; then
+if [ -n "$CRICKER_DISK" ] && [ ! -f "$CRICKER_DISK" ]; then
+    echo "qemu-runner: CRICKER_DISK=$CRICKER_DISK does not exist (run mkdisk first)" >&2
+    exit 1
+fi
+if [ -n "$CRICKER_DISK" ]; then
     # force-legacy=false selects MODERN virtio-mmio (version 2), whose split register interface
     # (separate physical addresses for the descriptor table and the two rings) is the current
     # design and the one worth learning. Without it QEMU gives legacy (version 1), a different
