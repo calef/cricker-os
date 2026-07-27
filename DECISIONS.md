@@ -1057,10 +1057,20 @@ Base Sv39 has no device-memory PTE bit, so `CAP_DEVICE` rides in an RSW (softwar
 `Flags` round-trip exact; real hardware would use Svpbmt. Portable code that must name the format (the
 user-VA gate, the user `Mapper`) refers to `arch::mmu::Format`, so the choice lives in `arch/`.
 
-RISC-V boots and prints today (S-mode entry, `.bss`, the `tp` per-CPU register, an NS16550 console,
-the OpenSBI device-tree handoff). The MMU (Sv39 tables + `satp`), traps (`stvec` + the syscall-ABI
-reconciliation), timer, and interrupt controller (PLIC, resolving the last leak: portable code still
-names `drivers::gic`) are the remaining work.
+**The whole capability core runs on RISC-V today.** Boot (higher-half Sv39, `.bss`, the `tp`
+per-CPU register, an NS16550 console, the OpenSBI device-tree handoff), the MMU (fine-grained W^X
+Sv39 tables + `satp`, the single-`satp` process model where every root carries the kernel high half),
+traps (`stvec`, the `sscratch` dance, the syscall-ABI reconciliation), the SBI timer, the scheduler
+and context switch, U-mode user programs making syscalls, a capability invocation (`SYS_INVOKE` →
+lookup → rights check → endpoint SEND) from U-mode, and **preemption** (the timer preempts a thread
+that never yields, DECISIONS §5). The port surfaced two RISC-V-specific bugs worth recording: `tp` is
+a general register, not a system register, so a U-mode trap must restore the kernel `tp` from a known
+source rather than trust it (notes/riscv-port.md); and the shallow TCB entry path let a trap frame
+placed at the top of the kernel stack overlap `enter_frame`'s own frame, fixed by placing the frame
+below the live `sp`. **Remaining:** a real user ELF (a RISC-V init binary in the build) and the PLIC,
+which resolves the last leak (portable code still names `drivers::gic` for the interrupt controller);
+the PLIC waits until RISC-V has a device interrupt to field, so the abstraction lands with a real
+second consumer rather than a speculative one.
 
 ## Reading
 
