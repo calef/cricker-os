@@ -68,6 +68,11 @@ else's kernel:
   component composition, CapDL for trusted init in milestone 22). Code reuse is nil (C,
   and their proofs are theirs), but every capability-model fork should check what seL4 did
   first. Already the habit; see the roadmap's Prior-art sections.
+- **libghostty-vt** (Ghostty's extracted VT core). Zero-dependency, no libc, no allocations,
+  C ABI: nearly a purpose-built description of "runnable as a cricker-os userspace component",
+  and in Zig, which makes it the strongest candidate anywhere for milestone 23's full claim (a
+  confined vendor component in a foreign language). Named in milestone 29; API still in flux,
+  so any adoption pins a version. The single-toolchain fallback is `vte`.
 - **Fuchsia.** The closest general-purpose capability OS. Design prior art for milestone 23
   (capability routing, component manifests) and for the "what would growing up look like"
   question in notes/why-not-general-purpose.md.

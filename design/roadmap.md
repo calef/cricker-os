@@ -40,6 +40,8 @@ IPC and the MMU invariants are next. This threads through the list rather than b
 | 20 | A portable HAL, proven on a second architecture | Make `arch/` a real HAL; bring up RISC-V then x86_64 | the "portable verified core" claim; reach the demonstrator earns |
 | 24 | A second aarch64 *board*: Virtualization.framework (optional) | Boot under Apple's Virtualization.framework, not QEMU's `virt`: a virtio-console driver (VZ has no PL011), VZ's interrupt/memory layout and boot handoff, device discovery through the machine VZ presents | proves the `arch/` **board** boundary on a second machine of the *same* ISA (cheaper than 16's silicon, distinct from 20's second ISA), and lets cricker-os run under the same VMM as macOS/Linux guests. Optional; portability exercise, **not** a benchmarking prerequisite (guest-internal microbenchmarks are VMM-independent) |
 | 27 | Rust `std` on the native ABI | A custom target whose `std` builds: `Vec`, `String`, `println!`, `Instant`, allocation from the process's own untyped, stdio over the console endpoint, `fs`/`net` honestly `Unsupported` until capability-granted servers back them | **widens "runs real workloads" by orders of magnitude**: the pool of programs that build for cricker-os becomes "most Rust code that doesn't touch fs/net", and milestone 23's components become writable by people who are not kernel people. Grows toward general purpose (notes/why-not-general-purpose.md) without smuggling POSIX: the `sys` layer maps to capabilities directly, no fork, no open-by-path |
+| 28 | A solid terminal: the line discipline as a component | Line editing, history, ANSI in/out, control characters, and a written terminal contract, as a **swappable userspace component** between the input/console drivers and applications; Ctrl-C as a capability-routed interrupt to the foreground process, not a Unix signal | a terminal with real behavior is a far better "instance one" for milestone 23's live component replacement than the raw echo loop, and 27's stdio semantics need a terminal that has semantics. Serial, deliberately; the display terminal is 29, and they must not be confused |
+| 29 | A display terminal (framebuffer, virtio-gpu) | An on-device terminal: a userspace virtio-gpu driver (arriving over **PCIe**, which the §18 transport just made reachable), a framebuffer component, font rendering, and a VT state engine maintaining the grid; input from a virtio keyboard | the first pixels the demonstrator ever puts on a screen, and the strongest form of the milestone-23 claim if the VT engine is **libghostty-vt** (zero-dependency, no-libc, no-alloc, C ABI, Zig): a vendor component in a foreign language, capability-confined and hot-swappable. Optional; well off the thesis path |
 | 25 | Cross-OS performance comparison (extends 21) | EL0-measured primitive benchmarks (syscall, context switch, IPC, map, spawn) the lmbench way, so the numbers include the trap the kernel-side benchmarks skip; then line them up against lmbench (Linux, macOS guests) and `sel4bench` (seL4), at a matched virtualization tier, with release builds. Fold in the icount codegen-sensitivity fix. | **turns perf claims into cross-OS numbers**: where does a Rust capability microkernel stand next to Linux, macOS's XNU, and seL4 on the primitives that define an OS. **Largely done**: four EL0 primitives (null syscall, context switch, IPC, page map) on both instruments, a release build path, and the three-way comparison (cricker-os vs Linux-under-HVF vs native macOS) with cricker-os winning null/IPC ~5x. `spawn` landed too (its real prerequisite was never retype, which had already shipped, but **object revocation**, reclaiming a child's TCB/aspace/endpoint so a spawn loop can repeat; that shipped as its own milestone, notes/object-revocation.md, and the EL0 `lat_proc` bench, `spawn_el0`, is in the suite and the committed baseline). **Remaining**: only `sel4bench` (built and booting for qemu-arm-virt, but it times single ops via the PMU cycle counter, which neither QEMU-TCG nor Apple HVF provides, so it is **deferred to real hardware**, the milestone-16 machine, which has a real PMU; this validates our CNTVCT + long-loop design). notes/benchmarks.md |
 | 22 | Trusted init: verify it, and shrink what a broken one can do | Measured/secure boot that checks init before running it; reduce init's authority so a compromise is bounded | **closes the thesis's own soft spot:** init is the privileged *unverified* component the whole system is built by |
 | 23 | A capability-routed component OS with live replacement | Every userspace component (driver, server, app) is a swappable, vendor-shippable unit behind a stable contract; operators replace them live, no reboot. The console hot-swap is instance one; a durable queue-broker decouples component lifecycles (opt-in per channel, for latency) | **the flagship payoff and a product ambition:** competing vendor components, confined by the kernel and swapped live; the verified core is the one fixed thing |
@@ -522,6 +524,47 @@ avoid: an errno-shaped `sys` layer that makes `std` work by pretending the OS is
 
 **Sequencing.** After 19 (the ABI, done) and object revocation (done); independent of 16 and 22;
 feeds 23 directly. Effort L. Off the thesis path, like 20 was: a reach the demonstrator earns.
+
+### 28. A solid terminal: the line discipline as a component
+
+**Deliverable.** The layer Unix calls the tty line discipline, as a swappable userspace component
+between the input/console drivers and applications: line editing (backspace, cursor keys,
+kill/yank), history, ANSI escape parsing in and out, control characters, and a written contract
+for what a terminal owes a program. The interesting design is **Ctrl-C**: interrupting the
+foreground process is a capability-routing question (who holds the right to interrupt whom), and
+this project's answer will not be Unix signals; that answer is the milestone's kernel-adjacent
+substance. Serial, deliberately: the terminal emulator stays on the host end of the wire.
+
+**Why.** Milestone 23's flagship line ("the console hot-swap is instance one") deserves a
+component with real behavior, and 27's stdio semantics (line buffering, `read_line`) need a
+terminal that has semantics. Pure userspace on machinery that all exists; could land any time.
+
+**Prior art and reuse.** Userspace, outside the TCB: the rule says actively prefer porting.
+`noline` (a no_std readline) and `embedded-cli` are live candidates for the editing core; the
+component contract and the interrupt routing are ours. Read the Unix tty layer as the
+mistake-catalog (its tangle is famous) and Plan 9 (editing pushed to the client) as the
+counter-design. Effort M.
+
+### 29. A display terminal: framebuffer, virtio-gpu, and a foreign component
+
+**Deliverable.** The demonstrator's first pixels: a userspace **virtio-gpu** driver (the device
+arrives over PCIe on both `virt` boards, which the §18 transport just made reachable), a
+framebuffer mapped into a terminal component, font rendering, and a VT state engine maintaining
+the grid (escape parsing, scrollback, wrapping, reflow); keyboard input via virtio-input. The
+serial console remains; this is a second head, not a replacement.
+
+**Why, and the 23 connection.** The VT engine is the strongest candidate anywhere in the plan
+for the full form of milestone 23's claim: **libghostty-vt** (Ghostty's extracted core:
+zero-dependency, no libc, fixed buffers with no allocations, C ABI, implemented in Zig) running
+as a capability-confined, hot-swappable vendor component would mean the kernel safely runs code
+we did not write, in a language we do not use. Costs stated plainly: a Zig toolchain enters the
+build for that one component, and their API is still in flux, so any adoption pins a version.
+The single-toolchain fallback is `vte` (alacritty's parser): same shape, our language, much less
+complete (no scrollback or reflow).
+
+**Sequencing.** Needs the PCIe transport (done) and wants 28's contract first so the display
+terminal implements a contract rather than inventing one. Optional and well off the thesis path;
+a reach in the 24 spirit. Effort L.
 
 ## The rival worth understanding, not building
 
