@@ -98,7 +98,9 @@ pub fn init(dtb_ptr: usize) {
     // us and told us where. Nobody else will protect it. Milestone 8 and 10 want to read
     // it, and if the allocator hands that memory out first, the bug lands a long way from
     // its cause.
-    let mut forbidden = [Region { start: 0, size: 0 }; MAX_REGIONS + 3];
+    // Image + DTB + initrd (3), plus the legacy reservation block and the /reserved-memory node
+    // (up to MAX_REGIONS each).
+    let mut forbidden = [Region { start: 0, size: 0 }; 2 * MAX_REGIONS + 3];
     let mut n = 0;
 
     let mut claim = |r: Region| {
@@ -122,6 +124,16 @@ pub fn init(dtb_ptr: usize) {
         claim(initrd);
     }
     for r in reserved {
+        claim(*r);
+    }
+    // The /reserved-memory node's children, distinct from the legacy reservation block above. This
+    // is where RISC-V firmware (OpenSBI) reserves its own region below the kernel; without it the
+    // allocator would hand out OpenSBI's PMP-protected memory and the first write would fault.
+    let mut resv_mem = [Region { start: 0, size: 0 }; MAX_REGIONS];
+    let resv_mem_count = dtb
+        .reserved_memory_regions(&mut resv_mem)
+        .expect("cannot read /reserved-memory");
+    for r in &resv_mem[..resv_mem_count] {
         claim(*r);
     }
     let forbidden = &forbidden[..n];

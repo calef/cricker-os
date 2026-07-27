@@ -334,6 +334,88 @@ impl<'a> Dtb<'a> {
         }
     }
 
+    /// The regions carved out by the `/reserved-memory` node's children.
+    ///
+    /// This is the *other* place firmware advertises memory the OS must not touch, distinct from the
+    /// legacy memory-reservation block that [`reserved_regions`](Self::reserved_regions) reads. On
+    /// RISC-V it is where OpenSBI reserves its own firmware region (with a PMP around it), so missing
+    /// it means the frame allocator hands out OpenSBI's memory and the first write faults on a PMP
+    /// violation. Each child node under `/reserved-memory` carries a `reg`, decoded with that node's
+    /// cell counts (which default to the root's).
+    ///
+    /// The `/reserved-memory` node sits at depth 2 (a child of the root, which is depth 1), and its
+    /// reserved regions are the `reg`s of its depth-3 children.
+    pub fn reserved_memory_regions(&self, out: &mut [Region]) -> Result<usize, Error> {
+        let mut address_cells = 2u32;
+        let mut size_cells = 2u32;
+
+        let mut depth = 0i32;
+        let mut resv_depth: Option<i32> = None;
+        let mut n = 0;
+        let mut at = self.off_struct;
+
+        loop {
+            let token = be32(self.bytes, at)?;
+            at += 4;
+
+            match token {
+                FDT_BEGIN_NODE => {
+                    let name = self.cstr(at)?;
+                    at += align4(name.len() + 1);
+                    depth += 1;
+
+                    if resv_depth.is_none() && name == b"reserved-memory" {
+                        resv_depth = Some(depth);
+                    }
+                }
+
+                FDT_END_NODE => {
+                    if resv_depth == Some(depth) {
+                        // Walked the whole /reserved-memory node; nothing more to find.
+                        return Ok(n);
+                    }
+                    depth -= 1;
+                }
+
+                FDT_PROP => {
+                    let len = be32(self.bytes, at)? as usize;
+                    let name_off = be32(self.bytes, at + 4)? as usize;
+                    let value_at = at + 8;
+                    at = value_at + align4(len);
+
+                    let name = self.cstr(self.off_strings + name_off)?;
+
+                    // The root's cell counts are the defaults for the reserved-memory children.
+                    if depth == 1 {
+                        match name {
+                            b"#address-cells" => address_cells = be32(self.bytes, value_at)?,
+                            b"#size-cells" => size_cells = be32(self.bytes, value_at)?,
+                            _ => {}
+                        }
+                    }
+
+                    if let Some(rd) = resv_depth {
+                        if depth == rd {
+                            // The reserved-memory node may declare its own cell counts for children.
+                            match name {
+                                b"#address-cells" => address_cells = be32(self.bytes, value_at)?,
+                                b"#size-cells" => size_cells = be32(self.bytes, value_at)?,
+                                _ => {}
+                            }
+                        } else if depth == rd + 1 && name == b"reg" {
+                            let dest = out.get_mut(n..).ok_or(Error::TooManyRegions)?;
+                            n += self.decode_reg(value_at, len, address_cells, size_cells, dest)?;
+                        }
+                    }
+                }
+
+                FDT_NOP => {}
+                FDT_END => return Ok(n),
+                other => return Err(Error::BadToken(other)),
+            }
+        }
+    }
+
     /// The initial ramdisk, if the bootloader placed one.
     ///
     /// Declared in `/chosen` as `linux,initrd-start` and `linux,initrd-end`.

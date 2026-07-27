@@ -122,7 +122,17 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
             arch::timer::TICK_HZ,
         );
 
-        println!("  next: the capability core, as arch/riscv64 stops being stubs.");
+        // Memory: parse the device tree OpenSBI handed us (via its high-half alias) for RAM, and
+        // bring up the frame allocator. Portable code, reached through the real phys_to_virt now.
+        stack::init();
+        memory::init(dtb);
+        let f = memory::alloc().expect("no frame from the allocator");
+        println!(
+            "  memory      : device tree parsed, frame allocator up (first frame {:#x})",
+            f.addr(),
+        );
+
+        println!("  next: fine-grained Sv39 tables, then the capability core.");
         arch::halt();
     }
 
