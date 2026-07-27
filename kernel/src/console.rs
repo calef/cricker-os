@@ -4,11 +4,26 @@
 //! pointer, so we mint a fresh one per call rather than keeping a
 //! `static mut CONSOLE`. The real state lives in the hardware, not in our memory.
 
-use crate::drivers::pl011::Pl011;
 use crate::sync::{IrqSafeMutex, rank};
 use core::fmt::Write;
 
-/// The PL011 on QEMU's `virt` machine.
+// The early console UART, selected by architecture at compile time. Two concrete drivers, not a
+// trait: there are exactly two, they are chosen here and nowhere else, and a trait would be an
+// abstraction ahead of a third requirement (DECISIONS.md, rules 2/3). aarch64's `virt` has a PL011;
+// RISC-V's has an NS16550. Both expose `new`/`init`/`impl Write`, so the console code below names
+// neither. See notes/riscv-port.md.
+#[cfg(target_arch = "aarch64")]
+use crate::drivers::pl011::Pl011 as ConsoleUart;
+#[cfg(target_arch = "riscv64")]
+use crate::drivers::ns16550::Ns16550 as ConsoleUart;
+
+/// The console UART's **physical** address on QEMU's `virt` machine.
+#[cfg(target_arch = "aarch64")]
+const UART_PHYS: u64 = 0x0900_0000; // PL011
+#[cfg(target_arch = "riscv64")]
+const UART_PHYS: u64 = 0x1000_0000; // NS16550
+
+/// The console UART's address, as the kernel sees it.
 ///
 /// **Hardcoded on purpose, and it should stay that way.** Not a TODO.
 ///
@@ -18,30 +33,27 @@ use core::fmt::Write;
 /// `println!` is how you would debug it. So the console has to come up *before* the
 /// device tree is parsed, which means the console cannot depend on it.
 ///
-/// The Raspberry Pi port will need a different constant here, and that is the correct
-/// shape: a per-board early-console address, chosen at compile time, that gets us far
-/// enough to read the tree that tells us everything else.
+/// A new board needs a different constant here, and that is the correct shape: a per-board
+/// early-console address, chosen at compile time, that gets us far enough to read the tree that
+/// tells us everything else.
 ///
-/// (The tree does carry it, incidentally: `/chosen/stdout-path = "/pl011@9000000"`.
-/// Worth reading *after* boot as a cross-check, but never worth depending on to boot.)
-///
-/// **This is a virtual address.** The UART is physically at `0x0900_0000`, and it lives in
-/// the kernel's direct map at `pa | KERNEL_VA_BASE`. boot.s maps it before any Rust runs, and
-/// `mmu::init` preserves it, so this is valid from the kernel's first instruction.
-const PL011_BASE: usize = crate::arch::mmu::phys_to_virt(0x0900_0000) as usize;
+/// **This is a virtual address.** It lives in the kernel's direct map at `pa | KERNEL_VA_BASE`; on
+/// aarch64 boot.s maps it before any Rust runs and `mmu::init` preserves it. On RISC-V the kernel
+/// currently runs bare (identity map), so `phys_to_virt` is the identity until the Sv39 step.
+const UART_BASE: usize = crate::arch::mmu::phys_to_virt(UART_PHYS) as usize;
 
 /// The console UART.
 ///
-/// It used to be lock-free: we minted a fresh `Pl011` handle per `print!`, since the handle
-/// is just a pointer and the real state lives in the hardware. That was fine with no
-/// interrupts. It stops being fine the moment an interrupt handler can print in the middle
-/// of somebody else's `write_str`, because the UART is written **one byte at a time** and
-/// the two writers would splice into each other mid-word.
+/// It used to be lock-free: we minted a fresh handle per `print!`, since the handle is just a
+/// pointer and the real state lives in the hardware. That was fine with no interrupts. It stops
+/// being fine the moment an interrupt handler can print in the middle of somebody else's
+/// `write_str`, because the UART is written **one byte at a time** and the two writers would splice
+/// into each other mid-word.
 ///
-/// SAFETY: PL011_BASE is the documented UART address on QEMU `virt`, and nothing else in
-/// the kernel touches it.
-static CONSOLE: IrqSafeMutex<Pl011> =
-    IrqSafeMutex::new(rank::CONSOLE, unsafe { Pl011::new(PL011_BASE) });
+/// SAFETY: UART_BASE is the documented UART address on QEMU `virt`, and nothing else in the kernel
+/// touches it.
+static CONSOLE: IrqSafeMutex<ConsoleUart> =
+    IrqSafeMutex::new(rank::CONSOLE, unsafe { ConsoleUart::new(UART_BASE) });
 
 pub fn init() {
     CONSOLE.lock().init();

@@ -132,8 +132,15 @@ Finding these is the point; each gets pushed under `arch/`.
    tests pass. This proves the boundary is complete: a second architecture compiles against the entire
    kernel with no change above `arch/` (the four leaks were the exceptions, now closed). What is *not*
    yet done is running: every `unimplemented!()` in `arch/riscv64` is real work for the steps below.
-2. **Boots and prints.** Real S-mode `_start` (set `sp`, zero `.bss`), a 16550 UART driver, "hello from
-   RISC-V" on the serial line. The milestone-1 moment on a second ISA.
+2. **Boots and prints. Done.** OpenSBI hands off in S-mode; `_start` sets `sp` and zeroes `.bss`;
+   `kernel_main` sets the `tp` per-CPU register, brings up the NS16550 console (a plain-volatile byte
+   UART, `drivers/ns16550.rs`, selected by a compile-time alias in `console.rs`), and prints a banner
+   including the real device-tree pointer OpenSBI passed in `a1`. That one line exercises the whole
+   chain: S-mode entry, stack, `.bss`, `tp`, `interrupts::disable` (the console lock uses it), the
+   UART, and the DTB handoff. Then a clean `wfi` halt. The milestone-1 moment on a second ISA. A fifth
+   leak surfaced and was deferred, not fixed: portable code (`sched`, `smp`, `syscall`, `user`) names
+   `drivers::gic` directly, an interrupt-controller coupling that the traps step resolves with a PLIC
+   abstraction; until then the GIC driver stays un-gated (it compiles on riscv and is simply dead).
 3. **Traps.** `stvec` + the `TrapFrame` + a fault that prints instead of dying silently.
 4. **MMU (Sv39).** `satp`, the direct map, the high-half, the paging-format work. This is the biggest
    single step (it settles the `paging` generalization).

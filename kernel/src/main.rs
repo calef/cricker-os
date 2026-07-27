@@ -65,6 +65,9 @@ pub static DTB: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsiz
 /// where arguments live. `dtb` arrives in `x0`. See notes/registers.md.
 ///
 /// `-> !` means this never returns, which is true: there is nowhere to return *to*.
+// On riscv64, the early console banner ends in `arch::halt()`, so the rest of `kernel_main` (the
+// full aarch64 boot) is deliberately unreachable there. Scoped to riscv so aarch64 keeps the lint.
+#[cfg_attr(target_arch = "riscv64", allow(unreachable_code))]
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_main(dtb: usize) -> ! {
     DTB.store(dtb, core::sync::atomic::Ordering::Relaxed);
@@ -80,6 +83,23 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
     // window between these two lines is the last place in the kernel where a fault
     // still kills us silently.
     console::init();
+
+    // RISC-V reaches exactly this far today (milestone 20, the console step): OpenSBI's S-mode
+    // handoff, `_start`'s stack and `.bss` zeroing, the per-CPU register, and the NS16550 console.
+    // Everything past here in `kernel_main` (arch::init, the MMU, the scheduler) is still
+    // `unimplemented!()` on riscv, so print the milestone-1 banner and halt cleanly rather than
+    // panic into a stub. This block disappears when the traps and MMU steps let RISC-V run the
+    // whole boot. See notes/riscv-port.md.
+    #[cfg(target_arch = "riscv64")]
+    {
+        println!();
+        println!("cricker-os on RISC-V (rv64, S-mode)");
+        println!("  hart 0 booted: stack, .bss, and the NS16550 console are up.");
+        println!("  device tree : {dtb:#018x}");
+        println!("  next: the capability core, as arch/riscv64 stops being stubs.");
+        arch::halt();
+    }
+
     arch::init();
     stack::init();
 
