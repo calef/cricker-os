@@ -79,7 +79,7 @@ else's kernel:
   honest split: the host-testable closure shape and the witness tests favored building, the
   rule favored reuse, and the omission of the pass is the actual lesson. Kept.
 
-- **`crickerfs` (2026-07-28): kept, over `tar-no-std`/ustar.** Weighed retroactively on
+- **`crickerfs` (2026-07-27): kept, over `tar-no-std`/ustar.** Weighed retroactively on
   Chris's question, with the swap costed out. The format predates this note (a learning-era
   artifact), but the keep decision is a fresh application of the rule: the kernel parses the
   initrd itself, so the parser sits **inside the TCB**, which is exactly where the rule says
