@@ -36,6 +36,25 @@ pub struct TrapFrame {
 }
 
 impl TrapFrame {
+    /// The syscall number the caller passed. RISC-V `ecall` ABI: register `a7` (`x17`). The portable
+    /// dispatcher reads it here so it never names a register directly. This, with `arg`/`set_arg`, is
+    /// the resolution of the syscall-ABI leak flagged during the port (DECISIONS §17): aarch64 uses
+    /// x8 + x0..x5, RISC-V uses a7 + a0..a5, and each maps its own registers.
+    pub fn syscall_nr(&self) -> u64 {
+        self.x[17] // a7
+    }
+
+    /// Syscall argument register `i` (RISC-V: `a0`..`a5`, i.e. `x10`..`x15`).
+    pub fn arg(&self, i: usize) -> u64 {
+        self.x[10 + i]
+    }
+
+    /// Set syscall argument/return register `i`. The return value and IPC message words ride in
+    /// `a0`..`a2` (`x10`..`x12`).
+    pub fn set_arg(&mut self, i: usize, v: u64) {
+        self.x[10 + i] = v;
+    }
+
     /// Build the frame that drops a brand-new thread to U-mode at `entry` on `user_sp`, with `args`
     /// in `a0`..`a2`. The RISC-V side of the userspace-entry seam (notes/riscv-port.md, leak #3),
     /// mirroring aarch64's `for_user_entry`. `sret` will resume at `sepc` in the privilege named by

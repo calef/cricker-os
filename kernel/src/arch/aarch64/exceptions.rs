@@ -73,6 +73,23 @@ impl TrapFrame {
     /// `M[4]=0` (AArch64), `M[3:0]=0` (EL0t, the only stack EL0 has), `DAIF=0` (IRQs on the moment we
     /// land, so a tight-loop user thread is still preemptible, per DECISIONS §5). Zero looks like a
     /// bug and is not.
+    /// The syscall number the caller passed. aarch64 ABI: register `x8` (DECISIONS §10). The
+    /// portable syscall dispatcher reads it through here so it never names a register directly.
+    pub fn syscall_nr(&self) -> u64 {
+        self.x[8]
+    }
+
+    /// Syscall argument register `i` (aarch64: `x0`..`x5`).
+    pub fn arg(&self, i: usize) -> u64 {
+        self.x[i]
+    }
+
+    /// Set syscall argument/return register `i`. The syscall return value and the IPC message words
+    /// ride in these same registers, which is why the setter is general.
+    pub fn set_arg(&mut self, i: usize, v: u64) {
+        self.x[i] = v;
+    }
+
     pub fn for_user_entry(entry: u64, user_sp: u64, args: [u64; 3]) -> Self {
         let mut x = [0u64; 31];
         x[0] = args[0]; // _start's first argument (AAPCS64 puts it in x0)

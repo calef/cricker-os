@@ -34,7 +34,12 @@ use abi::Error;
 
 /// Called from the `svc` arm of `exception_dispatch`.
 pub fn dispatch(frame: &mut TrapFrame) {
-    let nr = frame.x[8];
+    // The syscall number and arguments come from the trap frame through arch accessors, not raw
+    // register indices, because the ABI register file differs per architecture (aarch64 `svc` with
+    // the number in x8 and args in x0..x5; RISC-V `ecall` with the number in a7 and args in a0..a5).
+    // `TrapFrame::{syscall_nr, arg, set_arg}` hide that mapping so this dispatcher stays portable.
+    // See DECISIONS §10/§17.
+    let nr = frame.syscall_nr();
 
     // `exit` never comes back, so it is not part of the result-writing path below.
     if nr == abi::SYS_EXIT {
@@ -49,21 +54,30 @@ pub fn dispatch(frame: &mut TrapFrame) {
         // Drop a capability from the caller's own cspace (milestone 19d). Deleting an empty slot
         // is a no-op, not an error: a loader recycling slots should not have to track emptiness.
         abi::SYS_CAP_DELETE => {
-            let _ = sched::delete_current_cap(frame.x[0]);
+            let _ = sched::delete_current_cap(frame.arg(0));
             Ok(0)
         }
         abi::SYS_INVOKE => invoke(
-            frame, frame.x[0], frame.x[1], frame.x[2], frame.x[3], frame.x[4],
+            frame,
+            frame.arg(0),
+            frame.arg(1),
+            frame.arg(2),
+            frame.arg(3),
+            frame.arg(4),
         ),
         _ => Err(Error::BadSyscall),
     };
 
-    // The return value goes back in x0, which `exception_restore` will pop into the register the
-    // user is waiting on. Writing to the trap frame IS writing to the user's registers.
-    frame.x[0] = match result {
-        Ok(v) => v as u64,
-        Err(e) => (e as i64) as u64,
-    };
+    // The return value goes back in the first argument register, which the trap-restore path pops
+    // into the register the user is waiting on. Writing to the trap frame IS writing to the user's
+    // registers.
+    frame.set_arg(
+        0,
+        match result {
+            Ok(v) => v as u64,
+            Err(e) => (e as i64) as u64,
+        },
+    );
 }
 
 /// Act on a capability.
@@ -112,8 +126,8 @@ fn invoke(
                 // Word 0 goes back the way every syscall result does, in x0 (dispatch writes it
                 // from our return value). Words 1 and 2 we place directly, because a syscall
                 // return is one register and a message is three.
-                frame.x[1] = msg[1];
-                frame.x[2] = msg[2];
+                frame.set_arg(1, msg[1]);
+                frame.set_arg(2, msg[2]);
                 Ok(msg[0] as i64)
             }
 
@@ -156,8 +170,8 @@ fn invoke(
                 }
                 // x1 carries the slot the received capability landed in, or NO_CAP if the message
                 // brought none; x2 the second data word (a CALL's, or 0). x0 returns the first word.
-                frame.x[1] = msg[1];
-                frame.x[2] = msg[2];
+                frame.set_arg(1, msg[1]);
+                frame.set_arg(2, msg[2]);
                 Ok(msg[0] as i64)
             }
 
@@ -172,7 +186,7 @@ fn invoke(
                 if sched::take_ipc_aborted() {
                     return Err(Error::NoSuchSlot); // endpoint revoked; no call, no reply
                 }
-                frame.x[1] = reply[1]; // r1; r0 returns in x0 below
+                frame.set_arg(1, reply[1]); // r1; r0 returns in x0 below
                 Ok(reply[0] as i64)
             }
             _ => Err(Error::BadMethod),
