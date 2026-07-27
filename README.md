@@ -46,7 +46,7 @@ The eleven v1 milestones are done, and so is most of the post-v1 roadmap
 - **It runs a real workload.** A CoreMark-derived compute program, spawned against the written
   native ABI ([notes/abi.md](notes/abi.md)) from a crickerfs archive, by init, at EL0.
 - **Two ISAs at parity.** Everything architecture-specific lives under `kernel/src/arch/`, and
-  riscv64 proves it: SMP, the full test suite (116 tests on aarch64, 55 on riscv64), the
+  riscv64 proves it: SMP, the full test suite (117 tests on aarch64, 59 on riscv64), the
   interactive shell, and the benchmarks all run on both.
 - **SMP.** Four cores via PSCI (aarch64) and SBI (riscv64), per-CPU run queues, cross-core
   placement by inbox plus a reschedule IPI. No shared run-queue lock.
@@ -106,7 +106,7 @@ kernel/
   src/                 capabilities, scheduler, IPC, untyped, revocation, the syscall surface
 user/                  EL0: init, the shell, the console/input/block drivers, servers
 crates/                pure logic, host-tested in milliseconds: caps, ipc, paging, elf,
-                       dtb, frames, heap, slab, slots, crickerfs, intrusive, asid, ...
+                       dtb, pci, frames, slots, crickerfs, intrusive, asid, ...
 bench/                 the benchmark suite and committed baselines (both ISAs)
 script/                normalized entry points (setup, test, console, verify, bench, ...)
 xtask/                 build orchestration (build, run, test, bench, gdb, objdump, image)
