@@ -191,16 +191,21 @@ on real cycles via the SBI PMU extension. Caveat, stated now: sel4bench's platfo
 thinner on RISC-V than ARM, so the milestone-25 seL4 comparison may still eventually want an ARM
 board; that purchase moves to "when 25's leftover justifies it".
 
-**16b: IOMMU-backed DMA isolation, in emulation first, against the ratified spec.** The RISC-V
-IOMMU is ratified (v1.0.1, 2026-02) and QEMU emulates it on the `virt` board we already boot, as
-a PCIe device over the §18 transport we already built. So the isolation half no longer waits on
-a purchase: put the ratified IOMMU in front of the virtio devices, confine driver DMA in
-(emulated) hardware, and keep the shadow ring as belt-and-suspenders rather than the sole
-defense. The `Virtio` capability stays shaped to sit behind either. When silicon with the
-ratified IOMMU ships in a buyable board (the IP exists: SiFive P870-class, Andes, SpacemiT),
-16b's code carries over; that is the same emulate-then-carry pattern the whole kernel was built
-on. QEMU also emulates ARM's SMMUv3 (`-machine virt,iommu=smmuv3`) if a comparison is ever
-wanted; the riscv-iommu is chosen because it aligns with 16a's board and the PCIe work.
+**16b: IOMMU-backed DMA isolation, in emulation, on BOTH boards** (parity, Chris's direction
+2026-07-27). Each `virt` board emulates its architecture's native IOMMU: SMMUv3 on aarch64
+(`-machine virt,iommu=smmuv3`, mature) and the ratified RISC-V IOMMU (v1.0.1) on riscv (newer;
+its bugs may be QEMU's, and the record should say which is which). Both sit in front of PCIe,
+which §18 drives on both boards; both need `iommu_platform=on` per virtio device, and a device
+without it silently bypasses translation, the same manufactured-fact hazard the runners now
+fail loudly on. The two IOMMUs are structural siblings, and the deep symmetry is the payoff:
+each translates with its own CPU's page-table format (VMSAv8-64; Sv39), so the format-generic
+`paging` crate, the seam that was HAL leak #2, builds IOMMU domains with the same proved code
+that builds process address spaces. Shape: one portable DMA-domain seam, two arch IOMMU
+drivers under `arch/` (device table, command queue, fault queue each), the `Virtio` capability
+unchanged above, the disk and attacker suites running behind the IOMMU on both ISAs, and the
+shadow ring demoted to defence in depth everywhere. Silicon carries 16b's riscv code over when
+a board ships the ratified spec; that is the emulate-then-carry pattern the kernel was built
+on. Parity is claimed at the QEMU tier; 16a's silicon is one board first, honestly.
 
 **Why.** This is where the discussion's strongest pro-microkernel argument finally becomes true
 for us. Today driver isolation is real only because of the shadow descriptor ring we wrote
