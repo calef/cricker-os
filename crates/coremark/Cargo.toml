@@ -2,6 +2,7 @@
 name = "coremark"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 
 # Pure `no_std` compute, no dependencies. The point is to be *portable*: this same crate compiles
 # for cricker-os (aarch64-unknown-none), and later for macOS and Linux, so the compute comparison

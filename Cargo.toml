@@ -22,6 +22,14 @@ members = [
     "crates/coremark",
 ]
 
+# Shared package metadata. Each member opts in with `license.workspace = true`, so the
+# dual license is declared in exactly one place. MIT OR Apache-2.0 is the Rust-ecosystem
+# convention: it lets downstream users pick whichever fits their project, and the Apache
+# half adds an explicit patent grant the bare MIT license lacks. See LICENSE-MIT and
+# LICENSE-APACHE.
+[workspace.package]
+license = "MIT OR Apache-2.0"
+
 # Note: we deliberately do NOT set `panic = "abort"` here. The bare-metal target
 # has abort baked in already, and setting it workspace-wide would break `cargo test`
 # for the host-side crates we plan to add (DECISIONS.md §7).

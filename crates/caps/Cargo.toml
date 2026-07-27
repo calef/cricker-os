@@ -2,6 +2,7 @@
 name = "caps"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 
 # `kani` is a cfg set only by `cargo kani` (script/verify), never by an ordinary build. Declaring it
 # here keeps the unexpected_cfgs lint from flagging the `#[cfg(kani)]` proof module under -D warnings.
