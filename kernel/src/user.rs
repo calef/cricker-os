@@ -97,6 +97,12 @@ impl AddressSpace {
         let region = crate::untyped::create(content_pages + AS_OVERHEAD)?;
         let root = crate::untyped::retype_page(region)?;
 
+        // Share the kernel into this root. On RISC-V a process runs on a single `satp` that must map
+        // both the process (low half) and the kernel (high half), so the root gets copies of the
+        // kernel root's high-half entries. On aarch64 the kernel lives in a separate TTBR1 and this
+        // is a no-op. See arch::mmu::share_kernel_half and DECISIONS §17.
+        mmu::share_kernel_half(root);
+
         // Into the revocation registry (phase C): this is how a later revoke finds our mapping
         // log, whose pages this same region will pay for. Full registry = no address space.
         if !crate::revoke::register_space(root, region) {
@@ -220,6 +226,7 @@ static USER_SPACES: crate::sync::IrqSafeMutex<slots::Table<AddressSpace, MAX_USE
 /// exhausted region, a full registry, or ASID exhaustion (unreachable; the type is honest).
 pub fn user_aspace_create(region: u64) -> Option<u64> {
     let root = crate::untyped::retype_object_page(region)?;
+    mmu::share_kernel_half(root); // RISC-V single-satp: the process root carries the kernel high half
 
     if !crate::revoke::register_space(root, region) {
         return None; // registry full; the carved page is spent, the caller's own loss (B.4 rule)

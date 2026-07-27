@@ -183,7 +183,29 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
             );
         }
 
-        println!("  next: user address spaces at U-mode, the rest of the capability core.");
+        // User address spaces (the single-satp model): build a process address space, switch satp
+        // to it, and keep running. That only survives if share_kernel_half copied the kernel high
+        // half into the process root (otherwise this kernel code, at a high VA, unmaps itself on the
+        // csrw satp). Then map and translate a user page in the live process space.
+        {
+            use paging::Flags;
+            let aspace = user::AddressSpace::new(1).expect("no process address space");
+            let user_va = 0x40_0000u64;
+            // SAFETY: aspace.ttbr0() is a well-formed Sv39 satp whose root carries the kernel half.
+            unsafe { arch::mmu::activate_user(aspace.ttbr0()) };
+            let frame = memory::alloc().expect("no user frame").addr();
+            arch::mmu::map_current_user_frame(user_va, frame, Flags::user_data(), || {
+                memory::alloc().map(|f| f.addr())
+            })
+            .expect("user map failed");
+            let mapped = arch::mmu::translate_user(user_va);
+            arch::mmu::deactivate_user(); // back to the kernel-only root before dropping the aspace
+            println!(
+                "  user aspace : process satp activated (kernel half shared), user {user_va:#x} -> {mapped:x?}",
+            );
+        }
+
+        println!("  next: drop to U-mode (sscratch trap entry, sret) and run a user program.");
         arch::halt();
     }
 

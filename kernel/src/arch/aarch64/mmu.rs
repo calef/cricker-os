@@ -493,6 +493,12 @@ pub fn ttbr0_value(root: u64, asid: u16) -> u64 {
     root | (asid as u64) << 48
 }
 
+/// Share the kernel into a fresh process root. **A no-op on aarch64:** the kernel lives in a
+/// separate `TTBR1` that every process shares implicitly, so a process's `TTBR0` root carries only
+/// user mappings. It exists so portable `user::AddressSpace` can call it unconditionally; on RISC-V,
+/// with one `satp` per address space, it copies the kernel high-half into the root. See DECISIONS §17.
+pub fn share_kernel_half(_root: u64) {}
+
 /// Point `TTBR0_EL1` at a composed root-plus-ASID value ([`ttbr0_value`]). **No TLB flush.**
 ///
 /// # Where the sledgehammer went (milestone 15)

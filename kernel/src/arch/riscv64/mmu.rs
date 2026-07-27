@@ -26,9 +26,33 @@ const UART_SIZE: u64 = 0x1000;
 
 /// The `satp` MODE field value for Sv39 (bits 63:60).
 const SATP_MODE_SV39: u64 = 8 << 60;
+/// `satp.ASID` sits at bits 59:44 on rv64 Sv39.
+const SATP_ASID_SHIFT: u64 = 44;
+/// `satp.PPN` is the low 44 bits.
+const SATP_PPN_MASK: u64 = (1 << 44) - 1;
 
 /// The kernel's fine-map root, saved by [`init`] so a secondary hart can adopt it.
 static KERNEL_ROOT: AtomicU64 = AtomicU64::new(0);
+
+/// Read `satp`.
+fn read_satp() -> u64 {
+    let satp: u64;
+    // SAFETY: reads a CSR. No side effects.
+    unsafe { asm!("csrr {}, satp", out(reg) satp, options(nomem, nostack, preserves_flags)) };
+    satp
+}
+
+/// Write `satp` and flush the TLB, installing a whole address space (kernel high + user low).
+fn write_satp(satp: u64) {
+    // SAFETY: the caller guarantees `satp` names a well-formed Sv39 root; sfence makes it take
+    // effect and drops stale entries.
+    unsafe { asm!("csrw satp, {}", "sfence.vma", in(reg) satp, options(nostack)) };
+}
+
+/// The physical address of the currently-installed root page table (`satp.PPN << 12`).
+fn current_root_pa() -> u64 {
+    (read_satp() & SATP_PPN_MASK) << 12
+}
 
 /// The base of the kernel's virtual address space: the Sv39 high half (bits 63:38 all one, the sign
 /// extension of bit 38 = 1). Chosen exactly like aarch64's base so `VA = PA | KERNEL_VA_BASE` is
@@ -273,82 +297,96 @@ pub fn init_secondary() {
     unimplemented!("riscv secondary MMU bring-up: the SMP step")
 }
 
-/// The `satp` value naming a user address space: mode (Sv39) | ASID | root PPN. The RISC-V analog of
-/// aarch64's `ttbr0_value`; kept under the aarch64-flavoured name for now so portable `user.rs` does
-/// not change (renaming the concept is a separate cleanup, noted in riscv-port.md).
+/// Compose the `satp` value naming an address space: Sv39 mode, ASID, and the root PPN. The RISC-V
+/// analog of aarch64's `ttbr0_value`, kept under that name so portable `user.rs` does not change.
+/// **Returns a full `satp` value** (not a bare root), so `switch_user_root`/`activate_user` write it
+/// directly; the `root` a process stores must itself contain the kernel high-half (see the note on
+/// the single-`satp` model at `switch_user_root`).
 pub fn ttbr0_value(root: u64, asid: u16) -> u64 {
-    let _ = (root, asid);
-    unimplemented!("riscv satp composition (Sv39 | asid | ppn): the MMU step")
+    SATP_MODE_SV39 | ((asid as u64) << SATP_ASID_SHIFT) | (root >> 12)
 }
 
-/// Discharge TLB entries for an ASID (`sfence.vma x0, asid`). The MMU step.
+/// Discharge every TLB entry tagged with `asid`: `sfence.vma x0, asid` (all addresses, one ASID).
 pub fn flush_asid(asid: u16) {
-    let _ = asid;
-    unimplemented!("riscv sfence.vma by asid: the MMU step")
+    // SAFETY: TLB maintenance is always sound.
+    unsafe { asm!("sfence.vma zero, {}", in(reg) asid as u64, options(nostack)) };
 }
 
-/// Install a user address space (write `satp`). The MMU step.
+/// Install a user address space by writing its composed `satp`.
 ///
 /// # Safety
-/// `satp` must name a well-formed Sv39 root; the caller owns that invariant, as on aarch64.
+/// `satp` must name a well-formed Sv39 root that includes the kernel high-half (else the next
+/// instruction fetch faults); the caller owns that invariant, as on aarch64.
 pub unsafe fn activate_user(satp: u64) {
-    let _ = satp;
-    unimplemented!("riscv activate user satp: the MMU step")
+    write_satp(satp);
 }
 
-/// Remove the user address space from this hart. The MMU step.
+/// Remove the user address space from this hart: fall back to the kernel-only reserved root.
 pub fn deactivate_user() {
-    unimplemented!("riscv deactivate user satp: the MMU step")
+    switch_user_root(reserved_root());
 }
 
-/// Whether U-mode may read `va` in the installed address space. The MMU step.
+/// Whether U-mode may read `va` in the installed address space. RISC-V has no address-translation
+/// instruction like aarch64's `AT S1E0R`, so we walk the current tables and check the U bit.
 pub fn user_can_read(va: u64) -> bool {
-    let _ = va;
-    unimplemented!("riscv user_can_read (SUM / page walk): the MMU step")
+    translate_user(va).is_some_and(|(_, f)| f.is_user_accessible())
 }
 
-/// Whether U-mode may write `va` in the installed address space. The MMU step.
+/// Whether U-mode may write `va`: user-accessible and writable.
 pub fn user_can_write(va: u64) -> bool {
-    let _ = va;
-    unimplemented!("riscv user_can_write (SUM / page walk): the MMU step")
+    translate_user(va).is_some_and(|(_, f)| f.is_user_accessible() && f.is_writable())
 }
 
-/// The root (satp PPN) of the currently installed user address space. The MMU step.
+/// The physical root of the currently installed address space (`satp.PPN << 12`).
 pub fn current_user_root() -> u64 {
-    unimplemented!("riscv current user satp root: the MMU step")
+    current_root_pa()
 }
 
-/// Map one user page at `va`, allocating the leaf and any tables from `alloc`. The MMU step.
+/// Map one user page at `va`, allocating the leaf and any intermediate tables from `alloc`, into the
+/// currently installed address space. Returns the leaf's physical address (for revocation records).
 pub fn map_current_user_page(
     va: u64,
     flags: Flags,
-    alloc: impl FnMut() -> Option<u64>,
+    mut alloc: impl FnMut() -> Option<u64>,
 ) -> Result<u64, MapError> {
-    let _ = (va, flags, alloc);
-    unimplemented!("riscv map user page (Sv39 walk + PTE): the MMU step")
+    let leaf = alloc().ok_or(MapError::OutOfFrames)?;
+    map_current_user_frame(va, leaf, flags, alloc)?;
+    Ok(leaf)
 }
 
-/// Unmap one user page at `va` in the space rooted at `root`, returning the frame it named. MMU step.
+/// Unmap one user page at `va` in the space rooted at `root`, invalidate the TLB, and return the
+/// frame it named.
 pub fn unmap_user_at(root: u64, va: u64) -> Option<u64> {
-    let _ = (root, va);
-    unimplemented!("riscv unmap user page: the MMU step")
+    // SAFETY: `root` is a live low-half-owning root; `unmap` allocates nothing; the direct map makes
+    // `phys_to_ptr` valid.
+    let mut mapper = unsafe { Mapper::<_, _, Sv39>::new(root, Half::Low, || None, phys_to_ptr) };
+    let (pa, flush) = mapper.unmap(va).ok()?;
+    flush.flush(flush_tlb);
+    Some(pa)
 }
 
-/// Translate `va` in the space rooted at `root`. The MMU step.
+/// Translate `va` in the space rooted at physical `root`.
 pub fn translate_at(root: u64, va: u64) -> Option<(u64, Flags)> {
-    let _ = (root, va);
-    unimplemented!("riscv translate in a given root: the MMU step")
+    // SAFETY: `root` is a page table; the direct map makes `phys_to_ptr` valid; no allocation.
+    let mapper = unsafe { Mapper::<_, _, Sv39>::new(root, Half::Low, || None, phys_to_ptr) };
+    mapper.translate(va)
 }
 
-/// Map one user page at `va` onto the existing frame `phys`. The MMU step.
+/// Map one user page at `va` onto the already-owned physical frame `phys` in the current address
+/// space, drawing any intermediate tables from `alloc`, then flush the TLB for `va` (RISC-V may
+/// require an `sfence.vma` to make a freshly-valid leaf visible, unlike aarch64).
 pub fn map_current_user_frame(
     va: u64,
     phys: u64,
     flags: Flags,
     alloc: impl FnMut() -> Option<u64>,
 ) -> Result<(), MapError> {
-    let _ = (va, phys, flags, alloc);
-    unimplemented!("riscv map user frame (Sv39 walk + PTE): the MMU step")
+    let root = current_root_pa();
+    // SAFETY: `root` is the live installed root; the direct map makes `phys_to_ptr` valid.
+    let mut mapper = unsafe { Mapper::<_, _, Sv39>::new(root, Half::Low, alloc, phys_to_ptr) };
+    mapper.map(va, phys, flags)?;
+    flush_tlb(va);
+    Ok(())
 }
 
 /// The root a thread with no user address space runs on. On RISC-V the whole address space is one
@@ -356,7 +394,7 @@ pub fn map_current_user_frame(
 /// address faults, which is exactly right for a kernel thread. (On aarch64 this is a separate empty
 /// `TTBR0` table; the single-`satp` model folds it into the kernel root.)
 pub fn reserved_root() -> u64 {
-    KERNEL_ROOT.load(Ordering::Relaxed)
+    ttbr0_value(KERNEL_ROOT.load(Ordering::Relaxed), 0)
 }
 
 /// Install the address space rooted at physical `root` by writing `satp`, and flush the TLB.
@@ -367,13 +405,9 @@ pub fn reserved_root() -> u64 {
 /// high-half entries (shared at address-space creation), and switching threads rewrites the whole
 /// `satp`. For a kernel thread, `root` is [`reserved_root`] (the kernel root), so this is a no-op
 /// switch that still flushes.
-pub fn switch_user_root(root: u64) {
-    let satp = SATP_MODE_SV39 | (root >> 12);
-    // SAFETY: writing satp installs a well-formed Sv39 root (the caller's invariant); the following
-    // sfence.vma makes the switch take effect and drops stale entries.
-    unsafe {
-        asm!("csrw satp, {satp}", "sfence.vma", satp = in(reg) satp, options(nostack));
-    }
+pub fn switch_user_root(satp: u64) {
+    // `satp` is already a composed value (from `ttbr0_value` or `reserved_root`); write it directly.
+    write_satp(satp);
 }
 
 /// Serializes edits to the kernel's live tables: two harts must not mutate them at once. Same role
@@ -441,10 +475,29 @@ pub fn translate(va: u64) -> Option<(u64, Flags)> {
     kernel_mapper().translate(va)
 }
 
-/// Translate a user virtual address through the installed user tables. The MMU step.
+/// Translate a user virtual address through the currently installed address space.
 pub fn translate_user(va: u64) -> Option<(u64, Flags)> {
-    let _ = va;
-    unimplemented!("riscv translate user va: the MMU step")
+    translate_at(current_root_pa(), va)
+}
+
+/// Populate a fresh process root's **high half** with the kernel's, so a single `satp` pointing at
+/// it sees both the process's user pages (low half) and the whole kernel (high half).
+///
+/// This is the RISC-V single-`satp` requirement with no aarch64 counterpart: aarch64 keeps the
+/// kernel in a separate `TTBR1` that every process shares implicitly, but RISC-V has one root per
+/// address space, so every process root must carry copies of the kernel root's top-level entries.
+/// The kernel high half is the top 256 entries (index 256..512, `KERNEL_VA_BASE`'s top-level index
+/// and up); they point at shared kernel intermediate tables, so copying the entries shares the whole
+/// kernel map. Called by `user::AddressSpace` right after it allocates a root.
+pub fn share_kernel_half(root: u64) {
+    let kernel_root = KERNEL_ROOT.load(Ordering::Relaxed);
+    // SAFETY: both are page-aligned root tables reachable through the direct map. We copy only the
+    // high-half entries; the low half stays zero for the process's own user mappings.
+    unsafe {
+        let dst = &mut (*phys_to_ptr(root)).entries;
+        let src = &(*phys_to_ptr(kernel_root)).entries;
+        dst[256..paging::ENTRIES].copy_from_slice(&src[256..paging::ENTRIES]);
+    }
 }
 
 /// Print a human summary of the kernel's mapping (the boot tour). The MMU step.
