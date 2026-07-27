@@ -73,6 +73,15 @@ path = "src/driver.rs"
 test = false
 bench = false
 
+# The system builder / boot init (parity D): the portable counterpart of hello's init_boot role. It
+# builds the interactive system (console + input + shell) out of its own budget and stays as the
+# spawn service. The riscv boot loads it as the boot process; aarch64 keeps using hello's init_boot.
+[[bin]]
+name = "sysinit"
+path = "src/sysinit.rs"
+test = false
+bench = false
+
 # The EL0 microbenchmark program (primitive suite): self-times syscall/IPC primitives from EL0, the
 # lmbench way, so the numbers include the trap the kernel-side benchmarks skip. Run by the bench boot.
 [[bin]]

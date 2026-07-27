@@ -171,6 +171,34 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         #[cfg(feature = "bench")]
         bench::run();
 
+        // A `shell` build hands the machine to userspace init here and parks, instead of the tour.
+        // The kernel loads `sysinit` from the initrd, grants it the NS16550 and the UART interrupt,
+        // and it builds the console server, input driver, and shell out of its own budget; the shell
+        // is interactive over the serial. This is the RISC-V equivalent of the aarch64 `initboot`
+        // path. Needs the shell programs in the initrd (cargo xtask initrd-riscv packs them).
+        #[cfg(feature = "shell")]
+        {
+            if let Some((plic_phys, _)) = memory::plic_region() {
+                // SAFETY: the PLIC is device-mapped in the direct map; hart 0's context is 1.
+                unsafe { drivers::plic::init(arch::mmu::phys_to_virt(plic_phys) as usize, 1) };
+            }
+            match user::initrd() {
+                Some(initrd) => {
+                    const UART_IRQ: u32 = 10; // the NS16550's PLIC interrupt id on QEMU virt
+                    if let Err(e) = user::riscv_shell_boot(initrd, UART_IRQ) {
+                        println!("  shell boot failed: {e:?}");
+                    } else {
+                        println!("  shell: userspace init is building the console, input, and shell.");
+                        println!();
+                    }
+                }
+                None => println!("  shell: no initrd (run `cargo xtask initrd-riscv`)"),
+            }
+            // The boot thread parks; sysinit and its children (console/input/shell) run on the
+            // scheduler. `halt` is a preemptible wfi loop, so they get scheduled from here on.
+            arch::halt();
+        }
+
         // A test build runs the kernel suite right here and exits via semihosting, instead of the
         // demonstration tour below. Everything the tests need is now up: memory and the frame
         // allocator, the Sv39 paging, the scheduler and its idle thread, the timer, interrupts, and

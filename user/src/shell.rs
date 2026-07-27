@@ -143,7 +143,14 @@ fn parse_num(s: &[u8]) -> u64 {
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
-    unsafe { core::arch::asm!("brk #0", options(nostack, nomem)) };
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("brk #0", options(nostack, nomem))
+    };
+    #[cfg(target_arch = "riscv64")]
+    unsafe {
+        core::arch::asm!("ebreak", options(nostack, nomem))
+    };
     loop {
         core::hint::spin_loop();
     }

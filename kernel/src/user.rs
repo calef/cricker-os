@@ -1234,6 +1234,92 @@ pub fn riscv_uart_driver_demo(
     Ok(report)
 }
 
+/// **Boot the interactive shell system on RISC-V** (parity D). The riscv counterpart of aarch64's
+/// `spawn_init` + `init_boot`: load `sysinit` (the portable system builder) as the boot process, map
+/// the whole initrd into it, and grant it three capabilities: a large untyped budget (slot 0), the
+/// NS16550's registers as a device cap (slot 1), and the UART receive interrupt as an `Irq` cap (slot
+/// 2). From those, `sysinit` builds the console server, the input driver, and the shell out of its
+/// own budget and wires them together; the kernel touches none of it. Unlike the other demos this
+/// does not block: `sysinit` and its children run on the scheduler while the boot thread parks.
+#[cfg(target_arch = "riscv64")]
+pub fn riscv_shell_boot(archive: &'static [u8], uart_irq: u32) -> Result<(), LoadError> {
+    use crate::cap::Rights;
+    const UART_PHYS: u64 = 0x1000_0000; // the NS16550 on QEMU virt
+
+    let (initrd_start, initrd_len) = memory::initrd_region().expect("no initrd region");
+    let initrd_pages = initrd_len.div_ceil(FRAME_SIZE);
+
+    let fs = crickerfs::Fs::parse(archive).expect("initrd is not a crickerfs archive");
+    let init_bytes = fs.read("sysinit").expect("archive has no 'sysinit' program");
+    let elf = Elf::parse(init_bytes).map_err(LoadError::NotLoadable)?;
+
+    // sysinit's address space: its segments, a deep stack (it runs an ELF loader that builds three
+    // children), and the whole archive mapped read-only so it can load them by name.
+    let content: u64 = elf
+        .segments()
+        .map(|seg| {
+            let (s, e) = seg.page_range(FRAME_SIZE);
+            (e - s) / FRAME_SIZE
+        })
+        .sum::<u64>()
+        + 1
+        + initrd_pages / 512
+        + INIT_STACK_PAGES
+        + 8;
+    let mut space =
+        AddressSpace::new(content).ok_or(LoadError::Unmappable(MapError::OutOfFrames))?;
+    map_segments(&mut space, &elf)?;
+    for k in 0..INIT_STACK_PAGES {
+        space
+            .map_new(USER_STACK_VA - k * FRAME_SIZE, Flags::user_data())
+            .map_err(LoadError::Unmappable)?;
+    }
+    for i in 0..initrd_pages {
+        space
+            .map_physical(
+                INITRD_VA + i * FRAME_SIZE,
+                initrd_start + i * FRAME_SIZE,
+                Flags::user_rodata(),
+            )
+            .map_err(LoadError::Unmappable)?;
+    }
+    let aspace_name = readopt_user_aspace(space).expect("register sysinit aspace");
+
+    // Route the UART receive interrupt to an endpoint; the input driver's Irq cap will WAIT on it.
+    let irq_ep = crate::sched::create_endpoint();
+    crate::sched::bind_irq(uart_irq, irq_ep);
+    let build_region = crate::untyped::create(2048).expect("no building budget for sysinit");
+
+    let tcb_region = crate::untyped::create(2).expect("no tcb region");
+    let tid = crate::sched::create_tcb(tcb_region).expect("no tcb");
+    // slot 0: budget. slot 1: the NS16550 registers, WRITE|GRANT so sysinit maps them into the
+    // console and input drivers. slot 2: the UART Irq, READ|GRANT so it can delegate it to input.
+    let s0 = crate::sched::tcb_insert_cap(tid, crate::cap::untyped_cap(build_region))
+        .expect("insert budget");
+    assert_eq!(s0, 0);
+    let s1 = crate::sched::tcb_insert_cap(
+        tid,
+        crate::cap::device_frame_cap(UART_PHYS, Rights::WRITE.union(Rights::GRANT)),
+    )
+    .expect("insert uart device");
+    assert_eq!(s1, 1);
+    let s2 = crate::sched::tcb_insert_cap(
+        tid,
+        crate::cap::irq_cap_rights(uart_irq, Rights::READ.union(Rights::GRANT)),
+    )
+    .expect("insert uart irq");
+    assert_eq!(s2, 2);
+    crate::sched::configure_tcb(tid, elf.entry(), USER_STACK_TOP, aspace_name).expect("configure");
+    crate::sched::start_tcb(tid, [0, initrd_len, 0]).expect("start"); // a1 = the archive length
+
+    // Arm the interrupt chain so the input driver's keystrokes flow: the source at the PLIC and
+    // supervisor external interrupts in `sie`. The input driver arms the NS16550's own RX interrupt
+    // (its IER) when it starts, and re-arms the PLIC source through its Irq cap's ACK.
+    crate::drivers::plic::enable(uart_irq);
+    crate::arch::exceptions::enable_external();
+    Ok(())
+}
+
 /// Bringing the console driver up in userspace, and wiring a client to it.
 ///
 /// **This is the milestone-8 payload.** It creates the shared machinery (two endpoints and a

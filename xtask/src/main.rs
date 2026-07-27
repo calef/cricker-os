@@ -184,6 +184,14 @@ fn initrd_riscv() -> bool {
             "elbench",
             "--bin",
             "coremark",
+            "--bin",
+            "sysinit",
+            "--bin",
+            "console",
+            "--bin",
+            "input",
+            "--bin",
+            "shell",
             "--target",
             RISCV_TARGET,
         ],
@@ -197,52 +205,31 @@ fn initrd_riscv() -> bool {
             .display()
             .to_string()
     };
-    let builder = match std::fs::read(bin("builder")) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("initrd-riscv: cannot read {}: {e}", bin("builder"));
-            return false;
-        }
-    };
-    let worker = match std::fs::read(bin("worker")) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("initrd-riscv: cannot read {}: {e}", bin("worker"));
-            return false;
-        }
-    };
-    let driver = match std::fs::read(bin("driver")) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("initrd-riscv: cannot read {}: {e}", bin("driver"));
-            return false;
-        }
-    };
-    let elbench = match std::fs::read(bin("elbench")) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("initrd-riscv: cannot read {}: {e}", bin("elbench"));
-            return false;
-        }
-    };
-    let coremark = match std::fs::read(bin("coremark")) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("initrd-riscv: cannot read {}: {e}", bin("coremark"));
-            return false;
-        }
-    };
-
-    // `builder` is the first program the kernel loads, so it takes the archive's `init` entry;
-    // `worker` is the one `builder` loads by name; `driver` is the userspace UART interrupt driver;
-    // `elbench` and `coremark` are the benchmark workloads (loaded by name in the bench boot).
-    let files: [(&str, &[u8]); 5] = [
-        ("init", &builder),
-        ("worker", &worker),
-        ("driver", &driver),
-        ("elbench", &elbench),
-        ("coremark", &coremark),
+    // Read each bin's ELF into an owned buffer, then pack. The archive name comes first, the bin
+    // name second: `builder` is packed as `init` (the entry the kernel loads); the rest keep their
+    // names. `sysinit`/`console`/`input`/`shell` are the interactive-shell system (parity D).
+    let entries: &[(&str, &str)] = &[
+        ("init", "builder"),
+        ("worker", "worker"),
+        ("driver", "driver"),
+        ("elbench", "elbench"),
+        ("coremark", "coremark"),
+        ("sysinit", "sysinit"),
+        ("console", "console"),
+        ("input", "input"),
+        ("shell", "shell"),
     ];
+    let mut blobs: Vec<(&str, Vec<u8>)> = Vec::new();
+    for &(archive_name, bin_name) in entries {
+        match std::fs::read(bin(bin_name)) {
+            Ok(b) => blobs.push((archive_name, b)),
+            Err(e) => {
+                eprintln!("initrd-riscv: cannot read {}: {e}", bin(bin_name));
+                return false;
+            }
+        }
+    }
+    let files: Vec<(&str, &[u8])> = blobs.iter().map(|(n, b)| (*n, b.as_slice())).collect();
     let size = crickerfs::image_size(&files);
     let mut img = std::vec![0u8; size];
     if crickerfs::write_image(&files, &mut img).is_err() {
