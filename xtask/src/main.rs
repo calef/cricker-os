@@ -178,6 +178,8 @@ fn initrd_riscv() -> bool {
             "builder",
             "--bin",
             "worker",
+            "--bin",
+            "driver",
             "--target",
             RISCV_TARGET,
         ],
@@ -205,10 +207,17 @@ fn initrd_riscv() -> bool {
             return false;
         }
     };
+    let driver = match std::fs::read(bin("driver")) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("initrd-riscv: cannot read {}: {e}", bin("driver"));
+            return false;
+        }
+    };
 
     // `builder` is the first program the kernel loads, so it takes the archive's `init` entry;
-    // `worker` is the one `builder` loads by name.
-    let files: [(&str, &[u8]); 2] = [("init", &builder), ("worker", &worker)];
+    // `worker` is the one `builder` loads by name; `driver` is the userspace UART interrupt driver.
+    let files: [(&str, &[u8]); 3] = [("init", &builder), ("worker", &worker), ("driver", &driver)];
     let size = crickerfs::image_size(&files);
     let mut img = std::vec![0u8; size];
     if crickerfs::write_image(&files, &mut img).is_err() {

@@ -1149,6 +1149,91 @@ pub fn riscv_initrd_demo(archive: &'static [u8]) -> Result<u64, LoadError> {
     Ok(crate::sched::ipc_recv(report)[0])
 }
 
+/// **Start the interrupt-driven UART driver as an unprivileged userspace process** (milestone 20).
+///
+/// The device-interrupt story's real form: a driver that owns the UART's interrupt by *capability*,
+/// not by privilege. The kernel loads `driver` from the archive, builds its address space, maps the
+/// NS16550's registers into it device-typed (so the driver reads the byte itself; the kernel is not
+/// in the data path), and grants it exactly two capabilities: an `Irq` capability for the UART
+/// interrupt (slot 0) and a report endpoint (slot 1). It routes the interrupt to the endpoint the
+/// `Irq` cap waits on, starts the driver, and arms the source (PLIC), the receive interrupt (UART),
+/// and supervisor external interrupts (`sie.SEIE`).
+///
+/// Returns the report endpoint. This does **not** block: the caller spawns a receiver so the boot
+/// tour continues, and the driver's `WAIT`/read/report/`ACK` loop runs whenever a byte arrives. The
+/// `ACK` is the point of the whole exercise: it crosses the `arch::irq` seam (the PLIC on RISC-V, the
+/// GIC on aarch64) to re-arm the source, from an unprivileged process holding only a capability.
+#[cfg(target_arch = "riscv64")]
+pub fn riscv_uart_driver_demo(
+    archive: &'static [u8],
+    uart_irq: u32,
+) -> Result<crate::sched::EpId, LoadError> {
+    const DRIVER_UART_VA: u64 = 0x0070_0000; // must match user/src/driver.rs UART_VA
+    const UART_PHYS: u64 = 0x1000_0000; // the NS16550 on QEMU virt
+
+    let fs = crickerfs::Fs::parse(archive).expect("initrd is not a crickerfs archive");
+    let driver_bytes = fs.read("driver").expect("archive has no 'driver' program");
+    let elf = Elf::parse(driver_bytes).map_err(LoadError::NotLoadable)?;
+
+    // The driver's address space: its segments, a stack, and the UART's registers device-typed.
+    let content: u64 = elf
+        .segments()
+        .map(|seg| {
+            let (s, e) = seg.page_range(FRAME_SIZE);
+            (e - s) / FRAME_SIZE
+        })
+        .sum::<u64>()
+        + 1
+        + INIT_STACK_PAGES
+        + 8;
+    let mut space =
+        AddressSpace::new(content).ok_or(LoadError::Unmappable(MapError::OutOfFrames))?;
+    map_segments(&mut space, &elf)?;
+    for k in 0..INIT_STACK_PAGES {
+        space
+            .map_new(USER_STACK_VA - k * FRAME_SIZE, Flags::user_data())
+            .map_err(LoadError::Unmappable)?;
+    }
+    // The UART registers, device-typed and user-accessible: the driver reads RBR/LSR directly.
+    space
+        .map_physical(DRIVER_UART_VA, UART_PHYS, Flags::user_device())
+        .map_err(LoadError::Unmappable)?;
+
+    let aspace_name = readopt_user_aspace(space).expect("register driver aspace");
+
+    // Route the UART interrupt to an endpoint; the Irq cap's WAIT blocks on it. The report endpoint
+    // is where the driver SENDs each byte, and where the caller's receiver waits.
+    let irq_ep = crate::sched::create_endpoint();
+    crate::sched::bind_irq(uart_irq, irq_ep);
+    let report = crate::sched::create_endpoint();
+
+    let tcb_region = crate::untyped::create(2).expect("no tcb region");
+    let tid = crate::sched::create_tcb(tcb_region).expect("no tcb");
+    // slot 0: the Irq capability (READ permits WAIT/ACK). slot 1: the report endpoint (WRITE).
+    let s0 = crate::sched::tcb_insert_cap(
+        tid,
+        crate::cap::irq_cap_rights(uart_irq, crate::cap::Rights::READ),
+    )
+    .expect("insert irq cap");
+    assert_eq!(s0, 0, "the Irq cap must land in slot 0");
+    let s1 = crate::sched::tcb_insert_cap(
+        tid,
+        crate::cap::endpoint_cap(report, crate::cap::Rights::WRITE),
+    )
+    .expect("insert report");
+    assert_eq!(s1, 1, "the report endpoint must land in slot 1");
+    crate::sched::configure_tcb(tid, elf.entry(), USER_STACK_TOP, aspace_name).expect("configure");
+    crate::sched::start_tcb(tid, [0, 0, 0]).expect("start");
+
+    // Arm the whole chain, now that the driver is running and routed: the source at the PLIC, the
+    // receive interrupt at the UART, and supervisor external interrupts in `sie`.
+    crate::drivers::plic::enable(uart_irq);
+    crate::console::rx_enable();
+    crate::arch::exceptions::enable_external();
+
+    Ok(report)
+}
+
 /// Bringing the console driver up in userspace, and wiring a client to it.
 ///
 /// **This is the milestone-8 payload.** It creates the shared machinery (two endpoints and a

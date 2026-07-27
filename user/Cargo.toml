@@ -63,6 +63,16 @@ path = "src/builder.rs"
 test = false
 bench = false
 
+# The interrupt-driven console input driver (milestone 20): an unprivileged userspace device driver.
+# It holds an Irq capability, a report endpoint, and a device mapping of the UART, and services the
+# receive interrupt with the seL4 WAIT/read/report/ACK loop. Portable; the riscv initrd packs it as
+# "driver". The aarch64 input driver is the PL011-wired role of `hello`; this is its portable analog.
+[[bin]]
+name = "driver"
+path = "src/driver.rs"
+test = false
+bench = false
+
 # The EL0 microbenchmark program (primitive suite): self-times syscall/IPC primitives from EL0, the
 # lmbench way, so the numbers include the trap the kernel-side benchmarks skip. Run by the bench boot.
 [[bin]]

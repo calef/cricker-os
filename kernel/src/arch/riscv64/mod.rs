@@ -14,6 +14,7 @@ use core::arch::{asm, global_asm};
 pub mod context;
 pub mod exceptions;
 pub mod interrupts;
+pub mod irq;
 pub mod mmu;
 pub mod semihosting;
 pub mod timer;

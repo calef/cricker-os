@@ -552,13 +552,14 @@ fn invoke(
                 let m = sched::ipc_recv(ep);
                 Ok(m[0] as i64)
             }
-            // ACK re-enables the interrupt at the GIC. The kernel masked it when it fired; now
-            // that the driver has serviced the device, it is safe to let it fire again.
+            // ACK re-enables the interrupt at the controller. The kernel masked it when it fired;
+            // now that the driver has serviced the device, it is safe to let it fire again. This
+            // names `arch::irq`, not a specific controller: the GIC on aarch64, the PLIC on RISC-V.
             abi::irq::ACK => {
                 if !cap.rights.allows(Rights::READ) {
                     return Err(Error::NotPermitted);
                 }
-                crate::drivers::gic::enable(intid);
+                crate::arch::irq::enable(intid);
                 Ok(0)
             }
             _ => Err(Error::BadMethod),
