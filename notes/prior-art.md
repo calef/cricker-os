@@ -68,6 +68,9 @@ else's kernel:
   component composition, CapDL for trusted init in milestone 22). Code reuse is nil (C,
   and their proofs are theirs), but every capability-model fork should check what seL4 did
   first. Already the habit; see the roadmap's Prior-art sections.
+- **smoltcp**. The no_std TCP/IP stack, kernel-agnostic and event-driven, proven across
+  embedded Rust (Redox has shipped on it). Named in milestone 30 as the plan's easiest reuse
+  call: the thesis is the kernel confining the network stack, never the stack itself.
 - **libghostty-vt** (Ghostty's extracted VT core). Zero-dependency, no libc, no allocations,
   C ABI: nearly a purpose-built description of "runnable as a cricker-os userspace component",
   and in Zig, which makes it the strongest candidate anywhere for milestone 23's full claim (a

@@ -214,6 +214,7 @@ around verification and real workloads:
 | 27 | Rust `std` on the native ABI | ahead (feeds 23) |
 | 28 | A solid terminal: the line discipline as a component | ahead (feeds 23, 27) |
 | 29 | A display terminal (framebuffer, virtio-gpu, libghostty-vt) | optional |
+| 30 | The network stack as a confined component (virtio-net, smoltcp) | ahead (feeds 23, 27) |
 
 Also built along the way, outside the numbering: a four-part adversarial security audit,
 per-process spawn quotas, kernel-mediated DMA confinement (QEMU `virt` has no IOMMU),

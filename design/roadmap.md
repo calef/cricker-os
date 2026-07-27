@@ -42,6 +42,7 @@ IPC and the MMU invariants are next. This threads through the list rather than b
 | 27 | Rust `std` on the native ABI | A custom target whose `std` builds: `Vec`, `String`, `println!`, `Instant`, allocation from the process's own untyped, stdio over the console endpoint, `fs`/`net` honestly `Unsupported` until capability-granted servers back them | **widens "runs real workloads" by orders of magnitude**: the pool of programs that build for cricker-os becomes "most Rust code that doesn't touch fs/net", and milestone 23's components become writable by people who are not kernel people. Grows toward general purpose (notes/why-not-general-purpose.md) without smuggling POSIX: the `sys` layer maps to capabilities directly, no fork, no open-by-path |
 | 28 | A solid terminal: the line discipline as a component | Line editing, history, ANSI in/out, control characters, and a written terminal contract, as a **swappable userspace component** between the input/console drivers and applications; Ctrl-C as a capability-routed interrupt to the foreground process, not a Unix signal | a terminal with real behavior is a far better "instance one" for milestone 23's live component replacement than the raw echo loop, and 27's stdio semantics need a terminal that has semantics. Serial, deliberately; the display terminal is 29, and they must not be confused |
 | 29 | A display terminal (framebuffer, virtio-gpu) | An on-device terminal: a userspace virtio-gpu driver (arriving over **PCIe**, which the §18 transport just made reachable), a framebuffer component, font rendering, and a VT state engine maintaining the grid; input from a virtio keyboard | the first pixels the demonstrator ever puts on a screen, and the strongest form of the milestone-23 claim if the VT engine is **libghostty-vt** (zero-dependency, no-libc, no-alloc, C ABI, Zig): a vendor component in a foreign language, capability-confined and hot-swappable. Optional; well off the thesis path |
+| 30 | The network stack as a confined component | A userspace **virtio-net** driver behind the DMA confinement (extended to multi-queue: RX means the device writes INTO driver memory), and the TCP/IP stack itself (`smoltcp`) as a swappable userspace component with a capability-shaped socket contract; backs `std::net` for 27 | **the canonical microkernel component**, the one people ask about first when a minimal kernel claims to stand next to Linux; and milestone 23's most convincing instance, hot-swapping a network stack under open connections. The reuse call is the plan's easiest: the thesis is the kernel confining the stack, not the stack |
 | 25 | Cross-OS performance comparison (extends 21) | EL0-measured primitive benchmarks (syscall, context switch, IPC, map, spawn) the lmbench way, so the numbers include the trap the kernel-side benchmarks skip; then line them up against lmbench (Linux, macOS guests) and `sel4bench` (seL4), at a matched virtualization tier, with release builds. Fold in the icount codegen-sensitivity fix. | **turns perf claims into cross-OS numbers**: where does a Rust capability microkernel stand next to Linux, macOS's XNU, and seL4 on the primitives that define an OS. **Largely done**: four EL0 primitives (null syscall, context switch, IPC, page map) on both instruments, a release build path, and the three-way comparison (cricker-os vs Linux-under-HVF vs native macOS) with cricker-os winning null/IPC ~5x. `spawn` landed too (its real prerequisite was never retype, which had already shipped, but **object revocation**, reclaiming a child's TCB/aspace/endpoint so a spawn loop can repeat; that shipped as its own milestone, notes/object-revocation.md, and the EL0 `lat_proc` bench, `spawn_el0`, is in the suite and the committed baseline). **Remaining**: only `sel4bench` (built and booting for qemu-arm-virt, but it times single ops via the PMU cycle counter, which neither QEMU-TCG nor Apple HVF provides, so it is **deferred to real hardware**, the milestone-16 machine, which has a real PMU; this validates our CNTVCT + long-loop design). notes/benchmarks.md |
 | 22 | Trusted init: verify it, and shrink what a broken one can do | Measured/secure boot that checks init before running it; reduce init's authority so a compromise is bounded | **closes the thesis's own soft spot:** init is the privileged *unverified* component the whole system is built by |
 | 23 | A capability-routed component OS with live replacement | Every userspace component (driver, server, app) is a swappable, vendor-shippable unit behind a stable contract; operators replace them live, no reboot. The console hot-swap is instance one; a durable queue-broker decouples component lifecycles (opt-in per channel, for latency) | **the flagship payoff and a product ambition:** competing vendor components, confined by the kernel and swapped live; the verified core is the one fixed thing |
@@ -565,6 +566,37 @@ complete (no scrollback or reflow).
 **Sequencing.** Needs the PCIe transport (done) and wants 28's contract first so the display
 terminal implements a contract rather than inventing one. Optional and well off the thesis path;
 a reach in the 24 spirit. Effort L.
+
+### 30. The network stack as a confined component
+
+**Deliverable.** Two components and a contract. A userspace **virtio-net** driver, confined by
+the same shadow-ring validator as the disk, which requires the one genuinely new kernel-adjacent
+piece: **multi-queue transport support** (virtio-net needs RX and TX; the §18 seam and the
+confinement are queue-0-only today, and RX is the direction where the *device writes into*
+driver memory, so the validator grows a proved, tested second direction rather than an ad hoc
+one). Above it, the TCP/IP stack itself as a swappable userspace component, `smoltcp` inside a
+net server, speaking a capability-shaped socket contract: an endpoint plus shared frames per
+connection, no ambient "the network"; a process holds a capability to a stack or it does not.
+The contract is what `std::net`'s PAL (milestone 27) binds to, replacing its honest
+`Unsupported`. Scope discipline: TCP, UDP, DHCP, done; no sockets-API mimicry beyond what the
+PAL needs.
+
+**Why.** A userspace network stack has been the defining microkernel component since Mach and
+L4, and it is the first thing people ask about when a minimal kernel claims to stand next to
+Linux. Milestone 23 gets its most convincing instance: live-replacing a network stack under
+open connections is a far harder-nosed test of the component contract than a console swap. And
+the multi-queue RX confinement is real DMA-isolation work that should land under the
+validator's discipline, not be retrofitted when a NIC needs it on real hardware.
+
+**Prior art and reuse.** The reuse call is the easiest in the plan: `smoltcp` (no_std,
+kernel-agnostic, event-driven, proven across embedded Rust; Redox has shipped on it). Building
+TCP by hand proves nothing thesis-relevant. Prior art to read before the contract is drawn:
+seL4's netstack componentization, Fuchsia's Netstack3 (Rust, capability-routed, the closest
+cousin), and Plan 9's /net as the counter-design (per-connection filesystem, everything a
+file). Testing is cheap: QEMU's user-mode networking NATs the guest with zero host setup.
+
+**Sequencing.** After the PCIe transport (done); the multi-queue confinement is the
+prerequisite piece and worth building first as its own tested step. Feeds 23 and 27. Effort L.
 
 ## The rival worth understanding, not building
 
