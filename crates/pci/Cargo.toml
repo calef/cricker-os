@@ -1,0 +1,10 @@
+[package]
+name = "pci"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+# no_std for the kernel, std for host tests, like every §7 pure-logic crate. The crate owns the
+# decode logic only (ECAM addressing, config-space walks, BAR sizing, virtio capability parsing);
+# the kernel supplies the volatile MMIO accessors, so all of this tests on the host against a fake
+# config space in milliseconds.

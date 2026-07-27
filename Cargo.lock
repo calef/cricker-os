@@ -85,6 +85,10 @@ name = "paging"
 version = "0.1.0"
 
 [[package]]
+name = "pci"
+version = "0.1.0"
+
+[[package]]
 name = "regions"
 version = "0.1.0"
 

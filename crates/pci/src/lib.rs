@@ -1,0 +1,397 @@
+//! PCI configuration space: the decode logic, and none of the MMIO.
+//!
+//! This crate knows how ECAM addressing works, how to walk a config space for devices, how to
+//! size a BAR, and how to find the virtio vendor capabilities. It deliberately does not know how
+//! to *touch* any of it: every function takes read/write closures over `(bdf, offset)`, and the
+//! kernel passes volatile accessors into the mapped ECAM window while the tests pass a fake
+//! config space built in an array. The same inversion `validate_and_shadow` uses in
+//! kernel/src/virtio.rs, and the reason all of this is host-testable.
+//!
+//! Vocabulary, because PCI is fifty years of acronyms: a function is addressed by **BDF**
+//! (bus, device, function). Each function has 4 KB of **configuration space** (ECAM: a flat
+//! memory window, 4 KB per function, `(bus << 20) | (dev << 15) | (fn << 12)`). The first 64
+//! bytes are the standardized header: vendor/device id, command/status, class, the **BARs**
+//! (Base Address Registers, where the function's register blocks live in memory), and the
+//! capability list pointer. Everything virtio-modern needs beyond that lives in **vendor
+//! capabilities** in that list. See notes/pcie.md.
+
+#![cfg_attr(not(test), no_std)]
+
+/// A function's address: (bus, device, function).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Bdf {
+    pub bus: u8,
+    pub dev: u8,
+    pub func: u8,
+}
+
+impl Bdf {
+    /// The function's byte offset inside the ECAM window: 4 KB per function, laid out
+    /// `bus:8 | dev:5 | fn:3 | offset:12`. This shift-and-or IS the ECAM spec.
+    pub fn ecam_offset(self) -> u64 {
+        ((self.bus as u64) << 20) | ((self.dev as u64) << 15) | ((self.func as u64) << 12)
+    }
+}
+
+// Standardized config-space header offsets (type 0).
+pub const VENDOR_ID: u64 = 0x00;
+pub const COMMAND: u64 = 0x04;
+pub const HEADER_TYPE: u64 = 0x0e;
+pub const BAR0: u64 = 0x10;
+pub const CAP_PTR: u64 = 0x34;
+pub const INTERRUPT_PIN: u64 = 0x3d;
+
+/// Command register bits we set to bring a device up.
+pub const CMD_MEMORY_SPACE: u16 = 1 << 1;
+/// Bus mastering is DMA permission at the PCI level: without it the device cannot issue a single
+/// memory transaction. The kernel-side confinement (the shadow ring) polices *where* the DMA
+/// goes; this bit is what allows DMA to exist at all, so it is set last, after the transport is
+/// registered.
+pub const CMD_BUS_MASTER: u16 = 1 << 2;
+
+/// Status register bit 4: this function has a capability list.
+const STATUS_CAP_LIST: u16 = 1 << 4;
+
+/// virtio's PCI vendor id, and the modern virtio-blk device id (0x1040 + device type 2).
+pub const VIRTIO_VENDOR: u16 = 0x1af4;
+pub const VIRTIO_BLK_MODERN: u16 = 0x1042;
+/// The transitional (legacy-capable) virtio-blk id. We do not drive legacy, but we recognize it
+/// so enumeration can say "found a disk, but it is transitional" instead of "no disk".
+pub const VIRTIO_BLK_TRANSITIONAL: u16 = 0x1001;
+
+/// Walk every function on `buses` buses and call `f` with (bdf, vendor, device). Empty slots
+/// read vendor 0xffff (the bus's way of saying "nobody home") and are skipped; a single-function
+/// device (header type bit 7 clear) skips functions 1..8. QEMU `virt` is flat on bus 0, but the
+/// walk covers every bus in range so a bridge topology enumerates too; the caller picks how many
+/// buses its `bus-range` covers.
+pub fn enumerate(buses: u16, read32: &mut dyn FnMut(Bdf, u64) -> u32, f: &mut dyn FnMut(Bdf, u16, u16)) {
+    for bus in 0..buses.min(256) {
+        for dev in 0..32 {
+            let bdf0 = Bdf {
+                bus: bus as u8,
+                dev,
+                func: 0,
+            };
+            let id = read32(bdf0, VENDOR_ID);
+            if id & 0xffff == 0xffff {
+                continue; // empty slot
+            }
+            let multifunction = (read32(bdf0, HEADER_TYPE & !3) >> ((HEADER_TYPE & 3) * 8)) & 0x80 != 0;
+            let funcs = if multifunction { 8 } else { 1 };
+            for func in 0..funcs {
+                let bdf = Bdf {
+                    bus: bus as u8,
+                    dev,
+                    func,
+                };
+                let id = read32(bdf, VENDOR_ID);
+                if id & 0xffff == 0xffff {
+                    continue;
+                }
+                f(bdf, (id & 0xffff) as u16, (id >> 16) as u16);
+            }
+        }
+    }
+}
+
+/// One decoded Base Address Register: where the register block is, how big, and how wide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Bar {
+    /// The assigned base address (0 if firmware assigned nothing; the caller must then place it).
+    pub base: u64,
+    /// The region size in bytes, from the write-ones probe.
+    pub size: u64,
+    /// A 64-bit BAR consumes two BAR slots; the caller's index bookkeeping needs to know.
+    pub is_64: bool,
+}
+
+/// Read and size the six BAR slots of a type-0 header. Returns one entry per **slot** (six),
+/// `None` for the upper half of a 64-bit BAR and for I/O-space BARs (we drive memory BARs only).
+///
+/// Sizing is the standard dance the spec prescribes: write all-ones, read back the mask of
+/// writable bits (the low bits that stay zero encode the alignment/size), restore the original.
+/// The device is quiescent during this (memory decoding is off until the command register is
+/// set), which is why enumeration runs before enable.
+pub fn read_bars(
+    bdf: Bdf,
+    read32: &mut dyn FnMut(Bdf, u64) -> u32,
+    write32: &mut dyn FnMut(Bdf, u64, u32),
+) -> [Option<Bar>; 6] {
+    let mut out = [None; 6];
+    let mut i = 0;
+    while i < 6 {
+        let off = BAR0 + i as u64 * 4;
+        let orig = read32(bdf, off);
+        if orig & 1 != 0 {
+            // An I/O-space BAR. x86 legacy; nothing we drive uses one.
+            i += 1;
+            continue;
+        }
+        let is_64 = orig & 0b110 == 0b100;
+
+        write32(bdf, off, u32::MAX);
+        let mask_lo = read32(bdf, off);
+        write32(bdf, off, orig);
+
+        if is_64 {
+            let off_hi = off + 4;
+            let orig_hi = read32(bdf, off_hi);
+            write32(bdf, off_hi, u32::MAX);
+            let mask_hi = read32(bdf, off_hi);
+            write32(bdf, off_hi, orig_hi);
+
+            let mask = ((mask_hi as u64) << 32) | (mask_lo as u64 & 0xffff_fff0);
+            if mask != 0 {
+                out[i] = Some(Bar {
+                    base: ((orig_hi as u64) << 32) | (orig as u64 & 0xffff_fff0),
+                    size: !mask + 1,
+                    is_64: true,
+                });
+            }
+            i += 2; // the upper half consumed a slot
+        } else {
+            let mask = mask_lo as u64 & 0xffff_fff0;
+            if mask != 0 {
+                out[i] = Some(Bar {
+                    base: orig as u64 & 0xffff_fff0,
+                    // Bits above a 32-bit BAR's reach can never be set; extend the mask so the
+                    // `!mask + 1` size math is done at u64 width.
+                    size: !(mask | 0xffff_ffff_0000_0000) + 1,
+                    is_64: false,
+                });
+            }
+            i += 1;
+        }
+    }
+    out
+}
+
+/// What each virtio vendor capability describes (virtio spec 4.1.4: `cfg_type`).
+pub const VIRTIO_CAP_COMMON: u8 = 1;
+pub const VIRTIO_CAP_NOTIFY: u8 = 2;
+pub const VIRTIO_CAP_ISR: u8 = 3;
+pub const VIRTIO_CAP_DEVICE: u8 = 4;
+
+/// A virtio vendor capability, decoded: which register block it names, and where that block
+/// lives as (BAR index, offset into the BAR, length). `notify_off_multiplier` is meaningful only
+/// for the notify capability (the doorbell for queue N is at
+/// `offset + queue_notify_off * multiplier`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VirtioCap {
+    pub cfg_type: u8,
+    pub bar: u8,
+    pub offset: u32,
+    pub length: u32,
+    pub notify_off_multiplier: u32,
+}
+
+/// Walk the capability list and call `f` for each **virtio vendor capability** (cap id 0x09).
+/// The list is a linked list in config space: status bit 4 says one exists, 0x34 points at the
+/// first entry, each entry is `{cap_id: u8, next: u8, ...}`. Bounded at 64 hops so a cycle in a
+/// hostile or broken device terminates instead of hanging the walk.
+pub fn virtio_caps(bdf: Bdf, read32: &mut dyn FnMut(Bdf, u64) -> u32, f: &mut dyn FnMut(VirtioCap)) {
+    const CAP_ID_VENDOR: u8 = 0x09;
+
+    let status = (read32(bdf, COMMAND) >> 16) as u16;
+    if status & STATUS_CAP_LIST == 0 {
+        return;
+    }
+    let mut at = (read32(bdf, CAP_PTR) & 0xfc) as u64;
+    for _ in 0..64 {
+        if at == 0 {
+            return;
+        }
+        let head = read32(bdf, at);
+        let cap_id = (head & 0xff) as u8;
+        let next = ((head >> 8) & 0xfc) as u64;
+        if cap_id == CAP_ID_VENDOR {
+            // struct virtio_pci_cap: u8 id, next, cap_len, cfg_type; u8 bar; 3 pad; u32 offset,
+            // length; the notify capability carries one extra u32 after that.
+            let cfg_type = ((head >> 24) & 0xff) as u8;
+            let bar = (read32(bdf, at + 4) & 0xff) as u8;
+            f(VirtioCap {
+                cfg_type,
+                bar,
+                offset: read32(bdf, at + 8),
+                length: read32(bdf, at + 12),
+                notify_off_multiplier: if cfg_type == VIRTIO_CAP_NOTIFY {
+                    read32(bdf, at + 16)
+                } else {
+                    0
+                },
+            });
+        }
+        at = next;
+    }
+}
+
+/// The INTx swizzle on QEMU's `virt` boards: the legacy interrupt pin of the function at device
+/// `d` using pin `p` (1=INTA..4=INTD) lands on PLIC/GIC input `base + ((d + p - 1) % 4)`. This is
+/// the standard bridge swizzle the PCI spec prescribes for a flat bus, and QEMU's generic ECAM
+/// bridge implements exactly it; the dtb crate's fixture test cross-checks this formula against
+/// the machine's own `interrupt-map`, so if a future board routes differently the host tests say
+/// so before the kernel misroutes an interrupt.
+pub fn intx_irq(base: u32, dev: u8, pin: u8) -> u32 {
+    base + ((dev as u32 + pin as u32 - 1) % 4)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fake 3-function config space: a virtio-blk at 00:01.0 with two BARs and a capability
+    /// list, an empty bus otherwise. Offsets are byte addresses into per-function 4 KB pages.
+    struct FakeCfg {
+        space: std::collections::HashMap<(u8, u8, u8, u64), u32>,
+    }
+
+    impl FakeCfg {
+        fn new() -> Self {
+            let mut s = std::collections::HashMap::new();
+            let f = (0u8, 1u8, 0u8);
+            // vendor 0x1af4, device 0x1042 (modern virtio-blk)
+            s.insert((f.0, f.1, f.2, 0x00), 0x1042_1af4u32);
+            // command 0, status: capability list present
+            s.insert((f.0, f.1, f.2, 0x04), (0x0010u32) << 16);
+            // header type 0, single-function
+            s.insert((f.0, f.1, f.2, 0x0c), 0);
+            // BAR0: 32-bit memory at 0x4000_0000 (assigned), size 0x1000
+            s.insert((f.0, f.1, f.2, 0x10), 0x4000_0000);
+            // BAR4: 64-bit memory, unassigned (base 0), size 0x4000
+            s.insert((f.0, f.1, f.2, 0x20), 0b100);
+            s.insert((f.0, f.1, f.2, 0x24), 0);
+            // capability list: 0x40 -> vendor cap (common, bar 4, off 0x0, len 0x1000)
+            //                  0x50 -> vendor cap (notify, bar 4, off 0x3000, len 0x1000, mult 4;
+            //                          the notify cap is 20 bytes, so its multiplier sits at 0x60)
+            //                  0x70 -> MSI-X cap (id 0x11), to prove non-vendor caps are skipped
+            s.insert((f.0, f.1, f.2, 0x34), 0x40);
+            s
+                .insert((f.0, f.1, f.2, 0x40), u32::from_le_bytes([0x09, 0x50, 16, VIRTIO_CAP_COMMON]));
+            s.insert((f.0, f.1, f.2, 0x44), 4); // bar 4
+            s.insert((f.0, f.1, f.2, 0x48), 0x0); // offset
+            s.insert((f.0, f.1, f.2, 0x4c), 0x1000); // length
+            s
+                .insert((f.0, f.1, f.2, 0x50), u32::from_le_bytes([0x09, 0x70, 20, VIRTIO_CAP_NOTIFY]));
+            s.insert((f.0, f.1, f.2, 0x54), 4);
+            s.insert((f.0, f.1, f.2, 0x58), 0x3000);
+            s.insert((f.0, f.1, f.2, 0x5c), 0x1000);
+            s.insert((f.0, f.1, f.2, 0x60), 4); // notify_off_multiplier
+            s.insert((f.0, f.1, f.2, 0x70), u32::from_le_bytes([0x11, 0x00, 0, 0])); // MSI-X, end of list
+            FakeCfg { space: s }
+        }
+
+        fn read32(&mut self, bdf: Bdf, off: u64) -> u32 {
+            // Empty slots float high: all-ones, the hardware's "nobody home".
+            *self
+                .space
+                .get(&(bdf.bus, bdf.dev, bdf.func, off & !3))
+                .unwrap_or(&u32::MAX)
+        }
+
+        /// BAR writes emulate the size probe: all-ones writes read back as the size mask.
+        fn write32(&mut self, bdf: Bdf, off: u64, v: u32) {
+            let key = (bdf.bus, bdf.dev, bdf.func, off & !3);
+            if !self.space.contains_key(&key) {
+                return;
+            }
+            let v = match off & !3 {
+                0x10 if v == u32::MAX => !(0x1000u32 - 1), // BAR0: size 0x1000
+                0x20 if v == u32::MAX => (!(0x4000u32 - 1)) | 0b100, // BAR4 low: size 0x4000, keep type bits
+                0x24 if v == u32::MAX => u32::MAX,         // BAR4 high: all bits writable
+                _ => v,
+            };
+            self.space.insert(key, v);
+        }
+    }
+
+    /// ECAM addressing is a pure shift-and-or, and these three points pin the layout: function
+    /// stride 4 KB, device stride 32 KB, bus stride 1 MB.
+    #[test]
+    fn ecam_offsets_have_the_specified_strides() {
+        assert_eq!(Bdf { bus: 0, dev: 0, func: 1 }.ecam_offset(), 0x1000);
+        assert_eq!(Bdf { bus: 0, dev: 1, func: 0 }.ecam_offset(), 0x8000);
+        assert_eq!(Bdf { bus: 1, dev: 0, func: 0 }.ecam_offset(), 0x10_0000);
+    }
+
+    /// Enumeration finds the one real device and nothing else: empty slots (vendor 0xffff) are
+    /// skipped, and a single-function device's functions 1..8 are never probed as devices.
+    #[test]
+    fn enumeration_finds_the_virtio_disk_and_skips_empty_slots() {
+        let mut cfg = FakeCfg::new();
+        let mut found = Vec::new();
+        enumerate(
+            256,
+            &mut |b, o| cfg.read32(b, o),
+            &mut |bdf, vendor, device| found.push((bdf, vendor, device)),
+        );
+        assert_eq!(
+            found,
+            vec![(Bdf { bus: 0, dev: 1, func: 0 }, VIRTIO_VENDOR, VIRTIO_BLK_MODERN)],
+        );
+    }
+
+    /// The BAR probe decodes an assigned 32-bit BAR and an UNassigned 64-bit BAR (base 0), sizes
+    /// both by the write-ones dance, marks widths, and restores the original values (the probe
+    /// must not leave the device reprogrammed).
+    #[test]
+    fn bars_are_sized_and_restored() {
+        let cfg = std::cell::RefCell::new(FakeCfg::new());
+        let bdf = Bdf { bus: 0, dev: 1, func: 0 };
+        let bars = read_bars(
+            bdf,
+            &mut |b, o| cfg.borrow_mut().read32(b, o),
+            &mut |b, o, v| cfg.borrow_mut().write32(b, o, v),
+        );
+        let mut cfg = cfg.into_inner();
+
+        assert_eq!(bars[0], Some(Bar { base: 0x4000_0000, size: 0x1000, is_64: false }));
+        assert_eq!(bars[4], Some(Bar { base: 0, size: 0x4000, is_64: true }));
+        assert_eq!(bars[1], None);
+        assert_eq!(bars[5], None, "the upper half of a 64-bit BAR is not its own BAR");
+
+        // Restored: originals read back, not the probe's all-ones.
+        assert_eq!(cfg.read32(bdf, 0x10), 0x4000_0000);
+        assert_eq!(cfg.read32(bdf, 0x20), 0b100);
+    }
+
+    /// The capability walk yields the two virtio vendor capabilities with their (bar, offset,
+    /// length) and the notify multiplier, and skips the MSI-X capability in the same list.
+    #[test]
+    fn the_capability_walk_finds_virtio_vendor_caps_only() {
+        let mut cfg = FakeCfg::new();
+        let bdf = Bdf { bus: 0, dev: 1, func: 0 };
+        let mut caps = Vec::new();
+        virtio_caps(bdf, &mut |b, o| cfg.read32(b, o), &mut |c| caps.push(c));
+
+        assert_eq!(caps.len(), 2, "exactly the two vendor caps, MSI-X skipped");
+        assert_eq!(caps[0].cfg_type, VIRTIO_CAP_COMMON);
+        assert_eq!((caps[0].bar, caps[0].offset, caps[0].length), (4, 0, 0x1000));
+        assert_eq!(caps[1].cfg_type, VIRTIO_CAP_NOTIFY);
+        assert_eq!((caps[1].bar, caps[1].offset), (4, 0x3000));
+        assert_eq!(caps[1].notify_off_multiplier, 4);
+    }
+
+    /// A capability list that loops must terminate, not hang: hostile or broken hardware gets a
+    /// bounded walk, the same discipline as the virtqueue chain walk.
+    #[test]
+    fn a_cyclic_capability_list_terminates() {
+        let mut cfg = FakeCfg::new();
+        let bdf = Bdf { bus: 0, dev: 1, func: 0 };
+        // Point the second cap's `next` back at the first.
+        cfg.space
+            .insert((0, 1, 0, 0x50), u32::from_le_bytes([0x09, 0x40, 20, VIRTIO_CAP_NOTIFY]));
+        let mut n = 0;
+        virtio_caps(bdf, &mut |b, o| cfg.read32(b, o), &mut |_| n += 1);
+        assert!(n <= 64, "the walk did not terminate promptly on a cycle");
+    }
+
+    /// The INTx swizzle, pinned: on QEMU virt the PCI irq base is 32 (riscv) and the four lines
+    /// rotate by device. Device 1 pin INTA is base+1; device 4 wraps back to base+0.
+    #[test]
+    fn the_intx_swizzle_rotates_by_device() {
+        assert_eq!(intx_irq(32, 1, 1), 33);
+        assert_eq!(intx_irq(32, 2, 1), 34);
+        assert_eq!(intx_irq(32, 4, 1), 32);
+        assert_eq!(intx_irq(32, 1, 2), 34, "pin B advances the rotation too");
+    }
+}
