@@ -187,13 +187,16 @@ mod tests {
 
     /// The boot core set up its per-CPU pointer, and `current()` reaches a real block.
     ///
-    /// Single-core still, so the boot core is id 0 and its block is `PERCPU[0]`.
+    /// The boot core's id is `arch::boot_cpu_id()`: 0 on aarch64, but on RISC-V the boot hart is not
+    /// guaranteed to be 0 (QEMU picks it), and the logical id equals the hart id, so this reads it
+    /// rather than assuming 0.
     #[test_case]
     fn boot_cpu_percpu_is_reachable() {
-        assert_eq!(id(), 0);
+        let boot = crate::arch::boot_cpu_id();
+        assert_eq!(id(), boot);
         assert_eq!(
             current() as *const PerCpu,
-            &PERCPU[0] as *const PerCpu,
+            &PERCPU[boot] as *const PerCpu,
             "current() does not point at the boot core's block"
         );
     }

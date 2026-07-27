@@ -17,9 +17,10 @@ set -e
 ELF="$1"
 shift
 
-# One hart for now: SMP bring-up (SBI HSM) is the traps/timer step. The NS16550 console is on the
-# `virt` machine at 0x1000_0000; `-serial stdio` wires it to this terminal.
-SMP="${CRICKER_SMP:-1}"
+# Four harts, matching aarch64's runner (parity workstream A). OpenSBI boots hart 0; the others sit
+# in SBI HSM STOPPED state until the kernel starts them with sbi_hart_start (arch::psci_cpu_on). The
+# NS16550 console is on the `virt` machine at 0x1000_0000; `-serial stdio` wires it to this terminal.
+SMP="${CRICKER_SMP:-4}"
 
 # The userspace program rides in as an initrd, exactly as on aarch64: QEMU loads the file into RAM
 # and writes its address into /chosen/linux,initrd-start in the device tree, where memory::init reads

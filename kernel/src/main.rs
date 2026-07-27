@@ -77,7 +77,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
     // held-rank out of its per-CPU block, so `TPIDR_EL1` must point at that block before
     // `console::init` (the first lock) runs. On one core this is pure setup with no visible
     // effect; it is the foundation SMP is built on. See cpu.rs and DECISIONS.md §11.
-    cpu::init_this_cpu(0);
+    cpu::init_this_cpu(arch::boot_cpu_id());
 
     // Console first, exceptions second, and the order is not arbitrary: the fault
     // handler's entire job is to print, so it is useless until the UART works. The
@@ -165,6 +165,12 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
             test_main();
             arch::halt();
         }
+
+        // SMP: bring the other harts online (parity workstream A). Each secondary starts via SBI HSM
+        // at secondary_boot, adopts the fine kernel map, sets its own trap vector and per-CPU state
+        // (its own per-hart trap stash, A1), arms its timer, and idles until there is work. A count
+        // greater than one proves the per-hart trap path and the bring-up work on a second hart.
+        smp::bring_up_secondaries();
 
         // Dynamic kernel mapping self-test: map a fresh frame at an unused high-half VA, read it
         // back through the tables, write and read through the mapping, then unmap it. Proves

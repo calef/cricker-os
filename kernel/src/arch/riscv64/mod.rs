@@ -82,6 +82,26 @@ const _: () = {
 static TRAP_STASH: [TrapStash; crate::cpu::MAX_CPUS] =
     [const { TrapStash::new() }; crate::cpu::MAX_CPUS];
 
+/// The physical hart id OpenSBI handed the kernel on (`a0` at `_start`), stashed by boot.s. The
+/// logical cpu id equals the physical hart id on RISC-V (so the PLIC context `2*hart+1`, the timer,
+/// and IPIs all line up), and this is which hart is the boot cpu. QEMU's boot hart is usually 0 but
+/// the spec does not require it, so the SMP bring-up reads this rather than assuming.
+#[unsafe(no_mangle)]
+static BOOT_HARTID: AtomicUsize = AtomicUsize::new(0);
+
+/// The physical hart id the kernel booted on (see [`BOOT_HARTID`]).
+pub fn boot_hartid() -> usize {
+    BOOT_HARTID.load(Ordering::Relaxed)
+}
+
+/// The logical id of the hart the kernel boots on. On RISC-V the logical cpu id equals the physical
+/// hart id, and QEMU's boot hart is not guaranteed to be 0, so this reads the id OpenSBI handed us at
+/// `_start` (stashed by boot.s). The SMP bring-up starts every *other* hart. The aarch64 twin is
+/// always 0.
+pub fn boot_cpu_id() -> usize {
+    boot_hartid()
+}
+
 /// Set this hart's per-CPU pointer. RISC-V's `tp` (thread pointer) is the analog of aarch64's
 /// `TPIDR_EL1`, but a general register, so this also arms the per-hart trap path: it records the
 /// pointer in this hart's [`TrapStash`] and points `sscratch` at that stash, so `trap.s` can recover
@@ -107,17 +127,38 @@ pub fn percpu() -> usize {
     tp
 }
 
-/// Start a secondary hart. The SMP analog of aarch64's PSCI `CPU_ON`, implemented via the SBI HSM
-/// (hart state management) extension `sbi_hart_start`. Filled in at the SMP step.
+/// Start a secondary hart. The name is aarch64's (`psci_cpu_on`); the mechanism is the SBI HSM
+/// (Hart State Management) extension's `sbi_hart_start(hartid, start_addr, opaque)`. The firmware
+/// starts the target hart at `entry` (a physical address) in S-mode with paging off, `a0` = its hart
+/// id and `a1` = `context`. Returns the SBI error (0 = success; a hart QEMU did not create, when
+/// `-smp` is smaller than MAX_CPUS, returns a nonzero error rather than hanging). See boot.s
+/// `secondary_boot`.
 pub fn psci_cpu_on(target_hart: u64, entry: u64, context: u64) -> i64 {
-    let _ = (target_hart, entry, context);
-    unimplemented!("riscv SMP bring-up (SBI HSM sbi_hart_start): the timer + interrupts step")
+    const SBI_HSM_EID: usize = 0x0048_534D; // "HSM"
+    const SBI_HART_START_FID: usize = 0;
+    let error: i64;
+    // SAFETY: an SBI call. a7 = extension, a6 = function, a0..a2 = (hartid, start_addr, opaque). The
+    // firmware returns the error in a0 and clobbers a1; nothing else.
+    unsafe {
+        asm!(
+            "ecall",
+            in("a7") SBI_HSM_EID,
+            in("a6") SBI_HART_START_FID,
+            inout("a0") target_hart => error,
+            inout("a1") entry => _,
+            in("a2") context,
+            options(nostack),
+        );
+    }
+    error
 }
 
-/// Bring the architecture up: install the trap vector (`stvec`), start the timer, enable the
-/// interrupt sources. Filled in at the traps step.
+/// Bring this hart's architecture state up. On RISC-V that is the trap vector (`stvec`): unlike
+/// aarch64's `VBAR_EL1` this is the only per-hart install a secondary needs here, since the timer and
+/// interrupt unmasking are separate steps in `secondary_main`. The primary sets `stvec` directly in
+/// its boot tour; this is the path a secondary takes to the same place.
 pub fn init() {
-    unimplemented!("riscv arch init (stvec + timer + interrupts): the traps step")
+    exceptions::init();
 }
 
 /// Stop this hart forever, cheaply. `wfi` parks the hart until an interrupt; with nothing left to

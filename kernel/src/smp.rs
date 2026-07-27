@@ -97,9 +97,13 @@ pub fn bring_up_secondaries() {
     let entry = arch::mmu::virt_to_phys(secondary_boot as *const () as u64);
 
     let mut started = 0;
-    for id in 1..MAX_CPUS {
-        // QEMU virt numbers cores 0..N in MPIDR affinity 0, so the target MPIDR is the id.
-        // TODO(portability): read the CPU list and their MPIDRs from `/cpus` in the device tree.
+    for id in 0..MAX_CPUS {
+        // Start every core but the one we booted on. On aarch64 that is always core 0; on RISC-V
+        // QEMU's boot hart is not guaranteed to be 0, so skip whichever this is (logical id == hart
+        // id there). TODO(portability): read the CPU list from `/cpus` in the device tree.
+        if id == cpu::id() {
+            continue;
+        }
         let ret = arch::psci_cpu_on(id as u64, entry, stack_top(id));
         if ret == 0 {
             started += 1;

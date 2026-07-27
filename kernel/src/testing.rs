@@ -22,9 +22,10 @@ static WATCH_LAST_HB: AtomicU64 = AtomicU64::new(0);
 static WATCH_STALL_TICKS: AtomicU64 = AtomicU64::new(0);
 
 /// Called from the timer IRQ each tick (test builds only; see `timer::tick`). Only the boot core
-/// watches, so any dump happens once.
+/// watches, so any dump happens once. The boot core is `arch::boot_cpu_id()` (0 on aarch64, but on
+/// RISC-V whichever hart QEMU booted), which is also the one hart that ticks in a single-hart test.
 pub fn watchdog_tick() {
-    if crate::cpu::id() != 0 {
+    if crate::cpu::id() != crate::arch::boot_cpu_id() {
         return;
     }
     const STALL_LIMIT: u64 = 6000; // ticks at 100 Hz = 60 s

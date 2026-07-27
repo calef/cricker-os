@@ -53,6 +53,11 @@ _start_high:
     j       1b
 2:
 
+    # Stash the boot hart id (still in a0 from OpenSBI) before a0 becomes the kernel_main argument.
+    # .bss was just zeroed, so this survives; the kernel reads it to learn which physical hart it is.
+    la      t0, BOOT_HARTID
+    sd      a0, 0(t0)
+
     # kernel_main(dtb): move the DTB (still in a1 from OpenSBI) into the first argument.
     mv      a0, a1
     call    kernel_main
@@ -61,10 +66,33 @@ _start_high:
 3:  wfi
     j       3b
 
-# The secondary-hart entry (SMP). Referenced by smp.rs so it must link; the SBI-HSM bring-up that
-# actually starts a hart here, sets its stack, replays satp, and calls `secondary_main` is the SMP
-# step. For now a started hart would simply park.
+# The secondary-hart entry (SMP). SBI HSM `sbi_hart_start` (arch::psci_cpu_on) starts a hart HERE, at
+# this PHYSICAL address, with paging off, in S-mode, a0 = its hart id and a1 = the opaque word core 0
+# passed (this hart's high-VA stack top). The page tables already exist (core 0 built BOOT_PAGE_TABLE
+# and the fine map), so we only replay the satp/high-half transition, exactly like `_start`, then jump
+# to `secondary_main`. It adopts the fine map, sets its own trap vector and per-CPU state, and idles.
 .global secondary_boot
 secondary_boot:
+    # Turn Sv39 on via the boot table (same three steps as _start). a0 (hart id) and a1 (stack top)
+    # must survive, so touch only t0/t1.
+    lla     t0, BOOT_PAGE_TABLE
+    srli    t0, t0, 12
+    li      t1, 8 << 60
+    or      t0, t0, t1
+    sfence.vma
+    csrw    satp, t0
+    sfence.vma
+
+    # Jump to the high-half alias of secondary_high.
+    lla     t0, secondary_high
+    li      t1, 0xffffffc000000000  # KERNEL_VA_BASE (must match link-riscv.ld and mmu.rs)
+    add     t0, t0, t1
+    jr      t0
+
+secondary_high:
+    mv      sp, a1                  # the high-VA stack top core 0 passed as the opaque word
+    # a0 still holds this hart's id; secondary_main(cpu_id) reads it as its first argument.
+    call    secondary_main
+    # secondary_main is `-> !`. If it ever returns, park rather than run on.
 1:  wfi
     j       1b

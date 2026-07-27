@@ -44,6 +44,13 @@ pub fn set_percpu(ptr: usize) {
     TPIDR_EL1.set(ptr as u64);
 }
 
+/// The logical id of the core the kernel boots on. On aarch64's `virt` the boot core is MPIDR
+/// affinity 0, so it is always 0; the SMP bring-up starts every *other* core. (RISC-V's boot hart is
+/// not guaranteed to be 0, so its `arch::boot_cpu_id` reads the actual hart id.)
+pub fn boot_cpu_id() -> usize {
+    0
+}
+
 /// Read this core's per-CPU pointer back. One instruction.
 pub fn percpu() -> usize {
     TPIDR_EL1.get() as usize

@@ -174,6 +174,19 @@ unsafe fn install(root: u64) {
     }
 }
 
+/// Adopt the kernel's fine-grained Sv39 map on a secondary hart (SMP). `secondary_boot` brought this
+/// hart up on the coarse `BOOT_PAGE_TABLE`, which reaches only the first few gigapages of the high
+/// half, not the thread-stack area far above the direct map; switching `satp` to the shared
+/// `KERNEL_ROOT` the primary built and verified gives this hart the same W^X map every other hart
+/// runs on. All harts share the one kernel root, so there is nothing per-hart to build. The RISC-V
+/// counterpart of the aarch64 `init_secondary`.
+pub fn init_secondary() {
+    let root = KERNEL_ROOT.load(Ordering::Relaxed);
+    // SAFETY: the primary built this root and is running on it; it covers this code, this hart's
+    // stack (mapped in the kernel image), and the UART, so the switch is seamless.
+    unsafe { install(root) };
+}
+
 /// Build every mapping the kernel needs: the direct map of RAM, the W^X kernel sections, the stack,
 /// and the UART. Mirrors the aarch64 `map_everything`.
 fn map_everything<A, P>(m: &mut Mapper<A, P, Sv39>) -> Result<(), MapError>
@@ -308,11 +321,6 @@ linker_symbol!(data_start, __data_start);
 linker_symbol!(bss_end, __bss_end);
 linker_symbol!(stack_bottom, __stack_bottom);
 linker_symbol!(stack_top, __stack_top);
-
-/// Replay the kernel mapping on a secondary hart. The SMP + MMU step.
-pub fn init_secondary() {
-    unimplemented!("riscv secondary MMU bring-up: the SMP step")
-}
 
 /// Compose the `satp` value naming an address space: Sv39 mode, ASID, and the root PPN. The RISC-V
 /// analog of aarch64's `ttbr0_value`, kept under that name so portable `user.rs` does not change.
