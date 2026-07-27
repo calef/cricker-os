@@ -238,7 +238,23 @@ Finding these is the point; each gets pushed under `arch/`.
    is fully portable; it also builds for aarch64, though aarch64's init is the PL011-wired role of
    `hello`. Build the archive with `cargo xtask initrd-riscv`.
 
-   **Remaining:** the PLIC (leak: `drivers::gic`), for device interrupts. That is the last item.
+   **And a real device interrupt flows through the PLIC.** A keystroke becomes a message: the
+   NS16550 raises its receive line into the PLIC, the PLIC delivers a supervisor external interrupt
+   (`scause` = 9), `riscv_trap_dispatch` claims it (acknowledging and masking that source), looks up
+   the endpoint it is routed to, and notifies it; a kernel driver thread blocked there wakes, reads
+   the byte, and re-arms the source. Boot shows "a keystroke reached a kernel driver through the
+   PLIC: 0x41 ('A')". The shape is exactly aarch64's `handle_irq` (mask, notify, complete) and it
+   reuses the arch-neutral routing (`bind_irq` / `irq_route` / `irq_notify`) unchanged. The PLIC's
+   base comes from the device tree, which exposed one parser bug: `node_reg` only matched nodes at
+   depth 2 (the aarch64 GIC is a direct child of the root), but the riscv PLIC is at
+   `/soc/plic@c000000`, depth 3. `node_reg` now matches at any depth and decodes `reg` with the
+   parent's cell counts. Two test caveats: pipe the byte *after* boot (the console clears the RX FIFO
+   during init), and the demo driver runs in the kernel for now.
+
+   **Remaining:** extract `arch::irq` (GIC + PLIC behind one interface) to close the last leak
+   (portable `sched`/`smp`/`syscall`/`user` still name `drivers::gic`), now that there are two working
+   interrupt controllers to extract it from; and, if wanted, move the demo driver to userspace (a
+   program holding the `Irq` capability, `WAIT`/`ACK`).
 
 The reward beyond the proof: when a real RISC-V board (a ~$70 StarFive VisionFive 2 / Milk-V Mars, or a
 rented Graviton later) is on hand, the QEMU-virt work transfers, because real boards use the same

@@ -1078,10 +1078,16 @@ the archive into it, grants it a budget and a report endpoint, and `init` loads 
 builds it as a child through the capability verbs, wiring it to the report. The kernel never touches
 the child's bytes. That exercised the full userspace capability syscall surface on RISC-V.
 
-**Remaining:** the PLIC, which resolves the last leak
-(portable code still names `drivers::gic` for the interrupt controller); it waits until RISC-V has a
-device interrupt to field, so the abstraction lands with a real second consumer rather than a
-speculative one.
+**Device interrupts flow through the PLIC too:** a
+keystroke raises the NS16550's line into the PLIC, which delivers a supervisor external interrupt;
+the handler claims it, masks the source, and notifies the endpoint it is routed to, and a driver
+blocked there wakes, reads the byte, and re-arms. This is the real second consumer the
+interrupt-controller abstraction was waiting for.
+
+**Remaining:** extract `arch::irq` (the GIC and the PLIC behind one interface) to close the last
+leak, portable code still names `drivers::gic`. The order was deliberate: build the PLIC and prove a
+real interrupt through it first, so the abstraction is factored out of two working controllers rather
+than guessed ahead of one.
 
 ## Reading
 
