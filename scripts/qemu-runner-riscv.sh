@@ -44,7 +44,12 @@ if [ -n "$CRICKER_DISK" ] && [ ! -f "$CRICKER_DISK" ]; then
     exit 1
 fi
 if [ -n "$CRICKER_DISK" ]; then
-    DISK="-global virtio-mmio.force-legacy=false -drive file=$CRICKER_DISK,if=none,format=raw,id=hd0,readonly=on -device virtio-blk-device,drive=hd0"
+    # The same image is attached TWICE, deliberately: once as virtio-mmio (hd0, the parity-C
+    # transport) and once as virtio-blk-pci (hd1, the PCIe transport). Both read-only, so the
+    # double attachment is safe, and one boot exercises both transports side by side.
+    # disable-legacy=on makes the PCI function MODERN (device id 0x1042): without it QEMU offers a
+    # transitional device (0x1001), whose legacy register layout we deliberately do not drive.
+    DISK="-global virtio-mmio.force-legacy=false -drive file=$CRICKER_DISK,if=none,format=raw,id=hd0,readonly=on -device virtio-blk-device,drive=hd0 -drive file=$CRICKER_DISK,if=none,format=raw,id=hd1,readonly=on -device virtio-blk-pci,drive=hd1,disable-legacy=on"
 fi
 
 exec qemu-system-riscv64 \

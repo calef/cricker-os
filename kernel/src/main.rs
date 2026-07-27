@@ -37,6 +37,11 @@ mod drivers;
 mod kmem;
 mod memory;
 mod panic;
+// PCIe enumeration + virtio-pci bring-up (the PCIe transport). riscv64-only for now: that is the
+// board whose disk arrives over PCIe; the decode logic (crates/pci) is architecture-neutral and
+// the aarch64 wiring is a constants change when wanted. See kernel/src/pci.rs.
+#[cfg(target_arch = "riscv64")]
+mod pci;
 mod revoke;
 mod sched;
 mod smp;
@@ -469,6 +474,28 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
                     "  virtio      : no block device attached (pass CRICKER_DISK to attach one)"
                 )
             }
+        }
+
+        // PCIe enumeration + virtio-pci bring-up (the PCIe transport, P1/P2). The disk QEMU
+        // attaches as `virtio-blk-pci` arrives over the transport real hardware uses: found by
+        // walking ECAM config space, its BARs placed by the kernel (OpenSBI does no PCI setup),
+        // its register blocks resolved through the virtio vendor capabilities, its INTx line
+        // swizzled to a PLIC input.
+        match pci::find_block_device() {
+            Some(d) => println!(
+                "  pcie        : virtio-blk at {:02x}:{:02x}.{}, common {:#x}, notify {:#x} (mult {}), isr {:#x}, PLIC IRQ {}",
+                d.bdf.bus,
+                d.bdf.dev,
+                d.bdf.func,
+                d.common,
+                d.notify_base,
+                d.notify_mult,
+                d.isr,
+                d.intid,
+            ),
+            None => println!(
+                "  pcie        : no virtio-blk on the bus (pass CRICKER_DISK to attach one)"
+            ),
         }
 
         println!("cricker-os: the capability core runs on RISC-V.");

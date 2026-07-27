@@ -105,6 +105,29 @@ pub const VIRTIO_IRQ_BASE: u32 = 1;
 pub const VIRTIO_SLOT_STRIDE: u64 = 0x1000;
 pub const VIRTIO_SLOTS: u64 = 8;
 
+/// The PCIe ECAM window on QEMU's riscv `virt` (the `pci@30000000` node): configuration space,
+/// 4 KB per function, 1 MB per bus. We map (and therefore enumerate) **bus 0 only**: QEMU `virt`
+/// is a flat root complex with every device on bus 0, and a 4 KB-page kernel map of all 256
+/// buses would cost 64K PTEs for space that reads all-ones. Widening is one constant if a bridge
+/// topology ever appears. The dtb fixture test cross-checks this base against the machine's own
+/// `reg`, the same hardcode-with-a-witness pattern as the UART.
+pub const PCI_ECAM_BASE: u64 = 0x3000_0000;
+pub const PCI_ECAM_BUSES: u16 = 1;
+pub const PCI_ECAM_MAPPED: u64 = PCI_ECAM_BUSES as u64 * 0x10_0000;
+
+/// Where BARs get placed. QEMU `virt` reserves 0x4000_0000..0x8000_0000 as the 32-bit PCI memory
+/// window, but with `-bios default` nobody has programmed a BAR before us (OpenSBI does no PCI),
+/// so the kernel assigns them itself, bumping from this base. We map only a 2 MB slice: a virtio
+/// function's register BAR is 16 KB, so this bounds the kernel's page-table spend while leaving
+/// room for dozens of devices.
+pub const PCI_BAR_BASE: u64 = 0x4000_0000;
+pub const PCI_BAR_MAPPED: u64 = 0x20_0000;
+
+/// The PLIC input for INTx line A on the `virt` board's root complex; B, C, D follow. A device's
+/// line is `PCI_IRQ_BASE + ((dev + pin - 1) % 4)`, the standard swizzle (`pci::intx_irq`); the
+/// dtb fixture test walks the machine's own `interrupt-map` and asserts the formula matches.
+pub const PCI_IRQ_BASE: u32 = 32;
+
 /// Physical to kernel-virtual. Identity in bare mode; `pa + KERNEL_VA_BASE` once the high-half exists.
 pub const fn phys_to_virt(pa: u64) -> u64 {
     pa + KERNEL_VA_BASE
@@ -243,6 +266,22 @@ where
         m,
         VIRTIO_MMIO_BASE,
         VIRTIO_MMIO_BASE + VIRTIO_MMIO_SIZE,
+        Flags::device(),
+    )?;
+
+    // 9. The PCIe windows (the PCIe transport): bus 0's ECAM config space, and the slice of the
+    // 32-bit PCI memory window the kernel assigns BARs from. Device memory both. An absent device
+    // reads all-ones in ECAM ("nobody home"), so mapping these is harmless without a PCI device.
+    direct_map(
+        m,
+        PCI_ECAM_BASE,
+        PCI_ECAM_BASE + PCI_ECAM_MAPPED,
+        Flags::device(),
+    )?;
+    direct_map(
+        m,
+        PCI_BAR_BASE,
+        PCI_BAR_BASE + PCI_BAR_MAPPED,
         Flags::device(),
     )?;
 

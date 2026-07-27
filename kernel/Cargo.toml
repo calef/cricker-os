@@ -15,6 +15,7 @@ caps = { version = "0.1.0", path = "../crates/caps" }
 coremark = { version = "0.1.0", path = "../crates/coremark" }
 crickerfs = { version = "0.1.0", path = "../crates/crickerfs" }
 dtb = { version = "0.1.0", path = "../crates/dtb" }
+pci = { version = "0.1.0", path = "../crates/pci" }
 elf = { version = "0.1.0", path = "../crates/elf" }
 frames = { version = "0.1.0", path = "../crates/frames" }
 intrusive = { version = "0.1.0", path = "../crates/intrusive" }
