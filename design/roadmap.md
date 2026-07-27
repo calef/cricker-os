@@ -668,9 +668,12 @@ Linux/FUSE, which is itself a gift (images can be created and inspected on the h
 same code that serves them on cricker-os). It is the flagship form of the userspace-reuse
 thesis: the kernel confining a serious component we did not write.
 
-**Risks, stated now.** (1) The core's std/alloc footprint needs auditing before the port is
-costed; the FUSE half is std and stays on the host, but the engine must run against our
-userspace runtime (encryption features off in phase one). (2) The write path is new on our
+**Risks, priced.** (1) ~~The core's std/alloc footprint needs auditing~~ **Audited, retired**
+(notes/redoxfs-audit.md): `std` is a feature, not an assumption; the ~5,400-line core compiles
+for BOTH of our bare-metal targets today, three bit-rotted imports away from clean, and the
+`Disk` trait is three synchronous methods shaped exactly like a blk-IPC client. The one real
+cost is a `GlobalAlloc` for the FS-server process, which milestone 27's PAL needs anyway;
+creation paths (`mkfs`, uuid, entropy) are the only std-gated core APIs and stay on the host. (2) The write path is new on our
 side, driver through validator through tests, and errors there eat filesystems; the CoW design
 is forgiving, but the tests must include kill-mid-write. (3) Upstream coupling: pin a version,
 carry patches, and record divergence, the same discipline as any vendored engine.

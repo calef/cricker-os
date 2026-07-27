@@ -208,6 +208,10 @@ in the code or the conversation doesn't make sense, it belongs here.
   would actually hit (no POSIX/libc, no writable FS, no network, no GUI), why that's a
   deliberate teaching-subset choice rather than a limit of the model (Fuchsia is a
   general-purpose capability microkernel), and what it would take to grow toward one.
+- [RedoxFS std-footprint audit](redoxfs-audit.md) — milestone 32's engine, costed by building
+  it: the no_std core compiles for both bare-metal targets three imports away from clean, the
+  Disk trait is a blk-IPC client's exact shape, and the one real cost (a userspace GlobalAlloc)
+  was already on milestone 27's books.
 - [Prior art and reuse](prior-art.md) — where to look before building (Redox, rCore, Tock,
   Hubris, seL4, Fuchsia) and the rule that decides build-vs-reuse: the reuse boundary is the
   TCB boundary. Inside it, always build; userspace components, actively prefer porting,
