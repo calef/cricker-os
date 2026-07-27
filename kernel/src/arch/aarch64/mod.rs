@@ -9,11 +9,16 @@ use aarch64_cpu::registers::TPIDR_EL1;
 use core::arch::global_asm;
 use tock_registers::interfaces::{Readable, Writeable};
 
+pub mod context;
 pub mod exceptions;
 pub mod interrupts;
 pub mod mmu;
 pub mod semihosting;
 pub mod timer;
+
+// The saved thread context and how a new one is faked (the Rust half of context.s). Re-exported
+// flat so `crate::arch::{Context, switch_to}` names them regardless of architecture.
+pub use context::{Context, switch_to};
 
 // The arm64 Image header. `_start` lands at byte 0 of the image, which is where QEMU
 // begins executing. It does nothing but branch to `_boot`.

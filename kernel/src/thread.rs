@@ -104,44 +104,12 @@ impl FreeVas {
     }
 }
 
-/// The callee-saved registers, as `switch_to` pushes them.
-///
-/// **This layout is a contract with `context.s`.** Twelve `u64`s, 96 bytes, in exactly this
-/// order. Reorder a field here and the assembly restores the wrong register into the wrong
-/// place, and the thread resumes with a frame pointer where its return address should be.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct Context {
-    /// `x19`. **Doubles as the argument to a brand-new thread**: `thread_trampoline` reads the
-    /// boxed closure out of it. A callee-saved register, chosen exactly because `switch_to`
-    /// restores it for us on the way in.
-    pub x19: u64,
-    pub x20: u64,
-    pub x21: u64,
-    pub x22: u64,
-    pub x23: u64,
-    pub x24: u64,
-    pub x25: u64,
-    pub x26: u64,
-    pub x27: u64,
-    pub x28: u64,
-    /// `x29`, the frame pointer. Zero for a new thread: it is the bottom of the backtrace.
-    pub x29: u64,
-    /// `x30`, the link register. **Where `switch_to`'s `ret` jumps.** For a new thread this is
-    /// `thread_trampoline`, which is how a thread that has never run gets started by the same
-    /// instruction that resumes one that has.
-    pub x30: u64,
-}
-
-const _: () = assert!(size_of::<Context>() == 96);
-
-unsafe extern "C" {
-    /// Save our callee-saved registers, swap `sp`, restore theirs, and `ret` into **their**
-    /// `x30`. See context.s: the last instruction returns to a different thread.
-    pub fn switch_to(prev_context: *mut *mut Context, next_context: *mut Context);
-
-    fn thread_trampoline();
-}
+/// The saved thread context (`arch::Context`) and the context switch (`arch::switch_to`) are
+/// arch-specific by nature: a context *is* a particular CPU's callee-saved register set. `thread.rs`
+/// treats a `Context` as opaque, it only stores one and hands it to `switch_to`, and builds a fresh
+/// one through the two `for_*_thread` constructors in `arch`. Re-exported here so the thread
+/// subsystem's callers (`sched`) keep naming them through `crate::thread`. See notes/riscv-port.md.
+pub use crate::arch::{Context, switch_to};
 
 /// A stack, with an unmapped page beneath it.
 ///
@@ -505,22 +473,13 @@ impl Thread {
         // run" path: the trampoline just happens to be what `x30` points at.
         let context = (closure_at - size_of::<Context>() as u64) as *mut Context;
 
+        // The closure lives on the new stack (`closure_at`); its concrete type was erased, so we
+        // also hand over the monomorphized shim that knows how to call it. `arch` owns which
+        // registers carry them and which trampoline `switch_to`'s first `ret` lands in.
+        let call_shim = (call_closure::<F> as extern "C" fn(*mut ())) as usize as u64;
         // SAFETY: the stack was just mapped read/write, and this is inside it.
         unsafe {
-            context.write(Context {
-                x19: closure_at, // where the closure lives, for the trampoline
-                x20: (call_closure::<F> as extern "C" fn(*mut ())) as usize as u64, // how to call it
-                x21: 0,
-                x22: 0,
-                x23: 0,
-                x24: 0,
-                x25: 0,
-                x26: 0,
-                x27: 0,
-                x28: 0,
-                x29: 0, // no caller: the backtrace ends here
-                x30: thread_trampoline as *const () as u64, // <- where `ret` will go
-            });
+            context.write(Context::for_kernel_thread(closure_at, call_shim));
         }
 
         Some(Thread {
@@ -579,34 +538,15 @@ impl Thread {
         };
         let (entry, user_sp) = self.entry;
         let context = (stack.top() - size_of::<Context>() as u64) as *mut Context;
-        // SAFETY: the stack was just mapped read/write, and this is inside it.
+        // SAFETY: the stack was just mapped read/write, and this is inside it. `arch` owns the
+        // mapping from (entry, user sp, args) onto registers and the EL0 first-run trampoline.
         unsafe {
-            context.write(Context {
-                x19: entry,              // the trampoline moves this to elr
-                x20: user_sp,            // ...and this to sp_el0
-                x21: self.start_args[0], // the trampoline moves these to x0, x1, x2 (19d/19e)
-                x22: self.start_args[1],
-                x23: self.start_args[2],
-                x24: 0,
-                x25: 0,
-                x26: 0,
-                x27: 0,
-                x28: 0,
-                x29: 0,
-                x30: user_entry_trampoline as *const () as u64,
-            });
+            context.write(Context::for_user_thread(entry, user_sp, self.start_args));
         }
         self.stack = Some(stack);
         self.context = context;
         true
     }
-}
-
-unsafe extern "C" {
-    /// The EL0 entry trampoline (context.s): the mirror of `thread_trampoline` for a thread that
-    /// starts in userspace. `switch_to` restores `x19` = entry and `x20` = user sp, then this
-    /// enables interrupts and tail-calls `user_thread_entry`.
-    fn user_entry_trampoline();
 }
 
 /// Where a **user** thread starts, in Rust (milestone 19c.3): the EL0 mirror of `thread_entry`.
