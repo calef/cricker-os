@@ -100,6 +100,10 @@ pub const VIRTIO_MMIO_SIZE: u64 = 8 * 0x1000;
 /// The first PLIC interrupt id for the virtio-mmio slots on the `virt` machine (irq 1 is the first
 /// virtio slot; the driver adds the slot index).
 pub const VIRTIO_IRQ_BASE: u32 = 1;
+/// RISC-V's `virt` lays out 8 virtio-mmio slots 0x1000 apart (aarch64's are 32, 0x200 apart). The
+/// probe (`virtio::find_block_device`) walks them.
+pub const VIRTIO_SLOT_STRIDE: u64 = 0x1000;
+pub const VIRTIO_SLOTS: u64 = 8;
 
 /// Physical to kernel-virtual. Identity in bare mode; `pa + KERNEL_VA_BASE` once the high-half exists.
 pub const fn phys_to_virt(pa: u64) -> u64 {
@@ -230,6 +234,17 @@ where
     // to exit QEMU (arch::semihosting::exit). One page. Harmless to map in every build; only the test
     // build ever writes it. The boot tour halts with `wfi` and never touches it.
     direct_map(m, 0x10_0000, 0x10_1000, Flags::device())?;
+
+    // 8. The virtio-mmio transport window (milestone 9 / parity C), device memory. The kernel probes
+    // these slots for a block device (virtio::find_block_device) and owns the transport; the DMA
+    // rings live in the driver's own region (notes/dma.md). Absent hardware here just reads as "no
+    // device", so mapping it is harmless when no disk is attached.
+    direct_map(
+        m,
+        VIRTIO_MMIO_BASE,
+        VIRTIO_MMIO_BASE + VIRTIO_MMIO_SIZE,
+        Flags::device(),
+    )?;
 
     Ok(())
 }

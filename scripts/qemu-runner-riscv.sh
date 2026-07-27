@@ -31,6 +31,15 @@ if [ -n "$CRICKER_INITRD" ]; then
     INITRD="-initrd $CRICKER_INITRD"
 fi
 
+# Attach the crickerfs image as a virtio-mmio block device (parity C), exactly as the aarch64 runner
+# does: `if=none` + `-device virtio-blk-device` puts a block device in one of the `virt` machine's
+# virtio-mmio slots (0x1000_1000..), which virtio::find_block_device probes. force-legacy=false picks
+# modern virtio (version 2). Without a disk the kernel simply finds no block device and says so.
+DISK=""
+if [ -n "$CRICKER_DISK" ] && [ -f "$CRICKER_DISK" ]; then
+    DISK="-global virtio-mmio.force-legacy=false -drive file=$CRICKER_DISK,if=none,format=raw,id=hd0,readonly=on -device virtio-blk-device,drive=hd0"
+fi
+
 exec qemu-system-riscv64 \
     -machine virt \
     -cpu rv64 \
@@ -41,4 +50,5 @@ exec qemu-system-riscv64 \
     -serial stdio \
     -kernel "$ELF" \
     $INITRD \
+    $DISK \
     "$@"

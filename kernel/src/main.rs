@@ -391,6 +391,22 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
             }
         }
 
+        // virtio block device discovery (parity C). Probe the virtio-mmio slots the `virt` machine
+        // lays out (0x1000_1000..); a block device shows up when a disk is attached (CRICKER_DISK).
+        // The kernel owns the transport and will hand a userspace driver the device's registers, an
+        // Irq capability, and a DMA region; here we just prove the discovery works on RISC-V.
+        match virtio::find_block_device() {
+            Some(dev) => println!(
+                "  virtio      : block device found at {:#x}, PLIC IRQ {} (kernel owns the transport)",
+                dev.mmio_phys, dev.intid,
+            ),
+            None => {
+                println!(
+                    "  virtio      : no block device attached (pass CRICKER_DISK to attach one)"
+                )
+            }
+        }
+
         println!("cricker-os: the capability core runs on RISC-V.");
         arch::halt();
     }

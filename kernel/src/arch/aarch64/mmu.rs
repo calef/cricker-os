@@ -266,6 +266,10 @@ pub const VIRTIO_MMIO_BASE: u64 = 0x0a00_0000;
 pub const VIRTIO_MMIO_SIZE: u64 = 32 * 0x200;
 /// SPI 16 becomes INTID 48 (SPIs start at 32). Slot `i` uses INTID `VIRTIO_IRQ_BASE + i`.
 pub const VIRTIO_IRQ_BASE: u32 = 48;
+/// aarch64's `virt` lays out 32 virtio-mmio slots 0x200 apart (RISC-V's are 8, 0x1000 apart). The
+/// probe (`virtio::find_block_device`) walks them.
+pub const VIRTIO_SLOT_STRIDE: u64 = 0x200;
+pub const VIRTIO_SLOTS: u64 = 32;
 
 /// Map a range of *virtual* addresses to the physical ones they were linked against.
 ///

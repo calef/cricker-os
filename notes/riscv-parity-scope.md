@@ -84,7 +84,23 @@ no in-kernel test run. **The hard part is already done:** `arch::semihosting::ex
   there is, and it aligns with the verified-Rust thesis. Do it first: cheap, and it makes every later
   parity claim checkable on riscv.
 
-### C. virtio-blk + on-disk filesystem — M. The driver + DMA model.
+### C. virtio-blk + on-disk filesystem — PARTIAL (kernel-side discovery done; blocked on QEMU transport).
+
+The kernel-side enumeration is arch-correct on RISC-V now: the virtio-mmio slot layout (32 slots
+0x200 apart on aarch64, 8 slots 0x1000 apart on riscv) moved into arch constants, the transport
+window is mapped device-typed, and `find_block_device` probes it and reads valid magic on riscv. The
+userspace driver itself is nearly portable (342 lines, one `dmb ish` to arch-gate to `fence`).
+
+**Blocked, and honestly:** QEMU 11's riscv `virt` does not auto-plug `-device virtio-blk-device` into
+the virtio-mmio slots (all eight read magic ok but device-id 0 = empty); it prefers the PCIe
+transport. So there is no mmio block device for the kernel's mmio driver to find. Finishing C needs
+either a way to force a virtio-mmio disk on riscv `virt`, or a PCIe virtio transport (a larger driver
+change) — plus then extracting the userspace driver from `hello` into a portable binary, granting it
+the DMA region + device MMIO + Irq cap (the PLIC path from parity's earlier work), and the
+`virtio_service` wiring. aarch64's virtio works fully (the userspace-driver-reads-a-disk test passes);
+this is a transport-availability gap on riscv, not a kernel defect. Original scope below.
+
+### C (original scope). virtio-blk + on-disk filesystem — M. The driver + DMA model.
 
 aarch64 runs a userspace virtio-blk driver that reads crickerfs off a virtio-mmio disk, with the
 kernel touching no DMA. RISC-V has the MMIO constants (`VIRTIO_MMIO_BASE`, `VIRTIO_IRQ_BASE`) but no

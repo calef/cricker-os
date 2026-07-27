@@ -12,11 +12,12 @@
 //! is in slot 3, its interrupt is INTID 51" without knowing the first thing about how a block
 //! device works.
 
-use crate::arch::mmu::{self, VIRTIO_IRQ_BASE, VIRTIO_MMIO_BASE};
+use crate::arch::mmu::{self, VIRTIO_IRQ_BASE, VIRTIO_MMIO_BASE, VIRTIO_SLOT_STRIDE, VIRTIO_SLOTS};
 
-/// One virtio-mmio slot is 0x200 bytes.
-const SLOT_STRIDE: u64 = 0x200;
-const SLOTS: u64 = 32;
+/// The virtio-mmio slot layout, from the arch: aarch64's `virt` has 32 slots 0x200 apart, RISC-V's
+/// has 8 slots 0x1000 apart. The probe walks `SLOTS` of them at `SLOT_STRIDE`.
+const SLOT_STRIDE: u64 = VIRTIO_SLOT_STRIDE;
+const SLOTS: u64 = VIRTIO_SLOTS;
 
 /// "virt", little-endian, at offset 0x000 of every slot.
 const MAGIC: u32 = 0x7472_6976;
