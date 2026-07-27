@@ -127,7 +127,18 @@ mostly porting userspace, not proving new kernel behavior.
 - **Proves:** the full interactive system runs on riscv. Lowest *kernel* value of the list; highest
   app-porting cost. Do last, or skip if the goal is "prove the kernel," not "ship the system."
 
-### E. Benchmarks — M. Cross-arch numbers.
+### E. Benchmarks — DONE.
+
+All eleven primitives plus CoreMark run on RISC-V, single-hart and SMP. `bench.rs` moved its timing
+to `arch::timer::now`/`frequency` (rdtime on riscv), the boot reaches `bench::run` under `--features
+bench`, and `initrd-riscv` packs `elbench` + `coremark`. Two fixes fell out of `spawn_el0` (the fast
+userspace spawn+reap loop): elbench's 9-instruction `CHILD_STUB` was aarch64 machine code (added the
+riscv `li`/`ecall` version), and the `MAP_CODE` syscall never synced the icache on the userspace
+map-executable path (a correctness fix for both arches, latent until a spawn loop stressed it). One
+refinement left: the aarch64 `xtask bench` uses TCG+icount for deterministic counts; a riscv
+equivalent would make the cross-arch numbers directly comparable. Original scope below.
+
+### E (original scope). Benchmarks — M. Cross-arch numbers.
 
 aarch64 runs CoreMark and the elbench EL0 primitive suite (null syscall, context switch, IPC RTT, map,
 spawn), plus cross-OS comparisons. RISC-V runs none. The workloads are userspace and mostly portable
