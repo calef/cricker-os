@@ -34,7 +34,7 @@ IPC and the MMU invariants are next. This threads through the list rather than b
 | 14 | Kernel objects from untyped: remove the kernel heap | Retype TCBs, endpoints, page tables; delete the kernel heap | **critical path:** a verifiable kernel cannot allocate. **Built:** the kernel has no allocator; see design/kernel-objects-from-untyped.md |
 | 15 | Tagged address spaces (ASIDs) | 16-bit ASIDs, generation/rollover; stop flushing the whole EL1 TLB per switch | perf the real-workload path needs on real silicon. **Built** (8-bit fixed bitmap, no rollover: milestone 14's bounds made generations unnecessary; notes/asids.md) |
 | 21 | Performance measurement: benchmarks with teeth | icount microbenchmarks + committed baseline that fails on regression; HVF-native runs for real magnitudes | perf claims become measurements; regressions surface next to their cause. **Built**; notes/benchmarks.md |
-| 16 | Real hardware + SMMU-backed driver isolation | Port to an IOMMU-backed machine; confine driver DMA in silicon | isolation in hardware, under real workloads |
+| 16 | Real hardware + IOMMU-backed driver isolation, **RISC-V first** | **16a:** first silicon on a VisionFive 2-class board, whose firmware contract (OpenSBI, SBI HSM, NS16550, PLIC, Sv39) is exactly what the kernel already speaks. **16b:** IOMMU-backed DMA isolation against QEMU's emulation of the **ratified RISC-V IOMMU** (v1.0.1) first, over the §18 PCIe transport; silicon when a board ships it | isolation in hardware, under real workloads; the second ISA becomes the first silicon, and the IOMMU work stops waiting on a purchase |
 | 19 | Run a real workload | A native-ABI workload first; Linux-compat or VM hosting later | **the "runs real workloads" half** of the thesis. **Built:** granular verbs and userspace init (19d), init as the real boot path (19d.2c), dedicated binaries delivered as a crickerfs archive with a shared `user_rt` runtime (19f.1-6), the native ABI written down (19e/Decision 2, notes/abi.md, DECISIONS §15), and the first real workload, a CoreMark-derived compute program spawned against that ABI (19e). design/init-and-granular-spawn.md |
 | 17 | Multikernel-leaning scheduler (research, optional) | Partition the shared thread table and endpoints | optional; not on the thesis path |
 | 20 | A portable HAL, proven on a second architecture | Make `arch/` a real HAL; bring up RISC-V then x86_64 | the "portable verified core" claim; reach the demonstrator earns |
@@ -176,20 +176,39 @@ switch already flushes the world.
 **Detail.** Standard aarch64 (ASID in TTBRx, `TCR_EL1.A1`); kernel/src/arch/aarch64/mmu.rs carries
 the deferral.
 
-### 16. Real hardware + SMMU-backed driver isolation
+### 16. Real hardware + IOMMU-backed driver isolation (recast 2026-07-27: RISC-V first)
 
-**Deliverable.** Port to hardware with an IOMMU in front of the device (Raspberry Pi 4 class, or
-virtio-pci behind QEMU's SMMU) and confine driver DMA with the SMMU's stage-2, behind or instead of
-the software shadow ring.
+The milestone was always two things bundled, first silicon and DMA isolation in hardware, and
+the recast splits them, because each is better served on the RISC-V side now.
 
-**Why.** This is where the discussion's strongest pro-microkernel argument finally becomes true for
-us. On QEMU `virt` there is no IOMMU over virtio-mmio, so driver isolation is real only because of
-the shadow descriptor ring we wrote (notes/dma.md). Real hardware makes it real in silicon, and the
-shadow ring becomes belt-and-suspenders rather than the sole defense. Keep the `Virtio` capability
-shaped so it can sit behind either.
+**16a: first silicon, on a VisionFive 2-class RISC-V board.** The riscv port's firmware contract
+on real boards is IDENTICAL to what the kernel runs today: OpenSBI, SBI HSM bring-up (the hart
+lottery is already survived, on the record), NS16550, PLIC, Sv39. A ~$60-100 board boots the
+exact contract we speak; the aarch64 side fits real boards worse (a Pi wants TF-A for PSCI, its
+default is spin-table, and its IOMMU story is the weak spot notes/target-hardware.md already
+flags). Deliverable: boot, UART, SMP, the test suite where semihosting allows, and the benches
+on real cycles via the SBI PMU extension. Caveat, stated now: sel4bench's platform coverage is
+thinner on RISC-V than ARM, so the milestone-25 seL4 comparison may still eventually want an ARM
+board; that purchase moves to "when 25's leftover justifies it".
+
+**16b: IOMMU-backed DMA isolation, in emulation first, against the ratified spec.** The RISC-V
+IOMMU is ratified (v1.0.1, 2026-02) and QEMU emulates it on the `virt` board we already boot, as
+a PCIe device over the §18 transport we already built. So the isolation half no longer waits on
+a purchase: put the ratified IOMMU in front of the virtio devices, confine driver DMA in
+(emulated) hardware, and keep the shadow ring as belt-and-suspenders rather than the sole
+defense. The `Virtio` capability stays shaped to sit behind either. When silicon with the
+ratified IOMMU ships in a buyable board (the IP exists: SiFive P870-class, Andes, SpacemiT),
+16b's code carries over; that is the same emulate-then-carry pattern the whole kernel was built
+on. QEMU also emulates ARM's SMMUv3 (`-machine virt,iommu=smmuv3`) if a comparison is ever
+wanted; the riscv-iommu is chosen because it aligns with 16a's board and the PCIe work.
+
+**Why.** This is where the discussion's strongest pro-microkernel argument finally becomes true
+for us. Today driver isolation is real only because of the shadow descriptor ring we wrote
+(notes/dma.md); an IOMMU makes it real in hardware, with the software ring demoted to defence in
+depth.
 
 **Prior art.** design/driver-domains.md already works the principled version (a driver per VM,
-cricker-os as an EL2 hypervisor, SMMU stage-2). Hardware-gated, and impossible under HVF.
+stage-2 behind a hypervisor). Hardware-gated there; 16b's emulation-first path is not.
 
 **Also closes an integrity window (milestone 22's precondition).** Before DMA is confined in
 silicon, a malicious device can DMA over any RAM the kernel has not walled off, *including the

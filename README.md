@@ -206,7 +206,7 @@ around verification and real workloads:
 | 19 | A real workload: userspace init, the native ABI, CoreMark | ✅ |
 | 20 | The second architecture: RISC-V, brought to full parity | ✅ |
 | 25 | Cross-OS numbers: vs Linux and macOS at a matched tier | ✅ (seL4 waits on real-hardware PMU) |
-| 16 | Real hardware + SMMU-backed driver isolation | next |
+| 16 | Real hardware + IOMMU isolation: RISC-V first (16a silicon, 16b ratified RISC-V IOMMU in QEMU) | next |
 | 22 | Trusted init: verify it, shrink what a broken one can do | ahead |
 | 23 | A capability-routed component OS with live replacement | the destination |
 | 17 | Multikernel-leaning scheduler | optional research |
