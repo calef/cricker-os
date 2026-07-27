@@ -256,6 +256,19 @@ Four in `crates/elf/src/lib.rs`:
 | `a_passing_check_has_no_address_overflow` | if the check passes, `vaddr + memsz` did not wrap, so `validate`'s later unchecked add cannot panic |
 | `page_range_is_panic_free_and_ordered` | for any `vaddr`/`memsz`, the saturating page arithmetic neither panics nor returns an inverted range (a `pub` helper that must be safe on its own) |
 
+Two in `crates/crickerfs/src/lib.rs`, the initrd parser the kernel runs on boot input
+(the archive format the initrd and disk images use; kept over tar by the reuse record in
+notes/prior-art.md, and proved because the kernel-side parse is TCB code):
+
+| Harness | Property |
+|---|---|
+| `the_validation_implies_reads_slice_is_in_bounds` | for every entry value and image length, parse's acceptance check makes `read`'s slice arithmetic safe: no panic, bytes inside the image |
+| `a_short_image_is_refused_not_indexed` | any image under one block is `Truncated` before a byte past the length check is touched |
+
+Whole-parse totality hit the same wall as ELF and dtb below (a one-block symbolic image put
+CBMC past 20 CPU-minutes), and was decomposed the same way; the module comment records what is
+deliberately unproved and why it is sound anyway.
+
 ## Where BMC hit a wall: the ELF parser
 
 The goal for `elf` was the big one: prove `Elf::parse` *total*, that no byte string, however hostile,

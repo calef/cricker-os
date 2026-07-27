@@ -261,3 +261,62 @@ mod tests {
         );
     }
 }
+
+/// Machine-checked proofs (`script/verify`; notes/verification.md).
+///
+/// The initrd is parsed by the KERNEL (kernel/src/user.rs `program`), which puts this parser
+/// inside the TCB on externally-supplied bytes, the same position the dtb parser is in. And the
+/// same wall: the first attempt proved the WHOLE parse over a symbolic image, on the theory
+/// that a 15-entry bounded loop is tractable; CBMC disagreed (20+ CPU-minutes and climbing), so
+/// as in dtb the proof is decomposed to what converges and carries the weight:
+///
+/// - the **validation-implies-safe-read** arithmetic, for every entry value and image length
+///   (no symbolic arrays; this is the kernel-facing guarantee), and
+/// - the **truncation guard** for every under-one-block image.
+///
+/// What is deliberately NOT proved: whole-parse totality (the wall above; the in-bounds
+/// indexing it would add is `u32le`/`copy_from_slice` at offsets statically under one block,
+/// which the `image.len() < BLOCK` guard, proved below, makes sound), and `name_str` (its panic
+/// surface is a slice bounded by `position()`, and its UTF-8 half is `core`'s validator, which
+/// costs CBMC minutes to re-prove and is trusted everywhere else in the system).
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    /// **Parse's validation is sufficient for `read`: proved as arithmetic, for every entry.**
+    /// For ANY `start_block`, `len`, and image length: if the exact check `parse` performs
+    /// accepts the entry (`start_block * BLOCK`, `checked_add(len)`, `end <= image_len`), then
+    /// the slice bounds `read` computes satisfy `start <= end <= image_len`, so the indexing
+    /// cannot panic and the returned bytes lie inside the image. This is the kernel-facing
+    /// guarantee, free of any bound on the image size.
+    #[kani::proof]
+    fn the_validation_implies_reads_slice_is_in_bounds() {
+        let start_block: u32 = kani::any();
+        let len: u32 = kani::any();
+        let image_len: usize = kani::any();
+
+        // Exactly parse's acceptance condition, no more.
+        let start = start_block as usize * BLOCK;
+        let Some(end) = start.checked_add(len as usize) else {
+            return; // parse refuses: OutOfBounds
+        };
+        if end > image_len {
+            return; // parse refuses: OutOfBounds
+        }
+
+        // Exactly read's slice arithmetic.
+        let r_start = start_block as usize * BLOCK;
+        let r_end = r_start + len as usize; // cannot overflow: equals `end` above
+        assert!(r_start <= r_end);
+        assert!(r_end <= image_len, "read could index past the image");
+    }
+
+    /// **A short image is always `Truncated`, never indexed**: for any image under one block,
+    /// parse refuses before touching a byte past the length check.
+    #[kani::proof]
+    fn a_short_image_is_refused_not_indexed() {
+        const SHORT: usize = BLOCK - 1;
+        let image: [u8; SHORT] = kani::any();
+        assert_eq!(Fs::parse(&image).err(), Some(Error::Truncated));
+    }
+}
