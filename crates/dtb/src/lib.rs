@@ -356,6 +356,63 @@ impl<'a> Dtb<'a> {
         }
     }
 
+    /// The raw bytes of property `name` on the first node whose name starts with `prefix`,
+    /// searched at any depth. `Ok(None)` when no such node, or the node has no such property.
+    ///
+    /// The generic escape hatch next to the decoded accessors above: some properties have
+    /// per-binding layouts no general decoder can know (`interrupt-map` is the motivating case:
+    /// its entry width depends on three different nodes' cell counts). The caller gets the bytes
+    /// (big-endian cells, per the DTB spec) and owns the interpretation; the pci crate's fixture
+    /// tests use this to hold the INTx swizzle against the machine's own routing table.
+    pub fn node_prop(&self, prefix: &[u8], name: &[u8]) -> Result<Option<&'a [u8]>, Error> {
+        let mut depth = 0usize;
+        let mut target_at: Option<usize> = None;
+        let mut at = self.off_struct;
+
+        loop {
+            let token = be32(self.bytes, at)?;
+            at += 4;
+
+            match token {
+                FDT_BEGIN_NODE => {
+                    let nm = self.cstr(at)?;
+                    at += align4(nm.len() + 1);
+                    depth += 1;
+                    if depth >= 2 && nm.starts_with(prefix) && target_at.is_none() {
+                        target_at = Some(depth);
+                    }
+                }
+
+                FDT_END_NODE => {
+                    if target_at == Some(depth) {
+                        // Walked the whole matched node: it has no such property.
+                        return Ok(None);
+                    }
+                    depth = depth.saturating_sub(1);
+                }
+
+                FDT_PROP => {
+                    let len = be32(self.bytes, at)? as usize;
+                    let name_off = be32(self.bytes, at + 4)? as usize;
+                    let value_at = at + 8;
+                    at = value_at + align4(len);
+
+                    if target_at == Some(depth) && self.cstr(self.off_strings + name_off)? == name {
+                        return self
+                            .bytes
+                            .get(value_at..value_at + len)
+                            .map(Some)
+                            .ok_or(Error::Truncated);
+                    }
+                }
+
+                FDT_NOP => {}
+                FDT_END => return Ok(None),
+                other => return Err(Error::BadToken(other)),
+            }
+        }
+    }
+
     /// The regions carved out by the `/reserved-memory` node's children.
     ///
     /// This is the *other* place firmware advertises memory the OS must not touch, distinct from the

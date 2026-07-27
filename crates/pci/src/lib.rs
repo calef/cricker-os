@@ -64,7 +64,11 @@ pub const VIRTIO_BLK_TRANSITIONAL: u16 = 0x1001;
 /// device (header type bit 7 clear) skips functions 1..8. QEMU `virt` is flat on bus 0, but the
 /// walk covers every bus in range so a bridge topology enumerates too; the caller picks how many
 /// buses its `bus-range` covers.
-pub fn enumerate(buses: u16, read32: &mut dyn FnMut(Bdf, u64) -> u32, f: &mut dyn FnMut(Bdf, u16, u16)) {
+pub fn enumerate(
+    buses: u16,
+    read32: &mut dyn FnMut(Bdf, u64) -> u32,
+    f: &mut dyn FnMut(Bdf, u16, u16),
+) {
     for bus in 0..buses.min(256) {
         for dev in 0..32 {
             let bdf0 = Bdf {
@@ -76,7 +80,8 @@ pub fn enumerate(buses: u16, read32: &mut dyn FnMut(Bdf, u64) -> u32, f: &mut dy
             if id & 0xffff == 0xffff {
                 continue; // empty slot
             }
-            let multifunction = (read32(bdf0, HEADER_TYPE & !3) >> ((HEADER_TYPE & 3) * 8)) & 0x80 != 0;
+            let multifunction =
+                (read32(bdf0, HEADER_TYPE & !3) >> ((HEADER_TYPE & 3) * 8)) & 0x80 != 0;
             let funcs = if multifunction { 8 } else { 1 };
             for func in 0..funcs {
                 let bdf = Bdf {
@@ -189,7 +194,11 @@ pub struct VirtioCap {
 /// The list is a linked list in config space: status bit 4 says one exists, 0x34 points at the
 /// first entry, each entry is `{cap_id: u8, next: u8, ...}`. Bounded at 64 hops so a cycle in a
 /// hostile or broken device terminates instead of hanging the walk.
-pub fn virtio_caps(bdf: Bdf, read32: &mut dyn FnMut(Bdf, u64) -> u32, f: &mut dyn FnMut(VirtioCap)) {
+pub fn virtio_caps(
+    bdf: Bdf,
+    read32: &mut dyn FnMut(Bdf, u64) -> u32,
+    f: &mut dyn FnMut(VirtioCap),
+) {
     const CAP_ID_VENDOR: u8 = 0x09;
 
     let status = (read32(bdf, COMMAND) >> 16) as u16;
@@ -265,18 +274,25 @@ mod tests {
             //                          the notify cap is 20 bytes, so its multiplier sits at 0x60)
             //                  0x70 -> MSI-X cap (id 0x11), to prove non-vendor caps are skipped
             s.insert((f.0, f.1, f.2, 0x34), 0x40);
-            s
-                .insert((f.0, f.1, f.2, 0x40), u32::from_le_bytes([0x09, 0x50, 16, VIRTIO_CAP_COMMON]));
+            s.insert(
+                (f.0, f.1, f.2, 0x40),
+                u32::from_le_bytes([0x09, 0x50, 16, VIRTIO_CAP_COMMON]),
+            );
             s.insert((f.0, f.1, f.2, 0x44), 4); // bar 4
             s.insert((f.0, f.1, f.2, 0x48), 0x0); // offset
             s.insert((f.0, f.1, f.2, 0x4c), 0x1000); // length
-            s
-                .insert((f.0, f.1, f.2, 0x50), u32::from_le_bytes([0x09, 0x70, 20, VIRTIO_CAP_NOTIFY]));
+            s.insert(
+                (f.0, f.1, f.2, 0x50),
+                u32::from_le_bytes([0x09, 0x70, 20, VIRTIO_CAP_NOTIFY]),
+            );
             s.insert((f.0, f.1, f.2, 0x54), 4);
             s.insert((f.0, f.1, f.2, 0x58), 0x3000);
             s.insert((f.0, f.1, f.2, 0x5c), 0x1000);
             s.insert((f.0, f.1, f.2, 0x60), 4); // notify_off_multiplier
-            s.insert((f.0, f.1, f.2, 0x70), u32::from_le_bytes([0x11, 0x00, 0, 0])); // MSI-X, end of list
+            s.insert(
+                (f.0, f.1, f.2, 0x70),
+                u32::from_le_bytes([0x11, 0x00, 0, 0]),
+            ); // MSI-X, end of list
             FakeCfg { space: s }
         }
 
@@ -297,7 +313,7 @@ mod tests {
             let v = match off & !3 {
                 0x10 if v == u32::MAX => !(0x1000u32 - 1), // BAR0: size 0x1000
                 0x20 if v == u32::MAX => (!(0x4000u32 - 1)) | 0b100, // BAR4 low: size 0x4000, keep type bits
-                0x24 if v == u32::MAX => u32::MAX,         // BAR4 high: all bits writable
+                0x24 if v == u32::MAX => u32::MAX,                   // BAR4 high: all bits writable
                 _ => v,
             };
             self.space.insert(key, v);
@@ -308,9 +324,33 @@ mod tests {
     /// stride 4 KB, device stride 32 KB, bus stride 1 MB.
     #[test]
     fn ecam_offsets_have_the_specified_strides() {
-        assert_eq!(Bdf { bus: 0, dev: 0, func: 1 }.ecam_offset(), 0x1000);
-        assert_eq!(Bdf { bus: 0, dev: 1, func: 0 }.ecam_offset(), 0x8000);
-        assert_eq!(Bdf { bus: 1, dev: 0, func: 0 }.ecam_offset(), 0x10_0000);
+        assert_eq!(
+            Bdf {
+                bus: 0,
+                dev: 0,
+                func: 1
+            }
+            .ecam_offset(),
+            0x1000
+        );
+        assert_eq!(
+            Bdf {
+                bus: 0,
+                dev: 1,
+                func: 0
+            }
+            .ecam_offset(),
+            0x8000
+        );
+        assert_eq!(
+            Bdf {
+                bus: 1,
+                dev: 0,
+                func: 0
+            }
+            .ecam_offset(),
+            0x10_0000
+        );
     }
 
     /// Enumeration finds the one real device and nothing else: empty slots (vendor 0xffff) are
@@ -326,7 +366,15 @@ mod tests {
         );
         assert_eq!(
             found,
-            vec![(Bdf { bus: 0, dev: 1, func: 0 }, VIRTIO_VENDOR, VIRTIO_BLK_MODERN)],
+            vec![(
+                Bdf {
+                    bus: 0,
+                    dev: 1,
+                    func: 0
+                },
+                VIRTIO_VENDOR,
+                VIRTIO_BLK_MODERN
+            )],
         );
     }
 
@@ -336,7 +384,11 @@ mod tests {
     #[test]
     fn bars_are_sized_and_restored() {
         let cfg = std::cell::RefCell::new(FakeCfg::new());
-        let bdf = Bdf { bus: 0, dev: 1, func: 0 };
+        let bdf = Bdf {
+            bus: 0,
+            dev: 1,
+            func: 0,
+        };
         let bars = read_bars(
             bdf,
             &mut |b, o| cfg.borrow_mut().read32(b, o),
@@ -344,10 +396,27 @@ mod tests {
         );
         let mut cfg = cfg.into_inner();
 
-        assert_eq!(bars[0], Some(Bar { base: 0x4000_0000, size: 0x1000, is_64: false }));
-        assert_eq!(bars[4], Some(Bar { base: 0, size: 0x4000, is_64: true }));
+        assert_eq!(
+            bars[0],
+            Some(Bar {
+                base: 0x4000_0000,
+                size: 0x1000,
+                is_64: false
+            })
+        );
+        assert_eq!(
+            bars[4],
+            Some(Bar {
+                base: 0,
+                size: 0x4000,
+                is_64: true
+            })
+        );
         assert_eq!(bars[1], None);
-        assert_eq!(bars[5], None, "the upper half of a 64-bit BAR is not its own BAR");
+        assert_eq!(
+            bars[5], None,
+            "the upper half of a 64-bit BAR is not its own BAR"
+        );
 
         // Restored: originals read back, not the probe's all-ones.
         assert_eq!(cfg.read32(bdf, 0x10), 0x4000_0000);
@@ -359,13 +428,20 @@ mod tests {
     #[test]
     fn the_capability_walk_finds_virtio_vendor_caps_only() {
         let mut cfg = FakeCfg::new();
-        let bdf = Bdf { bus: 0, dev: 1, func: 0 };
+        let bdf = Bdf {
+            bus: 0,
+            dev: 1,
+            func: 0,
+        };
         let mut caps = Vec::new();
         virtio_caps(bdf, &mut |b, o| cfg.read32(b, o), &mut |c| caps.push(c));
 
         assert_eq!(caps.len(), 2, "exactly the two vendor caps, MSI-X skipped");
         assert_eq!(caps[0].cfg_type, VIRTIO_CAP_COMMON);
-        assert_eq!((caps[0].bar, caps[0].offset, caps[0].length), (4, 0, 0x1000));
+        assert_eq!(
+            (caps[0].bar, caps[0].offset, caps[0].length),
+            (4, 0, 0x1000)
+        );
         assert_eq!(caps[1].cfg_type, VIRTIO_CAP_NOTIFY);
         assert_eq!((caps[1].bar, caps[1].offset), (4, 0x3000));
         assert_eq!(caps[1].notify_off_multiplier, 4);
@@ -376,10 +452,16 @@ mod tests {
     #[test]
     fn a_cyclic_capability_list_terminates() {
         let mut cfg = FakeCfg::new();
-        let bdf = Bdf { bus: 0, dev: 1, func: 0 };
+        let bdf = Bdf {
+            bus: 0,
+            dev: 1,
+            func: 0,
+        };
         // Point the second cap's `next` back at the first.
-        cfg.space
-            .insert((0, 1, 0, 0x50), u32::from_le_bytes([0x09, 0x40, 20, VIRTIO_CAP_NOTIFY]));
+        cfg.space.insert(
+            (0, 1, 0, 0x50),
+            u32::from_le_bytes([0x09, 0x40, 20, VIRTIO_CAP_NOTIFY]),
+        );
         let mut n = 0;
         virtio_caps(bdf, &mut |b, o| cfg.read32(b, o), &mut |_| n += 1);
         assert!(n <= 64, "the walk did not terminate promptly on a cycle");
