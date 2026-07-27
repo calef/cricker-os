@@ -400,6 +400,46 @@ mod tests {
         assert_eq!(unsafe { e.recv(&mut *r) }, Recv::Blocked);
     }
 
+    /// The endpoint-destroy contract (object revocation): `drain_waiters` hands back every parked
+    /// thread exactly once, in queue order, and leaves the endpoint idle. The kernel's `revoke`
+    /// wakes each one with an error; if a waiter were skipped it would sleep forever on a dead
+    /// endpoint, and if one were handed back twice it would be double-queued on a run queue.
+    #[test]
+    fn drain_hands_back_every_waiter_and_leaves_the_endpoint_idle() {
+        let (mut a, mut b, mut r) = (node(), node(), node());
+        let (ap, bp): (*mut N, *mut N) = (&mut *a, &mut *b);
+        // Via `default()`: the kernel retypes endpoint pages through it, not through `new()`.
+        let mut e: Endpoint<N> = Endpoint::default();
+
+        assert_eq!(unsafe { e.send(ap) }, Send::Blocked);
+        assert_eq!(unsafe { e.send(bp) }, Send::Blocked);
+        assert!(!e.is_idle(), "parked senders hold the endpoint live");
+
+        let mut drained = Vec::new();
+        e.drain_waiters(|w| drained.push(w));
+        assert_eq!(drained, [ap, bp]);
+        assert!(e.is_idle());
+
+        // The other queue drains through the same path: a receiver can be parked too.
+        let rp: *mut N = &mut *r;
+        assert_eq!(unsafe { e.recv(rp) }, Recv::Blocked);
+        drained.clear();
+        e.drain_waiters(|w| drained.push(w));
+        assert_eq!(drained, [rp]);
+        assert!(e.is_idle());
+    }
+
+    /// Pending signals do not hold an endpoint live: `is_idle` counts blocked threads, not
+    /// counters. An endpoint whose only state is undelivered signals is safe to destroy (a
+    /// signal holds no thread, so nobody is left sleeping), and revocation relies on that.
+    #[test]
+    fn pending_signals_do_not_make_an_endpoint_busy() {
+        let mut e: Endpoint<N> = Endpoint::new();
+        assert_eq!(e.signal(), None);
+        assert_eq!(e.signal(), None);
+        assert!(e.is_idle());
+    }
+
     /// A signal with a receiver waiting hands it back directly and counts nothing.
     #[test]
     fn a_signal_wakes_a_waiting_receiver() {

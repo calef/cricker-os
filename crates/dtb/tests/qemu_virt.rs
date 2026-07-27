@@ -174,3 +174,31 @@ fn a_missing_node_is_zero_regions_not_an_error() {
     let mut regs = [Region { start: 0, size: 0 }; 2];
     assert_eq!(dtb.node_reg(b"nonesuch@", &mut regs).unwrap(), 0);
 }
+
+#[test]
+fn from_ptr_agrees_with_from_bytes() {
+    // The boot path's actual entry: the machine hands the kernel a bare pointer, and from_ptr
+    // must learn the blob's length from the blob itself before it can build the checked slice
+    // that everything else parses. Prove the pointer path lands on the same tree.
+    let via_ptr = unsafe { Dtb::from_ptr(QEMU_VIRT.as_ptr()) }.expect("should parse");
+    assert_eq!(via_ptr.total_size(), QEMU_VIRT.len());
+
+    let mut a = [Region { start: 0, size: 0 }; 4];
+    let mut b = [Region { start: 0, size: 0 }; 4];
+    Dtb::from_bytes(QEMU_VIRT)
+        .unwrap()
+        .memory_regions(&mut a)
+        .unwrap();
+    via_ptr.memory_regions(&mut b).unwrap();
+    assert_eq!(a, b);
+}
+
+#[test]
+fn no_reserved_memory_node_is_zero_regions() {
+    // aarch64 virt has no /reserved-memory node (that path matters on riscv, where OpenSBI
+    // adds one; see qemu_riscv_virt.rs). Walking the whole tree and finding none must be
+    // zero regions, not an error: this is the answer the aarch64 boot gets every time.
+    let dtb = Dtb::from_bytes(QEMU_VIRT).unwrap();
+    let mut regs = [Region { start: 0, size: 0 }; 2];
+    assert_eq!(dtb.reserved_memory_regions(&mut regs).unwrap(), 0);
+}

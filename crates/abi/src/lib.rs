@@ -341,3 +341,41 @@ impl Error {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+
+    /// Every variant round-trips through `from_ret`. The enum's `#[repr(i64)]` discriminants and
+    /// `from_ret`'s match arms are two lists that must agree, and this crate is the one place a
+    /// drift between them would not be a compile error: add a variant, forget the match arm, and
+    /// userspace decodes a real kernel error as `None`. (The new variant must be added to `ALL`
+    /// for this to guard it; that edit is at least in the same file.)
+    #[test]
+    fn every_error_round_trips_through_from_ret() {
+        const ALL: &[Error] = &[
+            Error::NoSuchSlot,
+            Error::WrongObject,
+            Error::NotPermitted,
+            Error::BadPointer,
+            Error::BadMethod,
+            Error::BadSyscall,
+            Error::OutOfMemory,
+            Error::DeviceRefused,
+        ];
+        for &e in ALL {
+            assert_eq!(Error::from_ret(e as i64), Some(e));
+        }
+    }
+
+    /// Success values and out-of-range negatives are not errors. `>= 0` is a result by the ABI's
+    /// own rule, and an unknown negative must surface as "not an error I know" rather than being
+    /// silently mapped onto the nearest variant.
+    #[test]
+    fn non_errors_decode_to_none() {
+        assert_eq!(Error::from_ret(0), None);
+        assert_eq!(Error::from_ret(1), None);
+        assert_eq!(Error::from_ret(-9), None);
+        assert_eq!(Error::from_ret(i64::MIN), None);
+    }
+}
