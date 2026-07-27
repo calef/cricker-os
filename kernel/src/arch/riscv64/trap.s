@@ -1,16 +1,21 @@
 # The S-mode trap vector and the U-mode return path.
 #
-# The RISC-V analog of aarch64's vectors.s. RISC-V has one trap entry (stvec), and unlike aarch64 it
-# does NOT switch stacks automatically: a trap from U-mode arrives still on the user stack. So we use
-# the sscratch CSR as a per-hart trap-stack pointer, the standard RISC-V dance:
+# The RISC-V analog of aarch64's vectors.s. RISC-V has one trap entry (stvec) and does NOT switch
+# stacks automatically: a trap from U-mode arrives still on the user stack, with the user's `tp`.
 #
-#   sscratch = the current thread's kernel-stack top  while running in U-mode
-#   sscratch = 0                                       while running in S-mode (the kernel)
+# So `sscratch` holds a pointer to this hart's per-hart trap stash (`struct TrapStash` in mod.rs), in
+# BOTH U- and S-mode. The stash carries what the entry needs to recover before it has a stack or a
+# valid `tp`:
 #
-# On a trap we swap sp and sscratch. If the swapped-in value is nonzero we came from U-mode and now
-# hold the kernel stack; if it is zero we came from S-mode and swap back to the stack we were on.
-# Either way we then build a TrapFrame, dispatch, and return through the shared `trap_return`, which
-# restores sscratch to the kernel-stack top when it returns to U-mode.
+#   0(stash)  kernel_sp  the current thread's kernel-stack top (where a U-mode trap lands)
+#   8(stash)  percpu     this hart's PerCpu pointer (the kernel `tp`)
+#   16(stash) scratch0   a scratch word
+#   24(stash) scratch1   a scratch word
+#
+# Unlike the old single-hart design (which kept the kernel `tp` in one global and the kernel-stack top
+# directly in `sscratch`), the stash is per-hart and reached through the per-hart `sscratch`, so every
+# hart recovers ITS OWN `tp` and stack. That is what makes the trap path SMP-correct. Whether a trap
+# came from U- or S-mode is read from `sstatus.SPP`, not from `sscratch` (which is never 0 now).
 #
 # The frame layout is `struct TrapFrame`: x[0..32] then sepc, scause, stval, sstatus (288 bytes).
 
@@ -18,19 +23,31 @@
 .balign 4                       # stvec direct mode needs the vector 4-byte aligned
 .global trap_entry
 trap_entry:
-    csrrw   sp, sscratch, sp    # swap: sp <-> sscratch
-    bnez    sp, 1f              # nonzero => came from U-mode; sp is now the kernel stack
-    csrrw   sp, sscratch, sp    # came from S-mode (sscratch was 0); swap back to our own sp
-1:
-    # sp = the kernel stack to build the frame on. For a U-mode trap, sscratch now holds the user sp;
-    # for an S-mode trap, sscratch is 0.
-    addi    sp, sp, -288
+    # sscratch = &TrapStash for this hart. Swap it into t0, parking the interrupted t0 in sscratch.
+    csrrw   t0, sscratch, t0    # t0 = &stash ; sscratch = interrupted t0
+    sd      t1, 16(t0)          # scratch0 = interrupted t1 (frees t1)
+    sd      sp, 24(t0)          # scratch1 = interrupted sp (frees sp)
 
+    # Which stack to build the frame on? SPP (sstatus bit 8): 1 = from S-mode (stay on the sp we were
+    # on), 0 = from U-mode (switch to this thread's kernel-stack top).
+    csrr    t1, sstatus
+    andi    t1, t1, 0x100
+    bnez    t1, 1f
+    ld      sp, 0(t0)           # U-mode: land on kernel_sp
+    j       2f
+1:  ld      sp, 24(t0)          # S-mode: the interrupted sp (saved in scratch1)
+2:  addi    sp, sp, -288
+
+    # Save the general registers. Registers we have not clobbered (x1, x3, x4, x7..x31) are saved
+    # straight from their live values; the clobbered ones (x2=sp, x5=t0, x6=t1) come from the stash
+    # or sscratch, where the entry parked them.
     sd      x1,  1*8(sp)
     sd      x3,  3*8(sp)
-    sd      x4,  4*8(sp)
-    sd      x5,  5*8(sp)
-    sd      x6,  6*8(sp)
+    sd      x4,  4*8(sp)        # interrupted tp; the kernel tp is reloaded below
+    csrr    t1, sscratch        # interrupted t0 (parked in sscratch by the first swap)
+    sd      t1,  5*8(sp)
+    ld      t1, 16(t0)          # interrupted t1 (scratch0)
+    sd      t1,  6*8(sp)
     sd      x7,  7*8(sp)
     sd      x8,  8*8(sp)
     sd      x9,  9*8(sp)
@@ -57,44 +74,40 @@ trap_entry:
     sd      x30, 30*8(sp)
     sd      x31, 31*8(sp)
     sd      zero, 0*8(sp)
+    ld      t1, 24(t0)          # interrupted sp (scratch1)
+    sd      t1,  2*8(sp)
 
-    # The interrupted sp (x[2]). From U-mode it is the user sp, now sitting in sscratch. From S-mode
-    # sscratch is 0 and the interrupted sp is just above our frame (sp + 288).
-    csrr    t0, sscratch
-    bnez    t0, 2f
-    addi    t0, sp, 288         # S-mode: the sp we were on before pushing the frame
-2:  sd      t0, 2*8(sp)
-    csrw    sscratch, zero      # we are in S-mode now; a nested trap uses this same kernel stack
+    csrr    t1, sepc
+    sd      t1, 32*8(sp)
+    csrr    t1, scause
+    sd      t1, 33*8(sp)
+    csrr    t1, stval
+    sd      t1, 34*8(sp)
+    csrr    t1, sstatus
+    sd      t1, 35*8(sp)
 
-    csrr    t0, sepc
-    sd      t0, 32*8(sp)
-    csrr    t0, scause
-    sd      t0, 33*8(sp)
-    csrr    t0, stval
-    sd      t0, 34*8(sp)
-    csrr    t0, sstatus
-    sd      t0, 35*8(sp)
+    # Recover the kernel per-CPU pointer (`tp`) for THIS hart from the stash. A trap from U-mode
+    # arrived with the user's tp; from S-mode it is already correct, and this reloads the same value.
+    ld      tp, 8(t0)           # percpu
 
-    # Restore the kernel's tp (per-CPU pointer). tp is a general register on RISC-V, so a trap from
-    # U-mode arrives with the user's tp (0). The user's value is already saved in the frame above;
-    # reload the kernel's from KERNEL_TP so the handler's cpu::current() is valid. Harmless from
-    # S-mode (same value). Done here, after the frame save, so t0 is free to clobber.
-    la      t0, KERNEL_TP
-    ld      tp, 0(t0)
+    # Restore sscratch to &stash (t0) for the next trap; it currently holds the interrupted t0, which
+    # is already saved in the frame.
+    csrw    sscratch, t0
 
     mv      a0, sp
     call    riscv_trap_dispatch
     # fall through to trap_return
 
 # Restore a TrapFrame at sp and return from the trap. Shared by the trap path and by the first entry
-# to U-mode (enter_user). If the frame returns to U-mode (sstatus.SPP == 0), arm sscratch with the
-# kernel-stack top so the next U-mode trap lands on the kernel stack.
+# to U-mode (enter_user). On a return to U-mode (sstatus.SPP == 0), record this thread's kernel-stack
+# top in the hart's stash, so the next U-mode trap lands there.
 trap_return:
     ld      t0, 35*8(sp)        # sstatus
     andi    t1, t0, 0x100       # SPP (bit 8): 1 = return to S-mode, 0 = return to U-mode
     bnez    t1, 3f
-    addi    t0, sp, 288         # returning to U-mode: sscratch = this thread's kernel-stack top
-    csrw    sscratch, t0
+    csrr    t0, sscratch        # &stash for this hart
+    addi    t1, sp, 288         # this thread's kernel-stack top
+    sd      t1, 0(t0)           # stash.kernel_sp
 3:
     ld      t0, 32*8(sp)
     csrw    sepc, t0

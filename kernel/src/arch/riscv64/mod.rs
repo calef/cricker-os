@@ -32,21 +32,71 @@ global_asm!(include_str!("context.s"));
 // The S-mode trap vector (the asm half of exceptions.rs): save the frame, dispatch, restore, sret.
 global_asm!(include_str!("trap.s"));
 
-/// This hart's kernel per-CPU pointer, kept where `trap.s` can reload `tp` from it on a trap from
-/// U-mode. Unlike aarch64's `TPIDR_EL1` (a system register that survives an EL0 round trip), RISC-V's
-/// `tp` is a general register that U-mode owns, so the trap entry must restore the kernel's from a
-/// hart-private source rather than trust the register. **Single-hart for now:** one global holds hart
-/// 0's pointer; SMP wants a per-hart slot (the sscratch-trapframe approach), noted in riscv-port.md.
-#[unsafe(no_mangle)]
-static KERNEL_TP: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+use core::sync::atomic::{AtomicUsize, Ordering};
+
+/// **The per-hart trap stash**, the thing `sscratch` points at in both U- and S-mode. RISC-V's `tp`
+/// is a general register that U-mode owns, so a trap from U-mode arrives with the user's `tp` and the
+/// kernel must recover its own per-CPU pointer from a *hart-private* source. That source is this
+/// struct: `sscratch` holds `&TRAP_STASH[hart]`, and `trap.s` reads the kernel `tp` from `percpu` and
+/// the kernel stack from `kernel_sp`. One global `KERNEL_TP` could not do this once there is more than
+/// one hart (every hart would reload hart 0's pointer); an array indexed by hart, reached through the
+/// per-hart `sscratch`, is what makes the trap path SMP-correct.
+///
+/// `#[repr(C)]` and the field order are load-bearing: `trap.s` accesses these by fixed byte offset
+/// (0, 8, 16, 24), checked below. Each hart touches only its own entry, and only during its own trap,
+/// so the `AtomicUsize`s are for interior mutability through the shared static, not cross-core
+/// synchronization (the asm reads/writes them plainly).
+#[repr(C)]
+struct TrapStash {
+    /// The current thread's kernel-stack top; where a U-mode trap lands. Set on every return to
+    /// U-mode (trap.s `trap_return`), so it always names the thread about to run in U-mode.
+    kernel_sp: AtomicUsize,
+    /// This hart's `PerCpu` pointer: the kernel `tp` the trap entry restores.
+    percpu: AtomicUsize,
+    /// Two scratch words the trap entry uses to free registers before it has a stack.
+    scratch0: AtomicUsize,
+    scratch1: AtomicUsize,
+}
+
+impl TrapStash {
+    const fn new() -> Self {
+        Self {
+            kernel_sp: AtomicUsize::new(0),
+            percpu: AtomicUsize::new(0),
+            scratch0: AtomicUsize::new(0),
+            scratch1: AtomicUsize::new(0),
+        }
+    }
+}
+
+// trap.s hardcodes these offsets; keep them honest.
+const _: () = {
+    assert!(core::mem::offset_of!(TrapStash, kernel_sp) == 0);
+    assert!(core::mem::offset_of!(TrapStash, percpu) == 8);
+    assert!(core::mem::offset_of!(TrapStash, scratch0) == 16);
+    assert!(core::mem::offset_of!(TrapStash, scratch1) == 24);
+};
+
+/// One trap stash per hart, indexed like `cpu::PERCPU`. A static so it exists before any allocator,
+/// which the very first trap (and every secondary's bring-up) needs.
+static TRAP_STASH: [TrapStash; crate::cpu::MAX_CPUS] =
+    [const { TrapStash::new() }; crate::cpu::MAX_CPUS];
 
 /// Set this hart's per-CPU pointer. RISC-V's `tp` (thread pointer) is the analog of aarch64's
-/// `TPIDR_EL1`. It is a general register, so we also stash it in [`KERNEL_TP`] for the trap entry to
-/// restore after a U-mode round trip (see `crate::percpu` and trap.s).
+/// `TPIDR_EL1`, but a general register, so this also arms the per-hart trap path: it records the
+/// pointer in this hart's [`TrapStash`] and points `sscratch` at that stash, so `trap.s` can recover
+/// the kernel `tp` after a U-mode round trip. See `crate::percpu` and trap.s.
 pub fn set_percpu(ptr: usize) {
-    KERNEL_TP.store(ptr, core::sync::atomic::Ordering::Relaxed);
+    // Set `tp` first so `cpu::id()` (which reads `tp`) resolves this hart's index into TRAP_STASH.
     // SAFETY: writes a general register the kernel reserves for per-CPU data. No memory effect.
     unsafe { asm!("mv tp, {}", in(reg) ptr, options(nomem, nostack, preserves_flags)) };
+    let stash = &TRAP_STASH[crate::cpu::id()];
+    stash.percpu.store(ptr, Ordering::Relaxed);
+    let stash_ptr = stash as *const TrapStash as usize;
+    // SAFETY: `sscratch` now names this hart's stash; trap.s reads it as `&TrapStash` on every trap.
+    unsafe {
+        asm!("csrw sscratch, {}", in(reg) stash_ptr, options(nomem, nostack, preserves_flags))
+    };
 }
 
 /// Read this hart's per-CPU pointer (the value last handed to [`set_percpu`]).

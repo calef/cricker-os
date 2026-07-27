@@ -74,8 +74,8 @@ impl TrapFrame {
         x[2] = user_sp; // sp
         // x[4] (tp) is left 0: U-mode gets no kernel pointer. RISC-V's tp is a general register (not
         // a system register like aarch64's TPIDR_EL1), so the kernel per-CPU pointer must not ride in
-        // U-mode. trap.s restores the kernel tp from KERNEL_TP on the way in, so the handler's
-        // cpu::current() is valid without leaking a kernel address to userspace.
+        // U-mode. trap.s restores the kernel tp from this hart's per-hart trap stash (via sscratch)
+        // on the way in, so the handler's cpu::current() is valid without leaking a kernel address.
         TrapFrame {
             x,
             sepc: entry,
