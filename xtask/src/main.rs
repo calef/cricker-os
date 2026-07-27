@@ -192,6 +192,8 @@ fn initrd_riscv() -> bool {
             "input",
             "--bin",
             "shell",
+            "--bin",
+            "blk",
             "--target",
             RISCV_TARGET,
         ],
@@ -218,6 +220,7 @@ fn initrd_riscv() -> bool {
         ("console", "console"),
         ("input", "input"),
         ("shell", "shell"),
+        ("blk", "blk"),
     ];
     let mut blobs: Vec<(&str, Vec<u8>)> = Vec::new();
     for &(archive_name, bin_name) in entries {
@@ -469,7 +472,16 @@ fn test() -> bool {
     // notes/riscv-parity-scope.md.
     eprintln!();
     eprintln!("--- kernel tests, riscv64 (QEMU) ---");
-    cargo(&["test", "-p", "kernel", "--target", RISCV_TARGET])
+    // The riscv userspace tests (parity C) load programs from the initrd and read the disk, so
+    // build the riscv archive and point the runner at IT, not at the aarch64 archive `cargo()`
+    // exports: the riscv ELF loader must never be handed aarch64 ELFs. The disk is arch-neutral
+    // (a crickerfs data image) and was built by mkdisk() above.
+    if !initrd_riscv() {
+        return false;
+    }
+    unsafe { std::env::set_var("CRICKER_INITRD", riscv_initrd_path()) };
+    unsafe { std::env::set_var("CRICKER_DISK", disk_path()) };
+    run("cargo", &["test", "-p", "kernel", "--target", RISCV_TARGET])
 }
 
 /// The microbenchmarks (milestone 21; design/roadmap.md §21).

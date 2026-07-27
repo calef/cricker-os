@@ -82,12 +82,21 @@ fn mw(off: u64, v: u32) {
     unsafe { invoke(VIRTIO, abi::virtio::WRITE_REG, off, v as u64, 0) };
 }
 
-/// A `dmb ish`: order our normal-memory accesses to the queue against the device's, and against
-/// the MMIO notify. On QEMU DMA is coherent, but the barrier is still needed so neither the
-/// compiler nor the CPU reorders "publish the descriptor" past "tell the device."
+/// Order our normal-memory accesses to the queue against the device's, and against the MMIO
+/// notify. On QEMU DMA is coherent, but the barrier is still needed so neither the compiler nor
+/// the CPU reorders "publish the descriptor" past "tell the device." `dmb ish` on aarch64; on
+/// RISC-V one full `fence`, the same conservative choice the kernel's `arch::dma_wmb` makes.
 fn barrier() {
     // SAFETY: a barrier has no operands and cannot be unsound.
-    unsafe { core::arch::asm!("dmb ish", options(nostack, nomem, preserves_flags)) };
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("dmb ish", options(nostack, nomem, preserves_flags))
+    };
+    // SAFETY: as above; a fence only constrains ordering.
+    #[cfg(target_arch = "riscv64")]
+    unsafe {
+        core::arch::asm!("fence", options(nostack, preserves_flags))
+    };
 }
 
 fn dma_write<T>(off: u64, val: T) {

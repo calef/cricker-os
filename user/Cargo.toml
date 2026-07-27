@@ -82,6 +82,15 @@ path = "src/sysinit.rs"
 test = false
 bench = false
 
+# The virtio-blk driver as its own binary (parity C): the shared `virtio` module (the same file
+# hello's aarch64 roles compile) behind a dedicated-binary skeleton, so riscv runs the identical
+# driver, attacker included, without porting the PL011-wired hello multiplexer.
+[[bin]]
+name = "blk"
+path = "src/blk.rs"
+test = false
+bench = false
+
 # The EL0 microbenchmark program (primitive suite): self-times syscall/IPC primitives from EL0, the
 # lmbench way, so the numbers include the trap the kernel-side benchmarks skip. Run by the bench boot.
 [[bin]]

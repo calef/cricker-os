@@ -1,0 +1,62 @@
+//! The virtio-blk driver as its own binary (parity C).
+//!
+//! On aarch64 the block driver is a *role* of the PL011-wired `hello` multiplexer (milestone 9
+//! predates the dedicated-binary split). This is its portable analog, the 19f pattern: the whole
+//! driver logic is the shared `virtio` module, and this file is only the skeleton a dedicated
+//! binary needs (an `_start` that dispatches the role, a panic handler, the runtime re-exports).
+//! The kernel's `virtio_service` spawns it with the same role numbers and the same capability
+//! slots as hello's roles, so the kernel side is byte-identical across the two shapes.
+//!
+//! The three roles are the honest driver and the two attackers the DMA-confinement tests spawn
+//! (a descriptor aimed at kernel memory, and the indirect-descriptor escape). The attackers ride
+//! in the same binary for the same reason they ride in hello: they differ from the honest driver
+//! by one descriptor, and sharing the setup code is what makes the attack a fair test.
+
+#![no_std]
+#![no_main]
+
+// The virtio module names `crate::{check, invoke, send}`; in `hello` those are its helpers, here
+// they are `user_rt`'s (same signatures) plus the local `check`.
+pub use user_rt::{invoke, send};
+
+#[path = "virtio.rs"]
+mod virtio;
+
+/// Role numbers, matching kernel/src/user.rs `virtio_service` (and hello's dispatch).
+const VIRTIO_BLK: u64 = 3;
+const VIRTIO_ATTACK: u64 = 8;
+const VIRTIO_ATTACK_INDIRECT: u64 = 13;
+
+/// A failed sanity check is a fault, not a wrong answer: panic, and the handler traps.
+pub fn check(ok: bool) {
+    if !ok {
+        panic!();
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn _start(role: u64, dma_phys: u64, _arg2: u64) -> ! {
+    match role {
+        VIRTIO_BLK => virtio::run(dma_phys),
+        VIRTIO_ATTACK => virtio::run_attack(dma_phys),
+        VIRTIO_ATTACK_INDIRECT => virtio::run_attack_indirect(dma_phys),
+        _ => panic!(),
+    }
+}
+
+#[panic_handler]
+fn panic(_: &core::panic::PanicInfo) -> ! {
+    // A driver bug is a dead driver: fault, and the kernel kills the process legibly. The trap
+    // instruction is the one arch-specific line, same as every dedicated binary.
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("brk #0", options(nostack, nomem))
+    };
+    #[cfg(target_arch = "riscv64")]
+    unsafe {
+        core::arch::asm!("ebreak", options(nostack, nomem))
+    };
+    loop {
+        core::hint::spin_loop();
+    }
+}

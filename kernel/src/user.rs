@@ -3494,3 +3494,95 @@ mod tests {
         );
     }
 }
+
+/// Parity C: the virtio-blk driver, its two attackers, and the DMA confinement, on RISC-V.
+///
+/// These are the riscv twins of the three disk tests in the aarch64 module above, separate
+/// because that module leans on aarch64-only scaffolding (the hand-written 7a user programs and
+/// the PL011-wired `hello` roles), while these need only the ELF loader and the initrd archive.
+/// The driver is the SAME `virtio` module the aarch64 roles compile, packed as the dedicated
+/// `blk` binary (user/src/blk.rs); the kernel-side wiring (`virtio_service`) is the same code,
+/// unconditionally. What these prove that aarch64's runs do not: userspace device drivers with
+/// DMA, and the kernel's DMA confinement, on the second ISA.
+#[cfg(all(test, target_arch = "riscv64"))]
+mod riscv_virtio_tests {
+    use super::*;
+    use crate::sched;
+    use core::sync::atomic::Ordering;
+
+    /// The `blk` driver's ELF bytes from the riscv initrd archive. Absent means the initrd was
+    /// built without it (or the aarch64 archive was handed to a riscv boot, the mix-up the xtask
+    /// riscv test leg exists to prevent); fail loudly rather than skip.
+    fn blk_image() -> &'static [u8] {
+        program("blk").expect("no blk program in the initrd archive")
+    }
+
+    /// The headline, on the second ISA: an unprivileged process drives a real block device over
+    /// DMA and reads a file off it, with the kernel owning only the confinement. Interrupt
+    /// delivery is asserted too: the completion reached the driver as a message through its Irq
+    /// capability, via the PLIC rather than the GIC.
+    #[test_case]
+    fn a_userspace_driver_reads_a_file_from_a_virtio_disk() {
+        use crate::arch::exceptions::ROUTED_IRQS;
+
+        let report = match virtio_service::start(blk_image()) {
+            Some(r) => r,
+            None => {
+                // No disk attached to this run. Nothing to test; do not fail.
+                crate::println!("    (no virtio disk attached; skipping)");
+                return;
+            }
+        };
+
+        let irqs_before = ROUTED_IRQS.load(Ordering::Relaxed);
+        let word = sched::ipc_recv(report)[0];
+
+        assert_eq!(
+            &word.to_le_bytes(),
+            b"cricker-",
+            "the driver reported the wrong file contents",
+        );
+        assert!(
+            ROUTED_IRQS.load(Ordering::Relaxed) > irqs_before,
+            "the read completed but no device interrupt was delivered as a message",
+        );
+    }
+
+    /// The DMA confinement holds on riscv: a descriptor aimed at kernel memory is refused and
+    /// the device is never rung. The attacker reports `1` (refused).
+    #[test_case]
+    fn the_kernel_refuses_a_dma_descriptor_that_escapes_the_drivers_region() {
+        let report = match virtio_service::start_attacker(blk_image()) {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no virtio disk attached; skipping)");
+                return;
+            }
+        };
+        let refused = sched::ipc_recv(report)[0];
+        assert_eq!(
+            refused, 1,
+            "a malicious driver's descriptor pointing at kernel memory was NOT refused: the \
+             device could have DMA'd over the kernel",
+        );
+    }
+
+    /// The indirect-descriptor escape is refused on riscv too; see the aarch64 twin for why the
+    /// subtle case needs its own test.
+    #[test_case]
+    fn the_kernel_refuses_an_indirect_descriptor_escape() {
+        let report = match virtio_service::start_attacker_indirect(blk_image()) {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no virtio disk attached; skipping)");
+                return;
+            }
+        };
+        let refused = sched::ipc_recv(report)[0];
+        assert_eq!(
+            refused, 1,
+            "an indirect descriptor whose inner table pointed at kernel memory was NOT refused: \
+             the device could have followed it out of the driver's region",
+        );
+    }
+}
