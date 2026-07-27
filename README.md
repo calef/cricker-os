@@ -1,10 +1,16 @@
 # cricker-os
 
-A small operating system for aarch64, written in Rust, from nothing.
+A capability microkernel for aarch64 and riscv64, written in Rust, from the first instruction.
 
-This is a learning project. The goal is not to produce a useful OS, it's to understand how
-operating systems actually work by building one, starting from the first instruction the
-CPU ever executes. If it ends up useful, that's a bonus.
+The goal (DECISIONS.md §14): a verified-Rust capability microkernel that runs real workloads,
+built to stand next to Linux, macOS, and seL4 on the primitives that define an OS, and to win
+where a minimal kernel should. The capability core carries machine-checked proofs. The kernel
+allocates no memory of its own. Every driver and server is an EL0 process. The same portable
+core boots on two ISAs.
+
+This began as a learning project (build an OS to understand one) and pivoted to a demonstrator
+deliberately, on the record. The habits survived the pivot: every decision written down, every
+concept a note, every claim measured.
 
 ## Try it
 
@@ -13,7 +19,9 @@ script/setup               # one time: install the toolchain and QEMU, then buil
 script/console             # boot straight to an interactive shell at EL0
 script/console --hvf       # ...on the real Apple Silicon core (instant boot)
 script/server              # the full milestone tour, then the shell
-script/test                # host tests, then the kernel under QEMU
+script/test                # host tests, then the kernel under QEMU, both ISAs
+script/verify              # the machine-checked proofs (Kani)
+script/bench               # icount microbenchmarks against the committed baseline
 ```
 
 `script/*` is the normalized "Scripts to Rule Them All" front door; each is a thin wrapper over
@@ -22,25 +30,33 @@ script/test                # host tests, then the kernel under QEMU
 At the `$` prompt: `help`, `echo hello`, `run 7` (spawns a process that computes 49). Quit with
 Ctrl-C, or `pkill qemu-system-aarch64` from another terminal.
 
-**Status: milestone 11, plus post-v1 hardening.** An interactive shell runs at EL0, spawning
-processes on command, and the drivers it talks to (console, block, input) are themselves EL0
-processes the kernel only routes messages between. It boots on QEMU, prints to a serial port, catches its
-own faults and reports them legibly, reads its memory map out of the device tree, hands out
-physical memory a page at a time, and **runs with the MMU on**: kernel `.text` is read-execute,
-`.rodata` is read-only, nothing writable is executable, and there's a guard page under the
-stack. `Vec` and `Box` work, because we built the heap they needed. The kernel runs in the
-high half out of `TTBR1`, leaving `TTBR0` free for user processes.
+## Status
 
-```
-cricker-os
-  exception level : EL1
-  stack top       : 0x0000000040097010
-  device tree     : 0x0000000044000000
+The eleven v1 milestones are done, and so is most of the post-v1 roadmap
+([design/roadmap.md](design/roadmap.md)). Where it stands:
 
-milestone 1: we are running our own code on a CPU with nothing underneath it.
-milestone 2: and when it goes wrong, we get told.
-           : and the machine now tells us what it is, instead of us guessing.
-```
+- **The capability core is proved.** The `caps` model, the IPC rendezvous with one-shot reply,
+  and the MMU isolation invariants all carry machine-checked proofs (Kani) via `script/verify`.
+  See [notes/verification.md](notes/verification.md).
+- **The kernel does not allocate.** There is no kernel heap. Page tables, TCBs, endpoints, and
+  address spaces are all retyped out of untyped memory that userspace owns and pays for.
+- **Processes come and go.** A userspace init builds the whole system through granular
+  capability verbs (retype, configure, insert, start), and object revocation tears a process
+  back down: its TCBs, address spaces, endpoints, and the memory behind them, reclaimed safely.
+- **It runs a real workload.** A CoreMark-derived compute program, spawned against the written
+  native ABI ([notes/abi.md](notes/abi.md)) from a crickerfs archive, by init, at EL0.
+- **Two ISAs at parity.** Everything architecture-specific lives under `kernel/src/arch/`, and
+  riscv64 proves it: SMP, the full test suite (116 tests on aarch64, 55 on riscv64), the
+  interactive shell, and the benchmarks all run on both.
+- **SMP.** Four cores via PSCI (aarch64) and SBI (riscv64), per-CPU run queues, cross-core
+  placement by inbox plus a reschedule IPI. No shared run-queue lock.
+- **Benchmarked against Linux and macOS, honestly.** Same Apple Silicon core, same
+  virtualization tier, release builds: ~5x faster than Linux at the null syscall and the IPC
+  round trip, and faster than native macOS at both. The page map is a tie (both sides are bound
+  by page zeroing), and spawn+reap beats `fork`+`exit` ~2.6x with the caveat that a cricker-os
+  process is a lighter object than a Unix process. Every number and every caveat:
+  [notes/benchmarks.md](notes/benchmarks.md). The seL4 comparison waits on real hardware
+  (`sel4bench` needs a PMU cycle counter QEMU and HVF do not provide).
 
 When something faults, you get this instead of a silent death:
 
@@ -62,7 +78,7 @@ cd cricker-os
 script/setup               # installs the pinned Rust toolchain and QEMU, then builds
 
 script/server              # boot it
-script/test                # run the kernel's tests under QEMU
+script/test                # run the tests
 script/console             # boot straight to the interactive shell
 ```
 
@@ -77,29 +93,25 @@ repo). They are thin wrappers over `cargo xtask`, which still does the work and 
 cargo xtask objdump        # disassemble it
 cargo xtask image          # build the flat arm64 Image and dump its header
 cargo xtask gdb            # boot paused, waiting for a debugger on :1234
+cargo xtask bench --riscv  # the benchmark suite on the second ISA
 ```
 
 ## What's here
 
 ```
 kernel/
-  link.ld              where the image lives in memory, and what the linker exports to us
-  src/arch/aarch64/
-    image_header.s     64 bytes that make QEMU treat us as a kernel, not a blob
-    boot.s             the first instructions the machine executes
-    vectors.s          the exception vector table (shape dictated by silicon)
-    exceptions.rs      the trap frame, ESR decoding, fault reports
-    semihosting.rs     how we ask QEMU to exit with a status code
-  src/drivers/pl011.rs the serial port
-  src/console.rs       print! / println!
-  src/testing.rs       the QEMU test harness
-script/                normalized entry points (setup, test, server, console, ...) — thin xtask wrappers
-scripts/qemu-runner.sh how the kernel actually gets booted (ELF -> flat Image -> QEMU)
-crates/dtb/            device tree parser        | pure logic, host-tested,
-crates/frames/         physical frame allocator  | milliseconds, no emulator
-xtask/                 build orchestration (build, run, test, gdb, objdump, image)
+  src/arch/aarch64/    boot.s, vectors, MMU, GIC, timer, PSCI: everything ISA-specific
+  src/arch/riscv64/    the same boundary, proved by a second ISA (SBI, Sv39, PLIC)
+  src/drivers/         pl011, ns16550: a driver gets a base address and nothing else
+  src/                 capabilities, scheduler, IPC, untyped, revocation, the syscall surface
+user/                  EL0: init, the shell, the console/input/block drivers, servers
+crates/                pure logic, host-tested in milliseconds: caps, ipc, paging, elf,
+                       dtb, frames, heap, slab, slots, crickerfs, intrusive, asid, ...
+bench/                 the benchmark suite and committed baselines (both ISAs)
+script/                normalized entry points (setup, test, console, verify, bench, ...)
+xtask/                 build orchestration (build, run, test, bench, gdb, objdump, image)
 notes/                 a concept glossary, written as questions came up
-design/                open proposals, not yet decided
+design/                the roadmap and worked designs
 DECISIONS.md           what we chose, what we rejected, and why
 ```
 
@@ -122,18 +134,18 @@ kernels are structured](notes/portability.md).
 
 ## The decisions
 
-Written down in [`DECISIONS.md`](DECISIONS.md) before any code, so the reasons survive
+Written down in [`DECISIONS.md`](DECISIONS.md) as they were made, so the reasons survive
 contact with month four. The short version:
 
 | | |
 |---|---|
-| **Architecture** | aarch64. Clean exception model, sane MMU, real hardware at the end of the road, and none of x86's forty years of archaeology. |
-| **Target** | QEMU `virt` for daily work; a Raspberry Pi port as a deliberate later milestone. |
-| **Kernel shape** | Monolithic, but drivers never reach into kernel globals and the syscall surface stays narrow. Two cheap rules instead of speculatively trait-ifying everything. |
+| **Architecture** | aarch64 first: clean exception model, sane MMU, and weak memory ordering as a discipline rather than a hazard. riscv64 second, as the port that proves the `arch/` boundary is real. |
+| **Target** | QEMU `virt` (TCG and HVF) for daily work; real hardware is milestone 16. |
+| **Kernel shape** | **Capability microkernel** (seL4-shaped, decided at milestone 7): no `open()`, no ambient authority, drivers are EL0 processes, and since milestone 14 the kernel allocates nothing. See DECISIONS.md §10 and §14. |
 | **Execution** | **Preemptive threads with real stacks.** Not async. See below. |
-| **SMP** | One core for now. Refactor when it hurts. |
-| **Testing** | QEMU harness plus host-testable pure-logic crates, from the first commit. |
-| **Process model** | **Capability-based microkernel** (seL4/Zircon-shaped). Deferred to a hard decision point at milestone 7, then resolved there: no `open()`, no ambient authority, drivers are EL0 processes. See DECISIONS.md §10. |
+| **SMP** | Four cores, per-CPU run queues, cross-core placement by inbox plus IPI. (v1 said "one core, refactor when it hurts"; it hurt, we refactored.) |
+| **Verification** | Machine-checked proofs (Kani) of the capability core: `caps`, IPC, the MMU isolation invariants. The frontier moves inward from the pure-logic crates. |
+| **Testing** | QEMU harness plus host-testable pure-logic crates from the first commit, plus benchmarks with committed baselines that fail on regression. |
 
 ### Why not async/await
 
@@ -153,7 +165,7 @@ purpose is to run code it did not compile.** That's why Embassy is excellent on 
 microcontroller and impossible here.
 
 And Go corroborates it the hard way. Goroutines were originally cooperative, yielding at
-function calls — and Go owns its compiler and compiles *every line that runs*. It still didn't
+function calls, and Go owns its compiler and compiles *every line that runs*. It still didn't
 work: a goroutine in a tight loop with no function calls never yields, and the garbage
 collector could never stop it. **Go 1.14 added asynchronous preemption**, which is a timer
 interrupt built in userspace out of signals. If a language that owns its entire toolchain
@@ -162,8 +174,8 @@ certainly can't. See [DECISIONS.md](DECISIONS.md) §5.
 
 ## Milestones
 
-The dividing line between "a Rust program that boots" and "an operating system" is
-milestone 7.
+The v1 plan, all built. The dividing line between "a Rust program that boots" and "an
+operating system" is milestone 7.
 
 | # | | |
 |---|---|---|
@@ -177,24 +189,33 @@ milestone 7.
 | 8 | **The console driver leaves the kernel** | ✅ |
 | 9 | virtio-blk in userspace + a filesystem server | ✅ |
 | 10 | A process server, and a shell that spawns binaries | ✅ |
-| 11 | Untyped memory: the kernel stops allocating | ✅ * |
+| 11 | Untyped memory: the kernel stops allocating for userspace | ✅ |
 
-<sub>* The kernel still allocates its own page tables, TCBs, and endpoints from its heap,
-which is Zircon's model and deliberate (DECISIONS §10). What milestone 11 demonstrates is the
-other half: a userspace process spends pages out of an `Untyped` capability without the
-kernel's free-frame count moving, so a process cannot force the kernel to allocate.</sub>
+The post-v1 roadmap ([design/roadmap.md](design/roadmap.md)), reordered by DECISIONS §14
+around verification and real workloads:
 
-**Beyond the plan.** After milestone 11: a security audit, per-process spawn quotas,
-kernel-mediated DMA confinement (there is no IOMMU on QEMU `virt`), capability delegation
-between processes (`SEND_CAP`/`RECV_CAP`), and frame capabilities (shared memory a process
-owns and delegates). **SMP** (the §6 refactor, "when it hurts"): four cores boot via PSCI and
-schedule preempted threads from per-CPU run queues, with cross-core work placement by an inbox
-plus a reschedule SGI (no shared run-queue lock). All under `-smp 4`, 91 kernel tests. The one
-piece left is making auto-distribution the default `spawn` policy; the migration mechanism is done.
+| # | | |
+|---|---|---|
+| 12 | Call/Reply IPC: a one-shot reply capability | ✅ |
+| 13 | Frame revocation: un-share a page from every holder | ✅ |
+| 26 | Object revocation: tear a process back down | ✅ |
+| 18 | Verify the capability core: `caps`, IPC, MMU invariants (Kani) | ✅ |
+| 14 | Kernel objects from untyped: the kernel heap is deleted | ✅ |
+| 15 | Tagged address spaces (ASIDs) | ✅ |
+| 21 | Benchmarks with teeth: icount + committed baselines | ✅ |
+| 19 | A real workload: userspace init, the native ABI, CoreMark | ✅ |
+| 20 | The second architecture: RISC-V, brought to full parity | ✅ |
+| 25 | Cross-OS numbers: vs Linux and macOS at a matched tier | ✅ (seL4 waits on real-hardware PMU) |
+| 16 | Real hardware + SMMU-backed driver isolation | next |
+| 22 | Trusted init: verify it, shrink what a broken one can do | ahead |
+| 23 | A capability-routed component OS with live replacement | the destination |
+| 17 | Multikernel-leaning scheduler | optional research |
+| 24 | A second aarch64 board (Virtualization.framework) | optional |
 
-Deliberately out of scope for v1: a writable filesystem, networking, a GUI, dynamic linking.
-Each multiplies debugging difficulty, and none teaches something the first ten don't already
-set up. (SMP and real hardware, once out of scope, are now on the table.)
+Also built along the way, outside the numbering: a four-part adversarial security audit,
+per-process spawn quotas, kernel-mediated DMA confinement (QEMU `virt` has no IOMMU),
+capability delegation between processes, and frame capabilities (shared memory a process owns
+and delegates).
 
 ## Things this project has already gotten wrong
 
