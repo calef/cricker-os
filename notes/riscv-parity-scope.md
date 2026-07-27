@@ -18,7 +18,21 @@ Effort is session-sized: **S** = part of a session, **M** = one to two sessions,
 
 ## The gaps
 
-### A. SMP (multi-hart) — L, high risk. The only pure-kernel gap.
+### A. SMP (multi-hart) — DONE.
+
+RISC-V runs on all four harts, and the SMP test suite passes (riscv64 55, aarch64 116). Built in
+four steps: **A1** the per-hart trap state (`sscratch` points at a per-hart `TrapStash` holding the
+kernel `tp` and stack, replacing the single global that could not scale past one hart); **A2**
+secondary bring-up via SBI HSM `sbi_hart_start` into a `secondary_boot` that replays the higher-half
+transition, made robust to QEMU's non-deterministic boot hart by keying everything to
+`arch::boot_cpu_id()` (logical id == hart id); **A3** IPIs via the SBI IPI extension (a supervisor
+software interrupt, `scause` = 1, draining the inbox), lighting up `send_reschedule`; **A4** the SMP
+tests un-gated and generalized off "boot core is 0". The subtle one was **TLB shootdown**: RISC-V has
+no hardware TLB broadcast, so `flush_tlb` follows its local `sfence.vma` with an SBI RFENCE to the
+other online harts, or a thread migrated to a core faults on a stale translation of its own stack.
+Original scoping below.
+
+### A (original scope). SMP (multi-hart) — L, high risk. The only pure-kernel gap.
 
 RISC-V runs single-hart today; `send_reschedule` is a no-op and the runner passes `-smp 1`. This is
 the last big *primitive* aarch64 claims and riscv does not, and the only parity item that is genuine
