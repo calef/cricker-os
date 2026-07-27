@@ -53,6 +53,16 @@ path = "src/coremark.rs"
 test = false
 bench = false
 
+# The minimal init / system builder (milestone 20): a fully portable init that loads the worker from
+# a multi-entry initrd archive and builds it as a child through the capability verbs. It is the
+# RISC-V richer-initrd demonstration (the aarch64 init is a role of the PL011-wired `hello`). Same
+# test/bench reasoning as the others; the riscv initrd packs it under the name "init".
+[[bin]]
+name = "builder"
+path = "src/builder.rs"
+test = false
+bench = false
+
 # The EL0 microbenchmark program (primitive suite): self-times syscall/IPC primitives from EL0, the
 # lmbench way, so the numbers include the trap the kernel-side benchmarks skip. Run by the bench boot.
 [[bin]]

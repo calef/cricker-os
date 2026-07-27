@@ -1067,6 +1067,88 @@ pub fn riscv_worker_demo(worker: &[u8], n: u64) -> Result<u64, LoadError> {
     Ok(crate::sched::ipc_recv(result)[0])
 }
 
+/// **The richer initrd: userspace init builds the system** (milestone 20). The RISC-V counterpart of
+/// [`spawn_init`], trimmed to the portable core (no GIC, no PL011 device cap, no IRQ delegation: this
+/// proves the composition model, not the aarch64 interactive system).
+///
+/// The initrd is a crickerfs archive holding `init` (the portable `builder` program) plus `worker`.
+/// The kernel loads only `init`, maps the whole archive read-only into its address space, and grants
+/// it exactly two capabilities: a large untyped budget (slot 0) and a report endpoint with
+/// WRITE|GRANT (slot 1). From those, `init` reads `worker` out of the archive by name, builds it as a
+/// child entirely from its own budget (a userspace ELF loader), hands the child a WRITE view of the
+/// report endpoint as its slot 0, and starts it with an input. The child squares the input and SENDs
+/// the answer straight to the report endpoint, which this function is waiting on. The kernel never
+/// parsed or mapped the worker: init did. That is the whole point (DECISIONS §17, and the aarch64
+/// init lineage in notes/init-and-loading.md), now on RISC-V.
+#[cfg(target_arch = "riscv64")]
+pub fn riscv_initrd_demo(archive: &'static [u8]) -> Result<u64, LoadError> {
+    let (initrd_start, initrd_len) = memory::initrd_region().expect("no initrd region");
+    let initrd_pages = initrd_len.div_ceil(FRAME_SIZE);
+
+    // Read only the one entry the kernel must: "init" (the builder). The rest is init's to parse.
+    let fs = crickerfs::Fs::parse(archive).expect("initrd is not a crickerfs archive");
+    let init_bytes = fs.read("init").expect("archive has no 'init' program");
+    let elf = Elf::parse(init_bytes).map_err(LoadError::NotLoadable)?;
+
+    // init's address space: its own segments, a deep stack (it runs an ELF loader loop), and the
+    // whole archive mapped read-only so it can parse the programs it loads.
+    let content: u64 = elf
+        .segments()
+        .map(|seg| {
+            let (s, e) = seg.page_range(FRAME_SIZE);
+            (e - s) / FRAME_SIZE
+        })
+        .sum::<u64>()
+        + 1
+        + initrd_pages / 512
+        + INIT_STACK_PAGES
+        + 8;
+    let mut space =
+        AddressSpace::new(content).ok_or(LoadError::Unmappable(MapError::OutOfFrames))?;
+    map_segments(&mut space, &elf)?;
+    for k in 0..INIT_STACK_PAGES {
+        space
+            .map_new(USER_STACK_VA - k * FRAME_SIZE, Flags::user_data())
+            .map_err(LoadError::Unmappable)?;
+    }
+    for i in 0..initrd_pages {
+        space
+            .map_physical(
+                INITRD_VA + i * FRAME_SIZE,
+                initrd_start + i * FRAME_SIZE,
+                Flags::user_rodata(),
+            )
+            .map_err(LoadError::Unmappable)?;
+    }
+
+    // Register the space, then build init's TCB with its two capabilities: budget (slot 0), report
+    // endpoint WRITE|GRANT (slot 1, so init may delegate a narrowed view to the child it builds).
+    let aspace_name = readopt_user_aspace(space).expect("register init aspace");
+    let report = crate::sched::create_endpoint();
+    let build_region = crate::untyped::create(2048).expect("no building budget for init");
+
+    let tcb_region = crate::untyped::create(2).expect("no tcb region");
+    let tid = crate::sched::create_tcb(tcb_region).expect("no tcb");
+    let s0 = crate::sched::tcb_insert_cap(tid, crate::cap::untyped_cap(build_region))
+        .expect("insert budget");
+    assert_eq!(s0, 0, "init's budget must land in slot 0");
+    let s1 = crate::sched::tcb_insert_cap(
+        tid,
+        crate::cap::endpoint_cap(
+            report,
+            crate::cap::Rights::WRITE.union(crate::cap::Rights::GRANT),
+        ),
+    )
+    .expect("insert report");
+    assert_eq!(s1, 1, "init's report endpoint must land in slot 1");
+    crate::sched::configure_tcb(tid, elf.entry(), USER_STACK_TOP, aspace_name).expect("configure");
+    // init reads the archive length from its second argument (a1), as the worker reads its input.
+    crate::sched::start_tcb(tid, [0, initrd_len, 0]).expect("start");
+
+    // The word the child SENDs home (init built the pipe; the child sent through it).
+    Ok(crate::sched::ipc_recv(report)[0])
+}
+
 /// Bringing the console driver up in userspace, and wiring a client to it.
 ///
 /// **This is the milestone-8 payload.** It creates the shared machinery (two endpoints and a

@@ -224,9 +224,21 @@ Finding these is the point; each gets pushed under `arch/`.
    (`load`, `map_segments`) was already arch-neutral and needed no change. This is the first RISC-V
    userspace program the kernel did not hand-write.
 
-   **Remaining:** the PLIC (leak: `drivers::gic`), for device interrupts; and, if wanted, a richer
-   initrd (a crickerfs archive with an `init` that loads others by name, as aarch64 has) rather than
-   the single-ELF initrd the worker demo uses.
+   **And userspace init builds the system, from a richer initrd.** The single-ELF initrd became a
+   crickerfs archive holding two programs: `init` (the portable `builder`) and `worker`. The kernel
+   (`riscv_initrd_demo`, a minimal `spawn_init` with no GIC/PL011/IRQ baggage) loads only `init`, maps
+   the whole archive read-only into it, and grants it two capabilities: an untyped budget and a report
+   endpoint. From those, `init` reads `worker` out of the archive by name, builds it as a child
+   *entirely from its own budget* through the capability verbs (retype an address space, copy each
+   segment into retyped frames and map them, retype a TCB, endow it, configure, start), hands the
+   child a WRITE view of the report endpoint, and starts it with an input. The child squares it and
+   SENDs `81` straight home; the kernel never parsed or mapped the worker. This exercised the *full*
+   userspace capability syscall surface on RISC-V for the first time (untyped RETYPE/RETYPE_OBJ,
+   aspace MAP_INTO, frame MAP, tcb CAP_INSERT/CONFIGURE/START), all across the `ecall` ABI. `builder`
+   is fully portable; it also builds for aarch64, though aarch64's init is the PL011-wired role of
+   `hello`. Build the archive with `cargo xtask initrd-riscv`.
+
+   **Remaining:** the PLIC (leak: `drivers::gic`), for device interrupts. That is the last item.
 
 The reward beyond the proof: when a real RISC-V board (a ~$70 StarFive VisionFive 2 / Milk-V Mars, or a
 rented Graviton later) is on hand, the QEMU-virt work transfers, because real boards use the same

@@ -23,6 +23,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 const TARGET: &str = "aarch64-unknown-none-softfloat";
 const RUNNER: &str = "scripts/qemu-runner.sh";
 
+/// The RISC-V target, for the second-architecture initrd (milestone 20). The kernel itself is built
+/// and run through cargo + `scripts/qemu-runner-riscv.sh` directly, not this xtask; this const exists
+/// only so `initrd-riscv` builds the userspace archive for the matching target.
+const RISCV_TARGET: &str = "riscv64imac-unknown-none-elf";
+
 /// Whether this run builds optimized binaries. Only `bench --release` sets it (a fair cross-OS
 /// comparison wants an optimized kernel and userspace, not the debug default). Everything else stays
 /// debug: faster builds, and the tests and the tour want debuginfo and cheap rebuilds.
@@ -93,6 +98,7 @@ fn main() -> ExitCode {
                     TARGET,
                 ])
         }
+        "initrd-riscv" => initrd_riscv(),
         "test" => test(),
         "bench" => bench(),
         "gdb" => gdb(),
@@ -103,7 +109,7 @@ fn main() -> ExitCode {
                 eprintln!("unknown command: {other}\n");
             }
             eprintln!(
-                "usage: cargo xtask <build|run|shell|initboot|test|bench|gdb|objdump|image> [--hvf]"
+                "usage: cargo xtask <build|run|shell|initboot|initrd-riscv|test|bench|gdb|objdump|image> [--hvf]"
             );
             eprintln!("       cargo xtask bench [--real] [--release] [--check] [--save]");
             return ExitCode::FAILURE;
@@ -139,6 +145,85 @@ fn initrd_path() -> String {
         .join("target/initrd.img")
         .display()
         .to_string()
+}
+
+/// Where the RISC-V initrd archive is written (milestone 20). Separate from the aarch64 one because
+/// it holds riscv64 ELFs, not aarch64 ones.
+fn riscv_initrd_path() -> String {
+    workspace_root()
+        .join("target/initrd-riscv.img")
+        .display()
+        .to_string()
+}
+
+/// **Build the RISC-V userspace archive** (milestone 20, the richer-initrd step). Compiles the two
+/// portable programs the second architecture runs (`builder`, the minimal init, and `worker`, the
+/// child it loads) for the riscv target, and packs them into a crickerfs archive: `builder` under
+/// the name `init` (the entry the kernel loads first), `worker` under `worker` (the one init loads by
+/// name). Point `CRICKER_INITRD` at the result and boot the riscv kernel, e.g.:
+///
+/// ```text
+/// cargo xtask initrd-riscv
+/// CRICKER_INITRD=target/initrd-riscv.img cargo run -p kernel --target riscv64imac-unknown-none-elf
+/// ```
+fn initrd_riscv() -> bool {
+    // Only the portable bins: hello/console/input/shell are aarch64-wired and do not build here.
+    if !run(
+        "cargo",
+        &[
+            "build",
+            "-p",
+            "user",
+            "--bin",
+            "builder",
+            "--bin",
+            "worker",
+            "--target",
+            RISCV_TARGET,
+        ],
+    ) {
+        return false;
+    }
+
+    let bin = |name: &str| {
+        workspace_root()
+            .join(format!("target/{RISCV_TARGET}/debug/{name}"))
+            .display()
+            .to_string()
+    };
+    let builder = match std::fs::read(bin("builder")) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("initrd-riscv: cannot read {}: {e}", bin("builder"));
+            return false;
+        }
+    };
+    let worker = match std::fs::read(bin("worker")) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("initrd-riscv: cannot read {}: {e}", bin("worker"));
+            return false;
+        }
+    };
+
+    // `builder` is the first program the kernel loads, so it takes the archive's `init` entry;
+    // `worker` is the one `builder` loads by name.
+    let files: [(&str, &[u8]); 2] = [("init", &builder), ("worker", &worker)];
+    let size = crickerfs::image_size(&files);
+    let mut img = std::vec![0u8; size];
+    if crickerfs::write_image(&files, &mut img).is_err() {
+        eprintln!("initrd-riscv: could not build the archive");
+        return false;
+    }
+    if let Err(e) = std::fs::write(riscv_initrd_path(), &img) {
+        eprintln!("initrd-riscv: could not write {}: {e}", riscv_initrd_path());
+        return false;
+    }
+    eprintln!(
+        "wrote {} ({size} bytes): init=builder, worker=worker",
+        riscv_initrd_path()
+    );
+    true
 }
 
 /// Pack the built user ELF into the initrd archive the kernel hands init (milestone 19f).
