@@ -22,14 +22,16 @@ fi
 channel="$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
 [ -n "$channel" ] || channel="nightly"
 
-echo "==> Ensuring Rust toolchain '$channel' (components + aarch64 target)"
+echo "==> Ensuring Rust toolchain '$channel' (components + bare-metal targets)"
 rustup toolchain install "$channel" --profile minimal
 rustup component add --toolchain "$channel" rust-src llvm-tools rustfmt clippy
-rustup target add --toolchain "$channel" aarch64-unknown-none-softfloat
+rustup target add --toolchain "$channel" aarch64-unknown-none-softfloat riscv64imac-unknown-none-elf
 
 # --- QEMU ---------------------------------------------------------------------------------
-# The kernel runs under qemu-system-aarch64 (system emulation). See notes/qemu.md.
-if command -v qemu-system-aarch64 >/dev/null 2>&1; then
+# The kernel runs under qemu-system-aarch64, and the riscv port under qemu-system-riscv64
+# (system emulation; see notes/qemu.md). Check for both: a machine provisioned before the
+# riscv port has only the first, and `cargo xtask test` now needs the pair.
+if command -v qemu-system-aarch64 >/dev/null 2>&1 && command -v qemu-system-riscv64 >/dev/null 2>&1; then
     echo "==> QEMU present: $(qemu-system-aarch64 --version | head -1)"
 else
     echo "==> Installing QEMU"
@@ -39,13 +41,15 @@ else
             echo "bootstrap: Homebrew not found; install it from https://brew.sh, then re-run." >&2
             exit 1
         fi
+        # Homebrew's qemu ships every system emulator, riscv64 included.
         brew install qemu
         ;;
     Linux)
-        # qemu-system-arm carries qemu-system-aarch64; ipxe-qemu supplies efi-virtio.rom, the
-        # option ROM the -device virtio-blk-device (our disk) loads at startup.
+        # qemu-system-arm carries qemu-system-aarch64 and qemu-system-misc carries
+        # qemu-system-riscv64; ipxe-qemu supplies efi-virtio.rom, the option ROM the
+        # -device virtio-blk-device (our disk) loads at startup.
         sudo apt-get update
-        sudo apt-get install -y qemu-system-arm ipxe-qemu
+        sudo apt-get install -y qemu-system-arm qemu-system-misc ipxe-qemu
         ;;
     *)
         echo "bootstrap: unknown OS '$os'; install qemu-system-aarch64 by hand." >&2
