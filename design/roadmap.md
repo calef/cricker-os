@@ -57,6 +57,13 @@ earns, and it re-touches the parked competitor story below. The broad competitor
 end of this file).
 Several milestones already have their design worked out; the blocks below point at it.
 
+**The Prior-art sections below cover reuse too.** Before building, each milestone design answers
+three questions against the ecosystems in notes/prior-art.md (Redox, rCore, Tock, Hubris, seL4,
+Fuchsia): is there code to use, a design to copy, or a mistake to avoid? The build-vs-reuse call
+gets recorded with its reason. The rule that decides it: the reuse boundary is the TCB boundary
+(inside it, always build; userspace, actively prefer porting), and no reuse may widen the syscall
+surface or smuggle in POSIX assumptions. notes/prior-art.md has the full argument.
+
 ### 12. Call/Reply IPC: a one-shot reply capability
 
 **Built (milestone 12); see DECISIONS §12 and notes/ipc-naming.md.** The rest of this block is the

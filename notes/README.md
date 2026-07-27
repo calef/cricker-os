@@ -203,6 +203,10 @@ in the code or the conversation doesn't make sense, it belongs here.
   would actually hit (no POSIX/libc, no writable FS, no network, no GUI), why that's a
   deliberate teaching-subset choice rather than a limit of the model (Fuchsia is a
   general-purpose capability microkernel), and what it would take to grow toward one.
+- [Prior art and reuse](prior-art.md) — where to look before building (Redox, rCore, Tock,
+  Hubris, seL4, Fuchsia) and the rule that decides build-vs-reuse: the reuse boundary is the
+  TCB boundary. Inside it, always build; userspace components, actively prefer porting,
+  because a confined foreign component is evidence for the milestone-23 thesis.
 - [Deadlock](deadlock.md) — the four Coffman conditions, and why breaking *any one* makes
   deadlock impossible. Every rule in our locking discipline is "pick a condition and destroy
   it." Also: Rust does not save you from this, and the reason why is worth knowing.
