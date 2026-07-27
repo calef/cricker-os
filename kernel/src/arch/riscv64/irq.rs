@@ -13,6 +13,16 @@ pub fn enable(intid: u32) {
     crate::drivers::plic::enable(intid);
 }
 
+/// The PLIC context that targets the **boot hart's** S-mode: `2*hart + 1` on QEMU `virt` (each
+/// hart has an M context at `2*hart` and an S context at `2*hart + 1`). This must be derived, not
+/// hardcoded to 1: OpenSBI elects the boot hart by lottery, and a kernel that programs hart 0's
+/// context while running (and setting `sie.SEIE`) on hart 3 leaves every external interrupt
+/// pending at the PLIC forever, with all harts parked in `wfi`. Found by the parity-C disk test
+/// hanging on some runs and passing on others, exactly the lottery's coin flip.
+pub fn boot_s_context() -> usize {
+    2 * super::boot_hartid() + 1
+}
+
 /// Bring the interrupt controller up on the boot core. On RISC-V this is the PLIC, but the shared
 /// `interrupts_init` that calls this is on the full-boot path, which the port does not reach yet (the
 /// RISC-V boot tour halts earlier and initializes the PLIC directly in its device-driver step, from

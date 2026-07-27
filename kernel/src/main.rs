@@ -179,8 +179,14 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         #[cfg(feature = "shell")]
         {
             if let Some((plic_phys, _)) = memory::plic_region() {
-                // SAFETY: the PLIC is device-mapped in the direct map; hart 0's context is 1.
-                unsafe { drivers::plic::init(arch::mmu::phys_to_virt(plic_phys) as usize, 1) };
+                // SAFETY: the PLIC is device-mapped in the direct map; the context is the boot
+                // hart's S context (derived, not hardcoded: OpenSBI's hart lottery).
+                unsafe {
+                    drivers::plic::init(
+                        arch::mmu::phys_to_virt(plic_phys) as usize,
+                        arch::irq::boot_s_context(),
+                    )
+                };
             }
             match user::initrd() {
                 Some(initrd) => {
@@ -207,6 +213,22 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         // the other harts. The RISC-V equivalent of the `#[cfg(test)] test_main()` on the aarch64 boot.
         #[cfg(test)]
         {
+            // The PLIC too: the parity-C disk tests route a device interrupt, and `plic::enable`
+            // through a never-initialized PLIC is a store through a zero base (a fault this test
+            // path found the hard way; the shell and tour paths already did this). SEIE as well:
+            // enabling a source at the PLIC delivers nothing while supervisor external interrupts
+            // are masked in `sie`, and that bit is otherwise only set by the UART driver paths.
+            if let Some((plic_phys, _)) = memory::plic_region() {
+                // SAFETY: the PLIC is device-mapped in the direct map; the context is the boot
+                // hart's S context (derived, not hardcoded: OpenSBI's hart lottery).
+                unsafe {
+                    drivers::plic::init(
+                        arch::mmu::phys_to_virt(plic_phys) as usize,
+                        arch::irq::boot_s_context(),
+                    )
+                };
+                arch::exceptions::enable_external();
+            }
             test_main();
             arch::halt();
         }
@@ -392,9 +414,15 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         // RX FIFO during init, so a byte sent at t=0 is dropped).
         if let Some((plic_phys, _)) = memory::plic_region() {
             const UART_IRQ: u32 = 10; // the NS16550's interrupt id on QEMU virt
-            const S_CONTEXT: usize = 1; // hart 0's supervisor context on QEMU virt (2*hart + 1)
-            // SAFETY: the PLIC is device-mapped in the direct map (mmu::map_everything); this is its VA.
-            unsafe { drivers::plic::init(arch::mmu::phys_to_virt(plic_phys) as usize, S_CONTEXT) };
+            // SAFETY: the PLIC is device-mapped in the direct map (mmu::map_everything); this is
+            // its VA. The context is the boot hart's S context (2*hart + 1), derived rather than
+            // hardcoded to 1 because OpenSBI elects the boot hart by lottery; see irq::boot_s_context.
+            unsafe {
+                drivers::plic::init(
+                    arch::mmu::phys_to_virt(plic_phys) as usize,
+                    arch::irq::boot_s_context(),
+                )
+            };
 
             let started = user::initrd()
                 .filter(|a| {
