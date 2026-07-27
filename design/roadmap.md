@@ -668,6 +668,25 @@ Linux/FUSE, which is itself a gift (images can be created and inspected on the h
 same code that serves them on cricker-os). It is the flagship form of the userspace-reuse
 thesis: the kernel confining a serious component we did not write.
 
+**The port plan, fixed by the audit** (notes/redoxfs-audit.md; done against 0.9.1, by
+building, so the implementer starts here rather than rediscovering):
+
+1. **Pin 0.9.1**, vendor or patch-dep with exactly the audit's three `use alloc::vec::Vec`
+   imports (`filesystem.rs` x2, `record.rs` x1); offer the patch upstream so the pin can
+   eventually drop it. Build with `--no-default-features` on the workspace nightly; both
+   bare-metal targets are proven to compile.
+2. **The allocator comes first** and is shared work with 27's PAL: an untyped-backed
+   `GlobalAlloc` in `user_rt`. The core is alloc-heavy; nothing else runs without this.
+3. **The `Disk` impl is a blk-IPC client**: `read_at(block, &mut [u8])`, `write_at(block,
+   &[u8])`, `size()`, all synchronous, returning `syscall::error::Result`; map that error type
+   to ABI errors once, at the server boundary, and nowhere else.
+4. **Only operate on-device; never create.** The std-gated core APIs are exactly creation
+   (`FileSystem::create`, uuid v4, getrandom): `mkfs` and inspection stay host-side via FUSE.
+   The server opens an existing image, full stop; entropy never becomes a userspace dependency.
+5. Known-and-accepted: the unconditional `libc` dep is a manifest wart (host-binaries-only,
+   proven harmless on `none` targets), and aes/xts/argon2/lz4 ride along as binary size with
+   encryption unused in phase one.
+
 **Risks, priced.** (1) ~~The core's std/alloc footprint needs auditing~~ **Audited, retired**
 (notes/redoxfs-audit.md): `std` is a feature, not an assumption; the ~5,400-line core compiles
 for BOTH of our bare-metal targets today, three bit-rotted imports away from clean, and the
