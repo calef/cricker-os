@@ -19,11 +19,12 @@
 #![feature(custom_test_frameworks)]
 #![test_runner(crate::testing::runner)]
 #![reexport_test_harness_main = "test_main"]
-// The RISC-V build is a scaffold (milestone 20): its `arch` layer is stubbed with
-// `unimplemented!()`, so the boot path never runs and most of the kernel above it is not yet
-// referenced from a riscv64 build. That makes almost everything look like dead code. Allow it
-// *only* on riscv64, so the aarch64 build keeps full dead-code checking and this allowance
-// disappears the moment the RISC-V stubs become real. See notes/riscv-port.md.
+// The RISC-V boot runs a self-contained tour (in `kernel_main` below) that ends in `arch::halt()`,
+// before the shared, still-aarch64-shaped full boot (userspace init as the boot process, the shell,
+// the virtio service). That full-boot code and its helpers are therefore unreferenced from a riscv64
+// build and look like dead code, even though the `arch` layer itself is fully implemented. Allow it
+// *only* on riscv64, so the aarch64 build keeps full dead-code checking; it goes away if the RISC-V
+// boot is ever wired into the shared path instead of halting. See notes/riscv-port.md.
 #![cfg_attr(target_arch = "riscv64", allow(dead_code))]
 
 mod arch;
@@ -65,8 +66,8 @@ pub static DTB: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsiz
 /// where arguments live. `dtb` arrives in `x0`. See notes/registers.md.
 ///
 /// `-> !` means this never returns, which is true: there is nowhere to return *to*.
-// On riscv64, the early console banner ends in `arch::halt()`, so the rest of `kernel_main` (the
-// full aarch64 boot) is deliberately unreachable there. Scoped to riscv so aarch64 keeps the lint.
+// On riscv64, the boot tour below ends in `arch::halt()`, so the rest of `kernel_main` (the shared
+// full boot) is deliberately unreachable there. Scoped to riscv so aarch64 keeps the lint.
 #[cfg_attr(target_arch = "riscv64", allow(unreachable_code))]
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_main(dtb: usize) -> ! {
@@ -84,12 +85,15 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
     // still kills us silently.
     console::init();
 
-    // RISC-V reaches exactly this far today (milestone 20, the console step): OpenSBI's S-mode
-    // handoff, `_start`'s stack and `.bss` zeroing, the per-CPU register, and the NS16550 console.
-    // Everything past here in `kernel_main` (arch::init, the MMU, the scheduler) is still
-    // `unimplemented!()` on riscv, so print the milestone-1 banner and halt cleanly rather than
-    // panic into a stub. This block disappears when the traps and MMU steps let RISC-V run the
-    // whole boot. See notes/riscv-port.md.
+    // The RISC-V boot is a self-contained tour, right here in this block, and it halts at the end
+    // rather than falling through to the shared boot path below. From OpenSBI's S-mode handoff it
+    // brings up its own arch (traps, the Sv39 MMU, the SBI timer) and then demonstrates the whole
+    // capability core on RISC-V: the scheduler and preemption, U-mode programs and syscalls,
+    // capability invocation, userspace init building a child out of the initrd, and a userspace
+    // driver servicing a device interrupt through the PLIC. It stops before the shared full boot
+    // (userspace init as the boot process, the shell, the virtio service), which is still
+    // aarch64-shaped; making those portable is what would let RISC-V join the shared path instead of
+    // halting here. See notes/riscv-port.md.
     #[cfg(target_arch = "riscv64")]
     {
         // A live code address proves we jumped to the high-half alias in boot.s and are executing
