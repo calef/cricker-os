@@ -39,6 +39,7 @@ IPC and the MMU invariants are next. This threads through the list rather than b
 | 17 | Multikernel-leaning scheduler (research, optional) | Partition the shared thread table and endpoints | optional; not on the thesis path |
 | 20 | A portable HAL, proven on a second architecture | Make `arch/` a real HAL; bring up RISC-V then x86_64 | the "portable verified core" claim; reach the demonstrator earns |
 | 24 | A second aarch64 *board*: Virtualization.framework (optional) | Boot under Apple's Virtualization.framework, not QEMU's `virt`: a virtio-console driver (VZ has no PL011), VZ's interrupt/memory layout and boot handoff, device discovery through the machine VZ presents | proves the `arch/` **board** boundary on a second machine of the *same* ISA (cheaper than 16's silicon, distinct from 20's second ISA), and lets cricker-os run under the same VMM as macOS/Linux guests. Optional; portability exercise, **not** a benchmarking prerequisite (guest-internal microbenchmarks are VMM-independent) |
+| 27 | Rust `std` on the native ABI | A custom target whose `std` builds: `Vec`, `String`, `println!`, `Instant`, allocation from the process's own untyped, stdio over the console endpoint, `fs`/`net` honestly `Unsupported` until capability-granted servers back them | **widens "runs real workloads" by orders of magnitude**: the pool of programs that build for cricker-os becomes "most Rust code that doesn't touch fs/net", and milestone 23's components become writable by people who are not kernel people. Grows toward general purpose (notes/why-not-general-purpose.md) without smuggling POSIX: the `sys` layer maps to capabilities directly, no fork, no open-by-path |
 | 25 | Cross-OS performance comparison (extends 21) | EL0-measured primitive benchmarks (syscall, context switch, IPC, map, spawn) the lmbench way, so the numbers include the trap the kernel-side benchmarks skip; then line them up against lmbench (Linux, macOS guests) and `sel4bench` (seL4), at a matched virtualization tier, with release builds. Fold in the icount codegen-sensitivity fix. | **turns perf claims into cross-OS numbers**: where does a Rust capability microkernel stand next to Linux, macOS's XNU, and seL4 on the primitives that define an OS. **Largely done**: four EL0 primitives (null syscall, context switch, IPC, page map) on both instruments, a release build path, and the three-way comparison (cricker-os vs Linux-under-HVF vs native macOS) with cricker-os winning null/IPC ~5x. `spawn` landed too (its real prerequisite was never retype, which had already shipped, but **object revocation**, reclaiming a child's TCB/aspace/endpoint so a spawn loop can repeat; that shipped as its own milestone, notes/object-revocation.md, and the EL0 `lat_proc` bench, `spawn_el0`, is in the suite and the committed baseline). **Remaining**: only `sel4bench` (built and booting for qemu-arm-virt, but it times single ops via the PMU cycle counter, which neither QEMU-TCG nor Apple HVF provides, so it is **deferred to real hardware**, the milestone-16 machine, which has a real PMU; this validates our CNTVCT + long-loop design). notes/benchmarks.md |
 | 22 | Trusted init: verify it, and shrink what a broken one can do | Measured/secure boot that checks init before running it; reduce init's authority so a compromise is bounded | **closes the thesis's own soft spot:** init is the privileged *unverified* component the whole system is built by |
 | 23 | A capability-routed component OS with live replacement | Every userspace component (driver, server, app) is a swappable, vendor-shippable unit behind a stable contract; operators replace them live, no reboot. The console hot-swap is instance one; a durable queue-broker decouples component lifecycles (opt-in per channel, for latency) | **the flagship payoff and a product ambition:** competing vendor components, confined by the kernel and swapped live; the verified core is the one fixed thing |
@@ -491,6 +492,35 @@ workloads" is committed). What remains open:
   world needs another OS that the demonstrator has by then proved. Until both hold, competitor-shaped
   work (broad driver coverage, a full Linux ABI, a package ecosystem) is out of scope, and saying so
   keeps the demonstrator from sliding into a second, unfinished Linux.
+
+### 27. Rust `std` on the native ABI
+
+**Deliverable.** A custom rustc target (`aarch64-unknown-cricker` / `riscv64-unknown-cricker`,
+`-Zbuild-std` against a target spec first, a real target later if ever warranted) whose `std`
+compiles and links against the capability ABI (notes/abi.md). Concretely: implement std's `sys`
+platform layer over what a process already has. Allocation draws from the process's own untyped
+(the `user_rt` heap growing into a real `GlobalAlloc`); `stdout`/`stderr` SEND to the console
+endpoint by slot convention; `Instant`/`SystemTime` read the virtual counter; `panic!` aborts (a
+fault the kernel reports) before unwinding is ever attempted; `thread::spawn` retypes a TCB, or
+returns `Unsupported` in phase one; `fs` and `net` return `Unsupported`, honestly, until
+capability-granted servers exist to back them.
+
+**Why.** The first wall an application hits on cricker-os is "no std" (the note
+why-not-general-purpose.md names it), and milestone 23's vendor-component ambition needs
+components writable by people who are not kernel people. `std` on the native ABI widens "runs
+real workloads" from hand-built `no_std` binaries to most of crates.io that stays off fs and
+net, without smuggling the POSIX assumptions the ABI deliberately excludes: no fork, no
+open-by-path, no ambient anything. Paths, when they come, name capabilities.
+
+**Prior art and reuse.** Hermit is the closest shape (std's pal implemented directly over a
+non-POSIX unikernel ABI) and the model to follow; Fuchsia did the same at scale. Redox took the
+other road, std via relibc (a POSIX shim first), which is exactly the "later, if ever"
+DECISIONS §15 already prices at nothing. Code to use: rustc's own `build-std` machinery and
+target-spec JSON; there is no crate to adopt, because the deliverable IS the pal. Mistake to
+avoid: an errno-shaped `sys` layer that makes `std` work by pretending the OS is Unix.
+
+**Sequencing.** After 19 (the ABI, done) and object revocation (done); independent of 16 and 22;
+feeds 23 directly. Effort L. Off the thesis path, like 20 was: a reach the demonstrator earns.
 
 ## The rival worth understanding, not building
 

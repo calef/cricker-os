@@ -211,6 +211,7 @@ around verification and real workloads:
 | 23 | A capability-routed component OS with live replacement | the destination |
 | 17 | Multikernel-leaning scheduler | optional research |
 | 24 | A second aarch64 board (Virtualization.framework) | optional |
+| 27 | Rust `std` on the native ABI | ahead (feeds 23) |
 
 Also built along the way, outside the numbering: a four-part adversarial security audit,
 per-process spawn quotas, kernel-mediated DMA confinement (QEMU `virt` has no IOMMU),
