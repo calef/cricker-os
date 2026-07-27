@@ -67,7 +67,9 @@ if [ -n "$CRICKER_DISK" ]; then
     # (separate physical addresses for the descriptor table and the two rings) is the current
     # design and the one worth learning. Without it QEMU gives legacy (version 1), a different
     # and older queue layout.
-    DISK="-global virtio-mmio.force-legacy=false -drive file=$CRICKER_DISK,if=none,format=raw,id=hd0,readonly=on -device virtio-blk-device,drive=hd0"
+    # The same image is attached TWICE, as on riscv: virtio-mmio (hd0) and virtio-blk-pci (hd1,
+    # modern via disable-legacy=on), both read-only, so one boot exercises both transports.
+    DISK="-global virtio-mmio.force-legacy=false -drive file=$CRICKER_DISK,if=none,format=raw,id=hd0,readonly=on -device virtio-blk-device,drive=hd0 -drive file=$CRICKER_DISK,if=none,format=raw,id=hd1,readonly=on -device virtio-blk-pci,drive=hd1,disable-legacy=on"
 fi
 
 # shellcheck disable=SC2086  # $INITRD and $DISK are deliberately word-split or empty

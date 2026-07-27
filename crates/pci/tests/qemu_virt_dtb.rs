@@ -62,3 +62,57 @@ fn the_intx_swizzle_matches_the_interrupt_map() {
         );
     }
 }
+
+const QEMU_AARCH64_VIRT: &[u8] = include_bytes!("../../dtb/tests/fixtures/qemu-virt.dtb");
+
+/// The aarch64 ECAM window the kernel maps is the machine's **highmem** ECAM: the node is named
+/// `pcie@10000000` (the low MMIO base) but its `reg` is 0x40_1000_0000, and trusting the name
+/// instead of the `reg` is exactly the mistake this witness exists to catch.
+#[test]
+fn the_aarch64_ecam_window_matches_the_machine() {
+    let dtb = Dtb::from_bytes(QEMU_AARCH64_VIRT).unwrap();
+    let mut regs = [Region { start: 0, size: 0 }; 2];
+    assert_eq!(dtb.node_reg(b"pcie@", &mut regs).unwrap(), 1);
+    assert_eq!(
+        regs[0],
+        Region {
+            start: 0x40_1000_0000, // PCI_ECAM_BASE in arch/aarch64/mmu.rs
+            size: 0x1000_0000,
+        }
+    );
+}
+
+/// The swizzle against the aarch64 machine's `interrupt-map`. Entries are TEN cells here, not
+/// six: the GIC's `#interrupt-cells = 3` (type, number, flags) where the PLIC's is 1, plus a
+/// two-cell parent unit address because the GIC also declares `#address-cells = 2` (the spec
+/// says a map entry carries the parent's address cells; the PLIC declares zero). Every entry
+/// must be a type-0 (SPI) interrupt, and `intx_irq(35, dev, pin)` (INTID 32 + SPI 3 as the
+/// base, from arch/aarch64/mmu.rs) must reproduce `32 + SPI` for all sixteen.
+#[test]
+fn the_intx_swizzle_matches_the_aarch64_interrupt_map() {
+    let dtb = Dtb::from_bytes(QEMU_AARCH64_VIRT).unwrap();
+    let map = dtb
+        .node_prop(b"pcie@", b"interrupt-map")
+        .unwrap()
+        .expect("the pcie node has no interrupt-map");
+
+    const ENTRY_CELLS: usize = 10; // addr:3, pin:1, phandle:1, parent-addr:2, gic (type, spi, flags):3
+    let cell = |i: usize| -> u32 { u32::from_be_bytes(map[i * 4..i * 4 + 4].try_into().unwrap()) };
+    assert_eq!(map.len() % (ENTRY_CELLS * 4), 0, "unexpected entry width");
+    let entries = map.len() / (ENTRY_CELLS * 4);
+    assert_eq!(entries, 16, "QEMU virt routes 4 devices x 4 pins");
+
+    for e in 0..entries {
+        let at = e * ENTRY_CELLS;
+        let dev = ((cell(at) >> 11) & 0x1f) as u8;
+        let pin = cell(at + 3) as u8;
+        let gic_type = cell(at + 7);
+        let spi = cell(at + 8);
+        assert_eq!(gic_type, 0, "PCI INTx must arrive as an SPI");
+        assert_eq!(
+            intx_irq(35, dev, pin), // 35 = PCI_IRQ_BASE in arch/aarch64/mmu.rs
+            32 + spi,               // SPIs start at INTID 32
+            "swizzle disagrees with the machine for device {dev} pin {pin}",
+        );
+    }
+}

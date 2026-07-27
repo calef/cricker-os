@@ -1120,9 +1120,11 @@ virtio-pci unchanged. The three decisions the scope note flagged, resolved as it
    polices both buses, and PCI Bus-Master Enable (DMA permission at the bus level) is granted
    last, after the confined transport is fully described.
 
-3. **virtio-mmio stays.** aarch64's working, tested mmio path is not migrated; PCIe is the riscv
-   disk path and a proven-portable subsystem (the `pci` crate and the seam are arch-neutral; the
-   aarch64 wiring is a constants change when a PCIe device wants driving there).
+3. **virtio-mmio stays.** Neither board's working mmio path is migrated; PCIe runs **alongside**
+   it, and the portability claim is proven rather than promised: the same crate and seam drive
+   the disk on riscv (INTx via the PLIC, irqs 32..35) and on aarch64 (INTx via the GIC, INTIDs
+   35..38, the highmem ECAM at 0x40_1000_0000). The per-arch cost was exactly the predicted
+   constants-plus-map change, which is rule #1 doing its job on a whole subsystem.
 
 **What the kernel is on this bus:** with `-bios default`, OpenSBI does no PCI setup, so the kernel
 is the firmware: it sizes and places BARs itself. The hardcoded window/irq constants are held by

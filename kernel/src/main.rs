@@ -37,10 +37,9 @@ mod drivers;
 mod kmem;
 mod memory;
 mod panic;
-// PCIe enumeration + virtio-pci bring-up (the PCIe transport). riscv64-only for now: that is the
-// board whose disk arrives over PCIe; the decode logic (crates/pci) is architecture-neutral and
-// the aarch64 wiring is a constants change when wanted. See kernel/src/pci.rs.
-#[cfg(target_arch = "riscv64")]
+// PCIe enumeration + virtio-pci bring-up (the PCIe transport, DECISIONS §18). Portable: the
+// decode logic is crates/pci, and each arch supplies its window/irq constants. See
+// kernel/src/pci.rs.
 mod pci;
 mod revoke;
 mod sched;
@@ -669,6 +668,29 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
                                 println!(
                                     "      the driver reported {head:?}, not the motd contents"
                                 );
+                            }
+                        }
+                    }
+                }
+
+                // The same disk again, over PCIe (DECISIONS §18): found by ECAM enumeration,
+                // BARs placed by the kernel, INTx through the GIC, the identical driver and
+                // confinement behind the transport seam.
+                match crate::pci::find_block_device() {
+                    None => println!("    pcie   : no virtio-blk on the bus"),
+                    Some(d) => {
+                        println!(
+                            "    pcie   : virtio-blk at {:02x}:{:02x}.{}, INTID {}, same driver, same confinement",
+                            d.bdf.bus, d.bdf.dev, d.bdf.func, d.intid,
+                        );
+                        if let Some(report) = user::virtio_service::start_pci(image_for_virtio()) {
+                            let word = sched::ipc_recv(report)[0];
+                            if &word.to_le_bytes() == b"cricker-" {
+                                println!(
+                                    "      the same file, over the transport real hardware uses."
+                                );
+                            } else {
+                                println!("      the pcie driver reported the wrong bytes");
                             }
                         }
                     }

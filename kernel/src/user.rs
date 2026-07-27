@@ -1532,10 +1532,9 @@ pub mod virtio_service {
         ))
     }
 
-    /// Start the SAME driver binary against the PCIe disk (the PCIe transport, P4): enumeration
-    /// and bring-up by kernel/src/pci.rs, INTx through the PLIC, the identical confinement. The
-    /// driver cannot tell which bus it is on, and that is the point.
-    #[cfg(target_arch = "riscv64")]
+    /// Start the SAME driver binary against the PCIe disk (the PCIe transport, DECISIONS §18):
+    /// enumeration and bring-up by kernel/src/pci.rs, INTx through the interrupt controller, the
+    /// identical confinement. The driver cannot tell which bus it is on, and that is the point.
     pub fn start_pci(image: &'static [u8]) -> Option<EpId> {
         let d = crate::pci::find_block_device()?;
         Some(wire(
@@ -2889,6 +2888,38 @@ mod tests {
             refused, 1,
             "an indirect descriptor whose inner table pointed at kernel memory was NOT refused: \
              the device could have followed it out of the driver's region",
+        );
+    }
+
+    /// **The PCIe transport on aarch64, end to end** (DECISIONS §18): the same driver reads the
+    /// same file off the disk QEMU attached as `virtio-blk-pci`, found by ECAM enumeration in
+    /// the highmem window, BARs placed by the kernel, the completion arriving as INTx through
+    /// the GIC (SPI 3 + swizzle). The riscv twin proved the seam on the PLIC board; this proves
+    /// the same subsystem, from the same portable crate and seam, on the second bus of the
+    /// second interrupt controller.
+    #[test_case]
+    fn a_userspace_driver_reads_a_file_over_the_pcie_transport() {
+        use crate::arch::exceptions::ROUTED_IRQS;
+
+        let report = match virtio_service::start_pci(init_image()) {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no virtio-pci disk on the bus; skipping)");
+                return;
+            }
+        };
+
+        let irqs_before = ROUTED_IRQS.load(Ordering::Relaxed);
+        let word = sched::ipc_recv(report)[0];
+
+        assert_eq!(
+            &word.to_le_bytes(),
+            b"cricker-",
+            "the driver reported the wrong file contents over pci",
+        );
+        assert!(
+            ROUTED_IRQS.load(Ordering::Relaxed) > irqs_before,
+            "the read completed but no INTx interrupt was delivered through the GIC",
         );
     }
 

@@ -130,10 +130,6 @@ pub enum Transport {
     Mmio { mmio_phys: u64 },
     /// A modern virtio-pci function, resolved by kernel/src/pci.rs: the common-config block, the
     /// ISR byte, and the notify doorbell parameters, all physical addresses in a mapped BAR.
-    // Constructed only by kernel/src/pci.rs, which is riscv64-only today (that board's disk
-    // arrives over PCIe). On aarch64 the variant is dormant, not dead: the seam is portable and
-    // the aarch64 wiring is a constants-plus-map change when a PCIe device wants driving there.
-    #[cfg_attr(target_arch = "aarch64", allow(dead_code))]
     Pci {
         common: u64,
         notify_base: u64,

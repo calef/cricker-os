@@ -78,9 +78,15 @@ ECAM enumeration finds 00:01.0, the kernel places its BARs, sets up queue 0 thro
 common-config, the driver (byte-identical to the mmio one) submits a request past the shadow-ring
 validator, the doorbell rings, and the completion arrives as INTx through the PLIC.
 
+Both boards run it: riscv (INTx via the PLIC) and aarch64 (INTx via the GIC, SPIs 3..6, and the
+**highmem** ECAM at 0x40_1000_0000; the machine names the node `pcie@10000000` after the low MMIO
+base, and trusting the name instead of the `reg` is a mistake the witness test now guards). The
+per-arch cost of the second board was constants plus two map entries, the portability claim in
+concrete form.
+
 Edges, honestly: bus 0 only is mapped and enumerated (QEMU `virt` is flat; widening is one
 constant); INTx only, no MSI-X; the modern function only (`disable-legacy=on` in the runner,
 because QEMU's default virtio-blk-pci is transitional and we do not drive the legacy layout);
-aarch64 keeps its working mmio path, with the pci variant dormant there until wired. The DMA
+both boards keep their working mmio paths alongside. The DMA
 confinement is unchanged in spirit and in code; what PCIe adds to the trust story is Bus-Master
 Enable, the bus-level DMA switch the kernel now controls explicitly.

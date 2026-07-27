@@ -7,9 +7,10 @@
 //! only the volatile accessors into the mapped ECAM window and the policy: which device to pick,
 //! where BARs go, which command bits to set. See notes/pcie.md and notes/pcie-transport-scope.md.
 //!
-//! Compiled on riscv64 only for now: that is the board whose disk arrives over PCIe. The `pci`
-//! crate and everything in here except the four `arch::mmu` window constants is
-//! architecture-neutral; aarch64 wiring is a constants-plus-map_everything change when wanted.
+//! Portable: everything here except the `arch::mmu` window/irq constants is architecture-
+//! neutral, and both `virt` boards expose the same `pci-host-ecam-generic` bridge. On riscv the
+//! INTx lines route to the PLIC (32..35), on aarch64 to GIC SPIs (INTIDs 35..38); each arch's
+//! constants say so, and host-run witnesses hold them against the machine's own device tree.
 
 use crate::arch::mmu::{
     self, PCI_BAR_BASE, PCI_BAR_MAPPED, PCI_ECAM_BASE, PCI_ECAM_BUSES, PCI_IRQ_BASE,
@@ -33,6 +34,10 @@ fn cfg_write32(bdf: Bdf, off: u64, v: u32) {
 /// physical address, memory decoding and bus mastering enabled, its INTx line known.
 #[derive(Debug, Clone, Copy)]
 pub struct PciBlockDevice {
+    /// Which function this is, for the boot tours' prints; every other build (tests, the shell
+    /// and bench boots) drives the device without ever naming it, so the lint is quieted rather
+    /// than chased through four cfg combinations.
+    #[allow(dead_code)]
     pub bdf: Bdf,
     /// The virtio common-config block (queue setup, status, features), physical.
     pub common: u64,
