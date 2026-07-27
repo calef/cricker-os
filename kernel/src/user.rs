@@ -561,11 +561,11 @@ pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
     // interrupt"), not queued. Setting up the route here means the fire is counted on the routed
     // endpoint even though the init-built child is not yet waiting; the child's WAIT drains it.
     crate::sched::bind_irq(INIT_TEST_SGI, crate::sched::create_endpoint());
-    crate::drivers::gic::enable(INIT_TEST_SGI);
+    crate::arch::irq::enable(INIT_TEST_SGI);
     // And the UART receive interrupt (19d.2c): the input driver init builds waits on it. Route and
     // enable it here, so init can delegate the Irq cap to that driver.
     crate::sched::bind_irq(UART_RX_INTID, crate::sched::create_endpoint());
-    crate::drivers::gic::enable(UART_RX_INTID);
+    crate::arch::irq::enable(UART_RX_INTID);
 
     crate::sched::spawn(move || {
         // The initrd is a crickerfs archive (milestone 19f), not a bare ELF: it carries init plus
@@ -1396,7 +1396,7 @@ pub mod virtio_service {
         // its Irq capability will receive it. See milestone 9a.
         let irq_ep = crate::sched::create_endpoint();
         crate::sched::bind_irq(dev.intid, irq_ep);
-        crate::drivers::gic::enable(dev.intid);
+        crate::arch::irq::enable(dev.intid);
 
         // Where the driver reports the bytes it read.
         let report = crate::sched::create_endpoint();
@@ -1535,7 +1535,7 @@ pub mod input_service {
 
         let irq_ep = crate::sched::create_endpoint();
         crate::sched::bind_irq(UART_INTID, irq_ep);
-        crate::drivers::gic::enable(UART_INTID);
+        crate::arch::irq::enable(UART_INTID);
 
         // The line buffer the driver assembles into. Shared with the reader (the shell) later; a
         // scratch page for the standalone validator.

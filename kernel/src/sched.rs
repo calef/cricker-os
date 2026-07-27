@@ -472,7 +472,7 @@ pub fn spawn_on<F: FnOnce() + Send + 'static>(target: usize, f: F) -> Option<Tid
 
     if remote {
         // Poke the target: its handler drains the inbox we just pushed to and reschedules.
-        crate::drivers::gic::send_sgi(RESCHED_SGI, target);
+        crate::arch::irq::send_reschedule(target);
     }
     Some(id)
 }

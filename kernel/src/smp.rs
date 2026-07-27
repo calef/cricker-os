@@ -146,7 +146,7 @@ pub extern "C" fn secondary_main(cpu_id: usize) -> ! {
 
     // 5. This core's interrupt hardware: its GIC CPU interface, then its timer (the PPI is banked,
     //    so this arms THIS core's tick, which is this core's source of preemption).
-    crate::drivers::gic::init_this_cpu();
+    crate::arch::irq::init_this_cpu();
     arch::timer::init();
 
     // 6. (tests only) Prove this core schedules from its OWN queue by spawning a probe onto it.

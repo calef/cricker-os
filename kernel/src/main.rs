@@ -651,16 +651,12 @@ fn image_for_virtio() -> &'static [u8] {
 }
 
 fn interrupts_init(_dtb: usize) {
-    use crate::arch::{interrupts, mmu, timer};
-    use crate::drivers::gic;
+    use crate::arch::{interrupts, irq, timer};
 
-    let ((gicd, _), (gicc, _)) = memory::gic_regions().expect("no interrupt controller in the DTB");
-
-    // The GIC lives in the direct map, like every other physical address the kernel names.
-    // SAFETY: the addresses came from the device tree, and `mmu::init` mapped both as DEVICE
-    // memory. Mapping them as normal memory would let the CPU cache and reorder writes to an
-    // interrupt controller, which is exactly as bad as it sounds.
-    unsafe { gic::init(mmu::phys_to_virt(gicd), mmu::phys_to_virt(gicc)) };
+    // Bring up the interrupt controller (the GIC on aarch64, the PLIC on RISC-V), reading its
+    // location from the device tree. Portable code names `arch::irq`, never a specific controller,
+    // which is what lets a second architecture be a new `arch/` directory rather than a diff here.
+    irq::init();
 
     timer::init();
 

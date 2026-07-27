@@ -12,3 +12,20 @@
 pub fn enable(intid: u32) {
     crate::drivers::plic::enable(intid);
 }
+
+/// Bring the interrupt controller up on the boot core. On RISC-V this is the PLIC, but the shared
+/// `interrupts_init` that calls this is on the full-boot path, which the port does not reach yet (the
+/// RISC-V boot tour halts earlier and initializes the PLIC directly in its device-driver step, from
+/// `memory::plic_region`). A no-op until the two paths converge; the PLIC is real (drivers/plic.rs).
+pub fn init() {}
+
+/// Per-core interrupt-controller setup. The RISC-V port is single-hart for now (no SMP bring-up via
+/// SBI HSM), so there is no secondary context to program; the PLIC's one S-mode context is set in
+/// `plic::init`. A no-op until SMP.
+pub fn init_this_cpu() {}
+
+/// Send a reschedule IPI to another hart. On RISC-V, inter-processor interrupts go through the CLINT
+/// (software interrupts, `sip.SSIP`), not the PLIC, and the port is single-hart, so there is no other
+/// hart to poke and the target is always self. A no-op until SMP; the thread is already enqueued and
+/// the current hart reschedules at its next scheduling point.
+pub fn send_reschedule(_target_cpu: usize) {}

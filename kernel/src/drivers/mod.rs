@@ -5,10 +5,12 @@
 //! knows nothing about the rest of the kernel. That rule is cheap now and is what
 //! keeps the microkernel door open later. See DECISIONS.md §4.
 
-// The GIC interrupt-controller driver. Still un-gated: portable code (sched, smp, syscall, user)
-// names `drivers::gic` directly, an interrupt-controller coupling the RISC-V port must resolve at
-// the traps step (its PLIC analog). It is pure MMIO Rust, so it compiles on riscv and is simply dead
-// there until then. Gating it, and abstracting that coupling, is the interrupts step's work.
+// The GIC interrupt-controller driver, aarch64's. Gated now (milestone 20): portable code names
+// `arch::irq`, not `drivers::gic`, so the only things that reach the GIC are aarch64 arch code
+// (exceptions, timer) and the aarch64 `arch::irq` adapter. RISC-V's analog is `plic`. This gating is
+// the last of the HAL leaks closed: a new ISA is a new `arch/` directory, not a diff across the
+// kernel (DECISIONS §4, §17). aarch64 IRQ tests in portable files stay `cfg(test)`, aarch64-only.
+#[cfg(target_arch = "aarch64")]
 pub mod gic;
 
 // The PL011 UART, aarch64's `virt` console. Used only by the console (via a compile-time alias), so
