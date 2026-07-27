@@ -1,18 +1,14 @@
 //! **Traps, RISC-V.** The `stvec` vector, the saved [`TrapFrame`], and the dispatch into the
 //! portable syscall and fault handlers. The S-mode analog of aarch64's `VBAR` table + `ESR` decode.
 //!
-//! Scaffold for the compile milestone: the frame type and the one externally-read counter are here,
-//! `init` is the traps step. RISC-V has a single trap entry (`stvec`), not aarch64's 16-slot table;
-//! interrupt-versus-exception is the top bit of `scause`, and the syscall path is the `ecall` cause.
-//!
-//! **A known ABI leak to resolve at the traps step:** portable `syscall.rs` reads the syscall number
-//! from `frame.x[8]` and arguments from `frame.x[0..]`, which is the aarch64 `svc`+`x8` convention
-//! (DECISIONS §10/§16). RISC-V's natural `ecall` ABI puts the number in `a7` (x17) and arguments in
-//! `a0`..`a5` (x10..x15). The index array below makes it *compile*; making it *correct* means either
-//! arranging this frame so the dispatcher's indices line up, or giving `syscall.rs` named accessors.
-//! See notes/riscv-port.md.
+//! RISC-V has a single trap entry (`stvec`), not aarch64's 16-slot table; interrupt-versus-exception
+//! is the top bit of `scause`, and the syscall path is the `ecall` cause. The trap-entry assembly is
+//! in trap.s; it fills a [`TrapFrame`] and calls [`riscv_trap_dispatch`], which fans out on `scause`.
+//! The syscall-ABI reconciliation is done: the portable dispatcher reads the number and arguments
+//! through `TrapFrame::{syscall_nr, arg, set_arg}` (see this module's `impl`), so `ecall`'s a7/a0..a5
+//! map correctly without `syscall.rs` naming a register.
 
-use core::sync::atomic::AtomicUsize;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// The registers saved on a trap. `x` is the RISC-V general-register file `x0`..`x31` (`x[0]` is the
 /// hardwired zero); the trap CSRs follow. `#[repr(C)]` because the trap-entry assembly (the traps
@@ -95,6 +91,10 @@ pub unsafe fn enter_user(frame: *mut TrapFrame) -> ! {
 /// Interrupts routed to a userspace handler (delegated IRQs). Bumped by the trap dispatcher.
 pub static ROUTED_IRQS: AtomicUsize = AtomicUsize::new(0);
 
+/// Interrupts taken with no source enabled to explain them (should stay zero until the timer/PLIC
+/// steps enable real sources).
+pub static SPURIOUS_IRQS: AtomicUsize = AtomicUsize::new(0);
+
 /// System calls served (`ecall` from U-mode). Read by the boot tour; bumped by the trap dispatcher.
 pub static SVC_COUNT: AtomicUsize = AtomicUsize::new(0);
 
@@ -102,7 +102,88 @@ pub static SVC_COUNT: AtomicUsize = AtomicUsize::new(0);
 /// bumped by the trap dispatcher.
 pub static USER_FAULTS: AtomicUsize = AtomicUsize::new(0);
 
-/// Install the trap vector (`stvec`) and the trap stack. The traps step.
+/// Breakpoints (`ebreak`) caught. Exists so a test can prove the trap round-trip actually ran,
+/// rather than proving only that we did not crash. The aarch64 analog is its own `BRK_COUNT`.
+pub static BRK_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// The `sstatus.SPP` bit: the privilege the trap came from (0 = U-mode, 1 = S-mode).
+const SPP: u64 = 1 << 8;
+/// The high bit of `scause`: set for an interrupt, clear for an exception.
+const INTERRUPT: u64 = 1 << 63;
+/// `scause` exception code for `ecall` taken from U-mode: the syscall.
+const CAUSE_ECALL_U: u64 = 8;
+/// `scause` exception code for a breakpoint (`ebreak`).
+const CAUSE_BREAKPOINT: u64 = 3;
+
+/// Install the trap vector: `stvec` = [`trap_entry`], direct mode (all traps to one handler; the low
+/// two bits of `stvec` select the mode and must be 0, which trap.s's `.balign 4` guarantees).
 pub fn init() {
-    unimplemented!("riscv trap init (stvec + trap entry + dispatch): the traps step")
+    unsafe extern "C" {
+        fn trap_entry();
+    }
+    let vector = trap_entry as usize;
+    // SAFETY: `vector` is our 4-byte-aligned trap entry; writing stvec has no memory effect.
+    unsafe { core::arch::asm!("csrw stvec, {}", in(reg) vector, options(nomem, nostack)) };
+}
+
+/// Advance `sepc` past the instruction that trapped: 2 bytes if it is compressed (low two bits not
+/// `0b11`), otherwise 4. Used to step over a handled breakpoint. `ecall` is always 4 bytes.
+fn advance_past_trapping_insn(frame: &mut TrapFrame) {
+    // SAFETY: `sepc` is the address of the instruction that trapped, which is mapped and readable.
+    let low = unsafe { core::ptr::read_volatile(frame.sepc as *const u16) };
+    frame.sepc += if low & 0b11 == 0b11 { 4 } else { 2 };
+}
+
+/// The Rust half of the trap path, called from trap.s with the saved [`TrapFrame`]. Fans out on
+/// `scause`: an `ecall` from U-mode is a syscall; a breakpoint is a debug/self-test trap; an
+/// interrupt goes to the (not-yet-built) interrupt path; anything else is a fault.
+#[unsafe(no_mangle)]
+extern "C" fn riscv_trap_dispatch(frame: &mut TrapFrame) {
+    let scause = frame.scause;
+
+    if scause & INTERRUPT != 0 {
+        // Timer and external interrupts arrive here once the timer and PLIC steps enable them.
+        // Nothing is enabled yet, so a stray interrupt is unexpected; count it and return.
+        SPURIOUS_IRQS.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
+
+    let code = scause & 0xff;
+    let from_user = frame.sstatus & SPP == 0;
+
+    match code {
+        CAUSE_ECALL_U => {
+            // The syscall. `sepc` points AT the `ecall` (unlike aarch64, where the hardware advances
+            // ELR past `svc`), so step over it before dispatching, and `ecall` is always 4 bytes.
+            SVC_COUNT.fetch_add(1, Ordering::Relaxed);
+            frame.sepc += 4;
+            crate::syscall::dispatch(frame);
+        }
+        CAUSE_BREAKPOINT => {
+            BRK_COUNT.fetch_add(1, Ordering::Relaxed);
+            advance_past_trapping_insn(frame);
+        }
+        _ => {
+            USER_FAULTS.fetch_add(1, Ordering::Relaxed);
+            // The user-fault path (kill the thread, keep the kernel) arrives with the user thread
+            // path. Until a user thread can run on RISC-V there is nothing to kill, so a trap here is
+            // a kernel bug: report it with the detail that makes it legible.
+            panic!(
+                "unexpected RISC-V trap: scause={scause:#x} (code {code}) stval={:#x} sepc={:#x} \
+                 from_user={from_user}",
+                frame.stval, frame.sepc,
+            );
+        }
+    }
+}
+
+/// Prove the trap path works end to end: execute a breakpoint and return. If traps are wired,
+/// [`riscv_trap_dispatch`] catches `scause` = breakpoint, [`advance_past_trapping_insn`] steps `sepc`
+/// past the `ebreak`, and `sret` lands us right back here. If they are not, this never returns.
+/// Returns the breakpoint count so the caller can confirm the handler actually ran.
+pub fn self_test() -> usize {
+    let before = BRK_COUNT.load(Ordering::Relaxed);
+    // SAFETY: `ebreak` raises a breakpoint the dispatcher handles; it has no other effect.
+    unsafe { core::arch::asm!("ebreak") };
+    BRK_COUNT.load(Ordering::Relaxed) - before
 }

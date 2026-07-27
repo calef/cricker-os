@@ -28,6 +28,9 @@ global_asm!(include_str!("boot.s"));
 // The context switch and the two first-run trampolines (the asm half of context.rs).
 global_asm!(include_str!("context.s"));
 
+// The S-mode trap vector (the asm half of exceptions.rs): save the frame, dispatch, restore, sret.
+global_asm!(include_str!("trap.s"));
+
 /// Set this hart's per-CPU pointer. RISC-V's `tp` (thread pointer) is the direct analog of
 /// aarch64's `TPIDR_EL1`: a scratch register the kernel owns in S-mode and reads to find the
 /// current core's `PerCpu`. See `crate::percpu`.

@@ -101,6 +101,12 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         println!("  hart 0 booted: high-half kernel, .bss, and the NS16550 console are up.");
         println!("  running at  : {pc:#018x}  (high half: Sv39 paging is on)");
         println!("  device tree : {dtb:#018x}");
+
+        // Traps: install stvec and prove the round-trip by taking a breakpoint and returning.
+        arch::exceptions::init();
+        let caught = arch::exceptions::self_test();
+        println!("  traps       : stvec set; a breakpoint was caught and stepped over ({caught})");
+
         println!("  next: the capability core, as arch/riscv64 stops being stubs.");
         arch::halt();
     }
