@@ -251,10 +251,26 @@ Finding these is the point; each gets pushed under `arch/`.
    parent's cell counts. Two test caveats: pipe the byte *after* boot (the console clears the RX FIFO
    during init), and the demo driver runs in the kernel for now.
 
-   **Remaining:** extract `arch::irq` (GIC + PLIC behind one interface) to close the last leak
-   (portable `sched`/`smp`/`syscall`/`user` still name `drivers::gic`), now that there are two working
-   interrupt controllers to extract it from; and, if wanted, move the demo driver to userspace (a
-   program holding the `Irq` capability, `WAIT`/`ACK`).
+   **The driver moved to userspace, and the last leak closed.** First the demo driver became an
+   unprivileged U-mode process (`user/src/driver.rs`): the kernel maps the NS16550 into it
+   device-typed and grants it an `Irq` capability and a report endpoint, and it runs the seL4
+   IRQHandler loop, `WAIT` on the cap (block for the interrupt as a message), read the byte through
+   its own device mapping, `SEND` it, `ACK`. "an unprivileged userspace driver serviced the UART via
+   its Irq cap and sent 0x5a". The kernel is never in the data path. That exercised the `Irq`
+   capability `WAIT`/`ACK` from RISC-V U-mode for the first time, and the `ACK` re-arm is what forced
+   the interrupt-controller seam into being.
+
+   Then `arch::irq` was extracted with two working consumers behind it (the GIC and the PLIC), and
+   `drivers::gic` was gated to aarch64. Every portable caller (`sched::place_on`, `smp`,
+   `user::spawn_init`, `main::interrupts_init`, the `Irq` ACK) now names `arch::irq`, not a
+   controller. The only code still naming `drivers::gic` is aarch64 arch code (rule #1 lets arch name
+   its own driver) and the `cfg(test)` aarch64 IRQ tests. **That was the last HAL leak.** A new ISA is
+   a new `arch/` directory, not a diff across the kernel, with zero exceptions in portable non-test
+   code.
+
+   **The port is complete.** Boot, MMU, traps, timer, scheduler, preemption, U-mode user programs,
+   capability invocation, userspace-built processes (init loads and builds children), and device
+   interrupts serviced by a userspace driver all run on RISC-V, the same portable core as aarch64.
 
 The reward beyond the proof: when a real RISC-V board (a ~$70 StarFive VisionFive 2 / Milk-V Mars, or a
 rented Graviton later) is on hand, the QEMU-virt work transfers, because real boards use the same

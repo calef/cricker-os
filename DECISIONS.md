@@ -1084,10 +1084,20 @@ the handler claims it, masks the source, and notifies the endpoint it is routed 
 blocked there wakes, reads the byte, and re-arms. This is the real second consumer the
 interrupt-controller abstraction was waiting for.
 
-**Remaining:** extract `arch::irq` (the GIC and the PLIC behind one interface) to close the last
-leak, portable code still names `drivers::gic`. The order was deliberate: build the PLIC and prove a
-real interrupt through it first, so the abstraction is factored out of two working controllers rather
-than guessed ahead of one.
+**The last leak is closed.** The device driver moved to userspace (an unprivileged process holding
+an `Irq` capability and a device mapping, running the seL4 `WAIT`/read/`SEND`/`ACK` loop), and its
+ACK forced the interrupt-controller seam. Then `arch::irq` was extracted with two working consumers
+behind it, the GIC and the PLIC, and `drivers::gic` was gated to aarch64. Every portable caller names
+`arch::irq`; the only code naming `drivers::gic` is aarch64 arch code and `cfg(test)` aarch64 tests.
+The order was deliberate: prove a real interrupt through the PLIC, then a userspace driver exercising
+the ACK on both arches, then extract, so the abstraction was factored out of two exercised
+controllers rather than guessed ahead of one.
+
+**The RISC-V port is complete.** Every primitive that defines the kernel runs on both aarch64 and
+RISC-V from one portable core: boot, the MMU, traps, the timer, the scheduler, preemption, U-mode
+user programs, capability invocation, userspace-built processes, and device interrupts serviced by an
+unprivileged userspace driver. Rule #1 held: the second ISA was a new `arch/` directory, not a diff
+across the kernel, with no exceptions left in portable non-test code.
 
 ## Reading
 
