@@ -1,0 +1,63 @@
+From 2c790019bde105934dc56168f303ac2b1c70d7fb Mon Sep 17 00:00:00 2001
+From: Chris Alef <chris@crickertech.com>
+Date: Mon, 27 Jul 2026 14:41:58 -0700
+Subject: [PATCH] Fix no_std build: import Vec where the std prelude no longer
+ supplies it
+
+Building with --no-default-features fails with E0425 (cannot find type
+Vec) at three sites in filesystem.rs and one in record.rs: Vec is
+supplied by the std prelude when the std feature is on, but the no_std
+path (no_std + extern crate alloc) must import it from alloc. Add the
+two imports, and add a CI job that builds --no-default-features so the
+advertised no_std configuration cannot bit-rot unnoticed again.
+
+Verified: cargo +nightly build --no-default-features succeeds on the
+host and cross-compiles for bare-metal targets
+(riscv64imac-unknown-none-elf, aarch64-unknown-none-softfloat).
+---
+ .gitlab-ci.yml    | 6 ++++++
+ src/filesystem.rs | 1 +
+ src/record.rs     | 1 +
+ 3 files changed, 8 insertions(+)
+
+diff --git a/.gitlab-ci.yml b/.gitlab-ci.yml
+index 846edc0..3484096 100644
+--- a/.gitlab-ci.yml
++++ b/.gitlab-ci.yml
+@@ -13,6 +13,12 @@ build:linux:
+     stage: build
+     script: cargo +nightly build --verbose
+ 
++# The library advertises a no_std core (std is a feature); build it so the
++# configuration cannot bit-rot unnoticed, as it had (missing Vec imports).
++build:no_std:
++    stage: build
++    script: cargo +nightly build --no-default-features --verbose
++
+ build:redox:
+     stage: build
+     script: redoxer build --verbose
+diff --git a/src/filesystem.rs b/src/filesystem.rs
+index 20dcd2a..393b113 100644
+--- a/src/filesystem.rs
++++ b/src/filesystem.rs
+@@ -2,6 +2,7 @@ use aes::Aes128;
+ use alloc::{
+     collections::{BTreeMap, VecDeque},
+     vec,
++    vec::Vec,
+ };
+ use syscall::error::{Error, Result, EKEYREJECTED, ENOENT, ENOKEY};
+ use xts_mode::{get_tweak_default, Xts128};
+diff --git a/src/record.rs b/src/record.rs
+index a0fbef6..8142b66 100644
+--- a/src/record.rs
++++ b/src/record.rs
+@@ -1,3 +1,4 @@
++use alloc::vec::Vec;
+ use alloc::vec;
+ use core::ops;
+ 
+-- 
+2.55.0
+
