@@ -1,5 +1,10 @@
 # The heap
 
+> **The crates are gone** (2026-07-27): `crates/heap` and `crates/slab` were deleted once
+> nothing in the workspace referenced them, superseding this note's earlier "the crates stay"
+> stance at Chris's direction. The history preserves them; this note remains as the record of
+> what was built and why its deletion was earned (milestone 14).
+
 ## Why the stack isn't enough
 
 The stack works because **function lifetimes nest** ([stack.md](stack.md)). If `foo` calls

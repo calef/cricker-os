@@ -44,10 +44,6 @@ name = "frames"
 version = "0.1.0"
 
 [[package]]
-name = "heap"
-version = "0.1.0"
-
-[[package]]
 name = "intrusive"
 version = "0.1.0"
 
@@ -94,10 +90,6 @@ dependencies = [
 
 [[package]]
 name = "regions"
-version = "0.1.0"
-
-[[package]]
-name = "slab"
 version = "0.1.0"
 
 [[package]]
