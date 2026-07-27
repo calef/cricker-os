@@ -62,9 +62,7 @@ pub fn intact() -> bool {
 ///
 /// Negative means we are *already* below it and are actively corrupting the kernel.
 pub fn headroom() -> i64 {
-    let sp: u64;
-    // SAFETY: reads a register.
-    unsafe { core::arch::asm!("mov {}, sp", out(reg) sp, options(nomem, nostack)) };
+    let sp = crate::arch::current_sp();
     sp.wrapping_sub(bottom()) as i64
 }
 

@@ -64,6 +64,55 @@ pub struct TrapFrame {
 // is about to read the wrong bytes.
 const _: () = assert!(size_of::<TrapFrame>() == 272);
 
+impl TrapFrame {
+    /// Build the frame that drops a brand-new thread to EL0 at `entry` on `user_sp`, with `args` in
+    /// `x0`..`x2`. The arch side of the userspace-entry seam (notes/riscv-port.md, leak #3):
+    /// portable `user.rs` asks for "a user-entry frame" and never names `elr`/`spsr`/`sp_el0`.
+    ///
+    /// `spsr = 0` is the `SPSR_EL1` value for "return to EL0t, AArch64, interrupts unmasked":
+    /// `M[4]=0` (AArch64), `M[3:0]=0` (EL0t, the only stack EL0 has), `DAIF=0` (IRQs on the moment we
+    /// land, so a tight-loop user thread is still preemptible, per DECISIONS §5). Zero looks like a
+    /// bug and is not.
+    pub fn for_user_entry(entry: u64, user_sp: u64, args: [u64; 3]) -> Self {
+        let mut x = [0u64; 31];
+        x[0] = args[0]; // _start's first argument (AAPCS64 puts it in x0)
+        x[1] = args[1];
+        x[2] = args[2];
+        TrapFrame {
+            x,
+            elr: entry, // where `eret` jumps
+            spsr: 0,    // EL0t, interrupts on (see above)
+            sp_el0: user_sp,
+        }
+    }
+}
+
+unsafe extern "C" {
+    /// `mov sp, x0` then fall into `exception_restore`: `eret` into the EL0 state the frame
+    /// describes. Defined in vectors.s.
+    fn enter_userspace(frame: *mut TrapFrame) -> !;
+}
+
+/// Drop to EL0 by loading `frame` and returning from the exception into it. The arch side of the
+/// userspace-entry seam; the portable caller builds the frame with [`TrapFrame::for_user_entry`],
+/// places it at the top of the current thread's kernel stack, and calls this.
+///
+/// **`#[inline(always)]` is load-bearing, not cosmetic.** The frame sits at the *top of the caller's
+/// own kernel stack*, overlapping the caller's live call frames (see `enter_frame` in user.rs). It is
+/// intact only until `enter_userspace` does `mov sp, x0`, and only if nothing pushes onto the stack
+/// in between. A real call here would push a return address and prologue into exactly that region and
+/// corrupt the frame (observed as a child thread getting `sp_el0 = 0`). Inlining makes the caller
+/// tail-call `enter_userspace` directly, with no push, which is what the pre-seam direct call did.
+///
+/// # Safety
+/// `frame` must be a correctly-built, writable `TrapFrame` at the top of the current thread's kernel
+/// stack, with EL0's code and stack mapped and `TTBR0` installed.
+#[inline(always)]
+pub unsafe fn enter_user(frame: *mut TrapFrame) -> ! {
+    // SAFETY: the caller owns the frame's validity, as documented.
+    unsafe { enter_userspace(frame) }
+}
+
 /// How many `brk` instructions we have caught and stepped over.
 ///
 /// Exists so the tests can prove the handler actually ran, rather than proving only

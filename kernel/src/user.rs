@@ -37,8 +37,9 @@
 //! capabilities, and the syscall surface gets designed against a capability table at 7d, in one
 //! piece, on purpose. Not accreted here because it was convenient.
 
-use crate::arch::exceptions::TrapFrame;
+use crate::arch::exceptions::{TrapFrame, enter_user};
 use crate::arch::mmu::{self, phys_to_ptr};
+use crate::arch::sync_icache;
 use crate::memory;
 use elf::Elf;
 use frames::{FRAME_SIZE, Frame};
@@ -56,23 +57,6 @@ pub const USER_CODE_VA: u64 = 0x0000_0000_0040_0000;
 pub const USER_STACK_VA: u64 = 0x0000_0000_0050_0000;
 pub const USER_STACK_TOP: u64 = USER_STACK_VA + FRAME_SIZE;
 
-/// `SPSR_EL1` for "return to EL0, AArch64, interrupts on."
-///
-/// - `M[4] = 0`: AArch64, not AArch32.
-/// - `M[3:0] = 0b0000`: **EL0t**. The `t` means SP_EL0, which is the only stack pointer EL0
-///   has. There is no EL0h.
-/// - `DAIF = 0`: Debug, SError, IRQ and FIQ all **unmasked**.
-///
-/// So the value is zero, which looks like a bug and is not. It is worth spelling out because
-/// the DAIF bits are the interesting part: **IRQs are on the moment we land in EL0.** If they
-/// were masked, a user program in a tight loop could never be preempted and the machine would
-/// be gone, which is the exact failure DECISIONS §5 spent a milestone refusing to accept.
-const SPSR_EL0T: u64 = 0;
-
-unsafe extern "C" {
-    /// `mov sp, x0` then fall into `exception_restore`. Two instructions. See vectors.s.
-    fn enter_userspace(frame: *mut TrapFrame) -> !;
-}
 
 /// A user address space: an L0 table for `TTBR0`, and every frame that hangs off it.
 ///
@@ -809,55 +793,12 @@ fn enter_frame(entry: u64, user_sp: u64, arg0: u64, arg1: u64, arg2: u64) -> ! {
     );
 
     // SAFETY: `frame` is 16-byte-aligned writable kernel stack (a KernelStack top is page
-    // aligned and TrapFrame is 272, a multiple of 16), EL0's code and stack are mapped, and
-    // TTBR0 is installed.
+    // aligned and TrapFrame is a multiple of 16), the user code and stack are mapped, and the
+    // user address space is installed. `arch` owns the register layout: we ask for a user-entry
+    // frame and hand it back to `arch` to make the jump (notes/riscv-port.md, leak #3).
     unsafe {
-        let mut x = [0u64; 31];
-        x[0] = arg0; // _start's first argument
-        x[1] = arg1; // ...and its second
-        x[2] = arg2; // ...and its third
-        frame.write(TrapFrame {
-            x,
-            elr: entry,      // ...where `eret` jumps
-            spsr: SPSR_EL0T, // ...and the exception level it jumps to
-            sp_el0: user_sp, // ...on the stack it will jump onto (caller's choice, 19c.3)
-        });
-
-        enter_userspace(frame)
-    }
-}
-
-/// Make the instruction fetcher aware of code we just wrote as data.
-///
-/// The D-cache and the I-cache are **not coherent** on aarch64. This is not a QEMU quirk, it is
-/// the architecture: the assumption is that writing code is rare and paying for coherence on
-/// every store is not worth it. So the loader has to say so explicitly, and every loader on
-/// every ARM machine does exactly this.
-///
-/// `dc cvau` cleans the data cache to the point of unification, `ic ivau` invalidates the
-/// instruction cache, and the barriers make the two agree. Get it wrong and the CPU executes
-/// whatever was in that frame *before* the program landed there, which is an extremely
-/// entertaining bug.
-fn sync_icache(va: u64, len: usize) {
-    const LINE: u64 = 64; // conservative: the real size is in CTR_EL0
-
-    let mut p = va & !(LINE - 1);
-    let end = va + len as u64;
-
-    // SAFETY: cache maintenance on a mapped, readable range is always sound.
-    unsafe {
-        while p < end {
-            core::arch::asm!("dc cvau, {p}", p = in(reg) p, options(nostack));
-            p += LINE;
-        }
-        core::arch::asm!("dsb ish", options(nostack));
-
-        let mut p = va & !(LINE - 1);
-        while p < end {
-            core::arch::asm!("ic ivau, {p}", p = in(reg) p, options(nostack));
-            p += LINE;
-        }
-        core::arch::asm!("dsb ish", "isb", options(nostack));
+        frame.write(TrapFrame::for_user_entry(entry, user_sp, [arg0, arg1, arg2]));
+        enter_user(frame)
     }
 }
 
@@ -866,7 +807,13 @@ fn sync_icache(va: u64, len: usize) {
 // Hand-written aarch64, assembled into `.rodata` and copied into a user page at load time.
 // There is no ELF loader yet (that is 7c) and no filesystem to load from (that is milestone 9),
 // so the "binary" rides along inside the kernel image. Honest scaffolding, and it goes away.
+//
+// aarch64-only: these are literal aarch64 machine code, and using `global_asm!` here is a standing
+// exception to rule 1 (it predates the RISC-V port). They are exercised only by aarch64 EL0 tests
+// and the boot tour, both of which are themselves aarch64-gated. RISC-V reaches EL0 through the ELF
+// loader, not these. See notes/riscv-port.md, leak #3.
 
+#[cfg(target_arch = "aarch64")]
 core::arch::global_asm!(
     r#"
 .section .rodata.user_programs, "a"
@@ -914,6 +861,7 @@ USER_OUTLAW_END:
 "#
 );
 
+#[cfg(target_arch = "aarch64")]
 macro_rules! user_program {
     ($name:ident, $start:ident, $end:ident) => {
         /// `allow(dead_code)` because 7c handed the demo over to the real ELF from the initrd,
@@ -937,8 +885,11 @@ macro_rules! user_program {
     };
 }
 
+#[cfg(target_arch = "aarch64")]
 user_program!(hello, USER_HELLO_START, USER_HELLO_END);
+#[cfg(target_arch = "aarch64")]
 user_program!(spin, USER_SPIN_START, USER_SPIN_END);
+#[cfg(target_arch = "aarch64")]
 user_program!(outlaw, USER_OUTLAW_START, USER_OUTLAW_END);
 
 /// Bringing the console driver up in userspace, and wiring a client to it.

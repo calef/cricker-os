@@ -35,6 +35,44 @@ pub struct TrapFrame {
     pub sstatus: u64,
 }
 
+impl TrapFrame {
+    /// Build the frame that drops a brand-new thread to U-mode at `entry` on `user_sp`, with `args`
+    /// in `a0`..`a2`. The RISC-V side of the userspace-entry seam (notes/riscv-port.md, leak #3),
+    /// mirroring aarch64's `for_user_entry`. `sret` will resume at `sepc` in the privilege named by
+    /// `sstatus.SPP`: SPP = 0 is U-mode, and SPIE = 1 makes interrupts enabled after the return, so a
+    /// tight-loop user thread stays preemptible (the RISC-V analog of aarch64's DAIF = 0).
+    ///
+    /// The register indices are the RISC-V ABI: `a0`..`a2` are `x10`..`x12`, `sp` is `x2`. This is
+    /// also where the syscall-ABI reconciliation (the traps step) will settle, since the dispatcher
+    /// reads its arguments from this same frame.
+    pub fn for_user_entry(entry: u64, user_sp: u64, args: [u64; 3]) -> Self {
+        const SPIE: u64 = 1 << 5; // sstatus.SPIE: interrupts enabled after sret (SPP stays 0 = U-mode)
+        let mut x = [0u64; 32];
+        x[10] = args[0]; // a0: _start's first argument
+        x[11] = args[1]; // a1
+        x[12] = args[2]; // a2
+        x[2] = user_sp; // sp
+        TrapFrame {
+            x,
+            sepc: entry, // where sret resumes
+            scause: 0,
+            stval: 0,
+            sstatus: SPIE,
+        }
+    }
+}
+
+/// Drop to U-mode by loading `frame` and executing `sret`. The RISC-V side of the userspace-entry
+/// seam. The traps step implements it (the U-mode `sret` path with the trap frame restore).
+///
+/// # Safety
+/// As aarch64's `enter_user`: `frame` must be a correctly-built, writable `TrapFrame` at the top of
+/// the current thread's kernel stack, with the user address space installed.
+pub unsafe fn enter_user(frame: *mut TrapFrame) -> ! {
+    let _ = frame;
+    unimplemented!("riscv drop to U-mode (restore trap frame + sret): the traps step")
+}
+
 /// Interrupts routed to a userspace handler (delegated IRQs). Bumped by the trap dispatcher.
 pub static ROUTED_IRQS: AtomicUsize = AtomicUsize::new(0);
 

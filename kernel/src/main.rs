@@ -19,6 +19,12 @@
 #![feature(custom_test_frameworks)]
 #![test_runner(crate::testing::runner)]
 #![reexport_test_harness_main = "test_main"]
+// The RISC-V build is a scaffold (milestone 20): its `arch` layer is stubbed with
+// `unimplemented!()`, so the boot path never runs and most of the kernel above it is not yet
+// referenced from a riscv64 build. That makes almost everything look like dead code. Allow it
+// *only* on riscv64, so the aarch64 build keeps full dead-code checking and this allowance
+// disappears the moment the RISC-V stubs become real. See notes/riscv-port.md.
+#![cfg_attr(target_arch = "riscv64", allow(dead_code))]
 
 mod arch;
 #[cfg(feature = "bench")]
@@ -203,7 +209,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
 
             // 7a. EL0.
             {
-                use crate::arch::exceptions::{SVC_COUNT, USER_FAULTS};
+                use crate::arch::exceptions::SVC_COUNT;
                 use crate::arch::timer;
                 use core::sync::atomic::Ordering;
 
@@ -247,15 +253,21 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
                 }
 
                 // The privilege boundary, still real: a program that reaches for a kernel address is
-                // killed, and the kernel is not.
-                let faults0 = USER_FAULTS.load(Ordering::Relaxed);
-                sched::spawn(|| unsafe { user::exec(user::outlaw()) });
-                timer::spin_for(timer::frequency() / 20);
-                println!(
-                    "    outlaw : reached {:#018x}, was killed, kernel survived ({} fault)",
-                    0xffff_0000_4008_0000u64,
-                    USER_FAULTS.load(Ordering::Relaxed) - faults0,
-                );
+                // killed, and the kernel is not. aarch64-only: the demo runs `user::outlaw()`, one of
+                // the hand-written aarch64 programs (notes/riscv-port.md, leak #3); RISC-V grows its
+                // own boundary demo through the ELF-load path.
+                #[cfg(target_arch = "aarch64")]
+                {
+                    use crate::arch::exceptions::USER_FAULTS;
+                    let faults0 = USER_FAULTS.load(Ordering::Relaxed);
+                    sched::spawn(|| unsafe { user::exec(user::outlaw()) });
+                    timer::spin_for(timer::frequency() / 20);
+                    println!(
+                        "    outlaw : reached {:#018x}, was killed, kernel survived ({} fault)",
+                        0xffff_0000_4008_0000u64,
+                        USER_FAULTS.load(Ordering::Relaxed) - faults0,
+                    );
+                }
 
                 // Milestone 8. The console driver is no longer in the kernel.
                 match user::initrd() {
@@ -422,16 +434,13 @@ mod tests {
 
     /// Proves `boot.s` gave us a usable, correctly aligned stack.
     ///
-    /// aarch64 faults on a misaligned `sp` when it's used, so a bug here would show
-    /// up as a mysterious early crash rather than as anything legible.
-    /// See notes/stack.md. Reads `sp` via an aarch64 instruction, so it is gated to
-    /// aarch64; RISC-V grows its own boot-sanity test when it boots (notes/riscv-port.md).
-    #[cfg(target_arch = "aarch64")]
+    /// Both aarch64 and RISC-V require a 16-byte-aligned `sp`, and both fault or corrupt
+    /// silently on a misaligned one, so a bug here would show up as a mysterious early crash
+    /// rather than as anything legible. Reads `sp` through `arch::current_sp`, so it is portable.
+    /// See notes/stack.md.
     #[test_case]
     fn stack_pointer_is_16_byte_aligned() {
-        let sp: usize;
-        // SAFETY: reads a register. No side effects.
-        unsafe { core::arch::asm!("mov {}, sp", out(reg) sp) };
+        let sp = crate::arch::current_sp();
         assert_eq!(sp % 16, 0, "sp = {sp:#x}");
     }
 

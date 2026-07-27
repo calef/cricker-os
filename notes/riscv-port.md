@@ -51,9 +51,9 @@ The port is worth doing precisely because it finds where the abstraction leaked.
    descriptor formats implement. The *arithmetic* (index extraction, the walk) is shared; the *bit
    layout* is not.
 
-3. **`user.rs` embeds the entire userspace-entry mechanism (the headline leak).** This is the big
-   one the compile step surfaced, and it is larger and more delicate than the other two because it is
-   the privilege boundary. The nominally-portable `user.rs` directly:
+3. **`user.rs` embedded the entire userspace-entry mechanism (the headline leak).** **Closed.** This
+   was the big one the compile step surfaced, larger and more delicate than the other two because it
+   is the privilege boundary. The nominally-portable `user.rs` directly:
    - constructs an aarch64 `TrapFrame` (`elr`/`spsr`/`sp_el0`, a 31-entry `x`) to drop to EL0, and
      defines the `SPSR_EL0T` constant and the `enter_userspace` extern;
    - carries `sync_icache` with `dc cvau`/`ic ivau`/`dsb`/`isb` inline `asm!` (RISC-V wants a single
@@ -62,12 +62,24 @@ The port is worth doing precisely because it finds where the abstraction leaked.
      `global_asm!` right in the file, a standing rule-1 violation (`asm!`/`global_asm!` outside
      `arch/`) that predates the port.
 
-   The fix is a set of arch seams mirroring how leak #1 was closed: a `TrapFrame::for_user_entry(entry,
-   user_sp, args)` constructor in `arch`, an `arch::sync_icache(va, len)`, the `SPSR`/`enter_userspace`
-   items relocated under `arch/aarch64`, and the embedded aarch64 programs gated to aarch64 (they are
-   "honest scaffolding that goes away" once the ELF-load path is the only one). It is its own focused
-   piece: it touches the EL0-entry path and its consumers ripple into tests and the boot tour, so it
-   wants careful aarch64 re-testing, not a rushed pass at the tail of the scaffold work.
+   The fix was a set of arch seams mirroring how leak #1 was closed: a `TrapFrame::for_user_entry(entry,
+   user_sp, args)` constructor in `arch`, an `arch::sync_icache(va, len)` (aarch64 `dc cvau`/`ic ivau`;
+   RISC-V `fence.i`), an `arch::current_sp()` (a fourth small leak: `stack.rs` read `sp` with inline
+   `asm!`), the `SPSR`/`enter_userspace` items relocated under `arch/aarch64` behind `arch::enter_user`,
+   and the embedded aarch64 programs (plus their test and boot-tour consumers) gated to aarch64. RISC-V
+   reaches U-mode through the ELF-load path, not the hand-written programs. `user.rs` now names no
+   register and no arch instruction.
+
+   **A sharp lesson from the extraction, recorded because it will bite again:** the user-entry
+   `TrapFrame` is written onto the *top of the caller's own kernel stack*, overlapping the caller's live
+   call frames, and is intact only until `enter_userspace` does `mov sp, x0` **provided nothing pushes
+   onto the stack in between**. The pre-seam code satisfied this because the jump was a direct tail call
+   from the frame-writing function. Wrapping it in an ordinary `arch::enter_user` function silently
+   broke it: the wrapper's own call frame push corrupted the just-written frame (seen as a child thread
+   getting `sp_el0 = 0`, then a translation fault). The exec path survived by luck of stack depth; the
+   deeper TCB-child path did not. The fix is `#[inline(always)]` on `enter_user`, which is load-bearing,
+   not cosmetic, and is commented as such at the definition. Only the full aarch64 test suite caught
+   this; a compile-only check would have shipped it.
 
 A related, smaller **ABI leak** the traps step resolves: `syscall.rs` reads the syscall number from
 `frame.x[8]` and args from `frame.x[0..]`, the aarch64 `svc`+`x8` convention. RISC-V's `ecall` ABI
@@ -113,12 +125,13 @@ Finding these is the point; each gets pushed under `arch/`.
 
 ## The incremental plan (each a provable, committable piece)
 
-1. **Compiles for `riscv64`.** The full arch contract stubbed, the leaks resolved. Proves the
-   boundary is complete: a second arch slots in as stubs. **In progress:** the `arch/riscv64` scaffold
-   and build wiring are in (10 files, the whole contract, the pure primitives real and every deferred
-   piece a loud `unimplemented!()`); RISC-V now compiles against the entire kernel *except* `user.rs`,
-   which leak #3 above must be extracted first. aarch64 stays fully green throughout (the scaffold is
-   `cfg`-inert for it). The user-entry extraction is the remaining work for this step.
+1. **Compiles for `riscv64`. Done.** The full arch contract stubbed (pure primitives real, every
+   deferred piece a loud `unimplemented!()`), all four leaks resolved, the build wiring in place.
+   `cargo build --target riscv64imac-unknown-none-elf` links a RISC-V ELF, and both `cargo clippy`
+   passes (aarch64 and riscv64) are clean under `-D warnings`. aarch64 stays fully green: 116 kernel
+   tests pass. This proves the boundary is complete: a second architecture compiles against the entire
+   kernel with no change above `arch/` (the four leaks were the exceptions, now closed). What is *not*
+   yet done is running: every `unimplemented!()` in `arch/riscv64` is real work for the steps below.
 2. **Boots and prints.** Real S-mode `_start` (set `sp`, zero `.bss`), a 16550 UART driver, "hello from
    RISC-V" on the serial line. The milestone-1 moment on a second ISA.
 3. **Traps.** `stvec` + the `TrapFrame` + a fault that prints instead of dying silently.

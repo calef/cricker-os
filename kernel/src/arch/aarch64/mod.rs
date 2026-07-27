@@ -128,6 +128,15 @@ pub fn wait_for_interrupt() {
     aarch64_cpu::asm::wfi();
 }
 
+/// This core's current stack pointer. Reading `sp` is arch-specific (rule 1), so the stack-overflow
+/// canary check (stack.rs) goes through here rather than embedding an `asm!` in portable code.
+pub fn current_sp() -> u64 {
+    let sp: u64;
+    // SAFETY: reads a register. No side effects.
+    unsafe { core::arch::asm!("mov {}, sp", out(reg) sp, options(nomem, nostack, preserves_flags)) };
+    sp
+}
+
 /// Order all prior normal-memory writes before the next device (MMIO) write.
 ///
 /// The kernel builds a virtio descriptor ring in normal memory, then rings the device with an MMIO
@@ -138,4 +147,38 @@ pub fn wait_for_interrupt() {
 /// rather than in the transport (kernel/src/virtio.rs).
 pub fn dma_wmb() {
     aarch64_cpu::asm::barrier::dsb(aarch64_cpu::asm::barrier::SY);
+}
+
+/// Make the instruction fetcher aware of code we just wrote as data, over `[va, va+len)`.
+///
+/// The D-cache and the I-cache are **not coherent** on aarch64. This is not a QEMU quirk, it is the
+/// architecture: the assumption is that writing code is rare and paying for coherence on every store
+/// is not worth it, so the loader has to say so explicitly, and every loader on every ARM machine
+/// does exactly this. `dc cvau` cleans the data cache to the point of unification, `ic ivau`
+/// invalidates the instruction cache, and the barriers make the two agree. Get it wrong and the CPU
+/// executes whatever was in that page *before* the program landed there.
+///
+/// Arch-specific by rule 1 (RISC-V does this with a single `fence.i`), so it lives here rather than
+/// in the ELF loader (kernel/src/user.rs). See notes/riscv-port.md, leak #3.
+pub fn sync_icache(va: u64, len: usize) {
+    const LINE: u64 = 64; // conservative: the real size is in CTR_EL0
+
+    let mut p = va & !(LINE - 1);
+    let end = va + len as u64;
+
+    // SAFETY: cache maintenance on a mapped, readable range is always sound.
+    unsafe {
+        while p < end {
+            core::arch::asm!("dc cvau, {p}", p = in(reg) p, options(nostack));
+            p += LINE;
+        }
+        core::arch::asm!("dsb ish", options(nostack));
+
+        let mut p = va & !(LINE - 1);
+        while p < end {
+            core::arch::asm!("ic ivau, {p}", p = in(reg) p, options(nostack));
+            p += LINE;
+        }
+        core::arch::asm!("dsb ish", "isb", options(nostack));
+    }
 }

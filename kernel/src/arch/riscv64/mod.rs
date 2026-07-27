@@ -73,10 +73,29 @@ pub fn wait_for_interrupt() {
     unsafe { asm!("wfi", options(nomem, nostack)) };
 }
 
+/// This core's current stack pointer, for the stack-overflow canary check (stack.rs).
+pub fn current_sp() -> u64 {
+    let sp: u64;
+    // SAFETY: reads a register. No side effects.
+    unsafe { asm!("mv {}, sp", out(reg) sp, options(nomem, nostack, preserves_flags)) };
+    sp
+}
+
 /// A DMA write memory barrier: order all prior stores before any device sees a later one. RISC-V's
 /// `fence ow, ow` orders outer (device/IO) writes; the plain `fence` here is the conservative full
 /// barrier, matching aarch64's `dsb sy`. Tightened when a real DMA driver lands.
 pub fn dma_wmb() {
     // SAFETY: a fence has no memory effect of its own; it only constrains ordering.
     unsafe { asm!("fence", options(nostack, preserves_flags)) };
+}
+
+/// Make the instruction fetcher aware of code just written as data. Where aarch64 needs a
+/// clean/invalidate loop over cache lines, RISC-V has one instruction: `fence.i` synchronizes this
+/// hart's instruction stream with its prior stores. It has no address range (it covers everything),
+/// so `va`/`len` are ignored; a multi-hart port will additionally need to fence the other harts. See
+/// notes/riscv-port.md, leak #3.
+pub fn sync_icache(va: u64, len: usize) {
+    let _ = (va, len);
+    // SAFETY: `fence.i` only orders instruction fetch against prior stores on this hart.
+    unsafe { asm!("fence.i", options(nostack, preserves_flags)) };
 }
