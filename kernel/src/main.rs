@@ -205,7 +205,14 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
             );
         }
 
-        println!("  next: drop to U-mode (sscratch trap entry, sret) and run a user program.");
+        // The capstone, running a program at U-mode, is wired up (user::exec, enter_user's sret, the
+        // sscratch U-mode trap entry, the hand-written RISC-V program) and the sret to U-mode WORKS:
+        // a user `ecall` reaches the trap dispatcher. But the U-mode trap-return path still hits a
+        // store page fault at the kernel frame page, under debug (needs GDB to inspect the live satp
+        // and PTE). So the end-to-end run is left out of this boot rather than hanging it. See
+        // notes/riscv-port.md, step 6.
+        println!("  next: finish the U-mode round trip (a store fault in the trap-return path).");
+
         arch::halt();
     }
 

@@ -61,7 +61,12 @@ impl TrapFrame {
     /// also where the syscall-ABI reconciliation (the traps step) will settle, since the dispatcher
     /// reads its arguments from this same frame.
     pub fn for_user_entry(entry: u64, user_sp: u64, args: [u64; 3]) -> Self {
-        const SPIE: u64 = 1 << 5; // sstatus.SPIE: interrupts enabled after sret (SPP stays 0 = U-mode)
+        // sstatus for the sret: SPIE (interrupts on after the return), SPP left 0 (return to U-mode),
+        // and UXL = 2 (U-mode is 64-bit, bits 33:32). UXL is load-bearing: the trap-return path
+        // writes this whole value into sstatus, so omitting UXL would clear it to 0 and make the
+        // U-mode XLEN illegal, faulting on the first user instruction.
+        const SPIE: u64 = 1 << 5;
+        const UXL_64: u64 = 2 << 32;
         let mut x = [0u64; 32];
         x[10] = args[0]; // a0: _start's first argument
         x[11] = args[1]; // a1
@@ -72,20 +77,33 @@ impl TrapFrame {
             sepc: entry, // where sret resumes
             scause: 0,
             stval: 0,
-            sstatus: SPIE,
+            sstatus: SPIE | UXL_64,
         }
     }
 }
 
+unsafe extern "C" {
+    /// Load `frame` as the trap frame and `sret` into it (the first entry to U-mode). Defined in
+    /// trap.s; shares the restore path with the trap return. Its first instruction is `mv sp, a0`,
+    /// so it does not touch the caller's stack.
+    fn user_return(frame: *mut TrapFrame) -> !;
+}
+
 /// Drop to U-mode by loading `frame` and executing `sret`. The RISC-V side of the userspace-entry
-/// seam. The traps step implements it (the U-mode `sret` path with the trap frame restore).
+/// seam (the counterpart of aarch64's `enter_user`).
+///
+/// **`#[inline(always)]` is load-bearing**, exactly as on aarch64: the frame sits at the top of the
+/// caller's own kernel stack, so a real call frame pushed here would overwrite it before
+/// `user_return`'s `mv sp, a0` takes effect. Inlining makes the caller tail-jump to `user_return`
+/// with no push.
 ///
 /// # Safety
-/// As aarch64's `enter_user`: `frame` must be a correctly-built, writable `TrapFrame` at the top of
-/// the current thread's kernel stack, with the user address space installed.
+/// `frame` must be a correctly-built, writable `TrapFrame` at the top of the current thread's kernel
+/// stack, with the user address space installed.
+#[inline(always)]
 pub unsafe fn enter_user(frame: *mut TrapFrame) -> ! {
-    let _ = frame;
-    unimplemented!("riscv drop to U-mode (restore trap frame + sret): the traps step")
+    // SAFETY: the caller's contract; `user_return` never returns.
+    unsafe { user_return(frame) }
 }
 
 /// Interrupts routed to a userspace handler (delegated IRQs). Bumped by the trap dispatcher.

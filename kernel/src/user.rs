@@ -899,6 +899,42 @@ user_program!(spin, USER_SPIN_START, USER_SPIN_END);
 #[cfg(target_arch = "aarch64")]
 user_program!(outlaw, USER_OUTLAW_START, USER_OUTLAW_END);
 
+// The RISC-V hand-written demo program (the aarch64 ones above are aarch64 machine code). Same shape
+// as USER_HELLO: yield, come back, yield again (proving the round trip through U-mode), then exit.
+// Syscall ABI: number in a7, `ecall`. See DECISIONS §10/§17.
+#[cfg(target_arch = "riscv64")]
+core::arch::global_asm!(
+    r#"
+.section .rodata.user_programs, "a"
+.balign 4
+.global USER_HELLO_START
+USER_HELLO_START:
+    li      a7, 1           // SYS_YIELD
+    ecall
+    li      a7, 1           // SYS_YIELD again: if we get here, sret PUT US BACK at U-mode
+    ecall
+    li      a7, 0           // SYS_EXIT
+    ecall
+1:  j       1b              // never reached
+.global USER_HELLO_END
+USER_HELLO_END:
+"#
+);
+
+/// The RISC-V demo program's bytes (the `hello` counterpart on riscv64; the aarch64 build gets its
+/// own `hello` from the `user_program!` macro above).
+#[cfg(target_arch = "riscv64")]
+pub fn hello() -> &'static [u8] {
+    unsafe extern "C" {
+        static USER_HELLO_START: u8;
+        static USER_HELLO_END: u8;
+    }
+    let start = (&raw const USER_HELLO_START) as usize;
+    let end = (&raw const USER_HELLO_END) as usize;
+    // SAFETY: both symbols are in .rodata, in this image, emitted in this order.
+    unsafe { core::slice::from_raw_parts(start as *const u8, end - start) }
+}
+
 /// Bringing the console driver up in userspace, and wiring a client to it.
 ///
 /// **This is the milestone-8 payload.** It creates the shared machinery (two endpoints and a

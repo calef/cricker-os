@@ -168,12 +168,24 @@ Finding these is the point; each gets pushed under `arch/`.
    (external/device interrupts), which also resolves the `drivers::gic` leak; it is exercised by the
    userspace-driver path, so it lands with that.
 6. **The capability core runs. In progress.** The **scheduler and context switch run on RISC-V**:
-   `sched::init` + two spawned kernel threads + yield, proven by "2 of 2 kernel threads ran", which
-   exercises kernel-stack allocation, the initial `Context`, `context.s` (`switch_to` + the
-   trampolines), the run queue, yield, exit, and reap. **Remaining for full parity:** user address
-   spaces at U-mode (the user-mapping surface, the `sscratch` U-mode trap entry, `enter_user`'s
-   `sret`, a process root that shares the kernel high-half), then running a user ELF. IPC, caps, and
-   the scheduler are the same portable code that already works on aarch64, now on the RISC-V switch.
+   `sched::init` + two spawned kernel threads + yield, proven by "2 of 2 kernel threads ran". The
+   **user-mapping surface and the single-`satp` model work**: a process address space is built, `satp`
+   is switched to it (the kernel survives, proving `share_kernel_half`), and a user page maps and
+   translates. The **U-mode entry is wired and the `sret` to U-mode WORKS** (`enter_user`, the
+   `sscratch` U-mode trap entry, the hand-written RISC-V program): a user `ecall` reaches the trap
+   dispatcher (`scause` = 8, ecall-from-U, confirmed under diagnostic).
+
+   **The one open bug:** the U-mode trap-return path takes a **store page fault (`scause` = 15) at the
+   kernel frame page** (a high VA, ~`0xffffffd0…`) while saving the trap frame in `trap_entry`, and
+   loops. The puzzle: `enter_frame`'s `frame.write` to that *same* address, in S-mode under the *same*
+   process `satp`, succeeds moments earlier, so the page is provably mapped writable in the process
+   root; yet the store in `trap_entry` after the U-mode round trip faults there. Next step is GDB
+   (`script/gdb`): break at `trap_entry`, inspect `satp`, `sp`, `sscratch`, and walk the process
+   root's PTE for the frame VA, and check A/D bits and whether an `sfence`/ASID interaction lost the
+   entry. Everything up to and including the `sret` is proven; this is the last mile.
+
+   **Remaining after that:** running a user ELF, then IPC/caps end to end (the same portable code that
+   works on aarch64, now on the RISC-V switch), plus the PLIC (leak: `drivers::gic`).
 
 The reward beyond the proof: when a real RISC-V board (a ~$70 StarFive VisionFive 2 / Milk-V Mars, or a
 rented Graviton later) is on hand, the QEMU-virt work transfers, because real boards use the same
