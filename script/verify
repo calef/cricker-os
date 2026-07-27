@@ -53,3 +53,6 @@ cargo kani -p asid
 
 echo "==> kani: crickerfs (the initrd parser the kernel runs on boot input)"
 cargo kani -p crickerfs
+
+echo "==> kani: pci (config-space decode on hostile-device input)"
+cargo kani -p pci

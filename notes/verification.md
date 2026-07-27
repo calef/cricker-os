@@ -269,6 +269,16 @@ Whole-parse totality hit the same wall as ELF and dtb below (a one-block symboli
 CBMC past 20 CPU-minutes), and was decomposed the same way; the module comment records what is
 deliberately unproved and why it is sound anyway.
 
+Four in `crates/pci/src/lib.rs`, the config-space decode the kernel runs on **device** input
+(a hostile or broken PCI function can answer the closures with anything):
+
+| Harness | Property |
+|---|---|
+| `ecam_offset_stays_inside_the_window` | any BDF's config page lies inside the 256-bus ECAM window, so the kernel's volatile accessors cannot escape a correctly-sized mapping |
+| `intx_irq_is_total_and_bounded` | the swizzle is total (the pin-0 underflow that panicked debug builds is gone, hardened with saturating arithmetic) and lands within `base..=base+3` |
+| `read_bars_is_total_for_any_device` | the BAR size probe never panics on garbage device answers (`!mask + 1` cannot overflow: the type bits are masked first) |
+| `the_capability_walk_terminates_on_any_device` | a capability list forming ANY graph, cycles included, is walked at most 64 hops; the bounded-walk discipline proved rather than argued |
+
 ## Where BMC hit a wall: the ELF parser
 
 The goal for `elf` was the big one: prove `Elf::parse` *total*, that no byte string, however hostile,

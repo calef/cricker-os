@@ -13,3 +13,8 @@ license.workspace = true
 # The fixture-witness tests (tests/qemu_virt_dtb.rs) parse the riscv virt device tree to hold
 # the kernel's PCI hardcodes and the INTx swizzle against the machine's own routing table.
 dtb = { version = "0.1.0", path = "../dtb" }
+
+# `kani` is set only by `cargo kani` (script/verify), never by an ordinary build; declaring it
+# keeps unexpected_cfgs from flagging the `#[cfg(kani)]` proof module under -D warnings.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

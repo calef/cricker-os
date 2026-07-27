@@ -241,7 +241,87 @@ pub fn virtio_caps(
 /// the machine's own `interrupt-map`, so if a future board routes differently the host tests say
 /// so before the kernel misroutes an interrupt.
 pub fn intx_irq(base: u32, dev: u8, pin: u8) -> u32 {
-    base + ((dev as u32 + pin as u32 - 1) % 4)
+    // Total for every input, proved in the verification module. Pins are 1-based (1=INTA); the
+    // saturating_sub means a (contract-violating) pin of 0 behaves as INTA instead of
+    // underflowing, and the saturating_add means a nonsense base cannot wrap. The callers all
+    // check pin == 0 before calling; this is defence in depth, not an invitation.
+    base.saturating_add((dev as u32 + (pin as u32).saturating_sub(1)) % 4)
+}
+
+/// Machine-checked proofs (`script/verify`; notes/verification.md).
+///
+/// This crate's input comes from a DEVICE: a hostile or broken PCI function can return any
+/// bytes at all through the config-space closures, and the decode runs in the kernel. So the
+/// properties proved are the hostile-input ones: the walks are total (no device response can
+/// panic them) and structurally bounded (a cycle in a capability list terminates). `enumerate`
+/// has no proof because it has nothing to prove: it owns no arrays and does no fallible
+/// arithmetic; its loops are bounded by literals.
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    /// **ECAM addressing stays inside the window.** Any BDF's config page lies below the
+    /// 256-bus window size (0x1000_0000), so `ecam_base + ecam_offset() + off` for off < 4096
+    /// cannot escape a correctly-sized mapping. This is the arithmetic the kernel's volatile
+    /// accessors trust.
+    #[kani::proof]
+    fn ecam_offset_stays_inside_the_window() {
+        let bdf = Bdf {
+            bus: kani::any(),
+            dev: kani::any(),
+            func: kani::any(),
+        };
+        // dev and func are 5- and 3-bit fields by construction of every caller (enumerate
+        // produces them from bounded loops); the offset must hold for all such values.
+        kani::assume(bdf.dev < 32 && bdf.func < 8);
+        assert!(bdf.ecam_offset() + 0xfff < 0x1000_0000);
+    }
+
+    /// **`intx_irq` is total and lands on one of the four lines.** For any base, device, and
+    /// pin, no underflow (the pin-0 case that used to panic in debug builds) and no overflow,
+    /// and the result is within `base..=base+3` whenever that range exists.
+    #[kani::proof]
+    fn intx_irq_is_total_and_bounded() {
+        let base: u32 = kani::any();
+        let dev: u8 = kani::any();
+        let pin: u8 = kani::any();
+        let irq = intx_irq(base, dev, pin);
+        assert!(irq >= base || irq == u32::MAX);
+        assert!(irq.saturating_sub(base) <= 3 || irq == u32::MAX);
+    }
+
+    /// **`read_bars` is total for any device responses.** The closures return arbitrary values
+    /// on every call, standing in for a device that answers the size probe with garbage; the
+    /// decode must never panic (the size arithmetic `!mask + 1` cannot overflow because the
+    /// type bits are masked out of `mask` first, so it is never all-ones).
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn read_bars_is_total_for_any_device() {
+        let bdf = Bdf {
+            bus: kani::any(),
+            dev: kani::any(),
+            func: kani::any(),
+        };
+        let _ = read_bars(bdf, &mut |_, _| kani::any(), &mut |_, _, _| {});
+    }
+
+    /// **The capability walk terminates and never panics, even on a cyclic list.** The
+    /// closures return arbitrary values, standing in for a device whose capability pointers
+    /// form any graph at all; the walk visits at most 64 entries and the callback fires at
+    /// most that often. This is the bounded-walk discipline (the virtqueue chain walk's twin)
+    /// proved rather than argued.
+    #[kani::proof]
+    #[kani::unwind(66)]
+    fn the_capability_walk_terminates_on_any_device() {
+        let bdf = Bdf {
+            bus: kani::any(),
+            dev: kani::any(),
+            func: kani::any(),
+        };
+        let mut calls = 0u32;
+        virtio_caps(bdf, &mut |_, _| kani::any(), &mut |_| calls += 1);
+        assert!(calls <= 64);
+    }
 }
 
 #[cfg(test)]
