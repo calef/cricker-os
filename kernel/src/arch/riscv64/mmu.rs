@@ -351,15 +351,29 @@ pub fn map_current_user_frame(
     unimplemented!("riscv map user frame (Sv39 walk + PTE): the MMU step")
 }
 
-/// A reserved, empty user root installed when no process is current. The MMU step.
+/// The root a thread with no user address space runs on. On RISC-V the whole address space is one
+/// `satp`, so "the reserved user root" is simply the kernel root: its low half is empty, so any user
+/// address faults, which is exactly right for a kernel thread. (On aarch64 this is a separate empty
+/// `TTBR0` table; the single-`satp` model folds it into the kernel root.)
 pub fn reserved_root() -> u64 {
-    unimplemented!("riscv reserved user root: the MMU step")
+    KERNEL_ROOT.load(Ordering::Relaxed)
 }
 
-/// Install a user root (write `satp`) without the full activate bookkeeping. The MMU step.
-pub fn switch_user_root(satp: u64) {
-    let _ = satp;
-    unimplemented!("riscv switch user satp: the MMU step")
+/// Install the address space rooted at physical `root` by writing `satp`, and flush the TLB.
+///
+/// **This is the RISC-V single-`satp` model.** aarch64 has separate `TTBR0` (user) and `TTBR1`
+/// (kernel), so switching a process swaps only `TTBR0` and leaves the kernel mapped. RISC-V has one
+/// `satp` for the whole address space, so a process's root table must *itself* contain the kernel's
+/// high-half entries (shared at address-space creation), and switching threads rewrites the whole
+/// `satp`. For a kernel thread, `root` is [`reserved_root`] (the kernel root), so this is a no-op
+/// switch that still flushes.
+pub fn switch_user_root(root: u64) {
+    let satp = SATP_MODE_SV39 | (root >> 12);
+    // SAFETY: writing satp installs a well-formed Sv39 root (the caller's invariant); the following
+    // sfence.vma makes the switch take effect and drops stale entries.
+    unsafe {
+        asm!("csrw satp, {satp}", "sfence.vma", satp = in(reg) satp, options(nostack));
+    }
 }
 
 /// Serializes edits to the kernel's live tables: two harts must not mutate them at once. Same role

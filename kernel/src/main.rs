@@ -160,7 +160,30 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
             );
         }
 
-        println!("  next: the capability core (user address spaces, the scheduler).");
+        // The scheduler and the context switch: adopt the boot thread, spawn two kernel threads,
+        // and yield. Each spawned thread runs its closure (via switch_to -> thread_trampoline ->
+        // thread_entry -> the closure) and exits, cascading back to us. A nonzero count proves the
+        // RISC-V context switch (context.s: switch_to and the trampolines) works end to end.
+        {
+            use core::sync::atomic::{AtomicU32, Ordering};
+            static RAN: AtomicU32 = AtomicU32::new(0);
+            sched::init();
+            sched::spawn(|| {
+                RAN.fetch_add(1, Ordering::SeqCst);
+            });
+            sched::spawn(|| {
+                RAN.fetch_add(1, Ordering::SeqCst);
+            });
+            for _ in 0..4 {
+                sched::yield_now();
+            }
+            println!(
+                "  scheduler   : {} of 2 kernel threads ran (RISC-V context switch works)",
+                RAN.load(Ordering::SeqCst),
+            );
+        }
+
+        println!("  next: user address spaces at U-mode, the rest of the capability core.");
         arch::halt();
     }
 
