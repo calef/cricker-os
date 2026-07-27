@@ -19,13 +19,20 @@ pub fn enable(intid: u32) {
 /// `memory::plic_region`). A no-op until the two paths converge; the PLIC is real (drivers/plic.rs).
 pub fn init() {}
 
-/// Per-core interrupt-controller setup. The RISC-V port is single-hart for now (no SMP bring-up via
-/// SBI HSM), so there is no secondary context to program; the PLIC's one S-mode context is set in
-/// `plic::init`. A no-op until SMP.
-pub fn init_this_cpu() {}
+/// Per-core interrupt setup, run on each hart as it becomes a scheduler participant (the primary in
+/// its boot tour, each secondary in `secondary_main`). Unmasks this hart's software interrupts
+/// (`sie.SSIE`), the reschedule-IPI source, so a thread another hart hands it wakes it promptly. The
+/// PLIC's per-hart external-interrupt context (`2*hart+1` threshold/enables) will be programmed here
+/// too once a device interrupt is routed to a non-boot hart; the boot hart's is set in `plic::init`.
+pub fn init_this_cpu() {
+    super::exceptions::enable_software_interrupts();
+}
 
-/// Send a reschedule IPI to another hart. On RISC-V, inter-processor interrupts go through the CLINT
-/// (software interrupts, `sip.SSIP`), not the PLIC, and the port is single-hart, so there is no other
-/// hart to poke and the target is always self. A no-op until SMP; the thread is already enqueued and
-/// the current hart reschedules at its next scheduling point.
-pub fn send_reschedule(_target_cpu: usize) {}
+/// Send a reschedule IPI to `target_cpu`. On RISC-V the logical cpu id equals the hart id, and the
+/// IPI goes through the SBI, which sets the target hart's `sip.SSIP` so it takes a supervisor
+/// software interrupt (`scause` = 1) and drains its inbox. Unlike the PLIC's external interrupts this
+/// is a software interrupt, the firmware's mechanism rather than this controller's, but the
+/// `arch::irq` seam is the same one aarch64 fills with a GIC SGI.
+pub fn send_reschedule(target_cpu: usize) {
+    crate::arch::sbi_send_ipi(target_cpu);
+}

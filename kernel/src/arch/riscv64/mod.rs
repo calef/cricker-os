@@ -153,6 +153,52 @@ pub fn psci_cpu_on(target_hart: u64, entry: u64, context: u64) -> i64 {
     error
 }
 
+/// Send a reschedule inter-processor interrupt to `target_hart` via the SBI IPI extension. The
+/// firmware sets the target hart's `sip.SSIP`, so it takes a supervisor software interrupt
+/// (`scause` = 1) and drains its inbox. The RISC-V analog of an aarch64 reschedule SGI; used by
+/// `arch::irq::send_reschedule` (and so by `sched::place_on` when it hands a thread to another hart).
+pub fn sbi_send_ipi(target_hart: usize) {
+    const SBI_IPI_EID: usize = 0x0073_5049; // "sPI"
+    const SBI_SEND_IPI_FID: usize = 0;
+    let mask = 1usize << target_hart; // hart_mask, relative to base 0
+    // SAFETY: an SBI call. a7 = extension, a6 = function, a0 = hart bitmap, a1 = mask base. The
+    // firmware returns in a0/a1 (ignored); nothing else is touched.
+    unsafe {
+        asm!(
+            "ecall",
+            in("a7") SBI_IPI_EID,
+            in("a6") SBI_SEND_IPI_FID,
+            inout("a0") mask => _,
+            inout("a1") 0usize => _,
+            options(nostack),
+        );
+    }
+}
+
+/// Shoot down a virtual-address translation on the harts in `hart_mask`, via the SBI RFENCE
+/// extension. The firmware IPIs those harts and each executes `sfence.vma start, ...` for the range.
+/// RISC-V has no hardware TLB broadcast (aarch64's `tlbi ..., is` does), so a kernel page-table change
+/// must be pushed to the other harts this way or a migrated thread faults on a stale translation. See
+/// `mmu::flush_tlb`.
+pub fn sbi_remote_sfence_vma(hart_mask: usize, start: usize, size: usize) {
+    const SBI_RFENCE_EID: usize = 0x5246_4E43; // "RFNC"
+    const SBI_REMOTE_SFENCE_VMA_FID: usize = 1;
+    // SAFETY: an SBI call. a7/a6 = extension/function, a0 = hart bitmap, a1 = mask base (0), a2/a3 =
+    // the address range. The firmware returns in a0/a1 (ignored); nothing else is touched.
+    unsafe {
+        asm!(
+            "ecall",
+            in("a7") SBI_RFENCE_EID,
+            in("a6") SBI_REMOTE_SFENCE_VMA_FID,
+            inout("a0") hart_mask => _,
+            inout("a1") 0usize => _,
+            in("a2") start,
+            in("a3") size,
+            options(nostack),
+        );
+    }
+}
+
 /// Bring this hart's architecture state up. On RISC-V that is the trap vector (`stvec`): unlike
 /// aarch64's `VBAR_EL1` this is the only per-hart install a secondary needs here, since the timer and
 /// interrupt unmasking are separate steps in `secondary_main`. The primary sets `stvec` directly in

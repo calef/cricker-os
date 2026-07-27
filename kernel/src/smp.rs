@@ -53,11 +53,24 @@ static SECONDARY_STACKS: Stacks = Stacks(core::cell::UnsafeCell::new(
 /// How many secondaries have reached [`secondary_main`] and are idling.
 static ONLINE: AtomicUsize = AtomicUsize::new(0);
 
+/// A bitmask of the online cores, by id. The boot core sets its bit before bring-up; each secondary
+/// sets its own as it comes online. RISC-V uses it as the hart mask for SBI RFENCE TLB shootdown
+/// (aarch64's `tlbi ..., is` broadcasts in hardware and needs no mask). Kept here, portable, because
+/// which cores are online is a scheduler fact, not an arch one.
+static ONLINE_MASK: AtomicUsize = AtomicUsize::new(0);
+
 /// How many cores are online: the boot core plus the secondaries that came up. Used to spread work
 /// (SMP step 3c) without baking in a core count.
 #[allow(dead_code)] // used by the SMP tests now, and by spawn's placement policy when it distributes
 pub fn online_count() -> usize {
     ONLINE.load(Ordering::Acquire) + 1
+}
+
+/// The bitmask of online cores (by id). RISC-V's TLB shootdown targets every online core but the one
+/// doing the flush; see `arch::mmu::flush_tlb`.
+#[cfg_attr(target_arch = "aarch64", allow(dead_code))] // aarch64's TLB broadcast needs no mask
+pub fn online_harts_mask() -> usize {
+    ONLINE_MASK.load(Ordering::Acquire)
 }
 
 /// Set by each secondary's probe thread, indexed by the core it actually ran on. The proof that a
@@ -92,6 +105,10 @@ unsafe extern "C" {
 /// bring-up itself needs no allocator, but step 3 will). Core 0 keeps doing all real scheduling
 /// work; the secondaries only idle until then.
 pub fn bring_up_secondaries() {
+    // Record the boot core as online before starting anyone, so a TLB shootdown from here on names
+    // it. (Secondaries add their own bits as they come up.)
+    ONLINE_MASK.fetch_or(1 << cpu::id(), Ordering::Release);
+
     // The entry point PSCI needs is PHYSICAL: the core starts with its MMU off. Cast the
     // function item through a pointer (not straight to an integer, which the compiler warns on).
     let entry = arch::mmu::virt_to_phys(secondary_boot as *const () as u64);
@@ -162,7 +179,9 @@ pub extern "C" fn secondary_main(cpu_id: usize) -> ! {
     .expect("a secondary could not spawn its probe");
 
     // 7. Online (Release, so a core seeing the count also sees everything set up above), and from
-    //    the next line on, preemptible.
+    //    the next line on, preemptible. Add this core to the online mask first, so a TLB shootdown
+    //    that runs the instant we are counted also targets us.
+    ONLINE_MASK.fetch_or(1 << cpu::id(), Ordering::Release);
     ONLINE.fetch_add(1, Ordering::Release);
     arch::interrupts::enable();
 
@@ -175,10 +194,11 @@ pub extern "C" fn secondary_main(cpu_id: usize) -> ! {
     }
 }
 
-// The SMP tests need more than one core online (the runner passes `-smp 4` on aarch64). RISC-V is
-// single-hart today, so they are gated to aarch64 until the RISC-V SMP work (parity workstream A,
-// notes/riscv-parity-scope.md) brings up secondary harts via SBI HSM and passes `-smp` to its runner.
-#[cfg(all(test, target_arch = "aarch64"))]
+// The SMP tests need more than one core online (the runner passes `-smp 4`). They run on both
+// architectures now that RISC-V brings up secondary harts via SBI HSM (parity workstream A): the
+// bring-up, cross-core work placement (inbox + reschedule IPI), and load balancing are all portable
+// and exercised identically on the GIC/SGI and PLIC/SBI-IPI paths.
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -204,7 +224,15 @@ mod tests {
     /// core does other work meanwhile rather than pure-spinning.
     #[test_case]
     fn every_secondary_runs_scheduled_work() {
-        let all_ran = || (1..MAX_CPUS).all(|c| RAN_ON[c].load(Ordering::Acquire));
+        // A secondary is any core that is not the boot core. On aarch64 the boot core is 0, so this
+        // is cores 1..N; on RISC-V QEMU's boot hart is not fixed, so it is every core but that one.
+        let boot = crate::arch::boot_cpu_id();
+        let is_secondary = |c: usize| c != boot;
+        let all_ran = || {
+            (0..MAX_CPUS)
+                .filter(|&c| is_secondary(c))
+                .all(|c| RAN_ON[c].load(Ordering::Acquire))
+        };
 
         let mut spins = 0u64;
         while !all_ran() {
@@ -216,11 +244,13 @@ mod tests {
             );
         }
 
-        for (c, ran) in RAN_ON.iter().enumerate().skip(1) {
-            assert!(
-                ran.load(Ordering::Acquire),
-                "secondary core {c} never ran scheduled work",
-            );
+        for (c, ran) in RAN_ON.iter().enumerate() {
+            if is_secondary(c) {
+                assert!(
+                    ran.load(Ordering::Acquire),
+                    "secondary core {c} never ran scheduled work",
+                );
+            }
         }
     }
 

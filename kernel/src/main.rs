@@ -156,21 +156,24 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         sched::init();
         arch::interrupts::restore(irqs);
 
+        // SMP: bring the other harts online (parity workstream A). First arm this (boot) hart's own
+        // software-interrupt source, so a secondary can hand work back to it; then start the
+        // secondaries. Each starts via SBI HSM at secondary_boot, adopts the fine kernel map, sets
+        // its own trap vector and per-CPU state (its own per-hart trap stash, A1), arms its timer and
+        // its IPI source, and becomes a scheduler participant. Before the tests (and the tour), so the
+        // SMP tests find the cores online, mirroring aarch64's `bring_up_secondaries` then `test_main`.
+        arch::irq::init_this_cpu();
+        smp::bring_up_secondaries();
+
         // A test build runs the kernel suite right here and exits via semihosting, instead of the
         // demonstration tour below. Everything the tests need is now up: memory and the frame
-        // allocator, the Sv39 paging, the scheduler and its idle thread, the timer, and interrupts.
-        // This is the RISC-V equivalent of the `#[cfg(test)] test_main()` on the aarch64 boot path.
+        // allocator, the Sv39 paging, the scheduler and its idle thread, the timer, interrupts, and
+        // the other harts. The RISC-V equivalent of the `#[cfg(test)] test_main()` on the aarch64 boot.
         #[cfg(test)]
         {
             test_main();
             arch::halt();
         }
-
-        // SMP: bring the other harts online (parity workstream A). Each secondary starts via SBI HSM
-        // at secondary_boot, adopts the fine kernel map, sets its own trap vector and per-CPU state
-        // (its own per-hart trap stash, A1), arms its timer, and idles until there is work. A count
-        // greater than one proves the per-hart trap path and the bring-up work on a second hart.
-        smp::bring_up_secondaries();
 
         // Dynamic kernel mapping self-test: map a fresh frame at an unused high-half VA, read it
         // back through the tables, write and read through the mapping, then unmap it. Proves

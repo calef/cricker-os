@@ -135,6 +135,29 @@ const INTERRUPT: u64 = 1 << 63;
 /// `scause` interrupt code for a supervisor external interrupt: a device raised a line into the
 /// PLIC, which routed it here. The RISC-V analog of an aarch64 IRQ exception carrying a GIC intid.
 const S_EXTERNAL: u32 = 9;
+/// `scause` interrupt code for a supervisor software interrupt: another hart's reschedule IPI, set
+/// through the SBI (which pends `sip.SSIP`). The RISC-V analog of aarch64's reschedule SGI.
+const S_SOFTWARE: u32 = 1;
+
+/// Clear this hart's pending software interrupt (`sip.SSIP`, bit 1). The IPI stays pending until
+/// acknowledged, so the handler clears it or it would re-fire the instant interrupts reopen.
+fn clear_software_interrupt() {
+    const SSIP: u64 = 1 << 1;
+    // SAFETY: clears a `sip` bit; no memory effect. `csrc` is atomic read-clear.
+    unsafe { core::arch::asm!("csrc sip, {}", in(reg) SSIP, options(nomem, nostack)) };
+}
+
+/// Unmask this hart's software interrupts (`sie.SSIE`, bit 1): the reschedule-IPI source. Armed per
+/// hart when it becomes a scheduler participant, alongside the timer's `sie.STIE`. Without it a
+/// reschedule IPI sets `sip.SSIP` but is never taken, so a migrated thread would sit in the inbox
+/// until the target's next timer tick.
+pub fn enable_software_interrupts() {
+    const SSIE: u64 = 1 << 1;
+    // SAFETY: sets a `sie` bit; takes effect under sstatus.SIE. No memory effect.
+    unsafe {
+        core::arch::asm!("csrs sie, {}", in(reg) SSIE, options(nomem, nostack, preserves_flags))
+    };
+}
 /// `scause` exception code for `ecall` taken from U-mode: the syscall.
 const CAUSE_ECALL_U: u64 = 8;
 /// `scause` exception code for a breakpoint (`ebreak`).
@@ -207,8 +230,14 @@ extern "C" fn riscv_trap_dispatch(frame: &mut TrapFrame) {
                     crate::drivers::plic::complete(source);
                 }
             }
-            // Software interrupts (IPI, via the CLINT) arrive here once SMP enables them. Nothing
-            // else is enabled yet, so anything else is unexpected.
+            // A reschedule IPI from another hart (SBI set our sip.SSIP). Clear the pending bit, then
+            // drain our inbox: another hart handed us a thread and poked us, and drain_inbox moves it
+            // onto our own run queue and sets need_resched, so the deferral below switches to it.
+            // The RISC-V twin of aarch64's RESCHED_SGI case. See sched::place_on / drain_inbox.
+            S_SOFTWARE => {
+                clear_software_interrupt();
+                crate::sched::drain_inbox();
+            }
             _ => {
                 SPURIOUS_IRQS.fetch_add(1, Ordering::Relaxed);
             }

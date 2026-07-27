@@ -481,9 +481,19 @@ pub fn unmap_page(va: u64) -> Result<u64, MapError> {
 /// page's translation. Unlike aarch64's `tlbi`, `sfence.vma` also orders the preceding page-table
 /// write and completes locally, so no separate barrier is needed.
 pub fn flush_tlb(va: u64) {
-    // SAFETY: TLB maintenance is always sound; getting it wrong means a stale translation, which is
-    // the memory-unsafety that matters here, not Rust unsafety.
+    // Local first. SAFETY: TLB maintenance is always sound; getting it wrong means a stale
+    // translation, which is the memory-unsafety that matters here, not Rust unsafety.
     unsafe { asm!("sfence.vma {}, zero", in(reg) va, options(nostack)) };
+
+    // Then the other online harts (SMP shootdown). The kernel root is shared, so a page mapped or
+    // unmapped here must be sfence'd on every hart that might run a thread touching it, or a migrated
+    // thread faults on a translation this hart already invalidated but the others still cache. RISC-V
+    // has no hardware TLB broadcast, so we IPI via SBI RFENCE. Skipped entirely until a second hart is
+    // online (single-hart boot maps a great many pages; there is no one to shoot down).
+    let others = crate::smp::online_harts_mask() & !(1usize << crate::cpu::id());
+    if others != 0 {
+        super::sbi_remote_sfence_vma(others, va as usize, PAGE_SIZE as usize);
+    }
 }
 
 /// Whether paging is on: `satp`'s MODE field is not Bare (0). True from `boot.s`'s Sv39 switch on.
