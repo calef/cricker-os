@@ -111,7 +111,7 @@ fn main() -> ExitCode {
             eprintln!(
                 "usage: cargo xtask <build|run|shell|initboot|initrd-riscv|test|bench|gdb|objdump|image> [--hvf]"
             );
-            eprintln!("       cargo xtask bench [--real] [--release] [--check] [--save]");
+            eprintln!("       cargo xtask bench [--riscv] [--real] [--release] [--check] [--save]");
             return ExitCode::FAILURE;
         }
     };
@@ -514,6 +514,13 @@ fn bench() -> bool {
         return false;
     }
 
+    // The second architecture. RISC-V has its own path (its own kernel target, runner, and initrd,
+    // no disk, no HVF); everything else -- the icount instrument, the parsing, the table, the
+    // baseline gate -- is shared through run_bench. See bench_riscv.
+    if std::env::args().any(|a| a == "--riscv") {
+        return bench_riscv(check, save);
+    }
+
     if !mkdisk()
         || !user()
         || !cargo_profiled(&[
@@ -544,12 +551,81 @@ fn bench() -> bool {
     }
     cmd.env("CRICKER_INITRD", initrd_path());
     cmd.env("CRICKER_DISK", disk_path());
+
+    run_bench(
+        cmd,
+        real,
+        check,
+        save,
+        workspace_root().join("bench/baseline.txt"),
+    )
+}
+
+/// **The RISC-V benchmark path** (parity E's follow-up). Same primitive suite, same deterministic
+/// icount instrument, on the second architecture, so the tick counts are directly comparable to the
+/// aarch64 ones: both are the virtual timer advancing under `-icount`, which is instruction-clocked,
+/// not wall-clock. No HVF (there is no RISC-V hypervisor on this host) and no disk (the bench boot
+/// runs no virtio); it just needs the riscv initrd carrying `elbench` + `coremark`. Its baseline is a
+/// separate file, since the counts differ by ISA. `cargo xtask bench --riscv [--check|--save]`.
+fn bench_riscv(check: bool, save: bool) -> bool {
+    if !initrd_riscv()
+        || !run(
+            "cargo",
+            &[
+                "build",
+                "-p",
+                "kernel",
+                "--features",
+                "bench",
+                "--target",
+                RISCV_TARGET,
+            ],
+        )
+    {
+        return false;
+    }
+
+    let mut cmd = Command::new("scripts/qemu-runner-riscv.sh");
+    cmd.arg(format!("target/{RISCV_TARGET}/debug/kernel"));
+    // icount pins virtual time (rdtime) to the instruction stream; sleep=off so it never waits on the
+    // wall clock. This is what makes the riscv counts deterministic and comparable to aarch64's.
+    cmd.args(["-icount", "shift=0,sleep=off"]);
+    cmd.env("CRICKER_INITRD", riscv_initrd_path());
+    // One hart: a primitive benchmark measures per-core cost. With more harts, a thread that waits
+    // for a spawned child leaves its hart idling in `wfi`, and under `-icount` a `wfi` jumps virtual
+    // time to the next timer tick, inflating the spawn primitives to timer-quantized nonsense. The
+    // single-core costs are what compare to aarch64 anyway.
+    cmd.env("CRICKER_SMP", "1");
+    eprintln!(
+        "--- bench: riscv64, single hart, TCG + icount (deterministic instruction counts) ---"
+    );
+
+    run_bench(
+        cmd,
+        false,
+        check,
+        save,
+        workspace_root().join("bench/baseline-riscv.txt"),
+    )
+}
+
+/// Run a bench kernel through `cmd`, read its `bench:` lines until `bench: done`, and report the
+/// table (and, off the deterministic icount instrument, save or check against `baseline`). Shared by
+/// the aarch64 and RISC-V bench paths so the parsing, the table, and the regression gate are one
+/// implementation. `real` only chooses the "ns are fiction" footer.
+fn run_bench(
+    mut cmd: Command,
+    real: bool,
+    check: bool,
+    save: bool,
+    baseline_path: std::path::PathBuf,
+) -> bool {
     cmd.stdout(std::process::Stdio::piped());
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("bench: failed to start {RUNNER}: {e}");
+            eprintln!("bench: failed to start the runner: {e}");
             return false;
         }
     };
@@ -611,7 +687,6 @@ fn bench() -> bool {
         eprintln!("(TCG+icount: ticks are deterministic; ns are fiction. --real for magnitudes.)");
     }
 
-    let baseline_path = workspace_root().join("bench/baseline.txt");
     if save {
         let mut out = String::from(
             "# bench/baseline.txt: deterministic icount tick counts (cargo xtask bench --save).

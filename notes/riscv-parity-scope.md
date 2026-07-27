@@ -134,9 +134,16 @@ to `arch::timer::now`/`frequency` (rdtime on riscv), the boot reaches `bench::ru
 bench`, and `initrd-riscv` packs `elbench` + `coremark`. Two fixes fell out of `spawn_el0` (the fast
 userspace spawn+reap loop): elbench's 9-instruction `CHILD_STUB` was aarch64 machine code (added the
 riscv `li`/`ecall` version), and the `MAP_CODE` syscall never synced the icache on the userspace
-map-executable path (a correctness fix for both arches, latent until a spawn loop stressed it). One
-refinement left: the aarch64 `xtask bench` uses TCG+icount for deterministic counts; a riscv
-equivalent would make the cross-arch numbers directly comparable. Original scope below.
+map-executable path (a correctness fix for both arches, latent until a spawn loop stressed it).
+
+**And the numbers are now comparable.** `cargo xtask bench --riscv` runs the same suite on riscv under
+the same deterministic `-icount` instrument (single hart, so an idle `wfi` cannot jump virtual time to
+the timer and inflate the spawn primitives), with its own baseline (`bench/baseline-riscv.txt`) for
+`--check`/`--save`. The comparable metric is **ns/iter**: under `-icount shift=0` virtual time advances
+~1 ns/instruction, and ns/iter divides out each arch's timer frequency (aarch64 CNTFRQ vs riscv's
+10 MHz), so it is frequency-normalized instructions-per-primitive. CoreMark lands within ~7% across
+the two ISAs (same workload), which is the sanity check that the comparison is sound. Original scope
+below.
 
 ### E (original scope). Benchmarks — M. Cross-arch numbers.
 
