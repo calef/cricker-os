@@ -32,11 +32,16 @@ rest of the kernel calls through `crate::arch`:
 
 The port is worth doing precisely because it finds where the abstraction leaked. Two are already known:
 
-1. **`thread::Context` is aarch64-register-shaped in *portable* `thread.rs`.** It names `x19`..`x30`,
-   the aarch64 callee-saved set, and is a contract with `context.s`. RISC-V's callee-saved set is
-   `s0`..`s11` + `ra` + `sp`. Fix: make `Context` arch-specific (either `#[cfg]` the struct in
-   `thread.rs`, or move it under `arch/` and have `thread.rs` use `arch::Context`). This is the
-   cleanest leak: it was always arch-specific, just living in the wrong file.
+1. **`thread::Context` is aarch64-register-shaped in *portable* `thread.rs`.** ~~It names `x19`..`x30`,
+   the aarch64 callee-saved set, and is a contract with `context.s`.~~ **Closed (commit `fdc4376`),
+   before RISC-V was started, as an aarch64-only refactor proved against the green baseline.** The
+   deeper leak was not the field names but the two construction sites, which encoded the register
+   *mapping* (`x19`=closure/entry, `x20`=shim/user-sp, `x21`..`x23`=args, `x30`=trampoline). The
+   struct, the `switch_to`/trampoline externs, and the frame construction now live in
+   `arch/aarch64/context.rs` behind two intent-named constructors, `Context::for_kernel_thread(closure_at,
+   call_shim)` and `Context::for_user_thread(entry, user_sp, args)`; the fields are private. `thread.rs`
+   names no register. RISC-V implements the same two constructors with its own set (`s0`..`s11` + `ra`,
+   `a0`/`a1` for args) and `thread.rs` does not change.
 
 2. **The `paging` crate encodes the aarch64 descriptor format.** It looks generic (page-table math)
    but its `Flags` are aarch64 descriptor bits (`AF`, `SH`, `AP_*`, `PXN`, `UXN`, `NG`, MAIR attr
