@@ -35,8 +35,16 @@ pub extern "C" fn _start(_x0: u64, n: u64, _x2: u64) -> ! {
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     // No console and no report channel to trust: the only honest way to signal "something is wrong"
-    // is a fault the kernel turns into a kill. A worker bug is a dead worker, nothing more.
-    unsafe { core::arch::asm!("brk #0", options(nostack, nomem)) };
+    // is a fault the kernel turns into a kill. A worker bug is a dead worker, nothing more. The trap
+    // instruction is the one arch-specific line: aarch64 `brk`, RISC-V `ebreak`.
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("brk #0", options(nostack, nomem))
+    };
+    #[cfg(target_arch = "riscv64")]
+    unsafe {
+        core::arch::asm!("ebreak", options(nostack, nomem))
+    };
     loop {
         core::hint::spin_loop();
     }

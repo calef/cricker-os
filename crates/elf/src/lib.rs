@@ -25,8 +25,25 @@ const ET_EXEC: u16 = 2;
 /// `e_type` for a PIE / shared object. Needs relocation, which we do not do.
 const ET_DYN: u16 = 3;
 
-/// `e_machine`.
+/// `e_machine` for the two architectures cricker-os runs on. Any one build uses exactly one of
+/// these as [`EXPECTED_MACHINE`] and compiles the other's branch out, so from that build's point of
+/// view the other constant is unused; we keep both named because the crate documents both machines
+/// it knows, and the tests check rejection of the non-native one.
+#[allow(dead_code)]
 const EM_AARCH64: u16 = 183;
+#[allow(dead_code)]
+const EM_RISCV: u16 = 243;
+
+/// The machine this build accepts. A kernel only ever loads binaries for its **own** architecture,
+/// so the expected machine is a compile-time fact, not a runtime parameter: the riscv build accepts
+/// riscv ELFs, every other build (the aarch64 kernel, and the host that runs these tests) accepts
+/// aarch64. This keeps the "catch a foreign binary" check (an aarch64 kernel refuses a riscv ELF and
+/// vice versa) without threading an expected-machine argument through every caller in the kernel and
+/// in userspace init, both of which would only ever pass their own architecture anyway.
+#[cfg(target_arch = "riscv64")]
+const EXPECTED_MACHINE: u16 = EM_RISCV;
+#[cfg(not(target_arch = "riscv64"))]
+const EXPECTED_MACHINE: u16 = EM_AARCH64;
 
 /// `p_type`: a segment the loader must actually put in memory. The only one we care about.
 const PT_LOAD: u32 = 1;
@@ -52,9 +69,11 @@ pub enum Error {
     NotLittleEndian,
     /// `e_version` is not 1.
     BadVersion,
-    /// Compiled for some other machine. **This is the one that catches an x86 binary**, and it
-    /// catches it *here* rather than as a mystery illegal-instruction fault at EL0.
-    NotAarch64,
+    /// Compiled for a machine this kernel does not run (`e_machine` is neither our own architecture
+    /// nor is it the one we were built to accept). **This is the one that catches an x86 binary, or
+    /// a riscv binary handed to the aarch64 kernel**, and it catches it *here* rather than as a
+    /// mystery illegal-instruction fault the instant the program starts.
+    WrongMachine,
     /// A PIE or shared object. It expects a dynamic linker to relocate it. We are not one.
     NeedsRelocation,
     /// Not an executable at all (a relocatable object, a core dump).
@@ -173,8 +192,8 @@ impl<'a> Elf<'a> {
         let e_type = u16le(bytes, 16);
         let e_machine = u16le(bytes, 18);
 
-        if e_machine != EM_AARCH64 {
-            return Err(Error::NotAarch64);
+        if e_machine != EXPECTED_MACHINE {
+            return Err(Error::WrongMachine);
         }
         match e_type {
             ET_EXEC => {}
@@ -620,7 +639,17 @@ mod tests {
     fn a_binary_for_another_machine_is_refused() {
         let mut b = Builder::new().seg(PF_R | PF_X, 0x40_0000, &[0xaa; 16], 16);
         b.e_machine = 62; // EM_X86_64
-        assert_eq!(Elf::parse(&b.build()).err(), Some(Error::NotAarch64));
+        assert_eq!(Elf::parse(&b.build()).err(), Some(Error::WrongMachine));
+    }
+
+    /// **A binary for the *other* cricker-os architecture is refused too.** These host tests build
+    /// with `EXPECTED_MACHINE == EM_AARCH64`, so a riscv ELF (243) is a foreign machine here, exactly
+    /// as an aarch64 ELF would be to the riscv kernel. The check is symmetric, not aarch64-privileged.
+    #[test]
+    fn a_binary_for_the_other_supported_machine_is_refused() {
+        let mut b = Builder::new().seg(PF_R | PF_X, 0x40_0000, &[0xaa; 16], 16);
+        b.e_machine = EM_RISCV;
+        assert_eq!(Elf::parse(&b.build()).err(), Some(Error::WrongMachine));
     }
 
     /// A PIE expects a dynamic linker to relocate it. We are not one, and loading it as if we
