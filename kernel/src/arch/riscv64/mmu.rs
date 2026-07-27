@@ -15,11 +15,43 @@ use paging::{Flags, MapError, PageTable, Sv39};
 /// aarch64 module's alias for why), so the user-VA gate and the user `Mapper` land on Sv39 here.
 pub type Format = Sv39;
 
-/// The base of the kernel's virtual address space. **Zero for now:** the kernel runs in bare mode
-/// through boot and console, so a kernel virtual address *is* its physical address. The Sv39 step
-/// raises this to the Sv39 high-half (`0xffff_ffc0_0000_0000`) and makes the two differ. Matched to
-/// `KERNEL_VA_BASE` in link-riscv.ld.
-pub const KERNEL_VA_BASE: u64 = 0x0;
+/// The base of the kernel's virtual address space: the Sv39 high half (bits 63:38 all one, the sign
+/// extension of bit 38 = 1). Chosen exactly like aarch64's base so `VA = PA | KERNEL_VA_BASE` is
+/// exact and a kernel VA shares its physical address's page-table indices. Matched to
+/// `KERNEL_VA_BASE` in link-riscv.ld, and the kernel runs here from `boot.s`'s high-half jump on.
+pub const KERNEL_VA_BASE: u64 = 0xffff_ffc0_0000_0000;
+
+/// The boot page table: a single Sv39 root that maps the low physical range (to survive turning
+/// paging on) and its high-half alias (where the kernel is linked). Four gigapage (1 GiB) leaves are
+/// enough to run and print: index 0 and 2 identity-map the UART region and the kernel/RAM region;
+/// 256 and 258 are the same two at `KERNEL_VA_BASE` (adding 256 to the top-level index). It is RWX
+/// everywhere, like aarch64's coarse boot map: it exists to survive ~twenty instructions until
+/// `mmu::init` builds the real W^X tables. See boot.s and notes/riscv-port.md.
+///
+/// `boot.s` reads its **physical** address (PC-relative) to load `satp`, so it must be a real static
+/// with a stable symbol. It is `.data` (initialized), loaded at its low physical address.
+#[repr(C, align(4096))]
+struct BootTable([u64; paging::ENTRIES]);
+
+const fn boot_table() -> BootTable {
+    // Sv39 gigapage leaf: V R W X A D set. RWX is deliberate and temporary (see above).
+    const LEAF: u64 = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 6) | (1 << 7);
+    // A 1 GiB-aligned physical base, as a gigapage PTE (PPN at bits 53:10).
+    const fn giga(pa: u64) -> u64 {
+        ((pa >> 12) << 10) | LEAF
+    }
+    let mut t = [0u64; paging::ENTRIES];
+    t[0] = giga(0x0000_0000); // identity: 0..1 GiB, covers the UART at 0x1000_0000
+    t[2] = giga(0x8000_0000); // identity: 2..3 GiB, covers the kernel/RAM at 0x8020_0000
+    t[256] = t[0]; // high alias of index 0 (KERNEL_VA_BASE adds 256 to the top-level index)
+    t[258] = t[2]; // high alias of index 2
+    BootTable(t)
+}
+
+/// The boot table instance `boot.s` points `satp` at. `#[unsafe(no_mangle)]` so the assembly can
+/// name it; `pub` and read from asm, so not actually dead despite appearances.
+#[unsafe(no_mangle)]
+static BOOT_PAGE_TABLE: BootTable = boot_table();
 
 /// The physical address of the virtio-mmio transport window on QEMU's `virt` machine. The `virt`
 /// board lays out 8 virtio-mmio slots of 0x1000 each starting at 0x1000_1000, growing downward by

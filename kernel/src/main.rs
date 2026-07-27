@@ -92,9 +92,14 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
     // whole boot. See notes/riscv-port.md.
     #[cfg(target_arch = "riscv64")]
     {
+        // A live code address proves we jumped to the high-half alias in boot.s and are executing
+        // there, not merely reaching the UART through the identity map (both are mapped by the boot
+        // table). If this reads 0xffffffc0_8020_xxxx, Sv39 is on and the kernel is in the high half.
+        let pc = kernel_main as *const () as usize;
         println!();
-        println!("cricker-os on RISC-V (rv64, S-mode)");
-        println!("  hart 0 booted: stack, .bss, and the NS16550 console are up.");
+        println!("cricker-os on RISC-V (rv64, S-mode, Sv39)");
+        println!("  hart 0 booted: high-half kernel, .bss, and the NS16550 console are up.");
+        println!("  running at  : {pc:#018x}  (high half: Sv39 paging is on)");
         println!("  device tree : {dtb:#018x}");
         println!("  next: the capability core, as arch/riscv64 stops being stubs.");
         arch::halt();

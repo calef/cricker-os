@@ -148,8 +148,17 @@ Finding these is the point; each gets pushed under `arch/`.
    `drivers::gic` directly, an interrupt-controller coupling that the traps step resolves with a PLIC
    abstraction; until then the GIC driver stays un-gated (it compiles on riscv and is simply dead).
 3. **Traps.** `stvec` + the `TrapFrame` + a fault that prints instead of dying silently.
-4. **MMU (Sv39).** `satp`, the direct map, the high-half, the paging-format work. This is the biggest
-   single step (it settles the `paging` generalization).
+4. **MMU (Sv39).** `satp`, the direct map, the high-half, the paging-format work. The biggest single
+   step. **In progress:** the paging-format work is done (leak #2), and the **higher-half boot
+   transition works** (Chris chose high-half, DECISIONS §17): the kernel links high / loads low, and
+   `boot.s` enters physically, points `satp` at a four-gigapage boot table (identity + high alias),
+   turns Sv39 on, and jumps to its own high-half alias. Proven by the console banner reporting a live
+   code address of `0xffffffc0_8020_xxxx` (`KERNEL_VA_BASE | physical`), i.e. the kernel is genuinely
+   executing in the Sv39 high half, not just reaching the UART through the identity alias.
+   **Remaining:** replace the coarse RWX boot table with fine-grained W^X kernel tables (via
+   `Mapper<_, _, Sv39>`), and implement the user-mapping surface and per-process `satp` switching
+   (which needs traps to exercise). The RISC-V single-`satp` model means every process root shares the
+   kernel's high-half top-level entries.
 5. **Timer + interrupts.** Sstc/CLINT + PLIC, preemption on RISC-V.
 6. **The capability core runs.** `caps`, IPC, the scheduler, the same code as aarch64, on RISC-V. The
    payoff: one verified capability core, two ISAs, and rule #1 proven (or its leaks all closed).
