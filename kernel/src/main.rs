@@ -205,14 +205,25 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
             );
         }
 
-        // The capstone, running a program at U-mode, is wired up (user::exec, enter_user's sret, the
-        // sscratch U-mode trap entry, the hand-written RISC-V program) and the sret to U-mode WORKS:
-        // a user `ecall` reaches the trap dispatcher. But the U-mode trap-return path still hits a
-        // store page fault at the kernel frame page, under debug (needs GDB to inspect the live satp
-        // and PTE). So the end-to-end run is left out of this boot rather than hanging it. See
-        // notes/riscv-port.md, step 6.
-        println!("  next: finish the U-mode round trip (a store fault in the trap-return path).");
+        // The capstone: run a real program at U-mode. `exec` builds an address space, maps the
+        // hand-written RISC-V program, and drops to U-mode via enter_user's sret. The program yields
+        // (round-tripping U-mode -> trap -> dispatch -> yield -> sret -> U-mode) twice, then exits.
+        // The syscall count proves the whole userspace path: enter_user, the sscratch U-mode trap
+        // entry, the ecall dispatch through the ABI accessors, and the return to U-mode.
+        {
+            use core::sync::atomic::Ordering;
+            let before = arch::exceptions::SVC_COUNT.load(Ordering::Relaxed);
+            sched::spawn(|| unsafe { user::exec(user::hello()) });
+            for _ in 0..4 {
+                sched::yield_now();
+            }
+            let served = arch::exceptions::SVC_COUNT.load(Ordering::Relaxed) - before;
+            println!(
+                "  userspace   : a program ran at U-mode and made {served} syscalls (yield/yield/exit via ecall)",
+            );
+        }
 
+        println!("cricker-os: the capability core runs on RISC-V.");
         arch::halt();
     }
 

@@ -167,25 +167,30 @@ Finding these is the point; each gets pushed under `arch/`.
    `scause` = timer to `timer::tick`; proven by ~17 ticks in 0.2 s at 100 Hz. **Remaining:** the PLIC
    (external/device interrupts), which also resolves the `drivers::gic` leak; it is exercised by the
    userspace-driver path, so it lands with that.
-6. **The capability core runs. In progress.** The **scheduler and context switch run on RISC-V**:
-   `sched::init` + two spawned kernel threads + yield, proven by "2 of 2 kernel threads ran". The
-   **user-mapping surface and the single-`satp` model work**: a process address space is built, `satp`
-   is switched to it (the kernel survives, proving `share_kernel_half`), and a user page maps and
-   translates. The **U-mode entry is wired and the `sret` to U-mode WORKS** (`enter_user`, the
-   `sscratch` U-mode trap entry, the hand-written RISC-V program): a user `ecall` reaches the trap
-   dispatcher (`scause` = 8, ecall-from-U, confirmed under diagnostic).
+6. **The capability core runs. Done (a user program runs at U-mode).** The scheduler and context
+   switch run on RISC-V ("2 of 2 kernel threads ran"); the user-mapping surface and the single-`satp`
+   model work (a process `satp` is installed, the kernel survives via `share_kernel_half`, a user page
+   maps and translates); and **a hand-written RISC-V program runs at U-mode and makes syscalls**:
+   "a program ran at U-mode and made 3 syscalls (yield/yield/exit via ecall)". That exercises the
+   whole path: `enter_user`'s `sret`, the `sscratch` U-mode trap entry, `ecall` dispatch through the
+   ABI accessors, and the return to U-mode, twice, then `exit`.
 
-   **The one open bug:** the U-mode trap-return path takes a **store page fault (`scause` = 15) at the
-   kernel frame page** (a high VA, ~`0xffffffd0…`) while saving the trap frame in `trap_entry`, and
-   loops. The puzzle: `enter_frame`'s `frame.write` to that *same* address, in S-mode under the *same*
-   process `satp`, succeeds moments earlier, so the page is provably mapped writable in the process
-   root; yet the store in `trap_entry` after the U-mode round trip faults there. Next step is GDB
-   (`script/gdb`): break at `trap_entry`, inspect `satp`, `sp`, `sscratch`, and walk the process
-   root's PTE for the frame VA, and check A/D bits and whether an `sfence`/ASID interaction lost the
-   entry. Everything up to and including the `sret` is proven; this is the last mile.
+   **The last-mile bug and its root cause (a genuine HAL lesson): `tp` is a general register on
+   RISC-V, not a system register.** aarch64 keeps the per-CPU pointer in `TPIDR_EL1`, a system
+   register that survives an EL0 round trip untouched. RISC-V's `tp` (x4) is an ordinary GPR, so the
+   user trap frame left it 0, the `sret` gave U-mode `tp = 0`, and the ecall trap handler ran with
+   `tp = 0` and null-dereferenced `cpu::current()`. That panicked; the panic handler then re-panicked
+   while *formatting* the message (a `core::fmt` path), recursing into itself and blowing the kernel
+   stack, which is what presented as the mystery "store fault at the frame page" (the nested-fault
+   cascade of the overflow, unrelated to the frame's mapping, which was fine all along). QEMU's
+   `-d int` exception log pinned it: the recursion was in `rust_begin_unwind`, and a raw-UART dump of
+   the panic location (bypassing `core::fmt`) named `cpu.rs:160`. Fix: `for_user_entry` carries the
+   kernel `tp` in the frame, so it survives the round trip. **Follow-up (noted, not yet done):** that
+   leaks the kernel per-CPU address into U-mode's `tp`; the leak-free fix restores `tp` in `trap.s`
+   from a per-hart source (the standard sscratch-trapframe approach), also needed for SMP.
 
-   **Remaining after that:** running a user ELF, then IPC/caps end to end (the same portable code that
-   works on aarch64, now on the RISC-V switch), plus the PLIC (leak: `drivers::gic`).
+   **Remaining:** a user ELF and IPC/caps end to end (the same portable code that works on aarch64,
+   now on the RISC-V switch), plus the PLIC (leak: `drivers::gic`).
 
 The reward beyond the proof: when a real RISC-V board (a ~$70 StarFive VisionFive 2 / Milk-V Mars, or a
 rented Graviton later) is on hand, the QEMU-virt work transfers, because real boards use the same
