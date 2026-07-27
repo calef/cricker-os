@@ -112,7 +112,19 @@ driver run. The virtio-mmio driver is largely portable (MMIO + virtqueues + DMA)
 - **Proves:** userspace device drivers *with DMA* on the second arch, and the "kernel issued no
   virtio command and touched no DMA" claim on riscv. Self-contained; depends on nothing else here.
 
-### D. Full integrated boot + interactive shell — M–L. Mostly userspace porting.
+### D. Full integrated boot + interactive shell — DONE.
+
+The interactive shell runs on RISC-V, over the serial: `echo` echoes, `run 9` spawns a worker that
+computes 81. A new portable `sysinit` (the counterpart of hello's aarch64-tied `init_boot`) is loaded
+as the boot process and, from an untyped budget plus the NS16550 device cap and the UART Irq cap,
+builds the console server, input driver, and shell out of its own budget and wires them; the kernel
+parks. The three shell programs became arch-neutral -- the UART register layout is gated per arch
+(PL011 vs NS16550, including that the NS16550 clears its RX interrupt on read, with no ICR). The
+wiring is arch-neutral: `sysinit` maps whatever device cap the kernel grants and delegates whatever
+Irq cap it is handed, so the same binary would drive a PL011. `--features shell` selects it (the
+riscv initboot). aarch64 keeps hello's init_boot; its shell still works. Original scope below.
+
+### D (original scope). Full integrated boot + interactive shell — M–L. Mostly userspace porting.
 
 aarch64 boots userspace init as the boot process, which builds the whole system (console + input +
 shell + spawn service). RISC-V demonstrates init building *one* worker, then halts. Closing this is
