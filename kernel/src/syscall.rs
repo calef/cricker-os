@@ -124,10 +124,13 @@ fn invoke(
                     return Err(Error::NoSuchSlot); // endpoint revoked; the message is a placeholder
                 }
                 // Word 0 goes back the way every syscall result does, in x0 (dispatch writes it
-                // from our return value). Words 1 and 2 we place directly, because a syscall
-                // return is one register and a message is three.
+                // from our return value). Words 1..4 we place directly, because a syscall return is
+                // one register and a message is up to five: ordinary IPC fills three and leaves the
+                // top two zero, and a fault/exit notification (DECISIONS §26) fills all five.
                 frame.set_arg(1, msg[1]);
                 frame.set_arg(2, msg[2]);
+                frame.set_arg(3, msg[3]);
+                frame.set_arg(4, msg[4]);
                 Ok(msg[0] as i64)
             }
 
@@ -314,7 +317,9 @@ fn invoke(
                 }
                 // a0 = the cap to give the child, a1 = rights to narrow it to. GRANT-gated and
                 // narrowing-only, exactly as SEND_CAP: you may endow a child only with authority
-                // you were trusted to pass on, and only narrowed.
+                // you were trusted to pass on, and only narrowed. a2 = target slot: 0 is first-free
+                // (the original behaviour, so every existing caller is unchanged), n is slot n - 1
+                // (a supervisor placing a fault endpoint in the reserved slot, milestone 22).
                 let src = sched::current_cap(a0).map_err(|_| Error::NoSuchSlot)?;
                 if !src.rights.allows(Rights::GRANT) {
                     return Err(Error::NotPermitted);
@@ -323,12 +328,14 @@ fn invoke(
                 if !narrowed.is_subset_of(src.rights) {
                     return Err(Error::NotPermitted);
                 }
+                let target = (a2 != 0).then(|| a2 - 1);
                 let child_slot = sched::tcb_insert_cap(
                     tid,
                     crate::cap::Cap {
                         object: src.object,
                         rights: narrowed,
                     },
+                    target,
                 )?;
                 Ok(child_slot as i64)
             }

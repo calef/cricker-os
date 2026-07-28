@@ -54,6 +54,12 @@ pub const SYS_CAP_DELETE: u64 = 3;
 /// guess.** The kernel looks in *your* table, and if the slot is empty you get `NoSuchSlot`.
 pub type CapSlot = u64;
 
+/// The number of capability slots in a thread's cspace. Mirrors the kernel's `cap::CSPACE_SLOTS`;
+/// lives here too so userspace can name the reserved [`fault::FAULT_EP_SLOT`] without reaching into
+/// the kernel. The two must agree, and a mismatch would put the fault slot in different places on
+/// the two sides of the boundary, which is exactly the drift this crate exists to prevent.
+pub const CSPACE_SLOTS: u64 = 16;
+
 /// Methods on a `Console` capability. **Historical: no longer wired up.**
 ///
 /// Milestone 8 removed the kernel-served `Console` object (the console became a userspace server
@@ -160,10 +166,16 @@ pub mod tcb {
     /// on the TCB cap and `WRITE` on the aspace cap. Only an unstarted (embryo) TCB.
     pub const CONFIGURE: u64 = 0;
 
-    /// `invoke(cap, CAP_INSERT, cap_slot, rights, _)` -> child_slot. Copy the capability in the
-    /// caller's `cap_slot`, narrowed to `rights`, into the child's cspace, returning the slot it
-    /// landed in. The child's whole initial authority is built this way, one grant at a time,
+    /// `invoke(cap, CAP_INSERT, cap_slot, rights, target)` -> child_slot. Copy the capability in
+    /// the caller's `cap_slot`, narrowed to `rights`, into the child's cspace, returning the slot
+    /// it landed in. The child's whole initial authority is built this way, one grant at a time,
     /// before it runs. Needs `WRITE` on the TCB cap and `GRANT` on the inserted capability.
+    ///
+    /// `target` chooses where the capability lands: **0 places it in the first free slot** (the
+    /// original behaviour, so every existing caller is unchanged), and `n` places it in slot
+    /// `n - 1`. The explicit target exists for the supervision endpoint, which a supervisor puts
+    /// in the reserved [`fault::FAULT_EP_SLOT`](super::fault::FAULT_EP_SLOT) rather than wherever
+    /// first-free happened to fall. `OutOfMemory` if the chosen slot is occupied or out of range.
     pub const CAP_INSERT: u64 = 1;
 
     /// `invoke(cap, START, _, _, _)` -> 0. Make the thread runnable: it gets a kernel stack and
@@ -196,6 +208,45 @@ pub mod rights {
     pub const READ: u64 = 1 << 0;
     pub const WRITE: u64 = 1 << 1;
     pub const GRANT: u64 = 1 << 2;
+}
+
+/// **The fault endpoint: thread death becomes a message a supervisor holds** (milestone 22,
+/// DECISIONS §26). When a thread faults or exits, the kernel delivers one message to the
+/// supervision endpoint its spawner designated, and the thread's corpse persists (dead until the
+/// supervisor reaps it with §16 revocation). Restart policy lives in userspace; the kernel never
+/// relaunches anything. This module is the two conventions §26 said it would add: a message-format
+/// convention and a spawn-slot convention. No new syscall and no new method (§26).
+pub mod fault {
+    /// **The spawn-slot convention.** A supervised child is spawned with its supervision endpoint
+    /// in this reserved cspace slot (via [`tcb::CAP_INSERT`] with an explicit target slot, or a
+    /// [`Spawn`](../user/struct.Spawn.html) grant). At `START` the kernel reads this slot: if it
+    /// holds an `Endpoint` capability the thread is supervised, and the kernel records the endpoint
+    /// as the thread's fault target and clears the slot (so the child cannot forge fault messages
+    /// on it, keeping §26's "the kernel is the only sender" property). An empty slot means the
+    /// thread is unsupervised and gets today's behaviour: it dies and is reaped immediately.
+    ///
+    /// It is the **last** cspace slot, deliberately out of the way of the low slots a child's
+    /// ordinary grants fill from zero upward, so an unsupervised child never accidentally lands a
+    /// working endpoint here and gets mistaken for a supervised one.
+    pub const FAULT_EP_SLOT: u64 = super::CSPACE_SLOTS - 1;
+
+    /// **The message-format convention.** A fault/exit notification is five words, delivered to the
+    /// supervision endpoint's holder through a plain `RECV`:
+    ///
+    /// ```text
+    ///   w0  event    FAULT or EXIT
+    ///   w1  tid      the dead thread's id (kernel-stamped, trustworthy: the kernel is the
+    ///                only sender on this path, so the supervisor need not badge it)
+    ///   w2  pc       the faulting instruction (0 for a clean exit)
+    ///   w3  addr     the faulting address (0 for a clean exit, or a fault with no address)
+    ///   w4  reserved 0 today; a fault-reply / resume protocol arrives here additively (§26.4)
+    /// ```
+    ///
+    /// `RECV` returns w0 in the syscall's result register and w1..w4 in the next four argument
+    /// registers. Ordinary three-word IPC leaves w3 and w4 zero, so a supervisor is the only
+    /// receiver that reads them.
+    pub const EVENT_FAULT: u64 = 1;
+    pub const EVENT_EXIT: u64 = 2;
 }
 
 /// Methods on an `Irq` capability. **How a userspace driver owns an interrupt.**

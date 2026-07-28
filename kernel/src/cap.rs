@@ -109,6 +109,10 @@ pub type Cap = caps::Cap<Object>;
 pub const CSPACE_SLOTS: usize = 16;
 pub type CSpace = caps::CSpace<Object, CSPACE_SLOTS>;
 
+// The ABI names the reserved fault slot as `CSPACE_SLOTS - 1`, so the two constants must agree or
+// the kernel would read the fault endpoint from a different slot than the supervisor wrote it to.
+const _: () = assert!(CSPACE_SLOTS as u64 == abi::CSPACE_SLOTS);
+
 pub use caps::{Error, Rights};
 
 /// A capability naming an endpoint, with the given rights.

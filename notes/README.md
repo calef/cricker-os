@@ -119,6 +119,12 @@ in the code or the conversation doesn't make sense, it belongs here.
   ownership plus generational staleness instead of a capability derivation tree, why destroy is
   the owner's explicit act and must stay off the scheduler lock, `Untyped::SPLIT`/`DESTROY`, and
   the generational region slots that make a repeatable spawn loop finally possible.
+- [Supervision: a thread's death becomes a message](supervision.md) — milestone 22's fault endpoint
+  (DECISIONS §26). The kernel is the only witness to a fault, so it delivers a five-word message
+  (event, tid, pc, addr, reserved) to the supervision endpoint a thread was spawned holding; the
+  corpse is dead-until-reaped so the supervisor can inspect it and reap it with §16 revocation. No
+  new syscall or method: a spawn-slot convention and a message-format convention. Restart policy
+  stays in userspace; the kernel never relaunches anything.
 - [Delegating a capability](delegation.md) — a capability system where processes can't pass
   capabilities isn't one. A process now delegates a capability to another over an IPC endpoint
   (`SEND_CAP`/`RECV_CAP`), narrowing the rights, and only if it holds `GRANT`. Authority composes

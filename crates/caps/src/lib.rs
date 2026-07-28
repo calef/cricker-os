@@ -160,6 +160,21 @@ impl<O: Copy, const N: usize> CSpace<O, N> {
         Ok(slot as u64)
     }
 
+    /// Put a capability in a **specific free slot**, refusing an occupied or out-of-range one.
+    ///
+    /// The targeted counterpart of [`insert`](Self::insert). A supervisor uses it to place a
+    /// child's supervision endpoint in the reserved fault slot (abi's `FAULT_EP_SLOT`) rather than
+    /// wherever first-free would fall, and refusing an occupied slot keeps that reservation honest:
+    /// two things must never share the slot the kernel reads at `START`.
+    pub fn insert_at(&mut self, slot: u64, cap: Cap<O>) -> Result<u64, Error> {
+        let s = self.slots.get_mut(slot as usize).ok_or(Error::NoSuchSlot)?;
+        if s.is_some() {
+            return Err(Error::NoFreeSlot);
+        }
+        *s = Some(cap);
+        Ok(slot)
+    }
+
     /// Put a capability in a specific slot, replacing whatever was there.
     pub fn put(&mut self, slot: u64, cap: Cap<O>) -> Result<(), Error> {
         let s = self.slots.get_mut(slot as usize).ok_or(Error::NoSuchSlot)?;

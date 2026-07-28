@@ -119,6 +119,48 @@ by the contract it was built to. That is the same shape seL4 uses for every task
 it is honest to call it a convention rather than dress it up as an API. The convention *is* the ABI;
 writing it down (here, and in each program's header comment) is what milestone 19e commits.
 
+## 5. The fault endpoint: a thread's death as a message (milestone 22)
+
+A supervised thread's death is delivered to its supervisor as an ordinary endpoint message, so
+restart policy lives in userspace and the kernel never relaunches anything (DECISIONS §26). Two
+conventions make it work, and neither adds a syscall or a method: a spawn-slot convention and a
+message-format convention (both in `crates/abi`, module `fault`).
+
+**The spawn-slot convention.** A supervised child is spawned with its supervision endpoint in the
+**reserved fault slot**, `abi::fault::FAULT_EP_SLOT` (the last cspace slot, `CSPACE_SLOTS - 1 = 15`).
+A supervisor building a child through the TCB surface places it there with `Tcb::CAP_INSERT`'s
+explicit target argument (`invoke(tcb, CAP_INSERT, cap_slot, rights, target)`, where `target` is
+`slot + 1` and `0` keeps the original first-free behaviour). At `START` the kernel reads the fault
+slot: if it holds an `Endpoint` capability the thread is supervised, and the kernel records that
+endpoint as the thread's fault target **and clears the slot**, so the child cannot forge fault
+messages on it. An empty fault slot means the thread is unsupervised and gets the pre-milestone-22
+behaviour: it dies and is reaped immediately, reporting to no one. The reserved slot is the *last*
+one precisely so an ordinary child, whose grants fill the low slots from zero upward, never lands a
+working endpoint there by accident and gets mistaken for supervised.
+
+**The message-format convention.** When a supervised thread faults or exits, the kernel delivers one
+five-word message to its supervision endpoint, taken by a plain `RECV`:
+
+```text
+  w0  event    fault::EVENT_FAULT (1) or fault::EVENT_EXIT (2)
+  w1  tid      the dead thread's id, kernel-stamped
+  w2  pc       the faulting instruction (0 for a clean exit)
+  w3  addr     the faulting address (0 for a clean exit)
+  w4  reserved 0 today; a fault-reply / resume protocol arrives here additively
+```
+
+`RECV` returns `w0` in the syscall's result register and `w1..w4` in the next four argument
+registers (`x1..x4` on aarch64, `a1..a4` on riscv). Ordinary three-word IPC leaves `w3` and `w4`
+zero, so a supervisor is the only receiver that reads the top two, and no other program's `RECV`
+changes. The tid is trustworthy without a badge because **the kernel is the only sender on this
+path**; seL4's badged-endpoint machinery is what you would reach for if untrusted senders ever
+shared a supervision endpoint, and it returns as its own decision if that day comes.
+
+The corpse is **dead until reaped**: after the message, the thread never runs again, but its TCB,
+address space, and memory persist for postmortem until the supervisor reaps them with §16 revocation
+(`Untyped::DESTROY` on the child's region). That is why the reserved `w4` can carry a resume protocol
+later without a format change: the corpse it would resume is still there.
+
 ## The one ambient thing: reading the clock (milestone 19e / the primitive suite)
 
 §10 says no ambient authority, and the object surface honors it: everything a program can *do* goes
