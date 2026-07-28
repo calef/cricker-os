@@ -65,6 +65,16 @@ if [ -n "$CRICKER_DISK" ]; then
     DISK="-global virtio-mmio.force-legacy=false -drive file=$CRICKER_DISK,if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 -drive file=$PCI_DISK,if=none,format=raw,id=hd1 -device virtio-blk-pci,drive=hd1,disable-legacy=on,iommu_platform=on"
 fi
 
+# A virtio-net NIC on QEMU user-mode (slirp) networking when CRICKER_NET is set (milestone 30), the
+# twin of the aarch64 runner's block. slirp NATs the guest with a built-in DHCP server (10.0.2.0/24)
+# and needs no host setup. Two NICs mirror the two disks: the mmio NIC (net0) has no IOMMU in front
+# of it, the PCI NIC (net1) sits behind the RISC-V IOMMU (iommu_platform=on). No image file, so
+# nothing to fail loud on here; the net test asserts the NIC is present rather than skipping.
+NET=""
+if [ -n "$CRICKER_NET" ]; then
+    NET="-netdev user,id=net0 -device virtio-net-device,netdev=net0 -netdev user,id=net1 -device virtio-net-pci,netdev=net1,disable-legacy=on,iommu_platform=on"
+fi
+
 # The RISC-V IOMMU (milestone 16b): the ratified v1.0.1 IOMMU as a PCI function (riscv-iommu-pci,
 # Red Hat 1b36:0014) in front of the PCIe bus. Present on every boot for parity with the aarch64
 # SMMU that is always on the machine; the kernel enumerates it, places its BAR, and brings it up
@@ -84,4 +94,5 @@ exec qemu-system-riscv64 \
     $IOMMU \
     $INITRD \
     $DISK \
+    $NET \
     "$@"

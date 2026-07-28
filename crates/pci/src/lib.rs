@@ -67,6 +67,12 @@ pub const VIRTIO_BLK_MODERN: u16 = 0x1042;
 /// so enumeration can say "found a disk, but it is transitional" instead of "no disk".
 pub const VIRTIO_BLK_TRANSITIONAL: u16 = 0x1001;
 
+/// The modern virtio-net device id (0x1040 + device type 1), and its transitional twin. Same
+/// recognition role as the blk pair: the net stack (milestone 30) drives modern only, and a
+/// transitional NIC is reported as such rather than counted as absent.
+pub const VIRTIO_NET_MODERN: u16 = 0x1041;
+pub const VIRTIO_NET_TRANSITIONAL: u16 = 0x1000;
+
 /// Walk every function on `buses` buses and call `f` with (bdf, vendor, device). Empty slots
 /// read vendor 0xffff (the bus's way of saying "nobody home") and are skipped; a single-function
 /// device (header type bit 7 clear) skips functions 1..8. QEMU `virt` is flat on bus 0, but the

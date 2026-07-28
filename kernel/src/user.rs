@@ -1467,6 +1467,8 @@ pub mod virtio_service {
     /// The write-path roles (milestone 32 phase 1); must match user/src/hello.rs and blk.rs.
     const ROLE_VIRTIO_BLK_WRITE: u64 = 30;
     const ROLE_VIRTIO_BLK_WRITE_ABANDON: u64 = 31;
+    /// The virtio-net driver role (milestone 30); must match user/src/hello.rs and blk.rs.
+    const ROLE_VIRTIO_NET: u64 = 40;
 
     /// Start a driver role against a discovered transport. The shared body of [`start`] (mmio),
     /// [`start_pci`] (PCIe), and the writer starters: everything from here on, the DMA region,
@@ -1563,6 +1565,161 @@ pub mod virtio_service {
     /// knows the request genuinely left before the death.
     pub fn start_write_abandoner(image: &'static [u8]) -> Option<EpId> {
         start_role(image, ROLE_VIRTIO_BLK_WRITE_ABANDON)
+    }
+
+    /// Start the virtio-net driver against the mmio NIC (milestone 30). It does a DHCP round trip
+    /// over QEMU user-mode networking and reports the offered address. `None` if no NIC is attached.
+    /// The same `wire` machinery as the disk: the DMA confinement now polices two queues, and the
+    /// driver drives receive and transmit through the one `Virtio` capability.
+    pub fn start_net(image: &'static [u8]) -> Option<EpId> {
+        let dev = crate::virtio::find_net_device()?;
+        Some(wire(
+            image,
+            crate::virtio::Transport::Mmio {
+                mmio_phys: dev.mmio_phys,
+            },
+            dev.intid,
+            ROLE_VIRTIO_NET,
+            None, // virtio-mmio has no IOMMU in front of it on either board
+        ))
+    }
+
+    /// The same net driver over the PCIe transport, behind the IOMMU (milestone 30, §20): the NIC
+    /// is confined in hardware to its DMA region and shadow page, `iommu_platform=on`, exactly the
+    /// disk's pattern. The driver cannot tell which bus it is on.
+    pub fn start_net_pci(image: &'static [u8]) -> Option<EpId> {
+        let d = crate::pci::find_net_device()?;
+        Some(wire(
+            image,
+            crate::virtio::Transport::Pci {
+                common: d.common,
+                notify_base: d.notify_base,
+                notify_mult: d.notify_mult,
+                notify_addr: [0; crate::virtio::MAX_QUEUES],
+                isr: d.isr,
+            },
+            d.intid,
+            ROLE_VIRTIO_NET,
+            Some(d.rid),
+        ))
+    }
+
+    /// The heap budget the net server (smoltcp) draws from, in pages: the socket set, per-frame
+    /// transmit buffers, and caches, plus the program's own page tables. netd caps its heap at 128
+    /// pages, so 192 leaves headroom without being unbounded.
+    const NET_SERVER_BUDGET_PAGES: u64 = 192;
+    /// smoltcp builds packets on the stack; one mapped stack page is not enough. Eight extra keeps
+    /// the poll loop clear (allocdemo needed three for `alloc` collections; smoltcp asks more).
+    const NET_SERVER_STACK_PAGES: u64 = 8;
+
+    /// Start the **net server** (milestone 30, piece 3): the `netd` binary, which runs smoltcp over
+    /// the confined NIC and does DHCP. Like [`wire`] it hands the confined `Virtio` capability, the
+    /// interrupt, a DMA page, and a report endpoint; unlike it, the server also gets an **untyped
+    /// budget** (slot 3) for the heap smoltcp allocates against, and extra stack pages. Returns the
+    /// endpoint the server reports its acquired address on, or `None` if no NIC is attached.
+    pub fn start_net_server(image: &'static [u8]) -> Option<EpId> {
+        let dev = crate::virtio::find_net_device()?;
+        Some(wire_net_server(
+            image,
+            crate::virtio::Transport::Mmio {
+                mmio_phys: dev.mmio_phys,
+            },
+            dev.intid,
+            None,
+        ))
+    }
+
+    /// The net server over the PCIe transport, behind the IOMMU (§20).
+    pub fn start_net_server_pci(image: &'static [u8]) -> Option<EpId> {
+        let d = crate::pci::find_net_device()?;
+        Some(wire_net_server(
+            image,
+            crate::virtio::Transport::Pci {
+                common: d.common,
+                notify_base: d.notify_base,
+                notify_mult: d.notify_mult,
+                notify_addr: [0; crate::virtio::MAX_QUEUES],
+                isr: d.isr,
+            },
+            d.intid,
+            Some(d.rid),
+        ))
+    }
+
+    /// [`wire`] for the net server: the same confined transport, interrupt, DMA page, and report
+    /// endpoint, plus an untyped budget for the heap and extra stack pages. `netd` is its own binary
+    /// (loaded by name), so no role selector is passed.
+    fn wire_net_server(
+        image: &'static [u8],
+        transport: crate::virtio::Transport,
+        intid: u32,
+        rid: Option<u32>,
+    ) -> EpId {
+        use crate::cap::untyped_cap;
+
+        let dma = crate::memory::alloc()
+            .expect("no DMA frame for the net server")
+            .addr();
+        // SAFETY: fresh frame via the direct map; zero it so stale RAM cannot look like a valid
+        // descriptor to the device before the driver writes the real ones.
+        unsafe {
+            core::ptr::write_bytes(mmu::phys_to_virt(dma) as *mut u8, 0, FRAME_SIZE as usize);
+        }
+
+        let irq_ep = crate::sched::create_endpoint();
+        crate::sched::bind_irq(intid, irq_ep);
+        crate::arch::irq::enable(intid);
+
+        let report = crate::sched::create_endpoint();
+        let vid = crate::virtio::register(transport, dma, FRAME_SIZE, rid);
+        let budget = crate::untyped::create(NET_SERVER_BUDGET_PAGES).expect("no untyped for netd");
+
+        // The DMA mapping plus the extra stack pages, in one array the spawn closure owns.
+        let mut maps = [Mapping {
+            va: 0,
+            phys: 0,
+            flags: Flags::user_data(),
+        }; NET_SERVER_STACK_PAGES as usize + 1];
+        maps[0] = Mapping {
+            va: DMA_VA,
+            phys: dma,
+            flags: Flags::user_data(),
+        };
+        for k in 0..NET_SERVER_STACK_PAGES as usize {
+            let phys = crate::memory::alloc()
+                .expect("no frame for the net server stack")
+                .addr();
+            // SAFETY: fresh frame via the direct map; zero it so the process starts clean.
+            unsafe {
+                core::ptr::write_bytes(mmu::phys_to_virt(phys) as *mut u8, 0, FRAME_SIZE as usize);
+            }
+            maps[k + 1] = Mapping {
+                va: USER_STACK_VA - (k as u64 + 1) * FRAME_SIZE,
+                phys,
+                flags: Flags::user_data(),
+            };
+        }
+
+        crate::sched::spawn(move || {
+            run(
+                image,
+                Spawn {
+                    arg0: 0, // netd is its own binary; no role selector
+                    arg1: dma,
+                    arg2: 0,
+                    grants: &[
+                        endpoint_cap(report, Rights::WRITE), // slot 0: report the acquired address
+                        irq_cap(intid),                      // slot 1: WAIT / ACK the interrupt
+                        virtio_cap(vid),                     // slot 2: the confined transport
+                        untyped_cap(budget),                 // slot 3: the heap's budget
+                    ],
+                    maps: &maps,
+                },
+            )
+        })
+        .expect("could not spawn the net server");
+
+        report
     }
 
     /// [`wire`] against the enumerated mmio disk, at `role`.
@@ -2475,6 +2632,12 @@ mod tests {
         program("worker").expect("no worker program in the initrd archive")
     }
 
+    /// The `netd` program's ELF bytes (milestone 30, piece 3): the smoltcp net server, a distinct
+    /// binary loaded by name.
+    fn netd_image() -> &'static [u8] {
+        program("netd").expect("no netd program in the initrd archive")
+    }
+
     /// Spin the scheduler until `done()`, or give up. Returns whether it happened.
     fn wait_for(mut done: impl FnMut() -> bool) -> bool {
         for _ in 0..2000 {
@@ -3026,6 +3189,110 @@ mod tests {
         assert!(
             ROUTED_IRQS.load(Ordering::Relaxed) > irqs_before,
             "the read completed but no device interrupt was delivered as a message",
+        );
+    }
+
+    /// **A userspace driver completes a DHCP round trip over virtio-net.** Milestone 30, end to
+    /// end, and the proof the multi-queue confinement carries a real NIC.
+    ///
+    /// The kernel enumerates the NIC and hands a driver at EL0 a confined `Virtio` capability, a DMA
+    /// page, and an interrupt. The driver brings up BOTH virtqueues (receive = 0, transmit = 1),
+    /// posts a receive buffer, transmits a hand-built DHCP DISCOVER, and waits for QEMU user-mode
+    /// networking's OFFER. It reports the offered address, which must land in slirp's 10.0.2.0/24.
+    /// Because a valid OFFER for our transaction is the only path to that report, a match proves the
+    /// DISCOVER left (TX) and the OFFER returned (RX), across both queues and both directions of the
+    /// confinement, with no TCP/IP stack in the loop.
+    #[test_case]
+    fn a_userspace_driver_completes_a_dhcp_round_trip_over_virtio_net() {
+        use crate::arch::exceptions::ROUTED_IRQS;
+
+        let report = match virtio_service::start_net(init_image()) {
+            Some(r) => r,
+            None => {
+                // No NIC on this run (a bare boot). The test runners always attach one, so this
+                // branch is not the parity gate. See scripts/qemu-runner*.sh (CRICKER_NET).
+                crate::println!("    (no virtio-net device attached; skipping)");
+                return;
+            }
+        };
+
+        let irqs_before = ROUTED_IRQS.load(Ordering::Relaxed);
+        let yiaddr = sched::ipc_recv(report)[0] as u32;
+
+        assert_eq!(
+            yiaddr & 0xffff_ff00,
+            0x0A00_0200,
+            "the DHCP OFFER's yiaddr {yiaddr:#010x} is not in QEMU slirp's 10.0.2.0/24: the round \
+             trip did not complete correctly",
+        );
+        assert!(
+            ROUTED_IRQS.load(Ordering::Relaxed) > irqs_before,
+            "the DHCP exchange completed but no device interrupt was delivered as a message",
+        );
+    }
+
+    /// The same DHCP round trip over the PCIe transport, behind the IOMMU (milestone 30, §20): the
+    /// NIC is confined in hardware to its DMA region, and the driver binary is byte-identical to the
+    /// mmio one. Proves the multi-queue confinement and the net driver work over the bus real
+    /// hardware uses.
+    #[test_case]
+    fn a_userspace_driver_completes_a_dhcp_round_trip_over_virtio_net_pci() {
+        let report = match virtio_service::start_net_pci(init_image()) {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no virtio-net-pci device attached; skipping)");
+                return;
+            }
+        };
+
+        let yiaddr = sched::ipc_recv(report)[0] as u32;
+        assert_eq!(
+            yiaddr & 0xffff_ff00,
+            0x0A00_0200,
+            "the DHCP OFFER's yiaddr {yiaddr:#010x} over PCIe is not in QEMU slirp's 10.0.2.0/24",
+        );
+    }
+
+    /// **The net server: smoltcp running DHCP over the confined NIC** (milestone 30, piece 3). The
+    /// integration proof and the thesis headline for networking: a real, reused TCP/IP stack
+    /// (smoltcp, not hand-built) runs entirely at EL0, brings the NIC up through the `Virtio`
+    /// capability, and completes a DHCP handshake against QEMU user-mode networking. The kernel
+    /// knows nothing about DHCP; it owns only the DMA confinement. The server reports the acquired
+    /// address, which must land in slirp's 10.0.2.0/24, so only a real DHCP round trip driven by
+    /// smoltcp over the confined NIC can produce it.
+    #[test_case]
+    fn the_net_server_acquires_a_dhcp_lease_over_smoltcp() {
+        let report = match virtio_service::start_net_server(netd_image()) {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no virtio-net device attached; skipping)");
+                return;
+            }
+        };
+        let addr = sched::ipc_recv(report)[0] as u32;
+        assert_eq!(
+            addr & 0xffff_ff00,
+            0x0A00_0200,
+            "smoltcp's DHCP lease {addr:#010x} is not in QEMU slirp's 10.0.2.0/24",
+        );
+    }
+
+    /// The net server over the PCIe transport, behind the IOMMU (milestone 30, §20): smoltcp drives
+    /// a NIC confined in hardware and still gets its lease.
+    #[test_case]
+    fn the_net_server_acquires_a_dhcp_lease_over_smoltcp_pci() {
+        let report = match virtio_service::start_net_server_pci(netd_image()) {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no virtio-net-pci device attached; skipping)");
+                return;
+            }
+        };
+        let addr = sched::ipc_recv(report)[0] as u32;
+        assert_eq!(
+            addr & 0xffff_ff00,
+            0x0A00_0200,
+            "smoltcp's DHCP lease {addr:#010x} over PCIe is not in QEMU slirp's 10.0.2.0/24",
         );
     }
 
@@ -3952,6 +4219,11 @@ mod riscv_virtio_tests {
         program("blk").expect("no blk program in the initrd archive")
     }
 
+    /// The `netd` program's ELF bytes (milestone 30, piece 3): the smoltcp net server.
+    fn netd_image() -> &'static [u8] {
+        program("netd").expect("no netd program in the initrd archive")
+    }
+
     /// Spin the scheduler until `done()`, or give up. The aarch64 module's helper, re-declared
     /// because that module is aarch64-gated.
     fn wait_for(mut done: impl FnMut() -> bool) -> bool {
@@ -4036,6 +4308,91 @@ mod riscv_virtio_tests {
         assert!(
             ROUTED_IRQS.load(Ordering::Relaxed) > irqs_before,
             "the read completed but no device interrupt was delivered as a message",
+        );
+    }
+
+    /// The virtio-net DHCP round trip, on the second ISA (milestone 30): a driver at EL0 brings up
+    /// both queues, transmits a DHCP DISCOVER, and receives slirp's OFFER, all behind the multi-queue
+    /// confinement, with the completion delivered via the PLIC. Parity with the aarch64 net test.
+    #[test_case]
+    fn a_userspace_driver_completes_a_dhcp_round_trip_over_virtio_net() {
+        use crate::arch::exceptions::ROUTED_IRQS;
+
+        let report = match virtio_service::start_net(blk_image()) {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no virtio-net device attached; skipping)");
+                return;
+            }
+        };
+
+        let irqs_before = ROUTED_IRQS.load(Ordering::Relaxed);
+        let yiaddr = sched::ipc_recv(report)[0] as u32;
+
+        assert_eq!(
+            yiaddr & 0xffff_ff00,
+            0x0A00_0200,
+            "the DHCP OFFER's yiaddr {yiaddr:#010x} is not in QEMU slirp's 10.0.2.0/24",
+        );
+        assert!(
+            ROUTED_IRQS.load(Ordering::Relaxed) > irqs_before,
+            "the DHCP exchange completed but no device interrupt was delivered as a message",
+        );
+    }
+
+    /// The riscv net round trip over PCIe, behind the RISC-V IOMMU (milestone 30, §20).
+    #[test_case]
+    fn a_userspace_driver_completes_a_dhcp_round_trip_over_virtio_net_pci() {
+        let report = match virtio_service::start_net_pci(blk_image()) {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no virtio-net-pci device attached; skipping)");
+                return;
+            }
+        };
+
+        let yiaddr = sched::ipc_recv(report)[0] as u32;
+        assert_eq!(
+            yiaddr & 0xffff_ff00,
+            0x0A00_0200,
+            "the DHCP OFFER's yiaddr {yiaddr:#010x} over PCIe is not in QEMU slirp's 10.0.2.0/24",
+        );
+    }
+
+    /// The net server (smoltcp) acquiring a DHCP lease over the confined NIC, on the second ISA
+    /// (milestone 30, piece 3). A reused userspace TCP/IP stack, driving a kernel-confined device.
+    #[test_case]
+    fn the_net_server_acquires_a_dhcp_lease_over_smoltcp() {
+        let report = match virtio_service::start_net_server(netd_image()) {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no virtio-net device attached; skipping)");
+                return;
+            }
+        };
+        let addr = sched::ipc_recv(report)[0] as u32;
+        assert_eq!(
+            addr & 0xffff_ff00,
+            0x0A00_0200,
+            "smoltcp's DHCP lease {addr:#010x} is not in QEMU slirp's 10.0.2.0/24",
+        );
+    }
+
+    /// The riscv net server over PCIe, behind the RISC-V IOMMU (milestone 30, §20).
+    #[test_case]
+    fn the_net_server_acquires_a_dhcp_lease_over_smoltcp_pci() {
+        let report = match virtio_service::start_net_server_pci(netd_image()) {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no virtio-net-pci device attached; skipping)");
+                return;
+            }
+        };
+        let addr = sched::ipc_recv(report)[0] as u32;
+        assert_eq!(
+            addr & 0xffff_ff00,
+            0x0A00_0200,
+            "smoltcp's DHCP lease {addr:#010x} over PCIe is not in QEMU slirp's 10.0.2.0/24",
         );
     }
 

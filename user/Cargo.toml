@@ -118,6 +118,14 @@ path = "src/elbench.rs"
 test = false
 bench = false
 
+# The net server (milestone 30, piece 3): smoltcp as a userspace TCP/IP stack driving the confined
+# NIC. Links `extern crate alloc` over user_rt's heap. `mkinitrd` packs it as "netd" for both ISAs.
+[[bin]]
+name = "netd"
+path = "src/netd.rs"
+test = false
+bench = false
+
 [dependencies]
 abi = { version = "0.1.0", path = "../crates/abi" }
 coremark = { version = "0.1.0", path = "../crates/coremark" }
@@ -125,3 +133,15 @@ crickerfs = { version = "0.1.0", path = "../crates/crickerfs" }
 elf = { version = "0.1.0", path = "../crates/elf" }
 linedisc = { version = "0.1.0", path = "../crates/linedisc" }
 user_rt = { version = "0.1.0", path = "../crates/user_rt" }
+
+# smoltcp (milestone 30, piece 3): the userspace TCP/IP stack. no_std, heap over user_rt's
+# UntypedHeap. Pinned at 0.13.1; divergence policy is the vendored-engine discipline (DECISIONS §18).
+smoltcp = { version = "0.13.1", default-features = false, features = [
+    "alloc",
+    "medium-ethernet",
+    "proto-ipv4",
+    "proto-dhcpv4",
+    "socket-udp",
+    "socket-tcp",
+    "socket-dhcpv4",
+] }

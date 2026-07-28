@@ -21,7 +21,9 @@ const SLOTS: u64 = VIRTIO_SLOTS;
 
 /// "virt", little-endian, at offset 0x000 of every slot.
 const MAGIC: u32 = 0x7472_6976;
-/// DeviceID at offset 0x008. 0 means "empty slot"; 2 means "block device".
+/// DeviceID at offset 0x008. 0 means "empty slot"; the virtio device-type numbers we route: 1 is a
+/// network card, 2 is a block device.
+const DEVICE_ID_NET: u32 = 1;
 const DEVICE_ID_BLOCK: u32 = 2;
 
 // Register offsets we read here. The driver knows many more; the kernel knows exactly three.
@@ -29,9 +31,11 @@ const REG_MAGIC: u64 = 0x000;
 const REG_VERSION: u64 = 0x004;
 const REG_DEVICE_ID: u64 = 0x008;
 
-/// A block device found on the bus: where its registers are, and which interrupt it raises.
+/// A virtio device found on the mmio bus: where its registers are, and which interrupt it raises.
+/// Device-neutral on purpose, because the fields the kernel hands a driver (a register base and an
+/// interrupt) are the same whether the device is a disk or a NIC; only the driver differs.
 #[derive(Debug, Clone, Copy)]
-pub struct BlockDevice {
+pub struct VirtioMmioDevice {
     /// Physical address of this slot's registers. Handed to the driver as a device mapping.
     pub mmio_phys: u64,
     /// The interrupt this device raises. Handed to the driver as an `Irq` capability.
@@ -45,13 +49,15 @@ fn read_reg(slot: u64, offset: u64) -> u32 {
     unsafe { core::ptr::read_volatile(va as *const u32) }
 }
 
-/// Scan the bus for the first virtio block device. `None` if there is no disk attached.
-pub fn find_block_device() -> Option<BlockDevice> {
+/// Scan the bus for the first virtio device of type `device_id`. The kernel's whole knowledge of a
+/// device at this layer is its type number and its slot; which driver claims the type is a userspace
+/// decision (see `virtio_service`).
+fn find_by_device_id(device_id: u32) -> Option<VirtioMmioDevice> {
     for slot in 0..SLOTS {
         if read_reg(slot, REG_MAGIC) != MAGIC {
             continue; // not a virtio-mmio slot at all
         }
-        if read_reg(slot, REG_DEVICE_ID) != DEVICE_ID_BLOCK {
+        if read_reg(slot, REG_DEVICE_ID) != device_id {
             continue; // empty, or some other kind of device
         }
 
@@ -62,12 +68,22 @@ pub fn find_block_device() -> Option<BlockDevice> {
             "expected modern virtio-mmio"
         );
 
-        return Some(BlockDevice {
+        return Some(VirtioMmioDevice {
             mmio_phys: VIRTIO_MMIO_BASE + slot * SLOT_STRIDE,
             intid: VIRTIO_IRQ_BASE + slot as u32,
         });
     }
     None
+}
+
+/// Scan the bus for the first virtio block device. `None` if there is no disk attached.
+pub fn find_block_device() -> Option<VirtioMmioDevice> {
+    find_by_device_id(DEVICE_ID_BLOCK)
+}
+
+/// Scan the bus for the first virtio network device. `None` if there is no NIC attached.
+pub fn find_net_device() -> Option<VirtioMmioDevice> {
+    find_by_device_id(DEVICE_ID_NET)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -350,9 +366,9 @@ struct Device {
 /// The most virtio transports we will drive. Each `register` call takes a slot for the life of
 /// the boot (there is no unregister), and the test suite registers one per driver it spawns: the
 /// reader, two attackers, the PCIe reader, two writers, the abandoner, and its post-kill reader
-/// already make eight, so eight was no longer generous. Fixed-size (milestone 14 phase B.1):
-/// probing never allocates.
-const MAX_DEVICES: usize = 16;
+/// already make eight, and milestone 30 adds the net driver and net server over both buses (four
+/// more), so the ceiling grew again. Fixed-size (milestone 14 phase B.1): probing never allocates.
+const MAX_DEVICES: usize = 24;
 
 /// The device table, fixed. `get`/`get_mut` mirror the slice API the call sites already used.
 struct Devices {

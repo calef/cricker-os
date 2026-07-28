@@ -551,6 +551,8 @@ fn initrd_riscv() -> bool {
             "blk",
             "--bin",
             "allocdemo",
+            "--bin",
+            "netd",
             "--target",
             RISCV_TARGET,
         ],
@@ -580,6 +582,7 @@ fn initrd_riscv() -> bool {
         ("termd", "termd"),
         ("blk", "blk"),
         ("allocdemo", "allocdemo"),
+        ("netd", "netd"),
     ];
     let mut blobs: Vec<(&str, Vec<u8>)> = Vec::new();
     for &(archive_name, bin_name) in entries {
@@ -686,6 +689,13 @@ fn mkinitrd() -> bool {
             return false;
         }
     };
+    let netd = match std::fs::read(bin_elf("netd")) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("netd"));
+            return false;
+        }
+    };
     // "init" is the hello binary (the kernel loads it, init re-enters it at its remaining roles);
     // "worker", "console", "input", "shell" are the split system binaries (19f.2-5), "termd" is
     // the line discipline between them (milestone 28), "coremark" is the compute workload (19e),
@@ -702,6 +712,7 @@ fn mkinitrd() -> bool {
         ("coremark", &coremark),
         ("elbench", &elbench),
         ("allocdemo", &allocdemo),
+        ("netd", &netd),
     ];
     // The std demo (milestone 27) rides along IFF it has been built (`cargo xtask user-std`, which
     // `test` runs). It builds through a separate toolchain and target, so an interactive `run` that
@@ -944,6 +955,7 @@ fn test() -> bool {
     }
     unsafe { std::env::set_var("CRICKER_INITRD", riscv_initrd_path()) };
     unsafe { std::env::set_var("CRICKER_DISK", disk_path()) };
+    unsafe { std::env::set_var("CRICKER_NET", "1") }; // a virtio-net NIC for the net test (m30)
     run("cargo", &["test", "-p", "kernel", "--target", RISCV_TARGET])
 }
 
@@ -1361,6 +1373,9 @@ fn cargo(args: &[&str]) -> bool {
     // script ignores it when the file is not there (which is any build before `user` exists).
     unsafe { std::env::set_var("CRICKER_INITRD", initrd_path()) };
     unsafe { std::env::set_var("CRICKER_DISK", disk_path()) };
+    // Attach a virtio-net NIC too (milestone 30): slirp needs no host file, so it is always on for
+    // tests, and the net driver's DHCP round-trip test exercises it.
+    unsafe { std::env::set_var("CRICKER_NET", "1") };
 
     run("cargo", args)
 }
