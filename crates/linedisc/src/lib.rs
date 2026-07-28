@@ -201,7 +201,12 @@ impl LineDisc {
             EscState::Idle => {}
             EscState::Esc => {
                 match b {
-                    b'[' => self.esc = EscState::Csi { params: [0; 2], n: 0 },
+                    b'[' => {
+                        self.esc = EscState::Csi {
+                            params: [0; 2],
+                            n: 0,
+                        }
+                    }
                     b'O' => self.esc = EscState::Ss3,
                     _ => {} // an escape we do not speak; drop it and the introducer
                 }
