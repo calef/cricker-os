@@ -360,7 +360,10 @@ fn user_fault(frame: &TrapFrame, esr: u64) -> ! {
     );
     crate::println!("  the kernel is fine.");
 
-    crate::sched::exit();
+    // Deliver the fault to a supervisor if this thread had one, and become a corpse; otherwise this
+    // is `exit`'s unsupervised path (Finished, reaped by the next thread). See DECISIONS §26 and
+    // sched::depart. `frame.elr` is the faulting pc, `far` the faulting address.
+    crate::sched::fault(frame.elr, far);
 }
 
 /// Service one hardware interrupt.

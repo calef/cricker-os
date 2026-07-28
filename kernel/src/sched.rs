@@ -581,25 +581,98 @@ pub fn yield_now() {
     schedule();
 }
 
-/// The current thread is done. Never returns.
+/// The current thread exited cleanly (`SYS_EXIT`). Never returns.
 pub fn exit() -> ! {
+    depart(abi::fault::EVENT_EXIT, 0, 0)
+}
+
+/// The current thread faulted (a bad access, an illegal instruction) and is being killed. Never
+/// returns. `pc` is the faulting instruction and `addr` the faulting address (0 if the fault class
+/// carries none). The arch fault handlers call this from the faulting thread's kernel stack, the
+/// same context `exit` runs in, so the departure below is identical bar the event code and words.
+pub fn fault(pc: u64, addr: u64) -> ! {
+    depart(abi::fault::EVENT_FAULT, pc, addr)
+}
+
+/// **A thread's last act: report its death, then leave the CPU forever** (milestone 22, §26).
+///
+/// Two outcomes, decided by whether the thread was spawned with a supervision endpoint (its
+/// `fault_ep`, set at `START` from the reserved fault slot):
+///
+///   - **Unsupervised** (`fault_ep == None`): today's behaviour exactly. Mark `Finished` and
+///     `schedule()` away; the next thread's `finish_switch` reaps it once it is off this stack.
+///   - **Supervised**: build the five-word §26 message, retain it on the corpse for postmortem,
+///     deliver it to the supervision endpoint (waking a waiting supervisor, or parking the corpse
+///     on the endpoint so the message is not lost if none is waiting), and mark the thread `Dead`.
+///     A `Dead` corpse is never reaped by `finish_switch`; it persists, registers and address
+///     space intact, until the supervisor reaps it with §16 revocation.
+///
+/// Either way we are still running on the thread's own kernel stack, so we cannot free it here; we
+/// only mark state and `schedule()`, exactly as `exit` always has.
+fn depart(event: u64, pc: u64, addr: u64) -> ! {
     {
         let mut guard = SCHED.lock();
-        let sched = guard.as_mut().expect("exit before sched::init");
+        let sched = guard.as_mut().expect("depart before sched::init");
         let current = current_tid();
-        if let Some(t) = sched.threads.get_mut(current) {
-            t.state = State::Finished;
+
+        let fault_ep = sched.threads.get(current).and_then(|t| t.fault_ep);
+
+        match fault_ep {
+            None => {
+                if let Some(t) = sched.threads.get_mut(current) {
+                    t.state = State::Finished;
+                }
+            }
+            Some(ep) => {
+                let msg = [event, current, pc, addr, 0];
+                if let Some(t) = sched.threads.get_mut(current) {
+                    // Retain the message on the corpse (postmortem) and stage it as the mailbox a
+                    // parked-corpse delivery will hand the supervisor. Dead: never runs again.
+                    t.fault_msg = Some(msg);
+                    t.mailbox = msg;
+                    t.state = State::Dead;
+                }
+                deliver_death(sched, current, ep, msg);
+            }
         }
-        // Deliberately NOT pushed back onto the ready queue, and deliberately not removed from
-        // `threads` either: we are still running on its stack. Dropping the `Thread` here would
-        // unmap the very stack these instructions are using.
-        //
-        // The reaping happens in `schedule()`, from the *next* thread, once we are safely off
-        // this stack. Classic, and the reason every kernel has something called a reaper.
+        // Not requeued and not removed: we are still on this stack. The switch below leaves it,
+        // and for a Finished thread the next thread reaps it; a Dead one waits for the supervisor.
     }
 
     schedule();
-    unreachable!("a finished thread was scheduled again");
+    unreachable!("a departed thread was scheduled again");
+}
+
+/// Deliver a corpse's five-word death message to its supervision endpoint. Caller holds `SCHED`
+/// and has already marked the corpse `Dead` with `msg` in its mailbox.
+///
+/// This is the ordinary synchronous-send rendezvous (`Endpoint::send`), reused: if a supervisor is
+/// blocked in `RECV`, hand it the message and wake it; if none is, the corpse joins the endpoint's
+/// sender queue with the message in its mailbox, so the notification waits there rather than being
+/// lost (the same guarantee an ordinary blocked sender gets, and the reason a data-carrying death
+/// uses the sender queue rather than the data-less IRQ signal count). The corpse is never woken:
+/// `ipc_recv` recognises a `Dead` sender and leaves it dead after taking its message, the same way
+/// it leaves a `CALL` caller blocked. If the endpoint itself is gone (the supervisor was torn down
+/// first), the message is simply dropped, like an interrupt with no live endpoint.
+fn deliver_death(sched: &mut Scheduler, corpse: Tid, ep: EpId, msg: [u64; 5]) {
+    let me = tcb_ptr(sched, corpse);
+    let Some(endpoint) = endpoint_of(sched, ep) else {
+        return;
+    };
+    // SAFETY: `me` is the corpse, live in the table (Dead, not yet reaped) and on no queue; if it
+    // joins the sender queue below it stays put, since nothing wakes or reaps a Dead thread until
+    // the supervisor drains it and revokes. Same pointer discipline as ipc_send.
+    match unsafe { endpoint.send(me) } {
+        ipc::Send::Rendezvous(receiver) => {
+            // SAFETY: wait-queue entries are live Blocked threads; the id revalidates it.
+            let receiver = unsafe { (*receiver).id };
+            sched.threads.get_mut(receiver).unwrap().mailbox = msg;
+            wake(sched, receiver);
+        }
+        ipc::Send::Blocked => {
+            // The corpse is parked on the sender queue now, its mailbox already holding `msg`.
+        }
+    }
 }
 
 /// Called from the timer IRQ. **Records** that a switch is wanted; does not switch.
@@ -852,7 +925,7 @@ pub fn irq_notify(ep: EpId) {
         // SAFETY: only live Blocked threads sit on wait queues; reading the id revalidates it
         // through the table for everything after.
         let waiter = unsafe { (*waiter).id };
-        sched.threads.get_mut(waiter).unwrap().mailbox = [1, 0, 0];
+        sched.threads.get_mut(waiter).unwrap().mailbox = [1, 0, 0, 0, 0];
         wake(sched, waiter);
     }
 }
@@ -926,6 +999,14 @@ fn wake(sched: &mut Scheduler, tid: Tid) {
     }
 }
 
+/// Widen an ordinary three-word IPC message into the five-word mailbox. Words 3 and 4 are zero;
+/// only a fault/exit message (DECISIONS §26) ever fills them, and a `RECV` hands all five back, so
+/// an ordinary receiver simply never reads the top two. Keeping the mailbox one width means the
+/// fault path reuses the same rendezvous machinery rather than growing a parallel one.
+fn wide(m: [u64; 3]) -> [u64; 5] {
+    [m[0], m[1], m[2], 0, 0]
+}
+
 /// **Send three words to an endpoint, blocking until a receiver takes them.**
 ///
 /// The synchronous rendezvous, sender's half:
@@ -939,6 +1020,7 @@ fn wake(sched: &mut Scheduler, tid: Tid) {
 /// Callable by a kernel thread directly (this function) or by a user thread through the `SEND`
 /// method on an endpoint capability (see syscall.rs). Same code underneath.
 pub fn ipc_send(ep: EpId, msg: [u64; 3]) {
+    let msg = wide(msg);
     let block = {
         let mut guard = SCHED.lock();
         let sched = guard.as_mut().expect("no scheduler");
@@ -981,7 +1063,7 @@ pub fn ipc_send(ep: EpId, msg: [u64; 3]) {
 
 /// **Receive three words from an endpoint, blocking until one arrives.** The mirror of
 /// [`ipc_send`].
-pub fn ipc_recv(ep: EpId) -> [u64; 3] {
+pub fn ipc_recv(ep: EpId) -> [u64; 5] {
     let immediate = {
         let mut guard = SCHED.lock();
         let sched = guard.as_mut().expect("no scheduler");
@@ -993,12 +1075,12 @@ pub fn ipc_recv(ep: EpId) -> [u64; 3] {
         // reaper sets the flag and wakes it, and it returns its stale mailbox for the layer to drop.)
         let Some(endpoint) = endpoint_of(sched, ep) else {
             set_ipc_aborted(sched, current);
-            return [0, 0, 0];
+            return [0, 0, 0, 0, 0];
         };
         // SAFETY: as in ipc_send: the running thread, and Blocked-while-queued keeps it live.
         match unsafe { endpoint.recv(me) } {
             // An interrupt already fired while we were not waiting. Take it and do not block.
-            ipc::Recv::Signal => Some([1, 0, 0]),
+            ipc::Recv::Signal => Some([1, 0, 0, 0, 0]),
             ipc::Recv::FromSender(sender) => {
                 // SAFETY: wait-queue entries are live Blocked threads; the id revalidates it.
                 let sender = unsafe { (*sender).id };
@@ -1009,11 +1091,17 @@ pub fn ipc_recv(ep: EpId) -> [u64; 3] {
                 // with its own request masquerading as a reply. Serve CALL endpoints with RECV_CAP; a
                 // plain RECV here leaves the caller hung, the same no-timeout limitation as a reply
                 // that never comes.
-                let is_caller = matches!(
+                //
+                // A **dead sender** is a fault/exit corpse parked on its supervision endpoint
+                // (DECISIONS §26): deliver its five-word message but never wake it, exactly as for a
+                // caller, because it is dead-until-reaped and must not run again. `recv` already
+                // popped it off the sender queue, so it is now a free-standing corpse the supervisor
+                // reaps with revocation.
+                let leave_blocked = matches!(
                     sched.threads.get(sender).unwrap().outgoing_cap,
                     Some(c) if matches!(c.object, crate::cap::Object::Reply(_))
-                );
-                if !is_caller {
+                ) || sched.threads.get(sender).unwrap().state == State::Dead;
+                if !leave_blocked {
                     wake(sched, sender);
                 }
                 Some(msg)
@@ -1072,14 +1160,14 @@ pub fn ipc_send_cap(ep: EpId, data: u64, cap: crate::cap::Cap) {
                 let receiver = unsafe { (*receiver).id };
                 let r = sched.threads.get_mut(receiver).unwrap();
                 let slot = r.cspace.insert(cap).unwrap_or(NO_CAP);
-                r.mailbox = [data, slot, 0];
+                r.mailbox = [data, slot, 0, 0, 0];
                 wake(sched, receiver);
                 false
             }
             ipc::Send::Blocked => {
                 // `send` queued `current`; we park the data word and the capability to hand over.
                 let me = sched.threads.get_mut(current).unwrap();
-                me.mailbox = [data, 0, 0];
+                me.mailbox = [data, 0, 0, 0, 0];
                 me.outgoing_cap = Some(cap);
                 me.state = State::Blocked;
                 true
@@ -1154,7 +1242,8 @@ pub fn ipc_recv_cap(ep: EpId) -> [u64; 3] {
             schedule(); // a capability-carrying sender fills our mailbox and wakes us
             let guard = SCHED.lock();
             let sched = guard.as_ref().expect("no scheduler");
-            sched.threads.get(current_tid()).unwrap().mailbox
+            let m = sched.threads.get(current_tid()).unwrap().mailbox;
+            [m[0], m[1], m[2]] // RECV_CAP carries three words; the top two are the fault path's
         }
     }
 }
@@ -1190,7 +1279,7 @@ pub fn ipc_call(ep: EpId, msg: [u64; 2]) -> [u64; 3] {
                 // A server is parked in RECV_CAP: hand it the reply cap and the two words now.
                 let r = sched.threads.get_mut(receiver).unwrap();
                 let slot = r.cspace.insert(reply).unwrap_or(NO_CAP);
-                r.mailbox = [msg[0], slot, msg[1]];
+                r.mailbox = [msg[0], slot, msg[1], 0, 0];
                 wake(sched, receiver);
             }
             ipc::Send::Blocked => {
@@ -1198,7 +1287,7 @@ pub fn ipc_call(ep: EpId, msg: [u64; 2]) -> [u64; 3] {
                 // in `outgoing_cap` so the eventual RECV_CAP hands it over and, seeing a Reply, leaves
                 // us blocked (see ipc_recv_cap).
                 let me = sched.threads.get_mut(current).unwrap();
-                me.mailbox = [msg[0], msg[1], 0];
+                me.mailbox = [msg[0], msg[1], 0, 0, 0];
                 me.outgoing_cap = Some(reply);
             }
         }
@@ -1211,7 +1300,8 @@ pub fn ipc_call(ep: EpId, msg: [u64; 2]) -> [u64; 3] {
 
     let guard = SCHED.lock();
     let sched = guard.as_ref().expect("no scheduler");
-    sched.threads.get(current_tid()).unwrap().mailbox
+    let m = sched.threads.get(current_tid()).unwrap().mailbox;
+    [m[0], m[1], m[2]] // a reply is two words plus the pad; the fault path owns the top two
 }
 
 /// **Reply: deliver two words to a blocked caller and wake it** (milestone 12). The other half of
@@ -1222,7 +1312,7 @@ pub fn ipc_reply(caller: Tid, msg: [u64; 2]) {
     let mut guard = SCHED.lock();
     let sched = guard.as_mut().expect("no scheduler");
     if let Some(t) = sched.threads.get_mut(caller) {
-        t.mailbox = [msg[0], msg[1], 0];
+        t.mailbox = [msg[0], msg[1], 0, 0, 0];
         wake(sched, caller);
     }
 }
@@ -1340,7 +1430,12 @@ fn reap_region_objects(base: u64, end: u64) -> Result<(), ()> {
     // --- Refuse phase: change nothing until every object in the region can be torn down. ---
 
     // A live thread (Ready/Running/Blocked) in the region: freeing its page would pull the stack, or
-    // the running address space, out from under a thread that can still be scheduled.
+    // the running address space, out from under a thread that can still be scheduled. A `Dead`
+    // corpse (milestone 22) is *not* live: it never runs again, so it is reapable here exactly like
+    // an `Embryo` or a `Finished` thread, which is precisely what "reaped with §16 revocation"
+    // (DECISIONS §26) means. Its page's region stays pinned through this reap, so dropping its bound
+    // address space below refuses early in `untyped::destroy` (before that call's SCHED-taking
+    // sweep), the same property a configured embryo already relies on.
     for t in sched.threads.iter_mut() {
         let phys = page_of(t);
         let live = matches!(t.state, State::Ready | State::Running | State::Blocked);
@@ -1474,14 +1569,29 @@ pub fn configure_tcb(
 /// **Install a capability into an embryo's cspace** (milestone 19c.3): the child's initial
 /// authority, granted one slot at a time before it runs. Refuses a non-embryo. Returns the child
 /// slot the capability landed in.
-pub fn tcb_insert_cap(tid: Tid, cap: crate::cap::Cap) -> Result<u64, abi::Error> {
+///
+/// `target` is `None` for first-free placement (the original behaviour) or `Some(slot)` to place
+/// the capability in a specific free slot, which a supervisor uses to put a child's supervision
+/// endpoint in the reserved fault slot (milestone 22). A targeted insert into an occupied or
+/// out-of-range slot is `OutOfMemory`, so the reservation cannot be quietly overwritten.
+pub fn tcb_insert_cap(
+    tid: Tid,
+    cap: crate::cap::Cap,
+    target: Option<u64>,
+) -> Result<u64, abi::Error> {
     let mut guard = SCHED.lock();
     let sched = guard.as_mut().ok_or(abi::Error::NoSuchSlot)?;
     let t = sched.threads.get_mut(tid).ok_or(abi::Error::NoSuchSlot)?;
     if t.state != State::Embryo {
         return Err(abi::Error::WrongObject);
     }
-    t.cspace.insert(cap).map_err(|_| abi::Error::OutOfMemory)
+    match target {
+        None => t.cspace.insert(cap).map_err(|_| abi::Error::OutOfMemory),
+        Some(slot) => t
+            .cspace
+            .insert_at(slot, cap)
+            .map_err(|_| abi::Error::OutOfMemory),
+    }
 }
 
 /// **Start an embryo** (milestone 19c.3): the no-start-before-whole gate, then make it runnable.
@@ -1501,6 +1611,18 @@ pub fn start_tcb(tid: Tid, args: [u64; 3]) -> Result<(), abi::Error> {
     if t.space.is_none() || t.entry.0 == 0 {
         return Err(abi::Error::NotPermitted); // configure it first
     }
+
+    // **The spawn-slot convention** (milestone 22, DECISIONS §26). If the reserved fault slot holds
+    // an Endpoint capability, this thread is supervised: record the endpoint as its fault target
+    // and consume the slot, so the child cannot forge fault messages on it (the kernel stays the
+    // only sender on this path, §26.5). Supervision is fixed here, at spawn, and never changes.
+    if let Ok(fault_cap) = t.cspace.get(abi::fault::FAULT_EP_SLOT)
+        && let crate::cap::Object::Endpoint(ep) = fault_cap.object
+    {
+        t.fault_ep = Some(ep);
+        let _ = t.cspace.delete(abi::fault::FAULT_EP_SLOT);
+    }
+
     t.start_args = args; // the child's x0, x1, x2 (19d/19e)
     if !t.arm_for_start() {
         return Err(abi::Error::OutOfMemory); // no kernel stack to be had
@@ -1554,6 +1676,18 @@ pub fn current_kernel_stack_top() -> Option<u64> {
 
 pub fn current() -> Tid {
     current_tid()
+}
+
+/// **Postmortem: read a corpse's retained fault/exit message** (milestone 22, test support). A
+/// `Dead` thread keeps its five-word §26 message until the supervisor reaps it, so this proves the
+/// corpse's TCB still holds its fault-time state after the notification was delivered. `None` if
+/// the name does not resolve or the thread is not a corpse.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn corpse_fault_msg(tid: Tid) -> Option<[u64; 5]> {
+    let guard = SCHED.lock();
+    let sched = guard.as_ref()?;
+    let t = sched.threads.get(tid)?;
+    (t.state == State::Dead).then_some(t.fault_msg).flatten()
 }
 
 pub fn thread_count() -> usize {
@@ -2117,7 +2251,13 @@ mod tests {
         );
 
         let msg = super::ipc_recv(ep); // collects the parked message, wakes the sender
-        assert_eq!(msg, [0x1234, 0x5678, 0x9abc], "wrong message received");
+        // Five words now (the top two are the fault path's, DECISIONS §26); an ordinary send fills
+        // the first three and leaves the rest zero.
+        assert_eq!(
+            msg,
+            [0x1234, 0x5678, 0x9abc, 0, 0],
+            "wrong message received"
+        );
 
         for _ in 0..50 {
             if SENT_RETURNED.load(Ordering::SeqCst) {

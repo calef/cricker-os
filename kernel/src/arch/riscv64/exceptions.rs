@@ -323,7 +323,10 @@ fn user_fault(frame: &TrapFrame, scause: u64, code: u64) -> ! {
     );
     crate::println!("  the kernel is fine.");
 
-    crate::sched::exit();
+    // Deliver the fault to a supervisor if this thread had one, and become a corpse; otherwise the
+    // unsupervised path (Finished, reaped by the next thread), exactly as `exit`. DECISIONS §26,
+    // sched::depart. `frame.sepc` is the faulting pc, `frame.stval` the faulting address.
+    crate::sched::fault(frame.sepc, frame.stval);
 }
 
 /// Prove the trap path works end to end: execute a breakpoint and return. If traps are wired,

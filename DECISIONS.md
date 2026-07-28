@@ -1497,6 +1497,46 @@ Surface cost: no new syscall and no new method. Spawn already carries grants; de
 kernel-internal send. The additions are a message-format convention and a spawn-slot convention,
 recorded in notes/abi.md when built.
 
+### Implementation (milestone 22, phase A), the decisions the build settled
+
+The five sub-decisions above are the design; building it settled the details they left open. These
+are amendments to §26, not a new section, per its own "no new section" intent.
+
+1. **The spawn-slot convention is the last cspace slot, consumed at `START`.** The designated
+   endowment (§26.2) is a real capability in a reserved slot, `abi::fault::FAULT_EP_SLOT` (=
+   `CSPACE_SLOTS - 1 = 15`). A supervisor places its endpoint there with `Tcb::CAP_INSERT`, which
+   grew an explicit target-slot argument (`0` keeps first-free, `n` targets slot `n - 1`) so the
+   fault endpoint lands in the reserved slot instead of wherever first-free fell. That is the one
+   surface change, and it is an *argument* to an existing method, not a new method. At `START` the
+   kernel reads the slot: an `Endpoint` there makes the thread supervised, and the kernel records the
+   endpoint (`Thread::fault_ep`) **and clears the slot**, so the child cannot forge messages on its
+   own supervision endpoint. The *last* slot is deliberate: ordinary children fill low slots from
+   zero, so none accidentally lands a working endpoint there and gets read as supervised.
+
+2. **Delivery reuses the synchronous-send rendezvous; the corpse is the parked sender.** The
+   non-blocking requirement (do not lose the event if the supervisor is not in `RECV`) is met by the
+   *existing* sender-queue mechanism, not a new one. If a supervisor waits, rendezvous; if not, the
+   dead thread parks on its supervision endpoint's sender queue with the message in its mailbox, and
+   `RECV` collects it later. A death carries data (tid, pc, addr), so the data-less IRQ signal count
+   does not fit; the sender queue does, and it is already proven. The corpse is never woken:
+   `ipc_recv` leaves a `Dead` sender dead after taking its message, the same way it leaves a `CALL`
+   caller blocked. So no new kernel mechanism was needed, which is what §26 predicted.
+
+3. **Dead-until-reaped is a distinct thread state.** `State::Dead` is a corpse the reaper must *not*
+   collect (unlike `Finished`); only the supervisor's §16 `DESTROY` frees it. Reusing `Finished`
+   would race the reaper against the supervisor, so the distinction is a property of the type. The
+   corpse's TCB retains the fault-time registers (its mailbox holds the five words), which is what
+   the reserved fifth word needs to exist for.
+
+4. **The IPC mailbox widened from three words to five.** The message is five words and `RECV` must
+   deliver all five, so the kernel mailbox and the `RECV` result grew to five registers. Ordinary
+   three-word IPC pads the top two with zero, so `user_rt::recv` and every existing program are
+   unchanged; only a supervisor reads `w3`/`w4`. This is the message-format convention made real.
+
+Proven on both ISAs (`kernel/src/user.rs`, `supervision_tests`): a child crashes and its supervisor
+receives `(FAULT, tid, pc, addr)`, the corpse survives with its state until revocation reaps it, a
+respawned child runs, and a clean exit reports `EXIT`. See notes/supervision.md and notes/abi.md §5.
+
 ## Reading
 
 - **The seL4 manual**, and Klein et al., *seL4: Formal Verification of an OS Kernel* (SOSP'09)

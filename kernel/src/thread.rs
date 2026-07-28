@@ -229,6 +229,18 @@ pub enum State {
     /// message arrives" a real thing a thread can do rather than a spin loop.
     Blocked,
     Finished,
+    /// **Dead, but not yet reaped** (milestone 22, DECISIONS §26). A supervised thread that
+    /// faulted or exited: the kernel has delivered its fault/exit message to its supervision
+    /// endpoint, and it will never run again, but its corpse (this TCB, its address space, its
+    /// memory) persists for postmortem until the supervisor reaps it with §16 object revocation.
+    ///
+    /// The difference from [`Finished`](Self::Finished) is who frees it. A `Finished` thread is
+    /// auto-reaped by the next thread's `finish_switch` the moment it is off its stack; a `Dead`
+    /// one is *not*, so its registers and address space survive for the supervisor to inspect and
+    /// its region stays occupied until an explicit `DESTROY`. Revocation treats `Dead` as reapable
+    /// (unlike a live `Ready`/`Running`/`Blocked`), and the scheduler never runs it (only `Running`
+    /// threads are requeued), so it is dead in every sense but "its memory is gone."
+    Dead,
 }
 
 /// **A reserved slot in a spawner's resource budget, returned when this thread dies.**
@@ -298,14 +310,19 @@ pub struct Thread {
     /// integer. That is the entire unforgeability mechanism, and it is a bounds check.
     pub cspace: crate::cap::CSpace,
 
-    /// **The IPC message this thread most recently sent or received.** Three words.
+    /// **The IPC message this thread most recently sent or received.** Five words.
     ///
     /// A sender parks its message here before blocking; a receiver reads it here after being
     /// woken. It is a `Thread` field rather than a stack local precisely because the rendezvous
     /// happens across two threads at two different times: the sender deposits it and blocks, and
     /// the receiver, running later, reaches into the sender's `Thread` to collect it. See
     /// sched.rs.
-    pub mailbox: [u64; 3],
+    ///
+    /// Three words carry ordinary IPC; the extra two exist for the five-word fault/exit message a
+    /// dead thread's corpse delivers to its supervisor (DECISIONS §26, abi's `fault` module).
+    /// Ordinary sends leave words 3 and 4 zero, and `RECV` hands all five back, so only a
+    /// supervisor ever reads the top two.
+    pub mailbox: [u64; 5],
 
     /// **A slot in a spawner's quota, or `None` for a thread nobody bounded.** Reaped with the
     /// thread, which is how the slot comes back. See [`QuotaToken`].
@@ -361,6 +378,20 @@ pub struct Thread {
     /// kernel-created thread; false for a user-retyped TCB (19c.3). The page-origin half of the
     /// same owned-vs-borrowed question kernel stacks answered with "one owner" (notes/tcb.md).
     pub(crate) tcb_kmem: bool,
+
+    /// **Where this thread's fault/exit is reported** (milestone 22, DECISIONS §26), or `None` for
+    /// an unsupervised thread. Set once at `START` from the child's reserved fault slot (abi's
+    /// `FAULT_EP_SLOT`) and never afterward: supervision is granted at spawn only, so the
+    /// relationship is fixed and visible in how the thread was built (§26.2). When the thread
+    /// faults or exits, the kernel delivers a five-word message here and the corpse goes `Dead`
+    /// until reaped; a thread with `None` dies and is reaped immediately, today's behaviour.
+    pub(crate) fault_ep: Option<crate::sched::EpId>,
+
+    /// **The fault/exit message this thread's corpse carries** (milestone 22), retained after death
+    /// so a test can prove a `Dead` TCB still holds its fault-time state. Set when the thread dies
+    /// with a `fault_ep`; `None` while it lives. The words are the §26 format
+    /// `[event, tid, pc, addr, reserved]`, the same five the supervisor received.
+    pub(crate) fault_msg: Option<[u64; 5]>,
 }
 
 // SAFETY: plain storage of the link, nothing else, which is all the queue's contract asks.
@@ -391,7 +422,7 @@ impl Thread {
             stack: None,
             space: None,
             cspace: crate::cap::CSpace::new(),
-            mailbox: [0; 3],
+            mailbox: [0; 5],
             quota: None,
             outgoing_cap: None,
             next: core::ptr::null_mut(),
@@ -401,6 +432,8 @@ impl Thread {
             entry: (0, 0), // a kernel thread; never enters EL0 by this path
             start_args: [0; 3],
             tcb_kmem: true,
+            fault_ep: None,
+            fault_msg: None,
         }
     }
 
@@ -419,7 +452,7 @@ impl Thread {
             stack: None,
             space: None,
             cspace: crate::cap::CSpace::new(),
-            mailbox: [0; 3],
+            mailbox: [0; 5],
             quota: None,
             outgoing_cap: None,
             next: core::ptr::null_mut(),
@@ -429,6 +462,8 @@ impl Thread {
             entry: (0, 0), // a kernel thread; never enters EL0 by this path
             start_args: [0; 3],
             tcb_kmem: true,
+            fault_ep: None,
+            fault_msg: None,
         }
     }
 
@@ -489,7 +524,7 @@ impl Thread {
             stack: Some(stack),
             space: None, // a kernel thread until it calls `user::exec`
             cspace: crate::cap::CSpace::new(), // and it can name nothing until it is handed something
-            mailbox: [0; 3],
+            mailbox: [0; 5],
             quota: None,
             outgoing_cap: None,
             next: core::ptr::null_mut(),
@@ -499,6 +534,8 @@ impl Thread {
             entry: (0, 0), // a kernel thread; becomes a user process via exec, not this path
             start_args: [0; 3],
             tcb_kmem: true,
+            fault_ep: None,
+            fault_msg: None,
         })
     }
 
@@ -514,7 +551,7 @@ impl Thread {
             stack: None,
             space: None,
             cspace: crate::cap::CSpace::new(),
-            mailbox: [0; 3],
+            mailbox: [0; 5],
             quota: None,
             outgoing_cap: None,
             next: core::ptr::null_mut(),
@@ -524,6 +561,8 @@ impl Thread {
             entry: (0, 0),
             start_args: [0; 3],
             tcb_kmem: false, // a user-retyped TCB page; the region owns it
+            fault_ep: None,
+            fault_msg: None,
         }
     }
 
