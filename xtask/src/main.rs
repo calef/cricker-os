@@ -553,6 +553,7 @@ fn initrd_riscv() -> bool {
             "allocdemo",
             "--bin",
             "netd",
+            "--bin",
             "budgeter",
             "--target",
             RISCV_TARGET,
