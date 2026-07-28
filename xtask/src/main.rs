@@ -359,14 +359,30 @@ fn disk_path() -> String {
         .to_string()
 }
 
-/// Build the crickerfs disk image the virtio-blk driver will read.
+/// The PCIe transport's copy of the disk image, a sibling of [`disk_path`]. Two files because
+/// both transports are now attached **writable** (milestone 32's write path) and QEMU's image
+/// locking refuses to attach one file to two devices once either attachment can write. The
+/// runner derives this name from `CRICKER_DISK`, so the two stay in lockstep.
+fn disk_pci_path() -> String {
+    workspace_root()
+        .join("target/crickerfs-pci.img")
+        .display()
+        .to_string()
+}
+
+/// Build the crickerfs disk images the virtio-blk driver will read and write.
 ///
 /// **The disk is generated, not checked in**, the same way the flat kernel image is: a binary
 /// blob in git is a blob nobody can review. The contents are a couple of tiny files, written
 /// through the same `crickerfs::write_image` the userspace filesystem server reads back, so the
 /// format has exactly one definition.
+///
+/// `scratch` is the write-path tests' one-block playground: the driver writes a pattern into its
+/// block and reads it back, so nothing else on the disk is ever a write target. Regenerating the
+/// images here is also what makes test runs independent: whatever a previous run wrote to
+/// scratch is rebuilt to zeros.
 fn mkdisk() -> bool {
-    let files: [(&str, &[u8]); 2] = [
+    let files: [(&str, &[u8]); 3] = [
         (
             "motd",
             b"cricker-os: read from a virtio disk, by a driver at EL0.\n",
@@ -375,6 +391,7 @@ fn mkdisk() -> bool {
             "readme",
             b"this file came off a real block device through a userspace driver.\n",
         ),
+        ("scratch", &[0u8; 512]),
     ];
     let size = crickerfs::image_size(&files).max(64 * 1024); // pad to a friendly size
     let mut img = std::vec![0u8; size];
@@ -382,9 +399,12 @@ fn mkdisk() -> bool {
         eprintln!("mkdisk: could not build the image");
         return false;
     }
-    if let Err(e) = std::fs::write(disk_path(), &img) {
-        eprintln!("mkdisk: could not write {}: {e}", disk_path());
-        return false;
+    // One identical image per transport; see disk_pci_path for why they cannot share a file.
+    for path in [disk_path(), disk_pci_path()] {
+        if let Err(e) = std::fs::write(&path, &img) {
+            eprintln!("mkdisk: could not write {path}: {e}");
+            return false;
+        }
     }
     true
 }
