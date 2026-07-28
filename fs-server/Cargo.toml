@@ -21,6 +21,17 @@ license = "MIT OR Apache-2.0"
 name = "fs_server"
 path = "src/lib.rs"
 
+# The EL0 binary. Behind `el0` so a host `cargo test` (which cannot compile user_rt's EL0 asm)
+# never tries to build it; the target build turns defaults off and el0 on. test/bench off for the
+# same reason every dedicated binary sets them: the default libtest target needs `extern crate test`,
+# which does not exist for the bare-metal targets.
+[[bin]]
+name = "fsserver"
+path = "src/bin/fsserver.rs"
+required-features = ["el0"]
+test = false
+bench = false
+
 [features]
 # Host default: the sans-IO core plus the std RedoxFS a `cargo test` fixture needs.
 default = ["hosttest"]
@@ -29,6 +40,13 @@ hosttest = ["redoxfs/std", "redox_syscall/std"]
 # build, which also drops the default (`--no-default-features --features el0`), so the pure no_std
 # core is what links into the kernel image.
 el0 = ["dep:user_rt", "dep:abi", "dep:fs_proto"]
+
+# The initrd carries this binary's ELF, so keep it small and deterministic (the same knobs
+# user-std uses). Only the target build uses the release profile; host tests use dev and unwind.
+[profile.release]
+opt-level = "s"
+debug = false
+strip = "debuginfo"
 
 [dependencies]
 # The vendored engine, no default features: the pure no_std core (creation APIs stay host-side).
