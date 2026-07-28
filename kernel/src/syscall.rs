@@ -549,10 +549,10 @@ fn invoke(
                 abi::virtio::WRITE_REG => crate::virtio::write_register(id, a0, a1 as u32)
                     .map(|_| 0)
                     .map_err(map),
-                abi::virtio::SETUP_QUEUE => crate::virtio::setup_queue(id, a0 as u16)
+                abi::virtio::SETUP_QUEUE => crate::virtio::setup_queue(id, a0 as u16, a1 as u16)
                     .map(|_| 0)
                     .map_err(map),
-                abi::virtio::NOTIFY => crate::virtio::notify(id).map(|_| 0).map_err(map),
+                abi::virtio::NOTIFY => crate::virtio::notify(id, a0 as u16).map(|_| 0).map_err(map),
                 _ => Err(Error::BadMethod),
             }
         }

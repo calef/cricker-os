@@ -220,11 +220,16 @@ pub mod virtio {
     /// interrupt-ack); the queue-address and notify registers are refused (they go through the
     /// validated paths below).
     pub const WRITE_REG: u64 = 1;
-    /// `invoke(cap, SETUP_QUEUE, num, _, _)` -> 0. The kernel programs queue 0's ring addresses to
-    /// the fixed offsets in the driver's DMA region, so the driver never chooses them.
+    /// `invoke(cap, SETUP_QUEUE, num, queue, _)` -> 0. The kernel programs the given queue's ring
+    /// addresses to the fixed offsets of that queue's ring block in the driver's DMA region, so the
+    /// driver never chooses them. `queue` selects the virtqueue (a virtio-net device uses receive =
+    /// 0, transmit = 1; the disk uses only queue 0, and passing 0 keeps its ABI byte-identical).
+    /// `BadQueue`/`WrongObject` if `queue` is out of range or the block does not fit the region.
     pub const SETUP_QUEUE: u64 = 2;
-    /// `invoke(cap, NOTIFY, _, _, _)` -> 0, or `DmaRefused` if a newly-published descriptor points
-    /// outside the driver's DMA region. On refusal the device is NOT told to go.
+    /// `invoke(cap, NOTIFY, queue, _, _)` -> 0, or `DeviceRefused` if a newly-published descriptor on
+    /// that queue points outside the driver's DMA region. On refusal the device is NOT told to go.
+    /// `queue` selects the virtqueue, as for `SETUP_QUEUE`; each queue keeps its own validated
+    /// high-water mark, so receive and transmit submits never interfere.
     pub const NOTIFY: u64 = 3;
 }
 

@@ -134,9 +134,10 @@ pub enum Transport {
         common: u64,
         notify_base: u64,
         notify_mult: u32,
-        /// Queue 0's resolved doorbell, computed at `setup_queue0` (it needs `queue_notify_off`,
-        /// which is only readable with the queue selected). Zero until then.
-        notify_addr: u64,
+        /// Each queue's resolved doorbell, computed at `setup_queue` (it needs `queue_notify_off`,
+        /// which is only readable with that queue selected, and it differs per queue). Zero until
+        /// the queue is set up. Indexed by queue number; see `MAX_QUEUES`.
+        notify_addr: [u64; MAX_QUEUES],
         isr: u64,
     },
 }
@@ -209,25 +210,31 @@ impl Transport {
         }
     }
 
-    /// Queue 0's maximum size, as the device reports it.
-    fn queue_num_max(&self) -> u16 {
+    /// Queue `q`'s maximum size, as the device reports it. Each queue is selected and read on its
+    /// own: a device may size its queues differently (virtio-net rarely does, but the kernel does
+    /// not assume it).
+    fn queue_num_max(&self, q: u16) -> u16 {
         match self {
             Transport::Mmio { mmio_phys } => {
-                reg_write(*mmio_phys, REG_QUEUE_SEL, 0);
+                reg_write(*mmio_phys, REG_QUEUE_SEL, q as u32);
                 reg_read(*mmio_phys, REG_QUEUE_NUM_MAX) as u16
             }
-            Transport::Pci { .. } => self.read_reg(REG_QUEUE_NUM_MAX) as u16,
+            Transport::Pci { common, .. } => {
+                pwrite::<u16>(*common + PCI_QUEUE_SEL, q);
+                pread::<u16>(*common + PCI_QUEUE_SIZE)
+            }
         }
     }
 
-    /// Program queue 0: its size and its three ring addresses, then mark it live. The addresses
+    /// Program queue `q`: its size and its three ring addresses, then mark it live. The addresses
     /// are the kernel's choice (the shadow page and the driver's used ring); that this method is
-    /// the only way they reach the device is the confinement.
-    fn setup_queue0(&mut self, num: u16, desc: u64, avail: u64, used: u64) {
+    /// the only way they reach the device is the confinement. On PCI the queue's doorbell is
+    /// resolved here (it is only readable with the queue selected) and remembered per queue.
+    fn setup_queue(&mut self, q: u16, num: u16, desc: u64, avail: u64, used: u64) {
         match self {
             Transport::Mmio { mmio_phys } => {
                 let m = *mmio_phys;
-                reg_write(m, REG_QUEUE_SEL, 0);
+                reg_write(m, REG_QUEUE_SEL, q as u32);
                 reg_write(m, REG_QUEUE_NUM, num as u32);
                 reg_write(m, REG_QUEUE_DESC_LOW, desc as u32);
                 reg_write(m, REG_QUEUE_DESC_HIGH, (desc >> 32) as u32);
@@ -244,37 +251,71 @@ impl Transport {
                 notify_addr,
                 ..
             } => {
-                pwrite::<u16>(*common + PCI_QUEUE_SEL, 0);
+                pwrite::<u16>(*common + PCI_QUEUE_SEL, q);
                 pwrite::<u16>(*common + PCI_QUEUE_SIZE, num);
                 pwrite::<u64>(*common + PCI_QUEUE_DESC, desc);
                 pwrite::<u64>(*common + PCI_QUEUE_DRIVER, avail);
                 pwrite::<u64>(*common + PCI_QUEUE_DEVICE, used);
                 // The doorbell: notify_base + queue_notify_off * multiplier, readable only with
-                // the queue selected, so it is resolved here and remembered.
+                // this queue selected, so it is resolved here and remembered for this queue.
                 let off = pread::<u16>(*common + PCI_QUEUE_NOTIFY_OFF) as u64;
-                *notify_addr = *notify_base + off * (*notify_mult as u64);
+                notify_addr[q as usize] = *notify_base + off * (*notify_mult as u64);
                 pwrite::<u16>(*common + PCI_QUEUE_ENABLE, 1);
             }
         }
     }
 
-    /// Ring the doorbell for queue 0. Only [`notify`] calls this, after validation.
-    fn notify_queue0(&self) {
+    /// Ring the doorbell for queue `q`. Only [`notify`] calls this, after validation. On mmio the
+    /// notify register carries the queue number as its value; on PCI each queue has its own
+    /// doorbell address, resolved at [`setup_queue`].
+    fn notify_queue(&self, q: u16) {
         match self {
-            Transport::Mmio { mmio_phys } => reg_write(*mmio_phys, REG_QUEUE_NOTIFY, 0),
-            Transport::Pci { notify_addr, .. } => pwrite::<u16>(*notify_addr, 0),
+            Transport::Mmio { mmio_phys } => reg_write(*mmio_phys, REG_QUEUE_NOTIFY, q as u32),
+            Transport::Pci { notify_addr, .. } => pwrite::<u16>(notify_addr[q as usize], 0),
         }
     }
 }
 
 /// The fixed queue layout, a contract shared with the userspace driver (user/src/virtio.rs). The
 /// kernel places the rings at these offsets in the DMA region, so it always knows where they are.
+/// These offsets are **relative to a queue's ring block**; a device's queue `q` puts its rings at
+/// `q * RING_BLOCK + {DESC,AVAIL,USED}_OFF` (see `RING_BLOCK`).
 pub const QSIZE: u16 = 8;
 const DESC_OFF: u64 = 0x000; // 16 * QSIZE
 const AVAIL_OFF: u64 = 0x080; // 6 + 2*QSIZE
 const USED_OFF: u64 = 0x100; // 6 + 8*QSIZE
-/// The whole ring area must fit under this; the data buffers the driver adds live above it.
+/// The whole ring area of one queue must fit under this; a queue's data buffers live above it.
 const RING_END: u64 = USED_OFF + 6 + 8 * QSIZE as u64;
+
+/// The most virtqueues the confinement drives per device. A virtio-net device needs two (receive =
+/// queue 0, transmit = queue 1); the disk uses only queue 0. Fixed and small on purpose: one
+/// kernel-private shadow frame per device holds every queue's shadow rings, so the ceiling is what
+/// fits there (`MAX_QUEUES * RING_BLOCK <= FRAME_SIZE`), asserted below, not a policy dial.
+pub const MAX_QUEUES: usize = 2;
+
+/// The stride between successive queues' ring areas, in **both** the driver's DMA region and the
+/// kernel-private shadow. Queue `q`'s descriptor table, available ring, and used ring sit at
+/// `q * RING_BLOCK + {DESC,AVAIL,USED}_OFF`. 0x200 leaves room for a whole queue's ring area
+/// (`RING_END`) and keeps queue 0 byte-identical to the single-queue layout the disk driver already
+/// uses: the disk's data buffers begin at 0x200 (= queue 1's block), which is free because a disk
+/// has no queue 1, so the disk needs no change at all.
+const RING_BLOCK: u64 = 0x200;
+
+// The shadow frame must hold every queue's ring block, and a queue's ring area must fit in its
+// block. Both are compile-time facts, so break the build if a future edit violates either.
+const _: () = assert!(
+    RING_END <= RING_BLOCK,
+    "a queue's rings overflow its ring block"
+);
+const _: () = assert!(
+    MAX_QUEUES as u64 * RING_BLOCK <= frames::FRAME_SIZE,
+    "the shadow frame cannot hold every queue's ring block",
+);
+
+/// Queue `q`'s ring block base, relative to a region (driver DMA or shadow) base.
+const fn queue_block(q: u16) -> u64 {
+    q as u64 * RING_BLOCK
+}
 
 const VIRTQ_DESC_F_NEXT: u16 = 1;
 /// Bit 2: this descriptor points at a **table of further descriptors** instead of a buffer. The
@@ -289,9 +330,10 @@ struct Device {
     transport: Transport,
     dma_base: u64,
     dma_size: u64,
-    /// The last available-ring index we have already validated and forwarded. Descriptors are
-    /// only ever *added* by the driver, so we validate the new ones each notify.
-    last_avail: u16,
+    /// The last available-ring index we have already validated and forwarded, **per queue**.
+    /// Descriptors are only ever *added* by the driver, so we validate the new ones each notify;
+    /// RX and TX advance independently, so each queue keeps its own high-water mark.
+    last_avail: [u16; MAX_QUEUES],
     /// Which 32-bit word of the feature bits the driver's next `DRIVER_FEATURES` write targets
     /// (`DRIVER_FEATURES_SEL`: 0 = features 0..31, 1 = 32..63). Tracked so a feature write can have
     /// the ring-layout features the validator cannot police stripped from whichever word carries
@@ -382,7 +424,7 @@ pub fn register(transport: Transport, dma_base: u64, dma_size: u64, rid: Option<
         transport,
         dma_base,
         dma_size,
-        last_avail: 0,
+        last_avail: [0; MAX_QUEUES],
         driver_features_sel: 0,
         shadow_base,
     });
@@ -605,45 +647,61 @@ fn sanitize_driver_features(sel: u32, val: u32) -> u32 {
     }
 }
 
-/// Set up queue 0 with `num` entries. The kernel programs the ring addresses, so the driver never
-/// gets to choose them:
+/// Set up queue `queue` with `num` entries. The kernel programs the ring addresses, so the driver
+/// never gets to choose them:
 ///
-/// - **Descriptor table and available ring** point at the kernel-private **shadow** page. The
-///   device reads its descriptors from memory the driver cannot write; the driver builds its own
-///   copies in its region and the kernel validates and copies them across on `notify`.
-/// - **Used ring** stays in the driver's region, so the driver reads completions directly. The
-///   device only ever *writes* indices and lengths there, never addresses, so nothing to confine.
-pub fn setup_queue(id: usize, num: u16) -> Result<(), TransportError> {
+/// - **Descriptor table and available ring** point at this queue's block in the kernel-private
+///   **shadow** page. The device reads its descriptors from memory the driver cannot write; the
+///   driver builds its own copies in its region and the kernel validates and copies them across on
+///   `notify`.
+/// - **Used ring** stays in this queue's block in the driver's region, so the driver reads
+///   completions directly. The device only ever *writes* indices and lengths there, never
+///   addresses, so nothing to confine.
+///
+/// A device with several queues (virtio-net: receive on 0, transmit on 1) calls this once per
+/// queue; each queue's rings sit at `queue * RING_BLOCK` in both regions, so they never overlap.
+pub fn setup_queue(id: usize, num: u16, queue: u16) -> Result<(), TransportError> {
+    if queue as usize >= MAX_QUEUES {
+        return Err(TransportError::BadQueue);
+    }
     let mut devs = DEVICES.lock();
     let dev = devs.get_mut(id).ok_or(TransportError::NoDevice)?;
 
-    if num == 0 || num > QSIZE || dev.dma_size < RING_END {
+    // Every queue's ring block must lie inside the driver's DMA region. The last block ends at
+    // `MAX_QUEUES * RING_BLOCK`, but this queue only needs its own block plus a ring area.
+    let block = queue_block(queue);
+    if num == 0 || num > QSIZE || dev.dma_size < block + RING_END {
         return Err(TransportError::BadQueue);
     }
-    if dev.transport.queue_num_max() < num {
+    if dev.transport.queue_num_max(queue) < num {
         return Err(TransportError::BadQueue);
     }
 
-    let desc = dev.shadow_base + DESC_OFF; // the SHADOW descriptor table (device-read, kernel-owned)
-    let avail = dev.shadow_base + AVAIL_OFF; // the SHADOW available ring
-    let used = dev.dma_base + USED_OFF; // the used ring stays in the driver's region
-    dev.transport.setup_queue0(num, desc, avail, used);
+    let desc = dev.shadow_base + block + DESC_OFF; // the SHADOW descriptor table (device-read)
+    let avail = dev.shadow_base + block + AVAIL_OFF; // the SHADOW available ring
+    let used = dev.dma_base + block + USED_OFF; // the used ring stays in the driver's region
+    dev.transport.setup_queue(queue, num, desc, avail, used);
     Ok(())
 }
 
-/// **The validated "go".** Validate the descriptor chains the driver has newly published, copy the
-/// validated ones into the shadow ring the device reads, and only then ring the device. If any
-/// descriptor escapes the driver's DMA region, the shadow is not published, the device is NOT
-/// notified, and the driver gets `DmaEscape`.
-pub fn notify(id: usize) -> Result<(), TransportError> {
+/// **The validated "go" for queue `queue`.** Validate the descriptor chains the driver has newly
+/// published on that queue, copy the validated ones into the queue's shadow ring the device reads,
+/// and only then ring the device. If any descriptor escapes the driver's DMA region, the shadow is
+/// not published, the device is NOT notified, and the driver gets `DmaEscape`. Each queue keeps its
+/// own last-validated index, so a receive submit and a transmit submit never interfere.
+pub fn notify(id: usize, queue: u16) -> Result<(), TransportError> {
+    if queue as usize >= MAX_QUEUES {
+        return Err(TransportError::BadQueue);
+    }
     let mut devs = DEVICES.lock();
     let dev = devs.get_mut(id).ok_or(TransportError::NoDevice)?;
 
-    let driver_desc = dev.dma_base + DESC_OFF;
-    let driver_avail = dev.dma_base + AVAIL_OFF;
-    let shadow_desc = dev.shadow_base + DESC_OFF;
-    let shadow_avail = dev.shadow_base + AVAIL_OFF;
-    let to_idx = dma_read16(driver_avail + 2); // the driver's avail.idx
+    let block = queue_block(queue);
+    let driver_desc = dev.dma_base + block + DESC_OFF;
+    let driver_avail = dev.dma_base + block + AVAIL_OFF;
+    let shadow_desc = dev.shadow_base + block + DESC_OFF;
+    let shadow_avail = dev.shadow_base + block + AVAIL_OFF;
+    let to_idx = dma_read16(driver_avail + 2); // the driver's avail.idx for this queue
 
     let ok = validate_and_shadow(
         dev.dma_base,
@@ -652,7 +710,7 @@ pub fn notify(id: usize) -> Result<(), TransportError> {
         driver_avail,
         shadow_desc,
         shadow_avail,
-        dev.last_avail,
+        dev.last_avail[queue as usize],
         to_idx,
         &|p| dma_read16(p),
         &|p| dma_read64(p),
@@ -662,12 +720,12 @@ pub fn notify(id: usize) -> Result<(), TransportError> {
     if !ok {
         return Err(TransportError::DmaEscape);
     }
-    dev.last_avail = to_idx;
+    dev.last_avail[queue as usize] = to_idx;
 
     // The shadow writes above must be globally visible before the device is rung: the device is a
     // separate observer that will read the shadow by DMA. See arch::dma_wmb.
     crate::arch::dma_wmb();
-    dev.transport.notify_queue0();
+    dev.transport.notify_queue(queue);
     Ok(())
 }
 
@@ -716,11 +774,11 @@ pub(crate) fn provoke_iommu_escape(id: usize, avail_out_of_domain: u64) {
 
     // Queue 0: descriptor table on the (in-domain) shadow, used ring in the (in-domain) driver
     // region, available ring pointed OUT of the domain. Then DRIVER_OK to make the queue live.
-    let num = dev.transport.queue_num_max().min(QSIZE);
+    let num = dev.transport.queue_num_max(0).min(QSIZE);
     let desc = dev.shadow_base + DESC_OFF;
     let used = dev.dma_base + USED_OFF;
     dev.transport
-        .setup_queue0(num, desc, avail_out_of_domain, used);
+        .setup_queue(0, num, desc, avail_out_of_domain, used);
     dev.transport
         .write_reg(REG_STATUS, S_ACK | S_DRIVER | S_FEATURES_OK | S_DRIVER_OK);
 
@@ -734,7 +792,7 @@ pub(crate) fn provoke_iommu_escape(id: usize, avail_out_of_domain: u64) {
     // Kick. The device now reads the available ring at an unmapped IOVA and the IOMMU faults. Under
     // TCG QEMU processes the kick synchronously in this vCPU thread, so the fault is already in the
     // IOMMU's queue by the time this returns.
-    dev.transport.notify_queue0();
+    dev.transport.notify_queue(0);
 
     // Reset the device so a later test that re-registers it does not inherit this deliberately
     // broken queue. The fault event lives in the IOMMU's own queue, which a device reset does not
@@ -745,6 +803,11 @@ pub(crate) fn provoke_iommu_escape(id: usize, avail_out_of_domain: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The device-writable descriptor flag, bit 1. The kernel validator does not name it (it bounds
+    /// addresses whichever way the device moves the bytes), but the receive-direction tests set it
+    /// to build a descriptor the *device writes into*, which is what a virtio-net RX buffer is.
+    const VIRTQ_DESC_F_WRITE: u16 = 2;
 
     // Read/write the direct map at a physical address. One set serves both the fake driver region
     // and the fake shadow region below, since they take absolute addresses. Passed to
@@ -783,15 +846,24 @@ mod tests {
         crate::memory::free(frames::Frame::from_addr(shadow));
     }
 
-    /// Drive `validate_and_shadow` against the fake regions with the standard closures.
+    /// Drive `validate_and_shadow` against the fake regions with the standard closures. Queue 0,
+    /// the single-queue shape the disk uses.
     fn run(driver: u64, size: u64, shadow: u64, from: u16, to: u16) -> bool {
+        run_q(driver, size, shadow, 0, from, to)
+    }
+
+    /// Drive `validate_and_shadow` for a specific queue, applying that queue's ring-block offset in
+    /// both the driver region and the shadow, exactly as `notify(id, queue)` does. Lets a test
+    /// exercise queue 1 (virtio-net's transmit queue) on its own block.
+    fn run_q(driver: u64, size: u64, shadow: u64, q: u16, from: u16, to: u16) -> bool {
+        let block = queue_block(q);
         validate_and_shadow(
             driver,
             size,
-            driver + DESC_OFF,
-            driver + AVAIL_OFF,
-            shadow + DESC_OFF,
-            shadow + AVAIL_OFF,
+            driver + block + DESC_OFF,
+            driver + block + AVAIL_OFF,
+            shadow + block + DESC_OFF,
+            shadow + block + AVAIL_OFF,
             from,
             to,
             &r16,
@@ -983,6 +1055,93 @@ mod tests {
         free_regions(driver, shadow);
     }
 
+    /// **The receive direction is confined: a device-WRITABLE descriptor aimed outside the region is
+    /// refused** (milestone 30, the multi-queue confinement's second, proved direction). virtio-net's
+    /// receive queue is the direction where the *device writes into* the driver's memory: the driver
+    /// posts an empty buffer and the device fills it with a packet. A hostile driver posts a receive
+    /// buffer pointing at kernel memory and lets the device write a packet over the kernel image. The
+    /// validator bounds the address whether the device reads or writes it, so this is refused before
+    /// the device is rung; the in-region receive buffer that validates first proves the refusal is
+    /// about the address, not the direction flag. This is the same property milestone 32's write path
+    /// relied on, now asserted for the direction where the device is the writer.
+    #[test_case]
+    fn the_validator_refuses_an_rx_descriptor_that_escapes_the_region() {
+        let (driver, shadow, size) = two_regions();
+        let desc = driver + DESC_OFF;
+        let avail = driver + AVAIL_OFF;
+
+        // A legitimate receive posting: one device-writable buffer, wholly in-region.
+        write_desc(desc, 0, driver + 0x400, 1514, VIRTQ_DESC_F_WRITE, 0);
+        w16(avail + 4, 0); // ring[0] = head 0
+        w16(avail + 2, 1); // avail.idx = 1
+        assert!(
+            run(driver, size, shadow, 0, 1),
+            "an in-region device-writable receive buffer was refused",
+        );
+
+        // The attack: the same device-writable buffer, now aimed at kernel memory, so the device
+        // would DMA a received packet straight over the kernel image.
+        write_desc(desc, 0, 0xffff_0000_4008_0000, 1514, VIRTQ_DESC_F_WRITE, 0);
+        assert!(
+            !run(driver, size, shadow, 0, 1),
+            "a device-writable receive descriptor pointing at kernel memory was NOT refused: the \
+             device could overwrite the kernel with a received packet",
+        );
+
+        free_regions(driver, shadow);
+    }
+
+    /// **A second queue validates on its own ring block, independent of queue 0** (milestone 30). A
+    /// virtio-net device drives receive on queue 0 and transmit on queue 1; each queue's rings live
+    /// at `queue * RING_BLOCK` in both the driver region and the shadow, so a submit on one queue
+    /// never reads or writes the other's shadow. Validate a good chain on queue 1, confirm it landed
+    /// in queue 1's shadow block while a sentinel in queue 0's shadow block stayed put, then confirm
+    /// an escape on queue 1 is refused the same as on queue 0.
+    #[test_case]
+    fn a_second_queue_validates_on_its_own_block() {
+        let (driver, shadow, size) = two_regions();
+        let q1 = queue_block(1);
+        let desc1 = driver + q1 + DESC_OFF;
+        let avail1 = driver + q1 + AVAIL_OFF;
+
+        // A sentinel in queue 0's shadow descriptor slot. Frames from `alloc` are not zeroed, so we
+        // plant a known value and assert queue-1 validation leaves it untouched.
+        const SENTINEL: u64 = 0xC0FF_EE00_C0FF_EE00;
+        w64(shadow + DESC_OFF, SENTINEL);
+
+        // A good transmit chain on queue 1: header + data, wholly in-region, above every ring block.
+        let data = MAX_QUEUES as u64 * RING_BLOCK; // first byte past all queues' rings
+        write_desc(desc1, 0, driver + data, 60, VIRTQ_DESC_F_NEXT, 1);
+        write_desc(desc1, 1, driver + data + 64, 8, 0, 0);
+        w16(avail1 + 4, 0); // ring[0] = head 0
+        w16(avail1 + 2, 1); // avail.idx = 1
+        assert!(
+            run_q(driver, size, shadow, 1, 0, 1),
+            "a valid chain on queue 1 was refused",
+        );
+
+        // It landed in queue 1's shadow block, and queue 0's shadow block is untouched.
+        assert_eq!(
+            r64(shadow + q1 + DESC_OFF),
+            driver + data,
+            "queue 1's validated descriptor did not reach queue 1's shadow block",
+        );
+        assert_eq!(
+            r64(shadow + DESC_OFF),
+            SENTINEL,
+            "validating queue 1 disturbed queue 0's shadow block",
+        );
+
+        // An escape on queue 1 is refused, the same confinement as queue 0.
+        write_desc(desc1, 0, 0xffff_0000_4008_0000, 60, VIRTQ_DESC_F_NEXT, 1);
+        assert!(
+            !run_q(driver, size, shadow, 1, 0, 1),
+            "a queue-1 descriptor escaping the region was NOT refused",
+        );
+
+        free_regions(driver, shadow);
+    }
+
     /// **The IOMMU faults a DMA that escapes the domain, in hardware** (milestone 16b, both ISAs).
     ///
     /// The shadow ring proves the *software* refuses an out-of-region descriptor before the device
@@ -1028,7 +1187,7 @@ mod tests {
                 common: d.common,
                 notify_base: d.notify_base,
                 notify_mult: d.notify_mult,
-                notify_addr: 0,
+                notify_addr: [0; MAX_QUEUES],
                 isr: d.isr,
             },
             dma,

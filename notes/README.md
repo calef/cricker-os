@@ -158,6 +158,12 @@ in the code or the conversation doesn't make sense, it belongs here.
   arch drivers (SMMUv3, RISC-V IOMMU v1.0.1) attach it. The disk and attacker suites run behind it;
   a confinement test makes the IOMMU fault an escaping DMA, so a silent bypass fails loudly. The
   shadow ring stays as defence in depth.
+- [The network stack as a confined component](net.md) — milestone 30 (DECISIONS §21). Multi-queue
+  DMA confinement (built, both ISAs): the validator grows a second queue and the receive direction,
+  where the device writes into driver memory, proved by the same address-bounding check. Then the
+  prior art (seL4 dataports, Fuchsia Netstack3, Plan 9 /net as the counter-design), the socket
+  contract proposal and its open fork, the smoltcp 0.13.1 pin, and the driver/server work that
+  follows.
 - [A security audit](security.md) — an adversarial four-part review of the whole kernel. The
   MMU and capability confinement held up; two panics on untrusted input were fixed; the DMA/no-IOMMU
   limitation and the missing resource quotas are named rather than hidden.

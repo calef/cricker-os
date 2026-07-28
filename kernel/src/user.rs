@@ -1586,7 +1586,7 @@ pub mod virtio_service {
                 common: d.common,
                 notify_base: d.notify_base,
                 notify_mult: d.notify_mult,
-                notify_addr: 0,
+                notify_addr: [0; crate::virtio::MAX_QUEUES],
                 isr: d.isr,
             },
             d.intid,
