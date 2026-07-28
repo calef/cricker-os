@@ -1180,6 +1180,42 @@ could have said the reverse. The PCIe transport (§18) is already x86's native b
 ECAM bridge on both `virt` boards is the same `pci-host-ecam-generic` shape x86 machines
 present through ACPI.
 
+## 20. The terminal is a userspace component, and the kernel is out of the shell business (milestone 28)
+
+**Decided and built 2026-07-28.** Milestone 28 put the tty line discipline in userspace as a
+swappable component (`termd`), sitting on plain endpoints between the input/console drivers and
+applications. Three things here are decisions, and the reason each gets recorded rather than left
+in code:
+
+- **The terminal protocol is a userspace protocol, not kernel ABI.** The opcodes
+  (`OP_WRITE`/`OP_READLINE`/`OP_BYTES`), the read flags, and the shared-page convention live in
+  `linedisc::proto` and are written up in [notes/terminal-contract.md](notes/terminal-contract.md).
+  Every request is an endpoint `CALL` served through `RECV_CAP` and answered through the one-shot
+  Reply capability (§12); the kernel routes the words without reading them. **No new syscall and no
+  new kernel method were added.** This is the §4 boundary held on purpose: a whole tty layer landed
+  as userspace composition, not as syscall surface.
+
+- **The kernel is retired as the interactive system's builder.** The aarch64 kernel-wired
+  `shell_service` (the pre-19d.2c path) cannot host a shell that speaks the terminal contract, so
+  every aarch64 interactive build (the milestone tour, `--features shell`, `--features initboot`)
+  now hands off to userspace init through `boot_via_init`, the way RISC-V's `--features shell`
+  already hands off to the portable `sysinit`. `shell_service` stays as dead code for reference.
+  This completes the §15 / 19d.2c direction ("userspace init is the boot path") for the
+  interactive system on both architectures; the reasoning and the deadlock-freedom argument are in
+  [notes/line-discipline.md](notes/line-discipline.md).
+
+- **`^C` (interrupting the foreground process) is deferred as a design fork.** The terminal
+  detects the interrupt and the contract carries `FLAG_INTERRUPTED`, but *routing* the interrupt to
+  a running foreground process is a capability-routing question whose answer will not be Unix
+  signals, and it is not built. The problem, candidate mechanisms, prior art (seL4, Fuchsia, Plan
+  9), and a recommendation are in [design/interrupt-routing.md](design/interrupt-routing.md), for
+  the architect to settle before code.
+
+The engine was **built, not ported**, against the §14 default for userspace, because `noline`
+blocks on a cursor-position report a piped line never answers and is a per-read readline rather
+than an always-on discipline, and `embedded-cli` is the application's altitude. The full accounting
+is in [notes/line-discipline.md](notes/line-discipline.md).
+
 ## Reading
 
 - **The seL4 manual**, and Klein et al., *seL4: Formal Verification of an OS Kernel* (SOSP'09)
