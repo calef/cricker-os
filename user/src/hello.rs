@@ -58,6 +58,9 @@ const INIT: u64 = 20;
 const CHILD: u64 = 21;
 const DEV_CHILD: u64 = 22;
 const IRQ_CHILD: u64 = 26;
+// 23-25 and 27-29 are init roles, declared below with their functions.
+const VIRTIO_BLK_WRITE: u64 = 30;
+const VIRTIO_BLK_WRITE_ABANDON: u64 = 31;
 
 /// The word the frame producer writes into a shared page and the consumer reads back through its
 /// own mapping of the same physical page. One binary, so one constant serves both roles.
@@ -94,6 +97,8 @@ pub extern "C" fn _start(role: u64, dma_phys: u64, _arg2: u64) -> ! {
         UNTYPED_DEMO => untyped_demo(),
         VIRTIO_ATTACK => virtio::run_attack(dma_phys),
         VIRTIO_ATTACK_INDIRECT => virtio::run_attack_indirect(dma_phys),
+        VIRTIO_BLK_WRITE => virtio::run_write(dma_phys),
+        VIRTIO_BLK_WRITE_ABANDON => virtio::run_write_abandon(dma_phys),
         CALL_SERVER => call_server(),
         CALL_CLIENT => call_client(),
         REVOKE_DEMO => revoke_demo(),
