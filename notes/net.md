@@ -190,35 +190,62 @@ kernel confines by DMA. The kernel knows nothing about DHCP.
 DHCP is itself UDP, so smoltcp's UDP path over our NIC is exercised end to end by this test. What is
 not yet built is the client-facing socket contract that lets *other* processes use the stack.
 
-## Remaining work (Piece 3 phase B: the client-facing socket contract)
+## Piece 3 phase B: the client-facing socket contract (built, both ISAs)
 
-The §25 contract, so a process other than netd can open sockets. Design, concrete enough to build
-from:
+The §25 contract, so a process other than netd can open sockets. netd, after DHCP, serves requests
+on a `Stack` endpoint; a client holds `WRITE` on it plus its own untyped budget. Files:
+`user/src/netproto.rs` (the wire format), the serve loop in `user/src/netd.rs`, and the client in
+`user/src/netcli.rs` (a module of the netd binary, dispatched by the entry role, see the archive
+note below).
 
-- **The Stack endpoint.** netd, after DHCP, serves requests on a `Stack` endpoint (RECV_CAP). A
-  client holds `WRITE` on it plus an untyped budget (to mint the per-connection shared frame). A
-  socket is a small integer **socket id** returned by open and carried in the request word of every
+- **A socket is a socket id.** Open returns a small integer, carried in the request word of every
   later call; the per-connection **shared frame** is the real granted resource, delegated once at
-  open via `SEND_CAP` and mapped by netd at a per-socket VA (§25).
-- **Operations**, each a `CALL` on the Stack endpoint (which mints the reply cap netd answers on),
-  the socket id packed into the request word: `OPEN_UDP`/`OPEN_TCP` -> socket id; `BIND(port)`;
-  `CONNECT(ip, port)` (ip/port in the shared frame header, since CALL carries only two words);
-  `SEND(len)` and `RECV() -> len` (payload already in / left in the shared frame); `CLOSE`. A
-  blocking `RECV` is netd driving the smoltcp poll loop (WAIT on the NIC interrupt) until the socket
-  has data, then replying, the disk driver's discipline one layer up.
+  open via `SEND_CAP` and mapped by netd at a per-socket VA. No ambient network: the client acts only
+  through the `Stack` capability it was granted, and bytes cross in the shared frame, never in a
+  message.
+- **Operations.** `ATTACH_FRAME` is a `SEND_CAP` (it carries the frame). The rest are `CALL`s (which
+  mint the reply cap netd answers on), the socket id packed into the request word: `OPEN_UDP` /
+  `OPEN_TCP`; `SENDTO(len)` and `RECV() -> len` for UDP (destination and payload in the shared
+  frame); `CONNECT` / `SEND(len)` / `RECV()` for TCP; `CLOSE`. A blocking `RECV` is netd driving the
+  smoltcp poll loop (WAIT on the NIC interrupt) until the socket has data, then replying, the disk
+  driver's discipline one layer up.
+- **Frame layout, pinned.** One data region reused per operation, NOT a split TX/RX ring: the
+  phase-one contract is one *synchronous* exchange per `CALL` (the client blocks in the CALL while
+  netd drives the network), so a request's payload and its reply never coexist. A split ring becomes
+  necessary only with asynchronous or streaming sockets, deferred with the concurrency model.
 - **Concurrency model, phase one:** single-threaded netd, one synchronous exchange per request. netd
-  blocks on the Stack endpoint between requests and drives the network inside handling one request.
-  This suffices for the `std::net` PAL's blocking calls and for request/response traffic; concurrent
-  connections and listening sockets want either userspace threads (milestone 19c TCBs) or a
-  select-like wait, which is the phase-two extension.
-- **Tests, and the honest gap.** UDP is deterministically testable over slirp: a client opens a UDP
-  socket, sends a DNS query to slirp's built-in resolver (10.0.2.3:53), and verifies the response,
-  exercising the whole contract with a real protocol. TCP end to end is the gap: slirp NATs outbound
-  TCP to the host, and a deterministic peer needs host setup (a listener, or `guestfwd`), which the
-  QEMU-only, zero-host-setup test model does not provide. So the TCP socket type is built to the same
-  contract, but its end-to-end test is limited to what a deterministic peer allows (a connect whose
-  handshake or refusal is observable); a full TCP data round trip is recorded as needing a test peer,
-  not left as a silent gap.
+  blocks on the `Stack` endpoint between requests and drives the network inside handling one. This
+  suits the `std::net` PAL's blocking calls; concurrent connections and listening sockets want either
+  userspace threads (milestone 19c TCBs) or a select-like wait, the phase-two extension.
+- **One binary, one archive entry.** The client rides in the netd binary (a nonzero entry role runs
+  it) rather than a separate binary, because the crickerfs archive directory holds at most 15 files
+  and the initrd was already near that ceiling. A subtlety worth recording: netd reports its DHCP
+  lease with a *blocking* `send`, so the spawn service drains that report before returning, or netd
+  never reaches its serve loop and the client's first request hangs. That was the one real bug in
+  bring-up, caught by a watchdog hang.
 
-This binds milestone 27's `std::net` PAL, replacing its `Unsupported`. Scope discipline holds: TCP,
+### What the gate proves, and what it does not
+
+Both tests are deterministic and zero-host-setup, run over both the mmio and the PCI-behind-IOMMU
+transports, on aarch64 and riscv64:
+
+- **UDP, `a_client_resolves_dns_through_the_socket_contract`.** A real DNS A-query for `example.com`
+  to slirp's built-in resolver (10.0.2.3:53); the client verifies the reply is a response (QR bit) to
+  its own transaction id. Proves UDP send and receive through the whole path (client, netd, smoltcp,
+  confined NIC). It relies on the test host being able to resolve DNS, which slirp forwards; a host
+  with no resolver would make this time out.
+- **TCP, `a_client_echoes_over_tcp_through_the_socket_contract`.** A full round trip against a slirp
+  `guestfwd` echo peer: the runners add `guestfwd=tcp:10.0.2.9:7777-cmd:/bin/cat` to each NIC's
+  `-netdev user`, so a guest connection to 10.0.2.9:7777 is piped to a fresh `/bin/cat`. The client
+  does OPEN_TCP, CONNECT (the three-way handshake completes against a real peer), SEND a payload,
+  RECV the echo and check it byte for byte, then CLOSE (the FIN). No host port is bound and nothing
+  outlives QEMU, so the whole round trip, handshake through bidirectional data to teardown, is in the
+  committed gate with zero host setup. Verified against QEMU 11.0.2.
+
+**Not proven by the gate:** inbound connections. A `LISTEN`/`accept` verb plus a QEMU `hostfwd` (host
+port -> guest) is the way to test the guest accepting a connection, and that is future work; the
+contract has no listen verb yet. The concurrency model above is the other limit: one synchronous
+exchange at a time, no overlapping connections.
+
+This binds milestone 27's `std::net` PAL, replacing its `Unsupported`. Scope discipline held: TCP,
 UDP, DHCP, no sockets-API mimicry beyond what the PAL needs.
