@@ -22,9 +22,11 @@
 use core::marker::PhantomData;
 
 pub mod aarch64;
+pub mod domain;
 pub mod sv39;
 
 pub use aarch64::Aarch64;
+pub use domain::{DmaRegion, build_identity_domain};
 pub use sv39::Sv39;
 
 pub const PAGE_SIZE: u64 = 4096;
