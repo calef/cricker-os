@@ -1074,6 +1074,38 @@ This is a bug fix to this section's intent (untyped is delegable in seL4, the mo
 guarantees from), recorded here rather than as a new section. See `kernel/src/syscall.rs`'s `SPLIT`
 handler, `cap::untyped_root_cap`, and notes/grant-expression.md.
 
+### Amendment (milestone 22): DESTROY force-kills a live resident thread, it no longer only refuses
+
+`DESTROY` refused (NotPermitted) while a live thread occupied the region, on the reasoning that "its
+owner must let it finish first." That is right for a cooperative child, and wrong for the exact case
+§24 built the forcible tier of `^C` for: **a runaway that never finishes.** A thread spinning at EL0,
+never yielding and never checking its interrupt endpoint, would refuse `DESTROY` forever, so the
+shell's escalation had nothing to escalate *to*. §24 named the forcible tier "§16's revocation" and
+said "no new kernel primitive"; this is the small change to `DESTROY` that makes that true.
+
+**The refusal now arms a kill.** When `DESTROY` finds a live (`Ready`/`Running`/`Blocked`) resident
+thread, it marks it `killed` and still refuses this pass. A killed thread never runs again: the
+scheduler converts it to a `Finished` corpse at its **next preemption** instead of requeueing it, and
+the ordinary reaper tears down its stack and address space exactly as a clean exit would. So the
+owner that retries `DESTROY` (the shell's escalation loop already retries, for the exit sliver)
+reclaims the region once the runaway has been torn down.
+
+**Why a flag and a retry, not a synchronous kill.** Yanking a thread out of a run queue needs an
+arbitrary-remove the intrusive `Fifo` deliberately does not have, and stopping a thread `Running` on
+another core needs a cross-core IPI and a rendezvous. The killed flag needs neither: a runaway is
+preemptible by construction (DECISIONS §5), so **each core converts its own killed thread on the
+timer**, and the whole mechanism is one branch in `schedule()` plus one flag in `DESTROY`. The cost
+is that reclamation is not instantaneous (the runaway runs to the end of its timeslice, then dies),
+which is exactly the semantics the shell wants: a bounded escalation, not a stop-the-world.
+
+**Scope, honestly.** This tears down the runaway (`Running`/`Ready`), which is §24's stated target. A
+thread that only ever *blocks* is never scheduled to hit that preemption, so the flag alone will not
+reap it; that case is the cooperative tier's job (send the program its interrupt endpoint, which by
+definition it is listening on), not the forcible tier's. A single kernel test builds a one-instruction
+EL0 runaway and reclaims its region out from under it, on both ISAs (`user.rs`,
+`destroy_force_kills_a_runaway_and_reclaims_its_region`). See `kernel/src/sched.rs` (`schedule`,
+`reap_region_objects`) and `Thread::killed`.
+
 ## 17. The second architecture: RISC-V, and the page-table format trait
 
 The port to RISC-V (rv64, QEMU `virt`) is the first real test of rule #1 ("all architecture-specific
