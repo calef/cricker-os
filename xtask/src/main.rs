@@ -194,6 +194,8 @@ fn initrd_riscv() -> bool {
             "shell",
             "--bin",
             "blk",
+            "--bin",
+            "allocdemo",
             "--target",
             RISCV_TARGET,
         ],
@@ -221,6 +223,7 @@ fn initrd_riscv() -> bool {
         ("input", "input"),
         ("shell", "shell"),
         ("blk", "blk"),
+        ("allocdemo", "allocdemo"),
     ];
     let mut blobs: Vec<(&str, Vec<u8>)> = Vec::new();
     for &(archive_name, bin_name) in entries {
@@ -308,11 +311,18 @@ fn mkinitrd() -> bool {
             return false;
         }
     };
+    let allocdemo = match std::fs::read(bin_elf("allocdemo")) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("allocdemo"));
+            return false;
+        }
+    };
     // "init" is the hello binary (the kernel loads it, init re-enters it at its remaining roles);
     // "worker", "console", "input", "shell" are the split system binaries (19f.2-5), "coremark" is
     // the compute workload (19e), and "elbench" is the EL0 microbenchmark program (primitive suite).
     // init (and the bench boot) load each by name. All are entries in the one archive.
-    let files: [(&str, &[u8]); 7] = [
+    let files: [(&str, &[u8]); 8] = [
         ("init", &hello),
         ("worker", &worker),
         ("console", &console),
@@ -320,6 +330,7 @@ fn mkinitrd() -> bool {
         ("shell", &shell),
         ("coremark", &coremark),
         ("elbench", &elbench),
+        ("allocdemo", &allocdemo),
     ];
     let size = crickerfs::image_size(&files);
     let mut img = std::vec![0u8; size];
@@ -455,6 +466,8 @@ fn test() -> bool {
         "ipc",
         "-p",
         "slots",
+        "-p",
+        "uheap",
         "-p",
         "intrusive",
         "-p",

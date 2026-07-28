@@ -91,6 +91,15 @@ path = "src/blk.rs"
 test = false
 bench = false
 
+# The allocator workload (milestone 27): the first program that links `extern crate alloc`, over
+# the untyped-backed heap in user_rt. Proves Vec/String/BTreeMap churn, free-in-any-order, and
+# reuse-without-growth against a real budget, on both ISAs.
+[[bin]]
+name = "allocdemo"
+path = "src/allocdemo.rs"
+test = false
+bench = false
+
 # The EL0 microbenchmark program (primitive suite): self-times syscall/IPC primitives from EL0, the
 # lmbench way, so the numbers include the trap the kernel-side benchmarks skip. Run by the bench boot.
 [[bin]]

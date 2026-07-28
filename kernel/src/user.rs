@@ -1852,6 +1852,100 @@ pub mod untyped_service {
     }
 }
 
+/// **The untyped-backed userspace heap** (milestone 27): spawn the `allocdemo` workload, the
+/// first program that links `extern crate alloc`, with an untyped budget (slot 0) and a report
+/// endpoint (slot 1). The program wires `user_rt::heap` as its global allocator, churns
+/// `Vec`/`String`/`BTreeMap` with frees in arbitrary order, asserts every intermediate result
+/// itself (a wrong value faults), and reports a magic word plus how many bytes of heap it
+/// committed. Portable: the same test runs the riscv64 ELF on riscv and the aarch64 ELF on
+/// aarch64, out of each arch's own initrd.
+#[cfg(test)]
+pub mod alloc_service {
+    use super::*;
+    use crate::cap::{Rights, endpoint_cap, untyped_cap};
+    use crate::sched::EpId;
+
+    /// The demo caps its own heap at 64 pages; the budget must also cover the program's page
+    /// tables and the heap's, so 96 pages is comfortable without being unbounded.
+    pub const BUDGET_PAGES: u64 = 96;
+
+    /// `load` maps one stack page, which suits the hand-sized programs; `alloc` collections
+    /// (BTreeMap nodes, the fmt machinery behind `assert!`) burn more than 4 KiB of stack, so
+    /// map three more pages below it. The demo found this the honest way: a data abort at
+    /// 0x4ffff8, one word below the mapped page.
+    const EXTRA_STACK_PAGES: u64 = 3;
+
+    pub fn start(image: &'static [u8]) -> EpId {
+        let budget = crate::untyped::create(BUDGET_PAGES).expect("no untyped for allocdemo");
+        let report = crate::sched::create_endpoint();
+
+        let mut stack = [Mapping {
+            va: 0,
+            phys: 0,
+            flags: Flags::user_data(),
+        }; EXTRA_STACK_PAGES as usize];
+        for (k, m) in stack.iter_mut().enumerate() {
+            let phys = crate::memory::alloc().expect("no frame for allocdemo stack").addr();
+            // SAFETY: fresh frame via the direct map; zero it so the new process starts clean.
+            unsafe {
+                core::ptr::write_bytes(mmu::phys_to_virt(phys) as *mut u8, 0, FRAME_SIZE as usize);
+            }
+            m.va = USER_STACK_VA - (k as u64 + 1) * FRAME_SIZE;
+            m.phys = phys;
+        }
+
+        crate::sched::spawn(move || {
+            run(
+                image,
+                Spawn {
+                    arg0: 0,
+                    arg1: 0,
+                    arg2: 0,
+                    grants: &[
+                        untyped_cap(budget),                 // slot 0: the heap's budget
+                        endpoint_cap(report, Rights::WRITE), // slot 1: report the verdict
+                    ],
+                    maps: &stack,
+                },
+            )
+        })
+        .expect("could not spawn allocdemo");
+
+        report
+    }
+}
+
+#[cfg(test)]
+mod heap_tests {
+    use super::*;
+
+    /// The full `alloc` surface holds on a real budget: collections allocate, free in arbitrary
+    /// order, and freed memory is reused rather than leaked. The workload asserts each value
+    /// internally and faults on any lie, so this test's magic-word check is the "it all ran"
+    /// bit; the committed count proves the heap both grew (it allocated more than zero pages)
+    /// and stayed inside its own 64-page cap, i.e. growth is demand-driven, not budget-eating.
+    #[test_case]
+    fn a_process_runs_alloc_collections_on_its_own_untyped() {
+        let image = program("allocdemo").expect("no allocdemo program in the initrd archive");
+        let report = alloc_service::start(image);
+        let words = crate::sched::ipc_recv(report);
+        assert_eq!(
+            words[0], 0xA110_C0DE,
+            "allocdemo did not complete its heap workout",
+        );
+        let committed = words[1];
+        assert!(committed > 0, "the heap never grew: nothing was allocated?");
+        assert!(
+            committed <= 64 * 4096,
+            "the heap grew past its own cap: growth policy is broken",
+        );
+        assert!(
+            committed.is_multiple_of(4096),
+            "committed bytes must be whole pages",
+        );
+    }
+}
+
 /// **Capability delegation: authority moves between processes at runtime.**
 ///
 /// Every other capability in cricker-os is minted by the kernel and handed to a process at spawn.

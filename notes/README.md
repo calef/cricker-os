@@ -57,6 +57,9 @@ in the code or the conversation doesn't make sense, it belongs here.
   `heap`/`slab` crates were deleted outright on 2026-07-27 once nothing referenced them: the
   git history preserves the work, and a demonstrator's tree should hold what it ships. The
   note stays; building the allocator and then earning its deletion were both the point.
+  **Milestone 27 brought the heap back in userspace**: `crates/uheap` (the algorithm,
+  host-tested) plus `user_rt::heap` (a `GlobalAlloc` that grows out of the process's own
+  untyped via `untyped::MAP`); the note's last section is that story.
 - [Physical memory](physical-memory.md) — the frame allocator. Why a bitmap and not a free
   list, the bootstrap problem (the allocator's first act is to allocate itself), and why
   `mark_used` rounds *outward*.

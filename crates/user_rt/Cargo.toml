@@ -14,3 +14,4 @@ doctest = false
 
 [dependencies]
 abi = { version = "0.1.0", path = "../abi" }
+uheap = { version = "0.1.0", path = "../uheap" }
