@@ -897,9 +897,10 @@ endgame, and POSIX posture). The entries here remain the detailed source for eac
   verb that would make "interrupt" mean pause-and-inspect. Deferred because it widens the §4
   syscall surface with no consumer yet, and because it should be designed next to milestone 22's
   fault endpoints (both are "the kernel turns a thread's state into a message a supervisor
-  holds"). **Triggers to build:** (1) milestone 22's supervision tree wants suspend-on-fault
-  rather than kill-on-fault; (2) real job control (`fg`/`bg`, a stopped-process state) in the
-  shell; (3) a debugger. Whichever fires first, design SUSPEND and the fault endpoint as one
+  holds"). **Triggers to build:** (1) a userspace pager (demand paging is fault-message,
+  fix, resume: the fault endpoint of §26 is its front half); (2) real job control (`fg`/`bg`, a
+  stopped-process state) in the shell; (3) a debugger. (Milestone 22's supervision tree chose
+  dead-until-reaped over suspend-on-fault, §26, so it is no longer a trigger.) Whichever fires first, design SUSPEND and the fault endpoint as one
   surface, and give the method its own DECISIONS entry.
 
 ---
@@ -1458,6 +1459,43 @@ third process (the id is meaningless outside the holder of the stack cap, which 
 it is a limit); (2) milestone 23's hot-swap work wants per-connection revocation during a net
 server swap. The contract keeps the shared frame as the per-connection resource precisely so this
 migration changes the handle, not the data plane.
+
+## 26. The fault endpoint: thread death becomes a message a supervisor holds
+
+**Decided 2026-07-28 (Chris), the five sub-decisions settled one at a time; not yet built.** The
+kernel is the only witness to a thread's fault, so it is the one that must pass the news along.
+When a thread faults or exits, the kernel delivers a message to the supervision endpoint its
+spawner designated. This is the one kernel mechanism milestone 22's supervision tree needs;
+restart policy stays in userspace, and the kernel never relaunches anything.
+
+The five parts, each decided explicitly:
+
+1. **Build it.** The alternative (userspace heartbeat polling) is a poor death detector: timeouts
+   are guesswork where the kernel has the exact instant and cause. Polling remains the right tool
+   for a different problem, liveness ("alive but wedged"), and any supervisor can layer it on with
+   ordinary IPC and no kernel help.
+2. **Supervision is granted at spawn, only.** The fault endpoint is one more capability in the
+   spawn endowment, so the supervision relationship is visible in the spawn literal and cannot
+   change afterward. Runtime reattach (`Tcb::SET_FAULT_EP`) is deferred until milestone 23's
+   hot-swap work demands supervision handoff, and it is a new decision when it does.
+3. **Both faults and exits flow**, distinguished by an event code. Restart policy needs to tell
+   "crashed" from "finished".
+4. **Dead-until-reaped.** After the message, the thread never runs again, but its corpse (TCB,
+   address space, memory) persists for postmortem until the supervisor reaps it with §16 object
+   revocation. Suspend-for-inspection (resumable faults) is deferred to the SUSPEND tracker in
+   Open design ideas, which now carries the userspace pager as a third trigger; the message format
+   reserves a word so a fault-reply/resume protocol can arrive additively.
+5. **One shared supervision endpoint per supervisor**, kernel-stamped identity per message:
+   `(event code, tid, fault pc, fault address, reserved)`. Synchronous rendezvous means `RECV`
+   blocks on one endpoint, so per-child endpoints would force a supervisor thread per child or a
+   new wait-any primitive; the shared endpoint needs neither. The id word is trustworthy because
+   the kernel is the only sender on this path (seL4 solves the general untrusted-sender case with
+   badged capabilities; that mechanism returns as its own decision if shared endpoints ever need
+   trustworthy identity from userspace senders).
+
+Surface cost: no new syscall and no new method. Spawn already carries grants; delivery is a
+kernel-internal send. The additions are a message-format convention and a spawn-slot convention,
+recorded in notes/abi.md when built.
 
 ## Reading
 
