@@ -20,6 +20,13 @@ cd "$(dirname "$0")/.."
 echo "==> clippy: host crates + xtask"
 cargo clippy --workspace --exclude kernel --exclude user --exclude user_rt --all-targets -- -D warnings
 
+# The RedoxFS host tool (tools/redoxfs-host) is its own workspace, outside ours on purpose (it wraps
+# the vendored engine, which we do not want in our gates; see Cargo.toml). Lint it on its own so our
+# code there is still held to -D warnings. The engine it depends on is external to its workspace too,
+# so clippy does not lint upstream redoxfs, only our tool.
+echo "==> clippy: redoxfs-host (its own workspace)"
+cargo clippy --manifest-path tools/redoxfs-host/Cargo.toml --all-targets -- -D warnings
+
 echo "==> clippy: kernel + user + user_rt (aarch64)"
 cargo clippy -p kernel -p user -p user_rt --target aarch64-unknown-none-softfloat --all-targets -- -D warnings
 

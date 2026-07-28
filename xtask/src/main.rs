@@ -486,6 +486,41 @@ fn test() -> bool {
     ]) {
         return false;
     }
+
+    // The vendored RedoxFS pin (vendor/redoxfs, milestone 32) is kept honest here, both halves of
+    // vendor/README.md's promise. Both are driven by --manifest-path because the engine and the
+    // host tool are their OWN workspaces, deliberately outside ours so upstream code never reaches
+    // our clippy/fmt gates (see the workspace `exclude` in Cargo.toml).
+    //
+    // First: the host tool's round trip (mkfs, put, ls, cat) against the pinned engine, the same
+    // code phase 2's FS server will open images with, so a regression is caught on the host in
+    // milliseconds. Second: the engine's no_std core built for BOTH bare-metal targets, because
+    // upstream does not CI the no_std path and it bit-rotted once already (the two Vec imports the
+    // pin carries); this build catches the next such regression instead of phase 2 doing it.
+    eprintln!();
+    eprintln!("--- vendored redoxfs: host round trip + no_std core (both targets) ---");
+    if !run(
+        "cargo",
+        &["test", "--manifest-path", "tools/redoxfs-host/Cargo.toml"],
+    ) {
+        return false;
+    }
+    for target in [TARGET, RISCV_TARGET] {
+        if !run(
+            "cargo",
+            &[
+                "build",
+                "--manifest-path",
+                "vendor/redoxfs/Cargo.toml",
+                "--no-default-features",
+                "--target",
+                target,
+            ],
+        ) {
+            return false;
+        }
+    }
+
     eprintln!();
     eprintln!("--- kernel tests, aarch64 (QEMU) ---");
     if !user() || !mkdisk() {
