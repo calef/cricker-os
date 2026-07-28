@@ -4439,6 +4439,53 @@ mod force_kill_tests {
             mmu::phys_to_virt(code_phys),
             core::mem::size_of_val(SPIN_STUB),
         );
+        user_aspace_map(aspace, CODE_VA, code_phys, Flags::user_code()).expect("map code");
+
+        let stack_phys = crate::untyped::retype_page(region).expect("no stack frame");
+        user_aspace_map(aspace, STACK_VA, stack_phys, Flags::user_data()).expect("map stack");
+
+        let tid = sched::create_tcb(region).expect("no tcb");
+        sched::configure_tcb(tid, CODE_VA, STACK_VA + frames::FRAME_SIZE, aspace)
+            .expect("configure");
+        sched::start_tcb(tid, [0; 3]).expect("start");
+
+        // Let the runaway actually reach EL0 and start spinning, so we tear down a running thread,
+        // not an embryo. A few yields is plenty; it is preemptible the instant it lands.
+        for _ in 0..8 {
+            sched::yield_now();
+        }
+
+        // The forcible tier: reclaim the region while the runaway is still live. The first pass arms
+        // the kill and refuses; the runaway is converted to a corpse at its next preemption; the
+        // retry (yielding to give it that preemption) reclaims. Bounded, so a bug is a failed test,
+        // not a hung emulator.
+        let mut reclaimed = false;
+        for _ in 0..4000 {
+            if sched::reclaim_region(region).is_ok() {
+                reclaimed = true;
+                break;
+            }
+            sched::yield_now();
+        }
+        assert!(
+            reclaimed,
+            "DESTROY never tore down a runaway: the killed flag did not convert it to a corpse",
+        );
+
+        assert!(
+            sched::thread_count() <= threads_before,
+            "the force-killed runaway was reclaimed but never actually reaped",
+        );
+        assert_eq!(
+            crate::memory::free_frames(),
+            frames_before,
+            "reclaiming a force-killed runaway did not return its frames to baseline",
+        );
+    }
+}
+
+/// Parity C: the virtio-blk driver, its two attackers, and the DMA confinement, on RISC-V.
+///
 /// **The fault endpoint: a supervisor watches a child die and reap it** (milestone 22, DECISIONS
 /// §26). These are the cross-ISA tests, because the mechanism is portable: a supervised child that
 /// faults (or exits) turns into a five-word message on its supervision endpoint, its corpse persists
@@ -4527,24 +4574,6 @@ mod supervision_tests {
         user_aspace_map(aspace, STACK_VA, stack_phys, Flags::user_data()).expect("map stack");
 
         let tid = sched::create_tcb(region).expect("no tcb");
-        sched::configure_tcb(tid, CODE_VA, STACK_VA + frames::FRAME_SIZE, aspace)
-            .expect("configure");
-        sched::start_tcb(tid, [0; 3]).expect("start");
-
-        // Let the runaway actually reach EL0 and start spinning, so we tear down a running thread,
-        // not an embryo. A few yields is plenty; it is preemptible the instant it lands.
-        for _ in 0..8 {
-            sched::yield_now();
-        }
-
-        // The forcible tier: reclaim the region while the runaway is still live. The first pass arms
-        // the kill and refuses; the runaway is converted to a corpse at its next preemption; the
-        // retry (yielding to give it that preemption) reclaims. Bounded, so a bug is a failed test,
-        // not a hung emulator.
-        let mut reclaimed = false;
-        for _ in 0..4000 {
-            if sched::reclaim_region(region).is_ok() {
-                reclaimed = true;
         if let Some(rep) = report {
             let cap = crate::cap::endpoint_cap(
                 rep,
@@ -4624,20 +4653,6 @@ mod supervision_tests {
             }
             sched::yield_now();
         }
-        assert!(
-            reclaimed,
-            "DESTROY never tore down a runaway: the killed flag did not convert it to a corpse",
-        );
-
-        assert!(
-            sched::thread_count() <= threads_before,
-            "the force-killed runaway was reclaimed but never actually reaped",
-        );
-        assert_eq!(
-            crate::memory::free_frames(),
-            frames_before,
-            "reclaiming a force-killed runaway did not return its frames to baseline",
-        );
     }
 
     /// **A clean exit flows too, distinguished by the event code.** The other half of §26's "both
