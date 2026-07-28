@@ -113,6 +113,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8d2d250f87fb3fb6f225c907cf54381509f47b40b74b1d1f12d2dccbc915bdfe"
 
 [[package]]
+name = "uheap"
+version = "0.1.0"
+
+[[package]]
 name = "user"
 version = "0.1.0"
 dependencies = [
@@ -129,6 +133,7 @@ name = "user_rt"
 version = "0.1.0"
 dependencies = [
  "abi",
+ "uheap",
 ]
 
 [[package]]

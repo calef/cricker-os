@@ -17,6 +17,7 @@
 //! `.cargo/config.toml`. That script is the single source of truth for how the kernel
 //! gets booted, so there is exactly one place to get the QEMU flags wrong.
 
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -99,6 +100,8 @@ fn main() -> ExitCode {
                 ])
         }
         "initrd-riscv" => initrd_riscv(),
+        "std-src" => std_src(),
+        "user-std" => user_std(),
         "test" => test(),
         "bench" => bench(),
         "gdb" => gdb(),
@@ -109,7 +112,7 @@ fn main() -> ExitCode {
                 eprintln!("unknown command: {other}\n");
             }
             eprintln!(
-                "usage: cargo xtask <build|run|shell|initboot|initrd-riscv|test|bench|gdb|objdump|image> [--hvf]"
+                "usage: cargo xtask <build|run|shell|initboot|initrd-riscv|std-src|user-std|test|bench|gdb|objdump|image> [--hvf]"
             );
             eprintln!("       cargo xtask bench [--riscv] [--real] [--release] [--check] [--save]");
             return ExitCode::FAILURE;
@@ -137,6 +140,349 @@ fn build() -> bool {
 /// wants as a flat image. See notes/elf.md.
 fn user() -> bool {
     cargo_profiled(&["build", "-p", "user", "--target", TARGET]) && mkinitrd()
+}
+
+// ===========================================================================================
+// Rust `std` on the native ABI (milestone 27).
+//
+// std's Platform Abstraction Layer for cricker-os lives in patches/std-cricker (the Hermit shape:
+// a `sys` backend on the capability ABI, not a libc shim). `std-src` materializes a patched
+// rust-src into a linked `cricker-dev` toolchain; `user-std` builds the `hellostd` demo for the
+// custom targets with -Zbuild-std against it. See notes/std.md.
+// ===========================================================================================
+
+/// The custom-target triples the std demo builds for, one per supported ISA. The name is the
+/// JSON spec's file stem, which is also cargo's target-dir subdirectory.
+const STD_TARGETS: [&str; 2] = ["aarch64-unknown-cricker", "riscv64-unknown-cricker"];
+
+/// The linked toolchain name (`rustup toolchain link`) whose rust-src carries the cricker PAL.
+const CRICKER_TOOLCHAIN: &str = "cricker-dev";
+
+/// Bump to force every farm to rebuild after a change to the patch logic itself (not the inputs).
+const STD_SRC_PATCH_VERSION: u32 = 2;
+
+fn farm_dir() -> PathBuf {
+    workspace_root().join("target/cricker-farm")
+}
+
+/// The real nightly sysroot the farm is hardlink-cloned from.
+fn real_sysroot() -> Option<PathBuf> {
+    capture("rustc", &["--print", "sysroot"]).map(|s| PathBuf::from(s.trim()))
+}
+
+/// The farm's patched std source root (`.../library/std/src`).
+fn farm_std_src() -> PathBuf {
+    farm_dir().join("lib/rustlib/src/rust/library/std/src")
+}
+
+/// The `hellostd` ELF for a given custom-target triple. user-std is its own workspace, so its
+/// artifacts land under `user-std/target/<triple>/release/`.
+fn hellostd_elf(triple: &str) -> PathBuf {
+    workspace_root().join(format!("user-std/target/{triple}/release/hellostd"))
+}
+
+/// A cheap FNV-1a over a byte slice, folded into the running hash. No crypto, no dep: this only
+/// needs to notice when a PAL input changed so the farm (and thus the build-std cache) is rebuilt.
+fn fnv(mut h: u64, bytes: &[u8]) -> u64 {
+    for &b in bytes {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01B3);
+    }
+    h
+}
+
+/// Hash everything that determines the farm's contents: the toolchain version, the patch-logic
+/// version, the ABI/heap crates copied in verbatim, the target specs, and every overlay file.
+/// A mismatch means the linked toolchain is stale and std must be rebuilt from patched source.
+fn std_inputs_stamp() -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    h = fnv(h, &STD_SRC_PATCH_VERSION.to_le_bytes());
+    if let Some(v) = capture("rustc", &["-vV"]) {
+        h = fnv(h, v.as_bytes());
+    }
+    let root = workspace_root();
+    let mut files: Vec<PathBuf> = vec![
+        root.join("crates/abi/src/lib.rs"),
+        root.join("crates/uheap/src/lib.rs"),
+        root.join("targets/aarch64-unknown-cricker.json"),
+        root.join("targets/riscv64-unknown-cricker.json"),
+    ];
+    collect_files(&root.join("patches/std-cricker/overlay"), &mut files);
+    files.sort();
+    for f in files {
+        h = fnv(h, f.to_string_lossy().as_bytes());
+        if let Ok(bytes) = std::fs::read(&f) {
+            h = fnv(h, &bytes);
+        }
+    }
+    h
+}
+
+/// Walk `dir` and push every regular file into `out` (used to fingerprint the overlay tree).
+fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            collect_files(&p, out);
+        } else {
+            out.push(p);
+        }
+    }
+}
+
+/// **Materialize the patched `cricker-dev` toolchain** (milestone 27).
+///
+/// build-std reads std's source from the sysroot of the rustc it invokes, so a patched std means
+/// a toolchain whose sysroot IS patched. We hardlink-clone the real nightly (`cp -al`, near-zero
+/// disk since blocks are shared) so rustc resolves *this* directory as its sysroot, then replace
+/// the `src` subtree with a real (independent-inode) copy and patch that copy: the overlay PAL
+/// files, the ABI/heap crates generated verbatim, and a `target_os = "cricker"` arm inserted into
+/// std's `cfg_select!` dispatchers. The real toolchain is never touched.
+///
+/// Idempotent: a stamp of all inputs guards the rebuild, so a warm farm (and its build-std cache)
+/// survives across runs and only a PAL change forces std to recompile.
+fn std_src() -> bool {
+    let stamp = std_inputs_stamp();
+    let stamp_file = farm_dir().join(".cricker-stamp");
+    if farm_std_src().is_dir()
+        && std::fs::read_to_string(&stamp_file).ok().as_deref() == Some(&stamp.to_string())
+    {
+        return true;
+    }
+
+    let Some(real) = real_sysroot() else {
+        eprintln!("std-src: cannot find the nightly sysroot (rustc --print sysroot)");
+        return false;
+    };
+    let farm = farm_dir();
+    eprintln!("--- std-src: building the patched cricker-dev toolchain (this recompiles std) ---");
+
+    // Fresh farm. `cp -al` clones bin+lib as hardlinks; the src subtree is then a real copy so
+    // patching it never mutates the shared rustup toolchain.
+    let _ = std::fs::remove_dir_all(&farm);
+    if let Err(e) = std::fs::create_dir_all(&farm) {
+        eprintln!("std-src: cannot create {}: {e}", farm.display());
+        return false;
+    }
+    let cp = |args: &[&str]| run("cp", args);
+    if !cp(&["-al", &s(real.join("bin")), &s(farm.join("bin"))])
+        || !cp(&["-al", &s(real.join("lib")), &s(farm.join("lib"))])
+    {
+        eprintln!("std-src: hardlink-clone of the toolchain failed");
+        return false;
+    }
+    let src = farm.join("lib/rustlib/src");
+    let _ = std::fs::remove_dir_all(&src);
+    if !cp(&["-R", &s(real.join("lib/rustlib/src")), &s(src)]) {
+        eprintln!("std-src: real copy of rust-src failed");
+        return false;
+    }
+
+    if !std_apply_overlay() || !std_generate_modules() || !std_patch_dispatch() {
+        return false;
+    }
+
+    // Link (or relink) the farm as `cricker-dev`. Idempotent: rustup replaces an existing link to
+    // the same path.
+    if !run("rustup", &["toolchain", "link", CRICKER_TOOLCHAIN, &s(farm.clone())]) {
+        eprintln!("std-src: `rustup toolchain link {CRICKER_TOOLCHAIN}` failed");
+        return false;
+    }
+
+    if let Err(e) = std::fs::write(&stamp_file, stamp.to_string()) {
+        eprintln!("std-src: cannot write stamp {}: {e}", stamp_file.display());
+        return false;
+    }
+    true
+}
+
+/// Path-to-string helper for the `cp`/`rustup` argument lists.
+fn s(p: PathBuf) -> String {
+    p.display().to_string()
+}
+
+/// Copy the PAL overlay (`patches/std-cricker/overlay/std/src/...`) over the farm's std source.
+fn std_apply_overlay() -> bool {
+    let overlay = workspace_root().join("patches/std-cricker/overlay/std/src");
+    let dst_root = farm_std_src();
+    let mut files = Vec::new();
+    collect_files(&overlay, &mut files);
+    for f in files {
+        let rel = f.strip_prefix(&overlay).unwrap();
+        let dst = dst_root.join(rel);
+        if let Some(parent) = dst.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = std::fs::copy(&f, &dst) {
+            eprintln!("std-src: overlay copy {} failed: {e}", rel.display());
+            return false;
+        }
+    }
+    true
+}
+
+/// Generate `abi.rs` and `uheap.rs` verbatim from the host-tested crates, so the ABI numbers and
+/// the heap algorithm have exactly one definition. The transform strips crate-level inner
+/// attributes (`#![no_std]`, illegal in a non-root module) and any trailing `#[cfg(test)]` module.
+fn std_generate_modules() -> bool {
+    let root = workspace_root();
+    let jobs = [
+        (
+            root.join("crates/abi/src/lib.rs"),
+            farm_std_src().join("sys/pal/cricker/abi.rs"),
+        ),
+        (
+            root.join("crates/uheap/src/lib.rs"),
+            farm_std_src().join("sys/alloc/cricker/uheap.rs"),
+        ),
+    ];
+    for (src, dst) in jobs {
+        let Ok(text) = std::fs::read_to_string(&src) else {
+            eprintln!("std-src: cannot read {}", src.display());
+            return false;
+        };
+        let mut body: String = text
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("#!["))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if let Some(idx) = body.find("\n#[cfg(test)]\nmod tests") {
+            body.truncate(idx);
+        }
+        let body = format!("{}\n", body.trim_end());
+        if let Some(parent) = dst.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = std::fs::write(&dst, body) {
+            eprintln!("std-src: cannot write {}: {e}", dst.display());
+            return false;
+        }
+    }
+    true
+}
+
+/// Insert `text` immediately after the first occurrence of `anchor` in `path`.
+fn patch_after(path: &Path, anchor: &str, insert: &str) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        eprintln!("std-src: cannot read {}", path.display());
+        return false;
+    };
+    let Some(pos) = text.find(anchor) else {
+        eprintln!(
+            "std-src: anchor not found in {} (std internals changed?): {anchor:?}",
+            path.display()
+        );
+        return false;
+    };
+    let at = pos + anchor.len();
+    let new = format!("{}\n{}\n{}", &text[..at], insert.trim_end_matches('\n'), &text[at..]);
+    if let Err(e) = std::fs::write(path, new) {
+        eprintln!("std-src: cannot write {}: {e}", path.display());
+        return false;
+    }
+    true
+}
+
+/// Add a `target_os = "cricker"` arm to std's `cfg_select!` dispatchers so they pick the cricker
+/// backend, and add cricker to std's `build.rs` known-platform chain (so std is not
+/// `restricted_std` and ordinary programs need no `#![feature]`). These string anchors couple us
+/// to the pinned nightly's std internals; a rustc bump that reshapes them fails loudly here, which
+/// is the intended tripwire (see notes/std.md).
+fn std_patch_dispatch() -> bool {
+    let sys = farm_std_src().join("sys");
+    let ok = patch_after(
+        &sys.join("pal/mod.rs"),
+        "cfg_select! {",
+        "    target_os = \"cricker\" => {\n        pub(crate) mod cricker;\n        pub use self::cricker::*;\n    }",
+    ) && patch_after(
+        &sys.join("alloc/mod.rs"),
+        "cfg_select! {",
+        "    target_os = \"cricker\" => {\n        mod cricker;\n        use cricker as imp;\n    }",
+    ) && patch_after(
+        &sys.join("stdio/mod.rs"),
+        "cfg_select! {",
+        "    target_os = \"cricker\" => {\n        mod cricker;\n        pub use cricker::*;\n    }",
+    ) && patch_after(
+        &sys.join("random/mod.rs"),
+        "cfg_select! {",
+        "    target_os = \"cricker\" => {\n        mod cricker;\n        pub use cricker::fill_bytes;\n    }",
+    ) && patch_after(
+        &sys.join("thread/mod.rs"),
+        "cfg_select! {",
+        "    target_os = \"cricker\" => {\n        mod cricker;\n        pub use cricker::{Thread, available_parallelism, current_os_id, set_name, sleep, yield_now, DEFAULT_MIN_STACK_SIZE};\n    }",
+    ) && patch_after(
+        &sys.join("time/mod.rs"),
+        "cfg_select! {",
+        "    target_os = \"cricker\" => {\n        mod cricker;\n        use cricker as imp;\n    }",
+    ) && patch_after(
+        // io/error has no fallback arm; route cricker to the generic backend.
+        &sys.join("io/error/mod.rs"),
+        "cfg_select! {",
+        "    target_os = \"cricker\" => {\n        mod generic;\n        pub use generic::*;\n    }",
+    ) && patch_after(
+        // Single-threaded, no native TLS: storage is a plain static (no_threads).
+        &sys.join("thread_local/mod.rs"),
+        "cfg_select! {",
+        "    target_os = \"cricker\" => {\n        mod no_threads;\n        pub use no_threads::{EagerStorage, LazyStorage, thread_local_inner};\n        pub(crate) use no_threads::{LocalPointer, local_pointer};\n    }",
+    ) && patch_after(
+        // ... and the TLS-destructor guard is a no-op.
+        &sys.join("thread_local/mod.rs"),
+        "pub(crate) mod guard {\n    cfg_select! {",
+        "        target_os = \"cricker\" => {\n            pub(crate) fn enable() {}\n        }",
+    ) && patch_after(
+        // std::env::consts::OS. `cfg_unordered!` turns each arm's cfg into the fallback's
+        // exclusion set, so adding a cricker arm both defines OS and keeps the fallback off it.
+        &sys.join("env_consts.rs"),
+        "cfg_unordered! {",
+        "#[cfg(target_os = \"cricker\")]\npub mod os {\n    pub const FAMILY: &str = \"\";\n    pub const OS: &str = \"cricker\";\n    pub const DLL_PREFIX: &str = \"\";\n    pub const DLL_SUFFIX: &str = \"\";\n    pub const DLL_EXTENSION: &str = \"\";\n    pub const EXE_SUFFIX: &str = \"\";\n    pub const EXE_EXTENSION: &str = \"\";\n}",
+    ) && patch_after(
+        // cricker has a real PAL: not restricted_std.
+        &farm_std_src().parent().unwrap().join("build.rs"),
+        "        || target_os == \"vexos\"\n",
+        "        || target_os == \"cricker\"",
+    );
+    ok
+}
+
+/// **Build the `hellostd` demo for both custom targets** (milestone 27), via -Zbuild-std against
+/// the patched `cricker-dev` toolchain. panic=abort and singlethread come from the target specs;
+/// `compiler-builtins-mem` supplies memcpy/memset for the bare target.
+///
+/// `RUSTUP_TOOLCHAIN` is set explicitly rather than via `+cricker-dev`, because the cargo proxy
+/// that launched this xtask already exports `RUSTUP_TOOLCHAIN=nightly`, which would override a
+/// `+` selector and silently build std from the *unpatched* sysroot.
+fn user_std() -> bool {
+    if !std_src() {
+        return false;
+    }
+    let manifest = s(workspace_root().join("user-std/Cargo.toml"));
+    for triple in STD_TARGETS {
+        let spec = s(workspace_root().join(format!("targets/{triple}.json")));
+        let ok = Command::new("cargo")
+            .env("RUSTUP_TOOLCHAIN", CRICKER_TOOLCHAIN)
+            .args([
+                "build",
+                "--release",
+                "--manifest-path",
+                &manifest,
+                "-Zjson-target-spec",
+                "-Zbuild-std=core,alloc,std,panic_abort",
+                "-Zbuild-std-features=compiler-builtins-mem",
+                "--target",
+                &spec,
+            ])
+            .status()
+            .map(|st| st.success())
+            .unwrap_or(false);
+        if !ok {
+            eprintln!("user-std: building hellostd for {triple} failed");
+            return false;
+        }
+    }
+    true
 }
 
 /// Where the packed initrd archive is written.
@@ -196,6 +542,8 @@ fn initrd_riscv() -> bool {
             "termd",
             "--bin",
             "blk",
+            "--bin",
+            "allocdemo",
             "--target",
             RISCV_TARGET,
         ],
@@ -224,6 +572,7 @@ fn initrd_riscv() -> bool {
         ("shell", "shell"),
         ("termd", "termd"),
         ("blk", "blk"),
+        ("allocdemo", "allocdemo"),
     ];
     let mut blobs: Vec<(&str, Vec<u8>)> = Vec::new();
     for &(archive_name, bin_name) in entries {
@@ -234,6 +583,11 @@ fn initrd_riscv() -> bool {
                 return false;
             }
         }
+    }
+    // The std demo (milestone 27), built through the cricker-dev toolchain for the riscv custom
+    // target, rides along when present, exactly as on aarch64. `test` builds it first.
+    if let Ok(bytes) = std::fs::read(hellostd_elf("riscv64-unknown-cricker")) {
+        blobs.push(("hellostd", bytes));
     }
     let files: Vec<(&str, &[u8])> = blobs.iter().map(|(n, b)| (*n, b.as_slice())).collect();
     let size = crickerfs::image_size(&files);
@@ -318,12 +672,20 @@ fn mkinitrd() -> bool {
             return false;
         }
     };
+    let allocdemo = match std::fs::read(bin_elf("allocdemo")) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("allocdemo"));
+            return false;
+        }
+    };
     // "init" is the hello binary (the kernel loads it, init re-enters it at its remaining roles);
     // "worker", "console", "input", "shell" are the split system binaries (19f.2-5), "termd" is
     // the line discipline between them (milestone 28), "coremark" is the compute workload (19e),
-    // and "elbench" is the EL0 microbenchmark program (primitive suite). init (and the bench
-    // boot) load each by name. All are entries in the one archive.
-    let files: [(&str, &[u8]); 8] = [
+    // "elbench" is the EL0 microbenchmark program (primitive suite), and "allocdemo" proves the
+    // user_rt heap (milestone 27). init (and the bench boot) load each by name. All are entries
+    // in the one archive.
+    let mut files: Vec<(&str, &[u8])> = vec![
         ("init", &hello),
         ("worker", &worker),
         ("console", &console),
@@ -332,7 +694,15 @@ fn mkinitrd() -> bool {
         ("termd", &termd),
         ("coremark", &coremark),
         ("elbench", &elbench),
+        ("allocdemo", &allocdemo),
     ];
+    // The std demo (milestone 27) rides along IFF it has been built (`cargo xtask user-std`, which
+    // `test` runs). It builds through a separate toolchain and target, so an interactive `run` that
+    // never built it simply ships an initrd without it; nothing loads it there.
+    let hellostd = std::fs::read(hellostd_elf("aarch64-unknown-cricker")).ok();
+    if let Some(bytes) = &hellostd {
+        files.push(("hellostd", bytes.as_slice()));
+    }
     let size = crickerfs::image_size(&files);
     let mut img = std::vec![0u8; size];
     if crickerfs::write_image(&files, &mut img).is_err() {
@@ -490,6 +860,8 @@ fn test() -> bool {
         "-p",
         "slots",
         "-p",
+        "uheap",
+        "-p",
         "intrusive",
         "-p",
         "asid",
@@ -537,6 +909,11 @@ fn test() -> bool {
 
     eprintln!();
     eprintln!("--- kernel tests, aarch64 (QEMU) ---");
+    // Build the std demo (milestone 27) for both custom targets first, so both initrds carry it:
+    // mkinitrd (inside `user`) packs the aarch64 hellostd, initrd_riscv packs the riscv one.
+    if !user_std() {
+        return false;
+    }
     if !user() || !mkdisk() {
         return false;
     }

@@ -18,6 +18,7 @@ members = [
     "crates/intrusive",
     "crates/linedisc",
     "crates/slots",
+    "crates/uheap",
     "crates/user_rt",
     "crates/coremark",
 ]

@@ -533,6 +533,11 @@ workloads" is committed). What remains open:
 
 ### 27. Rust `std` on the native ABI
 
+**Built 2026-07-28, both ISAs green.** std's platform layer runs directly on the capability ABI
+(Hermit's shape); a real std program (`Vec`, `String`, `HashMap`, `println!`, `Instant`) is spawned
+and checked byte for byte on aarch64 and riscv64. See notes/std.md and DECISIONS §22. Phase-one
+scope holds: `thread::spawn`, `fs`, and `net` are honestly `Unsupported`.
+
 **Deliverable.** A custom rustc target (`aarch64-unknown-cricker` / `riscv64-unknown-cricker`,
 `-Zbuild-std` against a target spec first, a real target later if ever warranted) whose `std`
 compiles and links against the capability ABI (notes/abi.md). Concretely: implement std's

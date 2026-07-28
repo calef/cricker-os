@@ -1901,6 +1901,216 @@ pub mod untyped_service {
     }
 }
 
+/// **The untyped-backed userspace heap** (milestone 27): spawn the `allocdemo` workload, the
+/// first program that links `extern crate alloc`, with an untyped budget (slot 0) and a report
+/// endpoint (slot 1). The program wires `user_rt::heap` as its global allocator, churns
+/// `Vec`/`String`/`BTreeMap` with frees in arbitrary order, asserts every intermediate result
+/// itself (a wrong value faults), and reports a magic word plus how many bytes of heap it
+/// committed. Portable: the same test runs the riscv64 ELF on riscv and the aarch64 ELF on
+/// aarch64, out of each arch's own initrd.
+#[cfg(test)]
+pub mod alloc_service {
+    use super::*;
+    use crate::cap::{Rights, endpoint_cap, untyped_cap};
+    use crate::sched::EpId;
+
+    /// The demo caps its own heap at 64 pages; the budget must also cover the program's page
+    /// tables and the heap's, so 96 pages is comfortable without being unbounded.
+    pub const BUDGET_PAGES: u64 = 96;
+
+    /// `load` maps one stack page, which suits the hand-sized programs; `alloc` collections
+    /// (BTreeMap nodes, the fmt machinery behind `assert!`) burn more than 4 KiB of stack, so
+    /// map three more pages below it. The demo found this the honest way: a data abort at
+    /// 0x4ffff8, one word below the mapped page.
+    const EXTRA_STACK_PAGES: u64 = 3;
+
+    pub fn start(image: &'static [u8]) -> EpId {
+        let budget = crate::untyped::create(BUDGET_PAGES).expect("no untyped for allocdemo");
+        let report = crate::sched::create_endpoint();
+
+        let mut stack = [Mapping {
+            va: 0,
+            phys: 0,
+            flags: Flags::user_data(),
+        }; EXTRA_STACK_PAGES as usize];
+        for (k, m) in stack.iter_mut().enumerate() {
+            let phys = crate::memory::alloc().expect("no frame for allocdemo stack").addr();
+            // SAFETY: fresh frame via the direct map; zero it so the new process starts clean.
+            unsafe {
+                core::ptr::write_bytes(mmu::phys_to_virt(phys) as *mut u8, 0, FRAME_SIZE as usize);
+            }
+            m.va = USER_STACK_VA - (k as u64 + 1) * FRAME_SIZE;
+            m.phys = phys;
+        }
+
+        crate::sched::spawn(move || {
+            run(
+                image,
+                Spawn {
+                    arg0: 0,
+                    arg1: 0,
+                    arg2: 0,
+                    grants: &[
+                        untyped_cap(budget),                 // slot 0: the heap's budget
+                        endpoint_cap(report, Rights::WRITE), // slot 1: report the verdict
+                    ],
+                    maps: &stack,
+                },
+            )
+        })
+        .expect("could not spawn allocdemo");
+
+        report
+    }
+}
+
+#[cfg(test)]
+mod heap_tests {
+    use super::*;
+
+    /// The full `alloc` surface holds on a real budget: collections allocate, free in arbitrary
+    /// order, and freed memory is reused rather than leaked. The workload asserts each value
+    /// internally and faults on any lie, so this test's magic-word check is the "it all ran"
+    /// bit; the committed count proves the heap both grew (it allocated more than zero pages)
+    /// and stayed inside its own 64-page cap, i.e. growth is demand-driven, not budget-eating.
+    #[test_case]
+    fn a_process_runs_alloc_collections_on_its_own_untyped() {
+        let image = program("allocdemo").expect("no allocdemo program in the initrd archive");
+        let report = alloc_service::start(image);
+        let words = crate::sched::ipc_recv(report);
+        assert_eq!(
+            words[0], 0xA110_C0DE,
+            "allocdemo did not complete its heap workout",
+        );
+        let committed = words[1];
+        assert!(committed > 0, "the heap never grew: nothing was allocated?");
+        assert!(
+            committed <= 64 * 4096,
+            "the heap grew past its own cap: growth policy is broken",
+        );
+        assert!(
+            committed.is_multiple_of(4096),
+            "committed bytes must be whole pages",
+        );
+    }
+}
+
+/// **Rust `std` on the native ABI** (milestone 27): spawn the `hellostd` demo, an ordinary Rust
+/// program (no `no_std`, no attributes) built for the `*-unknown-cricker` custom target with std's
+/// PAL implemented directly over the capability ABI. It gets the same two grants as `allocdemo`,
+/// an untyped budget (slot 0, which the std `GlobalAlloc` draws the heap from) and an endpoint
+/// (slot 1, which `println!` SENDs to). Its stdout is a fixed, deterministic transcript the test
+/// reassembles from the endpoint and checks byte for byte. Portable: the aarch64 ELF runs on
+/// aarch64 and the riscv64 ELF on riscv, out of each arch's own initrd.
+#[cfg(test)]
+pub mod std_service {
+    use super::*;
+    use crate::cap::{Rights, endpoint_cap, untyped_cap};
+    use crate::sched::EpId;
+
+    /// The heap high-water for the demo's Vec/String/HashMap workout plus std's own runtime
+    /// allocations and the heap's page tables is well under 1 MiB; 256 pages is comfortable, and
+    /// the initial region only needs to be contiguous at spawn, when memory is unfragmented.
+    pub const BUDGET_PAGES: u64 = 256;
+
+    /// std's startup, formatting machinery, and collection code use far more stack than a
+    /// hand-written `no_std` worker. `load` maps one stack page; map 32 more below it (128 KiB
+    /// total), generous so a stack-depth surprise is not what a first std bring-up debugs.
+    const EXTRA_STACK_PAGES: u64 = 32;
+
+    pub fn start(image: &'static [u8]) -> EpId {
+        let budget = crate::untyped::create(BUDGET_PAGES).expect("no untyped for hellostd");
+        let report = crate::sched::create_endpoint();
+
+        let mut stack = [Mapping {
+            va: 0,
+            phys: 0,
+            flags: Flags::user_data(),
+        }; EXTRA_STACK_PAGES as usize];
+        for (k, m) in stack.iter_mut().enumerate() {
+            let phys = crate::memory::alloc().expect("no frame for hellostd stack").addr();
+            // SAFETY: fresh frame via the direct map; zero it so the new process starts clean.
+            unsafe {
+                core::ptr::write_bytes(mmu::phys_to_virt(phys) as *mut u8, 0, FRAME_SIZE as usize);
+            }
+            m.va = USER_STACK_VA - (k as u64 + 1) * FRAME_SIZE;
+            m.phys = phys;
+        }
+
+        crate::sched::spawn(move || {
+            run(
+                image,
+                Spawn {
+                    arg0: 0,
+                    arg1: 0,
+                    arg2: 0,
+                    grants: &[
+                        untyped_cap(budget),                 // slot 0: the heap's budget
+                        endpoint_cap(report, Rights::WRITE), // slot 1: stdout/stderr
+                    ],
+                    maps: &stack,
+                },
+            )
+        })
+        .expect("could not spawn hellostd");
+
+        report
+    }
+}
+
+#[cfg(test)]
+mod std_tests {
+    use super::*;
+
+    /// The exact bytes `hellostd` prints, in order. `println!` is line-buffered and every line
+    /// ends in `\n`, so the whole transcript is flushed by the time the program exits. Pinned here
+    /// so a drift in std's behaviour, the PAL, or the demo is a loud diff rather than a mystery.
+    /// `os cricker` proves `std::env::consts::OS` resolves through the patched `env_consts`; the
+    /// two `unsupported` lines prove `fs`/`net` refuse honestly rather than pretend.
+    const EXPECTED: &[u8] = b"hello from std on cricker-os\n\
+        os cricker\n\
+        vec sum 149985000\n\
+        string len 800\n\
+        map lookup 1369\n\
+        fs honestly unsupported\n\
+        net honestly unsupported\n\
+        instant monotonic ok\n";
+
+    /// A whole Rust `std` program runs on the native ABI and its output is exactly right.
+    ///
+    /// The program SENDs its stdout as 16-byte endpoint messages (w0 = byte count, w1|w2 = the
+    /// bytes, little-endian); we reassemble the stream and compare. Because `SEND` blocks until a
+    /// receiver takes it, recving exactly `EXPECTED.len()` bytes consumes exactly the messages the
+    /// program sent, and the program has reached `SYS_EXIT` by the time the last one lands.
+    #[test_case]
+    fn a_whole_std_program_runs_on_the_native_abi() {
+        let image = program("hellostd").expect("no hellostd program in the initrd archive");
+        let report = std_service::start(image);
+
+        let mut got = [0u8; 256];
+        let mut len = 0usize;
+        while len < EXPECTED.len() {
+            let words = crate::sched::ipc_recv(report);
+            let count = words[0] as usize;
+            assert!(count >= 1 && count <= 16, "stdout message with a bad byte count: {count}");
+            let mut chunk = [0u8; 16];
+            chunk[..8].copy_from_slice(&words[1].to_le_bytes());
+            chunk[8..].copy_from_slice(&words[2].to_le_bytes());
+            for &b in &chunk[..count] {
+                assert!(len < got.len(), "hellostd printed more than the expected transcript");
+                got[len] = b;
+                len += 1;
+            }
+        }
+
+        assert_eq!(
+            &got[..len],
+            EXPECTED,
+            "hellostd's stdout did not match the expected transcript",
+        );
+    }
+}
+
 /// **Capability delegation: authority moves between processes at runtime.**
 ///
 /// Every other capability in cricker-os is minted by the kernel and handed to a process at spawn.

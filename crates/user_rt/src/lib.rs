@@ -7,6 +7,10 @@
 //! then was the shared surface known rather than guessed, which is the DECISIONS rule about not
 //! building an abstraction before its requirements exist.
 //!
+//! Milestone 27 added one more thing every program *may* build on: [`heap`], the untyped-backed
+//! `GlobalAlloc` that turns the budget a program was granted into `Vec` and `String`. It is a
+//! module, not a default: a program that never allocates links no allocator.
+//!
 //! What is deliberately **not** here: the `#[panic_handler]`. A panic handler is per-final-binary,
 //! and putting one in this library would force it on every program that links the crate and collide
 //! with any program that wants its own (as `hello` does). Each binary keeps its own one-line handler;
@@ -23,6 +27,8 @@
 //! semantics, and the `abi` constants are identical across both.
 
 #![no_std]
+
+pub mod heap;
 
 /// Invoke a capability: the one syscall a userspace program makes. `cap` names a capability in the
 /// process's cspace, `method` selects the operation, and `a0..a2` are its arguments; the return is

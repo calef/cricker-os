@@ -1281,6 +1281,56 @@ The engine was **built, not ported**, against the §14 default for userspace, be
 blocks on a cursor-position report a piped line never answers and is a per-read readline rather
 than an always-on discipline, and `embedded-cli` is the application's altitude. The full accounting
 is in [notes/line-discipline.md](notes/line-discipline.md).
+## 22. Rust `std` on the native ABI, the Hermit way (milestone 27)
+
+Decided and built 2026-07-28. Full write-up in notes/std.md; this records the decision and the
+forks inside it.
+
+**The decision: implement std's platform layer (`sys`) directly on the capability ABI, not a POSIX
+shim under the Unix one.** This is Hermit's shape (std on a non-POSIX unikernel ABI), which
+DECISIONS §15 already priced the alternative (Redox's relibc-first road) at "later, if ever, and at
+no cost to defer". A std program draws its heap from an untyped budget at slot 0, SENDs stdout to an
+endpoint at slot 1, reads `Instant`/`SystemTime` from the virtual counter, and gets honest
+`Unsupported` from `thread::spawn`, `fs`, and `net` until the servers that back them exist
+(milestones 30 and 32). No new syscall and no new capability method: the PAL is a client of the ABI
+as it already stands, the same surface `allocdemo` proved. `panic!` prints and faults (panic=abort;
+unwinding is never linked), which is this ABI's honest `abort()`.
+
+**Why now:** the first wall an application hits on cricker-os is "no std", and milestone 23's
+vendor-component ambition needs components writable by people who are not kernel people. std on the
+native ABI widens "runs real workloads" to most of crates.io that stays off files and sockets,
+without smuggling in the POSIX assumptions (no fork, no open-by-path, no ambient anything) the ABI
+deliberately excludes.
+
+**The one genuinely new thing is build machinery, and its forks were settled by measurement, not
+taste.** `-Zbuild-std` reads std's source from the sysroot of the rustc it invokes, so a patched std
+means a toolchain whose sysroot is patched. Three approaches were on the table; the empirical result
+chose:
+
+- *Symlink farm* (link a fake toolchain, symlink lib, real patched src): **rejected, measured to not
+  work.** rustc derives its sysroot from the resolved location of `librustc_driver`, and a symlinked
+  dylib resolves back to the real toolchain, so build-std read the unpatched src.
+- *In-place patch of the shared rustup toolchain*: **rejected.** It mutates a shared, rustup-managed
+  directory (a surprise `rustup update` would clobber, and it clobbers what other projects build
+  against), which the "never clobber" discipline warns against.
+- *Hardlink-clone the toolchain* (`cp -al` bin+lib, real copy of just `src`, patch that): **chosen.**
+  The clone's `librustc_driver` lives inside the clone, so rustc resolves the clone as its sysroot;
+  blocks are shared so the disk cost is near zero; and the real toolchain is never touched.
+  `cargo xtask std-src` builds and links it as `cricker-dev`.
+
+**Target specs, not real targets** (roadmap's "a spec first, a real target later if ever"): custom
+JSON with `os = "cricker"`, `panic-strategy = "abort"`, softfloat, and `singlethread = true`. That
+last one is honest for phase one, one thread of execution per process, so std uses its `no_threads`
+sync and single-`static` TLS; it flips off when `thread::spawn` becomes real. The ABI numbers and
+the heap algorithm are generated verbatim into the patched std from `crates/abi` and `crates/uheap`,
+so they have exactly one definition and cannot drift.
+
+**Accepted costs, recorded:** `SystemTime` is monotonic-since-boot rather than wall-clock (no RTC);
+`std::random` is a non-cryptographic splitmix64 (no entropy source); stdout and stderr interleave on
+one endpoint; and the `std-src` patches are string-anchored to the pinned nightly's std internals, a
+coupling that fails loudly on a rustc bump (the intended tripwire) rather than silently. Proven by a
+real std program (`Vec`, `String`, `HashMap`, `println!`, `Instant`) spawned as a workload and
+checked byte for byte on both ISAs (the §19 parity gate).
 
 ## Reading
 
