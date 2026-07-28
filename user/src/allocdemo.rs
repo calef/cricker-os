@@ -49,7 +49,8 @@ pub extern "C" fn _start(_x0: u64, _x1: u64, _x2: u64) -> ! {
         v.push(i.wrapping_mul(2_654_435_761));
     }
     let sum: u64 = v.iter().fold(0u64, |a, &x| a.wrapping_add(x));
-    let expected: u64 = (0..10_000u64).fold(0u64, |a, i| a.wrapping_add(i.wrapping_mul(2_654_435_761)));
+    let expected: u64 =
+        (0..10_000u64).fold(0u64, |a, i| a.wrapping_add(i.wrapping_mul(2_654_435_761)));
     assert_eq!(sum, expected);
 
     // 2. Strings: heap bytes with content that must survive verbatim.
@@ -81,7 +82,11 @@ pub extern "C" fn _start(_x0: u64, _x1: u64, _x2: u64) -> ! {
     let committed_before = HEAP.committed_bytes();
     let big: Vec<u8> = alloc::vec![0xA5; 128 * 1024];
     assert_eq!(big.len(), 128 * 1024);
-    assert_eq!(HEAP.committed_bytes(), committed_before, "reuse must not grow the heap");
+    assert_eq!(
+        HEAP.committed_bytes(),
+        committed_before,
+        "reuse must not grow the heap"
+    );
     drop(big);
 
     send(REPORT, MAGIC, HEAP.committed_bytes(), 0);

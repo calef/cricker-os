@@ -60,7 +60,10 @@ unsafe impl Send for Heap {}
 impl Heap {
     /// An empty heap. `const` so it can back a `static` allocator before any region exists.
     pub const fn new() -> Self {
-        Heap { head: None, free: 0 }
+        Heap {
+            head: None,
+            free: 0,
+        }
     }
 
     /// Total free bytes. An exact count, not an estimate; the fragmentation tests lean on it.
@@ -123,7 +126,10 @@ impl Heap {
                 let after_front: Option<NonNull<FreeBlock>> = if tail > 0 {
                     let t = (aligned + size) as *mut FreeBlock;
                     // SAFETY: the tail range lies inside the block we are carving.
-                    unsafe { (*t).size = tail; (*t).next = next; }
+                    unsafe {
+                        (*t).size = tail;
+                        (*t).next = next;
+                    }
                     NonNull::new(t)
                 } else {
                     next
@@ -131,7 +137,10 @@ impl Heap {
                 if front > 0 {
                     // The front remainder keeps the block's list position; only its size shrinks.
                     // SAFETY: writing the node in place, still inside memory we own.
-                    unsafe { (*block.as_ptr()).size = front; (*block.as_ptr()).next = after_front; }
+                    unsafe {
+                        (*block.as_ptr()).size = front;
+                        (*block.as_ptr()).next = after_front;
+                    }
                 } else {
                     // SAFETY: `link` points at the Option naming this block.
                     unsafe { *link = after_front };

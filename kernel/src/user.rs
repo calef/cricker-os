@@ -1934,7 +1934,9 @@ pub mod alloc_service {
             flags: Flags::user_data(),
         }; EXTRA_STACK_PAGES as usize];
         for (k, m) in stack.iter_mut().enumerate() {
-            let phys = crate::memory::alloc().expect("no frame for allocdemo stack").addr();
+            let phys = crate::memory::alloc()
+                .expect("no frame for allocdemo stack")
+                .addr();
             // SAFETY: fresh frame via the direct map; zero it so the new process starts clean.
             unsafe {
                 core::ptr::write_bytes(mmu::phys_to_virt(phys) as *mut u8, 0, FRAME_SIZE as usize);
@@ -2028,7 +2030,9 @@ pub mod std_service {
             flags: Flags::user_data(),
         }; EXTRA_STACK_PAGES as usize];
         for (k, m) in stack.iter_mut().enumerate() {
-            let phys = crate::memory::alloc().expect("no frame for hellostd stack").addr();
+            let phys = crate::memory::alloc()
+                .expect("no frame for hellostd stack")
+                .addr();
             // SAFETY: fresh frame via the direct map; zero it so the new process starts clean.
             unsafe {
                 core::ptr::write_bytes(mmu::phys_to_virt(phys) as *mut u8, 0, FRAME_SIZE as usize);
@@ -2092,12 +2096,18 @@ mod std_tests {
         while len < EXPECTED.len() {
             let words = crate::sched::ipc_recv(report);
             let count = words[0] as usize;
-            assert!(count >= 1 && count <= 16, "stdout message with a bad byte count: {count}");
+            assert!(
+                (1..=16).contains(&count),
+                "stdout message with a bad byte count: {count}"
+            );
             let mut chunk = [0u8; 16];
             chunk[..8].copy_from_slice(&words[1].to_le_bytes());
             chunk[8..].copy_from_slice(&words[2].to_le_bytes());
             for &b in &chunk[..count] {
-                assert!(len < got.len(), "hellostd printed more than the expected transcript");
+                assert!(
+                    len < got.len(),
+                    "hellostd printed more than the expected transcript"
+                );
                 got[len] = b;
                 len += 1;
             }

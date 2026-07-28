@@ -169,7 +169,11 @@ impl UntypedHeap {
             inner.committed += got * PAGE;
             // SAFETY: `[start, start + got * PAGE)` was just mapped writable for us alone, and
             // is adjacent to (or the start of) the range already donated.
-            unsafe { inner.heap.add_region(start as *mut u8, (got * PAGE) as usize) };
+            unsafe {
+                inner
+                    .heap
+                    .add_region(start as *mut u8, (got * PAGE) as usize)
+            };
         }
         // Only a fresh contiguous run at least as big as the request guarantees the retry
         // succeeds; anything less and the honest answer is allocation failure.

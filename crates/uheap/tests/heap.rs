@@ -27,7 +27,10 @@ fn everything_freed_coalesces_to_one_block() {
     // Allocate a mix of sizes, then free in an order that is neither LIFO nor FIFO. If any
     // adjacency case in insert_free is wrong, the final block count betrays it.
     let sizes = [24usize, 1, 4096, 100, 16, 333, 2048, 7];
-    let ptrs: Vec<_> = sizes.iter().map(|&s| (h.alloc(layout(s, 8)).unwrap(), s)).collect();
+    let ptrs: Vec<_> = sizes
+        .iter()
+        .map(|&s| (h.alloc(layout(s, 8)).unwrap(), s))
+        .collect();
     for i in [3, 0, 6, 1, 7, 2, 5, 4] {
         let (p, s) = ptrs[i];
         unsafe { h.dealloc(p, layout(s, 8)) };
@@ -42,7 +45,10 @@ fn effective_size_is_the_grid() {
     assert_eq!(effective_size(layout(16, 8)), 16);
     assert_eq!(effective_size(layout(17, 1)), 32);
     // A zero-size allocation still costs one grid cell, so the pointer is unique and freeable.
-    assert_eq!(effective_size(Layout::from_size_align(0, 1).unwrap()), MIN_ALIGN);
+    assert_eq!(
+        effective_size(Layout::from_size_align(0, 1).unwrap()),
+        MIN_ALIGN
+    );
 }
 
 #[test]
@@ -72,7 +78,10 @@ fn exhaustion_returns_none_and_growth_at_the_top_coalesces() {
     let (first, rest) = a.0.split_at_mut(8 * 1024);
     unsafe { h.add_region(first.as_mut_ptr(), first.len()) };
 
-    assert!(h.alloc(layout(16 * 1024, 8)).is_none(), "must refuse, not corrupt");
+    assert!(
+        h.alloc(layout(16 * 1024, 8)).is_none(),
+        "must refuse, not corrupt"
+    );
 
     // Grow the way user_rt::heap does: donate the pages right above the committed top.
     unsafe { h.add_region(rest.as_mut_ptr(), 16 * 1024) };

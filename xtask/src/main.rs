@@ -287,7 +287,10 @@ fn std_src() -> bool {
 
     // Link (or relink) the farm as `cricker-dev`. Idempotent: rustup replaces an existing link to
     // the same path.
-    if !run("rustup", &["toolchain", "link", CRICKER_TOOLCHAIN, &s(farm.clone())]) {
+    if !run(
+        "rustup",
+        &["toolchain", "link", CRICKER_TOOLCHAIN, &s(farm.clone())],
+    ) {
         eprintln!("std-src: `rustup toolchain link {CRICKER_TOOLCHAIN}` failed");
         return false;
     }
@@ -378,7 +381,12 @@ fn patch_after(path: &Path, anchor: &str, insert: &str) -> bool {
         return false;
     };
     let at = pos + anchor.len();
-    let new = format!("{}\n{}\n{}", &text[..at], insert.trim_end_matches('\n'), &text[at..]);
+    let new = format!(
+        "{}\n{}\n{}",
+        &text[..at],
+        insert.trim_end_matches('\n'),
+        &text[at..]
+    );
     if let Err(e) = std::fs::write(path, new) {
         eprintln!("std-src: cannot write {}: {e}", path.display());
         return false;
@@ -393,7 +401,7 @@ fn patch_after(path: &Path, anchor: &str, insert: &str) -> bool {
 /// is the intended tripwire (see notes/std.md).
 fn std_patch_dispatch() -> bool {
     let sys = farm_std_src().join("sys");
-    let ok = patch_after(
+    patch_after(
         &sys.join("pal/mod.rs"),
         "cfg_select! {",
         "    target_os = \"cricker\" => {\n        pub(crate) mod cricker;\n        pub use self::cricker::*;\n    }",
@@ -443,8 +451,7 @@ fn std_patch_dispatch() -> bool {
         &farm_std_src().parent().unwrap().join("build.rs"),
         "        || target_os == \"vexos\"\n",
         "        || target_os == \"cricker\"",
-    );
-    ok
+    )
 }
 
 /// **Build the `hellostd` demo for both custom targets** (milestone 27), via -Zbuild-std against
