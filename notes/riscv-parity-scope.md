@@ -219,3 +219,30 @@ D (boot/shell) ── needs console/input ported to NS16550
 
 If the goal is **"the kernel is at parity,"** A + B + C + E is the set, and D is system integration
 rather than a kernel claim. If the goal is **"the whole system runs on riscv,"** add D.
+
+---
+
+## Post-parity correction (2026-07-27, milestone 32): user faults did not kill on riscv
+
+Parity was declared with a hole nothing had tested: **the riscv trap dispatcher could not kill a
+faulting user thread.** A U-mode `ebreak` was counted and stepped over, so a userspace panic
+handler (every one of which ends in `ebreak`, expecting to die) resumed into its own spin loop and
+lived forever; any other U-mode fault fell into an arm that panicked the whole kernel, behind a
+comment claiming no user thread could run on RISC-V yet, which had been false since milestone 20.
+DECISIONS §10's "a driver bug is a crashed process, not a dead machine" was an aarch64-only
+property, and the parity record above did not say so.
+
+Nothing noticed because no riscv test ever made a user thread fault. All the parity-C drivers
+either succeed or are refused politely; the fault path had no witness. Milestone 32's
+kill-mid-write test is the first riscv test that *requires* a user thread to genuinely die, and it
+flushed the gap out within minutes of being written.
+
+The fix mirrors aarch64's `user_fault`: a U-mode breakpoint or fault increments `USER_FAULTS`,
+prints the legible kill line, and `sched::exit()`s the thread from the trap handler (the same
+context the blocking-syscall path already schedules away from). The S-mode `ebreak` self-test
+keeps its step-over. Proven by `a_faulting_user_thread_is_killed_and_the_kernel_survives` (spawn
+the blk binary at a bogus role: panic, `ebreak`, killed, reaped) and by the kill-mid-write pair.
+
+Two lessons, both repeats: a stale comment is misinformation with authority (the teardown note's
+"a TODO that outlives the decision that resolved it" rule, hit again); and a parity claim is only
+as wide as the suite that checks it. The fault path was in the suite's blind spot on both counts.
