@@ -361,6 +361,15 @@ pub struct Thread {
     /// kernel-created thread; false for a user-retyped TCB (19c.3). The page-origin half of the
     /// same owned-vs-borrowed question kernel stacks answered with "one owner" (notes/tcb.md).
     pub(crate) tcb_kmem: bool,
+
+    /// **Marked for forcible teardown** (DECISIONS §16 amendment): a region's owner called
+    /// `Untyped::DESTROY` while this thread was still live in it, so the thread is doomed. The
+    /// scheduler converts a killed thread to a corpse at its next preemption instead of requeueing
+    /// it (see `schedule`), so a runaway that never checks its endpoint is torn down without
+    /// yanking it out of a queue or stopping another core: each core reaps its own on the timer.
+    /// This is the forcible tier of `^C` (§24), where the shell's escalation retries `DESTROY`
+    /// until the killed thread has self-terminated and the region is object-free.
+    pub(crate) killed: bool,
 }
 
 // SAFETY: plain storage of the link, nothing else, which is all the queue's contract asks.
@@ -401,6 +410,7 @@ impl Thread {
             entry: (0, 0), // a kernel thread; never enters EL0 by this path
             start_args: [0; 3],
             tcb_kmem: true,
+            killed: false,
         }
     }
 
@@ -429,6 +439,7 @@ impl Thread {
             entry: (0, 0), // a kernel thread; never enters EL0 by this path
             start_args: [0; 3],
             tcb_kmem: true,
+            killed: false,
         }
     }
 
@@ -499,6 +510,7 @@ impl Thread {
             entry: (0, 0), // a kernel thread; becomes a user process via exec, not this path
             start_args: [0; 3],
             tcb_kmem: true,
+            killed: false,
         })
     }
 
@@ -524,6 +536,7 @@ impl Thread {
             entry: (0, 0),
             start_args: [0; 3],
             tcb_kmem: false, // a user-retyped TCB page; the region owns it
+            killed: false,
         }
     }
 

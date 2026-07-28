@@ -680,10 +680,22 @@ pub fn schedule() {
         // Requeue the outgoing thread if it can still run — but never the idle thread, which
         // lives outside the ready queue.
         if runnable && current != idle_tid {
-            sched.threads.get_mut(current).unwrap().state = State::Ready;
             let ptr = tcb_ptr(sched, current);
-            // SAFETY: just marked Ready, coming off the CPU, on no queue. Round robin: the back.
-            cpu::current().with_runq(|q| unsafe { q.push_back(ptr) });
+            let outgoing = sched.threads.get_mut(current).unwrap();
+            if outgoing.killed {
+                // **Forcible teardown** (DECISIONS §16 amendment, §24's second-`^C` tier). A thread
+                // `DESTROY` marked killed never runs again: retire it here, off its stack, as a
+                // `Finished` corpse, and do NOT requeue it, so the very next thing that happens is
+                // `finish_switch` reaping it exactly as a clean exit does (stack and address space
+                // torn down outside this lock). A runaway spinning at EL0 reaches this the instant
+                // its timeslice ends, so the shell's escalation needs no queue surgery and no
+                // cross-core stop: each core converts its own killed thread on the timer.
+                outgoing.state = State::Finished;
+            } else {
+                outgoing.state = State::Ready;
+                // SAFETY: just marked Ready, coming off the CPU, on no queue. Round robin: the back.
+                cpu::current().with_runq(|q| unsafe { q.push_back(ptr) });
+            }
         }
 
         {
@@ -1320,10 +1332,12 @@ pub fn create_tcb(region: u64) -> Option<Tid> {
 
 /// Tear down every kernel object whose backing page lies in `[base, end)`, so `untyped::destroy`
 /// can reclaim the region (object revocation). `Err` if a **live** thread (`Ready`/`Running`/
-/// `Blocked`) sits in the region: its owner must let it finish first, and the region stays pinned.
-/// `Embryo` and `Finished` threads are removed here (dropped, and their generational names killed,
-/// so every outstanding `Tcb` capability to them goes stale on its next use). Endpoints and address
-/// spaces are the later phases of this milestone.
+/// `Blocked`) sits in the region; the region stays pinned. But the refusal is no longer passive:
+/// it **arms the kill** (DECISIONS §16 amendment), marking each live resident thread so the
+/// scheduler tears it down at its next preemption, so an owner that retries (the shell's `^C`
+/// escalation, §24) reclaims a runaway rather than being told forever to wait for it. `Embryo` and
+/// `Finished` threads are removed here (dropped, and their generational names killed, so every
+/// outstanding `Tcb` capability to them goes stale on its next use).
 ///
 /// Takes `SCHED`, so it must run **outside** any teardown `Drop`: this is the caller-driven half of
 /// revocation, and `untyped::destroy` is the `SCHED`-free half (which is why the reaper's
@@ -1339,14 +1353,29 @@ fn reap_region_objects(base: u64, end: u64) -> Result<(), ()> {
 
     // --- Refuse phase: change nothing until every object in the region can be torn down. ---
 
-    // A live thread (Ready/Running/Blocked) in the region: freeing its page would pull the stack, or
-    // the running address space, out from under a thread that can still be scheduled.
+    // A live thread (Ready/Running/Blocked) in the region: freeing its page would pull the stack,
+    // or the running address space, out from under a thread that can still be scheduled. We may not
+    // reclaim under it this pass, but the forcible tier of `^C` (DECISIONS §24) needs `DESTROY` to
+    // *tear a runaway down*, not merely refuse it. So arm the kill (§16 amendment): mark every live
+    // resident thread `killed` and refuse. A killed thread never runs again; the scheduler converts
+    // it to a corpse at its next preemption, with no queue surgery here and no core stopping another
+    // (each core reaps its own on the timer). The region's owner retries `DESTROY` (the shell's
+    // escalation loop already does), and once the runaway has torn down this pass finds it gone and
+    // reclaims. A thread that only ever blocks, never scheduled to hit that preemption, is the
+    // cooperative tier's job (send it its interrupt endpoint), not this one.
+    let mut live = false;
     for t in sched.threads.iter_mut() {
         let phys = page_of(t);
-        let live = matches!(t.state, State::Ready | State::Running | State::Blocked);
-        if base <= phys && phys < end && live {
-            return Err(());
+        if base <= phys
+            && phys < end
+            && matches!(t.state, State::Ready | State::Running | State::Blocked)
+        {
+            t.killed = true;
+            live = true;
         }
+    }
+    if live {
+        return Err(());
     }
     // Endpoints do not refuse: a thread blocked on an endpoint in the region is woken with an error
     // (its IPC aborts, its cap now stale) rather than stranding the reclaim, in the removal phase.

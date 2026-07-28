@@ -152,3 +152,26 @@ The follow-ons this note once listed are all done: the EL0 spawn benchmark (`lat
 benchmarks.md), LIFO return-of-pages-to-parent, and error-return for a blocked waiter (both above).
 What is left is the general, non-LIFO case of return-to-parent, which is what a full capability
 derivation tree buys, and we still have no reason to build one.
+
+## DESTROY force-kills a runaway (milestone 22, DECISIONS §16 amendment)
+
+`DESTROY` used to refuse outright while a live thread occupied the region, which is correct for a
+cooperative child but leaves the shell's `^C` escalation (§24) nothing to escalate to: a thread
+spinning at EL0, never checking its endpoint, would refuse `DESTROY` forever. The fix is small and
+avoids the two hard problems (removing a node from the intrusive `Fifo`, and stopping a thread
+running on another core):
+
+- `DESTROY` on a live resident thread now marks it `killed` and still refuses that pass.
+- `schedule()` converts a killed thread to a `Finished` corpse at its next preemption instead of
+  requeueing it, so the ordinary reaper tears it down (stack, address space) just like a clean exit.
+- The owner retries `DESTROY` (the shell already retries for the exit sliver); once the runaway has
+  been preempted and reaped, the retry finds the region object-free and reclaims it.
+
+A runaway is preemptible by construction (§5), so **each core reaps its own killed thread on the
+timer**; no cross-core IPI, no queue surgery, one branch in `schedule()` and one flag. The tradeoff
+is that reclamation waits for one timeslice rather than being instantaneous, which is the bounded
+escalation the shell wants, not a stop-the-world. A thread that only ever *blocks* is never scheduled
+to hit that preemption, so it is the cooperative tier's job (it is listening on its interrupt
+endpoint by definition), not the forcible tier's. Proven on both ISAs by
+`destroy_force_kills_a_runaway_and_reclaims_its_region` (`kernel/src/user.rs`): a one-instruction EL0
+runaway, reclaimed out from under itself.
