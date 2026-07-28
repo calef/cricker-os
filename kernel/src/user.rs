@@ -3592,6 +3592,62 @@ mod riscv_virtio_tests {
         program("blk").expect("no blk program in the initrd archive")
     }
 
+    /// Spin the scheduler until `done()`, or give up. The aarch64 module's helper, re-declared
+    /// because that module is aarch64-gated.
+    fn wait_for(mut done: impl FnMut() -> bool) -> bool {
+        for _ in 0..2000 {
+            if done() {
+                return true;
+            }
+            sched::yield_now();
+        }
+        done()
+    }
+
+    /// **A faulting riscv user thread dies, and the kernel does not.** DECISIONS §10's promise
+    /// ("a driver bug is a crashed process, not a dead machine"), proven on the second ISA for
+    /// the first time.
+    ///
+    /// This test exists because the promise was NOT kept here: the riscv trap dispatcher stepped
+    /// over a U-mode `ebreak` (so a panicking driver resumed its own panic loop, alive forever)
+    /// and panicked the kernel on any other U-mode fault, behind a comment claiming user threads
+    /// could not run on RISC-V yet. Every riscv userspace binary's panic handler ends in `ebreak`
+    /// expecting to die, and no test had ever made one fault. The kill-mid-write test (below)
+    /// needs a driver to genuinely die, which is what flushed this out.
+    ///
+    /// The blk binary's `_start` panics on an unknown role, so spawning it with one is the
+    /// smallest honest fault: panic, `ebreak`, killed, reaped.
+    #[test_case]
+    fn a_faulting_user_thread_is_killed_and_the_kernel_survives() {
+        use crate::arch::exceptions::USER_FAULTS;
+
+        let faults = USER_FAULTS.load(Ordering::Relaxed);
+        let threads = sched::thread_count();
+
+        sched::spawn(move || {
+            run(
+                blk_image(),
+                Spawn {
+                    arg0: 0xDEAD, // no such role: _start panics, and the panic handler ebreaks
+                    arg1: 0,
+                    arg2: 0,
+                    grants: &[],
+                    maps: &[],
+                },
+            )
+        })
+        .expect("spawn failed");
+
+        assert!(
+            wait_for(|| USER_FAULTS.load(Ordering::Relaxed) > faults),
+            "the faulting user thread was never killed",
+        );
+        assert!(
+            wait_for(|| sched::thread_count() <= threads),
+            "the killed thread was never reaped",
+        );
+    }
+
     /// The headline, on the second ISA: an unprivileged process drives a real block device over
     /// DMA and reads a file off it, with the kernel owning only the confinement. Interrupt
     /// delivery is asserted too: the completion reached the driver as a message through its Irq
