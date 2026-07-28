@@ -274,3 +274,37 @@ police (indirect, packed) before a descriptor is built, and the IOMMU still faul
 address even if a validator bug ever let one through. The feature-stripping and the shadow copy cost
 almost nothing and buy a second independent barrier, which is the right trade for the one DMA path
 that can reach the whole machine.
+
+## Multiple queues, and the receive direction (milestone 30)
+
+The disk uses one virtqueue. A NIC uses two: receive (queue 0) and transmit (queue 1). virtio-net is
+the reason the confinement grew a second queue, and receive is the reason it is worth stating what
+"a second direction" does and does not mean.
+
+**The plumbing that is new.** Each device now carries a per-queue last-validated index and a
+per-queue ring block. `setup_queue(id, num, queue)` and `notify(id, queue)` take a queue number, and
+queue `q`'s descriptor table, available ring, and used ring sit at `q * RING_BLOCK` (0x200) in both
+the driver's DMA region and the one kernel-private shadow frame (two queues fit in 0x400 of a 4 KiB
+frame, asserted at compile time). Queue 0's offsets are exactly the old single-queue layout, so the
+disk driver did not change: its data buffers already start at 0x200, which is queue 1's block, and a
+disk has no queue 1. The `Virtio` capability's methods grew a queue argument rather than gaining new
+methods; the disk passes queue 0 and its ABI is byte-identical (DECISIONS §23).
+
+**The validation that is NOT new, and why that is the honest finding.** `validate_and_shadow` did not
+change. It bounds the *address* of every descriptor, `addr..addr+len` inside the driver's region,
+whichever way the device moves the bytes. Receive is where the *device writes into* driver memory
+(the driver posts an empty buffer, the device fills it with a packet), and that is exactly the shape
+milestone 32's block write already leaned on: the validator "bounds addresses, never directions." A
+receive descriptor aimed at kernel memory would let the device *overwrite* the kernel with an inbound
+packet; a transmit descriptor aimed there would let it *exfiltrate* kernel memory onto the wire; both
+are refused by the one in-region check, before the device is ever rung. So the "second direction" is
+proved, not implemented: `the_validator_refuses_an_rx_descriptor_that_escapes_the_region` sets the
+device-writable flag and asserts the refusal is about the address, not the flag, and
+`a_second_queue_validates_on_its_own_block` proves queue 1 validates on its own block without
+touching queue 0's shadow. Both run on both ISAs.
+
+The used ring for the receive queue needs no extra confinement either: the device writes the received
+length into `used.ring[i].len` and the packet bytes into the descriptor buffer, and both landing
+zones are the driver's own in-region memory (the used ring is placed by the kernel; the buffer is
+address-checked). The device never writes an *address* anywhere the driver chose, which is the whole
+invariant.
