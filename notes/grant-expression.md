@@ -70,12 +70,19 @@ literally.
 
 ## Untyped had to become delegable first
 
-Making `run --mem N` real, and not parsed-and-ignored, needed a one-line kernel fix, recorded as an
-amendment to DECISIONS §16. `Untyped::SPLIT` minted its child budget with `WRITE` alone, so it
-could be spent but never delegated (`SEND_CAP` and `CAP_INSERT` both gate on `GRANT`). Untyped was
-the one object type no process could hand on, which quietly foreclosed the whole feature. `SPLIT`
-now mints the child `READ|WRITE|GRANT`, matching `RETYPE` and `RETYPE_OBJ`. The root untyped init
-gets at boot stays `WRITE`-only: init spends it and never passes it on.
+Making `run --mem N` real, and not parsed-and-ignored, needed a kernel fix, recorded as an amendment
+to DECISIONS §16. `Untyped::SPLIT` minted its child budget with `WRITE` alone, so it could be spent
+but never delegated (`SEND_CAP` and `CAP_INSERT` both gate on `GRANT`). Untyped was the one object
+type no process could hand on, which quietly foreclosed the whole feature.
+
+The fix is rights **inheritance**, not a blanket upgrade, and the distinction matters: minting the
+`SPLIT` child full rights unconditionally would be an escalation, since `SPLIT` gates only on
+`WRITE`, so a process holding a spend-only untyped could split itself a `GRANT`-bearing child and
+manufacture the right it was denied. Instead, a `SPLIT` child inherits the invoking capability's
+rights and no more, and the **root** untyped init holds at boot is the delegable one
+(`READ|WRITE|GRANT`). Rights narrow monotonically from that root down: root -> init split (inherits
+`GRANT`) -> shell (narrowed to `WRITE|GRANT` at `CAP_INSERT`) -> shell split (inherits) -> spawned
+child (narrowed to `WRITE`, spend-only). `GRANT` never appears where it was not present above.
 
 ## The budgeter proves the grant is real
 

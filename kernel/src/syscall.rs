@@ -449,16 +449,15 @@ fn invoke(
                     return Err(Error::NotPermitted);
                 }
                 let child = crate::untyped::split(region, a0).ok_or(Error::OutOfMemory)?;
-                // Full rights on the child budget (milestone 31): the caller carved it from its own
-                // untyped and owns it completely, including GRANT (the right to pass a memory budget
-                // on). This matches RETYPE/RETYPE_OBJ, which mint full rights to their creator; only
-                // SPLIT under-granted (WRITE alone), which silently made untyped the one object type
-                // no process could delegate. See cap::untyped_cap_rights and DECISIONS §16.
-                let slot = sched::grant(crate::cap::untyped_cap_rights(
-                    child,
-                    Rights::READ.union(Rights::WRITE).union(Rights::GRANT),
-                ))
-                .map_err(|_| Error::OutOfMemory)?; // cspace full
+                // The child inherits THIS capability's rights, never more (milestone 31). SPLIT is a
+                // fresh mint, so it must honor the derive-never-widens invariant by hand: a process
+                // holding a spend-only (GRANT-less) untyped must not SPLIT itself a GRANT-bearing
+                // child over the same memory and manufacture the right its capability withheld.
+                // Rights narrow monotonically from the delegable root budget down; init holds that
+                // root with GRANT and hands narrowed budgets on. See cap::untyped_cap_rights and
+                // DECISIONS §16.
+                let slot = sched::grant(crate::cap::untyped_cap_rights(child, cap.rights))
+                    .map_err(|_| Error::OutOfMemory)?; // cspace full
                 Ok(slot as i64)
             }
             // Reclaim this region and every object retyped from it (object revocation): tear the
@@ -588,5 +587,81 @@ fn invoke(
             }
             _ => Err(Error::BadMethod),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **`SPLIT` never widens rights: a spend-only untyped splits into spend-only children.** SPLIT
+    /// gates only on `WRITE`, and mints a fresh capability to the child budget, so it must honor the
+    /// derive-never-widens invariant by hand or a process could manufacture authority it was denied:
+    /// hold a deliberately `GRANT`-less untyped, `SPLIT` it, and receive a `GRANT`-bearing child over
+    /// the same memory, then delegate what its own capability could not. This drives the real syscall
+    /// path (not the region-level `untyped::split`, which carries no rights) and pins the child's
+    /// rights to the parent capability's, at the mint site the Kani proofs do not cover. The contrast
+    /// arm shows the delegable root does pass `GRANT` down, so the inheritance is real, not a blanket
+    /// deny. Milestone 31; see DECISIONS §16 amendment.
+    #[test_case]
+    fn split_inherits_the_parent_capabilitys_rights_never_widening() {
+        // `for_user_entry` is the portable frame constructor (both ISAs); SPLIT does not read it.
+        let mut frame = TrapFrame::for_user_entry(0, 0, [0, 0, 0]);
+
+        // A spend-only (WRITE, no GRANT) untyped, exactly what a leaf child is handed.
+        let spend_only_region = crate::untyped::create(8).expect("a region to split");
+        let parent =
+            sched::grant(crate::cap::untyped_cap(spend_only_region)).expect("grant parent");
+        assert!(
+            !sched::current_cap(parent)
+                .unwrap()
+                .rights
+                .allows(Rights::GRANT),
+            "the parent capability must lack GRANT for this test to mean anything",
+        );
+
+        // SPLIT through the real handler. WRITE permits it; the child must inherit WRITE only.
+        let child_slot = invoke(&mut frame, parent, abi::untyped::SPLIT, 2, 0, 0)
+            .expect("split succeeds: the parent holds WRITE") as u64;
+        let child = sched::current_cap(child_slot).expect("the child capability exists");
+        assert!(
+            !child.rights.allows(Rights::GRANT),
+            "escalation: a GRANT-less untyped split into a GRANT-bearing child",
+        );
+        // Because it lacks GRANT it cannot be delegated: SEND_CAP and CAP_INSERT both refuse without
+        // it (the exact gate at syscall.rs lines ~143 and ~319), so the child is non-transferable.
+        assert!(
+            !child.rights.allows(Rights::GRANT),
+            "a spend-only child must be un-delegatable",
+        );
+        let Object::Untyped(child_region) = child.object else {
+            panic!("SPLIT must mint an untyped");
+        };
+
+        // Contrast: the delegable root (READ|WRITE|GRANT, what init holds) passes GRANT to its
+        // children, so a spawner can hand a budget on. Inheritance, not a blanket deny.
+        let root_region = crate::untyped::create(8).expect("a root region");
+        let root = sched::grant(crate::cap::untyped_root_cap(root_region)).expect("grant root");
+        let root_child_slot =
+            invoke(&mut frame, root, abi::untyped::SPLIT, 2, 0, 0).expect("split the root") as u64;
+        let root_child = sched::current_cap(root_child_slot).expect("root child exists");
+        assert!(
+            root_child.rights.allows(Rights::GRANT),
+            "a delegable root must split into delegable children",
+        );
+        let Object::Untyped(root_child_region) = root_child.object else {
+            panic!("SPLIT must mint an untyped");
+        };
+
+        // Clean up: reclaim children (LIFO top of each parent) then parents, and drop the cap slots,
+        // so the test returns every frame it borrowed and leaves the test thread's cspace as it found
+        // it (the free-frame baseline that later tests measure against).
+        sched::reclaim_region(child_region).expect("reclaim the spend-only child");
+        sched::reclaim_region(spend_only_region).expect("reclaim the spend-only parent");
+        sched::reclaim_region(root_child_region).expect("reclaim the root child");
+        sched::reclaim_region(root_region).expect("reclaim the root parent");
+        for slot in [parent, child_slot, root, root_child_slot] {
+            let _ = sched::delete_current_cap(slot);
+        }
     }
 }

@@ -141,7 +141,10 @@ pub fn irq_cap_rights(intid: u32, rights: Rights) -> Cap {
     }
 }
 
-/// A capability to an untyped memory region. `WRITE` lets the holder retype pages out of it.
+/// A capability to an untyped memory region with `WRITE` only: the holder may spend it (retype pages
+/// and objects, `SPLIT`, `MAP`, `DESTROY`) but **not delegate it**, because `SEND_CAP` and
+/// `CAP_INSERT` both gate on `GRANT`. This is the spend-only budget a leaf child is handed: least
+/// authority for a process that consumes memory and passes none on.
 pub fn untyped_cap(region: u64) -> Cap {
     Cap {
         object: Object::Untyped(region),
@@ -149,18 +152,33 @@ pub fn untyped_cap(region: u64) -> Cap {
     }
 }
 
-/// A capability to an untyped region with explicit rights (milestone 31). `SPLIT` uses this to give
-/// the caller **full rights** on the child budget it carved from its own, so an untyped is a
-/// first-class delegatable grant: `GRANT` lets a process pass a memory budget to another (the
-/// capability-shell's `run --mem N`), matching what every other creation path already grants its
-/// creator (`RETYPE` frames, `RETYPE_OBJ` endpoints/aspaces/tcbs all mint full rights). The root
-/// untyped the kernel hands init at boot stays [`untyped_cap`] (`WRITE` only): init spends it, it
-/// never delegates it. Delegation narrows from here, as everywhere.
+/// A capability to an untyped region with explicit rights (milestone 31). Two callers:
+///
+/// - `SPLIT` mints its child budget with the **invoking capability's own rights** (never more), so
+///   a spend-only untyped splits into spend-only children and cannot manufacture `GRANT` it was
+///   denied. This is the derive-never-widens invariant honored by hand at a fresh mint site.
+/// - [`untyped_root_cap`] builds the delegable root from `READ|WRITE|GRANT`.
+///
+/// The rights an untyped carries are therefore set once at the root and only ever narrow downward:
+/// root (`GRANT`) -> init's `SPLIT` (inherits `GRANT`) -> `CAP_INSERT` into a child (narrowed).
 pub fn untyped_cap_rights(region: u64, rights: Rights) -> Cap {
     Cap {
         object: Object::Untyped(region),
         rights,
     }
+}
+
+/// The delegable root untyped the kernel hands init at boot (milestone 31). Full rights, `GRANT`
+/// included, because handing memory budgets to the children it builds is init's whole job: the root
+/// of the budget tree must carry the right to pass budgets on. Rights narrow monotonically from
+/// here (a `SPLIT` child inherits its parent's rights; `CAP_INSERT` narrows again), so `GRANT` never
+/// appears anywhere it was not present at the root. Contrast [`untyped_cap`], the `WRITE`-only
+/// spend-only budget a leaf child receives.
+pub fn untyped_root_cap(region: u64) -> Cap {
+    untyped_cap_rights(
+        region,
+        Rights::READ.union(Rights::WRITE).union(Rights::GRANT),
+    )
 }
 
 /// A capability to a virtio device's transport. `WRITE` lets the holder operate it.
