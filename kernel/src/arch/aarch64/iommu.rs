@@ -275,7 +275,7 @@ pub fn attach(rid: u32, ttb: u64, asid: u16) {
     unsafe {
         core::ptr::write_volatile(cd, cd_w0);
         core::ptr::write_volatile(cd.add(1), cd_w1);
-        core::ptr::write_volatile(cd.add(2), (ttb as u32 & 0xffff_fff0) | 0);
+        core::ptr::write_volatile(cd.add(2), ttb as u32 & 0xffff_fff0); // low flag bits stay zero
         core::ptr::write_volatile(cd.add(3), (ttb >> 32) as u32 & 0xf_ffff);
         core::ptr::write_volatile(cd.add(4), 0); // TTB1 does not exist
         core::ptr::write_volatile(cd.add(5), 0);
