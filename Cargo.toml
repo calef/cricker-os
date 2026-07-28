@@ -7,6 +7,7 @@ members = [
     "crates/abi",
     "crates/asid",
     "crates/caps",
+    "crates/capsh",
     "crates/crickerfs",
     "crates/dtb",
     "crates/elf",

@@ -553,6 +553,7 @@ fn initrd_riscv() -> bool {
             "allocdemo",
             "--bin",
             "netd",
+            "budgeter",
             "--target",
             RISCV_TARGET,
         ],
@@ -583,6 +584,7 @@ fn initrd_riscv() -> bool {
         ("blk", "blk"),
         ("allocdemo", "allocdemo"),
         ("netd", "netd"),
+        ("budgeter", "budgeter"),
     ];
     let mut blobs: Vec<(&str, Vec<u8>)> = Vec::new();
     for &(archive_name, bin_name) in entries {
@@ -696,6 +698,13 @@ fn mkinitrd() -> bool {
             return false;
         }
     };
+    let budgeter = match std::fs::read(bin_elf("budgeter")) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("budgeter"));
+            return false;
+        }
+    };
     // "init" is the hello binary (the kernel loads it, init re-enters it at its remaining roles);
     // "worker", "console", "input", "shell" are the split system binaries (19f.2-5), "termd" is
     // the line discipline between them (milestone 28), "coremark" is the compute workload (19e),
@@ -713,6 +722,7 @@ fn mkinitrd() -> bool {
         ("elbench", &elbench),
         ("allocdemo", &allocdemo),
         ("netd", &netd),
+        ("budgeter", &budgeter),
     ];
     // The std demo (milestone 27) rides along IFF it has been built (`cargo xtask user-std`, which
     // `test` runs). It builds through a separate toolchain and target, so an interactive `run` that

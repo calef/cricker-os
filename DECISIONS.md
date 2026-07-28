@@ -1032,6 +1032,47 @@ hot path does not regress. The EL0 `lat_proc` spawn benchmark also landed (notes
 cricker-os builds a process faster than Linux or macOS, with the honest caveat that a
 capability-microkernel process is a lighter object than a Unix one.
 
+### Amendment (milestone 31): untyped becomes delegable by rights *inheritance*, with a delegable root
+
+`SPLIT`'s child untyped was minted with `WRITE` alone (`cap::untyped_cap`), where every other
+creation path gives its creator full rights: `RETYPE` mints a frame `READ|WRITE|GRANT`, `RETYPE_OBJ`
+mints an endpoint, aspace, or TCB the same. Because `SEND_CAP` and `CAP_INSERT` both gate on `GRANT`,
+that under-grant silently made untyped the one object type **no process could delegate**: a split
+budget could be spent by its holder and handed to no one. That foreclosed "untyped budgets as
+first-class grants," milestone 31's headline: a shell that endows a child N pages from its own budget
+must delegate an untyped, and could not.
+
+**The first fix was wrong, and the way it was wrong is the interesting part.** Minting the `SPLIT`
+child `READ|WRITE|GRANT` unconditionally is a *rights escalation*. `SPLIT` gates only on `WRITE`, so a
+process holding a deliberately `GRANT`-less untyped (one delegated to it spend-only) could `SPLIT` it
+and receive a `GRANT`-bearing child over the same memory, manufacturing the very right its capability
+withheld. That violates the model's derive-never-widens invariant, and it does so at a *fresh mint*
+site the Kani proofs (which cover `derive`) do not reach.
+
+**The right fix is rights inheritance, not a rights default.** Two coordinated changes:
+
+1. A `SPLIT` child inherits **the invoking capability's rights, never more**
+   (`untyped_cap_rights(child, cap.rights)` at the mint site). A spend-only untyped splits into
+   spend-only children; `GRANT` is passed down only if the parent held it. This makes `SPLIT` honor
+   derive-never-widens by hand, the same discipline `derive` enforces.
+2. The **root** untyped the kernel hands init at boot becomes `READ|WRITE|GRANT`
+   (`cap::untyped_root_cap`, at the three init-boot grant sites). Delegating budgets to the children
+   it builds is init's job, so the root of the budget tree carries `GRANT`. This was the actual bug:
+   the `WRITE`-only root, not the `SPLIT` default, is what left no delegable untyped anywhere and
+   forced the escalating workaround.
+
+Rights then narrow monotonically from the root down: root (`GRANT`) -> init's `SPLIT` (inherits
+`GRANT`) -> `CAP_INSERT` into the shell (narrowed to `WRITE|GRANT`) -> shell's `SPLIT` (inherits) ->
+`CAP_INSERT` into the spawned child (narrowed to `WRITE`, spend-only). `untyped_cap` (`WRITE` only)
+stays the constructor for a spend-only leaf budget; nothing manufactures authority at any step.
+
+A kernel test pins the invariant at the mint site (`syscall.rs`,
+`split_inherits_the_parent_capabilitys_rights_never_widening`): a `GRANT`-less untyped splits into a
+`GRANT`-less child that cannot be delegated, while the delegable root splits into delegable children.
+This is a bug fix to this section's intent (untyped is delegable in seL4, the model we borrow
+guarantees from), recorded here rather than as a new section. See `kernel/src/syscall.rs`'s `SPLIT`
+handler, `cap::untyped_root_cap`, and notes/grant-expression.md.
+
 ## 17. The second architecture: RISC-V, and the page-table format trait
 
 The port to RISC-V (rv64, QEMU `virt`) is the first real test of rule #1 ("all architecture-specific

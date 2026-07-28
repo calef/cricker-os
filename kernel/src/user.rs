@@ -633,7 +633,9 @@ pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
         let build_region = crate::untyped::create(2048).expect("no building budget for init");
 
         crate::sched::adopt_address_space(space);
-        crate::sched::grant(crate::cap::untyped_cap(build_region)).expect("grant untyped");
+        // The delegable root budget: init narrows and hands budgets to the children it builds, so
+        // the root carries GRANT (milestone 31). Rights only narrow downward from here.
+        crate::sched::grant(crate::cap::untyped_root_cap(build_region)).expect("grant untyped");
         crate::sched::grant(crate::cap::endpoint_cap(
             report,
             crate::cap::Rights::WRITE.union(crate::cap::Rights::GRANT),
@@ -1131,7 +1133,9 @@ pub fn riscv_initrd_demo(archive: &'static [u8]) -> Result<u64, LoadError> {
 
     let tcb_region = crate::untyped::create(2).expect("no tcb region");
     let tid = crate::sched::create_tcb(tcb_region).expect("no tcb");
-    let s0 = crate::sched::tcb_insert_cap(tid, crate::cap::untyped_cap(build_region))
+    // The delegable root budget (milestone 31): init hands narrowed budgets to its children, so the
+    // root carries GRANT; rights only narrow downward from here.
+    let s0 = crate::sched::tcb_insert_cap(tid, crate::cap::untyped_root_cap(build_region))
         .expect("insert budget");
     assert_eq!(s0, 0, "init's budget must land in slot 0");
     let s1 = crate::sched::tcb_insert_cap(
@@ -1296,9 +1300,11 @@ pub fn riscv_shell_boot(archive: &'static [u8], uart_irq: u32) -> Result<(), Loa
 
     let tcb_region = crate::untyped::create(2).expect("no tcb region");
     let tid = crate::sched::create_tcb(tcb_region).expect("no tcb");
-    // slot 0: budget. slot 1: the NS16550 registers, WRITE|GRANT so sysinit maps them into the
-    // console and input drivers. slot 2: the UART Irq, READ|GRANT so it can delegate it to input.
-    let s0 = crate::sched::tcb_insert_cap(tid, crate::cap::untyped_cap(build_region))
+    // slot 0: the delegable root budget (milestone 31), GRANT included so sysinit can split off a
+    // budget for the shell and hand it on; rights only narrow downward. slot 1: the NS16550
+    // registers, WRITE|GRANT so sysinit maps them into the console and input drivers. slot 2: the
+    // UART Irq, READ|GRANT so it can delegate it to input.
+    let s0 = crate::sched::tcb_insert_cap(tid, crate::cap::untyped_root_cap(build_region))
         .expect("insert budget");
     assert_eq!(s0, 0);
     let s1 = crate::sched::tcb_insert_cap(

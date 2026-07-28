@@ -12,14 +12,17 @@
 //! 4. the **shell**: prints and reads lines through the terminal endpoint, runs commands;
 //!
 //! wired together with endpoints and shared pages this program creates. The kernel wires none of it.
-//! Then it stays alive as the spawn service: `run <n>` in the shell asks it to build a `worker` that
-//! returns n*n. Nothing here names an architecture: the console and input drivers hold the one
-//! device-specific fact (the UART register layout), and the kernel grants the right device.
+//! Then it stays alive as the spawn service (milestone 31): the shell resolves a `run` into a grant
+//! expression and directs init to load the named program and endow it with exactly what the command
+//! named (the result endpoint, and an untyped budget the shell delegates for `run --mem N`). Nothing
+//! here names an architecture: the console and input drivers hold the one device-specific fact (the
+//! UART register layout), and the kernel grants the right device.
 
 #![no_std]
 #![no_main]
 
-use user_rt::{cap_delete, exit, invoke, recv, send};
+use capsh::{Prog, spawnproto};
+use user_rt::{cap_delete, exit, invoke, recv, recv_cap, send};
 
 /// Where the kernel maps the initrd archive, read-only. Must match the kernel's spawn path.
 const INITRD_VA: u64 = 0x2000_0000;
@@ -32,6 +35,12 @@ const UART_IRQ: u64 = 2; // the UART receive interrupt, an Irq cap to delegate i
 const PAGE: u64 = 4096;
 const CHILD_STACK_VA: u64 = 0x0050_0000;
 const CHILD_STACK_PAGES: u64 = 4;
+
+/// Pages of untyped we split off our own budget and hand the shell (milestone 31), so the shell can
+/// in turn endow the programs it spawns (`run --mem N`) out of a budget that is genuinely *its own*.
+/// The shell shrinks this by N pages per grant; the pages a spawned child pins are not reclaimed in
+/// phase 1, so this is a session budget, not a renewable one.
+const SH_BUDGET_PAGES: u64 = 128;
 
 // The VAs each program hardcodes; they must match console.rs / input.rs / termd.rs / shell.rs.
 const CON_SHARED_VA: u64 = 0x0060_0000; // console reads text here; termd writes it
@@ -117,13 +126,18 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, _x2: u64) -> ! {
     must0(tcb_start(input, 0, 0, 0));
     cap_delete(input);
 
-    // 4. The shell: prints and reads lines through the terminal, holds the spawn channel.
+    // 4. The shell: prints and reads lines through the terminal, holds the spawn channel, and holds
+    // its own untyped budget (slot 3) so `run --mem N` grants from memory that is genuinely the
+    // shell's. WRITE lets it SPLIT the budget; GRANT lets it delegate the split to init. We carve
+    // that budget from our own untyped and hand it over the same way we hand any capability.
+    let sh_budget = must(untyped_split(SH_BUDGET_PAGES));
     let shell = must(build_child(
         &sh_elf,
         &[
             (term_ep, abi::rights::WRITE),
             (spawn_ep, abi::rights::WRITE),
             (result_ep, abi::rights::READ),
+            (sh_budget, abi::rights::WRITE | abi::rights::GRANT),
         ],
         &[
             (SH_OUT_VA, term_out, abi::aspace::MAP_RW), // shell writes text and prompts here
@@ -132,28 +146,85 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, _x2: u64) -> ! {
     ));
     must0(tcb_start(shell, 0, 0, 0));
     cap_delete(shell);
+    cap_delete(sh_budget); // our copy; the shell holds its own now
 
-    // The spawn service. The shell SENDs `n` on `spawn_ep`; we build a `worker` endowed with
-    // `result_ep` (WRITE) and start it with `n` in a1. The worker squares `n`, SENDs the answer
-    // straight to `result_ep`, and exits; the shell, holding `result_ep` for READ, receives it. We
-    // never see the answer, only build the pipe. If the build fails (budget spent), answer u64::MAX so
-    // the shell degrades gracefully instead of hanging.
+    // The spawn service (milestone 31's grant expression, wire half; capsh::spawnproto). The shell
+    // resolved a `run` into a program, an argument, and a memory-grant page count, and it directs us
+    // rather than building the child itself: we hold the initrd, so we stay the ELF loader (the
+    // parser lives in one place, out of the shell). We endow every child the result endpoint at slot
+    // 0, and the untyped the shell delegates at slot 1 when a `--mem` grant rode along. Nothing else:
+    // the child's authority is exactly what the command line named. See the spawn_service comment.
     let worker = fs.read("worker").and_then(|b| elf::Elf::parse(b).ok());
+    let budgeter = fs.read("budgeter").and_then(|b| elf::Elf::parse(b).ok());
+    spawn_service(spawn_ep, result_ep, worker.as_ref(), budgeter.as_ref())
+}
+
+/// The spawn service loop: serve the shell's `run` requests forever. Init is the ELF loader the
+/// shell directs; it inserts only what the shell endows plus the shared report channel, so a
+/// spawned program can reach nothing the command line did not name.
+///
+/// The exchange (capsh::spawnproto): the shell `SEND`s the request (program id, argument, page
+/// count); if the count is non-zero, it `SEND_CAP`s exactly one capability next, an untyped it split
+/// from its own budget, which we receive here. We build the child, endow it, and start it with the
+/// argument in a1. On any failure we send the spawn-failed sentinel on the result endpoint so the
+/// shell's single read completes with a legible failure instead of hanging.
+fn spawn_service(
+    spawn_ep: u64,
+    result_ep: u64,
+    worker: Option<&elf::Elf>,
+    budgeter: Option<&elf::Elf>,
+) -> ! {
     loop {
-        let n = recv(spawn_ep).0;
-        let built = worker
-            .as_ref()
-            .and_then(|w| build_child(w, &[(result_ep, abi::rights::WRITE)], &[]).ok());
+        let (w0, w1, w2) = recv(spawn_ep);
+        let prog = Prog::from_id(spawnproto::prog_id(w0));
+        let arg = spawnproto::arg(w1);
+        let mem_pages = spawnproto::mem_pages(w2);
+
+        // A promised memory grant arrives as the delegated untyped over the next SEND_CAP; no
+        // promise, no receive, so the two sides stay in lockstep on the endpoint.
+        let budget = if mem_pages > 0 {
+            let slot = recv_cap(spawn_ep).1;
+            if slot == abi::endpoint::NO_CAP {
+                None
+            } else {
+                Some(slot)
+            }
+        } else {
+            None
+        };
+
+        let elf = match prog {
+            Some(Prog::Worker) => worker,
+            Some(Prog::Budgeter) => budgeter,
+            None => None,
+        };
+
+        let built = elf.and_then(|e| match budget {
+            // The delegated budget goes in narrowed to WRITE: the child may spend it, not lend it.
+            Some(b) => build_child(
+                e,
+                &[(result_ep, abi::rights::WRITE), (b, abi::rights::WRITE)],
+                &[],
+            )
+            .ok(),
+            None => build_child(e, &[(result_ep, abi::rights::WRITE)], &[]).ok(),
+        });
+
         match built {
-            Some(w) => {
-                if tcb_start(w, 0, n, 0) != 0 {
-                    send(result_ep, u64::MAX, 0, 0);
+            Some(tcb) => {
+                if tcb_start(tcb, 0, arg, 0) != 0 {
+                    send(result_ep, spawnproto::SPAWN_FAILED, 0, 0);
                 }
-                cap_delete(w);
+                cap_delete(tcb);
             }
             None => {
-                send(result_ep, u64::MAX, 0, 0);
+                send(result_ep, spawnproto::SPAWN_FAILED, 0, 0);
             }
+        }
+        // Drop our copy of the delegated budget (it is the child's now), so a long session of
+        // `run --mem` does not exhaust init's own 16-slot cspace. A no-op when there was none.
+        if let Some(b) = budget {
+            cap_delete(b);
         }
     }
 }
@@ -259,6 +330,13 @@ fn retype_obj(objtype: u64) -> Result<u64, ()> {
 
 fn retype_frame() -> Result<u64, ()> {
     let r = unsafe { invoke(UNTYPED, abi::untyped::RETYPE, 0, 0, 0) };
+    if r < 0 { Err(()) } else { Ok(r as u64) }
+}
+
+/// Carve `pages` off our own untyped into a new child untyped we can delegate (milestone 31). The
+/// SPLIT grants us full rights on the child, including GRANT, so we can hand a memory budget on.
+fn untyped_split(pages: u64) -> Result<u64, ()> {
+    let r = unsafe { invoke(UNTYPED, abi::untyped::SPLIT, pages, 0, 0) };
     if r < 0 { Err(()) } else { Ok(r as u64) }
 }
 
