@@ -149,6 +149,20 @@ pub fn untyped_cap(region: u64) -> Cap {
     }
 }
 
+/// A capability to an untyped region with explicit rights (milestone 31). `SPLIT` uses this to give
+/// the caller **full rights** on the child budget it carved from its own, so an untyped is a
+/// first-class delegatable grant: `GRANT` lets a process pass a memory budget to another (the
+/// capability-shell's `run --mem N`), matching what every other creation path already grants its
+/// creator (`RETYPE` frames, `RETYPE_OBJ` endpoints/aspaces/tcbs all mint full rights). The root
+/// untyped the kernel hands init at boot stays [`untyped_cap`] (`WRITE` only): init spends it, it
+/// never delegates it. Delegation narrows from here, as everywhere.
+pub fn untyped_cap_rights(region: u64, rights: Rights) -> Cap {
+    Cap {
+        object: Object::Untyped(region),
+        rights,
+    }
+}
+
 /// A capability to a virtio device's transport. `WRITE` lets the holder operate it.
 pub fn virtio_cap(id: usize) -> Cap {
     Cap {

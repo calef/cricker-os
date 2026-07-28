@@ -449,8 +449,16 @@ fn invoke(
                     return Err(Error::NotPermitted);
                 }
                 let child = crate::untyped::split(region, a0).ok_or(Error::OutOfMemory)?;
-                let slot =
-                    sched::grant(crate::cap::untyped_cap(child)).map_err(|_| Error::OutOfMemory)?; // cspace full
+                // Full rights on the child budget (milestone 31): the caller carved it from its own
+                // untyped and owns it completely, including GRANT (the right to pass a memory budget
+                // on). This matches RETYPE/RETYPE_OBJ, which mint full rights to their creator; only
+                // SPLIT under-granted (WRITE alone), which silently made untyped the one object type
+                // no process could delegate. See cap::untyped_cap_rights and DECISIONS §16.
+                let slot = sched::grant(crate::cap::untyped_cap_rights(
+                    child,
+                    Rights::READ.union(Rights::WRITE).union(Rights::GRANT),
+                ))
+                .map_err(|_| Error::OutOfMemory)?; // cspace full
                 Ok(slot as i64)
             }
             // Reclaim this region and every object retyped from it (object revocation): tear the
