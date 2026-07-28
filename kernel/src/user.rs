@@ -671,7 +671,9 @@ pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
 /// system's first output comes from a userspace driver init built, not from the kernel. The
 /// report endpoint is unused on this path (init prints via the console it builds, not back to the
 /// kernel); it is created only to satisfy `spawn_init`'s shape.
-#[cfg(feature = "initboot")]
+// The aarch64 interactive boot hands off here for every non-bench build (the tour, `--features
+// shell`, and `--features initboot`), since milestone 28 retired the kernel-wired `shell_service`.
+#[cfg(not(any(test, feature = "bench")))]
 pub fn boot_via_init(image: &'static [u8]) {
     const INIT_BOOT_ROLE: u64 = 27;
     let report = crate::sched::create_endpoint();

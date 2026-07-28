@@ -122,6 +122,102 @@ pub fn recv(slot: u64) -> (u64, u64, u64) {
     (w0, w1, w2)
 }
 
+/// `RECV_CAP` on the endpoint capability in `slot`: receive a message that may carry a
+/// capability. Blocks until one arrives; returns `(w0, cap_slot, w1)`, where `cap_slot` is where
+/// the incoming capability landed in this thread's cspace, or [`abi::endpoint::NO_CAP`] if the
+/// message carried none. This is how a server receives a [`call`]: the delivered capability is
+/// the one-shot Reply naming the caller (milestone 12, DECISIONS §12).
+#[cfg(target_arch = "aarch64")]
+pub fn recv_cap(slot: u64) -> (u64, u64, u64) {
+    let (mut w0, mut w1, mut w2): (u64, u64, u64);
+    // SAFETY: `svc`. RECV_CAP returns three words in x0/x1/x2.
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("x8") abi::SYS_INVOKE,
+            inlateout("x0") slot => w0,
+            in("x1") abi::endpoint::RECV_CAP,
+            lateout("x1") w1,
+            lateout("x2") w2,
+            in("x3") 0u64,
+            in("x4") 0u64,
+            options(nostack),
+        );
+    }
+    (w0, w1, w2)
+}
+
+/// `RECV_CAP` (RISC-V). See the aarch64 twin; `ecall`, the three returned words in `a0`/`a1`/`a2`.
+#[cfg(target_arch = "riscv64")]
+pub fn recv_cap(slot: u64) -> (u64, u64, u64) {
+    let (mut w0, mut w1, mut w2): (u64, u64, u64);
+    // SAFETY: `ecall`. RECV_CAP returns three words in a0/a1/a2.
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            in("a7") abi::SYS_INVOKE,
+            inlateout("a0") slot => w0,
+            inlateout("a1") abi::endpoint::RECV_CAP => w1,
+            lateout("a2") w2,
+            in("a3") 0u64,
+            in("a4") 0u64,
+            options(nostack),
+        );
+    }
+    (w0, w1, w2)
+}
+
+/// `CALL` on the endpoint capability in `slot`: send two words and block until the server
+/// replies through the one-shot Reply capability the kernel mints (milestone 12). Returns the
+/// two reply words. The atomic send-and-wait that makes a request unmistakably answerable.
+#[cfg(target_arch = "aarch64")]
+pub fn call(slot: u64, w0: u64, w1: u64) -> (u64, u64) {
+    let (mut r0, mut r1): (u64, u64);
+    // SAFETY: `svc`. CALL returns the two reply words in x0/x1.
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("x8") abi::SYS_INVOKE,
+            inlateout("x0") slot => r0,
+            in("x1") abi::endpoint::CALL,
+            lateout("x1") r1,
+            in("x2") w0,
+            in("x3") w1,
+            in("x4") 0u64,
+            options(nostack),
+        );
+    }
+    (r0, r1)
+}
+
+/// `CALL` (RISC-V). See the aarch64 twin; `ecall`, the two reply words in `a0`/`a1`.
+#[cfg(target_arch = "riscv64")]
+pub fn call(slot: u64, w0: u64, w1: u64) -> (u64, u64) {
+    let (mut r0, mut r1): (u64, u64);
+    // SAFETY: `ecall`. CALL returns the two reply words in a0/a1.
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            in("a7") abi::SYS_INVOKE,
+            inlateout("a0") slot => r0,
+            inlateout("a1") abi::endpoint::CALL => r1,
+            in("a2") w0,
+            in("a3") w1,
+            in("a4") 0u64,
+            options(nostack),
+        );
+    }
+    (r0, r1)
+}
+
+/// `REPLY` through the one-shot Reply capability in `slot`: deliver two words to the blocked
+/// caller and wake it. The capability is consumed by the kernel on use (that is what makes it
+/// one-shot), so the slot is free again when this returns.
+pub fn reply(slot: u64, r0: u64, r1: u64) -> i64 {
+    // SAFETY: `svc`/`ecall`; the kernel validates the Reply capability and consumes it.
+    unsafe { invoke(slot, abi::reply::REPLY, r0, r1, 0) }
+}
+
 /// Give up the CPU (`SYS_YIELD`). Returns when the scheduler runs this thread again; if another
 /// thread is ready, control goes there and back, which is one context-switch round trip.
 #[cfg(target_arch = "aarch64")]

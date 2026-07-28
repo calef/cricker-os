@@ -789,27 +789,21 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
             }
         } // end of the milestone tour (#[cfg(not(feature = "shell"))])
 
-        // **Milestone 19d.2c: userspace init is the boot path.** With `initboot`, the kernel
-        // stops wiring services itself: it hands off to init, which brings up the console (and,
-        // in the interactive build, input and the shell) out of its own budget through the
-        // granular verbs. This is the line that retires the kernel as the system's builder.
-        #[cfg(feature = "initboot")]
+        // **Milestone 19d.2c, completed at 28: userspace init is the boot path.** The kernel stops
+        // wiring services itself. It hands off to init, which brings up the console server, the line
+        // discipline (`termd`, milestone 28), the input driver, and the shell out of its own budget
+        // through the granular verbs. This is the line that retires the kernel as the system's
+        // builder. Every aarch64 interactive build reaches it: `--features shell` and the milestone
+        // tour hand off straight away (the tour after running its demos), the same way `initboot`
+        // always has, and the same way RISC-V's `--features shell` hands off to `sysinit`. The
+        // legacy kernel-wired `user::shell_service` is retired as a boot path (it cannot host the
+        // milestone-28 shell, which speaks the terminal contract, not the raw console protocol) and
+        // is kept only as dead code for reference.
         if let Some(image) = user::initrd() {
             println!();
             println!("cricker-os — handing the system to userspace init.");
             user::boot_via_init(image);
             // The boot thread's work is done; init and the services it builds run until halt.
-        }
-
-        // The interactive shell (the pre-19d.2c path). **This is how you actually use the OS.**
-        // It brings up its own console and input drivers kernel-side, so it stands alone with the
-        // tour compiled out. `initboot` moves this bring-up into init above.
-        #[cfg(not(feature = "initboot"))]
-        if user::initrd().is_some() {
-            println!();
-            println!("cricker-os — an interactive shell at EL0. type `help`.");
-            user::shell_service::start();
-            // The boot thread's work is done; the shell and its friends run until halt.
         }
     }
 

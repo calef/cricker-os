@@ -1,52 +1,58 @@
 //! A shell, at EL0: the last program lifted out of hello into its own binary (milestone 19f.5).
 //!
-//! **Proof the whole stack works.** It reads command lines from the input driver (milestone 10's
-//! receive side), prints through the console server (milestone 8), and asks init to spawn worker
-//! processes on command. Every layer under it is exercised at once: EL0, per-process address
-//! spaces, capabilities, IPC, and two userspace drivers, all distinct binaries now. The kernel is a
-//! message router; everything the user sees is a conversation between processes.
+//! **Proof the whole stack works.** It talks to one terminal endpoint (milestone 28's contract,
+//! notes/terminal-contract.md) and asks init to spawn worker processes on command. Every layer
+//! under it is exercised at once: EL0, per-process address spaces, capabilities, IPC, and three
+//! userspace components (input driver, line discipline, console server), all distinct binaries.
+//! The kernel is a message router; everything the user sees is a conversation between processes.
+//!
+//! What the shell does NOT know is the point. It cannot tell whether its terminal endpoint is
+//! served by the full line discipline or by bare drivers; it never sees a keystroke, an escape
+//! sequence, or an echo. Line editing, history, and ^C all happen on the other side of the
+//! endpoint. The shell writes text, reads lines, and handles the two flags the contract defines
+//! (end of input, interrupted).
 //!
 //! # The shell's world
 //!
 //! It holds, by convention (init granted them in this order):
 //!
-//! - slot 0/1: the console server's request/reply endpoints (print).
-//! - slot 2: the input driver's line endpoint (read a line).
-//! - slot 3: a spawn endpoint (ask init to start a worker).
-//! - slot 4: a result endpoint (receive a spawned worker's answer).
+//! - slot 0: the terminal endpoint (CALL: OP_WRITE / OP_READLINE).
+//! - slot 1: a spawn endpoint (ask init to start a worker).
+//! - slot 2: a result endpoint (receive a spawned worker's answer).
 //!
-//! and two shared pages: one with the console server (output), one with the input driver (the line
-//! buffer). No role selector; a standalone binary needs none. The syscall runtime (`invoke`/`recv`)
-//! comes from the shared `user_rt` crate (19f.6).
+//! and two pages shared with the terminal: OUT_VA (we write text and prompts) and LINE_VA
+//! (completed lines arrive). No role selector; the syscall runtime comes from `user_rt`.
 
 #![no_std]
 #![no_main]
 
-use user_rt::{invoke, recv};
+use linedisc::proto;
+use user_rt::{call, invoke, recv};
 
-// Shared pages (must match init's / the kernel shell_service's wiring).
-const OUT_VA: u64 = 0x0000_0000_0060_0000; // shared with the console server
-const LINE_VA: u64 = 0x0000_0000_00b0_0000; // shared with the input driver
+// Pages shared with the terminal (must match the wiring in init / the kernel shell_service).
+const OUT_VA: u64 = 0x0000_0000_0060_0000; // we write; the terminal reads
+const LINE_VA: u64 = 0x0000_0000_00b0_0000; // the terminal writes; we read
 
 // Capability slots.
-const REQUEST: u64 = 0; // SEND to the console server
-const REPLY: u64 = 1; // RECV the console ack
-const LINE: u64 = 2; // RECV a completed input line
-const SPAWN: u64 = 3; // SEND a spawn request
-const RESULT: u64 = 4; // RECV a worker's result
+const TERM: u64 = 0; // CALL requests on the terminal
+const SPAWN: u64 = 1; // SEND a spawn request
+const RESULT: u64 = 2; // RECV a worker's result
 
-/// Print a string through the console server: write it into the shared page, send the length, wait
-/// for the ack (which means the buffer is free again).
+/// Print through the terminal: write the text into the shared page, CALL OP_WRITE. The reply
+/// means the bytes are on the wire and the page is ours again.
 fn print(s: &[u8]) {
     let n = s.len().min(4096);
+    stage(s, n);
+    call(TERM, proto::req(proto::OP_WRITE, n as u64), 0);
+}
+
+/// Copy `n` bytes into the outgoing shared page.
+fn stage(s: &[u8], n: usize) {
     let out = OUT_VA as *mut u8;
     for (i, &b) in s[..n].iter().enumerate() {
-        // SAFETY: the console shared page is mapped read/write.
+        // SAFETY: the terminal's output page is mapped read/write at OUT_VA.
         unsafe { core::ptr::write_volatile(out.add(i), b) };
     }
-    // SAFETY: `svc`; the kernel validates the console capability.
-    unsafe { invoke(REQUEST, abi::endpoint::SEND, n as u64, 0, 0) };
-    recv(REPLY);
 }
 
 /// Print a small unsigned number.
@@ -64,17 +70,19 @@ fn print_num(mut v: u64) {
     print(&digits[i..]);
 }
 
-/// Read a command line from the input driver. The bytes land in the shared LINE page; we copy up to
-/// `out.len()` of them and return the count.
-fn read_line(out: &mut [u8]) -> usize {
-    let len = recv(LINE).0 as usize;
+/// Read a command line: stage the prompt, CALL OP_READLINE, and block until the terminal has a
+/// line for us. The editing (cursor keys, history, backspace) happens entirely on the far side;
+/// we get the finished line in LINE_VA and its length and flags in the reply.
+fn read_line(prompt: &[u8], out: &mut [u8]) -> (usize, u64) {
+    stage(prompt, prompt.len());
+    let (len, flags) = call(TERM, proto::req(proto::OP_READLINE, prompt.len() as u64), 0);
+    let len = (len as usize).min(out.len());
     let src = LINE_VA as *const u8;
-    let n = len.min(out.len());
-    for (i, b) in out[..n].iter_mut().enumerate() {
+    for (i, b) in out[..len].iter_mut().enumerate() {
         // SAFETY: the line page is mapped read-only and holds at least `len` bytes.
         *b = unsafe { core::ptr::read_volatile(src.add(i)) };
     }
-    n
+    (len, flags)
 }
 
 #[unsafe(no_mangle)]
@@ -84,11 +92,17 @@ pub extern "C" fn _start(_x0: u64, _x1: u64, _x2: u64) -> ! {
 
     let mut line = [0u8; 128];
     loop {
-        print(b"$ ");
-        let n = read_line(&mut line);
+        let (n, flags) = read_line(b"$ ", &mut line);
+        if flags & proto::FLAG_INTERRUPTED != 0 {
+            // ^C: the terminal discarded the line; come back for the next one.
+            continue;
+        }
+        if flags & proto::FLAG_EOF != 0 {
+            // ^D on an empty line. This shell is the session; there is nothing to exit to.
+            print(b"  (end of input; this shell has nowhere to exit to)\n");
+            continue;
+        }
         let cmd = &line[..n];
-        // No echo here: the input driver echoes each character as you type it (raw terminal), so
-        // echoing the whole line again would double it.
 
         if cmd == b"help" {
             print(b"  help        this text\n");

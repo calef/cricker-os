@@ -78,6 +78,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "linedisc"
+version = "0.1.0"
+
+[[package]]
 name = "paging"
 version = "0.1.0"
 
@@ -116,6 +120,7 @@ dependencies = [
  "coremark",
  "crickerfs",
  "elf",
+ "linedisc",
  "user_rt",
 ]
 

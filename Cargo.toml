@@ -16,6 +16,7 @@ members = [
     "crates/pci",
     "crates/regions",
     "crates/intrusive",
+    "crates/linedisc",
     "crates/slots",
     "crates/user_rt",
     "crates/coremark",

@@ -134,6 +134,14 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [A shell at EL0](shell.md) — milestone 10: an interactive shell, a userspace input driver
   (console receive), and worker processes spawned on command. Proof the whole stack works, as a
   conversation between processes the kernel only routes.
+- [The line discipline as a userspace component](line-discipline.md) — milestone 28: the tty
+  layer as a process (`termd`) on plain endpoints, a sans-IO editing engine host-tested against a
+  screen model, why it was built rather than porting `noline`/`embedded-cli`, and the Reply-cap
+  argument that makes it deadlock-free.
+- [The terminal contract](terminal-contract.md) — milestone 28: the interface a terminal
+  presents (the `OP_WRITE`/`OP_READLINE`/`OP_BYTES` IPC protocol, the read flags, the shared
+  pages, and the honest limits), written down so milestones 29 and 31 implement against a
+  contract, not against today's component.
 
 - [Running under virtualization on Apple Silicon](virtualization.md) — `cargo xtask run --hvf`
   puts the kernel on the real M3 core via Apple's Hypervisor.framework. It found two QEMU-shaped
