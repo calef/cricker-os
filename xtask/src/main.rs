@@ -193,6 +193,8 @@ fn initrd_riscv() -> bool {
             "--bin",
             "shell",
             "--bin",
+            "termd",
+            "--bin",
             "blk",
             "--target",
             RISCV_TARGET,
@@ -220,6 +222,7 @@ fn initrd_riscv() -> bool {
         ("console", "console"),
         ("input", "input"),
         ("shell", "shell"),
+        ("termd", "termd"),
         ("blk", "blk"),
     ];
     let mut blobs: Vec<(&str, Vec<u8>)> = Vec::new();
@@ -308,16 +311,25 @@ fn mkinitrd() -> bool {
             return false;
         }
     };
+    let termd = match std::fs::read(bin_elf("termd")) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("termd"));
+            return false;
+        }
+    };
     // "init" is the hello binary (the kernel loads it, init re-enters it at its remaining roles);
-    // "worker", "console", "input", "shell" are the split system binaries (19f.2-5), "coremark" is
-    // the compute workload (19e), and "elbench" is the EL0 microbenchmark program (primitive suite).
-    // init (and the bench boot) load each by name. All are entries in the one archive.
-    let files: [(&str, &[u8]); 7] = [
+    // "worker", "console", "input", "shell" are the split system binaries (19f.2-5), "termd" is
+    // the line discipline between them (milestone 28), "coremark" is the compute workload (19e),
+    // and "elbench" is the EL0 microbenchmark program (primitive suite). init (and the bench
+    // boot) load each by name. All are entries in the one archive.
+    let files: [(&str, &[u8]); 8] = [
         ("init", &hello),
         ("worker", &worker),
         ("console", &console),
         ("input", &input),
         ("shell", &shell),
+        ("termd", &termd),
         ("coremark", &coremark),
         ("elbench", &elbench),
     ];
@@ -453,6 +465,8 @@ fn test() -> bool {
         "pci",
         "-p",
         "ipc",
+        "-p",
+        "linedisc",
         "-p",
         "slots",
         "-p",

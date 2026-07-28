@@ -120,6 +120,7 @@ dependencies = [
  "coremark",
  "crickerfs",
  "elf",
+ "linedisc",
  "user_rt",
 ]
 

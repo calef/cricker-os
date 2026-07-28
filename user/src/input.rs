@@ -1,31 +1,36 @@
-//! Console **input**, at EL0: a whole program in one job (milestone 19f.4, split out of hello).
+//! Console **input**, at EL0: the raw receive driver (milestone 19f.4, raw since milestone 28).
 //!
-//! The receive half of a terminal. Milestone 8 put console *output* in userspace; a shell also
-//! needs input. This driver owns the UART's receive side and its receive interrupt, assembles a line
-//! character by character, echoing as it goes, and hands each completed line to a reader (the shell)
-//! over IPC. A separate process from the output console server: each does one thing and blocks on one
-//! thing, which is what synchronous IPC wants.
+//! The receive half of a terminal, reduced to what a driver actually is: own the UART's receive
+//! side and its interrupt, and forward every byte that arrives. It assembles nothing, echoes
+//! nothing, and interprets nothing; the editing, echo, and line assembly that used to live here
+//! moved to the line discipline component (`termd`), where Unix keeps them too (a UART driver
+//! feeds the tty layer; it is not the tty layer). What remains is the irreducible driver loop:
+//! WAIT on the interrupt, drain the FIFO, hand the bytes on, ACK.
 //!
-//! Its whole authority is what init grants it: SEND on the line endpoint (slot 0), the RX interrupt
-//! capability (slot 1), the UART registers mapped device-typed, and a line buffer page. No role
-//! selector; a standalone binary needs none. The syscall runtime (`invoke`/`send`) comes from the
-//! shared `user_rt` crate (19f.6).
+//! Bytes travel packed in the words of an `OP_BYTES` CALL (up to 8 per message, the terminal
+//! contract's driver half; see notes/terminal-contract.md). A keystroke is one byte and control
+//! flow, not bulk data, so the words-in-registers path fits §10's rule; a paste drains in
+//! 8-byte messages, and the CALL's rendezvous is the flow control that keeps a fast sender from
+//! outrunning the discipline.
 //!
-//! The line assembly, echoing, and IPC are portable; the one arch-specific thing is the UART register
-//! layout, in the `uart` module below (aarch64 PL011, RISC-V NS16550).
+//! Its whole authority: WRITE on the terminal endpoint (slot 0), the RX interrupt capability
+//! (slot 1), and the UART registers mapped device-typed. It cannot print, spawn, or read what
+//! anyone else typed. No role selector; the syscall runtime comes from `user_rt`.
+//!
+//! The one arch-specific thing is the UART register layout, in the `uart` module below
+//! (aarch64 PL011, RISC-V NS16550).
 
 #![no_std]
 #![no_main]
 
 use abi::irq;
-use user_rt::{invoke, send};
+use linedisc::proto;
+use user_rt::{call, invoke};
 
 const UART_VA: u64 = 0x0000_0000_00a0_0000;
-const LINE_VA: u64 = 0x0000_0000_00b0_0000;
 
-const LINE: u64 = 0; // SEND: hand a completed line's length to the reader
+const TERM: u64 = 0; // CALL: forward raw wire bytes to the line discipline
 const IRQ: u64 = 1; // WAIT / ACK the receive interrupt
-const LINE_MAX: usize = 128;
 
 /// The UART, the one arch-specific part of an input driver. aarch64's `virt` has a PL011 (32-bit
 /// registers, RX-FIFO-empty and TX-FIFO-full flags in the Flag Register, a maskable RX interrupt in
@@ -40,7 +45,6 @@ mod uart {
     const IMSC: u64 = 0x38;
     const ICR: u64 = 0x44;
     const FR_RXFE: u32 = 1 << 4;
-    const FR_TXFF: u32 = 1 << 5;
     const RXIM: u32 = 1 << 4;
 
     fn rd(off: u64) -> u32 {
@@ -58,12 +62,6 @@ mod uart {
     pub fn rx_get() -> u8 {
         rd(DR) as u8
     }
-    pub fn tx_put(c: u8) {
-        while rd(FR) & FR_TXFF != 0 {
-            core::hint::spin_loop();
-        }
-        wr(DR, c as u32);
-    }
     pub fn arm_rx_interrupt() {
         wr(IMSC, rd(IMSC) | RXIM);
     }
@@ -75,12 +73,11 @@ mod uart {
 #[cfg(target_arch = "riscv64")]
 mod uart {
     use super::UART_VA;
-    const RBR: u64 = 0x00; // receive buffer (read) / transmit holding (write)
+    const RBR: u64 = 0x00; // receive buffer (read)
     const IER: u64 = 0x01; // interrupt enable
     const LSR: u64 = 0x05; // line status
     const IER_ERBFI: u8 = 1 << 0; // enable received-data-available interrupt
     const LSR_DR: u8 = 1 << 0; // data ready
-    const LSR_THRE: u8 = 1 << 5; // transmit holding register empty
 
     fn rd(off: u64) -> u8 {
         // SAFETY: UART_VA is our device mapping of the NS16550.
@@ -97,76 +94,52 @@ mod uart {
     pub fn rx_get() -> u8 {
         rd(RBR) // reading clears the receive interrupt; that is why clear_interrupt is a no-op
     }
-    pub fn tx_put(c: u8) {
-        while rd(LSR) & LSR_THRE == 0 {
-            core::hint::spin_loop();
-        }
-        wr(RBR, c);
-    }
     pub fn arm_rx_interrupt() {
         wr(IER, IER_ERBFI);
     }
     pub fn clear_interrupt() {
-        // The NS16550 clears the receive interrupt when the byte is read (rx_get, in drain). There
-        // is no separate interrupt-clear register, so this is nothing.
+        // The NS16550 clears the receive interrupt when the byte is read (rx_get, in drain).
     }
 }
 
-/// Read lines forever, handing each to the reader over the `LINE` endpoint. The line's bytes are
-/// left in the shared `LINE_VA` page for the reader to pick up. No arguments: a standalone binary.
+/// Forward wire bytes forever. No arguments: a standalone binary.
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(_x0: u64, _x1: u64, _x2: u64) -> ! {
-    let buf = LINE_VA as *mut u8;
-    let mut n: usize;
-
     // Drain anything already in the FIFO by POLLING, before arming the interrupt: input piped in at
     // boot is sitting in the FIFO already, and the first interrupt after arming can race with it.
     // This narrows the window but does NOT close it. A line burst-piped into QEMU during the few
     // instructions between the driver starting and this drain running can still lose its leading
     // character. A real user typing after the prompt never hits it, and every line after the first is
     // interrupt-driven and intact. Fully closing it needs the driver armed before any input arrives.
-    n = drain(buf, 0);
+    drain();
     uart::arm_rx_interrupt();
 
     loop {
         // SAFETY: the trap validates the Irq capability in slot 1.
         unsafe { invoke(IRQ, irq::WAIT, 0, 0, 0) };
-        n = drain(buf, n);
+        drain();
         uart::clear_interrupt(); // quiet the device (PL011: ICR; NS16550: reading RBR already did)
         // SAFETY: re-enable the line at the controller now that the device is quiet.
         unsafe { invoke(IRQ, irq::ACK, 0, 0, 0) };
     }
 }
 
-/// Read every character currently in the FIFO into the line buffer, echoing as we go. On a
-/// newline, hand the line to the reader and reset. Returns the new line length.
-fn drain(buf: *mut u8, mut n: usize) -> usize {
-    while uart::rx_pending() {
-        let c = uart::rx_get();
-        if c == b'\r' || c == b'\n' {
-            // Echo the newline so the shell's output starts on a fresh line, then hand over.
-            uart::tx_put(b'\r');
-            uart::tx_put(b'\n');
-            send(LINE, n as u64, 0, 0); // blocks until the reader takes the line
-            n = 0;
-        } else if (c == 0x7f || c == 0x08) && n > 0 {
-            // Backspace: erase the character on screen (back, space, back) as well as in the line.
-            n -= 1;
-            uart::tx_put(0x08);
-            uart::tx_put(b' ');
-            uart::tx_put(0x08);
-        } else if c >= 0x20 && n < LINE_MAX {
-            // **Echo as you type.** The terminal is in raw mode, so nothing echoes locally; the
-            // input driver is the only thing that can show a character back. This is safe against
-            // interleaving because the reader (the shell) is blocked waiting for the line while
-            // you type, so it is not writing the UART. See notes/shell.md.
-            uart::tx_put(c);
-            // SAFETY: n < LINE_MAX and the line page is mapped read/write.
-            unsafe { core::ptr::write_volatile(buf.add(n), c) };
+/// Read everything in the FIFO and forward it, up to 8 bytes per OP_BYTES message, packed
+/// little-endian in the second word. The CALL blocks until the discipline has taken the bytes;
+/// the FIFO fills while we wait, and we drain what accumulated on return.
+fn drain() {
+    loop {
+        let mut word: u64 = 0;
+        let mut n: u64 = 0;
+        while n < 8 && uart::rx_pending() {
+            word |= (uart::rx_get() as u64) << (8 * n);
             n += 1;
         }
+        if n == 0 {
+            return;
+        }
+        call(TERM, proto::req(proto::OP_BYTES, n), word);
     }
-    n
 }
 
 #[panic_handler]

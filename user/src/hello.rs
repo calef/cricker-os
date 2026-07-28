@@ -381,12 +381,16 @@ fn init_boot(_x1: u64) -> ! {
     const UART_DEV: u64 = 2;
     const UART_IRQ: u64 = 4;
 
-    // The VAs each program hardcodes. Console, input, and shell are all their own binaries now
-    // (19f.3-5), each started with no role; the VAs must match console.rs/input.rs/shell.rs.
-    const CON_SHARED_VA: u64 = 0x0060_0000; // console reads text here; shell writes it
+    // The VAs each program hardcodes. Console, input, termd, and shell are all their own
+    // binaries (19f.3-5, 28), each started with no role; the VAs must match
+    // console.rs/input.rs/termd.rs/shell.rs.
+    const CON_SHARED_VA: u64 = 0x0060_0000; // console reads text here; termd writes it
     const CON_UART_VA: u64 = 0x0070_0000; // console's UART mapping
+    const TERM_OUT_VA: u64 = 0x0080_0000; // termd reads the shell's text/prompts here
+    const TERM_IN_VA: u64 = 0x0090_0000; // termd delivers completed lines here
     const IN_UART_VA: u64 = 0x00a0_0000; // input driver's UART mapping
-    const LINE_VA: u64 = 0x00b0_0000; // input writes lines here; shell reads them
+    const SH_OUT_VA: u64 = 0x0060_0000; // the shell's view of the TERM_OUT frame
+    const LINE_VA: u64 = 0x00b0_0000; // the shell's view of the TERM_IN frame
     const DEV: u64 = abi::aspace::MAP_RO; // mode arg ignored for a DeviceFrame cap
 
     // Every service init builds is now its own binary, loaded from the archive by name. init itself
@@ -403,6 +407,12 @@ fn init_boot(_x1: u64) -> ! {
     let Ok(in_elf) = elf::Elf::parse(in_bytes) else {
         halt_forever()
     };
+    let Some(td_bytes) = program(initrd_len, "termd") else {
+        halt_forever()
+    };
+    let Ok(td_elf) = elf::Elf::parse(td_bytes) else {
+        halt_forever()
+    };
     let Some(sh_bytes) = program(initrd_len, "shell") else {
         halt_forever()
     };
@@ -411,14 +421,16 @@ fn init_boot(_x1: u64) -> ! {
     };
 
     // The endpoints and shared pages init owns and hands out. Endpoints come from retype with full
-    // rights, so init keeps RWG and delegates narrowed views.
+    // rights, so init keeps RWG and delegates narrowed views. `term_ep` is the terminal contract's
+    // one endpoint (milestone 28, notes/terminal-contract.md): the line discipline serves it; the
+    // input driver and the shell hold WRITE and cannot tell what is behind it.
     let Ok(request) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else {
         halt_forever()
     };
     let Ok(reply) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else {
         halt_forever()
     };
-    let Ok(line) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else {
+    let Ok(term_ep) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else {
         halt_forever()
     };
     let Ok(spawn_ep) = retype_obj(UNTYPED, abi::objtype::ENDPOINT) else {
@@ -430,7 +442,10 @@ fn init_boot(_x1: u64) -> ! {
     let Ok(con_shared) = retype_frame(UNTYPED) else {
         halt_forever()
     };
-    let Ok(line_buf) = retype_frame(UNTYPED) else {
+    let Ok(term_out) = retype_frame(UNTYPED) else {
+        halt_forever()
+    };
+    let Ok(term_in) = retype_frame(UNTYPED) else {
         halt_forever()
     };
 
@@ -446,29 +461,42 @@ fn init_boot(_x1: u64) -> ! {
     check(tcb_start(con, 0, 0, 0) == 0); // no role selector: console is its own binary
     cap_delete(con);
 
-    // 2. Input driver: waits on the UART receive interrupt, assembles lines, delivers them.
-    let in_caps: &[(u64, u64)] = &[(line, abi::rights::WRITE), (UART_IRQ, abi::rights::READ)];
-    let in_maps: &[(u64, u64, u64)] = &[
-        (IN_UART_VA, UART_DEV, DEV),
-        (LINE_VA, line_buf, abi::aspace::MAP_RW),
+    // 2. The line discipline (milestone 28): serves the terminal endpoint, prints through the
+    // console. It is the console's only client; everyone else prints through it.
+    let td_caps: &[(u64, u64)] = &[
+        (term_ep, abi::rights::READ),
+        (request, abi::rights::WRITE),
+        (reply, abi::rights::READ),
     ];
+    let td_maps: &[(u64, u64, u64)] = &[
+        (CON_SHARED_VA, con_shared, abi::aspace::MAP_RW), // termd fills what the console reads
+        (TERM_OUT_VA, term_out, abi::aspace::MAP_RO),
+        (TERM_IN_VA, term_in, abi::aspace::MAP_RW),
+    ];
+    let Ok(termd) = build_child(UNTYPED, &td_elf, td_caps, td_maps) else {
+        halt_forever()
+    };
+    check(tcb_start(termd, 0, 0, 0) == 0);
+    cap_delete(termd);
+
+    // 3. Input driver: waits on the UART receive interrupt, forwards raw bytes to the terminal.
+    let in_caps: &[(u64, u64)] = &[(term_ep, abi::rights::WRITE), (UART_IRQ, abi::rights::READ)];
+    let in_maps: &[(u64, u64, u64)] = &[(IN_UART_VA, UART_DEV, DEV)];
     let Ok(input) = build_child(UNTYPED, &in_elf, in_caps, in_maps) else {
         halt_forever()
     };
     check(tcb_start(input, 0, 0, 0) == 0); // no role selector: input is its own binary
     cap_delete(input);
 
-    // 3. The shell: prints via the console, reads lines from input, and holds the spawn channel.
+    // 4. The shell: prints and reads lines through the terminal, and holds the spawn channel.
     let sh_caps: &[(u64, u64)] = &[
-        (request, abi::rights::WRITE),
-        (reply, abi::rights::READ),
-        (line, abi::rights::READ),
+        (term_ep, abi::rights::WRITE),
         (spawn_ep, abi::rights::WRITE),
         (result_ep, abi::rights::READ),
     ];
     let sh_maps: &[(u64, u64, u64)] = &[
-        (CON_SHARED_VA, con_shared, abi::aspace::MAP_RW), // OUT_VA: shell writes text here
-        (LINE_VA, line_buf, abi::aspace::MAP_RO),         // shell reads input lines
+        (SH_OUT_VA, term_out, abi::aspace::MAP_RW), // shell writes text and prompts here
+        (LINE_VA, term_in, abi::aspace::MAP_RO),    // shell reads completed lines
     ];
     let Ok(shell) = build_child(UNTYPED, &sh_elf, sh_caps, sh_maps) else {
         halt_forever()

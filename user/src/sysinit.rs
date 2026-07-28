@@ -7,8 +7,9 @@
 //! whole interactive system out of its own budget:
 //!
 //! 1. the **console** server (output): reads text from a shared page, writes it to the UART;
-//! 2. the **input** driver (keystrokes): waits on the UART receive interrupt, assembles lines;
-//! 3. the **shell**: prints through the console, reads lines from input, runs commands;
+//! 2. the **input** driver (keystrokes): waits on the UART receive interrupt, forwards bytes;
+//! 3. the **line discipline** (`termd`, milestone 28): editing, echo, history, between them;
+//! 4. the **shell**: prints and reads lines through the terminal endpoint, runs commands;
 //!
 //! wired together with endpoints and shared pages this program creates. The kernel wires none of it.
 //! Then it stays alive as the spawn service: `run <n>` in the shell asks it to build a `worker` that
@@ -32,11 +33,14 @@ const PAGE: u64 = 4096;
 const CHILD_STACK_VA: u64 = 0x0050_0000;
 const CHILD_STACK_PAGES: u64 = 4;
 
-// The VAs each driver hardcodes; they must match console.rs / input.rs / shell.rs.
-const CON_SHARED_VA: u64 = 0x0060_0000; // console reads text here; shell writes it
+// The VAs each program hardcodes; they must match console.rs / input.rs / termd.rs / shell.rs.
+const CON_SHARED_VA: u64 = 0x0060_0000; // console reads text here; termd writes it
 const CON_UART_VA: u64 = 0x0070_0000; // console's UART mapping
+const TERM_OUT_VA: u64 = 0x0080_0000; // termd reads the shell's text/prompts here
+const TERM_IN_VA: u64 = 0x0090_0000; // termd delivers completed lines here
 const IN_UART_VA: u64 = 0x00a0_0000; // input driver's UART mapping
-const LINE_VA: u64 = 0x00b0_0000; // input writes lines here; shell reads them
+const SH_OUT_VA: u64 = 0x0060_0000; // the shell's view of the TERM_OUT frame
+const LINE_VA: u64 = 0x00b0_0000; // the shell's view of the TERM_IN frame
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(_x0: u64, initrd_len: u64, _x2: u64) -> ! {
@@ -54,19 +58,25 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, _x2: u64) -> ! {
     let Some(in_elf) = fs.read("input").and_then(|b| elf::Elf::parse(b).ok()) else {
         fail()
     };
+    let Some(td_elf) = fs.read("termd").and_then(|b| elf::Elf::parse(b).ok()) else {
+        fail()
+    };
     let Some(sh_elf) = fs.read("shell").and_then(|b| elf::Elf::parse(b).ok()) else {
         fail()
     };
 
     // The endpoints and shared pages we own and hand out, each retyped with full rights so we can
-    // delegate narrowed views.
+    // delegate narrowed views. `term_ep` is the terminal contract's one endpoint: the discipline
+    // serves it; the input driver and the shell only hold WRITE on it, and neither can tell what
+    // is on the other side (notes/terminal-contract.md).
     let request = must(retype_obj(abi::objtype::ENDPOINT));
     let reply = must(retype_obj(abi::objtype::ENDPOINT));
-    let line = must(retype_obj(abi::objtype::ENDPOINT));
+    let term_ep = must(retype_obj(abi::objtype::ENDPOINT));
     let spawn_ep = must(retype_obj(abi::objtype::ENDPOINT));
     let result_ep = must(retype_obj(abi::objtype::ENDPOINT));
-    let con_shared = must(retype_frame());
-    let line_buf = must(retype_frame());
+    let con_shared = must(retype_frame()); // termd -> console text
+    let term_out = must(retype_frame()); // shell -> termd text and prompts
+    let term_in = must(retype_frame()); // termd -> shell completed lines
 
     // 1. Console server: reads text from the shared page, writes it to the UART.
     let con = must(build_child(
@@ -80,31 +90,44 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, _x2: u64) -> ! {
     must0(tcb_start(con, 0, 0, 0));
     cap_delete(con);
 
-    // 2. Input driver: waits on the UART receive interrupt, assembles lines, delivers them.
+    // 2. The line discipline: serves the terminal endpoint, prints through the console. It is
+    // the console's only client; everyone else prints through it.
+    let termd = must(build_child(
+        &td_elf,
+        &[
+            (term_ep, abi::rights::READ),
+            (request, abi::rights::WRITE),
+            (reply, abi::rights::READ),
+        ],
+        &[
+            (CON_SHARED_VA, con_shared, abi::aspace::MAP_RW), // termd fills what the console reads
+            (TERM_OUT_VA, term_out, abi::aspace::MAP_RO),
+            (TERM_IN_VA, term_in, abi::aspace::MAP_RW),
+        ],
+    ));
+    must0(tcb_start(termd, 0, 0, 0));
+    cap_delete(termd);
+
+    // 3. Input driver: waits on the UART receive interrupt, forwards raw bytes to the terminal.
     let input = must(build_child(
         &in_elf,
-        &[(line, abi::rights::WRITE), (UART_IRQ, abi::rights::READ)],
-        &[
-            (IN_UART_VA, UART_DEV, abi::aspace::MAP_RO),
-            (LINE_VA, line_buf, abi::aspace::MAP_RW),
-        ],
+        &[(term_ep, abi::rights::WRITE), (UART_IRQ, abi::rights::READ)],
+        &[(IN_UART_VA, UART_DEV, abi::aspace::MAP_RO)],
     ));
     must0(tcb_start(input, 0, 0, 0));
     cap_delete(input);
 
-    // 3. The shell: prints via the console, reads lines from input, holds the spawn channel.
+    // 4. The shell: prints and reads lines through the terminal, holds the spawn channel.
     let shell = must(build_child(
         &sh_elf,
         &[
-            (request, abi::rights::WRITE),
-            (reply, abi::rights::READ),
-            (line, abi::rights::READ),
+            (term_ep, abi::rights::WRITE),
             (spawn_ep, abi::rights::WRITE),
             (result_ep, abi::rights::READ),
         ],
         &[
-            (CON_SHARED_VA, con_shared, abi::aspace::MAP_RW), // shell writes text here
-            (LINE_VA, line_buf, abi::aspace::MAP_RO),         // shell reads input lines
+            (SH_OUT_VA, term_out, abi::aspace::MAP_RW), // shell writes text and prompts here
+            (LINE_VA, term_in, abi::aspace::MAP_RO),    // shell reads completed lines
         ],
     ));
     must0(tcb_start(shell, 0, 0, 0));

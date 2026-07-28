@@ -33,9 +33,19 @@ test = false
 bench = false
 
 # The input driver (milestone 19f.4): the receive half of the terminal, lifted out of hello.
+# Since milestone 28 it is a raw byte forwarder; the editing lives in termd.
 [[bin]]
 name = "input"
 path = "src/input.rs"
+test = false
+bench = false
+
+# The line discipline (milestone 28): the tty layer as a swappable userspace component between
+# the input/console drivers and applications. Serves the terminal contract
+# (notes/terminal-contract.md); the editing engine is the host-tested `linedisc` crate.
+[[bin]]
+name = "termd"
+path = "src/termd.rs"
 test = false
 bench = false
 
@@ -104,4 +114,5 @@ abi = { version = "0.1.0", path = "../crates/abi" }
 coremark = { version = "0.1.0", path = "../crates/coremark" }
 crickerfs = { version = "0.1.0", path = "../crates/crickerfs" }
 elf = { version = "0.1.0", path = "../crates/elf" }
+linedisc = { version = "0.1.0", path = "../crates/linedisc" }
 user_rt = { version = "0.1.0", path = "../crates/user_rt" }
