@@ -12,9 +12,11 @@
 //! 4. the **shell**: prints and reads lines through the terminal endpoint, runs commands;
 //!
 //! wired together with endpoints and shared pages this program creates. The kernel wires none of it.
-//! Then it stays alive as the spawn service: `run <n>` in the shell asks it to build a `worker` that
-//! returns n*n. Nothing here names an architecture: the console and input drivers hold the one
-//! device-specific fact (the UART register layout), and the kernel grants the right device.
+//! Then it stays alive as the spawn service (milestone 31): the shell resolves a `run` into a grant
+//! expression and directs init to load the named program and endow it with exactly what the command
+//! named (the result endpoint, and an untyped budget the shell delegates for `run --mem N`). Nothing
+//! here names an architecture: the console and input drivers hold the one device-specific fact (the
+//! UART register layout), and the kernel grants the right device.
 
 #![no_std]
 #![no_main]

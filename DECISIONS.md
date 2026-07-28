@@ -1022,6 +1022,25 @@ hot path does not regress. The EL0 `lat_proc` spawn benchmark also landed (notes
 cricker-os builds a process faster than Linux or macOS, with the honest caveat that a
 capability-microkernel process is a lighter object than a Unix one.
 
+### Amendment (milestone 31): `SPLIT` grants the child budget full rights
+
+`SPLIT`'s child untyped was minted with `WRITE` alone (`cap::untyped_cap`), where every other
+creation path gives its creator full rights: `RETYPE` mints a frame `READ|WRITE|GRANT`, `RETYPE_OBJ`
+mints an endpoint, aspace, or TCB the same. Because `SEND_CAP` and `CAP_INSERT` both gate on `GRANT`,
+that under-grant silently made untyped the one object type **no process could delegate**: a split
+budget could be spent by its holder and handed to no one.
+
+That foreclosed "untyped budgets as first-class grants," which is milestone 31's headline: a shell
+that endows a child N pages from its own budget must delegate an untyped, and could not. The fix is a
+rights default, not a new method or syscall: `SPLIT` now mints the child `READ|WRITE|GRANT`
+(`cap::untyped_cap_rights`), matching the rest, so a process that carves a budget off its own owns it
+completely, including the right to pass it on. The root untyped the kernel hands init at boot stays
+`WRITE`-only (`untyped_cap`): init spends it and never delegates it, so nothing there changes.
+
+This is a bug fix to this section's intent (untyped is delegable in seL4, the model we borrow
+guarantees from), recorded here rather than as a new section. See `kernel/src/syscall.rs`'s `SPLIT`
+handler and notes/grant-expression.md.
+
 ## 17. The second architecture: RISC-V, and the page-table format trait
 
 The port to RISC-V (rv64, QEMU `virt`) is the first real test of rule #1 ("all architecture-specific

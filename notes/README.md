@@ -151,6 +151,14 @@ in the code or the conversation doesn't make sense, it belongs here.
   presents (the `OP_WRITE`/`OP_READLINE`/`OP_BYTES` IPC protocol, the read flags, the shared
   pages, and the honest limits), written down so milestones 29 and 31 implement against a
   contract, not against today's component.
+- [The command line as a grant expression](grant-expression.md) — milestone 31: naming a resource
+  in a command is how you grant it (Miller's "designation is authorization"), the inversion of
+  Unix's ambient authority at the one interface a human touches. The shell's own budget, the
+  `SEND_CAP`-to-init spawn protocol, `run --mem N` made real by the `budgeter` program, the "you
+  hold no such capability" refusal, and the `SPLIT`-grants-`GRANT` fix that let untyped be delegated.
+- [The program manifest](program-manifest.md) — milestone 31: a program's declared endowment,
+  checked against the command at the prompt so a mismatch is a legible refusal, not a mystery hang.
+  SHILL's contract shrunk to phase 1, and milestone 23's component contract in embryo.
 
 - [Running under virtualization on Apple Silicon](virtualization.md) — `cargo xtask run --hvf`
   puts the kernel on the real M3 core via Apple's Hypervisor.framework. It found two QEMU-shaped
