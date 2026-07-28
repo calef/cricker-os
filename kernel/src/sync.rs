@@ -153,6 +153,15 @@ pub mod rank {
     /// with no other lock held; the rank records where that syscall sits, not any nesting need.
     pub const VIRTIO: u32 = 56;
 
+    /// The IOMMU driver's device (milestone 16b): the SMMUv3's stream table and queues, the
+    /// RISC-V IOMMU's device directory and queues, whichever this arch has. A pure leaf: `attach`
+    /// and `take_fault` do register and in-memory-queue work and lock nothing beneath them, and
+    /// the DMA domain's page-table frames are allocated *before* this lock is taken (see
+    /// crate::iommu::confine), so the lock is never held across an allocation. Below VIRTIO
+    /// because a PCI device is confined from the same bring-up path that registers its transport,
+    /// though the two locks are never actually nested (confine runs before DEVICES is taken).
+    pub const IOMMU: u32 = 54;
+
     /// The free list of thread-stack virtual addresses (a fixed array since 14 B.1).
     ///
     /// **Below the scheduler**, because a `KernelStack`'s `Drop` runs from the reaper, which

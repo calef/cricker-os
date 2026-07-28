@@ -15,7 +15,53 @@
 use crate::arch::mmu::{
     self, PCI_BAR_BASE, PCI_BAR_MAPPED, PCI_ECAM_BASE, PCI_ECAM_BUSES, PCI_IRQ_BASE,
 };
+use core::sync::atomic::{AtomicU64, Ordering};
 use pci::{Bar, Bdf, VirtioCap};
+
+/// The shared bump cursor for kernel-assigned BARs. With `-bios default` the kernel is the PCI
+/// firmware (OpenSBI does no PCI setup), so every BAR arrives zero and the kernel places it. More
+/// than one function now needs placing: the virtio disk, and on riscv the IOMMU (itself a PCI
+/// function, milestone 16b). Two independent bump allocators starting from `PCI_BAR_BASE` would
+/// hand out the same address twice, so the cursor is one shared value that only ever advances.
+/// Enumeration runs on the boot hart alone; the atomic is for correctness of the shared state, not
+/// contention.
+static BAR_NEXT: AtomicU64 = AtomicU64::new(PCI_BAR_BASE);
+
+/// Place every unassigned BAR of `bdf` at a size-aligned address drawn from the shared cursor,
+/// writing the config-space BAR registers. Returns false (after saying so) if the window is
+/// exhausted. A BAR that already carries an address (nonzero) is left alone.
+fn place_bars(bdf: Bdf, bars: &mut [Option<Bar>; 6]) -> bool {
+    for (i, bar) in bars.iter_mut().enumerate() {
+        let Some(bar) = bar.as_mut() else { continue };
+        if bar.base != 0 {
+            continue; // firmware (or a previous boot stage) already placed it
+        }
+        // A BAR's address must be aligned to its size (the writable-bits mask encodes that). Reserve
+        // size-aligned space from the shared cursor.
+        let align = bar.size.max(0x10);
+        let base = loop {
+            let cur = BAR_NEXT.load(Ordering::Relaxed);
+            let base = cur.next_multiple_of(align);
+            if base + bar.size > PCI_BAR_BASE + PCI_BAR_MAPPED {
+                crate::println!("  pci: BAR window exhausted; cannot place BAR{i}");
+                return false;
+            }
+            if BAR_NEXT
+                .compare_exchange(cur, base + bar.size, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                break base;
+            }
+        };
+        let off = pci::BAR0 + i as u64 * 4;
+        cfg_write32(bdf, off, base as u32 | if bar.is_64 { 0b100 } else { 0 });
+        if bar.is_64 {
+            cfg_write32(bdf, off + 4, (base >> 32) as u32);
+        }
+        bar.base = base;
+    }
+    true
+}
 
 fn cfg_read32(bdf: Bdf, off: u64) -> u32 {
     let va = mmu::phys_to_virt(PCI_ECAM_BASE + bdf.ecam_offset() + (off & !3));
@@ -49,6 +95,10 @@ pub struct PciBlockDevice {
     pub isr: u64,
     /// The PLIC input its INTx pin routes to (the standard swizzle; see `pci::intx_irq`).
     pub intid: u32,
+    /// The PCIe requester id (`bus:8 | dev:5 | fn:3`), the id the IOMMU keys its per-device tables
+    /// on (milestone 16b). Carried through to `virtio::register` so the device is confined to its
+    /// DMA region in hardware.
+    pub rid: u32,
 }
 
 /// Find the first modern virtio-blk function on the bus and bring it up. `None` if there is no
@@ -86,30 +136,13 @@ pub fn find_block_device() -> Option<PciBlockDevice> {
     );
     let bdf = found?;
 
-    // Size every BAR, then place the unassigned ones. Bump allocation from the window base,
-    // aligned to each BAR's size (a BAR's address must be size-aligned; that is what the
-    // writable-bits mask encodes).
+    // Size every BAR, then place the unassigned ones from the shared cursor (the IOMMU function
+    // draws from the same cursor on riscv, so the two cannot overlap).
     let mut bars = pci::read_bars(bdf, &mut |b, o| cfg_read32(b, o), &mut |b, o, v| {
         cfg_write32(b, o, v)
     });
-    let mut next = PCI_BAR_BASE;
-    for (i, bar) in bars.iter_mut().enumerate() {
-        let Some(bar) = bar.as_mut() else { continue };
-        if bar.base != 0 {
-            continue; // firmware (or a previous boot stage) already placed it
-        }
-        let base = next.next_multiple_of(bar.size.max(0x10));
-        if base + bar.size > PCI_BAR_BASE + PCI_BAR_MAPPED {
-            crate::println!("  pci: BAR window exhausted; cannot place BAR{i}");
-            return None;
-        }
-        let off = pci::BAR0 + i as u64 * 4;
-        cfg_write32(bdf, off, base as u32 | if bar.is_64 { 0b100 } else { 0 });
-        if bar.is_64 {
-            cfg_write32(bdf, off + 4, (base >> 32) as u32);
-        }
-        bar.base = base;
-        next = base + bar.size;
+    if !place_bars(bdf, &mut bars) {
+        return None;
     }
 
     // The virtio vendor capabilities name (bar, offset) pairs; resolve them to physical
@@ -161,5 +194,56 @@ pub fn find_block_device() -> Option<PciBlockDevice> {
         notify_mult,
         isr,
         intid,
+        rid: bdf.requester_id(),
     })
+}
+
+/// The QEMU `riscv-iommu-pci` function's PCI identity (Red Hat vendor, RISC-V IOMMU device id).
+/// riscv-only: aarch64's SMMUv3 is a device-tree platform node, not a PCI function, and x86's
+/// IOMMUs are discovered through ACPI, so a PCI-function IOMMU is a RISC-V shape today.
+#[cfg(target_arch = "riscv64")]
+const IOMMU_VENDOR: u16 = 0x1b36;
+#[cfg(target_arch = "riscv64")]
+const IOMMU_DEVICE: u16 = 0x0014;
+
+/// **Bring up the RISC-V IOMMU, if the machine has one** (milestone 16b). Unlike the aarch64
+/// SMMUv3 (a platform device the kernel finds in the device tree), the ratified RISC-V IOMMU is
+/// itself a PCI function: the kernel enumerates it, places its BAR0 (the register file) from the
+/// same shared cursor as every other BAR, enables memory-space decoding, and hands the base to the
+/// arch driver's `init`. No such function on the bus (a plain `virt` boot, or aarch64), no-op.
+///
+/// Its own registers are reached by the CPU as MMIO, so it needs Memory-Space Enable but not
+/// Bus-Master: the IOMMU is not a DMA initiator, it is the thing that polices them.
+#[cfg(target_arch = "riscv64")]
+pub fn init_iommu() {
+    let mut found: Option<Bdf> = None;
+    pci::enumerate(
+        PCI_ECAM_BUSES,
+        &mut |b, o| cfg_read32(b, o),
+        &mut |bdf, vendor, device| {
+            if found.is_none() && vendor == IOMMU_VENDOR && device == IOMMU_DEVICE {
+                found = Some(bdf);
+            }
+        },
+    );
+    let Some(bdf) = found else { return };
+
+    let mut bars = pci::read_bars(bdf, &mut |b, o| cfg_read32(b, o), &mut |b, o, v| {
+        cfg_write32(b, o, v)
+    });
+    if !place_bars(bdf, &mut bars) {
+        crate::println!("  pci: could not place the IOMMU's BAR; leaving the IOMMU off");
+        return;
+    }
+    let Some(base) = bars[0].as_ref().map(|b| b.base) else {
+        crate::println!("  pci: the IOMMU function has no BAR0; leaving the IOMMU off");
+        return;
+    };
+
+    // Memory-Space Enable so BAR0 decodes and the register reads below land. No Bus-Master: the
+    // IOMMU does not itself DMA.
+    let cmd = cfg_read32(bdf, pci::COMMAND) as u16;
+    cfg_write32(bdf, pci::COMMAND, (cmd | pci::CMD_MEMORY_SPACE) as u32);
+
+    crate::arch::iommu::init(base);
 }

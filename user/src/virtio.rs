@@ -30,6 +30,8 @@ const VIRTIO: u64 = 2; // the device transport: read/write registers, set up the
 
 // --- virtio-mmio v2 register offsets (bytes from the slot base) ---
 const MAGIC: u64 = 0x000;
+const DEVICE_FEATURES: u64 = 0x010;
+const DEVICE_FEATURES_SEL: u64 = 0x014;
 const DRIVER_FEATURES: u64 = 0x020;
 const DRIVER_FEATURES_SEL: u64 = 0x024;
 const INTERRUPT_STATUS: u64 = 0x060;
@@ -44,6 +46,15 @@ const S_FEATURES_OK: u32 = 8;
 
 // Feature bit 32: VIRTIO_F_VERSION_1. Mandatory for a modern device.
 const F_VERSION_1_HI: u32 = 1; // bit 32 lives in the high 32-bit word
+
+// Feature bit 33: VIRTIO_F_ACCESS_PLATFORM. The device sets it when it sits behind an IOMMU
+// (QEMU's `iommu_platform=on`, milestone 16b); it then treats the addresses in our descriptors and
+// ring registers as IOVAs to be translated, and REQUIRES the driver to negotiate the bit or it
+// refuses to run. Our DMA domain is an identity map (IOVA == PA, kernel/src/iommu.rs), so accepting
+// the bit changes nothing about the addresses we compute; it just tells the device we know we are
+// translated. Offered only when behind an IOMMU, so we ack it conditionally: the virtio-mmio disk
+// does not offer it, and acking a feature the device did not offer would fail negotiation.
+const F_ACCESS_PLATFORM_HI: u32 = 1 << 1; // bit 33 lives in the high 32-bit word
 
 // The virtqueue we build. Small: one request in flight is all a demo needs.
 const QSIZE: usize = 8;
@@ -131,8 +142,19 @@ fn init_with_features(driver_features_lo: u32) {
     // validate does not survive.
     mw(DRIVER_FEATURES_SEL, 0);
     mw(DRIVER_FEATURES, driver_features_lo);
+
+    // The high word: VERSION_1 always, and ACCESS_PLATFORM only if the device offered it (i.e. it
+    // is behind an IOMMU). Reading the device's high feature word first is what keeps the ack a
+    // subset of the offer, so the same driver binary negotiates correctly on the bare mmio disk and
+    // the IOMMU-fronted PCIe disk alike.
+    mw(DEVICE_FEATURES_SEL, 1);
+    let dev_hi = mr(DEVICE_FEATURES);
+    let mut ack_hi = F_VERSION_1_HI;
+    if dev_hi & F_ACCESS_PLATFORM_HI != 0 {
+        ack_hi |= F_ACCESS_PLATFORM_HI;
+    }
     mw(DRIVER_FEATURES_SEL, 1);
-    mw(DRIVER_FEATURES, F_VERSION_1_HI);
+    mw(DRIVER_FEATURES, ack_hi);
 
     mw(STATUS, S_ACKNOWLEDGE | S_DRIVER | S_FEATURES_OK);
     check(mr(STATUS) & S_FEATURES_OK != 0);

@@ -288,6 +288,12 @@ where
     Ok(())
 }
 
+/// The page-table format this architecture's IOMMU walks: the RISC-V IOMMU's single-stage
+/// (`iosatp`) translation is Sv39, the same format the CPU uses. The portable DMA-domain seam
+/// (kernel/src/iommu.rs, paging::domain) builds device domains through this alias; its registers
+/// live in a BAR inside the PCI window mapped above, so no extra MMIO region is needed here.
+pub type DmaFormat = Sv39;
+
 /// Map a range of *virtual* addresses to the physical ones they were linked against.
 fn map_range<A, P>(
     m: &mut Mapper<A, P, Sv39>,

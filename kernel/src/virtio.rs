@@ -336,7 +336,14 @@ static DEVICES: IrqSafeMutex<Devices> = IrqSafeMutex::new(
 /// Register the block device and its DMA region with the transport layer. Returns its id, which
 /// is what goes inside an `Object::Virtio` capability. The driver never sees the device's
 /// registers on either bus; it drives the device through that capability.
-pub fn register(transport: Transport, dma_base: u64, dma_size: u64) -> usize {
+///
+/// `rid` is the PCIe requester id when the device sits behind an IOMMU (the PCI transport), `None`
+/// for a virtio-mmio device (no IOMMU fronts the mmio bus on either board). When an IOMMU is active
+/// and a requester id is given, the device is confined in hardware to exactly the frames it may
+/// reach (its DMA region plus the shadow page) before it is entered in the table: from that moment
+/// any other address it emits faults at the IOMMU. The software shadow ring stays either way, now
+/// as defence in depth (notes/dma.md).
+pub fn register(transport: Transport, dma_base: u64, dma_size: u64, rid: Option<u32>) -> usize {
     // The shadow page the device reads its rings from. One frame per device, kernel-owned and never
     // mapped into the driver, so the driver cannot touch what the device sees.
     let shadow_base = crate::memory::alloc()
@@ -350,6 +357,16 @@ pub fn register(transport: Transport, dma_base: u64, dma_size: u64) -> usize {
             0,
             frames::FRAME_SIZE as usize,
         );
+    }
+
+    // Confine the device in hardware before it is entered in the table. Done outside the DEVICES
+    // lock: building the domain allocates page-table frames, and the IOMMU attach takes its own
+    // lock, so keeping both off the VIRTIO rank keeps the lock order a plain leaf (sync::rank).
+    if let Some(rid) = rid
+        && crate::iommu::active()
+    {
+        let regions = crate::iommu::virtio_regions(dma_base, dma_size, shadow_base);
+        crate::iommu::confine(rid, &regions);
     }
 
     let mut devs = DEVICES.lock();
@@ -651,6 +668,77 @@ pub fn notify(id: usize) -> Result<(), TransportError> {
     Ok(())
 }
 
+/// **Test hook: make device `id` emit an address its IOMMU domain does not map, so the IOMMU must
+/// fault** (milestone 16b confinement proof, kernel/src/iommu.rs).
+///
+/// The software shadow ring refuses an out-of-region descriptor *before* the device is ever rung,
+/// so a normal path can never reach the hardware. To prove the IOMMU itself confines the device we
+/// deliberately go around that: bring the device up at the transport level and point its **available
+/// ring** at `avail_out_of_domain`, a frame the domain does not include. On the kick, the device's
+/// first act is to read the available ring; that read is an out-of-domain IOVA, so the IOMMU faults
+/// it and records the event. The CPU can still fill the frame through the direct map (CPU accesses
+/// do not go through the IOMMU); only the *device's* view of it is unmapped, which is the whole
+/// point. No block-device knowledge is needed: the fault happens before any descriptor is read.
+#[cfg(test)]
+pub(crate) fn provoke_iommu_escape(id: usize, avail_out_of_domain: u64) {
+    // Status bits and the two feature words, in the mmio vocabulary the transport speaks.
+    const S_ACK: u32 = 1;
+    const S_DRIVER: u32 = 2;
+    const S_DRIVER_OK: u32 = 4;
+    const S_FEATURES_OK: u32 = 8;
+    const F_VERSION_1_HI: u32 = 1; // feature bit 32
+    const F_ACCESS_PLATFORM_HI: u32 = 1 << 1; // feature bit 33 (set when behind an IOMMU)
+
+    let mut devs = DEVICES.lock();
+    let dev = devs
+        .get_mut(id)
+        .expect("provoke_iommu_escape: no such device");
+
+    // Reset, then the modern handshake up to FEATURES_OK.
+    dev.transport.write_reg(REG_STATUS, 0);
+    dev.transport.write_reg(REG_STATUS, S_ACK);
+    dev.transport.write_reg(REG_STATUS, S_ACK | S_DRIVER);
+    dev.transport.write_reg(REG_DRIVER_FEATURES_SEL, 0);
+    dev.transport.write_reg(REG_DRIVER_FEATURES, 0);
+    dev.transport.write_reg(REG_DEVICE_FEATURES_SEL, 1);
+    let dev_hi = dev.transport.read_reg(REG_DEVICE_FEATURES);
+    let mut ack_hi = F_VERSION_1_HI;
+    if dev_hi & F_ACCESS_PLATFORM_HI != 0 {
+        ack_hi |= F_ACCESS_PLATFORM_HI; // required when iommu_platform=on, else FEATURES_OK sticks off
+    }
+    dev.transport.write_reg(REG_DRIVER_FEATURES_SEL, 1);
+    dev.transport.write_reg(REG_DRIVER_FEATURES, ack_hi);
+    dev.transport
+        .write_reg(REG_STATUS, S_ACK | S_DRIVER | S_FEATURES_OK);
+
+    // Queue 0: descriptor table on the (in-domain) shadow, used ring in the (in-domain) driver
+    // region, available ring pointed OUT of the domain. Then DRIVER_OK to make the queue live.
+    let num = dev.transport.queue_num_max().min(QSIZE);
+    let desc = dev.shadow_base + DESC_OFF;
+    let used = dev.dma_base + USED_OFF;
+    dev.transport
+        .setup_queue0(num, desc, avail_out_of_domain, used);
+    dev.transport
+        .write_reg(REG_STATUS, S_ACK | S_DRIVER | S_FEATURES_OK | S_DRIVER_OK);
+
+    // Publish an available head from the CPU side (bypassing the IOMMU) so the device has a reason to
+    // read the available ring. avail = { u16 flags; u16 idx; u16 ring[] }.
+    dma_write16(avail_out_of_domain, 0); // flags
+    dma_write16(avail_out_of_domain + 2, 1); // idx = 1: one entry available
+    dma_write16(avail_out_of_domain + 4, 0); // ring[0] = head 0
+    crate::arch::dma_wmb();
+
+    // Kick. The device now reads the available ring at an unmapped IOVA and the IOMMU faults. Under
+    // TCG QEMU processes the kick synchronously in this vCPU thread, so the fault is already in the
+    // IOMMU's queue by the time this returns.
+    dev.transport.notify_queue0();
+
+    // Reset the device so a later test that re-registers it does not inherit this deliberately
+    // broken queue. The fault event lives in the IOMMU's own queue, which a device reset does not
+    // touch, so this does not erase what the caller is about to drain.
+    dev.transport.write_reg(REG_STATUS, 0);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -890,5 +978,93 @@ mod tests {
         );
 
         free_regions(driver, shadow);
+    }
+
+    /// **The IOMMU faults a DMA that escapes the domain, in hardware** (milestone 16b, both ISAs).
+    ///
+    /// The shadow ring proves the *software* refuses an out-of-region descriptor before the device
+    /// is rung; this proves the *hardware* would stop the device even if that software were bypassed.
+    /// Confine the PCIe disk to its domain, then point its available ring at a frame the domain does
+    /// not map and kick it. The device reads that ring at an out-of-domain IOVA, the IOMMU faults,
+    /// and the fault turns up in the fault/event queue. A pass here also means the IOMMU is really in
+    /// force: if translation were absent (a missing `iommu=smmuv3` / `riscv-iommu-pci`, or the
+    /// `iommu_platform=on` that puts the device behind it), the escaping read would succeed silently
+    /// and no fault would appear, so the assertion fails loudly rather than passing on a fiction.
+    ///
+    /// Skipped only when there is no PCIe disk on the bus (nothing to confine). An IOMMU that is
+    /// absent while a disk *is* present is the failure this test exists to catch, so that path
+    /// asserts rather than skips.
+    #[test_case]
+    fn the_iommu_faults_a_dma_that_escapes_the_domain() {
+        let Some(d) = crate::pci::find_block_device() else {
+            // No PCIe disk attached: nothing to confine, nothing to prove. (The test runners always
+            // attach one, so this branch is for a bare boot, not the parity gate.)
+            return;
+        };
+
+        // The IOMMU must be up. If it is not while a PCIe disk is present, every PCIe DMA is
+        // bypassing translation: fail loudly, do not skip.
+        assert!(
+            crate::iommu::active(),
+            "a PCIe disk is present but the IOMMU is not active: DMA is bypassing translation \
+             (is iommu=smmuv3 / -device riscv-iommu-pci missing from the runner?)",
+        );
+
+        // Register (and thereby confine) the device to its DMA region + shadow page.
+        let dma = crate::memory::alloc().expect("no DMA frame").addr();
+        // SAFETY: fresh frame via the direct map.
+        unsafe {
+            core::ptr::write_bytes(
+                mmu::phys_to_virt(dma) as *mut u8,
+                0,
+                frames::FRAME_SIZE as usize,
+            );
+        }
+        let id = register(
+            Transport::Pci {
+                common: d.common,
+                notify_base: d.notify_base,
+                notify_mult: d.notify_mult,
+                notify_addr: 0,
+                isr: d.isr,
+            },
+            dma,
+            frames::FRAME_SIZE,
+            Some(d.rid),
+        );
+
+        // A frame the domain does not map: the device's escape target.
+        let victim = crate::memory::alloc().expect("no victim frame").addr();
+        let victim_page = victim & !0xfff;
+
+        // Drain any stale fault first, so what we observe is ours.
+        while crate::iommu::take_fault().is_some() {}
+
+        provoke_iommu_escape(id, victim);
+
+        // Poll the fault/event queue. QEMU records the fault as it processes the kick under TCG, so a
+        // bounded spin is plenty; the loop bound turns "no fault ever" into a failure, not a hang.
+        let mut fault = None;
+        for _ in 0..2_000_000 {
+            if let Some(f) = crate::iommu::take_fault() {
+                fault = Some(f);
+                break;
+            }
+            core::hint::spin_loop();
+        }
+
+        let f = fault.expect(
+            "the device read an out-of-domain address and the IOMMU recorded no fault: it is not \
+             confining the device in hardware",
+        );
+        assert_eq!(
+            f.addr & !0xfff,
+            victim_page,
+            "the IOMMU faulted, but on {:#x} (code {:#x}, rid {:#x}), not the escape frame {:#x}",
+            f.addr,
+            f.code,
+            f.rid,
+            victim_page,
+        );
     }
 }

@@ -1467,7 +1467,12 @@ pub mod virtio_service {
     /// [`start_pci`] (PCIe): everything from here on, the DMA region, the Irq routing, the
     /// confined `Virtio` capability, the spawn, is bus-agnostic, which is the transport seam
     /// doing its job.
-    fn wire(image: &'static [u8], transport: crate::virtio::Transport, intid: u32) -> EpId {
+    fn wire(
+        image: &'static [u8],
+        transport: crate::virtio::Transport,
+        intid: u32,
+        rid: Option<u32>,
+    ) -> EpId {
         // A DMA page: physical memory the device can reach, mapped into the driver, whose
         // physical address the driver must know (a process sees only virtual addresses). We hand
         // that physical address over in `arg1`.
@@ -1492,7 +1497,7 @@ pub mod virtio_service {
         // Register the device's transport with the kernel: the kernel owns the registers and the
         // DMA-critical operations, and confines the device to this DMA region. The driver gets a
         // `Virtio` capability, not the registers.
-        let vid = crate::virtio::register(transport, dma, FRAME_SIZE);
+        let vid = crate::virtio::register(transport, dma, FRAME_SIZE, rid);
 
         crate::sched::spawn(move || {
             run(
@@ -1529,12 +1534,14 @@ pub mod virtio_service {
                 mmio_phys: dev.mmio_phys,
             },
             dev.intid,
+            None, // virtio-mmio has no IOMMU in front of it on either board
         ))
     }
 
     /// Start the SAME driver binary against the PCIe disk (the PCIe transport, DECISIONS §18):
     /// enumeration and bring-up by kernel/src/pci.rs, INTx through the interrupt controller, the
-    /// identical confinement. The driver cannot tell which bus it is on, and that is the point.
+    /// identical confinement, now backed by the IOMMU when the machine has one (§20). The driver
+    /// cannot tell which bus it is on, and that is the point.
     pub fn start_pci(image: &'static [u8]) -> Option<EpId> {
         let d = crate::pci::find_block_device()?;
         Some(wire(
@@ -1547,6 +1554,7 @@ pub mod virtio_service {
                 isr: d.isr,
             },
             d.intid,
+            Some(d.rid), // the PCIe requester id, the IOMMU keys its tables on it
         ))
     }
 
@@ -1568,6 +1576,7 @@ pub mod virtio_service {
             },
             dma,
             FRAME_SIZE,
+            None,
         );
         let report = crate::sched::create_endpoint();
 
@@ -1616,6 +1625,7 @@ pub mod virtio_service {
             },
             dma,
             FRAME_SIZE,
+            None,
         );
         let report = crate::sched::create_endpoint();
 
