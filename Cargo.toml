@@ -11,6 +11,7 @@ members = [
     "crates/dtb",
     "crates/elf",
     "crates/frames",
+    "crates/fs_proto",
     "crates/ipc",
     "crates/paging",
     "crates/pci",
