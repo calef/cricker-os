@@ -501,3 +501,363 @@ fn write_desc(i: u64, addr: u64, len: u32, flags: u16, next: u16) {
     dma_write::<u16>(base + 12, flags);
     dma_write::<u16>(base + 14, next);
 }
+
+// =================================================================================================
+// A virtio-net driver. **At EL0, behind the multi-queue DMA confinement (milestone 30).**
+//
+// The same shape as the disk driver above: the kernel owns the registers and the two DMA-critical
+// powers (the ring addresses and the "go"), and confines the device to this one DMA page. What is
+// new is that a NIC needs TWO virtqueues, receive (queue 0, where the device WRITES a frame into our
+// memory) and transmit (queue 1, where it READS one out), and milestone 30's confinement grew a
+// proved second queue and second direction to carry exactly that. The driver drives both queues
+// through the one `Virtio` capability, passing the queue number to SETUP_QUEUE and NOTIFY.
+//
+// The proof it runs, end to end, is a DHCP exchange against QEMU's user-mode (slirp) network: build
+// a DHCP DISCOVER by hand, transmit it (TX), and receive the OFFER slirp sends back (RX). That
+// exercises both directions and both queues with no TCP/IP stack in the loop, so it is a clean test
+// of the driver and the confinement rather than of smoltcp.
+// =================================================================================================
+
+/// The two virtqueues, matching the kernel's contract (receive = 0, transmit = 1).
+const NET_RX_Q: u64 = 0;
+const NET_TX_Q: u64 = 1;
+
+/// The modern virtio-net header, prepended to every frame in both directions. 12 bytes because we
+/// negotiate VIRTIO_F_VERSION_1 (the `num_buffers` field is then always present).
+const NET_HDR_LEN: u64 = 12;
+
+// Our DMA-page layout for the net driver. The queue rings follow the kernel's per-queue stride
+// (RING_BLOCK = 0x200, with desc/avail/used at +0x000/+0x080/+0x100 inside each queue's block, see
+// kernel/src/virtio.rs), and the packet buffers live above both queues' blocks. Everything fits in
+// the one 4 KiB DMA page the spawn service hands us.
+const NET_RX_DESC: u64 = 0x000;
+const NET_RX_AVAIL: u64 = 0x080;
+const NET_RX_USED: u64 = 0x100;
+const NET_TX_DESC: u64 = 0x200;
+const NET_TX_AVAIL: u64 = 0x280;
+// The transmit used ring lives at 0x300 (queue 1's block + USED_OFF), but the driver never reads it:
+// it does not wait on transmit completions, only on the receive side, so there is no constant for it.
+/// One receive buffer: the 12-byte virtio header plus room for a full 1514-byte Ethernet frame.
+const NET_RX_BUF: u64 = 0x400;
+const NET_RX_BUF_LEN: u64 = 0x600;
+/// One transmit buffer: the header plus the DHCP frame we build.
+const NET_TX_BUF: u64 = 0xA00;
+
+/// Our source MAC. Locally administered; slirp does not care what it is, only that DHCP names it.
+const NET_MAC: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
+/// A recognizable DHCP transaction id, so the OFFER we accept is unambiguously the reply to our
+/// DISCOVER and not some unrelated broadcast.
+const NET_XID: u32 = 0x3903_F326;
+
+fn wr_be16(off: u64, v: u16) {
+    dma_write::<u8>(off, (v >> 8) as u8);
+    dma_write::<u8>(off + 1, v as u8);
+}
+fn wr_be32(off: u64, v: u32) {
+    dma_write::<u8>(off, (v >> 24) as u8);
+    dma_write::<u8>(off + 1, (v >> 16) as u8);
+    dma_write::<u8>(off + 2, (v >> 8) as u8);
+    dma_write::<u8>(off + 3, v as u8);
+}
+fn rd_be16(off: u64) -> u16 {
+    ((dma_read::<u8>(off) as u16) << 8) | dma_read::<u8>(off + 1) as u16
+}
+fn rd_be32(off: u64) -> u32 {
+    ((dma_read::<u8>(off) as u32) << 24)
+        | ((dma_read::<u8>(off + 1) as u32) << 16)
+        | ((dma_read::<u8>(off + 2) as u32) << 8)
+        | (dma_read::<u8>(off + 3) as u32)
+}
+
+/// The IPv4 header checksum over `len` bytes at `off`: sum the 16-bit words, fold the carries, and
+/// complement. The checksum field itself must be zero when this runs.
+fn ip_checksum(off: u64, len: u64) -> u16 {
+    let mut sum: u32 = 0;
+    let mut i = 0;
+    while i + 1 < len {
+        sum += rd_be16(off + i) as u32;
+        i += 2;
+    }
+    while (sum >> 16) != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !(sum as u16)
+}
+
+/// The virtio-net handshake and both-queue setup. Unlike the disk's `init`, this sets up receive AND
+/// transmit, through the kernel, which places each queue's rings at its own block.
+fn init_net() {
+    check(mr(MAGIC) == 0x7472_6976); // "virt"
+
+    mw(STATUS, 0);
+    mw(STATUS, S_ACKNOWLEDGE);
+    mw(STATUS, S_ACKNOWLEDGE | S_DRIVER);
+
+    // Negotiate no low-word net features: no checksum offload, no MRG_RXBUF, so one frame lands in
+    // one buffer behind one 12-byte header, which is the simplest correct thing.
+    mw(DRIVER_FEATURES_SEL, 0);
+    mw(DRIVER_FEATURES, 0);
+
+    // The high word: VERSION_1 always, ACCESS_PLATFORM only if offered (behind an IOMMU), the same
+    // conditional ack the disk driver makes so one binary works on the bare NIC and the confined one.
+    mw(DEVICE_FEATURES_SEL, 1);
+    let dev_hi = mr(DEVICE_FEATURES);
+    let mut ack_hi = F_VERSION_1_HI;
+    if dev_hi & F_ACCESS_PLATFORM_HI != 0 {
+        ack_hi |= F_ACCESS_PLATFORM_HI;
+    }
+    mw(DRIVER_FEATURES_SEL, 1);
+    mw(DRIVER_FEATURES, ack_hi);
+
+    mw(STATUS, S_ACKNOWLEDGE | S_DRIVER | S_FEATURES_OK);
+    check(mr(STATUS) & S_FEATURES_OK != 0);
+
+    // Both queues, through the kernel: it programs each queue's ring addresses to that queue's block
+    // in our DMA region, so we never choose them. SAFETY: `svc`.
+    check(unsafe { invoke(VIRTIO, abi::virtio::SETUP_QUEUE, QSIZE as u64, NET_RX_Q, 0) } == 0);
+    check(unsafe { invoke(VIRTIO, abi::virtio::SETUP_QUEUE, QSIZE as u64, NET_TX_Q, 0) } == 0);
+
+    mw(
+        STATUS,
+        S_ACKNOWLEDGE | S_DRIVER | S_FEATURES_OK | S_DRIVER_OK,
+    );
+}
+
+/// Write one descriptor into an explicit descriptor table (the disk's `write_desc` is hardwired to
+/// queue 0's; the NIC has two tables).
+fn write_desc_at(desc_base: u64, i: u64, addr: u64, len: u32, flags: u16, next: u16) {
+    let b = desc_base + i * 16;
+    dma_write::<u64>(b, addr);
+    dma_write::<u32>(b + 8, len);
+    dma_write::<u16>(b + 12, flags);
+    dma_write::<u16>(b + 14, next);
+}
+
+/// Post the single receive buffer as a device-writable descriptor and ring queue 0. Re-callable: it
+/// re-uses descriptor head 0 with a fresh available-ring slot each time, so the device fills the
+/// same buffer again. `dma_phys` is the DMA page's physical base (descriptors speak physical).
+fn post_rx(dma_phys: u64, avail_idx: u16) {
+    write_desc_at(
+        NET_RX_DESC,
+        0,
+        dma_phys + NET_RX_BUF,
+        NET_RX_BUF_LEN as u32,
+        VIRTQ_DESC_F_WRITE, // the device WRITES the received frame here
+        0,
+    );
+    dma_write::<u16>(NET_RX_AVAIL + 4 + (avail_idx as u64 % QSIZE as u64) * 2, 0);
+    barrier();
+    dma_write::<u16>(NET_RX_AVAIL + 2, avail_idx.wrapping_add(1));
+    barrier();
+    // SAFETY: `svc`. The kernel validates the receive descriptor (device-writable, in our region).
+    if unsafe { invoke(VIRTIO, abi::virtio::NOTIFY, NET_RX_Q, 0, 0) } < 0 {
+        report_code(0xE7);
+    }
+}
+
+/// Transmit the frame already built at `NET_TX_BUF + NET_HDR_LEN`, of `frame_len` bytes: zero the
+/// virtio header in front of it, post one device-readable descriptor, and ring queue 1.
+fn send_frame(dma_phys: u64, frame_len: u64, avail_idx: u16) {
+    for i in 0..NET_HDR_LEN {
+        dma_write::<u8>(NET_TX_BUF + i, 0);
+    }
+    write_desc_at(
+        NET_TX_DESC,
+        0,
+        dma_phys + NET_TX_BUF,
+        (NET_HDR_LEN + frame_len) as u32,
+        0, // device READS the buffer (transmit)
+        0,
+    );
+    dma_write::<u16>(NET_TX_AVAIL + 4 + (avail_idx as u64 % QSIZE as u64) * 2, 0);
+    barrier();
+    dma_write::<u16>(NET_TX_AVAIL + 2, avail_idx.wrapping_add(1));
+    barrier();
+    // SAFETY: `svc`.
+    if unsafe { invoke(VIRTIO, abi::virtio::NOTIFY, NET_TX_Q, 0, 0) } < 0 {
+        report_code(0xE8);
+    }
+}
+
+/// Build a DHCP DISCOVER (Ethernet + IPv4 + UDP + BOOTP/DHCP) at `NET_TX_BUF + NET_HDR_LEN`, and
+/// return the Ethernet frame length. The broadcast flag is set so slirp's OFFER comes back to the
+/// broadcast address, where our single RX buffer will catch it.
+fn build_dhcp_discover() -> u64 {
+    let f = NET_TX_BUF + NET_HDR_LEN;
+
+    // --- Ethernet: to broadcast, from us, IPv4 ---
+    for i in 0..6u64 {
+        dma_write::<u8>(f + i, 0xff);
+        dma_write::<u8>(f + 6 + i, NET_MAC[i as usize]);
+    }
+    wr_be16(f + 12, 0x0800);
+
+    let ip = f + 14;
+    let udp = ip + 20;
+    let dhcp = udp + 8;
+
+    // --- BOOTP/DHCP payload ---
+    dma_write::<u8>(dhcp, 1); // op = BOOTREQUEST
+    dma_write::<u8>(dhcp + 1, 1); // htype = Ethernet
+    dma_write::<u8>(dhcp + 2, 6); // hlen
+    dma_write::<u8>(dhcp + 3, 0); // hops
+    wr_be32(dhcp + 4, NET_XID);
+    wr_be16(dhcp + 8, 0); // secs
+    wr_be16(dhcp + 10, 0x8000); // flags = broadcast
+    for i in 12..28u64 {
+        dma_write::<u8>(dhcp + i, 0); // ciaddr/yiaddr/siaddr/giaddr
+    }
+    for i in 0..6u64 {
+        dma_write::<u8>(dhcp + 28 + i, NET_MAC[i as usize]); // chaddr
+    }
+    for i in 34..236u64 {
+        dma_write::<u8>(dhcp + i, 0); // rest of chaddr, sname, file
+    }
+    wr_be32(dhcp + 236, 0x6382_5363); // DHCP magic cookie
+
+    // Options: message type DISCOVER, a parameter request list, end.
+    let mut o = dhcp + 240;
+    dma_write::<u8>(o, 53); // option 53: DHCP message type
+    dma_write::<u8>(o + 1, 1);
+    dma_write::<u8>(o + 2, 1); // DISCOVER
+    o += 3;
+    dma_write::<u8>(o, 55); // option 55: parameter request list
+    dma_write::<u8>(o + 1, 3);
+    dma_write::<u8>(o + 2, 1); // subnet mask
+    dma_write::<u8>(o + 3, 3); // router
+    dma_write::<u8>(o + 4, 6); // DNS
+    o += 5;
+    dma_write::<u8>(o, 255); // end
+    o += 1;
+
+    let dhcp_len = o - dhcp;
+    let udp_len = 8 + dhcp_len;
+    let ip_total = 20 + udp_len;
+
+    // --- UDP: bootpc(68) -> bootps(67), checksum 0 (optional for IPv4) ---
+    wr_be16(udp, 68);
+    wr_be16(udp + 2, 67);
+    wr_be16(udp + 4, udp_len as u16);
+    wr_be16(udp + 6, 0);
+
+    // --- IPv4 header ---
+    dma_write::<u8>(ip, 0x45); // version 4, IHL 5
+    dma_write::<u8>(ip + 1, 0x00);
+    wr_be16(ip + 2, ip_total as u16);
+    wr_be16(ip + 4, 0); // identification
+    wr_be16(ip + 6, 0); // flags/fragment
+    dma_write::<u8>(ip + 8, 64); // TTL
+    dma_write::<u8>(ip + 9, 17); // protocol = UDP
+    wr_be16(ip + 10, 0); // checksum placeholder
+    wr_be32(ip + 12, 0x0000_0000); // src 0.0.0.0
+    wr_be32(ip + 16, 0xffff_ffff); // dst 255.255.255.255
+    let csum = ip_checksum(ip, 20);
+    wr_be16(ip + 10, csum);
+
+    14 + ip_total
+}
+
+/// Wait for the receive queue's used ring to advance, discarding wakeups that were really the
+/// transmit completion (the device's interrupt line is shared across both queues). Returns false if
+/// no receive completion arrives within a bounded number of wakeups. Mirrors the disk's
+/// `complete_block`: the used ring, not the wakeup, is the completion.
+fn wait_rx(rx_used_before: u16) -> bool {
+    for _ in 0..64 {
+        // SAFETY: `svc`; blocks until the device raises its line.
+        unsafe { invoke(IRQ, abi::irq::WAIT, 0, 0, 0) };
+        let istatus = mr(INTERRUPT_STATUS);
+        mw(INTERRUPT_ACK, istatus);
+        // SAFETY: `svc`; re-enable the line the kernel masked when it fired.
+        unsafe { invoke(IRQ, abi::irq::ACK, 0, 0, 0) };
+        barrier();
+        if dma_read::<u16>(NET_RX_USED + 2) != rx_used_before {
+            return true;
+        }
+    }
+    false
+}
+
+/// Parse the frame in the receive buffer as a DHCP OFFER for our transaction. Returns the offered
+/// address (`yiaddr`) on a match, `None` otherwise, so an unrelated broadcast is skipped rather than
+/// mistaken for the reply.
+fn parse_dhcp_offer() -> Option<u32> {
+    let f = NET_RX_BUF + NET_HDR_LEN;
+    if rd_be16(f + 12) != 0x0800 {
+        return None; // not IPv4
+    }
+    let ip = f + 14;
+    let ihl = (dma_read::<u8>(ip) & 0x0f) as u64 * 4;
+    if ihl < 20 || dma_read::<u8>(ip + 9) != 17 {
+        return None; // not a sane IPv4/UDP header
+    }
+    let udp = ip + ihl;
+    if rd_be16(udp + 2) != 68 {
+        return None; // not addressed to the DHCP client port
+    }
+    let dhcp = udp + 8;
+    if dma_read::<u8>(dhcp) != 2 || rd_be32(dhcp + 4) != NET_XID {
+        return None; // not a BOOTREPLY for our transaction
+    }
+    if rd_be32(dhcp + 236) != 0x6382_5363 {
+        return None; // no DHCP magic cookie
+    }
+    let yiaddr = rd_be32(dhcp + 16);
+
+    // Scan the options for message type 53 == 2 (OFFER).
+    let mut o = dhcp + 240;
+    let end = NET_RX_BUF + NET_RX_BUF_LEN;
+    let mut is_offer = false;
+    while o + 1 < end {
+        let tag = dma_read::<u8>(o);
+        if tag == 255 {
+            break; // end
+        }
+        if tag == 0 {
+            o += 1; // pad
+            continue;
+        }
+        let len = dma_read::<u8>(o + 1) as u64;
+        if tag == 53 && len >= 1 && dma_read::<u8>(o + 2) == 2 {
+            is_offer = true;
+        }
+        o += 2 + len;
+    }
+
+    (is_offer && yiaddr != 0).then_some(yiaddr)
+}
+
+/// **The virtio-net headline: a DHCP round trip from an EL0 driver.** Bring the NIC up, post a
+/// receive buffer, transmit a DHCP DISCOVER, and wait for slirp's OFFER. Reports the offered IPv4
+/// address (`yiaddr`) as a little-endian word, which the kernel test checks lands in QEMU user-mode
+/// networking's 10.0.2.0/24. TX and RX, both queues, both directions of the confinement, proven end
+/// to end with no TCP/IP stack in the loop.
+pub fn run_net(dma_phys: u64) -> ! {
+    init_net();
+
+    let mut rx_avail: u16 = 0;
+    post_rx(dma_phys, rx_avail);
+    rx_avail = rx_avail.wrapping_add(1);
+
+    let frame_len = build_dhcp_discover();
+    send_frame(dma_phys, frame_len, 0);
+
+    let mut rx_used: u16 = 0;
+    for _ in 0..8 {
+        if !wait_rx(rx_used) {
+            report_code(0xE9); // no receive completion arrived
+        }
+        rx_used = dma_read::<u16>(NET_RX_USED + 2);
+
+        if let Some(yiaddr) = parse_dhcp_offer() {
+            send(REPORT, yiaddr as u64, 0, 0);
+            loop {
+                core::hint::spin_loop();
+            }
+        }
+
+        // Not our OFFER (some other broadcast): re-post the buffer and wait for the next frame.
+        post_rx(dma_phys, rx_avail);
+        rx_avail = rx_avail.wrapping_add(1);
+    }
+    report_code(0xEA); // frames arrived, but none was our DHCP OFFER
+}

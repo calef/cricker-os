@@ -88,7 +88,19 @@ if [ -n "$CRICKER_DISK" ]; then
     DISK="-global virtio-mmio.force-legacy=false -drive file=$CRICKER_DISK,if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 -drive file=$PCI_DISK,if=none,format=raw,id=hd1 -device virtio-blk-pci,drive=hd1,disable-legacy=on,iommu_platform=on"
 fi
 
-# shellcheck disable=SC2086  # $INITRD and $DISK are deliberately word-split or empty
+# Attach a virtio-net NIC on QEMU user-mode (slirp) networking when CRICKER_NET is set (milestone
+# 30). slirp NATs the guest with a built-in DHCP server (10.0.2.0/24, gateway 10.0.2.2) and needs no
+# host setup, so the net driver's DHCP round-trip test runs with zero privilege. Two NICs mirror the
+# two disks: the mmio NIC (net0) has no IOMMU in front of it, the PCI NIC (net1) sits behind the
+# SMMU (iommu_platform=on), the same hardware confinement the PCI disk gets. There is no image file
+# to fail loud on here; the manufactured-fact hazard (CRICKER_NET set but no NIC enumerated) is
+# caught by the net test, which asserts a NIC is present rather than skipping.
+NET=""
+if [ -n "$CRICKER_NET" ]; then
+    NET="-netdev user,id=net0 -device virtio-net-device,netdev=net0 -netdev user,id=net1 -device virtio-net-pci,netdev=net1,disable-legacy=on,iommu_platform=on"
+fi
+
+# shellcheck disable=SC2086  # $INITRD, $DISK and $NET are deliberately word-split or empty
 # CPU and accelerator.
 #
 # By default we run under TCG (QEMU translates every aarch64 instruction), with an emulated
@@ -132,4 +144,5 @@ exec qemu-system-aarch64 \
     -kernel "$IMG" \
     $INITRD \
     $DISK \
+    $NET \
     "$@"

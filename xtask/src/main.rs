@@ -944,6 +944,7 @@ fn test() -> bool {
     }
     unsafe { std::env::set_var("CRICKER_INITRD", riscv_initrd_path()) };
     unsafe { std::env::set_var("CRICKER_DISK", disk_path()) };
+    unsafe { std::env::set_var("CRICKER_NET", "1") }; // a virtio-net NIC for the net test (m30)
     run("cargo", &["test", "-p", "kernel", "--target", RISCV_TARGET])
 }
 
@@ -1361,6 +1362,9 @@ fn cargo(args: &[&str]) -> bool {
     // script ignores it when the file is not there (which is any build before `user` exists).
     unsafe { std::env::set_var("CRICKER_INITRD", initrd_path()) };
     unsafe { std::env::set_var("CRICKER_DISK", disk_path()) };
+    // Attach a virtio-net NIC too (milestone 30): slirp needs no host file, so it is always on for
+    // tests, and the net driver's DHCP round-trip test exercises it.
+    unsafe { std::env::set_var("CRICKER_NET", "1") };
 
     run("cargo", args)
 }

@@ -76,10 +76,12 @@ fn cfg_write32(bdf: Bdf, off: u64, v: u32) {
     unsafe { core::ptr::write_volatile(va as *mut u32, v) }
 }
 
-/// A modern virtio block device on the PCI bus, brought up: every register block resolved to a
-/// physical address, memory decoding and bus mastering enabled, its INTx line known.
+/// A modern virtio device on the PCI bus, brought up: every register block resolved to a
+/// physical address, memory decoding and bus mastering enabled, its INTx line known. Device-neutral
+/// (a disk and a NIC differ only in the driver above this), so both `find_block_device` and
+/// `find_net_device` return it.
 #[derive(Debug, Clone, Copy)]
-pub struct PciBlockDevice {
+pub struct PciVirtioDevice {
     /// Which function this is, for the boot tours' prints; every other build (tests, the shell
     /// and bench boots) drives the device without ever naming it, so the lint is quieted rather
     /// than chased through four cfg combinations.
@@ -103,39 +105,63 @@ pub struct PciBlockDevice {
 
 /// Find the first modern virtio-blk function on the bus and bring it up. `None` if there is no
 /// PCI disk (an empty bus reads all-ones and enumerates nothing).
-///
-/// Bring-up order matters and is deliberate:
-/// 1. enumerate and size BARs while memory decoding is off (the sizing dance writes the BARs);
-/// 2. assign addresses to unassigned BARs (with `-bios default`, OpenSBI has done no PCI setup,
-///    so every BAR arrives zero and the kernel is the firmware here);
-/// 3. parse the virtio vendor capabilities and resolve them against the assigned BARs;
-/// 4. only then set Memory-Space Enable, and Bus-Master last: DMA permission is granted at the
-///    final moment, after the transport the confinement layer owns is fully described.
-pub fn find_block_device() -> Option<PciBlockDevice> {
+pub fn find_block_device() -> Option<PciVirtioDevice> {
+    let bdf = find_virtio_bdf(
+        pci::VIRTIO_BLK_MODERN,
+        pci::VIRTIO_BLK_TRANSITIONAL,
+        "virtio-blk",
+    )?;
+    bring_up(bdf)
+}
+
+/// Find the first modern virtio-net function on the bus and bring it up. `None` if there is no
+/// PCI NIC. Same bring-up as the disk; the transport seam and the DMA confinement do not know or
+/// care that a NIC sits behind them (milestone 30).
+pub fn find_net_device() -> Option<PciVirtioDevice> {
+    let bdf = find_virtio_bdf(
+        pci::VIRTIO_NET_MODERN,
+        pci::VIRTIO_NET_TRANSITIONAL,
+        "virtio-net",
+    )?;
+    bring_up(bdf)
+}
+
+/// Enumerate the bus for the first function matching `modern`, warning (once) if only a
+/// `transitional` (legacy) twin is present, since we drive modern only. `kind` names the device for
+/// that warning.
+fn find_virtio_bdf(modern: u16, transitional: u16, kind: &str) -> Option<Bdf> {
     let mut found: Option<Bdf> = None;
     pci::enumerate(
         PCI_ECAM_BUSES,
         &mut |b, o| cfg_read32(b, o),
         &mut |bdf, vendor, device| {
             if found.is_none() && vendor == pci::VIRTIO_VENDOR {
-                match device {
-                    pci::VIRTIO_BLK_MODERN => found = Some(bdf),
-                    pci::VIRTIO_BLK_TRANSITIONAL => {
-                        crate::println!(
-                            "  pci: virtio-blk at {:02x}:{:02x}.{} is transitional (legacy); \
-                             we drive modern only",
-                            bdf.bus,
-                            bdf.dev,
-                            bdf.func,
-                        );
-                    }
-                    _ => {}
+                if device == modern {
+                    found = Some(bdf);
+                } else if device == transitional {
+                    crate::println!(
+                        "  pci: {kind} at {:02x}:{:02x}.{} is transitional (legacy); \
+                         we drive modern only",
+                        bdf.bus,
+                        bdf.dev,
+                        bdf.func,
+                    );
                 }
             }
         },
     );
-    let bdf = found?;
+    found
+}
 
+/// Bring an enumerated virtio function up and resolve its transport. Bring-up order matters and is
+/// deliberate:
+/// 1. size BARs while memory decoding is off (the sizing dance writes the BARs);
+/// 2. assign addresses to unassigned BARs (with `-bios default`, OpenSBI has done no PCI setup,
+///    so every BAR arrives zero and the kernel is the firmware here);
+/// 3. parse the virtio vendor capabilities and resolve them against the assigned BARs;
+/// 4. only then set Memory-Space Enable, and Bus-Master last: DMA permission is granted at the
+///    final moment, after the transport the confinement layer owns is fully described.
+fn bring_up(bdf: Bdf) -> Option<PciVirtioDevice> {
     // Size every BAR, then place the unassigned ones from the shared cursor (the IOMMU function
     // draws from the same cursor on riscv, so the two cannot overlap).
     let mut bars = pci::read_bars(bdf, &mut |b, o| cfg_read32(b, o), &mut |b, o, v| {
@@ -187,7 +213,7 @@ pub fn find_block_device() -> Option<PciBlockDevice> {
     }
     let intid = pci::intx_irq(PCI_IRQ_BASE, bdf.dev, pin);
 
-    Some(PciBlockDevice {
+    Some(PciVirtioDevice {
         bdf,
         common,
         notify_base,
