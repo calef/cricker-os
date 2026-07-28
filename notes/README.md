@@ -104,6 +104,12 @@ in the code or the conversation doesn't make sense, it belongs here.
   one `svc` and four syscall numbers, the whole object world behind `SYS_INVOKE`, `_start(x0,x1,x2)`,
   and how a program meets its capabilities by convention rather than discovery. Why we wrote the
   convention down instead of building a BootInfo, and what a POSIX shim would cost (nothing, later).
+- [Rust `std` on the native ABI](std.md) — milestone 27: std's platform layer implemented directly
+  on the capability ABI (Hermit's shape, not a POSIX shim). Heap from an untyped budget, stdout to an
+  endpoint, time from the virtual counter, `panic!` faults, and `thread::spawn`/`fs`/`net` honestly
+  `Unsupported`. How build-std runs against a hardlink-cloned, patched rust-src, why the symlink farm
+  was measured to fail, and the honest caveats (monotonic-only clock, non-crypto random, std-internals
+  coupling).
 - [How authority moves, narrows, and ends](capability-lifecycle.md) — capabilities spread by
   copy-with-narrowing (never widening), `SEND_CAP` is share not move, the two independent
   narrowings (rights vs. GRANT), and why there's no revocation yet (a control gap, not a
