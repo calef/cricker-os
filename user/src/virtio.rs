@@ -410,23 +410,37 @@ fn submit_block(dma_phys: u64, sector: u64, req_type: u32) -> u16 {
 }
 
 /// Wait for the completion of a submitted transfer and confirm the device reported success.
+///
+/// **The completion is the used ring advancing, not the wakeup.** A driver cannot treat one
+/// interrupt as one completion: the device's line is shared across every driver that ever holds
+/// this device, and a wakeup can be spurious, coalesced, or left pending by a *previous* operator
+/// of the device. The kill-mid-write case makes that concrete: a driver that submitted a write and
+/// died leaves its completion interrupt pending on the shared routing endpoint, and this fresh
+/// driver's first WAIT would consume that stale signal before its own request is on the used ring.
+/// So loop: WAIT, quiet the device, re-enable the line, and let `used.idx` decide when we are
+/// actually done. Every real completion the device makes also raises the line, so the loop always
+/// makes progress and cannot outlast the device. See notes/dma.md (the kill-mid-write section).
 fn complete_block(used_before: u16) {
-    // **Wait for the interrupt, as a message.** The device raises its line when it puts our
-    // buffer on the used ring; the kernel (milestone 9a) masks the line, turns it into a
-    // notification, and wakes us. If the interrupt already fired between the notify above and
-    // this call, the kernel's pending count makes WAIT return at once instead of blocking on an
-    // event that is already over. SAFETY: `svc`; the kernel validates the Irq capability.
-    unsafe { invoke(IRQ, irq::WAIT, 0, 0, 0) };
+    loop {
+        // **Wait for the interrupt, as a message.** The device raises its line when it puts our
+        // buffer on the used ring; the kernel (milestone 9a) masks the line, turns it into a
+        // notification, and wakes us. If the interrupt already fired between the notify above and
+        // this call, the kernel's pending count makes WAIT return at once instead of blocking on
+        // an event that is already over. SAFETY: `svc`; the kernel validates the Irq capability.
+        unsafe { invoke(IRQ, irq::WAIT, 0, 0, 0) };
 
-    // Quiet the device (read its interrupt-status, acknowledge it), then re-enable the line at
-    // the GIC, which the kernel masked when it fired. SAFETY: `svc`.
-    let istatus = mr(INTERRUPT_STATUS);
-    mw(INTERRUPT_ACK, istatus);
-    unsafe { invoke(IRQ, irq::ACK, 0, 0, 0) };
+        // Quiet the device (read its interrupt-status, acknowledge it), then re-enable the line at
+        // the controller, which the kernel masked when it fired. SAFETY: `svc`.
+        let istatus = mr(INTERRUPT_STATUS);
+        mw(INTERRUPT_ACK, istatus);
+        unsafe { invoke(IRQ, irq::ACK, 0, 0, 0) };
 
-    barrier();
-    if dma_read::<u16>(OFF_USED + 2) == used_before {
-        report_code(0xE3); // woke, but the device did not complete the request
+        barrier();
+        if dma_read::<u16>(OFF_USED + 2) != used_before {
+            break; // our request is on the used ring; this wakeup was really ours
+        }
+        // The used ring has not moved, so that wakeup belonged to someone else (a stale completion
+        // from a dead driver, most likely). Wait again for our own.
     }
     let st = dma_read::<u8>(OFF_STATUS);
     if st != 0 {

@@ -218,7 +218,7 @@ off its own block would be caught.
 **Kill-mid-write.** Errors here eat filesystems, so the teardown case is tested on both ISAs: a
 driver submits a validated write and dies (panic, kill, reap) without collecting the completion or
 acknowledging the interrupt, then a fresh driver resets the same device and must complete its own
-round trip. Two facts make the abandoned request harmless, and both are load-bearing:
+round trip. Three facts make the abandoned request harmless, and all three are load-bearing:
 
 - **The dead driver's DMA frame is never reclaimed.** A `Spawn`-mapped page goes through
   `map_physical`, whose contract is "Drop leaves it alone", so the in-flight completion (the used
@@ -232,6 +232,19 @@ round trip. Two facts make the abandoned request harmless, and both are load-bea
   count of validated submissions, not completions, so an uncollected completion leaves nothing
   dangling; the next operator of the physical device resets it (status 0) and programs its own
   registration's rings from scratch.
+- **The completion is the used ring, not the interrupt.** This one was missing at first, and the
+  test caught it: the kill-mid-write case failed intermittently, `report_code(0xE3)` ("woke, but
+  the device did not complete the request"), roughly one run in two. The abandoned write's
+  completion still raises the device's interrupt line, and the kernel turns that into a pending
+  signal on the interrupt's routing endpoint. That endpoint is shared across every driver of the
+  same physical line, so the *survivor's* first `WAIT` consumed the dead driver's stale completion
+  signal and then found its own request not yet on the used ring. The read path never noticed
+  because it only ever expects one completion. The fix is the correct virtio discipline anyway: a
+  driver treats the used ring advancing, not a single wakeup, as the completion, so
+  `complete_block` (`user/src/virtio.rs`) now loops WAIT/ack until `used.idx` moves, discarding a
+  wakeup that was really someone else's. Every real completion also raises the line, so the loop
+  always makes progress. This hardens the read path too: coalesced and spurious interrupts were
+  always possible and were only tolerated by luck before.
 
 The riscv half of this test is also what exposed that the riscv trap path could not kill a
 faulting user thread at all (it stepped over a U-mode `ebreak` and kernel-panicked on any other
