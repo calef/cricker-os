@@ -94,6 +94,10 @@ impl Prog {
                 arg: ArgSpec::Required,
                 mem: MemSpec::Forbidden,
                 reports: true,
+                // A worker finishes in one step; there is no long computation to interrupt, so it
+                // is granted no interrupt channel. The shell waits for its result and no ^C tier
+                // applies (milestone 24).
+                interruptible: false,
             },
             Prog::Budgeter => Manifest {
                 arg: ArgSpec::Forbidden,
@@ -102,6 +106,7 @@ impl Prog {
                 // shell's own budget can actually back.
                 mem: MemSpec::Required { min: 1, max: 64 },
                 reports: true,
+                interruptible: false,
             },
         }
     }
@@ -136,6 +141,11 @@ pub struct Manifest {
     /// Endowed with the shared result endpoint (so it can report back). Every phase-1 program
     /// reports; the field exists so a program that does not can drop the channel it never uses.
     pub reports: bool,
+    /// Granted a per-job interrupt channel so `^C` can reach it (milestone 24, DECISIONS §24). A
+    /// long-running or interactive program declares this and the shell wires the two-tier interrupt
+    /// path for it; a program that finishes in one step (worker) declares `false` and is simply
+    /// waited on. "Granted by default to interactive programs" is expressed here, per program.
+    pub interruptible: bool,
 }
 
 /// A parsed command line. The shell dispatches on this; only [`Command::Run`] carries a grant
@@ -188,6 +198,9 @@ pub struct Endowment {
     pub mem_pages: u64,
     /// Grant the shared result endpoint.
     pub reports: bool,
+    /// Wire the two-tier `^C` path for this job (mirrors the manifest). When true the shell mints
+    /// the per-job interrupt channel and runs the escalation policy while the job is foreground.
+    pub interruptible: bool,
 }
 
 /// Why a `run` was refused, decided at the prompt before any spawn. Each variant maps to one
@@ -400,6 +413,7 @@ pub fn plan(run: &RunSpec) -> Result<Endowment, Refusal> {
         arg,
         mem_pages,
         reports: m.reports,
+        interruptible: m.interruptible,
     })
 }
 
@@ -455,6 +469,98 @@ pub fn parse_u64(s: &[u8]) -> Option<u64> {
         v = v.checked_mul(10)?.checked_add((b - b'0') as u64)?;
     }
     Some(v)
+}
+
+// ---- the two-tier interrupt escalation policy (milestone 24, DECISIONS §24) ----
+
+/// What the shell should do this step of watching a foreground job for `^C`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Action {
+    /// Nothing this step.
+    None,
+    /// Deliver the cooperative interrupt: ask the job to stop itself (the first tier).
+    Cooperative,
+    /// Tear the job down: it did not stop when asked (the forcible tier).
+    Forcible,
+}
+
+/// Poll ticks the shell waits for a cooperative exit after the first `^C` before it escalates on a
+/// timeout. This is the "shell-side timeout" DECISIONS §24 left to the shell: a job that ignores the
+/// cooperative signal is still torn down without needing a second keystroke. In ticks (the shell's
+/// own watch loop iterations), not wall time, so it is deterministic and testable without a clock.
+pub const COOP_GRACE_TICKS: u32 = 200;
+
+/// The two-tier escalation policy, as a small state machine the shell drives while a foreground job
+/// runs. It holds where `^C` routing lives (DECISIONS §24: in the shell, userspace, because job
+/// control is the shell's knowledge). Pure logic, host-tested, so the counts and the grace window
+/// are pinned without an emulator.
+///
+/// The shell feeds it two events: [`on_interrupt`](Escalation::on_interrupt) when it observes a
+/// fresh `^C`, and [`on_tick`](Escalation::on_tick) each watch-loop iteration. The first `^C` asks
+/// the job to stop ([`Action::Cooperative`]); a second `^C`, or the grace window elapsing with no
+/// clean exit, tears it down ([`Action::Forcible`]). After a forcible decision the machine is spent
+/// and returns [`Action::None`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Escalation {
+    interrupts: u32,
+    grace_left: u32,
+    coop_sent: bool,
+    done: bool,
+}
+
+impl Escalation {
+    pub fn new() -> Self {
+        Escalation {
+            interrupts: 0,
+            grace_left: 0,
+            coop_sent: false,
+            done: false,
+        }
+    }
+
+    /// A fresh `^C` was observed. The first asks the job to stop and arms the grace window; a second
+    /// (while the same job is still foreground) escalates to a forcible teardown.
+    pub fn on_interrupt(&mut self) -> Action {
+        if self.done {
+            return Action::None;
+        }
+        self.interrupts += 1;
+        if self.interrupts == 1 {
+            self.coop_sent = true;
+            self.grace_left = COOP_GRACE_TICKS;
+            Action::Cooperative
+        } else {
+            self.done = true;
+            Action::Forcible
+        }
+    }
+
+    /// A watch-loop tick with no new `^C`. Once the cooperative signal is out, the grace window
+    /// counts down; when it reaches zero the job is torn down even without a second `^C`, so a job
+    /// that ignores the cooperative signal does not hang the prompt forever.
+    pub fn on_tick(&mut self) -> Action {
+        if self.done || !self.coop_sent {
+            return Action::None;
+        }
+        self.grace_left = self.grace_left.saturating_sub(1);
+        if self.grace_left == 0 {
+            self.done = true;
+            Action::Forcible
+        } else {
+            Action::None
+        }
+    }
+
+    /// Whether the policy has reached a forcible teardown (the shell stops watching after this).
+    pub fn spent(&self) -> bool {
+        self.done
+    }
+}
+
+impl Default for Escalation {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -631,5 +737,55 @@ mod tests {
         assert_eq!(parse_u64(b""), None);
         assert_eq!(parse_u64(b"1a"), None);
         assert_eq!(parse_u64(b"-1"), None);
+    }
+
+    #[test]
+    fn worker_and_budgeter_are_not_interruptible() {
+        // Fast jobs finish in one step; the shell just waits for them, no ^C tier.
+        assert!(!Prog::Worker.manifest().interruptible);
+        assert!(!Prog::Budgeter.manifest().interruptible);
+        let Command::Run(r) = parse(b"run worker 9") else {
+            panic!()
+        };
+        assert!(!plan(&r).unwrap().interruptible);
+    }
+
+    #[test]
+    fn first_interrupt_is_cooperative_second_is_forcible() {
+        let mut e = Escalation::new();
+        assert_eq!(e.on_interrupt(), Action::Cooperative);
+        assert!(!e.spent());
+        assert_eq!(e.on_interrupt(), Action::Forcible);
+        assert!(e.spent());
+        // Spent: further events do nothing.
+        assert_eq!(e.on_interrupt(), Action::None);
+        assert_eq!(e.on_tick(), Action::None);
+    }
+
+    #[test]
+    fn a_cooperative_signal_times_out_into_a_forcible_teardown() {
+        // The "shell-side timeout": the first ^C asks nicely; if the job never exits, the grace
+        // window elapsing tears it down without a second keystroke.
+        let mut e = Escalation::new();
+        assert_eq!(e.on_interrupt(), Action::Cooperative);
+        // Ticks short of the window do nothing.
+        for _ in 0..COOP_GRACE_TICKS - 1 {
+            assert_eq!(e.on_tick(), Action::None);
+        }
+        // The last tick of the window escalates.
+        assert_eq!(e.on_tick(), Action::Forcible);
+        assert!(e.spent());
+    }
+
+    #[test]
+    fn ticks_before_any_interrupt_do_nothing() {
+        // No ^C yet: the grace window is not armed, so watching a well-behaved job never escalates.
+        let mut e = Escalation::new();
+        for _ in 0..COOP_GRACE_TICKS * 2 {
+            assert_eq!(e.on_tick(), Action::None);
+        }
+        assert!(!e.spent());
+        // And a first ^C after a long quiet run is still cooperative.
+        assert_eq!(e.on_interrupt(), Action::Cooperative);
     }
 }
