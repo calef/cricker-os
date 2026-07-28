@@ -366,9 +366,9 @@ struct Device {
 /// The most virtio transports we will drive. Each `register` call takes a slot for the life of
 /// the boot (there is no unregister), and the test suite registers one per driver it spawns: the
 /// reader, two attackers, the PCIe reader, two writers, the abandoner, and its post-kill reader
-/// already make eight, so eight was no longer generous. Fixed-size (milestone 14 phase B.1):
-/// probing never allocates.
-const MAX_DEVICES: usize = 16;
+/// already make eight, and milestone 30 adds the net driver and net server over both buses (four
+/// more), so the ceiling grew again. Fixed-size (milestone 14 phase B.1): probing never allocates.
+const MAX_DEVICES: usize = 24;
 
 /// The device table, fixed. `get`/`get_mut` mirror the slice API the call sites already used.
 struct Devices {
