@@ -209,6 +209,15 @@ shadow ring demoted to defence in depth everywhere. Silicon carries 16b's riscv 
 a board ships the ratified spec; that is the emulate-then-carry pattern the kernel was built
 on. Parity is claimed at the QEMU tier; 16a's silicon is one board first, honestly.
 
+**Built 2026-07-28** (16b, both ISAs in emulation; DECISIONS §20, notes/iommu.md). The portable
+DMA-domain seam (`crate::iommu` over `paging::domain`), the two arch drivers (SMMUv3, RISC-V IOMMU
+v1.0.1), boot bring-up (SMMU from the device tree, RISC-V IOMMU enumerated as a PCI function), the
+`iommu_platform=on` enablement with the confinement test as the loud-on-bypass guard, and the disk
+and both attacker suites passing behind the IOMMU on both boards (aarch64 118 kernel tests, riscv
+60). Both emulations behaved to spec, no QEMU-vs-ours bug surfaced. Shadow ring kept as defence in
+depth. Remaining under 16: **16a** (first silicon on a RISC-V board) is still the hardware step;
+16b's riscv driver carries over when a board ships the ratified spec.
+
 **Why.** This is where the discussion's strongest pro-microkernel argument finally becomes true
 for us. Today driver isolation is real only because of the shadow descriptor ring we wrote
 (notes/dma.md); an IOMMU makes it real in hardware, with the software ring demoted to defence in

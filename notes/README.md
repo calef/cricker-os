@@ -150,6 +150,12 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [Confining DMA without an IOMMU](dma.md) — the device bypasses the MMU, so a hostile driver
   could DMA over the kernel. Closed by kernel-mediated descriptor validation: the kernel owns the
   ring addresses and the notify, and refuses any descriptor outside the driver's own DMA region.
+- [Confining DMA with an IOMMU](iommu.md) — the hardware version (milestone 16b, DECISIONS §20), on
+  both ISAs behind one seam: the format-generic `paging` crate builds a device's DMA domain (an
+  identity map over the frames it may reach) the same way it builds a process address space, and two
+  arch drivers (SMMUv3, RISC-V IOMMU v1.0.1) attach it. The disk and attacker suites run behind it;
+  a confinement test makes the IOMMU fault an escaping DMA, so a silent bypass fails loudly. The
+  shadow ring stays as defence in depth.
 - [A security audit](security.md) — an adversarial four-part review of the whole kernel. The
   MMU and capability confinement held up; two panics on untrusted input were fixed; the DMA/no-IOMMU
   limitation and the missing resource quotas are named rather than hidden.
