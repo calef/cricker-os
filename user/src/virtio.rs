@@ -17,6 +17,7 @@
 
 use crate::{check, invoke, send};
 use abi::irq;
+use fs_proto::blk;
 
 // The kernel maps the DMA page at this fixed VA (must match kernel/src/user.rs virtio_service).
 // The device REGISTERS are NOT mapped: we drive the device through a `Virtio` capability (slot 2),
@@ -500,4 +501,93 @@ fn write_desc(i: u64, addr: u64, len: u32, flags: u16, next: u16) {
     dma_write::<u32>(base + 8, len);
     dma_write::<u16>(base + 12, flags);
     dma_write::<u16>(base + 14, next);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The block server (milestone 32 phase 2): drive the device, serve blocks over blk IPC.
+//
+// The driver roles above read one block and report. This role instead becomes a long-lived server:
+// it inits the device once, then answers read/write/size requests from the FS server forever, one
+// filesystem block (8 sectors, 4096 bytes) per request. The FS server is its only client and never
+// touches the DMA region; the device confinement (kernel/src/virtio.rs) is unchanged, so a serving
+// block driver is as confined as a reading one. See notes/fs-server.md and notes/dma.md.
+// ---------------------------------------------------------------------------------------------
+
+/// The block server's request endpoint (slot 0): the FS server CALLs here; this role RECV_CAPs the
+/// request plus the one-shot Reply that names the caller. IRQ (1) and VIRTIO (2) are as every role.
+const BLK_REQ: u64 = 0;
+
+/// Where the kernel maps the page shared with the FS server (the block buffer). Distinct from the
+/// DMA region, which the FS server must never see, and from [`DMA_VA`].
+const BLK_SHARED_VA: u64 = 0x0000_0000_00A0_0000;
+
+/// virtio-mmio device-config window; virtio-blk's capacity (u64, in 512-byte sectors) is at its
+/// start. Reads are DMA-safe, so the kernel's `READ_REG` permits this offset.
+const CONFIG: u64 = 0x100;
+
+/// **The block server.** Bring the device up, then serve blk IPC forever. Every request is a CALL
+/// answered through the kernel-minted Reply, so this server can answer a client it was never wired
+/// to, exactly once each. The transfer unit is one filesystem block; the bulk rides in the shared
+/// page, the control (opcode, block index, result) rides in the message, the §10 split.
+pub fn run_blk_server(dma_phys: u64) -> ! {
+    init();
+    loop {
+        // RECV_CAP: (first word, the Reply cap's slot, second word = the block index).
+        let (w0, reply, block) = user_rt::recv_cap(BLK_REQ);
+        let r0: i64 = match fs_proto::op(w0) {
+            blk::READ => {
+                blk_read(dma_phys, block);
+                0
+            }
+            blk::WRITE => {
+                blk_write(dma_phys, block);
+                0
+            }
+            blk::SIZE => disk_size_bytes(),
+            _ => -22, // EINVAL: an opcode this server does not implement
+        };
+        // Answer through the one-shot Reply. SAFETY: `svc`; the kernel validated and consumes it.
+        unsafe { invoke(reply, abi::reply::REPLY, r0 as u64, 0, 0) };
+    }
+}
+
+/// Read one filesystem block (8 sectors) into the shared page, sector by sector through the DMA
+/// data buffer. The device fills [`OFF_DATA`]; we copy each sector out to the FS server's page.
+fn blk_read(dma_phys: u64, block: u64) {
+    for i in 0..blk::SECTORS_PER_BLOCK {
+        read_block(dma_phys, block * blk::SECTORS_PER_BLOCK + i);
+        // SAFETY: OFF_DATA holds one sector we just read; the shared page has room for 8 of them.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                (DMA_VA + OFF_DATA) as *const u8,
+                (BLK_SHARED_VA + i * BLOCK as u64) as *mut u8,
+                BLOCK,
+            )
+        };
+    }
+}
+
+/// Write one filesystem block (8 sectors) from the shared page, sector by sector through the DMA
+/// data buffer. The FS server filled the shared page; we stage each sector and let the device read.
+fn blk_write(dma_phys: u64, block: u64) {
+    for i in 0..blk::SECTORS_PER_BLOCK {
+        // SAFETY: copy one sector of the FS server's page into the device-reachable DMA buffer.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                (BLK_SHARED_VA + i * BLOCK as u64) as *const u8,
+                (DMA_VA + OFF_DATA) as *mut u8,
+                BLOCK,
+            )
+        };
+        write_block(dma_phys, block * blk::SECTORS_PER_BLOCK + i);
+    }
+}
+
+/// The disk's size in bytes, from virtio-blk's capacity register (sectors * 512). RedoxFS asks for
+/// this once, at open, to size its allocator; the value is the whole extent the image lives in.
+fn disk_size_bytes() -> i64 {
+    let lo = mr(CONFIG) as u64;
+    let hi = mr(CONFIG + 4) as u64;
+    let sectors = lo | (hi << 32);
+    (sectors * 512) as i64
 }
