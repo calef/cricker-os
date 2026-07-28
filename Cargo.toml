@@ -17,6 +17,7 @@ members = [
     "crates/regions",
     "crates/intrusive",
     "crates/slots",
+    "crates/uheap",
     "crates/user_rt",
     "crates/coremark",
 ]
