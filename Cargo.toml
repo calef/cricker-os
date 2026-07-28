@@ -21,6 +21,18 @@ members = [
     "crates/coremark",
 ]
 
+# The vendored RedoxFS engine (vendor/redoxfs) and the host tool that wraps it (tools/redoxfs-host)
+# are deliberately kept OUT of this workspace: each is its own workspace root (an empty [workspace]
+# in its Cargo.toml) and both are excluded here. This is what keeps our `-D warnings` clippy gate
+# and `cargo fmt` off upstream code we do not own, and keeps redoxfs's default features (which pull
+# `fuser`, whose build script panics on macOS) out of our builds. They are still gated, just on
+# their own: script/lint, script/fmt, and cargo xtask test each drive them by --manifest-path. See
+# vendor/README.md. Nothing in the kernel depends on redoxfs yet; that is milestone 32 phase 2.
+exclude = [
+    "vendor/redoxfs",
+    "tools/redoxfs-host",
+]
+
 # Shared package metadata. Each member opts in with `license.workspace = true`, so the
 # dual license is declared in exactly one place. MIT OR Apache-2.0 is the Rust-ecosystem
 # convention: it lets downstream users pick whichever fits their project, and the Apache

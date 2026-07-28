@@ -67,9 +67,18 @@ if [ -n "$CRICKER_DISK" ]; then
     # (separate physical addresses for the descriptor table and the two rings) is the current
     # design and the one worth learning. Without it QEMU gives legacy (version 1), a different
     # and older queue layout.
-    # The same image is attached TWICE, as on riscv: virtio-mmio (hd0) and virtio-blk-pci (hd1,
-    # modern via disable-legacy=on), both read-only, so one boot exercises both transports.
-    DISK="-global virtio-mmio.force-legacy=false -drive file=$CRICKER_DISK,if=none,format=raw,id=hd0,readonly=on -device virtio-blk-device,drive=hd0 -drive file=$CRICKER_DISK,if=none,format=raw,id=hd1,readonly=on -device virtio-blk-pci,drive=hd1,disable-legacy=on"
+    #
+    # Both transports are attached WRITABLE (milestone 32: the write-capable block path), which
+    # is why there are two image files rather than one attached twice: QEMU's image locking
+    # refuses to open one file for two devices once either can write. mkdisk writes the sibling
+    # alongside the main image with identical contents; missing sibling = stale build, fail loud
+    # (the readonly-era silent-degradation lesson, see the CRICKER_DISK check above).
+    PCI_DISK="${CRICKER_DISK%.img}-pci.img"
+    if [ ! -f "$PCI_DISK" ]; then
+        echo "qemu-runner: $PCI_DISK does not exist (run mkdisk first; it writes both images)" >&2
+        exit 1
+    fi
+    DISK="-global virtio-mmio.force-legacy=false -drive file=$CRICKER_DISK,if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 -drive file=$PCI_DISK,if=none,format=raw,id=hd1 -device virtio-blk-pci,drive=hd1,disable-legacy=on"
 fi
 
 # shellcheck disable=SC2086  # $INITRD and $DISK are deliberately word-split or empty

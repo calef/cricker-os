@@ -305,9 +305,12 @@ struct Device {
     shadow_base: u64,
 }
 
-/// The most virtio transports we will drive. QEMU's virt board exposes a handful of MMIO slots;
-/// eight is generous. Fixed (milestone 14 phase B.1): probing never allocates.
-const MAX_DEVICES: usize = 8;
+/// The most virtio transports we will drive. Each `register` call takes a slot for the life of
+/// the boot (there is no unregister), and the test suite registers one per driver it spawns: the
+/// reader, two attackers, the PCIe reader, two writers, the abandoner, and its post-kill reader
+/// already make eight, so eight was no longer generous. Fixed-size (milestone 14 phase B.1):
+/// probing never allocates.
+const MAX_DEVICES: usize = 16;
 
 /// The device table, fixed. `get`/`get_mut` mirror the slice API the call sites already used.
 struct Devices {

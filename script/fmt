@@ -7,3 +7,8 @@ set -e
 cd "$(dirname "$0")/.."
 
 cargo fmt --all --check
+
+# The RedoxFS host tool is its own workspace (see Cargo.toml), so `--all` above does not reach it.
+# Format-check our code there separately. The vendored engine it wraps is external and never
+# formatted by this (we keep it byte-identical to the pin).
+cargo fmt --manifest-path tools/redoxfs-host/Cargo.toml --check

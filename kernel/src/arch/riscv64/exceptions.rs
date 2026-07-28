@@ -268,15 +268,20 @@ extern "C" fn riscv_trap_dispatch(frame: &mut TrapFrame) {
             frame.sepc += 4;
             crate::syscall::dispatch(frame);
         }
-        CAUSE_BREAKPOINT => {
+        // A breakpoint from S-mode is the trap self-test: count it and step over. From U-mode it
+        // falls through to `user_fault` below, because every userspace panic handler ends in
+        // `ebreak` *expecting to die* ("a driver bug is a dead driver"); stepping over it would
+        // resume a program that just declared itself broken.
+        CAUSE_BREAKPOINT if !from_user => {
             BRK_COUNT.fetch_add(1, Ordering::Relaxed);
             advance_past_trapping_insn(frame);
         }
+        // A user thread did something illegal (or `ebreak`ed on purpose). It dies; the kernel
+        // does not. Same promise as aarch64's `user_fault`, kept on the second ISA.
+        _ if from_user => user_fault(frame, scause, code),
         _ => {
-            USER_FAULTS.fetch_add(1, Ordering::Relaxed);
-            // The user-fault path (kill the thread, keep the kernel) arrives with the user thread
-            // path. Until a user thread can run on RISC-V there is nothing to kill, so a trap here is
-            // a kernel bug: report it with the detail that makes it legible.
+            // An exception from S-mode is a KERNEL bug, and fatal. Report it with the detail
+            // that makes it legible.
             panic!(
                 "unexpected RISC-V trap: scause={scause:#x} (code {code}) stval={:#x} sepc={:#x} \
                  from_user={from_user}",
@@ -284,6 +289,41 @@ extern "C" fn riscv_trap_dispatch(frame: &mut TrapFrame) {
             );
         }
     }
+}
+
+/// A user thread did something it is not allowed to do. Kill it; keep the machine.
+///
+/// The mechanism is aarch64's `user_fault`, verbatim in spirit: we are in the trap handler on the
+/// faulting thread's kernel stack, `sched::exit()` marks it Finished and schedules away forever,
+/// and the reaper frees the stack from the next thread. The blocking-syscall path (`ipc_recv`)
+/// already schedules away from this exact context, so nothing here is novel.
+///
+/// **Correction, on the record.** Until milestone 32 this arm panicked the whole kernel, behind a
+/// comment claiming no user thread could run on RISC-V, which had been false since parity (user
+/// threads shipped with milestone 20 and the parity workstreams). Nothing noticed because no riscv
+/// test made a user thread fault; the kill-mid-write test is the first, and it flushed this out.
+/// The stale comment survived two workstreams past the decision that obsoleted it, which is
+/// exactly the "a TODO that outlives its decision becomes misinformation" failure notes/teardown.md
+/// documents.
+fn user_fault(frame: &TrapFrame, scause: u64, code: u64) -> ! {
+    USER_FAULTS.fetch_add(1, Ordering::Relaxed);
+
+    crate::println!();
+    crate::println!(
+        "  user thread {} killed: scause {:#x} (code {})",
+        crate::sched::current(),
+        scause,
+        code,
+    );
+    crate::println!(
+        "    pc {:#018x}   stval {:#018x}   user sp {:#018x}",
+        frame.sepc,
+        frame.stval,
+        frame.x[2],
+    );
+    crate::println!("  the kernel is fine.");
+
+    crate::sched::exit();
 }
 
 /// Prove the trap path works end to end: execute a breakpoint and return. If traps are wired,

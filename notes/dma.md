@@ -196,6 +196,61 @@ copy. The copy step does not walk indirect tables, so it refuses the flag rather
 shadowing them, which is the simpler and stricter choice for a device that never needs indirect
 descriptors.
 
+## The write direction (milestone 32 phase 1)
+
+The write-capable block path needed **no kernel change**, and it is worth recording why that is a
+property and not luck: the validator bounds *addresses*, never directions. A blk read marks the
+data descriptor device-writable (the device fills the buffer); a blk write leaves the flag clear
+(the device consumes the buffer). Either way `validate_and_shadow` checks the same thing, that
+`addr..addr+len` stays inside the driver's region, so both hazards are closed by one check: a read
+descriptor aimed at kernel memory would let the device *overwrite* the kernel, a write descriptor
+aimed there would let it *exfiltrate* kernel memory to disk, and neither address ever reaches the
+device. The roadmap's claim that the transport "already speaks both directions" was verified
+against the code and is accurate.
+
+What was new: the driver's write verb (`user/src/virtio.rs::write_block`, one flag away from the
+read), attaching QEMU's disks writable (one image file per transport, because QEMU write-locks a
+file once any attachment can write; see the runners), and the tests. The write tests run the same
+matrix as the read path: both ISAs, both transports (mmio and PCIe), a full pattern round trip
+through a wiped buffer, plus a re-check of the superblock and directory so a write that strayed
+off its own block would be caught.
+
+**Kill-mid-write.** Errors here eat filesystems, so the teardown case is tested on both ISAs: a
+driver submits a validated write and dies (panic, kill, reap) without collecting the completion or
+acknowledging the interrupt, then a fresh driver resets the same device and must complete its own
+round trip. Three facts make the abandoned request harmless, and all three are load-bearing:
+
+- **The dead driver's DMA frame is never reclaimed.** A `Spawn`-mapped page goes through
+  `map_physical`, whose contract is "Drop leaves it alone", so the in-flight completion (the used
+  ring entry, the status byte) lands in a frame the allocator never re-issued. This is currently a
+  deliberate leak, one frame per spawned driver. **The caveat for whoever builds DMA-region
+  reclaim later:** freeing that frame on thread death would hand the device a landing zone the
+  allocator may already have re-issued to someone else, which is a use-after-free performed by
+  hardware. Reclaim must quiesce the device first (device reset, then confirm no requests are
+  outstanding), and nothing enforces that today except this note and the test.
+- **The kernel's transport state carries nothing in-flight.** `Device` tracks `last_avail`, a
+  count of validated submissions, not completions, so an uncollected completion leaves nothing
+  dangling; the next operator of the physical device resets it (status 0) and programs its own
+  registration's rings from scratch.
+- **The completion is the used ring, not the interrupt.** This one was missing at first, and the
+  test caught it: the kill-mid-write case failed intermittently, `report_code(0xE3)` ("woke, but
+  the device did not complete the request"), roughly one run in two. The abandoned write's
+  completion still raises the device's interrupt line, and the kernel turns that into a pending
+  signal on the interrupt's routing endpoint. That endpoint is shared across every driver of the
+  same physical line, so the *survivor's* first `WAIT` consumed the dead driver's stale completion
+  signal and then found its own request not yet on the used ring. The read path never noticed
+  because it only ever expects one completion. The fix is the correct virtio discipline anyway: a
+  driver treats the used ring advancing, not a single wakeup, as the completion, so
+  `complete_block` (`user/src/virtio.rs`) now loops WAIT/ack until `used.idx` moves, discarding a
+  wakeup that was really someone else's. Every real completion also raises the line, so the loop
+  always makes progress. This hardens the read path too: coalesced and spurious interrupts were
+  always possible and were only tolerated by luck before.
+
+The riscv half of this test is also what exposed that the riscv trap path could not kill a
+faulting user thread at all (it stepped over a U-mode `ebreak` and kernel-panicked on any other
+U-mode fault, behind a comment stale since milestone 20). Fixed alongside; see
+notes/riscv-parity-scope.md.
+
 ## The tradeoff, stated plainly
 
 This moves the virtio *transport* into the kernel, which slightly walks back milestone 9's "the

@@ -1462,12 +1462,21 @@ pub mod virtio_service {
     const DMA_VA: u64 = 0x0000_0000_0090_0000;
 
     const ROLE_VIRTIO_BLK: u64 = 3;
+    /// The write-path roles (milestone 32 phase 1); must match user/src/hello.rs and blk.rs.
+    const ROLE_VIRTIO_BLK_WRITE: u64 = 30;
+    const ROLE_VIRTIO_BLK_WRITE_ABANDON: u64 = 31;
 
-    /// Start the driver against a discovered transport. The shared body of [`start`] (mmio) and
-    /// [`start_pci`] (PCIe): everything from here on, the DMA region, the Irq routing, the
-    /// confined `Virtio` capability, the spawn, is bus-agnostic, which is the transport seam
-    /// doing its job.
-    fn wire(image: &'static [u8], transport: crate::virtio::Transport, intid: u32) -> EpId {
+    /// Start a driver role against a discovered transport. The shared body of [`start`] (mmio),
+    /// [`start_pci`] (PCIe), and the writer starters: everything from here on, the DMA region,
+    /// the Irq routing, the confined `Virtio` capability, the spawn, is bus-agnostic, which is
+    /// the transport seam doing its job, and role-agnostic, because every role gets the same
+    /// world and differs only in what it does with it.
+    fn wire(
+        image: &'static [u8],
+        transport: crate::virtio::Transport,
+        intid: u32,
+        role: u64,
+    ) -> EpId {
         // A DMA page: physical memory the device can reach, mapped into the driver, whose
         // physical address the driver must know (a process sees only virtual addresses). We hand
         // that physical address over in `arg1`.
@@ -1498,7 +1507,7 @@ pub mod virtio_service {
             run(
                 image,
                 Spawn {
-                    arg0: ROLE_VIRTIO_BLK,
+                    arg0: role,
                     arg1: dma, // the DMA region's PHYSICAL address (still needed to build requests)
                     arg2: 0,
                     grants: &[
@@ -1522,6 +1531,37 @@ pub mod virtio_service {
     /// Start the driver against the virtio-mmio disk. Returns the endpoint it will report its
     /// result on, or `None` if there is no disk attached to enumerate.
     pub fn start(image: &'static [u8]) -> Option<EpId> {
+        start_role(image, ROLE_VIRTIO_BLK)
+    }
+
+    /// Start the SAME driver binary against the PCIe disk (the PCIe transport, DECISIONS §18):
+    /// enumeration and bring-up by kernel/src/pci.rs, INTx through the interrupt controller, the
+    /// identical confinement. The driver cannot tell which bus it is on, and that is the point.
+    pub fn start_pci(image: &'static [u8]) -> Option<EpId> {
+        start_role_pci(image, ROLE_VIRTIO_BLK)
+    }
+
+    /// Start the write-path driver (milestone 32 phase 1) against the mmio disk: it writes a
+    /// pattern to the scratch block, reads it back, re-checks the filesystem around it, and
+    /// reports the read-back bytes.
+    pub fn start_writer(image: &'static [u8]) -> Option<EpId> {
+        start_role(image, ROLE_VIRTIO_BLK_WRITE)
+    }
+
+    /// The same writer over the PCIe transport.
+    pub fn start_writer_pci(image: &'static [u8]) -> Option<EpId> {
+        start_role_pci(image, ROLE_VIRTIO_BLK_WRITE)
+    }
+
+    /// Start the abandoning writer (the kill-mid-write case): it submits a validated write and
+    /// dies on purpose before collecting the completion. Reports 1 after the submit, so the test
+    /// knows the request genuinely left before the death.
+    pub fn start_write_abandoner(image: &'static [u8]) -> Option<EpId> {
+        start_role(image, ROLE_VIRTIO_BLK_WRITE_ABANDON)
+    }
+
+    /// [`wire`] against the enumerated mmio disk, at `role`.
+    fn start_role(image: &'static [u8], role: u64) -> Option<EpId> {
         let dev = crate::virtio::find_block_device()?;
         Some(wire(
             image,
@@ -1529,13 +1569,12 @@ pub mod virtio_service {
                 mmio_phys: dev.mmio_phys,
             },
             dev.intid,
+            role,
         ))
     }
 
-    /// Start the SAME driver binary against the PCIe disk (the PCIe transport, DECISIONS §18):
-    /// enumeration and bring-up by kernel/src/pci.rs, INTx through the interrupt controller, the
-    /// identical confinement. The driver cannot tell which bus it is on, and that is the point.
-    pub fn start_pci(image: &'static [u8]) -> Option<EpId> {
+    /// [`wire`] against the enumerated PCIe disk, at `role`.
+    fn start_role_pci(image: &'static [u8], role: u64) -> Option<EpId> {
         let d = crate::pci::find_block_device()?;
         Some(wire(
             image,
@@ -1547,6 +1586,7 @@ pub mod virtio_service {
                 isr: d.isr,
             },
             d.intid,
+            role,
         ))
     }
 
@@ -2923,6 +2963,97 @@ mod tests {
         );
     }
 
+    /// **A userspace driver writes a block and reads it back.** Milestone 32 phase 1: the write
+    /// verb, end to end, through the same validated transport as the read path. The driver
+    /// writes a pattern to the scratch block, wipes its buffer, reads the block back, verifies
+    /// every byte in-process, re-checks the superblock and directory around it, and reports the
+    /// read-back head. A matching report therefore certifies the round trip AND that the write
+    /// landed only on its own block.
+    #[test_case]
+    fn a_userspace_driver_writes_a_block_and_reads_it_back() {
+        let report = match virtio_service::start_writer(init_image()) {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no virtio disk attached; skipping)");
+                return;
+            }
+        };
+        let word = sched::ipc_recv(report)[0];
+        assert_eq!(
+            &word.to_le_bytes(),
+            b"CRKWRIT1",
+            "the driver did not read back the pattern it wrote",
+        );
+    }
+
+    /// The same write round trip over the PCIe transport (DECISIONS §18): the write verb must
+    /// hold on both buses, exactly as the read path does, or the transport seam has a
+    /// direction-shaped hole.
+    #[test_case]
+    fn a_userspace_driver_writes_a_block_over_the_pcie_transport() {
+        let report = match virtio_service::start_writer_pci(init_image()) {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no virtio-pci disk on the bus; skipping)");
+                return;
+            }
+        };
+        let word = sched::ipc_recv(report)[0];
+        assert_eq!(
+            &word.to_le_bytes(),
+            b"CRKWRIT1",
+            "the driver did not read back the pattern it wrote over pci",
+        );
+    }
+
+    /// **A driver killed mid-write leaves the device and the transport sane.** Errors here eat
+    /// filesystems, so this is the write path's teardown proof: a driver submits a validated
+    /// write and dies (panics, is killed, is reaped) without ever collecting the completion,
+    /// acknowledging the interrupt, or advancing its ring bookkeeping. The device still owes a
+    /// completion into the dead driver's DMA region, which is safe precisely because that frame
+    /// is kernel-allocated and deliberately never reclaimed on thread death (`map_physical`'s
+    /// "Drop leaves it alone" rule): the DMA lands in memory the allocator never re-issued.
+    /// Then the full writer runs against the SAME device, resets it, and must complete its own
+    /// round trip, which proves the abandoned request wedged nothing: not the device, not the
+    /// validator's per-registration state, not the disk.
+    #[test_case]
+    fn a_driver_killed_mid_write_leaves_the_device_and_transport_sane() {
+        let faults = USER_FAULTS.load(Ordering::Relaxed);
+        let report = match virtio_service::start_write_abandoner(init_image()) {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no virtio disk attached; skipping)");
+                return;
+            }
+        };
+
+        // 1 = the kernel validated the write and rang the device; the request is genuinely in
+        // flight (or already complete) when the driver dies.
+        assert_eq!(
+            sched::ipc_recv(report)[0],
+            1,
+            "the abandoner never got its write submitted",
+        );
+
+        // The deliberate death: panic -> brk -> killed. Wait for the kill so the survivor below
+        // runs against a device whose previous operator is really gone.
+        assert!(
+            wait_for(|| USER_FAULTS.load(Ordering::Relaxed) > faults),
+            "the abandoner never died; nothing was killed mid-write",
+        );
+
+        // The survivor: the same full write-verify driver, same physical device. It must succeed
+        // from a clean device reset, in-flight completion and all.
+        let report = virtio_service::start_writer(init_image())
+            .expect("the disk vanished between the abandoner and the survivor");
+        let word = sched::ipc_recv(report)[0];
+        assert_eq!(
+            &word.to_le_bytes(),
+            b"CRKWRIT1",
+            "after a mid-write kill, a fresh driver could not use the device",
+        );
+    }
+
     /// A dead user thread's address space is freed, all of it, including its page tables.
     ///
     /// The milestone 6 reaper test found that stack VAs were bump-allocated and never reused,
@@ -3592,6 +3723,62 @@ mod riscv_virtio_tests {
         program("blk").expect("no blk program in the initrd archive")
     }
 
+    /// Spin the scheduler until `done()`, or give up. The aarch64 module's helper, re-declared
+    /// because that module is aarch64-gated.
+    fn wait_for(mut done: impl FnMut() -> bool) -> bool {
+        for _ in 0..2000 {
+            if done() {
+                return true;
+            }
+            sched::yield_now();
+        }
+        done()
+    }
+
+    /// **A faulting riscv user thread dies, and the kernel does not.** DECISIONS §10's promise
+    /// ("a driver bug is a crashed process, not a dead machine"), proven on the second ISA for
+    /// the first time.
+    ///
+    /// This test exists because the promise was NOT kept here: the riscv trap dispatcher stepped
+    /// over a U-mode `ebreak` (so a panicking driver resumed its own panic loop, alive forever)
+    /// and panicked the kernel on any other U-mode fault, behind a comment claiming user threads
+    /// could not run on RISC-V yet. Every riscv userspace binary's panic handler ends in `ebreak`
+    /// expecting to die, and no test had ever made one fault. The kill-mid-write test (below)
+    /// needs a driver to genuinely die, which is what flushed this out.
+    ///
+    /// The blk binary's `_start` panics on an unknown role, so spawning it with one is the
+    /// smallest honest fault: panic, `ebreak`, killed, reaped.
+    #[test_case]
+    fn a_faulting_user_thread_is_killed_and_the_kernel_survives() {
+        use crate::arch::exceptions::USER_FAULTS;
+
+        let faults = USER_FAULTS.load(Ordering::Relaxed);
+        let threads = sched::thread_count();
+
+        sched::spawn(move || {
+            run(
+                blk_image(),
+                Spawn {
+                    arg0: 0xDEAD, // no such role: _start panics, and the panic handler ebreaks
+                    arg1: 0,
+                    arg2: 0,
+                    grants: &[],
+                    maps: &[],
+                },
+            )
+        })
+        .expect("spawn failed");
+
+        assert!(
+            wait_for(|| USER_FAULTS.load(Ordering::Relaxed) > faults),
+            "the faulting user thread was never killed",
+        );
+        assert!(
+            wait_for(|| sched::thread_count() <= threads),
+            "the killed thread was never reaped",
+        );
+    }
+
     /// The headline, on the second ISA: an unprivileged process drives a real block device over
     /// DMA and reads a file off it, with the kernel owning only the confinement. Interrupt
     /// delivery is asserted too: the completion reached the driver as a message through its Irq
@@ -3691,6 +3878,79 @@ mod riscv_virtio_tests {
         assert!(
             ROUTED_IRQS.load(Ordering::Relaxed) > irqs_before,
             "the read completed but no INTx interrupt was delivered through the PLIC",
+        );
+    }
+
+    /// The write round trip on the second ISA (milestone 32 phase 1); see the aarch64 twin for
+    /// what the report certifies.
+    #[test_case]
+    fn a_userspace_driver_writes_a_block_and_reads_it_back() {
+        let report = match virtio_service::start_writer(blk_image()) {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no virtio disk attached; skipping)");
+                return;
+            }
+        };
+        let word = sched::ipc_recv(report)[0];
+        assert_eq!(
+            &word.to_le_bytes(),
+            b"CRKWRIT1",
+            "the driver did not read back the pattern it wrote",
+        );
+    }
+
+    /// The write round trip over the PCIe transport, on the second ISA.
+    #[test_case]
+    fn a_userspace_driver_writes_a_block_over_the_pcie_transport() {
+        let report = match virtio_service::start_writer_pci(blk_image()) {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no virtio-pci disk on the bus; skipping)");
+                return;
+            }
+        };
+        let word = sched::ipc_recv(report)[0];
+        assert_eq!(
+            &word.to_le_bytes(),
+            b"CRKWRIT1",
+            "the driver did not read back the pattern it wrote over pci",
+        );
+    }
+
+    /// Kill-mid-write on the second ISA; see the aarch64 twin for the full argument. This is
+    /// also the test that made the riscv user-fault kill path exist: the abandoner's deliberate
+    /// death is a U-mode `ebreak`, which used to be silently stepped over.
+    #[test_case]
+    fn a_driver_killed_mid_write_leaves_the_device_and_transport_sane() {
+        use crate::arch::exceptions::USER_FAULTS;
+
+        let faults = USER_FAULTS.load(Ordering::Relaxed);
+        let report = match virtio_service::start_write_abandoner(blk_image()) {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no virtio disk attached; skipping)");
+                return;
+            }
+        };
+
+        assert_eq!(
+            sched::ipc_recv(report)[0],
+            1,
+            "the abandoner never got its write submitted",
+        );
+        assert!(
+            wait_for(|| USER_FAULTS.load(Ordering::Relaxed) > faults),
+            "the abandoner never died; nothing was killed mid-write",
+        );
+
+        let report = virtio_service::start_writer(blk_image())
+            .expect("the disk vanished between the abandoner and the survivor");
+        let word = sched::ipc_recv(report)[0];
+        assert_eq!(
+            &word.to_le_bytes(),
+            b"CRKWRIT1",
+            "after a mid-write kill, a fresh driver could not use the device",
         );
     }
 }

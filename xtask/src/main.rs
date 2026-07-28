@@ -359,14 +359,30 @@ fn disk_path() -> String {
         .to_string()
 }
 
-/// Build the crickerfs disk image the virtio-blk driver will read.
+/// The PCIe transport's copy of the disk image, a sibling of [`disk_path`]. Two files because
+/// both transports are now attached **writable** (milestone 32's write path) and QEMU's image
+/// locking refuses to attach one file to two devices once either attachment can write. The
+/// runner derives this name from `CRICKER_DISK`, so the two stay in lockstep.
+fn disk_pci_path() -> String {
+    workspace_root()
+        .join("target/crickerfs-pci.img")
+        .display()
+        .to_string()
+}
+
+/// Build the crickerfs disk images the virtio-blk driver will read and write.
 ///
 /// **The disk is generated, not checked in**, the same way the flat kernel image is: a binary
 /// blob in git is a blob nobody can review. The contents are a couple of tiny files, written
 /// through the same `crickerfs::write_image` the userspace filesystem server reads back, so the
 /// format has exactly one definition.
+///
+/// `scratch` is the write-path tests' one-block playground: the driver writes a pattern into its
+/// block and reads it back, so nothing else on the disk is ever a write target. Regenerating the
+/// images here is also what makes test runs independent: whatever a previous run wrote to
+/// scratch is rebuilt to zeros.
 fn mkdisk() -> bool {
-    let files: [(&str, &[u8]); 2] = [
+    let files: [(&str, &[u8]); 3] = [
         (
             "motd",
             b"cricker-os: read from a virtio disk, by a driver at EL0.\n",
@@ -375,6 +391,7 @@ fn mkdisk() -> bool {
             "readme",
             b"this file came off a real block device through a userspace driver.\n",
         ),
+        ("scratch", &[0u8; 512]),
     ];
     let size = crickerfs::image_size(&files).max(64 * 1024); // pad to a friendly size
     let mut img = std::vec![0u8; size];
@@ -382,9 +399,12 @@ fn mkdisk() -> bool {
         eprintln!("mkdisk: could not build the image");
         return false;
     }
-    if let Err(e) = std::fs::write(disk_path(), &img) {
-        eprintln!("mkdisk: could not write {}: {e}", disk_path());
-        return false;
+    // One identical image per transport; see disk_pci_path for why they cannot share a file.
+    for path in [disk_path(), disk_pci_path()] {
+        if let Err(e) = std::fs::write(&path, &img) {
+            eprintln!("mkdisk: could not write {path}: {e}");
+            return false;
+        }
     }
     true
 }
@@ -466,6 +486,41 @@ fn test() -> bool {
     ]) {
         return false;
     }
+
+    // The vendored RedoxFS pin (vendor/redoxfs, milestone 32) is kept honest here, both halves of
+    // vendor/README.md's promise. Both are driven by --manifest-path because the engine and the
+    // host tool are their OWN workspaces, deliberately outside ours so upstream code never reaches
+    // our clippy/fmt gates (see the workspace `exclude` in Cargo.toml).
+    //
+    // First: the host tool's round trip (mkfs, put, ls, cat) against the pinned engine, the same
+    // code phase 2's FS server will open images with, so a regression is caught on the host in
+    // milliseconds. Second: the engine's no_std core built for BOTH bare-metal targets, because
+    // upstream does not CI the no_std path and it bit-rotted once already (the two Vec imports the
+    // pin carries); this build catches the next such regression instead of phase 2 doing it.
+    eprintln!();
+    eprintln!("--- vendored redoxfs: host round trip + no_std core (both targets) ---");
+    if !run(
+        "cargo",
+        &["test", "--manifest-path", "tools/redoxfs-host/Cargo.toml"],
+    ) {
+        return false;
+    }
+    for target in [TARGET, RISCV_TARGET] {
+        if !run(
+            "cargo",
+            &[
+                "build",
+                "--manifest-path",
+                "vendor/redoxfs/Cargo.toml",
+                "--no-default-features",
+                "--target",
+                target,
+            ],
+        ) {
+            return false;
+        }
+    }
+
     eprintln!();
     eprintln!("--- kernel tests, aarch64 (QEMU) ---");
     if !user() || !mkdisk() {

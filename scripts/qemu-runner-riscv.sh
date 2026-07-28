@@ -44,12 +44,19 @@ if [ -n "$CRICKER_DISK" ] && [ ! -f "$CRICKER_DISK" ]; then
     exit 1
 fi
 if [ -n "$CRICKER_DISK" ]; then
-    # The same image is attached TWICE, deliberately: once as virtio-mmio (hd0, the parity-C
-    # transport) and once as virtio-blk-pci (hd1, the PCIe transport). Both read-only, so the
-    # double attachment is safe, and one boot exercises both transports side by side.
+    # Two transports, two image files: virtio-mmio (hd0, the parity-C transport) and
+    # virtio-blk-pci (hd1, the PCIe transport). Both are WRITABLE (milestone 32: the
+    # write-capable block path), and QEMU's image locking refuses to open one file for two
+    # devices once either can write, so mkdisk writes an identical sibling image for the PCI
+    # side. A missing sibling is a stale build; fail loud, same rule as the main image.
     # disable-legacy=on makes the PCI function MODERN (device id 0x1042): without it QEMU offers a
     # transitional device (0x1001), whose legacy register layout we deliberately do not drive.
-    DISK="-global virtio-mmio.force-legacy=false -drive file=$CRICKER_DISK,if=none,format=raw,id=hd0,readonly=on -device virtio-blk-device,drive=hd0 -drive file=$CRICKER_DISK,if=none,format=raw,id=hd1,readonly=on -device virtio-blk-pci,drive=hd1,disable-legacy=on"
+    PCI_DISK="${CRICKER_DISK%.img}-pci.img"
+    if [ ! -f "$PCI_DISK" ]; then
+        echo "qemu-runner-riscv: $PCI_DISK does not exist (run mkdisk first; it writes both images)" >&2
+        exit 1
+    fi
+    DISK="-global virtio-mmio.force-legacy=false -drive file=$CRICKER_DISK,if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 -drive file=$PCI_DISK,if=none,format=raw,id=hd1 -device virtio-blk-pci,drive=hd1,disable-legacy=on"
 fi
 
 exec qemu-system-riscv64 \

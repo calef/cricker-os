@@ -1,0 +1,31 @@
+image: "redoxos/redoxer"
+
+workflow:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "master" && $CI_PROJECT_NAMESPACE == "redox-os"'
+    - if: '$CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "master"'
+
+stages:
+    - build
+    - test
+
+build:linux:
+    stage: build
+    script: cargo +nightly build --verbose
+
+build:redox:
+    stage: build
+    script: redoxer build --verbose
+
+test:linux:
+    stage: test
+    dependencies:
+        - build:linux
+    script: cargo +nightly test --verbose
+
+test:redox:
+    stage: test
+    dependencies:
+        - build:redox
+    # only run integration test as without KVM unit tests is super slow
+    script: redoxer test --verbose -- --test '*' -- --nocapture

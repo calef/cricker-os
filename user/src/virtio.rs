@@ -58,7 +58,8 @@ const VIRTQ_DESC_F_INDIRECT: u16 = 4; // points at a table of further descriptor
 const F_INDIRECT_DESC_LO: u32 = 1 << 28;
 
 // blk request types.
-const VIRTIO_BLK_T_IN: u32 = 0; // read
+const VIRTIO_BLK_T_IN: u32 = 0; // read: the device WRITES the data buffer
+const VIRTIO_BLK_T_OUT: u32 = 1; // write: the device READS the data buffer
 
 // --- our DMA layout, offsets within the one DMA page ---
 const OFF_DESC: u64 = 0x000; // 16 * QSIZE = 128 bytes
@@ -178,6 +179,97 @@ pub fn run(dma_phys: u64) -> ! {
     }
 }
 
+/// The byte the write test puts at offset `i` of the scratch block. The first eight bytes are a
+/// literal the kernel test asserts against; the rest is a cheap position-dependent function, so a
+/// buffer that came back shifted, truncated, or stale cannot match it.
+fn pattern_byte(i: usize) -> u8 {
+    const HEAD: &[u8; 8] = b"CRKWRIT1";
+    if i < 8 {
+        HEAD[i]
+    } else {
+        (i as u8).wrapping_mul(31) ^ 0x5A
+    }
+}
+
+/// **The write path, end to end.** Find the `scratch` file in the directory (the one block on the
+/// disk the write tests own), write a pattern into its block, wipe the buffer, read the block
+/// back, and verify every byte made the round trip through the device. Then re-read block 0 and
+/// look motd up again, so the report also certifies the write did not eat the filesystem around
+/// it. Reports the first 8 bytes of the read-back pattern.
+pub fn run_write(dma_phys: u64) -> ! {
+    init();
+
+    // The directory tells us where scratch lives; nothing about the sector is hardcoded.
+    read_block(dma_phys, 0);
+    let mut magic = [0u8; 8];
+    for (i, b) in magic.iter_mut().enumerate() {
+        *b = dma_read::<u8>(OFF_DATA + i as u64);
+    }
+    check(&magic == b"CRKR0001");
+    let scratch = find_file(b"scratch").unwrap_or_else(|| report_code(0xE6)) as u64;
+
+    // Write the pattern...
+    for i in 0..BLOCK {
+        dma_write::<u8>(OFF_DATA + i as u64, pattern_byte(i));
+    }
+    write_block(dma_phys, scratch);
+
+    // ...wipe the buffer so a read that silently does nothing cannot pass, and read it back.
+    for i in 0..BLOCK {
+        dma_write::<u8>(OFF_DATA + i as u64, 0);
+    }
+    read_block(dma_phys, scratch);
+    for i in 0..BLOCK {
+        check(dma_read::<u8>(OFF_DATA + i as u64) == pattern_byte(i));
+    }
+    let mut head = [0u8; 8];
+    for (i, b) in head.iter_mut().enumerate() {
+        *b = dma_read::<u8>(OFF_DATA + i as u64);
+    }
+
+    // The write must have landed on ITS block and nothing else: the superblock still parses and
+    // the read-path file is still in the directory.
+    read_block(dma_phys, 0);
+    for (i, b) in magic.iter_mut().enumerate() {
+        *b = dma_read::<u8>(OFF_DATA + i as u64);
+    }
+    check(&magic == b"CRKR0001");
+    check(find_file(b"motd").is_some());
+
+    send(REPORT, u64::from_le_bytes(head), 0, 0);
+
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+/// **The abandoned write.** Submit a write through the validated path and then die on purpose,
+/// without waiting for the completion, acknowledging the interrupt, or touching the used ring:
+/// the kill-mid-write case. The kernel reaps this thread with the device still owing it a
+/// completion; the test then runs the full writer against the same device and it must succeed,
+/// which is the proof the abandoned request left the transport, the validator bookkeeping, and
+/// the disk in a sane state. Reports 1 after the submit so the test knows the write really left,
+/// then panics (`brk`/`ebreak`), which is how a userspace process dies here.
+pub fn run_write_abandon(dma_phys: u64) -> ! {
+    init();
+
+    read_block(dma_phys, 0);
+    let mut magic = [0u8; 8];
+    for (i, b) in magic.iter_mut().enumerate() {
+        *b = dma_read::<u8>(OFF_DATA + i as u64);
+    }
+    check(&magic == b"CRKR0001");
+    let scratch = find_file(b"scratch").unwrap_or_else(|| report_code(0xE6)) as u64;
+
+    for i in 0..BLOCK {
+        dma_write::<u8>(OFF_DATA + i as u64, 0xAB);
+    }
+    let _used_before = submit_block(dma_phys, scratch, VIRTIO_BLK_T_OUT);
+
+    send(REPORT, 1, 0, 0); // submitted; the kernel validated it and rang the device
+    panic!(); // and now we are gone, mid-operation
+}
+
 /// **The attack, refused.** A malicious driver that points a descriptor at kernel memory and asks
 /// the device to write there. The kernel validates the descriptor on submit and refuses, so the
 /// device is never told to go and never touches the address. Reports 1 if the kernel refused
@@ -271,25 +363,30 @@ fn find_file(name: &[u8]) -> Option<u32> {
     None
 }
 
-/// Build the three-descriptor chain for a block read, publish it, wait for the interrupt, and
-/// confirm the device reported success.
-fn read_block(dma_phys: u64, sector: u64) {
-    // The request header the device reads: type=IN (read), reserved, sector.
-    dma_write::<u32>(OFF_HEADER, VIRTIO_BLK_T_IN);
+/// Build and publish the three-descriptor chain for one block transfer, and ring the device
+/// through the kernel. Returns the used-ring index from before the submit, which is what
+/// [`complete_block`] compares against to see the completion land. The chain shape is the blk
+/// spec's for both directions; only the data descriptor's device-writable flag differs:
+/// a read (`T_IN`) has the device WRITE our buffer, a write (`T_OUT`) has it READ the buffer.
+/// Either way every address is inside our DMA region, and the kernel checks that on NOTIFY;
+/// the direction flag changes nothing about the confinement, which bounds addresses, not flags.
+fn submit_block(dma_phys: u64, sector: u64, req_type: u32) -> u16 {
+    // The request header the device reads: type, reserved, sector.
+    dma_write::<u32>(OFF_HEADER, req_type);
     dma_write::<u32>(OFF_HEADER + 4, 0);
     dma_write::<u64>(OFF_HEADER + 8, sector);
     dma_write::<u8>(OFF_STATUS, 0xff); // the device overwrites this with 0 on success
 
-    // desc[0]: header, device reads it.        NEXT -> 1
+    let data_flags = if req_type == VIRTIO_BLK_T_IN {
+        VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE // read: the device fills our buffer
+    } else {
+        VIRTQ_DESC_F_NEXT // write: the device consumes our buffer
+    };
+
+    // desc[0]: header, device reads it.          NEXT -> 1
     write_desc(0, dma_phys + OFF_HEADER, 16, VIRTQ_DESC_F_NEXT, 1);
-    // desc[1]: data buffer, device WRITES it.  NEXT -> 2
-    write_desc(
-        1,
-        dma_phys + OFF_DATA,
-        BLOCK as u32,
-        VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE,
-        2,
-    );
+    // desc[1]: data buffer, direction above.     NEXT -> 2
+    write_desc(1, dma_phys + OFF_DATA, BLOCK as u32, data_flags, 2);
     // desc[2]: status byte, device WRITES it.  (end of chain)
     write_desc(2, dma_phys + OFF_STATUS, 1, VIRTQ_DESC_F_WRITE, 0);
 
@@ -309,27 +406,60 @@ fn read_block(dma_phys: u64, sector: u64) {
         report_code(0xE5); // the kernel refused our request (a descriptor escaped our region)
     }
 
-    // **Wait for the interrupt, as a message.** The device raises its line when it puts our
-    // buffer on the used ring; the kernel (milestone 9a) masks the line, turns it into a
-    // notification, and wakes us. If the interrupt already fired between the notify above and
-    // this call, the kernel's pending count makes WAIT return at once instead of blocking on an
-    // event that is already over. SAFETY: `svc`; the kernel validates the Irq capability.
-    unsafe { invoke(IRQ, irq::WAIT, 0, 0, 0) };
+    used_before
+}
 
-    // Quiet the device (read its interrupt-status, acknowledge it), then re-enable the line at
-    // the GIC, which the kernel masked when it fired. SAFETY: `svc`.
-    let istatus = mr(INTERRUPT_STATUS);
-    mw(INTERRUPT_ACK, istatus);
-    unsafe { invoke(IRQ, irq::ACK, 0, 0, 0) };
+/// Wait for the completion of a submitted transfer and confirm the device reported success.
+///
+/// **The completion is the used ring advancing, not the wakeup.** A driver cannot treat one
+/// interrupt as one completion: the device's line is shared across every driver that ever holds
+/// this device, and a wakeup can be spurious, coalesced, or left pending by a *previous* operator
+/// of the device. The kill-mid-write case makes that concrete: a driver that submitted a write and
+/// died leaves its completion interrupt pending on the shared routing endpoint, and this fresh
+/// driver's first WAIT would consume that stale signal before its own request is on the used ring.
+/// So loop: WAIT, quiet the device, re-enable the line, and let `used.idx` decide when we are
+/// actually done. Every real completion the device makes also raises the line, so the loop always
+/// makes progress and cannot outlast the device. See notes/dma.md (the kill-mid-write section).
+fn complete_block(used_before: u16) {
+    loop {
+        // **Wait for the interrupt, as a message.** The device raises its line when it puts our
+        // buffer on the used ring; the kernel (milestone 9a) masks the line, turns it into a
+        // notification, and wakes us. If the interrupt already fired between the notify above and
+        // this call, the kernel's pending count makes WAIT return at once instead of blocking on
+        // an event that is already over. SAFETY: `svc`; the kernel validates the Irq capability.
+        unsafe { invoke(IRQ, irq::WAIT, 0, 0, 0) };
 
-    barrier();
-    if dma_read::<u16>(OFF_USED + 2) == used_before {
-        report_code(0xE3); // woke, but the device did not complete the request
+        // Quiet the device (read its interrupt-status, acknowledge it), then re-enable the line at
+        // the controller, which the kernel masked when it fired. SAFETY: `svc`.
+        let istatus = mr(INTERRUPT_STATUS);
+        mw(INTERRUPT_ACK, istatus);
+        unsafe { invoke(IRQ, irq::ACK, 0, 0, 0) };
+
+        barrier();
+        if dma_read::<u16>(OFF_USED + 2) != used_before {
+            break; // our request is on the used ring; this wakeup was really ours
+        }
+        // The used ring has not moved, so that wakeup belonged to someone else (a stale completion
+        // from a dead driver, most likely). Wait again for our own.
     }
     let st = dma_read::<u8>(OFF_STATUS);
     if st != 0 {
         report_code(0xE200 | st as u64); // device reported a non-OK status
     }
+}
+
+/// Read one block from `sector` into the DMA data buffer, start to finish.
+fn read_block(dma_phys: u64, sector: u64) {
+    let used_before = submit_block(dma_phys, sector, VIRTIO_BLK_T_IN);
+    complete_block(used_before);
+}
+
+/// Write the DMA data buffer to `sector`, start to finish. **The write verb** (milestone 32
+/// phase 1): the same chain, the same validated submit, the same completion; only the data
+/// descriptor's direction differs, so everything the read path proved carries over.
+fn write_block(dma_phys: u64, sector: u64) {
+    let used_before = submit_block(dma_phys, sector, VIRTIO_BLK_T_OUT);
+    complete_block(used_before);
 }
 
 /// Report a diagnostic code to the kernel and stop. Distinct from the magic, so the kernel's
