@@ -892,6 +892,16 @@ endgame, and POSIX posture). The entries here remain the detailed source for eac
   person who eventually wires it (thinking about untyped accounting, not shared-frame lifetimes)
   meets the precondition there too.
 
+- **`Tcb::SUSPEND`/`RESUME`: pause a thread without killing it** (deferred from the `^C` decision,
+  §24, 2026-07-28). The two-tier interrupt design covers notify and kill; suspend is the third
+  verb that would make "interrupt" mean pause-and-inspect. Deferred because it widens the §4
+  syscall surface with no consumer yet, and because it should be designed next to milestone 22's
+  fault endpoints (both are "the kernel turns a thread's state into a message a supervisor
+  holds"). **Triggers to build:** (1) milestone 22's supervision tree wants suspend-on-fault
+  rather than kill-on-fault; (2) real job control (`fg`/`bg`, a stopped-process state) in the
+  shell; (3) a debugger. Whichever fires first, design SUSPEND and the fault endpoint as one
+  surface, and give the method its own DECISIONS entry.
+
 ---
 
 ## Milestones
@@ -1368,6 +1378,28 @@ receive buffer validates; the same buffer aimed at kernel memory is refused) and
 `a_second_queue_validates_on_its_own_block` (a good chain on queue 1 lands in queue 1's shadow
 block while a sentinel in queue 0's block is untouched, and a queue-1 escape is refused the same as
 queue 0). See notes/net.md and notes/dma.md.
+
+## 24. Interrupting the foreground process: two-tier, shell-held, no new kernel surface
+
+**Decided 2026-07-28 (Chris), from the proposal in design/interrupt-routing.md.** `^C` routes in
+two tiers. The first `^C` is cooperative: the shell sends an interrupt message on an endpoint the
+foreground child was spawned holding, and a program that listens can cancel cleanly. The second
+`^C` (or a shell-side timeout) escalates to the forcible tier: the shell tears the child down with
+object revocation (§16), which handles the runaway that never checks its endpoint. The interrupt
+capability is held by the **shell**, because job control is the shell's knowledge; a process that
+was not granted a child's interrupt endpoint cannot interrupt it, and there is no ambient deliverer
+of signals. Unix signals (ambient authority, delivered by PID) are exactly what this design
+refuses to reintroduce.
+
+**No new kernel primitive.** The cooperative tier is the existing endpoint machinery; the forcible
+tier is §16's revocation. The escalation policy (how many `^C`s, what timeout) lives in the shell,
+userspace, where policy belongs.
+
+**Deferred, deliberately: `Tcb::SUSPEND`/`RESUME`.** A suspend method would make "interrupt" mean
+pause-and-inspect (real job control, an eventual debugger) instead of notify-or-kill. It is
+deferred, not rejected: it widens the syscall surface for a consumer that does not exist yet, and
+milestone 22's supervision work (fault endpoints) is the adjacent primitive it should be designed
+beside. Tracked in Open design ideas above; the trigger to revisit is written there.
 
 ## Reading
 
