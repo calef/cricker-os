@@ -25,6 +25,7 @@
 mod virtio;
 
 use abi::{Error, endpoint};
+use capsh::{Prog, spawnproto};
 use user_rt::{exit, invoke, recv, send};
 
 /// Roles, as passed in `x0` by the kernel.
@@ -385,6 +386,9 @@ fn init_boot(_x1: u64) -> ! {
     const UNTYPED: u64 = 0;
     const UART_DEV: u64 = 2;
     const UART_IRQ: u64 = 4;
+    // Pages we split off our own budget and hand the shell, so `run --mem N` grants memory that is
+    // genuinely the shell's own (milestone 31). Must match shell.rs's SH_BUDGET_PAGES.
+    const SH_BUDGET_PAGES: u64 = 128;
 
     // The VAs each program hardcodes. Console, input, termd, and shell are all their own
     // binaries (19f.3-5, 28), each started with no role; the VAs must match
@@ -493,11 +497,18 @@ fn init_boot(_x1: u64) -> ! {
     check(tcb_start(input, 0, 0, 0) == 0); // no role selector: input is its own binary
     cap_delete(input);
 
-    // 4. The shell: prints and reads lines through the terminal, and holds the spawn channel.
+    // 4. The shell: prints and reads lines through the terminal, holds the spawn channel, and holds
+    // its own untyped budget (slot 3) so `run --mem N` grants from memory that is genuinely the
+    // shell's. WRITE lets it SPLIT the budget; GRANT lets it delegate the split to init. We carve it
+    // from our own untyped and hand it over the same way we hand any capability.
+    let Ok(sh_budget) = untyped_split(UNTYPED, SH_BUDGET_PAGES) else {
+        halt_forever()
+    };
     let sh_caps: &[(u64, u64)] = &[
         (term_ep, abi::rights::WRITE),
         (spawn_ep, abi::rights::WRITE),
         (result_ep, abi::rights::READ),
+        (sh_budget, abi::rights::WRITE | abi::rights::GRANT),
     ];
     let sh_maps: &[(u64, u64, u64)] = &[
         (SH_OUT_VA, term_out, abi::aspace::MAP_RW), // shell writes text and prompts here
@@ -508,35 +519,74 @@ fn init_boot(_x1: u64) -> ! {
     };
     check(tcb_start(shell, 0, 0, 0) == 0); // no role selector: shell is its own binary
     cap_delete(shell);
+    cap_delete(sh_budget); // our copy; the shell holds its own now
 
-    // The worker is its own binary (19f.2). Parse it once from the archive; every `run <n>` builds
-    // a fresh child from it. If it is missing or unparseable, `worker` is None and the service just
-    // answers "could not spawn" for every request.
+    // The programs the shell can spawn (milestone 31), parsed once from the archive; every `run`
+    // builds a fresh child. A missing or unparseable entry stays None and the service answers
+    // "could not spawn" for it.
     let worker = program(initrd_len, "worker").and_then(|bytes| elf::Elf::parse(bytes).ok());
+    let budgeter = program(initrd_len, "budgeter").and_then(|bytes| elf::Elf::parse(bytes).ok());
 
-    // init stays alive as the real spawn service (19e). The shell SENDs `n` on `spawn_ep`; init
-    // builds a worker endowed with `result_ep` (WRITE) as its slot 0 and starts it with `n` in x1
-    // (the multi-arg START). The worker squares `n`, SENDs the answer straight to `result_ep`, and
-    // exits; the shell, holding `result_ep` for READ, receives it. init never sees the answer, it
-    // only builds the pipe. If the budget is exhausted (worker pages are pinned and not reclaimed
-    // yet), init answers u64::MAX so the shell degrades gracefully instead of the shell hanging.
+    // The spawn service (milestone 31's grant expression, wire half; capsh::spawnproto). The shell
+    // resolved a `run` into a program, an argument, and a memory-grant page count, and directs init
+    // rather than building the child itself: init holds the initrd, so it stays the ELF loader (the
+    // parser lives in one place). init endows every child the result endpoint at slot 0, and the
+    // untyped the shell delegates at slot 1 when a `--mem` grant rode along. Nothing else: the
+    // child's authority is exactly what the command line named. On any failure init sends the
+    // spawn-failed sentinel on the result endpoint so the shell's one read completes, not hangs.
     loop {
-        let n = recv(spawn_ep).0; // blocks until the shell asks; x0 carries the argument
-        let worker_caps: &[(u64, u64)] = &[(result_ep, abi::rights::WRITE)];
-        let built = worker
-            .as_ref()
-            .and_then(|w| build_child(UNTYPED, w, worker_caps, &[]).ok());
-        match built.ok_or(()) {
-            Ok(w) => {
-                // x0 unused (standalone binary); the input is in x1.
-                if tcb_start(w, 0, n, 0) != 0 {
-                    send(result_ep, u64::MAX, 0, 0);
+        let (w0, w1, w2) = recv(spawn_ep); // blocks until the shell asks
+        let prog = Prog::from_id(spawnproto::prog_id(w0));
+        let arg = spawnproto::arg(w1);
+        let mem_pages = spawnproto::mem_pages(w2);
+
+        // A promised memory grant arrives as the delegated untyped over the next SEND_CAP; no
+        // promise, no receive, so both sides stay in lockstep on the endpoint.
+        let budget = if mem_pages > 0 {
+            let (_w, slot) = recv_cap(spawn_ep);
+            if slot == endpoint::NO_CAP {
+                None
+            } else {
+                Some(slot)
+            }
+        } else {
+            None
+        };
+
+        let elf = match prog {
+            Some(Prog::Worker) => worker.as_ref(),
+            Some(Prog::Budgeter) => budgeter.as_ref(),
+            None => None,
+        };
+
+        // The delegated budget goes in narrowed to WRITE: the child may spend it, not lend it.
+        let built = elf.and_then(|e| match budget {
+            Some(b) => build_child(
+                UNTYPED,
+                e,
+                &[(result_ep, abi::rights::WRITE), (b, abi::rights::WRITE)],
+                &[],
+            )
+            .ok(),
+            None => build_child(UNTYPED, e, &[(result_ep, abi::rights::WRITE)], &[]).ok(),
+        });
+
+        match built {
+            Some(tcb) => {
+                // x0 unused (standalone binary); the argument is in x1.
+                if tcb_start(tcb, 0, arg, 0) != 0 {
+                    send(result_ep, spawnproto::SPAWN_FAILED, 0, 0);
                 }
-                cap_delete(w); // init's TCB cap; the worker keeps running until it exits
+                cap_delete(tcb); // init's TCB cap; the child keeps running until it exits
             }
-            Err(_) => {
-                send(result_ep, u64::MAX, 0, 0); // out of budget: "could not spawn"
+            None => {
+                send(result_ep, spawnproto::SPAWN_FAILED, 0, 0);
             }
+        }
+        // Drop our copy of the delegated budget (it is the child's now), so a long session of
+        // `run --mem` does not exhaust init's own 16-slot cspace. A no-op when there was none.
+        if let Some(b) = budget {
+            cap_delete(b);
         }
     }
 }
@@ -940,6 +990,13 @@ fn retype_obj(untyped: u64, objtype: u64) -> Result<u64, ()> {
 /// Retype a page of `untyped` into a Frame capability; returns its cap slot.
 fn retype_frame(untyped: u64) -> Result<u64, ()> {
     let r = unsafe { invoke(untyped, abi::untyped::RETYPE, 0, 0, 0) };
+    if r < 0 { Err(()) } else { Ok(r as u64) }
+}
+
+/// Carve `pages` off `untyped` into a new child untyped we can delegate (milestone 31). The SPLIT
+/// grants full rights on the child, including GRANT, so a memory budget can be handed on.
+fn untyped_split(untyped: u64, pages: u64) -> Result<u64, ()> {
+    let r = unsafe { invoke(untyped, abi::untyped::SPLIT, pages, 0, 0) };
     if r < 0 { Err(()) } else { Ok(r as u64) }
 }
 

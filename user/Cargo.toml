@@ -56,6 +56,14 @@ path = "src/shell.rs"
 test = false
 bench = false
 
+# The budgeter (milestone 31): spends exactly the untyped budget `run --mem N` grants it and reports
+# how many pages it could map. The program that makes the memory grant real, not parsed-and-ignored.
+[[bin]]
+name = "budgeter"
+path = "src/budgeter.rs"
+test = false
+bench = false
+
 # The CoreMark workload (milestone 19e): the first real compute workload, run against the native ABI.
 [[bin]]
 name = "coremark"
@@ -120,6 +128,7 @@ bench = false
 
 [dependencies]
 abi = { version = "0.1.0", path = "../crates/abi" }
+capsh = { version = "0.1.0", path = "../crates/capsh" }
 coremark = { version = "0.1.0", path = "../crates/coremark" }
 crickerfs = { version = "0.1.0", path = "../crates/crickerfs" }
 elf = { version = "0.1.0", path = "../crates/elf" }

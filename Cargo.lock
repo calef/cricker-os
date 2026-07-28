@@ -24,6 +24,10 @@ name = "caps"
 version = "0.1.0"
 
 [[package]]
+name = "capsh"
+version = "0.1.0"
+
+[[package]]
 name = "coremark"
 version = "0.1.0"
 
@@ -121,6 +125,7 @@ name = "user"
 version = "0.1.0"
 dependencies = [
  "abi",
+ "capsh",
  "coremark",
  "crickerfs",
  "elf",
