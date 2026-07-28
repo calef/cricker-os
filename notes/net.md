@@ -91,15 +91,15 @@ map.
 
 **Open questions (the fork).**
 
-1. **Socket identity: a minted endpoint per socket, or a socket id on the stack endpoint?** A minted
-   endpoint per socket is the purest capability shape (a socket IS an unforgeable object, delegatable
-   on its own), but it spends a kernel object (a page) per connection and needs the server to retype
-   untyped per socket. A socket id (small integer) on the one stack endpoint is cheap and matches
-   what `std::net`'s PAL wants (a file-descriptor-like handle), but "which socket" then rides in a
-   message word rather than being the capability itself, which is weaker designation. Recommendation:
-   **socket id for phase one** (cheap, and the PAL needs an fd-like anyway), with the shared frame as
-   the real per-connection resource; revisit minted-endpoint-per-socket if a socket ever needs to be
-   delegated to a third process. This is the decision most worth Chris's eye.
+1. **Socket identity: DECIDED 2026-07-28 (Chris): a socket id on the stack endpoint for phase
+   one; minted-endpoint-per-socket is the deliberate later step, tracked in DECISIONS §25.** The
+   trade as it was put to him: a minted endpoint per socket is the purest capability shape (a
+   socket IS an unforgeable object, delegatable on its own), but it spends a kernel object (a
+   page) per connection and needs the server to retype untyped per socket. A socket id (small
+   integer) on the one stack endpoint is cheap and matches what `std::net`'s PAL wants (a
+   file-descriptor-like handle), but "which socket" then rides in a message word rather than
+   being the capability itself, which is weaker designation. The shared frame stays the real
+   per-connection resource either way, which is what makes the later migration cheap.
 
 2. **How does the shared frame's producer/consumer protocol work without a syscall per byte?** A
    ring buffer in the shared frame with head/tail indices, the driver pattern, so `send(len)` just
