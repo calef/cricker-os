@@ -73,12 +73,19 @@ if [ -n "$CRICKER_DISK" ]; then
     # refuses to open one file for two devices once either can write. mkdisk writes the sibling
     # alongside the main image with identical contents; missing sibling = stale build, fail loud
     # (the readonly-era silent-degradation lesson, see the CRICKER_DISK check above).
+    #
+    # iommu_platform=on is what puts the PCI disk BEHIND the SMMU (milestone 16b): the device then
+    # emits IOVAs the SMMU translates through the domain the kernel built, and offers
+    # VIRTIO_F_ACCESS_PLATFORM so the driver knows it. WITHOUT this flag QEMU's virtio device
+    # bypasses the SMMU silently, and the confinement test (which asserts the hardware faults an
+    # out-of-region DMA) fails loudly rather than passing on a fiction. The mmio disk (hd0) has no
+    # IOMMU in front of it on this machine, so it takes no such flag.
     PCI_DISK="${CRICKER_DISK%.img}-pci.img"
     if [ ! -f "$PCI_DISK" ]; then
         echo "qemu-runner: $PCI_DISK does not exist (run mkdisk first; it writes both images)" >&2
         exit 1
     fi
-    DISK="-global virtio-mmio.force-legacy=false -drive file=$CRICKER_DISK,if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 -drive file=$PCI_DISK,if=none,format=raw,id=hd1 -device virtio-blk-pci,drive=hd1,disable-legacy=on"
+    DISK="-global virtio-mmio.force-legacy=false -drive file=$CRICKER_DISK,if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 -drive file=$PCI_DISK,if=none,format=raw,id=hd1 -device virtio-blk-pci,drive=hd1,disable-legacy=on,iommu_platform=on"
 fi
 
 # shellcheck disable=SC2086  # $INITRD and $DISK are deliberately word-split or empty
@@ -101,7 +108,13 @@ if [ "$CRICKER_ACCEL" = "hvf" ]; then
     MACHINE="virt,accel=hvf,gic-version=2"
     CPU="host"
 else
-    MACHINE="virt,gic-version=2"
+    # iommu=smmuv3 puts an SMMUv3 in front of the PCIe root complex (milestone 16b). It is on the
+    # TCG path only, on purpose: the IOMMU is a correctness feature proven by the test suite (which
+    # runs under TCG), not a benchmark axis, and smmuv3 emulation alongside HVF acceleration is the
+    # fragile combination. The device tree then carries an `smmuv3@...` node (memory::smmu_region
+    # finds it) and an identity iommu-map for the bus. A plain boot without a PCI disk still gets the
+    # SMMU; it just has nothing to confine.
+    MACHINE="virt,gic-version=2,iommu=smmuv3"
     CPU="cortex-a72"
 fi
 

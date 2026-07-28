@@ -258,3 +258,19 @@ driver operates the device." That is a real cost, taken deliberately, and it is 
 confining DMA *is* a transport concern, and the kernel still knows nothing about block devices. The
 alternative — trusting the driver with all of physical memory — is what a monolithic kernel does
 with an in-kernel driver, and the whole point of this project is not to.
+
+## And now, in hardware (milestone 16b)
+
+The "why not an IOMMU" section above was written when we had none reachable. Milestone 16b reaches
+one, on both boards: an SMMUv3 on aarch64 and the ratified RISC-V IOMMU on riscv, in front of the
+PCIe bus, each confining a device to a domain the kernel programs (notes/iommu.md, DECISIONS §20).
+So the clean answer is now the real answer for the PCIe transport.
+
+This shadow ring is **not** removed. It is demoted to defence in depth. Two reasons it stays. First,
+virtio-mmio has no IOMMU in front of it on either board, so the software confinement is still the
+only thing guarding the mmio disk. Second, even where the IOMMU is present, keeping both means a
+regression in either layer is caught by the other: the transport still refuses a format it cannot
+police (indirect, packed) before a descriptor is built, and the IOMMU still faults an escaping
+address even if a validator bug ever let one through. The feature-stripping and the shadow copy cost
+almost nothing and buy a second independent barrier, which is the right trade for the one DMA path
+that can reach the whole machine.

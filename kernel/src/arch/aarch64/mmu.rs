@@ -273,8 +273,21 @@ where
         Flags::device(),
     )?;
 
+    // 9. The SMMUv3's registers (milestone 16b), only when the device tree says the machine has
+    // one. Gating on the node keeps a plain `virt` boot from mapping (and later touching) MMIO
+    // that is not there.
+    if let Some((smmu, smmu_size)) = memory::smmu_region() {
+        direct_map(m, smmu, smmu + smmu_size, Flags::device())?;
+    }
+
     Ok(())
 }
+
+/// The page-table format this architecture's IOMMU walks: the SMMUv3 stage-1 translates with
+/// VMSAv8-64, the same format the CPU (and therefore every process address space here) uses. The
+/// portable DMA-domain seam (kernel/src/iommu.rs, paging::domain) builds device domains through
+/// this alias, which is what makes the seam one piece of code over two ISAs.
+pub type DmaFormat = Aarch64;
 
 /// The virtio-mmio device window on QEMU `virt`: 32 slots of 0x200 bytes at 0x0a000000, with
 /// interrupts SPI 16..47 (INTID 48..79). Fixed by the machine, like [`UART_BASE`].

@@ -88,6 +88,17 @@ pub fn init(dtb_ptr: usize) {
         }
     }
 
+    // The SMMUv3 (milestone 16b), present only when the machine was started with
+    // `iommu=smmuv3`. Absent, the kernel runs exactly as before; present, iommu::init drives it.
+    {
+        let mut smmu = [Region { start: 0, size: 0 }; 1];
+        if let Ok(n) = dtb.node_reg(b"smmuv3@", &mut smmu)
+            && n >= 1
+        {
+            *SMMU_REGION.lock() = Some((smmu[0].start, smmu[0].size));
+        }
+    }
+
     // The whole span we have to be able to describe. Note this is the *span*, not the
     // *sum*: if a board has RAM at 0x4000_0000 and again at 0x8_0000_0000, we track
     // every frame between them and simply never free the hole. A bit of wasted bitmap
@@ -295,6 +306,14 @@ pub fn plic_region() -> Option<(u64, u64)> {
     *PLIC_REGION.lock()
 }
 
+/// The SMMUv3's register block (start, size), both **physical**, from the device tree. `None`
+/// when the machine has no SMMU (riscv, or aarch64 without `iommu=smmuv3`). Presence here is what
+/// gates the whole aarch64 IOMMU path: no node, no register reads, no faults on a machine that
+/// never had the device.
+pub fn smmu_region() -> Option<(u64, u64)> {
+    *SMMU_REGION.lock()
+}
+
 /// The RAM regions the device tree told us about.
 ///
 /// The MMU needs these: with paging on, a physical address the kernel cannot *name* is a
@@ -358,6 +377,11 @@ static GIC_REGIONS: IrqSafeMutex<GicRegions> = IrqSafeMutex::new(rank::RAM, (Non
 /// The PLIC's single register block, from the device tree (milestone 20). `None` on aarch64 (no such
 /// node) and until `init` has run.
 static PLIC_REGION: IrqSafeMutex<Option<(u64, u64)>> = IrqSafeMutex::new(rank::RAM, None);
+
+/// The SMMUv3's register block, from the device tree (milestone 16b). `None` unless the machine was
+/// started with `-machine virt,iommu=smmuv3` (and always on riscv, whose IOMMU is a PCI function
+/// found by enumeration, not a platform device with a node).
+static SMMU_REGION: IrqSafeMutex<Option<(u64, u64)>> = IrqSafeMutex::new(rank::RAM, None);
 
 static BITMAP_START: AtomicUsize = AtomicUsize::new(0);
 static BITMAP_BYTES: AtomicUsize = AtomicUsize::new(0);

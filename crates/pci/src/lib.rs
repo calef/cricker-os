@@ -31,6 +31,14 @@ impl Bdf {
     pub fn ecam_offset(self) -> u64 {
         ((self.bus as u64) << 20) | ((self.dev as u64) << 15) | ((self.func as u64) << 12)
     }
+
+    /// The **PCIe requester id**: the 16-bit `bus:8 | dev:5 | fn:3` a function stamps on every
+    /// memory transaction it issues, and the key an IOMMU (SMMUv3 StreamID, RISC-V IOMMU device_id)
+    /// looks a device up by. Both `virt` boards publish an identity `iommu-map` in the device tree,
+    /// so this number is exactly the id the IOMMU sees. See kernel/src/iommu.rs (milestone 16b).
+    pub fn requester_id(self) -> u32 {
+        ((self.bus as u32) << 8) | ((self.dev as u32) << 3) | (self.func as u32)
+    }
 }
 
 // Standardized config-space header offsets (type 0).
@@ -430,6 +438,57 @@ mod tests {
             }
             .ecam_offset(),
             0x10_0000
+        );
+    }
+
+    /// The requester id is `bus:8 | dev:5 | fn:3`, the id the IOMMU keys per-device tables on
+    /// (milestone 16b). A different packing than `ecam_offset`, so it gets its own witness.
+    #[test]
+    fn requester_id_packs_bus_dev_fn() {
+        assert_eq!(
+            Bdf {
+                bus: 0,
+                dev: 0,
+                func: 0
+            }
+            .requester_id(),
+            0
+        );
+        assert_eq!(
+            Bdf {
+                bus: 0,
+                dev: 1,
+                func: 0
+            }
+            .requester_id(),
+            0x08
+        );
+        assert_eq!(
+            Bdf {
+                bus: 0,
+                dev: 0,
+                func: 1
+            }
+            .requester_id(),
+            0x01
+        );
+        assert_eq!(
+            Bdf {
+                bus: 0,
+                dev: 2,
+                func: 3
+            }
+            .requester_id(),
+            0x13
+        );
+        assert_eq!(
+            Bdf {
+                bus: 1,
+                dev: 0,
+                func: 0
+            }
+            .requester_id(),
+            0x100
         );
     }
 

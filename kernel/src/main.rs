@@ -34,6 +34,7 @@ mod cap;
 mod console;
 mod cpu;
 mod drivers;
+mod iommu;
 mod kmem;
 mod memory;
 mod panic;
@@ -168,6 +169,12 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         // SMP tests find the cores online, mirroring aarch64's `bring_up_secondaries` then `test_main`.
         arch::irq::init_this_cpu();
         smp::bring_up_secondaries();
+
+        // The RISC-V IOMMU (milestone 16b), if QEMU presents one (`-device riscv-iommu-pci`). It is
+        // a PCI function, so the kernel enumerates it, places its BAR, and brings it up here, before
+        // any path (test, shell, tour) confines a virtio-pci device. Absent, this is a no-op and the
+        // kernel runs exactly as before. See kernel/src/iommu.rs, notes/iommu.md.
+        pci::init_iommu();
 
         // A bench build runs the primitive suite here and parks, instead of the tour. It needs the
         // `elbench` and `coremark` programs in the initrd (cargo xtask initrd-riscv packs them). The
@@ -511,6 +518,16 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
     // And now the sketchiest moment in the kernel. The instant SCTLR_EL1.M is set, the very
     // next instruction is fetched through the MMU. See arch/aarch64/mmu.rs.
     arch::mmu::init();
+
+    // The SMMUv3 (milestone 16b), if the machine was started with `iommu=smmuv3`. Its register
+    // block is a device-tree node (memory::smmu_region), mapped by mmu::init just above; absent, the
+    // kernel runs exactly as before. Bringing it up here installs an all-invalid stream table and
+    // sets default-deny, so every PCIe stream aborts until virtio::register confines its device.
+    // The CPU's own ECAM and BAR reads are not DMA, so PCI enumeration below is unaffected. See
+    // kernel/src/iommu.rs, notes/iommu.md.
+    if let Some((smmu_base, _)) = memory::smmu_region() {
+        arch::iommu::init(smmu_base);
+    }
 
     // The heap must come AFTER the MMU: it hands out addresses, and with paging on an
     // address is only usable if something has mapped it. From here, `Vec` works.

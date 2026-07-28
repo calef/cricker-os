@@ -51,13 +51,26 @@ if [ -n "$CRICKER_DISK" ]; then
     # side. A missing sibling is a stale build; fail loud, same rule as the main image.
     # disable-legacy=on makes the PCI function MODERN (device id 0x1042): without it QEMU offers a
     # transitional device (0x1001), whose legacy register layout we deliberately do not drive.
+    #
+    # iommu_platform=on puts the PCI disk BEHIND the RISC-V IOMMU (milestone 16b, the twin of the
+    # aarch64 SMMU): the device emits IOVAs the IOMMU translates through the domain the kernel built,
+    # and offers VIRTIO_F_ACCESS_PLATFORM so the driver negotiates it. Without it QEMU's virtio
+    # device bypasses the IOMMU silently, and the confinement test fails loudly. The mmio disk has no
+    # IOMMU in front of it and takes no such flag.
     PCI_DISK="${CRICKER_DISK%.img}-pci.img"
     if [ ! -f "$PCI_DISK" ]; then
         echo "qemu-runner-riscv: $PCI_DISK does not exist (run mkdisk first; it writes both images)" >&2
         exit 1
     fi
-    DISK="-global virtio-mmio.force-legacy=false -drive file=$CRICKER_DISK,if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 -drive file=$PCI_DISK,if=none,format=raw,id=hd1 -device virtio-blk-pci,drive=hd1,disable-legacy=on"
+    DISK="-global virtio-mmio.force-legacy=false -drive file=$CRICKER_DISK,if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 -drive file=$PCI_DISK,if=none,format=raw,id=hd1 -device virtio-blk-pci,drive=hd1,disable-legacy=on,iommu_platform=on"
 fi
+
+# The RISC-V IOMMU (milestone 16b): the ratified v1.0.1 IOMMU as a PCI function (riscv-iommu-pci,
+# Red Hat 1b36:0014) in front of the PCIe bus. Present on every boot for parity with the aarch64
+# SMMU that is always on the machine; the kernel enumerates it, places its BAR, and brings it up
+# (pci::init_iommu). Idle when no PCI disk is attached. Placed on the command line before the disk
+# so it fronts the bus the virtio-blk-pci device joins.
+IOMMU="-device riscv-iommu-pci"
 
 exec qemu-system-riscv64 \
     -machine virt \
@@ -68,6 +81,7 @@ exec qemu-system-riscv64 \
     -display none \
     -serial stdio \
     -kernel "$ELF" \
+    $IOMMU \
     $INITRD \
     $DISK \
     "$@"
