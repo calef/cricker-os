@@ -44,6 +44,10 @@ name = "frames"
 version = "0.1.0"
 
 [[package]]
+name = "fs_proto"
+version = "0.1.0"
+
+[[package]]
 name = "intrusive"
 version = "0.1.0"
 
