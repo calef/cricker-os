@@ -18,6 +18,10 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 pub(crate) mod abi;
+// The netd socket-contract wire format (opcodes, frame offsets), generated verbatim from
+// `user/src/netproto.rs` by `cargo xtask std-src` so the numbers cannot drift from the server.
+// The net PAL (`sys/net`) is a client of it.
+pub(crate) mod netproto;
 pub(crate) mod rt;
 
 use crate::io;

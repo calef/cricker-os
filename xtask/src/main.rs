@@ -159,7 +159,7 @@ const STD_TARGETS: [&str; 2] = ["aarch64-unknown-cricker", "riscv64-unknown-cric
 const CRICKER_TOOLCHAIN: &str = "cricker-dev";
 
 /// Bump to force every farm to rebuild after a change to the patch logic itself (not the inputs).
-const STD_SRC_PATCH_VERSION: u32 = 2;
+const STD_SRC_PATCH_VERSION: u32 = 3;
 
 fn farm_dir() -> PathBuf {
     workspace_root().join("target/cricker-farm")
@@ -204,6 +204,9 @@ fn std_inputs_stamp() -> u64 {
     let mut files: Vec<PathBuf> = vec![
         root.join("crates/abi/src/lib.rs"),
         root.join("crates/uheap/src/lib.rs"),
+        // The net PAL generates its wire constants verbatim from the netd contract; a change to it
+        // must rebuild the farm just like a change to the ABI crate.
+        root.join("user/src/netproto.rs"),
         root.join("targets/aarch64-unknown-cricker.json"),
         root.join("targets/riscv64-unknown-cricker.json"),
     ];
@@ -341,6 +344,12 @@ fn std_generate_modules() -> bool {
             root.join("crates/uheap/src/lib.rs"),
             farm_std_src().join("sys/alloc/cricker/uheap.rs"),
         ),
+        // The netd socket-contract wire format, verbatim, so the net PAL cannot drift from the
+        // server it talks to (same discipline as the ABI and heap crates above).
+        (
+            root.join("user/src/netproto.rs"),
+            farm_std_src().join("sys/pal/cricker/netproto.rs"),
+        ),
     ];
     for (src, dst) in jobs {
         let Ok(text) = std::fs::read_to_string(&src) else {
@@ -425,6 +434,14 @@ fn std_patch_dispatch() -> bool {
         &sys.join("time/mod.rs"),
         "cfg_select! {",
         "    target_os = \"cricker\" => {\n        mod cricker;\n        use cricker as imp;\n    }",
+    ) && patch_after(
+        // net: TcpStream + outbound UdpSocket over the netd socket contract (milestone 27 phase
+        // two). The first cfg_select in connection/mod.rs is the backend dispatcher; the cricker
+        // arm precedes the `_ =>` unsupported fallback that phase one used. hostname has its own
+        // `_ =>` fallback to unsupported, so it needs no arm.
+        &sys.join("net/connection/mod.rs"),
+        "cfg_select! {",
+        "    target_os = \"cricker\" => {\n        mod cricker;\n        pub use cricker::*;\n    }",
     ) && patch_after(
         // io/error has no fallback arm; route cricker to the generic backend.
         &sys.join("io/error/mod.rs"),

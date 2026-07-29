@@ -16,10 +16,21 @@
 //!   (w0 = byte count, w1|w2 = the bytes, little-endian). Interleaving of out and err is the
 //!   phase-one price of one endpoint; milestone 28's terminal contract owns fixing it.
 //!
-//! Programs that never allocate or print never touch the slots they do not use.
+//! And two more, granted only to a std program that is given the network (milestone 27 phase two;
+//! the net PAL in `sys/net` binds them, DECISIONS §25):
+//!
+//! - **slot 2**: the `Stack` endpoint with WRITE. `std::net` speaks the netd socket contract
+//!   (`netproto`) over it: `CALL`s carry a socket id and control words, `SEND_CAP` delegates a
+//!   per-socket shared frame. A program not given the network leaves this slot empty, and every
+//!   `TcpStream`/`UdpSocket` operation returns `Unsupported` rather than blocking.
+//! - **slot 3**: an untyped budget the net PAL mints and maps each socket's shared frame from.
+//!
+//! Programs that never allocate, print, or open a socket never touch the slots they do not use.
 
 pub const UNTYPED_SLOT: u64 = 0;
 pub const STDOUT_SLOT: u64 = 1;
+pub const STACK_SLOT: u64 = 2;
+pub const NET_UNTYPED_SLOT: u64 = 3;
 
 /// Where the heap lives: 1 GiB, clear of the program image (0x40_0000), stacks, shared pages,
 /// and the initrd window (0x2000_0000). Same value as `user_rt::heap::DEFAULT_BASE`.
@@ -72,6 +83,53 @@ pub unsafe fn invoke(cap: u64, method: u64, a0: u64, a1: u64, a2: u64) -> i64 {
 /// SEND three words on the endpoint in `slot`. Blocks until a receiver takes them.
 pub fn send(slot: u64, w0: u64, w1: u64, w2: u64) -> i64 {
     unsafe { invoke(slot, abi::endpoint::SEND, w0, w1, w2) }
+}
+
+/// `CALL` the endpoint in `slot`: send two words and block until the server replies through the
+/// one-shot Reply capability the kernel mints. Returns the two reply words. A verbatim twin of
+/// `user_rt::call`; the net PAL (`sys/net`) drives the socket contract with it.
+///
+/// On a syscall-level failure (an empty slot, wrong rights) the kernel returns a negative value
+/// in the first result register, which a caller distinguishes from a server reply by reading it
+/// as `i64` (the net server never replies a negative word).
+#[cfg(target_arch = "aarch64")]
+pub fn call(slot: u64, w0: u64, w1: u64) -> (u64, u64) {
+    let (mut r0, mut r1): (u64, u64);
+    // SAFETY: `svc`. CALL returns the two reply words in x0/x1.
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("x8") abi::SYS_INVOKE,
+            inlateout("x0") slot => r0,
+            in("x1") abi::endpoint::CALL,
+            lateout("x1") r1,
+            in("x2") w0,
+            in("x3") w1,
+            in("x4") 0u64,
+            options(nostack),
+        );
+    }
+    (r0, r1)
+}
+
+/// `CALL` (RISC-V). See the aarch64 twin; `ecall`, the two reply words in `a0`/`a1`.
+#[cfg(target_arch = "riscv64")]
+pub fn call(slot: u64, w0: u64, w1: u64) -> (u64, u64) {
+    let (mut r0, mut r1): (u64, u64);
+    // SAFETY: `ecall`. CALL returns the two reply words in a0/a1.
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            in("a7") abi::SYS_INVOKE,
+            inlateout("a0") slot => r0,
+            inlateout("a1") abi::endpoint::CALL => r1,
+            in("a2") w0,
+            in("a3") w1,
+            in("a4") 0u64,
+            options(nostack),
+        );
+    }
+    (r0, r1)
 }
 
 /// Give up the CPU (`SYS_YIELD`); the timed sleep loop is built on this.
