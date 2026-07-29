@@ -454,3 +454,78 @@ the harness itself. No bench was measuring fiction in the sense of an elided loo
 the loops all still do their work; the fiction was the *counter*, reading four harts where the
 benchmark meant one. The new baseline (smp=1) is the first aarch64 icount baseline that measures the
 primitive rather than the machine, and it now agrees in shape with the riscv one.
+
+## The one bench that is legitimately multi-hart (DECISIONS §28, the placement win)
+
+Every primitive above is hart-pinned, and it has to be: the icount instrument boots `-smp 1`, because
+under `-icount` all vCPUs share one virtual clock and an idle hart's `wfi` jumps that clock forward
+(the 2026-07-28 finding above). So the deterministic suite measures per-core path length and is blind,
+by construction, to §28's whole job: spreading work across the four harts. The `smp_*` benches
+(`kernel/src/bench.rs::smp_throughput`) are the one measurement that shows it, and their methodology is
+different on purpose, so this section is where the difference is written down.
+
+**They never gate, and never touch `bench/baseline.txt`.** Two structural reasons. First, they run
+only when `online_count() > 1`, which is only the `--real` (HVF) boot; under the icount instrument
+(`-smp 1`) `smp_throughput` returns immediately, so no `smp_*` line is ever emitted there and the
+committed baseline never sees them (verified: `--check` output has no `smp_*` rows). Second, a
+wall-clock throughput number is not even defined under `-icount` (one shared clock), and TCG serialises
+all vCPUs onto one host thread, so there is no real parallelism to measure. Only HVF gives each core
+its own counter and genuine concurrent execution. These are statistical HVF magnitudes read by a human
+with loose bounds, exactly like the other `--real` numbers, not a tick baseline.
+
+**Two workloads, because they tell opposite and both-true stories.**
+
+| bench | workload | one batch |
+|---|---|---|
+| `smp_compute_*` | N independent CPU-bound grinders, no syscalls | `solo` = 1 worker; `all` = 16 workers, each the same fixed grind |
+| `smp_pipe_*` | N independent synchronous IPC ping-pong pairs | `solo` = 1 pair; `all` = 16 pairs, each 2000 round trips |
+
+The scaling factor for either is the `solo` throughput divided by the `all` throughput, i.e. read it
+from the totals (`iters / ticks`), not from the coarse `ns/iter` column. `smp_cores` records the
+ceiling (4 on this boot).
+
+**Compute scales, ~3.5x on 4 cores, and that is the §28 placement win.** Numbers (HVF, release,
+min-of-4 batches, five boots):
+
+```
+smp_compute_solo   ~8,886 ticks / 300,000 iters      (one core's grind rate)
+smp_compute_all   ~40,000 ticks / 4,800,000 iters    (16x the work, across the machine)
+```
+
+Sixteen workers is sixteen times the work; run one at a time it would take `16 x 8,886 = 142,176`
+ticks, and it finishes in ~40,000, a **3.5x speedup** (≈89% of the 4x ceiling). The lost ~11% is real
+and expected: 16 does not divide into 4 waves cleanly (the last wave runs four workers where earlier
+waves were full), plus spawn, reap, and the barrier. A CPU-bound worker makes no cross-core wake once
+placed, so the host keeps every busy vCPU on a real core, and what is left to measure is exactly
+placement filling the machine. This is the number no hart-pinned primitive can show.
+
+**Synchronous IPC pipelines do NOT scale under HVF, they go slightly backwards, and the reason is the
+host, not the scheduler.** Numbers (same conditions):
+
+```
+smp_pipe_solo   ~2,900 ticks / 2,000 rtts    (~59 ns/round trip, one warm core, all local)
+smp_pipe_all  ~250,000 ticks / 32,000 rtts   (~322 ns/round trip aggregate)
+```
+
+The aggregate per-round-trip is *slower* than a single pair's, a ~0.18x "speedup". That looks alarming
+until you see why, and the why is a virtualization property. A single pair, with the other three cores
+idle and the main thread blocked, co-locates by §28's local-wake rule and does every rendezvous on one
+warm core, no cross-core traffic at all, so it runs at the `ipc_rtt` rate (~59 ns). Sixteen pairs get
+scattered across the cores by placement, and whenever placement or stealing splits a pair across two
+cores, its next rendezvous is a cross-core wake, an SGI to a vCPU the host has descheduled because the
+guest looked idle a moment earlier. Waking a descheduled vCPU costs host reschedule latency that the
+co-located pair never pays. So the IPC-heavy parallel workload spends its time in HVF's wake path, not
+in the kernel. This is the **same** reason the icount suite is pinned to one hart and the same reason a
+same-machine seL4 number is deferred to real hardware: the instrument underneath, not cricker-os, sets
+the ceiling. On real silicon with four dedicated cores and no descheduling, the pipelines would scale
+the way compute does here; measuring that is a real-hardware follow-up (milestone 16), and the bench is
+already written to report it when the wakes are cheap.
+
+Getting the solo baseline honest took one correction worth recording, because it is the same class of
+error as the smp=4 counter bug. The first version had the main thread **busy-yield** on a done counter
+instead of blocking on a `RECV`. A runnable main plus the pair is three threads the scheduler scatters,
+so even the *solo* pair took cross-core wakes and clocked ~60x slower than `ipc_rtt`'s identical pair,
+and the derived scaling came out **superlinear** (greater than the core count), which is not physical.
+Blocking the main thread (the `ipc_rtt` shape) fixed it: solo returned to the ~59 ns rate and scaling
+fell back under the ceiling where it belongs. A non-physical speedup is a bug in the measurement, never
+a win; it went in the bin, not the baseline.
