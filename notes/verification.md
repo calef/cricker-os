@@ -81,7 +81,7 @@ A proof is only as good as three things, and each is worth being blunt about:
 
 ## What is proved today
 
-Seven harnesses in `crates/caps/src/lib.rs`, under `#[cfg(kani)]`:
+Eight harnesses in `crates/caps/src/lib.rs`, under `#[cfg(kani)]`:
 
 | Harness | Property |
 |---|---|
@@ -90,6 +90,7 @@ Seven harnesses in `crates/caps/src/lib.rs`, under `#[cfg(kani)]`:
 | `from_bits_cannot_forge_a_right` | an attacker-controlled syscall register cannot conjure an undefined right |
 | `subset_matches_allows` | the two phrasings of the order agree, so a bug in one shows against the other |
 | `derive_never_widens_rights` | the central theorem, on the real `CSpace::derive` |
+| `split_never_widens_rights` | authority never widens at the *other* mint site: `Cap::mint_child` (the inheriting mint `Untyped::SPLIT` now uses) hands a child no more than the parent held (milestone 35, below) |
 | `a_deleted_capability_stays_deleted` | for every table state, once `delete` succeeds the slot answers `NoSuchSlot` to both `get` and a second `delete` (the consume-on-use mechanism behind the one-shot Reply) |
 | `delete_touches_only_its_slot` | deleting any slot leaves every other slot exactly as it was (consuming one caller's Reply cannot orphan another's) |
 
@@ -278,6 +279,58 @@ Four in `crates/pci/src/lib.rs`, the config-space decode the kernel runs on **de
 | `intx_irq_is_total_and_bounded` | the swizzle is total (the pin-0 underflow that panicked debug builds is gone, hardened with saturating arithmetic) and lands within `base..=base+3` |
 | `read_bars_is_total_for_any_device` | the BAR size probe never panics on garbage device answers (`!mask + 1` cannot overflow: the type bits are masked first) |
 | `the_capability_walk_terminates_on_any_device` | a capability list forming ANY graph, cycles included, is walked at most 64 hops; the bounded-walk discipline proved rather than argued |
+
+Six in `crates/dma_validate/src/lib.rs`, the DMA-confinement validator (milestone 35). This is the
+last isolation boundary in the system that was attacker-tested but never proved. It confines a
+userspace virtio driver's DMA: on every `NOTIFY` the kernel walks the driver's descriptors, refuses
+any whose buffer escapes the driver's granted region (or is indirect), and copies the validated ones
+into a kernel-private **shadow ring** the device reads, so the driver cannot touch what the device
+acts on. The logic was lifted out of `kernel/src/virtio.rs::validate_and_shadow` (which now calls it)
+so it could be proved, the same Phase-2 move `regions` and `ipc` made; the kernel's QEMU attacker
+suite (the DMA-escape and indirect-escape end-to-end tests, on both ISAs) is unchanged and green, so
+the extraction is faithful.
+
+| Harness | Property |
+|---|---|
+| `in_region_is_sound` | the confinement predicate is sound and total: for every base/size/addr/len, if `in_region` accepts then `base <= addr` and `addr + len <= base + size` with no overflow (direction-agnostic, so it underwrites both TX device-reads and RX device-writes) |
+| `an_accepted_descriptor_is_confined` | for every descriptor bit pattern (flags fully symbolic, so the device-writable RX bit is covered) and every region, an accepted descriptor is not indirect and its whole buffer is in-region |
+| `validate_and_shadow_confines_every_chain` | **the main theorem**: over a fully symbolic driver descriptor table and region, no descriptor the walk copies into the shadow is ever out-of-region or indirect, so the device only ever reads confined descriptors. Symbolic-index-bounded, so it also proves the walk never reads or writes past a ring |
+| `an_oversized_batch_is_refused` | a batch claiming more than `qsize` new entries is refused before a single descriptor is read or written (the DoS bound on the outer loop; the memory closures panic if called) |
+| `a_descriptor_mutated_after_validation_cannot_reach_the_device` | the shadow ring closes the time-of-check/time-of-use race: after a validated copy, the driver aiming its own descriptor at any address cannot change what the device reads from the shadow |
+| `distinct_queues_occupy_disjoint_blocks` | multi-queue isolation (milestone 30): for any two distinct in-range queues, one queue's whole ring area ends before the other's block begins, so validating a NIC's receive queue never touches its transmit queue's rings |
+
+The main theorem proves the confinement core, `shadow_one_head`, which the write closure instruments
+so it asserts "in-region and not indirect" the instant each descriptor lands in the shadow. It is
+proved for **one** newly-published head, not the whole ring, and that is a decomposition, not a
+sample: the invariant is checked on *every* shadow write, and one head's chain already writes up to
+`qsize` fully symbolic descriptors, so the per-write property is quantified over arbitrary descriptor
+content and position; the outer loop only repeats that validated processing for each further head
+(its bound the separate `an_oversized_batch_is_refused`), reaching no new descriptor state. Batching
+the whole ring pushed the SAT formula to `qsize * qsize` symbolic reads and out of a practical
+`script/verify` budget (three minutes) for no added coverage; the single-head form verifies in ~20s.
+
+### The one isolation seam still on tests, and why: the IOMMU domain
+
+Milestone 35's third item was to confirm the IOMMU domain builder
+(`paging::domain::build_identity_domain`, milestone 16b) has a *maps-exactly-the-grant* proof, the
+hardware sibling of the validator property (the device's DMA domain maps precisely the granted frames
+and nothing else). **It does not, and it stays on tests, on purpose.** The property is a `Mapper`
+build-and-translate round trip: build the domain's four-level (VMSAv8-64) or three-level (Sv39) page
+tables over the granted frames, then translate a symbolic IOVA and assert it maps identity in-region
+and faults out. That is exactly the round trip this note already declined as the BMC wall (see the
+`paging` section's "deliberately not proved"): a symbolic address walking a *built* table is the
+"BMC over real memory" case that walled the ELF parser, and it is a formula-size wall, not an unwind
+bound (the level count is fixed). The existing `paging` harnesses deliberately prove the *arithmetic*
+under the walk instead of building tables, and that arithmetic is what underwrites the domain:
+`distinct_pages_take_distinct_paths` (two page-aligned addresses with the same indices are the same
+page, so an ungranted page cannot alias a granted leaf), `index_is_always_in_bounds`, the leaf codec
+keeping address and permissions apart, and the two-halves-disjoint gate. The build-and-translate
+itself is covered on **both formats** by `crates/paging/src/domain.rs`'s tests: an in-region IOVA
+translates to its own PA, a page past the region does not, and the gap between two granted regions
+does not (`aarch64_domain_confines_a_region`, `sv39_domain_confines_a_region`,
+`two_disjoint_regions_map_and_the_gap_does_not`). So the domain property is proved-by-composition plus
+tested on both formats, which is the honest status; forcing a walling harness would buy nothing the
+arithmetic harnesses do not already give.
 
 ## Where BMC hit a wall: the ELF parser
 

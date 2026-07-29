@@ -423,14 +423,18 @@ scale wants a kernel that does not allocate.
 (bounded model checking, Rust). Verus is the deeper Rust option to revisit if a property needs
 unbounded proof.
 
-**Status (2026-07-28), and where §18 continues as milestone 35.** The proved set is now broad: 12
-crates, ~53 harnesses, covering `caps`, `ipc` (rendezvous, one-shot reply, the collected-sender
-path), the MMU codec on *both* formats (`paging`: VMSAv8-64 and Sv39, level-walk and leaf
-permission separation), generational names (`slots`: a removed name never resolves again), frame
-allocation, region split/destroy arithmetic, ELF parsing, the device-tree reader, ASID allocation,
-and PCI decode. An audit against the TCB (prompted by asking "what should we prove that we
-haven't") found the boundaries are proved with **one glaring exception: the DMA-confinement
-validator is attacker-tested, never proved.** That is milestone 35.
+**Status (2026-07-29), with milestone 35 done.** The proved set is now broad: 13 crates, ~60
+harnesses, covering `caps`, `ipc` (rendezvous, one-shot reply, the collected-sender path), the MMU
+codec on *both* formats (`paging`: VMSAv8-64 and Sv39, level-walk and leaf permission separation),
+generational names (`slots`: a removed name never resolves again), frame allocation, region
+split/destroy arithmetic, ELF parsing, the device-tree reader, ASID allocation, PCI decode, and now
+the DMA-confinement validator (`dma_validate`, milestone 35). An audit against the TCB (prompted by
+asking "what should we prove that we haven't") found the boundaries proved with **one glaring
+exception: the DMA-confinement validator was attacker-tested, never proved.** Milestone 35 closed it:
+the validator is extracted and proved for every input, the `Untyped::SPLIT` mint site is proved not
+to widen rights, and the IOMMU domain's *maps-exactly* property is confirmed to sit on the declined
+build-and-translate BMC wall (proved-by-composition plus tested on both formats). See
+notes/verification.md.
 
 ### 35. Prove the DMA-confinement boundary (extends 18)
 
@@ -462,6 +466,20 @@ the validator sits inside the kernel crate.
    builder (`build_identity_domain`, milestone 16b) has a harness for the *maps-exactly-the-grant*
    property (the device domain maps precisely the granted frames and nothing else), not just a
    test. It is the sibling of the validator property, on the hardware side.
+
+**Done (2026-07-29).** (1) The validator is `crates/dma_validate`, host-testable pure logic the
+kernel's `validate_and_shadow` now calls; six Kani harnesses prove no descriptor the walk shadows
+escapes the granted region or is indirect, covering both directions (symbolic flags include the RX
+device-writable bit), indirect descriptors, multi-queue block isolation, the oversized-batch bound,
+and the mutated-after-validation (TOCTOU) case. The QEMU attacker suite (DMA-escape and
+indirect-escape, both ISAs) is unchanged and green, so the extraction is faithful. (2)
+`split_never_widens_rights` in `crates/caps` proves the `Untyped::SPLIT` mint (now routed through
+`Cap::mint_child`) hands a child no more authority than the parent, the mint site the `derive` proof
+did not reach. (3) The IOMMU *maps-exactly* property has **no** harness and stays on tests, on
+purpose: it is a `Mapper` build-and-translate round trip (a symbolic IOVA walking a built four-level
+table), which is the BMC-over-real-memory wall notes/verification.md already declined; the domain's
+soundness rests on the proved walk arithmetic (`distinct_pages_take_distinct_paths` and the leaf
+codec) plus `domain.rs`'s tests on both formats. See notes/verification.md.
 
 **Why it is load-bearing now, not later.** Milestone 16a's board, the VisionFive 2, **has no
 IOMMU** (notes/target-hardware.md). We demoted the software validator to "defence in depth" when

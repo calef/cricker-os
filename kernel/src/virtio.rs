@@ -333,12 +333,15 @@ const fn queue_block(q: u16) -> u64 {
     q as u64 * RING_BLOCK
 }
 
+// The descriptor flags the validator acts on. The validation logic that reads them now lives in
+// `crates/dma_validate` (as `dma_validate::F_NEXT` / `F_INDIRECT`); these copies remain for the
+// attacker tests below, which build descriptor words by hand. Bit 2 (`INDIRECT`) points a
+// descriptor at a table of further descriptors the validator never copies into the shadow, so it is
+// refused (and the feature that enables it is negotiated off in `sanitize_driver_features`), which
+// is the confinement failing closed if that negotiation ever regresses.
+#[cfg(test)]
 const VIRTQ_DESC_F_NEXT: u16 = 1;
-/// Bit 2: this descriptor points at a **table of further descriptors** instead of a buffer. The
-/// validator walks the flat chain and never follows that inner table, so a descriptor carrying
-/// this flag would send the device to addresses we never checked. The kernel negotiates the
-/// feature that enables it off (see `sanitize_driver_features`) *and* refuses the flag here, so the
-/// confinement fails closed if that negotiation ever regresses.
+#[cfg(test)]
 const VIRTQ_DESC_F_INDIRECT: u16 = 4;
 
 /// One block device the kernel operates the transport for.
@@ -479,18 +482,15 @@ fn dma_write64(phys: u64, v: u64) {
 /// **The security-critical step: validate the driver's descriptors AND copy them into the shadow
 /// ring the device reads.**
 ///
-/// For each newly-available head (`from_idx .. to_idx`), walk the chain in the *driver's* descriptor
-/// table, check every descriptor stays within `[dma_base, dma_base + dma_size)`, and copy the
-/// validated bytes into the *shadow* table at the same index. Then mirror the head into the shadow
-/// available ring, and finally publish the shadow's `avail.idx`. The device is programmed to read
-/// the shadow (see [`setup_queue`]), which the driver cannot write, so **the bytes the device acts
-/// on are exactly the bytes validated here** — mutating a descriptor after this returns changes only
-/// the driver's own copy, which nothing reads. That is what closes the time-of-check/time-of-use
-/// race an in-place check leaves open. Returns false, leaving the shadow's published index untouched,
-/// if any descriptor escapes the region, is indirect, or the chain is malformed.
-///
-/// Takes the driver and shadow ring *physical addresses* plus read/write word pairs, so a test can
-/// build both regions in ordinary memory and drive it directly.
+/// The logic lives in `crates/dma_validate` (milestone 35), lifted out so Kani can prove it for
+/// every input: no descriptor the device reads out of the shadow references memory outside
+/// `[dma_base, dma_base + dma_size)`, in either direction, with indirect descriptors refused, over
+/// any batch. This is the thin kernel adapter: it passes the driver and shadow ring *physical
+/// addresses* and the direct-map read/write closures, plus `QSIZE`, straight through to the proved
+/// walk. The device reads the shadow (see [`setup_queue`]), which the driver cannot write, so the
+/// bytes the device acts on are exactly the bytes validated here; mutating a descriptor after this
+/// returns changes only the driver's own copy, which nothing reads. See notes/dma.md and
+/// notes/verification.md.
 #[allow(clippy::too_many_arguments)]
 fn validate_and_shadow(
     dma_base: u64,
@@ -506,80 +506,21 @@ fn validate_and_shadow(
     write16: &dyn Fn(u64, u16),
     write64: &dyn Fn(u64, u64),
 ) -> bool {
-    // At most QSIZE descriptors can be newly available since the last validation: the available
-    // ring has only QSIZE slots, so a driver cannot have published more than that without the
-    // device consuming some. A larger jump in avail.idx is malformed or hostile, and walking it
-    // would spin this loop up to 65535 times under the caller's lock, with interrupts masked.
-    // Refuse it before touching a single descriptor. (wrapping_sub because avail.idx wraps at u16.)
-    if to_idx.wrapping_sub(from_idx) > QSIZE {
-        return false;
-    }
-
-    let in_region = |addr: u64, len: u64| -> bool {
-        // No overflow, and both ends inside the region.
-        match addr.checked_add(len) {
-            Some(end) => addr >= dma_base && end <= dma_base + dma_size,
-            None => false,
-        }
-    };
-
-    // avail: { u16 flags; u16 idx; u16 ring[QSIZE]; }
-    let mut idx = from_idx;
-    while idx != to_idx {
-        let slot = (idx % QSIZE) as u64;
-        let head = read16(driver_avail + 4 + slot * 2);
-        if head >= QSIZE {
-            return false; // head index out of the descriptor table
-        }
-
-        // Walk the chain in the DRIVER's table, validate each descriptor, and copy the validated
-        // bytes into the SHADOW table. Bounded by QSIZE, so a `next` cycle cannot loop forever, and
-        // because we only ever copy a validated descriptor, every descriptor the device can reach in
-        // the shadow has an in-region address. desc[d] = { u64 addr @0; u32 len @8; u16 flags @12;
-        // u16 next @14 }; the len/flags/next share one 64-bit word we read and copy verbatim.
-        let mut d = head;
-        for _ in 0..QSIZE {
-            let src = driver_desc + d as u64 * 16;
-            let addr = read64(src);
-            let word = read64(src + 8);
-            let len = word & 0xffff_ffff;
-            let flags = ((word >> 32) & 0xffff) as u16;
-            let next = ((word >> 48) & 0xffff) as u16;
-
-            // An indirect descriptor points at a table we do not copy, so the device would follow it
-            // out of the region. Refuse it. (The feature is negotiated off as well; this fails
-            // closed if that ever regresses.)
-            if flags & VIRTQ_DESC_F_INDIRECT != 0 {
-                return false;
-            }
-            if !in_region(addr, len) {
-                return false; // a descriptor points outside the driver's region
-            }
-            if flags & VIRTQ_DESC_F_NEXT != 0 && next >= QSIZE {
-                return false; // a chain link out of the descriptor table
-            }
-
-            // Copy the validated descriptor into the shadow, byte-for-byte. From here the device
-            // reads this, not the driver's copy.
-            let dst = shadow_desc + d as u64 * 16;
-            write64(dst, addr);
-            write64(dst + 8, word);
-
-            if flags & VIRTQ_DESC_F_NEXT == 0 {
-                break;
-            }
-            d = next;
-        }
-
-        // Mirror the head into the shadow available ring.
-        write16(shadow_avail + 4 + slot * 2, head);
-        idx = idx.wrapping_add(1);
-    }
-
-    // Publish LAST: the device reads the shadow's avail.idx to learn what is ready, so it must not
-    // advance until every descriptor it points at is already in the shadow.
-    write16(shadow_avail + 2, to_idx);
-    true
+    dma_validate::validate_and_shadow(
+        dma_base,
+        dma_size,
+        driver_desc,
+        driver_avail,
+        shadow_desc,
+        shadow_avail,
+        from_idx,
+        to_idx,
+        QSIZE,
+        read16,
+        read64,
+        write16,
+        write64,
+    )
 }
 
 /// Errors the transport can return to the driver.

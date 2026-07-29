@@ -64,6 +64,13 @@ can, at worst, corrupt itself.
 
 ## The validator
 
+Since milestone 35 the validation logic lives in `crates/dma_validate`, a host-testable pure-logic
+crate the kernel's `validate_and_shadow` calls, and it is **machine-checked**: six Kani harnesses
+prove no descriptor the walk copies into the shadow escapes the granted region or is indirect, for
+every input (both directions, multi-queue, and the mutated-after-validation race). This was the last
+isolation boundary that was attacker-tested but not proved; see notes/verification.md. The rest of
+this section describes what that logic does.
+
 `kernel/src/virtio.rs::validate_and_shadow` is the security-critical code. On `NOTIFY` it walks the
 available ring from the last-validated index to the current one, and for each new head follows the
 descriptor chain, checking that every `addr..addr+len` (with overflow rejected) lies within
