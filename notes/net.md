@@ -249,3 +249,22 @@ exchange at a time, no overlapping connections.
 
 This binds milestone 27's `std::net` PAL, replacing its `Unsupported`. Scope discipline held: TCP,
 UDP, DHCP, no sockets-API mimicry beyond what the PAL needs.
+
+### Ephemeral ports must be independent of the socket id (a fix the PAL found)
+
+The first version of netd derived a socket's local port from its socket id (`LOCAL_PORT_BASE + sid`).
+That is wrong, and the `std::net` PAL flushed it out: a program that opens a TCP socket, closes it,
+and opens another reuses the same socket id, so it reused the exact local port. Reconnecting to the
+same peer on an identical 4-tuple whose slirp flow had not yet cleared makes the SYN go unanswered,
+and netd stalled in its bounded connect poll forever. Bisection confirmed it: a fresh id connects, a
+reused id hangs.
+
+The fix is what any real stack does: netd allocates ephemeral local ports from a private range with a
+**rotating allocator** independent of the socket id (`user/src/netd.rs`, `PortAllocator`). Each open
+advances the cursor, so a just-closed connection's port is not handed out again until the whole range
+has cycled, and a port a live socket still holds is skipped outright. Socket-id reuse is then safe:
+the reopened socket gets a new local port, a new 4-tuple, and a new slirp flow.
+
+The regression is `a_reopened_socket_id_connects_again_over_tcp` (both ISAs): open a TCP socket,
+connect to the guestfwd echo peer, close, reopen the *same* id, and connect again; the client reports
+OK only if both connects complete. Before the fix the second connect hangs the way the PAL saw.
