@@ -80,17 +80,55 @@ fn a_w16(va: u64, v: u16) {
     unsafe { core::ptr::write_volatile(va as *mut u16, v) }
 }
 
-/// One open socket: its smoltcp handle, whether it is TCP, and where its shared frame is mapped.
+/// One open socket: its smoltcp handle, whether it is TCP, where its shared frame is mapped, and the
+/// ephemeral local port it was assigned.
 #[derive(Clone, Copy)]
 struct Sock {
     handle: SocketHandle,
     is_tcp: bool,
     va: u64,
+    local_port: u16,
 }
 
-/// The largest datagram/segment buffered per socket, and the ephemeral local port base.
+/// The private ephemeral-port range netd allocates local ports from, and a **rotating** allocator
+/// over it. The local port must be independent of the socket id: deriving it from the id (the
+/// original bug, found by the std::net PAL) means reopening a just-closed id reuses the exact port,
+/// and a TCP connect on a 4-tuple whose slirp flow has not yet cleared stalls in the bounded poll
+/// forever. Advancing monotonically hands out a fresh port each open, so a closed connection's port
+/// is not reused until the whole range has cycled; ports a live socket still holds are skipped
+/// outright. See notes/net.md.
+const EPHEMERAL_LO: u16 = 49152;
+const EPHEMERAL_HI: u16 = 65535;
+
+struct PortAllocator {
+    next: u16,
+}
+
+impl PortAllocator {
+    fn new() -> Self {
+        Self { next: EPHEMERAL_LO }
+    }
+
+    /// The next free ephemeral port not currently held by a live socket. Bounded by the range size,
+    /// so it always terminates; with only `MAX_SOCKETS` sockets ever live, it never exhausts.
+    fn alloc(&mut self, socks: &[Option<Sock>; MAX_SOCKETS]) -> u16 {
+        for _ in 0..=(EPHEMERAL_HI - EPHEMERAL_LO) {
+            let port = self.next;
+            self.next = if self.next == EPHEMERAL_HI {
+                EPHEMERAL_LO
+            } else {
+                self.next + 1
+            };
+            if !socks.iter().flatten().any(|s| s.local_port == port) {
+                return port;
+            }
+        }
+        self.next
+    }
+}
+
+/// The largest datagram/segment buffered per socket.
 const SOCK_BUF: usize = 2048;
-const LOCAL_PORT_BASE: u16 = 49152;
 
 /// Entry role 0 is the net server; any other role runs the socket-contract client (the same
 /// binary, so the initrd stays under its 15-file directory limit).
@@ -138,6 +176,7 @@ fn server(dma_phys: u64) -> ! {
     // --- Serve the socket contract. One synchronous exchange per request. ---
     let mut socks: [Option<Sock>; MAX_SOCKETS] = [None; MAX_SOCKETS];
     let mut frame_va: [u64; MAX_SOCKETS] = [0; MAX_SOCKETS];
+    let mut ports = PortAllocator::new();
     loop {
         let (w0, cap_slot, w1) = recv_cap(STACK);
         let op = req_op(w0);
@@ -174,13 +213,13 @@ fn server(dma_phys: u64) -> ! {
                     ),
                 );
                 let handle = sockets.add(s);
-                let _ = sockets
-                    .get_mut::<udp::Socket>(handle)
-                    .bind(LOCAL_PORT_BASE + sid as u16);
+                let local_port = ports.alloc(&socks);
+                let _ = sockets.get_mut::<udp::Socket>(handle).bind(local_port);
                 socks[sid] = Some(Sock {
                     handle,
                     is_tcp: false,
                     va: frame_va[sid],
+                    local_port,
                 });
                 reply(cap_slot, REP_OK, 0);
             }
@@ -191,10 +230,12 @@ fn server(dma_phys: u64) -> ! {
                     tcp::SocketBuffer::new(vec![0u8; SOCK_BUF]),
                 );
                 let handle = sockets.add(s);
+                let local_port = ports.alloc(&socks);
                 socks[sid] = Some(Sock {
                     handle,
                     is_tcp: true,
                     va: frame_va[sid],
+                    local_port,
                 });
                 reply(cap_slot, REP_OK, 0);
             }
@@ -222,13 +263,24 @@ fn server(dma_phys: u64) -> ! {
             OP_CLOSE => {
                 if let Some(sk) = socks[sid].take() {
                     if sk.is_tcp {
-                        sockets.get_mut::<tcp::Socket>(sk.handle).close();
+                        let handle = sk.handle;
+                        sockets.get_mut::<tcp::Socket>(handle).close();
+                        // Drain the close handshake so the peer (and slirp's flow for it) sees a
+                        // clean teardown before we drop the socket. Dropping a socket mid-close
+                        // leaves the peer's connection half-open, which on the guestfwd echo peer
+                        // blocks the next connection to it. Both FINs exchanged (Closed or TimeWait)
+                        // is enough; waiting for full Closed would linger in TimeWait's timer.
+                        // Bounded, so a peer that never finishes still returns.
+                        service_until(&mut iface, &mut dev, &mut sockets, |s| {
+                            matches!(
+                                s.get_mut::<tcp::Socket>(handle).state(),
+                                tcp::State::Closed | tcp::State::TimeWait
+                            )
+                        });
                     } else {
                         sockets.get_mut::<udp::Socket>(sk.handle).close();
+                        iface.poll(instant(), &mut dev, &mut sockets);
                     }
-                    // Drive the poll loop briefly so a TCP FIN actually leaves before we drop the
-                    // socket; UDP close is immediate.
-                    iface.poll(instant(), &mut dev, &mut sockets);
                     sockets.remove(sk.handle);
                 }
                 reply(cap_slot, REP_OK, 0);
@@ -366,7 +418,7 @@ fn tcp_connect(
     }
     let dst = read_dst(sk.va);
     let handle = sk.handle;
-    let local = LOCAL_PORT_BASE + sid as u16;
+    let local = sk.local_port;
     {
         let cx = iface.context();
         if sockets
