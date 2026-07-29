@@ -73,7 +73,9 @@ pub fn watchdog_tick() {
     }
     if WATCH_STALL_TICKS.fetch_add(1, Ordering::Relaxed) + 1 == STALL_LIMIT {
         println!();
-        println!("WATCHDOG: no progress for ~60 s — every core idle, every thread blocked: a lost-wakeup hang.");
+        println!(
+            "WATCHDOG: no progress for ~60 s. Every core idle, every thread blocked: a lost-wakeup hang."
+        );
         crate::sched::dump_threads();
         semihosting::exit(semihosting::EXIT_FAILURE);
     }
