@@ -41,7 +41,7 @@ IPC and the MMU invariants are next. This threads through the list rather than b
 | 24 | A second aarch64 *board*: Virtualization.framework (optional) | Boot under Apple's Virtualization.framework, not QEMU's `virt`: a virtio-console driver (VZ has no PL011), VZ's interrupt/memory layout and boot handoff, device discovery through the machine VZ presents | proves the `arch/` **board** boundary on a second machine of the *same* ISA (cheaper than 16's silicon, distinct from 20's second ISA), and lets cricker-os run under the same VMM as macOS/Linux guests. Optional; portability exercise, **not** a benchmarking prerequisite (guest-internal microbenchmarks are VMM-independent) |
 | 27 | Rust `std` on the native ABI | A custom target whose `std` builds: `Vec`, `String`, `println!`, `Instant`, allocation from the process's own untyped, stdio over the console endpoint, `fs`/`net` honestly `Unsupported` until capability-granted servers back them | **widens "runs real workloads" by orders of magnitude**: the pool of programs that build for cricker-os becomes "most Rust code that doesn't touch fs/net", and milestone 23's components become writable by people who are not kernel people. Grows toward general purpose (notes/why-not-general-purpose.md) without smuggling POSIX: the `sys` layer maps to capabilities directly, no fork, no open-by-path |
 | 28 | A solid terminal: the line discipline as a component | Line editing, history, ANSI in/out, control characters, and a written terminal contract, as a **swappable userspace component** between the input/console drivers and applications; Ctrl-C as a capability-routed interrupt to the foreground process, not a Unix signal. **Built, §21**: `termd` on both ISAs, a sans-IO engine (20 host tests), the contract in notes/terminal-contract.md, `shell_service` retired for userspace init; Ctrl-C routing decided (two-tier, DECISIONS §24), implementation pending | a terminal with real behavior is a far better "instance one" for milestone 23's live component replacement than the raw echo loop, and 27's stdio semantics need a terminal that has semantics. Serial, deliberately; the display terminal is 29, and they must not be confused |
-| 29 | A display terminal (framebuffer, virtio-gpu) | An on-device terminal: a userspace virtio-gpu driver (arriving over **PCIe**, which the §18 transport just made reachable), a framebuffer component, font rendering, and a VT state engine maintaining the grid; input from a virtio keyboard | the first pixels the demonstrator ever puts on a screen, and the strongest form of the milestone-23 claim if the VT engine is **libghostty-vt** (zero-dependency, no-libc, no-alloc, C ABI, Zig): a vendor component in a foreign language, capability-confined and hot-swappable. Optional; well off the thesis path |
+| 29 | A display terminal (framebuffer, virtio-gpu) | An on-device terminal: a userspace virtio-gpu driver (arriving over **PCIe**, which the §18 transport just made reachable), a framebuffer component, font rendering, and a VT state engine maintaining the grid; input from a virtio keyboard | the first pixels the demonstrator ever puts on a screen, and the strongest form of the milestone-23 claim if the VT engine is **libghostty-vt** (zero-dependency, no-libc, no-alloc, C ABI, Zig): a vendor component in a foreign language, capability-confined and hot-swappable. **Promoted from optional (2026-07-28): rung one of the display ladder (see "The display ladder" below), whose destination is a capability-routed compositor** |
 | 30 | The network stack as a confined component | A userspace **virtio-net** driver behind the DMA confinement (extended to multi-queue: RX means the device writes INTO driver memory), and the TCP/IP stack itself (`smoltcp`) as a swappable userspace component with a capability-shaped socket contract; backs `std::net` for 27 | **the canonical microkernel component**, the one people ask about first when a minimal kernel claims to stand next to Linux; and milestone 23's most convincing instance, hot-swapping a network stack under open connections. The reuse call is the plan's easiest: the thesis is the kernel confining the stack, not the stack |
 | 31 | A capability shell: designation is authorization | The command line becomes a **grant expression**: naming a resource in a command IS the capability grant (`run wc report.txt` passes one readable file cap; `run wc` alone can read nothing, and the refusal is "no such capability", not EPERM); untyped budgets as first-class grants; a SHILL-style manifest per program checked at spawn; a `caps` command printing a process's whole endowment. **Phase 1 built, both ISAs**: `capsh` (host-tested parse + manifest + spawn protocol), the shell over the existing surface, `run --mem N` made real by the `budgeter` program (from the shell's own budget, via a `SEND_CAP`-to-init spawn protocol), manifest refusals and the "you hold no such capability" file refusal at the prompt, `caps`/`caps run ...` introspection. One kernel bug fix: `Untyped::SPLIT` now grants the child `GRANT` so a budget is delegable (DECISIONS §16 amendment). Notes: grant-expression.md, program-manifest.md. Per-file grants wait on milestone 32 | **no-ambient-authority made user-visible**: the inversion of Unix's model at the one interface a human touches. Milestone 23's component contract in embryo, met first at the shell |
 | 32 | A real filesystem: RedoxFS behind a capability FS server | A write-capable block path, an FS-server **component** whose handles are capabilities from birth (open-by-path exists only INSIDE the server, relative to a granted directory cap), and **RedoxFS** as the on-disk engine, ported behind its own `Disk` trait over blk IPC | the flagship **userspace-reuse** story the prior-art note predicted: a real CoW filesystem we did not write, running confined; and the thing 31's per-file grants point at |
@@ -731,6 +731,42 @@ carry patches, and record divergence, the same discipline as any vendored engine
 and simplicity, no integrity story), littlefs (proven, C, wrong-language FFI for less gain
 than ghostty-vt would buy). Feeds 31 (per-file grants), 23 (a component with real state to
 hand off across a live swap, the hardest handoff case yet named), 27 (`std::fs`). Effort L.
+
+## The display ladder (recorded 2026-07-28, Chris's direction)
+
+The stated destination: eventually, something like COSMIC driving a GPU for display. That
+decomposes into rungs, each independently a demo, and the decomposition is what makes the ambition
+honest. COSMIC's shape is Rust clients rendering into shared buffers, a compositor compositing
+them to scanout, everything message-passing; cricker-os already has shared frames and endpoints,
+so the *architecture* is aligned even where the drivers are mountains.
+
+1. **Rung one: milestone 29 as specified** (promoted from optional). The VT terminal over
+   virtio-gpu/framebuffer under QEMU: the framebuffer component and the seam everything above
+   rides on.
+2. **Rung two: a compositor component (milestone 33).** Multiple clients, each holding a
+   capability to its own surface (a shared frame); software composition to the framebuffer;
+   input routed by capability from the terminal contract. No ambient display: window enumeration,
+   screenshots, and screen sharing are grants, not defaults. A compositor is the canonical
+   multiplexer of one device among mutually distrusting clients, so this rung is thesis work
+   (milestone 23's component story), not decoration. Wayland's model is the prior art; the
+   capability routing is what Wayland's security model approximates.
+3. **Rung three: real applications.** iced's software-rendering path and cosmic-text on the
+   milestone 27 std PAL. Something COSMIC-like appears here, before any GPU.
+4. **Rung four: GPU acceleration via virtio-gpu 3D (milestone 34).** The Venus path (Vulkan over
+   the virtio device, over the §18 PCIe transport): how every VM gets a GPU without a hardware
+   driver, and what would give wgpu something real. A mountain, but a climbable one, priced as
+   such.
+5. **Rung five: struck.** A bare-metal driver for the VisionFive 2's BXE-4-32 3D core is a
+   Linux-scale multi-year effort (loaded firmware, thin documentation, Mesa still maturing on
+   Linux itself) that proves nothing rung four does not. The board's standalone-display story is
+   the DC8200 framebuffer path instead: U-Boot's `simple-framebuffer` handoff first (zero display
+   code), a mode-setting driver only if ever needed, serial input until a USB HID milestone earns
+   its own number. The JH7110 has no IOMMU, so display DMA on that board is confined by software
+   discipline, and the record will say so.
+
+Governance, stated now so it is not smuggled later: rungs one and two are demonstrator work.
+Rungs three and four reopen the parked competitor question below, which is the architect's call
+to make consciously when rung two is real.
 
 ## The rival worth understanding, not building
 

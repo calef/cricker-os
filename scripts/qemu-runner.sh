@@ -89,15 +89,21 @@ if [ -n "$CRICKER_DISK" ]; then
 fi
 
 # Attach a virtio-net NIC on QEMU user-mode (slirp) networking when CRICKER_NET is set (milestone
-# 30). slirp NATs the guest with a built-in DHCP server (10.0.2.0/24, gateway 10.0.2.2) and needs no
-# host setup, so the net driver's DHCP round-trip test runs with zero privilege. Two NICs mirror the
-# two disks: the mmio NIC (net0) has no IOMMU in front of it, the PCI NIC (net1) sits behind the
-# SMMU (iommu_platform=on), the same hardware confinement the PCI disk gets. There is no image file
-# to fail loud on here; the manufactured-fact hazard (CRICKER_NET set but no NIC enumerated) is
-# caught by the net test, which asserts a NIC is present rather than skipping.
+# 30). slirp NATs the guest with a built-in DHCP server (10.0.2.0/24, gateway 10.0.2.2) and DNS
+# resolver (10.0.2.3), and needs no host setup, so the net tests run with zero privilege. Two NICs
+# mirror the two disks: the mmio NIC (net0) has no IOMMU in front of it, the PCI NIC (net1) sits
+# behind the SMMU (iommu_platform=on), the same hardware confinement the PCI disk gets. There is no
+# image file to fail loud on here; the manufactured-fact hazard (CRICKER_NET set but no NIC
+# enumerated) is caught by the net test, which asserts a NIC is present rather than skipping.
+#
+# guestfwd adds a deterministic TCP echo peer at 10.0.2.9:7777 inside slirp: a connection to it is
+# piped to a fresh `/bin/cat`, so the TCP round-trip gate (connect, send, recv the echo, close) runs
+# with zero host setup and nothing outlives QEMU. Verified against QEMU 11.0.2. Each slirp instance
+# is its own network, so both NICs can use the same virtual address without conflict.
+GUESTFWD="guestfwd=tcp:10.0.2.9:7777-cmd:/bin/cat"
 NET=""
 if [ -n "$CRICKER_NET" ]; then
-    NET="-netdev user,id=net0 -device virtio-net-device,netdev=net0 -netdev user,id=net1 -device virtio-net-pci,netdev=net1,disable-legacy=on,iommu_platform=on"
+    NET="-netdev user,id=net0,$GUESTFWD -device virtio-net-device,netdev=net0 -netdev user,id=net1,$GUESTFWD -device virtio-net-pci,netdev=net1,disable-legacy=on,iommu_platform=on"
 fi
 
 # shellcheck disable=SC2086  # $INITRD, $DISK and $NET are deliberately word-split or empty

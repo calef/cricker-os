@@ -1,21 +1,23 @@
 //! **The net server: smoltcp as a userspace TCP/IP stack over the confined NIC** (milestone 30,
 //! piece 3).
 //!
-//! This is the flagship of the userspace-reuse thesis for networking: the kernel confines the NIC's
-//! DMA (pieces 1 and 2), and a real, reused TCP/IP stack (smoltcp, not hand-built) runs it entirely
-//! at EL0. The kernel knows nothing about TCP, UDP, or DHCP; it owns only the DMA confinement.
+//! The networking form of the userspace-reuse thesis: the kernel confines the NIC's DMA (pieces 1
+//! and 2), and a real, reused TCP/IP stack (smoltcp, not hand-built) runs it entirely at EL0. The
+//! kernel knows nothing about TCP, UDP, or DHCP; it owns only the DMA confinement.
 //!
-//! Phase A (this file today) proves the integration: bring the NIC up through the `Virtio`
-//! capability, drive smoltcp's poll loop over the receive/transmit rings (`vnet`), and run DHCP to
-//! completion against QEMU user-mode networking. It reports the acquired address, which the kernel
-//! test asserts lands in slirp's 10.0.2.0/24. The capability-shaped socket contract (a `Stack`
-//! endpoint, socket ids, per-connection shared frames; DECISIONS §25) layers on top of this loop.
+//! netd brings the NIC up, runs DHCP to completion (reporting the lease), then serves a
+//! capability-shaped socket contract on a `Stack` endpoint (DECISIONS §25, notes/net.md,
+//! user/src/netproto.rs): a socket is a socket id, per-connection bytes cross in a shared frame the
+//! client delegates, and every operation is one message. Phase one is single-threaded and
+//! synchronous, one exchange per request; the server blocks on the `Stack` endpoint between
+//! requests and drives the network inside handling one.
 //!
 //! # Capability contract
-//! - slot 0: the report endpoint (WRITE)
+//! - slot 0: the report endpoint (WRITE) for the DHCP lease
 //! - slot 1: the NIC interrupt (WAIT / ACK)
 //! - slot 2: the confined `Virtio` transport
-//! - slot 3: an untyped budget, for the heap smoltcp allocates against
+//! - slot 3: an untyped budget, for the heap and for mapping clients' shared frames
+//! - slot 4: the `Stack` endpoint (READ), where clients' requests arrive
 //! - arg1: the DMA page's physical address
 
 #![no_std]
@@ -23,84 +25,396 @@
 
 extern crate alloc;
 
-use abi::irq;
+use abi::{frame as fr, irq};
 use alloc::vec;
-use smoltcp::iface::{Config, Interface, SocketSet};
-use smoltcp::socket::dhcpv4;
+use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
+use smoltcp::socket::{dhcpv4, tcp, udp};
 use smoltcp::time::Instant;
-use smoltcp::wire::{EthernetAddress, HardwareAddress, IpCidr};
-use user_rt::{cntfrq, invoke, now, send};
+use smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr, IpEndpoint, Ipv4Address};
+use user_rt::{cap_delete, cntfrq, invoke, now, recv_cap, reply, send};
 
+#[path = "netproto.rs"]
+mod netproto;
 #[path = "vnet.rs"]
 mod vnet;
+// The socket-contract client rides in this same binary (dispatched by the entry role), because the
+// initrd directory holds at most 15 files; see user/src/netcli.rs.
+#[path = "netcli.rs"]
+mod netcli;
+use netproto::*;
 
 const REPORT: u64 = 0;
 const IRQ: u64 = 1;
 const UNTYPED: u64 = 3;
+const STACK: u64 = 4;
 
-/// The heap smoltcp allocates against (the socket set, per-frame transmit buffers, caches). Capped
-/// well under the granted budget so a leak shows up as a fault, not silent growth.
+/// The heap smoltcp allocates against, capped well under the granted budget.
 const HEAP_MAX: u64 = 128 * 4096;
 
 #[global_allocator]
 static HEAP: user_rt::heap::UntypedHeap = user_rt::heap::UntypedHeap::new();
 
-/// Our MAC. Locally administered; slirp routes DHCP regardless of what it is.
+/// Our MAC. Locally administered; slirp routes DHCP regardless.
 const MAC: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
 
-/// smoltcp's clock, from the monotonic counter (`CNTVCT_EL0` / `rdtime`), in milliseconds. u128
-/// intermediate so the multiply never overflows for any realistic uptime.
+/// Where a client's shared frame for socket `sid` is mapped in netd's address space. Above the DMA
+/// page (0x90_0000) and well below the heap (1 GiB).
+fn socket_va(sid: usize) -> u64 {
+    0x0000_0000_00A0_0000 + sid as u64 * 0x1000
+}
+
+/// smoltcp's clock, from the monotonic counter, in milliseconds.
 fn instant() -> Instant {
     let ms = (now() as u128 * 1000 / cntfrq() as u128) as i64;
     Instant::from_millis(ms)
 }
 
+// Absolute-VA access to a mapped shared frame (little-endian for the length and port fields).
+fn a_r8(va: u64) -> u8 {
+    unsafe { core::ptr::read_volatile(va as *const u8) }
+}
+fn a_r16(va: u64) -> u16 {
+    unsafe { core::ptr::read_volatile(va as *const u16) }
+}
+fn a_w16(va: u64, v: u16) {
+    unsafe { core::ptr::write_volatile(va as *mut u16, v) }
+}
+
+/// One open socket: its smoltcp handle, whether it is TCP, and where its shared frame is mapped.
+#[derive(Clone, Copy)]
+struct Sock {
+    handle: SocketHandle,
+    is_tcp: bool,
+    va: u64,
+}
+
+/// The largest datagram/segment buffered per socket, and the ephemeral local port base.
+const SOCK_BUF: usize = 2048;
+const LOCAL_PORT_BASE: u16 = 49152;
+
+/// Entry role 0 is the net server; any other role runs the socket-contract client (the same
+/// binary, so the initrd stays under its 15-file directory limit).
 #[unsafe(no_mangle)]
-pub extern "C" fn _start(_a0: u64, dma_phys: u64, _a2: u64) -> ! {
+pub extern "C" fn _start(role: u64, dma_phys: u64, _a2: u64) -> ! {
+    if role == 0 {
+        server(dma_phys)
+    } else {
+        netcli::run(role)
+    }
+}
+
+/// The net server: bring the NIC up, run DHCP, then serve the socket contract.
+fn server(dma_phys: u64) -> ! {
     HEAP.init(UNTYPED, user_rt::heap::DEFAULT_BASE, HEAP_MAX);
 
     let mut dev = vnet::VirtioNet::bring_up(dma_phys);
-
     let mut config = Config::new(HardwareAddress::Ethernet(EthernetAddress(MAC)));
     config.random_seed = now();
     let mut iface = Interface::new(config, &mut dev, instant());
-
     let mut sockets = SocketSet::new(vec![]);
-    let dhcp = dhcpv4::Socket::new();
-    let handle = sockets.add(dhcp);
 
+    // --- DHCP: bring the interface up, then report the lease (the phase-A test asserts it). ---
+    let dhcp = sockets.add(dhcpv4::Socket::new());
     loop {
         iface.poll(instant(), &mut dev, &mut sockets);
-
-        if let Some(dhcpv4::Event::Configured(cfg)) =
-            sockets.get_mut::<dhcpv4::Socket>(handle).poll()
+        if let Some(dhcpv4::Event::Configured(cfg)) = sockets.get_mut::<dhcpv4::Socket>(dhcp).poll()
         {
-            // Record the lease on the interface, so a later phase's sockets have a source address.
-            let octets = cfg.address.address().octets();
             iface.update_ip_addrs(|addrs| {
                 let _ = addrs.push(IpCidr::Ipv4(cfg.address));
             });
-            // Report the acquired address (big-endian octets as a u32) and rest. The test asserts
-            // it lands in slirp's 10.0.2.0/24, which only a real DHCP round trip through smoltcp and
-            // the confined NIC can produce.
-            send(REPORT, u32::from_be_bytes(octets) as u64, 0, 0);
-            loop {
-                core::hint::spin_loop();
+            if let Some(router) = cfg.router {
+                let _ = iface.routes_mut().add_default_ipv4_route(router);
             }
+            let octets = cfg.address.address().octets();
+            send(REPORT, u32::from_be_bytes(octets) as u64, 0, 0);
+            break;
         }
-
-        // Block until the NIC raises its line again (a receive or transmit completion). The kernel's
-        // pending count means a line that already fired makes WAIT return at once. SAFETY: `svc`.
         unsafe {
             invoke(IRQ, irq::WAIT, 0, 0, 0);
         }
         dev.ack_irq();
     }
+
+    // --- Serve the socket contract. One synchronous exchange per request. ---
+    let mut socks: [Option<Sock>; MAX_SOCKETS] = [None; MAX_SOCKETS];
+    let mut frame_va: [u64; MAX_SOCKETS] = [0; MAX_SOCKETS];
+    loop {
+        let (w0, cap_slot, w1) = recv_cap(STACK);
+        let op = req_op(w0);
+        let sid = req_sid(w0) as usize;
+        if sid >= MAX_SOCKETS {
+            if cap_slot != abi::endpoint::NO_CAP {
+                reply(cap_slot, REP_ERR, 0);
+            }
+            continue;
+        }
+
+        match op {
+            OP_ATTACH_FRAME => {
+                // cap_slot holds the delegated frame. Map it writable at this socket's VA, paid for
+                // from netd's untyped; the mapping outlives the cap, so drop the cap after. ATTACH
+                // is a SEND_CAP, so there is no reply cap to answer on.
+                let va = socket_va(sid);
+                let r = unsafe { invoke(cap_slot, fr::MAP, va, 1, UNTYPED) };
+                cap_delete(cap_slot);
+                if r >= 0 {
+                    frame_va[sid] = va;
+                }
+            }
+
+            OP_OPEN_UDP => {
+                let s = udp::Socket::new(
+                    udp::PacketBuffer::new(
+                        vec![udp::PacketMetadata::EMPTY; 8],
+                        vec![0u8; SOCK_BUF],
+                    ),
+                    udp::PacketBuffer::new(
+                        vec![udp::PacketMetadata::EMPTY; 8],
+                        vec![0u8; SOCK_BUF],
+                    ),
+                );
+                let handle = sockets.add(s);
+                let _ = sockets
+                    .get_mut::<udp::Socket>(handle)
+                    .bind(LOCAL_PORT_BASE + sid as u16);
+                socks[sid] = Some(Sock {
+                    handle,
+                    is_tcp: false,
+                    va: frame_va[sid],
+                });
+                reply(cap_slot, REP_OK, 0);
+            }
+
+            OP_OPEN_TCP => {
+                let s = tcp::Socket::new(
+                    tcp::SocketBuffer::new(vec![0u8; SOCK_BUF]),
+                    tcp::SocketBuffer::new(vec![0u8; SOCK_BUF]),
+                );
+                let handle = sockets.add(s);
+                socks[sid] = Some(Sock {
+                    handle,
+                    is_tcp: true,
+                    va: frame_va[sid],
+                });
+                reply(cap_slot, REP_OK, 0);
+            }
+
+            OP_SENDTO => {
+                let rep = udp_sendto(&mut iface, &mut dev, &mut sockets, &socks, sid, w1 as usize);
+                reply(cap_slot, rep, 0);
+            }
+
+            OP_RECV => {
+                let rep = sock_recv(&mut iface, &mut dev, &mut sockets, &socks, sid);
+                reply(cap_slot, rep, 0);
+            }
+
+            OP_CONNECT => {
+                let rep = tcp_connect(&mut iface, &mut dev, &mut sockets, &socks, sid);
+                reply(cap_slot, rep, 0);
+            }
+
+            OP_SEND => {
+                let rep = tcp_send(&mut iface, &mut dev, &mut sockets, &socks, sid, w1 as usize);
+                reply(cap_slot, rep, 0);
+            }
+
+            OP_CLOSE => {
+                if let Some(sk) = socks[sid].take() {
+                    if sk.is_tcp {
+                        sockets.get_mut::<tcp::Socket>(sk.handle).close();
+                    } else {
+                        sockets.get_mut::<udp::Socket>(sk.handle).close();
+                    }
+                    // Drive the poll loop briefly so a TCP FIN actually leaves before we drop the
+                    // socket; UDP close is immediate.
+                    iface.poll(instant(), &mut dev, &mut sockets);
+                    sockets.remove(sk.handle);
+                }
+                reply(cap_slot, REP_OK, 0);
+            }
+
+            _ => {
+                if cap_slot != abi::endpoint::NO_CAP {
+                    reply(cap_slot, REP_ERR, 0);
+                }
+            }
+        }
+    }
+}
+
+/// Read the destination (octets + little-endian port) from a shared frame's header.
+fn read_dst(va: u64) -> IpEndpoint {
+    let ip = Ipv4Address::new(
+        a_r8(va + OFF_DST_IP),
+        a_r8(va + OFF_DST_IP + 1),
+        a_r8(va + OFF_DST_IP + 2),
+        a_r8(va + OFF_DST_IP + 3),
+    );
+    let port = a_r16(va + OFF_DST_PORT);
+    IpEndpoint::new(IpAddress::Ipv4(ip), port)
+}
+
+/// Drive the poll loop until `cond` holds, servicing the NIC on each wakeup. Bounded so a stuck
+/// exchange returns rather than spinning forever; a genuinely lost packet still relies on the
+/// QEMU-level timeout, the disk driver's discipline.
+fn service_until(
+    iface: &mut Interface,
+    dev: &mut vnet::VirtioNet,
+    sockets: &mut SocketSet,
+    mut cond: impl FnMut(&mut SocketSet) -> bool,
+) -> bool {
+    for _ in 0..2000 {
+        iface.poll(instant(), dev, sockets);
+        if cond(sockets) {
+            return true;
+        }
+        unsafe {
+            invoke(IRQ, irq::WAIT, 0, 0, 0);
+        }
+        dev.ack_irq();
+    }
+    iface.poll(instant(), dev, sockets);
+    cond(sockets)
+}
+
+fn udp_sendto(
+    iface: &mut Interface,
+    dev: &mut vnet::VirtioNet,
+    sockets: &mut SocketSet,
+    socks: &[Option<Sock>; MAX_SOCKETS],
+    sid: usize,
+    len: usize,
+) -> u64 {
+    let Some(sk) = socks[sid] else { return REP_ERR };
+    if sk.is_tcp || sk.va == 0 || len > DATA_MAX {
+        return REP_ERR;
+    }
+    let dst = read_dst(sk.va);
+    let mut buf = vec![0u8; len];
+    for (i, b) in buf.iter_mut().enumerate() {
+        *b = a_r8(sk.va + OFF_PAYLOAD + i as u64);
+    }
+    if sockets
+        .get_mut::<udp::Socket>(sk.handle)
+        .send_slice(&buf, dst)
+        .is_err()
+    {
+        return REP_ERR;
+    }
+    iface.poll(instant(), dev, sockets); // push the datagram out
+    REP_OK
+}
+
+fn sock_recv(
+    iface: &mut Interface,
+    dev: &mut vnet::VirtioNet,
+    sockets: &mut SocketSet,
+    socks: &[Option<Sock>; MAX_SOCKETS],
+    sid: usize,
+) -> u64 {
+    let Some(sk) = socks[sid] else { return REP_ERR };
+    if sk.va == 0 {
+        return REP_ERR;
+    }
+    let handle = sk.handle;
+    let ready = if sk.is_tcp {
+        service_until(iface, dev, sockets, |s| {
+            s.get_mut::<tcp::Socket>(handle).can_recv()
+        })
+    } else {
+        service_until(iface, dev, sockets, |s| {
+            s.get_mut::<udp::Socket>(handle).can_recv()
+        })
+    };
+    if !ready {
+        return REP_ERR;
+    }
+
+    let mut buf = [0u8; DATA_MAX];
+    let n = if sk.is_tcp {
+        sockets
+            .get_mut::<tcp::Socket>(handle)
+            .recv_slice(&mut buf)
+            .unwrap_or(0)
+    } else {
+        sockets
+            .get_mut::<udp::Socket>(handle)
+            .recv_slice(&mut buf)
+            .map(|(n, _)| n)
+            .unwrap_or(0)
+    };
+    for (i, &b) in buf[..n].iter().enumerate() {
+        unsafe {
+            core::ptr::write_volatile((sk.va + OFF_PAYLOAD + i as u64) as *mut u8, b);
+        }
+    }
+    a_w16(sk.va + OFF_LEN, n as u16);
+    n as u64
+}
+
+fn tcp_connect(
+    iface: &mut Interface,
+    dev: &mut vnet::VirtioNet,
+    sockets: &mut SocketSet,
+    socks: &[Option<Sock>; MAX_SOCKETS],
+    sid: usize,
+) -> u64 {
+    let Some(sk) = socks[sid] else { return REP_ERR };
+    if !sk.is_tcp || sk.va == 0 {
+        return REP_ERR;
+    }
+    let dst = read_dst(sk.va);
+    let handle = sk.handle;
+    let local = LOCAL_PORT_BASE + sid as u16;
+    {
+        let cx = iface.context();
+        if sockets
+            .get_mut::<tcp::Socket>(handle)
+            .connect(cx, dst, local)
+            .is_err()
+        {
+            return REP_ERR;
+        }
+    }
+    // Drive until the connection settles: established, or back to a closed state (a RST from an
+    // unused port, the deterministic refusal outcome).
+    service_until(iface, dev, sockets, |s| {
+        let st = s.get_mut::<tcp::Socket>(handle).state();
+        st == tcp::State::Established || st == tcp::State::Closed
+    });
+    match sockets.get_mut::<tcp::Socket>(handle).state() {
+        tcp::State::Established => CONNECT_ESTABLISHED,
+        _ => CONNECT_REFUSED,
+    }
+}
+
+fn tcp_send(
+    iface: &mut Interface,
+    dev: &mut vnet::VirtioNet,
+    sockets: &mut SocketSet,
+    socks: &[Option<Sock>; MAX_SOCKETS],
+    sid: usize,
+    len: usize,
+) -> u64 {
+    let Some(sk) = socks[sid] else { return REP_ERR };
+    if !sk.is_tcp || sk.va == 0 || len > DATA_MAX {
+        return REP_ERR;
+    }
+    let mut buf = vec![0u8; len];
+    for (i, b) in buf.iter_mut().enumerate() {
+        *b = a_r8(sk.va + OFF_PAYLOAD + i as u64);
+    }
+    let sent = sockets
+        .get_mut::<tcp::Socket>(sk.handle)
+        .send_slice(&buf)
+        .unwrap_or(0);
+    iface.poll(instant(), dev, sockets);
+    sent as u64
 }
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
-    // A server bug is a dead server: fault, and the kernel reports it. Same shape as every binary.
     #[cfg(target_arch = "aarch64")]
     unsafe {
         core::arch::asm!("brk #0", options(nostack, nomem))

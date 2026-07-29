@@ -1074,6 +1074,38 @@ This is a bug fix to this section's intent (untyped is delegable in seL4, the mo
 guarantees from), recorded here rather than as a new section. See `kernel/src/syscall.rs`'s `SPLIT`
 handler, `cap::untyped_root_cap`, and notes/grant-expression.md.
 
+### Amendment (milestone 22): DESTROY force-kills a live resident thread, it no longer only refuses
+
+`DESTROY` refused (NotPermitted) while a live thread occupied the region, on the reasoning that "its
+owner must let it finish first." That is right for a cooperative child, and wrong for the exact case
+§24 built the forcible tier of `^C` for: **a runaway that never finishes.** A thread spinning at EL0,
+never yielding and never checking its interrupt endpoint, would refuse `DESTROY` forever, so the
+shell's escalation had nothing to escalate *to*. §24 named the forcible tier "§16's revocation" and
+said "no new kernel primitive"; this is the small change to `DESTROY` that makes that true.
+
+**The refusal now arms a kill.** When `DESTROY` finds a live (`Ready`/`Running`/`Blocked`) resident
+thread, it marks it `killed` and still refuses this pass. A killed thread never runs again: the
+scheduler converts it to a `Finished` corpse at its **next preemption** instead of requeueing it, and
+the ordinary reaper tears down its stack and address space exactly as a clean exit would. So the
+owner that retries `DESTROY` (the shell's escalation loop already retries, for the exit sliver)
+reclaims the region once the runaway has been torn down.
+
+**Why a flag and a retry, not a synchronous kill.** Yanking a thread out of a run queue needs an
+arbitrary-remove the intrusive `Fifo` deliberately does not have, and stopping a thread `Running` on
+another core needs a cross-core IPI and a rendezvous. The killed flag needs neither: a runaway is
+preemptible by construction (DECISIONS §5), so **each core converts its own killed thread on the
+timer**, and the whole mechanism is one branch in `schedule()` plus one flag in `DESTROY`. The cost
+is that reclamation is not instantaneous (the runaway runs to the end of its timeslice, then dies),
+which is exactly the semantics the shell wants: a bounded escalation, not a stop-the-world.
+
+**Scope, honestly.** This tears down the runaway (`Running`/`Ready`), which is §24's stated target. A
+thread that only ever *blocks* is never scheduled to hit that preemption, so the flag alone will not
+reap it; that case is the cooperative tier's job (send the program its interrupt endpoint, which by
+definition it is listening on), not the forcible tier's. A single kernel test builds a one-instruction
+EL0 runaway and reclaims its region out from under it, on both ISAs (`user.rs`,
+`destroy_force_kills_a_runaway_and_reclaims_its_region`). See `kernel/src/sched.rs` (`schedule`,
+`reap_region_objects`) and `Thread::killed`.
+
 ## 17. The second architecture: RISC-V, and the page-table format trait
 
 The port to RISC-V (rv64, QEMU `virt`) is the first real test of rule #1 ("all architecture-specific
@@ -1496,6 +1528,46 @@ The five parts, each decided explicitly:
 Surface cost: no new syscall and no new method. Spawn already carries grants; delivery is a
 kernel-internal send. The additions are a message-format convention and a spawn-slot convention,
 recorded in notes/abi.md when built.
+
+### Implementation (milestone 22, phase A), the decisions the build settled
+
+The five sub-decisions above are the design; building it settled the details they left open. These
+are amendments to §26, not a new section, per its own "no new section" intent.
+
+1. **The spawn-slot convention is the last cspace slot, consumed at `START`.** The designated
+   endowment (§26.2) is a real capability in a reserved slot, `abi::fault::FAULT_EP_SLOT` (=
+   `CSPACE_SLOTS - 1 = 15`). A supervisor places its endpoint there with `Tcb::CAP_INSERT`, which
+   grew an explicit target-slot argument (`0` keeps first-free, `n` targets slot `n - 1`) so the
+   fault endpoint lands in the reserved slot instead of wherever first-free fell. That is the one
+   surface change, and it is an *argument* to an existing method, not a new method. At `START` the
+   kernel reads the slot: an `Endpoint` there makes the thread supervised, and the kernel records the
+   endpoint (`Thread::fault_ep`) **and clears the slot**, so the child cannot forge messages on its
+   own supervision endpoint. The *last* slot is deliberate: ordinary children fill low slots from
+   zero, so none accidentally lands a working endpoint there and gets read as supervised.
+
+2. **Delivery reuses the synchronous-send rendezvous; the corpse is the parked sender.** The
+   non-blocking requirement (do not lose the event if the supervisor is not in `RECV`) is met by the
+   *existing* sender-queue mechanism, not a new one. If a supervisor waits, rendezvous; if not, the
+   dead thread parks on its supervision endpoint's sender queue with the message in its mailbox, and
+   `RECV` collects it later. A death carries data (tid, pc, addr), so the data-less IRQ signal count
+   does not fit; the sender queue does, and it is already proven. The corpse is never woken:
+   `ipc_recv` leaves a `Dead` sender dead after taking its message, the same way it leaves a `CALL`
+   caller blocked. So no new kernel mechanism was needed, which is what §26 predicted.
+
+3. **Dead-until-reaped is a distinct thread state.** `State::Dead` is a corpse the reaper must *not*
+   collect (unlike `Finished`); only the supervisor's §16 `DESTROY` frees it. Reusing `Finished`
+   would race the reaper against the supervisor, so the distinction is a property of the type. The
+   corpse's TCB retains the fault-time registers (its mailbox holds the five words), which is what
+   the reserved fifth word needs to exist for.
+
+4. **The IPC mailbox widened from three words to five.** The message is five words and `RECV` must
+   deliver all five, so the kernel mailbox and the `RECV` result grew to five registers. Ordinary
+   three-word IPC pads the top two with zero, so `user_rt::recv` and every existing program are
+   unchanged; only a supervisor reads `w3`/`w4`. This is the message-format convention made real.
+
+Proven on both ISAs (`kernel/src/user.rs`, `supervision_tests`): a child crashes and its supervisor
+receives `(FAULT, tid, pc, addr)`, the corpse survives with its state until revocation reaps it, a
+respawned child runs, and a clean exit reports `EXIT`. See notes/supervision.md and notes/abi.md §5.
 
 ## Reading
 

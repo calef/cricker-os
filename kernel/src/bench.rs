@@ -268,7 +268,7 @@ fn null_syscall_el0() {
         println!("bench: null_syscall skipped (no elbench in the initrd)");
         return;
     }
-    let [ticks, iters, _] = sched::ipc_recv(report);
+    let [ticks, iters, ..] = sched::ipc_recv(report);
     println!("bench: null_syscall {ticks} {iters}");
 }
 
@@ -288,7 +288,7 @@ fn ctx_switch_el0() {
     if !spawn_elbench(EL_CTX_SWITCH, report) {
         return;
     }
-    let [ticks, iters, _] = sched::ipc_recv(report);
+    let [ticks, iters, ..] = sched::ipc_recv(report);
     println!("bench: ctx_switch {ticks} {iters}");
 }
 
@@ -341,7 +341,7 @@ fn ipc_rtt_el0() {
     })
     .expect("bench: could not spawn the ipc client");
 
-    let [ticks, iters, _] = sched::ipc_recv(report);
+    let [ticks, iters, ..] = sched::ipc_recv(report);
     // Distinct from the kernel-side `ipc_rtt` above: this one crosses the EL0<->EL1 boundary on every
     // send and recv, which is the whole point (comparable to lmbench). The gap between them is roughly
     // the trap cost of the four svcs per round trip.
@@ -403,7 +403,7 @@ fn map_el0() {
     })
     .expect("bench: could not spawn the map bencher");
 
-    let [ticks, iters, _] = sched::ipc_recv(report);
+    let [ticks, iters, ..] = sched::ipc_recv(report);
     println!("bench: map_el0 {ticks} {iters}");
 }
 
@@ -445,7 +445,7 @@ fn spawn_el0() {
         )
     })
     .expect("bench: could not spawn the spawner");
-    let [ticks, iters, _] = sched::ipc_recv(report);
+    let [ticks, iters, ..] = sched::ipc_recv(report);
     println!("bench: spawn_el0 {ticks} {iters}");
 }
 
