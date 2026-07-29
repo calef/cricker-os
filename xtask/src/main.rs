@@ -1034,6 +1034,17 @@ fn test() -> bool {
     ) {
         return false;
     }
+    // The FS server's sans-IO core (fs-server, its own workspace): open, read, write, close against
+    // a real RedoxFS image in memory, in milliseconds. This proves the filesystem logic for BOTH the
+    // read and write paths on the host, which the on-device test can only do for reads today.
+    eprintln!();
+    eprintln!("--- fs-server sans-IO core (host, its own workspace) ---");
+    if !run(
+        "cargo",
+        &["test", "--manifest-path", "fs-server/Cargo.toml"],
+    ) {
+        return false;
+    }
     for target in [TARGET, RISCV_TARGET] {
         if !run(
             "cargo",
