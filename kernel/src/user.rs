@@ -1829,6 +1829,81 @@ pub mod virtio_service {
         Some(cli_report)
     }
 
+    /// The networked std client's heap budget and extra stack, both larger than the hand-written
+    /// client's: it is a full std program (formatting, `Vec`, `String`), so it needs the same
+    /// generous heap and stack the `hellostd` demo does.
+    const STD_NET_HEAP_PAGES: u64 = 256;
+    const STD_NET_STACK_PAGES: u64 = 32;
+
+    /// **Spawn the net server and a `std::net` client** (milestone 27 phase two): the same
+    /// `hellostd` std binary, but now given the network, so its `UdpSocket::bind` probe succeeds
+    /// and it drives a real UDP DNS query and a TCP echo round trip through `std::net`, whose PAL
+    /// binds to this same netd socket contract. netd is `netd_image` (entry role 0, holding the
+    /// NIC and `READ` on the `Stack` endpoint); `std_image` is the ordinary std ELF given the std
+    /// slot convention (heap untyped at 0, stdout at 1) plus the two net slots (the `Stack`
+    /// endpoint `WRITE` at 2, an untyped budget for its per-socket shared frames at 3). Over the
+    /// mmio transport; the PAL sits above the transport, so proving it on one is proving it. The
+    /// same binary spawned without slots 2 and 3 runs the offline transcript instead, which is what
+    /// makes "no ambient network" visible: authority, not the code, decides. Returns the program's
+    /// stdout endpoint for the test to reassemble, or `None` if no NIC is attached.
+    pub fn start_net_std(netd_image: &'static [u8], std_image: &'static [u8]) -> Option<EpId> {
+        use crate::cap::untyped_cap;
+
+        let dev = crate::virtio::find_net_device()?;
+        let transport = crate::virtio::Transport::Mmio {
+            mmio_phys: dev.mmio_phys,
+        };
+        let (netd_report, stack) = wire_net_server(netd_image, transport, dev.intid, None);
+
+        let report = crate::sched::create_endpoint();
+        let heap =
+            crate::untyped::create(STD_NET_HEAP_PAGES).expect("no untyped for the std net heap");
+        let frames = crate::untyped::create(NET_CLIENT_BUDGET_PAGES)
+            .expect("no untyped for the std net frames");
+
+        let mut stackmaps = [Mapping {
+            va: 0,
+            phys: 0,
+            flags: Flags::user_data(),
+        }; STD_NET_STACK_PAGES as usize];
+        for (k, m) in stackmaps.iter_mut().enumerate() {
+            let phys = crate::memory::alloc()
+                .expect("no frame for the std net stack")
+                .addr();
+            // SAFETY: fresh frame via the direct map; zero it so the process starts clean.
+            unsafe {
+                core::ptr::write_bytes(mmu::phys_to_virt(phys) as *mut u8, 0, FRAME_SIZE as usize);
+            }
+            m.va = USER_STACK_VA - (k as u64 + 1) * FRAME_SIZE;
+            m.phys = phys;
+        }
+
+        crate::sched::spawn(move || {
+            run(
+                std_image,
+                Spawn {
+                    arg0: 0,
+                    arg1: 0,
+                    arg2: 0,
+                    grants: &[
+                        untyped_cap(heap),                   // slot 0: the heap's budget
+                        endpoint_cap(report, Rights::WRITE), // slot 1: stdout/stderr
+                        endpoint_cap(stack, Rights::WRITE),  // slot 2: the Stack endpoint
+                        untyped_cap(frames), // slot 3: mint per-socket shared frames
+                    ],
+                    maps: &stackmaps,
+                },
+            )
+        })
+        .expect("could not spawn the networked std program");
+
+        // Same discipline as start_net_stack: drain netd's blocking DHCP report so it reaches its
+        // serve loop before the std program's first request, and confirm DHCP completed.
+        crate::sched::ipc_recv(netd_report);
+
+        Some(report)
+    }
+
     /// [`wire`] against the enumerated mmio disk, at `role`.
     fn start_role(image: &'static [u8], role: u64) -> Option<EpId> {
         let dev = crate::virtio::find_block_device()?;
@@ -3486,6 +3561,61 @@ mod tests {
         );
     }
 
+    /// The `hellostd` std program's ELF bytes. The same binary the offline std test spawns; given
+    /// the network here, its `UdpSocket::bind` probe succeeds and it runs the net transcript.
+    fn hellostd_image() -> &'static [u8] {
+        program("hellostd").expect("no hellostd program in the initrd archive")
+    }
+
+    /// The exact transcript `hellostd` prints when it is granted the network. Pinned so a drift in
+    /// the net PAL, the contract, or the demo is a loud diff rather than a mystery.
+    const STD_NET_EXPECTED: &[u8] = b"std net on cricker-os\ndns ok\ntcp echo ok\n";
+
+    /// **`std::net` end to end over the socket contract** (milestone 27 phase two): the `hellostd`
+    /// std binary, given the network, does a real UDP DNS query and a TCP echo round trip through
+    /// `std::net::{UdpSocket, TcpStream}`, whose PAL binds to netd's contract. The program never
+    /// sees a capability or a socket id; it writes to a socket and reads from it. This closes the
+    /// `net honestly unsupported` gap from phase one: std's networking runs on the native ABI,
+    /// reaching the same path the hand-written client does through std's blocking API. Its stdout
+    /// is reassembled off the endpoint and compared byte for byte, the `hellostd` discipline.
+    #[test_case]
+    fn std_net_runs_over_the_socket_contract() {
+        let report = match virtio_service::start_net_std(netd_image(), hellostd_image()) {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no virtio-net device attached; skipping)");
+                return;
+            }
+        };
+
+        let mut got = [0u8; 256];
+        let mut len = 0usize;
+        while len < STD_NET_EXPECTED.len() {
+            let words = sched::ipc_recv(report);
+            let count = words[0] as usize;
+            assert!(
+                (1..=16).contains(&count),
+                "std net stdout message with a bad byte count: {count}"
+            );
+            let mut chunk = [0u8; 16];
+            chunk[..8].copy_from_slice(&words[1].to_le_bytes());
+            chunk[8..].copy_from_slice(&words[2].to_le_bytes());
+            for &b in &chunk[..count] {
+                assert!(
+                    len < got.len(),
+                    "the std net program printed more than the transcript"
+                );
+                got[len] = b;
+                len += 1;
+            }
+        }
+        assert_eq!(
+            &got[..len],
+            STD_NET_EXPECTED,
+            "the std net program's stdout did not match the expected transcript",
+        );
+    }
+
     /// **The shell's `run` mechanism: spawn a process, get its answer.** Milestone 10's core.
     ///
     /// A worker process is started at EL0 with an argument, computes `n*n`, reports the result on
@@ -4655,6 +4785,58 @@ mod riscv_virtio_tests {
         assert_eq!(
             verdict, NET_CLIENT_OK,
             "the TCP echo round trip over PCIe failed (client code {verdict:#x})",
+        );
+    }
+
+    /// The `hellostd` std program's ELF bytes from the riscv initrd. Given the network here, its
+    /// `UdpSocket::bind` probe succeeds and it runs the net transcript.
+    fn hellostd_image() -> &'static [u8] {
+        program("hellostd").expect("no hellostd program in the initrd archive")
+    }
+
+    /// The exact transcript `hellostd` prints when it is granted the network.
+    const STD_NET_EXPECTED: &[u8] = b"std net on cricker-os\ndns ok\ntcp echo ok\n";
+
+    /// **`std::net` end to end over the socket contract, on the second ISA** (milestone 27 phase
+    /// two): the riscv twin of the aarch64 std-net test. The `hellostd` std binary, given the
+    /// network, does a real UDP DNS query and a TCP echo round trip through `std::net`, whose PAL
+    /// binds to netd's contract, proving std's networking runs on the native ABI on both
+    /// architectures (the §19 parity gate). Its stdout is reassembled and compared byte for byte.
+    #[test_case]
+    fn std_net_runs_over_the_socket_contract() {
+        let report = match virtio_service::start_net_std(netd_image(), hellostd_image()) {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no virtio-net device attached; skipping)");
+                return;
+            }
+        };
+
+        let mut got = [0u8; 256];
+        let mut len = 0usize;
+        while len < STD_NET_EXPECTED.len() {
+            let words = sched::ipc_recv(report);
+            let count = words[0] as usize;
+            assert!(
+                (1..=16).contains(&count),
+                "std net stdout message with a bad byte count: {count}"
+            );
+            let mut chunk = [0u8; 16];
+            chunk[..8].copy_from_slice(&words[1].to_le_bytes());
+            chunk[8..].copy_from_slice(&words[2].to_le_bytes());
+            for &b in &chunk[..count] {
+                assert!(
+                    len < got.len(),
+                    "the std net program printed more than the transcript"
+                );
+                got[len] = b;
+                len += 1;
+            }
+        }
+        assert_eq!(
+            &got[..len],
+            STD_NET_EXPECTED,
+            "the std net program's stdout did not match the expected transcript",
         );
     }
 
