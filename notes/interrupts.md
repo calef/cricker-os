@@ -249,3 +249,77 @@ The whole path is exercised by a **software-generated interrupt** (SGI): `gic::s
 INTID 1 from software, with no hardware behind it. A thread blocks in `WAIT`, the test raises the
 SGI, the handler routes it, the thread wakes. Deterministic, and it needs no disk. The virtio
 driver (9b) will use the same path with a real device interrupt in place of the SGI.
+
+---
+
+# IRQ affinity: spreading device lines off core 0 (fix/irq-delivery, 2026-07-29)
+
+Until now every SPI targeted core 0: `gic::enable` wrote `ITARGETSR[intid] = 1` (bit 0). Under SMP
+that funnels every device interrupt onto one core, and because the handler that turns an interrupt
+into a message runs on the core that took it (`handle_irq` calls `irq_notify`, which wakes the
+driver onto `cpu::current`), the driver wake lands on core 0 too. Every disk and NIC completion, and
+the driver work it triggers, re-concentrates on core 0 no matter where the threads were spawned.
+
+The fix distributes SPI lines across the online cores. The **policy** lives in `arch::irq::enable`
+(it may read `smp::online_count`; it is arch glue, not a driver): each SPI is assigned a target core
+the first time it is enabled, round-robin over the online cores, and that assignment is **stable**
+(`IRQ_TARGET`, an atomic per-INTID slot). Stability matters because the `Irq` capability's ACK
+re-enables the line on every completion; re-rolling the target each time would make the line hop
+cores on every interrupt. The **mechanism** stays in the driver: `gic::enable(intid, target_cpu)`
+writes `ITARGETSR[intid] = 1 << target_cpu`. PPIs and SGIs are per-core, so the target is ignored
+for them (the timer PPI, the reschedule SGI). Rule #2 holds: the GIC driver is told which core, it
+does not decide.
+
+What this does and does not buy, measured honestly:
+
+- It **does** move each device's interrupt (and the wake it causes) off core 0 onto its assigned
+  core. Verified: the full aarch64 suite (disk, PCIe disk, both DHCP round trips) stays green with
+  the lines spread, and a diskless boot's device IRQs land on cores other than 0.
+- It **does not**, on its own, make the heavy `std_net` pipeline (smoltcp in `netd`, plus the std
+  program) go faster under SMP, because that pipeline is a chain of IPC rendezvous, and a rendezvous
+  wake still lands on the *waker's* core (`cpu::current`). Spreading the interrupt moves the whole
+  chain to the interrupt's core; it does not parallelize it. Parallelizing the pipeline needs the
+  rendezvous/device-IRQ **wake placement** to be load-aware, which is the scheduler's call
+  (DECISIONS §28 territory), not the interrupt controller's. See the `std_net` note below.
+
+## The riscv PLIC side, done the same way (parity §19)
+
+The PLIC equivalent spreads device sources across harts, the same round-robin-with-a-stable-target
+shape as the GIC. The PLIC delivers a source to a **context** (a hart at a privilege level, `2*hart+1`
+for S-mode on QEMU `virt`), so the pieces are:
+
+- **Every hart sets `SEIE` early** (`arch::irq::init_this_cpu` now unmasks supervisor external
+  interrupts alongside the software-interrupt IPI source). This is safe before the PLIC base is even
+  known: `SEIE` with no source enabled for the hart's context delivers nothing. It sidesteps the
+  ordering hazard that a secondary comes online (running `init_this_cpu`) *before* the boot path
+  calls `plic::init`; the CSR is unmasked now, the context is set up later.
+- **The boot hart opens a target hart's context and routes the source to it** (`target_context` in
+  `arch/riscv64/irq.rs`). The threshold and enable registers are global PLIC MMIO, so the boot hart,
+  which runs every `enable` (test wiring, driver spawn), can open any hart's context and enable a
+  source on it. The target is chosen round-robin over the online harts and is **stable per source**
+  (`SOURCE_CTX`), for the same reason the GIC target is stable: the ACK re-enables the line on every
+  completion, and the mask and the re-enable have to name the same context.
+- **Each hart claims and completes against its own context** (`this_s_context` = `2*cpu::id()+1`,
+  passed to `plic::claim`/`complete`/`disable` from the external-interrupt handler). A source targets
+  exactly one hart, so the hart that takes it is the hart it is enabled on, and the mask/complete land
+  on the right context. The PLIC driver stays mechanism-only: it is told the context, it does not read
+  the hartid (rule #2, DECISIONS §4).
+
+Proven the same way as the GIC: the riscv suite is green at the 4-hart boot with device sources
+spread across harts (disk read, the interrupt-driven fs-server block server, both routed to whatever
+hart the round-robin picked, plus the SMP placement tests). As on aarch64, this distributes the
+interrupt and the wake it causes; it does not by itself parallelize the `std_net` pipeline, which
+needs the load-aware rendezvous wake (see below).
+
+## The `std_net` SMP hang is not an interrupt-delivery bug
+
+Recorded so it is not re-diagnosed as one. The `std_net` test (smoltcp in `netd` serving a std
+program's `UdpSocket`/`TcpStream`) hangs under the 4-core boot on **both** ISAs, watchdog-killed at
+60 s, while in the same run the hand-built DHCP round trips (`virtio_net`, `virtio_net_pci`) pass and
+the interrupt-driven fs-server block server passes. So interrupt delivery under SMP is sound; the
+hang is specific to the heavier, longer, timer-driven smoltcp pipeline. Its threads are woken by a
+mix of device IRQ and IPC rendezvous, and both wakes currently pin to one core, so the pipeline
+serializes there instead of spreading; a request/response chain that fits in 60 s on a real single
+core does not when it shares a machine with three cores it cannot use. The fix is load-aware wake
+placement in the scheduler (DECISIONS §28), with the IRQ affinity above as the necessary
+interrupt-side half. This is out of the IRQ-delivery lane and is left to that work.

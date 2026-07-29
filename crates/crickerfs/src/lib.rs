@@ -291,6 +291,51 @@ mod tests {
         assert_eq!(fs.len(), MAX_FILES);
         assert_eq!(fs.read(&names[MAX_FILES - 1]), Some(data));
     }
+
+    /// **A directory that spills past one block round-trips, every file with distinct contents.**
+    /// `a_full_directory_round_trips` above proves the capacity boundary but writes identical bytes
+    /// to every file, so a directory that mixed up `start_block`s would still read the same byte back
+    /// and pass. This one gives every file its own contents and name and checks each reads back
+    /// byte-for-byte, the integrity guard for the multi-block directory. It is the case the riscv
+    /// initrd hit (its per-role driver binaries push it past fifteen).
+    #[test]
+    fn a_directory_spanning_two_blocks_round_trips() {
+        // Twenty files, each with distinct contents longer than a name so a shifted or truncated
+        // directory could not accidentally match.
+        let bodies: vec::Vec<vec::Vec<u8>> = (0..20u8)
+            .map(|i| vec![i; (BLOCK + i as usize) % (2 * BLOCK) + 1])
+            .collect();
+        let names: vec::Vec<vec::Vec<u8>> = (0..20u8)
+            .map(|i| std::format!("file{i}").into_bytes())
+            .collect();
+        let files: vec::Vec<(&str, &[u8])> = (0..20)
+            .map(|i| {
+                (
+                    core::str::from_utf8(&names[i]).unwrap(),
+                    bodies[i].as_slice(),
+                )
+            })
+            .collect();
+        assert!(
+            files.len() > (BLOCK - 12) / ENTRY_LEN,
+            "test must exceed one block"
+        );
+
+        let mut img = vec![0u8; image_size(&files)];
+        let n = write_image(&files, &mut img).expect("write");
+        assert_eq!(n, img.len());
+
+        let fs = Fs::parse(&img).expect("parse");
+        assert_eq!(fs.len(), 20);
+        for (i, body) in bodies.iter().enumerate() {
+            let name = core::str::from_utf8(&names[i]).unwrap();
+            assert_eq!(
+                fs.read(name),
+                Some(body.as_slice()),
+                "file {name} mismatched"
+            );
+        }
+    }
 }
 
 /// Machine-checked proofs (`script/verify`; notes/verification.md).

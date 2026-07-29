@@ -110,6 +110,13 @@ pub unsafe fn enter_user(frame: *mut TrapFrame) -> ! {
     unsafe { user_return(frame) }
 }
 
+/// Diagnostic stub (the watchdog dump's EL0-PC column): the riscv trap frame is not at a fixed
+/// stack offset (it rides below the live sp via sscratch), so return 0 rather than misread it. The
+/// aarch64 dump carries the real PC, which is the ISA the FS hang reproduces on.
+pub fn user_pc(_stack_top: u64) -> u64 {
+    0
+}
+
 /// Interrupts routed to a userspace handler (delegated IRQs). Bumped by the trap dispatcher.
 pub static ROUTED_IRQS: AtomicUsize = AtomicUsize::new(0);
 
@@ -218,16 +225,20 @@ extern "C" fn riscv_trap_dispatch(frame: &mut TrapFrame) {
             // kernel-side demo, an explicit re-enable) brings it back. `complete` ends the PLIC's
             // claim so it will arbitrate the next interrupt. See notes/interrupts.md, drivers/plic.rs.
             S_EXTERNAL => {
-                let source = crate::drivers::plic::claim();
+                // Claim, mask, and complete against THIS hart's own context. IRQ affinity may have
+                // routed the source to a secondary hart's context, and that hart claims from its own
+                // context, not the boot hart's (drivers/plic.rs, arch::irq::this_s_context).
+                let ctx = super::irq::this_s_context();
+                let source = crate::drivers::plic::claim(ctx);
                 if source != 0 {
                     if let Some(ep) = crate::sched::irq_route(source) {
                         ROUTED_IRQS.fetch_add(1, Ordering::Relaxed);
-                        crate::drivers::plic::disable(source);
+                        crate::drivers::plic::disable(source, ctx);
                         crate::sched::irq_notify(ep);
                     } else {
                         SPURIOUS_IRQS.fetch_add(1, Ordering::Relaxed);
                     }
-                    crate::drivers::plic::complete(source);
+                    crate::drivers::plic::complete(source, ctx);
                 }
             }
             // A reschedule IPI from another hart (SBI set our sip.SSIP). Clear the pending bit, then
@@ -236,7 +247,10 @@ extern "C" fn riscv_trap_dispatch(frame: &mut TrapFrame) {
             // The RISC-V twin of aarch64's RESCHED_SGI case. See sched::place_on / drain_inbox.
             S_SOFTWARE => {
                 clear_software_interrupt();
+                // Two reasons a hart pokes us (DECISIONS §28): it handed us a thread (drain it), or
+                // an idle hart asked us for work (serve the steal). The same IPI carries both.
                 crate::sched::drain_inbox();
+                crate::sched::serve_steal_request();
             }
             _ => {
                 SPURIOUS_IRQS.fetch_add(1, Ordering::Relaxed);

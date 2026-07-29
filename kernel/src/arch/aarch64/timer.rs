@@ -131,7 +131,7 @@ pub fn init() {
     let interval = freq / TICK_HZ;
     INTERVAL.store(interval, Ordering::Relaxed);
 
-    gic::enable(TIMER_INTID);
+    gic::enable(TIMER_INTID, 0); // PPI: per-core, target ignored
 
     start(interval);
 }

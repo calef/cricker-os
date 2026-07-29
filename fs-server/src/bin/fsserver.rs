@@ -1,0 +1,211 @@
+//! **The FS-server EL0 binary** (milestone 32 phase 2): RedoxFS, confined, served over IPC.
+//!
+//! The sans-IO core is [`fs_server::Server`]; this file is only the two IO edges it needs and the
+//! runtime a dedicated binary carries. Below it, the [`IpcDisk`] turns the RedoxFS `Disk` trait into
+//! a **blk-IPC client**: a `read_at`/`write_at`/`size` is a `CALL` to the block server, one
+//! filesystem block per shared page. Above it, [`serve`] turns file-service requests from clients
+//! into `Server` calls and answers through the one-shot Reply the kernel mints. The allocator is the
+//! untyped-backed heap, so every byte RedoxFS allocates is paid from this process's own budget,
+//! which is the whole reason phase 2 waited on milestone 27's `GlobalAlloc`.
+//!
+//! # Capability contract (notes/fs-server.md, notes/abi.md §4)
+//! - **slot 0**: an untyped budget, the heap's (RedoxFS is alloc-heavy; nothing runs without it).
+//! - **slot 1**: the block-service endpoint, `WRITE`. The FS server is the block server's client.
+//! - **slot 2**: the file-service endpoint, `READ`. Clients `CALL` here; this is the directory
+//!   capability, bound in the server to the image's root (phase 2). A client without it opens
+//!   nothing.
+//! - **[`BLK_PAGE`]**: a page shared with the block server (the block buffer).
+//! - **[`FILE_PAGE`]**: a page shared with the client (a name on open, file bytes on read/write).
+//!
+//! The server only ever OPENS the image (never creates: creation is std-gated and host-side), and
+//! it maps RedoxFS's error type to the wire exactly once, in [`serve`], via `fs_proto::reply_err`.
+
+#![no_std]
+#![no_main]
+
+extern crate alloc;
+
+use fs_proto::{blk, fs, op, reply_err, req};
+use fs_server::Server;
+use redoxfs::Disk;
+use syscall::error::{EINVAL, EIO, Error, Result};
+use user_rt::{call, invoke, recv_cap, send};
+
+/// Cspace slots, by convention with the kernel-side wiring (kernel/src/user.rs `fs_service`).
+const UNTYPED: u64 = 0;
+const BLK: u64 = 1;
+const FILE: u64 = 2;
+/// A readiness endpoint: the server SENDs one word here once the image is open, before it serves.
+const READY: u64 = 3;
+
+/// Where the kernel maps the two shared pages. Above the program image (0x40_0000) and the heap
+/// (0x4000_0000 + a few MiB), so nothing collides.
+const BLK_PAGE: u64 = 0x5000_0000;
+const FILE_PAGE: u64 = 0x5000_1000;
+
+/// One filesystem block / one shared page, in bytes. The transfer unit both directions.
+const BLOCK: usize = blk::BLOCK_SIZE;
+
+/// The heap cap. RedoxFS keeps a record-sized compress buffer (128 KiB), block buffers, and small
+/// tree structures; a few MiB is comfortable for the small images phase 2 serves. The untyped the
+/// kernel grants is the real ceiling.
+const HEAP_MAX: u64 = 8 * 1024 * 1024;
+
+#[global_allocator]
+static HEAP: user_rt::heap::UntypedHeap = user_rt::heap::UntypedHeap::new();
+
+/// The RedoxFS `Disk` over blk IPC. Stateless: everything it needs (the endpoint slot, the shared
+/// page) is a fixed convention, so it is a zero-sized handle the `Server` owns.
+struct IpcDisk;
+
+impl IpcDisk {
+    /// One blk `CALL`: opcode, block index. Returns the reply's first word as a signed result
+    /// (negative is an error, per the wire convention). The bulk rides in [`BLK_PAGE`].
+    fn blk(op_code: u64, block: u64) -> i64 {
+        // SAFETY: `call` traps to the kernel, which validates the endpoint in slot BLK.
+        let (r0, _) = call(BLK, req(op_code), block);
+        r0 as i64
+    }
+
+    /// Copy `n` bytes out of the shared block page (a completed read landed there).
+    fn from_page(dst: &mut [u8]) {
+        // SAFETY: BLK_PAGE is a mapped, writable page of exactly BLOCK bytes; `dst` is no larger.
+        unsafe {
+            core::ptr::copy_nonoverlapping(BLK_PAGE as *const u8, dst.as_mut_ptr(), dst.len())
+        }
+    }
+
+    /// Copy `src` into the shared block page (to be written). `src` is at most one block.
+    fn to_page(src: &[u8]) {
+        // SAFETY: as above; `src` is no larger than the page.
+        unsafe { core::ptr::copy_nonoverlapping(src.as_ptr(), BLK_PAGE as *mut u8, src.len()) }
+    }
+}
+
+impl Disk for IpcDisk {
+    unsafe fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
+        // RedoxFS reads whole blocks (and multi-block records), always block-aligned; we still
+        // chunk defensively so a short tail is read correctly.
+        for (i, chunk) in buffer.chunks_mut(BLOCK).enumerate() {
+            if Self::blk(blk::READ, block + i as u64) < 0 {
+                return Err(Error::new(EIO));
+            }
+            Self::from_page(chunk);
+        }
+        Ok(buffer.len())
+    }
+
+    unsafe fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
+        for (i, chunk) in buffer.chunks(BLOCK).enumerate() {
+            let b = block + i as u64;
+            if chunk.len() < BLOCK {
+                // A partial final block would clobber the rest of the block; read-modify-write so
+                // only the given bytes change. RedoxFS does not do this today, but a Disk owes it.
+                if Self::blk(blk::READ, b) < 0 {
+                    return Err(Error::new(EIO));
+                }
+            }
+            Self::to_page(chunk);
+            if Self::blk(blk::WRITE, b) < 0 {
+                return Err(Error::new(EIO));
+            }
+        }
+        Ok(buffer.len())
+    }
+
+    fn size(&mut self) -> Result<u64> {
+        let n = Self::blk(blk::SIZE, 0);
+        if n < 0 {
+            return Err(Error::new(EIO));
+        }
+        Ok(n as u64)
+    }
+}
+
+/// The file-service pages, as slices. The FS server reads a name (open) or file bytes (write) from
+/// [`FILE_PAGE`] and writes read results back into it.
+///
+/// SAFETY: FILE_PAGE is a mapped, writable page of 4096 bytes shared with the one client bound to
+/// this endpoint; `len` is clamped to the page below before either is used.
+unsafe fn file_page(len: usize) -> &'static mut [u8] {
+    unsafe { core::slice::from_raw_parts_mut(FILE_PAGE as *mut u8, len) }
+}
+
+/// Answer a caller through its one-shot Reply capability (slot `reply`), then return to serving.
+fn reply(reply_slot: u64, r0: i64) {
+    // SAFETY: the kernel minted this Reply naming the blocked caller; REPLY consumes it.
+    unsafe { invoke(reply_slot, abi::reply::REPLY, r0 as u64, 0, 0) };
+}
+
+/// The serve loop. Blocks on the file-service endpoint, dispatches one request, replies, repeats.
+/// This is the **only** place a RedoxFS error becomes a wire value ([`reply_err`]); everything
+/// below it speaks `syscall::error::Result`.
+fn serve(server: &mut Server<IpcDisk>) -> ! {
+    loop {
+        // RECV_CAP delivers (first word, the Reply cap's slot, second word). The Reply names the
+        // caller; endpoint-only naming means we never learn who they are, only how to answer.
+        let (w0, reply_slot, w1) = recv_cap(FILE);
+        let handle = fs::req_handle(w0) as u32;
+        let len = fs::req_len(w0).min(BLOCK); // never touch past the shared page
+        let offset = w1;
+
+        let result: Result<i64> = match op(w0) {
+            fs::OPEN => {
+                // SAFETY: the name is `len` bytes the client wrote at the start of FILE_PAGE.
+                let name_bytes = unsafe { file_page(len) };
+                match core::str::from_utf8(name_bytes) {
+                    Ok(name) => server.open_file(name).map(|h| h as i64),
+                    Err(_) => Err(Error::new(EINVAL)),
+                }
+            }
+            fs::READ => {
+                // SAFETY: read straight into the shared page, up to one page.
+                let buf = unsafe { file_page(len) };
+                server.read(handle, offset, buf).map(|n| n as i64)
+            }
+            fs::WRITE => {
+                // SAFETY: the data is `len` bytes the client wrote into the shared page.
+                let data = unsafe { file_page(len) };
+                server.write(handle, offset, data).map(|n| n as i64)
+            }
+            fs::FSTAT => server.fstat(handle).map(|s| s as i64),
+            fs::CLOSE => server.close(handle).map(|()| 0),
+            _ => Err(Error::new(EINVAL)),
+        };
+
+        // The one error-mapping site: RedoxFS's Error -> the negated-errno wire value.
+        reply(reply_slot, result.unwrap_or_else(|e| reply_err(e.errno)));
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn _start(_x0: u64, _x1: u64, _x2: u64) -> ! {
+    HEAP.init(UNTYPED, user_rt::heap::DEFAULT_BASE, HEAP_MAX);
+
+    // Open the image over blk IPC and bind to its root. A bad image (or a block server that never
+    // answers correctly) faults here, which the kernel reports; the server never creates.
+    let mut server = match Server::open(IpcDisk) {
+        Ok(s) => s,
+        Err(_) => panic!(), // not a RedoxFS image, or the disk misbehaved: die legibly.
+    };
+    // The image is open: signal readiness (so the test can tell an open-path hang from a serve-path
+    // one), then serve forever.
+    send(READY, fs_proto::fixture::READY, 0, 0);
+    serve(&mut server);
+}
+
+#[panic_handler]
+fn panic(_: &core::panic::PanicInfo) -> ! {
+    // A server fault is a dead server: trap, and the kernel reaps it legibly. One arch-specific line.
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("brk #0", options(nostack, nomem))
+    };
+    #[cfg(target_arch = "riscv64")]
+    unsafe {
+        core::arch::asm!("ebreak", options(nostack, nomem))
+    };
+    loop {
+        core::hint::spin_loop();
+    }
+}

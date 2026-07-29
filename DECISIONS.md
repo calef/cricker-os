@@ -821,6 +821,14 @@ The [post-v1 milestone roadmap](design/roadmap.md) sequences the buildable ones 
 proposed numbered milestones (12+) and names the two decisions they force (the verification
 endgame, and POSIX posture). The entries here remain the detailed source for each.
 
+- **SMP thread placement** (§11's deferred step 3c). **SUPERSEDED by §28 (built 2026-07-28/29).** The
+  standing gap this described (every spawn and wake on the current core, so a workload fanning out
+  from one core stayed there; the milestone 32 FS mount starved beside three idle cores) is closed.
+  §28 shipped the power-of-two-choices spawn placement and message-shaped work stealing this entry
+  weighed, and its implementation amendment chose the third option here, **wake-time balancing**, for
+  device interrupts specifically (least-loaded, ties to the current core) while keeping IPC rendezvous
+  wakes local. See §28 and notes/scheduler.md. Kept for the record of the reasoning that led there.
+
 - [Microarchitecture-variant binaries](design/fat-binaries.md) — our targets straddle the
   ARMv8.0 / ARMv8.2 line (no LSE atomics on Cortex-A72, LSE on everything newer), and with
   no libc we can't lean on LLVM's `outline-atomics` to paper over it. Milestone 6 forces
@@ -1624,6 +1632,55 @@ Proven on both ISAs (`kernel/src/user.rs`, `supervision_tests`): a child crashes
 receives `(FAULT, tid, pc, addr)`, the corpse survives with its state until revocation reaps it, a
 respawned child runs, and a clean exit reports `EXIT`. See notes/supervision.md and notes/abi.md §5.
 
+## 27. The filesystem service: a capability-shaped contract over a component we did not write (milestone 32 phase 2)
+
+RedoxFS runs confined as a userspace FS-server component, and its interface is **capability-shaped
+from birth**. Three processes, wired by the kernel and named by nobody else: a **block server** (a
+role of the virtio driver) that serves blocks over blk IPC with the DMA confinement unchanged; an
+**FS server** (`fs-server/`, its own workspace because it links the vendored engine) that runs the
+no_std RedoxFS core behind a `Disk` trait over blk IPC and allocates from its own untyped budget
+through §22's `GlobalAlloc`; and a **client** that holds only a directory capability. The contract
+and both wire protocols live in `crates/fs_proto`, host-tested, the way the terminal contract lives
+in `linedisc::proto`. Full design in notes/fs-server.md.
+
+**The contract's rules, which milestone 31 will grant against.** The endpoint a client holds IS the
+directory capability: it is bound, in the server, to one directory node, and every name in an `OPEN`
+is resolved under that directory. There is no absolute path, no `..`, no global namespace; a client
+without the endpoint can open nothing, and the refusal is "no such capability", not a permission
+check. A handle is a server-minted token, validated against the session's table in one place, so
+forging one is meaningless. Open-by-path exists only inside the server. None of this adds a syscall:
+the kernel routes these words the way it routes any IPC (§10, §12) and never reads an opcode, so
+adding a method is a change to `fs_proto` and the note, not to the surface (the §16 discipline).
+
+**The error boundary is mapped exactly once.** RedoxFS's error type (`syscall::error::Error`) rides
+unmapped through the sans-IO core and the `Disk` impl; the serve loop is the single site that turns
+it into the wire's negated errno (`fs_proto::reply_err`). There is no ABI type below the boundary to
+leak, which is what makes the rule enforceable rather than aspirational.
+
+**The block server polls, deliberately.** RedoxFS scans a 256-entry header ring at mount, so an open
+is hundreds of reads. The block server moves a whole 4096-byte block per virtio request (its DMA
+region's second page IS the FS server's block page, so the device DMAs straight in, no copy) and
+**polls the used ring** rather than waiting on the interrupt, because QEMU completes virtio-blk
+synchronously inside `NOTIFY` (notes/dma.md) and a reschedule per read overran the watchdog. A
+QEMU-tuned choice, recorded as such: real async hardware wants the interrupt path back. The runners
+also order the two mmio disks with care, because QEMU assigns virtio-mmio slots in reverse
+command-line order and the kernel enumerates by ascending slot.
+
+**Creation stays host-side, always.** The std-gated core APIs are exactly creation (uuid, getrandom);
+the server only ever opens an image, so entropy never becomes a userspace dependency. Test images are
+made by `tools/redoxfs-host` with the same pinned engine (roadmap §32 item 4).
+
+**Proven, and the open item.** The read path is proven end to end on both ISAs (the §19 gate): a
+host-made image, mounted by the confined FS server over blk IPC, its `motd` opened through a granted
+directory capability and read back byte for byte, plus a host-tool consistency check after the run.
+The sans-IO core is host-tested for read AND write (`fs-server` lib), so the filesystem logic is
+proven both ways. **On-device writes are the remaining work:** the plumbing is in place and
+host-proven, but the end-to-end write loops inside RedoxFS's allocator commit on bare metal even on a
+pristine image (the `prev`-chain walk in `Transaction::sync_allocator`), against the cricker runtime
+(`IpcDisk` + untyped `GlobalAlloc`) where the std path with `DiskMemory` runs clean. This is a
+redoxfs-internals / heap-interaction investigation raised rather than papered over; the client's
+green test is read-only by consequence and says so. See notes/fs-server.md.
+
 ## 28. SMP placement: two random choices at spawn, message-shaped stealing, local wakes
 
 **Decided 2026-07-28 (Chris), after §11's deferred "step 3c" was demonstrated by the machine** (a
@@ -1659,6 +1716,52 @@ orderings) lose their accidental cover, so the implementation lands with cross-c
 rule 4's discipline applied on purpose. Supersedes the Open design ideas placement entry when the
 in-flight FS integration lands it. Implementation slots after milestone 22 phase B, before
 milestone 23's swap-under-load demo.
+
+### Implementation amendment (2026-07-29, as built)
+
+The three parts shipped as ratified, with one addition the machine forced and two corrections worth
+recording. Code in `kernel/src/sched.rs` and `kernel/src/cpu.rs`; scheduler note in
+notes/scheduler.md; cross-core stress tests in `sched.rs`, `smp.rs`, and `user.rs`.
+
+- **Spawn placement, as built.** `spawn` calls `pick_spawn_target`: two samples of a per-core
+  xorshift PRNG index the online cores, and the lighter by `runnable()` (a relaxed mirror of run
+  queue + inbox depth, kept current in `cpu::with_runq` / `note_inbox_len`) wins. The PRNG is seeded
+  per core from a fixed constant so a given boot makes the same choices, which keeps the icount
+  benches reproducible. On one online core it is a no-op.
+
+- **Stealing, as built.** An idle core's `try_initiate_steal` picks the most-loaded other core by run
+  queue depth alone (never its inbox, which is work already in flight to it), CASes a one-slot steal
+  request, and pokes it with the reschedule SGI; the victim's `serve_steal_request` hands back one
+  queued thread through the requester's inbox at its next scheduler entry. Pull-based, no cross-core
+  run-queue lock.
+
+- **The wake SPLIT (the addition).** §28.2 said "wake stays local." That is right for an **IPC
+  rendezvous**: the partner wakes on the waker's core, message in registers, cache warm, and the
+  serial netd<->std pipeline stays co-located. It is wrong for a **device interrupt**, which carries
+  no such locality: pinning the woken driver to the IRQ-handling core re-concentrates the pipeline
+  (std_net) or lands it on a busy core. So `irq_notify` wakes LOAD-AWARE via `wake_load_aware` /
+  `pick_wake_target`: the least-loaded core, ties won by the current core so a driver taking a
+  completion interrupt every request (the block server at mount) is not migrated each time. Rendezvous
+  wakes (`ipc_*`, supervision, revocation) stay local, unchanged. This is the split the IRQ-delivery
+  work recommended; the device-line affinity that spreads which core takes each IRQ is its companion,
+  documented in notes/interrupts.md.
+
+- **Correction: migration needs the per-hart pointer to be right (RISC-V).** §28's scattering is the
+  first workload to preempt kernel threads on secondary harts and then move them. That exposed a
+  latent RISC-V bug: the trap frame saved and unconditionally restored `tp`, the kernel per-CPU
+  pointer, so a thread preempted on one hart and resumed on another came back reading the wrong
+  hart's per-CPU state. Fixed in `arch/riscv64/trap.s` (restore `tp` only for a U-mode return; a
+  kernel return keeps the live, correct one). Full write-up in notes/riscv-port.md. aarch64 was
+  immune (its pointer is `TPIDR_EL1`, a system register the frame never carries).
+
+- **Correction: the hang watchdog now credits real progress, not test starts.** With migration and a
+  slow-but-live workload, the old "did a new test begin in the last 60 s" heartbeat could not tell a
+  deadlock from a slow test, and it tripped std_net, which legitimately runs about 300 s in netd's
+  userspace smoltcp poll (CPU-bound, no wakes and no output for stretches over a minute). The
+  watchdog now counts progress as a completed wake or a line of output OR any core running a
+  non-idle thread; only a genuine lost wakeup (every thread blocked, every core on its idle thread)
+  stalls it. It does not catch a busy-spin livelock, which is indistinguishable from a live
+  CPU-bound test at runtime and is not its target. See `kernel/src/testing.rs`.
 
 ## Reading
 

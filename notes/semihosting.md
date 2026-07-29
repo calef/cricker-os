@@ -62,6 +62,31 @@ all tests pass; our panic handler exits 1.
 Why not print "PASS" to the UART and grep for it? Because cargo doesn't grep, it reads an
 exit code. Building on the standard tooling beats a hack that parses text.
 
+## The hang watchdog, and what it cannot tell you
+
+A lost IPC wakeup would leave a test blocked forever, so the whole run hangs silently and
+`script/test` never returns. `kernel/src/testing.rs` guards against that: the timer IRQ watches a
+heartbeat, and if it does not advance for ~60 s it dumps the thread table and exits with a failure
+status (the same semihosting exit, just with a nonzero code). So a real hang fails loudly instead of
+hanging the CI.
+
+**The limitation, learned the hard way (milestone 32).** The heartbeat is bumped **once per test, at
+the test's start** (in `Testable::run`), not while a test runs. So "no progress for 60 s" cannot
+distinguish a genuine deadlock from a test that is simply *slower than 60 s*. Both look identical:
+the heartbeat stops advancing because no *new* test started. The milestone 32 FS-server test tripped
+this as a false deadlock: it was not stuck, it was starved (leaked spinning driver threads crammed on
+core 0 slowed the RedoxFS mount past 60 s), and raising the limit made it pass, which is exactly what
+a deadlock can never do. The dump reinforced the wrong read, because a starved thread and a
+deadlocked one both sit `Blocked`/`Ready` with nothing obviously moving.
+
+**A harness improvement candidate, not yet built:** a per-test *progress* heartbeat (the test, or the
+IPC/scheduler, bumps a counter as work happens) would tell "slow" from "stuck." The enriched
+`sched::dump_threads` (each thread's EL0 PC and the per-endpoint sender/receiver/pending counts,
+added while chasing that false deadlock) is the other half: two dumps a few seconds apart show
+whether the pipeline's threads are changing state (starved but progressing) or frozen (a real
+deadlock). Until the heartbeat is per-progress, read a watchdog trip as "stuck **or** slow" and
+confirm which with a raised limit before assuming a lost wakeup.
+
 ## Why we *don't* use it for console output
 
 Semihosting can print characters (`SYS_WRITEC`). We deliberately don't:

@@ -49,7 +49,14 @@ fn open(image: &Path) -> Result<FileSystem<DiskFile>, String> {
 
 /// Create a fresh, empty RedoxFS image of `size` bytes at `image`. Unencrypted, no reserved
 /// bootloader area. Fails if the size cannot hold the header ring plus a minimal tree.
+///
+/// **Start from an empty file.** `DiskFile::create` opens with `create(true)` but does NOT
+/// truncate, so running `mkfs` over an existing image leaves that image's stale blocks past the
+/// new (smaller) write, and the result fails to open ("not a RedoxFS image: I/O error"). Removing
+/// the file first makes `mkfs` idempotent, which the phase-2 test flow relies on (it regenerates
+/// the image every run).
 pub fn mkfs(image: &Path, size: u64) -> Result<(), String> {
+    let _ = std::fs::remove_file(image); // ignore "not found"; any other error surfaces below
     let disk = DiskFile::create(image, size)
         .map_err(|e| format!("cannot create {}: {e}", image.display()))?;
     let (secs, nsec) = now();

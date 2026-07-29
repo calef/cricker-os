@@ -128,6 +128,29 @@ pub fn percpu() -> usize {
     tp
 }
 
+/// **Test-only: does `tp` name the hart we are physically running on?** RISC-V keeps the kernel
+/// per-CPU pointer in `tp`, so `cpu::id()` is only right if `tp` is. The independent ground truth is
+/// `sscratch`, which points at this hart's [`TrapStash`], is set once per hart by [`set_percpu`], and
+/// never migrates. A mismatch means a preempted kernel thread resumed on a different hart still
+/// carrying the stale `tp` from its origin hart, the SMP migration bug `trap.s`'s S-mode `tp`
+/// handling fixes (DECISIONS §28). The two reads run under masked interrupts so a preemption between
+/// them cannot split them across harts and manufacture a false mismatch. The aarch64 twin is a
+/// constant `true`: there the per-CPU pointer is `TPIDR_EL1`, a system register the trap frame never
+/// carries, so it cannot go stale on migration.
+#[cfg(test)]
+pub fn percpu_matches_hart() -> bool {
+    let was_enabled = crate::arch::interrupts::disable();
+    let sscratch: usize;
+    // SAFETY: reads a CSR; `sscratch` holds `&TRAP_STASH[hart]` in S-mode (trap.s keeps it so).
+    unsafe { asm!("csrr {}, sscratch", out(reg) sscratch, options(nomem, nostack)) };
+    // `cpu::id()` reads `tp`; taken here, under the same mask, so both name one instant on one hart.
+    let hart_from_tp = crate::cpu::id();
+    crate::arch::interrupts::restore(was_enabled);
+    let base = TRAP_STASH.as_ptr() as usize;
+    let hart_from_sscratch = (sscratch - base) / core::mem::size_of::<TrapStash>();
+    hart_from_sscratch == hart_from_tp
+}
+
 /// Start a secondary hart. The name is aarch64's (`psci_cpu_on`); the mechanism is the SBI HSM
 /// (Hart State Management) extension's `sbi_hart_start(hartid, start_addr, opaque)`. The firmware
 /// starts the target hart at `entry` (a physical address) in S-mode with paging off, `a0` = its hart

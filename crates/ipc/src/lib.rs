@@ -114,6 +114,12 @@ impl<T: Node> Endpoint<T> {
         self.senders.is_empty() && self.receivers.is_empty()
     }
 
+    /// Diagnostic: `(queued senders, queued receivers, pending signals)`. For a hang dump, a
+    /// nonzero sender count with a zero receiver count on a request endpoint is a stalled server.
+    pub fn debug_counts(&self) -> (usize, usize, u32) {
+        (self.senders.len(), self.receivers.len(), self.pending)
+    }
+
     /// **Empty both wait queues, handing every blocked thread back to `f`** (object revocation): the
     /// endpoint is about to be destroyed, so each waiter is popped off here (which frees its intrusive
     /// link, so `f` may re-queue it onto a run queue) and the caller wakes it with an error. After

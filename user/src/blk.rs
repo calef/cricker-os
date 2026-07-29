@@ -29,6 +29,8 @@ const VIRTIO_ATTACK_INDIRECT: u64 = 13;
 const VIRTIO_BLK_WRITE: u64 = 30;
 const VIRTIO_BLK_WRITE_ABANDON: u64 = 31;
 const VIRTIO_NET: u64 = 40;
+/// The block server (milestone 32 phase 2): serves blocks over blk IPC to the FS server.
+const VIRTIO_BLK_SERVER: u64 = 32;
 
 /// A failed sanity check is a fault, not a wrong answer: panic, and the handler traps.
 pub fn check(ok: bool) {
@@ -46,6 +48,7 @@ pub extern "C" fn _start(role: u64, dma_phys: u64, _arg2: u64) -> ! {
         VIRTIO_BLK_WRITE => virtio::run_write(dma_phys),
         VIRTIO_BLK_WRITE_ABANDON => virtio::run_write_abandon(dma_phys),
         VIRTIO_NET => virtio::run_net(dma_phys),
+        VIRTIO_BLK_SERVER => virtio::run_blk_server(dma_phys),
         _ => panic!(),
     }
 }

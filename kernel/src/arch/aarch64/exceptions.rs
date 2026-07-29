@@ -130,6 +130,16 @@ pub unsafe fn enter_user(frame: *mut TrapFrame) -> ! {
     unsafe { enter_userspace(frame) }
 }
 
+/// **Diagnostic: the EL0 PC of a thread from the TrapFrame at the top of its kernel stack.** A
+/// thread that trapped from EL0 (a syscall, or a timer preemption while spinning) left its frame at
+/// `stack_top - size_of::<TrapFrame>()`, where `elr` is its EL0 PC. Used by the watchdog dump to say
+/// *where* each thread is, not just its scheduler state. Meaningless for a pure kernel thread.
+pub fn user_pc(stack_top: u64) -> u64 {
+    let frame = (stack_top - size_of::<TrapFrame>() as u64) as *const TrapFrame;
+    // SAFETY: diagnostic read of the frame the vector's SAVE_CONTEXT wrote at the stack top.
+    unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*frame).elr)) }
+}
+
 /// How many `brk` instructions we have caught and stepped over.
 ///
 /// Exists so the tests can prove the handler actually ran, rather than proving only
@@ -393,9 +403,12 @@ fn handle_irq(_frame: &mut TrapFrame) {
             crate::sched::on_tick();
         }
         crate::sched::RESCHED_SGI => {
-            // Another core handed us a thread (via our inbox) and poked us. Drain it onto our run
-            // queue and request a reschedule; the deferral at the bottom runs schedule(). SMP 3c.
+            // Another core poked us for one of two reasons (SMP 3c, DECISIONS §28). It may have
+            // handed us a thread via our inbox: drain it onto our run queue and reschedule (the
+            // deferral at the bottom runs schedule()). Or an idle core asked us for work: serve the
+            // steal by handing one queued thread back. The same SGI carries both; we do both.
             crate::sched::drain_inbox();
+            crate::sched::serve_steal_request();
         }
         other => {
             // Is this interrupt routed to a userspace driver? If so, **it becomes a message.**

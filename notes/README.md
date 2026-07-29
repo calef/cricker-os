@@ -94,6 +94,11 @@ in the code or the conversation doesn't make sense, it belongs here.
   of register values, and here that's literal: 8 bytes. The context switch is fifteen
   instructions and **the last one returns into a different thread.**
 
+- [The scheduler: placement, stealing, wakes](scheduler.md) — DECISIONS §28 as built: per-core
+  run queues, two-choice spawn placement, message-shaped stealing, and the wake split (local for an
+  IPC rendezvous, load-aware for a device interrupt). The costs migration made real: the RISC-V
+  `tp` fix and the progress-based hang watchdog.
+
 - [Capabilities, and why the kernel has no `open()`](capabilities.md) — a capability is a file
   descriptor that can point at *anything*. Unix already had them; it just also built a back door.
   The milestone 7 decision, and the confused deputy. **7d**: three syscalls, a capability is the
@@ -261,6 +266,12 @@ in the code or the conversation doesn't make sense, it belongs here.
   it: the no_std core compiles for both bare-metal targets three imports away from clean, the
   Disk trait is a blk-IPC client's exact shape, and the one real cost (a userspace GlobalAlloc)
   was already on milestone 27's books.
+- [The RedoxFS filesystem server](fs-server.md) — milestone 32 phase 2: RedoxFS confined as a
+  userspace component behind a capability-shaped contract (the endpoint IS the directory
+  capability, a handle is a server-minted token, open-by-path lives only inside the server). The
+  three-process design (block server, FS server, client), why the block server polls, the error
+  boundary mapped once, and the honest open item: the read path is proven end to end on both ISAs,
+  on-device writes loop inside RedoxFS's allocator commit and are the remaining work.
 - [Prior art and reuse](prior-art.md) — where to look before building (Redox, rCore, Tock,
   Hubris, seL4, Fuchsia) and the rule that decides build-vs-reuse: the reuse boundary is the
   TCB boundary. Inside it, always build; userspace components, actively prefer porting,

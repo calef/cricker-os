@@ -57,6 +57,16 @@ pub fn percpu() -> usize {
     TPIDR_EL1.get() as usize
 }
 
+/// **Test-only: does the per-CPU pointer name the hart we run on?** Always `true` on aarch64: the
+/// pointer lives in `TPIDR_EL1`, a system register the trap frame never saves or restores, so a
+/// thread migrating between cores keeps whatever `TPIDR_EL1` the destination core set at boot. The
+/// RISC-V twin has to check (its per-CPU pointer is `tp`, a general register that CAN ride a stale
+/// trap frame across a migration, DECISIONS §28); this exists so a portable test can call it on both.
+#[cfg(test)]
+pub fn percpu_matches_hart() -> bool {
+    true
+}
+
 /// PSCI `CPU_ON`: start a secondary core. Returns 0 on success, a negative PSCI error otherwise.
 ///
 /// PSCI (Power State Coordination Interface) is the firmware call standard for turning ARM cores

@@ -110,6 +110,10 @@ name = "frames"
 version = "0.1.0"
 
 [[package]]
+name = "fs_proto"
+version = "0.1.0"
+
+[[package]]
 name = "hash32"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -153,6 +157,7 @@ dependencies = [
  "dtb",
  "elf",
  "frames",
+ "fs_proto",
  "intrusive",
  "ipc",
  "paging",
@@ -303,6 +308,7 @@ dependencies = [
  "coremark",
  "crickerfs",
  "elf",
+ "fs_proto",
  "linedisc",
  "smoltcp",
  "user_rt",
@@ -321,4 +327,5 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "crickerfs",
+ "fs_proto",
 ]

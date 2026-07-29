@@ -116,7 +116,20 @@ trap_return:
 
     ld      x1,  1*8(sp)
     ld      x3,  3*8(sp)
+    # tp (x4). A U-mode thread owns its tp, so a return to U-mode restores the saved value. An S-mode
+    # (kernel) thread's tp is THIS hart's PerCpu pointer, and it must name the hart we RESUME on, not
+    # the one the frame was built on. A preempted kernel thread can migrate to another hart under SMP
+    # load balancing (DECISIONS §28); its frame's saved tp is then stale, and restoring it would make
+    # the thread read a different hart's per-CPU state (current, idle, run queue, held_rank) and
+    # corrupt it. The live tp is already this hart's (trap_entry reloaded it from the per-hart stash,
+    # and switch_to preserves it across a migration), so for an S-mode return we KEEP it and skip the
+    # frame's copy. t0 still holds the frame's sstatus (loaded just above for the CSR write); SPP
+    # (bit 8) is 1 for a return to S-mode. This is the return-path mirror of trap_entry's
+    # `ld tp, 8(t0)`. See notes/riscv-port.md.
+    andi    t1, t0, 0x100
+    bnez    t1, 4f
     ld      x4,  4*8(sp)
+4:
     ld      x5,  5*8(sp)
     ld      x6,  6*8(sp)
     ld      x7,  7*8(sp)

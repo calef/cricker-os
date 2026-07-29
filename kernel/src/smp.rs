@@ -185,13 +185,11 @@ pub extern "C" fn secondary_main(cpu_id: usize) -> ! {
     ONLINE.fetch_add(1, Ordering::Release);
     arch::interrupts::enable();
 
-    // 8. This core's idle loop, which is now its idle thread's body. Yield first, so a freshly
-    //    queued thread (the probe, or later any migrated work) runs at once rather than waiting a
-    //    tick; then wfi parks the core until an interrupt makes something runnable.
-    loop {
-        crate::sched::yield_now();
-        arch::wait_for_interrupt();
-    }
+    // 8. This core's idle loop, which is now its idle thread's body: the shared idle body that also
+    //    steals work from a loaded core (DECISIONS §28). Yield first so a thread already queued (the
+    //    probe) runs at once, then hand off to `run_idle`, which steals, parks in wfi, and yields.
+    crate::sched::yield_now();
+    crate::sched::run_idle()
 }
 
 // The SMP tests need more than one core online (the runner passes `-smp 4`). They run on both
@@ -254,69 +252,168 @@ mod tests {
         }
     }
 
-    /// **Work can be placed on any core from another core** (SMP step 3c). Core 0 uses `spawn_on`
-    /// to put a probe on each online core; a remote target is reached through its inbox and a
-    /// reschedule SGI. Each probe records the core it actually ran on, proving the migration path
-    /// delivers a thread to the chosen core.
+    /// **Work can be placed on any core from another core** (SMP step 3c, delivery mechanism). Core 0
+    /// uses `spawn_on` to put one probe on each online core; a remote target is reached through its
+    /// inbox and a reschedule SGI. Each probe marks the core it runs on, and every core must be hit.
+    ///
+    /// The probes are **persistent** (they spin until released) and there is exactly **one per core**,
+    /// on purpose: DECISIONS §28 added work stealing, so a short probe placed on a core can be stolen
+    /// away before that core runs it, and `spawn_on` is a placement hint, not a pin (an explicit pin
+    /// is a deferred §28 trigger). One persistent probe per core keeps every core busy with its own,
+    /// so no core goes idle and nothing is stolen, which is what lets this stay a clean test of the
+    /// delivery path reaching each target. The batch-spread test above covers the stealing case.
     #[test_case]
     fn work_can_be_placed_on_every_core() {
+        static RELEASE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+        for s in &SPREAD {
+            s.store(0, Ordering::Relaxed);
+        }
+        RELEASE.store(false, Ordering::Relaxed);
+
         let n = online_count();
         for target in 0..n {
             crate::sched::spawn_on(target, move || {
-                SPREAD[cpu::id()].fetch_add(1, Ordering::Release);
+                while !RELEASE.load(Ordering::Relaxed) {
+                    SPREAD[cpu::id()].store(1, Ordering::Relaxed);
+                    core::hint::spin_loop();
+                }
             })
             .expect("spawn_on failed");
         }
 
-        let done = || (0..n).all(|c| SPREAD[c].load(Ordering::Acquire) > 0);
+        let done = || (0..n).all(|c| SPREAD[c].load(Ordering::Relaxed) != 0);
         let mut spins = 0u64;
         while !done() {
             crate::sched::yield_now();
             spins += 1;
             assert!(spins < 5_000_000, "work placed on a core never ran there");
         }
-
-        for (c, spread) in SPREAD.iter().enumerate().take(n) {
-            assert!(
-                spread.load(Ordering::Acquire) > 0,
-                "core {c} never ran work placed on it",
-            );
-        }
+        RELEASE.store(true, Ordering::Relaxed); // let the probes finish and be reaped
     }
 
-    /// **A balanced batch fills the whole machine** (SMP load balancing, the last piece of §11).
-    /// `spawn_balanced` round-robins placement over the online cores, so a batch larger than the core
-    /// count lands work on all of them without any explicit `spawn_on`. Each probe records the core it
-    /// ran on, and every online core must get some. This is the scaling demonstration: work offered to
-    /// the scheduler spreads across the cores instead of piling onto the caller.
+    /// **A batch of cpu-bound work fills the whole machine** (SMP load balancing; DECISIONS §28).
+    /// Offer the scheduler more runnable threads than cores and every core must end up running one.
+    ///
+    /// The measure is deliberately "which core is a thread running on *now*", marked every spin, not
+    /// "which core did a thread first land on". Since §28 the two differ: `spawn` and `spawn_balanced`
+    /// place work, but idle cores then *steal* it, so a thread migrates. A first-landing count would
+    /// race (a core's placed thread can be stolen before that core runs it); the running-now mark
+    /// captures placement and stealing together, which is the property that matters, the whole machine
+    /// is busy. The threads spin until released so the work persists long enough for stealing to reach
+    /// every idle core, then they exit and are reaped (the no-leak proxy would catch it otherwise).
     #[test_case]
-    fn balanced_spawn_spreads_across_all_cores() {
-        static RAN: [core::sync::atomic::AtomicU32; MAX_CPUS] =
+    fn a_batch_of_cpu_bound_work_reaches_every_core() {
+        static ON: [core::sync::atomic::AtomicU32; MAX_CPUS] =
             [const { core::sync::atomic::AtomicU32::new(0) }; MAX_CPUS];
-        for r in &RAN {
+        static RELEASE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+        for r in &ON {
             r.store(0, Ordering::Relaxed);
         }
+        RELEASE.store(false, Ordering::Relaxed);
 
         let n = online_count();
         for _ in 0..(n * 4) {
-            crate::sched::spawn_balanced(|| {
-                RAN[cpu::id()].fetch_add(1, Ordering::Release);
+            crate::sched::spawn(|| {
+                // Mark whatever core we are running on right now, every pass, until released. A
+                // thread stolen onto an idle core marks that core here, which is exactly what proves
+                // the idle core got fed.
+                while !RELEASE.load(Ordering::Relaxed) {
+                    ON[cpu::id()].store(1, Ordering::Relaxed);
+                    core::hint::spin_loop();
+                }
             })
-            .expect("spawn_balanced failed");
+            .expect("spawn failed");
         }
 
-        let done = || (0..n).all(|c| RAN[c].load(Ordering::Acquire) > 0);
+        let done = || (0..n).all(|c| ON[c].load(Ordering::Relaxed) != 0);
         let mut spins = 0u64;
         while !done() {
             crate::sched::yield_now();
             spins += 1;
-            assert!(spins < 5_000_000, "balanced work did not reach every core");
-        }
-        for (c, ran) in RAN.iter().enumerate().take(n) {
             assert!(
-                ran.load(Ordering::Acquire) > 0,
-                "core {c} got no balanced work",
+                spins < 5_000_000,
+                "cpu-bound work never reached every core: placement + stealing did not fill the machine",
             );
         }
+        // Let them all finish, so they are reaped rather than left spinning.
+        RELEASE.store(true, Ordering::Relaxed);
+    }
+
+    /// **A kernel thread that migrates between harts keeps a per-CPU pointer that names the hart it
+    /// is actually on** (DECISIONS §28; the RISC-V `trap.s` S-mode `tp` fix).
+    ///
+    /// RISC-V keeps the kernel per-CPU pointer in `tp`, a general register the trap frame saves and
+    /// restores. A kernel thread preempted on one hart carries `tp = &percpu[origin]` in its frame;
+    /// when an idle hart steals it, it used to resume through `trap_return` with that stale `tp` and
+    /// then read, and corrupt, the origin hart's scheduler state (its idle thread was marked
+    /// `Finished`, and that hart's next `schedule()` panicked "the last thread exited"). aarch64 never
+    /// had the bug: its per-CPU pointer is `TPIDR_EL1`, a system register the frame never carries, so
+    /// `percpu_matches_hart` there is a constant `true` and this test is a no-op.
+    ///
+    /// This drives exactly the corrupting motion: waves of cpu-bound workers, each alive long enough
+    /// (several 100 Hz ticks) to be preempted and so to acquire a saved frame, and more of them than
+    /// cores so that as the early finishers drain their harts to idle, those harts steal the still-
+    /// running, already-preempted workers, migrating a framed kernel thread across harts. Every spin,
+    /// each worker re-checks that `tp` still names the hart it runs on; one false reading is the bug.
+    /// Pre-fix it trips within the first wave on RISC-V.
+    #[test_case]
+    fn a_migrated_kernel_thread_keeps_its_hart_pointer() {
+        use core::sync::atomic::AtomicUsize;
+        static BAD: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+        static DONE: AtomicUsize = AtomicUsize::new(0);
+        BAD.store(false, Ordering::Relaxed);
+        DONE.store(0, Ordering::Relaxed);
+
+        // ~40 ms per worker: at 100 Hz that is several preemption ticks, so a worker is certain to be
+        // preempted (and thus stealable with a live frame) before it finishes.
+        let life = crate::arch::timer::frequency() / 25;
+        let n = online_count();
+        let mut total = 0usize;
+
+        for _wave in 0..6 {
+            for _ in 0..(n * 3) {
+                let spawned = crate::sched::spawn(move || {
+                    let end = crate::arch::timer::now() + life;
+                    while crate::arch::timer::now() < end {
+                        if !crate::arch::percpu_matches_hart() {
+                            BAD.store(true, Ordering::Relaxed);
+                        }
+                        core::hint::spin_loop();
+                    }
+                    DONE.fetch_add(1, Ordering::Relaxed);
+                });
+                if spawned.is_some() {
+                    total += 1;
+                } else {
+                    // Thread table momentarily full (a prior wave still draining); stop adding and let
+                    // it drain below. Not a failure: we still have plenty of migration in flight.
+                    break;
+                }
+            }
+
+            // Drain this wave, checking the invariant throughout. Time-based: an idle hart's yields
+            // return at once under §28, so a fixed spin count would elapse in no time.
+            let deadline = crate::arch::timer::now() + 2 * crate::arch::timer::frequency();
+            while DONE.load(Ordering::Relaxed) < total {
+                assert!(
+                    !BAD.load(Ordering::Relaxed),
+                    "a migrated kernel thread read a per-CPU pointer for the WRONG hart: a stale tp \
+                     rode a hart migration (DECISIONS §28; trap.s S-mode tp handling)",
+                );
+                assert!(
+                    crate::arch::timer::now() < deadline,
+                    "migration workers never drained ({}/{} done)",
+                    DONE.load(Ordering::Relaxed),
+                    total,
+                );
+                crate::sched::yield_now();
+            }
+        }
+
+        assert!(
+            !BAD.load(Ordering::Relaxed),
+            "a migrated kernel thread read a per-CPU pointer for the WRONG hart (stale tp across a \
+             hart migration)",
+        );
     }
 }

@@ -134,6 +134,14 @@ path = "src/allocdemo.rs"
 test = false
 bench = false
 
+# The FS-service client (milestone 32 phase 2): opens a file through a granted directory capability,
+# reads it, writes and reads back a pattern, and reports. mkinitrd packs it as "fsclient".
+[[bin]]
+name = "fsclient"
+path = "src/fsclient.rs"
+test = false
+bench = false
+
 # The EL0 microbenchmark program (primitive suite): self-times syscall/IPC primitives from EL0, the
 # lmbench way, so the numbers include the trap the kernel-side benchmarks skip. Run by the bench boot.
 [[bin]]
@@ -156,6 +164,7 @@ capsh = { version = "0.1.0", path = "../crates/capsh" }
 coremark = { version = "0.1.0", path = "../crates/coremark" }
 crickerfs = { version = "0.1.0", path = "../crates/crickerfs" }
 elf = { version = "0.1.0", path = "../crates/elf" }
+fs_proto = { version = "0.1.0", path = "../crates/fs_proto" }
 linedisc = { version = "0.1.0", path = "../crates/linedisc" }
 user_rt = { version = "0.1.0", path = "../crates/user_rt" }
 
