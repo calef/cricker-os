@@ -167,10 +167,10 @@ fn server(dma_phys: u64) -> ! {
             send(REPORT, u32::from_be_bytes(octets) as u64, 0, 0);
             break;
         }
-        unsafe {
-            invoke(IRQ, irq::WAIT, 0, 0, 0);
-        }
-        dev.ack_irq();
+        // Same discipline as service_until: block on the interrupt only when smoltcp has no timer
+        // pending, so a dropped DHCP OFFER is retried by smoltcp's own DISCOVER retransmit rather
+        // than deadlocking on an interrupt that will not come.
+        wait_for_nic(&mut iface, &mut dev, &mut sockets);
     }
 
     // --- Serve the socket contract. One synchronous exchange per request. ---
@@ -307,6 +307,36 @@ fn read_dst(va: u64) -> IpEndpoint {
     IpEndpoint::new(IpAddress::Ipv4(ip), port)
 }
 
+/// **Wait for the NIC to need attention again, without stalling smoltcp's own timers.**
+///
+/// The obvious loop, "block on the NIC interrupt, service on each wakeup," has a hole that SMP timing
+/// on riscv exposed and that a lone core hid: smoltcp drives TCP retransmits, delayed ACKs, and DNS
+/// timeouts from *its* clock, advanced only when we call `poll`. If we block on the interrupt alone
+/// and the exchange is waiting on one of those timers (a segment we must retransmit because its ACK
+/// was dropped), no RX interrupt is coming (the peer is waiting for that retransmit), so the block
+/// never returns and the whole pipeline deadlocks with every core idle. aarch64 happened never to
+/// drop a segment and so never hit it; riscv under the SMP scatter did. See notes/net.md.
+///
+/// So: ask smoltcp when it next needs to run. When it has **no** timer pending (`poll_delay` is
+/// `None`), block on the interrupt, which is the common, efficient case (0% CPU until a frame
+/// arrives), and correct, because with nothing of our own to send we are purely waiting on the peer,
+/// whose own retransmit will wake us. When it **does** have a timer pending, do not block: yield and
+/// let the caller re-`poll`, so the timer actually fires. That confines the busy interval to the
+/// short retransmit window, not the whole exchange.
+fn wait_for_nic(iface: &mut Interface, dev: &mut vnet::VirtioNet, sockets: &mut SocketSet) {
+    if iface.poll_delay(instant(), sockets).is_none() {
+        unsafe {
+            invoke(IRQ, irq::WAIT, 0, 0, 0);
+        }
+        dev.ack_irq();
+    } else {
+        // A smoltcp timer is due: keep the source armed and the device quiet, then yield so the
+        // caller re-polls and smoltcp emits the retransmit/ACK. Not a blocking wait, on purpose.
+        dev.ack_irq();
+        user_rt::yield_now();
+    }
+}
+
 /// Drive the poll loop until `cond` holds, servicing the NIC on each wakeup. Bounded so a stuck
 /// exchange returns rather than spinning forever; a genuinely lost packet still relies on the
 /// QEMU-level timeout, the disk driver's discipline.
@@ -316,18 +346,20 @@ fn service_until(
     sockets: &mut SocketSet,
     mut cond: impl FnMut(&mut SocketSet) -> bool,
 ) -> bool {
-    for _ in 0..2000 {
+    let start = instant().total_millis();
+    loop {
         iface.poll(instant(), dev, sockets);
         if cond(sockets) {
             return true;
         }
-        unsafe {
-            invoke(IRQ, irq::WAIT, 0, 0, 0);
+        // A stuck exchange still returns rather than blocking a hart forever; 15 s is far beyond any
+        // slirp round trip yet well under the 60 s watchdog. The disk driver's bounded discipline.
+        if instant().total_millis() - start > 15_000 {
+            iface.poll(instant(), dev, sockets);
+            return cond(sockets);
         }
-        dev.ack_irq();
+        wait_for_nic(iface, dev, sockets);
     }
-    iface.poll(instant(), dev, sockets);
-    cond(sockets)
 }
 
 fn udp_sendto(

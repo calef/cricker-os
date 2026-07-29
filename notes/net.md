@@ -268,3 +268,37 @@ the reopened socket gets a new local port, a new 4-tuple, and a new slirp flow.
 The regression is `a_reopened_socket_id_connects_again_over_tcp` (both ISAs): open a TCP socket,
 connect to the guestfwd echo peer, close, reopen the *same* id, and connect again; the client reports
 OK only if both connects complete. Before the fix the second connect hangs the way the PAL saw.
+
+### The RX poll must honor smoltcp's timers, not just the interrupt (a riscv-SMP lost-wakeup)
+
+`std_net` hung on riscv under the 4-hart boot, watchdog-killed with every core idle and every thread
+blocked, while the same test passed on aarch64 and the lighter DHCP and TCP-echo tests passed on
+riscv in the same run. The shape said lost wakeup; the cause was subtler than a dropped interrupt.
+
+The old server loop blocked on the NIC interrupt between polls: `poll; if done break; WAIT; ack`. That
+is fine until an exchange depends on one of smoltcp's *own* timers. smoltcp drives TCP retransmits,
+delayed ACKs, and DNS timeouts from its clock, which only advances when we call `poll`. If a segment's
+ACK is dropped, the peer goes quiet waiting for our retransmit, and our retransmit is a timer event
+that only fires on the next `poll`, which we are not doing because we are blocked on an interrupt the
+peer will never send. netd waits for the peer, the peer waits for netd, both idle. Instrumenting the
+PLIC at the hang showed the truth: **no source pending, the net source still enabled**. Not a masked
+line, not a lost IRQ; the device was simply idle, because both ends were waiting on the same stalled
+timer. aarch64 happened never to drop a segment (different servicing latency), so it never armed the
+retransmit path; the riscv SMP scatter, which moves the driver and its wakes across harts, was slow
+enough to drop one and expose the hole. It was not the IRQ affinity: forcing every source back to the
+boot hart's PLIC context still hung, which ruled the PLIC out.
+
+The fix (`wait_for_nic`, `user/src/netd.rs`) asks smoltcp when it next needs to run. With **no** timer
+pending (`poll_delay` is `None`), it blocks on the interrupt, the common case, 0% CPU until a frame
+arrives, and correct because with nothing of our own outstanding we are purely waiting on the peer,
+whose retransmit will wake us. With a timer **pending**, it does not block: it yields and lets the
+loop re-`poll`, so the timer fires and the retransmit goes out. The busy interval is confined to the
+short retransmit window rather than the whole exchange. Both the DHCP bring-up loop and the
+service loop use it. `std_net` then completes on both ISAs at the 4-hart/4-core boot.
+
+The honest caveat: yielding across a retransmit window spins a hart until the timer is due (bounded by
+the exchange, and by a 15 s per-call backstop well under the 60 s watchdog). The clean version is a
+*timed* wait, a `WAIT` that returns on either the interrupt or a deadline, so the server sleeps
+through the backoff instead of spinning. That is a small kernel-surface addition (an `Irq::WAIT`
+timeout, or a timer notification) and is left as the follow-up; the yield-poll is correct and needs no
+new syscall.
