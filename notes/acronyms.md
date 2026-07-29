@@ -47,6 +47,7 @@ linked.
 | **DSB / DMB / ISB** | **Data Synchronization / Data Memory / Instruction Synchronization Barrier** | Memory ordering. `ISB` is what makes a system-register write take effect for the *next* instruction. |
 | **PSCI** | **Power State Coordination Interface** | The standard way to start and stop cores. How SMP bringup will work. |
 | **SMP** | **Symmetric MultiProcessing** | More than one core, all equal. DECISIONS §6: not yet. |
+| **PE** | **Processing Element** | ARM's precise word for one thing that runs an instruction stream, since "core" is ambiguous under SMT. RISC-V's twin term is the **hart** (**har**dware **t**hread). One-to-one with cores on all our targets. [harts-and-pes.md](harts-and-pes.md) |
 | **LSE** | **Large System Extensions** | ARMv8.1 single-instruction atomics (`CAS`, `LDADD`). Our Cortex-A72 lacks them. [design/fat-binaries.md](../design/fat-binaries.md) |
 
 ## aarch64: system registers
