@@ -106,8 +106,9 @@ in the code or the conversation doesn't make sense, it belongs here.
   convention down instead of building a BootInfo, and what a POSIX shim would cost (nothing, later).
 - [Rust `std` on the native ABI](std.md) — milestone 27: std's platform layer implemented directly
   on the capability ABI (Hermit's shape, not a POSIX shim). Heap from an untyped budget, stdout to an
-  endpoint, time from the virtual counter, `panic!` faults, and `thread::spawn`/`fs`/`net` honestly
-  `Unsupported`. How build-std runs against a hardlink-cloned, patched rust-src, why the symlink farm
+  endpoint, time from the virtual counter, `panic!` faults, `thread::spawn`/`fs` honestly
+  `Unsupported`, and (phase two) `std::net`'s `TcpStream`/outbound `UdpSocket` bound to netd's socket
+  contract. How build-std runs against a hardlink-cloned, patched rust-src, why the symlink farm
   was measured to fail, and the honest caveats (monotonic-only clock, non-crypto random, std-internals
   coupling).
 - [How authority moves, narrows, and ends](capability-lifecycle.md) — capabilities spread by

@@ -1383,6 +1383,23 @@ one endpoint; and the `std-src` patches are string-anchored to the pinned nightl
 coupling that fails loudly on a rustc bump (the intended tripwire) rather than silently. Proven by a
 real std program (`Vec`, `String`, `HashMap`, `println!`, `Instant`) spawned as a workload and
 checked byte for byte on both ISAs (the §19 parity gate).
+
+**Amendment (phase two, 2026-07-28): `std::net` binds to the socket contract.** `std::net::TcpStream`
+and outbound `std::net::UdpSocket` now work, backed by netd over the §25 socket contract; the
+`net honestly unsupported` line of phase one is retired. The PAL (`sys/net/connection/cricker.rs`) is
+a **pure client** of the frozen contract, no new syscall and no new capability method: it holds a
+`Stack` endpoint (slot 2) and a frame untyped (slot 3), mints a shared frame per socket, and drives
+netd with `netproto` `CALL`s. The wire constants are generated verbatim from `user/src/netproto.rs`
+into the patched std, the same anti-drift discipline as the ABI and heap crates. A std program does
+networking only if it holds those two slots; without them `std::net` returns `Unsupported`, which is
+"no ambient network" (§10) made visible from inside a process. The same `hellostd` binary proves
+both: spawned without the net slots it runs the offline transcript, spawned with them (and a running
+netd) it does a real UDP DNS query and a TCP echo round trip, each asserted byte for byte on both
+ISAs. Honest gaps carried as `Unsupported`: `TcpListener` (no LISTEN verb), non-blocking mode and
+timeouts (blocking-only contract), DNS resolution (`lookup_host`; numeric addresses only), and IPv6.
+One finding reported up: netd ties a socket's local port to its socket id, so reopening a closed id
+reuses its port and can stall against slirp; the fix is ephemeral local ports in netd, a contract-side
+change (notes/std.md).
 ## 23. Multi-queue DMA confinement: the validator's second direction (milestone 30)
 
 **Decided and built 2026-07-28.** A virtio-net device needs two virtqueues (receive on queue 0,
