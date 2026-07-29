@@ -821,6 +821,21 @@ The [post-v1 milestone roadmap](design/roadmap.md) sequences the buildable ones 
 proposed numbered milestones (12+) and names the two decisions they force (the verification
 endgame, and POSIX posture). The entries here remain the detailed source for each.
 
+- **SMP thread placement: every spawn and wake lands on the current core** (§11's deferred step 3c).
+  `sched::spawn` puts a new thread on the spawning core's run queue, and `wake()` puts a woken thread
+  on the *waker's* core (its own comment says "step 3c makes this place the thread on the right core
+  via its inbox"). The cross-core migration mechanism exists (`spawn_on`, the inbox, the reschedule
+  IPI) but nothing drives it by policy, so a workload that fans out from one core stays on that core.
+  The machine has now demonstrated the gap: the milestone 32 FS test ran with ~18 threads crammed on
+  core 0 while cores 1-3 sat idle, and the RedoxFS mount (hundreds of serialized block round trips)
+  was starved slow enough to trip the hang watchdog under the net boot (the leaked-spinner half of
+  that was a separate test bug, since fixed; the placement imbalance is the standing one). Options,
+  for the architect to weigh when this is scheduled: **round-robin placement** (spawn cycles a target
+  core), **wake-time balancing** (wake a thread onto the least-loaded core rather than the waker's),
+  or **work stealing** (an idle core pulls from a busy core's queue). Round-robin is the smallest
+  change and probably enough; stealing is the most robust and the most work. No trigger is firing
+  hard yet (the FS test passes now that the spinner leak is fixed), so this is parked, not urgent.
+
 - [Microarchitecture-variant binaries](design/fat-binaries.md) — our targets straddle the
   ARMv8.0 / ARMv8.2 line (no LSE atomics on Cortex-A72, LSE on everything newer), and with
   no libc we can't lean on LLVM's `outline-atomics` to paper over it. Milestone 6 forces

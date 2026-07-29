@@ -18,6 +18,7 @@
 use crate::{check, invoke, send};
 use abi::irq;
 use fs_proto::blk;
+use user_rt::exit;
 
 // The kernel maps the DMA page at this fixed VA (must match kernel/src/user.rs virtio_service).
 // The device REGISTERS are NOT mapped: we drive the device through a `Virtio` capability (slot 2),
@@ -197,9 +198,11 @@ pub fn run(dma_phys: u64) -> ! {
     }
     send(REPORT, u64::from_le_bytes(head), 0, 0);
 
-    loop {
-        core::hint::spin_loop();
-    }
+    // Done: exit so the kernel reaps this one-shot driver thread rather than leaving it spinning
+    // on a run queue forever. A leaked spinner is not just untidy: enough of them starve a later
+    // heavy test (the RedoxFS mount) past the hang watchdog. See notes/supervision.md / the test
+    // starvation finding.
+    exit();
 }
 
 /// The byte the write test puts at offset `i` of the scratch block. The first eight bytes are a
@@ -261,9 +264,11 @@ pub fn run_write(dma_phys: u64) -> ! {
 
     send(REPORT, u64::from_le_bytes(head), 0, 0);
 
-    loop {
-        core::hint::spin_loop();
-    }
+    // Done: exit so the kernel reaps this one-shot driver thread rather than leaving it spinning
+    // on a run queue forever. A leaked spinner is not just untidy: enough of them starve a later
+    // heavy test (the RedoxFS mount) past the hang watchdog. See notes/supervision.md / the test
+    // starvation finding.
+    exit();
 }
 
 /// **The abandoned write.** Submit a write through the validated path and then die on purpose,
@@ -319,9 +324,11 @@ pub fn run_attack(dma_phys: u64) -> ! {
     send(REPORT, if r < 0 { 1 } else { 0 }, 0, 0); // 1 = refused (good), 0 = it went through (bad)
 
     let _ = dma_phys;
-    loop {
-        core::hint::spin_loop();
-    }
+    // Done: exit so the kernel reaps this one-shot driver thread rather than leaving it spinning
+    // on a run queue forever. A leaked spinner is not just untidy: enough of them starve a later
+    // heavy test (the RedoxFS mount) past the hang watchdog. See notes/supervision.md / the test
+    // starvation finding.
+    exit();
 }
 
 /// **The indirect-descriptor attack, refused.** The subtler cousin of `run_attack`: instead of a
@@ -360,9 +367,11 @@ pub fn run_attack_indirect(dma_phys: u64) -> ! {
     send(REPORT, if r < 0 { 1 } else { 0 }, 0, 0); // 1 = refused (good), 0 = it went through (bad)
 
     let _ = dma_phys;
-    loop {
-        core::hint::spin_loop();
-    }
+    // Done: exit so the kernel reaps this one-shot driver thread rather than leaving it spinning
+    // on a run queue forever. A leaked spinner is not just untidy: enough of them starve a later
+    // heavy test (the RedoxFS mount) past the hang watchdog. See notes/supervision.md / the test
+    // starvation finding.
+    exit();
 }
 
 /// Find a file in the crickerfs directory sitting in the block-0 buffer, returning its start
@@ -489,9 +498,11 @@ fn write_block(dma_phys: u64, sector: u64) {
 /// "not the crickerfs magic" branch prints it. Only reached on a bring-up failure.
 fn report_code(code: u64) -> ! {
     send(REPORT, 0xDEAD_0000_0000_0000 | code, 0, 0);
-    loop {
-        core::hint::spin_loop();
-    }
+    // Done: exit so the kernel reaps this one-shot driver thread rather than leaving it spinning
+    // on a run queue forever. A leaked spinner is not just untidy: enough of them starve a later
+    // heavy test (the RedoxFS mount) past the hang watchdog. See notes/supervision.md / the test
+    // starvation finding.
+    exit();
 }
 
 /// Write one 16-byte descriptor: { u64 addr; u32 len; u16 flags; u16 next; }.
@@ -851,9 +862,7 @@ pub fn run_net(dma_phys: u64) -> ! {
 
         if let Some(yiaddr) = parse_dhcp_offer() {
             send(REPORT, yiaddr as u64, 0, 0);
-            loop {
-                core::hint::spin_loop();
-            }
+            exit(); // one-shot: reported the DHCP offer, so exit and be reaped, do not spin
         }
 
         // Not our OFFER (some other broadcast): re-post the buffer and wait for the next frame.

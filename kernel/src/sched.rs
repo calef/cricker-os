@@ -1728,6 +1728,39 @@ pub fn thread_count() -> usize {
     SCHED.lock().as_ref().map_or(0, |s| s.threads.len())
 }
 
+/// **Count the runnable threads that are not the caller and not an idle thread** (test support).
+///
+/// A leaked one-shot driver that spins forever instead of exiting is `Ready`/`Running` for the rest
+/// of the boot; a thread doing legitimate work is `Blocked` on an endpoint when the system is
+/// quiescent. So, from a quiesced probe (yield until pending exits are reaped), this count is the
+/// number of leaked spinners: the idle threads (one per core) and the probe itself are the only
+/// runnable threads a clean system has. The regression proxy for the test-thread starvation that
+/// made the RedoxFS mount overrun the hang watchdog.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn runnable_non_idle_count(&exclude: &Tid) -> usize {
+    let mut guard = SCHED.lock();
+    let Some(sched) = guard.as_mut() else {
+        return 0;
+    };
+    let mut idles = [u64::MAX; crate::cpu::MAX_CPUS];
+    for (c, slot) in idles
+        .iter_mut()
+        .enumerate()
+        .take(crate::smp::online_count())
+    {
+        *slot = crate::cpu::of(c).idle.load(Ordering::Relaxed);
+    }
+    sched
+        .threads
+        .iter_mut()
+        .filter(|t| {
+            matches!(t.state, State::Ready | State::Running)
+                && t.id != exclude
+                && !idles.contains(&t.id)
+        })
+        .count()
+}
+
 /// Print every thread's scheduler state, for diagnosing a hang. A lost IPC wakeup leaves a thread
 /// `Blocked` forever with nothing to wake it; this shows which thread, and the `on_cpu`/`wake_pending`
 /// flags that would reveal a botched wake-before-switch-out handoff. Takes SCHED, which is free when
@@ -1741,14 +1774,30 @@ pub fn dump_threads() {
     };
     crate::println!("--- thread dump (hang diagnostic) ---");
     for t in sched.threads.iter_mut() {
+        let pc = t
+            .stack
+            .as_ref()
+            .map(|s| crate::arch::exceptions::user_pc(s.top()))
+            .unwrap_or(0);
         crate::println!(
-            "  tid={:#06x} state={:?} on_cpu={} wake_pending={} has_outgoing_cap={}",
+            "  tid={:#06x} state={:?} on_cpu={} wake_pending={} has_outgoing_cap={} pc={:#010x}",
             t.id,
             t.state,
             t.on_cpu,
             t.wake_pending,
             t.outgoing_cap.is_some(),
+            pc,
         );
+    }
+    // Endpoint topology: which endpoint each blocked thread is queued on, so a deadlock shows as a
+    // sender with no receiver. Diagnostic only.
+    for (name, &phys) in sched.endpoints.iter() {
+        // SAFETY: a live endpoint page, direct-mapped, under SCHED.
+        let ep = unsafe { &*(crate::arch::mmu::phys_to_virt(phys) as *const Endpoint) };
+        let (ns, nr, np) = ep.debug_counts();
+        if ns != 0 || nr != 0 || np != 0 {
+            crate::println!("  ep={name:#06x} senders={ns} receivers={nr} pending={np}");
+        }
     }
     for c in 0..crate::smp::online_count() {
         let pc = cpu::of(c);

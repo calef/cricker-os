@@ -5589,3 +5589,41 @@ mod riscv_virtio_tests {
         );
     }
 }
+
+/// **No test may leak a runnable thread** (the regression proxy for the test-thread starvation that
+/// made the RedoxFS mount overrun the hang watchdog under the net boot). A one-shot driver that
+/// spins forever instead of exiting stays `Ready`/`Running` for the rest of the boot; enough of them
+/// crammed onto core 0 (the scheduler places every spawn and wake on the current core, DECISIONS
+/// "Open design ideas": the SMP placement gap) starve a later heavy test past the 60 s watchdog.
+///
+/// This module is deliberately the **last** thing in the file so it runs after every driver test on
+/// both ISAs, catching an accumulated leak wherever it came from. It quiesces first (yielding lets a
+/// just-finished thread be reaped by the next context switch), then asserts nothing but the idle
+/// threads and this probe is still runnable. A leak fails here with the offending thread in the dump,
+/// on the test that leaked's own turf, rather than as a mysterious watchdog trip three tests later.
+#[cfg(test)]
+mod no_leaked_threads {
+    use super::*;
+    use crate::sched;
+
+    #[test_case]
+    fn the_suite_left_no_runnable_thread_spinning() {
+        // Quiesce: 200 yields is far more than enough for every Finished thread to be switched away
+        // from and reaped, and for any thread mid-exit to get there. What stays runnable after this
+        // is a genuine leak (a thread that never blocks and never exits).
+        for _ in 0..200 {
+            sched::yield_now();
+        }
+        let me = sched::current();
+        let leaked = sched::runnable_non_idle_count(&me);
+        if leaked != 0 {
+            sched::dump_threads();
+        }
+        assert_eq!(
+            leaked, 0,
+            "{leaked} thread(s) are still runnable after the suite quiesced: a test spawned a \
+             thread that never exits. A leaked spinner starves later heavy tests past the watchdog; \
+             make the one-shot role exit() after it reports instead of looping forever.",
+        );
+    }
+}

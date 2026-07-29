@@ -110,6 +110,13 @@ pub unsafe fn enter_user(frame: *mut TrapFrame) -> ! {
     unsafe { user_return(frame) }
 }
 
+/// Diagnostic stub (the watchdog dump's EL0-PC column): the riscv trap frame is not at a fixed
+/// stack offset (it rides below the live sp via sscratch), so return 0 rather than misread it. The
+/// aarch64 dump carries the real PC, which is the ISA the FS hang reproduces on.
+pub fn user_pc(_stack_top: u64) -> u64 {
+    0
+}
+
 /// Interrupts routed to a userspace handler (delegated IRQs). Bumped by the trap dispatcher.
 pub static ROUTED_IRQS: AtomicUsize = AtomicUsize::new(0);
 

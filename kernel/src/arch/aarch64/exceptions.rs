@@ -130,6 +130,16 @@ pub unsafe fn enter_user(frame: *mut TrapFrame) -> ! {
     unsafe { enter_userspace(frame) }
 }
 
+/// **Diagnostic: the EL0 PC of a thread from the TrapFrame at the top of its kernel stack.** A
+/// thread that trapped from EL0 (a syscall, or a timer preemption while spinning) left its frame at
+/// `stack_top - size_of::<TrapFrame>()`, where `elr` is its EL0 PC. Used by the watchdog dump to say
+/// *where* each thread is, not just its scheduler state. Meaningless for a pure kernel thread.
+pub fn user_pc(stack_top: u64) -> u64 {
+    let frame = (stack_top - size_of::<TrapFrame>() as u64) as *const TrapFrame;
+    // SAFETY: diagnostic read of the frame the vector's SAVE_CONTEXT wrote at the stack top.
+    unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*frame).elr)) }
+}
+
 /// How many `brk` instructions we have caught and stepped over.
 ///
 /// Exists so the tests can prove the handler actually ran, rather than proving only
