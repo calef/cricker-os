@@ -551,6 +551,8 @@ fn initrd_riscv() -> bool {
             "blk",
             "--bin",
             "allocdemo",
+            "--bin",
+            "fsclient",
             "--target",
             RISCV_TARGET,
         ],
@@ -580,6 +582,7 @@ fn initrd_riscv() -> bool {
         ("termd", "termd"),
         ("blk", "blk"),
         ("allocdemo", "allocdemo"),
+        ("fsclient", "fsclient"),
     ];
     let mut blobs: Vec<(&str, Vec<u8>)> = Vec::new();
     for &(archive_name, bin_name) in entries {
@@ -595,6 +598,11 @@ fn initrd_riscv() -> bool {
     // target, rides along when present, exactly as on aarch64. `test` builds it first.
     if let Ok(bytes) = std::fs::read(hellostd_elf("riscv64-unknown-cricker")) {
         blobs.push(("hellostd", bytes));
+    }
+    // The FS server (milestone 32 phase 2), built for the riscv bare target, rides along when
+    // present, exactly as hellostd does; `test` builds it first.
+    if let Ok(bytes) = std::fs::read(fsserver_elf(RISCV_TARGET)) {
+        blobs.push(("fsserver", bytes));
     }
     let files: Vec<(&str, &[u8])> = blobs.iter().map(|(n, b)| (*n, b.as_slice())).collect();
     let size = crickerfs::image_size(&files);
@@ -686,6 +694,13 @@ fn mkinitrd() -> bool {
             return false;
         }
     };
+    let fsclient = match std::fs::read(bin_elf("fsclient")) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("fsclient"));
+            return false;
+        }
+    };
     // "init" is the hello binary (the kernel loads it, init re-enters it at its remaining roles);
     // "worker", "console", "input", "shell" are the split system binaries (19f.2-5), "termd" is
     // the line discipline between them (milestone 28), "coremark" is the compute workload (19e),
@@ -702,6 +717,7 @@ fn mkinitrd() -> bool {
         ("coremark", &coremark),
         ("elbench", &elbench),
         ("allocdemo", &allocdemo),
+        ("fsclient", &fsclient),
     ];
     // The std demo (milestone 27) rides along IFF it has been built (`cargo xtask user-std`, which
     // `test` runs). It builds through a separate toolchain and target, so an interactive `run` that
@@ -709,6 +725,12 @@ fn mkinitrd() -> bool {
     let hellostd = std::fs::read(hellostd_elf("aarch64-unknown-cricker")).ok();
     if let Some(bytes) = &hellostd {
         files.push(("hellostd", bytes.as_slice()));
+    }
+    // The FS server (milestone 32 phase 2) rides along IFF built (its own workspace/target; `test`
+    // builds it). Absent for a plain interactive boot, which simply skips the FS-server test.
+    let fsserver = std::fs::read(fsserver_elf(TARGET)).ok();
+    if let Some(bytes) = &fsserver {
+        files.push(("fsserver", bytes.as_slice()));
     }
     let size = crickerfs::image_size(&files);
     let mut img = std::vec![0u8; size];
@@ -796,6 +818,120 @@ fn mkdisk() -> bool {
         }
     }
     true
+}
+
+// ===========================================================================================
+// The RedoxFS FS server and its test image (milestone 32 phase 2).
+//
+// The FS-server binary is out-of-workspace (it links the vendored engine), built for the bare
+// targets with the pure no_std core (`--no-default-features`) plus the EL0 runtime (`el0`),
+// release so the initrd stays small. The test image is made HOST-side by the redoxfs-host tool,
+// the same engine the server opens it with; the server never creates. See notes/fs-server.md.
+// ===========================================================================================
+
+/// Build the FS-server ELF for `triple`. Its own workspace, so it takes `--manifest-path` and its
+/// artifacts land under `fs-server/target/`.
+fn fs_server_build(triple: &str) -> bool {
+    run(
+        "cargo",
+        &[
+            "build",
+            "--manifest-path",
+            "fs-server/Cargo.toml",
+            "--bin",
+            "fsserver",
+            "--no-default-features",
+            "--features",
+            "el0",
+            "--release",
+            "--target",
+            triple,
+        ],
+    )
+}
+
+/// The FS-server ELF path for a target triple (always the release profile; see `fs_server_build`).
+fn fsserver_elf(triple: &str) -> String {
+    workspace_root()
+        .join(format!("fs-server/target/{triple}/release/fsserver"))
+        .display()
+        .to_string()
+}
+
+/// Where the RedoxFS test image is written. The runners derive exactly this name from
+/// `CRICKER_DISK` (`${CRICKER_DISK%.img}-redoxfs.img`), so the two stay in lockstep.
+fn redoxfs_disk_path() -> String {
+    workspace_root()
+        .join("target/crickerfs-redoxfs.img")
+        .display()
+        .to_string()
+}
+
+/// Drive the redoxfs-host tool (its own workspace) by `--manifest-path`, quietly. Returns success.
+fn redoxfs_host(args: &[&str]) -> bool {
+    let mut v = vec![
+        "run",
+        "--quiet",
+        "--manifest-path",
+        "tools/redoxfs-host/Cargo.toml",
+        "--",
+    ];
+    v.extend_from_slice(args);
+    run("cargo", &v)
+}
+
+/// Build the RedoxFS test image the FS server serves: an empty filesystem with the two fixture
+/// files (`motd`, `scratch`) the client reads and writes. Made host-side with the pinned engine, so
+/// an image the server opens is proven against exactly the code that opens it. Arch-neutral (the
+/// on-disk format does not depend on the CPU), so one image serves both ISA test legs.
+fn mkredoxfs() -> bool {
+    let img = redoxfs_disk_path();
+    // Stage the fixture contents in temp files (the host tool's `put` takes a host file), then load
+    // them. The contents live in fs_proto::fixture, shared with the client and the kernel test.
+    let motd = workspace_root().join("target/redoxfs-motd.tmp");
+    let scratch = workspace_root().join("target/redoxfs-scratch.tmp");
+    if std::fs::write(&motd, fs_proto::fixture::MOTD).is_err()
+        || std::fs::write(&scratch, fs_proto::fixture::SCRATCH_INIT).is_err()
+    {
+        eprintln!("mkredoxfs: cannot stage the fixture files");
+        return false;
+    }
+    let motd = motd.display().to_string();
+    let scratch = scratch.display().to_string();
+    redoxfs_host(&["mkfs", &img, "16"])
+        && redoxfs_host(&["put", &img, fs_proto::fixture::MOTD_NAME, &motd])
+        && redoxfs_host(&["put", &img, fs_proto::fixture::SCRATCH_NAME, &scratch])
+}
+
+/// After a test run, reopen the image with the host tool and confirm it still parses and the file
+/// the FS server served reads back byte for byte. `cat` succeeding at all proves the image is still
+/// a consistent RedoxFS after the run (the FS server opened it read-write with cleanup, which
+/// advances the header ring); the bytes prove nothing was corrupted. The write path's own on-disk
+/// verification waits on the write blocker (notes/fs-server.md).
+fn redoxfs_check_after_run() -> bool {
+    let out = capture(
+        "cargo",
+        &[
+            "run",
+            "--quiet",
+            "--manifest-path",
+            "tools/redoxfs-host/Cargo.toml",
+            "--",
+            "cat",
+            &redoxfs_disk_path(),
+            fs_proto::fixture::MOTD_NAME,
+        ],
+    );
+    match out {
+        Some(s) if s.as_bytes() == fs_proto::fixture::MOTD => true,
+        other => {
+            eprintln!(
+                "redoxfs consistency check failed: motd did not read back after the run (got {:?})",
+                other.as_deref().unwrap_or("<host tool error>")
+            );
+            false
+        }
+    }
 }
 
 fn user_elf() -> String {
@@ -921,7 +1057,12 @@ fn test() -> bool {
     if !user_std() {
         return false;
     }
-    if !user() || !mkdisk() {
+    // The FS server (milestone 32 phase 2), for the aarch64 bare target, before `user()` so mkinitrd
+    // packs it; then the RedoxFS test image the runner attaches as the second mmio disk.
+    if !fs_server_build(TARGET) {
+        return false;
+    }
+    if !user() || !mkdisk() || !mkredoxfs() {
         return false;
     }
     if !cargo(&["test", "-p", "kernel", "--target", TARGET]) {
@@ -939,12 +1080,25 @@ fn test() -> bool {
     // build the riscv archive and point the runner at IT, not at the aarch64 archive `cargo()`
     // exports: the riscv ELF loader must never be handed aarch64 ELFs. The disk is arch-neutral
     // (a crickerfs data image) and was built by mkdisk() above.
+    // The riscv FS server, before the riscv archive that packs it.
+    if !fs_server_build(RISCV_TARGET) {
+        return false;
+    }
     if !initrd_riscv() {
         return false;
     }
     unsafe { std::env::set_var("CRICKER_INITRD", riscv_initrd_path()) };
     unsafe { std::env::set_var("CRICKER_DISK", disk_path()) };
-    run("cargo", &["test", "-p", "kernel", "--target", RISCV_TARGET])
+    if !run("cargo", &["test", "-p", "kernel", "--target", RISCV_TARGET]) {
+        return false;
+    }
+
+    // FS-level consistency after the runs (milestone 32 phase 2): reopen the RedoxFS image with the
+    // host tool and confirm the FS server's write persisted and the filesystem still parses. Both
+    // ISA legs wrote the same pattern to the same image; the write survives, so it reads back.
+    eprintln!();
+    eprintln!("--- redoxfs image consistency after the run (host tool) ---");
+    redoxfs_check_after_run()
 }
 
 /// The microbenchmarks (milestone 21; design/roadmap.md §21).

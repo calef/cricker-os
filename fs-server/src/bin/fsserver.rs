@@ -29,12 +29,14 @@ use fs_proto::{blk, fs, op, reply_err, req};
 use fs_server::Server;
 use redoxfs::Disk;
 use syscall::error::{EINVAL, EIO, Error, Result};
-use user_rt::{call, invoke, recv_cap};
+use user_rt::{call, invoke, recv_cap, send};
 
 /// Cspace slots, by convention with the kernel-side wiring (kernel/src/user.rs `fs_service`).
 const UNTYPED: u64 = 0;
 const BLK: u64 = 1;
 const FILE: u64 = 2;
+/// A readiness endpoint: the server SENDs one word here once the image is open, before it serves.
+const READY: u64 = 3;
 
 /// Where the kernel maps the two shared pages. Above the program image (0x40_0000) and the heap
 /// (0x4000_0000 + a few MiB), so nothing collides.
@@ -186,6 +188,9 @@ pub extern "C" fn _start(_x0: u64, _x1: u64, _x2: u64) -> ! {
         Ok(s) => s,
         Err(_) => panic!(), // not a RedoxFS image, or the disk misbehaved: die legibly.
     };
+    // The image is open: signal readiness (so the test can tell an open-path hang from a serve-path
+    // one), then serve forever.
+    send(READY, fs_proto::fixture::READY, 0, 0);
     serve(&mut server);
 }
 

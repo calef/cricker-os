@@ -150,7 +150,8 @@ pub mod fixture {
     /// A file the image ships with; the client reads it back through a granted directory capability.
     pub const MOTD_NAME: &str = "motd";
     /// Its exact contents. Longer than eight bytes so the report's head word is a real prefix.
-    pub const MOTD: &[u8] = b"redoxfs served this file to an EL0 client through a capability handle\n";
+    pub const MOTD: &[u8] =
+        b"redoxfs served this file to an EL0 client through a capability handle\n";
 
     /// A file the image ships with (with placeholder contents) so the client can open it and write.
     pub const SCRATCH_NAME: &str = "scratch";
@@ -158,11 +159,17 @@ pub mod fixture {
     pub const SCRATCH_INIT: &[u8] = b"(placeholder overwritten by the fs-server write test)";
     /// What the client writes to `scratch` and reads back; the host tool re-reads it after the run
     /// to prove the write reached the on-disk image and the filesystem is still consistent.
-    pub const WRITE_PATTERN: &[u8] = b"CRKFS_WRITE_OK: this round-tripped through the RedoxFS image\n";
+    pub const WRITE_PATTERN: &[u8] =
+        b"CRKFS_WRITE_OK: this round-tripped through the RedoxFS image\n";
 
     /// The client's success sentinel, sent as the report's second word; the head of [`MOTD`] is the
     /// first. Any other value (or silence) fails the test.
     pub const SUCCESS: u64 = 0xF11E_600D;
+
+    /// The FS server's readiness sentinel: sent once, after it has opened the RedoxFS image over blk
+    /// IPC and before it serves clients. The test waits for it, so a hang in `open` (the blk path)
+    /// is distinguishable from a hang in the serve/client path, and a booted-but-empty run is caught.
+    pub const READY: u64 = 0xF5_0BEEF5;
 }
 
 #[cfg(test)]

@@ -1332,6 +1332,55 @@ coupling that fails loudly on a rustc bump (the intended tripwire) rather than s
 real std program (`Vec`, `String`, `HashMap`, `println!`, `Instant`) spawned as a workload and
 checked byte for byte on both ISAs (the §19 parity gate).
 
+## 23. The filesystem service: a capability-shaped contract over a component we did not write (milestone 32 phase 2)
+
+RedoxFS runs confined as a userspace FS-server component, and its interface is **capability-shaped
+from birth**. Three processes, wired by the kernel and named by nobody else: a **block server** (a
+role of the virtio driver) that serves blocks over blk IPC with the DMA confinement unchanged; an
+**FS server** (`fs-server/`, its own workspace because it links the vendored engine) that runs the
+no_std RedoxFS core behind a `Disk` trait over blk IPC and allocates from its own untyped budget
+through §22's `GlobalAlloc`; and a **client** that holds only a directory capability. The contract
+and both wire protocols live in `crates/fs_proto`, host-tested, the way the terminal contract lives
+in `linedisc::proto`. Full design in notes/fs-server.md.
+
+**The contract's rules, which milestone 31 will grant against.** The endpoint a client holds IS the
+directory capability: it is bound, in the server, to one directory node, and every name in an `OPEN`
+is resolved under that directory. There is no absolute path, no `..`, no global namespace; a client
+without the endpoint can open nothing, and the refusal is "no such capability", not a permission
+check. A handle is a server-minted token, validated against the session's table in one place, so
+forging one is meaningless. Open-by-path exists only inside the server. None of this adds a syscall:
+the kernel routes these words the way it routes any IPC (§10, §12) and never reads an opcode, so
+adding a method is a change to `fs_proto` and the note, not to the surface (the §16 discipline).
+
+**The error boundary is mapped exactly once.** RedoxFS's error type (`syscall::error::Error`) rides
+unmapped through the sans-IO core and the `Disk` impl; the serve loop is the single site that turns
+it into the wire's negated errno (`fs_proto::reply_err`). There is no ABI type below the boundary to
+leak, which is what makes the rule enforceable rather than aspirational.
+
+**The block server polls, deliberately.** RedoxFS scans a 256-entry header ring at mount, so an open
+is hundreds of reads. The block server moves a whole 4096-byte block per virtio request (its DMA
+region's second page IS the FS server's block page, so the device DMAs straight in, no copy) and
+**polls the used ring** rather than waiting on the interrupt, because QEMU completes virtio-blk
+synchronously inside `NOTIFY` (notes/dma.md) and a reschedule per read overran the watchdog. A
+QEMU-tuned choice, recorded as such: real async hardware wants the interrupt path back. The runners
+also order the two mmio disks with care, because QEMU assigns virtio-mmio slots in reverse
+command-line order and the kernel enumerates by ascending slot.
+
+**Creation stays host-side, always.** The std-gated core APIs are exactly creation (uuid, getrandom);
+the server only ever opens an image, so entropy never becomes a userspace dependency. Test images are
+made by `tools/redoxfs-host` with the same pinned engine (roadmap §32 item 4).
+
+**Proven, and the open item.** The read path is proven end to end on both ISAs (the §19 gate): a
+host-made image, mounted by the confined FS server over blk IPC, its `motd` opened through a granted
+directory capability and read back byte for byte, plus a host-tool consistency check after the run.
+The sans-IO core is host-tested for read AND write (`fs-server` lib), so the filesystem logic is
+proven both ways. **On-device writes are the remaining work:** the plumbing is in place and
+host-proven, but the end-to-end write loops inside RedoxFS's allocator commit on bare metal even on a
+pristine image (the `prev`-chain walk in `Transaction::sync_allocator`), against the cricker runtime
+(`IpcDisk` + untyped `GlobalAlloc`) where the std path with `DiskMemory` runs clean. This is a
+redoxfs-internals / heap-interaction investigation raised rather than papered over; the client's
+green test is read-only by consequence and says so. See notes/fs-server.md.
+
 ## Reading
 
 - **The seL4 manual**, and Klein et al., *seL4: Formal Verification of an OS Kernel* (SOSP'09)

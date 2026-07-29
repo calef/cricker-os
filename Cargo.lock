@@ -71,6 +71,7 @@ dependencies = [
  "dtb",
  "elf",
  "frames",
+ "fs_proto",
  "intrusive",
  "ipc",
  "paging",
@@ -128,6 +129,7 @@ dependencies = [
  "coremark",
  "crickerfs",
  "elf",
+ "fs_proto",
  "linedisc",
  "user_rt",
 ]
@@ -145,4 +147,5 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "crickerfs",
+ "fs_proto",
 ]

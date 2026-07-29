@@ -1694,6 +1694,221 @@ pub mod virtio_service {
     }
 }
 
+/// **The RedoxFS filesystem service** (milestone 32 phase 2): three confined processes and the
+/// endpoints and shared pages that wire them, spawned by the test that proves the stack end to end.
+///
+/// ```text
+///   disk ──virtio──► block server ──blk IPC──► FS server ──file IPC──► client ──► report to kernel
+/// ```
+///
+/// The kernel builds the wiring and hands each process exactly its world (a `Spawn` literal each);
+/// it never sees a filesystem operation, an opcode, or a byte of file data. The FS server owns
+/// RedoxFS and its own heap; the block server owns the DMA confinement; the client holds only a
+/// directory capability. This is the same shape as `virtio_service` and the console, one level up.
+///
+/// The service drives the **second** mmio block disk (the RedoxFS image); the first is the crickerfs
+/// disk the phase-1 driver tests use. `None` if there is no such disk attached to this run.
+#[allow(dead_code)] // spawned only by the phase-2 test, like every other service module here
+pub mod fs_service {
+    use super::*;
+    use crate::cap::{Rights, endpoint_cap, irq_cap, untyped_cap, virtio_cap};
+    use crate::sched::EpId;
+
+    /// The block server's role in the driver binary (must match user/src/{hello,blk}.rs and virtio.rs).
+    const ROLE_BLK_SERVER: u64 = 32;
+
+    /// The heap budget the FS server draws RedoxFS's allocations from. RedoxFS keeps a 128 KiB
+    /// compress buffer, block buffers, and small tree structures for the images phase 2 serves; 8 MiB
+    /// is comfortable and is the process's hard ceiling (its `HEAP_MAX` matches).
+    const FS_BUDGET_PAGES: u64 = 2048;
+
+    /// Extra stack pages for the FS server, below the single page `run` maps. RedoxFS's recursive
+    /// tree/htree/transaction code needs far more than 4 KiB; 32 pages (128 KiB) is generous and
+    /// costs 32 frames once per boot.
+    const FS_STACK_PAGES: u64 = 32;
+
+    // The VAs each process expects its mappings at. Each MUST match that program's source.
+    const DMA_VA: u64 = 0x0000_0000_0090_0000; // block server DMA region, 2 pages (user/src/virtio.rs)
+    const BLK_PAGE_FS: u64 = 0x5000_0000; // FS server's block page (fsserver.rs BLK_PAGE)
+    const FILE_PAGE_FS: u64 = 0x5000_1000; // FS server's file page (fsserver.rs FILE_PAGE)
+    const FILE_VA_CLIENT: u64 = 0x0000_0000_0060_0000; // client's file page (fsclient.rs FILE_VA)
+
+    /// A fresh, zeroed frame, returned by physical address. Zeroed so no stale RAM is ever visible
+    /// across a share, and (for the DMA frame) so the device never reads a stale descriptor.
+    fn frame() -> u64 {
+        let p = crate::memory::alloc()
+            .expect("no frame for the fs service")
+            .addr();
+        // SAFETY: fresh frame, reachable through the direct map.
+        unsafe { core::ptr::write_bytes(mmu::phys_to_virt(p) as *mut u8, 0, FRAME_SIZE as usize) };
+        p
+    }
+
+    /// Wire and spawn the block server, the FS server, and the client. `blk_image` is the driver
+    /// binary carrying the block-server role (hello on aarch64, `blk` on riscv); `fsserver_image`
+    /// and `client_image` are the same on both ISAs. Returns the endpoint the client reports on.
+    pub fn start(
+        blk_image: &'static [u8],
+        fsserver_image: &'static [u8],
+        client_image: &'static [u8],
+    ) -> Option<(EpId, EpId, EpId)> {
+        let dev = crate::virtio::find_block_device_n(1)?;
+
+        // The block server's DMA region is TWO contiguous pages: page 0 for the rings, request
+        // header and status (block-server-private), page 1 for the 4096-byte data buffer. Page 1 is
+        // ALSO the block page shared with the FS server, so the device DMAs a whole filesystem block
+        // straight into the FS server's page, one request per block, no copy. The other shared page
+        // (client <-> FS server, names and file bytes) is a single frame.
+        let dma = crate::memory::alloc_contiguous(2)
+            .expect("no 2-page DMA region for the block server")
+            .addr();
+        // SAFETY: two fresh contiguous frames via the direct map; zero so neither stale descriptors
+        // nor stale file bytes are ever visible to the device or the FS server.
+        unsafe {
+            core::ptr::write_bytes(
+                mmu::phys_to_virt(dma) as *mut u8,
+                0,
+                2 * FRAME_SIZE as usize,
+            )
+        };
+        let blk_shared = dma + FRAME_SIZE; // page 1 of the region is the shared block page
+        let file_shared = frame();
+
+        // The endpoints. Rights split each into a request side and an answer side.
+        let blk_ep = crate::sched::create_endpoint(); // FS server WRITE (CALL) -> block server READ
+        let file_ep = crate::sched::create_endpoint(); // client WRITE (CALL) -> FS server READ
+        let report = crate::sched::create_endpoint(); // client WRITE -> the kernel test RECVs
+        let ready = crate::sched::create_endpoint(); // FS server WRITE -> the kernel test RECVs
+        let blk_ready = crate::sched::create_endpoint(); // block server WRITE -> the kernel test RECVs
+
+        // --- the block server: its 2-page DMA region, the device's interrupt, the confined
+        // transport, the blk request endpoint. Same confinement as any driver, just a bigger region.
+        let irq_ep = crate::sched::create_endpoint();
+        crate::sched::bind_irq(dev.intid, irq_ep);
+        crate::arch::irq::enable(dev.intid);
+        let vid = crate::virtio::register(
+            crate::virtio::Transport::Mmio {
+                mmio_phys: dev.mmio_phys,
+            },
+            dma,
+            2 * FRAME_SIZE, // both pages: the device may touch the rings AND the data buffer
+            None,           // virtio-mmio has no IOMMU in front of it
+        );
+        crate::sched::spawn(move || {
+            run(
+                blk_image,
+                Spawn {
+                    arg0: ROLE_BLK_SERVER,
+                    arg1: dma, // the DMA region's physical address
+                    arg2: 0,
+                    grants: &[
+                        endpoint_cap(blk_ep, Rights::READ), // slot 0: RECV blk requests
+                        irq_cap(dev.intid),                 // slot 1: the device interrupt
+                        virtio_cap(vid),                    // slot 2: the confined transport
+                        endpoint_cap(blk_ready, Rights::WRITE), // slot 3: signal readiness once
+                    ],
+                    maps: &[
+                        // Both DMA pages, contiguous at DMA_VA; page 1 (DMA_VA + FRAME_SIZE) is the
+                        // shared block buffer, the same frame the FS server maps at BLK_PAGE_FS.
+                        Mapping {
+                            va: DMA_VA,
+                            phys: dma,
+                            flags: Flags::user_data(),
+                        },
+                        Mapping {
+                            va: DMA_VA + FRAME_SIZE,
+                            phys: blk_shared,
+                            flags: Flags::user_data(),
+                        },
+                    ],
+                },
+            )
+        })
+        .expect("could not spawn the block server");
+
+        // --- the FS server: a heap budget, the block-service endpoint (client side), the
+        // file-service endpoint (server side), and both shared pages. No device, no DMA. ---
+        //
+        // It also gets a DEEP stack. `run` maps one stack page (enough for the shallow programs),
+        // but RedoxFS recurses through its tree and htree and commits transactions on the stack, and
+        // one 4 KiB page overflows immediately (the first `open` faults ~4.2 KiB down). So map extra
+        // stack pages below USER_STACK_VA out of fresh frames. These are shared-style mappings (not
+        // freed on death), a one-time cost paid once per boot for the single FS server the test runs.
+        let budget =
+            crate::untyped::create(FS_BUDGET_PAGES).expect("no heap budget for the FS server");
+        let mut stack = [0u64; FS_STACK_PAGES as usize];
+        for f in stack.iter_mut() {
+            *f = frame();
+        }
+        crate::sched::spawn(move || {
+            // Build the mapping list: the two shared pages, then the extra stack pages.
+            let mut maps = [Mapping {
+                va: 0,
+                phys: 0,
+                flags: Flags::user_data(),
+            }; 2 + FS_STACK_PAGES as usize];
+            maps[0] = Mapping {
+                va: BLK_PAGE_FS,
+                phys: blk_shared,
+                flags: Flags::user_data(),
+            };
+            maps[1] = Mapping {
+                va: FILE_PAGE_FS,
+                phys: file_shared,
+                flags: Flags::user_data(),
+            };
+            for (i, &phys) in stack.iter().enumerate() {
+                maps[2 + i] = Mapping {
+                    va: super::USER_STACK_VA - (i as u64 + 1) * FRAME_SIZE,
+                    phys,
+                    flags: Flags::user_data(),
+                };
+            }
+            run(
+                fsserver_image,
+                Spawn {
+                    arg0: 0,
+                    arg1: 0,
+                    arg2: 0,
+                    grants: &[
+                        untyped_cap(budget),                 // slot 0: the heap's untyped budget
+                        endpoint_cap(blk_ep, Rights::WRITE), // slot 1: CALL the block server
+                        endpoint_cap(file_ep, Rights::READ), // slot 2: RECV file requests
+                        endpoint_cap(ready, Rights::WRITE),  // slot 3: signal readiness once
+                    ],
+                    maps: &maps,
+                },
+            )
+        })
+        .expect("could not spawn the FS server");
+
+        // --- the client: the file-service endpoint (its directory capability) and the report
+        // endpoint, plus its view of the file page. It names nothing else in the system. ---
+        crate::sched::spawn(move || {
+            run(
+                client_image,
+                Spawn {
+                    arg0: 0,
+                    arg1: 0,
+                    arg2: 0,
+                    grants: &[
+                        endpoint_cap(file_ep, Rights::WRITE), // slot 0: CALL the FS server
+                        endpoint_cap(report, Rights::WRITE),  // slot 1: report to the kernel
+                    ],
+                    maps: &[Mapping {
+                        va: FILE_VA_CLIENT,
+                        phys: file_shared,
+                        flags: Flags::user_data(),
+                    }],
+                },
+            )
+        })
+        .expect("could not spawn the FS client");
+
+        Some((blk_ready, ready, report))
+    }
+}
+
 /// Console **input** in userspace: the receive half of the terminal.
 #[allow(dead_code)]
 pub mod input_service {
@@ -3029,6 +3244,56 @@ mod tests {
         );
     }
 
+    /// **The RedoxFS filesystem service, end to end** (milestone 32 phase 2, the flagship
+    /// userspace-reuse story). Three confined processes: a block server drives the RedoxFS disk over
+    /// DMA, an FS server mounts it over blk IPC and serves files from its own heap, and a client
+    /// opens `motd` through a granted directory capability, reads it, writes a pattern to `scratch`
+    /// and reads it back, then reports. The client names nothing but its directory endpoint, so a
+    /// success here is the whole capability contract holding: designation is authorization, the
+    /// handle is a server-minted token, and a real CoW filesystem we did not write runs confined.
+    #[test_case]
+    fn the_fs_server_serves_redoxfs_over_a_capability_contract() {
+        let (blk_ready, ready, report) = match fs_service::start(
+            init_image(),
+            program("fsserver").expect("no fsserver program in the initrd archive"),
+            program("fsclient").expect("no fsclient program in the initrd archive"),
+        ) {
+            Some(r) => r,
+            None => {
+                // No RedoxFS disk attached to this run. Nothing to test; do not fail.
+                crate::println!("    (no RedoxFS disk attached; skipping)");
+                return;
+            }
+        };
+
+        // First: the block server brought the RedoxFS device up.
+        assert_eq!(
+            sched::ipc_recv(blk_ready)[0],
+            fs_proto::fixture::READY,
+            "the block server did not bring the RedoxFS device up",
+        );
+        // Then: the FS server opened the image over blk IPC.
+        assert_eq!(
+            sched::ipc_recv(ready)[0],
+            fs_proto::fixture::READY,
+            "the FS server did not open the RedoxFS image",
+        );
+
+        // Then: the client has read motd, round-tripped scratch, and reported. If any of the three
+        // processes faults, it never sends and the QEMU-level timeout is the backstop.
+        let [head, status, _] = sched::ipc_recv(report);
+        assert_eq!(
+            status,
+            fs_proto::fixture::SUCCESS,
+            "the client did not report success: a check in the read or write path failed",
+        );
+        assert_eq!(
+            &head.to_le_bytes()[..],
+            &fs_proto::fixture::MOTD[..8],
+            "the client read the wrong motd bytes off the RedoxFS image",
+        );
+    }
+
     /// **The shell's `run` mechanism: spawn a process, get its answer.** Milestone 10's core.
     ///
     /// A worker process is started at EL0 with an argument, computes `n*n`, reports the result on
@@ -4036,6 +4301,48 @@ mod riscv_virtio_tests {
         assert!(
             ROUTED_IRQS.load(Ordering::Relaxed) > irqs_before,
             "the read completed but no device interrupt was delivered as a message",
+        );
+    }
+
+    /// **The RedoxFS filesystem service, end to end, on the second ISA** (milestone 32 phase 2).
+    /// The aarch64 twin's contract, proven identically on riscv by the same suite (the parity gate):
+    /// a block server, an FS server over blk IPC, and a client that opens a file through a granted
+    /// directory capability, reads it, round-trips a write, and reports. The block-server role rides
+    /// the portable `blk` binary here instead of hello.
+    #[test_case]
+    fn the_fs_server_serves_redoxfs_over_a_capability_contract() {
+        let (blk_ready, ready, report) = match fs_service::start(
+            blk_image(),
+            program("fsserver").expect("no fsserver program in the initrd archive"),
+            program("fsclient").expect("no fsclient program in the initrd archive"),
+        ) {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no RedoxFS disk attached; skipping)");
+                return;
+            }
+        };
+
+        assert_eq!(
+            sched::ipc_recv(blk_ready)[0],
+            fs_proto::fixture::READY,
+            "the block server did not bring the RedoxFS device up",
+        );
+        assert_eq!(
+            sched::ipc_recv(ready)[0],
+            fs_proto::fixture::READY,
+            "the FS server did not open the RedoxFS image",
+        );
+        let [head, status, _] = sched::ipc_recv(report);
+        assert_eq!(
+            status,
+            fs_proto::fixture::SUCCESS,
+            "the client did not report success: a check in the read or write path failed",
+        );
+        assert_eq!(
+            &head.to_le_bytes()[..],
+            &fs_proto::fixture::MOTD[..8],
+            "the client read the wrong motd bytes off the RedoxFS image",
         );
     }
 

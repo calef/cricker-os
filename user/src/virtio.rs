@@ -519,7 +519,19 @@ const BLK_REQ: u64 = 0;
 
 /// Where the kernel maps the page shared with the FS server (the block buffer). Distinct from the
 /// DMA region, which the FS server must never see, and from [`DMA_VA`].
-const BLK_SHARED_VA: u64 = 0x0000_0000_00A0_0000;
+///
+/// The block server's DMA region is **two contiguous pages** (kernel/src/user.rs `fs_service`):
+/// page 0 holds the rings, request header, and status (block-server-private), and page 1 is the
+/// 4096-byte data buffer, which IS the page shared with the FS server. So one virtio request moves a
+/// whole filesystem block (eight sectors) and the device DMAs it straight into the FS server's page,
+/// with no per-sector loop and no copy. `BLK_OFF_DATA` is that page-1 offset.
+const BLK_OFF_DATA: u64 = 0x1000;
+/// One filesystem block in the data buffer: eight 512-byte sectors.
+const BLK_DATA_LEN: u32 = 4096;
+
+/// The block server's readiness endpoint (slot 3): SEND once after the device is up, so the test
+/// can tell a device-bring-up hang from a first-read hang. See kernel/src/user.rs fs_service.
+const BLK_READY: u64 = 3;
 
 /// virtio-mmio device-config window; virtio-blk's capacity (u64, in 512-byte sectors) is at its
 /// start. Reads are DMA-safe, so the kernel's `READ_REG` permits this offset.
@@ -531,6 +543,9 @@ const CONFIG: u64 = 0x100;
 /// page, the control (opcode, block index, result) rides in the message, the §10 split.
 pub fn run_blk_server(dma_phys: u64) -> ! {
     init();
+    // The device is up: signal readiness, so a hang here (bring-up) is distinct from a hang in the
+    // first read completion. SEND rendezvous, so this also paces the test past bring-up.
+    send(BLK_READY, fs_proto::fixture::READY, 0, 0);
     loop {
         // RECV_CAP: (first word, the Reply cap's slot, second word = the block index).
         let (w0, reply, block) = user_rt::recv_cap(BLK_REQ);
@@ -551,36 +566,81 @@ pub fn run_blk_server(dma_phys: u64) -> ! {
     }
 }
 
-/// Read one filesystem block (8 sectors) into the shared page, sector by sector through the DMA
-/// data buffer. The device fills [`OFF_DATA`]; we copy each sector out to the FS server's page.
-fn blk_read(dma_phys: u64, block: u64) {
-    for i in 0..blk::SECTORS_PER_BLOCK {
-        read_block(dma_phys, block * blk::SECTORS_PER_BLOCK + i);
-        // SAFETY: OFF_DATA holds one sector we just read; the shared page has room for 8 of them.
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                (DMA_VA + OFF_DATA) as *const u8,
-                (BLK_SHARED_VA + i * BLOCK as u64) as *mut u8,
-                BLOCK,
-            )
-        };
+/// Complete a block-server transfer by **polling** the used ring, not by waiting on the interrupt.
+///
+/// QEMU pops descriptors and writes the used ring synchronously inside the `QUEUE_NOTIFY` MMIO write
+/// (notes/dma.md), so by the time the kernel's `NOTIFY` returns the completion is already done. The
+/// FS server does hundreds of reads at open (RedoxFS scans a 256-entry header ring), and a
+/// WAIT-on-interrupt per read pays a full reschedule each time, which overran the test's watchdog.
+/// Polling the used ring skips that. The fallback to [`complete_block`] keeps the driver correct on
+/// hardware that completes asynchronously, where the poll would spin out and the interrupt is real;
+/// on QEMU the poll succeeds on the first read of the ring, so the fallback never runs.
+fn complete_blk(used_before: u16) {
+    for _ in 0..50_000_000 {
+        barrier();
+        if dma_read::<u16>(OFF_USED + 2) != used_before {
+            let st = dma_read::<u8>(OFF_STATUS);
+            if st != 0 {
+                panic!(); // the device reported a non-OK status
+            }
+            return;
+        }
+        core::hint::spin_loop();
     }
+    // The device did not complete inline within a generous bound. This poll-based server requires
+    // synchronous completion (which QEMU provides); fault loudly rather than hang invisibly.
+    panic!();
 }
 
-/// Write one filesystem block (8 sectors) from the shared page, sector by sector through the DMA
-/// data buffer. The FS server filled the shared page; we stage each sector and let the device read.
+/// Read one filesystem block (eight sectors, 4096 bytes) in a SINGLE virtio request. The device
+/// DMAs straight into page 1 of the DMA region, which is the FS server's block page, so there is no
+/// per-sector loop and no copy. Contrast the read path above, which the small-buffer driver roles
+/// use one 512-byte sector at a time; the FS server reads hundreds of blocks at open, so the eight-
+/// fold reduction in device round trips is what keeps it inside the test's watchdog.
+fn blk_read(dma_phys: u64, block: u64) {
+    let used_before = submit_blk(dma_phys, block * blk::SECTORS_PER_BLOCK, VIRTIO_BLK_T_IN);
+    complete_blk(used_before);
+}
+
+/// Write one filesystem block from page 1 (the FS server filled it before this request) in a single
+/// virtio request. The one direction flag differs from the read; the addresses are identical.
 fn blk_write(dma_phys: u64, block: u64) {
-    for i in 0..blk::SECTORS_PER_BLOCK {
-        // SAFETY: copy one sector of the FS server's page into the device-reachable DMA buffer.
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                (BLK_SHARED_VA + i * BLOCK as u64) as *const u8,
-                (DMA_VA + OFF_DATA) as *mut u8,
-                BLOCK,
-            )
-        };
-        write_block(dma_phys, block * blk::SECTORS_PER_BLOCK + i);
+    let used_before = submit_blk(dma_phys, block * blk::SECTORS_PER_BLOCK, VIRTIO_BLK_T_OUT);
+    complete_blk(used_before);
+}
+
+/// Build and publish the three-descriptor chain for a whole-block (4096-byte) transfer and ring the
+/// device through the kernel. Mirrors [`submit_block`] but with the data descriptor spanning a full
+/// block at [`BLK_OFF_DATA`] (page 1, the shared page) instead of one sector. Returns the used-ring
+/// index from before the submit, which [`complete_block`] compares against.
+fn submit_blk(dma_phys: u64, sector: u64, req_type: u32) -> u16 {
+    dma_write::<u32>(OFF_HEADER, req_type);
+    dma_write::<u32>(OFF_HEADER + 4, 0);
+    dma_write::<u64>(OFF_HEADER + 8, sector);
+    dma_write::<u8>(OFF_STATUS, 0xff);
+
+    let data_flags = if req_type == VIRTIO_BLK_T_IN {
+        VIRTQ_DESC_F_NEXT | VIRTQ_DESC_F_WRITE // read: the device fills the block page
+    } else {
+        VIRTQ_DESC_F_NEXT // write: the device consumes the block page
+    };
+    write_desc(0, dma_phys + OFF_HEADER, 16, VIRTQ_DESC_F_NEXT, 1);
+    write_desc(1, dma_phys + BLK_OFF_DATA, BLK_DATA_LEN, data_flags, 2);
+    write_desc(2, dma_phys + OFF_STATUS, 1, VIRTQ_DESC_F_WRITE, 0);
+
+    let used_before: u16 = dma_read::<u16>(OFF_USED + 2);
+    let idx: u16 = dma_read::<u16>(OFF_AVAIL + 2);
+    dma_write::<u16>(OFF_AVAIL + 4 + (idx as u64 % QSIZE as u64) * 2, 0);
+    barrier();
+    dma_write::<u16>(OFF_AVAIL + 2, idx.wrapping_add(1));
+    barrier();
+
+    // SAFETY: `svc`. The kernel validates every descriptor against the 2-page region before ringing;
+    // a refusal here is a block-server bug, so fault rather than limp on.
+    if unsafe { invoke(VIRTIO, abi::virtio::NOTIFY, 0, 0, 0) } < 0 {
+        panic!();
     }
+    used_before
 }
 
 /// The disk's size in bytes, from virtio-blk's capacity register (sectors * 512). RedoxFS asks for
