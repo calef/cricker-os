@@ -912,6 +912,8 @@ fn test() -> bool {
         "-p",
         "crickerfs",
         "-p",
+        "dma_validate",
+        "-p",
         "dtb",
         "-p",
         "elf",

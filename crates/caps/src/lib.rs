@@ -80,6 +80,25 @@ pub struct Cap<O> {
     pub rights: Rights,
 }
 
+impl<O> Cap<O> {
+    /// **Mint a fresh capability to `object` carrying no more authority than this one.** The rule a
+    /// fresh mint site *outside* [`CSpace::derive`] must honor by hand so that authority never
+    /// widens: the child inherits the parent's rights, never a superset.
+    ///
+    /// `Untyped::SPLIT` is such a site (kernel/src/cap.rs, milestone 31): it carves a child budget
+    /// off a parent untyped and mints a capability to it, and because that mint is not a `derive` the
+    /// "derive never widens rights" proof does not reach it. Routing it through here puts it under the
+    /// [`split_never_widens_rights`](../src/lib.rs) proof, so a spend-only (GRANT-less) untyped cannot
+    /// split itself a GRANT-bearing child and manufacture the right its own capability was denied. See
+    /// DECISIONS §16 and notes/verification.md.
+    pub fn mint_child(&self, object: O) -> Cap<O> {
+        Cap {
+            object,
+            rights: self.rights,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
     /// **The slot is empty.** Note what this is *not*: it is not "permission denied." There is
@@ -341,6 +360,26 @@ mod verification {
             assert!(derived.rights.is_subset_of(src_rights));
             assert!(requested.is_subset_of(src_rights));
         }
+    }
+
+    /// **Authority never widens at the other mint site either: `split` inherits, it does not grant.**
+    /// `Untyped::SPLIT` mints a child budget outside [`CSpace::derive`] (kernel/src/cap.rs), so
+    /// `derive_never_widens_rights` does not reach it; the kernel now routes that mint through
+    /// [`Cap::mint_child`], and this proves the same theorem there: for every rights pattern, a child
+    /// minted from a parent holds no more than the parent did. So a spend-only untyped cannot split
+    /// itself a GRANT-bearing child and manufacture the authority it was denied. Milestone 35.
+    #[kani::proof]
+    fn split_never_widens_rights() {
+        let parent = Cap {
+            object: 7u8,
+            rights: Rights(kani::any()),
+        };
+        let child_object: u8 = kani::any();
+
+        let child = parent.mint_child(child_object);
+
+        assert!(child.rights.is_subset_of(parent.rights));
+        assert_eq!(child.object, child_object);
     }
 }
 

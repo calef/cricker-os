@@ -156,12 +156,11 @@ pub fn untyped_cap(region: u64) -> Cap {
     }
 }
 
-/// A capability to an untyped region with explicit rights (milestone 31). Two callers:
-///
-/// - `SPLIT` mints its child budget with the **invoking capability's own rights** (never more), so
-///   a spend-only untyped splits into spend-only children and cannot manufacture `GRANT` it was
-///   denied. This is the derive-never-widens invariant honored by hand at a fresh mint site.
-/// - [`untyped_root_cap`] builds the delegable root from `READ|WRITE|GRANT`.
+/// A capability to an untyped region with explicit rights (milestone 31). Its one caller is
+/// [`untyped_root_cap`], which builds the delegable root from `READ|WRITE|GRANT`. `Untyped::SPLIT`
+/// used to build its child here too; since milestone 35 it mints through `Cap::mint_child` instead
+/// (the inheriting mint the `split_never_widens_rights` proof covers), so the child's rights are
+/// pinned to the parent's by proved code rather than by passing `cap.rights` here.
 ///
 /// The rights an untyped carries are therefore set once at the root and only ever narrow downward:
 /// root (`GRANT`) -> init's `SPLIT` (inherits `GRANT`) -> `CAP_INSERT` into a child (narrowed).

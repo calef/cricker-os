@@ -460,10 +460,12 @@ fn invoke(
                 // fresh mint, so it must honor the derive-never-widens invariant by hand: a process
                 // holding a spend-only (GRANT-less) untyped must not SPLIT itself a GRANT-bearing
                 // child over the same memory and manufacture the right its capability withheld.
-                // Rights narrow monotonically from the delegable root budget down; init holds that
-                // root with GRANT and hands narrowed budgets on. See cap::untyped_cap_rights and
-                // DECISIONS §16.
-                let slot = sched::grant(crate::cap::untyped_cap_rights(child, cap.rights))
+                // `Cap::mint_child` is that inheriting mint, and `split_never_widens_rights`
+                // (crates/caps) proves it never widens, at the one mint site outside `derive` the
+                // caps proofs otherwise miss (milestone 35). Rights narrow monotonically from the
+                // delegable root budget down; init holds that root with GRANT and hands narrowed
+                // budgets on. See DECISIONS §16.
+                let slot = sched::grant(cap.mint_child(crate::cap::Object::Untyped(child)))
                     .map_err(|_| Error::OutOfMemory)?; // cspace full
                 Ok(slot as i64)
             }
