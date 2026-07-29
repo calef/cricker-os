@@ -13,7 +13,7 @@
 //!
 //! ```text
 //!   blocks 0..DIR_BLOCKS   the superblock and directory
-//!     magic   "CRKR0002"   (8 bytes)
+//!     magic   "CRKR0001"   (8 bytes)
 //!     count   u32 LE       how many files
 //!     ...then `count` directory entries, each 32 bytes:
 //!       name        24 bytes, NUL-padded
@@ -26,17 +26,20 @@
 //! The directory is [`DIR_BLOCKS`] blocks, holding the magic, the count, and up to [`MAX_FILES`]
 //! entries. It grew from one block to two at milestone 24: the interactive system plus its demo
 //! programs passed fifteen files. `start_block` is an absolute block number, so a reader never needs
-//! to know `DIR_BLOCKS` to find data; only the writer places it. The magic's version bumped with the
-//! layout, so a stale one-block image fails loudly rather than being misread.
+//! to know `DIR_BLOCKS` to find data; only the writer places it. That is why the magic did not need
+//! to change: a reader (the kernel loader, the EL0 blk driver) is oblivious to where data begins.
 
 #![no_std]
 
 /// The block size, and the alignment of everything.
 pub const BLOCK: usize = 512;
 
-/// Superblock magic. Version in the last four bytes, so a format change is legible. Bumped to
-/// `0002` at milestone 24 when the directory grew from one block to two.
-pub const MAGIC: [u8; 8] = *b"CRKR0002";
+/// Superblock magic. Version in the last four bytes, so a format change is legible. Kept at `0001`
+/// across the milestone-24 two-block-directory change on purpose: `start_block` is absolute, so the
+/// change is invisible to a reader (the kernel loader, and the EL0 blk driver that checks this
+/// magic), and every image regenerates from this one crate. Bumping it would only have broken the
+/// blk driver's hardcoded check, for no reader-visible gain.
+pub const MAGIC: [u8; 8] = *b"CRKR0001";
 
 /// How many blocks the superblock-and-directory occupies. File data starts after it.
 pub const DIR_BLOCKS: usize = 2;
