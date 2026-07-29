@@ -670,6 +670,16 @@ layer); sits behind 28's terminal contract. Effort M.
 
 ### 32. A real filesystem: RedoxFS behind a capability FS server
 
+**Phase 1 built** (the write-capable block path; DECISIONS §22 area, notes/dma.md). **Phase 2
+built, read path** (2026-07-28; DECISIONS §23, notes/fs-server.md): RedoxFS runs confined as a
+three-process userspace service (block server over blk IPC, FS server over the vendored no_std core
+with its own untyped heap, client holding a directory capability), and a client opens the shipped
+`motd` through a granted directory capability and reads it back, proven on aarch64 and riscv64 with
+a host-tool consistency check. The contract is capability-shaped from birth and adds no syscall; the
+error type maps to the wire exactly once; creation stays host-side. **Open item:** on-device writes
+loop inside RedoxFS's allocator commit on bare metal (the logic is host-proven in the fs-server lib
+tests with `DiskMemory`), a redoxfs-internals / heap-interaction investigation.
+
 **Deliverable.** Three pieces. A **write-capable block path** (the driver and the confinement
 validator already speak both directions; the write verbs and tests are the new work). An
 **FS-server component** whose contract is capability-shaped from birth: a file handle is a
