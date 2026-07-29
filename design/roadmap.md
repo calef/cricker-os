@@ -48,6 +48,7 @@ IPC and the MMU invariants are next. This threads through the list rather than b
 | 25 | Cross-OS performance comparison (extends 21) | EL0-measured primitive benchmarks (syscall, context switch, IPC, map, spawn) the lmbench way, so the numbers include the trap the kernel-side benchmarks skip; then line them up against lmbench (Linux, macOS guests) and `sel4bench` (seL4), at a matched virtualization tier, with release builds. Fold in the icount codegen-sensitivity fix. | **turns perf claims into cross-OS numbers**: where does a Rust capability microkernel stand next to Linux, macOS's XNU, and seL4 on the primitives that define an OS. **Largely done**: four EL0 primitives (null syscall, context switch, IPC, page map) on both instruments, a release build path, and the three-way comparison (cricker-os vs Linux-under-HVF vs native macOS) with cricker-os winning null/IPC ~5x. `spawn` landed too (its real prerequisite was never retype, which had already shipped, but **object revocation**, reclaiming a child's TCB/aspace/endpoint so a spawn loop can repeat; that shipped as its own milestone, notes/object-revocation.md, and the EL0 `lat_proc` bench, `spawn_el0`, is in the suite and the committed baseline). **Remaining**: only `sel4bench` (built and booting for qemu-arm-virt, but it times single ops via the PMU cycle counter, which neither QEMU-TCG nor Apple HVF provides, so it is **deferred to real hardware**, the milestone-16 machine, which has a real PMU; this validates our CNTVCT + long-loop design). notes/benchmarks.md |
 | 22 | Trusted init: verify it, and shrink what a broken one can do | Measured/secure boot that checks init before running it; reduce init's authority so a compromise is bounded | **closes the thesis's own soft spot:** init is the privileged *unverified* component the whole system is built by |
 | 23 | A capability-routed component OS with live replacement | Every userspace component (driver, server, app) is a swappable, vendor-shippable unit behind a stable contract; operators replace them live, no reboot. The console hot-swap is instance one; a durable queue-broker decouples component lifecycles (opt-in per channel, for latency) | **the flagship payoff and a product ambition:** competing vendor components, confined by the kernel and swapped live; the verified core is the one fixed thing |
+| 35 | Prove the DMA-confinement boundary (extends 18) | Extract the shadow-ring validator (`validate_and_shadow`) out of `kernel/src/virtio.rs` into a host-testable logic crate and machine-check it: no validated descriptor chain, in either direction and including indirect descriptors and multi-queue, can reference memory outside the driver's granted DMA region. Add the `Untyped::SPLIT` "never widens rights" harness (the one fresh-mint site the caps proof doesn't reach) and confirm the IOMMU domain builder's *maps-exactly-the-grant* property is proved, not just tested. | **closes the one isolation boundary we test instead of prove.** Every other confinement seam (caps, MMU, IPC, generational names) is Kani-proved for all inputs; DMA is attacker-tested only. It is also the boundary that makes "don't trust the driver" true, so the proof belongs here, not on the confined component. **Load-bearing for 16a:** the VisionFive 2 has no IOMMU, so on first silicon this validator is the *sole* DMA confinement, not defence in depth |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -421,6 +422,60 @@ scale wants a kernel that does not allocate.
 **Prior art.** seL4 (Isabelle/HOL refinement, verified C) is the mountain; we took the tractable path
 (bounded model checking, Rust). Verus is the deeper Rust option to revisit if a property needs
 unbounded proof.
+
+**Status (2026-07-28), and where §18 continues as milestone 35.** The proved set is now broad: 12
+crates, ~53 harnesses, covering `caps`, `ipc` (rendezvous, one-shot reply, the collected-sender
+path), the MMU codec on *both* formats (`paging`: VMSAv8-64 and Sv39, level-walk and leaf
+permission separation), generational names (`slots`: a removed name never resolves again), frame
+allocation, region split/destroy arithmetic, ELF parsing, the device-tree reader, ASID allocation,
+and PCI decode. An audit against the TCB (prompted by asking "what should we prove that we
+haven't") found the boundaries are proved with **one glaring exception: the DMA-confinement
+validator is attacker-tested, never proved.** That is milestone 35.
+
+### 35. Prove the DMA-confinement boundary (extends 18)
+
+**The gap, stated precisely.** `validate_and_shadow` (`kernel/src/virtio.rs`) is the shadow-ring
+logic that stops a malicious userspace driver from pointing a device's DMA at memory it was not
+granted. It is the boundary that makes "the kernel confines the driver, so you need not trust the
+driver" *true*. Every other isolation boundary in the system is Kani-proved for all inputs; this
+one is covered by attacker tests that hit specific cases. It is pure bounds-checking over
+descriptor structures, exactly what bounded model checking is good at. The only reason it is not
+already proved is *where it lives*: the proved things are host-compilable pure-logic crates, and
+the validator sits inside the kernel crate.
+
+**Deliverable.**
+
+1. **Extract and prove the validator.** Lift the validation logic into a `crates/`-style
+   host-testable crate (the way `caps`, `ipc`, and `paging` were carved out), then prove the core
+   property: no validated descriptor chain can reference memory outside the driver's granted
+   region. Cover **both directions** (TX device-reads and RX device-writes-into-driver-memory,
+   the milestone 30 addition), **indirect descriptors** (the escape the attacker suite already
+   probes), and **multi-queue** (per-queue block isolation, also milestone 30). The kernel keeps
+   calling the proved logic; the extraction must not change behaviour, held against the green
+   attacker suite.
+2. **The `Untyped::SPLIT` rights harness.** SPLIT mints a child budget at `untyped_cap_rights`, a
+   fresh-mint site *outside* `caps::derive`, so the existing "derive never widens rights" proof
+   does not reach it. It is currently pinned by one kernel test (added with milestone 31's
+   rights-inheritance fix). Add the companion harness, "split never widens rights", beside the
+   existing one, so the "authority never widens" story is proved at *every* mint site.
+3. **Confirm the IOMMU domain property.** `paging`'s codec is proved; verify that the domain
+   builder (`build_identity_domain`, milestone 16b) has a harness for the *maps-exactly-the-grant*
+   property (the device domain maps precisely the granted frames and nothing else), not just a
+   test. It is the sibling of the validator property, on the hardware side.
+
+**Why it is load-bearing now, not later.** Milestone 16a's board, the VisionFive 2, **has no
+IOMMU** (notes/target-hardware.md). We demoted the software validator to "defence in depth" when
+16b landed the emulated IOMMU, but on first real silicon there is no hardware behind it: the
+shadow-ring validator is the *sole* DMA confinement. So this proof should precede or accompany
+16a, not trail the optional reach work. It is the §18 thesis ("spread inward from the capability
+core") reaching the last unproved isolation boundary, and it is the one place the "verified core"
+claim currently rests on testing.
+
+**What stays unproved, on purpose.** The confined components themselves (`smoltcp`, RedoxFS, the
+drivers) are *not* proof targets: the whole point of the capability core is that a confined
+component need not be trusted. Proof effort belongs at the confinement boundary, not on the code
+it confines. Likewise the userspace-only crates (`uheap`, `capsh`, `linedisc`) and scheduler
+placement policy stay host-tested; a bad placement is a performance bug, not a safety hole.
 
 ### 19. Run a real workload
 
