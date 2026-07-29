@@ -4222,10 +4222,16 @@ mod tests {
             assert!(wait_for(|| sched::thread_count() <= baseline));
         }
 
-        // Exact: every frame the four address spaces used comes back, no more and no less.
-        assert_eq!(
-            used(),
-            before,
+        // Exact, but allow the asynchronous reap to settle. Pinning the outlaws with `spawn_on` is a
+        // placement HINT, not a pin (DECISIONS §28): an idle core can steal one before this core runs
+        // it, and then the frame free (finish_switch dropping the address space, after the thread
+        // leaves the table and outside SCHED) lands on that core a beat after `thread_count` already
+        // fell. So wait for `used()` to return to `before` rather than reading it the instant the
+        // count drops. Still exact and still a leak trap: a real leak (the milestone-6 bug) never
+        // gives the frames back, so this wait times out and fails; only cross-core reap lag is
+        // tolerated, not a missing frame.
+        assert!(
+            wait_for(|| used() == before),
             "four user address spaces came and went and {} frames did not come back",
             used() as i64 - before as i64,
         );

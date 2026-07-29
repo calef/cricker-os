@@ -91,6 +91,10 @@ pub unsafe fn force_unlock() {
 
 #[doc(hidden)]
 pub fn _print(args: core::fmt::Arguments) {
+    // Output is forward progress: it keeps the test hang-watchdog's heartbeat alive so a slow but
+    // live test is not mistaken for a deadlock (test builds only; see testing::note_progress).
+    #[cfg(test)]
+    crate::testing::note_progress();
     // Writing to a UART cannot fail in any way we can act on, so drop the Result.
     let _ = CONSOLE.lock().write_fmt(args);
 }

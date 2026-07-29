@@ -1009,21 +1009,32 @@ pub fn irq_route(intid: u32) -> Option<EpId> {
 /// cannot have been holding, because `IrqSafeMutex` masks interrupts for exactly as long as it
 /// is held. See DECISIONS §9.
 pub fn irq_notify(ep: EpId) {
-    let mut guard = SCHED.lock();
-    let sched = guard.as_mut().expect("no scheduler");
+    // A device-IRQ wake is LOAD-AWARE (DECISIONS §28.2), unlike a rendezvous wake, which stays
+    // local. If the woken driver lands on a *remote* core, `wake_load_aware` returns that core so we
+    // can poke it after SCHED is released (the `place_on` discipline: push under the lock, SGI
+    // after). The SGI send from IRQ context is a plain controller write, safe here.
+    let remote = {
+        let mut guard = SCHED.lock();
+        let sched = guard.as_mut().expect("no scheduler");
 
-    // `signal` wakes a waiting receiver or counts the signal; it never blocks or joins a queue. A
-    // stale name (the endpoint an interrupt was bound to has been revoked) is simply dropped: an
-    // interrupt with no live endpoint has nowhere to go, which is not an error.
-    let Some(endpoint) = endpoint_of(sched, ep) else {
-        return;
+        // `signal` wakes a waiting receiver or counts the signal; it never blocks or joins a queue. A
+        // stale name (the endpoint an interrupt was bound to has been revoked) is simply dropped: an
+        // interrupt with no live endpoint has nowhere to go, which is not an error.
+        let Some(endpoint) = endpoint_of(sched, ep) else {
+            return;
+        };
+        if let Some(waiter) = endpoint.signal() {
+            // SAFETY: only live Blocked threads sit on wait queues; reading the id revalidates it
+            // through the table for everything after.
+            let waiter = unsafe { (*waiter).id };
+            sched.threads.get_mut(waiter).unwrap().mailbox = [1, 0, 0, 0, 0];
+            wake_load_aware(sched, waiter)
+        } else {
+            None
+        }
     };
-    if let Some(waiter) = endpoint.signal() {
-        // SAFETY: only live Blocked threads sit on wait queues; reading the id revalidates it
-        // through the table for everything after.
-        let waiter = unsafe { (*waiter).id };
-        sched.threads.get_mut(waiter).unwrap().mailbox = [1, 0, 0, 0, 0];
-        wake(sched, waiter);
+    if let Some(target) = remote {
+        crate::arch::irq::send_reschedule(target);
     }
 }
 
@@ -1071,11 +1082,77 @@ pub fn create_endpoint() -> EpId {
     create_endpoint_from(region).expect("out of endpoints: raise KERNEL_EP_PAGES / MAX_ENDPOINTS")
 }
 
+/// **Which core should a device-IRQ wake place its driver on** (DECISIONS §28.2). The least-loaded
+/// online core, with the current (IRQ-handling) core winning ties: only a *strictly* less-loaded
+/// core displaces it. That is what makes this load-aware without thrashing. A driver that takes a
+/// completion interrupt every request (the block server through a RedoxFS mount) wakes on the same
+/// affinity core each time and, since that core is no more loaded than any other while it is the
+/// only work, stays there. When a core does pile up (the std_net RX path landing beside real work),
+/// a strictly-lighter core pulls the driver off it, so the pipeline stops re-concentrating. A full
+/// scan is fine: device IRQs are not the spawn hot path and `MAX_CPUS` is small.
+fn pick_wake_target() -> usize {
+    let here = cpu::id();
+    let mut best = here;
+    let mut best_load = cpu::current().runnable();
+    for c in 0..crate::smp::online_count() {
+        if c == here {
+            continue;
+        }
+        let load = cpu::of(c).runnable();
+        if load < best_load {
+            best_load = load;
+            best = c;
+        }
+    }
+    best
+}
+
+/// A **device-interrupt** wake (DECISIONS §28.2): load-aware, not local. Where [`wake`] queues a
+/// rendezvous partner on the waker's own core (message in registers, cache warm), an interrupt
+/// carries no such locality, and pinning the driver to the IRQ core re-concentrates the pipeline
+/// (the std_net lesson). So place it on [`pick_wake_target`]'s choice. Returns `Some(target)` when
+/// that is a *remote* core, so the caller sends the reschedule SGI after releasing SCHED; `None`
+/// when it stayed local or the wake was parked. Caller holds the lock.
+fn wake_load_aware(sched: &mut Scheduler, tid: Tid) -> Option<usize> {
+    let t = sched.threads.get_mut(tid)?;
+    if t.state != State::Blocked {
+        return None;
+    }
+    // A device-IRQ wake is forward progress too (test builds only; see testing::note_progress).
+    #[cfg(test)]
+    crate::testing::note_progress();
+    // The same wake-before-switch-out race `wake` guards: a thread still on its CPU has a stale
+    // saved context, so we must not let another core switch into it. Park the wake; its own core's
+    // `finish_switch` completes it locally once the context is saved. A device IRQ in that window is
+    // rare, and one non-load-aware wake is not worth teaching `finish_switch` a placement policy.
+    if t.on_cpu {
+        t.wake_pending = true;
+        return None;
+    }
+    t.state = State::Ready;
+    let ptr: *mut Thread = t;
+    let target = pick_wake_target();
+    if target == cpu::id() {
+        // SAFETY: just Blocked -> Ready, on no queue; SCHED masks interrupts, which with_runq needs.
+        cpu::current().with_runq(|q| unsafe { q.push_back(ptr) });
+        None
+    } else {
+        // Into the target's inbox (place_on keeps the inbox-len mirror under the inbox lock). The
+        // SGI that drains it goes out after SCHED drops, in irq_notify.
+        place_on(target, ptr);
+        Some(target)
+    }
+}
+
 /// Move a blocked thread back to the ready queue. Caller holds the lock.
 fn wake(sched: &mut Scheduler, tid: Tid) {
     if let Some(t) = sched.threads.get_mut(tid)
         && t.state == State::Blocked
     {
+        // A completed rendezvous is forward progress: keep the hang watchdog's heartbeat alive so a
+        // slow-but-live IPC pipeline (std_net) is not read as a deadlock (test builds only).
+        #[cfg(test)]
+        crate::testing::note_progress();
         // **The wake-before-switch-out race** (found by a 2-in-10 test flake; the Blocked twin
         // of the §11 reaper race). A thread marks itself Blocked and releases SCHED, but is
         // still running on its core until schedule() switches away; its saved context is stale
