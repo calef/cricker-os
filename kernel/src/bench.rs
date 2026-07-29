@@ -480,10 +480,11 @@ fn coremark_compute() {
 // deliver and the one no hart-pinned primitive can see.
 //
 // **Why it is NOT on the icount baseline, and never gates.** Two reasons, both structural:
-//   1. It is meaningful only with more than one hart, and the icount instrument pins `-smp 1`. So it
-//      runs ONLY when `online_count() > 1`, i.e. the `--real` (HVF) boot, which the harness already
-//      forbids from `--check`/`--save`. Under icount it is skipped outright, so it never touches
-//      `bench/baseline.txt`.
+//   1. It is meaningful only with more than one hart. The icount instrument pins `-smp 1`, and so
+//      does the default `--real` run (per-core magnitudes; see xtask's `bench`), so it runs ONLY on
+//      the `--real --smp` boot (HVF, 4 harts), which the harness already forbids from
+//      `--check`/`--save`. Everywhere else `online_count()` is 1 and it is skipped outright, so it
+//      never touches `bench/baseline.txt`.
 //   2. Under `-icount` all vCPUs share one virtual clock (again the 2026-07-28 finding), so a
 //      wall-clock throughput number is not even defined there; and TCG serialises vCPUs onto one
 //      host thread, so there is no real parallelism to measure. Only HVF gives each core its own
