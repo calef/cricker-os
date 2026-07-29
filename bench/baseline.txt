@@ -2,14 +2,14 @@
              # Updating this file is a statement that a performance change is intended and
              # understood; do it in the commit that causes the change. Checked by --check, a coarse
              # 10% tripwire (icount counts drift across builds; see notes/benchmarks.md).
-yield_switch 994978 2000
-ipc_rtt 2535604 1000
-call_reply 1876614 1000
-spawn_reap 1769595 64
-map_new 14781 64
-coremark 20941458 256
-null_syscall 427503 20000
-ctx_switch 6308105 5000
-ipc_rtt_el0 21364834 5000
-map_el0 408897 500
-spawn_el0 3132783 100
+yield_switch 995635 2000
+ipc_rtt 922720 1000
+call_reply 963080 1000
+spawn_reap 175890 64
+map_new 15520 64
+coremark 20913678 256
+null_syscall 457705 20000
+ctx_switch 2685272 5000
+ipc_rtt_el0 10101111 5000
+map_el0 419085 500
+spawn_el0 1754438 100
