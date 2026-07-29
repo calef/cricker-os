@@ -3044,6 +3044,7 @@ mod tests {
     /// client is a nonzero entry role of the `netd` binary, so it needs no image of its own.
     const NET_TEST_UDP_DNS: u64 = 1;
     const NET_TEST_TCP_ECHO: u64 = 2;
+    const NET_TEST_TCP_REOPEN: u64 = 3;
     const NET_CLIENT_OK: u64 = 1;
 
     /// Spin the scheduler until `done()`, or give up. Returns whether it happened.
@@ -3828,6 +3829,29 @@ mod tests {
         assert_eq!(
             verdict, NET_CLIENT_OK,
             "the TCP echo round trip over PCIe failed (client code {verdict:#x})",
+        );
+    }
+
+    /// **Regression: reusing a socket id is safe** (the ephemeral-port fix). A client opens a TCP
+    /// socket on id 0, connects to the echo peer, closes it, then reopens the same id and connects
+    /// again. netd derived the local port from the socket id, so the reopen reused the exact port and
+    /// the second connect stalled on a slirp flow that had not cleared; the rotating allocator hands
+    /// the reopen a fresh port, so both connects complete. The client reports OK only if they do.
+    #[test_case]
+    fn a_reopened_socket_id_connects_again_over_tcp() {
+        let report = match virtio_service::start_net_stack(netd_image(), NET_TEST_TCP_REOPEN, false)
+        {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no virtio-net device attached; skipping)");
+                return;
+            }
+        };
+        let verdict = sched::ipc_recv(report)[0];
+        assert_eq!(
+            verdict, NET_CLIENT_OK,
+            "reopening a socket id and connecting again failed (client code {verdict:#x}): the \
+             ephemeral local port is not independent of the socket id",
         );
     }
 
@@ -5111,6 +5135,7 @@ mod riscv_virtio_tests {
     /// a nonzero entry role of the `netd` binary, so it needs no image of its own.
     const NET_TEST_UDP_DNS: u64 = 1;
     const NET_TEST_TCP_ECHO: u64 = 2;
+    const NET_TEST_TCP_REOPEN: u64 = 3;
     const NET_CLIENT_OK: u64 = 1;
 
     /// Spin the scheduler until `done()`, or give up. The aarch64 module's helper, re-declared
@@ -5390,6 +5415,25 @@ mod riscv_virtio_tests {
         assert_eq!(
             verdict, NET_CLIENT_OK,
             "the TCP echo round trip over PCIe failed (client code {verdict:#x})",
+        );
+    }
+
+    /// Regression on the second ISA: reopening a socket id and connecting again completes (the
+    /// ephemeral-port fix). See the aarch64 twin for the finding.
+    #[test_case]
+    fn a_reopened_socket_id_connects_again_over_tcp() {
+        let report = match virtio_service::start_net_stack(netd_image(), NET_TEST_TCP_REOPEN, false)
+        {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no virtio-net device attached; skipping)");
+                return;
+            }
+        };
+        let verdict = sched::ipc_recv(report)[0];
+        assert_eq!(
+            verdict, NET_CLIENT_OK,
+            "reopening a socket id and connecting again failed (client code {verdict:#x})",
         );
     }
 

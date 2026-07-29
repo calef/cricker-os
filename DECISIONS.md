@@ -1507,6 +1507,44 @@ deferred, not rejected: it widens the syscall surface for a consumer that does n
 milestone 22's supervision work (fault endpoints) is the adjacent primitive it should be designed
 beside. Tracked in Open design ideas above; the trigger to revisit is written there.
 
+### Implementation amendment (built): two primitives forced the shape
+
+Building it (both ISAs) hit two facts about the primitives that refine, without changing, the
+two-tier decision. Both were confirmed with the architect before building; recorded here because
+the reasoning is the deliverable.
+
+**The cooperative signal is a shared-memory flag, not an endpoint delivery.** The design imagined an
+async notification on an endpoint the foreground job watches. But the job the user most wants to
+interrupt is *running a computation*, and a running program cannot watch an endpoint: there is no
+non-blocking receive, and a blocking one would stall the very work being interrupted. So the shell
+mints a per-job shared frame (`capsh::jobframe`), maps it into the child, and writes an interrupt
+word the child reads with a plain load *between work units*. This is "control by shared memory"
+where the model usually says "control by message", and it is honest about why: the message form
+needs a notification primitive that does not exist yet. It is granted like any capability, through
+the manifest's `interruptible` endowment, so the authority story is unchanged: a program the shell
+did not endow a job frame cannot be signaled, and cannot signal back.
+
+**The forcible tier is a plain `Untyped::DESTROY` on the child's region, and that required the §16
+amendment.** The shell builds a supervised child *entirely from an untyped it split from its own
+budget and delegated to init*, so the whole child, aspace and TCB and code and stack, lives in a
+region the shell holds. Tearing it down is `DESTROY` on that region. The first instinct, faulting
+the child by revoking a frame it touches, was rejected: a genuine runaway (a bare `loop {}`) touches
+nothing revocable, so frame-revocation cannot reach it. Instead `DESTROY` learned to force-kill a
+live resident thread (the §16 amendment): a refused reclaim arms the kill, each core converts its
+own killed thread to a corpse at the next preemption, and the owner retries `DESTROY` until it
+succeeds. The shell's watch loop retries exactly so. A pure `loop {}` spinner is now torn down on
+the second `^C` on both ISAs.
+
+**The shell learns of `^C` by polling, deliberately (wait A).** The shell must watch the job and the
+`^C` at once, and with only blocking primitives it cannot block on both. It busy-polls `termd`'s new
+`OP_INTRCOUNT` (an immediate reply with the running `^C` count) with `yield` between, driving the
+escalation from the count's advance. The escalation policy (first `^C` cooperative, a second `^C` or
+a grace-window timeout forcible) is host-tested in `capsh::Escalation`. Holding `^C` routing in the
+shell, not `termd`, is the §24 premise: job control is the shell's knowledge, and `termd` stays a
+terminal. The clean blocking form waits for the notification primitive milestone 23's latency
+ladder forecasts; the shared flag and the poll are the honest interim, not the destination. See
+notes/grant-expression.md (the interrupt grant) and notes/terminal-contract.md (the flow).
+
 ## 25. Socket identity: a socket id in phase one, minted endpoints as the tracked later step
 
 **Decided 2026-07-28 (Chris), resolving the milestone 30 piece-3 fork (notes/net.md).** A process

@@ -31,9 +31,18 @@
 //! the shell reads exactly once: a well-formed spawn yields the child's word, a failed one yields
 //! [`SPAWN_FAILED`]. One reader, one word, no ambiguity.
 
-/// Build the three request words from a resolved endowment's parts.
-pub fn request(prog_id: u64, arg: u64, mem_pages: u64) -> (u64, u64, u64) {
-    (prog_id, arg, mem_pages)
+/// The interruptible bit, packed into the high half of the page-count word so one `SEND` still
+/// carries the whole request. `mem_pages` is a small count (budgeter's ceiling is 64), so the low
+/// 32 bits hold it and this bit rides above.
+const INTERRUPTIBLE_BIT: u64 = 1 << 32;
+
+/// Build the three request words from a resolved endowment's parts. `interruptible` tells init this
+/// is a foreground job the shell will supervise: two capabilities lead the delegation (a job untyped
+/// the child is built from so the shell can tear it down, then a shared job frame), before any
+/// `--mem` untyped.
+pub fn request(prog_id: u64, arg: u64, mem_pages: u64, interruptible: bool) -> (u64, u64, u64) {
+    let w2 = (mem_pages & 0xffff_ffff) | if interruptible { INTERRUPTIBLE_BIT } else { 0 };
+    (prog_id, arg, w2)
 }
 
 /// The program id from a received request (word 0).
@@ -47,9 +56,16 @@ pub fn arg(w1: u64) -> u64 {
 }
 
 /// The memory-grant page count from a received request (word 2). Non-zero means one delegated
-/// untyped capability follows over `SEND_CAP` / `RECV_CAP`.
+/// untyped capability follows the interrupt caps (if any) over `SEND_CAP` / `RECV_CAP`.
 pub fn mem_pages(w2: u64) -> u64 {
-    w2
+    w2 & 0xffff_ffff
+}
+
+/// Whether this is a supervised foreground job (word 2's high bit). When set, the delegation leads
+/// with two caps: a job untyped (init builds the child from it; the shell keeps it to `DESTROY`) and
+/// a shared job frame (the cooperative interrupt flag and the child's status).
+pub fn interruptible(w2: u64) -> bool {
+    w2 & INTERRUPTIBLE_BIT != 0
 }
 
 /// The data word carried alongside the delegated untyped in the `SEND_CAP`. It is not load-bearing
@@ -62,21 +78,36 @@ pub const CAP_TAG: u64 = 0x6361_705f; // "cap_" little-endian-ish marker
 /// from any answer a real program would report (no phase-1 program returns `u64::MAX`).
 pub const SPAWN_FAILED: u64 = u64::MAX;
 
+/// The ack init sends on the result endpoint when a **supervised** (interruptible) child started
+/// cleanly. An interruptible child reports its own progress and exit through the shared job frame,
+/// not the result endpoint, so init sends this once as the go-ahead: the shell reads it, then begins
+/// watching the job frame. `0` is distinct from [`SPAWN_FAILED`].
+pub const SPAWN_OK: u64 = 0;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn request_round_trips() {
-        let (w0, w1, w2) = request(1, 9, 16);
+        let (w0, w1, w2) = request(1, 9, 16, false);
         assert_eq!(prog_id(w0), 1);
         assert_eq!(arg(w1), 9);
         assert_eq!(mem_pages(w2), 16);
+        assert!(!interruptible(w2));
+    }
+
+    #[test]
+    fn interruptible_bit_survives_a_zero_page_count() {
+        // The interrupt demonstrators take no --mem, so the flag must ride independent of the count.
+        let (_, _, w2) = request(2, 0, 0, true);
+        assert_eq!(mem_pages(w2), 0);
+        assert!(interruptible(w2));
     }
 
     #[test]
     fn no_grant_is_zero_pages() {
-        let (_, _, w2) = request(0, 5, 0);
+        let (_, _, w2) = request(0, 5, 0, false);
         assert_eq!(mem_pages(w2), 0);
     }
 }

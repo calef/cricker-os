@@ -36,6 +36,7 @@ const UNTYPED: u64 = 2;
 /// Test selectors (the entry role), and the success word the kernel test asserts.
 pub const TEST_UDP_DNS: u64 = 1;
 pub const TEST_TCP_ECHO: u64 = 2;
+pub const TEST_TCP_REOPEN: u64 = 3;
 const OK: u64 = 1;
 
 /// Where the client maps its shared frame.
@@ -198,11 +199,43 @@ fn tcp_echo() -> ! {
     done(OK);
 }
 
+/// **Regression: reusing a socket id is safe.** Open a TCP socket on id 0, connect to the echo peer,
+/// close it, then reopen the *same* id and connect again. Before netd assigned ephemeral local ports
+/// independent of the socket id, the reopen reused the exact local port, and the second connect on a
+/// 4-tuple whose slirp flow had not yet cleared stalled netd's bounded poll forever (found by the
+/// std::net PAL, notes/net.md). With the rotating allocator the reopen gets a fresh port, so both
+/// connects complete.
+fn tcp_reopen() -> ! {
+    attach_frame(0);
+    set_dst(ECHO_IP, ECHO_PORT);
+
+    // First connection on socket id 0.
+    if call(STACK, req(OP_OPEN_TCP, 0), 0).0 != REP_OK {
+        done(0xE030);
+    }
+    if call(STACK, req(OP_CONNECT, 0), 0).0 != CONNECT_ESTABLISHED {
+        done(0xE031);
+    }
+    let _ = call(STACK, req(OP_CLOSE, 0), 0);
+
+    // Reopen the SAME socket id and connect again. This is the exact path that hung before the fix.
+    if call(STACK, req(OP_OPEN_TCP, 0), 0).0 != REP_OK {
+        done(0xE032);
+    }
+    if call(STACK, req(OP_CONNECT, 0), 0).0 != CONNECT_ESTABLISHED {
+        done(0xE033);
+    }
+    let _ = call(STACK, req(OP_CLOSE, 0), 0);
+
+    done(OK);
+}
+
 /// Run the selected client exchange. Entered from `netd`'s `_start` when the entry role is nonzero.
 pub fn run(test: u64) -> ! {
     match test {
         TEST_UDP_DNS => udp_dns(),
         TEST_TCP_ECHO => tcp_echo(),
+        TEST_TCP_REOPEN => tcp_reopen(),
         _ => done(0xE0FF),
     }
 }

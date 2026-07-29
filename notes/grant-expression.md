@@ -125,6 +125,26 @@ endpoint grants concretely; the others share the same `SEND_CAP`-to-init path.
   design fork, not built here. The manifest is the userspace stand-in, and for the shell's purpose
   (what would this command grant?) it is the right answer anyway: the authority is the command, and
   the command is on the screen.
-- **No interrupt routing / Ctrl-C to the foreground child.** The design is decided (DECISIONS §24,
-  two-tier and shell-held), but its implementation is scheduled after this milestone merges. The
-  shell still handles the terminal's `FLAG_INTERRUPTED` on its own read, as milestone 28 left it.
+## The interrupt grant (milestone 24)
+
+A foreground job the user can `^C` is another grant the command line expresses, and it flows the
+same way: the manifest marks a program `interruptible`, and the shell endows a supervised job with
+what the two-tier interrupt (DECISIONS §24) needs, and nothing more.
+
+- **A shared job frame** the shell mints per job (`capsh::jobframe`) and maps into the child. The
+  cooperative signal is a word in it: on the first `^C` the shell writes the interrupt flag, and a
+  cooperative program reads it between work units and exits cleanly. Shared memory, not an endpoint,
+  because a running computation cannot poll an endpoint (no non-blocking receive); this is the one
+  place control rides in memory rather than a message, and the note says why.
+- **A job untyped** the shell splits from its own budget and delegates for init to build the *whole*
+  child from, so the child's region is one the shell holds. That is what makes the forcible tier a
+  capability the shell already has: a second `^C` tears the job down with `Untyped::DESTROY` on that
+  region (which force-kills the resident thread, §16 amendment), and even a runaway that ignores the
+  cooperative flag ends and the prompt returns.
+
+A program the command did not run as a supervised job holds no job frame and no reclaimable region,
+so it cannot be signaled or torn down through this path; the authority is exactly the endowment, as
+everywhere else. The escalation policy (how many `^C`, the grace timeout) is the shell's, host-tested
+in `capsh::Escalation`. The two demonstrators are `heeder` (heeds the cooperative `^C`) and `spinner`
+(a bare loop only the forcible tier ends). See DECISIONS §24's implementation amendment and
+notes/terminal-contract.md's `OP_INTRCOUNT`.

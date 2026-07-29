@@ -12,53 +12,43 @@
 //! # The layout
 //!
 //! ```text
-//!   block 0..          the directory (as many 512-byte blocks as the entries need)
+//!   blocks 0..DIR_BLOCKS   the superblock and directory
 //!     magic   "CRKR0001"   (8 bytes)
 //!     count   u32 LE       how many files
 //!     ...then `count` directory entries, each 32 bytes:
 //!       name        24 bytes, NUL-padded
-//!       start_block u32 LE  where the file's data begins
+//!       start_block u32 LE  where the file's data begins (an absolute block number)
 //!       len         u32 LE  the file's length in bytes
 //!
-//!   then                file data, each file block-aligned, starting at the block after the
-//!                       directory (block 1 for the common one-block directory)
+//!   blocks DIR_BLOCKS..     file data, each file block-aligned
 //! ```
 //!
-//! Up to fifteen entries fit one 512-byte block; more spill into a second, and file data starts
-//! after the directory rather than at a fixed block 1. So an image at or under fifteen files is
-//! byte-identical to the original single-block format, and a larger one (the riscv initrd, whose
-//! per-role driver binaries push it past fifteen) just pushes its data out by a block.
+//! The directory is [`DIR_BLOCKS`] blocks, holding the magic, the count, and up to [`MAX_FILES`]
+//! entries. It grew from one block to two at milestone 24: the interactive system plus its demo
+//! programs passed fifteen files. `start_block` is an absolute block number, so a reader never needs
+//! to know `DIR_BLOCKS` to find data; only the writer places it. That is why the magic did not need
+//! to change: a reader (the kernel loader, the EL0 blk driver) is oblivious to where data begins.
 
 #![no_std]
 
 /// The block size, and the alignment of everything.
 pub const BLOCK: usize = 512;
 
-/// Superblock magic. Version in the last four bytes, so a format change is legible.
+/// Superblock magic. Version in the last four bytes, so a format change is legible. Kept at `0001`
+/// across the milestone-24 two-block-directory change on purpose: `start_block` is absolute, so the
+/// change is invisible to a reader (the kernel loader, and the EL0 blk driver that checks this
+/// magic), and every image regenerates from this one crate. Bumping it would only have broken the
+/// blk driver's hardcoded check, for no reader-visible gain.
 pub const MAGIC: [u8; 8] = *b"CRKR0001";
+
+/// How many blocks the superblock-and-directory occupies. File data starts after it.
+pub const DIR_BLOCKS: usize = 2;
 
 const NAME_LEN: usize = 24;
 const ENTRY_LEN: usize = 32;
-
-/// The most files an image may hold. The directory (the magic, the count, then `count` 32-byte
-/// entries) now spans **as many blocks as it needs**, and file data starts at the block after it,
-/// so the count is no longer capped at the fifteen entries that fit one 512-byte block. Two blocks
-/// (31 files) is ample for every image this kernel builds: the largest is the riscv initrd, whose
-/// per-role driver binaries (aarch64 folds them into one `hello`) push it to ~17. Raising this is a
-/// one-line change, paid in the parsed [`Fs`]'s on-stack entry array. Nothing persists a crickerfs
-/// image across a rebuild (every initrd and the crickerfs disk are regenerated), so the multi-block
-/// directory needs no on-disk migration; and for any image at or under the old fifteen-file cap the
-/// layout is byte-identical (a one-block directory, data at block 1), so nothing regressed.
-const MAX_FILES: usize = 31;
-
-/// How many 512-byte blocks the directory occupies for `count` files. File data starts at the block
-/// after it. One block for up to fifteen files, which is what keeps small images byte-identical to
-/// the pre-multi-block format.
-const fn dir_blocks(count: usize) -> usize {
-    // `12 + count*ENTRY_LEN` is at least 12, so `div_ceil` is at least 1; no `.max(1)` needed (and
-    // `usize::max` is not const on this toolchain).
-    (12 + count * ENTRY_LEN).div_ceil(BLOCK)
-}
+/// The most files an image can hold: the directory blocks, past the 12-byte header, in 32-byte
+/// entries. Two blocks give 31, comfortably past the interactive system's file count.
+pub const MAX_FILES: usize = (DIR_BLOCKS * BLOCK - 12) / ENTRY_LEN;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -66,7 +56,7 @@ pub enum Error {
     TooManyFiles,
     /// A file's data runs past the end of the image.
     OutOfBounds,
-    /// The image is smaller than one block.
+    /// The image is smaller than the directory span (`DIR_BLOCKS` blocks).
     Truncated,
 }
 
@@ -99,7 +89,9 @@ pub struct Fs<'a> {
 
 impl<'a> Fs<'a> {
     pub fn parse(image: &'a [u8]) -> Result<Self, Error> {
-        if image.len() < BLOCK {
+        // The directory blocks must be present before any entry offset (up to 12 + MAX_FILES*32,
+        // which sits inside DIR_BLOCKS) is read; this guard is what makes those reads sound.
+        if image.len() < DIR_BLOCKS * BLOCK {
             return Err(Error::Truncated);
         }
         if image[0..8] != MAGIC {
@@ -109,11 +101,6 @@ impl<'a> Fs<'a> {
         let count = u32le(image, 8) as usize;
         if count > MAX_FILES {
             return Err(Error::TooManyFiles);
-        }
-        // The directory may now span more than one block, so make sure it fits the image before
-        // indexing entries (a corrupt count must not read past the buffer).
-        if 12 + count * ENTRY_LEN > image.len() {
-            return Err(Error::OutOfBounds);
         }
 
         let mut entries = [Entry {
@@ -185,7 +172,7 @@ pub fn write_image(files: &[(&str, &[u8])], out: &mut [u8]) -> Result<usize, Err
     out[0..8].copy_from_slice(&MAGIC);
     out[8..12].copy_from_slice(&(files.len() as u32).to_le_bytes());
 
-    let mut block = dir_blocks(files.len()) as u32; // data starts after the (multi-block) directory
+    let mut block = DIR_BLOCKS as u32; // data starts after the superblock and directory
     for (i, (name, data)) in files.iter().enumerate() {
         let off = 12 + i * ENTRY_LEN;
         let n = name.len().min(NAME_LEN);
@@ -210,7 +197,7 @@ pub fn write_image(files: &[(&str, &[u8])], out: &mut [u8]) -> Result<usize, Err
 
 /// How many bytes an image holding `files` needs.
 pub fn image_size(files: &[(&str, &[u8])]) -> usize {
-    let mut blocks = dir_blocks(files.len());
+    let mut blocks = DIR_BLOCKS;
     for (_, data) in files {
         blocks += data.len().div_ceil(BLOCK).max(1);
     }
@@ -248,15 +235,17 @@ mod tests {
         let fs = Fs::parse(&img).unwrap();
         let after = fs.entries().iter().find(|e| e.name_eq("after")).unwrap();
         assert_eq!(
-            after.start_block, 3,
-            "big took blocks 1-2, after should be at 3"
+            after.start_block as usize,
+            DIR_BLOCKS + 2,
+            "big took the two blocks after the directory, after should follow"
         );
         assert_eq!(fs.read("big").unwrap().len(), 600);
     }
 
     #[test]
     fn bad_magic_is_refused() {
-        let img = vec![0u8; BLOCK];
+        // A full-directory-sized image so the truncation guard passes and the magic check rejects it.
+        let img = vec![0u8; DIR_BLOCKS * BLOCK];
         assert_eq!(Fs::parse(&img).err(), Some(Error::BadMagic));
     }
 
@@ -267,10 +256,10 @@ mod tests {
 
     #[test]
     fn a_file_pointing_past_the_end_is_refused() {
-        let mut img = vec![0u8; BLOCK];
+        let mut img = vec![0u8; DIR_BLOCKS * BLOCK];
         img[0..8].copy_from_slice(&MAGIC);
         img[8..12].copy_from_slice(&1u32.to_le_bytes());
-        // one entry, start_block 100 (way past a one-block image)
+        // one entry, start_block 100 (way past the image)
         let off = 12;
         img[off + NAME_LEN..off + NAME_LEN + 4].copy_from_slice(&100u32.to_le_bytes());
         img[off + NAME_LEN + 4..off + NAME_LEN + 8].copy_from_slice(&1u32.to_le_bytes());
@@ -288,10 +277,27 @@ mod tests {
         );
     }
 
-    /// **A directory that spills past one block round-trips.** More than fifteen files forces the
-    /// directory into a second block and file data to start after it; every file must still read
-    /// back byte-for-byte. This is the case the riscv initrd hit (its per-role driver binaries push
-    /// it past fifteen), and the regression guard for the multi-block directory.
+    #[test]
+    fn a_full_directory_round_trips() {
+        // Exactly MAX_FILES files must write and parse back, so the two-block directory's last entry
+        // (offset 12 + (MAX_FILES-1)*32) is honored, not silently past the header's reach.
+        let data: &[u8] = b"z";
+        let names: vec::Vec<std::string::String> =
+            (0..MAX_FILES).map(|i| std::format!("f{i}")).collect();
+        let files: vec::Vec<(&str, &[u8])> = names.iter().map(|n| (n.as_str(), data)).collect();
+        let mut img = vec![0u8; image_size(&files)];
+        write_image(&files, &mut img).unwrap();
+        let fs = Fs::parse(&img).unwrap();
+        assert_eq!(fs.len(), MAX_FILES);
+        assert_eq!(fs.read(&names[MAX_FILES - 1]), Some(data));
+    }
+
+    /// **A directory that spills past one block round-trips, every file with distinct contents.**
+    /// `a_full_directory_round_trips` above proves the capacity boundary but writes identical bytes
+    /// to every file, so a directory that mixed up `start_block`s would still read the same byte back
+    /// and pass. This one gives every file its own contents and name and checks each reads back
+    /// byte-for-byte, the integrity guard for the multi-block directory. It is the case the riscv
+    /// initrd hit (its per-role driver binaries push it past fifteen).
     #[test]
     fn a_directory_spanning_two_blocks_round_trips() {
         // Twenty files, each with distinct contents longer than a name so a shifted or truncated
@@ -342,16 +348,13 @@ mod tests {
 ///
 /// - the **validation-implies-safe-read** arithmetic, for every entry value and image length
 ///   (no symbolic arrays; this is the kernel-facing guarantee), and
-/// - the **truncation guard** for every under-one-block image.
+/// - the **truncation guard** for every image under the directory span.
 ///
-/// What is deliberately NOT proved: whole-parse totality (the wall above; the in-bounds indexing it
-/// would add is `u32le`/`copy_from_slice` over the directory, at offsets below `12 + count *
-/// ENTRY_LEN`, which the directory-fits guard (`12 + count * ENTRY_LEN > image.len()` returns
-/// `OutOfBounds`) bounds inside the image). The directory may now span more than one block, so that
-/// explicit guard, not the one-block `image.len() < BLOCK` truncation guard, is what makes the
-/// directory reads sound; the truncation guard still refuses the degenerate under-one-block image.
-/// Also not proved: `name_str` (its panic surface is a slice bounded by `position()`, and its UTF-8
-/// half is `core`'s validator, which costs CBMC minutes to re-prove and is trusted everywhere else).
+/// What is deliberately NOT proved: whole-parse totality (the wall above; the in-bounds
+/// indexing it would add is `u32le`/`copy_from_slice` at offsets statically under one block,
+/// which the `image.len() < DIR_BLOCKS * BLOCK` guard, proved below, makes sound), and `name_str` (its panic
+/// surface is a slice bounded by `position()`, and its UTF-8 half is `core`'s validator, which
+/// costs CBMC minutes to re-prove and is trusted everywhere else in the system).
 #[cfg(kani)]
 mod verification {
     use super::*;
@@ -384,11 +387,12 @@ mod verification {
         assert!(r_end <= image_len, "read could index past the image");
     }
 
-    /// **A short image is always `Truncated`, never indexed**: for any image under one block,
-    /// parse refuses before touching a byte past the length check.
+    /// **A short image is always `Truncated`, never indexed**: for any image under the directory
+    /// span, parse refuses before touching a byte past the length check (which is what keeps the
+    /// entry reads, up to offset 12 + MAX_FILES*32 inside DIR_BLOCKS, in bounds).
     #[kani::proof]
     fn a_short_image_is_refused_not_indexed() {
-        const SHORT: usize = BLOCK - 1;
+        const SHORT: usize = DIR_BLOCKS * BLOCK - 1;
         let image: [u8; SHORT] = kani::any();
         assert_eq!(Fs::parse(&image).err(), Some(Error::Truncated));
     }

@@ -70,6 +70,10 @@ pub extern "C" fn _start(_x0: u64, _x1: u64, _x2: u64) -> ! {
     // A parked READLINE: the slot holding the caller's one-shot Reply capability. The caller
     // stays blocked (that is CALL's contract) while we serve everyone else.
     let mut pending: Option<u64> = None;
+    // How many ^C we have seen since boot. The shell reads this (OP_INTRCOUNT) to sense interrupts
+    // while a foreground job runs and no read is parked to fail (milestone 24, DECISIONS §24). A
+    // monotonic counter, so the shell learns of a ^C by the count advancing, never missing one.
+    let mut intr_count: u64 = 0;
 
     loop {
         let (w0, slot, w1) = recv_cap(TERM);
@@ -87,9 +91,12 @@ pub extern "C" fn _start(_x0: u64, _x1: u64, _x2: u64) -> ! {
                         Event::Line => queue.push(disc.line(), 0, &mut con),
                         Event::Eof => queue.push(&[], proto::FLAG_EOF, &mut con),
                         Event::Interrupt => {
-                            // ^C: the discipline discarded the edit line; we discard the
-                            // type-ahead and fail a pending read. Routing the interrupt to the
-                            // foreground process is design/interrupt-routing.md, not built here.
+                            // ^C: the discipline discarded the edit line. We discard the type-ahead
+                            // and fail a pending read (case 1, the shell is at the prompt). And we
+                            // bump the interrupt count, which the shell polls (OP_INTRCOUNT) when a
+                            // foreground job is running and no read is parked (case 2, milestone 24,
+                            // DECISIONS §24). One ^C, both effects; whichever the shell is watching.
+                            intr_count = intr_count.wrapping_add(1);
                             queue.clear();
                             if let Some(p) = pending.take() {
                                 reply(p, 0, proto::FLAG_INTERRUPTED);
@@ -131,6 +138,11 @@ pub extern "C" fn _start(_x0: u64, _x1: u64, _x2: u64) -> ! {
                 con.flush();
                 pending = Some(slot);
                 deliver(&mut queue, &mut pending);
+            }
+            proto::OP_INTRCOUNT => {
+                // The shell's ^C sensor: reply immediately with the running count. Never blocks, so
+                // the shell can busy-poll it while watching a foreground job (milestone 24).
+                reply(slot, intr_count, 0);
             }
             _ => {
                 reply(slot, proto::BAD_REQUEST, 0);

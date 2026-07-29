@@ -59,6 +59,13 @@ pub mod proto {
     /// Input driver → terminal: `count` (1..=8) raw wire bytes, packed little-endian in the
     /// second word. Replied immediately (r0 = 0); the rendezvous is the flow control.
     pub const OP_BYTES: u64 = 3;
+    /// Application → terminal: how many `^C` has the terminal seen since boot? Replied immediately
+    /// (r0 = the running count). This is the shell's `^C` sensor while a foreground job runs and no
+    /// read is parked to fail: the shell polls this and drives its two-tier interrupt escalation
+    /// from the count's advance (milestone 24, DECISIONS §24). Deliberately a poll, not a delivered
+    /// signal: there is no non-blocking receive, so a busy-poll with `yield` is how the shell watches
+    /// two things (the job and `^C`) at once until the blocking notification primitive arrives.
+    pub const OP_INTRCOUNT: u64 = 4;
 
     /// Pack a request's first word from an opcode and a length/count.
     pub const fn req(op: u64, len: u64) -> u64 {

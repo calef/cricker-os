@@ -574,6 +574,10 @@ fn initrd_riscv() -> bool {
             "budgeter",
             "--bin",
             "fsclient",
+            "--bin",
+            "heeder",
+            "--bin",
+            "spinner",
             "--target",
             RISCV_TARGET,
         ],
@@ -606,6 +610,8 @@ fn initrd_riscv() -> bool {
         ("netd", "netd"),
         ("budgeter", "budgeter"),
         ("fsclient", "fsclient"),
+        ("heeder", "heeder"),
+        ("spinner", "spinner"),
     ];
     let mut blobs: Vec<(&str, Vec<u8>)> = Vec::new();
     for &(archive_name, bin_name) in entries {
@@ -738,6 +744,20 @@ fn mkinitrd() -> bool {
             return false;
         }
     };
+    let heeder = match std::fs::read(bin_elf("heeder")) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("heeder"));
+            return false;
+        }
+    };
+    let spinner = match std::fs::read(bin_elf("spinner")) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("spinner"));
+            return false;
+        }
+    };
     // "init" is the hello binary (the kernel loads it, init re-enters it at its remaining roles);
     // "worker", "console", "input", "shell" are the split system binaries (19f.2-5), "termd" is
     // the line discipline between them (milestone 28), "coremark" is the compute workload (19e),
@@ -757,6 +777,8 @@ fn mkinitrd() -> bool {
         ("netd", &netd),
         ("budgeter", &budgeter),
         ("fsclient", &fsclient),
+        ("heeder", &heeder),
+        ("spinner", &spinner),
     ];
     // The std demo (milestone 27) rides along IFF it has been built (`cargo xtask user-std`, which
     // `test` runs). It builds through a separate toolchain and target, so an interactive `run` that
