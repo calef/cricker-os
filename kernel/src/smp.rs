@@ -338,4 +338,82 @@ mod tests {
         // Let them all finish, so they are reaped rather than left spinning.
         RELEASE.store(true, Ordering::Relaxed);
     }
+
+    /// **A kernel thread that migrates between harts keeps a per-CPU pointer that names the hart it
+    /// is actually on** (DECISIONS §28; the RISC-V `trap.s` S-mode `tp` fix).
+    ///
+    /// RISC-V keeps the kernel per-CPU pointer in `tp`, a general register the trap frame saves and
+    /// restores. A kernel thread preempted on one hart carries `tp = &percpu[origin]` in its frame;
+    /// when an idle hart steals it, it used to resume through `trap_return` with that stale `tp` and
+    /// then read, and corrupt, the origin hart's scheduler state (its idle thread was marked
+    /// `Finished`, and that hart's next `schedule()` panicked "the last thread exited"). aarch64 never
+    /// had the bug: its per-CPU pointer is `TPIDR_EL1`, a system register the frame never carries, so
+    /// `percpu_matches_hart` there is a constant `true` and this test is a no-op.
+    ///
+    /// This drives exactly the corrupting motion: waves of cpu-bound workers, each alive long enough
+    /// (several 100 Hz ticks) to be preempted and so to acquire a saved frame, and more of them than
+    /// cores so that as the early finishers drain their harts to idle, those harts steal the still-
+    /// running, already-preempted workers, migrating a framed kernel thread across harts. Every spin,
+    /// each worker re-checks that `tp` still names the hart it runs on; one false reading is the bug.
+    /// Pre-fix it trips within the first wave on RISC-V.
+    #[test_case]
+    fn a_migrated_kernel_thread_keeps_its_hart_pointer() {
+        use core::sync::atomic::AtomicUsize;
+        static BAD: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+        static DONE: AtomicUsize = AtomicUsize::new(0);
+        BAD.store(false, Ordering::Relaxed);
+        DONE.store(0, Ordering::Relaxed);
+
+        // ~40 ms per worker: at 100 Hz that is several preemption ticks, so a worker is certain to be
+        // preempted (and thus stealable with a live frame) before it finishes.
+        let life = crate::arch::timer::frequency() / 25;
+        let n = online_count();
+        let mut total = 0usize;
+
+        for _wave in 0..6 {
+            for _ in 0..(n * 3) {
+                let spawned = crate::sched::spawn(move || {
+                    let end = crate::arch::timer::now() + life;
+                    while crate::arch::timer::now() < end {
+                        if !crate::arch::percpu_matches_hart() {
+                            BAD.store(true, Ordering::Relaxed);
+                        }
+                        core::hint::spin_loop();
+                    }
+                    DONE.fetch_add(1, Ordering::Relaxed);
+                });
+                if spawned.is_some() {
+                    total += 1;
+                } else {
+                    // Thread table momentarily full (a prior wave still draining); stop adding and let
+                    // it drain below. Not a failure: we still have plenty of migration in flight.
+                    break;
+                }
+            }
+
+            // Drain this wave, checking the invariant throughout. Time-based: an idle hart's yields
+            // return at once under §28, so a fixed spin count would elapse in no time.
+            let deadline = crate::arch::timer::now() + 2 * crate::arch::timer::frequency();
+            while DONE.load(Ordering::Relaxed) < total {
+                assert!(
+                    !BAD.load(Ordering::Relaxed),
+                    "a migrated kernel thread read a per-CPU pointer for the WRONG hart: a stale tp \
+                     rode a hart migration (DECISIONS §28; trap.s S-mode tp handling)",
+                );
+                assert!(
+                    crate::arch::timer::now() < deadline,
+                    "migration workers never drained ({}/{} done)",
+                    DONE.load(Ordering::Relaxed),
+                    total,
+                );
+                crate::sched::yield_now();
+            }
+        }
+
+        assert!(
+            !BAD.load(Ordering::Relaxed),
+            "a migrated kernel thread read a per-CPU pointer for the WRONG hart (stale tp across a \
+             hart migration)",
+        );
+    }
 }

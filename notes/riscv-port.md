@@ -117,6 +117,41 @@ Finding these is the point; each gets pushed under `arch/`.
 - **Paging:** **Sv39** (three-level, 39-bit VA) to start, `satp` holding the root PPN + mode. The
   high-half direct map uses Sv39's top VA range (sign-extended); `KERNEL_VA_BASE` is chosen to fit it.
 
+## The per-hart `tp` hazard: a preempted kernel thread must not carry its origin hart's pointer
+
+`tp` being a *general register* (line above), not a system register, is the one place the "clean
+different" bites. `TPIDR_EL1` is banked per core and no thread ever saves or restores it; a thread
+that migrates from one aarch64 core to another simply reads whatever `TPIDR_EL1` the destination core
+set at boot. RISC-V has no such register. The kernel per-CPU pointer lives in `tp`, and the trap
+entry saves the full GPR set, `tp` included (`x[4]`), because a trap from U-mode arrives with the
+*user's* `tp` and the frame has to preserve it.
+
+That save is correct. The naive *restore* is not. `trap_return` originally reloaded `x[4]`
+unconditionally, which is right for a return to U-mode (the user owns `tp`) and was harmless for a
+kernel thread as long as a kernel thread always resumed on the hart it was preempted on. DECISIONS
+§28 broke that assumption: idle harts now steal runnable threads, so a kernel thread preempted on
+hart A (its frame holding `tp = &percpu[A]`) can resume on hart B. The unconditional restore then
+loaded `&percpu[A]` while running on B, and every `cpu::current()` after that read **hart A's**
+per-CPU block: its `current` tid, its `idle`, its run queue, its `held_rank`.
+
+The failure was spectacular and non-deterministic. A migrated worker, thinking it was on A, would
+call `exit()` and mark *hart A's* current thread (often A's idle) `Finished`; A's next `schedule()`
+then panicked "the last thread exited". Other interleavings tripped the rank-`assert!` in
+`sync.rs` (a bogus `held_rank` read from the wrong hart) or simply lost a thread and hung. Adding
+tracing moved it, the classic weak-ordering-adjacent tell, though the root cause is not a missing
+barrier: it is reading a hart-local register that had been restored from another hart's frame.
+
+**Fix (in `trap.s`, the return path):** restore `x[4]` only for a return to U-mode. For an S-mode
+(kernel) return, keep the live `tp`. It is already this hart's: `trap_entry` reloaded it from the
+per-hart stash (`sscratch`), and `switch_to` never touches `tp`, so it survives a migration intact.
+This is the exact mirror of `trap_entry`'s `ld tp, 8(t0)`. The regression test
+(`smp::tests::a_migrated_kernel_thread_keeps_its_hart_pointer`) drives the steal-a-preempted-thread
+interleaving and checks the invariant directly: `sscratch` names this hart's `TrapStash` and never
+migrates, so `(sscratch → hart) == cpu::id()` must hold on every spin; the aarch64 twin of the check
+is a constant `true`. The lesson generalizes: **anything the kernel keeps in a general register is
+part of the thread context on RISC-V, and the trap path must decide per privilege level whether it
+is the thread's or the hart's.** `tp` is the hart's.
+
 ## Build setup
 
 - **Target:** `riscv64imac-unknown-none-elf`, the integer-only target, the analog of aarch64's
