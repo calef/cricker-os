@@ -225,16 +225,20 @@ extern "C" fn riscv_trap_dispatch(frame: &mut TrapFrame) {
             // kernel-side demo, an explicit re-enable) brings it back. `complete` ends the PLIC's
             // claim so it will arbitrate the next interrupt. See notes/interrupts.md, drivers/plic.rs.
             S_EXTERNAL => {
-                let source = crate::drivers::plic::claim();
+                // Claim, mask, and complete against THIS hart's own context. IRQ affinity may have
+                // routed the source to a secondary hart's context, and that hart claims from its own
+                // context, not the boot hart's (drivers/plic.rs, arch::irq::this_s_context).
+                let ctx = super::irq::this_s_context();
+                let source = crate::drivers::plic::claim(ctx);
                 if source != 0 {
                     if let Some(ep) = crate::sched::irq_route(source) {
                         ROUTED_IRQS.fetch_add(1, Ordering::Relaxed);
-                        crate::drivers::plic::disable(source);
+                        crate::drivers::plic::disable(source, ctx);
                         crate::sched::irq_notify(ep);
                     } else {
                         SPURIOUS_IRQS.fetch_add(1, Ordering::Relaxed);
                     }
-                    crate::drivers::plic::complete(source);
+                    crate::drivers::plic::complete(source, ctx);
                 }
             }
             // A reschedule IPI from another hart (SBI set our sip.SSIP). Clear the pending bit, then

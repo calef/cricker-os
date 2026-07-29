@@ -2641,7 +2641,7 @@ mod tests {
 
         let ep = super::create_endpoint();
         super::bind_irq(SGI, ep);
-        crate::drivers::gic::enable(SGI);
+        crate::drivers::gic::enable(SGI, 0); // SGI: per-core, target ignored
 
         super::spawn(move || {
             super::ipc_recv(ep); // blocks until the interrupt fires
@@ -2745,7 +2745,7 @@ mod tests {
 
         let ep = super::create_endpoint();
         super::bind_irq(SGI, ep);
-        crate::drivers::gic::enable(SGI);
+        crate::drivers::gic::enable(SGI, 0); // SGI: per-core, target ignored
 
         // Fire it with NOBODY waiting. The signal must be counted.
         crate::drivers::gic::send_sgi(SGI, 0); // self (core 0) in the test

@@ -29,8 +29,6 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// The PLIC's MMIO base (a kernel virtual address in the direct map), stored by [`init`].
 static PLIC_BASE: AtomicUsize = AtomicUsize::new(0);
-/// The context our external interrupts are delivered to (hart 0 S-mode = 1 on QEMU `virt`).
-static PLIC_CONTEXT: AtomicUsize = AtomicUsize::new(0);
 
 const PRIORITY_BASE: usize = 0x0000;
 const ENABLE_BASE: usize = 0x2000;
@@ -41,10 +39,6 @@ const CLAIM_OFFSET: usize = 0x0004; // claim/complete sits one word past the thr
 
 fn base() -> usize {
     PLIC_BASE.load(Ordering::Relaxed)
-}
-
-fn context() -> usize {
-    PLIC_CONTEXT.load(Ordering::Relaxed)
 }
 
 /// Read a 32-bit PLIC register at `off` from the base.
@@ -68,41 +62,58 @@ fn write(off: usize, val: u32) {
 /// `context` must be this hart's supervisor context number.
 pub unsafe fn init(base: usize, context: usize) {
     PLIC_BASE.store(base, Ordering::Relaxed);
-    PLIC_CONTEXT.store(context, Ordering::Relaxed);
     // Threshold 0: an interrupt is taken when its priority is strictly greater, so priority >= 1
-    // gets through. (Threshold at max would mask everything.)
+    // gets through. (Threshold at max would mask everything.) Opens the boot context; a secondary
+    // hart's context is opened lazily by `arch::irq` the first time a source is routed to it.
+    open_context(context);
+}
+
+/// Open `context`'s threshold so any source with a nonzero priority can interrupt it. [`init`] does
+/// this for the boot context; IRQ affinity (`arch::irq`) calls this for a secondary hart's context
+/// the first time it routes a device source there, so that hart can actually take the interrupt. A
+/// context whose threshold is never opened takes nothing, which is the safe default. Idempotent.
+pub fn open_context(context: usize) {
     write(THRESHOLD_BASE + context * CONTEXT_STRIDE, 0);
 }
 
-/// Enable `source` for our context and give it a nonzero priority, so the PLIC will deliver it.
-pub fn enable(source: u32) {
+/// Enable `source` for `context` and give it a nonzero priority, so the PLIC will deliver it there.
+///
+/// `context` is a hart's S-mode context (`2*hart+1` on QEMU `virt`); the affinity policy in
+/// `arch::irq` chooses which one, so a device line lands on a chosen hart rather than always the
+/// boot hart. The driver is told the context; it does not read the hartid (rule #2, DECISIONS §4).
+pub fn enable(source: u32, context: usize) {
     // Priority 1 (the lowest that still interrupts; we do not prioritize among sources yet).
     write(PRIORITY_BASE + source as usize * 4, 1);
-    let word = ENABLE_BASE + context() * ENABLE_STRIDE + (source as usize / 32) * 4;
+    let word = ENABLE_BASE + context * ENABLE_STRIDE + (source as usize / 32) * 4;
     let bit = 1u32 << (source % 32);
     write(word, read(word) | bit);
 }
 
-/// Disable `source` for our context (clear its enable bit). The complement of [`enable`].
-pub fn disable(source: u32) {
-    let word = ENABLE_BASE + context() * ENABLE_STRIDE + (source as usize / 32) * 4;
+/// Disable `source` for `context` (clear its enable bit). The complement of [`enable`]. Called from
+/// the external-interrupt handler with the context that took the interrupt, which is the same
+/// context the source is enabled on (a source targets exactly one hart), so the mask and the later
+/// ACK re-enable stay in agreement.
+pub fn disable(source: u32, context: usize) {
+    let word = ENABLE_BASE + context * ENABLE_STRIDE + (source as usize / 32) * 4;
     let bit = 1u32 << (source % 32);
     write(word, read(word) & !bit);
 }
 
-/// **Claim the highest-priority pending interrupt** for our context, and mask it: the PLIC will not
+/// **Claim the highest-priority pending interrupt** for `context`, and mask it: the PLIC will not
 /// deliver this source again until [`complete`] is called for it. Returns 0 if nothing is pending
 /// (0 is not a valid source; source numbering starts at 1). Reading the claim register is the
-/// acknowledge, so call it exactly once per interrupt.
-pub fn claim() -> u32 {
-    read(THRESHOLD_BASE + context() * CONTEXT_STRIDE + CLAIM_OFFSET)
+/// acknowledge, so call it exactly once per interrupt. `context` must be the **claiming hart's own**
+/// context, so a secondary hart claims from its context, not the boot hart's.
+pub fn claim(context: usize) -> u32 {
+    read(THRESHOLD_BASE + context * CONTEXT_STRIDE + CLAIM_OFFSET)
 }
 
 /// **Complete** a claimed interrupt: tell the PLIC we are done with `source`, so it may deliver that
 /// source again. The counterpart to [`claim`]; between the two the source is masked at the PLIC.
-pub fn complete(source: u32) {
+/// `context` must be the context that claimed it (the completing hart's own).
+pub fn complete(source: u32, context: usize) {
     write(
-        THRESHOLD_BASE + context() * CONTEXT_STRIDE + CLAIM_OFFSET,
+        THRESHOLD_BASE + context * CONTEXT_STRIDE + CLAIM_OFFSET,
         source,
     );
 }

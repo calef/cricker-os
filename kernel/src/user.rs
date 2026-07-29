@@ -1236,7 +1236,7 @@ pub fn riscv_uart_driver_demo(
 
     // Arm the whole chain, now that the driver is running and routed: the source at the PLIC, the
     // receive interrupt at the UART, and supervisor external interrupts in `sie`.
-    crate::drivers::plic::enable(uart_irq);
+    crate::drivers::plic::enable(uart_irq, crate::arch::irq::boot_s_context());
     crate::console::rx_enable();
     crate::arch::exceptions::enable_external();
 
@@ -1330,7 +1330,7 @@ pub fn riscv_shell_boot(archive: &'static [u8], uart_irq: u32) -> Result<(), Loa
     // Arm the interrupt chain so the input driver's keystrokes flow: the source at the PLIC and
     // supervisor external interrupts in `sie`. The input driver arms the NS16550's own RX interrupt
     // (its IER) when it starts, and re-arms the PLIC source through its Irq cap's ACK.
-    crate::drivers::plic::enable(uart_irq);
+    crate::drivers::plic::enable(uart_irq, crate::arch::irq::boot_s_context());
     crate::arch::exceptions::enable_external();
     Ok(())
 }
@@ -5647,7 +5647,6 @@ mod riscv_virtio_tests {
 /// on the test that leaked's own turf, rather than as a mysterious watchdog trip three tests later.
 #[cfg(test)]
 mod no_leaked_threads {
-    use super::*;
     use crate::sched;
 
     #[test_case]
