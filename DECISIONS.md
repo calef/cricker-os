@@ -821,20 +821,13 @@ The [post-v1 milestone roadmap](design/roadmap.md) sequences the buildable ones 
 proposed numbered milestones (12+) and names the two decisions they force (the verification
 endgame, and POSIX posture). The entries here remain the detailed source for each.
 
-- **SMP thread placement: every spawn and wake lands on the current core** (§11's deferred step 3c).
-  `sched::spawn` puts a new thread on the spawning core's run queue, and `wake()` puts a woken thread
-  on the *waker's* core (its own comment says "step 3c makes this place the thread on the right core
-  via its inbox"). The cross-core migration mechanism exists (`spawn_on`, the inbox, the reschedule
-  IPI) but nothing drives it by policy, so a workload that fans out from one core stays on that core.
-  The machine has now demonstrated the gap: the milestone 32 FS test ran with ~18 threads crammed on
-  core 0 while cores 1-3 sat idle, and the RedoxFS mount (hundreds of serialized block round trips)
-  was starved slow enough to trip the hang watchdog under the net boot (the leaked-spinner half of
-  that was a separate test bug, since fixed; the placement imbalance is the standing one). Options,
-  for the architect to weigh when this is scheduled: **round-robin placement** (spawn cycles a target
-  core), **wake-time balancing** (wake a thread onto the least-loaded core rather than the waker's),
-  or **work stealing** (an idle core pulls from a busy core's queue). Round-robin is the smallest
-  change and probably enough; stealing is the most robust and the most work. No trigger is firing
-  hard yet (the FS test passes now that the spinner leak is fixed), so this is parked, not urgent.
+- **SMP thread placement** (§11's deferred step 3c). **SUPERSEDED by §28 (built 2026-07-28/29).** The
+  standing gap this described (every spawn and wake on the current core, so a workload fanning out
+  from one core stayed there; the milestone 32 FS mount starved beside three idle cores) is closed.
+  §28 shipped the power-of-two-choices spawn placement and message-shaped work stealing this entry
+  weighed, and its implementation amendment chose the third option here, **wake-time balancing**, for
+  device interrupts specifically (least-loaded, ties to the current core) while keeping IPC rendezvous
+  wakes local. See §28 and notes/scheduler.md. Kept for the record of the reasoning that led there.
 
 - [Microarchitecture-variant binaries](design/fat-binaries.md) — our targets straddle the
   ARMv8.0 / ARMv8.2 line (no LSE atomics on Cortex-A72, LSE on everything newer), and with
@@ -1723,6 +1716,52 @@ orderings) lose their accidental cover, so the implementation lands with cross-c
 rule 4's discipline applied on purpose. Supersedes the Open design ideas placement entry when the
 in-flight FS integration lands it. Implementation slots after milestone 22 phase B, before
 milestone 23's swap-under-load demo.
+
+### Implementation amendment (2026-07-29, as built)
+
+The three parts shipped as ratified, with one addition the machine forced and two corrections worth
+recording. Code in `kernel/src/sched.rs` and `kernel/src/cpu.rs`; scheduler note in
+notes/scheduler.md; cross-core stress tests in `sched.rs`, `smp.rs`, and `user.rs`.
+
+- **Spawn placement, as built.** `spawn` calls `pick_spawn_target`: two samples of a per-core
+  xorshift PRNG index the online cores, and the lighter by `runnable()` (a relaxed mirror of run
+  queue + inbox depth, kept current in `cpu::with_runq` / `note_inbox_len`) wins. The PRNG is seeded
+  per core from a fixed constant so a given boot makes the same choices, which keeps the icount
+  benches reproducible. On one online core it is a no-op.
+
+- **Stealing, as built.** An idle core's `try_initiate_steal` picks the most-loaded other core by run
+  queue depth alone (never its inbox, which is work already in flight to it), CASes a one-slot steal
+  request, and pokes it with the reschedule SGI; the victim's `serve_steal_request` hands back one
+  queued thread through the requester's inbox at its next scheduler entry. Pull-based, no cross-core
+  run-queue lock.
+
+- **The wake SPLIT (the addition).** §28.2 said "wake stays local." That is right for an **IPC
+  rendezvous**: the partner wakes on the waker's core, message in registers, cache warm, and the
+  serial netd<->std pipeline stays co-located. It is wrong for a **device interrupt**, which carries
+  no such locality: pinning the woken driver to the IRQ-handling core re-concentrates the pipeline
+  (std_net) or lands it on a busy core. So `irq_notify` wakes LOAD-AWARE via `wake_load_aware` /
+  `pick_wake_target`: the least-loaded core, ties won by the current core so a driver taking a
+  completion interrupt every request (the block server at mount) is not migrated each time. Rendezvous
+  wakes (`ipc_*`, supervision, revocation) stay local, unchanged. This is the split the IRQ-delivery
+  work recommended; the device-line affinity that spreads which core takes each IRQ is its companion,
+  documented in notes/interrupts.md.
+
+- **Correction: migration needs the per-hart pointer to be right (RISC-V).** §28's scattering is the
+  first workload to preempt kernel threads on secondary harts and then move them. That exposed a
+  latent RISC-V bug: the trap frame saved and unconditionally restored `tp`, the kernel per-CPU
+  pointer, so a thread preempted on one hart and resumed on another came back reading the wrong
+  hart's per-CPU state. Fixed in `arch/riscv64/trap.s` (restore `tp` only for a U-mode return; a
+  kernel return keeps the live, correct one). Full write-up in notes/riscv-port.md. aarch64 was
+  immune (its pointer is `TPIDR_EL1`, a system register the frame never carries).
+
+- **Correction: the hang watchdog now credits real progress, not test starts.** With migration and a
+  slow-but-live workload, the old "did a new test begin in the last 60 s" heartbeat could not tell a
+  deadlock from a slow test, and it tripped std_net, which legitimately runs about 300 s in netd's
+  userspace smoltcp poll (CPU-bound, no wakes and no output for stretches over a minute). The
+  watchdog now counts progress as a completed wake or a line of output OR any core running a
+  non-idle thread; only a genuine lost wakeup (every thread blocked, every core on its idle thread)
+  stalls it. It does not catch a busy-spin livelock, which is indistinguishable from a live
+  CPU-bound test at runtime and is not its target. See `kernel/src/testing.rs`.
 
 ## Reading
 

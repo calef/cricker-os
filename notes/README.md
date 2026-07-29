@@ -94,6 +94,11 @@ in the code or the conversation doesn't make sense, it belongs here.
   of register values, and here that's literal: 8 bytes. The context switch is fifteen
   instructions and **the last one returns into a different thread.**
 
+- [The scheduler: placement, stealing, wakes](scheduler.md) — DECISIONS §28 as built: per-core
+  run queues, two-choice spawn placement, message-shaped stealing, and the wake split (local for an
+  IPC rendezvous, load-aware for a device interrupt). The costs migration made real: the RISC-V
+  `tp` fix and the progress-based hang watchdog.
+
 - [Capabilities, and why the kernel has no `open()`](capabilities.md) — a capability is a file
   descriptor that can point at *anything*. Unix already had them; it just also built a back door.
   The milestone 7 decision, and the confused deputy. **7d**: three syscalls, a capability is the
