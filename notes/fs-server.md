@@ -65,7 +65,7 @@ rule enforceable: there is no ABI type below the boundary to leak. The blk IPC h
 convention (a negative reply is a negated errno), and the `Disk` impl maps a negative blk reply to
 `Error::new(EIO)`, which is the trait's own vocabulary, not an ABI leak.
 
-## The block server, and why it polls
+## The block server, and how it completes a request
 
 RedoxFS reads a lot at open: it scans a 256-entry header ring for crash consistency
 (`redoxfs::HEADER_RING`), so a mount is hundreds of block reads before it serves anything. Two
@@ -75,14 +75,23 @@ choices keep that inside the test's watchdog:
    pages: page 0 for the rings, request header and status, page 1 for the 4096-byte data buffer,
    which IS the page shared with the FS server. So one request moves an eight-sector block and the
    device DMAs it straight into the FS server's page, with no per-sector loop and no copy. The
-   milestone-9 driver roles still transfer one 512-byte sector at a time; this role does not.
-2. **Poll the used ring, do not wait on the interrupt.** QEMU pops descriptors and writes the used
-   ring synchronously inside the `QUEUE_NOTIFY` MMIO write (notes/dma.md), so by the time the
-   kernel's `NOTIFY` returns the completion is already done. Waiting on the interrupt per read pays
-   a full reschedule each time, and hundreds of those overran the watchdog. `complete_blk` polls
-   instead; it faults if the device has not completed within a generous bound, which a synchronous
-   device never hits. This is a QEMU-tuned choice, recorded honestly: the interrupt-driven path is
-   what the milestone-9 roles use, and real asynchronous hardware would want it back.
+   milestone-9 driver roles still transfer one 512-byte sector at a time; this role does not. This
+   is what keeps the mount's read count in the low hundreds rather than thousands.
+2. **Wait on the completion interrupt, the milestone-9 discipline** (`complete_blk`,
+   `user/src/virtio.rs`). The kernel turns the device's completion IRQ into a message on the block
+   server's `Irq` endpoint; the server WAITs for it, quiets the device, ACKs the line, and lets
+   `used.idx` decide when the completion is really its own (a wakeup can be stale or coalesced), the
+   same loop the read driver uses. This is a **correction** (fix/irq-delivery, 2026-07-29): the
+   earlier note here claimed interrupt-driven completion "overran the watchdog" and forced a poll of
+   the used ring. It does not. Booted with the WAIT path, the fs-server test passes on both ISAs at
+   the 4-core SMP boot (aarch64 141 tests, riscv64 84 tests), the mount's hundreds of WAIT-driven
+   completions all landing well inside the 60 s watchdog. The completion IRQ reaches the block
+   server's endpoint exactly as it reaches any milestone-9 driver's; the whole-block reads above are
+   what keep the reschedule count affordable. The prior "hangs on the first read" report did not
+   reproduce; the machine overruled the note. QEMU still completes synchronously inside the
+   `QUEUE_NOTIFY` write (notes/dma.md), so the interrupt is already pending by the time the server
+   WAITs, and the kernel's pending-signal count (DECISIONS §9a) makes that WAIT return at once rather
+   than block on an event already over.
 
 The disk order matters and is a real hazard. QEMU's `virt` assigns virtio-mmio devices to slots in
 **reverse** command-line order, and the kernel finds block devices by ascending slot. So the runners

@@ -935,30 +935,43 @@ pub fn run_blk_server(dma_phys: u64) -> ! {
     }
 }
 
-/// Complete a block-server transfer by **polling** the used ring, not by waiting on the interrupt.
+/// Complete a block-server transfer by **waiting on the completion interrupt**, the milestone-9
+/// discipline, not by polling the used ring.
 ///
-/// QEMU pops descriptors and writes the used ring synchronously inside the `QUEUE_NOTIFY` MMIO write
-/// (notes/dma.md), so by the time the kernel's `NOTIFY` returns the completion is already done. The
-/// FS server does hundreds of reads at open (RedoxFS scans a 256-entry header ring), and a
-/// WAIT-on-interrupt per read pays a full reschedule each time, which overran the test's watchdog.
-/// Polling the used ring skips that. The fallback to [`complete_block`] keeps the driver correct on
-/// hardware that completes asynchronously, where the poll would spin out and the interrupt is real;
-/// on QEMU the poll succeeds on the first read of the ring, so the fallback never runs.
+/// The FS server does hundreds of reads at open (RedoxFS scans a 256-entry header ring). An earlier
+/// version polled the used ring here, on the belief that a WAIT-per-read overran the test's watchdog;
+/// measured (fix/irq-delivery, 2026-07-29), it does not. Because each request moves a whole 4096-byte
+/// filesystem block ([`submit_blk`]), the mount's read count stays in the low hundreds, and a WAIT
+/// per read fits well inside the watchdog on both ISAs at the 4-core boot. So this server uses the
+/// same interrupt-as-message completion every other driver does, which is what a real asynchronous
+/// device needs and what the confinement was built to carry. QEMU still completes synchronously
+/// inside `NOTIFY`, so the interrupt is already pending and the WAIT returns at once (the kernel's
+/// pending-signal count, DECISIONS §9a).
 fn complete_blk(used_before: u16) {
-    for _ in 0..50_000_000 {
+    // **Wait on the completion interrupt** (the milestone-9 discipline), not a poll of the used ring.
+    // The kernel turns the device's completion IRQ into a message on this server's `Irq` endpoint;
+    // WAIT for it, quiet the device, ACK the line, and let `used.idx` decide when the completion is
+    // really ours (a wakeup can be stale, coalesced, or a prior operator's). This is the same loop
+    // `complete_block` uses. An earlier note (notes/fs-server.md) claimed this "overran the watchdog"
+    // and forced a poll; it does not, because the whole-block reads above keep the mount's read count
+    // low enough that a WAIT per read fits comfortably (proven: fs-server test green on both ISAs at
+    // the 4-core boot). QEMU still completes synchronously inside `NOTIFY`, so the interrupt is
+    // already pending and the kernel's pending-signal count (DECISIONS §9a) returns this WAIT at once
+    // rather than blocking on an event already over. See notes/dma.md.
+    loop {
+        unsafe { invoke(IRQ, irq::WAIT, 0, 0, 0) };
+        let istatus = mr(INTERRUPT_STATUS);
+        mw(INTERRUPT_ACK, istatus);
+        unsafe { invoke(IRQ, irq::ACK, 0, 0, 0) };
         barrier();
         if dma_read::<u16>(OFF_USED + 2) != used_before {
-            let st = dma_read::<u8>(OFF_STATUS);
-            if st != 0 {
-                panic!(); // the device reported a non-OK status
-            }
-            return;
+            break; // our request is on the used ring; this wakeup was really ours
         }
-        core::hint::spin_loop();
     }
-    // The device did not complete inline within a generous bound. This poll-based server requires
-    // synchronous completion (which QEMU provides); fault loudly rather than hang invisibly.
-    panic!();
+    let st = dma_read::<u8>(OFF_STATUS);
+    if st != 0 {
+        panic!(); // the device reported a non-OK status
+    }
 }
 
 /// Read one filesystem block (eight sectors, 4096 bytes) in a SINGLE virtio request. The device

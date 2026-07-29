@@ -180,8 +180,15 @@ pub fn init_this_cpu() {
     gic.gicc().CTLR.write(GICC_CTLR::ENABLE::SET);
 }
 
-/// Enable one interrupt source, and give it a priority.
-pub fn enable(intid: u32) {
+/// Enable one interrupt source, give it a priority, and target it at `target_cpu`.
+///
+/// `target_cpu` is the core the distributor should deliver this SPI to (bit N of `ITARGETSR`). The
+/// policy that chooses it (spreading device lines across cores so they do not all funnel through
+/// core 0) lives one level up in `arch::irq::enable`; this driver only writes the register it is
+/// told to, keeping the choice out of the GIC (DECISIONS §4: a driver reaches into no kernel
+/// global, including the online-core count). PPIs and SGIs are per-core, so `target_cpu` is ignored
+/// for them.
+pub fn enable(intid: u32, target_cpu: usize) {
     let guard = GIC.lock();
     let gic = guard.as_ref().expect("gic::enable before gic::init");
 
@@ -193,13 +200,14 @@ pub fn enable(intid: u32) {
     // IPRIORITYR is an array of BYTES: one per interrupt. Different stride, same device.
     gic.gicd().IPRIORITYR[intid as usize].set(TIMER_PRIORITY);
 
-    // ITARGETSR: which cores may service it. Bit 0 = core 0.
+    // ITARGETSR: which cores may service it. Bit N = core N.
     //
     // **Only meaningful for SPIs (32+).** PPIs and SGIs are per-core by definition, and the
-    // hardware ignores writes here for them. Writing anyway is harmless and would be actively
-    // wrong to omit once we have SMP and real devices.
+    // hardware ignores writes here for them. For an SPI we target the one core the policy chose,
+    // so a device's completion interrupt (and the driver wake it turns into) lands on that core
+    // rather than piling every device on core 0.
     if intid >= 32 {
-        gic.gicd().ITARGETSR[intid as usize].set(1);
+        gic.gicd().ITARGETSR[intid as usize].set(1 << target_cpu);
     }
 }
 
