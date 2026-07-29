@@ -33,6 +33,7 @@
 
 #![no_std]
 
+pub mod jobframe;
 pub mod spawnproto;
 
 /// A program the shell can spawn. The set is small and closed in phase 1; each variant carries a
@@ -50,6 +51,14 @@ pub enum Prog {
     /// many it got. The program that makes `--mem` *real* rather than parsed-and-ignored: the
     /// number it reports is the authority the command line handed it.
     Budgeter,
+    /// A long-running job that *heeds* the cooperative interrupt: it works forever, polling its
+    /// interrupt flag between work units, and on `^C` cleans up and exits (milestone 24). The
+    /// cooperative tier made visible: the first `^C` stops it gracefully.
+    Heeder,
+    /// A runaway that ignores the interrupt entirely: a tight loop that never checks its flag. Only
+    /// the forcible tier (the shell tearing its region down) ends it. The case the cooperative tier
+    /// cannot reach, and the reason the second `^C` exists.
+    Spinner,
 }
 
 impl Prog {
@@ -58,6 +67,8 @@ impl Prog {
         match name {
             b"worker" => Some(Prog::Worker),
             b"budgeter" => Some(Prog::Budgeter),
+            b"heeder" => Some(Prog::Heeder),
+            b"spinner" => Some(Prog::Spinner),
             _ => None,
         }
     }
@@ -67,6 +78,8 @@ impl Prog {
         match self {
             Prog::Worker => "worker",
             Prog::Budgeter => "budgeter",
+            Prog::Heeder => "heeder",
+            Prog::Spinner => "spinner",
         }
     }
 
@@ -75,6 +88,8 @@ impl Prog {
         match self {
             Prog::Worker => 0,
             Prog::Budgeter => 1,
+            Prog::Heeder => 2,
+            Prog::Spinner => 3,
         }
     }
 
@@ -83,6 +98,8 @@ impl Prog {
         match id {
             0 => Some(Prog::Worker),
             1 => Some(Prog::Budgeter),
+            2 => Some(Prog::Heeder),
+            3 => Some(Prog::Spinner),
             _ => None,
         }
     }
@@ -107,6 +124,22 @@ impl Prog {
                 mem: MemSpec::Required { min: 1, max: 64 },
                 reports: true,
                 interruptible: false,
+            },
+            // The two interrupt demonstrators. Both run until interrupted, take no argument and no
+            // memory grant, and report through the shared job frame rather than the result endpoint
+            // (so `reports` is false: they hold no result cap). `interruptible` is what makes the
+            // shell wire the two-tier ^C path and hold the region for a forcible teardown.
+            Prog::Heeder => Manifest {
+                arg: ArgSpec::Forbidden,
+                mem: MemSpec::Forbidden,
+                reports: false,
+                interruptible: true,
+            },
+            Prog::Spinner => Manifest {
+                arg: ArgSpec::Forbidden,
+                mem: MemSpec::Forbidden,
+                reports: false,
+                interruptible: true,
             },
         }
     }
