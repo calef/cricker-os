@@ -233,17 +233,19 @@ struct Scheduler {
 /// The most endpoints that can ever exist: the registry's bound. Endpoint teardown does not
 /// exist yet (regions hosting endpoints are pinned), so this caps creations over the kernel's
 /// lifetime, not concurrent use.
-const MAX_ENDPOINTS: usize = 384;
+const MAX_ENDPOINTS: usize = 512;
 
 /// An endpoint's name: a generational `slots` name over the endpoint registry (19a). What an
 /// `Object::Endpoint` capability carries. `u64` like a Tid, and stale-safe the same way.
 pub type EpId = u64;
 
-/// The pages the kernel carves for its own endpoints. 64 covered the suite until milestones 27
-/// and 28 merged: each was under the budget alone, and their combined boots (termd wiring plus
-/// the std/alloc demo processes) crossed it, a cost neither branch could see. 96 covers the
-/// merged suite; exhaustion panics in [`create_endpoint`] with the number to raise.
-const KERNEL_EP_PAGES: u64 = 96;
+/// The pages the kernel carves for its own endpoints. This grows with the SUITE, not the system:
+/// 64 lasted until the 27+28 merge, 96 until supervision and std::net merged the same day. Each
+/// parallel branch fits alone; the union of their test boots is what crosses the line, a cost no
+/// branch can see before merge. 128 covers today's suite; exhaustion panics in
+/// [`create_endpoint`] with the number to raise. If this grows again, consider making the test
+/// harness reap its boot services between modules instead of raising further.
+const KERNEL_EP_PAGES: u64 = 128;
 
 /// The endpoint behind a name, or `None` if the name no longer resolves. Caller holds `SCHED`.
 ///
