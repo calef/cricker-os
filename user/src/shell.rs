@@ -32,9 +32,9 @@
 #![no_std]
 #![no_main]
 
-use capsh::{Command, Endowment, Prog, Refusal, RunSpec, spawnproto};
+use capsh::{Action, Command, Endowment, Escalation, Prog, Refusal, RunSpec, jobframe, spawnproto};
 use linedisc::proto;
-use user_rt::{call, cap_delete, invoke, recv, send};
+use user_rt::{call, cap_delete, invoke, recv, send, yield_now};
 
 // Pages shared with the terminal (must match the wiring in init).
 const OUT_VA: u64 = 0x0000_0000_0060_0000; // we write; the terminal reads
@@ -106,7 +106,9 @@ pub extern "C" fn _start(_x0: u64, _x1: u64, _x2: u64) -> ! {
     loop {
         let (n, flags) = read_line(b"$ ", &mut line);
         if flags & proto::FLAG_INTERRUPTED != 0 {
-            // ^C: the terminal discarded the line; come back for the next one.
+            // ^C at the prompt: the terminal discarded the line. Account for this interrupt so it
+            // does not leak into the next job's watch, then come back for the next line.
+            CONSUMED.store(intr_count(), core::sync::atomic::Ordering::Relaxed);
             continue;
         }
         if flags & proto::FLAG_EOF != 0 {
@@ -149,6 +151,9 @@ fn help() {
 fn run(spec: RunSpec) {
     match capsh::plan(&spec) {
         Err(refusal) => refuse(spec, refusal),
+        // A supervised job runs under the two-tier ^C path (milestone 24); a fast job is simply
+        // spawned and waited on.
+        Ok(endow) if endow.interruptible => spawn_interruptible(endow),
         Ok(endow) => spawn(endow),
     }
 }
@@ -191,8 +196,8 @@ fn spawn(e: Endowment) {
         None
     };
 
-    // The request: program id, argument, page count (capsh::spawnproto).
-    let (w0, w1, w2) = spawnproto::request(e.prog.id(), e.arg, e.mem_pages);
+    // The request: program id, argument, page count, not interruptible (capsh::spawnproto).
+    let (w0, w1, w2) = spawnproto::request(e.prog.id(), e.arg, e.mem_pages, false);
     send(SPAWN, w0, w1, w2);
 
     // If a budget rode along, delegate it now, narrowed to WRITE|GRANT so init can re-insert it into
@@ -239,6 +244,8 @@ fn outcome(e: Endowment, answer: u64) {
             print_num(e.mem_pages);
             print(b"-page budget you granted (the rest paid for its page tables)\n");
         }
+        // Supervised jobs report through the job frame and the interruptible path, not here.
+        Prog::Heeder | Prog::Spinner => {}
     }
 }
 
@@ -298,6 +305,220 @@ fn untyped_split(pages: u64) -> Option<u64> {
     // (OutOfMemory) when the budget cannot back `pages`.
     let r = unsafe { invoke(BUDGET, abi::untyped::SPLIT, pages, 0, 0) };
     if r < 0 { None } else { Some(r as u64) }
+}
+
+// ---- the two-tier interrupt path (milestone 24, DECISIONS §24) ----
+
+const PAGE: u64 = 4096;
+/// Pages the construction untyped for a supervised child holds: its aspace, code, stack, and TCB.
+/// The heeder and spinner are tiny; this is generous. DESTROY returns these pages to our budget.
+const JOB_UNTYPED_PAGES: u64 = 32;
+/// Where we map a supervised job's shared frame in our own space. It advances per job, because there
+/// is no unmap syscall: each job gets a fresh window and the old mapping is simply left behind (one
+/// page of address space, and one frame from our budget, is the honest per-job cost).
+static SH_JOBFRAME_NEXT: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0x0000_0000_00c0_0000);
+
+/// The terminal's `^C` count we have already accounted for. A watermark, not a per-job baseline, and
+/// that distinction is load-bearing: a `^C` typed the instant after `run heeder` is counted by the
+/// terminal *before* the shell finishes spawning and starts watching (the input driver runs first).
+/// Diffing against a watermark carried across the session catches it anyway; a fresh baseline read at
+/// watch-start would already include it and miss the interrupt. A prompt `^C` (a failed read) and a
+/// finished job each advance the watermark, so neither leaks into the next job.
+static CONSUMED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Run a supervised foreground job: mint its resources from our own budget, direct init to build it
+/// from a region we hold, then watch it under the two-tier `^C` escalation until it stops or we tear
+/// it down. This is the whole of DECISIONS §24 on the shell's side.
+fn spawn_interruptible(e: Endowment) {
+    // Mint the job's resources. RETYPE the shared frame first, then SPLIT the construction budget,
+    // so the budget is the top of our watermark and DESTROY returns its pages cleanly (LIFO).
+    let job_fr = match retype_frame() {
+        Some(s) => s,
+        None => {
+            print(b"  this shell's memory budget is exhausted; nothing left to grant\n");
+            return;
+        }
+    };
+    let job_ut = match untyped_split(JOB_UNTYPED_PAGES) {
+        Some(s) => s,
+        None => {
+            cap_delete(job_fr);
+            print(b"  this shell's memory budget is exhausted; nothing left to grant\n");
+            return;
+        }
+    };
+
+    // Map the shared frame into our own space so we can signal the job and read its status.
+    let va = SH_JOBFRAME_NEXT.fetch_add(PAGE, core::sync::atomic::Ordering::Relaxed);
+    if !map_frame(job_fr, va) {
+        cap_delete(job_fr);
+        cap_delete(job_ut);
+        print(b"  could not map the job frame\n");
+        return;
+    }
+    // A freshly retyped frame is zeroed, but make the shared contract explicit.
+    jf_store(va, jobframe::INTERRUPT, 0);
+    jf_store(va, jobframe::DONE, 0);
+    jf_store(va, jobframe::STATUS, 0);
+    jf_store(va, jobframe::HEARTBEAT, 0);
+
+    // Direct init: an interruptible request, then the job untyped and the job frame, both delegated
+    // WRITE|GRANT (init builds from the untyped and maps the frame). We keep our own copies: the
+    // untyped to tear the job down, the frame to signal it and read it.
+    let (w0, w1, w2) = spawnproto::request(e.prog.id(), e.arg, e.mem_pages, true);
+    send(SPAWN, w0, w1, w2);
+    send_cap(job_ut);
+    send_cap(job_fr);
+
+    // init acks once the child is running: that is the shell's go-ahead to start watching.
+    if recv(RESULT).0 != spawnproto::SPAWN_OK {
+        print(b"  could not spawn (init is out of memory)\n");
+        cap_delete(job_fr);
+        cap_delete(job_ut);
+        return;
+    }
+    print(b"  running ");
+    print(e.prog.name().as_bytes());
+    print(b" in the foreground. ^C interrupts it.\n");
+
+    watch(va, job_ut);
+
+    // Account for every ^C up to now, so the job's interrupts do not leak into the next one.
+    CONSUMED.store(intr_count(), core::sync::atomic::Ordering::Relaxed);
+    // Drop our caps. If the job was reclaimed, the untyped cap is already stale; cap_delete just
+    // frees the slot.
+    cap_delete(job_fr);
+    cap_delete(job_ut);
+}
+
+/// Watch a running supervised job: poll its done flag and the terminal's `^C` count, drive the
+/// escalation policy, and act. The busy-poll with `yield` is how one thread watches two things (the
+/// job and `^C`) with only blocking primitives and no non-blocking receive (DECISIONS §24, wait A).
+fn watch(va: u64, job_ut: u64) {
+    // The baseline is the session watermark, not a fresh read: a ^C counted during the spawn is
+    // already reflected in intr_count but not yet in CONSUMED, so diffing against CONSUMED sees it.
+    let base = CONSUMED.load(core::sync::atomic::Ordering::Relaxed);
+    let mut esc = Escalation::new();
+    let mut fed: u64 = 0;
+    loop {
+        // Finished on its own (cooperatively or naturally)?
+        if jf_load(va, jobframe::DONE) != 0 {
+            let status = jf_load(va, jobframe::STATUS);
+            let beats = jf_load(va, jobframe::HEARTBEAT);
+            reclaim(job_ut);
+            report_finished(status, beats);
+            return;
+        }
+        // Fold in every ^C the terminal has seen since we started watching.
+        let n = intr_count().wrapping_sub(base);
+        let mut action = Action::None;
+        while fed < n {
+            fed += 1;
+            let a = esc.on_interrupt();
+            if !matches!(a, Action::None) {
+                action = a; // Forcible (a second ^C) wins over Cooperative (the first)
+            }
+        }
+        if matches!(action, Action::None) {
+            action = esc.on_tick(); // the grace timeout: escalate a job that ignored the first ^C
+        }
+        match action {
+            Action::Cooperative => {
+                jf_store(va, jobframe::INTERRUPT, 1);
+                print(b"  ^C: asked the job to stop.\n");
+            }
+            Action::Forcible => {
+                forcible(job_ut);
+                return;
+            }
+            Action::None => {}
+        }
+        yield_now();
+    }
+}
+
+/// Report a job that stopped on its own.
+fn report_finished(status: u64, beats: u64) {
+    if status == jobframe::STATUS_INTERRUPTED {
+        print(b"  the job caught the interrupt and stopped cleanly after ");
+        print_num(beats);
+        print(b" work units.\n");
+    } else {
+        print(b"  the job finished after ");
+        print_num(beats);
+        print(b" work units.\n");
+    }
+}
+
+/// The forcible tier: tear the job's region down with the owner's `DESTROY`. The shell holds the
+/// untyped the child was built from, so this reclaims its every object. Once the §16 amendment lands
+/// (DESTROY force-kills a live resident thread), this ends even a runaway that ignored the first ^C.
+fn forcible(job_ut: u64) {
+    print(b"  ^C again: tearing the job down.\n");
+    if reclaim(job_ut) {
+        print(b"  the job's process was torn down and its memory reclaimed.\n");
+    } else {
+        print(b"  teardown refused: DESTROY force-kills a live thread once the kernel amendment lands.\n");
+    }
+}
+
+/// Reclaim the job's region, retrying because a cooperatively-exiting child may still be finishing
+/// its last instruction (DESTROY refuses while a thread is live). Returns whether it succeeded.
+fn reclaim(job_ut: u64) -> bool {
+    for _ in 0..256 {
+        // SAFETY: `svc`/`ecall`; DESTROY reclaims the region or refuses (a live thread, pre-amendment).
+        if unsafe { invoke(job_ut, abi::untyped::DESTROY, 0, 0, 0) } == 0 {
+            return true;
+        }
+        yield_now();
+    }
+    false
+}
+
+/// RETYPE one page of our budget into a Frame capability we hold. `None` when the budget is spent.
+fn retype_frame() -> Option<u64> {
+    // SAFETY: `svc`/`ecall`; the kernel checks WRITE on the untyped.
+    let r = unsafe { invoke(BUDGET, abi::untyped::RETYPE, 0, 0, 0) };
+    if r < 0 { None } else { Some(r as u64) }
+}
+
+/// Map the frame in `slot` read/write at `va` in our own space; page tables come from our budget.
+fn map_frame(slot: u64, va: u64) -> bool {
+    // SAFETY: `svc`/`ecall`; the kernel checks the frame cap and the address.
+    unsafe { invoke(slot, abi::frame::MAP, va, 1, BUDGET) == 0 }
+}
+
+/// Delegate the capability in `slot` to init over the spawn endpoint, narrowed to WRITE|GRANT (init
+/// builds from an untyped or maps a frame, and narrows further from there). We keep our own copy.
+fn send_cap(slot: u64) {
+    // SAFETY: `svc`/`ecall`; the kernel checks WRITE on the endpoint and GRANT on the delegated cap.
+    unsafe {
+        invoke(
+            SPAWN,
+            abi::endpoint::SEND_CAP,
+            slot,
+            abi::rights::WRITE | abi::rights::GRANT,
+            spawnproto::CAP_TAG,
+        )
+    };
+}
+
+/// Ask the terminal how many `^C` it has seen (a non-blocking poll; see proto::OP_INTRCOUNT).
+fn intr_count() -> u64 {
+    call(TERM, proto::req(proto::OP_INTRCOUNT, 0), 0).0
+}
+
+/// Read a word from the mapped job frame.
+fn jf_load(va: u64, off: usize) -> u64 {
+    // SAFETY: the job frame is mapped read/write at `va`; `off` is a valid word offset.
+    unsafe { core::ptr::read_volatile((va as usize + off) as *const u64) }
+}
+
+/// Write a word to the mapped job frame.
+fn jf_store(va: u64, off: usize, v: u64) {
+    // SAFETY: as above; this word is the shell's to write (one writer per word, see jobframe).
+    unsafe { core::ptr::write_volatile((va as usize + off) as *mut u64, v) }
 }
 
 #[panic_handler]

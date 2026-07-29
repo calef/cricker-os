@@ -55,6 +55,7 @@ terminal writes, it reads).
 | `OP_WRITE` | app → terminal | `req(OP_WRITE, len)` | 0 | bytes consumed | 0 |
 | `OP_READLINE` | app → terminal | `req(OP_READLINE, plen)` | 0 | line length | flags |
 | `OP_BYTES` | driver → terminal | `req(OP_BYTES, n)` | n bytes, packed LE | 0 | 0 |
+| `OP_INTRCOUNT` | app → terminal | `req(OP_INTRCOUNT, 0)` | 0 | `^C` count so far | 0 |
 
 - **`OP_WRITE`**: print `len` bytes from the client's output page. The terminal performs
   output-side newline translation (`\n` becomes `\r\n`) and passes everything else, ANSI
@@ -76,12 +77,23 @@ terminal writes, it reads).
   driver does no editing, echo, or line assembly; it forwards bytes and nothing else, the way a
   UART driver feeds the Unix tty layer without being the tty layer.
 
+- **`OP_INTRCOUNT`** (milestone 24): reply immediately with the running count of `^C` the terminal
+  has seen since boot. This is the shell's `^C` sensor for the case a parked read cannot cover: when
+  a foreground job is running, the shell is not in `OP_READLINE`, so there is no read to fail with
+  `FLAG_INTERRUPTED`. The shell polls this count while watching the job and escalates from its
+  advance (DECISIONS §24). A poll, not a delivered signal, because there is no non-blocking receive
+  to block the shell on both the job and `^C` at once; a busy-poll with `yield` is the honest
+  interim. The count is monotonic, so the shell learns of a `^C` by the count changing and never
+  misses one; it tracks a session watermark of what it has consumed.
+
 ### Read flags (`r1` of an `OP_READLINE` reply)
 
 - `FLAG_EOF` (`1<<0`): end of input (`^D` on an empty line). The line length is 0.
 - `FLAG_INTERRUPTED` (`1<<1`): the read was interrupted (`^C`). The line length is 0. This is the
-  contract's hook for interrupt routing, whose design is open; see
-  [../design/interrupt-routing.md](../design/interrupt-routing.md).
+  contract's `^C` hook for a job **blocked reading** (the shell at its prompt). A job that is
+  **running** is reached through `OP_INTRCOUNT` and the two-tier routing instead (DECISIONS §24,
+  built; design/interrupt-routing.md is the original proposal). One `^C` at the terminal does both:
+  it fails any parked read and it bumps the count.
 
 A client that speaks the contract handles both flags. The shell's response is the model: on
 `FLAG_INTERRUPTED` it discards and reprompts, on `FLAG_EOF` it notes there is nowhere to exit to

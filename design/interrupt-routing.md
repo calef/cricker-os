@@ -1,8 +1,11 @@
 # Interrupt routing: what Ctrl-C means without signals
 
-**Status: DECIDED 2026-07-28 (Chris): the two-tier design (option C), interrupt capability held
-by the shell, `Tcb::SUSPEND` deferred with its trigger recorded in DECISIONS Open design ideas.
-See DECISIONS §24; this document stays as the design record. Not yet built.** Milestone 28 built the
+**Status: DECIDED 2026-07-28 (Chris), then BUILT: the two-tier design (option C), interrupt
+capability held by the shell, `Tcb::SUSPEND` still deferred. See DECISIONS §24 and its
+implementation amendment for what shipped (the cooperative tier is a shared-memory flag, not the
+endpoint notification this proposal imagined, because a running compute job cannot poll an endpoint;
+the forcible tier is `Untyped::DESTROY` on a region the shell holds). This document stays as the
+original design record.** Milestone 28 built the
 terminal that *detects* `^C` and wrote down the contract's hook for it (`FLAG_INTERRUPTED`), and
 deliberately stopped there. How the interrupt actually reaches the foreground process is a
 capability-routing question with real forks, and this project's answer will not be Unix signals.

@@ -36,6 +36,10 @@ const PAGE: u64 = 4096;
 const CHILD_STACK_VA: u64 = 0x0050_0000;
 const CHILD_STACK_PAGES: u64 = 4;
 
+/// Where a supervised (interruptible) child maps its shared job frame (milestone 24). Below the ELF
+/// load address (0x40_0000) and the stack; must match heeder.rs / spinner.rs's JOB_FRAME_VA.
+const CHILD_JOBFRAME_VA: u64 = 0x0030_0000;
+
 /// Pages of untyped we split off our own budget and hand the shell (milestone 31), so the shell can
 /// in turn endow the programs it spawns (`run --mem N`) out of a budget that is genuinely *its own*.
 /// The shell shrinks this by N pages per grant; the pages a spawned child pins are not reclaimed in
@@ -89,6 +93,7 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, _x2: u64) -> ! {
 
     // 1. Console server: reads text from the shared page, writes it to the UART.
     let con = must(build_child(
+        UNTYPED,
         &con_elf,
         &[(request, abi::rights::READ), (reply, abi::rights::WRITE)],
         &[
@@ -102,6 +107,7 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, _x2: u64) -> ! {
     // 2. The line discipline: serves the terminal endpoint, prints through the console. It is
     // the console's only client; everyone else prints through it.
     let termd = must(build_child(
+        UNTYPED,
         &td_elf,
         &[
             (term_ep, abi::rights::READ),
@@ -119,6 +125,7 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, _x2: u64) -> ! {
 
     // 3. Input driver: waits on the UART receive interrupt, forwards raw bytes to the terminal.
     let input = must(build_child(
+        UNTYPED,
         &in_elf,
         &[(term_ep, abi::rights::WRITE), (UART_IRQ, abi::rights::READ)],
         &[(IN_UART_VA, UART_DEV, abi::aspace::MAP_RO)],
@@ -132,6 +139,7 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, _x2: u64) -> ! {
     // that budget from our own untyped and hand it over the same way we hand any capability.
     let sh_budget = must(untyped_split(SH_BUDGET_PAGES));
     let shell = must(build_child(
+        UNTYPED,
         &sh_elf,
         &[
             (term_ep, abi::rights::WRITE),
@@ -148,6 +156,13 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, _x2: u64) -> ! {
     cap_delete(shell);
     cap_delete(sh_budget); // our copy; the shell holds its own now
 
+    // Free every boot cap the spawn service does not need, so init's 16-slot cspace has room to
+    // build a supervised child (which holds a job untyped and a job frame while build_child retypes
+    // an aspace, frames, and a TCB). The drivers and the shell hold the narrowed copies that matter.
+    for c in [request, reply, term_ep, con_shared, term_out, term_in] {
+        cap_delete(c);
+    }
+
     // The spawn service (milestone 31's grant expression, wire half; capsh::spawnproto). The shell
     // resolved a `run` into a program, an argument, and a memory-grant page count, and it directs us
     // rather than building the child itself: we hold the initrd, so we stay the ELF loader (the
@@ -156,75 +171,122 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, _x2: u64) -> ! {
     // the child's authority is exactly what the command line named. See the spawn_service comment.
     let worker = fs.read("worker").and_then(|b| elf::Elf::parse(b).ok());
     let budgeter = fs.read("budgeter").and_then(|b| elf::Elf::parse(b).ok());
-    spawn_service(spawn_ep, result_ep, worker.as_ref(), budgeter.as_ref())
+    let heeder = fs.read("heeder").and_then(|b| elf::Elf::parse(b).ok());
+    let spinner = fs.read("spinner").and_then(|b| elf::Elf::parse(b).ok());
+    spawn_service(
+        spawn_ep,
+        result_ep,
+        [
+            worker.as_ref(),
+            budgeter.as_ref(),
+            heeder.as_ref(),
+            spinner.as_ref(),
+        ],
+    )
+}
+
+/// Turn a `recv_cap` slot into `Some(slot)`, or `None` if the message carried no capability.
+fn opt_cap(slot: u64) -> Option<u64> {
+    if slot == abi::endpoint::NO_CAP {
+        None
+    } else {
+        Some(slot)
+    }
 }
 
 /// The spawn service loop: serve the shell's `run` requests forever. Init is the ELF loader the
-/// shell directs; it inserts only what the shell endows plus the shared report channel, so a
-/// spawned program can reach nothing the command line did not name.
+/// shell directs; it inserts only what the shell endows, so a spawned program can reach nothing the
+/// command line did not name.
 ///
-/// The exchange (capsh::spawnproto): the shell `SEND`s the request (program id, argument, page
-/// count); if the count is non-zero, it `SEND_CAP`s exactly one capability next, an untyped it split
-/// from its own budget, which we receive here. We build the child, endow it, and start it with the
-/// argument in a1. On any failure we send the spawn-failed sentinel on the result endpoint so the
-/// shell's single read completes with a legible failure instead of hanging.
-fn spawn_service(
-    spawn_ep: u64,
-    result_ep: u64,
-    worker: Option<&elf::Elf>,
-    budgeter: Option<&elf::Elf>,
-) -> ! {
+/// Two shapes (capsh::spawnproto). A **normal** job: the shell sends the request and, if `--mem`
+/// rode along, one delegated untyped; we build the child from our own budget, endow it the result
+/// endpoint (and the budget), and start it. A **supervised** (interruptible) job: the shell leads
+/// the delegation with a job untyped and a shared job frame; we build the whole child *from that
+/// untyped* (so the shell's region owns it and can `DESTROY` it to tear it down, milestone 24), map
+/// the job frame in, endow nothing else, start it, and send `SPAWN_OK` once as the shell's
+/// go-ahead. The `progs` array is indexed by [`Prog::id`].
+fn spawn_service(spawn_ep: u64, result_ep: u64, progs: [Option<&elf::Elf>; 4]) -> ! {
     loop {
         let (w0, w1, w2) = recv(spawn_ep);
         let prog = Prog::from_id(spawnproto::prog_id(w0));
         let arg = spawnproto::arg(w1);
         let mem_pages = spawnproto::mem_pages(w2);
+        let interruptible = spawnproto::interruptible(w2);
 
-        // A promised memory grant arrives as the delegated untyped over the next SEND_CAP; no
-        // promise, no receive, so the two sides stay in lockstep on the endpoint.
+        // Receive the delegated caps in protocol order: the interrupt pair first (job untyped, job
+        // frame), then any --mem untyped. No promise, no receive, so both sides stay in lockstep.
+        let (job_ut, job_fr) = if interruptible {
+            (opt_cap(recv_cap(spawn_ep).1), opt_cap(recv_cap(spawn_ep).1))
+        } else {
+            (None, None)
+        };
         let budget = if mem_pages > 0 {
-            let slot = recv_cap(spawn_ep).1;
-            if slot == abi::endpoint::NO_CAP {
-                None
-            } else {
-                Some(slot)
-            }
+            opt_cap(recv_cap(spawn_ep).1)
         } else {
             None
         };
 
-        let elf = match prog {
-            Some(Prog::Worker) => worker,
-            Some(Prog::Budgeter) => budgeter,
-            None => None,
-        };
+        let elf = prog.and_then(|p| progs[p.id() as usize]);
 
-        let built = elf.and_then(|e| match budget {
-            // The delegated budget goes in narrowed to WRITE: the child may spend it, not lend it.
-            Some(b) => build_child(
-                e,
-                &[(result_ep, abi::rights::WRITE), (b, abi::rights::WRITE)],
-                &[],
-            )
-            .ok(),
-            None => build_child(e, &[(result_ep, abi::rights::WRITE)], &[]).ok(),
-        });
-
-        match built {
-            Some(tcb) => {
-                if tcb_start(tcb, 0, arg, 0) != 0 {
+        if interruptible {
+            // Build the whole child from the shell's job untyped, mapping the shared job frame; no
+            // capabilities in its cspace (it reports through the frame and exits). SPAWN_OK is the
+            // go-ahead the shell waits for before it starts watching the frame.
+            let built = match (elf, job_ut, job_fr) {
+                (Some(e), Some(ut), Some(fr)) => {
+                    build_child(ut, e, &[], &[(CHILD_JOBFRAME_VA, fr, abi::aspace::MAP_RW)]).ok()
+                }
+                _ => None,
+            };
+            match built {
+                Some(tcb) => {
+                    let ok = tcb_start(tcb, 0, arg, 0) == 0;
+                    send(
+                        result_ep,
+                        if ok {
+                            spawnproto::SPAWN_OK
+                        } else {
+                            spawnproto::SPAWN_FAILED
+                        },
+                        0,
+                        0,
+                    );
+                    cap_delete(tcb);
+                }
+                None => {
                     send(result_ep, spawnproto::SPAWN_FAILED, 0, 0);
                 }
-                cap_delete(tcb);
             }
-            None => {
-                send(result_ep, spawnproto::SPAWN_FAILED, 0, 0);
+        } else {
+            // The delegated budget goes in narrowed to WRITE: the child may spend it, not lend it.
+            let built = elf.and_then(|e| match budget {
+                Some(b) => build_child(
+                    UNTYPED,
+                    e,
+                    &[(result_ep, abi::rights::WRITE), (b, abi::rights::WRITE)],
+                    &[],
+                )
+                .ok(),
+                None => build_child(UNTYPED, e, &[(result_ep, abi::rights::WRITE)], &[]).ok(),
+            });
+            match built {
+                Some(tcb) => {
+                    if tcb_start(tcb, 0, arg, 0) != 0 {
+                        send(result_ep, spawnproto::SPAWN_FAILED, 0, 0);
+                    }
+                    cap_delete(tcb);
+                }
+                None => {
+                    send(result_ep, spawnproto::SPAWN_FAILED, 0, 0);
+                }
             }
         }
-        // Drop our copy of the delegated budget (it is the child's now), so a long session of
-        // `run --mem` does not exhaust init's own 16-slot cspace. A no-op when there was none.
-        if let Some(b) = budget {
-            cap_delete(b);
+
+        // Drop our copies of every delegated cap: the child holds what it needs (the job frame is
+        // mapped, the budget inserted), and the shell holds the originals it kept (the job untyped
+        // for teardown). This keeps init's 16-slot cspace from filling across a long session.
+        for s in [job_ut, job_fr, budget].into_iter().flatten() {
+            cap_delete(s);
         }
     }
 }
@@ -238,8 +300,18 @@ static SCRATCH_NEXT: core::sync::atomic::AtomicU64 =
 /// map `maps` (each `(child_va, our_slot, mode)`), retype a TCB, insert `caps` (each `(our_slot,
 /// rights)`) in order, configure at the entry. Returns the TCB slot, ready to start. The userspace
 /// ELF loader, driven entirely through the capability verbs.
-fn build_child(elf: &elf::Elf, caps: &[(u64, u64)], maps: &[(u64, u64, u64)]) -> Result<u64, ()> {
-    let aspace = retype_obj(abi::objtype::ASPACE)?;
+fn build_child(
+    build_ut: u64,
+    elf: &elf::Elf,
+    caps: &[(u64, u64)],
+    maps: &[(u64, u64, u64)],
+) -> Result<u64, ()> {
+    // The child's aspace, code/data frames, stack, and TCB all come from `build_ut`. For a normal
+    // job that is our own budget (slot 0); for a supervised (interruptible) job it is the untyped
+    // the shell delegated, so the whole child lives in a region the shell holds and can `DESTROY`
+    // to tear it down (milestone 24). Our *scratch* mappings below stay on our own budget (UNTYPED):
+    // they are ours, and a child's region must not have our page tables freed under it on teardown.
+    let aspace = retype_obj_from(build_ut, abi::objtype::ASPACE)?;
 
     for seg in elf.segments() {
         let mode = if seg.is_executable() {
@@ -252,7 +324,7 @@ fn build_child(elf: &elf::Elf, caps: &[(u64, u64)], maps: &[(u64, u64, u64)]) ->
         let (start, end) = seg.page_range(PAGE);
         let mut va = start;
         while va < end {
-            let frame = retype_frame()?;
+            let frame = retype_frame_from(build_ut)?;
             let scratch = SCRATCH_NEXT.fetch_add(PAGE, core::sync::atomic::Ordering::Relaxed);
             if unsafe { invoke(frame, abi::frame::MAP, scratch, 1, UNTYPED) } != 0 {
                 return Err(());
@@ -279,7 +351,7 @@ fn build_child(elf: &elf::Elf, caps: &[(u64, u64)], maps: &[(u64, u64, u64)]) ->
     }
 
     for k in 0..CHILD_STACK_PAGES {
-        let stack_frame = retype_frame()?;
+        let stack_frame = retype_frame_from(build_ut)?;
         let va = CHILD_STACK_VA - k * PAGE;
         if unsafe {
             invoke(
@@ -302,7 +374,7 @@ fn build_child(elf: &elf::Elf, caps: &[(u64, u64)], maps: &[(u64, u64, u64)]) ->
         }
     }
 
-    let tcb = retype_obj(abi::objtype::TCB)?;
+    let tcb = retype_obj_from(build_ut, abi::objtype::TCB)?;
     for &(our_slot, rights) in caps {
         if unsafe { invoke(tcb, abi::tcb::CAP_INSERT, our_slot, rights, 0) } < 0 {
             return Err(());
@@ -324,12 +396,20 @@ fn build_child(elf: &elf::Elf, caps: &[(u64, u64)], maps: &[(u64, u64, u64)]) ->
 }
 
 fn retype_obj(objtype: u64) -> Result<u64, ()> {
-    let r = unsafe { invoke(UNTYPED, abi::untyped::RETYPE_OBJ, objtype, 0, 0) };
+    retype_obj_from(UNTYPED, objtype)
+}
+
+fn retype_obj_from(ut: u64, objtype: u64) -> Result<u64, ()> {
+    let r = unsafe { invoke(ut, abi::untyped::RETYPE_OBJ, objtype, 0, 0) };
     if r < 0 { Err(()) } else { Ok(r as u64) }
 }
 
 fn retype_frame() -> Result<u64, ()> {
-    let r = unsafe { invoke(UNTYPED, abi::untyped::RETYPE, 0, 0, 0) };
+    retype_frame_from(UNTYPED)
+}
+
+fn retype_frame_from(ut: u64) -> Result<u64, ()> {
+    let r = unsafe { invoke(ut, abi::untyped::RETYPE, 0, 0, 0) };
     if r < 0 { Err(()) } else { Ok(r as u64) }
 }
 
