@@ -243,7 +243,10 @@ extern "C" fn riscv_trap_dispatch(frame: &mut TrapFrame) {
             // The RISC-V twin of aarch64's RESCHED_SGI case. See sched::place_on / drain_inbox.
             S_SOFTWARE => {
                 clear_software_interrupt();
+                // Two reasons a hart pokes us (DECISIONS §28): it handed us a thread (drain it), or
+                // an idle hart asked us for work (serve the steal). The same IPI carries both.
                 crate::sched::drain_inbox();
+                crate::sched::serve_steal_request();
             }
             _ => {
                 SPURIOUS_IRQS.fetch_add(1, Ordering::Relaxed);

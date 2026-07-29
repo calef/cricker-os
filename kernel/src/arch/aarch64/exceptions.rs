@@ -403,9 +403,12 @@ fn handle_irq(_frame: &mut TrapFrame) {
             crate::sched::on_tick();
         }
         crate::sched::RESCHED_SGI => {
-            // Another core handed us a thread (via our inbox) and poked us. Drain it onto our run
-            // queue and request a reschedule; the deferral at the bottom runs schedule(). SMP 3c.
+            // Another core poked us for one of two reasons (SMP 3c, DECISIONS §28). It may have
+            // handed us a thread via our inbox: drain it onto our run queue and reschedule (the
+            // deferral at the bottom runs schedule()). Or an idle core asked us for work: serve the
+            // steal by handing one queued thread back. The same SGI carries both; we do both.
             crate::sched::drain_inbox();
+            crate::sched::serve_steal_request();
         }
         other => {
             // Is this interrupt routed to a userspace driver? If so, **it becomes a message.**

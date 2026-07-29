@@ -15,7 +15,7 @@
 use crate::sync::{IrqSafeMutex, rank};
 use crate::thread::{Thread, Tid};
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use intrusive::Fifo;
 
 /// A `current`/`idle` slot holding no thread. Tids are small integers from 0 up, so `u64::MAX`
@@ -94,6 +94,36 @@ pub struct PerCpu {
     /// reschedule SGI; this core drains it into its own run queue in the handler. A remote core
     /// touches only the inbox, never the run queue. See [`inbox_of`] and `sched::drain_inbox`.
     pub inbox: IrqSafeMutex<Fifo<Thread>>,
+
+    /// **This core's run-queue length, mirrored as an atomic so other cores may read it** (SMP
+    /// placement, DECISIONS §28). The owner keeps it exact by writing `runq.len()` after every
+    /// [`with_runq`](Self::with_runq); a placer or a would-be thief reads it (through
+    /// [`runnable`](Self::runnable)) **relaxed and possibly stale**, which §28 accepts on purpose
+    /// (the gossip lesson: an approximate load reading beats a synchronised one). It is the run
+    /// queue's depth, not counting the thread currently on the CPU.
+    runq_len: AtomicUsize,
+
+    /// **This core's inbox length, mirrored the same way.** Work handed to this core by a remote
+    /// (or a steal being served) sits in the inbox until this core's next scheduler entry drains it.
+    /// Counting it in [`runnable`](Self::runnable) is what keeps a burst of remote placements from
+    /// looking like an idle core: without it, a core with a full inbox but an empty run queue reads
+    /// zero load, so placers pile more on it and idle cores wrongly steal from elsewhere. Updated
+    /// under the inbox lock by whoever changed it (the remote pusher, or this core's drain).
+    inbox_len: AtomicUsize,
+
+    /// **A pending work-steal request from an idle core** (§28's message-shaped stealing): `0` for
+    /// none, otherwise the requesting core's id plus one. An idle core CASes this from 0 and pokes
+    /// this core with the reschedule SGI; this core, at its next scheduler entry, hands one runnable
+    /// thread back to the requester's inbox and clears the slot. One outstanding request at a time
+    /// (the CAS), so a thundering herd of idle cores collapses to one steal per victim per round.
+    pub steal_request: AtomicU32,
+
+    /// **This core's placement PRNG** (§28's power of two choices): xorshift32, seeded per boot per
+    /// core in [`init_this_cpu`], advanced only by this core (spawn runs on the placing core, with
+    /// interrupts masked), so a relaxed atomic is interior mutability, not synchronisation. A
+    /// deterministic PRNG, not real entropy: there is none before an OS, and determinism keeps the
+    /// icount benchmark instrument reproducible.
+    rng: AtomicU32,
 }
 
 // SAFETY: the only non-`Sync` field is `runq`, and the whole contract of this type is that a
@@ -112,6 +142,10 @@ impl PerCpu {
             switched_from: AtomicU64::new(NO_TID),
             runq: UnsafeCell::new(Fifo::new()),
             inbox: IrqSafeMutex::new(rank::INBOX, Fifo::new()),
+            runq_len: AtomicUsize::new(0),
+            inbox_len: AtomicUsize::new(0),
+            steal_request: AtomicU32::new(0),
+            rng: AtomicU32::new(1), // reseeded per core in init_this_cpu; never left 0 (xorshift)
         }
     }
 
@@ -131,7 +165,45 @@ impl PerCpu {
             "run queue touched with interrupts enabled: single-owner safety needs them masked",
         );
         // SAFETY: interrupts masked (asserted) and single-owner, so this `&mut` is exclusive.
-        f(unsafe { &mut *self.runq.get() })
+        let q = unsafe { &mut *self.runq.get() };
+        let r = f(q);
+        // Mirror the depth so other cores can read this core's load without touching its queue
+        // (DECISIONS §28). `Fifo::len` is O(1), so this is one store per queue op. Relaxed: the
+        // reader tolerates staleness, and the queue itself is single-owner.
+        self.runq_len.store(q.len(), Ordering::Relaxed);
+        r
+    }
+
+    /// Record this core's inbox length after a push or drain. Called with the inbox lock held, by
+    /// the remote core that pushed or by this core's drain, so the store is serialised by the lock.
+    pub fn note_inbox_len(&self, len: usize) {
+        self.inbox_len.store(len, Ordering::Relaxed);
+    }
+
+    /// This core's total load, for a **placement** decision (DECISIONS §28.1): queued threads plus
+    /// inbox threads not yet drained. Relaxed and possibly stale by design.
+    pub fn runnable(&self) -> usize {
+        self.runq_len.load(Ordering::Relaxed) + self.inbox_len.load(Ordering::Relaxed)
+    }
+
+    /// This core's **run-queue** backlog alone, for a **steal** decision (DECISIONS §28.3). A thief
+    /// targets this, not `runnable`, so it never tries to take work still sitting in a victim's inbox
+    /// on its way to that victim (which the victim's own imminent drain will run): only a real
+    /// backlog of already-queued threads is worth stealing. Relaxed and possibly stale.
+    pub fn runq_len(&self) -> usize {
+        self.runq_len.load(Ordering::Relaxed)
+    }
+
+    /// Advance this core's placement PRNG (xorshift32) and return the next value. Only the owning
+    /// core calls this, on the spawn path with interrupts masked, so the relaxed load/store pair is
+    /// interior mutability rather than cross-core synchronisation.
+    pub fn rng_next(&self) -> u32 {
+        let mut x = self.rng.load(Ordering::Relaxed);
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.rng.store(x, Ordering::Relaxed);
+        x
     }
 }
 
@@ -149,6 +221,13 @@ static PERCPU: [PerCpu; MAX_CPUS] = [const { PerCpu::new() }; MAX_CPUS];
 pub fn init_this_cpu(id: usize) {
     assert!(id < MAX_CPUS, "cpu id {id} exceeds MAX_CPUS {MAX_CPUS}");
     crate::arch::set_percpu(&PERCPU[id] as *const PerCpu as usize);
+    // Seed this core's placement PRNG (§28). A per-core deterministic seed: the same boot always
+    // makes the same choices (the icount instrument wants that), but the cores differ so they do
+    // not sample in lockstep. `| 1` keeps it nonzero, which xorshift requires.
+    PERCPU[id].rng.store(
+        0x2545_F491 ^ (id as u32).wrapping_mul(0x9E37_79B9) | 1,
+        Ordering::Relaxed,
+    );
 }
 
 /// This core's private block, in one instruction.

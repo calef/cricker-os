@@ -338,13 +338,7 @@ pub fn init() {
     // The idle thread. Its entire body is "wait for an interrupt, then let the scheduler look for
     // work." It is deliberately kept OUT of the ready queue (see cpu::PerCpu::idle): the scheduler picks it
     // only when nothing else is runnable, so it never steals a turn from real work.
-    let idle = Thread::spawn(|| {
-        loop {
-            crate::arch::wait_for_interrupt();
-            yield_now();
-        }
-    })
-    .expect("could not create the idle thread");
+    let idle = Thread::spawn(|| run_idle()).expect("could not create the idle thread");
 
     let mut sched = SCHED.lock();
     let s = sched.as_mut().unwrap();
@@ -415,6 +409,9 @@ pub fn drain_inbox() {
         cpu::current().with_runq(|q| unsafe { q.push_back(thread) });
         moved = true;
     }
+    // The inbox is empty now; mirror that under the lock (DECISIONS §28). The threads moved into the
+    // run queue, whose own mirror `with_runq` just updated, so the total load is unchanged.
+    cpu::current().note_inbox_len(inbox.len());
     drop(inbox);
     if moved {
         cpu::current().need_resched.store(true, Ordering::Relaxed);
@@ -448,7 +445,11 @@ fn place_on(target: usize, thread: *mut Thread) {
         cpu::current().with_runq(|q| unsafe { q.push_back(thread) });
     } else {
         // SAFETY: as above; the inbox mutex serializes access to the link.
-        unsafe { cpu::inbox_of(target).lock().push_back(thread) };
+        let mut inbox = cpu::inbox_of(target).lock();
+        unsafe { inbox.push_back(thread) };
+        // Mirror the target's inbox depth so it counts as load (DECISIONS §28); under the lock, so
+        // the store is serialised with any concurrent drain.
+        cpu::of(target).note_inbox_len(inbox.len());
     }
 }
 
@@ -482,39 +483,118 @@ pub fn spawn_on<F: FnOnce() + Send + 'static>(target: usize, f: F) -> Option<Tid
 }
 
 pub fn spawn<F: FnOnce() + Send + 'static>(f: F) -> Option<Tid> {
-    // Build the thread — which allocates a stack, maps four pages, and boxes the closure —
-    // OUTSIDE the lock. Critical sections stay short (DECISIONS.md §9), and this one would
-    // otherwise hold the scheduler across four page-table walks.
-    let thread = Thread::spawn(f)?;
+    // Placement is the power of two choices (DECISIONS §28): the new thread lands on the lighter of
+    // two randomly sampled cores, not always on the spawner's, so work spreads instead of piling on
+    // one core beside idle ones (the FS-server starvation lesson). `spawn_on` carries the thread to
+    // the chosen core over the §11 inbox/SGI path.
+    spawn_on(pick_spawn_target(), f)
+}
 
-    let mut guard = SCHED.lock();
-    let sched = guard.as_mut()?;
-    let id = sched.threads.insert_with(|tid| {
-        let mut thread = thread;
-        thread.id = tid;
-        thread
-    })?;
-    // Onto the spawning core's own queue. We hold SCHED, so interrupts are masked, which is what
-    // `with_runq` needs. (Step 3c will let a spawn target another core via its inbox.)
-    let ptr = tcb_ptr(sched, id);
-    // SAFETY: freshly inserted, Ready, on no queue; see tcb_ptr for why it stays valid.
-    cpu::current().with_runq(|q| unsafe { q.push_back(ptr) });
+/// **Power of two choices: which core should a new thread run on** (DECISIONS §28.1). Sample two
+/// random cores' runnable counters (relaxed, possibly stale, which §28 accepts) and return the
+/// lighter. Near-optimal balancing that reads at most two remote counters no matter how many cores
+/// there are, where a full least-loaded scan would contend on every counter and age badly. On a
+/// single online core it is a no-op; the two samples may coincide, degrading to one choice harmlessly.
+fn pick_spawn_target() -> usize {
+    let n = crate::smp::online_count();
+    if n <= 1 {
+        return cpu::id();
+    }
+    let a = cpu::current().rng_next() as usize % n;
+    let b = cpu::current().rng_next() as usize % n;
+    if cpu::of(a).runnable() <= cpu::of(b).runnable() {
+        a
+    } else {
+        b
+    }
+}
 
-    Some(id)
+/// **Serve a pending work-steal request** (DECISIONS §28.3), at a scheduler entry where interrupts
+/// are masked (the reschedule-SGI handler). If an idle core asked this core for work, hand it one
+/// thread from our run queue and poke it. We give from the *queue*, never the thread on the CPU, and
+/// only if we have one to spare; an empty give leaves the requester to ask again next tick, the
+/// bounded cost §28 accepts. Pull-based and lock-free between run queues: the only shared structure
+/// touched is the requester's inbox.
+pub fn serve_steal_request() {
+    // Take the request. Acquire pairs with the requester's Release CAS, so the requester id the CAS
+    // published is visible here; clearing it (swap to 0) lets the next idle core queue a fresh one.
+    let req = cpu::current().steal_request.swap(0, Ordering::Acquire);
+    if req == 0 {
+        return;
+    }
+    let requester = (req - 1) as usize;
+    // One thread off our own queue, if any. `with_runq` keeps the runnable mirror exact.
+    let thread = cpu::current().with_runq(|q| q.pop_front());
+    if let Some(t) = thread {
+        // SAFETY: a live Ready thread we just popped, on no other queue; the inbox mutex serialises
+        // the handoff and orders our pop before the requester's drain (the `place_on` discipline).
+        let mut inbox = cpu::inbox_of(requester).lock();
+        unsafe { inbox.push_back(t) };
+        cpu::of(requester).note_inbox_len(inbox.len());
+        crate::arch::irq::send_reschedule(requester);
+    }
+}
+
+/// **An idle core asks a loaded core for work** (DECISIONS §28.3), from the idle loop. Pick the
+/// most-loaded other core and, if it has a queued thread to spare, request one over its steal slot
+/// and poke it with the reschedule SGI; the victim serves it at its next scheduler entry, the stolen
+/// thread lands in our inbox, and that SGI's drain runs it. One outstanding request per victim (the
+/// CAS), so a crowd of idle cores collapses to one steal per victim per round.
+fn try_initiate_steal() {
+    // Do not steal if we have work of our own arriving: our run queue is empty (that is why the idle
+    // thread is running), but the inbox may hold threads a remote just handed us that our own next
+    // scheduler entry will drain. `runnable` counts those, so this guard defers to our own work.
+    if cpu::current().runnable() > 0 {
+        return;
+    }
+    let me = cpu::id();
+    let n = crate::smp::online_count();
+    let mut victim = None;
+    let mut best = 0usize;
+    for c in 0..n {
+        if c != me {
+            // Steal only a run-queue backlog, never a victim's inbox in transit (see `runq_len`).
+            let r = cpu::of(c).runq_len();
+            if r > best {
+                best = r;
+                victim = Some(c);
+            }
+        }
+    }
+    if let Some(v) = victim
+        && cpu::of(v)
+            .steal_request
+            .compare_exchange(0, (me + 1) as u32, Ordering::Release, Ordering::Relaxed)
+            .is_ok()
+    {
+        crate::arch::irq::send_reschedule(v);
+    }
+}
+
+/// **The idle thread's body**, shared by the boot core's spawned idle thread and every secondary's
+/// adopted idle context. Each pass: try to steal work from a loaded core (§28), park in `wfi` until
+/// an interrupt (the stolen thread's SGI, a spawn's SGI, or the tick), then yield so the scheduler
+/// runs whatever arrived. Never returns; it is the fallback the scheduler picks only when this
+/// core's run queue is empty.
+pub fn run_idle() -> ! {
+    loop {
+        try_initiate_steal();
+        crate::arch::wait_for_interrupt();
+        yield_now();
+    }
 }
 
 /// Round-robin cursor for load-balanced spawning across the online cores (SMP).
 static NEXT_CORE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
-/// **Load-balanced spawn** (SMP, the last piece of §11): place `f` on the next core in a round-robin
-/// over the online cores, so a batch of independent work spreads across all of them instead of piling
-/// onto the caller. Delegates to [`spawn_on`], which takes the fast local path when the chosen core is
-/// this one and otherwise reaches the target through its inbox and a reschedule SGI.
+/// **Round-robin spawn** (SMP): place `f` on the next online core in strict rotation, so a batch of
+/// independent work hits *every* core, not just most of them. Delegates to [`spawn_on`].
 ///
-/// [`spawn`] deliberately stays *local* placement. Much kernel work wants locality or a predictable
-/// core (a driver's helper, an ordering-sensitive pair), and forcing balancing on it is the wrong
-/// default for a microkernel where placement is policy, not mechanism. This is the explicit "spread
-/// it" primitive; a userspace balancer is the eventual home of richer policy (least-loaded, affinity).
+/// Since DECISIONS §28, [`spawn`] itself spreads load (the power of two choices), so the ordinary
+/// path no longer piles onto the caller and this is not the only way to balance. What round-robin
+/// still buys over the random default is a **deterministic, every-core** distribution, which is why
+/// the SMP balance test uses it: power of two choices is near-optimal on average but does not
+/// guarantee a given core is hit in a fixed number of spawns, and the test asserts exactly that.
 pub fn spawn_balanced<F: FnOnce() + Send + 'static>(f: F) -> Option<Tid> {
     let n = crate::smp::online_count();
     let core = NEXT_CORE.fetch_add(1, core::sync::atomic::Ordering::Relaxed) % n;
@@ -713,13 +793,27 @@ pub fn schedule() {
         };
 
         let current = current_tid();
+
+        // **Forcible teardown, before anything else** (DECISIONS §16 amendment; §28 made it
+        // load-bearing). A thread `DESTROY` marked killed must never run again. Convert it to a
+        // `Finished` corpse here, at the top of the decision, so *every* path below reaps it: not
+        // only the switch path, but the "nothing else to run, keep current" path a runaway alone on
+        // its core takes. Before §28's scattering, a killed runaway shared a core with other work, so
+        // a switch always happened and the old requeue-time check sufficed; once a runaway can be the
+        // only thread on its core, that check was unreachable and the runaway spun forever.
+        if let Some(t) = sched.threads.get_mut(current)
+            && t.killed
+            && t.state == State::Running
+        {
+            t.state = State::Finished;
+        }
         let state = sched.threads.get(current).map(|t| t.state);
 
         // **Only a still-Running thread goes back on the ready queue.** A thread that reached
-        // here after marking itself `Blocked` (it is waiting for IPC) or `Finished` must not be
-        // rescheduled, and this one line is what makes blocking work: `schedule()` can be
-        // called from the timer IRQ *while* a thread is mid-way through blocking itself, and it
-        // must not undo that by helpfully requeueing it.
+        // here after marking itself `Blocked` (it is waiting for IPC), `Finished`, or `Dead` (a
+        // supervised corpse) must not be rescheduled, and this one line is what makes blocking work:
+        // `schedule()` can be called from the timer IRQ *while* a thread is mid-way through blocking
+        // itself, and it must not undo that by helpfully requeueing it.
         let runnable = state == Some(State::Running);
 
         let idle_tid = cpu::current().idle.load(Ordering::Relaxed);
@@ -752,25 +846,14 @@ pub fn schedule() {
             }
         };
 
-        // Requeue the outgoing thread if it can still run — but never the idle thread, which
-        // lives outside the ready queue.
+        // Requeue the outgoing thread if it can still run — but never the idle thread, which lives
+        // outside the ready queue. A killed thread is already `Finished` (handled at the top), so it
+        // is not runnable here and is reaped by `finish_switch` after the switch, no queue surgery.
         if runnable && current != idle_tid {
+            sched.threads.get_mut(current).unwrap().state = State::Ready;
             let ptr = tcb_ptr(sched, current);
-            let outgoing = sched.threads.get_mut(current).unwrap();
-            if outgoing.killed {
-                // **Forcible teardown** (DECISIONS §16 amendment, §24's second-`^C` tier). A thread
-                // `DESTROY` marked killed never runs again: retire it here, off its stack, as a
-                // `Finished` corpse, and do NOT requeue it, so the very next thing that happens is
-                // `finish_switch` reaping it exactly as a clean exit does (stack and address space
-                // torn down outside this lock). A runaway spinning at EL0 reaches this the instant
-                // its timeslice ends, so the shell's escalation needs no queue surgery and no
-                // cross-core stop: each core converts its own killed thread on the timer.
-                outgoing.state = State::Finished;
-            } else {
-                outgoing.state = State::Ready;
-                // SAFETY: just marked Ready, coming off the CPU, on no queue. Round robin: the back.
-                cpu::current().with_runq(|q| unsafe { q.push_back(ptr) });
-            }
+            // SAFETY: just marked Ready, coming off the CPU, on no queue. Round robin: the back.
+            cpu::current().with_runq(|q| unsafe { q.push_back(ptr) });
         }
 
         {
@@ -1662,10 +1745,18 @@ pub fn start_tcb(tid: Tid, args: [u64; 3]) -> Result<(), abi::Error> {
         return Err(abi::Error::OutOfMemory); // no kernel stack to be had
     }
     t.state = State::Ready;
+    // Placement is the power of two choices (DECISIONS §28), the same as `spawn`: a freshly started
+    // user thread lands on the lighter of two sampled cores rather than always the starter's, so a
+    // process that spawns a pipeline does not pile it all onto one core. `place_on` enqueues locally
+    // or hands the thread to the target's inbox; the SGI that makes a remote target pick it up goes
+    // out after SCHED is released.
+    let target = pick_spawn_target();
     let ptr = tcb_ptr(sched, tid);
-    // SAFETY: freshly Ready, on no queue (it was an embryo, queued nowhere); SCHED held, IRQs
-    // masked, so this core's run queue is ours.
-    cpu::current().with_runq(|q| unsafe { q.push_back(ptr) });
+    place_on(target, ptr);
+    drop(guard);
+    if target != cpu::id() {
+        crate::arch::irq::send_reschedule(target);
+    }
     Ok(())
 }
 
@@ -1839,6 +1930,22 @@ mod tests {
 
     use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+    /// Spin the scheduler until `cond`, bounded by wall-clock, returning whether it happened. Since
+    /// DECISIONS §28, work a test spawns runs on *other* cores, so this core is often idle and a
+    /// yield returns at once: a fixed count of yields elapses in almost no real time and times out
+    /// before the parallel result lands. A ~2 s deadline gives the other cores real time while
+    /// staying far under the 60 s hang watchdog, so a genuine lost wakeup still fails.
+    fn spin_until(mut cond: impl FnMut() -> bool) -> bool {
+        let deadline = crate::arch::timer::now() + 2 * crate::arch::timer::frequency();
+        while crate::arch::timer::now() < deadline {
+            if cond() {
+                return true;
+            }
+            super::yield_now();
+        }
+        cond()
+    }
+
     /// A spawned thread actually runs, and its closure's captured state comes with it.
     #[test_case]
     fn a_spawned_thread_runs() {
@@ -1852,13 +1959,8 @@ mod tests {
         })
         .expect("spawn failed");
 
-        // Yield until it has had a turn. Round robin, so this is quick.
-        for _ in 0..100 {
-            if RAN.load(Ordering::SeqCst) {
-                break;
-            }
-            crate::sched::yield_now();
-        }
+        // Wait until it has had a turn (on this or another core, since §28).
+        spin_until(|| RAN.load(Ordering::SeqCst));
 
         assert!(RAN.load(Ordering::SeqCst), "the thread never ran");
         assert_eq!(
@@ -2142,8 +2244,16 @@ mod tests {
 
         let preemptions_before = crate::sched::preemptions();
 
+        // Pin both threads to THIS core, the one the test thread busy-waits on, so this stays a
+        // *same-core* preemption test after DECISIONS §28 made the default `spawn` scatter work
+        // across cores. The claim under test is that a never-yielding thread cannot monopolize the
+        // core it is on; if the spinner ran on some other idle core the timer would never have to
+        // preempt anything here, and the test would prove nothing. `spawn_on(cpu::id())` keeps the
+        // spinner, the polite thread, and the waiter contending for one core, as they always did.
+        let here = crate::cpu::id();
+
         // The hostile thread. This is the arbitrary ELF binary, in miniature.
-        crate::sched::spawn(|| {
+        crate::sched::spawn_on(here, || {
             while !STOP.load(Ordering::Relaxed) {
                 SPINNING.fetch_add(1, Ordering::Relaxed);
                 // Deliberately nothing else. No yield. No call. Nothing to cooperate with.
@@ -2152,7 +2262,7 @@ mod tests {
         .expect("spawn failed");
 
         // A well-behaved thread that just wants a turn.
-        crate::sched::spawn(|| {
+        crate::sched::spawn_on(here, || {
             OTHER_RAN.store(true, Ordering::SeqCst);
         })
         .expect("spawn failed");
@@ -2384,14 +2494,8 @@ mod tests {
         })
         .expect("spawn failed");
 
-        for _ in 0..200 {
-            if DONE.load(Ordering::SeqCst) {
-                break;
-            }
-            super::yield_now();
-        }
         assert!(
-            DONE.load(Ordering::SeqCst),
+            spin_until(|| DONE.load(Ordering::SeqCst)),
             "the request/reply never completed"
         );
         assert_eq!(
@@ -2460,12 +2564,7 @@ mod tests {
         })
         .expect("spawn failed");
         super::ipc_send(ep, [0x2A, 0, 0]);
-        for _ in 0..200 {
-            if GOT.load(Ordering::SeqCst) != 0 {
-                break;
-            }
-            super::yield_now();
-        }
+        spin_until(|| GOT.load(Ordering::SeqCst) != 0);
         assert_eq!(
             GOT.load(Ordering::SeqCst),
             0x2A,
@@ -2512,13 +2611,10 @@ mod tests {
         })
         .expect("spawn failed");
 
-        for _ in 0..200 {
-            if DONE.load(Ordering::SeqCst) {
-                break;
-            }
-            super::yield_now();
-        }
-        assert!(DONE.load(Ordering::SeqCst), "the call never returned");
+        assert!(
+            spin_until(|| DONE.load(Ordering::SeqCst)),
+            "the call never returned"
+        );
         assert_eq!(ANSWER.load(Ordering::SeqCst), 42, "wrong reply");
     }
 
@@ -2561,12 +2657,7 @@ mod tests {
         })
         .expect("spawn failed");
 
-        for _ in 0..300 {
-            if GOT_A.load(Ordering::SeqCst) != 0 && GOT_B.load(Ordering::SeqCst) != 0 {
-                break;
-            }
-            super::yield_now();
-        }
+        spin_until(|| GOT_A.load(Ordering::SeqCst) != 0 && GOT_B.load(Ordering::SeqCst) != 0);
         assert_eq!(
             GOT_A.load(Ordering::SeqCst),
             111,
@@ -2661,14 +2752,8 @@ mod tests {
         // Fire it. The GIC delivers the SGI, handle_irq routes it to `ep`, the waiter wakes.
         crate::drivers::gic::send_sgi(SGI, 0); // self (core 0) in the test
 
-        for _ in 0..100 {
-            if WOKE.load(Ordering::SeqCst) {
-                break;
-            }
-            super::yield_now();
-        }
         assert!(
-            WOKE.load(Ordering::SeqCst),
+            spin_until(|| WOKE.load(Ordering::SeqCst)),
             "a hardware interrupt fired and the thread waiting on it never woke",
         );
     }

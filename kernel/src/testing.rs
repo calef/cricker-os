@@ -38,8 +38,6 @@ pub fn watchdog_tick() {
     if WATCH_STALL_TICKS.fetch_add(1, Ordering::Relaxed) + 1 == STALL_LIMIT {
         println!();
         println!("WATCHDOG: a test made no progress for ~60 s — likely a lost-wakeup hang.");
-        // SCHED is free on a blocked-thread hang (a lock deadlock is a different failure); this is
-        // best-effort either way. It names the thread that is stuck and its wake flags.
         crate::sched::dump_threads();
         semihosting::exit(semihosting::EXIT_FAILURE);
     }

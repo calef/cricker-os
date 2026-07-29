@@ -3047,9 +3047,15 @@ mod tests {
     const NET_TEST_TCP_REOPEN: u64 = 3;
     const NET_CLIENT_OK: u64 = 1;
 
-    /// Spin the scheduler until `done()`, or give up. Returns whether it happened.
+    /// Spin the scheduler until `done()`, or give up after a wall-clock deadline. Returns whether it
+    /// happened. **Time-based, not a fixed yield count** (DECISIONS §28): with work spread across
+    /// cores, the test thread's own core is often idle, so a yield returns at once and a fixed count
+    /// of them elapses in almost no real time, timing out before a parallel result on another core
+    /// lands. A ~2 s deadline gives the other cores real time to finish while staying far under the
+    /// 60 s hang watchdog, so a genuine hang still fails.
     fn wait_for(mut done: impl FnMut() -> bool) -> bool {
-        for _ in 0..2000 {
+        let deadline = crate::arch::timer::now() + 2 * crate::arch::timer::frequency();
+        while crate::arch::timer::now() < deadline {
             if done() {
                 return true;
             }
@@ -4192,8 +4198,18 @@ mod tests {
         // snapshot swallows its fault, and the wait below times out on a count that will never
         // move again. Latent until milestone 14 phase A.2/A.3 made spawn-to-fault fast enough
         // to lose the race about once in seven runs.
+        // Pin the outlaws to THIS core (DECISIONS §28 made `spawn` scatter them). Frame accounting
+        // must be exact to catch a leak (the milestone-6 bug this test guards), but a thread's frames
+        // are freed by `finish_switch` on whatever core reaps it, *after* it leaves the thread table
+        // and outside SCHED. Scattered across cores, that free is asynchronous, so `used()` fluctuates
+        // and never reads exact. Kept on the test's own core, each outlaw's fault, reap, and frame
+        // free happen synchronously under the test's own yields, so `used()` is exact again. This
+        // tests the reaper, not placement, so pinning costs nothing.
+        let here = crate::cpu::id();
+        let outlaw_here = || sched::spawn_on(here, || unsafe { exec(outlaw()) });
+
         let f0 = USER_FAULTS.load(Ordering::Relaxed);
-        sched::spawn(|| unsafe { exec(outlaw()) }).expect("spawn failed");
+        outlaw_here().expect("spawn failed");
         assert!(wait_for(|| USER_FAULTS.load(Ordering::Relaxed) > f0));
         assert!(wait_for(|| sched::thread_count() <= baseline));
 
@@ -4201,11 +4217,12 @@ mod tests {
 
         for _ in 0..4 {
             let f = USER_FAULTS.load(Ordering::Relaxed);
-            sched::spawn(|| unsafe { exec(outlaw()) }).expect("spawn failed");
+            outlaw_here().expect("spawn failed");
             assert!(wait_for(|| USER_FAULTS.load(Ordering::Relaxed) > f));
             assert!(wait_for(|| sched::thread_count() <= baseline));
         }
 
+        // Exact: every frame the four address spaces used comes back, no more and no less.
         assert_eq!(
             used(),
             before,
@@ -4876,10 +4893,14 @@ mod force_kill_tests {
 
         // The forcible tier: reclaim the region while the runaway is still live. The first pass arms
         // the kill and refuses; the runaway is converted to a corpse at its next preemption; the
-        // retry (yielding to give it that preemption) reclaims. Bounded, so a bug is a failed test,
-        // not a hung emulator.
+        // retry reclaims. The wait is time-based, not a fixed spin count, because since DECISIONS §28
+        // the runaway may be placed on another core, where only that core's own timer tick converts
+        // it (the kill is bounded by the tick, §28.3 / §16). A tight yield loop on this core would
+        // finish inside one 10 ms tick and never give the remote core a chance; a one-second deadline
+        // spans ~100 ticks, ample, while still failing a real bug rather than hanging the emulator.
+        let deadline = crate::arch::timer::now() + crate::arch::timer::frequency();
         let mut reclaimed = false;
-        for _ in 0..4000 {
+        while crate::arch::timer::now() < deadline {
             if sched::reclaim_region(region).is_ok() {
                 reclaimed = true;
                 break;
@@ -5138,10 +5159,12 @@ mod riscv_virtio_tests {
     const NET_TEST_TCP_REOPEN: u64 = 3;
     const NET_CLIENT_OK: u64 = 1;
 
-    /// Spin the scheduler until `done()`, or give up. The aarch64 module's helper, re-declared
-    /// because that module is aarch64-gated.
+    /// Spin the scheduler until `done()`, or give up after a wall-clock deadline. The aarch64
+    /// module's helper, re-declared because that module is aarch64-gated; time-based for the same
+    /// reason (DECISIONS §28: a fixed yield count elapses in no real time on an idle core).
     fn wait_for(mut done: impl FnMut() -> bool) -> bool {
-        for _ in 0..2000 {
+        let deadline = crate::arch::timer::now() + 2 * crate::arch::timer::frequency();
+        while crate::arch::timer::now() < deadline {
             if done() {
                 return true;
             }
