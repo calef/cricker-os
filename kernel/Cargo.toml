@@ -14,6 +14,7 @@ asid = { version = "0.1.0", path = "../crates/asid" }
 caps = { version = "0.1.0", path = "../crates/caps" }
 coremark = { version = "0.1.0", path = "../crates/coremark" }
 crickerfs = { version = "0.1.0", path = "../crates/crickerfs" }
+fs_proto = { version = "0.1.0", path = "../crates/fs_proto" }
 dtb = { version = "0.1.0", path = "../crates/dtb" }
 pci = { version = "0.1.0", path = "../crates/pci" }
 elf = { version = "0.1.0", path = "../crates/elf" }

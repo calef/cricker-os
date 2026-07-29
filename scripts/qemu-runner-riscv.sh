@@ -62,7 +62,18 @@ if [ -n "$CRICKER_DISK" ]; then
         echo "qemu-runner-riscv: $PCI_DISK does not exist (run mkdisk first; it writes both images)" >&2
         exit 1
     fi
-    DISK="-global virtio-mmio.force-legacy=false -drive file=$CRICKER_DISK,if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 -drive file=$PCI_DISK,if=none,format=raw,id=hd1 -device virtio-blk-pci,drive=hd1,disable-legacy=on,iommu_platform=on"
+    # The RedoxFS image (milestone 32 phase 2), the SECOND mmio block device. Placed BEFORE the
+    # crickerfs disk on the command line on purpose: QEMU's virt assigns virtio-mmio devices to
+    # slots in REVERSE command-line order, and the kernel finds block devices by ascending slot, so
+    # the crickerfs disk must be the LAST mmio device to keep slot 0 (find_block_device -> crickerfs,
+    # the phase-1 tests), leaving RedoxFS at slot 1 (find_block_device_n(1) -> RedoxFS). Soft:
+    # present only when the test flow built it. Created host-side by tools/redoxfs-host.
+    REDOXFS_DISK="${CRICKER_DISK%.img}-redoxfs.img"
+    REDOXFS_MMIO=""
+    if [ -f "$REDOXFS_DISK" ]; then
+        REDOXFS_MMIO="-drive file=$REDOXFS_DISK,if=none,format=raw,id=hd2 -device virtio-blk-device,drive=hd2"
+    fi
+    DISK="-global virtio-mmio.force-legacy=false $REDOXFS_MMIO -drive file=$CRICKER_DISK,if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 -drive file=$PCI_DISK,if=none,format=raw,id=hd1 -device virtio-blk-pci,drive=hd1,disable-legacy=on,iommu_platform=on"
 fi
 
 # A virtio-net NIC on QEMU user-mode (slirp) networking when CRICKER_NET is set (milestone 30), the

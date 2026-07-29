@@ -7,3 +7,4 @@ publish = false
 
 [dependencies]
 crickerfs = { version = "0.1.0", path = "../crates/crickerfs" }
+fs_proto = { version = "0.1.0", path = "../crates/fs_proto" }

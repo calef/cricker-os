@@ -86,6 +86,28 @@ pub fn find_net_device() -> Option<VirtioMmioDevice> {
     find_by_device_id(DEVICE_ID_NET)
 }
 
+/// Scan the bus for the `n`-th (0-based) virtio block device, `None` if there is no such disk. The
+/// FS server (milestone 32 phase 2) drives the SECOND mmio block disk (`n = 1`), a RedoxFS image,
+/// leaving the first (the crickerfs disk) to the phase-1 driver tests. QEMU numbers the mmio slots
+/// in device order, so the runner attaches the crickerfs disk first and the RedoxFS disk second.
+#[allow(dead_code)] // called only by fs_service, which the phase-2 test drives
+pub fn find_block_device_n(n: usize) -> Option<VirtioMmioDevice> {
+    let mut seen = 0;
+    for slot in 0..SLOTS {
+        if read_reg(slot, REG_MAGIC) != MAGIC || read_reg(slot, REG_DEVICE_ID) != DEVICE_ID_BLOCK {
+            continue;
+        }
+        if seen == n {
+            return Some(VirtioMmioDevice {
+                mmio_phys: VIRTIO_MMIO_BASE + slot * SLOT_STRIDE,
+                intid: VIRTIO_IRQ_BASE + slot as u32,
+            });
+        }
+        seen += 1;
+    }
+    None
+}
+
 // ---------------------------------------------------------------------------------------------
 // Milestone: DMA confinement. The kernel owns the block device's transport.
 //
