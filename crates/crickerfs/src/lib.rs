@@ -12,7 +12,7 @@
 //! # The layout
 //!
 //! ```text
-//!   block 0            the superblock
+//!   block 0..          the directory (as many 512-byte blocks as the entries need)
 //!     magic   "CRKR0001"   (8 bytes)
 //!     count   u32 LE       how many files
 //!     ...then `count` directory entries, each 32 bytes:
@@ -20,11 +20,14 @@
 //!       start_block u32 LE  where the file's data begins
 //!       len         u32 LE  the file's length in bytes
 //!
-//!   block 1..           file data, each file block-aligned
+//!   then                file data, each file block-aligned, starting at the block after the
+//!                       directory (block 1 for the common one-block directory)
 //! ```
 //!
-//! A 512-byte block holds the magic, the count, and up to 15 entries, which is all the files this
-//! filesystem will ever need to hold to make its point.
+//! Up to fifteen entries fit one 512-byte block; more spill into a second, and file data starts
+//! after the directory rather than at a fixed block 1. So an image at or under fifteen files is
+//! byte-identical to the original single-block format, and a larger one (the riscv initrd, whose
+//! per-role driver binaries push it past fifteen) just pushes its data out by a block.
 
 #![no_std]
 
@@ -36,7 +39,26 @@ pub const MAGIC: [u8; 8] = *b"CRKR0001";
 
 const NAME_LEN: usize = 24;
 const ENTRY_LEN: usize = 32;
-const MAX_FILES: usize = (BLOCK - 12) / ENTRY_LEN; // 15
+
+/// The most files an image may hold. The directory (the magic, the count, then `count` 32-byte
+/// entries) now spans **as many blocks as it needs**, and file data starts at the block after it,
+/// so the count is no longer capped at the fifteen entries that fit one 512-byte block. Two blocks
+/// (31 files) is ample for every image this kernel builds: the largest is the riscv initrd, whose
+/// per-role driver binaries (aarch64 folds them into one `hello`) push it to ~17. Raising this is a
+/// one-line change, paid in the parsed [`Fs`]'s on-stack entry array. Nothing persists a crickerfs
+/// image across a rebuild (every initrd and the crickerfs disk are regenerated), so the multi-block
+/// directory needs no on-disk migration; and for any image at or under the old fifteen-file cap the
+/// layout is byte-identical (a one-block directory, data at block 1), so nothing regressed.
+const MAX_FILES: usize = 31;
+
+/// How many 512-byte blocks the directory occupies for `count` files. File data starts at the block
+/// after it. One block for up to fifteen files, which is what keeps small images byte-identical to
+/// the pre-multi-block format.
+const fn dir_blocks(count: usize) -> usize {
+    // `12 + count*ENTRY_LEN` is at least 12, so `div_ceil` is at least 1; no `.max(1)` needed (and
+    // `usize::max` is not const on this toolchain).
+    (12 + count * ENTRY_LEN).div_ceil(BLOCK)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -87,6 +109,11 @@ impl<'a> Fs<'a> {
         let count = u32le(image, 8) as usize;
         if count > MAX_FILES {
             return Err(Error::TooManyFiles);
+        }
+        // The directory may now span more than one block, so make sure it fits the image before
+        // indexing entries (a corrupt count must not read past the buffer).
+        if 12 + count * ENTRY_LEN > image.len() {
+            return Err(Error::OutOfBounds);
         }
 
         let mut entries = [Entry {
@@ -158,7 +185,7 @@ pub fn write_image(files: &[(&str, &[u8])], out: &mut [u8]) -> Result<usize, Err
     out[0..8].copy_from_slice(&MAGIC);
     out[8..12].copy_from_slice(&(files.len() as u32).to_le_bytes());
 
-    let mut block = 1u32; // data starts after the superblock
+    let mut block = dir_blocks(files.len()) as u32; // data starts after the (multi-block) directory
     for (i, (name, data)) in files.iter().enumerate() {
         let off = 12 + i * ENTRY_LEN;
         let n = name.len().min(NAME_LEN);
@@ -183,7 +210,7 @@ pub fn write_image(files: &[(&str, &[u8])], out: &mut [u8]) -> Result<usize, Err
 
 /// How many bytes an image holding `files` needs.
 pub fn image_size(files: &[(&str, &[u8])]) -> usize {
-    let mut blocks = 1usize;
+    let mut blocks = dir_blocks(files.len());
     for (_, data) in files {
         blocks += data.len().div_ceil(BLOCK).max(1);
     }
@@ -253,12 +280,55 @@ mod tests {
     #[test]
     fn too_many_files_is_refused() {
         let data: &[u8] = b"x";
-        let files: vec::Vec<(&str, &[u8])> = (0..16).map(|_| ("f", data)).collect();
+        let files: vec::Vec<(&str, &[u8])> = (0..MAX_FILES + 1).map(|_| ("f", data)).collect();
         let mut img = vec![0u8; image_size(&files) + BLOCK];
         assert_eq!(
             write_image(&files, &mut img).err(),
             Some(Error::TooManyFiles)
         );
+    }
+
+    /// **A directory that spills past one block round-trips.** More than fifteen files forces the
+    /// directory into a second block and file data to start after it; every file must still read
+    /// back byte-for-byte. This is the case the riscv initrd hit (its per-role driver binaries push
+    /// it past fifteen), and the regression guard for the multi-block directory.
+    #[test]
+    fn a_directory_spanning_two_blocks_round_trips() {
+        // Twenty files, each with distinct contents longer than a name so a shifted or truncated
+        // directory could not accidentally match.
+        let bodies: vec::Vec<vec::Vec<u8>> = (0..20u8)
+            .map(|i| vec![i; (BLOCK + i as usize) % (2 * BLOCK) + 1])
+            .collect();
+        let names: vec::Vec<vec::Vec<u8>> = (0..20u8)
+            .map(|i| std::format!("file{i}").into_bytes())
+            .collect();
+        let files: vec::Vec<(&str, &[u8])> = (0..20)
+            .map(|i| {
+                (
+                    core::str::from_utf8(&names[i]).unwrap(),
+                    bodies[i].as_slice(),
+                )
+            })
+            .collect();
+        assert!(
+            files.len() > (BLOCK - 12) / ENTRY_LEN,
+            "test must exceed one block"
+        );
+
+        let mut img = vec![0u8; image_size(&files)];
+        let n = write_image(&files, &mut img).expect("write");
+        assert_eq!(n, img.len());
+
+        let fs = Fs::parse(&img).expect("parse");
+        assert_eq!(fs.len(), 20);
+        for (i, body) in bodies.iter().enumerate() {
+            let name = core::str::from_utf8(&names[i]).unwrap();
+            assert_eq!(
+                fs.read(name),
+                Some(body.as_slice()),
+                "file {name} mismatched"
+            );
+        }
     }
 }
 
@@ -274,11 +344,14 @@ mod tests {
 ///   (no symbolic arrays; this is the kernel-facing guarantee), and
 /// - the **truncation guard** for every under-one-block image.
 ///
-/// What is deliberately NOT proved: whole-parse totality (the wall above; the in-bounds
-/// indexing it would add is `u32le`/`copy_from_slice` at offsets statically under one block,
-/// which the `image.len() < BLOCK` guard, proved below, makes sound), and `name_str` (its panic
-/// surface is a slice bounded by `position()`, and its UTF-8 half is `core`'s validator, which
-/// costs CBMC minutes to re-prove and is trusted everywhere else in the system).
+/// What is deliberately NOT proved: whole-parse totality (the wall above; the in-bounds indexing it
+/// would add is `u32le`/`copy_from_slice` over the directory, at offsets below `12 + count *
+/// ENTRY_LEN`, which the directory-fits guard (`12 + count * ENTRY_LEN > image.len()` returns
+/// `OutOfBounds`) bounds inside the image). The directory may now span more than one block, so that
+/// explicit guard, not the one-block `image.len() < BLOCK` truncation guard, is what makes the
+/// directory reads sound; the truncation guard still refuses the degenerate under-one-block image.
+/// Also not proved: `name_str` (its panic surface is a slice bounded by `position()`, and its UTF-8
+/// half is `core`'s validator, which costs CBMC minutes to re-prove and is trusted everywhere else).
 #[cfg(kani)]
 mod verification {
     use super::*;
