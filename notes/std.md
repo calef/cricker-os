@@ -27,7 +27,16 @@ out-of-band convention (notes/abi.md §4) grants them at fixed slots:
   byte count, w1|w2 = the bytes, little-endian). std's own `LineWriter` batches user writes; the
   receiver reassembles.
 
-A program that never allocates or prints never touches the slots it does not use.
+Two more slots exist, and only a std program *given the network* holds them (milestone 27 phase
+two, the `std::net` binding below):
+
+- **slot 2: a `Stack` endpoint with WRITE.** `std::net` speaks netd's socket contract over it.
+- **slot 3: an untyped budget** the net PAL mints each socket's shared frame from.
+
+A program that never allocates, prints, or opens a socket never touches the slots it does not use.
+The absence of slots 2 and 3 is exactly what "no ambient network" feels like from inside a
+process: `std::net` returns `Unsupported` because there is no `Stack` capability to reach, not
+because the code was compiled out.
 
 ## The PAL surface, and what each piece binds to
 
@@ -41,7 +50,8 @@ std by `cargo xtask std-src`. Each file binds one std concept to the ABI:
 | `Instant`, `SystemTime` | the virtual counter, `CNTVCT_EL0` / `rdtime` (`sys/time/cricker.rs`) |
 | `panic!` | print, then `brk`/`ebreak`: a fault the kernel attributes. No unwinding. |
 | `thread::spawn` | `Unsupported` in phase one; `sleep`/`yield` are real |
-| `fs`, `net` | `Unsupported`, honestly, until capability-granted servers exist |
+| `net` (`TcpStream`, outbound `UdpSocket`) | netd's socket contract on slots 2/3 (`sys/net/connection/cricker.rs`), or `Unsupported` when not granted |
+| `fs` | `Unsupported`, honestly, until milestone 32's FS server |
 | `HashMap` seed | splitmix64 from the counter (`sys/random/cricker.rs`), **not** cryptographic |
 | `std::env::consts::OS` | `"cricker"` (patched into `env_consts.rs`) |
 
@@ -97,6 +107,48 @@ The load-bearing fields:
 The build also passes `-Zbuild-std-features=compiler-builtins-mem` to supply `memcpy`/`memset` for
 the bare target.
 
+## `std::net` over the socket contract (milestone 27 phase two)
+
+`sys/net/connection/cricker.rs` binds std's `TcpStream` and outbound `UdpSocket` to netd's socket
+contract (DECISIONS §25, notes/net.md, `user/src/netproto.rs`). The PAL is a **client** of the
+frozen contract, nothing more: it holds the `Stack` endpoint (slot 2) and a frame untyped (slot 3),
+and for each socket it mints a shared `Frame`, maps it, delegates it to netd (`SEND_CAP`,
+`OP_ATTACH_FRAME`), and then drives the socket with `CALL`s carrying a socket id. Control words ride
+the message; bytes sit in the shared frame. This is the exact path the hand-written `netcli` client
+walks, reached through std's blocking API instead.
+
+The wire constants are not restated: `netproto.rs` is generated verbatim from `user/src/netproto.rs`
+into `sys/pal/cricker/netproto.rs` by `std-src`, the same anti-drift discipline as `abi.rs` and
+`uheap.rs`. If the contract changes, the PAL's numbers change with it, because there is one source.
+
+What binds, and how it maps to the contract:
+
+- **`TcpStream::{connect, read, write, ...}`** -> `OP_OPEN_TCP`, `OP_CONNECT`, `OP_RECV`, `OP_SEND`,
+  `OP_CLOSE` (on `Drop`). `read` blocks in netd until data arrives (a blocked `RECV`), the blocking
+  semantics std's default API wants. A short `read` keeps the segment's tail in a per-socket residual
+  buffer, so a stream never drops bytes.
+- **`UdpSocket::{bind, connect, send, recv, send_to, recv_from}`** -> `OP_OPEN_UDP`, `OP_SENDTO`,
+  `OP_RECV`. UDP `connect` only fixes a default peer (no contract call, matching Unix). `bind`'s
+  local address is validated but not honored: netd assigns an ephemeral local port.
+- **Errors map by meaning, no errno.** A refused TCP connect is `ConnectionRefused`; a netd timeout
+  on `RECV` is `TimedOut`; a datagram larger than the frame is `InvalidInput`; an IPv6 address is
+  `Unsupported` (netd is IPv4-only). A `CALL` on an empty `Stack` slot (no network granted) reads
+  back negative and becomes `Unsupported`, the same answer a program with no net grants gets.
+
+The concurrency model is the contract's: single-threaded, one synchronous exchange at a time. A
+program can hold up to `MAX_SOCKETS` (4) sockets at once and interleave them, but there is only ever
+one operation in flight, which is all a single-threaded process can do anyway.
+
+**A finding, recorded honestly.** netd derives a socket's local port from its socket id
+(`LOCAL_PORT_BASE + sid`), so an id is not an ephemeral port that rotates; reopening a just-closed id
+reuses its exact local port. Against QEMU's slirp, a TCP connect that reuses a port whose previous
+flow has not cleared stalls (the SYN's answer never comes, and netd blocks in its bounded poll on
+the NIC interrupt). The PAL softens this by handing out ids round-robin, so consecutive opens prefer
+different ids and ports, but a program that churns through more than `MAX_SOCKETS` sockets quickly
+can still hit a reused port. The real fix is netd assigning ephemeral local ports independent of the
+socket id, which is a **contract-side change reported up, not a client workaround**. The demo
+sidesteps it by keeping its UDP and TCP sockets on distinct ids at once.
+
 ## Honest caveats (what is Unsupported, and why)
 
 - **`thread::spawn` returns `Unsupported`.** The kernel has everything it needs (retype a TCB,
@@ -104,9 +156,20 @@ the bare target.
   safe: a TLS story, park/unpark on a kernel primitive, join. Phase one ships without it rather than
   shipping it wrong. The sync primitives are std's single-threaded `no_threads` implementations, and
   the allocator's spinlock is uncontended today but stays correct under future preemption.
-- **`fs` and `net` return `Unsupported`.** No file capability points anywhere until milestone 32's
-  FS server; no socket until milestone 30's network stack. Both back std's `unsupported` paths, and
-  the demo checks that they refuse with `ErrorKind::Unsupported` rather than pretend.
+- **`fs` returns `Unsupported`.** No file capability points anywhere until milestone 32's FS server.
+  It backs std's `unsupported` path, and the demo checks it refuses with `ErrorKind::Unsupported`
+  rather than pretend.
+- **`net` is bound, but with recorded gaps.** `TcpStream` and outbound `UdpSocket` work; the honest
+  Unsupported list is `TcpListener` (no LISTEN/accept verb in the contract), non-blocking mode and
+  read/write timeouts (the contract is blocking-only, no poll verb), DNS via `lookup_host` (no
+  resolver rides the contract, so `ToSocketAddrs` handles numeric addresses only, and a program that
+  wants DNS does it as a plain UDP query, as the demo does), IPv6 (netd is IPv4-only), and `peek` /
+  socket duplication / multicast join-leave (no contract verb backs them). `UdpSocket::recv_from`
+  reports the connected peer or the last send destination as the datagram source, because the
+  contract's `RECV` does not carry it; that is correct for the request/response pattern the demo
+  uses and recorded here for anything that assumes otherwise. Advisory knobs (`set_nodelay`,
+  `set_ttl`, keepalive, broadcast, multicast options) accept and return plausible values rather than
+  fail; they change nothing on the wire.
 - **`SystemTime` is monotonic-since-boot, not wall-clock.** No RTC, no NTP, so "system time" honestly
   measures "since this machine came up". Differencing two `SystemTime`s gives a correct duration;
   reading a calendar date gives 1970 plus uptime, which is the truth available.
@@ -122,10 +185,23 @@ the bare target.
 
 ## The proof
 
-`user-std/src/main.rs` is an ordinary Rust program, no `no_std`, no attributes, no `unsafe`. It
-exercises `Vec` (10,000-element collect against the untyped heap), `String`, `HashMap` (the random
-seed), `Instant` (asserted monotonic and advancing), and the honesty of `fs`/`net`. Its stdout is a
-fixed, deterministic transcript. The kernel test `std_tests::a_whole_std_program_runs_on_the_native_abi`
-(`kernel/src/user.rs`) spawns it with the two grants, reassembles the byte stream off the endpoint,
-and compares it byte for byte, on **both** ISAs out of each arch's own initrd (the parity gate,
-DECISIONS §19). `cargo xtask test` builds the demo for both targets first, so both initrds carry it.
+`user-std/src/main.rs` is an ordinary Rust program, no `no_std`, no attributes, no `unsafe`. It is
+**one binary with two behaviours, chosen by the authority it was granted**: on start it probes for
+the network with a single `UdpSocket::bind`, and the result branches it.
+
+- **Not granted the network** (only slots 0 and 1): the bind returns `Unsupported`, and the program
+  runs the offline transcript, exercising `Vec` (10,000-element collect against the untyped heap),
+  `String`, `HashMap` (the random seed), `Instant` (asserted monotonic and advancing), and the
+  honesty of `fs` and `net`. The kernel test `std_tests::a_whole_std_program_runs_on_the_native_abi`
+  spawns it this way.
+- **Granted the network** (slots 2 and 3 too, alongside a running netd): the bind succeeds, and the
+  program does a real UDP DNS query to slirp's resolver and a TCP echo round trip to slirp's
+  guestfwd peer, both through `std::net` and both asserted. The kernel test
+  `std_net_runs_over_the_socket_contract` spawns it this way.
+
+The same binary doing two things by its grants alone is the point of "no ambient network": the code
+never chose to have the network, its cspace did. Both tests reassemble the byte stream off the
+endpoint and compare it byte for byte, on **both** ISAs out of each arch's own initrd (the parity
+gate, DECISIONS §19). One binary also keeps the initrd under its 15-file crickerfs directory limit.
+`cargo xtask test` builds the demo for both targets first, so both initrds carry it, and both test
+legs attach a virtio-net NIC (`CRICKER_NET`) with the guestfwd echo peer.

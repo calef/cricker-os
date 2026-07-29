@@ -113,6 +113,11 @@ is the contract, and it is **per program**, published in that program's own sour
   shared text page read-only at `0x60_0000`, and the UART device frame.
 - the **input** driver gets the line endpoint at slot 0 and its RX interrupt capability at slot 1.
 - the **shell** holds five endpoints (slots 0–4) and two shared pages.
+- a **std program** (milestone 27) gets an untyped budget at slot 0 (its heap) and a WRITE endpoint
+  at slot 1 (stdout/stderr). A std program *given the network* (milestone 27 phase two) also gets a
+  WRITE `Stack` endpoint at slot 2 (netd's socket contract, DECISIONS §25) and a second untyped
+  budget at slot 3 (the per-socket shared frames `std::net` mints). Absent slots 2 and 3, `std::net`
+  returns `Unsupported`: no ambient network, felt from inside the process. See notes/std.md.
 
 This is out-of-band agreement, not discovery: the program does not ask "what am I holding," it knows
 by the contract it was built to. That is the same shape seL4 uses for every task below the root, and
