@@ -1032,7 +1032,19 @@ fn bench() -> bool {
     } else {
         cmd.env_remove("CRICKER_ACCEL");
         cmd.args(["-icount", "shift=0,sleep=off"]);
-        eprintln!("--- bench: TCG + icount (deterministic instruction-clocked counts) ---");
+        // One hart, the same reason the riscv path forces it (bench_riscv): a primitive benchmark
+        // measures per-core path length, and the counter it reads (CNTVCT) advances with QEMU's
+        // GLOBAL virtual time. Under `-icount` all vCPUs share that one clock, and an idle secondary
+        // hart sitting in `wfi` jumps virtual time to the next timer tick, so with `-smp 4` the
+        // measured window counts three other harts' idle jumps and load-balanced spawns, not the
+        // path under test. That contamination (not any code change) is what made the counts swing
+        // wildly and non-physically across today's merges: coremark, pure compute, moved 63%. See
+        // notes/benchmarks.md, the 2026-07-28 attribution. The aarch64 default is 4 (SMP tests);
+        // the icount bench pins 1 to match riscv and measure the primitive, not the machine.
+        cmd.env("CRICKER_SMP", "1");
+        eprintln!(
+            "--- bench: aarch64, single hart, TCG + icount (deterministic instruction counts) ---"
+        );
     }
     cmd.env("CRICKER_INITRD", initrd_path());
     cmd.env("CRICKER_DISK", disk_path());
