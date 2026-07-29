@@ -25,7 +25,7 @@
 //! - slot 2: an untyped budget (to mint and map the shared frame)
 
 use abi::{endpoint, frame as fr, rights, untyped as ut};
-use user_rt::{call, invoke, send};
+use user_rt::{call, exit, invoke, send};
 
 use super::netproto::*;
 
@@ -71,9 +71,12 @@ fn set_dst(ip: [u8; 4], port: u16) {
 /// Report `code` and stop.
 fn done(code: u64) -> ! {
     send(REPORT, code, 0, 0);
-    loop {
-        core::hint::spin_loop();
-    }
+    // Exit so the kernel reaps this one-shot client rather than leaving it spinning on a run queue
+    // forever. Leaked net-client spinners accumulate across the socket-contract tests and starve the
+    // later std_net test on core 0 (the same test-thread-starvation finding that made the driver
+    // roles exit; nothing balances threads across cores yet, DECISIONS Open design ideas). A
+    // one-shot role must exit, not spin.
+    exit();
 }
 
 /// Mint a frame from our untyped, map it writable, and delegate it to socket `sid`.
