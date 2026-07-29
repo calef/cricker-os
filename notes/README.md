@@ -36,6 +36,9 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [Registers](registers.md) — 248 bytes of storage inside the CPU, and why that's the
   whole ballgame. **The most fundamental note here.** The register file *is* the CPU's
   state, which is why context switches and interrupts work the way they do.
+- [Harts and PEs](harts-and-pes.md) — the precise words for "one thing that runs an instruction
+  stream" (RISC-V's hart, ARM's PE), why "core" is too ambiguous to build specs on, and the day
+  the distinction earned its keep here (the icount clock counts harts, not cores).
 - [aarch64](aarch64.md) — the instruction set. Registers, exception levels (EL0-EL3),
   system registers, and why the target triple is spelled the way it is.
 - [The stack, `sp`, and `x30`](stack.md) — the stack is just RAM plus an agreement. Why

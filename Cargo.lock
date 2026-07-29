@@ -94,6 +94,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "dma_validate"
+version = "0.1.0"
+
+[[package]]
 name = "dtb"
 version = "0.1.0"
 
@@ -149,6 +153,7 @@ dependencies = [
  "caps",
  "coremark",
  "crickerfs",
+ "dma_validate",
  "dtb",
  "elf",
  "frames",

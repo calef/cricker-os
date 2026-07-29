@@ -9,6 +9,7 @@ members = [
     "crates/caps",
     "crates/capsh",
     "crates/crickerfs",
+    "crates/dma_validate",
     "crates/dtb",
     "crates/elf",
     "crates/frames",

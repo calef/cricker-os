@@ -1688,6 +1688,42 @@ pristine image (the `prev`-chain walk in `Transaction::sync_allocator`), against
 redoxfs-internals / heap-interaction investigation raised rather than papered over; the client's
 green test is read-only by consequence and says so. See notes/fs-server.md.
 
+## 28. SMP placement: two random choices at spawn, message-shaped stealing, local wakes
+
+**Decided 2026-07-28 (Chris), after §11's deferred "step 3c" was demonstrated by the machine** (a
+starved core 0 beside three idle cores, the FS-server watchdog incident). Three parts, each chosen
+against the alternatives on the record:
+
+1. **Spawn placement: the power of two choices.** At thread creation, sample two random cores'
+   runnable counters (relaxed atomics; stale reads are fine, the gossip lesson) and place on the
+   lighter. Near-optimal balancing with O(1) state touched (Mitzenmacher; Sparrow's proof at
+   datacenter scale), and the placement path never reads more than two remote cache lines no
+   matter how many cores real silicon brings. Chosen over a full least-loaded scan (contends on
+   every counter, ages badly with core count) and over Windows-style round-robin (blind to load).
+2. **Wake stays local, deliberately.** A rendezvous partner wakes on the current core: message in
+   registers, cache warm, direct-handoff locality (seL4's precedent, Linux wake_affine's lesson).
+   The hot path affords no policy; the imbalance it can cause is the next part's job.
+3. **Correction: idle cores steal by message.** An idle core sends a steal request over the §11
+   inbox/SGI machinery to a loaded core, which hands one runnable thread back at its next
+   scheduler entry. Pull beats push under uncertainty (every distributed work queue), no shared
+   run-queue locks appear (the per-core queues stay single-owner), and it leans toward milestone
+   17's message-passing direction rather than away. Cost accepted: a steal lands at the victim's
+   next scheduler pass, bounded by the tick.
+
+**Deferred, with triggers:** an explicit placement grant in the spawn manifest (milestone 23's
+contract; overrides the default, recovering seL4's userspace-owns-placement story for pinned
+components); priorities and CPU budgets (no mechanism today, round-robin is the whole story; the
+trigger is a real workload where fairness visibly fails, and the design starts from budgets as
+narrowing grants, not from nice); §12's dormant priority-donation item wakes only with priorities.
+
+**Changeability, stated at ratification:** this is scheduler-internal policy. No ABI, no
+capability semantics, no baseline movement (the icount benches are hart-pinned). The one-time cost
+of enabling any migration at all: latent same-core assumptions (per-CPU state, weak-memory
+orderings) lose their accidental cover, so the implementation lands with cross-core stress tests,
+rule 4's discipline applied on purpose. Supersedes the Open design ideas placement entry when the
+in-flight FS integration lands it. Implementation slots after milestone 22 phase B, before
+milestone 23's swap-under-load demo.
+
 ## Reading
 
 - **The seL4 manual**, and Klein et al., *seL4: Formal Verification of an OS Kernel* (SOSP'09)
