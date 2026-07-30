@@ -160,10 +160,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       # A prebuilt binary rather than `cargo install`, the same trade the coverage job makes: this
-      # job compiles nothing of ours, so it has no business compiling a tool either.
+      # job compiles nothing of ours, so it has no business compiling a tool either. The version
+      # comes from .cargo-deny-version so this and script/supply-chain cannot disagree, which they
+      # did on the first run: the laptop had 0.19.1 and `@latest` here got 0.20.2, and the two spell
+      # `--config` differently and default it to different directories.
+      - name: Read the pinned cargo-deny version
+        id: deny
+        run: echo "version=$(cat .cargo-deny-version)" >> "$GITHUB_OUTPUT"
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deny
+          tool: cargo-deny@${{ steps.deny.outputs.version }}
       # The published .crate tarballs script/vendor-verify hashes. Keyed on the pin files, so
       # changing a pin correctly misses the cache and refetches. A miss costs one HTTP request.
       - name: Cache the vendored tarballs
