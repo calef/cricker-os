@@ -331,6 +331,30 @@ and the ring-bounds harness *taken together*. Each leg is proved; joining them i
 harnesses, not a fifth harness. That is the same shape as the one-shot Reply's three legs below, and
 it is recorded for the same reason.
 
+#### Non-vacuity: `kani::cover!`, and why a bound needs it
+
+A bound raises a question an assertion cannot answer. If the harness's assumptions turned out to be
+jointly unsatisfiable, or a bound quietly excluded the interesting shape, every assertion would pass
+and the harness would prove **nothing** while reporting `SUCCESSFUL`. This note has always named that
+as the main failure mode ("it proves what you asserted, not what you meant"), and until milestone 35
+the only defence was reading the harness carefully.
+
+`kani::cover!(condition)` inverts the question: it **fails when the condition is unreachable**. So it
+turns "this harness really does exercise the case I claim" from a reading into a result. Milestone 35
+introduces it, with four cover properties where the risk was real:
+
+- `the_outer_walk_stays_inside_the_rings_and_terminates` covers that a **wrapped** batch (`to < from`)
+  is reachable, that a wrapped batch is *walked to completion* rather than merely refused, that some
+  batch is accepted (so the harness is not vacuously refusing everything), and that some batch is
+  refused (so the guards are reachable). Without those, "wraparound is covered because `from` and `to`
+  are unconstrained" would be an inference about the code rather than a checked fact.
+- the two domain harnesses that stack assumptions cover that a **multi-page** grant satisfies them, so
+  neither is quantifying over an empty set and neither has `i` pinned to zero.
+
+The cheap general rule this suggests: **any harness with more than a couple of `kani::assume`s, or any
+harness whose interesting case is a corner of an unconstrained input, should carry a `cover!` for that
+case.** It costs no solver time worth measuring and it is the only thing that catches a vacuous proof.
+
 ### The IOMMU domain: proved where it can be, tested where it cannot
 
 Milestone 35's third item was to confirm the IOMMU domain builder
@@ -500,4 +524,14 @@ list, and a new harness in an existing crate is picked up with no change.
   not allocate.
 - **A harness that needs a huge bound is a design smell.** If a property needs Kani to explore an
   unbounded loop or a giant structure, that is often the code telling you the logic is not as local
-  as it should be. Prefer refactoring the logic to shrinking the proof.
+  as it should be. Prefer refactoring the logic to shrinking the proof. **This applies to *declining* a
+  proof too**, which milestone 35 learned the hard way: the IOMMU domain property was written off as the
+  build-and-translate wall, and the wall was real but it was not where the property lived. Before
+  recording a proof as impossible, check whether a smaller target carries it.
+- **Falsify a property before believing it.** Break the code the harness guards and confirm the harness
+  fails. Every milestone 35 property was falsified this way, and one falsification corrected a claim in
+  the code (the load-bearing guard was not the one the comment pointed at). A harness that cannot be
+  made to fail is not evidence.
+- **Guard against vacuity with `kani::cover!`.** Assumptions and bounds can silently empty a harness's
+  input set, and a vacuous harness reports `SUCCESSFUL`. A `cover!` fails when a state is unreachable,
+  so it is the one check that catches this. See the non-vacuity section above.

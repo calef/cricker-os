@@ -224,6 +224,9 @@ mod verification {
                 .checked_add(r.size)
                 .expect("an accepted grant has an end");
             assert!(end <= limit, "a page past the end of the grant was mapped");
+            // The harness reaches grants that actually have pages to map (see the non-vacuity note on
+            // `every_whole_page_of_the_grant_is_enumerated`).
+            kani::cover!(pages > 1, "a multi-page grant satisfies the assumptions");
         }
     }
 
@@ -284,6 +287,17 @@ mod verification {
                 Some(iova),
                 "a granted page is not the page its own index enumerates",
             );
+
+            // **Non-vacuity, machine-checked.** Four stacked assumptions could in principle be jointly
+            // unsatisfiable, in which case this harness would verify while proving nothing at all;
+            // notes/verification.md calls that the main failure mode ("it proves what you asserted, not
+            // what you meant"). `kani::cover!` fails when a state is *un*reachable, so this asserts the
+            // harness really does reach a grant with pages in it.
+            kani::cover!(pages > 0, "a non-empty grant satisfies the assumptions");
+            kani::cover!(
+                pages > 1,
+                "so does a multi-page grant, so `i` is not pinned to 0"
+            );
         }
     }
 
@@ -308,6 +322,12 @@ mod verification {
                 grant_page(r, i),
                 grant_page(r, j),
                 "two distinct indices enumerate the same page",
+            );
+            // Two distinct in-range indices must actually exist, or this proves nothing: a grant of one
+            // page satisfies `i < pages && j < pages && i != j` for no `(i, j)` at all.
+            kani::cover!(
+                pages > 1,
+                "a grant with two distinct page indices is reachable"
             );
         }
     }

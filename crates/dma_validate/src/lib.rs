@@ -620,7 +620,7 @@ mod verification {
             );
         };
 
-        let _ = validate_and_shadow(
+        let ok = validate_and_shadow(
             OUTER_BASE,
             OUTER_SIZE,
             DRIVER_DESC,
@@ -634,6 +634,27 @@ mod verification {
             &read64,
             &write16,
             &write64,
+        );
+
+        // **Non-vacuity, machine-checked rather than argued.** An assertion-only harness passes
+        // trivially if its inputs cannot reach the interesting states, and notes/verification.md names
+        // that ("it proves what you asserted, not what you meant") as the main failure mode, not solver
+        // bugs. `kani::cover!` inverts the question: it fails if the state is *un*reachable. So these
+        // are the claim "this harness really does exercise wraparound and really does walk descriptors",
+        // checked. Without them, "from and to are unconstrained, so the wrapped pairs are in there
+        // somewhere" would be a reading of the code rather than a result.
+        kani::cover!(to < from, "a wrapped batch (to < from) is reachable");
+        kani::cover!(
+            to < from && ok,
+            "a wrapped batch is walked to completion, not merely refused"
+        );
+        kani::cover!(
+            to != from && ok,
+            "some batch is accepted, so the walk is not vacuously refusing everything"
+        );
+        kani::cover!(
+            !ok,
+            "some batch is refused, so the guards are reachable too"
         );
     }
 
