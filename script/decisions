@@ -1,0 +1,77 @@
+#!/bin/sh
+#
+# Index and validate DECISIONS.md.
+#
+# **Why this exists rather than one file per decision.** DECISIONS.md is ~2,700 lines, which invites
+# splitting it into a directory. Measured first: 34 sections, median 73 lines, only six over 120. It is
+# long because the project has made 34 decisions, not because any one is bloated, and what it actually
+# lacked was a table of contents. Splitting would also make the failure mode WORSE in one specific way:
+# on 2026-07-30 two concurrent milestones both claimed §30, and that was caught because one file means
+# a duplicate number is a text conflict a human sees. As `30-dma.md` and `30-c-seam.md` it would have
+# merged clean and silently. So: an index, and a gate that makes the collision impossible instead.
+#
+#   script/decisions           print the index
+#   script/decisions --check   validate; non-zero on a problem (wired into script/lint)
+#
+# The check answers three questions no reader can answer by eye at this length: is every section number
+# unique, does the table of contents match the sections, and does every `§N` cited anywhere in the tree
+# actually exist?
+
+set -e
+
+ROOT="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
+
+exec python3 - "$ROOT" "${1:-}" <<'PY'
+import os
+import re
+import subprocess
+import sys
+
+root, mode = sys.argv[1], sys.argv[2]
+path = os.path.join(root, "DECISIONS.md")
+text = open(path).read()
+
+sections = [(int(m.group(1)), m.group(2).strip())
+            for m in re.finditer(r"^## (\d+)\. (.*?)$", text, re.M)]
+
+problems = []
+
+seen = {}
+for num, title in sections:
+    if num in seen:
+        problems.append(f"§{num} is used twice: {seen[num]!r} and {title!r}")
+    seen[num] = title
+
+# Gaps are legal (a decision can be withdrawn) but worth surfacing, because the usual cause is a
+# section that was renumbered on merge and left a hole nobody meant to leave.
+if sections:
+    missing = sorted(set(range(1, max(seen) + 1)) - set(seen))
+    if missing:
+        problems.append(f"gap in the numbering: {', '.join('§' + str(n) for n in missing)}")
+
+# Every §N cited anywhere in the tree must resolve. This is the check that pays: 418 references live in
+# code comments, and a citation of a section that does not exist is a dangling footnote in the one place
+# this project asks readers to trust prose.
+refs = subprocess.run(
+    ["git", "grep", "-hoE", "§[0-9]+", "--", ":!DECISIONS.md", ":!vendor", ":!*.lock"],
+    cwd=root, capture_output=True, text=True,
+).stdout
+dangling = sorted({int(r[1:]) for r in refs.split()} - set(seen))
+for n in dangling:
+    problems.append(f"§{n} is cited in the tree but DECISIONS.md has no such section")
+
+if mode == "--check":
+    for p in problems:
+        print(f"decisions: {p}", file=sys.stderr)
+    if problems:
+        sys.exit(1)
+    print(f"decisions: {len(sections)} sections, numbering clean, every cited § resolves")
+    sys.exit(0)
+
+width = max(len(t) for _, t in sections)
+print(f"DECISIONS.md — {len(sections)} decisions, {len(text.splitlines())} lines\n")
+for num, title in sections:
+    print(f"  §{num:<3} {title[:width]}")
+for p in problems:
+    print(f"\nPROBLEM: {p}")
+PY
