@@ -116,6 +116,32 @@ pub mod endpoint {
     /// that caller. Needs `WRITE`. Milestone 12; see notes/ipc-naming.md.
     pub const CALL: u64 = 4;
 
+    /// `invoke(cap, REAP, tid, _, _)` -> 0. **Collect a corpse this endpoint supervises**
+    /// (DECISIONS §32). `tid` is the thread id the kernel stamped on the death message
+    /// ([`fault`](super::fault)); the kernel reclaims that thread's TCB, its address space, and the
+    /// region behind them, exactly what [`untyped::DESTROY`](super::untyped::DESTROY) would have
+    /// reclaimed. Needs `READ` on this endpoint: the authority to collect is the authority to
+    /// *receive* deaths here, which is what a supervisor holds.
+    ///
+    /// **Authorization is the supervision relationship, not a rights bit and not a registry.** The
+    /// kernel checks that the named thread's recorded fault endpoint *is this endpoint*, so a tid
+    /// means something only relative to the capability it arrived through. A supervisor therefore
+    /// needs no capability to the child's memory, and gains none: the reclaimed region returns to
+    /// its owner under §13 region ownership, which is the **builder**. A supervisor can free a
+    /// child's memory; it cannot spend it.
+    ///
+    /// Three distinct refusals, because a restart policy wants to tell them apart:
+    ///
+    /// - [`Error::StillAlive`] the thread is not dead. Collecting a corpse is not killing; killing a
+    ///   live child is the stronger act and stays with `Untyped::DESTROY` (§24's forcible `^C`).
+    /// - [`Error::NotSupervised`] no thread by that tid supervised by *this* endpoint: another
+    ///   supervisor's child, an already-collected one, or a stale tid whose generational name no
+    ///   longer resolves. The two are deliberately one error, so a supervisor cannot probe the tid
+    ///   space of children it does not supervise.
+    /// - [`Error::NotPermitted`] the corpse's region cannot be reclaimed yet (the child `SPLIT` its
+    ///   own budget and those children are still live), the same refusal `DESTROY` gives.
+    pub const REAP: u64 = 5;
+
     /// The x1 value from [`RECV_CAP`] when the message carried no capability.
     pub const NO_CAP: u64 = u64::MAX;
 }
@@ -380,6 +406,18 @@ pub enum Error {
     /// **A device operation was refused.** For virtio `NOTIFY`, this means a descriptor pointed
     /// outside the driver's DMA region and the device was not allowed to touch it.
     DeviceRefused = -8,
+
+    /// **The thread is still running.** [`endpoint::REAP`] collects a corpse, and this one is not
+    /// one yet. Distinct from `NotPermitted` on purpose (DECISIONS §32): "you may not kill" and "no
+    /// such child" are different facts, and a restart policy branches on them differently (wait, or
+    /// escalate to the owner's `Untyped::DESTROY`, versus give up on that tid).
+    StillAlive = -9,
+
+    /// **This endpoint does not supervise a thread by that tid.** Another supervisor's child, one
+    /// already collected, or a tid whose generational name is stale. One error for all three
+    /// deliberately: distinguishing "gone" from "not yours" would let a supervisor probe the tid
+    /// space of children it has no relationship with.
+    NotSupervised = -10,
 }
 
 impl Error {
@@ -393,6 +431,8 @@ impl Error {
             -6 => Error::BadSyscall,
             -7 => Error::OutOfMemory,
             -8 => Error::DeviceRefused,
+            -9 => Error::StillAlive,
+            -10 => Error::NotSupervised,
             _ => return None,
         })
     }
@@ -418,6 +458,8 @@ mod tests {
             Error::BadSyscall,
             Error::OutOfMemory,
             Error::DeviceRefused,
+            Error::StillAlive,
+            Error::NotSupervised,
         ];
         for &e in ALL {
             assert_eq!(Error::from_ret(e as i64), Some(e));
@@ -431,7 +473,7 @@ mod tests {
     fn non_errors_decode_to_none() {
         assert_eq!(Error::from_ret(0), None);
         assert_eq!(Error::from_ret(1), None);
-        assert_eq!(Error::from_ret(-9), None);
+        assert_eq!(Error::from_ret(-11), None);
         assert_eq!(Error::from_ret(i64::MIN), None);
     }
 }

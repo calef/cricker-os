@@ -99,6 +99,44 @@ impl<O> Cap<O> {
     }
 }
 
+/// **May this supervision endpoint collect this thread's corpse?** (DECISIONS §32.)
+///
+/// The whole authorization decision of `endpoint::REAP`, as pure logic, so it is proved for every
+/// input rather than tested on the cases we thought of. The kernel calls exactly this
+/// (`sched::reap_supervised`) and then does the reclaim; nothing here mints, widens, or returns a
+/// capability, which is why a supervisor gains no memory authority by reaping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reap {
+    /// Authorized: this endpoint supervises that thread, and the thread is a corpse.
+    Permitted,
+    /// The thread is supervised here but still running. Collecting a corpse is not killing.
+    StillAlive,
+    /// No thread by that name is supervised by *this* endpoint: it never existed, it is
+    /// unsupervised, it belongs to another supervisor, or its name is stale.
+    NotSupervised,
+}
+
+/// The decision, from the three facts the kernel has: the thread's recorded supervision endpoint
+/// (`None` if the thread does not resolve at all, or resolves and is unsupervised), the endpoint
+/// actually being invoked, and whether the thread is dead.
+///
+/// **Ordering matters and is deliberate.** The supervision check comes first, so a supervisor
+/// learns nothing about a thread it does not supervise: a live stranger and a stale name give the
+/// same answer. Only once the relationship is established does the liveness answer differ, because
+/// only then is the distinction the holder's business.
+pub const fn reap_decision(fault_ep: Option<u64>, invoked_ep: u64, dead: bool) -> Reap {
+    match fault_ep {
+        Some(ep) if ep == invoked_ep => {
+            if dead {
+                Reap::Permitted
+            } else {
+                Reap::StillAlive
+            }
+        }
+        _ => Reap::NotSupervised,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
     /// **The slot is empty.** Note what this is *not*: it is not "permission denied." There is
@@ -400,6 +438,55 @@ mod verification {
         assert!(child.rights.is_subset_of(parent.rights));
         assert_eq!(child.object, child_object);
     }
+
+    /// **A reap is authorized by the supervision relationship, and by nothing else** (DECISIONS
+    /// §32). For every pair of endpoint names and every liveness, `Permitted` implies the thread's
+    /// recorded fault endpoint *is* the endpoint being invoked and the thread is dead. There is no
+    /// input where an unsupervised thread, another supervisor's child, or a stale name (all
+    /// `fault_ep` values that do not equal `invoked_ep`, including `None`) is reapable.
+    ///
+    /// This is the property that makes "a capability that cannot build cannot be made to build via
+    /// reap" hold: authorization consumes no capability and produces none. `reap_decision` takes no
+    /// `Cap` and returns no `Cap`, so there is no channel through which authority could flow to the
+    /// reaper. The proof pins the *gate*; the type pins the absence of a grant.
+    #[kani::proof]
+    fn reap_is_permitted_only_to_the_supervising_endpoint() {
+        let invoked: u64 = kani::any();
+        let fault_ep: Option<u64> = if kani::any() { Some(kani::any()) } else { None };
+        let dead: bool = kani::any();
+
+        match reap_decision(fault_ep, invoked, dead) {
+            Reap::Permitted => {
+                assert_eq!(fault_ep, Some(invoked), "reaped through the wrong endpoint");
+                assert!(dead, "reaped a live thread");
+            }
+            // A live child is refused as such only when it really is ours; otherwise the answer
+            // must disclose nothing, which is the next harness.
+            Reap::StillAlive => {
+                assert_eq!(fault_ep, Some(invoked));
+                assert!(!dead);
+            }
+            Reap::NotSupervised => assert_ne!(fault_ep, Some(invoked)),
+        }
+    }
+
+    /// **The refusal for a thread you do not supervise does not depend on the thread.** For any two
+    /// liveness values, a tid whose fault endpoint is not the invoked one answers identically, so a
+    /// supervisor cannot use `REAP` to learn whether some other supervisor's child (or a recycled
+    /// tid) is alive. The two facts §32 wants distinguishable are distinguishable only *inside* the
+    /// relationship.
+    #[kani::proof]
+    fn a_stranger_reveals_nothing_about_its_liveness() {
+        let invoked: u64 = kani::any();
+        let fault_ep: Option<u64> = if kani::any() { Some(kani::any()) } else { None };
+        kani::assume(fault_ep != Some(invoked));
+
+        assert_eq!(
+            reap_decision(fault_ep, invoked, true),
+            reap_decision(fault_ep, invoked, false),
+        );
+        assert_eq!(reap_decision(fault_ep, invoked, true), Reap::NotSupervised);
+    }
 }
 
 #[cfg(test)]
@@ -550,6 +637,18 @@ mod tests {
         assert!(Rights::READ.is_subset_of(Rights::ALL));
         assert!(!Rights::ALL.is_subset_of(Rights::READ));
         assert_eq!(Rights::ALL.intersect(Rights::READ), Rights::READ);
+    }
+
+    /// The four cases of §32's reap gate, spelled out as the readable companion to the symbolic
+    /// proofs: my corpse, my live child, another supervisor's child, an unsupervised thread (which
+    /// is also what a stale tid looks like, because a name that does not resolve carries no
+    /// endpoint).
+    #[test]
+    fn reap_authorizes_only_a_corpse_this_endpoint_supervises() {
+        assert_eq!(reap_decision(Some(7), 7, true), Reap::Permitted);
+        assert_eq!(reap_decision(Some(7), 7, false), Reap::StillAlive);
+        assert_eq!(reap_decision(Some(9), 7, true), Reap::NotSupervised);
+        assert_eq!(reap_decision(None, 7, true), Reap::NotSupervised);
     }
 
     #[test]

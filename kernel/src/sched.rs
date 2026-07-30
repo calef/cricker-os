@@ -1596,6 +1596,10 @@ pub fn create_tcb(region: u64) -> Option<Tid> {
     let name = sched.threads.insert_from_page(page, |tid| {
         let mut t = Thread::embryo();
         t.id = tid;
+        // Remember which region paid for this TCB. It is the region an endpoint reap reclaims
+        // (DECISIONS §32), and here is the only point where the answer is known rather than
+        // inferred: the caller named it, and nothing afterwards can tell us as reliably.
+        t.tcb_region = Some(region);
         t
     });
     // On a full table the page stays the region's (spend-only); nothing to recycle. The region
@@ -1674,6 +1678,27 @@ fn reap_region_objects(base: u64, end: u64) -> Result<(), ()> {
         }
     }
     for &tid in &doomed[..n] {
+        // **Unlink a corpse from its supervision endpoint first.** A supervised thread that died
+        // with nobody in `RECV` is parked on that endpoint's *sender* queue holding its death
+        // message (DECISIONS §26 implementation note 2), and that endpoint is the supervisor's, so
+        // it is not in this region and the endpoint sweep below will not touch it. Freeing the TCB
+        // while it is still linked there would leave a dangling pointer that the supervisor's next
+        // `RECV` would follow into a recycled page. §16's `DESTROY` could already reach this (reap
+        // before receiving); §32's endpoint reap makes it easy to reach, because a supervisor can be
+        // told a tid by its builder and never collect the message at all.
+        let parked = sched
+            .threads
+            .get(tid)
+            .filter(|t| t.state == State::Dead)
+            .and_then(|t| t.fault_ep);
+        if let Some(ep) = parked {
+            let ptr = tcb_ptr(sched, tid);
+            if let Some(endpoint) = endpoint_of(sched, ep) {
+                // SAFETY: `ptr` is compared by pointer, never dereferenced; the other queued
+                // senders are re-pushed and are all still live (blocked threads or corpses).
+                unsafe { endpoint.remove_sender(ptr) };
+            }
+        }
         sched.threads.remove(tid);
     }
 
@@ -1736,6 +1761,48 @@ pub fn reclaim_region(region: u64) -> Result<(), ()> {
     crate::untyped::unpin(region);
     crate::untyped::destroy(region);
     Ok(())
+}
+
+/// **Collect a corpse a supervision endpoint supervises** (DECISIONS §32, `endpoint::REAP`).
+///
+/// The one thing a supervisor could not previously do without holding the authority to *build* a
+/// process. `ep` is the endpoint the supervisor invoked; `tid` is the id the kernel stamped on the
+/// death message. Authorization is the relationship the kernel already tracks (`Thread::fault_ep`,
+/// §26 implementation note 1) rather than a new registry: the named thread's recorded supervision
+/// endpoint must *be* the invoked one, which is why the tid needs no badge and no handle. The
+/// decision itself is `caps::reap_decision`, proved for every input in that crate.
+///
+/// Then the reclaim is §16's, unchanged: `reclaim_region` on the region the TCB was retyped from,
+/// which is exactly the region name the owner would have passed to `Untyped::DESTROY`. One teardown
+/// path, so the two cannot drift. **The pages go back to the region's owner under §13**, which is
+/// the builder, not the reaper: a supervisor frees a child's memory without ever being able to spend
+/// it, because it never holds a capability to it.
+///
+/// Takes and releases `SCHED` before the reclaim, which takes it again: `reap_region_objects` must
+/// run with the lock and cannot be called under it.
+pub fn reap_supervised(ep: EpId, tid: Tid) -> Result<(), abi::Error> {
+    let region = {
+        let guard = SCHED.lock();
+        let sched = guard.as_ref().ok_or(abi::Error::NotSupervised)?;
+        // A stale or recycled tid resolves to `None` here (generational names, `crates/slots`), so
+        // it presents exactly as an unsupervised thread and cannot alias a fresh one.
+        let t = sched.threads.get(tid);
+        let fault_ep = t.and_then(|t| t.fault_ep);
+        let dead = t.is_some_and(|t| t.state == State::Dead);
+        match caps::reap_decision(fault_ep, ep, dead) {
+            caps::Reap::NotSupervised => return Err(abi::Error::NotSupervised),
+            caps::Reap::StillAlive => return Err(abi::Error::StillAlive),
+            caps::Reap::Permitted => {}
+        }
+        // A supervised thread is always one `create_tcb` built out of a region, so this is `Some`;
+        // be honest rather than unwrap, and report "nothing here to collect" if it ever is not.
+        t.and_then(|t| t.tcb_region)
+            .ok_or(abi::Error::NotSupervised)?
+    };
+    // `NotPermitted` for the same reasons `DESTROY` gives it: the child `SPLIT` its own budget and a
+    // child region still owns part of the run, or a racing reap got there first and the name is now
+    // stale. A restart policy reads it as "not yet", which is what it means.
+    reclaim_region(region).map_err(|_| abi::Error::NotPermitted)
 }
 
 /// **Configure an embryo** (milestone 19c.3): bind the address space named by `aspace_name`

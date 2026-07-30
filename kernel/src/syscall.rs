@@ -86,7 +86,11 @@ pub fn dispatch(frame: &mut TrapFrame) {
 /// *this thread's* table, which lives in kernel memory. An empty slot is `NoSuchSlot`: not
 /// "permission denied", but *there is nothing there*. That difference is what no-ambient-authority
 /// feels like from the inside.
-fn invoke(
+///
+/// `pub(crate)` so kernel tests in other modules can drive **this** path rather than a
+/// re-implementation of it: an authorization test that calls `sched` directly proves the helper, not
+/// the boundary. See `user.rs`'s `reap_tests`.
+pub(crate) fn invoke(
     frame: &mut TrapFrame,
     slot: u64,
     method: u64,
@@ -191,6 +195,24 @@ fn invoke(
                 }
                 frame.set_arg(1, reply[1]); // r1; r0 returns in x0 below
                 Ok(reply[0] as i64)
+            }
+
+            // **Collect a corpse this endpoint supervises** (DECISIONS §32). The method that lets a
+            // supervisor reap without holding the authority to *build*: reaping used to mean
+            // `Untyped::DESTROY`, which needs WRITE on the region, and WRITE on a region is also what
+            // retypes a thread and an address space out of it.
+            //
+            // READ, not WRITE: the authority to collect a death is the authority to *receive* deaths
+            // here, which is what a supervisor holds and what a send-only holder (a peer that can
+            // report to this supervisor) deliberately does not. `a0` is the tid the kernel stamped on
+            // the death message, and it is authorized *relative to this endpoint* (sched's
+            // reap_supervised), so it is a name inside a relationship rather than a global handle.
+            abi::endpoint::REAP => {
+                if !cap.rights.allows(Rights::READ) {
+                    return Err(Error::NotPermitted);
+                }
+                sched::reap_supervised(ep, a0)?;
+                Ok(0)
             }
             _ => Err(Error::BadMethod),
         },
