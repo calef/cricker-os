@@ -162,6 +162,107 @@ pub mod fs {
     }
 }
 
+/// **The per-file grant** (milestone 31 phase 2): what it means to hold one file rather than a
+/// directory, and how the narrowing travels.
+///
+/// A directory capability lets its holder name anything in the bound directory. `run wc report.txt`
+/// must hand over less than that: **one file, in one direction, and nothing else**. The narrowing is
+/// done by an attenuator, `user/src/fwarden.rs`, which holds the directory capability, opens exactly
+/// the granted name once at startup, and then serves the *same* [`fs`] protocol on its own endpoint
+/// with three rules:
+///
+/// 1. **[`fs::OPEN`] answers only the granted name.** Any other name is `ENOENT`, because in this
+///    scope there is no such name; nothing consulted a permission. The holder cannot enumerate, and
+///    cannot discover what else exists.
+/// 2. **[`fs::CREATE`] is `ENOTDIR`.** A file capability is not a directory, so "create a name in it"
+///    is not a request that means anything, which is a better answer than a permission refusal.
+/// 3. **[`fs::WRITE`] and [`fs::TRUNCATE`] are [`grant::EROFS`] without [`grant::WRITE`].** The
+///    capability is read-only; there is no policy to consult and no way to widen it from inside.
+///
+/// The attenuator pattern is Mark Miller's caretaker, and putting it in a separate process is what
+/// makes the claim checkable: the confined program holds an endpoint to the warden and nothing that
+/// names the FS server, so it cannot route around the narrowing even in principle. Open-by-path
+/// still exists only inside a server (DECISIONS §27); the warden just serves a server whose entire
+/// namespace is one name.
+pub mod grant {
+    /// The granted directions, packed into the warden's spec word. Read alone is the common case
+    /// (`run wc report.txt`); write implies read, since a writer that cannot read back is a shape
+    /// nothing has asked for.
+    pub const READ: u64 = 1 << 0;
+    pub const WRITE: u64 = 1 << 1;
+
+    /// The longest granted name, in bytes. The name rides in **two `START` argument words** rather
+    /// than a frame, so a per-file grant costs no extra page and no extra mapping, and the warden
+    /// needs nothing mapped before it runs. Sixteen bytes is short, and deliberately so: it is a
+    /// demonstrator's limit, not a filesystem's, and lifting it means giving the warden a frame,
+    /// which is a change to the wiring and not to this contract.
+    pub const MAX_NAME: usize = 16;
+
+    /// `EROFS`, the reply to a write through a read-only grant. Chosen over `EACCES` on purpose:
+    /// `EACCES` is the Unix answer, "you were denied", which implies a policy that could have said
+    /// yes. There is no policy here. The capability carries one direction, so the honest statement
+    /// is about the thing itself, and `std::io::ErrorKind::ReadOnlyFilesystem` is what a caller sees.
+    pub const EROFS: i32 = 30;
+
+    /// `ENOTDIR`, the reply to a [`super::fs::CREATE`] through a file grant. "This is a file, not a
+    /// directory" is a fact about what the holder has, not a refusal of what it asked.
+    pub const ENOTDIR: i32 = 20;
+
+    /// The handle the warden mints for the one file it serves. Fixed, because there is exactly one:
+    /// a holder that guesses a different number gets `EBADF` from the same check every other handle
+    /// goes through.
+    pub const HANDLE: u64 = 0;
+
+    /// Pack a granted name into the two argument words the warden is started with. Names shorter than
+    /// [`MAX_NAME`] are zero-padded; longer ones are refused by the caller (see [`fits`]).
+    pub const fn pack_name(name: &[u8]) -> (u64, u64) {
+        let mut lo = [0u8; 8];
+        let mut hi = [0u8; 8];
+        let mut i = 0;
+        while i < name.len() && i < 8 {
+            lo[i] = name[i];
+            i += 1;
+        }
+        while i < name.len() && i < MAX_NAME {
+            hi[i - 8] = name[i];
+            i += 1;
+        }
+        (u64::from_le_bytes(lo), u64::from_le_bytes(hi))
+    }
+
+    /// Unpack a granted name into `buf` (at least [`MAX_NAME`] bytes) and return its length.
+    pub fn unpack_name(lo: u64, hi: u64, len: usize, buf: &mut [u8; MAX_NAME]) -> usize {
+        buf[..8].copy_from_slice(&lo.to_le_bytes());
+        buf[8..].copy_from_slice(&hi.to_le_bytes());
+        len.min(MAX_NAME)
+    }
+
+    /// Whether a name can travel as a per-file grant at all.
+    pub const fn fits(name: &[u8]) -> bool {
+        !name.is_empty() && name.len() <= MAX_NAME
+    }
+
+    /// Pack the name length and the granted rights into the warden's third argument word.
+    pub const fn spec(len: usize, rights: u64) -> u64 {
+        ((len as u64) & 0xff) | (rights << 8)
+    }
+
+    /// The granted name's length from a spec word.
+    pub const fn spec_len(w: u64) -> usize {
+        (w & 0xff) as usize
+    }
+
+    /// The granted rights from a spec word.
+    pub const fn spec_rights(w: u64) -> u64 {
+        w >> 8
+    }
+
+    /// Whether a spec word grants writing.
+    pub const fn writable(w: u64) -> bool {
+        spec_rights(w) & WRITE != 0
+    }
+}
+
 /// The phase-2 end-to-end test fixture, in one place so the three programs that touch it agree: the
 /// host build (`cargo xtask`, which writes these into the RedoxFS image with the host tool), the
 /// client (which reads and writes them through the FS server), and the kernel test (which asserts
@@ -190,6 +291,35 @@ pub mod fixture {
     /// IPC and before it serves clients. The test waits for it, so a hang in `open` (the blk path)
     /// is distinguishable from a hang in the serve/client path, and a booted-but-empty run is caught.
     pub const READY: u64 = 0xF5_0BEEF5;
+
+    /// **The attacker's report: a bitmap of what got through**, not a pass/fail. Each bit says one
+    /// specific thing happened, so the test asserts an *expected set* rather than "zero", and a
+    /// failure names itself. That shape is what lets one attacker serve as its own negative control:
+    /// run against a read-only grant every bit must be clear, and run against a read/write grant of
+    /// the same shape the two write bits must be **set**, which is what proves the read-only
+    /// refusals were a narrowed capability rather than a warden that refuses everything.
+    pub mod escape {
+        /// It opened a file the grant does not designate. Never allowed.
+        pub const SECOND_FILE: u64 = 1 << 0;
+        /// Its write to the granted file was accepted. Expected only with `grant::WRITE`.
+        pub const WROTE: u64 = 1 << 1;
+        /// Its truncate of the granted file was accepted. Expected only with `grant::WRITE`; a
+        /// separate bit because a truncate carries no bytes, so a guard that only covered `WRITE`
+        /// would leave a way to destroy a file just as thoroughly.
+        pub const TRUNCATED: u64 = 1 << 2;
+        /// It created a file through a file capability. Never allowed: a file is not a directory.
+        pub const CREATED: u64 = 1 << 3;
+        /// It reached a file with a handle it was never given. Never allowed.
+        pub const FORGED_HANDLE: u64 = 1 << 4;
+        /// The thing it *should* be able to do failed, so nothing above was actually proven. A
+        /// capability that reaches nothing is trivially unescapable, and a test that only checked
+        /// the refusals would pass against one.
+        pub const GRANTED_READ_FAILED: u64 = 1 << 5;
+    }
+
+    /// The attacker's report leads with this so a silent client (a trapped one) cannot be mistaken
+    /// for a clean verdict of zero.
+    pub const VERDICT: u64 = 0xE5_CA9E00;
 }
 
 #[cfg(test)]
@@ -277,6 +407,67 @@ mod tests {
         assert_eq!(reply_errno(reply_err(9)), Some(9)); // EBADF round trips
         assert_eq!(reply_errno(0), None);
         assert_eq!(reply_errno(4096), None); // a byte count is a success, not an error
+    }
+
+    #[test]
+    fn a_granted_name_survives_the_two_argument_words() {
+        // The name rides in START arguments rather than a frame, so a per-file grant costs no page.
+        // Every length up to the limit has to come back exactly, including the 8-byte boundary where
+        // it splits across the two words.
+        for name in [
+            &b"a"[..],
+            b"motd",
+            b"scratch",
+            b"12345678",
+            b"123456789",
+            b"sixteen-bytes!!!",
+        ] {
+            assert!(grant::fits(name), "{name:?} should fit");
+            let (lo, hi) = grant::pack_name(name);
+            let mut buf = [0u8; grant::MAX_NAME];
+            let n = grant::unpack_name(lo, hi, name.len(), &mut buf);
+            assert_eq!(&buf[..n], name, "{name:?} did not survive the round trip");
+        }
+        assert!(!grant::fits(b""), "an empty name designates nothing");
+        assert!(
+            !grant::fits(b"seventeen-bytes!!"),
+            "a name past the limit must be refused where it is packed, not truncated silently",
+        );
+    }
+
+    #[test]
+    fn a_grant_spec_carries_its_length_and_its_direction_apart() {
+        // A read grant and a write grant of the same name differ only here, so the two fields must
+        // not bleed: a 16-byte name must not look like a write bit, and write must not lengthen it.
+        let ro = grant::spec(16, grant::READ);
+        let rw = grant::spec(16, grant::READ | grant::WRITE);
+        assert_eq!(grant::spec_len(ro), 16);
+        assert_eq!(grant::spec_len(rw), 16);
+        assert!(!grant::writable(ro));
+        assert!(grant::writable(rw));
+        // And a zero-rights spec grants nothing, rather than defaulting to something.
+        assert!(!grant::writable(grant::spec(4, 0)));
+    }
+
+    #[test]
+    fn the_escape_bits_are_distinct() {
+        // The attacker reports a bitmap and the test asserts an expected set, so two outcomes
+        // sharing a bit would hide one of them and make a wrong verdict read as a right one.
+        use fixture::escape::*;
+        let bits = [
+            SECOND_FILE,
+            WROTE,
+            TRUNCATED,
+            CREATED,
+            FORGED_HANDLE,
+            GRANTED_READ_FAILED,
+        ];
+        let mut seen = 0u64;
+        for b in bits {
+            assert_ne!(b, 0, "zero is the pass; it cannot also be a breach");
+            assert_eq!(seen & b, 0, "two escapes share a bit");
+            seen |= b;
+        }
     }
 
     #[test]

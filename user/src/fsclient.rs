@@ -17,7 +17,7 @@
 #![no_std]
 #![no_main]
 
-use fs_proto::{fixture, fs};
+use fs_proto::{fixture, fs, grant};
 use user_rt::{call, exit, now, send};
 
 /// The file-service endpoint: the client's whole authority to the filesystem. Naming a file over it
@@ -135,17 +135,166 @@ const BENCH_ITERS: u64 = 2000;
 const BENCH_WARMUP: u64 = 64;
 
 /// Roles, chosen by `arg0` at START (mirrors the kernel side). 0 is the end-to-end proof the test
-/// spawns; 1 is the benchmark loop the `--real --smp` bench spawns. One binary, two entries.
+/// spawns; 1 is the benchmark loop the `--real --smp` bench spawns; 2 is the attacker that a
+/// milestone-31 per-file grant is measured against. One binary, three entries.
 const ROLE_PROOF: u64 = 0;
 const ROLE_BENCH: u64 = 1;
+const ROLE_ATTACKER: u64 = 2;
 
 #[unsafe(no_mangle)]
-pub extern "C" fn _start(role: u64, _a1: u64, _a2: u64) -> ! {
+pub extern "C" fn _start(role: u64, a1: u64, _a2: u64) -> ! {
     match role {
         ROLE_BENCH => bench(),
+        ROLE_ATTACKER => attacker(a1 != 0),
         ROLE_PROOF => proof(),
         _ => proof(),
     }
+}
+
+/// **The attacker against a per-file grant** (milestone 31 phase 2). Spawned holding a *narrowed*
+/// endpoint: not the directory capability, but the file warden's, which designates exactly one file
+/// read-only. Its job is to try everything that would make that sentence false, and to report which
+/// attempts got through as a bitmap (`fixture::escape`).
+///
+/// **It is its own negative control, which is why it reports a bitmap and not a pass.** Run against a
+/// read-only grant, every bit must be clear. Run against a read/write grant of the same shape,
+/// `WROTE` and `TRUNCATED` must be **set** and everything else clear. Without that second run the
+/// first proves very little: a warden that refused every request would pass it, and so would a grant
+/// that reached nothing at all.
+///
+/// **What makes the attempts real.** Each one is against something that exists and that the process
+/// one hop up the chain can genuinely reach: the neighbour file is on the image, one directory entry
+/// away, and the warden could open it on any request it liked. Milestone 33's attacker was handed a
+/// real neighbouring client's address rather than a fictional one for exactly this reason, and
+/// milestone 36 used two witnesses for the reason the paragraph above gives.
+///
+/// `writable` also selects *which* file is granted, and that is a fixture constraint rather than a
+/// design one: the writable run damages what it is given, so it is given `scratch` (whose contents
+/// the gate's post-run host check pins, and which this restores as its last write) rather than
+/// `motd`, which two other tests compare byte for byte.
+fn attacker(writable: bool) -> ! {
+    use fixture::escape;
+    let mut verdict = 0u64;
+    let mut buf = [0u8; 128];
+
+    let (granted, neighbour) = if writable {
+        (fixture::SCRATCH_NAME, fixture::MOTD_NAME)
+    } else {
+        (fixture::MOTD_NAME, fixture::SCRATCH_NAME)
+    };
+
+    // The control: the one file this capability designates must open, and read back what is on it.
+    //
+    // The read-only run compares against `MOTD`, which nothing ever writes. The writable run cannot
+    // and must not: the suite runs its tests in **alphabetical order**, so this program runs before
+    // the two clients that put a known pattern in `scratch`, and asserting on those bytes here would
+    // be asserting on a history this test did not write. That is the exact failure DECISIONS §27 was
+    // corrected four times over, met again from the other side. So the writable run's control is that
+    // the file reads back the number of bytes `FSTAT` says it has, and, further down, that the bytes
+    // it writes are the bytes it reads back.
+    put_page(granted.as_bytes());
+    let (h, _) = call(FILE, fs::req(fs::OPEN, 0, granted.len() as u64), 0);
+    if (h as i64) < 0 {
+        verdict |= escape::GRANTED_READ_FAILED;
+    } else {
+        let (size, _) = call(FILE, fs::req(fs::FSTAT, h, 0), 0);
+        let want = if writable {
+            size as usize
+        } else {
+            fixture::MOTD.len()
+        };
+        let (n, _) = call(FILE, fs::req(fs::READ, h, want as u64), 0);
+        if (size as i64) < 0 || (n as i64) < 0 || n as usize != want || want > buf.len() {
+            verdict |= escape::GRANTED_READ_FAILED;
+        } else {
+            get_page(n as usize, &mut buf);
+            if !writable && &buf[..n as usize] != fixture::MOTD {
+                verdict |= escape::GRANTED_READ_FAILED;
+            }
+        }
+    }
+
+    // 1. A second file, by name. It exists, it sits in the same directory, and the warden could open
+    //    it. This capability names one file, so this must find nothing.
+    put_page(neighbour.as_bytes());
+    let (r, _) = call(FILE, fs::req(fs::OPEN, 0, neighbour.len() as u64), 0);
+    if (r as i64) >= 0 {
+        verdict |= escape::SECOND_FILE;
+    }
+
+    // 2. A write, against the file it IS allowed to read. Refusing a write to a file it cannot even
+    //    name would prove nothing; this is the sharp case. When it is *supposed* to succeed, the
+    //    bytes are read straight back: "the server accepted my write" and "my write landed" are
+    //    different claims, and only the second one makes this a control for the refusal above.
+    let probe = probe_payload();
+    put_page(&probe[..PROBE_LEN]);
+    let (w, _) = call(FILE, fs::req(fs::WRITE, grant::HANDLE, PROBE_LEN as u64), 0);
+    if (w as i64) >= 0 {
+        verdict |= escape::WROTE;
+        let (rb, _) = call(FILE, fs::req(fs::READ, grant::HANDLE, PROBE_LEN as u64), 0);
+        get_page(PROBE_LEN, &mut buf);
+        if rb as usize != PROBE_LEN || buf[..PROBE_LEN] != probe[..PROBE_LEN] {
+            verdict |= escape::GRANTED_READ_FAILED;
+        }
+    }
+
+    // 3. Truncation is a write that carries no bytes, so a guard that only covered WRITE would miss
+    //    it, and truncating to zero destroys a file just as thoroughly.
+    let (t, _) = call(FILE, fs::req(fs::TRUNCATE, grant::HANDLE, 0), 0);
+    if (t as i64) >= 0 {
+        verdict |= escape::TRUNCATED;
+    }
+
+    // 4. Creating a new name: the way to get a second file without opening one that exists. Refused
+    //    in both directions, because a file capability is not a directory.
+    put_page(b"made-by-attacker");
+    let (c, _) = call(FILE, fs::req(fs::CREATE, 0, 16), 0);
+    if (c as i64) >= 0 {
+        verdict |= escape::CREATED;
+    }
+
+    // 5. Handle guessing. The warden minted one handle and the FS server's own handle for the file is
+    //    a different number this process never saw, so spraying numbers is probing a table it is not
+    //    addressing. Every miss must be refused by the same check.
+    let mut guess = 1u64;
+    while guess < 8 {
+        let (g, _) = call(FILE, fs::req(fs::READ, guess, 8), 0);
+        if (g as i64) >= 0 {
+            verdict |= escape::FORGED_HANDLE;
+        }
+        guess += 1;
+    }
+
+    // Leave the fixture behind, as the LAST write, on the run that was allowed to damage it. The gate
+    // reopens the image with the host tool afterwards and compares `scratch` byte for byte, so an
+    // attacker that walked away from a truncated file would fail a check three steps downstream and
+    // look like a filesystem bug. That exact coupling is what DECISIONS §27 was corrected four times
+    // over, so it is paid off here rather than left to be rediscovered.
+    if writable {
+        let pat = fixture::WRITE_PATTERN;
+        put_page(pat);
+        let (rw, _) = call(FILE, fs::req(fs::WRITE, grant::HANDLE, pat.len() as u64), 0);
+        let (rr, _) = call(FILE, fs::req(fs::READ, grant::HANDLE, pat.len() as u64), 0);
+        get_page(pat.len(), &mut buf);
+        if (rw as i64) < 0 || rr as usize != pat.len() || &buf[..pat.len()] != pat {
+            verdict |= escape::GRANTED_READ_FAILED;
+        }
+    }
+
+    send(REPORT, fixture::VERDICT, verdict, 0);
+    exit();
+}
+
+/// How many bytes the attacker's write probe carries. A fixed length rather than the file's, because
+/// the file's length is history this program did not write (see the control's note).
+const PROBE_LEN: usize = 32;
+
+/// A recognisable payload for the write probe: if a read-only grant ever let one through, the bytes
+/// left on the disk say who put them there.
+fn probe_payload() -> [u8; PROBE_LEN] {
+    let mut p = [b'!'; PROBE_LEN];
+    p[..16].copy_from_slice(b"CLOBBERED-BY-ATK");
+    p
 }
 
 /// **The FS-server read benchmark** (the userspace-server tax, DECISIONS §32). Open `motd` once, then

@@ -2383,6 +2383,131 @@ pub mod fs_service {
         Some((readiness, report))
     }
 
+    /// **Wire a per-file grant and the program that holds it** (milestone 31 phase 2,
+    /// notes/grant-expression.md). This is what `run wc report.txt` resolves to, wired by the
+    /// kernel's test suite instead of by the shell, so the mechanism is gated on both ISAs.
+    ///
+    /// Three processes, and the shape is the point:
+    ///
+    /// ```text
+    ///   FS server ──file IPC──► fwarden ──narrowed file IPC──► the confined program
+    ///                (a directory)          (one file, one direction)
+    /// ```
+    ///
+    /// The warden holds the directory capability. The program holds an endpoint to the warden and
+    /// **nothing that names the FS server**, so "it cannot reach a second file" is a statement about
+    /// its cspace, not about a check it is trusted to pass. The narrowing is an address space, which
+    /// is why the attacker test below is a witness rather than an assertion.
+    ///
+    /// One frame is shared by all three. Every request on both hops is a blocking `CALL`, so the
+    /// client is parked inside its own call for the whole time the warden is using the page; a second
+    /// frame would buy a copy and no isolation, since the client is entitled to the bytes either way.
+    ///
+    /// The grant, as one value, because its four fields are one decision: which file, in which
+    /// direction, handed to which program started how. Splitting them across a long argument list
+    /// invites a caller to get `rights` and `role` the wrong way round, and both are bare integers.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub struct Grant {
+        /// The one name the warden will answer for. Must fit [`fs_proto::grant::MAX_NAME`].
+        pub name: &'static str,
+        /// `grant::READ`, or `READ | WRITE`.
+        pub rights: u64,
+        /// The confined program's `arg0` (its role) and `arg1`.
+        pub role: u64,
+        pub arg: u64,
+    }
+
+    /// What a wired grant hands back: the FS service's readiness endpoints if this call is the one
+    /// that wired it, the warden's own readiness endpoint, and the endpoint the confined program
+    /// reports on.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub struct Granted {
+        pub readiness: Option<(EpId, EpId)>,
+        pub warden_ready: EpId,
+        pub report: EpId,
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn start_granted(
+        blk_image: &'static [u8],
+        fsserver_image: &'static [u8],
+        warden_image: &'static [u8],
+        client_image: &'static [u8],
+        grant: Grant,
+    ) -> Option<Granted> {
+        let Grant {
+            name,
+            rights,
+            role: client_role,
+            arg: client_arg,
+        } = grant;
+        assert!(
+            fs_proto::grant::fits(name.as_bytes()),
+            "a granted name rides in two argument words; this one does not fit",
+        );
+        let (file_ep, file_shared, readiness) = ensure(blk_image, fsserver_image)?;
+        let narrow_ep = crate::sched::create_endpoint();
+        let warden_ready = crate::sched::create_endpoint();
+        let report = crate::sched::create_endpoint();
+
+        let (lo, hi) = fs_proto::grant::pack_name(name.as_bytes());
+        let spec = fs_proto::grant::spec(name.len(), rights);
+
+        // The warden: the directory capability, the narrowed endpoint it serves, and the shared page.
+        // The grant itself (the name and the direction) rides in its START arguments, so a per-file
+        // grant costs no frame at all.
+        crate::sched::spawn(move || {
+            run(
+                warden_image,
+                Spawn {
+                    arg0: lo,
+                    arg1: hi,
+                    arg2: spec,
+                    grants: &[
+                        endpoint_cap(file_ep, Rights::WRITE), // slot 0: CALL the FS server
+                        endpoint_cap(narrow_ep, Rights::READ), // slot 1: serve the narrowed capability
+                        endpoint_cap(warden_ready, Rights::WRITE), // slot 2: readiness, once
+                    ],
+                    maps: &[Mapping {
+                        va: FILE_VA_CLIENT,
+                        phys: file_shared,
+                        flags: Flags::user_data(),
+                    }],
+                },
+            )
+        })
+        .expect("could not spawn the file warden");
+
+        // The confined program. Its slot 0 looks exactly like a directory capability from inside, and
+        // is not one: same protocol, same page, a namespace of one name.
+        crate::sched::spawn(move || {
+            run(
+                client_image,
+                Spawn {
+                    arg0: client_role,
+                    arg1: client_arg,
+                    arg2: 0,
+                    grants: &[
+                        endpoint_cap(narrow_ep, Rights::WRITE), // slot 0: CALL the warden
+                        endpoint_cap(report, Rights::WRITE),    // slot 1: report to the kernel
+                    ],
+                    maps: &[Mapping {
+                        va: FILE_VA_CLIENT,
+                        phys: file_shared,
+                        flags: Flags::user_data(),
+                    }],
+                },
+            )
+        })
+        .expect("could not spawn the confined program");
+
+        Some(Granted {
+            readiness,
+            warden_ready,
+            report,
+        })
+    }
+
     /// The `std::fs` client's heap budget and extra stack. Same magnitudes as the networked std
     /// program: it is a full std program (formatting, `Vec`, `String`, `read_to_string`), so it
     /// needs the generous heap and the deep stack std's machinery wants.
@@ -5422,6 +5547,121 @@ mod tests {
         );
     }
 
+    /// **A read-only per-file grant, attacked** (milestone 31 phase 2, notes/grant-expression.md).
+    ///
+    /// `run wc report.txt` must hand over one file, not the directory it lives in. This wires exactly
+    /// that: an `fwarden` holding the directory capability, a confined program holding only the
+    /// warden's endpoint, and a grant of `motd`, read-only. The program is the attacker role of
+    /// `fsclient`, and it spends its life trying to make that sentence false.
+    ///
+    /// **What makes it a witness and not a formality.** Every attempt is against something that
+    /// really exists and that the process one hop up the chain can really reach: `scratch` is on the
+    /// image, one directory entry away, and the warden could open it on any request. Milestone 33's
+    /// attacker was handed a real neighbour's address rather than a fictional one for the same
+    /// reason. And this test alone would still be weak, because a warden that refused *everything*
+    /// would pass it; that is what the writable twin below is for, and why the verdict is a bitmap
+    /// rather than a boolean.
+    #[test_case]
+    fn a_read_only_per_file_grant_survives_an_attacker() {
+        let Some(verdict) = attack_a_grant(fs_proto::grant::READ, false) else {
+            return;
+        };
+        assert_eq!(
+            verdict,
+            0,
+            "the read-only per-file grant leaked: {}",
+            describe_escape(verdict),
+        );
+    }
+
+    /// **A writable per-file grant, attacked** (the second witness, and the first one's control).
+    ///
+    /// Same warden, same attacker, same neighbouring file; only the granted direction changes. Two
+    /// things fall out of it, and the second is why it exists:
+    ///
+    /// - A writable file capability really does write, and still reaches **only** its one file. The
+    ///   widening is exactly one axis wide.
+    /// - The read-only test above is now meaningful. Its refusals are a narrowed capability rather
+    ///   than a warden that says no to everything, because here the same requests, through the same
+    ///   code, succeed. A confinement test with no witness that the thing being confined *works* is
+    ///   a test that passes when the feature is missing entirely.
+    #[test_case]
+    fn a_writable_per_file_grant_writes_that_file_and_still_only_that_file() {
+        use fs_proto::fixture::escape;
+        let Some(verdict) = attack_a_grant(fs_proto::grant::READ | fs_proto::grant::WRITE, true)
+        else {
+            return;
+        };
+        assert_eq!(
+            verdict,
+            escape::WROTE | escape::TRUNCATED,
+            "a writable grant must write and truncate its own file and do nothing else: {}",
+            describe_escape(verdict & !(escape::WROTE | escape::TRUNCATED)),
+        );
+    }
+
+    /// Wire a per-file grant of the given direction, run the attacker against it, and return its
+    /// verdict bitmap. `None` when no RedoxFS disk is attached (nothing to test; do not fail).
+    fn attack_a_grant(rights: u64, writable: bool) -> Option<u64> {
+        let granted = match fs_service::start_granted(
+            init_image(),
+            program("fsserver").expect("no fsserver program in the initrd archive"),
+            program("fwarden").expect("no fwarden program in the initrd archive"),
+            program("fsclient").expect("no fsclient program in the initrd archive"),
+            fs_service::Grant {
+                // The writable run damages what it is granted, so it is granted the file the fixture
+                // discipline already covers; see the attacker's own note.
+                name: if writable {
+                    fs_proto::fixture::SCRATCH_NAME
+                } else {
+                    fs_proto::fixture::MOTD_NAME
+                },
+                rights,
+                role: 2, // ROLE_ATTACKER
+                arg: writable as u64,
+            },
+        ) {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no RedoxFS disk attached; skipping)");
+                return None;
+            }
+        };
+        assert_fs_service_ready(granted.readiness);
+        assert_eq!(
+            sched::ipc_recv(granted.warden_ready)[0],
+            fs_proto::fixture::READY,
+            "the warden could not open the granted name, so there was nothing to attack",
+        );
+        let [tag, verdict, ..] = sched::ipc_recv(granted.report);
+        assert_eq!(
+            tag,
+            fs_proto::fixture::VERDICT,
+            "the attacker's report is not a verdict word",
+        );
+        Some(verdict)
+    }
+
+    /// Name the bits an escape verdict set, so a failure reads as a sentence instead of a bitmap.
+    fn describe_escape(v: u64) -> &'static str {
+        use fs_proto::fixture::escape;
+        if v & escape::SECOND_FILE != 0 {
+            "it opened a file the grant does not designate"
+        } else if v & escape::WROTE != 0 {
+            "it wrote through a read-only grant"
+        } else if v & escape::TRUNCATED != 0 {
+            "it truncated through a read-only grant"
+        } else if v & escape::CREATED != 0 {
+            "it created a file through a file capability"
+        } else if v & escape::FORGED_HANDLE != 0 {
+            "it reached a file with a handle it was never given"
+        } else if v & escape::GRANTED_READ_FAILED != 0 {
+            "the granted read itself failed, so nothing above was actually proven"
+        } else {
+            "nothing (an empty verdict should not have failed an assertion)"
+        }
+    }
+
     /// **The FS server's stack is sized by measurement, and this is the measurement.**
     ///
     /// Runs after both FS clients, so the poison in the server's stack pages has been overwritten to
@@ -8208,6 +8448,75 @@ mod riscv_virtio_tests {
         let mut want = [0u8; 512];
         let n = std_fs_expected(&mut want);
         assert_std_transcript(report, &want[..n], "std fs");
+    }
+
+    /// **A read-only per-file grant, attacked, on the second ISA** (the parity gate). The aarch64
+    /// twin carries the reasoning: same warden, same attacker, same verdict.
+    #[test_case]
+    fn a_read_only_per_file_grant_survives_an_attacker() {
+        let Some(verdict) = attack_a_grant(fs_proto::grant::READ, false) else {
+            return;
+        };
+        assert_eq!(
+            verdict, 0,
+            "the read-only per-file grant leaked (see the aarch64 twin for what each bit means)",
+        );
+    }
+
+    /// **A writable per-file grant, attacked, on the second ISA** (the parity gate, and the read-only
+    /// test's control here too). See the aarch64 twin.
+    #[test_case]
+    fn a_writable_per_file_grant_writes_that_file_and_still_only_that_file() {
+        use fs_proto::fixture::escape;
+        let Some(verdict) = attack_a_grant(fs_proto::grant::READ | fs_proto::grant::WRITE, true)
+        else {
+            return;
+        };
+        assert_eq!(
+            verdict,
+            escape::WROTE | escape::TRUNCATED,
+            "a writable grant must write and truncate its own file and do nothing else",
+        );
+    }
+
+    /// The riscv half of the aarch64 twin's helper; the only difference is the block-server binary
+    /// (the portable `blk` here, the PL011-tied `hello` there).
+    fn attack_a_grant(rights: u64, writable: bool) -> Option<u64> {
+        let granted = match fs_service::start_granted(
+            blk_image(),
+            program("fsserver").expect("no fsserver program in the initrd archive"),
+            program("fwarden").expect("no fwarden program in the initrd archive"),
+            program("fsclient").expect("no fsclient program in the initrd archive"),
+            fs_service::Grant {
+                name: if writable {
+                    fs_proto::fixture::SCRATCH_NAME
+                } else {
+                    fs_proto::fixture::MOTD_NAME
+                },
+                rights,
+                role: 2, // ROLE_ATTACKER
+                arg: writable as u64,
+            },
+        ) {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no RedoxFS disk attached; skipping)");
+                return None;
+            }
+        };
+        assert_fs_service_ready(granted.readiness);
+        assert_eq!(
+            sched::ipc_recv(granted.warden_ready)[0],
+            fs_proto::fixture::READY,
+            "the warden could not open the granted name, so there was nothing to attack",
+        );
+        let [tag, verdict, ..] = sched::ipc_recv(granted.report);
+        assert_eq!(
+            tag,
+            fs_proto::fixture::VERDICT,
+            "the attacker's report is not a verdict word",
+        );
+        Some(verdict)
     }
 
     /// **The FS server's stack headroom, on the second ISA** (the parity gate). The aarch64 twin
