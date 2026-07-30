@@ -2627,6 +2627,97 @@ answer an input `CALL` and slow or stall the compositor's single thread. Confide
 are what this rung proves; availability wants the missing primitive and a policy, and Wayland does not
 solve it either.
 
+## 34. RedoxFS is the primary filesystem, on three conditions
+
+**Decided 2026-07-29 (Chris), with the conditions attached deliberately so the label and its caveats
+land together.** RedoxFS is the primary on-disk filesystem. It is not yet the *root* filesystem, and
+§34.3 below is why that is a separate piece of work rather than a relabelling.
+
+### Why this commitment is cheaper here than the words suggest
+
+In a monolithic kernel, choosing a primary filesystem means linking tens of thousands of lines of
+someone else's code into the TCB, where a bug in it is a kernel bug. Here the FS server is a confined
+userspace component holding a capability to a block device, so a RedoxFS defect is a **data-integrity
+bug, not a system compromise**: the kernel does not trust it and cannot be broken by it. That is what
+the structure was for, and it means this decision is revisable at the cost of one component, which
+milestone 23 exists to demonstrate. Recording it as a decision is still right, because a default
+nobody wrote down is a decision nobody can revisit.
+
+### What earns it the role
+
+- **It is already somebody's root filesystem.** Redox OS runs on it. That is the exact use being asked
+  of it, exercised by a real system rather than inferred from a design document, and it is the single
+  strongest argument in its favour.
+- **Copy-on-write with transactions**, so crash consistency is designed in rather than bolted on. That
+  is the one property a primary filesystem must have and the most expensive thing to write oneself.
+- **Rust, and no_std on both bare targets**, proven by us. It does not drag a libc into the FS server.
+  (§31 makes a C component possible now, but possible is not free.)
+- **Maintained upstream**, pinned at 0.9.1 with a patch discipline (`patches/`, two `Vec` imports).
+- It is the reuse thesis made concrete: a real filesystem we did not write, running confined.
+
+### The three conditions
+
+1. **Crash consistency must be tested, not asserted.** It is RedoxFS's central selling point and we
+   have never injected a torn write or a power cut. Today the claim rests on the upstream design
+   description. For a project whose rule is measure rather than argue, this gap is worse than the
+   missing verbs were, and it is the first thing a skeptic should ask about. Until it is tested, the
+   docs say "designed for crash consistency", never "crash consistent".
+2. **Throughput must be measured.** `fs_read` is in the service-path benchmarks with the
+   userspace-server tax stated honestly, but there is nothing next to ext4 or APFS. The phrase
+   "primary filesystem" invites a comparison we currently cannot make.
+3. **The write path must be honestly complete**, which is `CREATE` and `TRUNCATE` (milestone 31 phase
+   two, in flight). §27 records why `TRUNCATE` is not merely a feature: a write that half-works reads
+   as a write that failed, and that sharp edge cost a day and produced three wrong root causes.
+
+One encouraging measurement already in hand: the real engine under the FS server's own allocator, at
+the 8 MiB cap, held a high-water of **352 KiB across thirty mount-and-write cycles**. So the budget is
+generous headroom rather than a requirement, which was the main worry about it on small hardware.
+
+### What would reverse this
+
+If RedoxFS turned out to need `std`, or to need an allocation guarantee the budget model cannot give,
+or if its **repair and recovery tooling is absent**. The first two have been probed and came out fine.
+The third is unchecked, and for a primary filesystem "what do you do with a corrupted one" is a fair
+question that deserves an answer before the label hardens.
+
+### Alternatives considered
+
+`crickerfs` is not among them, because it is not a competitor: a boot archive and a read-write
+filesystem are different jobs, and the initrd wants exactly what crickerfs is. It stays.
+
+- **Write our own.** Rejected on the same grounds as milestone 32 originally: the thesis is the kernel
+  confining the filesystem, not the filesystem. A crash-consistent CoW filesystem is a large, subtle
+  project that proves nothing the thesis needs.
+- **ext2.** Simple, well documented, Rust implementations exist, and it buys real interop (mount the
+  image on Linux). Rejected for a *root*: no journaling, so power loss means `fsck` and possible loss,
+  which is a step down from CoW. ext4 has no serious no_std Rust write implementation, and writing one
+  correctly is its own multi-month project.
+- **FAT32 / exFAT.** `fatfs` is mature and no_std. Rejected for a root on semantics: no crash
+  consistency at all, no permissions, no symlinks. It is the right answer for a future *boot* partition
+  where interop is the point, and wrong for anything that must survive a power cut.
+- **littlefs.** Genuinely power-fail-resilient, and wrong on two axes: it targets raw NAND/NOR with
+  wear levelling rather than a block device, at microcontroller scale, and it is C, so it would put a
+  foreign component in the storage path for no thesis gain.
+- **btrfs / ZFS / F2FS.** No no_std Rust implementation, and a size that would dominate the project.
+- **Build on a proven transactional store** (SQLite being the most battle-tested crash-consistency
+  implementation in existence, needing only a VFS shim, which is precisely the seam §31 built).
+  Interesting and not recommended: file-data performance would be poor and the novelty would need
+  defending for no thesis benefit. Recorded because the crash-consistency argument for it is real.
+
+### The alternative that could supersede this, and is not a filesystem choice
+
+**A read-only measured root plus a writable layer.** §22 already gives us measured boot, so hashing a
+read-only root image would extend integrity verification from init to the entire system, with writes
+landing in a smaller, less critical layer (RedoxFS or anything else). That is a *stronger security
+story* than a writable RedoxFS root, it sidesteps the repair question above by making the root
+reproducible rather than repairable, and it is the shape Android and ChromeOS chose (dm-verity plus an
+overlay). It is recorded here as the thing most likely to make this section a footnote, and it competes
+on architecture rather than on engine quality, which is why choosing RedoxFS now costs little.
+
+Note that switching engines would not address condition 1 at all: **no candidate's crash consistency
+is tested here.** That is a gap in our harness, not in RedoxFS, and it is why the conditions matter
+more than the choice.
+
 ## Reading
 
 - **The seL4 manual**, and Klein et al., *seL4: Formal Verification of an OS Kernel* (SOSP'09)
