@@ -129,7 +129,17 @@ cannot fake. That reopen is in the gate: `redoxfs_check_after_run` compares `scr
 fixture, and `mkredoxfs` rewrites it to a placeholder before every run, so the check passing means
 this run's guest write landed on the disk.
 
-The likely reason it works now is the interrupt-delivery fix above: the block server WAITs on the
+**Narrowed again the same day, and this direction matters more.** The claim above is true only for
+a *pristine* target block. Reproduced on main by a second agent: a write to a `scratch` block that
+has **already been written** loops in exactly the way the original open item described, at ~400% CPU.
+The gate never sees it because `mkredoxfs` rewrites `scratch` to a placeholder before every run, so
+every gated write is a first write; the loop only appears when the image carries a previous run's
+write, which is what invoking `cargo test -p kernel` directly (skipping `mkredoxfs`) produces. So the
+honest statement is: **a first on-device write works and is proven; a repeat write to the same block
+still loops.** The original blocker was not stale, it was narrower than recorded. Under
+investigation; do not read the paragraph above as "writes work" without this qualification.
+
+The likely reason the first write works is the interrupt-delivery fix above: the block server WAITs on the
 device's completion interrupt instead of polling the used ring, the same correction this note already
 had to make for the read path. That is stated as *likely*, not proven: what was measured is that the
 write completes, not why the poll path did not. The milestone-32 client stays read-only by choice

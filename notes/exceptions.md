@@ -232,6 +232,14 @@ The general lesson, which generalizes past these two files: **any sequence that 
 return-from-exception state in architectural registers must be atomic with respect to exceptions.**
 There is one copy of those registers, so a nested exception is a write to the thing you are building.
 
+So we went looking for the siblings, in both architectures' assembly, and wrote down what we found
+and what we cleared: [arch-audit.md](arch-audit.md). One correction it makes to the account above,
+worth carrying here: the claim that the mask "covers any future path by construction" is true on
+aarch64 and **not** on RISC-V, because `sstatus` is one register holding both the staged fields and
+the live `SIE` bit, so `trap_return`'s own `csrw sstatus` would put interrupts back on if a frame ever
+carried `SIE = 1`. It never does, and now the compiler enforces that rather than a comment asking for
+it.
+
 ## What moves out of `fatal()` next
 
 Every case currently falls into `fatal()`. As the kernel grows, they migrate into real

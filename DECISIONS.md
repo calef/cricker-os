@@ -1879,7 +1879,12 @@ capability and read back byte for byte, plus a host-tool consistency check after
 core is host-tested for read AND write (`fs-server` lib), so the filesystem logic is proven both ways
 independently of any device.
 
-**Amendment (2026-07-29): the on-device write works, and the recorded blocker was stale.** This
+**Amendment (2026-07-29, then narrowed the same day): a FIRST on-device write works; a repeat write
+to the same block still loops.** Read the correction below together with this qualification, which a
+second agent established by reproducing the loop on main: the gate only ever performs first writes,
+because `mkredoxfs` rewrites the target block to a placeholder before every run, so the loop hides
+behind the harness rather than being absent. The original blocker was not stale, it was narrower than
+recorded, and the optimistic correction below overstated it. See notes/fs-server.md. This
 section used to carry an open item, that an end-to-end write "loops inside RedoxFS's allocator commit
 on bare metal even on a pristine image" (the `prev`-chain walk in `Transaction::sync_allocator`). It
 does not. Driven through `std::fs` (§22's phase-two amendment), the write completes on both ISAs and
