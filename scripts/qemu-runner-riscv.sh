@@ -83,9 +83,17 @@ fi
 # (iommu_platform=on). guestfwd adds a deterministic TCP echo peer at 10.0.2.9:7777 (piped to
 # /bin/cat) for the TCP round-trip gate; nothing outlives QEMU. See the aarch64 runner for detail.
 GUESTFWD="guestfwd=tcp:10.0.2.9:7777-cmd:/bin/cat"
+
+# slirp's own TFTP server (10.0.2.2:69), which makes the gating UDP test deterministic and offline
+# instead of NAT'ing a DNS query to the host's resolver. The parity twin of the aarch64 runner's
+# block; the fixture must match user/src/netcli.rs. See the aarch64 runner for the full reasoning.
+TFTPDIR="$(dirname "$0")/../target/tftp"
+mkdir -p "$TFTPDIR"
+printf 'cricker-tftp!' > "$TFTPDIR/cricker"
+
 NET=""
 if [ -n "$CRICKER_NET" ]; then
-    NET="-netdev user,id=net0,$GUESTFWD -device virtio-net-device,netdev=net0 -netdev user,id=net1,$GUESTFWD -device virtio-net-pci,netdev=net1,disable-legacy=on,iommu_platform=on"
+    NET="-netdev user,id=net0,$GUESTFWD,tftp=$TFTPDIR -device virtio-net-device,netdev=net0 -netdev user,id=net1,$GUESTFWD,tftp=$TFTPDIR -device virtio-net-pci,netdev=net1,disable-legacy=on,iommu_platform=on"
 fi
 
 # The RISC-V IOMMU (milestone 16b): the ratified v1.0.1 IOMMU as a PCI function (riscv-iommu-pci,

@@ -116,9 +116,22 @@ fi
 # with zero host setup and nothing outlives QEMU. Verified against QEMU 11.0.2. Each slirp instance
 # is its own network, so both NICs can use the same virtual address without conflict.
 GUESTFWD="guestfwd=tcp:10.0.2.9:7777-cmd:/bin/cat"
+
+# `tftp=` turns on slirp's OWN TFTP server, at the gateway (10.0.2.2:69), and that is what makes the
+# gating UDP test deterministic and offline. The UDP test used to query 10.0.2.3:53, which is NOT a
+# resolver: libslirp NATs anything sent there to the HOST's nameserver, so that test silently
+# depended on the developer's DNS working at that instant and flaked whenever a query was dropped
+# (measured ~2.5% per query against a real resolver). TFTP is served inside libslirp, so the request
+# and its reply never leave the emulator. This is the UDP twin of the guestfwd echo peer above.
+# The fixture's name and contents are fixed and must match user/src/netcli.rs (TFTP_NAME/TFTP_BODY);
+# `printf` writes it with no trailing newline so the client can assert the bytes exactly.
+TFTPDIR="$(dirname "$0")/../target/tftp"
+mkdir -p "$TFTPDIR"
+printf 'cricker-tftp!' > "$TFTPDIR/cricker"
+
 NET=""
 if [ -n "$CRICKER_NET" ]; then
-    NET="-netdev user,id=net0,$GUESTFWD -device virtio-net-device,netdev=net0 -netdev user,id=net1,$GUESTFWD -device virtio-net-pci,netdev=net1,disable-legacy=on,iommu_platform=on"
+    NET="-netdev user,id=net0,$GUESTFWD,tftp=$TFTPDIR -device virtio-net-device,netdev=net0 -netdev user,id=net1,$GUESTFWD,tftp=$TFTPDIR -device virtio-net-pci,netdev=net1,disable-legacy=on,iommu_platform=on"
 fi
 
 # shellcheck disable=SC2086  # $INITRD, $DISK and $NET are deliberately word-split or empty
