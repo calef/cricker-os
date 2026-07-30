@@ -1214,8 +1214,21 @@ fn bench() -> bool {
         return bench_riscv(check, save);
     }
 
-    if !mkdisk()
+    // `--smp`: boot the full 4-hart machine under HVF so the multi-hart throughput bench
+    // (`smp_throughput`, DECISIONS §28) and the FS service-path bench (`fs_read`, DECISIONS §32) have
+    // cores and, for the FS one, a filesystem to work with. Both self-skip on one hart, so without
+    // this flag the `--real` run is single-hart and neither builds the FS image nor prints their
+    // lines. Only meaningful with `--real`.
+    let smp = std::env::args().any(|a| a == "--smp");
+
+    // For --smp, build the FS server (before user(), so mkinitrd packs the fsserver ELF) and the
+    // RedoxFS test image the runner attaches as the second mmio disk. The fs_read bench opens it; on
+    // any run without the image the bench finds no second disk and skips, so this stays out of the
+    // icount gate's build entirely.
+    if (smp && !fs_server_build(TARGET))
+        || !mkdisk()
         || !user()
+        || (smp && !mkredoxfs())
         || !cargo_profiled(&[
             "build",
             "-p",
@@ -1232,11 +1245,6 @@ fn bench() -> bool {
     // Run the kernel through the same runner script as everything else, with the accelerator
     // chosen by env and, for the deterministic instrument, icount pinning virtual time to the
     // instruction stream (sleep=off: virtual time never waits for the wall clock).
-    // `--smp`: boot the full 4-hart machine under HVF so the multi-hart throughput bench
-    // (`smp_throughput`, DECISIONS §28) has cores to fill. It self-skips on one hart, so without this
-    // flag the `--real` run is single-hart and prints no `smp_*` lines. Only meaningful with `--real`.
-    let smp = std::env::args().any(|a| a == "--smp");
-
     let mut cmd = Command::new(RUNNER);
     cmd.arg(kernel_elf());
     if real {

@@ -584,3 +584,71 @@ capability process is a lighter object than a Unix one" caveat that has always s
 Nothing here needed a path investigated. The only structural change was the harness (`--real` boots
 one hart now), and the one real code-attributable movement (`ipc_rtt_el0` +7%) is the mailbox, agreeing
 across both instruments.
+
+## The service-path benchmarks: what a userspace-server architecture costs (2026-07-29)
+
+The microkernel bet is that filesystems, network stacks, and drivers belong in confined userspace
+processes, not the kernel. The skeptic's fair question is the price: a request that a monolith
+serves with one syscall now crosses into another process, maybe through a third. Two benches answer
+it, and the split between them is the honest part, because the two servers this project actually
+runs sit on opposite sides of a measurement line.
+
+**`relay_rtt`: the confined-server tax, isolated and gated.** Real services fan out: the FS server
+CALLs the block server (`client -> fs -> blk -> fs -> client`), netd CALLs the NIC driver
+(`client -> netd -> driver -> netd -> client`). `relay_rtt` (kernel-side, `bench.rs`) is exactly that
+two-hop topology, a client through a relay to a backend and back, and it sits on the icount baseline
+next to the one-hop `ipc_rtt`:
+
+| bench | topology | icount ticks/iter |
+|---|---|---|
+| `ipc_rtt` | client <-> server (one hop) | ~982 |
+| `relay_rtt` | client -> relay -> backend -> relay -> client (two hops) | ~1,961 |
+
+The two-hop path is ~2.0x the one-hop, and the **difference, ~980 ticks, is what one confined
+intermediary that delegates to a backend costs**: two extra context switches and two extra
+rendezvous per request. That is the architecture's per-request tax over a monolith, isolated from any
+device, deterministic, and gated by `--check` so a regression in the IPC/switch path shows up against
+its commit. Adding `relay_rtt` shifted the other kernel-side IPC benches a few percent (`ipc_rtt`
++6%) through whole-crate codegen, all sub-tripwire, the churn this note documents above; the baseline
+was re-saved to absorb it in the commit that added the bench.
+
+**`fs_read`: the real RedoxFS read, whole path, and why it cannot be the isolated number.** This is
+the flagship: a client opens a file through a granted **directory capability** and reads a block, over
+the real confined stack (a block server driving the RedoxFS disk by DMA, the vendored RedoxFS engine
+mounting it over blk IPC on its own heap). It runs on the `--real --smp` boot, where the whole stack
+is proven by the fs-server test, and it reports:
+
+```
+fs_read   ~9.8M ticks / 2000 reads   ~204 us/read   (HVF, --release --smp, stable across runs)
+```
+
+**204 microseconds is device latency, and saying so is the point.** A read is not served warm from a
+cache; it goes to the block server, which does a DMA transfer and waits on the disk's completion
+interrupt, ~200 us per block under HVF. That swamps the FS-server's own IPC-contract tax (the extra
+`client -> fs` hop and the engine's dispatch), which `relay_rtt` puts at a few hundred *nanoseconds*.
+So `fs_read` is the honest **whole-path** cost of a userspace file read, not an isolated server tax,
+exactly the case milestone 21's rule names: when device latency swamps the isolation, measure the
+whole path and say so rather than report a fictional isolated number. The clean isolation of the file
+server's own cost was attempted and abandoned for this reason: a warm cache read and a raw blk-IPC
+read differ by that few-hundred-ns layer sitting on top of a ~200 us block read with its own
+run-to-run spread, so the delta is in the device noise. The isolated per-hop tax lives in `relay_rtt`
+instead, where it is measurable; `fs_read` is what a real file read actually costs, dominated by the
+disk the way it would be on any OS. And it is `--real`-only and never gated for the same reason the
+number is large: the mount and every read are interrupt-driven, not deterministic under `-icount`, so
+gating on `fs_read` would enshrine the non-determinism the 2026-07-28 lesson warns against. It
+self-skips (the `online_count() > 1` gate) everywhere but `--real --smp`, so `bench/baseline.txt`
+never sees it.
+
+**netd's socket round trip: measured, but not as a third icount bench, and here is why.** The net
+path has the same shape as the FS path (a confined server the client reaches only through a granted
+`Stack` capability), and its per-request IPC tax is the same `relay_rtt` topology. But a netd
+*socket* round trip is even less gate-able than `fs_read`: netd only reaches its serve loop after a
+DHCP handshake, and its RECV path drives smoltcp's own retransmit and delay-ACK timers (notes/net.md),
+so the path is DHCP- and timer-driven, deterministic under neither `-icount` nor, at the socket level,
+even a warm HVF loop. So netd's socket contract is proven and timed end to end by the existing net
+tests (`a_client_resolves_dns_through_the_socket_contract`, `a_client_echoes_over_tcp_...`, both ISAs,
+both transports), not duplicated as a bench that could only report device-and-timer latency. The bare
+EL0 round trip those build on, `ipc_rtt_el0` above, is the raw baseline; the `relay_rtt` delta is the
+confined-server tax netd pays on top of it, the same as the FS server. Recording it this way, one
+gated topology tax plus the two real servers measured where each is sound, is the honest fit to what
+the two instruments can and cannot see.

@@ -18,7 +18,7 @@
 #![no_main]
 
 use fs_proto::{fixture, fs};
-use user_rt::{call, exit, send};
+use user_rt::{call, exit, now, send};
 
 /// The file-service endpoint: the client's whole authority to the filesystem. Naming a file over it
 /// is a request the server resolves under the one directory this endpoint is bound to.
@@ -67,8 +67,50 @@ fn read(handle: u64, offset: u64, n: usize) -> usize {
     r0 as usize
 }
 
+/// Iterations for the timed read loop (`ROLE_BENCH`). Warmup pays the OPEN and the first cold read;
+/// the timed loop then reads the same block over and over, so it measures the FS-server file-IPC
+/// contract (client CALL, server dispatch, handle validation, engine read, copy into the shared page,
+/// reply), warm, not disk latency. Self-timed, reported home like elbench's primitives.
+const BENCH_ITERS: u64 = 2000;
+const BENCH_WARMUP: u64 = 64;
+
+/// Roles, chosen by `arg0` at START (mirrors the kernel side). 0 is the end-to-end proof the test
+/// spawns; 1 is the benchmark loop the `--real --smp` bench spawns. One binary, two entries.
+const ROLE_PROOF: u64 = 0;
+const ROLE_BENCH: u64 = 1;
+
 #[unsafe(no_mangle)]
-pub extern "C" fn _start(_a0: u64, _a1: u64, _a2: u64) -> ! {
+pub extern "C" fn _start(role: u64, _a1: u64, _a2: u64) -> ! {
+    match role {
+        ROLE_BENCH => bench(),
+        ROLE_PROOF => proof(),
+        _ => proof(),
+    }
+}
+
+/// **The FS-server read benchmark** (the userspace-server tax, DECISIONS §32). Open `motd` once, then
+/// time a loop of reads of its first block and report `[ticks, iters]` on the report endpoint, the
+/// elbench shape. The kernel's bench boot prints it as `fs_read`; against the bare `ipc_rtt_el0`
+/// round trip, the difference is what the FS-server contract costs above a raw endpoint call. It is a
+/// `--real`-only magnitude (the mount is device-driven, not deterministic under icount); see
+/// notes/benchmarks.md and kernel/src/bench.rs.
+fn bench() -> ! {
+    let handle = open(fixture::MOTD_NAME);
+    let block = fixture::MOTD.len();
+    for _ in 0..BENCH_WARMUP {
+        let _ = read(handle, 0, block);
+    }
+    let start = now();
+    for _ in 0..BENCH_ITERS {
+        let _ = read(handle, 0, block);
+    }
+    let ticks = now().wrapping_sub(start);
+    // slot 1 is REPORT; carry ticks and the iteration count, the bench line's two fields.
+    send(REPORT, ticks, BENCH_ITERS, 0);
+    exit();
+}
+
+fn proof() -> ! {
     // Read the motd the image ships with, through a handle the server minted for us. This proves
     // the whole read path end to end: a real RedoxFS image we did not write, mounted by a confined
     // FS server over blk IPC, its files opened by name under a granted directory capability and read
