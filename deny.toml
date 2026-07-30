@@ -1,0 +1,110 @@
+# cargo-deny: the supply-chain gate (milestone 42).
+#
+# The thesis is that this kernel confines code it did not write (DECISIONS §14, §27, §31). Not
+# knowing when that code has a published advisory was an odd blind spot for a project making that
+# claim, and licence obligations stop being cosmetic the moment milestone 39 ships a distribution.
+#
+# One config for four workspaces. The tree has four cargo workspaces on purpose (the main one,
+# fs-server, tools/redoxfs-host, and the vendored engine), so `script/supply-chain` runs cargo-deny
+# once per manifest with `--config deny.toml`. One policy, applied everywhere, is the point: a
+# licence we would refuse in the kernel is not acceptable in the host tooling either.
+
+[graph]
+# Only targets we actually build. This is a deliberate narrowing, not laziness: cargo-deny defaults
+# to every target in the universe, which drags `windows-sys`, `wasi`, and the whole redox-native
+# side of RedoxFS into the licence and advisory verdict for code that never enters a build here.
+# An advisory against a crate we do not compile is not a finding, it is noise, and noise is how an
+# alert list becomes wallpaper (DECISIONS §35).
+#
+# Two bare-metal targets (the kernel, user, and the EL0 fs-server binary) and three hosts (the
+# Apple Silicon dev machine, CI's aarch64 Linux runner, and an x86_64 Linux contributor). x86_64
+# bare metal is declared in §19 but not started; it joins this list when it does.
+targets = [
+    "aarch64-unknown-none-softfloat",
+    "riscv64imac-unknown-none-elf",
+    "aarch64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-gnu",
+]
+# Evaluate every feature, not just the default set. fs-server's `el0` feature and RedoxFS's `std`
+# pull different dependency graphs, and a feature nobody's default build enables is exactly where an
+# unexamined dependency would hide.
+all-features = true
+
+[advisories]
+version = 2
+# Yanked means the publisher withdrew it. Warning about that is the wrong strength: a yanked crate in
+# a committed lockfile is a build that will stop resolving, and we would rather learn it here.
+yanked = "deny"
+# "all", not the default "workspace": an unmaintained crate three levels down is still the one whose
+# next CVE nobody will fix. If this ever fires on something we cannot move off, the answer is an
+# `ignore` entry below WITH a written reason, per §35's rule that a dismissal is an argument.
+unmaintained = "all"
+# Empty on purpose, and it should stay short. Every entry here is a known-vulnerable dependency we
+# have decided to keep, so each one needs the sentence that says why.
+ignore = []
+
+[licenses]
+version = 2
+unused-allowed-license = "allow"
+# cricker-os is MIT OR Apache-2.0 (see Cargo.toml, LICENSE-MIT, LICENSE-APACHE). The allow-list is
+# what a dependency may offer such that our dual licence still holds downstream. It is an allow-list
+# rather than a deny-list because the failure we care about is a licence nobody looked at, and only
+# an allow-list makes the unexamined case loud.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    # LLVM's Apache-2.0 exception. Carried by `wasi` and by the compiler-support crates; it only
+    # relaxes the Apache terms around binary redistribution, so it is strictly easier than Apache-2.0.
+    "Apache-2.0 WITH LLVM-exception",
+    # `subtle` (constant-time primitives, under RedoxFS's encryption path) is BSD-3-Clause only.
+    # Permissive, attribution plus a no-endorsement clause; compatible with shipping under either
+    # half of our dual licence.
+    "BSD-3-Clause",
+    # `smoltcp` and `managed`, milestone 26's TCP/IP stack. 0BSD is public-domain-equivalent: no
+    # attribution required at all.
+    "0BSD",
+]
+# NOT allowed, and the reason is worth stating rather than leaving as an absence: anything copyleft.
+# `r-efi` offers `MIT OR Apache-2.0 OR LGPL-2.1-or-later` and resolves cleanly because MIT is on the
+# list; a crate offering LGPL *only* would fail here, which is the intended behaviour for a kernel
+# people are meant to be able to vendor.
+
+# One warning is expected on every run and is not a defect: the vendored engine publishes
+# `license-file = "LICENSE"` instead of an SPDX expression, so cargo-deny emits `no-license-field`
+# before reading the file and identifying it as MIT (which it then accepts; `licenses ok`). A
+# `[[licenses.clarify]]` entry is the usual answer and is deliberately NOT used here: its whole value
+# is pinning the licence file's bytes, and script/vendor-verify already pins every byte of
+# vendor/redoxfs against the published tarball, which is the stronger check of the two.
+
+[bans]
+# A duplicate version is not a licence problem, it is a "which copy got audited" problem, and on a
+# bare-metal target it is also image size: two copies of a crate link twice.
+multiple-versions = "deny"
+# A `version = "*"` dependency from a registry is a pin that is not a pin. We have none, and this is
+# what keeps it that way.
+wildcards = "deny"
+# An in-tree `path` dependency with no version is not a version range at all: it resolves to the
+# bytes in this repository, which the git history pins far more tightly than semver would. Several
+# of ours are written that way (fs-server -> ../vendor/redoxfs, redoxfs-host -> the same), and the
+# check that matters, "is this really upstream 0.9.1", is script/vendor-verify's job, not semver's.
+allow-wildcard-paths = true
+
+skip = [
+    # RedoxFS 0.9.1 depends on getrandom 0.2 directly while its uuid 1.x pulls getrandom 0.4. Both
+    # are host-side only: the bare-metal fs-server builds the engine `--no-default-features`, where
+    # neither is present (creation APIs are std-gated, roadmap §32 port plan item 4). Nothing we
+    # wrote chose either version, and moving off it means advancing the vendored pin, which is a
+    # deliberate re-vendor (vendor/README.md) rather than a config change. Drops when the pin does.
+    { crate = "getrandom@0.2.17", reason = "redoxfs 0.9.1's direct dep; uuid pulls 0.4. Host-side only; goes away with the next redoxfs pin" },
+]
+
+[sources]
+# Where code is allowed to come from. This is the check that would notice a dependency quietly
+# repointed at somebody's fork, which is the shape most real supply-chain attacks on a small project
+# would take. Everything here is either crates.io or an in-tree path; there are no git dependencies
+# and there should not be one without a decision.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

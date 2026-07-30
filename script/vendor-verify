@@ -1,0 +1,225 @@
+#!/bin/sh
+#
+# script/vendor-verify: prove that every vendored tree equals upstream plus our recorded patches.
+#
+# **Why this exists.** Milestone 32's flagship claim is that a real filesystem we did not write runs
+# confined, and vendor/README.md states the divergence from upstream "exhaustively". Until 2026-07-30
+# nothing checked that sentence. It was already wrong: the vendored Cargo.lock had been regenerated
+# rather than kept, so it named 25 dependency versions upstream's package does not, and the README
+# asserted the published package "ships without one" when it ships exactly one. Nobody edited the
+# filesystem, but nobody could have proved that either, and "we run upstream 0.9.1" is a security
+# claim, not a bookkeeping detail.
+#
+# **What is proved, and how.** For each `vendor/*.pin`:
+#   1. The published .crate tarball hashes to the sha256 in the pin. A crates.io version is
+#      immutable once published, so this is a real pin; a git tag would not be, because a tag moves.
+#   2. The pin's divergence patch applies to that tarball with ZERO fuzz.
+#   3. The patched tree is then byte-for-byte the tracked contents of the vendored directory.
+#
+# Step 3 is what makes step 2 airtight: a patch applied at the wrong offset still exits 0, and the
+# comparison catches it anyway. Together they leave no room for an unrecorded byte.
+#
+# **What it would catch:** an edit to vendored source nobody wrote down (the classic "I fixed it
+# locally" that then survives a re-vendor), a file added or deleted, a lockfile silently re-resolved,
+# and a tarball that is not the version we claim. What it does NOT catch: upstream shipping a
+# malicious 0.9.1 in the first place. That is a trust decision, made in notes/redoxfs-audit.md by
+# reading the code, and no hash can make it for us.
+#
+#   script/vendor-verify                verify every pin (the gate; runs in CI)
+#   script/vendor-verify --write-patch  regenerate the divergence patches after a deliberate change
+#
+# Only tracked files are compared, so a stray `target/` from building the vendored crate in place is
+# correctly ignored: the question is what we committed, not what is lying around. See
+# notes/scripts.md and design/roadmap.md's milestone 42.
+
+set -e
+
+ROOT="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
+
+exec python3 - "$ROOT" "${1:-}" <<'PY'
+import glob
+import hashlib
+import os
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import urllib.request
+
+root, mode = sys.argv[1], sys.argv[2]
+if mode not in ("", "--write-patch"):
+    sys.exit(f"vendor-verify: unknown argument {mode!r} (want --write-patch or nothing)")
+write = mode == "--write-patch"
+
+# The tarballs land here rather than in the repo: they are large, immutable, and re-fetchable, which
+# is the definition of a cache. CI keys a cache on the pin files so a run costs one HTTP request at
+# most, and usually none.
+cache = os.environ.get("CRICKER_VENDOR_CACHE") or os.path.expanduser("~/.cache/cricker-vendor")
+
+
+def read_pin(path):
+    fields = {}
+    for line in open(path):
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        key, _, value = line.partition("=")
+        fields[key.strip()] = value.strip()
+    missing = {"name", "version", "url", "sha256", "divergence"} - set(fields)
+    if missing:
+        sys.exit(f"{path}: missing field(s): {', '.join(sorted(missing))}")
+    return fields
+
+
+def fetch(pin):
+    """The tarball for this pin, hash-verified. Cached; a cache entry that fails the hash is
+    discarded and refetched once, because a corrupt download should not need a human."""
+    os.makedirs(cache, exist_ok=True)
+    path = os.path.join(cache, f"{pin['name']}-{pin['version']}.crate")
+    for attempt in range(2):
+        if os.path.exists(path):
+            digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
+            if digest == pin["sha256"]:
+                return path
+            if attempt:
+                sys.exit(
+                    f"{pin['name']}: tarball hashes to {digest}, pin says {pin['sha256']}.\n"
+                    f"  The published .crate for a version is immutable, so this means the pin is\n"
+                    f"  wrong, the download is corrupt, or something upstream of you is lying."
+                )
+            print(f"  cached tarball failed the hash, refetching")
+            os.unlink(path)
+        print(f"  fetching {pin['url']}")
+        with urllib.request.urlopen(pin["url"], timeout=120) as response:
+            body = response.read()
+        with open(path, "wb") as f:
+            f.write(body)
+    raise AssertionError("unreachable")
+
+
+def upstream_files(tarball):
+    """Path -> bytes for every regular file in the .crate, with the `name-version/` prefix removed."""
+    files = {}
+    with tarfile.open(tarball) as tf:
+        for member in tf.getmembers():
+            if not member.isfile():
+                continue
+            files[member.name.split("/", 1)[1]] = tf.extractfile(member).read()
+    return files
+
+
+def our_files(vendor_dir):
+    """Path -> bytes for every TRACKED file under the vendored directory. Tracked, not present: a
+    `target/` left behind by building the crate in place is not part of what we ship."""
+    rel = os.path.relpath(vendor_dir, root)
+    listed = subprocess.run(
+        ["git", "-C", root, "ls-files", "-z", "--", rel],
+        capture_output=True, text=True, check=True,
+    ).stdout.split("\0")
+    files = {}
+    for path in listed:
+        if not path:
+            continue
+        with open(os.path.join(root, path), "rb") as f:
+            files[os.path.relpath(path, rel)] = f.read()
+    return files
+
+
+def unified(upstream, ours):
+    """The divergence patch: `patch -p1` form, no timestamps, deterministic. Generated only by
+    --write-patch; verification APPLIES this rather than regenerating it, so the check does not
+    depend on this function still producing identical output years from now."""
+    import difflib
+
+    out = []
+    for name in sorted(set(upstream) | set(ours)):
+        before = upstream.get(name, b"")
+        after = ours.get(name, b"")
+        if before == after:
+            continue
+        out.extend(difflib.unified_diff(
+            before.decode().splitlines(keepends=True),
+            after.decode().splitlines(keepends=True),
+            fromfile="a/" + name, tofile="b/" + name,
+        ))
+    return "".join(out)
+
+
+failed = False
+pins = sorted(glob.glob(os.path.join(root, "vendor", "*.pin")))
+if not pins:
+    sys.exit("vendor-verify: no vendor/*.pin files; nothing claims to be vendored")
+
+for pin_path in pins:
+    pin = read_pin(pin_path)
+    vendor_dir = os.path.join(root, "vendor", pin["name"])
+    patch_path = os.path.join(root, pin["divergence"])
+    print(f"==> {pin['name']} {pin['version']}")
+
+    tarball = fetch(pin)
+    upstream = upstream_files(tarball)
+    ours = our_files(vendor_dir)
+
+    if write:
+        text = unified(upstream, ours)
+        with open(patch_path, "w") as f:
+            f.write(text)
+        changed = sorted(n for n in set(upstream) | set(ours)
+                         if upstream.get(n, b"") != ours.get(n, b""))
+        print(f"  wrote {pin['divergence']}: {len(changed)} file(s) diverge: {', '.join(changed) or 'none'}")
+        continue
+
+    # Extract, patch, compare. The extraction is thrown away; only the verdict survives.
+    work = tempfile.mkdtemp(prefix="cricker-vendor-")
+    try:
+        with tarfile.open(tarball) as tf:
+            tf.extractall(work, filter="data")
+        tree = os.path.join(work, f"{pin['name']}-{pin['version']}")
+
+        patch_text = open(patch_path).read()
+        if patch_text.strip():
+            # -F0: no fuzz. A hunk that only applies with fuzz means the context moved, which is
+            # exactly the drift we want to hear about rather than absorb.
+            applied = subprocess.run(
+                ["patch", "-p1", "-F0", "-s"],
+                cwd=tree, input=patch_text, capture_output=True, text=True,
+            )
+            if applied.returncode != 0:
+                print(f"  FAIL: {pin['divergence']} does not apply to the published {pin['version']}")
+                print((applied.stdout + applied.stderr).rstrip())
+                failed = True
+                continue
+
+        expected = {}
+        for dirpath, _, names in os.walk(tree):
+            for name in names:
+                full = os.path.join(dirpath, name)
+                with open(full, "rb") as f:
+                    expected[os.path.relpath(full, tree)] = f.read()
+
+        problems = []
+        for name in sorted(set(expected) - set(ours)):
+            problems.append(f"missing from the vendored tree (or untracked): {name}")
+        for name in sorted(set(ours) - set(expected)):
+            problems.append(f"present in the vendored tree, not in upstream+patches: {name}")
+        for name in sorted(set(expected) & set(ours)):
+            if expected[name] != ours[name]:
+                problems.append(f"differs from upstream+patches: {name}")
+
+        if problems:
+            print(f"  FAIL: vendor/{pin['name']} is not the published {pin['version']} plus "
+                  f"{pin['divergence']}")
+            for problem in problems:
+                print(f"    - {problem}")
+            print("  Either the change is deliberate (record it in vendor/README.md and rerun with")
+            print("  --write-patch) or something edited a vendored tree without saying so.")
+            failed = True
+        else:
+            print(f"  ok: {len(ours)} tracked files are the published tarball "
+                  f"(sha256 {pin['sha256'][:12]}...) plus {pin['divergence']}")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+sys.exit(1 if failed else 0)
+PY

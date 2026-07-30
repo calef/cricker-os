@@ -16,6 +16,10 @@ name = "fs-server"
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
+# Unpublishable by construction: it depends on ../vendor/redoxfs by path, and crates.io forbids path
+# dependencies. Saying so is what lets cargo-deny's wildcard ban (deny.toml) tell an in-tree path dep
+# apart from a registry `version = "*"`, which is the thing that ban is actually for.
+publish = false
 
 [lib]
 name = "fs_server"
