@@ -1,0 +1,97 @@
+name: toolchain drift
+
+# **Does the newest nightly still build us?** Asked daily, answered before it matters.
+#
+# rust-toolchain.toml pins a dated nightly (see the long comment there for why). Pinning makes builds
+# reproducible and makes a bump a deliberate commit, but it also means upstream can drift away from us
+# silently for weeks and present the whole bill at once, on whatever unrelated day someone finally
+# raises the date.
+#
+# This is the early warning. It builds against the LATEST nightly rather than the pin, and it is
+# deliberately its own workflow so that a red result here never blocks a merge: upstream breaking us is
+# information, not a defect in the commit that happened to trigger the run. When it goes red, the fix
+# is a bump commit with evidence, at a time of our choosing.
+#
+# The `std` overlay is the point of this job. `patches/std-cricker` patches std's own source, so it
+# tracks upstream *internals* rather than any stable API, and it is where drift lands first: on
+# 2026-07-30 upstream added `set_perm_nofollow` to `sys::fs` and our overlay's re-export list did not
+# carry it, which reddened CI on commits that had touched nothing but markdown.
+
+on:
+  schedule:
+    # 07:00 UTC daily, comfortably after the nightly of the day is published.
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+# Least privilege for GITHUB_TOKEN, set once for every job below. CodeQL flagged its absence
+# (actions/missing-workflow-permissions, 7 alerts) and it is the right call for this repo in
+# particular: a project whose entire thesis is that components should hold the authority their job
+# needs and nothing more has no business letting its CI token default to write access it never uses.
+# Jobs that genuinely need more say so themselves (see toolchain-bump.yml, which needs to open a PR).
+permissions:
+  contents: read
+
+# A queued run has nothing to say that the newer one will not say better.
+concurrency:
+  group: toolchain-drift
+  cancel-in-progress: true
+
+jobs:
+  latest-nightly:
+    name: build against the latest nightly
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      # RUSTUP_TOOLCHAIN overrides rust-toolchain.toml for every cargo/rustc invocation in this job,
+      # which is the whole mechanism: the repo stays pinned, this one job does not.
+      - name: Install the latest nightly
+        run: |
+          rustup toolchain install nightly --profile minimal \
+            --component rust-src,llvm-tools,rustfmt,clippy
+          rustup target add --toolchain nightly \
+            aarch64-unknown-none-softfloat riscv64imac-unknown-none-elf
+          echo "RUSTUP_TOOLCHAIN=nightly" >> "$GITHUB_ENV"
+
+      - name: Record which nightly this actually is
+        run: |
+          {
+            echo '### Toolchain drift check'
+            echo
+            echo "pinned:  $(grep -m1 '^channel' rust-toolchain.toml)"
+            echo "tested:  $(rustc --version)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install clang (the C component's compiler, milestone 36)
+        run: sudo apt-get update && sudo apt-get install -y clang
+
+      # The most fragile thing first, because it is the thing that actually breaks: rebuilding the std
+      # overlay against a fresh rust-src. A clean farm is the point, so this must not reuse a cached one.
+      - name: Build the std overlay (the fragile part)
+        run: |
+          rm -rf target/cricker-farm
+          cargo xtask user-std
+
+      # Then the ordinary build and the host-logic tests. The QEMU suite is deliberately skipped: this
+      # job answers "does it still compile and do the pure logic still hold", and a toolchain bump has
+      # never yet broken emulation without first breaking one of those.
+      - name: Build and host tests
+        run: |
+          cargo build --workspace --target aarch64-unknown-none-softfloat
+          cargo test --workspace --exclude kernel --exclude user
+
+      - name: What to do if this went red
+        if: failure()
+        run: |
+          {
+            echo
+            echo 'This job failing means **upstream nightly has drifted away from us**, not that any'
+            echo 'commit is broken. `main` is unaffected and still builds on the pinned toolchain.'
+            echo
+            echo 'To resolve, deliberately: raise the date in `rust-toolchain.toml`, `rm -rf'
+            echo 'target/cricker-farm`, then `script/test`. Expect the overlay'"'"'s'
+            echo '`pub use unsupported_fs::{...}` list in `sys/fs/cricker.rs` to need new names.'
+          } >> "$GITHUB_STEP_SUMMARY"

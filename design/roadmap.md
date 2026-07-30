@@ -25,35 +25,76 @@ IPC and the MMU invariants are next. This threads through the list rather than b
 
 ## The milestones
 
-| #  | Milestone | What it delivers | Serves §14 by |
-|----|-----------|------------------|---------------|
-| 12 | Call/Reply IPC: a one-shot reply capability | Reply-to-caller as a kernel guarantee. **Built, §12.** | the IPC the TCB must get right |
-| 13 | Capability revocation + untyped reclamation | Unmap a page from every holder; reclaim a region safely. **Built (frame scope), §13.** | safe teardown, a TCB property |
-| 26 | Object revocation: tear a process back down | Reclaim the TCBs, address spaces, and endpoints a process built, and the regions behind them, so a workload that comes and goes can leave. **Built:** region-ownership + generational staleness (no CDT), `Untyped::SPLIT`/`DESTROY`, generational region slots (retires the 256-lifetime cap), endpoints (safe subset). Extends §13 from frames to objects; DECISIONS §16, notes/object-revocation.md | **the teardown half of "run real workloads":** a process can be reaped, not just built |
-| 18 | Verify the capability core, then spread inward | Machine-checked proofs of `caps`, then IPC, then MMU isolation | **the verification itself.** **Built:** `caps`, IPC (rendezvous + one-shot Reply), and the MMU isolation invariants are all proved |
-| 14 | Kernel objects from untyped: remove the kernel heap | Retype TCBs, endpoints, page tables; delete the kernel heap | **critical path:** a verifiable kernel cannot allocate. **Built:** the kernel has no allocator; see design/kernel-objects-from-untyped.md |
-| 15 | Tagged address spaces (ASIDs) | 16-bit ASIDs, generation/rollover; stop flushing the whole EL1 TLB per switch | perf the real-workload path needs on real silicon. **Built** (8-bit fixed bitmap, no rollover: milestone 14's bounds made generations unnecessary; notes/asids.md) |
-| 21 | Performance measurement: benchmarks with teeth | icount microbenchmarks + committed baseline that fails on regression; HVF-native runs for real magnitudes | perf claims become measurements; regressions surface next to their cause. **Built**; notes/benchmarks.md |
-| 16 | Real hardware + IOMMU-backed driver isolation, **RISC-V first** | **16a:** first silicon on a VisionFive 2-class board, whose firmware contract (OpenSBI, SBI HSM, NS16550, PLIC, Sv39) is exactly what the kernel already speaks. **16b:** IOMMU-backed DMA isolation against QEMU's emulation of the **ratified RISC-V IOMMU** (v1.0.1) first, over the §18 PCIe transport; silicon when a board ships it | isolation in hardware, under real workloads; the second ISA becomes the first silicon, and the IOMMU work stops waiting on a purchase |
-| 19 | Run a real workload | A native-ABI workload first; Linux-compat or VM hosting later | **the "runs real workloads" half** of the thesis. **Built:** granular verbs and userspace init (19d), init as the real boot path (19d.2c), dedicated binaries delivered as a crickerfs archive with a shared `user_rt` runtime (19f.1-6), the native ABI written down (19e/Decision 2, notes/abi.md, DECISIONS §15), and the first real workload, a CoreMark-derived compute program spawned against that ABI (19e). design/init-and-granular-spawn.md |
-| 17 | Multikernel-leaning scheduler (research, optional) | Partition the shared thread table and endpoints | optional; not on the thesis path |
-| 20 | A portable HAL, proven on a second architecture | Make `arch/` a real HAL; bring up RISC-V then x86_64 | the "portable verified core" claim; reach the demonstrator earns |
-| 24 | A second aarch64 *board*: Virtualization.framework (optional) | Boot under Apple's Virtualization.framework, not QEMU's `virt`: a virtio-console driver (VZ has no PL011), VZ's interrupt/memory layout and boot handoff, device discovery through the machine VZ presents | proves the `arch/` **board** boundary on a second machine of the *same* ISA (cheaper than 16's silicon, distinct from 20's second ISA), and lets cricker-os run under the same VMM as macOS/Linux guests. Optional; portability exercise, **not** a benchmarking prerequisite (guest-internal microbenchmarks are VMM-independent) |
-| 27 | Rust `std` on the native ABI | A custom target whose `std` builds: `Vec`, `String`, `println!`, `Instant`, allocation from the process's own untyped, stdio over the console endpoint, `fs`/`net` honestly `Unsupported` until capability-granted servers back them | **widens "runs real workloads" by orders of magnitude**: the pool of programs that build for cricker-os becomes "most Rust code that doesn't touch fs/net", and milestone 23's components become writable by people who are not kernel people. Grows toward general purpose (notes/why-not-general-purpose.md) without smuggling POSIX: the `sys` layer maps to capabilities directly, no fork, no open-by-path |
-| 28 | A solid terminal: the line discipline as a component | Line editing, history, ANSI in/out, control characters, and a written terminal contract, as a **swappable userspace component** between the input/console drivers and applications; Ctrl-C as a capability-routed interrupt to the foreground process, not a Unix signal. **Built, §21**: `termd` on both ISAs, a sans-IO engine (20 host tests), the contract in notes/terminal-contract.md, `shell_service` retired for userspace init; Ctrl-C routing **built** (two-tier, DECISIONS §24 amendment): a shared-flag cooperative tier and an `Untyped::DESTROY` forcible tier, shell-held, proven on both ISAs with `heeder`/`spinner`; the shell learns of `^C` through `termd`'s `OP_INTRCOUNT` | a terminal with real behavior is a far better "instance one" for milestone 23's live component replacement than the raw echo loop, and 27's stdio semantics need a terminal that has semantics. Serial, deliberately; the display terminal is 29, and they must not be confused |
-| 29 | A display terminal (framebuffer, virtio-gpu) | An on-device terminal: a userspace virtio-gpu driver (arriving over **PCIe**, which the §18 transport just made reachable), a framebuffer component, font rendering, and a VT state engine maintaining the grid; input from a virtio keyboard | the first pixels the demonstrator ever puts on a screen, and the strongest form of the milestone-23 claim if the VT engine is **libghostty-vt** (zero-dependency, no-libc, no-alloc, C ABI, Zig): a vendor component in a foreign language, capability-confined and hot-swappable. **Promoted from optional (2026-07-28): rung one of the display ladder (see "The display ladder" below), whose destination is a capability-routed compositor** |
-| 30 | The network stack as a confined component | A userspace **virtio-net** driver behind the DMA confinement (extended to multi-queue: RX means the device writes INTO driver memory), and the TCP/IP stack itself (`smoltcp`) as a swappable userspace component with a capability-shaped socket contract; backs `std::net` for 27 | **the canonical microkernel component**, the one people ask about first when a minimal kernel claims to stand next to Linux; and milestone 23's most convincing instance, hot-swapping a network stack under open connections. The reuse call is the plan's easiest: the thesis is the kernel confining the stack, not the stack |
-| 31 | A capability shell: designation is authorization | The command line becomes a **grant expression**: naming a resource in a command IS the capability grant (`run wc report.txt` passes one readable file cap; `run wc` alone can read nothing, and the refusal is "no such capability", not EPERM); untyped budgets as first-class grants; a SHILL-style manifest per program checked at spawn; a `caps` command printing a process's whole endowment. **Phase 1 built, both ISAs**: `capsh` (host-tested parse + manifest + spawn protocol), the shell over the existing surface, `run --mem N` made real by the `budgeter` program (from the shell's own budget, via a `SEND_CAP`-to-init spawn protocol), manifest refusals and the "you hold no such capability" file refusal at the prompt, `caps`/`caps run ...` introspection. One kernel bug fix: `Untyped::SPLIT` now grants the child `GRANT` so a budget is delegable (DECISIONS §16 amendment). Notes: grant-expression.md, program-manifest.md. Per-file grants wait on milestone 32 | **no-ambient-authority made user-visible**: the inversion of Unix's model at the one interface a human touches. Milestone 23's component contract in embryo, met first at the shell |
-| 32 | A real filesystem: RedoxFS behind a capability FS server | A write-capable block path, an FS-server **component** whose handles are capabilities from birth (open-by-path exists only INSIDE the server, relative to a granted directory cap), and **RedoxFS** as the on-disk engine, ported behind its own `Disk` trait over blk IPC | the flagship **userspace-reuse** story the prior-art note predicted: a real CoW filesystem we did not write, running confined; and the thing 31's per-file grants point at |
-| 33 | A compositor: one screen, mutually distrusting clients | **Built (2026-07-29), both ISAs**, rung two of the display ladder: `compd` multiplexing one screen among three clients, each holding a capability to its own surface; software composition honouring a damage rectangle; input routed by capability over the terminal contract's `OP_BYTES`; enumeration and screenshots as read-only mappings rather than verbs. No new syscall and no new method. notes/compositor.md, DECISIONS §33 | **the canonical multiplexer of one device among distrusting clients**, and the thesis at its sharpest: a client is *proved* unable to reach its neighbour's pixels even when handed the exact address of them, and the compositor holds no authorization code because the authority is a mapping rather than a message. It also found the kernel's one missing primitive (no wait-any), recorded as a fork |
-| 25 | Cross-OS performance comparison (extends 21) | EL0-measured primitive benchmarks (syscall, context switch, IPC, map, spawn) the lmbench way, so the numbers include the trap the kernel-side benchmarks skip; then line them up against lmbench (Linux, macOS guests) and `sel4bench` (seL4), at a matched virtualization tier, with release builds. Fold in the icount codegen-sensitivity fix. | **turns perf claims into cross-OS numbers**: where does a Rust capability microkernel stand next to Linux, macOS's XNU, and seL4 on the primitives that define an OS. **Largely done**: four EL0 primitives (null syscall, context switch, IPC, page map) on both instruments, a release build path, and the three-way comparison (cricker-os vs Linux-under-HVF vs native macOS) with cricker-os winning null/IPC ~5x. `spawn` landed too (its real prerequisite was never retype, which had already shipped, but **object revocation**, reclaiming a child's TCB/aspace/endpoint so a spawn loop can repeat; that shipped as its own milestone, notes/object-revocation.md, and the EL0 `lat_proc` bench, `spawn_el0`, is in the suite and the committed baseline). **Remaining**: only `sel4bench` (built and booting for qemu-arm-virt, but it times single ops via the PMU cycle counter, which neither QEMU-TCG nor Apple HVF provides, so it is **deferred to real hardware**, the milestone-16 machine, which has a real PMU; this validates our CNTVCT + long-loop design). notes/benchmarks.md |
-| 22 | Trusted init: verify it, and shrink what a broken one can do | Measured/secure boot that checks init before running it; reduce init's authority so a compromise is bounded | **closes the thesis's own soft spot:** init is the privileged *unverified* component the whole system is built by |
-| 23 | A capability-routed component OS with live replacement | Every userspace component (driver, server, app) is a swappable, vendor-shippable unit behind a stable contract; operators replace them live, no reboot. The console hot-swap is instance one; a durable queue-broker decouples component lifecycles (opt-in per channel, for latency) | **the flagship payoff and a product ambition:** competing vendor components, confined by the kernel and swapped live; the verified core is the one fixed thing |
-| 35 | Prove the DMA-confinement boundary (extends 18) | Extract the shadow-ring validator (`validate_and_shadow`) out of `kernel/src/virtio.rs` into a host-testable logic crate and machine-check it: no validated descriptor chain, in either direction and including indirect descriptors and multi-queue, can reference memory outside the driver's granted DMA region. Add the `Untyped::SPLIT` "never widens rights" harness (the one fresh-mint site the caps proof doesn't reach) and confirm the IOMMU domain builder's *maps-exactly-the-grant* property is proved, not just tested. | **closes the one isolation boundary we test instead of prove.** Every other confinement seam (caps, MMU, IPC, generational names) is Kani-proved for all inputs; DMA is attacker-tested only. It is also the boundary that makes "don't trust the driver" true, so the proof belongs here, not on the confined component. **Load-bearing for 16a:** the VisionFive 2 has no IOMMU, so on first silicon this validator is the *sole* DMA confinement, not defence in depth |
-| 36 | A foreign-language component, seam first (spike; feeds 29 and 23) | Prove the FFI seam end to end with a *minimal* C component before committing to a large one: bare-metal clang for both bare targets in the build, a Rust `user_rt` shell that holds every capability and does every syscall while the C code gets plain buffers over the C ABI (so the §4 surface does not widen), and only the handful of libc symbols the component actually needs, with `malloc` on milestone 27's untyped-backed `GlobalAlloc`. The deliverable that matters is one test: a deliberate out-of-bounds write in the C code faults the process, touches nothing outside its grant, and its supervisor restarts it. **Built, DECISIONS §31, both ISAs**: clang capability-checked for both backends from one compiler (Apple's is rejected: no RISC-V), `cshim` holds every capability so the C holds none, the libc turned out to be **two** symbols not five (`compiler_builtins` already supplies the rest), and two witnesses prove the confinement (a read-only page that is the *same physical frame*, and a different frame at the same virtual address). notes/c-seam.md | **the thesis in one assertion.** Memory-unsafe foreign code is not a dilution of "a verified core that confines unverified workloads", it is the strongest available demonstration of it: the more unverified the component, the more the confinement has to prove. It also de-risks 29's libghostty-vt rung and 23's vendor-component claim *before* we owe anything to another project's toolchain or API churn |
-| 37 | Prove RedoxFS's crash consistency (DECISIONS §34, condition 1) | Inject the failure a copy-on-write filesystem exists to survive, and measure whether it does: torn writes (a block partially written), dropped writes (a write the device acknowledged and did not persist), and a kill mid-transaction, then reopen with the same `cleanup: true` header-ring replay the FS server always mounts with, and assert the filesystem is consistent and every acknowledged write is either wholly present or wholly absent. The seam is `IpcDisk` and the block server, which sit between the engine and the device and can drop or truncate a write deliberately; the sans-IO core already runs on the host against a real image, so most of this is host-testable in milliseconds and only the device-level kill needs QEMU. Includes the negative control that makes the rest mean anything: the injector must be shown to actually corrupt something when the replay is disabled | **the condition that decides whether §34's label is earned.** Crash consistency is RedoxFS's central selling point and the reason it beat ext2, and we currently assert it on the strength of the upstream design description rather than any measurement. That is a claim of exactly the kind this project's rules forbid, and it is the first thing a skeptic asks a filesystem. Until it passes, the docs say "designed for crash consistency" and never "crash consistent". Note this is a gap in **our harness, not in RedoxFS**: no candidate engine's crash consistency is tested here, so switching engines would not address it |
-| 38 | Filesystem throughput, and the comparison (DECISIONS §34, condition 2; extends 21/25) | Sequential and random read/write throughput through the confined FS server, against ext4 on Linux and APFS on macOS at a matched virtualization tier, the way milestone 25 did the primitives. Requires deciding what is honestly comparable: our reads are device-latency-dominated (`fs_read` is ~204 us/read under HVF, and `relay_rtt` puts the isolation tax a thousand times below that), so the interesting question is whether the userspace-server architecture costs throughput once the device dominates, which is a claim a microkernel skeptic will press | **"primary filesystem" invites a comparison we cannot currently make.** We have the per-request numbers and the isolation tax, and no MB/s figure at all. Milestone 21's rule is measure rather than argue, and 25 already established that the honest way to do this is EL0-measured against real systems rather than self-reported. This is where the "userspace servers are too slow" objection gets an answer or a concession |
+**Status vocabulary.** The `Status` column is the *one* canonical place a milestone's state lives, and
+it uses exactly these tokens. This exists because status used to be prose scattered through the detail
+blocks, phrased a dozen different ways ("Built 2026-07-28", "DONE", "Phase 1 built", "Largely done"),
+which is unreadable at a glance and, worse, unparseable: a status sweep on 2026-07-30 mis-reported eight
+milestones. `script/roadmap` validates this column and fails on anything outside the vocabulary.
 
+| Token | Means |
+|---|---|
+| `BUILT` | Complete, and proven by the gate on every supported ISA. |
+| `PARTIAL` | Some phases shipped and more remains, with nobody currently on it. The block says which phases. |
+| `IN-PROGRESS` | Active work on a branch right now. |
+| `NOT-STARTED` | Specified, nothing built. |
+| `OPTIONAL` | Deliberately off the thesis path; not a backlog item. |
+| `RECORDED` | Analysis captured and the decision deliberately *not* taken. |
+
+A detail block may narrate its state in prose (that is where the evidence and the dates belong), but the
+column is what answers "where do we stand". If the two disagree, the column is wrong and the block is
+right, because the block is where the work was written down; fix the column.
+
+**Why this is a markdown table and not GitHub Issues (decided 2026-07-30, Chris).** Issues would buy PR
+linkage, a home for discussion, and a board view. They would cost the things this table is actually for:
+the roadmap stops being version-controlled alongside the code, so a status change is no longer a diff in
+the commit that caused it; `script/roadmap --check` has nothing to validate, and that gate is what caught
+milestone 34 having no row; and the cross-references to `DECISIONS §N` and `notes/*.md` decay from one
+grep into URLs. The deciding argument is that **a second place where status lives is a second source of
+truth**, which is the exact failure this project spent 2026-07-30 cleaning up: `bench.rs` contradicting
+notes/benchmarks.md about what `fs_read` measures, status prose phrased a dozen ways that made a sweep
+mis-report eight milestones, and §27 corrected four times. The linkage only starts paying when more than
+one person files work, so revisit if that changes: with external contributors, the shape would be
+markdown canonical and issues **generated one-way** from it, never synced back.
+
+Note also that GitHub's own *Milestones* feature is a name collision with this list and a poor fit
+besides, being built for dated release grouping; these are capability-shaped and deliberately undated.
+
+| #  | Status | Milestone | Why it matters (§14) |
+|----|--------|-----------|----------------------|
+| 12 | BUILT | Call/Reply IPC: a one-shot reply capability | the IPC the TCB must get right |
+| 13 | BUILT | Capability revocation + untyped reclamation | safe teardown, a TCB property |
+| 26 | BUILT | Object revocation: tear a process back down | the teardown half of "run real workloads": a process can be reaped, not just built |
+| 18 | BUILT | Verify the capability core, then spread inward | the verification itself |
+| 14 | BUILT | Kernel objects from untyped: remove the kernel heap | removes the kernel heap: the prerequisite for "small enough to verify" |
+| 15 | BUILT | Tagged address spaces (ASIDs) | a context switch stops flushing every translation |
+| 21 | BUILT | Performance measurement: benchmarks with teeth | perf claims become measurements, and regressions surface next to their cause |
+| 16 | PARTIAL | Real hardware + IOMMU-backed driver isolation, **RISC-V first** | isolation in hardware, under real workloads |
+| 19 | BUILT | Run a real workload | the "runs real workloads" half of the thesis |
+| 17 | OPTIONAL | Multikernel-leaning scheduler (research, optional) | optional; not on the thesis path |
+| 20 | BUILT | A portable HAL, proven on a second architecture | the "portable verified core" claim |
+| 24 | OPTIONAL | A second aarch64 *board*: Virtualization.framework (optional) | proves the `arch/` **board** boundary on a second machine of the same ISA; optional |
+| 27 | BUILT | Rust `std` on the native ABI | widens "runs real workloads" by orders of magnitude |
+| 28 | BUILT | A solid terminal: the line discipline as a component | a terminal with real behaviour, which 27's stdio semantics need |
+| 29 | PARTIAL | A display terminal (framebuffer, virtio-gpu) | the first pixels the demonstrator ever puts on a screen |
+| 30 | BUILT | The network stack as a confined component | the canonical microkernel component, and the one people ask about first |
+| 31 | IN-PROGRESS | A capability shell: designation is authorization | no-ambient-authority made user-visible, at the one interface a human touches |
+| 32 | BUILT | A real filesystem: RedoxFS behind a capability FS server | the flagship userspace-reuse story: a real filesystem we did not write, confined |
+| 33 | BUILT | A compositor: one screen, mutually distrusting clients | the canonical multiplexer of one device among mutually distrusting clients |
+| 34 | NOT-STARTED | GPU acceleration via virtio-gpu 3D (the display ladder's rung four) | how every VM gets a GPU without a hardware driver |
+| 25 | PARTIAL | Cross-OS performance comparison (extends 21) | turns perf claims into cross-OS numbers |
+| 22 | PARTIAL | Trusted init: verify it, and shrink what a broken one can do | closes the thesis's own soft spot: init is the privileged *unverified* component |
+| 23 | NOT-STARTED | A capability-routed component OS with live replacement | the flagship payoff, and a product ambition |
+| 35 | BUILT | Prove the DMA-confinement boundary (extends 18) | closes the one isolation boundary we test instead of prove |
+| 36 | BUILT | A foreign-language component, seam first (spike; feeds 29 and 23) | the thesis in one assertion: unverified foreign code, confined and restarted |
+| 37 | NOT-STARTED | Prove RedoxFS's crash consistency (DECISIONS §34, condition 1) | decides whether §34's "primary filesystem" label is earned |
+| 38 | NOT-STARTED | Filesystem throughput, and the comparison (DECISIONS §34, condition 2; extends 21/25) | "primary filesystem" invites a comparison we cannot currently make |
+| 39 | RECORDED | Repository structure for a loosely-coupled OS, and the road to a distribution | the structure has to serve the thesis, and one constraint dominates |
+| 40 | NOT-STARTED | Documentation as a system service: searchable, rendered, and installed by packages | the OS explains itself, on itself |
+| 41 | NOT-STARTED | Dead code: triage the suppressions, and un-blindfold the gate | a `-D warnings` gate with holes in a third of the kernel is not a gate |
+| 42 | NOT-STARTED | Supply chain and fuzzing in CI (extends the 2026-07-30 CI audit) | we confine code we did not write; an advisory against it is invisible today |
+| 43 | NOT-STARTED | A second security audit, with a different lens | the attack surface roughly doubled after the first audit was written |
+| 44 | NOT-STARTED | GitHub repository hardening: policy, private reporting, code scanning, pull requests | a repository with a security thesis should be able to receive a report privately |
+| 45 | BUILT | Triage the CodeQL code-scanning alerts, and decide what the tool is for | the alerts land on this project's most-used unsafe abstraction |
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
 comparison), with the multikernel work (17) as
@@ -77,6 +118,10 @@ surface or smuggle in POSIX assumptions. notes/prior-art.md has the full argumen
 
 ### 12. Call/Reply IPC: a one-shot reply capability
 
+**In brief.** Reply-to-caller as a kernel guarantee. **Built, §12.**
+
+**Why it matters.** the IPC the TCB must get right
+
 **Built (milestone 12); see DECISIONS §12 and notes/ipc-naming.md.** The rest of this block is the
 proposal it was built from.
 
@@ -97,6 +142,10 @@ object), so it is a real decision, not a speculative add. This milestone turns t
 and gives it its own numbered §.
 
 ### 13. Capability revocation + untyped reclamation
+
+**In brief.** Unmap a page from every holder; reclaim a region safely. **Built (frame scope), §13.**
+
+**Why it matters.** safe teardown, a TCB property
 
 **Built (milestone 13), scoped to frame revocation; see DECISIONS §13.** The full derivation tree is
 deferred, the way the argument earlier in this file predicted: revoke-all-derivatives serves the
@@ -120,6 +169,10 @@ until revocation lands.** This milestone is that work, and the precondition is w
 
 ### 14. Kernel objects from untyped: remove the kernel heap
 
+**In brief.** Retype TCBs, endpoints, page tables; delete the kernel heap
+
+**Why it matters.** **critical path:** a verifiable kernel cannot allocate. **Built:** the kernel has no allocator; see design/kernel-objects-from-untyped.md
+
 **Deliverable.** Retype TCBs, endpoints, and page tables out of untyped memory, the way milestone 11
 already does for user pages, and delete the kernel heap and slab.
 
@@ -135,6 +188,10 @@ than only its pure-logic crates. It still also buys the smaller payoff on its ow
 kernel-heap-exhaustion class disappears entirely.
 
 ### 21. Performance measurement: benchmarks with teeth
+
+**In brief.** icount microbenchmarks + committed baseline that fails on regression; HVF-native runs for real magnitudes
+
+**Why it matters.** perf claims become measurements; regressions surface next to their cause. **Built**; notes/benchmarks.md
 
 **Added 2026-07-23, prompted by milestone 15 shipping a performance win nothing measures.** The
 requirement, stated by Chris: identify performance issues, and identify the *introduction* of
@@ -169,6 +226,10 @@ instead.
 
 ### 15. Tagged address spaces (ASIDs)
 
+**In brief.** 16-bit ASIDs, generation/rollover; stop flushing the whole EL1 TLB per switch
+
+**Why it matters.** perf the real-workload path needs on real silicon. **Built** (8-bit fixed bitmap, no rollover: milestone 14's bounds made generations unnecessary; notes/asids.md)
+
 **Deliverable.** Give each address space an ASID so a context switch stops doing `tlbi vmalle1is`
 (discard every EL1 translation, machine-wide) and instead flushes nothing.
 
@@ -184,6 +245,10 @@ switch already flushes the world.
 the deferral.
 
 ### 16. Real hardware + IOMMU-backed driver isolation (recast 2026-07-27: RISC-V first)
+
+**In brief.** **16a:** first silicon on a VisionFive 2-class board, whose firmware contract (OpenSBI, SBI HSM, NS16550, PLIC, Sv39) is exactly what the kernel already speaks. **16b:** IOMMU-backed DMA isolation against QEMU's emulation of the **ratified RISC-V IOMMU** (v1.0.1) first, over the §18 PCIe transport; silicon when a board ships it
+
+**Why it matters.** isolation in hardware, under real workloads; the second ISA becomes the first silicon, and the IOMMU work stops waiting on a purchase
 
 The milestone was always two things bundled, first silicon and DMA isolation in hardware, and
 the recast splits them, because each is better served on the RISC-V side now.
@@ -239,6 +304,10 @@ init's bytes at rest. So verifying init (22) is only airtight once 16 removes th
 it underneath the check.
 
 ### 22. Trusted init: verify it, and shrink what a broken one can do
+
+**In brief.** Measured/secure boot that checks init before running it; reduce init's authority so a compromise is bounded
+
+**Why it matters.** **closes the thesis's own soft spot:** init is the privileged *unverified* component the whole system is built by
 
 **The soft spot this closes.** §14 promises "a verified core that confines unverified workloads."
 init is unverified, but it is not a *typical* workload: it holds the process-construction authority
@@ -330,6 +399,10 @@ dead drivers, not the kernel); Erlang/OTP supervision trees and "let it crash" (
 that restart policy wants to be a rich userspace thing, not a kernel reflex).
 
 ### 23. A capability-routed component OS with live replacement
+
+**In brief.** Every userspace component (driver, server, app) is a swappable, vendor-shippable unit behind a stable contract; operators replace them live, no reboot. The console hot-swap is instance one; a durable queue-broker decouples component lifecycles (opt-in per channel, for latency)
+
+**Why it matters.** **the flagship payoff and a product ambition:** competing vendor components, confined by the kernel and swapped live; the verified core is the one fixed thing
 
 **The destination the design points at, and a product ambition.** A client names an *endpoint*,
 never a peer (the milestone 7-8 decision), so a component's identity is invisible to the code that
@@ -424,6 +497,10 @@ be swapped under the others.
 
 ### 17. Multikernel-leaning scheduler (research, optional)
 
+**In brief.** Partition the shared thread table and endpoints
+
+**Why it matters.** optional; not on the thesis path
+
 **Deliverable.** Partition or replicate the two structures still shared under one `SCHED` lock (the
 thread table and the endpoint array), toward per-core state with message-passing where a lock now
 sits.
@@ -437,6 +514,10 @@ current scale, and worth saying so rather than feeling the machine is owed a mes
 table.
 
 ### 18. Verify the capability core, then spread inward
+
+**In brief.** Machine-checked proofs of `caps`, then IPC, then MMU isolation
+
+**Why it matters.** **the verification itself.** **Built:** `caps`, IPC (rendezvous + one-shot Reply), and the MMU isolation invariants are all proved
 
 **Green-lit and started; see DECISIONS §14 and notes/verification.md.** This is the verification
 thesis as an actual work item rather than an aspiration.
@@ -474,6 +555,10 @@ instead of a descriptor, which the validator structurally cannot see and only an
 board without one they are unconfined. See DECISIONS §30 and notes/verification.md.
 
 ### 35. Prove the DMA-confinement boundary (extends 18)
+
+**In brief.** Extract the shadow-ring validator (`validate_and_shadow`) out of `kernel/src/virtio.rs` into a host-testable logic crate and machine-check it: no validated descriptor chain, in either direction and including indirect descriptors and multi-queue, can reference memory outside the driver's granted DMA region. Add the `Untyped::SPLIT` "never widens rights" harness (the one fresh-mint site the caps proof doesn't reach) and confirm the IOMMU domain builder's *maps-exactly-the-grant* property is proved, not just tested.
+
+**Why it matters.** **closes the one isolation boundary we test instead of prove.** Every other confinement seam (caps, MMU, IPC, generational names) is Kani-proved for all inputs; DMA is attacker-tested only. It is also the boundary that makes "don't trust the driver" true, so the proof belongs here, not on the confined component. **Load-bearing for 16a:** the VisionFive 2 has no IOMMU, so on first silicon this validator is the *sole* DMA confinement, not defence in depth
 
 **The gap, stated precisely.** `validate_and_shadow` (`kernel/src/virtio.rs`) is the shadow-ring
 logic that stops a malicious userspace driver from pointing a device's DMA at memory it was not
@@ -569,6 +654,10 @@ placement policy stay host-tested; a bad placement is a performance bug, not a s
 
 ### 19. Run a real workload
 
+**In brief.** A native-ABI workload first; Linux-compat or VM hosting later
+
+**Why it matters.** **the "runs real workloads" half** of the thesis. **Built:** granular verbs and userspace init (19d), init as the real boot path (19d.2c), dedicated binaries delivered as a crickerfs archive with a shared `user_rt` runtime (19f.1-6), the native ABI written down (19e/Decision 2, notes/abi.md, DECISIONS §15), and the first real workload, a CoreMark-derived compute program spawned against that ABI (19e). design/init-and-granular-spawn.md
+
 **Deliverable.** The "runs real workloads" half of §14: a real, unverified program running in
 confined userspace on the verified core. A **native-ABI** workload first (the leanest thing that
 proves the point), with a Linux-compat personality or VM hosting as later, larger options.
@@ -584,6 +673,10 @@ route) needs the EL2 work in design/driver-domains.md. Decide the first target b
 compat code, so it stays scoped.
 
 ### 20. A portable HAL, proven on a second architecture
+
+**In brief.** Make `arch/` a real HAL; bring up RISC-V then x86_64
+
+**Why it matters.** the "portable verified core" claim; reach the demonstrator earns
 
 **Reach the demonstrator earns (§14), with a thesis-relevant core.** A second ISA is reach work, and
 §14 parks reach. What pulls part of it back in-scope is one demonstrator claim: **the verified
@@ -678,6 +771,10 @@ workloads" is committed). What remains open:
 
 ### 27. Rust `std` on the native ABI
 
+**In brief.** A custom target whose `std` builds: `Vec`, `String`, `println!`, `Instant`, allocation from the process's own untyped, stdio over the console endpoint, `fs`/`net` honestly `Unsupported` until capability-granted servers back them
+
+**Why it matters.** **widens "runs real workloads" by orders of magnitude**: the pool of programs that build for cricker-os becomes "most Rust code that doesn't touch fs/net", and milestone 23's components become writable by people who are not kernel people. Grows toward general purpose (notes/why-not-general-purpose.md) without smuggling POSIX: the `sys` layer maps to capabilities directly, no fork, no open-by-path
+
 **Built 2026-07-28, both ISAs green; phase two complete 2026-07-29.** std's platform layer runs
 directly on the capability ABI (Hermit's shape); a real std program (`Vec`, `String`, `HashMap`,
 `println!`, `Instant`) is spawned and checked byte for byte on aarch64 and riscv64. Phase two bound
@@ -719,6 +816,10 @@ feeds 23 directly. Effort L. Off the thesis path, like 20 was: a reach the demon
 
 ### 28. A solid terminal: the line discipline as a component
 
+**In brief.** Line editing, history, ANSI in/out, control characters, and a written terminal contract, as a **swappable userspace component** between the input/console drivers and applications; Ctrl-C as a capability-routed interrupt to the foreground process, not a Unix signal. **Built, §21**: `termd` on both ISAs, a sans-IO engine (20 host tests), the contract in notes/terminal-contract.md, `shell_service` retired for userspace init; Ctrl-C routing **built** (two-tier, DECISIONS §24 amendment): a shared-flag cooperative tier and an `Untyped::DESTROY` forcible tier, shell-held, proven on both ISAs with `heeder`/`spinner`; the shell learns of `^C` through `termd`'s `OP_INTRCOUNT`
+
+**Why it matters.** a terminal with real behavior is a far better "instance one" for milestone 23's live component replacement than the raw echo loop, and 27's stdio semantics need a terminal that has semantics. Serial, deliberately; the display terminal is 29, and they must not be confused
+
 **Built 2026-07-28; see DECISIONS §21, notes/line-discipline.md, notes/terminal-contract.md, and
 design/interrupt-routing.md (the Ctrl-C fork, decided in DECISIONS §24 and now built per its
 implementation amendment: shell-held two-tier routing, proven on both ISAs).**
@@ -742,6 +843,10 @@ mistake-catalog (its tangle is famous) and Plan 9 (editing pushed to the client)
 counter-design. Effort M.
 
 ### 29. A display terminal: framebuffer, virtio-gpu, and a foreign component
+
+**In brief.** An on-device terminal: a userspace virtio-gpu driver (arriving over **PCIe**, which the §18 transport just made reachable), a framebuffer component, font rendering, and a VT state engine maintaining the grid; input from a virtio keyboard
+
+**Why it matters.** the first pixels the demonstrator ever puts on a screen, and the strongest form of the milestone-23 claim if the VT engine is **libghostty-vt** (zero-dependency, no-libc, no-alloc, C ABI, Zig): a vendor component in a foreign language, capability-confined and hot-swappable. **Promoted from optional (2026-07-28): rung one of the display ladder (see "The display ladder" below), whose destination is a capability-routed compositor**
 
 **Increment one built (2026-07-29, both ISAs): the first pixels, and the framebuffer seam.** A
 confined userspace virtio-gpu driver (`gpud`) drives the control queue through the proved validator
@@ -779,6 +884,10 @@ a reach in the 24 spirit. Effort L.
 
 ### 30. The network stack as a confined component
 
+**In brief.** A userspace **virtio-net** driver behind the DMA confinement (extended to multi-queue: RX means the device writes INTO driver memory), and the TCP/IP stack itself (`smoltcp`) as a swappable userspace component with a capability-shaped socket contract; backs `std::net` for 27
+
+**Why it matters.** **the canonical microkernel component**, the one people ask about first when a minimal kernel claims to stand next to Linux; and milestone 23's most convincing instance, hot-swapping a network stack under open connections. The reuse call is the plan's easiest: the thesis is the kernel confining the stack, not the stack
+
 **Deliverable.** Two components and a contract. A userspace **virtio-net** driver, confined by
 the same shadow-ring validator as the disk, which requires the one genuinely new kernel-adjacent
 piece: **multi-queue transport support** (virtio-net needs RX and TX; the §18 seam and the
@@ -809,6 +918,10 @@ file). Testing is cheap: QEMU's user-mode networking NATs the guest with zero ho
 prerequisite piece and worth building first as its own tested step. Feeds 23 and 27. Effort L.
 
 ### 31. A capability shell: designation is authorization
+
+**In brief.** The command line becomes a **grant expression**: naming a resource in a command IS the capability grant (`run wc report.txt` passes one readable file cap; `run wc` alone can read nothing, and the refusal is "no such capability", not EPERM); untyped budgets as first-class grants; a SHILL-style manifest per program checked at spawn; a `caps` command printing a process's whole endowment. **Phase 1 built, both ISAs**: `capsh` (host-tested parse + manifest + spawn protocol), the shell over the existing surface, `run --mem N` made real by the `budgeter` program (from the shell's own budget, via a `SEND_CAP`-to-init spawn protocol), manifest refusals and the "you hold no such capability" file refusal at the prompt, `caps`/`caps run ...` introspection. One kernel bug fix: `Untyped::SPLIT` now grants the child `GRANT` so a budget is delegable (DECISIONS §16 amendment). Notes: grant-expression.md, program-manifest.md. Per-file grants wait on milestone 32
+
+**Why it matters.** **no-ambient-authority made user-visible**: the inversion of Unix's model at the one interface a human touches. Milestone 23's component contract in embryo, met first at the shell
 
 **Phase 1 built (both ISAs).** The command line is a grant expression: `capsh` (a host-tested crate)
 parses it and checks it against a per-program manifest; the shell holds its own untyped budget and
@@ -848,6 +961,10 @@ reading as the mistake catalog. Feeds 23 and 22 (shrinking ambient authority, me
 layer); sits behind 28's terminal contract. Effort M.
 
 ### 32. A real filesystem: RedoxFS behind a capability FS server
+
+**In brief.** A write-capable block path, an FS-server **component** whose handles are capabilities from birth (open-by-path exists only INSIDE the server, relative to a granted directory cap), and **RedoxFS** as the on-disk engine, ported behind its own `Disk` trait over blk IPC
+
+**Why it matters.** the flagship **userspace-reuse** story the prior-art note predicted: a real CoW filesystem we did not write, running confined; and the thing 31's per-file grants point at
 
 **Phase 1 built** (the write-capable block path; DECISIONS §22 area, notes/dma.md). **Phase 2
 built, read path** (2026-07-28; DECISIONS §27, notes/fs-server.md): RedoxFS runs confined as a
@@ -913,6 +1030,10 @@ than ghostty-vt would buy). Feeds 31 (per-file grants), 23 (a component with rea
 hand off across a live swap, the hardest handoff case yet named), 27 (`std::fs`). Effort L.
 
 ### 36. A foreign-language component, seam first (spike; feeds 29 and 23)
+
+**In brief.** Prove the FFI seam end to end with a *minimal* C component before committing to a large one: bare-metal clang for both bare targets in the build, a Rust `user_rt` shell that holds every capability and does every syscall while the C code gets plain buffers over the C ABI (so the §4 surface does not widen), and only the handful of libc symbols the component actually needs, with `malloc` on milestone 27's untyped-backed `GlobalAlloc`. The deliverable that matters is one test: a deliberate out-of-bounds write in the C code faults the process, touches nothing outside its grant, and its supervisor restarts it. **Built, DECISIONS §31, both ISAs**: clang capability-checked for both backends from one compiler (Apple's is rejected: no RISC-V), `cshim` holds every capability so the C holds none, the libc turned out to be **two** symbols not five (`compiler_builtins` already supplies the rest), and two witnesses prove the confinement (a read-only page that is the *same physical frame*, and a different frame at the same virtual address). notes/c-seam.md
+
+**Why it matters.** **the thesis in one assertion.** Memory-unsafe foreign code is not a dilution of "a verified core that confines unverified workloads", it is the strongest available demonstration of it: the more unverified the component, the more the confinement has to prove. It also de-risks 29's libghostty-vt rung and 23's vendor-component claim *before* we owe anything to another project's toolchain or API churn
 
 **DONE 2026-07-29**, both ISAs, in QEMU. DECISIONS §31; concept note notes/c-seam.md.
 
@@ -1004,6 +1125,346 @@ board), which is a 16a story to do in Rust when first silicon makes it concrete.
 component at, and before committing to libghostty-vt. Effort S to M. The whole value is that it is
 cheap and it fails early: if the toolchain, the shim, or the confinement story has a problem, we
 find it with a throwaway component rather than half way into a port.
+
+### 41. Dead code: triage the suppressions, and un-blindfold the gate
+
+**In brief.** Triage all **79** `allow(dead_code)`/`allow(unused)` suppressions in the tree, delete what is dead, and replace the module-wide ones with per-item allows that carry a reason. Three distinct classes, only one of which is tidying. (1) **The gate is blindfolded over 5,831 lines**: six files carry module-wide `#![allow(dead_code)]`, including `sched.rs` (3,166 lines) and `arch/aarch64/mmu.rs` (1,275), so `-D warnings` cannot see dead code in the two largest and most security-relevant files in the kernel. (2) **Suppressions whose own comments name milestones that have since shipped**, e.g. `cpu.rs`'s "by the scheduler in step 3" and `smp.rs`'s "by spawn's placement policy" (both landed as §28), `cap.rs`'s "in 9b", `interrupts.rs`'s "milestone 5's first non-test caller", and two in `mmu.rs` pointing at milestone 8's in-kernel console, which §21 moved to userspace. Each is either now-used (delete the attribute) or genuinely dead (delete the code); either way the comment is false. (3) **Superseded demo payloads** in `user.rs`, which say so themselves ("7c handed the demo over to the real ELF"). Ends with a lint gate refusing new module-wide suppressions, the same shape as the conflict-marker and roadmap checks
+
+**Why it matters.** **a `-D warnings` gate with holes in a third of the kernel is a gate that reports success it has not earned**, which is the same class of problem as the four-times-corrected §27 record and the contradicted `fs_read` comment: the tooling said fine while nobody was looking. It also protects a real asset, since this codebase's unusually heavy commenting is only valuable while the comments are true, and a suppression citing a milestone that shipped weeks ago actively misleads. **Explicitly NOT in scope:** hardware register definitions (`gic.rs`, `timer.rs`, `semihosting.rs`, `mmu.rs` field encodings) where a complete definition is the point, and deliberate diagnostics (`VERIFY_WRITES`, `second_mount`) that encode measurements which killed hypotheses. Those keep their allows and gain a stated reason, which is the difference between a suppression and a decision
+
+**Chris's question, 2026-07-30: is there dead code that should be removed?** Answered by measurement
+rather than impression, and the answer is more interesting than a list of unused functions.
+
+**The negative result first, because it is worth recording.** There are **no dead binaries**. All 28
+programs in `user/` are packed into an image and reached by a test. My first sweep reported `hello` as
+never packed, which was wrong: it is packed under the archive name `init` through a variable my pattern
+missed. Correcting that before reporting it is the whole reason the sweep is written down here rather
+than delivered as a verdict.
+
+**The real finding: the `-D warnings` gate is blindfolded over 5,831 lines.** Six files carry
+module-wide `#![allow(dead_code)]`:
+
+| File | Lines |
+|---|---|
+| `kernel/src/sched.rs` | 3,166 |
+| `kernel/src/arch/aarch64/mmu.rs` | 1,275 |
+| `kernel/src/memory.rs` | 631 |
+| `kernel/src/arch/aarch64/timer.rs` | 430 |
+| `kernel/src/drivers/gic.rs` | 274 |
+| `kernel/src/arch/aarch64/semihosting.rs` | 55 |
+
+That includes the two largest and most security-relevant files in the kernel. Clippy runs with
+`-D warnings` and cannot see dead code in any of them, so the gate reports success it has not earned.
+This is the same class of problem as §27's four-times-corrected record, the `fs_read` doc comment that
+contradicted `notes/benchmarks.md`, and the conflict markers that survived a full gate run: **the
+tooling said fine because nothing was looking.**
+
+**Second class: suppressions whose own comments cite milestones that have shipped.** Each of these is
+either now-used, in which case the attribute should go, or genuinely dead, in which case the code
+should. Either way the comment is false today, and false comments are expensive here specifically
+because this codebase is commented far more heavily than production code on purpose. A suppression
+citing a milestone that landed weeks ago actively misleads a reader who is trusting the prose.
+
+- `kernel/src/cpu.rs:243` — "used by the tests now, and by the scheduler in step 3". Step 3 shipped as §28.
+- `kernel/src/smp.rs:64` — "used by the SMP tests now, and by spawn's placement policy when it...". Also §28.
+- `kernel/src/cap.rs:130` — "first used by the virtio driver setup in 9b".
+- `kernel/src/arch/aarch64/interrupts.rs:63` — "milestone 5's first non-test caller".
+- `kernel/src/arch/aarch64/mmu.rs:647` and `:660` — both point at milestone 8's *in-kernel* console, which §21 moved into userspace and retired.
+
+**Third class: superseded demo payloads** in `user.rs`, which admit it in place ("`allow(dead_code)`
+because 7c handed the demo over to the real ELF").
+
+#### Deliverable
+
+Triage all 79 suppressions; delete what is dead; convert the module-wide ones into per-item allows that
+each carry a reason; and finish with a `script/lint` check that refuses a new module-wide
+`#![allow(dead_code)]`, the same shape as the conflict-marker and roadmap-status gates. The point of
+that last step is that this is a ratchet: without it the file-level suppression comes back the first
+time someone finds it inconvenient.
+
+#### Explicitly not in scope
+
+- **Hardware register definitions** (`gic.rs`, `timer.rs`, `semihosting.rs`, and `mmu.rs`'s field
+  encodings), where defining the complete register set is the point and using only part of it is normal.
+- **Deliberate diagnostics** that encode measurements which killed hypotheses: `VERIFY_WRITES` in the FS
+  server (off by default, and its comment explains that turning it on overflows the server's stack from
+  RedoxFS's deep recursion) and `second_mount`, whose 30-cycle flat-heap measurement is what disproved
+  the accumulated-mount-state theory.
+
+Both keep their suppressions and gain a stated reason. That is the distinction the milestone is really
+about: **a suppression with a reason is a decision, and one without is a leak.**
+
+**Sequencing.** Independent of everything else, and a good candidate for a low-priority background lane
+precisely because it touches many files shallowly and conflicts with any lane editing the same files. Do
+it when no other lane is open, or accept the rebases. Effort M, mostly reading.
+
+### 40. Documentation as a system service: searchable, rendered, and installed by packages
+
+**In brief.** Markdown authored, **rendered** for display rather than shown raw, searchable locally, and installed by the package that owns it. Reuse `pulldown-cmark` for parsing (CommonMark is a fiddly spec worth taking from someone else) and write the ANSI renderer against `linedisc`'s contract, because `termimad`/`mdcat` sit on `crossterm` and assume a POSIX terminal we do not have. Phase 1 is a terminal viewer and pager, phase 2 a host-built inverted index shipped as a per-package shard, phase 3 a graphical viewer riding the display ladder. Two constraints found while scoping: **`readdir` refuses and the §27 contract has no such verb**, so nothing can walk a tree for documents, and **font rendering is still milestone 29's remaining increment**, so the terminal comes first
+
+**Why it matters.** **the OS explains itself, on itself.** The project's whole argument is already markdown (DECISIONS, thirty-plus notes, this roadmap), so a capability-confined viewer serving them is a better milestone-23 demonstration than another synthetic test and costs the documentation nothing. The missing `readdir` turns out to be a feature: **enumeration is authority**, so indexing at package-build time is both the way around the gap and the more honest shape, which is the same answer `apropos` reached for a different reason. And `doc notes/ipc-naming.md` granting exactly one readable file is milestone 31's designation-is-authorization made into something a person uses
+
+**Chris's direction, 2026-07-30.** Markdown as the authored format, rendered for display rather than
+shown raw, searchable on the local machine, and installed *by the package that owns it*, so a
+component brings its documentation with it.
+
+**Why this belongs on a demonstrator's roadmap rather than being a nicety.** The project's own
+argument is written in markdown: `DECISIONS.md`, thirty-plus notes, this roadmap. A cricker-os that
+serves its own design notes, on itself, through a capability-confined viewer, is a better
+demonstration of milestone 23's component story than another synthetic test, and it costs the
+documentation nothing because it already exists. It is also the first *application* on the display
+ladder that anybody would actually use.
+
+#### Two constraints found while scoping, both real
+
+1. **There is no directory iteration.** `readdir` refuses in the std PAL and the §27 file contract has
+   no such verb, so nothing can walk a tree looking for documents. Adding one is a decision, not a
+   detail, and **the capability model argues against it anyway: enumeration is authority.** A viewer
+   that can list a directory can discover what it was not given. So the design below indexes at
+   *package build time* and ships the index, which sidesteps the missing verb and is the more honest
+   shape. Unix reached the same answer for a different reason: `apropos` reads a prebuilt `mandb`
+   because scanning was slow.
+2. **There is no font rendering yet.** Milestone 29 shipped pixels, and glyphs plus the VT engine are
+   its remaining increment. So a *graphical* documentation browser cannot be first; the terminal can.
+
+#### Reuse: take the parser, write the renderer
+
+CommonMark is a fiddly specification with a large conformance suite, and parsing it is exactly the
+kind of work worth taking from someone else. Rendering to *our* terminal contract is ours and small.
+That split is the reuse judgment, and it is the same one milestone 32 made about RedoxFS.
+
+| Piece | Option | Judgment |
+|---|---|---|
+| Parse | **`pulldown-cmark`** (pure Rust, CommonMark, event-stream API, few dependencies) | **Take it.** The event stream is the right shape for a renderer that emits ANSI. Milestone 27's `std` is what makes this buildable at all. |
+| Parse | `comrak` (GFM: tables, strikethrough, footnotes) | Consider later if GFM tables matter; more dependencies. |
+| Render | `termimad`, `mdcat` | **Do not take.** Both sit on `crossterm`, which assumes a POSIX terminal (termios, ioctl). Porting that is more work than emitting ANSI against `linedisc`'s contract, which we own and already speak (§21). |
+| Search | `tantivy` | **Too heavy.** It assumes a filesystem and mmap. |
+| Search | A host-built inverted index shipped in the package | **Take this shape.** Built by `xtask` where there are no constraints, merged by the viewer across installed packages. |
+| UI | `ratatui` | Possible for a pager later; needs a backend against our terminal contract first. |
+
+#### Shape
+
+- **A doc bundle is part of a package**: rendered-source markdown plus a small index shard, installed
+  into a documentation store when the component is installed. This is where milestone 39's packaging
+  observation pays: manifest, hash, version, and now a doc bundle.
+- **The viewer holds a directory capability to the doc store** and nothing else. It cannot read the
+  rest of the filesystem, which is the point, and it does not need to because the index tells it what
+  exists.
+- **The index is a merge of shards**, one per installed package, so installing a component makes its
+  documentation searchable without a reindex pass and without any component being able to see
+  another's files.
+- **`doc search <term>`** and **`doc view <topic>`**, shell verbs. Milestone 31's grant expression
+  makes this a demonstration rather than a convenience: `doc notes/ipc-naming.md` passes exactly one
+  readable file capability, and a viewer invoked with no argument can read nothing.
+
+#### Phasing
+
+- **Phase 1, the terminal viewer.** `pulldown-cmark` to an ANSI renderer over `termd`'s contract:
+  headings, emphasis, lists, block quotes, code blocks, and a pager. Works on the serial console
+  today and inherits the display terminal for free when 29's glyph work lands. Host-tested in
+  milliseconds like every other pure-logic piece: markdown in, styled bytes out.
+- **Phase 2, search.** The host-built index, the shard merge, and `doc search`.
+- **Phase 3, the graphical viewer.** Rides the display ladder: needs 29's font rendering and sits as a
+  client of 33's compositor. Rung three of the ladder is where this becomes a real application.
+
+**Prior art worth reading:** `man` plus `apropos` plus `mandb` for the split between format, index and
+pager, which is the architecture this proposes minus the troff. Dash/Zeal *docsets* (a bundle with its
+own index) for the packaging shape. `cargo doc`'s HTML output as the road not taken, since HTML would
+need a browser engine, which is a mountain with no thesis behind it.
+
+**Sequencing.** Phase 1 wants milestone 31 phase 2 finished (per-file grants make `doc <file>` the
+demonstration it should be) and nothing else; it can precede the packaging work and be wired into it
+later. Effort S to M for phase 1, M for phases 2 and 3 together.
+
+### 39. Repository structure for a loosely-coupled OS, and the road to a distribution
+
+**In brief.** **Analysis recorded, no decision taken.** The tree is a monorepo for a deliberately loosely-coupled system, and it is straining in measurable ways: `user/` is 28 binaries and 9,324 lines in one crate that is also a shared library, `fs-server/` has already escaped into its own workspace for real dependency reasons, `crates/` conflates kernel proof crates with wire contracts and userspace runtime so the boundary a third party cares about is invisible, and every crate is version 0.1.0. Four options are written up with their trade-offs (restructure in place; multiple workspaces in one repo; split repos; monorepo plus a later distribution *manifest* repo), along with a naming argument (**components** and **services**, never "daemons", because a Unix daemon is defined by the ambient authority this OS does not have) and the observation that milestone 31's program manifest plus §22's measured-boot hashing are already three quarters of a package format
+
+**Why it matters.** **the structure has to serve the thesis, and one constraint dominates.** A single `script/test` proving the whole system on both ISAs is this project's credibility mechanism and what makes rule 5 a gate rather than an aspiration; splitting repos trades that for decoupling nothing external needs yet. Recommendation recorded (monorepo now, distribution as a separate manifest repo, executed as multiple workspaces, not before 23 forces it) so the eventual decision starts from evidence rather than from taste
+
+**Status: analysis recorded, NO DECISION TAKEN (2026-07-30, Chris's request).** Deliberately a
+roadmap milestone rather than a `DECISIONS.md` section, because nothing was decided; §-sections are
+for decisions, and recording an undecided question as one would be a lie about its status. This
+block exists so the analysis is not lost and so the eventual decision starts from evidence.
+
+The question Chris raised: cricker-os is a monorepo for a microkernel, but it is a collection of
+deliberately loosely-coupled things, and the structure may not support that long term. Plus a
+naming question (should the userspace servers be "services" or "daemons"), and the observation that
+a Linux-distribution-shaped layer will eventually sit on top of the OS components.
+
+#### Where the current structure is straining, measured rather than felt
+
+- **`user/` is one crate doing two incompatible jobs.** 28 binaries, 34 files, 9,324 lines. It is
+  also a library: `virtio`, `vnet`, `netproto`, `suptree` and `cseam` are shared modules sitting
+  beside the programs that consume them. So no component can express "I need the virtio driver bits
+  but not the network stack", every component rebuilds when any shared module changes, and no
+  component can take a dependency without handing it to all 28.
+- **One component has already escaped, for real reasons.** `fs-server/` is its own workspace with its
+  own `Cargo.lock`, because RedoxFS's default features pull `fuser` (whose build script panics on
+  macOS) and its core wants `std` under test. Milestone 36 did the same to the toolchain by requiring
+  a cross-capable clang. Two instances is a pattern: the first components with genuine dependency
+  needs of their own had to leave.
+- **`crates/` conflates three audiences with different rules**, so the boundary a third party would
+  care about is invisible: kernel proof crates (`caps`, `paging`, `frames`, `regions`, `slots`,
+  `asid`, `intrusive`, `dtb`, `elf`, `dma_validate`, `measure`, `uheap`, Kani-proved and nobody
+  else's business), wire contracts (`fs_proto`, `gfx_proto`, `linedisc`, `compose`, `abi`, the
+  **only** things an external component needs), and userspace runtime (`user_rt`, `capsh`,
+  `crickerfs`, `pci`).
+- **Every crate is `version = "0.1.0"`.** Correct for internal crates, fatal for a published
+  contract, and contracts are exactly what milestone 23's live replacement makes into a compatibility
+  surface.
+- **Not everything in `user/` is a service.** `heeder`, `spinner`, `flaky`, `allocdemo`, `worker`,
+  `builder`, `coremark`, `elbench` are fixtures and benchmarks. Mixing them with `netd`, `gpud`,
+  `compd` and `termd` is much of why the directory reads as shapeless.
+
+#### Naming: components and services, not daemons
+
+A technical objection rather than an aesthetic one. A Unix **daemon** is defined by what it detaches
+from: no controlling terminal, inherited ambient authority, a pid file, started by init holding the
+system's privilege. Every one of those is something this OS deliberately does not have, and
+importing the word imports the model. The project has already had to push back on exactly that pull
+(§27's "open-by-path exists only inside the server", §24's "Ctrl-C is a capability, not a signal").
+
+The project's own word already carries the thesis: milestone 23 is "a capability-routed **component**
+OS with live replacement", "a vendor-shippable unit behind a stable contract". Proposed vocabulary,
+matching what DECISIONS already says:
+
+- a **component** is the shippable unit, a binary plus its manifest (`components/`);
+- a **service** is what it offers over a contract ("the FS service");
+- a **contract** is the wire protocol (`contracts/`).
+
+"Server" stays a fine role word inside a component (`fsserver` serves the FS service). "Daemon" gets
+dropped.
+
+#### The four options
+
+| | Shape | Buys | Costs |
+|---|---|---|---|
+| **A** | One workspace, restructured directories (`kernel/`, `components/`, `contracts/`, `runtime/`, `fixtures/`, `tools/`) | Legibility, cheapest | Does not fix per-component dependencies unless each component also becomes its own crate, which is the actual work |
+| **B** | One repo, multiple workspaces (generalize what `fs-server/` already does, driven by `xtask --manifest-path`) | Real dependency isolation; a component can use `std` or a foreign toolchain without infecting the kernel build | More lock files, slower cold builds, more complex xtask |
+| **C** | Split repos: kernel, components, distribution | Maximum decoupling; what an ecosystem with third-party components looks like | **The integration gate**, see below |
+| **D** | Monorepo now; distribution as a separate *manifest* repo later | Keeps the gate; distro consumes released artifacts, the way Yocto, Buildroot and Alpine aports separate recipes from sources | Defers the decoupling question rather than answering it |
+
+#### The constraint that decides it
+
+**The single-command gate across both ISAs is the project's credibility mechanism.** One `script/test`
+boots the kernel and proves the whole system on aarch64 and riscv64, including every component's
+confinement, and rule 5 (DECISIONS §19) says parity is a gate and not an aspiration. Split into
+separate repos and that becomes a multi-repo CI problem where the integration proof either lives
+somewhere awkward or quietly stops running on every change. For a demonstrator whose entire argument
+is "measured, both architectures, same suite", that is an expensive thing to trade for directory
+cleanliness *before any external party needs it*.
+
+**Recommendation: D, executed as B, and not before milestone 23 forces it.**
+
+#### The packaging observation worth acting on early
+
+Most of a package format already exists and is not called one. Milestone 31's per-program **manifest**
+(SHILL-adapted: declared endowment, checked at spawn) is package metadata. §22's measured boot already
+hashes a component against a trust root. A distribution needs manifest, hash, version, and contract
+version; three of those four exist. Naming that as the packaging layer would make the distribution an
+assembly step rather than a new subsystem, and would give the contracts a reason to carry real version
+numbers, which is what lets components evolve independently at all.
+
+#### The cheap first move, which commits to none of the four
+
+**Split `user/` three ways**: `components/` for the services, `fixtures/` for the test programs, and
+lift `virtio`, `vnet`, `netproto`, `suptree` into `runtime/` crates. That ends the
+crate-is-both-a-program-collection-and-a-library problem, makes dependencies expressible, and leaves
+the gate untouched.
+
+**Whichever option is chosen, do the move as one mechanical commit with the pairing audited.**
+Renaming directories touches `xtask`'s `--bin` lists and the initrd packing, and a union merge in
+exactly that code dropped a `--bin` flag on 2026-07-29 and duplicated a loop header the same day. It
+must not be folded into feature work.
+
+### 24. A second aarch64 *board*: Virtualization.framework (optional)
+
+**In brief.** Boot under Apple's Virtualization.framework, not QEMU's `virt`: a virtio-console driver (VZ has no PL011), VZ's interrupt/memory layout and boot handoff, device discovery through the machine VZ presents
+
+**Why it matters.** proves the `arch/` **board** boundary on a second machine of the *same* ISA (cheaper than 16's silicon, distinct from 20's second ISA), and lets cricker-os run under the same VMM as macOS/Linux guests. Optional; portability exercise, **not** a benchmarking prerequisite (guest-internal microbenchmarks are VMM-independent)
+
+### 25. Cross-OS performance comparison (extends 21)
+
+**In brief.** EL0-measured primitive benchmarks (syscall, context switch, IPC, map, spawn) the lmbench way, so the numbers include the trap the kernel-side benchmarks skip; then line them up against lmbench (Linux, macOS guests) and `sel4bench` (seL4), at a matched virtualization tier, with release builds. Fold in the icount codegen-sensitivity fix.
+
+**Why it matters.** **turns perf claims into cross-OS numbers**: where does a Rust capability microkernel stand next to Linux, macOS's XNU, and seL4 on the primitives that define an OS. **Largely done**: four EL0 primitives (null syscall, context switch, IPC, page map) on both instruments, a release build path, and the three-way comparison (cricker-os vs Linux-under-HVF vs native macOS) with cricker-os winning null/IPC ~5x. `spawn` landed too (its real prerequisite was never retype, which had already shipped, but **object revocation**, reclaiming a child's TCB/aspace/endpoint so a spawn loop can repeat; that shipped as its own milestone, notes/object-revocation.md, and the EL0 `lat_proc` bench, `spawn_el0`, is in the suite and the committed baseline). **Remaining**: only `sel4bench` (built and booting for qemu-arm-virt, but it times single ops via the PMU cycle counter, which neither QEMU-TCG nor Apple HVF provides, so it is **deferred to real hardware**, the milestone-16 machine, which has a real PMU; this validates our CNTVCT + long-loop design). notes/benchmarks.md
+
+### 26. Object revocation: tear a process back down
+
+**In brief.** Reclaim the TCBs, address spaces, and endpoints a process built, and the regions behind them, so a workload that comes and goes can leave. **Built:** region-ownership + generational staleness (no CDT), `Untyped::SPLIT`/`DESTROY`, generational region slots (retires the 256-lifetime cap), endpoints (safe subset). Extends §13 from frames to objects; DECISIONS §16, notes/object-revocation.md
+
+**Why it matters.** **the teardown half of "run real workloads":** a process can be reaped, not just built
+
+### 33. A compositor: one screen, mutually distrusting clients
+
+**In brief.** **Built (2026-07-29), both ISAs**, rung two of the display ladder: `compd` multiplexing one screen among three clients, each holding a capability to its own surface; software composition honouring a damage rectangle; input routed by capability over the terminal contract's `OP_BYTES`; enumeration and screenshots as read-only mappings rather than verbs. No new syscall and no new method. notes/compositor.md, DECISIONS §33
+
+**Why it matters.** **the canonical multiplexer of one device among distrusting clients**, and the thesis at its sharpest: a client is *proved* unable to reach its neighbour's pixels even when handed the exact address of them, and the compositor holds no authorization code because the authority is a mapping rather than a message. It also found the kernel's one missing primitive (no wait-any), recorded as a fork
+
+### 34. GPU acceleration via virtio-gpu 3D (the display ladder's rung four)
+
+**In brief.** The **Venus** path: Vulkan commands serialized over the virtio-gpu device, arriving on the §18 PCIe transport, so the guest gets real GPU acceleration without owning a hardware driver. Needs the 3D context and command-submission side of virtio-gpu that rung one deliberately left alone (rung one sets up no cursor queue and no 3D context, keeping the §23 two-queue ceiling untouched), the confinement story extended to command-carried backing addresses (DECISIONS §30's residual gap: those are the addresses the descriptor validator structurally cannot see, and today only an IOMMU stops them), and something to consume it, which is what would give `wgpu` a real target
+
+**Why it matters.** **how every VM gets a GPU without a hardware driver**, and the honest ceiling on the display ladder: rung five (a bare-metal driver for the VisionFive 2's BXE-4-32 3D core) is struck as a Linux-scale multi-year effort that proves nothing this does not. A mountain, priced as such, and it reopens the parked competitor question the ladder's governance note names as the architect's call
+
+### 37. Prove RedoxFS's crash consistency (DECISIONS §34, condition 1)
+
+**In brief.** Inject the failure a copy-on-write filesystem exists to survive, and measure whether it does: torn writes (a block partially written), dropped writes (a write the device acknowledged and did not persist), and a kill mid-transaction, then reopen with the same `cleanup: true` header-ring replay the FS server always mounts with, and assert the filesystem is consistent and every acknowledged write is either wholly present or wholly absent. The seam is `IpcDisk` and the block server, which sit between the engine and the device and can drop or truncate a write deliberately; the sans-IO core already runs on the host against a real image, so most of this is host-testable in milliseconds and only the device-level kill needs QEMU. Includes the negative control that makes the rest mean anything: the injector must be shown to actually corrupt something when the replay is disabled
+
+**Why it matters.** **the condition that decides whether §34's label is earned.** Crash consistency is RedoxFS's central selling point and the reason it beat ext2, and we currently assert it on the strength of the upstream design description rather than any measurement. That is a claim of exactly the kind this project's rules forbid, and it is the first thing a skeptic asks a filesystem. Until it passes, the docs say "designed for crash consistency" and never "crash consistent". Note this is a gap in **our harness, not in RedoxFS**: no candidate engine's crash consistency is tested here, so switching engines would not address it
+
+### 38. Filesystem throughput, and the comparison (DECISIONS §34, condition 2; extends 21/25)
+
+**In brief.** Sequential and random read/write throughput through the confined FS server, against ext4 on Linux and APFS on macOS at a matched virtualization tier, the way milestone 25 did the primitives. Requires deciding what is honestly comparable: our reads are device-latency-dominated (`fs_read` is ~204 us/read under HVF, and `relay_rtt` puts the isolation tax a thousand times below that), so the interesting question is whether the userspace-server architecture costs throughput once the device dominates, which is a claim a microkernel skeptic will press
+
+**Why it matters.** **"primary filesystem" invites a comparison we cannot currently make.** We have the per-request numbers and the isolation tax, and no MB/s figure at all. Milestone 21's rule is measure rather than argue, and 25 already established that the honest way to do this is EL0-measured against real systems rather than self-reported. This is where the "userspace servers are too slow" objection gets an answer or a concession
+
+### 42. Supply chain and fuzzing in CI (extends the 2026-07-30 CI audit)
+
+**In brief.** Three things CI does not do. **Advisories and licences**: no `cargo-audit`/`cargo-deny`, so a published advisory against a dependency is invisible, and licence obligations go unrecorded, which stops being cosmetic the moment milestone 39's distribution exists. **Vendored integrity**: `vendor/redoxfs` is pinned at 0.9.1 with a `patches/` discipline and *nothing verifies the tree equals upstream-plus-our-patches*. **Fuzzing the parse surface**: Kani proves `elf`, `dtb` and `crickerfs` under *chosen bounds*, and a fuzzer explores byte sequences past those bounds and finds panics rather than property violations, which is complementary rather than redundant. Several crates are unproved entirely and take attacker-shaped input: the `fs_proto`/`gfx_proto`/`linedisc` decoders, `capsh` (which parses the human's command line), `compose` (clipping arithmetic, where its own note says off-by-one is the classic bug), and `measure`, the SHA-256 behind the measured-boot trust root
+
+**Why it matters.** **the thesis is confining code we did not write, so not knowing when that code has a published advisory is an odd blind spot**, and milestone 32's flagship claim ("a real filesystem we did not write") is only as good as our ability to say what we are actually running. Fuzzing is the honest complement to bounded model checking: Kani answers "is the property true inside these bounds", a fuzzer answers "does anything crash outside them", and the project currently only asks the first
+
+### 43. A second security audit, with a different lens
+
+**In brief.** The first audit (notes/arch-audit.md) read the **assembly and arch layer** and found three real bugs: the `eret`/`sret` privilege-escalation staging race, a stale `tp` on S-mode trap return corrupting cross-hart per-CPU data, and the PLIC's lock-free read-modify-write. A second pass should deliberately NOT re-read that, and should take the surface that has appeared since. Headline lens: **time-of-check to time-of-use across shared pages.** Every service contract now moves bulk data through a page shared with the client (blk, file, gfx, compose, linedisc, netd), so a server that validates a length or an offset from the request word and *then* reads the page has a double-fetch window a malicious client controls; 19 files touch that pattern. Further lenses: integer overflow in the wire's size and offset arithmetic (`fs_proto` packs a 40-bit length, and `TRUNCATE` takes a size in the second word); capability lifetime races between revocation and an in-flight use, now that generational names, `Untyped::DESTROY` and `Endpoint::REAP` all reclaim; and a census of the **804** `unsafe` occurrences, triaging which carry a stated safety argument
+
+**Why it matters.** **the attack surface roughly doubled after the first audit was written**: the compositor's shared surfaces, the C seam, the reap right, `std::fs`/`std::net`, and the FS service all arrived afterwards. The first audit's value came from reading for a *pattern* rather than waiting for a failure (it found the PLIC race that way), so the return on a second pass depends entirely on choosing a lens the first one did not use. Double-fetch is that lens: it is invisible to every gate we run, because both the check and the use are individually correct
+
+### 44. GitHub repository hardening: policy, private reporting, code scanning, pull requests
+
+**In brief.** Four items, and they split into files we can commit and settings someone with admin has to toggle. **Files:** a `SECURITY.md` policy stating what is in scope (the kernel's confinement boundaries) and what is not (a demonstrator running under QEMU is not a production system), and a code-scanning workflow. **Settings:** private vulnerability reporting, and a ruleset requiring pull requests into `main`. Note the plumbing for the last one already exists, since CI runs on `pull_request`; what is missing is the branch protection that makes it mandatory. One thing to check rather than assume: **CodeQL's Rust support** has been moving through preview, so confirm its current state before committing to it; if it is not ready, the practical scanners are the clippy gate we already run, `cargo-audit`/`cargo-deny` from milestone 42, and a SARIF upload from whatever does work
+
+**Why it matters.** **a public repository with a security thesis should be able to receive a security report privately**, which today it cannot. The pull-request item also changes how this project is built: work currently lands by merging feature branches into `main` locally, and requiring PRs would put every merge behind the same gate rather than trusting the person merging, which is the discipline that caught the reap flake and the conflict markers only because I happened to run the gates by hand
+
+### 45. Triage the CodeQL code-scanning alerts, and decide what the tool is for
+
+**Built 2026-07-30. All nine alerts are fixed, and the policy is DECISIONS §35.** The seven
+`actions/missing-workflow-permissions` went first: every CI job held a `GITHUB_TOKEN` with permissions
+it never used, which is an odd default for a project whose thesis is that a component holds the
+authority its job needs and nothing more.
+
+The two `rust/access-invalid-pointer` alerts turned out to be two different findings wearing one label.
+**Nullness was structurally fixable and the type was failing to say so**: every pointer entering the
+intrusive queues comes from a `&mut Thread`, so non-nullness is a fact of construction rather than a
+caller's promise. `Fifo`, `Endpoint` and the `Node` trait moved to `NonNull`, every conversion at every
+call site is infallible (`NonNull::from`, never `NonNull::new(..).unwrap()`), and `Option<NonNull<T>>`
+is the same size as `*mut T` through the niche, so it costs nothing. **Validity and aliasing remain
+inexpressible**, which is the design of an intrusive queue rather than a gap, and that reasoning now
+lives in the crate's own docs as the standing caveat.
+
+Two things recorded because they were wrong or nearly so. I predicted twice that `NonNull` would improve
+the code *without* satisfying CodeQL, reasoning that the rule was about validity generally; it cleared
+both alerts, so the rule was more precise than I credited. And I first "proved" that with a query
+against `refs/heads/<branch>`, which has **zero analyses**, so it would have returned zero whatever the
+code did. The real comparison is `/language:rust`: 2 results on `refs/heads/main`, 0 on
+`refs/pull/5/head`, holding across four commits each side.
+
+
+**In brief.** Nine alerts on first run. Seven (`actions/missing-workflow-permissions`) were fixed immediately by giving every workflow an explicit least-privilege `permissions: contents: read`, which is the right call for this repo specifically: a project whose thesis is that a component holds the authority its job needs and nothing more has no business letting its CI token default to write access it never uses. **The two that remain are high severity and need judgement, not configuration**: `rust/access-invalid-pointer` at `crates/intrusive/src/lib.rs:93` and `:109`, the raw-pointer dereferences in the intrusive wait-queue's `push_back` and `pop_front`. Both already carry `SAFETY` comments citing the queue's caller contract, and `intrusive` is one of the 13 Kani-proved crates, so the question is precisely what CodeQL sees that Kani does not: Kani proves the pure logic under chosen bounds, while the pointer validity here rests on a *caller* contract enforced by convention rather than by the type system. Decide per alert whether it is a true positive worth restructuring for, or a false positive to dismiss **with a written reason**; then set the standing policy for how alerts get triaged, since an alert list nobody dispositions decays into wallpaper
+
+**Why it matters.** **the alerts land exactly where this project's most-used unsafe abstraction lives**, so the answer is worth having either way: either the wait queue's contract can be made structural rather than documented, which is a real improvement to the code every blocked thread passes through, or we write down why it cannot be and what upholds it instead. Also forces the meta-decision milestone 44 left open, now that scanning is actually running: a scanner whose findings are never dispositioned is worse than none, because it manufactures the appearance of review
 
 ## The display ladder (recorded 2026-07-28, Chris's direction)
 

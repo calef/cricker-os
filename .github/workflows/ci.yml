@@ -6,6 +6,14 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Least privilege for GITHUB_TOKEN, set once for every job below. CodeQL flagged its absence
+# (actions/missing-workflow-permissions, 7 alerts) and it is the right call for this repo in
+# particular: a project whose entire thesis is that components should hold the authority their job
+# needs and nothing more has no business letting its CI token default to write access it never uses.
+# Jobs that genuinely need more say so themselves (see toolchain-bump.yml, which needs to open a PR).
+permissions:
+  contents: read
+
 # A quick follow-up push supersedes the in-flight run on the same ref, rather than queueing behind it.
 concurrency:
   group: ci-${{ github.ref }}
@@ -32,6 +40,24 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
+      # QEMU, built from source and cached. Ubuntu 24.04 ships 8.2 and `-device riscv-iommu-pci`
+      # (milestone 16b) arrived later, so the runner's packaged QEMU cannot boot the riscv leg at all.
+      # apt cannot fix it: it already installs the newest package for the release, and there is no
+      # newer Ubuntu ARM runner image. The version is pinned in .qemu-version so CI and the developer
+      # machine emulate on the same thing, which matters for a project whose benchmarks are instruction
+      # counts. Cold builds take ~10-20 min; every run after that is a cache hit. Restored BEFORE
+      # script/bootstrap on purpose, because bootstrap skips its apt install when QEMU is already on
+      # PATH, which is how the built one wins.
+      - name: Cache QEMU
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/cricker-qemu
+          key: qemu-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.qemu-version') }}
+      - name: Build QEMU if the cache missed
+        run: script/ci-qemu
+      - name: Put it on PATH
+        run: echo "$HOME/.cache/cricker-qemu/bin" >> "$GITHUB_PATH"
+
       # script/cibuild bootstraps the toolchain and QEMU (the same script/bootstrap a developer
       # runs), then runs the host-logic crates and the kernel under QEMU (TCG), exiting through
       # semihosting.
@@ -63,6 +89,65 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang
       - uses: Swatinem/rust-cache@v2
       - run: script/lint
+
+  verify:
+    name: verify (Kani proofs)
+    runs-on: ubuntu-24.04-arm
+    # Kani pulls its own toolchain and a CBMC backend, so this is the slowest job. 69 harnesses
+    # across 13 crates as of 2026-07-30.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+      # Kani is deliberately NOT in script/bootstrap (it pulls its own nightly and CBMC, which the
+      # test job would pay for and never use), so install it here, in the one job that needs it.
+      - name: Install Kani
+        run: |
+          cargo install --locked kani-verifier
+          cargo kani setup
+      # The proofs ARE the thesis (DECISIONS §14). Before 2026-07-30 they ran only on a developer's
+      # machine, which meant a change could break a proof and CI would report success.
+      - run: script/verify
+
+  bench:
+    name: bench (icount regression tripwire)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+      # Milestone 21's stated requirement is to catch "the *introduction* of performance problems
+      # proximate to the changes that introduce them", and a tripwire that only fires on a
+      # developer's laptop cannot do that. icount was chosen for determinism precisely so this is
+      # possible: it counts guest instructions, not wall time, so a shared runner's noise does not
+      # move it.
+      #
+      # If CI's counts and bench/baseline.txt disagree by more than the 10% tolerance, the fix is a
+      # CI-specific baseline, NOT a wider tolerance: widening it to make the job green would delete
+      # the only thing the job does. The baseline was committed from an aarch64 macOS host against
+      # Homebrew's QEMU, and this runs aarch64 Linux against Ubuntu's, so some drift is expected and
+      # the first red run is data rather than a defect.
+      # QEMU, built from source and cached. Ubuntu 24.04 ships 8.2 and `-device riscv-iommu-pci`
+      # (milestone 16b) arrived later, so the runner's packaged QEMU cannot boot the riscv leg at all.
+      # apt cannot fix it: it already installs the newest package for the release, and there is no
+      # newer Ubuntu ARM runner image. The version is pinned in .qemu-version so CI and the developer
+      # machine emulate on the same thing, which matters for a project whose benchmarks are instruction
+      # counts. Cold builds take ~10-20 min; every run after that is a cache hit. Restored BEFORE
+      # script/bootstrap on purpose, because bootstrap skips its apt install when QEMU is already on
+      # PATH, which is how the built one wins.
+      - name: Cache QEMU
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/cricker-qemu
+          key: qemu-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.qemu-version') }}
+      - name: Build QEMU if the cache missed
+        run: script/ci-qemu
+      - name: Put it on PATH
+        run: echo "$HOME/.cache/cricker-qemu/bin" >> "$GITHUB_PATH"
+
+      - run: script/bootstrap
+      - run: script/bench --check
+      - run: script/bench --riscv --check
 
   coverage:
     name: coverage (host crates)

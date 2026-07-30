@@ -356,20 +356,63 @@ mod tests {
     use super::*;
     use crate::{Aarch64, Sv39};
     use std::alloc::{Layout, alloc_zeroed};
+    use std::cell::RefCell;
     use std::vec::Vec;
 
-    /// A host stand-in for physical memory: leak zeroed, page-aligned frames and use their host
-    /// addresses as "physical" ones, exactly as the paging crate's other tests do. The pointer
-    /// arithmetic is identical, which is the whole reason page-table logic is host-testable.
-    fn frame() -> u64 {
+    // A SYNTHETIC physical address space, and the reason it exists is a CI failure worth recording.
+    //
+    // These tests used to leak zeroed host frames and use their host addresses directly as "physical"
+    // ones, with an identity `phys_to_ptr`. That works only if the host allocator happens to hand back
+    // addresses inside the format's addressable low half, which is not a property any allocator
+    // promises. On aarch64 macOS it did; on aarch64 Linux it does not, so `build_identity_domain`
+    // correctly refused with `MapError::WrongHalf` and two tests failed in CI while passing locally.
+    // The guard was right and the test was wrong.
+    //
+    // So the "physical" addresses are now chosen by the test, in the low half where both Sv39 and
+    // Aarch64 can express them, and the host frames sit *behind* `phys_to_ptr`, which is precisely
+    // what that indirection is for. The tests are host-independent and deterministic as a result: the
+    // addresses no longer depend on where malloc felt like putting something.
+
+    /// Where the synthetic pool starts. Low half, page-aligned, and far below Sv39's 2^38 ceiling.
+    const POOL_BASE: u64 = 0x0100_0000;
+
+    thread_local! {
+        /// Synthetic PA to host pointer. Thread-local so parallel tests cannot see each other's
+        /// frames, which also means each test's pool starts empty.
+        static PHYS: RefCell<Vec<(u64, u64)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// Back the synthetic physical address `pa` with a real zeroed host frame.
+    fn frame_at(pa: u64) -> u64 {
+        assert!(
+            pa.is_multiple_of(PAGE_SIZE),
+            "a synthetic PA must be page-aligned"
+        );
         // SAFETY: a valid non-zero layout; alloc_zeroed returns zeroed memory or null (asserted).
         let p = unsafe { alloc_zeroed(Layout::from_size_align(4096, 4096).unwrap()) };
         assert!(!p.is_null());
-        p as u64
+        PHYS.with(|m| m.borrow_mut().push((pa, p as u64)));
+        pa
     }
 
+    /// The next frame from the sequential pool: for roots and page tables, where the address does not
+    /// matter as long as it is legal and distinct.
+    fn frame() -> u64 {
+        let n = PHYS.with(|m| m.borrow().len()) as u64;
+        frame_at(POOL_BASE + n * PAGE_SIZE)
+    }
+
+    /// Resolve a synthetic PA to the host frame behind it. Panics on an unregistered address, which
+    /// would mean the walker followed a pointer nothing ever allocated: a loud test bug beats a
+    /// segfault.
     fn phys_to_ptr(pa: u64) -> *mut PageTable {
-        pa as *mut PageTable
+        PHYS.with(|m| {
+            m.borrow()
+                .iter()
+                .find(|(p, _)| *p == pa)
+                .map(|(_, host)| *host as *mut PageTable)
+                .unwrap_or_else(|| panic!("no host frame backs synthetic PA {pa:#x}"))
+        })
     }
 
     /// Build a domain over one region and check every in-region page translates to itself while a
@@ -377,7 +420,10 @@ mod tests {
     fn one_region_confines<F: PageFormat>() {
         let mut frames: Vec<u64> = Vec::new();
         let root = frame();
-        let base = frame(); // a single "device" data frame; its host address is its "PA"
+        // The device's data frame, at an address the TEST chooses so the assertions below mean what
+        // they say: `base + PAGE_SIZE` must be a page the domain was not given, and with a sequential
+        // pool it would have been the next frame allocated instead.
+        let base = frame_at(0x2000_0000);
         let regions = [DmaRegion {
             base,
             size: PAGE_SIZE,
@@ -430,8 +476,11 @@ mod tests {
     fn two_disjoint_regions_map_and_the_gap_does_not() {
         let mut frames: Vec<u64> = Vec::new();
         let root = frame();
-        let a = frame();
-        let b = frame();
+        // Far apart on purpose: the point of this test is the GAP between them, and adjacent regions
+        // would prove nothing about it. Sequentially-pooled frames would be adjacent, which is how
+        // this assertion could have quietly stopped testing anything.
+        let a = frame_at(0x2000_0000);
+        let b = frame_at(0x3000_0000);
         let regions = [
             DmaRegion {
                 base: a,
@@ -461,8 +510,9 @@ mod tests {
         };
         assert!(m.translate(a).is_some(), "region A did not map");
         assert!(m.translate(b).is_some(), "region B did not map");
-        // A frame the domain was never given: unmapped, so the device faults on it.
-        let c = frame();
+        // A frame the domain was never given: unmapped, so the device faults on it. In the gap
+        // between A and B, which is the strongest place to ask.
+        let c = frame_at(0x2800_0000);
         assert_eq!(
             m.translate(c),
             None,

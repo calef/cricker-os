@@ -1,5 +1,8 @@
 # cricker-os
 
+[![CI](https://github.com/calef/cricker-os/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/calef/cricker-os/actions/workflows/ci.yml)
+[![toolchain drift](https://github.com/calef/cricker-os/actions/workflows/toolchain-drift.yml/badge.svg)](https://github.com/calef/cricker-os/actions/workflows/toolchain-drift.yml)
+
 A capability microkernel for aarch64 and riscv64, written in Rust, from the first instruction.
 
 The goal (DECISIONS.md §14): a verified-Rust capability microkernel that runs real workloads,
@@ -27,36 +30,61 @@ script/bench               # icount microbenchmarks against the committed baseli
 `script/*` is the normalized "Scripts to Rule Them All" front door; each is a thin wrapper over
 `cargo xtask`, which still does the work (`cargo xtask shell` and friends work too).
 
+**The list above is a deliberate subset**, the seven commands worth knowing on day one. The complete
+reference is [notes/scripts.md](notes/scripts.md), and `script/lint` checks that every script has an
+entry there and that nothing named here has since been renamed away. Two documents, one comprehensive
+and one curated, is fine; two documents both claiming to be complete is not, which is the mistake the
+Status section above made twice.
+
 At the `$` prompt: `help`, `echo hello`, `run 7` (spawns a process that computes 49). Quit with
 Ctrl-C, or `pkill qemu-system-aarch64` from another terminal.
 
-## Status
+## What the badge means
 
-The eleven v1 milestones are done, and so is most of the post-v1 roadmap
-([design/roadmap.md](design/roadmap.md)). Where it stands:
+The CI badge above is green only when **every** gate passes, and the gates are the argument rather
+than a formality:
 
-- **The capability core is proved.** The `caps` model, the IPC rendezvous with one-shot reply,
-  and the MMU isolation invariants all carry machine-checked proofs (Kani) via `script/verify`.
-  See [notes/verification.md](notes/verification.md).
+| Gate | What it proves |
+|---|---|
+| `script/test` | The host-logic crates, then the kernel under QEMU on **both ISAs**, aarch64 and riscv64. Architectural parity is a gate, not an aspiration (DECISIONS §19). |
+| `script/verify` | 69 Kani harnesses across 13 crates: the capability model, IPC, MMU isolation, the DMA validator, the IOMMU domain. |
+| `script/bench --check` | icount instruction counts against a committed baseline, on both ISAs, so a performance regression surfaces next to the change that caused it. |
+| `script/lint` | clippy at `-D warnings`, plus broken intra-doc links, stray conflict markers, and the roadmap's status vocabulary. |
+| `script/fmt`, coverage | Formatting, and an 80%-per-file line-coverage floor on the host crates. |
+
+CI runs on an **aarch64** runner deliberately: this kernel targets a weakly-ordered machine, and a
+missing `Acquire`/`Release` passes on an x86_64 host and fails only on real ARM. Both the Rust
+toolchain and QEMU are pinned to exact versions, so "the tests passed" means the same thing on a
+laptop and on a runner. The second badge is a daily check of whether the *newest* nightly still
+builds us; it is informational and never blocks a merge.
+
+## What it does
+
+This section is deliberately **not** status. Status lives in one place, with a gated status column and
+a checker: **[design/roadmap.md](design/roadmap.md)**. What follows is what the system *is*, and each
+claim points at the artifact that keeps it true rather than repeating a list that goes stale. The
+previous version of this section did repeat them, and drifted twice inside three days.
+
+- **The security-critical logic carries machine-checked proofs.** Kani, run by `script/verify` and
+  gated in CI. Which crates and which properties, with the bounds and their justifications, is
+  [notes/verification.md](notes/verification.md); the count is whatever the gate prints.
 - **The kernel does not allocate.** There is no kernel heap. Page tables, TCBs, endpoints, and
   address spaces are all retyped out of untyped memory that userspace owns and pays for.
 - **Processes come and go.** A userspace init builds the whole system through granular
   capability verbs (retype, configure, insert, start), and object revocation tears a process
   back down: its TCBs, address spaces, endpoints, and the memory behind them, reclaimed safely.
-- **It runs a real workload.** A CoreMark-derived compute program, spawned against the written
-  native ABI ([notes/abi.md](notes/abi.md)) from a crickerfs archive, by init, at EL0.
+- **It runs real workloads.** A CoreMark-derived compute program against the written native ABI
+  ([notes/abi.md](notes/abi.md)), and ordinary Rust `std` programs on a custom target.
 - **Two ISAs at parity.** Everything architecture-specific lives under `kernel/src/arch/`, and
-  riscv64 proves it: SMP, the full test suite (117 tests on aarch64, 59 on riscv64), the
-  interactive shell, and the benchmarks all run on both.
+  riscv64 proves it: SMP, the whole test suite, the interactive shell, and the benchmarks all run on
+  both. Parity is a gate rather than an aspiration (DECISIONS §19).
 - **SMP.** Four cores via PSCI (aarch64) and SBI (riscv64), per-CPU run queues, cross-core
   placement by inbox plus a reschedule IPI. No shared run-queue lock.
-- **Benchmarked against Linux and macOS, honestly.** Same Apple Silicon core, same
-  virtualization tier, release builds: ~5x faster than Linux at the null syscall and the IPC
-  round trip, and faster than native macOS at both. The page map is a tie (both sides are bound
-  by page zeroing), and spawn+reap beats `fork`+`exit` ~2.6x with the caveat that a cricker-os
-  process is a lighter object than a Unix process. Every number and every caveat:
-  [notes/benchmarks.md](notes/benchmarks.md). The seL4 comparison waits on real hardware
-  (`sel4bench` needs a PMU cycle counter QEMU and HVF do not provide).
+- **Every driver and server is an EL0 process**, confined by the MMU and, for DMA, by a validator
+  and an IOMMU. A driver that misbehaves faults; it does not take the kernel with it.
+- **Benchmarked against Linux and macOS, honestly.** Same Apple Silicon core, same virtualization
+  tier, release builds. Every number, and every caveat that makes a comparison not apples to apples,
+  is in [notes/benchmarks.md](notes/benchmarks.md), which is the only place they are written down.
 
 When something faults, you get this instead of a silent death:
 

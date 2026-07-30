@@ -1,0 +1,134 @@
+name: toolchain bump
+
+# **Propose a toolchain bump daily; never apply one.** The three steps that want to stay separate:
+#
+#   1. PROPOSE (here): raise the pin, rebuild the std overlay as a fast sanity check, open a PR.
+#   2. VERIFY (the CI workflow, on that PR): both ISAs, the proofs, the benchmarks. The real gate
+#      stays the real gate; this job deliberately does not try to be it.
+#   3. ACCEPT (a human): merge. Nothing changes what the project compiles with until someone says so.
+#
+# This job must never push to `main`. An unattended job that can change the toolchain every build in
+# the project uses is exactly the authority it should not have, and the 2026-07-30 incident is the
+# argument: an unpinned nightly reddened CI for two days on commits that had touched only markdown,
+# and it only became visible because a human ran a clean build and read the error.
+#
+# One PR, updated in place on a fixed branch, rather than one per day. Silent when there is nothing to
+# do, and silent when the overlay does not build, because that case is already reported by the
+# `toolchain drift` workflow and two notifications for one fact is noise.
+
+on:
+  schedule:
+    # 08:00 UTC, an hour after the drift check, so a red drift result is already visible when this runs.
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: toolchain-bump
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  propose:
+    name: propose a pin bump
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Work out whether there is anything to do
+        id: plan
+        run: |
+          today="$(date -u +%Y-%m-%d)"
+          current="$(awk -F'"' '/^channel/ {print $2}' rust-toolchain.toml)"
+          target="nightly-$today"
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "target=$target"   >> "$GITHUB_OUTPUT"
+          if [ "$current" = "$target" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Already pinned to $target; nothing to propose."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "Proposing $current -> $target"
+          fi
+
+      # A nightly for a given date can be missing or incomplete (a component fails to build upstream).
+      # That is not our problem to report, so treat it as "nothing to propose today" rather than a
+      # failure: the drift check is what tells us when upstream has actually broken us.
+      - name: Install the target nightly
+        id: install
+        if: steps.plan.outputs.skip == 'false'
+        continue-on-error: true
+        run: |
+          rustup toolchain install "${{ steps.plan.outputs.target }}" --profile minimal \
+            --component rust-src,llvm-tools,rustfmt,clippy
+          rustup target add --toolchain "${{ steps.plan.outputs.target }}" \
+            aarch64-unknown-none-softfloat riscv64imac-unknown-none-elf
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.install.outcome == 'success'
+
+      - name: Install clang (the C component's compiler, milestone 36)
+        if: steps.install.outcome == 'success'
+        run: sudo apt-get update && sudo apt-get install -y clang
+
+      # The sanity check, and only the sanity check. The std overlay patches std's own source, so it
+      # tracks upstream internals rather than a stable API and is where a bump bites first. A clean
+      # farm is mandatory: a cached one hides exactly the breakage being tested for, which is how the
+      # 2026-07-30 drift stayed invisible on a developer machine while CI was red.
+      - name: Raise the pin and rebuild the std overlay
+        id: build
+        if: steps.install.outcome == 'success'
+        continue-on-error: true
+        env:
+          RUSTUP_TOOLCHAIN: ${{ steps.plan.outputs.target }}
+        run: |
+          sed -i "s|^channel = \".*\"|channel = \"${{ steps.plan.outputs.target }}\"|" rust-toolchain.toml
+          rm -rf target/cricker-farm
+          cargo xtask user-std
+
+      - name: Open or update the pull request
+        if: steps.build.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET: ${{ steps.plan.outputs.target }}
+          CURRENT: ${{ steps.plan.outputs.current }}
+        run: |
+          set -e
+          branch="toolchain/nightly-bump"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add rust-toolchain.toml
+          # The overlay may have needed new re-exports; include them if the build produced any.
+          git add -A patches/std-cricker || true
+          git commit -m "toolchain: bump the pin to $TARGET
+
+          Proposed automatically. The std overlay builds clean against this nightly, which is the
+          check that actually catches drift; everything else is this PR's own CI, which is the point
+          of proposing rather than applying.
+
+          Merging changes what every build in the project compiles with, so it wants a human."
+          git push --force origin "$branch"
+          # One PR, updated in place: create it only if there is not one open already.
+          if [ -z "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ]; then
+            gh pr create --head "$branch" --base main \
+              --title "toolchain: bump the pinned nightly to $TARGET" \
+              --body "Raises \`rust-toolchain.toml\` from \`$CURRENT\` to \`$TARGET\`.
+
+          The std overlay was rebuilt from a clean farm against this nightly and compiles, which is the
+          check that catches upstream drift. **Everything else is this PR's own CI**: both ISAs, the
+          Kani proofs, and the benchmark tripwire. That split is deliberate, so the proposing job never
+          has to be trusted as the gate.
+
+          If CI here is red, upstream has moved away from us. Do not merge; the fix is a commit to this
+          branch adding whatever the overlay now needs (usually a name in the \`pub use
+          unsupported_fs::{...}\` list in \`sys/fs/cricker.rs\`).
+
+          This branch is force-pushed daily, so it always proposes the newest nightly rather than
+          accumulating one PR per day."
+          else
+            echo "An open PR already exists for $branch; force-pushed the newer pin to it."
+          fi
