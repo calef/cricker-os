@@ -13,6 +13,7 @@ uses `cargo xtask` and that one uses `make` and the next uses `npm`.
 | `script/bootstrap` | Install every dependency: the pinned Rust toolchain (via rustup, from `rust-toolchain.toml`) and QEMU. Idempotent — it checks first and installs only what is missing. |
 | `script/setup` | First run after a clone: `bootstrap`, then build. |
 | `script/update` | After pulling new code: `bootstrap` (the pinned toolchain can change), then rebuild. |
+| `script/toolchain-bump [YYYY-MM-DD]` | Raise the pinned nightly, with evidence: install, rebuild the std farm from scratch, run every gate. Restores the old pin if anything fails, because a half-applied toolchain bump is worse than none. Run it when the daily `toolchain drift` workflow goes red. |
 | `script/test` | Run the suite — the host-logic crates in milliseconds, then the kernel under QEMU. The fast inner loop; assumes `setup` has run. |
 | `script/cibuild` | What CI runs: `bootstrap` (a CI runner starts bare), then the tests. |
 | `script/server` | Boot the OS in QEMU (the milestone tour, then the shell). An OS is the thing you *start*, so it is `server`. |
