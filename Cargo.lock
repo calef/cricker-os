@@ -322,6 +322,7 @@ version = "0.1.0"
 dependencies = [
  "abi",
  "capsh",
+ "compose",
  "coremark",
  "crickerfs",
  "elf",

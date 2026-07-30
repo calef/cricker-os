@@ -205,9 +205,29 @@ path = "src/painter.rs"
 test = false
 bench = false
 
+# The compositor (milestone 33, rung two): multiplexes one screen among mutually distrusting clients.
+# It is rung one's client at the display seam (gpud cannot tell it from `painter`), and it holds one
+# doorbell endpoint for all its clients plus one input endpoint per focusable client. `mkinitrd` packs
+# it as "compd" for both ISAs.
+[[bin]]
+name = "compd"
+path = "src/compd.rs"
+test = false
+bench = false
+
+# A window: a client of the compositor (milestone 33). One binary, several roles, because an attacker
+# that shares the honest path is a fair test of the boundary rather than a different program failing
+# for its own reasons. Packed as "window".
+[[bin]]
+name = "window"
+path = "src/window.rs"
+test = false
+bench = false
+
 [dependencies]
 abi = { version = "0.1.0", path = "../crates/abi" }
 capsh = { version = "0.1.0", path = "../crates/capsh" }
+compose = { version = "0.1.0", path = "../crates/compose" }
 coremark = { version = "0.1.0", path = "../crates/coremark" }
 crickerfs = { version = "0.1.0", path = "../crates/crickerfs" }
 elf = { version = "0.1.0", path = "../crates/elf" }

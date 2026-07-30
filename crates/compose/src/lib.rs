@@ -291,6 +291,32 @@ pub const SCENE: &[Window] = &[
 // The pictures: what a client paints, and what the screen must then hold.
 // ================================================================================================
 
+/// The most bytes any surface in [`SCENE`] takes, and so the most a client can be asked to paint. A
+/// client checks its published geometry against this before it paints: a geometry larger than the
+/// grant it was mapped would make it fault on its own surface, and a client should refuse a control
+/// page it cannot believe rather than discover that as a crash.
+pub const MAX_SURFACE_BYTES: u32 = {
+    let mut m = 0;
+    let mut i = 0;
+    while i < SCENE.len() {
+        let b = SCENE[i].w * SCENE[i].h * 4;
+        if b > m {
+            m = b;
+        }
+        i += 1;
+    }
+    m
+};
+
+/// **The small damage rectangle**, in surface coordinates, that the damage test's client commits for
+/// its second frame. Here rather than in the client because three parties must agree on it: the
+/// client that commits it, the kernel test that predicts the flush rectangle it produces, and the host
+/// tests that check the arithmetic without a machine.
+///
+/// Deliberately not aligned to anything and not at the origin: an odd offset and an odd size are what
+/// catch a compositor that rounded a damage rectangle out to a tile or a row.
+pub const SMALL_DAMAGE: Rect = Rect::new(4, 5, 9, 7);
+
 /// **What window `id` paints at its own `(x, y)`.** A per-coordinate, per-window function, for the
 /// reason `gfx_proto::pixel` is one: a fill proves nothing. A blank surface, a surface painted by the
 /// wrong client, a surface blitted at the wrong offset, and a transposed surface all have to be
@@ -909,8 +935,12 @@ mod tests {
         const POISON: u32 = 0xDEAD_BEEF;
         let mut screen = vec![POISON; SCREEN_PIXELS];
 
-        let damage = damage_to_screen(&SCENE[1], Rect::new(4, 5, 9, 7));
+        let damage = damage_to_screen(&SCENE[1], SMALL_DAMAGE);
         assert_eq!(damage, Rect::new(44, 29, 9, 7));
+        assert!(
+            damage.area() * 20 < Rect::screen().area(),
+            "the 'small' damage rectangle is not small: this test proves nothing about cost",
+        );
         composite(&mut screen, &refs, SCENE.len(), damage);
 
         for y in 0..SCREEN_H {
