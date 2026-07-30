@@ -670,8 +670,8 @@ fn scanout_holds_the_composed_screen(ppm: &[u8]) -> Result<(), String> {
 ///
 /// **This is the check a guest-side digest cannot replace**, and for text it matters more than for a
 /// pattern: a wrong pixel format turns a test pattern into an odd-looking test pattern, and it turns
-/// text into text nobody can read. The negative control is
-/// [`the_scanout_check_rejects_text_that_is_one_letter_wrong`].
+/// text into text nobody can read. Its negative control is
+/// `tests::the_scanout_check_rejects_text_that_is_one_letter_wrong`.
 fn scanout_holds_the_terminals_text(ppm: &[u8]) -> Result<(), String> {
     let expect = vt::script::full_screen();
     scanout_matches(ppm, |x, y| expect.pixel(x, y))

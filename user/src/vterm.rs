@@ -97,10 +97,13 @@ static mut TERMINAL: vt::Vt = vt::Vt::new(1, 1);
 /// # Safety
 /// This process has exactly one thread (a `Tcb` here owns its address space, DECISIONS §33), so
 /// there is no second reference and no aliasing question.
-#[allow(static_mut_refs)]
 fn term() -> &'static mut vt::Vt {
-    // SAFETY: see above; single-threaded by construction.
-    unsafe { &mut *(&raw mut TERMINAL) }
+    // A raw pointer first, then one dereference: taking `&mut TERMINAL` directly is what
+    // `static_mut_refs` exists to refuse, and it refuses it for a real reason (a second reference
+    // would be undefined behaviour, not merely untidy).
+    let p = &raw mut TERMINAL;
+    // SAFETY: see above; single-threaded by construction, so `p` is the only route to it.
+    unsafe { &mut *p }
 }
 
 fn rd32(va: u64) -> u32 {

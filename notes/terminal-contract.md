@@ -139,10 +139,26 @@ input arrives. Noted, not papered over; see [shell.md](shell.md).
 
 ## For milestones 29 and 31
 
-- **29 (display terminal)** implements the *same IPC half* against a framebuffer and a VT engine
-  instead of a serial line and this line discipline. The wire half differs (a grid, not a row),
-  but a program that speaks `OP_WRITE` / `OP_READLINE` does not change, which is the point of
-  writing the contract before the second terminal exists.
+- **29 (display terminal): built, 2026-07-30**, and the prediction held. `user/src/vterm.rs`
+  implements the *same IPC half* against a framebuffer and a VT engine instead of a serial line and
+  this line discipline: `OP_WRITE` prints from the client's output page, `OP_BYTES` carries
+  keystrokes in from a driver (or from the compositor, forwarding to the focused client), and the
+  framing constants are these ones, unchanged. The wire half differs, as this note said it would: a
+  grid, not a row.
+
+  Two things this note could not have predicted, both recorded in [glyphs.md](glyphs.md):
+
+  - **The display terminal does not serve `OP_READLINE`.** It renders a stream and echoes
+    keystrokes; it is not a line discipline. A client that wants edited lines composes `termd` in
+    front of it and prints the discipline's echo through `OP_WRITE`, which needs **no new protocol at
+    all**, because `linedisc`'s echo is exactly a byte stream the VT engine parses. That is not a
+    hope: `crates/vt` proves it on the host by running both components against each other.
+  - **The one-endpoint consequence.** A terminal has two classes of sender (an application printing,
+    an input source typing) and a process here has one wait point (DECISIONS §33), so both arrive on
+    one endpoint and are told apart by opcode, exactly as `termd` does. The security consequence is
+    stated rather than hidden: an application holding that endpoint could send `OP_BYTES` and forge a
+    keystroke into **its own** terminal. It gains nothing by it, and the boundary that matters (one
+    client's input not reaching another's) is the compositor's and is a capability there.
 - **31 (capability shell)** is a client of this contract. It reads lines through `OP_READLINE`
   and prints through `OP_WRITE`, and it adds the command semantics (completion, grant
   expressions) that the terminal deliberately does not carry.
