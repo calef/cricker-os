@@ -53,6 +53,7 @@ IPC and the MMU invariants are next. This threads through the list rather than b
 | 36 | A foreign-language component, seam first (spike; feeds 29 and 23) | Prove the FFI seam end to end with a *minimal* C component before committing to a large one: bare-metal clang for both bare targets in the build, a Rust `user_rt` shell that holds every capability and does every syscall while the C code gets plain buffers over the C ABI (so the §4 surface does not widen), and only the handful of libc symbols the component actually needs, with `malloc` on milestone 27's untyped-backed `GlobalAlloc`. The deliverable that matters is one test: a deliberate out-of-bounds write in the C code faults the process, touches nothing outside its grant, and its supervisor restarts it. **Built, DECISIONS §31, both ISAs**: clang capability-checked for both backends from one compiler (Apple's is rejected: no RISC-V), `cshim` holds every capability so the C holds none, the libc turned out to be **two** symbols not five (`compiler_builtins` already supplies the rest), and two witnesses prove the confinement (a read-only page that is the *same physical frame*, and a different frame at the same virtual address). notes/c-seam.md | **the thesis in one assertion.** Memory-unsafe foreign code is not a dilution of "a verified core that confines unverified workloads", it is the strongest available demonstration of it: the more unverified the component, the more the confinement has to prove. It also de-risks 29's libghostty-vt rung and 23's vendor-component claim *before* we owe anything to another project's toolchain or API churn |
 | 37 | Prove RedoxFS's crash consistency (DECISIONS §34, condition 1) | Inject the failure a copy-on-write filesystem exists to survive, and measure whether it does: torn writes (a block partially written), dropped writes (a write the device acknowledged and did not persist), and a kill mid-transaction, then reopen with the same `cleanup: true` header-ring replay the FS server always mounts with, and assert the filesystem is consistent and every acknowledged write is either wholly present or wholly absent. The seam is `IpcDisk` and the block server, which sit between the engine and the device and can drop or truncate a write deliberately; the sans-IO core already runs on the host against a real image, so most of this is host-testable in milliseconds and only the device-level kill needs QEMU. Includes the negative control that makes the rest mean anything: the injector must be shown to actually corrupt something when the replay is disabled | **the condition that decides whether §34's label is earned.** Crash consistency is RedoxFS's central selling point and the reason it beat ext2, and we currently assert it on the strength of the upstream design description rather than any measurement. That is a claim of exactly the kind this project's rules forbid, and it is the first thing a skeptic asks a filesystem. Until it passes, the docs say "designed for crash consistency" and never "crash consistent". Note this is a gap in **our harness, not in RedoxFS**: no candidate engine's crash consistency is tested here, so switching engines would not address it |
 | 38 | Filesystem throughput, and the comparison (DECISIONS §34, condition 2; extends 21/25) | Sequential and random read/write throughput through the confined FS server, against ext4 on Linux and APFS on macOS at a matched virtualization tier, the way milestone 25 did the primitives. Requires deciding what is honestly comparable: our reads are device-latency-dominated (`fs_read` is ~204 us/read under HVF, and `relay_rtt` puts the isolation tax a thousand times below that), so the interesting question is whether the userspace-server architecture costs throughput once the device dominates, which is a claim a microkernel skeptic will press | **"primary filesystem" invites a comparison we cannot currently make.** We have the per-request numbers and the isolation tax, and no MB/s figure at all. Milestone 21's rule is measure rather than argue, and 25 already established that the honest way to do this is EL0-measured against real systems rather than self-reported. This is where the "userspace servers are too slow" objection gets an answer or a concession |
+| 39 | Repository structure for a loosely-coupled OS, and the road to a distribution | **Analysis recorded, no decision taken.** The tree is a monorepo for a deliberately loosely-coupled system, and it is straining in measurable ways: `user/` is 28 binaries and 9,324 lines in one crate that is also a shared library, `fs-server/` has already escaped into its own workspace for real dependency reasons, `crates/` conflates kernel proof crates with wire contracts and userspace runtime so the boundary a third party cares about is invisible, and every crate is version 0.1.0. Four options are written up with their trade-offs (restructure in place; multiple workspaces in one repo; split repos; monorepo plus a later distribution *manifest* repo), along with a naming argument (**components** and **services**, never "daemons", because a Unix daemon is defined by the ambient authority this OS does not have) and the observation that milestone 31's program manifest plus §22's measured-boot hashing are already three quarters of a package format | **the structure has to serve the thesis, and one constraint dominates.** A single `script/test` proving the whole system on both ISAs is this project's credibility mechanism and what makes rule 5 a gate rather than an aspiration; splitting repos trades that for decoupling nothing external needs yet. Recommendation recorded (monorepo now, distribution as a separate manifest repo, executed as multiple workspaces, not before 23 forces it) so the eventual decision starts from evidence rather than from taste |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -1004,6 +1005,104 @@ board), which is a 16a story to do in Rust when first silicon makes it concrete.
 component at, and before committing to libghostty-vt. Effort S to M. The whole value is that it is
 cheap and it fails early: if the toolchain, the shim, or the confinement story has a problem, we
 find it with a throwaway component rather than half way into a port.
+
+### 39. Repository structure for a loosely-coupled OS, and the road to a distribution
+
+**Status: analysis recorded, NO DECISION TAKEN (2026-07-30, Chris's request).** Deliberately a
+roadmap milestone rather than a `DECISIONS.md` section, because nothing was decided; §-sections are
+for decisions, and recording an undecided question as one would be a lie about its status. This
+block exists so the analysis is not lost and so the eventual decision starts from evidence.
+
+The question Chris raised: cricker-os is a monorepo for a microkernel, but it is a collection of
+deliberately loosely-coupled things, and the structure may not support that long term. Plus a
+naming question (should the userspace servers be "services" or "daemons"), and the observation that
+a Linux-distribution-shaped layer will eventually sit on top of the OS components.
+
+#### Where the current structure is straining, measured rather than felt
+
+- **`user/` is one crate doing two incompatible jobs.** 28 binaries, 34 files, 9,324 lines. It is
+  also a library: `virtio`, `vnet`, `netproto`, `suptree` and `cseam` are shared modules sitting
+  beside the programs that consume them. So no component can express "I need the virtio driver bits
+  but not the network stack", every component rebuilds when any shared module changes, and no
+  component can take a dependency without handing it to all 28.
+- **One component has already escaped, for real reasons.** `fs-server/` is its own workspace with its
+  own `Cargo.lock`, because RedoxFS's default features pull `fuser` (whose build script panics on
+  macOS) and its core wants `std` under test. Milestone 36 did the same to the toolchain by requiring
+  a cross-capable clang. Two instances is a pattern: the first components with genuine dependency
+  needs of their own had to leave.
+- **`crates/` conflates three audiences with different rules**, so the boundary a third party would
+  care about is invisible: kernel proof crates (`caps`, `paging`, `frames`, `regions`, `slots`,
+  `asid`, `intrusive`, `dtb`, `elf`, `dma_validate`, `measure`, `uheap`, Kani-proved and nobody
+  else's business), wire contracts (`fs_proto`, `gfx_proto`, `linedisc`, `compose`, `abi`, the
+  **only** things an external component needs), and userspace runtime (`user_rt`, `capsh`,
+  `crickerfs`, `pci`).
+- **Every crate is `version = "0.1.0"`.** Correct for internal crates, fatal for a published
+  contract, and contracts are exactly what milestone 23's live replacement makes into a compatibility
+  surface.
+- **Not everything in `user/` is a service.** `heeder`, `spinner`, `flaky`, `allocdemo`, `worker`,
+  `builder`, `coremark`, `elbench` are fixtures and benchmarks. Mixing them with `netd`, `gpud`,
+  `compd` and `termd` is much of why the directory reads as shapeless.
+
+#### Naming: components and services, not daemons
+
+A technical objection rather than an aesthetic one. A Unix **daemon** is defined by what it detaches
+from: no controlling terminal, inherited ambient authority, a pid file, started by init holding the
+system's privilege. Every one of those is something this OS deliberately does not have, and
+importing the word imports the model. The project has already had to push back on exactly that pull
+(§27's "open-by-path exists only inside the server", §24's "Ctrl-C is a capability, not a signal").
+
+The project's own word already carries the thesis: milestone 23 is "a capability-routed **component**
+OS with live replacement", "a vendor-shippable unit behind a stable contract". Proposed vocabulary,
+matching what DECISIONS already says:
+
+- a **component** is the shippable unit, a binary plus its manifest (`components/`);
+- a **service** is what it offers over a contract ("the FS service");
+- a **contract** is the wire protocol (`contracts/`).
+
+"Server" stays a fine role word inside a component (`fsserver` serves the FS service). "Daemon" gets
+dropped.
+
+#### The four options
+
+| | Shape | Buys | Costs |
+|---|---|---|---|
+| **A** | One workspace, restructured directories (`kernel/`, `components/`, `contracts/`, `runtime/`, `fixtures/`, `tools/`) | Legibility, cheapest | Does not fix per-component dependencies unless each component also becomes its own crate, which is the actual work |
+| **B** | One repo, multiple workspaces (generalize what `fs-server/` already does, driven by `xtask --manifest-path`) | Real dependency isolation; a component can use `std` or a foreign toolchain without infecting the kernel build | More lock files, slower cold builds, more complex xtask |
+| **C** | Split repos: kernel, components, distribution | Maximum decoupling; what an ecosystem with third-party components looks like | **The integration gate**, see below |
+| **D** | Monorepo now; distribution as a separate *manifest* repo later | Keeps the gate; distro consumes released artifacts, the way Yocto, Buildroot and Alpine aports separate recipes from sources | Defers the decoupling question rather than answering it |
+
+#### The constraint that decides it
+
+**The single-command gate across both ISAs is the project's credibility mechanism.** One `script/test`
+boots the kernel and proves the whole system on aarch64 and riscv64, including every component's
+confinement, and rule 5 (DECISIONS §19) says parity is a gate and not an aspiration. Split into
+separate repos and that becomes a multi-repo CI problem where the integration proof either lives
+somewhere awkward or quietly stops running on every change. For a demonstrator whose entire argument
+is "measured, both architectures, same suite", that is an expensive thing to trade for directory
+cleanliness *before any external party needs it*.
+
+**Recommendation: D, executed as B, and not before milestone 23 forces it.**
+
+#### The packaging observation worth acting on early
+
+Most of a package format already exists and is not called one. Milestone 31's per-program **manifest**
+(SHILL-adapted: declared endowment, checked at spawn) is package metadata. §22's measured boot already
+hashes a component against a trust root. A distribution needs manifest, hash, version, and contract
+version; three of those four exist. Naming that as the packaging layer would make the distribution an
+assembly step rather than a new subsystem, and would give the contracts a reason to carry real version
+numbers, which is what lets components evolve independently at all.
+
+#### The cheap first move, which commits to none of the four
+
+**Split `user/` three ways**: `components/` for the services, `fixtures/` for the test programs, and
+lift `virtio`, `vnet`, `netproto`, `suptree` into `runtime/` crates. That ends the
+crate-is-both-a-program-collection-and-a-library problem, makes dependencies expressible, and leaves
+the gate untouched.
+
+**Whichever option is chosen, do the move as one mechanical commit with the pairing audited.**
+Renaming directories touches `xtask`'s `--bin` lists and the initrd packing, and a union merge in
+exactly that code dropped a `--bin` flag on 2026-07-29 and duplicated a loop header the same day. It
+must not be folded into feature work.
 
 ## The display ladder (recorded 2026-07-28, Chris's direction)
 
