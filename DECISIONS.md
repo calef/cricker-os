@@ -2723,9 +2723,20 @@ more than the choice.
 ## 35. What a scanner is for here, and how its findings get dispositioned
 
 **Decided 2026-07-30 (milestone 45), the first time code scanning actually ran.** CodeQL found nine
-things. Seven were real and fixed the same day (every CI job held a `GITHUB_TOKEN` with permissions it
-never used). Two are `rust/access-invalid-pointer` in `crates/intrusive`, and they forced the question
-milestone 44 left open: what happens to a finding we do not intend to change code for.
+things, and **all nine are fixed**: seven CI jobs holding a `GITHUB_TOKEN` with permissions they never
+used, and two `rust/access-invalid-pointer` in `crates/intrusive` that moving the queue API to
+`NonNull` cleared outright (same query both sides: main two open, the branch zero).
+
+The policy below is recorded anyway, and deliberately, because the *next* finding will not be so tidy
+and the question milestone 44 left open is still open: what happens to a finding we do not intend to
+change code for.
+
+**A prediction worth recording because it was wrong.** I twice said the `NonNull` change would
+probably improve the code *without* satisfying CodeQL, reasoning that the rule is about pointer
+validity in general rather than nullness specifically, and that the honest outcome would be a written
+dismissal. It cleared both alerts; the rule was more precise than I credited. The lesson is not "trust
+the scanner", it is that a hedge stated confidently is still a guess, and this one cost nothing only
+because the fix was worth making on its own merits.
 
 ### The rule
 
@@ -2756,9 +2767,10 @@ milestone tractable:
   rule 2**, "a node outlives its time on the queue", for a structure whose whole purpose is that the
   queue does not own its nodes.
 
-### What actually upholds the unprovable half
+### What actually upholds the half no tool covers
 
-A dismissal is only honest if it says what *does* hold the invariant, so: the kernel's own state
+This is no longer a dismissal justification, since nothing was dismissed. It stands as the queue's
+standing caveat, which is the more useful role: the kernel's own state
 machine. A thread is on exactly one run queue or inbox, or blocked on one endpoint queue, or running,
 and never two at once, because there is only one link inside it. Only `Finished` threads are ever
 freed, and a `Finished` thread is on no queue. All access is serialized (a run queue is single-core
@@ -2768,7 +2780,7 @@ the type system.
 
 ### The honest limit, which is the point of writing this down
 
-**A dismissal here is a statement about the callers, not about the crate.** The queue is safe because
+**Zero alerts is not a proof of safety.** The queue is safe because
 the scheduler uses it correctly, and nothing in `crates/intrusive` can check that. A future caller
 that violates rule 2 gets a use-after-free that neither CodeQL nor Kani would catch: Kani proves the
 queue's *logic* over a symbolic operation sequence with nodes it holds valid by construction, so it

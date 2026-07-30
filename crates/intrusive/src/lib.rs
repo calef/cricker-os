@@ -33,15 +33,18 @@
 //!
 //! # What a static analyser sees here, and why it is right (DECISIONS §35)
 //!
-//! CodeQL flags the dereferences in [`Fifo::push_back`] and [`Fifo::pop_front`] as
-//! `rust/access-invalid-pointer`. It is not wrong, and the alerts are dismissed with this paragraph
-//! as the reason rather than silently suppressed.
+//! CodeQL flagged the dereferences in [`Fifo::push_back`] and [`Fifo::pop_front`] as
+//! `rust/access-invalid-pointer`. **Both alerts are now fixed rather than dismissed**, and the
+//! measurement is worth recording because the expectation was wrong: the rule reads as being about
+//! pointer validity in general, so the prediction was that moving to [`NonNull`] would improve the
+//! code without satisfying the tool. It satisfied the tool outright, main going from two open alerts
+//! to zero on this change. The rule was more precise than it looked, and it was pointing at nullness.
 //!
 //! **Nullness is gone from the contract**: the API takes and returns [`NonNull`], and every caller
-//! converts from a reference, so non-nullness is a fact of construction rather than a promise. That
-//! half of the alert was a real defect and was fixed.
+//! converts from a reference (`NonNull::from`, never `NonNull::new(..).unwrap()`), so non-nullness is
+//! a fact of construction rather than a promise anyone keeps.
 //!
-//! **Validity is not expressible**, and that is the design. Rule 2 above says a node outlives its
+//! **Validity is still not expressible**, and no tool result changes that. Rule 2 above says a node outlives its
 //! time on the queue, and no type available to us can carry that for a structure whose entire purpose
 //! is that the queue does *not* own its nodes. What upholds it is the kernel's state machine: only
 //! `Finished` threads are ever freed, a `Finished` thread is on no queue, and one link per node makes
