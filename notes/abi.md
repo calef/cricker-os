@@ -175,6 +175,12 @@ changes. The tid is trustworthy without a badge because **the kernel is the only
 path**; seL4's badged-endpoint machinery is what you would reach for if untrusted senders ever
 shared a supervision endpoint, and it returns as its own decision if that day comes.
 
+The userspace side of that is two functions rather than one, and the split is not an ABI difference:
+`user_rt::recv` reads three words and `user_rt::recv_fault` reads all five, both from the same `RECV`.
+`recv_fault` arrived with milestone 36 (notes/c-seam.md), the first program to want `w3`: a restart
+policy needs the event and the tid, but a *checker* needs the faulting address, because that is the
+only word that says where the dead thread actually pointed.
+
 The corpse is **dead until reaped**: after the message, the thread never runs again, but its TCB,
 address space, and memory persist for postmortem until the supervisor reaps them with §16 revocation
 (`Untyped::DESTROY` on the child's region). That is why the reserved `w4` can carry a resume protocol
