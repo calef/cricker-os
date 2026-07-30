@@ -27,16 +27,20 @@ out-of-band convention (notes/abi.md §4) grants them at fixed slots:
   byte count, w1|w2 = the bytes, little-endian). std's own `LineWriter` batches user writes; the
   receiver reassembles.
 
-Two more slots exist, and only a std program *given the network* holds them (milestone 27 phase
-two, the `std::net` binding below):
+Three more slots exist, and a program holds each only if it was *given* the thing behind it
+(milestone 27 phase two, the `std::net` and `std::fs` bindings below):
 
 - **slot 2: a `Stack` endpoint with WRITE.** `std::net` speaks netd's socket contract over it.
 - **slot 3: an untyped budget** the net PAL mints each socket's shared frame from.
+- **slot 4: an FS-service endpoint with WRITE**, which *is* a directory capability, plus the page it
+  shares with the FS server mapped at `0x1100_0000`. `std::fs` speaks the §27 file contract over it.
 
-A program that never allocates, prints, or opens a socket never touches the slots it does not use.
-The absence of slots 2 and 3 is exactly what "no ambient network" feels like from inside a
-process: `std::net` returns `Unsupported` because there is no `Stack` capability to reach, not
-because the code was compiled out.
+A program that never allocates, prints, opens a socket, or opens a file never touches the slots it
+does not use. The absence of slots 2 and 3 is exactly what "no ambient network" feels like from
+inside a process, and the absence of slot 4 is "no ambient filesystem": each returns `Unsupported`
+because there is no capability to reach, not because the code was compiled out. A program can hold
+one and not the other, so the slots do not fill contiguously; notes/abi.md §4 records how the
+kernel-side wiring places slot 4 while leaving 2 and 3 empty, and why the gap matters.
 
 ## The PAL surface, and what each piece binds to
 
@@ -51,15 +55,16 @@ std by `cargo xtask std-src`. Each file binds one std concept to the ABI:
 | `panic!` | print, then `brk`/`ebreak`: a fault the kernel attributes. No unwinding. |
 | `thread::spawn` | `Unsupported` in phase one; `sleep`/`yield` are real |
 | `net` (`TcpStream`, outbound `UdpSocket`) | netd's socket contract on slots 2/3 (`sys/net/connection/cricker.rs`), or `Unsupported` when not granted |
-| `fs` | `Unsupported`, honestly, until milestone 32's FS server |
+| `fs` (`File`, `metadata`, `read`/`write`) | the FS service's file contract on slot 4 (`sys/fs/cricker.rs`), or `Unsupported` when no directory was granted |
 | `HashMap` seed | splitmix64 from the counter (`sys/random/cricker.rs`), **not** cryptographic |
 | `std::env::consts::OS` | `"cricker"` (patched into `env_consts.rs`) |
 
 The syscall glue (`sys/pal/cricker/rt.rs`) is a deliberate twin of `crates/user_rt`: the same
 `svc`/`ecall` wrappers, restated because std cannot depend on the crate. The ABI **constants** are
 not restated: `abi.rs` is generated verbatim from `crates/abi` by `std-src`, so the numbers cannot
-drift. Likewise `uheap.rs` is generated verbatim from `crates/uheap`, so the host-tested heap
-algorithm is the only heap algorithm.
+drift. Likewise `uheap.rs` from `crates/uheap` (the host-tested heap algorithm is the only heap
+algorithm), `netproto.rs` from `user/src/netproto.rs`, and `fsproto.rs` from `crates/fs_proto`: every
+wire format the PAL speaks has exactly one definition, and it lives with the server that answers it.
 
 ## The toolchain: build-std against a patched rust-src
 
@@ -149,6 +154,110 @@ can still hit a reused port. The real fix is netd assigning ephemeral local port
 socket id, which is a **contract-side change reported up, not a client workaround**. The demo
 sidesteps it by keeping its UDP and TCP sockets on distinct ids at once.
 
+## `std::fs` over the FS-service contract (milestone 27 phase two)
+
+`sys/fs/cricker.rs` binds std's `File` to the FS server's file contract (DECISIONS §27,
+notes/fs-server.md, `crates/fs_proto`). Like the net PAL it is a **client** of a frozen contract and
+nothing more, and like the net PAL its wire constants are generated verbatim (`fs_proto` becomes
+`sys/pal/cricker/fsproto.rs` by `std-src`), so the PAL's numbers cannot drift from the server's.
+
+### The interesting part: `File::open` takes a path, and there is no global namespace
+
+This is the design question the binding had to answer, and the answer is not a compromise. Per §27,
+open-by-path exists **only inside the FS server**, resolved relative to the one directory node the
+client's endpoint is bound to. So the honest mapping is:
+
+> a std program holds a **directory capability** (slot 4), and `File::open("motd")` means *"motd,
+> under the directory I was granted"*, not *"motd somewhere in a global filesystem"*.
+
+Four behaviours follow, and each is enforced on the client side, before a byte reaches the wire. The
+server enforces the same rule again (it resolves one component in its bound directory and nothing
+else); doing it here as well is not redundant, it is what turns a would-be escape into a legible
+`io::Error` instead of an `ENOENT` that reads like a missing file.
+
+- **An absolute path is refused.** `/etc/passwd` names nothing: this process holds a directory
+  capability, not a filesystem root.
+- **Any `..` is refused.** It would leave the granted directory, and no capability designates what is
+  out there.
+- **A nested path is refused**, and the message points at milestone 31: a subdirectory needs its own
+  directory capability, which the contract does not yet grant.
+- **A name that IS expressible but absent is an ordinary `NotFound`**, which is what makes the three
+  refusals above meaningfully different from "no such file".
+
+**The refusal is `ErrorKind::InvalidFilename`, deliberately not `PermissionDenied`.** Nothing
+consulted a permission; there is no name here for what was asked, because no capability designates
+it. Mapping a capability refusal onto `PermissionDenied` would be a Unix EPERM fiction, and this
+whole milestone exists to avoid smuggling POSIX assumptions into std (the §22 reasoning). `NotFound`
+was the other candidate (a sandbox commonly reports ENOENT for paths outside its namespace) and was
+rejected for conflating the two cases a program actually wants to tell apart.
+
+### Detecting "no filesystem" without touching the shared page
+
+A program that was not granted a directory has **no shared page mapped**, so a probe that wrote a
+name into it would fault instead of returning an error. The probe therefore has to carry no payload,
+and it is an `FSTAT` on a handle number the server's table can never contain:
+
+- **no capability in the slot:** the kernel refuses the invoke itself and answers with one of its own
+  small negatives (`NoSuchSlot` -1, `WrongObject` -2, `NotPermitted` -3).
+- **a real server:** it answers `-EBADF` (-9) for the impossible handle, which is a *reply*, so a
+  filesystem is reachable.
+
+The answer is cached, because a cspace slot's contents are fixed at spawn on this ABI.
+
+**A wart of the contract, recorded.** The wire's error space (a negated errno) overlaps the kernel's
+invoke-error space (-1..-8), so `-2` is both `ENOENT` and `WrongObject`, and `-5` is both `EIO` and
+`BadMethod`. It is harmless in practice: only `-1` and `-3` are read as "you hold no such
+capability", and neither `EPERM` nor `ESRCH` is in the FS server's vocabulary, while `-2` is left to
+the errno mapping so a missing file reads as `NotFound`. The clean fix is a tag or an offset in the
+reply word, which is a contract change (`fs_proto`, the FS server, and `fsclient`), reported up
+rather than papered over here.
+
+### What binds, and what stays Unsupported
+
+Bound: `File::open` (`OPEN`), `read`/`read_to_end`/`read_to_string` (`READ`), `write`/`write_all`
+(`WRITE`), `seek`/`stream_position`, `metadata`/`len` and `File::size` (`FSTAT`), close on `Drop`
+(`CLOSE`), and `std::fs::{metadata, read, exists}` built from open + fstat + close. The file position
+lives on the client side because the contract's read and write are both explicitly positional, so
+there is no cursor in the server to get out of step with, and a seek costs no message at all except
+`SeekFrom::End`.
+
+Unsupported, each because **no verb in the contract backs it**, not because the code is missing:
+
+- **Creating a file** (`File::create`, `OpenOptions::create_new`, and `create(true)` on a name that
+  is not there) and **truncating one** (`OpenOptions::truncate`, `File::set_len`). This is the one
+  gap with real user-visible reach: `std::fs::write(path, data)` opens with create + truncate, so it
+  is `Unsupported` by construction, and writing goes through
+  `OpenOptions::new().write(true).open(name)` on a file the image already carries. Adding `CREATE`
+  and `TRUNCATE` verbs is possible (RedoxFS's `create_node` is not std-gated; §27's "never create
+  on-device" is about creating a *filesystem*, which needs uuid and getrandom, not a file), but it
+  widens the contract, so it is a decision to take deliberately rather than a hole to plug.
+- **Directory iteration** (`read_dir`), `mkdir`, `unlink`, `rename`, `rmdir`, `remove_dir_all`,
+  `canonicalize`, `hard_link`, symlinks and `read_link`, `copy`.
+- **Permissions and file times.** The server keeps an mtime (a write advances it) but no verb reports
+  one, and there is no wall clock to interpret it against anyway. `Permissions::readonly` is honestly
+  `false`: authority here is a capability, not a mode bit.
+- **File locks** and `File::try_lock`.
+- **`File::duplicate`.** A handle is a token the server minted for one session; copying the number
+  would forge a second owner of the same handle, including its close.
+- **`fsync`/`datasync` succeed rather than refuse**, and that is honest rather than a shrug: nothing
+  is buffered on the client side, and the server commits a RedoxFS transaction per write (that is
+  what makes a kill mid-write recoverable), so a returned write is already durable.
+
+### The write path: a correction to the record
+
+notes/fs-server.md and §27 recorded an open item, that an end-to-end write "loops inside RedoxFS's
+allocator commit on bare metal even on a pristine image". **It does not.** Driven through `std::fs`,
+a write to the file the image ships completes on both ISAs, reads back through the server, and, the
+part a cache cannot fake, reads back byte for byte when the host tool reopens the image afterwards
+with the pinned engine. That check is in the gate (`redoxfs_check_after_run` compares `scratch`
+against the fixture, and `mkredoxfs` rewrites it to a placeholder before every run, so the check
+passing means this run's guest write landed).
+
+The likely reason is the fix/irq-delivery change of 2026-07-29, which put the block server back on
+the completion interrupt instead of polling the used ring, the same correction that note had already
+made for the read path. Stated as likely rather than proven: what was measured is that the write
+completes, not why the poll path did not.
+
 ## Honest caveats (what is Unsupported, and why)
 
 - **`thread::spawn` returns `Unsupported`.** The kernel has everything it needs (retype a TCB,
@@ -156,9 +265,10 @@ sidesteps it by keeping its UDP and TCP sockets on distinct ids at once.
   safe: a TLS story, park/unpark on a kernel primitive, join. Phase one ships without it rather than
   shipping it wrong. The sync primitives are std's single-threaded `no_threads` implementations, and
   the allocator's spinlock is uncontended today but stays correct under future preemption.
-- **`fs` returns `Unsupported`.** No file capability points anywhere until milestone 32's FS server.
-  It backs std's `unsupported` path, and the demo checks it refuses with `ErrorKind::Unsupported`
-  rather than pretend.
+- **`fs` is bound, with the gaps listed above.** A program granted no directory capability still gets
+  `Unsupported` from all of it, and the offline demo checks exactly that: same binary, no slot 4, and
+  `File::open` refuses with `ErrorKind::Unsupported` rather than pretending there is an empty
+  filesystem to look in.
 - **`net` is bound, but with recorded gaps.** `TcpStream` and outbound `UdpSocket` work; the honest
   Unsupported list is `TcpListener` (no LISTEN/accept verb in the contract), non-blocking mode and
   read/write timeouts (the contract is blocking-only, no poll verb), DNS via `lookup_host` (no
@@ -186,22 +296,39 @@ sidesteps it by keeping its UDP and TCP sockets on distinct ids at once.
 ## The proof
 
 `user-std/src/main.rs` is an ordinary Rust program, no `no_std`, no attributes, no `unsafe`. It is
-**one binary with two behaviours, chosen by the authority it was granted**: on start it probes for
-the network with a single `UdpSocket::bind`, and the result branches it.
+**one binary with three behaviours, chosen by the authority it was granted**: on start it probes for
+a directory capability (`File::open` on the fixture name) and then for the network (a single
+`UdpSocket::bind`), and the results branch it.
 
-- **Not granted the network** (only slots 0 and 1): the bind returns `Unsupported`, and the program
-  runs the offline transcript, exercising `Vec` (10,000-element collect against the untyped heap),
-  `String`, `HashMap` (the random seed), `Instant` (asserted monotonic and advancing), and the
-  honesty of `fs` and `net`. The kernel test `std_tests::a_whole_std_program_runs_on_the_native_abi`
-  spawns it this way.
-- **Granted the network** (slots 2 and 3 too, alongside a running netd): the bind succeeds, and the
+- **Granted a directory** (slot 4 and the shared page, alongside a running FS service): the open
+  succeeds, and the program reads the file with `Read` and again with `read_to_string`, stats it,
+  overwrites the image's `scratch` file and reads it back, and gets refused on `/etc/passwd`,
+  `../motd`, and `sub/motd`. The kernel test
+  `std_fs_reads_a_file_through_a_granted_directory_capability` spawns it this way.
+- **Granted the network** (slots 2 and 3, alongside a running netd): the bind succeeds, and the
   program does a real UDP DNS query to slirp's resolver and a TCP echo round trip to slirp's
   guestfwd peer, both through `std::net` and both asserted. The kernel test
   `std_net_runs_over_the_socket_contract` spawns it this way.
+- **Granted neither** (only slots 0 and 1): both probes return `Unsupported`, and the program runs
+  the offline transcript, exercising `Vec` (10,000-element collect against the untyped heap),
+  `String`, `HashMap` (the random seed), `Instant` (asserted monotonic and advancing), and the
+  honesty of `fs` and `net`. The kernel test `std_tests::a_whole_std_program_runs_on_the_native_abi`
+  spawns it this way.
 
-The same binary doing two things by its grants alone is the point of "no ambient network": the code
-never chose to have the network, its cspace did. Both tests reassemble the byte stream off the
-endpoint and compare it byte for byte, on **both** ISAs out of each arch's own initrd (the parity
-gate, DECISIONS §19). One binary also keeps the initrd under its 15-file crickerfs directory limit.
-`cargo xtask test` builds the demo for both targets first, so both initrds carry it, and both test
-legs attach a virtio-net NIC (`CRICKER_NET`) with the guestfwd echo peer.
+The same binary doing three things by its grants alone is the point of "no ambient authority": the
+code never chose to have a network or a filesystem, its cspace did. All three tests reassemble the
+byte stream off the endpoint and compare it byte for byte, on **both** ISAs out of each arch's own
+initrd (the parity gate, DECISIONS §19). The fs transcript splices the file's own bytes into the
+expected buffer from the shared fixture, so that one comparison covers the whole path: disk,
+DMA-confined block server, FS server running an engine we did not write, the file contract, the PAL,
+and the stdout endpoint. One binary also keeps the initrd under its 15-file crickerfs directory limit.
+`cargo xtask test` builds the demo for both targets first, so both initrds carry it; both test legs
+attach a virtio-net NIC (`CRICKER_NET`) with the guestfwd echo peer and the RedoxFS image as the
+second disk.
+
+**One boot has one FS service**, because the block server owns the RedoxFS device: a second wiring
+would put a second driver on the same virtio slot and re-bind its interrupt. So `fs_service`
+remembers what it wired, and the hand-written client's test and the `std::fs` test share one
+instance; whichever runs first receives the two readiness sentinels (each is sent once) and the other
+sees `None` and skips those assertions. That keeps the two tests order-independent, which matters
+because nothing guarantees which of them the harness runs first.

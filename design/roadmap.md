@@ -621,10 +621,16 @@ workloads" is committed). What remains open:
 
 ### 27. Rust `std` on the native ABI
 
-**Built 2026-07-28, both ISAs green.** std's platform layer runs directly on the capability ABI
-(Hermit's shape); a real std program (`Vec`, `String`, `HashMap`, `println!`, `Instant`) is spawned
-and checked byte for byte on aarch64 and riscv64. See notes/std.md and DECISIONS §22. Phase-one
-scope holds: `thread::spawn`, `fs`, and `net` are honestly `Unsupported`.
+**Built 2026-07-28, both ISAs green; phase two complete 2026-07-29.** std's platform layer runs
+directly on the capability ABI (Hermit's shape); a real std program (`Vec`, `String`, `HashMap`,
+`println!`, `Instant`) is spawned and checked byte for byte on aarch64 and riscv64. Phase two bound
+**`std::net`** to netd's socket contract and **`std::fs`** to the §27 FS service, so the same binary
+now has three behaviours chosen by its grants alone: a filesystem if it holds a directory capability,
+a network if it holds a `Stack` endpoint, and honest `Unsupported` for whichever it was not given.
+`std::fs`'s interesting half is what a path *means* with no global namespace: "under the directory I
+hold", so an absolute path or a `..` is refused as un-nameable rather than served. `thread::spawn`
+remains `Unsupported`, as do the operations no contract verb backs (creating or truncating a file,
+directory iteration, permissions, symlinks). See notes/std.md and DECISIONS §22.
 
 **Deliverable.** A custom rustc target (`aarch64-unknown-cricker` / `riscv64-unknown-cricker`,
 `-Zbuild-std` against a target spec first, a real target later if ever warranted) whose `std`
@@ -777,9 +783,12 @@ three-process userspace service (block server over blk IPC, FS server over the v
 with its own untyped heap, client holding a directory capability), and a client opens the shipped
 `motd` through a granted directory capability and reads it back, proven on aarch64 and riscv64 with
 a host-tool consistency check. The contract is capability-shaped from birth and adds no syscall; the
-error type maps to the wire exactly once; creation stays host-side. **Open item:** on-device writes
-loop inside RedoxFS's allocator commit on bare metal (the logic is host-proven in the fs-server lib
-tests with `DiskMemory`), a redoxfs-internals / heap-interaction investigation.
+error type maps to the wire exactly once; creation stays host-side. **Phase 2 write path proven
+too** (2026-07-29, through `std::fs`): the old "on-device writes loop inside RedoxFS's allocator
+commit" open item was stale and is corrected in DECISIONS §27 and notes/fs-server.md. A guest write
+now reads back when the host tool reopens the image, and that reopen is in the gate. What remains is a
+*contract* gap, not a write-path one: no `CREATE` and no `TRUNCATE` verb, so `std::fs::write` and
+`File::create` are honestly Unsupported and a write means opening a file the image already carries.
 
 **Deliverable.** Three pieces. A **write-capable block path** (the driver and the confinement
 validator already speak both directions; the write verbs and tests are the new work). An

@@ -7,10 +7,11 @@
 //! slots the std runtime contract names (see `rt`): an untyped budget that pays for the heap,
 //! and an endpoint that stdout/stderr SEND to.
 //!
-//! Everything the OS cannot honestly do yet returns `Unsupported` through the shared dispatch
-//! fallbacks (`fs`, `net`, `process`, `thread::spawn`, ...), rather than pretending: the
-//! capability-granted servers that will back them are later milestones (30 for net, the FS
-//! server for fs), and their PALs bind here when they exist.
+//! `net` and `fs` are bound to their capability-granted servers (phase two: netd's socket contract
+//! and the FS service), and each answers `Unsupported` when the program was not granted the
+//! capability that reaches its server. Everything the OS cannot honestly do yet (`process`,
+//! `thread::spawn`, ...) keeps the shared dispatch fallback rather than pretending; those PALs bind
+//! here when the servers behind them exist.
 //!
 //! This file lives in the cricker-os repo (patches/std-cricker) and is materialized into a
 //! patched rust-src by `cargo xtask std-src`; see notes/std.md for how the sysroot is built.
@@ -22,6 +23,11 @@ pub(crate) mod abi;
 // `user/src/netproto.rs` by `cargo xtask std-src` so the numbers cannot drift from the server.
 // The net PAL (`sys/net`) is a client of it.
 pub(crate) mod netproto;
+// The FS-service wire format (opcodes, request packing, the errno convention), generated verbatim
+// from `crates/fs_proto/src/lib.rs` by the same xtask step. The fs PAL (`sys/fs`) is a client of
+// it. `blk`/`fixture` in there belong to the other two parties, hence the allow.
+#[allow(dead_code)]
+pub(crate) mod fsproto;
 pub(crate) mod rt;
 
 use crate::io;

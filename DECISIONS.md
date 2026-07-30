@@ -1440,6 +1440,51 @@ timeouts (blocking-only contract), DNS resolution (`lookup_host`; numeric addres
 One finding reported up: netd ties a socket's local port to its socket id, so reopening a closed id
 reuses its port and can stall against slirp; the fix is ephemeral local ports in netd, a contract-side
 change (notes/std.md).
+
+**Amendment (phase two, 2026-07-29): `std::fs` binds to the FS-service contract, and a path means
+"under the directory I hold".** `std::fs::File` now works, backed by the §27 FS service; the
+`fs honestly unsupported` line of phase one is retired for a program that was granted a directory.
+The PAL (`sys/fs/cricker.rs`) is again a pure client of a frozen contract, no new syscall and no new
+capability method, with `crates/fs_proto` generated verbatim into the patched std.
+
+**The design question, and the answer.** `File::open` takes a path and this system has no global
+namespace, so the binding had to decide what a path *means*. Per §27, open-by-path exists only inside
+the server, resolved against the one directory node the client's endpoint is bound to. So the mapping
+is: **a std program holds a directory capability at slot 4, and `File::open("foo")` means "foo, under
+the directory I was granted."** Everything else follows, and is enforced client-side before a byte
+reaches the wire so a would-be escape becomes a legible error rather than an `ENOENT`:
+
+- An absolute path, any `..`, and any nested path are **refused as `ErrorKind::InvalidFilename`**,
+  with a message naming which case it was. Deliberately **not** `PermissionDenied`: nothing consulted
+  a permission, and there is no name here for what was asked, because no capability designates it.
+  Mapping a capability refusal onto EPERM would smuggle in exactly the POSIX fiction this milestone
+  exists to avoid. A name that is expressible but absent stays an ordinary `NotFound`, which is what
+  makes the difference legible.
+- A program with **no directory capability gets `Unsupported` from all of `std::fs`**, the same shape
+  the net half uses without a `Stack` capability. Detecting that cannot touch the shared page (an
+  ungranted program has none mapped), so the probe is a payload-free `FSTAT` on an impossible handle:
+  the kernel refuses the invoke, or the server answers `-EBADF`, and only the latter means a
+  filesystem is reachable.
+- **The slot convention now has a gap, and the gap is load-bearing.** A program granted a directory
+  but no network holds slots 0, 1, and 4, because empty 2 and 3 are how `std::net` knows it has no
+  network. `Spawn.grants` fills from zero and cannot express that, so the kernel gained
+  `sched::grant_at`, the same explicit-slot move `Tcb::CAP_INSERT` already offers a userspace loader
+  (§26's fault slot uses it). notes/abi.md §4 records the convention.
+
+Bound: open, read, write, seek, `metadata`/`len`, close on `Drop`, plus `metadata`/`read`/`exists` by
+name. **Honestly `Unsupported`, because the contract has no verb for them:** creating a file and
+truncating one (so `std::fs::write` and `File::create` are Unsupported by construction, and writing
+means opening a file the image already carries), directory iteration, `mkdir`/`unlink`/`rename`,
+symlinks and hard links, `canonicalize`, permissions, file times, locks, and `duplicate`. Proven on
+both ISAs (§19) by the same `hellostd` binary, now with three behaviours chosen by its grants alone:
+its stdout is compared byte for byte with the file's own bytes spliced in from the shared fixture, so
+one assertion covers disk, block server, FS server, contract, PAL, and endpoint.
+
+**Two things reported up rather than built** (see §27's amendment and notes/std.md): adding `CREATE`
+and `TRUNCATE` verbs to the contract, which is what `std::fs::write` needs; and the overlap between
+the wire's negated-errno space and the kernel's invoke-error space (-1..-8), where `-2` is both
+`ENOENT` and `WrongObject`.
+
 ## 23. Multi-queue DMA confinement: the validator's second direction (milestone 30)
 
 **Decided and built 2026-07-28.** A virtio-net device needs two virtqueues (receive on queue 0,
@@ -1806,29 +1851,53 @@ unmapped through the sans-IO core and the `Disk` impl; the serve loop is the sin
 it into the wire's negated errno (`fs_proto::reply_err`). There is no ABI type below the boundary to
 leak, which is what makes the rule enforceable rather than aspirational.
 
-**The block server polls, deliberately.** RedoxFS scans a 256-entry header ring at mount, so an open
-is hundreds of reads. The block server moves a whole 4096-byte block per virtio request (its DMA
-region's second page IS the FS server's block page, so the device DMAs straight in, no copy) and
-**polls the used ring** rather than waiting on the interrupt, because QEMU completes virtio-blk
-synchronously inside `NOTIFY` (notes/dma.md) and a reschedule per read overran the watchdog. A
-QEMU-tuned choice, recorded as such: real async hardware wants the interrupt path back. The runners
-also order the two mmio disks with care, because QEMU assigns virtio-mmio slots in reverse
-command-line order and the kernel enumerates by ascending slot.
+**The block server moves a whole block per request, and waits on the interrupt.** RedoxFS scans a
+256-entry header ring at mount, so an open is hundreds of reads. The block server moves a whole
+4096-byte block per virtio request (its DMA region's second page IS the FS server's block page, so
+the device DMAs straight in, no copy), which is what keeps the mount's request count in the low
+hundreds and affordable. It then **WAITs on the device's completion interrupt**, the milestone-9
+driver discipline, and lets `used.idx` decide when a wakeup is really its own.
+
+*This paragraph is a correction* (fix/irq-delivery, 2026-07-29). It used to say the server polled the
+used ring deliberately, because "a reschedule per read overran the watchdog". It does not: with the
+WAIT path the fs-server test passes on both ISAs at the 4-core SMP boot, all of the mount's
+interrupt-driven completions landing well inside the 60 s watchdog. QEMU still completes virtio-blk
+synchronously inside `NOTIFY` (notes/dma.md), so the interrupt is already pending when the server
+WAITs, and the pending-signal count (§9a) returns that WAIT at once instead of blocking on an event
+already over. The machine overruled the note.
+
+The runners also order the two mmio disks with care, because QEMU assigns virtio-mmio slots in
+reverse command-line order and the kernel enumerates by ascending slot.
 
 **Creation stays host-side, always.** The std-gated core APIs are exactly creation (uuid, getrandom);
 the server only ever opens an image, so entropy never becomes a userspace dependency. Test images are
 made by `tools/redoxfs-host` with the same pinned engine (roadmap §32 item 4).
 
-**Proven, and the open item.** The read path is proven end to end on both ISAs (the §19 gate): a
-host-made image, mounted by the confined FS server over blk IPC, its `motd` opened through a granted
-directory capability and read back byte for byte, plus a host-tool consistency check after the run.
-The sans-IO core is host-tested for read AND write (`fs-server` lib), so the filesystem logic is
-proven both ways. **On-device writes are the remaining work:** the plumbing is in place and
-host-proven, but the end-to-end write loops inside RedoxFS's allocator commit on bare metal even on a
-pristine image (the `prev`-chain walk in `Transaction::sync_allocator`), against the cricker runtime
-(`IpcDisk` + untyped `GlobalAlloc`) where the std path with `DiskMemory` runs clean. This is a
-redoxfs-internals / heap-interaction investigation raised rather than papered over; the client's
-green test is read-only by consequence and says so. See notes/fs-server.md.
+**Proven.** The read path is proven end to end on both ISAs (the §19 gate): a host-made image,
+mounted by the confined FS server over blk IPC, its `motd` opened through a granted directory
+capability and read back byte for byte, plus a host-tool consistency check after the run. The sans-IO
+core is host-tested for read AND write (`fs-server` lib), so the filesystem logic is proven both ways
+independently of any device.
+
+**Amendment (2026-07-29): the on-device write works, and the recorded blocker was stale.** This
+section used to carry an open item, that an end-to-end write "loops inside RedoxFS's allocator commit
+on bare metal even on a pristine image" (the `prev`-chain walk in `Transaction::sync_allocator`). It
+does not. Driven through `std::fs` (§22's phase-two amendment), the write completes on both ISAs and
+reads back byte for byte when the **host tool reopens the image afterwards** with the pinned engine,
+which is the half a cache cannot fake; that reopen is now part of the gate rather than a comment. The
+likely cause of the old symptom is the interrupt-delivery fix of the same day (the block server WAITs
+on the completion IRQ instead of polling the used ring, the same correction the read path needed);
+stated as likely, not proven, because what was measured is that the write completes, not why the poll
+path did not. The milestone-32 client stays read-only by choice now rather than by blocker.
+
+**The remaining gap is in the contract: there is no `CREATE` and no `TRUNCATE` verb**, so
+`std::fs::write` and `File::create` are honestly `Unsupported` and a write means opening a file the
+image already carries. Both verbs are addable (`Transaction::create_node` is not std-gated; "creation
+stays host-side" above is about creating a *filesystem*, which needs uuid and getrandom, not a file),
+and adding them is a change to `fs_proto`, the FS server, and this section, so it is a decision to
+take deliberately rather than a hole to plug. Reported up, with the reply-space overlap noted in
+notes/std.md (the wire's negated errnos collide with the kernel's invoke errors, -1..-8). See
+notes/fs-server.md.
 
 ## 28. SMP placement: two random choices at spawn, message-shaped stealing, local wakes
 
