@@ -134,6 +134,41 @@ impl<T: Node> Endpoint<T> {
         }
     }
 
+    /// **Take one specific sender back off the queue**, returning whether it was there.
+    ///
+    /// The one operation an intrusive `Fifo` deliberately does not offer (arbitrary remove), needed
+    /// here for one reason: a **corpse** can be a queued sender. A supervised thread that dies with
+    /// nobody in `RECV` parks on its supervision endpoint's sender queue with the death message in
+    /// its mailbox (DECISIONS §26 implementation note 2), and its supervisor may then reap it
+    /// (§32's endpoint reap, or §16's `DESTROY`) *without* having collected the message. Freeing a
+    /// TCB that is still linked into a queue leaves a dangling pointer the next `recv` would follow,
+    /// so the reap has to unlink it first.
+    ///
+    /// Expressed as drain-and-repush over `pop_front`/`push_back` rather than as a `Fifo::remove`,
+    /// which keeps the "one link, no arbitrary remove" contract intact in the queue itself: the cost
+    /// is O(queued senders) on a teardown path, and the queue's own proved invariants are the only
+    /// ones in play. FIFO order among the survivors is preserved.
+    ///
+    /// # Safety
+    ///
+    /// `victim` is compared by pointer, never dereferenced. Every *other* queued sender is popped
+    /// and pushed again, so they must all still satisfy the queue's contract (they do: a queued
+    /// sender is blocked or a corpse, and neither is freed while linked).
+    pub unsafe fn remove_sender(&mut self, victim: *mut T) -> bool {
+        let mut kept: Fifo<T> = Fifo::new();
+        let mut found = false;
+        while let Some(node) = self.senders.pop_front() {
+            if core::ptr::eq(node, victim) {
+                found = true;
+            } else {
+                // SAFETY: just popped from this queue, so it is valid and on no queue.
+                unsafe { kept.push_back(node) };
+            }
+        }
+        self.senders = kept;
+        found
+    }
+
     /// A sender `me` arrives. Rendezvous with a waiting receiver if there is one, otherwise `me`
     /// joins the sender queue (and the caller should block it).
     ///
@@ -444,6 +479,50 @@ mod tests {
         assert_eq!(e.signal(), None);
         assert_eq!(e.signal(), None);
         assert!(e.is_idle());
+    }
+
+    /// **A queued sender can be taken back out of the middle**, which is what reaping a corpse
+    /// needs (DECISIONS §32, and §16's `DESTROY` before it): a supervised thread that died with
+    /// nobody receiving is parked here with its death message, and freeing it while it is still
+    /// linked would leave the next `recv` following a dangling pointer. The survivors keep FIFO
+    /// order, the length drops by exactly one, and removing something that is not queued reports
+    /// `false` and changes nothing.
+    #[test]
+    fn a_queued_sender_can_be_removed_from_the_middle() {
+        let (mut a, mut b, mut c, mut r) = (node(), node(), node(), node());
+        let (ap, bp, cp): (*mut N, *mut N, *mut N) = (&mut *a, &mut *b, &mut *c);
+        let mut e: Endpoint<N> = Endpoint::new();
+
+        for p in [ap, bp, cp] {
+            assert_eq!(unsafe { e.send(p) }, Send::Blocked);
+        }
+        assert!(unsafe { e.remove_sender(bp) }, "b was queued");
+        assert_eq!(e.debug_counts().0, 2, "exactly one sender left the queue");
+        assert_eq!(unsafe { e.recv(&mut *r) }, Recv::FromSender(ap));
+        assert_eq!(unsafe { e.recv(&mut *r) }, Recv::FromSender(cp));
+        assert_eq!(unsafe { e.recv(&mut *r) }, Recv::Blocked);
+
+        // Not queued (already collected, the ordinary case): a no-op that says so.
+        let mut e2: Endpoint<N> = Endpoint::new();
+        assert!(!unsafe { e2.remove_sender(ap) });
+        assert!(e2.is_idle());
+    }
+
+    /// Removing the *only* queued sender leaves the endpoint idle rather than a queue with a stale
+    /// tail: the classic drained-to-empty bug, which matters here because the single-corpse case is
+    /// the common one.
+    #[test]
+    fn removing_the_only_sender_leaves_the_endpoint_idle() {
+        let (mut a, mut r) = (node(), node());
+        let ap: *mut N = &mut *a;
+        let mut e: Endpoint<N> = Endpoint::new();
+
+        assert_eq!(unsafe { e.send(ap) }, Send::Blocked);
+        assert!(unsafe { e.remove_sender(ap) });
+        assert!(e.is_idle(), "the endpoint still holds a sender");
+        assert_eq!(unsafe { e.recv(&mut *r) }, Recv::Blocked);
+        // And it can be used again afterwards: push, pop, no ghost.
+        assert!(e.one_queue_invariant());
     }
 
     /// A signal with a receiver waiting hands it back directly and counts nothing.
