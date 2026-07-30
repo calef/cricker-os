@@ -23,6 +23,14 @@ on:
     - cron: "0 7 * * *"
   workflow_dispatch:
 
+# Least privilege for GITHUB_TOKEN, set once for every job below. CodeQL flagged its absence
+# (actions/missing-workflow-permissions, 7 alerts) and it is the right call for this repo in
+# particular: a project whose entire thesis is that components should hold the authority their job
+# needs and nothing more has no business letting its CI token default to write access it never uses.
+# Jobs that genuinely need more say so themselves (see toolchain-bump.yml, which needs to open a PR).
+permissions:
+  contents: read
+
 # A queued run has nothing to say that the newer one will not say better.
 concurrency:
   group: toolchain-drift
