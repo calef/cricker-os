@@ -2408,6 +2408,9 @@ pub mod display_service {
     /// The DMA region, in frames: one for the rings and control buffers, then the surface.
     const DMA_FRAMES: u64 = 1 + gfx_proto::SURFACE_FRAMES as u64;
 
+    /// The driver binary's escape-attempt role; must match user/src/gpud.rs `ROLE_BACKING_ESCAPE`.
+    const ROLE_BACKING_ESCAPE: u64 = 1;
+
     /// **Wire and spawn the display driver and the painting client.** Returns
     /// `(driver report, client report)`, or `None` if no virtio-gpu function is on the bus.
     ///
@@ -2416,6 +2419,65 @@ pub mod display_service {
     /// and the shared frames that join them are created here, in the one place that is allowed to
     /// know both halves.
     pub fn start(driver_image: &'static [u8], client_image: &'static [u8]) -> Option<(EpId, EpId)> {
+        let (driver_report, display_ep, surface) = wire_driver(driver_image, 0, 0)?;
+
+        // --- the client: an endpoint and the pixels. Nothing else, which is the point. ---
+        let client_report = crate::sched::create_endpoint();
+        let mut client_maps = [Mapping {
+            va: 0,
+            phys: 0,
+            flags: Flags::user_data(),
+        }; gfx_proto::SURFACE_FRAMES as usize];
+        for (k, m) in client_maps.iter_mut().enumerate() {
+            m.va = SURFACE_VA_CLIENT + k as u64 * FRAME_SIZE;
+            m.phys = surface + k as u64 * FRAME_SIZE;
+        }
+        crate::sched::spawn(move || {
+            run(
+                client_image,
+                Spawn {
+                    arg0: 0,
+                    arg1: 0, // no physical address: a client has no business knowing one
+                    arg2: 0,
+                    grants: &[
+                        endpoint_cap(client_report, Rights::WRITE), // slot 0: its verdict
+                        endpoint_cap(display_ep, Rights::WRITE),    // slot 1: CALL the driver
+                    ],
+                    maps: &client_maps,
+                },
+            )
+        })
+        .expect("could not spawn the painting client");
+
+        Some((driver_report, client_report))
+    }
+
+    /// **Spawn a driver that attacks its own confinement** (user/src/gpud.rs `run_backing_escape`):
+    /// it asks the device to read pixels out of a frame outside its grant. Returns
+    /// `(report endpoint, the victim frame's physical address)`, or `None` if no GPU is on the bus.
+    ///
+    /// It gets exactly the honest driver's world, no more: the same confined transport, the same
+    /// region, the same interrupt. That is what makes it a fair test of the barrier rather than of a
+    /// missing capability. No client, because it never serves one.
+    ///
+    /// The **kernel** picks the victim frame and hands it over in `arg2`, the same way milestone 16b's
+    /// confinement test picks its own escape frame: the caller has to know the exact address to look
+    /// for in the IOMMU's fault queue, and a driver guessing at "the frame past my region" guesses
+    /// wrong (the shadow page is allocated right after it, and that frame IS in the domain). The frame
+    /// is deliberately never freed: it is an escape target, and handing it back to the allocator while
+    /// a device has been told to read it is the use-after-free-by-hardware notes/dma.md warns about.
+    pub fn start_backing_escape(driver_image: &'static [u8]) -> Option<(EpId, u64)> {
+        let victim = crate::memory::alloc()
+            .expect("no victim frame for the backing-escape test")
+            .addr();
+        let (report, _, _) = wire_driver(driver_image, ROLE_BACKING_ESCAPE, victim)?;
+        Some((report, victim))
+    }
+
+    /// The shared half of both spawns: find the GPU, build the DMA region, route the interrupt,
+    /// register the confined transport, and spawn `driver_image` at `role` with `arg2`. Returns
+    /// `(report endpoint, display endpoint, the surface's physical base)`.
+    fn wire_driver(driver_image: &'static [u8], role: u64, arg2: u64) -> Option<(EpId, EpId, u64)> {
         let d = crate::pci::find_gpu_device()?;
 
         // The DMA region: contiguous, because the surface must be one run of physical frames for the
@@ -2453,7 +2515,6 @@ pub mod display_service {
 
         let display_ep = crate::sched::create_endpoint(); // client WRITE (CALL) -> driver READ
         let driver_report = crate::sched::create_endpoint();
-        let client_report = crate::sched::create_endpoint();
 
         // --- the driver: the confined transport, the interrupt, the whole DMA region, and the
         // display endpoint's serving half. ---
@@ -2470,9 +2531,9 @@ pub mod display_service {
             run(
                 driver_image,
                 Spawn {
-                    arg0: 0,   // gpud is its own binary; no role selector
-                    arg1: dma, // the DMA region's PHYSICAL base: descriptors speak physical
-                    arg2: 0,
+                    arg0: role, // 0 = the display driver; 1 = the escape attempt
+                    arg1: dma,  // the DMA region's PHYSICAL base: descriptors speak physical
+                    arg2,       // the escape role's victim frame; unused (0) by the display driver
                     grants: &[
                         endpoint_cap(driver_report, Rights::WRITE), // slot 0: status
                         irq_cap(d.intid),                           // slot 1: the completion IRQ
@@ -2485,34 +2546,7 @@ pub mod display_service {
         })
         .expect("could not spawn the display driver");
 
-        // --- the client: an endpoint and the pixels. Nothing else, which is the point. ---
-        let mut client_maps = [Mapping {
-            va: 0,
-            phys: 0,
-            flags: Flags::user_data(),
-        }; gfx_proto::SURFACE_FRAMES as usize];
-        for (k, m) in client_maps.iter_mut().enumerate() {
-            m.va = SURFACE_VA_CLIENT + k as u64 * FRAME_SIZE;
-            m.phys = surface + k as u64 * FRAME_SIZE;
-        }
-        crate::sched::spawn(move || {
-            run(
-                client_image,
-                Spawn {
-                    arg0: 0,
-                    arg1: 0, // no physical address: a client has no business knowing one
-                    arg2: 0,
-                    grants: &[
-                        endpoint_cap(client_report, Rights::WRITE), // slot 0: its verdict
-                        endpoint_cap(display_ep, Rights::WRITE),    // slot 1: CALL the driver
-                    ],
-                    maps: &client_maps,
-                },
-            )
-        })
-        .expect("could not spawn the painting client");
-
-        Some((driver_report, client_report))
+        Some((driver_report, display_ep, surface))
     }
 }
 
@@ -2972,6 +3006,93 @@ mod display_tests {
             sched::thread_count(),
             threads_before + 1,
         );
+    }
+
+    /// **The device is refused a framebuffer it was not granted.**
+    ///
+    /// The GPU raises a confinement question a disk and a NIC do not, and this is the test that
+    /// answers it. Everywhere else, every address a device will touch arrives in a virtqueue
+    /// descriptor, so the kernel validates it and copies it into a shadow ring the driver cannot
+    /// reach (notes/dma.md). A virtio-gpu's *backing* addresses arrive inside a device-level command
+    /// payload instead. The kernel bounds the descriptor that carries the command, but the addresses
+    /// within it are bytes it does not parse, and it deliberately does not start parsing them:
+    /// teaching the transport to read virtio-gpu commands would put device knowledge in the one place
+    /// §18 keeps device-neutral.
+    ///
+    /// So the IOMMU is the barrier, and this proves it holds **in hardware**, the same way and with
+    /// the same evidence milestone 16b's confinement test does: the fault the IOMMU recorded. A driver
+    /// with exactly the honest driver's authority asks the device to read pixels out of a frame the
+    /// kernel deliberately left out of its domain, and then to transfer from it. The IOMMU must fault
+    /// at that frame.
+    ///
+    /// **The device's response code is deliberately not the assertion, and that is a finding.** The
+    /// first version of this test asserted the command came back refused, and it did not: QEMU's DMA
+    /// layer answers a translation failure by handing the device a *bounce buffer* instead of failing
+    /// the mapping, so `RESOURCE_ATTACH_BACKING` returns OK while the bytes the device actually gets
+    /// are not the victim frame's. The confinement held; only the error reporting did not survive the
+    /// trip. So the fault queue is the fact, the response code is printed for the record, and the
+    /// nuance is written down rather than smoothed over (notes/framebuffer-contract.md).
+    ///
+    /// Runs after the happy-path test on purpose. It resets and re-registers the same physical GPU,
+    /// which tears down the resource and scanout the first test set up, the same way the disk's
+    /// attacker tests share one device with the honest driver.
+    #[test_case]
+    fn the_iommu_refuses_the_gpu_a_framebuffer_outside_the_drivers_grant() {
+        let gpud = program("gpud").expect("no gpud program in the initrd archive");
+
+        // Drain any stale fault first, so what we observe is this test's.
+        while crate::iommu::take_fault().is_some() {}
+
+        let (report, victim) = display_service::start_backing_escape(gpud).expect(
+            "no virtio-gpu-pci function on the bus: is CRICKER_GPU missing from the test leg?",
+        );
+        assert!(
+            crate::iommu::active(),
+            "a virtio-gpu is present but the IOMMU is not active: nothing would refuse this escape, \
+             so the test would pass or fail on a fiction",
+        );
+
+        let [tag, response, ..] = sched::ipc_recv(report);
+        assert_eq!(
+            tag,
+            gfx::status::BACKING,
+            "the escape driver did not reach its attach (it reported {tag:#x}; a 0xDEAD_.. word's \
+             low byte names the bring-up step, see user/src/gpud.rs)",
+        );
+
+        // The evidence. QEMU records the fault as it processes the command under TCG, so a bounded
+        // spin is plenty; the bound turns "no fault ever" into a failure rather than a hang.
+        let mut fault = None;
+        for _ in 0..2_000_000 {
+            if let Some(f) = crate::iommu::take_fault() {
+                fault = Some(f);
+                break;
+            }
+            core::hint::spin_loop();
+        }
+        let f = fault.unwrap_or_else(|| {
+            panic!(
+                "the GPU was pointed at {victim:#x}, outside its DMA region, and the IOMMU recorded \
+                 no fault (the device answered the attach with {response:#x}): a backing address \
+                 rides in a command payload the transport validator cannot see, so if the IOMMU is \
+                 not bounding it, nothing is",
+            )
+        });
+        assert_eq!(
+            f.addr & !0xfff,
+            victim & !0xfff,
+            "the IOMMU faulted, but on {:#x} (code {:#x}, rid {:#x}), not the frame the GPU was \
+             pointed at ({victim:#x})",
+            f.addr,
+            f.code,
+            f.rid,
+        );
+
+        // Leave the fault queue as we found it. Not tidiness: the RISC-V IOMMU's queue holds 128
+        // records and the driver does not clear its overflow bit, so records left behind here cost a
+        // later test its own fault assertion. The escape above is sized to produce one fault for the
+        // same reason (user/src/gpud.rs).
+        while crate::iommu::take_fault().is_some() {}
     }
 }
 

@@ -84,6 +84,19 @@ pub const FORMAT: u32 = 2;
 /// The number of pixels in the surface.
 pub const PIXELS: usize = (WIDTH as usize) * (HEIGHT as usize);
 
+// Two facts about the geometry that must hold at build time, not at test time, because getting either
+// wrong is a device refusal or a wasted frame rather than a wrong answer: QEMU refuses a scanout
+// smaller than 16 in either dimension, and a surface that does not fill whole frames would hand the
+// client a partial page.
+const _: () = assert!(
+    WIDTH >= 16 && HEIGHT >= 16,
+    "QEMU refuses a scanout smaller than 16 in either dimension",
+);
+const _: () = assert!(
+    SURFACE_BYTES.is_multiple_of(4096),
+    "the surface must fill whole frames: it is granted and mapped a frame at a time",
+);
+
 /// The byte offset of pixel `(x, y)` from the start of the surface.
 pub const fn offset_of(x: u32, y: u32) -> usize {
     (y * STRIDE + x * BYTES_PER_PIXEL) as usize
@@ -260,7 +273,22 @@ pub mod status {
     /// [`super::checksum`] over the surface as the client reads it back after the flush, and
     /// `first_mismatch` is a pixel index or [`super::NO_MISMATCH`].
     pub const PAINTED: u64 = 0xD15_0003;
+
+    /// The escape attempt's result: `send(REPORT, BACKING, response, 0)`, where `response` is the
+    /// device's reply code to a `RESOURCE_ATTACH_BACKING` naming memory outside the driver's grant.
+    ///
+    /// This is the one hazard a GPU adds that a disk and a NIC do not have. A virtio-gpu's backing
+    /// addresses travel in a *device-level command payload*, not in a virtqueue descriptor, so the
+    /// transport's shadow-ring validator never sees them: it bounds the descriptor that carries the
+    /// command, and the addresses inside that command are opaque to it. The IOMMU is what bounds
+    /// them, and this reports whether it did. See notes/framebuffer-contract.md.
+    pub const BACKING: u64 = 0xD15_0004;
 }
+
+/// `VIRTIO_GPU_RESP_OK_NODATA`, the device's "command accepted" reply. Named here because the escape
+/// test's assertion is about this exact value: the device must NOT return it for a backing outside
+/// the grant.
+pub const RESP_OK_NODATA: u64 = 0x1100;
 
 #[cfg(test)]
 mod tests {
@@ -287,10 +315,6 @@ mod tests {
             "row 1 starts one stride in"
         );
         assert_eq!(offset_of(WIDTH - 1, HEIGHT - 1) + 4, SURFACE_BYTES as usize);
-        assert!(
-            WIDTH >= 16 && HEIGHT >= 16,
-            "QEMU refuses a scanout under 16"
-        );
         assert_ne!(WIDTH, HEIGHT, "a square surface hides transposition bugs");
     }
 

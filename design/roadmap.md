@@ -686,6 +686,20 @@ counter-design. Effort M.
 
 ### 29. A display terminal: framebuffer, virtio-gpu, and a foreign component
 
+**Increment one built (2026-07-29, both ISAs): the first pixels, and the framebuffer seam.** A
+confined userspace virtio-gpu driver (`gpud`) drives the control queue through the proved validator
+over the §18 PCIe transport on both `virt` boards, behind the IOMMU; a *separate* client (`painter`)
+holds only an endpoint and a shared surface and draws a coordinate-derived pattern into it. Two
+witnesses in two address spaces digest the result against a value the kernel computes itself, so the
+**framebuffer** is proven byte for byte; the **scanout** is not (`-display none`, and nothing in the
+guest can read QEMU's host surface back), and that limit is written into the test. The memory decision
+generalized to a rule (a framebuffer is a bigger grant, never an exemption) and the GPU's own
+confinement hazard (backing addresses ride in a command payload the transport validator cannot see, so
+the IOMMU is the barrier) is proved by an attacker test. DECISIONS §29,
+notes/framebuffer-contract.md. **Still to come in this milestone:** font rendering, the VT state
+engine, scrollback, and virtio-input, all of which arrive as clients of the contract rung one drew;
+the VT engine's language remains an open question.
+
 **Deliverable.** The demonstrator's first pixels: a userspace **virtio-gpu** driver (the device
 arrives over PCIe on both `virt` boards, which the §18 transport just made reachable), a
 framebuffer mapped into a terminal component, font rendering, and a VT state engine maintaining

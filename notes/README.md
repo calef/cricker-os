@@ -185,6 +185,13 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [The program manifest](program-manifest.md) — milestone 31: a program's declared endowment,
   checked against the command at the prompt so a mismatch is a legible refusal, not a mystery hang.
   SHILL's contract shrunk to phase 1, and milestone 23's component contract in embryo.
+- [The framebuffer contract](framebuffer-contract.md) — milestone 29, the display ladder's first
+  rung: the confined virtio-gpu driver, the client that draws, and the shared-surface contract
+  between them, written down so milestone 33's compositor implements against a contract. Also the
+  memory story (a framebuffer is a bigger grant, never an exemption), the confinement hazard a GPU
+  adds that a disk does not (backing addresses ride in a command payload the transport validator
+  cannot see, so the IOMMU is the barrier), and a plain statement of what the pixel test proves: the
+  framebuffer, not the scanout.
 
 - [Running under virtualization on Apple Silicon](virtualization.md) — `cargo xtask run --hvf`
   puts the kernel on the real M3 core via Apple's Hypervisor.framework. It found two QEMU-shaped

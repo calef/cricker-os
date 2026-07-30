@@ -128,6 +128,10 @@ const RESOURCE_ID: u32 = 1;
 /// The scanout we drive. QEMU's virtio-gpu offers one output by default.
 const SCANOUT_ID: u32 = 0;
 
+/// The entry role that attacks its own confinement instead of serving (see [`run_backing_escape`]).
+/// Must match kernel/src/user.rs `display_service::ROLE_BACKING_ESCAPE`.
+const ROLE_BACKING_ESCAPE: u64 = 1;
+
 /// Failure codes reported to the spawner, so a bring-up failure names its step instead of hanging.
 /// Each is OR'd into a `0xDEAD_...` word the kernel test prints.
 const E_NOT_VIRTIO: u64 = 0x01;
@@ -401,8 +405,79 @@ fn surface_pixel(i: usize) -> u32 {
     dma_read::<u32>(OFF_SURFACE + (i * 4) as u64)
 }
 
+/// **The escape attempt.** Bring the device up honestly, then ask it to read pixels out of memory
+/// this driver was never granted: a `RESOURCE_ATTACH_BACKING` naming `victim`, a frame the kernel
+/// allocated and deliberately left out of this device's IOMMU domain. Then transfer from it, so the
+/// device really tries to move those bytes. Reports the device's response code and stops.
+///
+/// This is the GPU's own confinement question, and it is not the disk's. Everywhere else, the
+/// addresses a device will touch arrive in virtqueue descriptors, which the kernel validates and
+/// copies into a shadow ring the driver cannot reach (notes/dma.md). A virtio-gpu's backing addresses
+/// arrive in a **device-level command payload** instead. The kernel bounds the descriptor carrying
+/// that command, but the addresses inside it are bytes it does not parse, and it should not start
+/// parsing them: that would put device knowledge in the transport, which is the line §18 draws.
+///
+/// So the IOMMU is the barrier here, and the kernel-side test is what checks it held, by draining the
+/// IOMMU's fault queue. **The device's response code is not the evidence**, and finding that out was
+/// the surprise: QEMU's DMA layer answers a translation failure with a bounce buffer rather than a
+/// failed mapping, so the command comes back OK while the bytes the device gets are not the victim's.
+/// The fault the IOMMU recorded is the fact; the response code is reported only so the test can say
+/// what happened. See notes/framebuffer-contract.md.
+///
+/// `victim` comes from the kernel rather than being computed here, for the same reason the milestone
+/// 16b confinement test picks its own escape frame: the test must know the exact address to look for
+/// in the fault queue. An earlier version guessed at "the frame just past my region" and that was a
+/// bad guess, because the allocator's next frame is not reliably out of the domain (the kernel's
+/// shadow page is allocated right after the region).
+fn run_backing_escape(dma_phys: u64, victim: u64) -> ! {
+    init(dma_phys);
+
+    write_hdr(CMD_RESOURCE_CREATE_2D);
+    dma_write::<u32>(OFF_REQ + HDR_LEN, RESOURCE_ID);
+    dma_write::<u32>(OFF_REQ + HDR_LEN + 4, gfx::FORMAT);
+    dma_write::<u32>(OFF_REQ + HDR_LEN + 8, gfx::WIDTH);
+    dma_write::<u32>(OFF_REQ + HDR_LEN + 12, gfx::HEIGHT);
+    if submit(dma_phys, (HDR_LEN + 16) as u32) != RESP_OK_NODATA {
+        die(E_CREATE_2D);
+    }
+
+    // Point the resource's backing at the victim frame: memory outside our grant, which a hostile
+    // display driver would love to read (another process's pixels, a key, a filesystem block) by
+    // having the GPU copy it into a scanout. Attaching is itself the access that must be refused: the
+    // device maps the backing here, and mapping an untranslatable address is what the IOMMU faults on.
+    //
+    // **One pixel's worth, not a whole frame, and the reason is a real limit worth knowing.** The
+    // RISC-V IOMMU's fault queue holds 128 records and the driver does not clear the queue's overflow
+    // bit, so a flood of faults latches the overflow and **silently stops fault reporting for
+    // everything after it**. A 4096-byte backing produced exactly that flood and broke the *next*
+    // test's fault assertion (milestone 16b's `the_iommu_faults_a_dma_that_escapes_the_domain`, which
+    // then saw no faults at all and reported the IOMMU as absent). Four bytes is one translation, one
+    // fault, and the same security question: can this device reach an address outside its grant?
+    // Recorded in notes/framebuffer-contract.md, because the overflow behaviour will matter more to
+    // whoever routes faults to a production handler than it does here.
+    write_hdr(CMD_RESOURCE_ATTACH_BACKING);
+    dma_write::<u32>(OFF_REQ + HDR_LEN, RESOURCE_ID);
+    dma_write::<u32>(OFF_REQ + HDR_LEN + 4, 1); // nr_entries
+    dma_write::<u64>(OFF_REQ + HDR_LEN + 8, victim); // OUTSIDE the grant
+    dma_write::<u32>(OFF_REQ + HDR_LEN + 16, 4); // one pixel: see above
+    dma_write::<u32>(OFF_REQ + HDR_LEN + 20, 0);
+    let resp = submit(dma_phys, (HDR_LEN + 24) as u32);
+
+    // Report what the device said about the attach. The kernel test decides whether the barrier held,
+    // from the IOMMU's fault queue; this role does not get to grade its own attack.
+    send(REPORT, gfx::status::BACKING, resp as u64, 0);
+    exit();
+}
+
 #[unsafe(no_mangle)]
-pub extern "C" fn _start(_arg0: u64, dma_phys: u64, _arg2: u64) -> ! {
+pub extern "C" fn _start(role: u64, dma_phys: u64, arg2: u64) -> ! {
+    // Two roles in one binary, for the reason the blk attackers ride with the blk driver: the attack
+    // differs from the honest driver by one field, and sharing the bring-up is what makes it a fair
+    // test rather than a different program that fails for its own reasons.
+    if role == ROLE_BACKING_ESCAPE {
+        run_backing_escape(dma_phys, arg2);
+    }
+
     let (dw, dh) = init(dma_phys);
     bring_up_surface(dma_phys);
 
