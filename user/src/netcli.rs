@@ -265,6 +265,18 @@ fn udp_tftp() -> ! {
         }
     }
 
+    // ACK block 1, which ends the transfer properly: { u16 opcode = 4 }{ u16 block = 1 }. The fixture
+    // is one short block, so this is the last packet of the exchange. Without it the server would sit
+    // retransmitting its DATA at a socket we are about to close, which is rude to the next test that
+    // brings this NIC up even though libslirp eventually gives up on its own.
+    let mut a = FRAME_VA + OFF_PAYLOAD;
+    put8(0x00, &mut a);
+    put8(0x04, &mut a);
+    put8(0x00, &mut a);
+    put8(0x01, &mut a);
+    set_dst(GW_IP, TFTP_PORT);
+    let _ = call(STACK, req(OP_SENDTO, 0), a - (FRAME_VA + OFF_PAYLOAD));
+
     let _ = call(STACK, req(OP_CLOSE, 0), 0);
     done(OK);
 }
