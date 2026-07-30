@@ -146,7 +146,7 @@ in the code or the conversation doesn't make sense, it belongs here.
   ownership plus generational staleness instead of a capability derivation tree, why destroy is
   the owner's explicit act and must stay off the scheduler lock, `Untyped::SPLIT`/`DESTROY`, and
   the generational region slots that make a repeatable spawn loop finally possible.
-- [Supervision: a thread's death becomes a message](supervision.md) — milestone 22's fault endpoint
+- [Supervision: a thread's death becomes a message](supervision.md) — milestone 22's fault endpoint; §32's `Endpoint::REAP` lets a supervisor collect a corpse without being able to build one
   (DECISIONS §26). The kernel is the only witness to a fault, so it delivers a five-word message
   (event, tid, pc, addr, reserved) to the supervision endpoint a thread was spawned holding; the
   corpse is dead-until-reaped so the supervisor can inspect it and reap it with §16 revocation. No

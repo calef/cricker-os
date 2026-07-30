@@ -272,6 +272,20 @@ unchecked, and its *authority* is broad, so within that authority a corrupted in
    shell's spawn service); migrating that hand-validated boot path is the next increment. Two design
    forks found and reported rather than built through (a reap-only right, and turning a tid into a
    handle). See DECISIONS §26's phase B.2 block and notes/trusted-init.md.
+
+   **Both of those forks are now closed (DECISIONS §32, BUILT 2026-07-29, both ISAs).** Reaping moved
+   off `Untyped::DESTROY`, which needs `WRITE` on the region and therefore the same right that *builds*
+   a process from it, onto `Endpoint::REAP` on the supervision endpoint. Authorization needed no new
+   bookkeeping: §26 already records `Thread::fault_ep` and the kernel already stamps the tid, so the
+   check is that the named thread's recorded endpoint *is* the one being invoked. The tid-to-handle fork
+   is closed for this case by the same move, because the tid is authorized relative to the endpoint it
+   arrived on rather than being a global handle. The measured payoff: **`subsup` now holds nothing but
+   endpoints**, since the phase B.2 proxy that had to ask `spawner` to reap is no longer needed. The
+   measured limit: milestone 36's `cwarden` still holds a construction budget because it is *also* the
+   builder, which shows the bundling was two things and only one of them was the reap. `REAP` refuses a
+   live thread on purpose, so a **hung** child still cannot be restarted; that is the watchdog case and
+   it belongs to 23. Two Kani harnesses in `crates/caps` cover the authorization invariant. See
+   notes/supervision.md.
 3. **Supervise, don't relaunch-in-kernel.** What happens when init (or any server) *fails*, as
    distinct from being corrupted. The failure of init degrades to a **halt, never a breach**
    (the kernel's guarantees hold regardless), so the only open question is availability: halt, or

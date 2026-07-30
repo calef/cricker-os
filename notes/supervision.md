@@ -111,6 +111,49 @@ child is a supervisor that can build processes, unless it proxies the reap throu
   or a distinct `Untyped::REAP` method changes the rights model and the syscall surface, so it stays a
   decision rather than an implementation detail.
 
-The second half of the same gap is unchanged: nothing maps a tid to a handle a builder holds, so a
-supervisor names instances by a handle it or its builder issued, which is sufficient for one child and
-insufficient in general.
+## Resolved: `Endpoint::REAP` (DECISIONS §32)
+
+Chris ratified it the same day the requirement above was measured, and it is built on both ISAs. The
+method hangs off **the supervision endpoint**, not off `Untyped`: an `Untyped` method has to name a
+region, and the whole premise is that the supervisor holds none. Authorization needs no new
+bookkeeping, because §26 already stores `Thread::fault_ep` and the kernel already stamps the tid on the
+death message, so the check is "the named thread's recorded fault endpoint *is* the endpoint being
+invoked". No registry, no new capability type, one new method.
+
+Two boundaries, both deliberate:
+
+- **It collects corpses; it does not kill.** A live thread is refused. Killing is strictly more
+  dangerous and keeps its existing home in §24's forcible tier, which needs construction authority
+  precisely because it is the stronger act. The cost is real and stated rather than hidden: **a
+  supervisor cannot restart a hung child**, because a livelocked process never sends a death message.
+  That is the watchdog case, and it waits for milestone 23.
+- **The reclaimed region goes to its owner under §13, which is the builder, not the reaper.** A
+  supervisor can free a child's memory and cannot spend it, which is what lets builder and supervisor
+  be separate processes without the supervisor slowly accumulating the builder's rights.
+
+It also settles the tid-to-handle half of this gap **for this case only**: the tid is authorized
+*relative to the endpoint it arrived on*, so no `Tcb::NAME`, no per-child endpoints, no
+builder-reported tid. That is the endpoint-only naming discipline applied consistently, a name that
+means something only to the holder of the capability it came through rather than a global handle. Any
+future operation that needs to name a child is a fresh decision and should try this shape first.
+
+### What narrowing the existing supervisors measured
+
+This is the part worth reading, because it says what §32 did and did not buy.
+
+- **`subsup` (milestone 22 phase B.2) now holds nothing but endpoints.** It had been the proxy: no
+  memory of its own, asking `spawner` to reap on its behalf. The proxy is no longer needed, so the
+  supervisor role reduces to exactly the authority its job describes. That is the payoff.
+- **`cwarden` (milestone 36) still holds a full construction budget, and that is a finding rather than
+  a failure.** It is *also* the builder: it splits a region per instance and lays `cshim` out in it,
+  and §32 does not touch construction. So the bundling §31 recorded was **two** things and only one of
+  them was the reap. What changed is that the per-instance region capability is now deleted as soon as
+  the child starts, instead of being held for the instance's whole life, so the warden holds nothing
+  that reaches a live instance's memory. Split roles 1 and 2 into separate processes and the supervisor
+  half would hold only endpoints, which is what `subsup` now demonstrates. Keeping them fused in the
+  spike stays deliberate: the requirement is visible in one program rather than hidden behind an IPC
+  hop.
+
+The authorization invariant is machine-checked, not only tested: two Kani harnesses in `crates/caps`
+cover it, which is the right instrument for "a capability that cannot build cannot be made to build via
+reap" because it quantifies over rights combinations rather than sampling them.
