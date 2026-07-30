@@ -257,6 +257,40 @@ What is still **not** proven, to be exact about it: that a physical panel would 
 scanout is the last thing we can observe, and on real hardware there is a display controller past it.
 That is a silicon question (notes/target-hardware.md), not a QEMU one.
 
+## What rung two did with this contract (milestone 33)
+
+Written back here on 2026-07-29, because a contract's real test is what happened when the next thing
+implemented against it, and the answer is worth recording: **nothing in this rung changed.**
+
+`crates/gfx_proto` and `user/src/gpud.rs` are byte-for-byte the same. The compositor
+(`user/src/compd.rs`) took `painter`'s place at this seam, holding the display endpoint and the scanout
+frames with exactly `painter`'s authority, and the driver cannot tell the difference. The only addition
+on this side of the seam is a kernel wiring entry point that starts the driver **with no client**
+(`display_service::start_driver`), because rung two's client is spawned separately with a scene behind
+it.
+
+Three of the four rung-two tests go further and replace `gpud` with a **kernel stand-in** that serves
+`INFO` and `FLUSH` over frames the kernel allocated. The compositor does not notice that either, which
+is milestone 23's swappable-component claim arriving as a side effect of a contract rather than as a
+demonstration built on purpose. It also made the damage rectangle *observable*: a real driver honours a
+rectangle and says nothing about it, so the stand-in is how "a one-window redraw does not cost a whole
+screen" became an assertion.
+
+Two predictions in the list below came out exactly as written, and one was answered differently:
+
+- **Damage tracking**: the compositor flushes one rectangle per frame, and the test poisons the rest of
+  the scanout and finds the poison intact. As predicted, no driver change.
+- **Input**: the keyboard's routing question turned out to be the compositor's, as predicted, and the
+  answer reuses `linedisc::proto::OP_BYTES` verbatim.
+- **Several surfaces**, differently: the prediction was "a compositor holding one endpoint per client
+  surface needs a driver change and not a contract change". Rung two holds **one** endpoint for all its
+  clients instead, because a shared endpoint carries no sender identity and per-client surfaces are
+  therefore identified by *memory* rather than by endpoint. Still no contract change, and still no
+  driver change, but by a different route than this note guessed. See notes/compositor.md.
+
+The scanout check grew accordingly: `cargo xtask` now proves **two** pictures over one boot, the
+composed screen first and this rung's pattern second, both on both ISAs.
+
 ## The seams left open
 
 Deliberately not in rung one, each with the seam it will use:

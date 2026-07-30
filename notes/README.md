@@ -209,6 +209,15 @@ in the code or the conversation doesn't make sense, it belongs here.
   cannot see, so the IOMMU is the barrier), and how the pixels are proven in two halves: the
   framebuffer from inside the guest by two witnesses, the scanout from the host by driving QEMU's
   monitor and checking a `screendump` against the same pattern definition.
+- [The compositor](compositor.md) — milestone 33, the display ladder's second rung: one screen
+  multiplexed among mutually distrusting clients. The idea it rests on is that **the shared doorbell
+  carries no authority**: a shared endpoint has no sender identity, so every per-client fact lives in
+  per-client memory and every privileged answer travels through privileged memory, which leaves a
+  compositor with no authorization code in it at all. Also: how a client is *proved* unable to touch
+  its neighbour's pixels (an attacker handed the exact address, adjacent frames, and four witnesses),
+  the two dialects of "you hold no such capability" (an empty cspace slot and an unmapped page),
+  enumeration and screenshots as read-only mappings rather than verbs, focus as a capability, and the
+  wait-any primitive whose absence shaped the whole design.
 
 - [Running under virtualization on Apple Silicon](virtualization.md) — `cargo xtask run --hvf`
   puts the kernel on the real M3 core via Apple's Hypervisor.framework. It found two QEMU-shaped

@@ -256,7 +256,9 @@ pub type EpId = u64;
 ///
 /// It used to be a ceiling, and it was the wrong shape of number, because it grew with the SUITE
 /// rather than with the system: 64 lasted until the 27+28 merge, 96 until supervision and std::net
-/// merged the same day, 128 until the compositor. Every parallel branch fit on its own, and the union
+/// merged the same day, 128 until milestone 33's compositor tests, which wire 26 endpoints across
+/// four scenes (a display, a doorbell, a report per client, an input endpoint per focusable client)
+/// and wanted 160. Every parallel branch fit on its own, and the union
 /// of their test boots is what crossed the line, which is a cost no branch can see before it merges.
 /// So the failure mode was a merge-time panic telling whoever merged to raise a constant, over and
 /// over, for a reason none of them caused. Growing on demand retires that whole class of papercut:
