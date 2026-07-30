@@ -187,12 +187,12 @@ fn refused(path: &str, label: &str) {
     }
 }
 
-/// slirp's built-in resolver and the guestfwd echo peer the test runners attach.
-const DNS_SERVER: &str = "10.0.2.3:53";
+/// The guestfwd echo peer the test runners attach. Both of this program's network fixtures now live
+/// inside libslirp (this one and the TFTP server `udp_ok` uses), so the transcript is offline and
+/// deterministic: nothing it depends on can be dropped by somebody else's router.
 const ECHO_PEER: &str = "10.0.2.9:7777";
-const DNS_TXID: u16 = 0x1234;
 
-/// The networked transcript (milestone 27 phase two): a real UDP DNS query and a TCP echo round
+/// The networked transcript (milestone 27 phase two): a UDP round trip and a TCP echo round
 /// trip, reached only through `std::net`. The program never sees a capability, a socket id, or a
 /// shared frame; it writes to a socket and reads from it, the way any Rust program does. Runs when
 /// the program holds the network. `sock` is the already-bound UDP socket the probe opened.
@@ -201,8 +201,8 @@ fn net_demo(sock: UdpSocket) {
 
     // Assertions rather than printed status keep the transcript byte-stable: a failure faults (the
     // panic path), which the kernel test sees as a missing line and a timeout, not a wrong answer.
-    assert!(dns_ok(&sock), "the UDP DNS query through std::net failed");
-    println!("dns ok");
+    assert!(udp_ok(&sock), "the UDP round trip through std::net failed");
+    println!("udp ok");
 
     // The UDP socket is held (by ref) across the TCP exchange so the two use distinct socket ids,
     // and thus distinct netd local ports: netd derives a socket's local port from its id, so a TCP
@@ -216,42 +216,63 @@ fn net_demo(sock: UdpSocket) {
     drop(sock);
 }
 
-/// A DNS A-record query for `name`, wire format, with recursion desired.
-fn build_dns_query(name: &str, txid: u16) -> Vec<u8> {
-    let mut q = Vec::new();
-    q.extend_from_slice(&txid.to_be_bytes());
-    q.extend_from_slice(&[0x01, 0x00]); // flags: recursion desired
-    q.extend_from_slice(&[0x00, 0x01]); // qdcount = 1
-    q.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00]); // an/ns/ar counts = 0
-    for label in name.split('.') {
-        q.push(label.len() as u8);
-        q.extend_from_slice(label.as_bytes());
-    }
-    q.push(0x00); // root label
-    q.extend_from_slice(&[0x00, 0x01]); // qtype A
-    q.extend_from_slice(&[0x00, 0x01]); // qclass IN
-    q
-}
+/// **The gating UDP round trip: slirp's own TFTP server**, the `std::net` twin of `netcli`'s
+/// `udp_tftp`. libslirp implements TFTP internally (enabled by `tftp=` on the netdev), so this
+/// request and its reply never leave the emulator.
+///
+/// This used to be a DNS A-record query for `example.com` at 10.0.2.3:53, which is *not* a resolver:
+/// libslirp NATs anything sent there to the HOST's nameserver, so the test silently depended on the
+/// developer's DNS answering at that instant and flaked at roughly 2.5% per query. That was fixed for
+/// the hand-built `netcli` gate and **missed here**, which is why this twin went on flaking after the
+/// fix landed; it cost a riscv leg on 2026-07-29. The lesson is worth the sentence: a fix applied to
+/// one of two call sites of the same hazard is half a fix, and the surviving half is harder to find
+/// because the record says the problem is solved.
+///
+/// What it proves is what the DNS version was there to prove about *our* code and nothing about the
+/// host: a program holding no capability and no socket id sends a datagram through `std::net` to an
+/// address it chooses and reads the reply back. Send a read request (opcode 1, `octet` mode) for the
+/// fixture the runners planted, and require the first data packet: opcode 3, block 1, the fixture's
+/// bytes exactly. The fixture is one short block, so the whole file arrives in that packet.
+///
+/// The name and body must match what `scripts/qemu-runner*.sh` writes into `target/tftp`.
+fn udp_ok(sock: &UdpSocket) -> bool {
+    const TFTP_SERVER: &str = "10.0.2.2:69";
+    const TFTP_NAME: &[u8] = b"cricker";
+    const TFTP_BODY: &[u8] = b"cricker-tftp!";
 
-/// Send a DNS query over the given UDP socket and confirm the reply is a response to our query.
-fn dns_ok(sock: &UdpSocket) -> bool {
-    if sock.connect(DNS_SERVER).is_err() {
+    if sock.connect(TFTP_SERVER).is_err() {
         return false;
     }
-    let query = build_dns_query("example.com", DNS_TXID);
-    if sock.send(&query).is_err() {
+
+    // RRQ: { u16 opcode = 1 } filename 0 "octet" 0
+    let mut rrq = vec![0x00, 0x01];
+    rrq.extend_from_slice(TFTP_NAME);
+    rrq.push(0x00);
+    rrq.extend_from_slice(b"octet");
+    rrq.push(0x00);
+    if sock.send(&rrq).is_err() {
         return false;
     }
+
     let mut buf = [0u8; 512];
     let Ok(n) = sock.recv(&mut buf) else {
         return false;
     };
-    if n < 12 {
+    if n < 4 + TFTP_BODY.len() {
         return false;
     }
-    let rid = u16::from_be_bytes([buf[0], buf[1]]);
-    let qr = buf[2] & 0x80; // high bit of byte 2 is the QR (query/response) flag
-    rid == DNS_TXID && qr != 0
+    // An ERROR packet (opcode 5) here means the fixture is missing: see the runners.
+    let opcode = u16::from_be_bytes([buf[0], buf[1]]);
+    let block = u16::from_be_bytes([buf[2], buf[3]]);
+    if opcode != 3 || block != 1 || &buf[4..4 + TFTP_BODY.len()] != TFTP_BODY {
+        return false;
+    }
+
+    // ACK block 1, ending the transfer properly rather than leaving the server retransmitting DATA
+    // at a socket we are about to drop. Failing to be acknowledged is not this test's business, so
+    // the send's result is deliberately ignored.
+    let _ = sock.send(&[0x00, 0x04, 0x00, 0x01]);
+    true
 }
 
 /// Connect to the echo peer over TCP, send a payload, and read the echo back whole.

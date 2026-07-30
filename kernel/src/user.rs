@@ -4542,7 +4542,7 @@ mod tests {
 
     /// The exact transcript `hellostd` prints when it is granted the network. Pinned so a drift in
     /// the net PAL, the contract, or the demo is a loud diff rather than a mystery.
-    const STD_NET_EXPECTED: &[u8] = b"std net on cricker-os\ndns ok\ntcp echo ok\n";
+    const STD_NET_EXPECTED: &[u8] = b"std net on cricker-os\nudp ok\ntcp echo ok\n";
 
     /// **`std::net` end to end over the socket contract** (milestone 27 phase two): the `hellostd`
     /// std binary, given the network, does a real UDP DNS query and a TCP echo round trip through
@@ -6477,7 +6477,7 @@ mod riscv_virtio_tests {
     }
 
     /// The exact transcript `hellostd` prints when it is granted the network.
-    const STD_NET_EXPECTED: &[u8] = b"std net on cricker-os\ndns ok\ntcp echo ok\n";
+    const STD_NET_EXPECTED: &[u8] = b"std net on cricker-os\nudp ok\ntcp echo ok\n";
 
     /// **`std::net` end to end over the socket contract, on the second ISA** (milestone 27 phase
     /// two): the riscv twin of the aarch64 std-net test. The `hellostd` std binary, given the
