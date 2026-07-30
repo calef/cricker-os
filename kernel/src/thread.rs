@@ -336,12 +336,12 @@ pub struct Thread {
 
     /// **The intrusive queue link** (milestone 14 phases A.2/A.3; notes/intrusive-queues.md).
     /// When this thread is on a run queue, a migration inbox, or an endpoint wait queue, this
-    /// points at the next thread in it; null otherwise. One link, so a thread can be on at most
+    /// points at the next thread in it; `None` otherwise. One link, so a thread can be on at most
     /// one queue, which is not a limitation but the scheduler's state machine made physical:
     /// Ready threads are on exactly one run queue or inbox, Blocked threads on at most one
     /// endpoint queue, Running/Finished threads on none. Touched only by the queue that holds
     /// the thread, under that queue's synchronization.
-    pub(crate) next: *mut Thread,
+    pub(crate) next: Option<core::ptr::NonNull<Thread>>,
 
     /// **Still standing on a CPU.** Set (under `SCHED`) when a core schedules this thread in;
     /// cleared by that core's *successor* thread in `finish_switch`, after the switch away has
@@ -415,10 +415,10 @@ pub struct Thread {
 
 // SAFETY: plain storage of the link, nothing else, which is all the queue's contract asks.
 unsafe impl intrusive::Node for Thread {
-    fn next(&self) -> *mut Self {
+    fn next(&self) -> Option<core::ptr::NonNull<Self>> {
         self.next
     }
-    fn set_next(&mut self, next: *mut Self) {
+    fn set_next(&mut self, next: Option<core::ptr::NonNull<Self>>) {
         self.next = next;
     }
 }
@@ -444,7 +444,7 @@ impl Thread {
             mailbox: [0; 5],
             quota: None,
             outgoing_cap: None,
-            next: core::ptr::null_mut(),
+            next: None,
             on_cpu: true, // adopted mid-run: this thread is standing on its CPU right now
             wake_pending: false,
             ipc_aborted: false,
@@ -476,7 +476,7 @@ impl Thread {
             mailbox: [0; 5],
             quota: None,
             outgoing_cap: None,
-            next: core::ptr::null_mut(),
+            next: None,
             on_cpu: true, // adopted mid-run: this thread is standing on its CPU right now
             wake_pending: false,
             ipc_aborted: false,
@@ -550,7 +550,7 @@ impl Thread {
             mailbox: [0; 5],
             quota: None,
             outgoing_cap: None,
-            next: core::ptr::null_mut(),
+            next: None,
             on_cpu: false,
             wake_pending: false,
             ipc_aborted: false,
@@ -579,7 +579,7 @@ impl Thread {
             mailbox: [0; 5],
             quota: None,
             outgoing_cap: None,
-            next: core::ptr::null_mut(),
+            next: None,
             on_cpu: false,
             wake_pending: false,
             ipc_aborted: false,
