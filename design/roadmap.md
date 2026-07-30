@@ -691,8 +691,9 @@ confined userspace virtio-gpu driver (`gpud`) drives the control queue through t
 over the §18 PCIe transport on both `virt` boards, behind the IOMMU; a *separate* client (`painter`)
 holds only an endpoint and a shared surface and draws a coordinate-derived pattern into it. Two
 witnesses in two address spaces digest the result against a value the kernel computes itself, so the
-**framebuffer** is proven byte for byte; the **scanout** is not (`-display none`, and nothing in the
-guest can read QEMU's host surface back), and that limit is written into the test. The memory decision
+**framebuffer** is proven byte for byte; and the **scanout** is proven too, from the host, by driving
+QEMU's monitor beside the suite and comparing a `screendump` PPM against the same pattern definition
+pixel for pixel (both ISAs, with a negative control on the checker). The memory decision
 generalized to a rule (a framebuffer is a bigger grant, never an exemption) and the GPU's own
 confinement hazard (backing addresses ride in a command payload the transport validator cannot see, so
 the IOMMU is the barrier) is proved by an attacker test. DECISIONS §29,

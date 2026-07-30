@@ -190,8 +190,9 @@ in the code or the conversation doesn't make sense, it belongs here.
   between them, written down so milestone 33's compositor implements against a contract. Also the
   memory story (a framebuffer is a bigger grant, never an exemption), the confinement hazard a GPU
   adds that a disk does not (backing addresses ride in a command payload the transport validator
-  cannot see, so the IOMMU is the barrier), and a plain statement of what the pixel test proves: the
-  framebuffer, not the scanout.
+  cannot see, so the IOMMU is the barrier), and how the pixels are proven in two halves: the
+  framebuffer from inside the guest by two witnesses, the scanout from the host by driving QEMU's
+  monitor and checking a `screendump` against the same pattern definition.
 
 - [Running under virtualization on Apple Silicon](virtualization.md) — `cargo xtask run --hvf`
   puts the kernel on the real M3 core via Apple's Hypervisor.framework. It found two QEMU-shaped

@@ -2884,15 +2884,19 @@ mod display_tests {
     /// `RESOURCE_ATTACH_BACKING` naming it succeeded, which under translation only happens if the
     /// address translated.
     ///
-    /// # What this does NOT prove, stated plainly
+    /// # What this test does NOT prove, and what does
     ///
-    /// **It proves the framebuffer, not the scanout.** The suite runs `-display none`, and nothing
-    /// inside the guest can read back QEMU's host-side surface, so "the bytes we handed the device are
-    /// the bytes it read out of our frames" is as far as an in-guest test reaches. A wrong pixel
-    /// *format* or a wrong scanout rectangle would still pass this test while showing garbage on a
-    /// real screen. The recipe for closing that gap is known and verified to work under
-    /// `-display none` (a QEMU monitor socket plus `screendump`, which yields a PPM of the scanout);
-    /// see notes/framebuffer-contract.md, "What the test proves, and the one thing it does not".
+    /// **This test proves the framebuffer, not the scanout.** The suite runs `-display none`, and
+    /// nothing inside the guest can read back QEMU's host-side surface, so "the bytes we handed the
+    /// device are the bytes it read out of our frames" is as far as an *in-guest* test reaches. A
+    /// wrong pixel *format* or a wrong scanout rectangle would pass this while showing garbage on a
+    /// real screen.
+    ///
+    /// The scanout is proven **from the host instead**, because only the host can see it:
+    /// `cargo xtask`'s scanout check drives QEMU's monitor beside this suite, dumps the scanout with
+    /// `screendump` (which works headlessly), and compares the PPM against `gfx_proto::pixel` pixel
+    /// for pixel, on both ISAs. Together the two halves cover the whole path. See
+    /// notes/framebuffer-contract.md, "Proving the scanout, from the host".
     #[test_case]
     fn a_confined_userspace_driver_puts_a_known_pattern_in_a_framebuffer() {
         let gpud = program("gpud").expect("no gpud program in the initrd archive");
@@ -3033,11 +3037,16 @@ mod display_tests {
     /// trip. So the fault queue is the fact, the response code is printed for the record, and the
     /// nuance is written down rather than smoothed over (notes/framebuffer-contract.md).
     ///
-    /// Runs after the happy-path test on purpose. It resets and re-registers the same physical GPU,
-    /// which tears down the resource and scanout the first test set up, the same way the disk's
-    /// attacker tests share one device with the honest driver.
+    /// **Runs BEFORE the happy-path test, and the name is what makes that true.** This test resets
+    /// and re-registers the same physical GPU (each driver programs the device from scratch, and a
+    /// virtio reset destroys every resource and scanout), the same way the disk's attacker tests share
+    /// one device with the honest driver. If it ran second it would wipe the pattern the pixel test
+    /// put on the scanout, and the host-side scanout check (`cargo xtask`'s `gpu_shot`, which dumps
+    /// the scanout while the suite runs) would find nothing to match. Sorting first is why this is
+    /// named `a_backing...` rather than `the_iommu...`. A reordering does not corrupt anything; it
+    /// fails the scanout check loudly, which is the right way to be wrong.
     #[test_case]
-    fn the_iommu_refuses_the_gpu_a_framebuffer_outside_the_drivers_grant() {
+    fn a_backing_outside_the_grant_is_refused_by_the_iommu() {
         let gpud = program("gpud").expect("no gpud program in the initrd archive");
 
         // Drain any stale fault first, so what we observe is this test's.

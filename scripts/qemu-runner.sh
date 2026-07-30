@@ -142,6 +142,19 @@ if [ -n "$CRICKER_GPU" ]; then
     GPU="-device virtio-gpu-pci,disable-legacy=on,iommu_platform=on"
 fi
 
+# A QEMU monitor on a unix socket, when CRICKER_GPU_MON names one (milestone 29). This is how the
+# **scanout** gets proven rather than only the framebuffer: `screendump` writes a PPM of the scanout
+# and it works with -display none (verified against QEMU 11.0.2), so the host can see the pixels the
+# guest cannot read back. xtask drives it while the suite runs (see gpu_shot); nothing else uses it,
+# and without the variable QEMU gets no monitor at all, exactly as before.
+#
+# The path must stay under 104 bytes: that is the OS limit on a unix socket path, and a worktree
+# checkout plus target/ gets close, which is why xtask puts the socket in /tmp and not in target/.
+MON=""
+if [ -n "$CRICKER_GPU_MON" ]; then
+    MON="-monitor unix:$CRICKER_GPU_MON,server,nowait"
+fi
+
 # shellcheck disable=SC2086  # $INITRD, $DISK, $NET and $GPU are deliberately word-split or empty
 # CPU and accelerator.
 #
@@ -188,4 +201,5 @@ exec qemu-system-aarch64 \
     $DISK \
     $NET \
     $GPU \
+    $MON \
     "$@"

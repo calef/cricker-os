@@ -2060,17 +2060,29 @@ the transport seam over twice. The parity that §19 demands is aarch64 `virt` an
 both carry `virtio-gpu-pci` over the §18 transport, proven by **one arch-neutral test** rather than
 two copies that can drift.
 
-**What the pixel test proves, and the one thing it does not.** The pattern is a per-coordinate
-function rather than a fill (a blank, filled, transposed, one-row-shifted, or one-pixel-shifted
-surface all fail), the digest is position sensitive, and two independent witnesses in two address
-spaces report it (the client from its mapping after the flush, the driver from a different mapping
-after the device reported the transfer complete), both compared against a value the kernel computed
-itself. **It proves the framebuffer, not the scanout.** The suite runs `-display none` and nothing in
-the guest can read QEMU's host-side surface back, so a wrong pixel format would still pass. The recipe
-for closing that gap is verified to work headlessly (a QEMU monitor socket plus `screendump`, which
-yields a PPM of the scanout even with no display backend) and what remains is orchestration, not
-capability; notes/framebuffer-contract.md carries the details and the two practical constraints found
-while probing it.
+**What the pixels are proven by, in two halves, because one half cannot reach the whole path.**
+
+*In the guest, the framebuffer.* The pattern is a per-coordinate function rather than a fill (a blank,
+filled, transposed, one-row-shifted, or one-pixel-shifted surface all fail), the digest is position
+sensitive, and two independent witnesses in two address spaces report it (the client from its mapping
+after the flush, the driver from a different mapping after the device reported the transfer complete),
+both compared against a value the kernel computed itself.
+
+*From the host, the scanout.* An in-guest test cannot go further: `-display none`, and nothing in the
+guest can read QEMU's host-side surface back, so a wrong pixel format or scanout rectangle would pass
+the guest's half while showing garbage on a screen. So the **host** proves that half. QEMU's monitor
+works headlessly, and `cargo xtask` drives it beside the ordinary test run (no second boot: the pattern
+stays on the scanout until QEMU exits, so nothing needs synchronizing), dumps the scanout with
+`screendump`, and compares the PPM against `gfx_proto::pixel` pixel for pixel. **Both ISAs, and the
+checker has its own negative control** (`cargo test -p xtask`: it must reject black, red/blue-swapped,
+row-shifted, one-pixel-wrong, and the default 640x480 console). The geometry is part of the assertion,
+which means a dump that is 128x64 at all is evidence `SET_SCANOUT` reached the device.
+
+One ordering fact is load-bearing and deliberately fail-loud: the confinement test resets the device,
+which destroys the scanout, so it must run before the pixel test; it is named
+`a_backing_outside_the_grant_is_refused_by_the_iommu` to sort first, and a reordering fails the scanout
+check rather than quietly skipping it. What remains unproven is only what QEMU cannot answer: that a
+physical panel would show this, which is a silicon question. See notes/framebuffer-contract.md.
 
 **Deferred, untouched:** the VT engine's language (libghostty-vt in Zig through its C ABI, or `vte` in
 Rust as the single-toolchain fallback). This rung needs neither, and the contract carries pixels, not

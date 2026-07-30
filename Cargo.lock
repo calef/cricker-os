@@ -339,5 +339,6 @@ version = "0.1.0"
 dependencies = [
  "crickerfs",
  "fs_proto",
+ "gfx_proto",
  "measure",
 ]

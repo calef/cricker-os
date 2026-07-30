@@ -99,6 +99,15 @@ if [ -n "$CRICKER_GPU" ]; then
     GPU="-device virtio-gpu-pci,disable-legacy=on,iommu_platform=on"
 fi
 
+# A QEMU monitor on a unix socket when CRICKER_GPU_MON names one (milestone 29), the twin of the
+# aarch64 runner's block: `screendump` over it writes a PPM of the scanout even with -display none,
+# which is how the scanout gets proven rather than only the framebuffer. The path must stay under the
+# OS's 104-byte unix-socket limit, which is why xtask puts it in /tmp. See gpu_shot in xtask.
+MON=""
+if [ -n "$CRICKER_GPU_MON" ]; then
+    MON="-monitor unix:$CRICKER_GPU_MON,server,nowait"
+fi
+
 # The RISC-V IOMMU (milestone 16b): the ratified v1.0.1 IOMMU as a PCI function (riscv-iommu-pci,
 # Red Hat 1b36:0014) in front of the PCIe bus. Present on every boot for parity with the aarch64
 # SMMU that is always on the machine; the kernel enumerates it, places its BAR, and brings it up
@@ -120,4 +129,5 @@ exec qemu-system-riscv64 \
     $DISK \
     $NET \
     $GPU \
+    $MON \
     "$@"

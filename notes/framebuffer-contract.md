@@ -204,20 +204,58 @@ both boards, one host-tested contract crate).
   address outside the grant faults.
 - The one-shot client is **reaped**, not leaked, before the test returns.
 
-**Not proven: the scanout.** The suite runs `-display none`, and nothing inside the guest can read
-QEMU's host-side surface back, so "the bytes we handed the device are the bytes it read out of our
-frames" is as far as an in-guest test reaches. A wrong pixel **format** or a wrong scanout rectangle
-would pass this test and show garbage on a real screen. This is a real gap, not a formality.
+**Not proven by the in-guest test: the scanout.** The suite runs `-display none`, and nothing inside
+the guest can read QEMU's host-side surface back, so "the bytes we handed the device are the bytes it
+read out of our frames" is as far as an in-guest test reaches. A wrong pixel **format** or a wrong
+scanout rectangle would pass it and show garbage on a real screen.
 
-The recipe for closing it is known and **verified to work under `-display none`**: give QEMU a
-monitor socket (`-monitor unix:PATH,server,nowait`) and issue `screendump FILE`, which writes a PPM
-of the scanout even with no display backend (checked against QEMU 11.0.2: a 640x480 PPM came back
-from a headless `virtio-gpu-pci`). What is left is orchestration, not capability: the host has to
-take the shot while the guest still has the pattern on the scanout, and feed the verdict back into a
-pass/fail that the kernel's semihosting exit owns. Two constraints found while probing: the unix
-socket path must stay under 104 bytes (a worktree path plus `target/` is close), and `socat` is not
-installed here, so the client should be xtask itself (`std::os::unix::net::UnixStream`) rather than a
-shell tool.
+## Proving the scanout, from the host
+
+That gap is closed, and by the host rather than the guest, because only the host can see the pixels.
+
+QEMU's monitor works headlessly: `screendump FILE` writes a PPM of the scanout even with
+`-display none` (verified against QEMU 11.0.2). So the runners take a monitor socket
+(`CRICKER_GPU_MON`), and `cargo xtask`'s `cargo_test_with_scanout_check` drives it **while the
+ordinary test run is happening**: it spawns the suite, and beside it polls the monitor every 100 ms,
+dumps the scanout, and compares the PPM against `gfx_proto::pixel`, the same definition the client
+painted from. The first match ends the polling. Both ISAs. On success it prints:
+
+```text
+scanout check (aarch64): the 128x64 pattern reached the DEVICE's scanout, verified pixel for pixel
+against gfx_proto::pixel (target/gpu-scanout-aarch64.ppm)
+```
+
+**So the pixels are proven all the way to the device**, not just to our own frames: the guest's two
+witnesses agree about the framebuffer, and the host independently confirms that what QEMU is
+scanning out is the pattern, pixel for pixel, in the right format, at the right geometry.
+
+Three details that make this a real check rather than a comforting one:
+
+- **It runs inside the existing test run, not a second boot.** The suite is minutes long per ISA, and
+  the pattern stays on the scanout from the display test until QEMU exits, so there is nothing to
+  synchronize with the guest. No extra QEMU, no marker protocol.
+- **The geometry is part of the assertion.** QEMU's console defaults to 640x480 and `SET_SCANOUT`
+  resizes it, so a dump that is 128x64 is itself evidence our scanout rectangle reached the device. A
+  scanout never set fails on size before a single pixel is compared.
+- **The checker has a negative control** (`cargo test -p xtask`): it must reject a black scanout, a
+  red/blue-swapped one (what a wrong virtio-gpu format code produces, and exactly what the in-guest
+  test cannot see), a one-row shift, a single wrong pixel, and the default console size. A checker
+  that accepted anything would report success on every run, which is worse than no check.
+
+Ordering is load-bearing and deliberately fail-loud: the confinement test resets the device (which
+destroys the scanout), so it must run **before** the pixel test. That is why it is named
+`a_backing_outside_the_grant_is_refused_by_the_iommu` rather than `the_iommu_...`, and the reason is
+in its doc comment. If the order ever changes, no dump matches and the scanout check fails; nothing
+is silently waved through.
+
+Two practical constraints found while building it, recorded so they are not rediscovered: the unix
+socket path must stay under 104 bytes (a worktree checkout plus `target/` gets close, so the socket
+lives in `/tmp` while the PPM goes under `target/`), and `socat` is not installed here, so the monitor
+client is xtask itself over `std::os::unix::net::UnixStream`.
+
+What is still **not** proven, to be exact about it: that a physical panel would show this. QEMU's
+scanout is the last thing we can observe, and on real hardware there is a display controller past it.
+That is a silicon question (notes/target-hardware.md), not a QEMU one.
 
 ## The seams left open
 
