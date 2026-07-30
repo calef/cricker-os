@@ -25,13 +25,75 @@
 //! is built with [`Flags::user_data`], which sets U on Sv39 and read/write on both formats. It is a
 //! device's data window, so user-accessible read/write with no execute is exactly right.
 
-use crate::{Flags, Half, MapError, Mapper, PageFormat, PageTable};
+use crate::{Flags, Half, MapError, Mapper, PAGE_SIZE, PageFormat, PageTable};
 
 /// A physical region a device is allowed to touch: `[base, base + size)`, 4 KiB aligned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DmaRegion {
     pub base: u64,
     pub size: u64,
+}
+
+/// **How many whole 4 KiB pages a grant contains, or why it is not a grant a page-granular domain
+/// can express.** The domain maps pages, so the grant it can express *exactly* is the set of whole
+/// pages inside `[base, base + size)`. This is the decision half of [`build_identity_domain`], split
+/// out as loopless arithmetic so Kani can quantify it over every region (see
+/// `an_enumerated_page_lies_inside_the_grant` and `every_whole_page_of_the_grant_is_enumerated`).
+///
+/// Refused, rather than approximated:
+///
+/// - **an unaligned `base`**, because a page-granular domain cannot start mid-page. Rounding down
+///   would map the bytes below `base` (an over-map: memory the device was never granted becomes
+///   reachable), and rounding up would silently shift the whole grant. [`Mapper::map`] would have
+///   refused the first page with [`MapError::Misaligned`] anyway; deciding it here makes the refusal
+///   provable instead of incidental.
+/// - **a region whose `base + size` wraps `u64`**, which is not a region at all: it has no end, so
+///   "inside the grant" is not even a statement that can be made about it, let alone proved. That is
+///   literally how the proof found this: `an_enumerated_page_lies_inside_the_grant` cannot compute the
+///   grant's limit without the check, and fails on it. The old builder had no check, handed `map_range`
+///   a page count derived from such a size, and relied on `map_range`'s unchecked `va + i * PAGE_SIZE`.
+///
+///   **Stated honestly, because the first draft of this comment overstated it:** this is a proof
+///   obligation closed, not a reachable bug fixed. Reaching a wrapped address needs a low-half
+///   page-aligned base *and* a `size` within a page or so of `2^64`, and the builder would run the
+///   frame allocator dry ([`MapError::OutOfFrames`]) after a few thousand pages, tens of orders of
+///   magnitude before the index at which the multiply wraps. No caller can construct such a region
+///   anyway; every grant is frame-allocator memory bounded by RAM. What the check buys is that the
+///   confinement property is now *total*: it holds for every `DmaRegion` value, so nobody has to
+///   re-derive that argument when a new caller appears.
+///
+/// A `size` that is not a whole number of pages is *not* refused: the trailing partial page is simply
+/// not mapped. That is the safe direction (the device reaches less than it was granted, never more)
+/// and it is what the old `size / PAGE_SIZE` already did.
+pub fn grant_pages(r: DmaRegion) -> Result<u64, MapError> {
+    if !r.base.is_multiple_of(PAGE_SIZE) {
+        return Err(MapError::Misaligned);
+    }
+    if r.base.checked_add(r.size).is_none() {
+        return Err(MapError::BadRegion);
+    }
+    Ok(r.size / PAGE_SIZE)
+}
+
+/// **The IOVA of the `i`th whole page of a grant, which is also its PA (the domain is identity).**
+/// `None` if `i` does not name a whole page of this region, so a caller cannot walk off the end by
+/// arithmetic: every add and multiply is checked, which is what makes the enumeration total for any
+/// region and any index.
+///
+/// Which of the two guards here is load-bearing is worth being exact about, because trying to falsify
+/// the soundness proof revealed it. **Soundness rests on [`grant_pages`] flooring**, not on the
+/// partial-page test below: for `i` under the page count the test can never fire, and weakening it to
+/// `off >= r.size` leaves the soundness harness verifying happily (checked, not assumed). Rounding the
+/// *count* up is what breaks it. So the test below is defence in depth for a caller who passes an `i`
+/// the builder never would, and the checked arithmetic is what makes the function total; the
+/// confinement itself comes from the count.
+pub fn grant_page(r: DmaRegion, i: u64) -> Option<u64> {
+    let off = i.checked_mul(PAGE_SIZE)?;
+    // The whole page must fit: a trailing partial page is not one of the grant's pages.
+    if off.checked_add(PAGE_SIZE)? > r.size {
+        return None;
+    }
+    r.base.checked_add(off)
 }
 
 /// **Build a device's DMA domain: an identity map over `regions` and nothing else.**
@@ -67,18 +129,232 @@ where
     // SAFETY: forwarded from this function's contract.
     let mut m = unsafe { Mapper::<A, P, F>::new(root, Half::Low, alloc_frame, phys_to_ptr) };
     for r in regions {
-        let count = r.size / crate::PAGE_SIZE;
-        // A fresh domain: every leaf is new, so map() returns () (no TlbFlush) and there is nothing
-        // to invalidate. The IOMMU has never walked these tables; they are not installed yet.
-        m.map_range(r.base, r.base, count, Flags::user_data())?;
+        // The page set is decided by [`grant_pages`]/[`grant_page`], the proved arithmetic, rather
+        // than by `map_range`'s unchecked `va + i * PAGE_SIZE`. That is what makes "the domain maps
+        // exactly the whole pages of the grant" a proved property of the code that runs: no page
+        // outside the grant is enumerated, and no whole page inside it is skipped.
+        let pages = grant_pages(*r)?;
+        for i in 0..pages {
+            // Unreachable for `i < pages`, and *proved* unreachable by
+            // `a_page_index_below_the_count_always_resolves`; the branch stays because the compiler
+            // cannot see that and a silent `continue` would be a hole rather than an error.
+            let page = grant_page(*r, i).ok_or(MapError::BadRegion)?;
+            // A fresh domain: every leaf is new, so map() returns () (no TlbFlush) and there is
+            // nothing to invalidate. The IOMMU has never walked these tables; they are not installed
+            // yet. `AlreadyMapped` here would mean two grants in `regions` overlap, which fails the
+            // whole build closed rather than quietly merging them.
+            m.map(page, page, Flags::user_data())?;
+        }
     }
     Ok(())
+}
+
+// =============================================================================================
+// Machine-checked proofs (Kani): **the domain maps exactly the grant.** Milestone 35 item 3.
+//
+// The property wanted is the hardware sibling of the DMA validator's: a device's domain maps
+// precisely the frames it was granted and nothing else. Stated over the *built page tables* it is a
+// `Mapper` build-and-translate round trip over a symbolic IOVA, which is the BMC-over-real-memory
+// wall notes/verification.md declined for the ELF parser and for `Mapper` itself. So it is
+// decomposed, the way that note says to decompose ("prefer refactoring the logic to shrinking the
+// proof"): the *page set* the builder feeds the mapper is loopless arithmetic, and that is proved
+// here for every region and every index. What the harnesses give, in the two directions that matter:
+//
+//   soundness (the security direction): every page the builder maps lies wholly inside a granted
+//     region, so no ungranted byte becomes device-reachable;
+//   completeness (the functional direction): every whole page of a granted region is mapped, so the
+//     confinement does not silently starve an honest driver;
+//   injectivity: no page is enumerated twice, so a build cannot fail `AlreadyMapped` against itself;
+//   totality: the arithmetic never panics or wraps, for any base, size, or index.
+//
+// This is format-independent, which is the right shape for a §19 parity gate: one proof covers the
+// SMMUv3 (VMSAv8-64) domain and the RISC-V IOMMU (Sv39) domain, because the page set does not depend
+// on the format. What is *not* proved here is the remaining link, "`Mapper::map` writes exactly one
+// leaf for the page it is told and touches nothing else." That stays underwritten by the proved walk
+// arithmetic (`index_is_always_in_bounds`, `distinct_pages_take_distinct_paths`, the leaf codec on
+// both formats) plus this module's build-and-translate tests below, on both formats. notes/dma.md
+// states that residual plainly.
+// =============================================================================================
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    /// **The enumeration is total: no region and no index makes it panic or wrap.** Both entry points
+    /// over fully symbolic inputs. Kani checks arithmetic overflow and panics on every operation, so a
+    /// run that trips nothing is the totality proof; it is worth its own harness because the builder
+    /// calls these on a region a caller supplied.
+    #[kani::proof]
+    fn the_grant_enumeration_is_total() {
+        let r = DmaRegion {
+            base: kani::any(),
+            size: kani::any(),
+        };
+        let i: u64 = kani::any();
+        let _ = grant_pages(r);
+        let _ = grant_page(r, i);
+    }
+
+    /// **Soundness, the security direction: every page the domain maps lies wholly inside the
+    /// grant.** For every region and every index the builder will visit, the enumerated IOVA is
+    /// page-aligned and `[page, page + PAGE_SIZE)` is contained in `[base, base + size)`. So the
+    /// domain cannot map a byte the device was not granted: not the bytes below an unaligned base
+    /// (refused), not a trailing partial page (never enumerated), and not a low address reached by
+    /// wrapping (refused). Since IOVA == PA, this is equally the statement that the device translates
+    /// only to granted physical memory.
+    #[kani::proof]
+    fn an_enumerated_page_lies_inside_the_grant() {
+        let r = DmaRegion {
+            base: kani::any(),
+            size: kani::any(),
+        };
+        let i: u64 = kani::any();
+        if let Ok(pages) = grant_pages(r) {
+            kani::assume(i < pages);
+            let page = grant_page(r, i).expect("a page index below the count always resolves");
+            assert!(
+                page.is_multiple_of(PAGE_SIZE),
+                "an unaligned page was mapped"
+            );
+            assert!(page >= r.base, "a page below the grant was mapped");
+            let end = page
+                .checked_add(PAGE_SIZE)
+                .expect("an enumerated page cannot end past u64");
+            let limit = r
+                .base
+                .checked_add(r.size)
+                .expect("an accepted grant has an end");
+            assert!(end <= limit, "a page past the end of the grant was mapped");
+            // The harness reaches grants that actually have pages to map (see the non-vacuity note on
+            // `every_whole_page_of_the_grant_is_enumerated`).
+            kani::cover!(pages > 1, "a multi-page grant satisfies the assumptions");
+        }
+    }
+
+    /// **The `ok_or` in the builder is dead code, provably.** For every accepted region, every index
+    /// below the page count resolves, so the builder's defensive branch cannot fire and the loop maps
+    /// exactly `pages` pages. Split from the soundness harness because it is the fact the builder's
+    /// control flow depends on, and it should be named where a reader of that branch will look.
+    #[kani::proof]
+    fn a_page_index_below_the_count_always_resolves() {
+        let r = DmaRegion {
+            base: kani::any(),
+            size: kani::any(),
+        };
+        let i: u64 = kani::any();
+        if let Ok(pages) = grant_pages(r) {
+            kani::assume(i < pages);
+            assert!(
+                grant_page(r, i).is_some(),
+                "an index below the page count did not resolve",
+            );
+        }
+    }
+
+    /// **Completeness, the functional direction: no whole page of the grant is left unmapped.** For
+    /// every accepted region and every page-aligned address whose whole page lies inside it, there is
+    /// an index below the page count that enumerates exactly that address. Proved constructively (the
+    /// witness is `(iova - base) / PAGE_SIZE`), which is stronger than an existence claim: it says
+    /// *which* iteration maps it.
+    ///
+    /// Without this, "maps exactly the grant" would be half a property. A domain that mapped nothing
+    /// at all would satisfy soundness perfectly and confine the device by starving it, which is not
+    /// the confinement anybody wants, and the failure would surface as a mysterious device fault
+    /// rather than as a refusal.
+    #[kani::proof]
+    fn every_whole_page_of_the_grant_is_enumerated() {
+        let r = DmaRegion {
+            base: kani::any(),
+            size: kani::any(),
+        };
+        let iova: u64 = kani::any();
+        if let Ok(pages) = grant_pages(r) {
+            kani::assume(iova.is_multiple_of(PAGE_SIZE));
+            kani::assume(iova >= r.base);
+            let end = match iova.checked_add(PAGE_SIZE) {
+                Some(e) => e,
+                None => return,
+            };
+            let limit = r
+                .base
+                .checked_add(r.size)
+                .expect("an accepted grant has an end");
+            kani::assume(end <= limit);
+
+            let i = (iova - r.base) / PAGE_SIZE;
+            assert!(i < pages, "a granted page has no index in the enumeration");
+            assert_eq!(
+                grant_page(r, i),
+                Some(iova),
+                "a granted page is not the page its own index enumerates",
+            );
+
+            // **Non-vacuity, machine-checked.** Four stacked assumptions could in principle be jointly
+            // unsatisfiable, in which case this harness would verify while proving nothing at all;
+            // notes/verification.md calls that the main failure mode ("it proves what you asserted, not
+            // what you meant"). `kani::cover!` fails when a state is *un*reachable, so this asserts the
+            // harness really does reach a grant with pages in it.
+            kani::cover!(pages > 0, "a non-empty grant satisfies the assumptions");
+            kani::cover!(
+                pages > 1,
+                "so does a multi-page grant, so `i` is not pinned to 0"
+            );
+        }
+    }
+
+    /// **The enumeration is injective: two distinct indices are two distinct pages.** So one region's
+    /// build never maps the same IOVA twice, which matters because [`Mapper::map`] refuses a second
+    /// write to a live leaf ([`MapError::AlreadyMapped`]): without injectivity a perfectly legal grant
+    /// could fail its own build. Together with soundness and completeness this pins the mapped set to
+    /// exactly the grant's whole pages, counted once each.
+    #[kani::proof]
+    fn the_enumeration_is_injective() {
+        let r = DmaRegion {
+            base: kani::any(),
+            size: kani::any(),
+        };
+        let i: u64 = kani::any();
+        let j: u64 = kani::any();
+        if let Ok(pages) = grant_pages(r) {
+            kani::assume(i < pages);
+            kani::assume(j < pages);
+            kani::assume(i != j);
+            assert_ne!(
+                grant_page(r, i),
+                grant_page(r, j),
+                "two distinct indices enumerate the same page",
+            );
+            // Two distinct in-range indices must actually exist, or this proves nothing: a grant of one
+            // page satisfies `i < pages && j < pages && i != j` for no `(i, j)` at all.
+            kani::cover!(
+                pages > 1,
+                "a grant with two distinct page indices is reachable"
+            );
+        }
+    }
+
+    /// **A grant the domain cannot express exactly is refused, not approximated.** For every region
+    /// with an unaligned base or an end that wraps `u64`, [`grant_pages`] errors, so the builder maps
+    /// nothing at all rather than mapping a rounded or wrapped page set. This is the fail-closed half
+    /// of the property: the two inputs that could produce an *over*-map are the two that are refused.
+    #[kani::proof]
+    fn a_grant_the_domain_cannot_express_is_refused() {
+        let r = DmaRegion {
+            base: kani::any(),
+            size: kani::any(),
+        };
+        if !r.base.is_multiple_of(PAGE_SIZE) || r.base.checked_add(r.size).is_none() {
+            assert!(
+                grant_pages(r).is_err(),
+                "a grant no page-granular domain can express exactly was accepted",
+            );
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Aarch64, PAGE_SIZE, Sv39};
+    use crate::{Aarch64, Sv39};
     use std::alloc::{Layout, alloc_zeroed};
     use std::vec::Vec;
 

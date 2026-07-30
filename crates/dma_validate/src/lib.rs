@@ -227,13 +227,13 @@ fn shadow_one_head(
 }
 
 // ---------------------------------------------------------------------------------------------
-// The queue ring layout, shared with the kernel (kernel/src/virtio.rs) and the userspace driver.
-//
-// These constants mirror the kernel's; they are duplicated here (not owned here) so the multi-queue
-// isolation property can be proved without moving the kernel's `setup_queue` layout, which the
-// milestone-35 change deliberately left untouched. The kernel keeps its own compile-time asserts
-// (`RING_END <= RING_BLOCK`, `MAX_QUEUES * RING_BLOCK <= FRAME_SIZE`) that catch drift on the safety-
-// critical relation; `distinct_queues_occupy_disjoint_blocks` here proves the isolation that follows.
+// The queue ring layout. **Owned here, and used by the kernel** (kernel/src/virtio.rs defines its
+// `QSIZE`, `RING_BLOCK`, `MAX_QUEUES`, and the three ring offsets as aliases of these), because a
+// proof about a *copy* of the layout proves nothing about the layout that runs. The first cut of
+// milestone 35 duplicated them and said so; that left `distinct_queues_occupy_disjoint_blocks`
+// quantifying over constants the kernel could drift away from silently. The kernel keeps its own
+// compile-time asserts as well, so drift would now be a compile error in two places rather than a
+// proof that quietly stopped applying.
 // ---------------------------------------------------------------------------------------------
 
 /// The negotiated queue size the kernel drives (`QSIZE` in kernel/src/virtio.rs).
@@ -372,10 +372,20 @@ mod verification {
             }
         }
         fn write64(&self, p: u64, v: u64) {
-            // A write to any address the subtraction cannot resolve (outside the shadow table) would
+            // A write to any address the subtraction cannot resolve (below the shadow table) would
             // trip Kani's overflow check here, which itself proves the walk only ever writes the
             // shadow, never back into the driver's region.
             let off = p - SHADOW_DESC;
+            // And it never writes *past* its own queue's descriptor table. Stated as an assertion
+            // rather than left implicit in the array bound below, because this is the multi-queue
+            // half of the confinement: a write bounded by `16 * qsize` stays inside `DESC_OFF ..
+            // AVAIL_OFF` of one queue's ring block, and `distinct_queues_occupy_disjoint_blocks`
+            // proves the blocks do not overlap. Together: validating a NIC's receive queue cannot
+            // touch its transmit queue's rings.
+            assert!(
+                off < 16 * QS as u64,
+                "a shadow write ran past this queue's descriptor table",
+            );
             let d = (off / 16) as usize;
             if off.is_multiple_of(16) {
                 self.s_desc.borrow_mut()[d].addr = v; // addr half, written first
@@ -512,6 +522,142 @@ mod verification {
         }
     }
 
+    // A region and a descriptor that always validate, for the harness below. Concrete on purpose:
+    // that harness isolates the *outer* loop's index arithmetic, and descriptor content is
+    // `validate_and_shadow_confines_every_chain`'s job. Making both symbolic at once would put
+    // `qsize` heads times `qsize` descriptors of symbolic reads in one formula, which is the batching
+    // blowup the main theorem factors out, for no coverage the two harnesses do not already give.
+    const OUTER_BASE: u64 = 0x8000_0000;
+    const OUTER_SIZE: u64 = 0x1000;
+
+    /// **The outer walk stays inside both rings and terminates, for every index pair, wraparound
+    /// included.** The confinement theorem above proves one head's chain; this proves the loop that
+    /// feeds it. `avail.idx` is a `u16` that wraps, and the walk runs `from_idx .. to_idx` through
+    /// that wrap (`from = 0xffff, to = 0x0002` is an ordinary three-entry batch), computing a ring
+    /// slot as `idx % qsize` and `wrapping_add`ing. Both `from` and `to` are unconstrained here, so
+    /// the wrapped case is covered rather than assumed away, and every closure asserts the address it
+    /// is handed:
+    ///
+    /// - a 16-bit read is exactly a `ring[slot]` load with `slot < qsize` (a read below the ring
+    ///   underflows the offset subtraction, which Kani flags, so "never reads outside the available
+    ///   ring" is proved in both directions);
+    /// - a 16-bit write is either the `avail.idx` publish or a `ring[slot]` mirror with `slot <
+    ///   qsize`;
+    /// - a 64-bit descriptor read or shadow write stays inside a `qsize`-entry table.
+    ///
+    /// **Termination is proved, not assumed.** `#[kani::unwind(11)]` is one more than the walk can
+    /// possibly need (the batch guard caps the outer loop at `qsize = 8` iterations, and each chain
+    /// here is one descriptor), and Kani's unwinding assertion fails if a loop could run longer. So
+    /// no index pair, wrapped or not, makes this loop spin: the property that keeps a hostile
+    /// `avail.idx` from holding the `DEVICES` lock with interrupts masked.
+    #[kani::proof]
+    #[kani::unwind(11)]
+    fn the_outer_walk_stays_inside_the_rings_and_terminates() {
+        let from: u16 = kani::any();
+        let to: u16 = kani::any();
+
+        // A symbolic available ring: each slot names an arbitrary head, in range or not.
+        let mut ring = [0u16; Q];
+        let mut i = 0;
+        while i < Q {
+            ring[i] = kani::any();
+            i += 1;
+        }
+
+        let read16 = |p: u64| -> u16 {
+            let off = p - DRIVER_AVAIL; // underflow here = a read below the ring: Kani catches it
+            assert!(
+                off >= 4,
+                "a 16-bit read below the available ring's ring[] array"
+            );
+            assert!(
+                (off - 4).is_multiple_of(2),
+                "an unaligned available-ring read"
+            );
+            let slot = (off - 4) / 2;
+            assert!(
+                slot < QS as u64,
+                "a read past the end of the available ring"
+            );
+            ring[slot as usize]
+        };
+        let read64 = |p: u64| -> u64 {
+            let off = p - DRIVER_DESC;
+            assert!(
+                off < 16 * QS as u64,
+                "a descriptor read past the end of the table"
+            );
+            // An in-region 8-byte buffer, no flags, so every chain is exactly one descriptor.
+            if off.is_multiple_of(16) {
+                OUTER_BASE
+            } else {
+                8
+            }
+        };
+        let write16 = |p: u64, _v: u16| {
+            let off = p - SHADOW_AVAIL;
+            if off == 2 {
+                return; // publishing the shadow's avail.idx, the last write
+            }
+            assert!(
+                off >= 4,
+                "a 16-bit write below the shadow ring's ring[] array"
+            );
+            assert!(
+                (off - 4).is_multiple_of(2),
+                "an unaligned shadow available-ring write"
+            );
+            assert!(
+                (off - 4) / 2 < QS as u64,
+                "a write past the end of the shadow available ring"
+            );
+        };
+        let write64 = |p: u64, _v: u64| {
+            let off = p - SHADOW_DESC;
+            assert!(
+                off < 16 * QS as u64,
+                "a shadow descriptor write past the end of the table"
+            );
+        };
+
+        let ok = validate_and_shadow(
+            OUTER_BASE,
+            OUTER_SIZE,
+            DRIVER_DESC,
+            DRIVER_AVAIL,
+            SHADOW_DESC,
+            SHADOW_AVAIL,
+            from,
+            to,
+            QS,
+            &read16,
+            &read64,
+            &write16,
+            &write64,
+        );
+
+        // **Non-vacuity, machine-checked rather than argued.** An assertion-only harness passes
+        // trivially if its inputs cannot reach the interesting states, and notes/verification.md names
+        // that ("it proves what you asserted, not what you meant") as the main failure mode, not solver
+        // bugs. `kani::cover!` inverts the question: it fails if the state is *un*reachable. So these
+        // are the claim "this harness really does exercise wraparound and really does walk descriptors",
+        // checked. Without them, "from and to are unconstrained, so the wrapped pairs are in there
+        // somewhere" would be a reading of the code rather than a result.
+        kani::cover!(to < from, "a wrapped batch (to < from) is reachable");
+        kani::cover!(
+            to < from && ok,
+            "a wrapped batch is walked to completion, not merely refused"
+        );
+        kani::cover!(
+            to != from && ok,
+            "some batch is accepted, so the walk is not vacuously refusing everything"
+        );
+        kani::cover!(
+            !ok,
+            "some batch is refused, so the guards are reachable too"
+        );
+    }
+
     /// **Distinct queues occupy disjoint ring blocks** (milestone 30 multi-queue isolation). A NIC
     /// drives receive on queue 0 and transmit on queue 1; each queue's rings live at `queue_block(q)`
     /// in both the driver region and the shadow, so validating one queue never reads or writes
@@ -528,6 +674,12 @@ mod verification {
         assert!(queue_block(q1) + RING_END <= queue_block(q2));
         // And each queue's ring area fits within its own block, so the blocks fully contain them.
         assert!(RING_END <= RING_BLOCK);
+        // The descriptor table a walk writes (`16 * qsize` bytes from `DESC_OFF`) ends at or before
+        // the available ring begins. This is what makes the walk's own `off < 16 * qsize` write bound
+        // (asserted in `ChainMem::write64`) add up to block isolation: a shadow write stays inside
+        // `DESC_OFF .. AVAIL_OFF` of one block, and the blocks do not overlap, so no shadow write can
+        // land in another queue's rings or in this queue's own available ring.
+        assert!(DESC_OFF + 16 * LAYOUT_QSIZE as u64 <= AVAIL_OFF);
     }
 }
 

@@ -364,6 +364,11 @@ pub enum MapError {
     WrongHalf,
     /// Nothing is mapped at this address, so there is nothing to unmap.
     NotMapped,
+    /// **A region that is not a region**: its `base + size` wraps `u64`, so it has no end. Only
+    /// [`domain::grant_pages`] raises this, and only for an input no caller can construct today; it
+    /// exists because refusing such a region is what stops the page enumeration from wrapping into
+    /// addresses *outside* the grant. See [`domain::grant_pages`] for the whole argument.
+    BadRegion,
 }
 
 /// Builds page tables, for any [`PageFormat`].

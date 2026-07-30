@@ -344,18 +344,26 @@ impl Transport {
 /// kernel places the rings at these offsets in the DMA region, so it always knows where they are.
 /// These offsets are **relative to a queue's ring block**; a device's queue `q` puts its rings at
 /// `q * RING_BLOCK + {DESC,AVAIL,USED}_OFF` (see `RING_BLOCK`).
-pub const QSIZE: u16 = 8;
-const DESC_OFF: u64 = 0x000; // 16 * QSIZE
-const AVAIL_OFF: u64 = 0x080; // 6 + 2*QSIZE
-const USED_OFF: u64 = 0x100; // 6 + 8*QSIZE
+///
+/// **These are aliases, not copies.** The layout is defined in `crates/dma_validate`, where
+/// `distinct_queues_occupy_disjoint_blocks` proves the isolation that follows from it (a queue's ring
+/// area fits inside its own block, blocks do not overlap, and the descriptor table a validation walk
+/// writes ends before the available ring begins). Milestone 35 first duplicated them here, which left
+/// the proof quantifying over constants this file could drift away from silently; aliasing makes the
+/// proved layout the layout that runs, the same discipline that has the kernel *call*
+/// `dma_validate::validate_and_shadow` rather than keep a parallel copy of it.
+pub const QSIZE: u16 = dma_validate::LAYOUT_QSIZE;
+const DESC_OFF: u64 = dma_validate::DESC_OFF; // 16 * QSIZE
+const AVAIL_OFF: u64 = dma_validate::AVAIL_OFF; // 6 + 2*QSIZE
+const USED_OFF: u64 = dma_validate::USED_OFF; // 6 + 8*QSIZE
 /// The whole ring area of one queue must fit under this; a queue's data buffers live above it.
-const RING_END: u64 = USED_OFF + 6 + 8 * QSIZE as u64;
+const RING_END: u64 = dma_validate::RING_END;
 
 /// The most virtqueues the confinement drives per device. A virtio-net device needs two (receive =
 /// queue 0, transmit = queue 1); the disk uses only queue 0. Fixed and small on purpose: one
 /// kernel-private shadow frame per device holds every queue's shadow rings, so the ceiling is what
 /// fits there (`MAX_QUEUES * RING_BLOCK <= FRAME_SIZE`), asserted below, not a policy dial.
-pub const MAX_QUEUES: usize = 2;
+pub const MAX_QUEUES: usize = dma_validate::MAX_QUEUES as usize;
 
 /// The stride between successive queues' ring areas, in **both** the driver's DMA region and the
 /// kernel-private shadow. Queue `q`'s descriptor table, available ring, and used ring sit at
@@ -363,7 +371,7 @@ pub const MAX_QUEUES: usize = 2;
 /// (`RING_END`) and keeps queue 0 byte-identical to the single-queue layout the disk driver already
 /// uses: the disk's data buffers begin at 0x200 (= queue 1's block), which is free because a disk
 /// has no queue 1, so the disk needs no change at all.
-const RING_BLOCK: u64 = 0x200;
+const RING_BLOCK: u64 = dma_validate::RING_BLOCK;
 
 // The shadow frame must hold every queue's ring block, and a queue's ring area must fit in its
 // block. Both are compile-time facts, so break the build if a future edit violates either.
@@ -376,9 +384,10 @@ const _: () = assert!(
     "the shadow frame cannot hold every queue's ring block",
 );
 
-/// Queue `q`'s ring block base, relative to a region (driver DMA or shadow) base.
+/// Queue `q`'s ring block base, relative to a region (driver DMA or shadow) base. The proved
+/// function, for the same reason the constants above are aliases.
 const fn queue_block(q: u16) -> u64 {
-    q as u64 * RING_BLOCK
+    dma_validate::queue_block(q)
 }
 
 // The descriptor flags the validator acts on. The validation logic that reads them now lives in

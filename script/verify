@@ -24,7 +24,7 @@ fi
 echo "==> kani: caps (the capability model)"
 cargo kani -p caps
 
-echo "==> kani: paging (the address arithmetic)"
+echo "==> kani: paging (the address arithmetic, and the IOMMU domain's page set)"
 cargo kani -p paging
 
 echo "==> kani: regions (the untyped-region accounting, no double-free)"

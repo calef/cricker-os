@@ -364,10 +364,23 @@ mod verification {
 
     /// **Authority never widens at the other mint site either: `split` inherits, it does not grant.**
     /// `Untyped::SPLIT` mints a child budget outside [`CSpace::derive`] (kernel/src/cap.rs), so
-    /// `derive_never_widens_rights` does not reach it; the kernel now routes that mint through
-    /// [`Cap::mint_child`], and this proves the same theorem there: for every rights pattern, a child
-    /// minted from a parent holds no more than the parent did. So a spend-only untyped cannot split
-    /// itself a GRANT-bearing child and manufacture the authority it was denied. Milestone 35.
+    /// `derive_never_widens_rights` does not reach it; the kernel routes that mint through
+    /// [`Cap::mint_child`], and this proves the theorem there. Milestone 35.
+    ///
+    /// **What the property is, precisely, because DECISIONS §16's amendment makes the obvious phrasing
+    /// wrong.** `SPLIT` grants the child `GRANT` so that a budget can be delegated onward, so "SPLIT
+    /// never *changes* rights" is false as a description of the feature's intent, and "never widens"
+    /// invites the question of what the model permits. What is proved is the strongest of the three and
+    /// the one that settles it: **the child's rights are exactly the parent's.** `mint_child` takes no
+    /// rights argument, so there is no input by which a caller could ask for more, and equality implies
+    /// the subset relation the rest of the model is stated in (asserted too, so the corollary the
+    /// syscall layer relies on is checked here and not inferred by a reader).
+    ///
+    /// The delegability is therefore a property of the *root's* mint, not a widening at `SPLIT`:
+    /// `untyped_root_cap` mints once with `READ|WRITE|GRANT`, `SPLIT` inherits whatever the parent
+    /// holds, `CAP_INSERT` narrows on the way into a child. Rights down a budget tree are monotonically
+    /// non-increasing from the root, a child holds `GRANT` only because the root did, and a spend-only
+    /// untyped provably cannot split itself a `GRANT`-bearing child.
     #[kani::proof]
     fn split_never_widens_rights() {
         let parent = Cap {
@@ -378,6 +391,12 @@ mod verification {
 
         let child = parent.mint_child(child_object);
 
+        // Exactly the parent's, for every one of the 2^32 rights patterns: inheritance, not a grant.
+        assert_eq!(
+            child.rights, parent.rights,
+            "an inheriting mint changed the child's rights",
+        );
+        // The weaker relation the capability model is phrased in, which the above implies.
         assert!(child.rights.is_subset_of(parent.rights));
         assert_eq!(child.object, child_object);
     }
