@@ -24,8 +24,8 @@
 //! ```
 //!
 //! The directory is [`DIR_BLOCKS`] blocks, holding the magic, the count, and up to [`MAX_FILES`]
-//! entries. It grew from one block to two at milestone 24: the interactive system plus its demo
-//! programs passed fifteen files. `start_block` is an absolute block number, so a reader never needs
+//! entries. It grew from one block to two at milestone 24 (the interactive system plus its demo
+//! programs passed fifteen files), and to four on 2026-07-30 (three lanes landing together made 32). `start_block` is an absolute block number, so a reader never needs
 //! to know `DIR_BLOCKS` to find data; only the writer places it. That is why the magic did not need
 //! to change: a reader (the kernel loader, the EL0 blk driver) is oblivious to where data begins.
 
@@ -42,12 +42,28 @@ pub const BLOCK: usize = 512;
 pub const MAGIC: [u8; 8] = *b"CRKR0001";
 
 /// How many blocks the superblock-and-directory occupies. File data starts after it.
-pub const DIR_BLOCKS: usize = 2;
+pub const DIR_BLOCKS: usize = 4;
 
 const NAME_LEN: usize = 24;
 const ENTRY_LEN: usize = 32;
-/// The most files an image can hold: the directory blocks, past the 12-byte header, in 32-byte
-/// entries. Two blocks give 31, comfortably past the interactive system's file count.
+/// The most files an archive can hold: the directory blocks, past the 12-byte header, in 32-byte
+/// entries. 63 at `DIR_BLOCKS = 4`.
+///
+/// **This is a ceiling that grows with the SUITE, not with the system**, which is the same shape as
+/// the kernel's old endpoint carve: every parallel branch fits on its own, and the union of their
+/// binaries is what crosses the line, so the cost is invisible to each branch that causes it and
+/// lands on whoever merges. It went 2 blocks (31 files) to 4 (63) on 2026-07-30, when three lanes
+/// landing together added `fwarden`, `vterm` and `kbd` and made 32.
+///
+/// **Doubled rather than quadrupled, deliberately.** [`Fs`] holds `entries` as a fixed array and is a
+/// stack local in the kernel's boot and spawn paths, so this constant is kernel stack: 63 entries is
+/// ~2 KB, 127 would be ~4 KB. The same day this was raised, the FS server was found to have died from
+/// being 528 bytes short of stack, which is a poor day to spend kilobytes for headroom nobody needs.
+///
+/// **The real fix, when this next bites:** parse entries lazily out of the image instead of copying
+/// them into a fixed array. [`Fs`] already borrows the whole image so lookups can return slices into
+/// it, so the array is a convenience rather than a requirement, and removing it would retire both the
+/// limit and the stack cost at once.
 pub const MAX_FILES: usize = (DIR_BLOCKS * BLOCK - 12) / ENTRY_LEN;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,9 +97,16 @@ impl Entry {
 }
 
 /// A parsed superblock. Borrows the whole image so file lookups can return slices into it.
+///
+/// **Holds no entry array, deliberately.** It used to copy every directory entry into a fixed
+/// `[Entry; MAX_FILES]`, which made [`MAX_FILES`] a charge against the *kernel stack*: `Fs` is a stack
+/// local in the boot and spawn paths, and raising the limit from 31 to 63 entries on 2026-07-30
+/// overflowed a 4-page kernel stack immediately, faulting on the guard page while parsing the initrd.
+/// Entries are decoded from the borrowed image on demand instead, which costs a few instructions per
+/// lookup on a path that runs a handful of times per boot, and retires the stack cost and the ceiling
+/// together. The image is already borrowed for exactly this reason.
 pub struct Fs<'a> {
     image: &'a [u8],
-    entries: [Entry; MAX_FILES],
     count: usize,
 }
 
@@ -103,20 +126,11 @@ impl<'a> Fs<'a> {
             return Err(Error::TooManyFiles);
         }
 
-        let mut entries = [Entry {
-            name: [0; NAME_LEN],
-            start_block: 0,
-            len: 0,
-        }; MAX_FILES];
-
-        for (i, e) in entries.iter_mut().enumerate().take(count) {
-            let off = 12 + i * ENTRY_LEN;
-            e.name.copy_from_slice(&image[off..off + NAME_LEN]);
-            e.start_block = u32le(image, off + NAME_LEN);
-            e.len = u32le(image, off + NAME_LEN + 4);
-
-            // Validate now, not while reading: a server should reject a corrupt image once, up
-            // front, not discover it mid-request.
+        // Validate every entry now, not while reading: a server should reject a corrupt image once,
+        // up front, rather than discover it mid-request. Decoding into a local costs no stack that
+        // survives the loop, which is the whole point of not keeping the array.
+        for i in 0..count {
+            let e = Self::entry_at(image, i);
             let start = e.start_block as usize * BLOCK;
             let end = start
                 .checked_add(e.len as usize)
@@ -126,11 +140,7 @@ impl<'a> Fs<'a> {
             }
         }
 
-        Ok(Fs {
-            image,
-            entries,
-            count,
-        })
+        Ok(Fs { image, count })
     }
 
     pub fn len(&self) -> usize {
@@ -141,13 +151,27 @@ impl<'a> Fs<'a> {
         self.count == 0
     }
 
-    pub fn entries(&self) -> &[Entry] {
-        &self.entries[..self.count]
+    /// Decode entry `i` out of the directory. Caller guarantees `i < count`, which every caller here
+    /// does by construction; `parse` has already bounds-checked the directory span.
+    fn entry_at(image: &[u8], i: usize) -> Entry {
+        let off = 12 + i * ENTRY_LEN;
+        let mut name = [0u8; NAME_LEN];
+        name.copy_from_slice(&image[off..off + NAME_LEN]);
+        Entry {
+            name,
+            start_block: u32le(image, off + NAME_LEN),
+            len: u32le(image, off + NAME_LEN + 4),
+        }
+    }
+
+    /// The directory, decoded lazily. One `Entry` exists at a time rather than [`MAX_FILES`] of them.
+    pub fn entries(&self) -> impl Iterator<Item = Entry> + '_ {
+        (0..self.count).map(|i| Self::entry_at(self.image, i))
     }
 
     /// The bytes of a file, by name.
     pub fn read(&self, name: &str) -> Option<&'a [u8]> {
-        let e = self.entries().iter().find(|e| e.name_eq(name))?;
+        let e = self.entries().find(|e| e.name_eq(name))?;
         let start = e.start_block as usize * BLOCK;
         Some(&self.image[start..start + e.len as usize])
     }
@@ -233,7 +257,7 @@ mod tests {
         write_image(&files, &mut img).unwrap();
 
         let fs = Fs::parse(&img).unwrap();
-        let after = fs.entries().iter().find(|e| e.name_eq("after")).unwrap();
+        let after = fs.entries().find(|e| e.name_eq("after")).unwrap();
         assert_eq!(
             after.start_block as usize,
             DIR_BLOCKS + 2,
