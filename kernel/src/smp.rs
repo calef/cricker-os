@@ -14,10 +14,10 @@
 //! structure) and fires the reschedule SGI; the target drains its inbox into its own queue in the
 //! handler. `sched::spawn_on(core, f)` is the primitive.
 //!
-//! **Load balancing** is the last piece: `sched::spawn_balanced(f)` round-robins placement over the
-//! online cores (via `spawn_on`), so a batch of independent work fills the machine. `spawn` itself
-//! stays *local* placement on purpose, because much kernel work wants locality and placement is
-//! policy, not mechanism, in a microkernel; `spawn_balanced` is the explicit "spread it" call.
+//! **Load balancing** is the last piece, and since DECISIONS §28 it lives in `sched::spawn` itself:
+//! two random choices at spawn, then work stealing by idle cores. There used to be an explicit
+//! `spawn_balanced` that round-robined placement, and milestone 41 deleted it, because §28 left it
+//! with no caller and a doc comment claiming a test used it that had already moved to plain `spawn`.
 
 use crate::cpu::{self, MAX_CPUS};
 use crate::{arch, println};
@@ -309,8 +309,8 @@ mod tests {
     /// Offer the scheduler more runnable threads than cores and every core must end up running one.
     ///
     /// The measure is deliberately "which core is a thread running on *now*", marked every spin, not
-    /// "which core did a thread first land on". Since §28 the two differ: `spawn` and `spawn_balanced`
-    /// place work, but idle cores then *steal* it, so a thread migrates. A first-landing count would
+    /// "which core did a thread first land on". Since §28 the two differ: `spawn` places work, but
+    /// idle cores then *steal* it, so a thread migrates. A first-landing count would
     /// race (a core's placed thread can be stolen before that core runs it); the running-now mark
     /// captures placement and stealing together, which is the property that matters, the whole machine
     /// is busy. The threads spin until released so the work persists long enough for stealing to reach
