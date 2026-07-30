@@ -119,30 +119,33 @@ why the ceiling lives in the kernel, where nothing can route around it.
   `user::a_dead_user_thread_frees_its_whole_address_space`: reaping and exact frame accounting under
   cross-core reap lag (the latter waits the lag out rather than reading the instant the count drops).
 
-### A found flake, unfixed and named: `cpu::boot_cpu_percpu_is_reachable` assumes an affinity
+### A found flake, fixed: a per-CPU test was asserting an affinity nothing promised
 
 Found while running the gates for milestone 35, on a tree whose diff cannot touch scheduling
-(`#[cfg(kani)]` harnesses, the DMA validator's layout constants, and the IOMMU domain builder). It is
-recorded here rather than fixed because the fix is a question about what the test harness promises, not
-a bug in this milestone's lane.
+(`#[cfg(kani)]` harnesses, the DMA validator's layout constants, and the IOMMU domain builder), which
+is what made it clearly pre-existing rather than a regression.
 
-`kernel::cpu::tests::boot_cpu_percpu_is_reachable` opens with `assert_eq!(id(), arch::boot_cpu_id())`,
-so it asserts **the test case is executing on the boot core**. On aarch64 `boot_cpu_id()` is the
+`kernel::cpu::tests::boot_cpu_percpu_is_reachable` opened with `assert_eq!(id(), arch::boot_cpu_id())`,
+so it asserted **the test case is executing on the boot core**. On aarch64 `boot_cpu_id()` is the
 constant 0 and `id()` is derived from `TPIDR_EL1`, which each core sets once at boot and which no
 context switch saves or restores; so `id() == 1` means the code really was running on core 1, not that
 a pointer was stale. Nothing promises otherwise: with four cores online and §28's stealing, a secondary
 core may pull the test thread, and then the assertion fails on an affinity the scheduler never offered.
 
-Observed **once in four consecutive full-suite runs** on an unchanged tree (`left: 1, right: 0` at
-`kernel/src/cpu.rs:275`), so roughly a one-in-four flake on this machine, and it fails the aarch64 half
-of `script/test` when it fires. Both halves pass on a re-run.
+Observed **once in four consecutive full-suite runs** on an unchanged tree (`left: 1, right: 0`), so
+roughly a one-in-four flake on this machine, failing the aarch64 half of `script/test` when it fired.
 
-The two candidate fixes are genuinely different decisions, which is why this is a note and not a patch:
+**Resolved by weakening the test to the property its own doc comment always described**, now
+`cpu::tests::percpu_is_self_consistent_on_whatever_core_we_run`: `current()` points at `PERCPU[id()]`
+and no other block, plus `of(boot)` reaches the boot core's block by index, which is what the
+cross-core paths (IPI, stealing) actually rely on. That is true on every core, so it is stronger
+coverage rather than weaker: under §28 placement the suite scatters, and the property gets exercised on
+several cores over a run instead of only the boot core.
 
-1. **Weaken the test to the property it documents.** Its doc comment says the point is "the boot core
-   set up its per-CPU pointer, and `current()` reaches a real block". That is portable and true on any
-   core: assert `current() as *const _ == &PERCPU[id()]` and `arch::percpu_matches_hart()`, and drop the
-   boot-core claim. Cheapest, and loses nothing the comment claims.
-2. **Give kernel test cases boot-core affinity** and keep the stronger assertion. That is a real
-   promise to make about the harness (other tests might come to lean on it), and it would need pinning
-   the test thread rather than asserting after the fact.
+The rejected alternative was **giving kernel test cases boot-core affinity** to keep the original
+assertion. It reads like the more rigorous option and is the worse trade: it buys one assertion back at
+the price of running the entire suite on one core, which is exactly where the placement bugs §28
+introduced would hide. A harness that avoids the scheduler it is meant to test is not a harness. The
+general rule this is an instance of: when a test fails because the system legitimately does something
+the test did not expect, check whether the *test's* claim was ever promised before treating the
+system's behaviour as the defect.

@@ -264,19 +264,44 @@ mod tests {
     use super::*;
     use core::sync::atomic::Ordering;
 
-    /// The boot core set up its per-CPU pointer, and `current()` reaches a real block.
+    /// Whatever core this runs on set up its per-CPU pointer, and `current()` reaches that core's
+    /// block and no other.
     ///
-    /// The boot core's id is `arch::boot_cpu_id()`: 0 on aarch64, but on RISC-V the boot hart is not
-    /// guaranteed to be 0 (QEMU picks it), and the logical id equals the hart id, so this reads it
-    /// rather than assuming 0.
+    /// This used to additionally assert `id() == arch::boot_cpu_id()`, and that assertion was a
+    /// placement claim wearing a per-CPU test's clothes. It failed about one full run in four once
+    /// DECISIONS §28's idle stealing started letting a secondary core pull the test thread. The
+    /// failure was honest: `id()` reads `TPIDR_EL1` (`tp` on RISC-V), which is per-CORE and set at
+    /// core init, and which no context switch saves or restores, so an `id()` of 1 means the test
+    /// genuinely ran on core 1. Nothing was broken except the test's assumption about where it runs.
+    ///
+    /// So it asserts the property its own doc comment always described: `current()` is
+    /// self-consistent with `id()`. That holds on every core, which makes it stronger coverage rather
+    /// than weaker: under §28 placement the suite scatters, so over a run this gets exercised on
+    /// several cores instead of only the boot core.
+    ///
+    /// The alternative was giving kernel tests boot-core affinity, and it is the wrong trade. Pinning
+    /// tests to core 0 would buy this one assertion back at the cost of running the whole suite on
+    /// one core, which is precisely where the placement bugs §28 introduced would hide. A harness
+    /// that avoids the scheduler it is meant to test is not a harness.
+    ///
+    /// `boot_cpu_id()` is still read rather than assumed to be 0, because on RISC-V the boot hart is
+    /// whichever one QEMU picks; it is used here only to prove the id is a plausible online core.
     #[test_case]
-    fn boot_cpu_percpu_is_reachable() {
-        let boot = crate::arch::boot_cpu_id();
-        assert_eq!(id(), boot);
+    fn percpu_is_self_consistent_on_whatever_core_we_run() {
+        let me = id();
+        assert!(me < MAX_CPUS, "cpu::id() returned {me}, out of range");
         assert_eq!(
             current() as *const PerCpu,
+            &PERCPU[me] as *const PerCpu,
+            "current() does not point at this core's own block"
+        );
+        // The boot core's block is reachable by index from any core, which is what `of()` promises
+        // and what the cross-core paths (IPI, stealing) rely on.
+        let boot = crate::arch::boot_cpu_id();
+        assert_eq!(
+            of(boot) as *const PerCpu,
             &PERCPU[boot] as *const PerCpu,
-            "current() does not point at the boot core's block"
+            "of(boot) does not reach the boot core's block"
         );
     }
 
