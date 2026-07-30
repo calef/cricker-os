@@ -38,7 +38,8 @@
 //! measurement is worth recording because the expectation was wrong: the rule reads as being about
 //! pointer validity in general, so the prediction was that moving to [`NonNull`] would improve the
 //! code without satisfying the tool. It satisfied the tool outright, main going from two open alerts
-//! to zero on this change. The rule was more precise than it looked, and it was pointing at nullness.
+//! to zero on this change (`/language:rust`: 2 results on `refs/heads/main`, 0 on `refs/pull/5/head`).
+//! The rule was more precise than it looked, and it was pointing at nullness.
 //!
 //! **Nullness is gone from the contract**: the API takes and returns [`NonNull`], and every caller
 //! converts from a reference (`NonNull::from`, never `NonNull::new(..).unwrap()`), so non-nullness is
