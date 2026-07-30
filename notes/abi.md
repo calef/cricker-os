@@ -118,6 +118,20 @@ is the contract, and it is **per program**, published in that program's own sour
   WRITE `Stack` endpoint at slot 2 (netd's socket contract, DECISIONS §25) and a second untyped
   budget at slot 3 (the per-socket shared frames `std::net` mints). Absent slots 2 and 3, `std::net`
   returns `Unsupported`: no ambient network, felt from inside the process. See notes/std.md.
+- a std program *given a directory* (milestone 27 phase two, the FS half) gets a WRITE FS-service
+  endpoint at **slot 4**, plus the page it shares with the FS server mapped at `0x1100_0000`. That
+  endpoint **is** the directory capability (DECISIONS §27): the server it reaches is bound to one
+  directory node, and every name `std::fs` sends is resolved under that directory, so
+  `File::open("foo")` means "foo, under the directory I hold". A path that would leave it (an
+  absolute path, any `..`) is refused as `InvalidFilename` rather than served, and an empty slot 4
+  makes every `std::fs` call `Unsupported`: no ambient filesystem, the same shape as the network.
+
+  **A slot can be held without the ones below it, and the gap is load-bearing.** A program granted a
+  directory but no network holds 0, 1, and 4, with 2 and 3 empty, because empty 2 and 3 are exactly
+  how `std::net` knows it has no network. `Spawn.grants` fills slots from zero in order and cannot
+  express a gap, so the kernel-side wiring places slot 4 with `sched::grant_at` first and lets the
+  ordered grants land at 0 and 1 behind it. That is the same explicit-target move `Tcb::CAP_INSERT`
+  offers a userspace loader (§5's fault slot uses it), available to the kernel's own service wiring.
 
 This is out-of-band agreement, not discovery: the program does not ask "what am I holding," it knows
 by the contract it was built to. That is the same shape seL4 uses for every task below the root, and
