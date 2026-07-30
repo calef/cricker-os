@@ -77,7 +77,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 28 | BUILT | A solid terminal: the line discipline as a component | a terminal with real behaviour, which 27's stdio semantics need |
 | 29 | BUILT | A display terminal (framebuffer, virtio-gpu) | the first pixels the demonstrator ever puts on a screen, and then the first letters |
 | 30 | BUILT | The network stack as a confined component | the canonical microkernel component, and the one people ask about first |
-| 31 | IN-PROGRESS | A capability shell: designation is authorization | no-ambient-authority made user-visible, at the one interface a human touches |
+| 31 | PARTIAL | A capability shell: designation is authorization | no-ambient-authority made user-visible, at the one interface a human touches |
 | 32 | BUILT | A real filesystem: RedoxFS behind a capability FS server | the flagship userspace-reuse story: a real filesystem we did not write, confined |
 | 33 | BUILT | A compositor: one screen, mutually distrusting clients | the canonical multiplexer of one device among mutually distrusting clients |
 | 34 | NOT-STARTED | GPU acceleration via virtio-gpu 3D (the display ladder's rung four) | how every VM gets a GPU without a hardware driver |
@@ -941,7 +941,7 @@ prerequisite piece and worth building first as its own tested step. Feeds 23 and
 
 ### 31. A capability shell: designation is authorization
 
-**In brief.** The command line becomes a **grant expression**: naming a resource in a command IS the capability grant (`run wc report.txt` passes one readable file cap; `run wc` alone can read nothing, and the refusal is "no such capability", not EPERM); untyped budgets as first-class grants; a SHILL-style manifest per program checked at spawn; a `caps` command printing a process's whole endowment. **Phase 1 built, both ISAs**: `capsh` (host-tested parse + manifest + spawn protocol), the shell over the existing surface, `run --mem N` made real by the `budgeter` program (from the shell's own budget, via a `SEND_CAP`-to-init spawn protocol), manifest refusals and the "you hold no such capability" file refusal at the prompt, `caps`/`caps run ...` introspection. One kernel bug fix: `Untyped::SPLIT` now grants the child `GRANT` so a budget is delegable (DECISIONS §16 amendment). Notes: grant-expression.md, program-manifest.md. Per-file grants wait on milestone 32
+**In brief.** The command line becomes a **grant expression**: naming a resource in a command IS the capability grant (`run wc file:report.txt` passes one readable file cap; `run wc` alone can read nothing, and the refusal is "no such capability", not EPERM); untyped budgets as first-class grants; a SHILL-style manifest per program checked at spawn; a `caps` command printing a process's whole endowment. **Phase 1 built, both ISAs**: `capsh` (host-tested parse + manifest + spawn protocol), the shell over the existing surface, `run --mem N` made real by the `budgeter` program, manifest refusals, `caps`/`caps run ...` introspection; one kernel fix, `Untyped::SPLIT` now grants the child `GRANT` (DECISIONS §16 amendment). **Phase 2 built, both ISAs**: the FS contract's `CREATE`/`TRUNCATE` (so `std::fs::write` works), and per-file grants as a **caretaker process** (`fwarden`) that narrows a directory capability to one file in one direction, proven by a read-only and a writable attacker. One scope note: the interactive shell still refuses `file:` because its boot wires no FS service, so it holds no directory to narrow. Notes: grant-expression.md, program-manifest.md, fs-server.md
 
 **Why it matters.** **no-ambient-authority made user-visible**: the inversion of Unix's model at the one interface a human touches. Milestone 23's component contract in embryo, met first at the shell
 
@@ -953,9 +953,47 @@ rest paid for page tables), proving the grant is real, not parsed-and-ignored. M
 and a `file:PATH` designator ("you hold no such capability") are refused at the prompt; `caps` and
 `caps run ...` print a process's whole endowment. One kernel change: `Untyped::SPLIT` grants the
 child `GRANT` so an untyped is delegable (DECISIONS §16 amendment), which the headline feature
-required and no other object type lacked. Per-file grants wait on milestone 32's FS server, and the
-`file:PATH` grammar is designed so they slot in with no change. Notes: grant-expression.md,
-program-manifest.md.
+required and no other object type lacked. Notes: grant-expression.md, program-manifest.md.
+
+**Phase 2 built (both ISAs): per-file grants.** The FS service's unit of authority is a *directory*
+(DECISIONS §27), and `run wc file:report.txt` says less than that, so the narrowing is a **caretaker**
+in Mark Miller's sense: `user/src/fwarden.rs` holds the directory capability, opens the granted name
+once, and serves the same contract on its own endpoint with a namespace of exactly one name. Any
+other name is `ENOENT` (in this scope there is no such name); `CREATE` is `ENOTDIR` (a file is not a
+directory); a write without the direction is `EROFS`. Each refusal is a fact about what the holder
+has, not a permission that could have said yes.
+
+It is a separate process for two reasons. The FS server receives on one endpoint, so serving a
+second narrower one would need a receive over a *set*, which means badging endpoint capabilities
+(seL4's answer) and is a design fork, recorded rather than taken. And it makes the claim checkable:
+the confined program holds an endpoint to the warden and nothing that names the FS server, so "it
+cannot reach a second file" is a property of its cspace rather than of a branch it is trusted to
+take.
+
+**Proven by an attacker, twice, and the second run is what makes the first mean anything.** It
+reports a bitmap of what got through. Read-only grant: every bit clear, against a neighbouring file
+that exists and that the warden could open. Read/write grant, same shape: the two write bits set and
+everything else clear. A warden that refused every request passes the first and fails the second.
+Phase 2 also landed the contract's `CREATE` and `TRUNCATE` (so `File::create` and `std::fs::write`
+work rather than returning `Unsupported`), a name check that was previously true only by the absence
+of a path walker, and a measured stack for the FS server after a 528-byte overflow presented as a
+mystery 900-second test.
+
+**Why the status is PARTIAL and not BUILT, stated plainly.** The mechanism is complete and gated on
+both ISAs, but this milestone's headline is about *the one interface a human touches*, and at that
+interface `run wc file:report.txt` is still a refusal. The interactive shell holds no directory to
+narrow, because the boot that starts it wires no FS service; the refusal it prints ("you hold no such
+capability: this shell was granted no directory to narrow") is **true** rather than a placeholder,
+and `caps` says the same. `capsh` carries the whole vocabulary (`FileSpec` in the manifest, a
+`FileGrant` in the endowment, refusals both ways, `caps` printing the file endowment), and the
+decision is a function of what the shell *holds* rather than of the calendar, which phase 1's
+hardcoded "arrives with milestone 32" was not.
+
+**Phase 3, then, is exactly one thing:** wire an FS service into the interactive boot (the kernel's
+shell boot path, a RedoxFS disk on the interactive runner, and init building the warden per grant),
+and flip `holdings()` in `user/src/shell.rs`. It was not done here because **nothing in the test suite
+boots the interactive shell**, so it would ship unexercised, and a demonstrator's ungated feature is
+worse than a recorded gap. Whoever takes it should consider gating that boot first.
 
 **Deliverable.** Invert Unix's authority model at the command line. A Unix child inherits your
 entire authority; a cricker-os command line is a **grant expression**: every argument that

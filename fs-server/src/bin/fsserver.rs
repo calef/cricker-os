@@ -192,6 +192,21 @@ fn serve(server: &mut Server<IpcDisk>) -> ! {
             }
             fs::FSTAT => server.fstat(handle).map(|s| s as i64),
             fs::CLOSE => server.close(handle).map(|()| 0),
+            fs::CREATE => {
+                // Same shape as OPEN, deliberately: the name is `len` bytes at the start of the
+                // shared page, and the reply is a handle. A client that can open can create.
+                // SAFETY: the name is `len` bytes the client wrote at the start of FILE_PAGE.
+                let name_bytes = unsafe { file_page(len) };
+                match core::str::from_utf8(name_bytes) {
+                    Ok(name) => server.create_file(name).map(|h| h as i64),
+                    Err(_) => Err(Error::new(EINVAL)),
+                }
+            }
+            // The new size rides in the second word, NOT in the length field, because it is an
+            // offset-shaped quantity: `len` is clamped to one page above, which would silently cap a
+            // truncate at 4096 bytes. Reading it from `offset` is what lets a file be truncated to
+            // any size the filesystem can hold.
+            fs::TRUNCATE => server.truncate(handle, offset).map(|()| 0),
             _ => Err(Error::new(EINVAL)),
         };
 

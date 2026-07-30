@@ -198,6 +198,9 @@ in the code or the conversation doesn't make sense, it belongs here.
   Unix's ambient authority at the one interface a human touches. The shell's own budget, the
   `SEND_CAP`-to-init spawn protocol, `run --mem N` made real by the `budgeter` program, the "you
   hold no such capability" refusal, and the `SPLIT`-grants-`GRANT` fix that let untyped be delegated.
+  Phase 2 adds **per-file grants**: a caretaker process narrowing a directory capability to one file
+  in one direction, proven by a read-only and a writable attacker, and why the second one is what
+  makes the first mean anything.
 - [The program manifest](program-manifest.md) — milestone 31: a program's declared endowment,
   checked against the command at the prompt so a mismatch is a legible refusal, not a mystery hang.
   SHILL's contract shrunk to phase 1, and milestone 23's component contract in embryo.
@@ -340,7 +343,10 @@ in the code or the conversation doesn't make sense, it belongs here.
   three-process design (block server, FS server, client), why the block server waits on the
   completion interrupt, and the error boundary mapped once. Read AND write are now proven end to end
   on both ISAs, the write with a host-tool reopen of the image; the old "writes loop in the allocator
-  commit" open item was stale and the note records the correction.
+  commit" open item was stale and the note records the correction. Milestone 31 phase 2 completed the
+  write path (`CREATE`, `TRUNCATE`), added the name check that was previously true only by the absence
+  of a path walker, and sized the FS server's stack by measurement after a 528-byte overflow presented
+  as a mystery 900-second test.
 - [Prior art and reuse](prior-art.md) — where to look before building (Redox, rCore, Tock,
   Hubris, seL4, Fuchsia) and the rule that decides build-vs-reuse: the reuse boundary is the
   TCB boundary. Inside it, always build; userspace components, actively prefer porting,

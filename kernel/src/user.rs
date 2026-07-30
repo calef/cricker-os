@@ -2053,10 +2053,32 @@ pub mod fs_service {
     /// is comfortable and is the process's hard ceiling (its `HEAP_MAX` matches).
     const FS_BUDGET_PAGES: u64 = 2048;
 
-    /// Extra stack pages for the FS server, below the single page `run` maps. RedoxFS's recursive
-    /// tree/htree/transaction code needs far more than 4 KiB; 32 pages (128 KiB) is generous and
-    /// costs 32 frames once per boot.
-    const FS_STACK_PAGES: u64 = 32;
+    /// **Extra stack pages for the FS server**, below the single page `run` maps, so the process
+    /// gets `1 + FS_STACK_PAGES` pages in one contiguous run down from [`USER_STACK_TOP`].
+    ///
+    /// RedoxFS recurses through its tree, htree and transaction code with **8 KiB frames** (one
+    /// `read_block::<TreeList<..>>` activation carries a whole 4096-byte block plus scratch), so this
+    /// is not a "generous round number" question, it is a measured one. It used to be 32, and 32 was
+    /// **528 bytes short** the moment milestone 31 phase 2 added `CREATE` and `TRUNCATE`: the FS
+    /// server took one more level of tree recursion, ran off the bottom of its stack, and was killed
+    /// by a data abort mid-request, which left every client blocked on a `CALL` that would never be
+    /// answered. See [`fs_stack_used`] for the instrument that now measures this instead of guessing,
+    /// and `the_fs_servers_stack_still_has_headroom` for the test that fails the day it is too small
+    /// again. notes/fs-server.md carries the story.
+    ///
+    /// 96 is chosen against the measurement, not above it: the high-water is **135,696 bytes**, and
+    /// `1 + 96` pages is 397,312, which leaves room for roughly thirty more 8 KiB activations. That
+    /// margin is the point, because recursion depth here tracks the *tree* depth, which grows with
+    /// the image; a size proven on a 16 MiB fixture is not proven on a real disk. 384 KiB of frames
+    /// once per boot is cheap next to the FS server's 8 MiB heap budget.
+    const FS_STACK_PAGES: u64 = 96;
+
+    /// The pattern every FS-server stack page is filled with before the process starts. Nothing but
+    /// the FS server's own stack writes ever touch these frames, so a word that still reads as this
+    /// is a word the stack never reached, and the deepest changed word is the high-water mark. The
+    /// value is deliberately not 0 and not a plausible pointer, so a poisoned word cannot be mistaken
+    /// for real data (or vice versa) in a dump.
+    const STACK_POISON: u64 = 0xC71C_5E57_C71C_5E57;
 
     // The VAs each process expects its mappings at. Each MUST match that program's source.
     const DMA_VA: u64 = 0x0000_0000_0090_0000; // block server DMA region, 2 pages (user/src/virtio.rs)
@@ -2081,6 +2103,70 @@ pub mod fs_service {
         // SAFETY: fresh frame, reachable through the direct map.
         unsafe { core::ptr::write_bytes(mmu::phys_to_virt(p) as *mut u8, 0, FRAME_SIZE as usize) };
         p
+    }
+
+    /// A fresh frame filled with [`STACK_POISON`], for one of the FS server's stack pages, and
+    /// remembered in [`FS_STACK_PHYS`] so the depth actually reached can be read back afterwards.
+    fn poisoned_stack_frame(index: usize) -> u64 {
+        let p = crate::memory::alloc()
+            .expect("no frame for the fs server's stack")
+            .addr();
+        // SAFETY: fresh frame, reachable through the direct map, exactly FRAME_SIZE bytes.
+        let words = unsafe {
+            core::slice::from_raw_parts_mut(
+                mmu::phys_to_virt(p) as *mut u64,
+                FRAME_SIZE as usize / 8,
+            )
+        };
+        words.fill(STACK_POISON);
+        FS_STACK_PHYS[index].store(p, core::sync::atomic::Ordering::Relaxed);
+        p
+    }
+
+    /// The physical frames behind the FS server's extra stack pages, index 0 being the page directly
+    /// below [`USER_STACK_VA`]. Written once at wiring, read by [`fs_stack_used`]. Zero means "this
+    /// boot never wired an FS service".
+    static FS_STACK_PHYS: [core::sync::atomic::AtomicU64; FS_STACK_PAGES as usize] =
+        [const { core::sync::atomic::AtomicU64::new(0) }; FS_STACK_PAGES as usize];
+
+    /// **How deep the FS server's stack actually went**, in bytes below [`USER_STACK_TOP`], and how
+    /// much it was given. `None` if this boot wired no FS service.
+    ///
+    /// Read by scanning the poison: the deepest word that is no longer [`STACK_POISON`] is the
+    /// deepest the process ever wrote. This is a measurement of the whole run so far, not a sample,
+    /// because nothing ever un-writes a stack word. The base page `run` maps is counted as fully used
+    /// (it holds the entry frame and cannot be scanned from here), which is true and is why the
+    /// number starts at one page.
+    ///
+    /// The point of it is that a stack size is otherwise a number nobody can defend. The one before
+    /// this was 528 bytes too small, and the way we found out was a mystery hang.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn fs_stack_used() -> Option<(u64, u64)> {
+        use core::sync::atomic::Ordering;
+        let total = (FS_STACK_PAGES + 1) * FRAME_SIZE;
+        let mut deepest = FRAME_SIZE; // the base page, always used
+        let mut wired = false;
+        for (i, slot) in FS_STACK_PHYS.iter().enumerate() {
+            let phys = slot.load(Ordering::Relaxed);
+            if phys == 0 {
+                continue;
+            }
+            wired = true;
+            // SAFETY: a frame this module allocated and still owns, via the direct map.
+            let words = unsafe {
+                core::slice::from_raw_parts(
+                    mmu::phys_to_virt(phys) as *const u64,
+                    FRAME_SIZE as usize / 8,
+                )
+            };
+            // Page `i` spans [USER_STACK_VA - (i+1)*FRAME, USER_STACK_VA - i*FRAME). Word `w` in it
+            // sits that far above the page's base, so a touched word means at least this much depth.
+            if let Some(w) = words.iter().position(|&x| x != STACK_POISON) {
+                let depth = (i as u64 + 2) * FRAME_SIZE - w as u64 * 8;
+                deepest = deepest.max(depth);
+            }
+        }
+        wired.then_some((deepest, total))
     }
 
     /// **One boot, one FS service**, remembered here.
@@ -2210,8 +2296,8 @@ pub mod fs_service {
         let budget =
             crate::untyped::create(FS_BUDGET_PAGES).expect("no heap budget for the FS server");
         let mut stack = [0u64; FS_STACK_PAGES as usize];
-        for f in stack.iter_mut() {
-            *f = frame();
+        for (i, f) in stack.iter_mut().enumerate() {
+            *f = poisoned_stack_frame(i);
         }
         crate::sched::spawn(move || {
             // Build the mapping list: the two shared pages, then the extra stack pages.
@@ -2295,6 +2381,131 @@ pub mod fs_service {
         .expect("could not spawn the FS client");
 
         Some((readiness, report))
+    }
+
+    /// **Wire a per-file grant and the program that holds it** (milestone 31 phase 2,
+    /// notes/grant-expression.md). This is what `run wc report.txt` resolves to, wired by the
+    /// kernel's test suite instead of by the shell, so the mechanism is gated on both ISAs.
+    ///
+    /// Three processes, and the shape is the point:
+    ///
+    /// ```text
+    ///   FS server ──file IPC──► fwarden ──narrowed file IPC──► the confined program
+    ///                (a directory)          (one file, one direction)
+    /// ```
+    ///
+    /// The warden holds the directory capability. The program holds an endpoint to the warden and
+    /// **nothing that names the FS server**, so "it cannot reach a second file" is a statement about
+    /// its cspace, not about a check it is trusted to pass. The narrowing is an address space, which
+    /// is why the attacker test below is a witness rather than an assertion.
+    ///
+    /// One frame is shared by all three. Every request on both hops is a blocking `CALL`, so the
+    /// client is parked inside its own call for the whole time the warden is using the page; a second
+    /// frame would buy a copy and no isolation, since the client is entitled to the bytes either way.
+    ///
+    /// The grant, as one value, because its four fields are one decision: which file, in which
+    /// direction, handed to which program started how. Splitting them across a long argument list
+    /// invites a caller to get `rights` and `role` the wrong way round, and both are bare integers.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub struct Grant {
+        /// The one name the warden will answer for. Must fit [`fs_proto::grant::MAX_NAME`].
+        pub name: &'static str,
+        /// `grant::READ`, or `READ | WRITE`.
+        pub rights: u64,
+        /// The confined program's `arg0` (its role) and `arg1`.
+        pub role: u64,
+        pub arg: u64,
+    }
+
+    /// What a wired grant hands back: the FS service's readiness endpoints if this call is the one
+    /// that wired it, the warden's own readiness endpoint, and the endpoint the confined program
+    /// reports on.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub struct Granted {
+        pub readiness: Option<(EpId, EpId)>,
+        pub warden_ready: EpId,
+        pub report: EpId,
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn start_granted(
+        blk_image: &'static [u8],
+        fsserver_image: &'static [u8],
+        warden_image: &'static [u8],
+        client_image: &'static [u8],
+        grant: Grant,
+    ) -> Option<Granted> {
+        let Grant {
+            name,
+            rights,
+            role: client_role,
+            arg: client_arg,
+        } = grant;
+        assert!(
+            fs_proto::grant::fits(name.as_bytes()),
+            "a granted name rides in two argument words; this one does not fit",
+        );
+        let (file_ep, file_shared, readiness) = ensure(blk_image, fsserver_image)?;
+        let narrow_ep = crate::sched::create_endpoint();
+        let warden_ready = crate::sched::create_endpoint();
+        let report = crate::sched::create_endpoint();
+
+        let (lo, hi) = fs_proto::grant::pack_name(name.as_bytes());
+        let spec = fs_proto::grant::spec(name.len(), rights);
+
+        // The warden: the directory capability, the narrowed endpoint it serves, and the shared page.
+        // The grant itself (the name and the direction) rides in its START arguments, so a per-file
+        // grant costs no frame at all.
+        crate::sched::spawn(move || {
+            run(
+                warden_image,
+                Spawn {
+                    arg0: lo,
+                    arg1: hi,
+                    arg2: spec,
+                    grants: &[
+                        endpoint_cap(file_ep, Rights::WRITE), // slot 0: CALL the FS server
+                        endpoint_cap(narrow_ep, Rights::READ), // slot 1: serve the narrowed capability
+                        endpoint_cap(warden_ready, Rights::WRITE), // slot 2: readiness, once
+                    ],
+                    maps: &[Mapping {
+                        va: FILE_VA_CLIENT,
+                        phys: file_shared,
+                        flags: Flags::user_data(),
+                    }],
+                },
+            )
+        })
+        .expect("could not spawn the file warden");
+
+        // The confined program. Its slot 0 looks exactly like a directory capability from inside, and
+        // is not one: same protocol, same page, a namespace of one name.
+        crate::sched::spawn(move || {
+            run(
+                client_image,
+                Spawn {
+                    arg0: client_role,
+                    arg1: client_arg,
+                    arg2: 0,
+                    grants: &[
+                        endpoint_cap(narrow_ep, Rights::WRITE), // slot 0: CALL the warden
+                        endpoint_cap(report, Rights::WRITE),    // slot 1: report to the kernel
+                    ],
+                    maps: &[Mapping {
+                        va: FILE_VA_CLIENT,
+                        phys: file_shared,
+                        flags: Flags::user_data(),
+                    }],
+                },
+            )
+        })
+        .expect("could not spawn the confined program");
+
+        Some(Granted {
+            readiness,
+            warden_ready,
+            report,
+        })
     }
 
     /// The `std::fs` client's heap budget and extra stack. Same magnitudes as the networked std
@@ -5124,7 +5335,11 @@ mod std_tests {
             fs_proto::fixture::MOTD,
             b"read_to_string 70\nmetadata len 70\n".as_slice(),
             b"absolute refused\ndotdot refused\nnested refused\n".as_slice(),
-            b"missing not found\ncreate unsupported\n".as_slice(),
+            b"missing not found\n".as_slice(),
+            // Milestone 31 phase 2: `create unsupported` became `write create ok`, plus the two
+            // refusals that prove CREATE did not widen what a client can reach.
+            b"write create ok\ncreate_new refused\n".as_slice(),
+            b"create refused absolute\ncreate refused dotdot\n".as_slice(),
             b"write readback ok\nfs ok\n".as_slice(),
         ] {
             buf[n..n + part.len()].copy_from_slice(part);
@@ -6169,6 +6384,150 @@ mod tests {
         );
     }
 
+    /// **A read-only per-file grant, attacked** (milestone 31 phase 2, notes/grant-expression.md).
+    ///
+    /// `run wc report.txt` must hand over one file, not the directory it lives in. This wires exactly
+    /// that: an `fwarden` holding the directory capability, a confined program holding only the
+    /// warden's endpoint, and a grant of `motd`, read-only. The program is the attacker role of
+    /// `fsclient`, and it spends its life trying to make that sentence false.
+    ///
+    /// **What makes it a witness and not a formality.** Every attempt is against something that
+    /// really exists and that the process one hop up the chain can really reach: `scratch` is on the
+    /// image, one directory entry away, and the warden could open it on any request. Milestone 33's
+    /// attacker was handed a real neighbour's address rather than a fictional one for the same
+    /// reason. And this test alone would still be weak, because a warden that refused *everything*
+    /// would pass it; that is what the writable twin below is for, and why the verdict is a bitmap
+    /// rather than a boolean.
+    #[test_case]
+    fn a_read_only_per_file_grant_survives_an_attacker() {
+        let Some(verdict) = attack_a_grant(fs_proto::grant::READ, false) else {
+            return;
+        };
+        assert_eq!(
+            verdict,
+            0,
+            "the read-only per-file grant leaked: {}",
+            describe_escape(verdict),
+        );
+    }
+
+    /// **A writable per-file grant, attacked** (the second witness, and the first one's control).
+    ///
+    /// Same warden, same attacker, same neighbouring file; only the granted direction changes. Two
+    /// things fall out of it, and the second is why it exists:
+    ///
+    /// - A writable file capability really does write, and still reaches **only** its one file. The
+    ///   widening is exactly one axis wide.
+    /// - The read-only test above is now meaningful. Its refusals are a narrowed capability rather
+    ///   than a warden that says no to everything, because here the same requests, through the same
+    ///   code, succeed. A confinement test with no witness that the thing being confined *works* is
+    ///   a test that passes when the feature is missing entirely.
+    #[test_case]
+    fn a_writable_per_file_grant_writes_that_file_and_still_only_that_file() {
+        use fs_proto::fixture::escape;
+        let Some(verdict) = attack_a_grant(fs_proto::grant::READ | fs_proto::grant::WRITE, true)
+        else {
+            return;
+        };
+        assert_eq!(
+            verdict,
+            escape::WROTE | escape::TRUNCATED,
+            "a writable grant must write and truncate its own file and do nothing else: {}",
+            describe_escape(verdict & !(escape::WROTE | escape::TRUNCATED)),
+        );
+    }
+
+    /// Wire a per-file grant of the given direction, run the attacker against it, and return its
+    /// verdict bitmap. `None` when no RedoxFS disk is attached (nothing to test; do not fail).
+    fn attack_a_grant(rights: u64, writable: bool) -> Option<u64> {
+        let granted = match fs_service::start_granted(
+            init_image(),
+            program("fsserver").expect("no fsserver program in the initrd archive"),
+            program("fwarden").expect("no fwarden program in the initrd archive"),
+            program("fsclient").expect("no fsclient program in the initrd archive"),
+            fs_service::Grant {
+                // The writable run damages what it is granted, so it is granted the file the fixture
+                // discipline already covers; see the attacker's own note.
+                name: if writable {
+                    fs_proto::fixture::SCRATCH_NAME
+                } else {
+                    fs_proto::fixture::MOTD_NAME
+                },
+                rights,
+                role: 2, // ROLE_ATTACKER
+                arg: writable as u64,
+            },
+        ) {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no RedoxFS disk attached; skipping)");
+                return None;
+            }
+        };
+        assert_fs_service_ready(granted.readiness);
+        assert_eq!(
+            sched::ipc_recv(granted.warden_ready)[0],
+            fs_proto::fixture::READY,
+            "the warden could not open the granted name, so there was nothing to attack",
+        );
+        let [tag, verdict, ..] = sched::ipc_recv(granted.report);
+        assert_eq!(
+            tag,
+            fs_proto::fixture::VERDICT,
+            "the attacker's report is not a verdict word",
+        );
+        Some(verdict)
+    }
+
+    /// Name the bits an escape verdict set, so a failure reads as a sentence instead of a bitmap.
+    fn describe_escape(v: u64) -> &'static str {
+        use fs_proto::fixture::escape;
+        if v & escape::SECOND_FILE != 0 {
+            "it opened a file the grant does not designate"
+        } else if v & escape::WROTE != 0 {
+            "it wrote through a read-only grant"
+        } else if v & escape::TRUNCATED != 0 {
+            "it truncated through a read-only grant"
+        } else if v & escape::CREATED != 0 {
+            "it created a file through a file capability"
+        } else if v & escape::FORGED_HANDLE != 0 {
+            "it reached a file with a handle it was never given"
+        } else if v & escape::GRANTED_READ_FAILED != 0 {
+            "the granted read itself failed, so nothing above was actually proven"
+        } else {
+            "nothing (an empty verdict should not have failed an assertion)"
+        }
+    }
+
+    /// **The FS server's stack is sized by measurement, and this is the measurement.**
+    ///
+    /// Runs after both FS clients, so the poison in the server's stack pages has been overwritten to
+    /// exactly the depth RedoxFS reached across a mount, reads, writes, a create and two truncates.
+    /// It prints the number and fails if less than a quarter of the grant is left.
+    ///
+    /// This exists because the previous size was a guess, and the guess was **528 bytes short**.
+    /// Milestone 31 phase 2's `CREATE` and `TRUNCATE` added one more level of tree recursion, the FS
+    /// server ran off the bottom of its stack mid-request, and the kernel killed it, correctly and
+    /// legibly. What was not legible was anything downstream: the std client sat blocked on a `CALL`
+    /// nobody would ever answer, and since other tests had left processes spinning on other cores,
+    /// the no-progress heartbeat saw a healthy system. The only instrument that fired was the
+    /// per-test wall-clock ceiling, so a 368-byte overflow presented as "std_fs takes 914 seconds".
+    /// A number nobody can defend is a number that will be wrong again; this one now has a witness.
+    #[test_case]
+    fn the_fs_servers_stack_still_has_headroom() {
+        let Some((used, total)) = fs_service::fs_stack_used() else {
+            crate::println!("    (no FS service wired this boot; skipping)");
+            return;
+        };
+        crate::println!("    (FS server stack high-water: {used} of {total} bytes) ");
+        assert!(
+            used * 4 <= total * 3,
+            "the FS server used {used} of {total} stack bytes: under a quarter left. RedoxFS \
+             recurses in 8 KiB frames, so the next verb that deepens a tree walk will overflow and \
+             the server will die mid-request. Raise FS_STACK_PAGES.",
+        );
+    }
+
     /// **A userspace driver completes a DHCP round trip over virtio-net.** Milestone 30, end to
     /// end, and the proof the multi-queue confinement carries a real NIC.
     ///
@@ -6735,7 +7094,28 @@ mod tests {
         assert!(wait_for(|| USER_FAULTS.load(Ordering::Relaxed) > f0));
         assert!(wait_for(|| sched::thread_count() <= baseline));
 
-        let before = used();
+        // Sample the baseline only once `used()` has STOPPED MOVING, for the same reason the
+        // assertion below waits rather than reading instantly, applied to the other end. The warm-up
+        // outlaw's address space is freed by `finish_switch` on whatever core actually ran it, which
+        // under §28 placement need not be this one, and that free lands a beat *after*
+        // `thread_count` falls. Sampling `before` inside that window captures frames that are about
+        // to come back, `used()` then settles BELOW `before`, and the wait for equality can never
+        // succeed. The failure says so plainly when it happens: it reported "-18 frames did not come
+        // back", a NEGATIVE leak, which no real leak can produce. Found when an unrelated change to
+        // the std::fs test shifted this test's timing; the race was already here.
+        // Two agreeing samples a yield apart mean nothing is in flight. Bounded by `wait_for`'s own
+        // deadline, so a genuinely unstable allocator fails the test rather than spinning here.
+        let mut last = used();
+        let settled = wait_for(|| {
+            sched::yield_now();
+            let now = core::mem::replace(&mut last, used());
+            now == last
+        });
+        assert!(
+            settled,
+            "frame accounting never settled before the baseline"
+        );
+        let before = last;
 
         for _ in 0..4 {
             let f = USER_FAULTS.load(Ordering::Relaxed);
@@ -8905,6 +9285,94 @@ mod riscv_virtio_tests {
         let mut want = [0u8; 512];
         let n = std_fs_expected(&mut want);
         assert_std_transcript(report, &want[..n], "std fs");
+    }
+
+    /// **A read-only per-file grant, attacked, on the second ISA** (the parity gate). The aarch64
+    /// twin carries the reasoning: same warden, same attacker, same verdict.
+    #[test_case]
+    fn a_read_only_per_file_grant_survives_an_attacker() {
+        let Some(verdict) = attack_a_grant(fs_proto::grant::READ, false) else {
+            return;
+        };
+        assert_eq!(
+            verdict, 0,
+            "the read-only per-file grant leaked (see the aarch64 twin for what each bit means)",
+        );
+    }
+
+    /// **A writable per-file grant, attacked, on the second ISA** (the parity gate, and the read-only
+    /// test's control here too). See the aarch64 twin.
+    #[test_case]
+    fn a_writable_per_file_grant_writes_that_file_and_still_only_that_file() {
+        use fs_proto::fixture::escape;
+        let Some(verdict) = attack_a_grant(fs_proto::grant::READ | fs_proto::grant::WRITE, true)
+        else {
+            return;
+        };
+        assert_eq!(
+            verdict,
+            escape::WROTE | escape::TRUNCATED,
+            "a writable grant must write and truncate its own file and do nothing else",
+        );
+    }
+
+    /// The riscv half of the aarch64 twin's helper; the only difference is the block-server binary
+    /// (the portable `blk` here, the PL011-tied `hello` there).
+    fn attack_a_grant(rights: u64, writable: bool) -> Option<u64> {
+        let granted = match fs_service::start_granted(
+            blk_image(),
+            program("fsserver").expect("no fsserver program in the initrd archive"),
+            program("fwarden").expect("no fwarden program in the initrd archive"),
+            program("fsclient").expect("no fsclient program in the initrd archive"),
+            fs_service::Grant {
+                name: if writable {
+                    fs_proto::fixture::SCRATCH_NAME
+                } else {
+                    fs_proto::fixture::MOTD_NAME
+                },
+                rights,
+                role: 2, // ROLE_ATTACKER
+                arg: writable as u64,
+            },
+        ) {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no RedoxFS disk attached; skipping)");
+                return None;
+            }
+        };
+        assert_fs_service_ready(granted.readiness);
+        assert_eq!(
+            sched::ipc_recv(granted.warden_ready)[0],
+            fs_proto::fixture::READY,
+            "the warden could not open the granted name, so there was nothing to attack",
+        );
+        let [tag, verdict, ..] = sched::ipc_recv(granted.report);
+        assert_eq!(
+            tag,
+            fs_proto::fixture::VERDICT,
+            "the attacker's report is not a verdict word",
+        );
+        Some(verdict)
+    }
+
+    /// **The FS server's stack headroom, on the second ISA** (the parity gate). The aarch64 twin
+    /// carries the reasoning; the number is worth having on both because the two ISAs do not use the
+    /// same amount of stack for the same recursion, and a size proven on one proves nothing on the
+    /// other.
+    #[test_case]
+    fn the_fs_servers_stack_still_has_headroom() {
+        let Some((used, total)) = fs_service::fs_stack_used() else {
+            crate::println!("    (no FS service wired this boot; skipping)");
+            return;
+        };
+        crate::println!("    (FS server stack high-water: {used} of {total} bytes) ");
+        assert!(
+            used * 4 <= total * 3,
+            "the FS server used {used} of {total} stack bytes: under a quarter left. RedoxFS \
+             recurses in 8 KiB frames, so the next verb that deepens a tree walk will overflow and \
+             the server will die mid-request. Raise FS_STACK_PAGES.",
+        );
     }
 
     /// The virtio-net DHCP round trip, on the second ISA (milestone 30): a driver at EL0 brings up

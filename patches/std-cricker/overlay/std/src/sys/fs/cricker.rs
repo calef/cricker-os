@@ -31,13 +31,19 @@
 //! this side keeps, since the contract's read and write are both positional), `file_attr`/`size`
 //! (`FSTAT`), close on `Drop` (`CLOSE`), plus [`stat`]/[`exists`] built from open + fstat + close.
 //!
-//! Unsupported, each because no verb in the contract backs it: creating a file (`create`,
-//! `create_new`; creation is host-side by design, §27's "never create on-device"), truncating one,
-//! directory iteration, `mkdir`/`unlink`/`rename`/`rmdir`, symlinks and hard links,
-//! `canonicalize`, permissions, file times, locks, and `duplicate` (a handle is a token the server
-//! minted; there is no dup verb). Because `create` and `truncate` are refused, the convenience
-//! `std::fs::write` and `File::create` are Unsupported by construction; writing goes through
-//! `OpenOptions::new().write(true).open(name)` on a file the image already carries.
+//! **Also bound since milestone 31 phase 2:** `create` and `create_new` (`CREATE`) and `truncate`
+//! (`TRUNCATE`), which means **`File::create` and `std::fs::write` work now** rather than being
+//! Unsupported by construction. Two things this corrects. Creating a *file* was never what §27 kept
+//! host-side; that was creating a *filesystem*, which needs uuid and getrandom, and
+//! `Transaction::create_node` is not std-gated, so a file can be made on-device without entropy
+//! becoming a userspace dependency. And the previous refusal was the right call at the time for a
+//! reason worth remembering: without `TRUNCATE`, `std::fs::write` would have left a tail of the old
+//! contents behind, so a write that half-worked would have read as a write that failed, which is
+//! precisely the confusion DECISIONS §27 records being corrected four times in one day.
+//!
+//! Still Unsupported, each because no verb in the contract backs it: directory iteration,
+//! `mkdir`/`unlink`/`rename`/`rmdir`, symlinks and hard links, `canonicalize`, permissions, file
+//! times, locks, and `duplicate` (a handle is a token the server minted; there is no dup verb).
 //!
 //! See notes/std.md for the full list with reasons.
 
@@ -271,6 +277,23 @@ fn open_handle(path: &Path) -> io::Result<u64> {
     request(proto::req(proto::OPEN, 0, name.len() as u64), 0)
 }
 
+/// Create `path` under the granted directory and return the handle. [`open_handle`]'s twin: the wire
+/// shape is identical, only the verb differs, which is why `CREATE` was specified to match `OPEN`.
+///
+/// The server answers `EEXIST` if the name is already there, and this is only ever called after an
+/// open reported `NotFound`, so that reply means somebody else created it in between. It surfaces as
+/// `AlreadyExists` rather than being retried, because a silent retry would turn a lost race into a
+/// caller writing over a file it believes it just made.
+fn create_handle(path: &Path) -> io::Result<u64> {
+    if !reachable() {
+        return Err(unsupported_err());
+    }
+    let name = one_name(path)?;
+    let mut p = page();
+    p.put(name.as_bytes());
+    request(proto::req(proto::CREATE, 0, name.len() as u64), 0)
+}
+
 // --- File ------------------------------------------------------------------------------------
 
 /// An open file: a handle the server minted, plus the offset std's positional API keeps on this
@@ -447,23 +470,45 @@ impl File {
                 "an open must ask for read, write, or append"
             ));
         }
-        // Creation is host-side by design (§27: the server only ever opens an image, so entropy
-        // never becomes a userspace dependency), and there is no truncate verb. Refusing here is
-        // what makes `File::create` and `std::fs::write` honestly Unsupported instead of silently
-        // leaving a tail of the old contents behind.
-        if opts.create_new || opts.truncate {
-            return Err(unsupported_err());
-        }
-
+        // `CREATE` and `TRUNCATE` exist now (milestone 31 phase 2), so this whole block used to be a
+        // refusal and is now a mapping. Creating a *file* was never the thing §27 kept host-side:
+        // that was creating a *filesystem*, which needs uuid and getrandom. `Transaction::create_node`
+        // is not std-gated, so the server can make a file without entropy ever becoming a userspace
+        // dependency, and the read of §27 that conflated the two is corrected there.
+        //
+        // The order below is POSIX's, and it matters: create-then-truncate, with truncate applied
+        // after a successful open of an existing file. `std::fs::write` is
+        // `create(true).truncate(true)`, so getting the order wrong would leave the old tail behind
+        // on exactly the path that exists to replace a file's contents, which is the day-costing bug
+        // this milestone is here to remove.
         let handle = match open_handle(path) {
+            Ok(h) if opts.create_new => {
+                // `create_new` means "must not already exist", and it does. Close the handle the open
+                // just minted rather than leaking it for the life of the process: the error path is
+                // the one nobody exercises, so it is the one that leaks.
+                let _ = request(proto::req(proto::CLOSE, h, 0), 0);
+                return Err(io::const_error!(
+                    io::ErrorKind::AlreadyExists,
+                    "the file already exists"
+                ));
+            }
             Ok(h) => h,
-            // `create(true)` on a name that is not there is exactly the case the contract cannot
-            // serve; say so, rather than reporting NotFound for an open that asked to create.
-            Err(e) if opts.create && e.kind() == io::ErrorKind::NotFound => {
-                return Err(unsupported_err());
+            // Not there, and the caller asked for it to be made. This is the case that used to be
+            // Unsupported.
+            Err(e) if (opts.create || opts.create_new) && e.kind() == io::ErrorKind::NotFound => {
+                create_handle(path)?
             }
             Err(e) => return Err(e),
         };
+
+        // Truncate after the open, so a fresh file (already empty) pays nothing and an existing one
+        // is emptied before the first write rather than after it.
+        if opts.truncate {
+            if let Err(e) = request(proto::req(proto::TRUNCATE, handle, 0), 0) {
+                let _ = request(proto::req(proto::CLOSE, handle, 0), 0);
+                return Err(e);
+            }
+        }
 
         let file = File { handle, pos: AtomicU64::new(0), append: opts.append };
         if opts.append {

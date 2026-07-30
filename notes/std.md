@@ -221,16 +221,29 @@ lives on the client side because the contract's read and write are both explicit
 there is no cursor in the server to get out of step with, and a seek costs no message at all except
 `SeekFrom::End`.
 
+**Also bound since milestone 31 phase 2** (this used to be the head of the Unsupported list):
+`File::create`, `OpenOptions::create_new`, `create(true)`, and `OpenOptions::truncate`, backed by the
+contract's new `CREATE` and `TRUNCATE` verbs. **So `std::fs::write` works.**
+
+Two things about that are worth keeping. The order in `File::open` is POSIX's and it is load-bearing:
+open, then create only if the open reported `NotFound` and the caller asked for it, then truncate
+after a successful open of an existing file. `std::fs::write` is `create(true).truncate(true)`, so
+getting the order wrong leaves the old tail behind on precisely the path that exists to *replace* a
+file's contents, which is the confusion DECISIONS §27 was corrected four times over. And the previous
+refusal was the right call at the time for a reason worth remembering: without `TRUNCATE`, a
+`std::fs::write` would have half-worked, and a write that half-works reads as a write that failed.
+`create_new` over a name that exists closes the handle the probing open minted before returning
+`AlreadyExists`, because the error path is the one nobody exercises and therefore the one that leaks.
+
+**A per-file grant needs no std API at all**, which is the payoff of having bound the PAL to a
+capability contract rather than to a namespace. A program handed a narrowed file capability (§27's
+caretaker, `user/src/fwarden.rs`) is an ordinary `std::fs` client: the one granted name opens, every
+other name is an ordinary `NotFound`, and a write through a read-only grant surfaces as
+`ErrorKind::ReadOnlyFilesystem`. Nothing in the PAL knows whether slot 4 leads to a directory or to
+one file, and it does not need to.
+
 Unsupported, each because **no verb in the contract backs it**, not because the code is missing:
 
-- **Creating a file** (`File::create`, `OpenOptions::create_new`, and `create(true)` on a name that
-  is not there) and **truncating one** (`OpenOptions::truncate`, `File::set_len`). This is the one
-  gap with real user-visible reach: `std::fs::write(path, data)` opens with create + truncate, so it
-  is `Unsupported` by construction, and writing goes through
-  `OpenOptions::new().write(true).open(name)` on a file the image already carries. Adding `CREATE`
-  and `TRUNCATE` verbs is possible (RedoxFS's `create_node` is not std-gated; §27's "never create
-  on-device" is about creating a *filesystem*, which needs uuid and getrandom, not a file), but it
-  widens the contract, so it is a decision to take deliberately rather than a hole to plug.
 - **Directory iteration** (`read_dir`), `mkdir`, `unlink`, `rename`, `rmdir`, `remove_dir_all`,
   `canonicalize`, `hard_link`, symlinks and `read_link`, `copy`.
 - **Permissions and file times.** The server keeps an mtime (a write advances it) but no verb reports
@@ -303,8 +316,14 @@ a directory capability (`File::open` on the fixture name) and then for the netwo
 - **Granted a directory** (slot 4 and the shared page, alongside a running FS service): the open
   succeeds, and the program reads the file with `Read` and again with `read_to_string`, stats it,
   overwrites the image's `scratch` file and reads it back, and gets refused on `/etc/passwd`,
-  `../motd`, and `sub/motd`. The kernel test
-  `std_fs_reads_a_file_through_a_granted_directory_capability` spawns it this way.
+  `../motd`, and `sub/motd`. Since milestone 31 phase 2 it also **creates** a name the image does not
+  carry with `std::fs::write`, writes it a second time with a *shorter* payload, and asserts the
+  read-back equals the shorter one: without `TRUNCATE` that second write would leave the first one's
+  tail behind, which is the whole of §27's four-times-corrected bug pinned at the top level rather
+  than only in a host test. `create_new` over the name it just made is `AlreadyExists`, and creating
+  `/tmp/escape` or `../escape` is refused exactly as opening them is, so `CREATE` did not widen what a
+  client can reach. The kernel test `std_fs_reads_a_file_through_a_granted_directory_capability`
+  spawns it this way.
 - **Granted the network** (slots 2 and 3, alongside a running netd): the bind succeeds, and the
   program does a real UDP DNS query to slirp's resolver and a TCP echo round trip to slirp's
   guestfwd peer, both through `std::net` and both asserted. The kernel test
@@ -321,7 +340,8 @@ byte stream off the endpoint and compare it byte for byte, on **both** ISAs out 
 initrd (the parity gate, DECISIONS §19). The fs transcript splices the file's own bytes into the
 expected buffer from the shared fixture, so that one comparison covers the whole path: disk,
 DMA-confined block server, FS server running an engine we did not write, the file contract, the PAL,
-and the stdout endpoint. One binary also keeps the initrd under its 15-file crickerfs directory limit.
+and the stdout endpoint. One binary also keeps the initrd inside its crickerfs directory limit
+(`crickerfs::MAX_FILES`, 31 entries).
 `cargo xtask test` builds the demo for both targets first, so both initrds carry it; both test legs
 attach a virtio-net NIC (`CRICKER_NET`) with the guestfwd echo peer and the RedoxFS image as the
 second disk.

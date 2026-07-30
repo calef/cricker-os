@@ -142,6 +142,16 @@ path = "src/fsclient.rs"
 test = false
 bench = false
 
+# The file warden (milestone 31 phase 2): a directory capability attenuated to one file, in one
+# direction. It is the caretaker that stands between the FS server and a program the command line
+# granted a single file, and it is a separate process so the narrowing is an address-space boundary
+# rather than a branch. mkinitrd packs it as "fwarden".
+[[bin]]
+name = "fwarden"
+path = "src/fwarden.rs"
+test = false
+bench = false
+
 # The EL0 microbenchmark program (primitive suite): self-times syscall/IPC primitives from EL0, the
 # lmbench way, so the numbers include the trap the kernel-side benchmarks skip. Run by the bench boot.
 [[bin]]

@@ -16,7 +16,7 @@
 //!     program runs the phase-one transcript, proving the collections, timing, and the honest
 //!     refusals.
 //!
-//! One binary keeps the initrd under its 15-file directory limit (crickerfs `MAX_FILES`) while
+//! One binary keeps the initrd inside its crickerfs directory limit (`MAX_FILES`, 31 entries) while
 //! still proving all three. The kernel test suite spawns it three ways and checks each transcript
 //! byte for byte, on both ISAs.
 
@@ -145,12 +145,45 @@ fn fs_demo(mut motd: File) {
         other => panic!("a missing name did not read as NotFound: {other:?}"),
     }
 
-    // Creating and truncating need verbs the contract does not have (§27: the server only ever
-    // opens an image it did not make), so std's convenience writers refuse honestly rather than
-    // silently leaving a tail of the old contents behind.
-    match std::fs::write(fs_proto::fixture::SCRATCH_NAME, b"x") {
-        Err(e) if e.kind() == ErrorKind::Unsupported => println!("create unsupported"),
-        other => panic!("fs::write did not refuse a create+truncate open: {other:?}"),
+    // **`std::fs::write` works now** (milestone 31 phase 2), and this is the assertion the CREATE and
+    // TRUNCATE verbs exist for. It creates a name the image does not carry, so it exercises CREATE,
+    // and it is deliberately written TWICE with a SHORTER payload the second time, which is the case
+    // that used to be impossible to get right: without TRUNCATE the second write would leave the tail
+    // of the first behind and the read-back would come up long. §27's four corrections all trace to
+    // that one behaviour, so it is pinned here at the top level rather than only in a host test.
+    let long = b"the first write, deliberately the longer of the two";
+    let short = b"the second write, shorter";
+    assert!(short.len() < long.len(), "the shorter write must be shorter");
+
+    std::fs::write("made-by-std", long).expect("fs::write could not create a file");
+    std::fs::write("made-by-std", short).expect("fs::write could not rewrite a file");
+    let back = std::fs::read("made-by-std").expect("reading back what fs::write wrote failed");
+    assert_eq!(
+        back, short,
+        "a shorter fs::write must REPLACE the contents, not leave the old tail",
+    );
+    println!("write create ok");
+
+    // `create_new` on a name that now exists is AlreadyExists, not Unsupported and not a silent
+    // overwrite. That distinction is the reason CREATE refuses rather than opening.
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open("made-by-std")
+    {
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => println!("create_new refused"),
+        other => panic!("create_new over an existing name did not refuse: {other:?}"),
+    }
+
+    // And a created name is still bound by the directory capability: creating outside it is refused
+    // the same way opening outside it is, so CREATE did not widen what a client can reach.
+    for (path, what) in [("/tmp/escape", "absolute"), ("../escape", "dotdot")] {
+        match std::fs::write(path, b"x") {
+            Err(e) if e.kind() != ErrorKind::PermissionDenied => {
+                println!("create refused {what}")
+            }
+            other => panic!("creating an un-nameable path was not refused: {other:?}"),
+        }
     }
 
     // **The on-device write path, and a correction to the record.** notes/fs-server.md recorded
