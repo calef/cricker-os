@@ -1711,6 +1711,76 @@ a test because a real refusal halts the machine; the decision function is tested
 path's only response to `Err` is `arch::halt()`. Recorded plainly. Host tests in `crates/measure`
 carry the FIPS vectors. No bench movement: the bench boot enters no boot program.
 
+### Milestone 22 phase B.2: init gives its authority away, and the supervision tree keeps running
+
+**Built 2026-07-29.** Phase A gave the kernel the mechanism (a death becomes a message); B.1 settled
+what bytes init is. This settles **what a compromised init can still reach**, which was the second half
+of the §14 soft spot. Recorded here with the rest of milestone 22 for the same reason B.1 is.
+
+1. **Init's authority becomes short-lived, not merely careful.** The pre-B.2 init holds a large untyped
+   budget for its whole life because it stays the system's process builder, so every process is one bug
+   in init away from being built wrong. The new root (`user/src/rootsup.rs`) holds full construction
+   authority only long enough to build two servers, then **deletes** it (the wiring capabilities, the
+   spawner's budget copy, and the root untyped). After that it cannot make a page, an address space, a
+   thread, or an endpoint. The alternative (keep the budget, be careful with it) was rejected on the
+   §14 thesis: a confinement you can only honour by being correct is not confinement.
+
+2. **Process construction moves to a sub-server that holds one program image, not the archive.** The
+   spawner gets `flaky`'s bytes copied into read-only pages of its own address space, never the 14 MB
+   initrd, so "build program X" is unanswerable for any other X. Its budget is `WRITE` without `GRANT`:
+   it may spend memory, never lend it. Each instance is built in its own region split off that budget,
+   which makes a reap one `Untyped::DESTROY` (§16) and, LIFO, returns the pages to the budget.
+
+3. **The supervisor holds no memory at all.** `subsup` has a request channel, a fault endpoint, and a
+   report endpoint. It cannot build, allocate, or reap; it can only *ask*. So the split is: the
+   supervisor decides **whether** to reap and rebuild, the spawner is what **can**. Policy and
+   authority separated by an IPC boundary, which is the same shape as every other decision here.
+
+4. **Restart policy is userspace code and stays there.** Bounded retries, a clean exit read as
+   "finished" rather than "crashed" (which is why §26 delivers both events), a give-up. The kernel's
+   whole contribution is one five-word message, unchanged from phase A. No new syscall, no new method.
+
+5. **Proven by authority, not by timing.** Two cross-ISA tests (`authority_tests`): after the handoff
+   both construction primitives fail from inside init with `NoSuchSlot` (nothing there) rather than
+   `NotPermitted` (something there, restricted); and a faulting sub-server is reaped and restarted by
+   its supervisor, with the clean exit of the replacement *not* triggering another restart. "init was
+   not involved" is proven by the empty capability slot, not by scheduling order: a process that cannot
+   retype a page cannot have built the replacement.
+
+**Two design forks found, reported rather than built through.**
+
+- **Reaping needs the same right as building.** `DESTROY` and `RETYPE` both need `WRITE` on the region,
+  so a root supervisor that can restart a dead tier-one server is a root supervisor that can build
+  processes, which is the authority the milestone exists to give away. rootsup therefore chooses to be
+  unable to build, and its policy for a tier-one death is "report and stop", the fail-closed floor.
+  Splitting a **reap-only right** out of `WRITE` (a rights bit, or a distinct `Untyped::REAP` method)
+  would let a root recover without regaining construction authority. That changes the rights model and
+  the syscall surface, so it is a decision, not an implementation detail.
+- **A supervisor cannot turn a tid into a handle.** The fault message names the dead thread by tid
+  (§26.5), but nothing maps a tid to something a builder holds, so `subsup` names instances by a handle
+  the spawner issues. That is sufficient for one child at a time and insufficient in general. Options:
+  a `Tcb::NAME` method (small, and discloses nothing the fault message does not already), per-child
+  fault endpoints (which §26.5 rejected for needing a thread per child or a wait-any primitive), or the
+  builder reporting the tid it created.
+
+**What is deliberately still open.** The tree proves the pattern with real programs on both ISAs, but
+it is **not yet the interactive boot's init**: `sysinit` and `hello`'s init role still hold their
+budgets for life, because they remain the shell's spawn service. That migration is the next increment
+and was not done blind in the same pass, because that boot path is hand-validated (the harness cannot
+inject keystrokes) and moving the spawn service wants an interactive confirmation, not a green unit
+test. See notes/trusted-init.md for the shape it takes.
+
+**A pre-existing bug this work found, on both architectures.** The supervision tree enters more
+processes per run than anything before it, and that surfaced a race in the **exception-return path**:
+staging `SPSR_EL1`/`ELR_EL1` (aarch64) or `sepc`/`sstatus` (riscv) for the return is not atomic with
+respect to a nested exception, so an interrupt in a two-instruction window could return a brand-new
+process to its entry point **at EL1** (aarch64, observed, about one suite run in four) or to a kernel
+address in U-mode (riscv, found by inspection). Only the first-entry path was exposed, because a normal
+trap return already has interrupts masked. Fixed by masking at the top of the restore, one instruction,
+free at the far end because the return restores the mask from the saved state anyway. Written up in
+notes/exceptions.md. The icount baselines moved by well under 1% (one extra instruction per exception
+return) and were re-saved in the same commit.
+
 ## 27. The filesystem service: a capability-shaped contract over a component we did not write (milestone 32 phase 2)
 
 RedoxFS runs confined as a userspace FS-server component, and its interface is **capability-shaped

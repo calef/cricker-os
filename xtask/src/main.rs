@@ -649,6 +649,14 @@ fn initrd_riscv() -> bool {
             "heeder",
             "--bin",
             "spinner",
+            "--bin",
+            "rootsup",
+            "--bin",
+            "spawner",
+            "--bin",
+            "subsup",
+            "--bin",
+            "flaky",
             "--target",
             RISCV_TARGET,
         ],
@@ -683,6 +691,13 @@ fn initrd_riscv() -> bool {
         ("fsclient", "fsclient"),
         ("heeder", "heeder"),
         ("spinner", "spinner"),
+        // The authority-shrinking supervision tree (milestone 22 phase B.2): an init that hands its
+        // construction authority to a spawner and its restart policy to a supervisor, then drops the
+        // budget. Portable, so both archives carry all four.
+        ("rootsup", "rootsup"),
+        ("spawner", "spawner"),
+        ("subsup", "subsup"),
+        ("flaky", "flaky"),
     ];
     let mut blobs: Vec<(&str, Vec<u8>)> = Vec::new();
     for &(archive_name, bin_name) in entries {
@@ -839,6 +854,19 @@ fn mkinitrd() -> bool {
     // "elbench" is the EL0 microbenchmark program (primitive suite), and "allocdemo" proves the
     // user_rt heap (milestone 27). init (and the bench boot) load each by name. All are entries
     // in the one archive.
+    // The authority-shrinking supervision tree (milestone 22 phase B.2), read as a group: four small
+    // portable programs that share one module, packed under their own names for both ISAs.
+    let mut tree: Vec<(&str, Vec<u8>)> = Vec::new();
+    for name in ["rootsup", "spawner", "subsup", "flaky"] {
+        match std::fs::read(bin_elf(name)) {
+            Ok(bytes) => tree.push((name, bytes)),
+            Err(e) => {
+                eprintln!("mkinitrd: cannot read {}: {e}", bin_elf(name));
+                return false;
+            }
+        }
+    }
+
     let mut files: Vec<(&str, &[u8])> = vec![
         ("init", &hello),
         ("worker", &worker),
@@ -855,6 +883,9 @@ fn mkinitrd() -> bool {
         ("heeder", &heeder),
         ("spinner", &spinner),
     ];
+    for (name, bytes) in &tree {
+        files.push((name, bytes.as_slice()));
+    }
     // The std demo (milestone 27) rides along IFF it has been built (`cargo xtask user-std`, which
     // `test` runs). It builds through a separate toolchain and target, so an interactive `run` that
     // never built it simply ships an initrd without it; nothing loads it there.

@@ -163,6 +163,122 @@ real and reachable option, just a bigger TCB. It becomes worth its cost when ini
 independently of the kernel, which is not true today: they are built by the same command, in the same
 tree, in one sequence.
 
+## Phase B.2: shrinking what a broken init can do
+
+B.1 settled *what bytes init is*. B.2 is the other half: **what a compromised init can still reach.**
+
+The pre-B.2 init (`sysinit`, `hello`'s init role) holds a large untyped budget for its entire life,
+because it stays the system's process builder. Every process in the system is therefore one bug in
+init away from being built wrong. The answer is not to make init more careful; it is to make it
+**hold less**, and to make it hold it for less time.
+
+### The tree
+
+Four small portable programs (`user/src/rootsup.rs`, `spawner.rs`, `subsup.rs`, `flaky.rs`, sharing
+`user/src/suptree.rs`):
+
+```text
+  rootsup   the root untyped + the initrd + a report endpoint       (briefly)
+    |
+    +-- spawner   one program image, one budget (WRITE), no initrd  (can build only that program)
+    |
+    +-- subsup    a request channel + a fault endpoint, NO memory   (cannot build anything)
+            |
+            +-- flaky   a report endpoint                           (the supervised sub-server)
+
+  then: rootsup deletes its untyped and becomes a RECV loop on its own supervision endpoint.
+```
+
+Each split is chosen so that the authority is the smallest thing that still does the job:
+
+- **The spawner holds a program image, not the initrd.** rootsup copies `flaky`'s bytes into fresh
+  read-only pages in the spawner's address space (the `blobs` field of `Endow`). So "build me program
+  X" is not a request the spawner *can* honour for any other X: the only program it can name is the
+  one it was handed. Compare init, which holds a 14 MB archive of every program in the system.
+- **The spawner's budget is WRITE without GRANT.** It may spend memory; it may not lend it. Nothing
+  it builds can be endowed with a budget of its own.
+- **Each instance is built in its own region**, split off the budget, so reaping it is one
+  `Untyped::DESTROY` (§16) and one instance's corpse cannot pin another's memory. A LIFO reap returns
+  the pages to the budget (§16's return-of-pages), so the restart loop is not a leak.
+- **The supervisor holds no memory at all.** Its entire power is to ask the spawner for a rebuild of
+  one program. A compromised supervisor is a restart loop, not a foothold.
+- **rootsup deletes the budget** once the two servers are running (and the wiring capabilities, and
+  the spawner's budget copy). What is left cannot make a page, an address space, a thread, or an
+  endpoint.
+
+### Restart policy is userspace code, and stays there
+
+`subsup` is the policy: bounded retries (two), a clean exit read as "finished" rather than "crashed",
+a give-up when the budget runs out. It reaps the corpse through the spawner before rebuilding, because
+§26's corpse is dead-until-reaped. None of that is in the kernel, and the kernel's whole contribution
+is one five-word message. That is DECISIONS §26 working as designed: the kernel is the only witness to
+a death, so it reports; everything after the report is somebody's opinion.
+
+Note which side of the split *reaping* falls on: the supervisor decides **whether** to reap and
+rebuild, the spawner is what **can**. Policy and authority, separated by an IPC boundary.
+
+### What is proven, both ISAs
+
+`kernel/src/user.rs`, `authority_tests`:
+
+- `init_drops_its_construction_authority_and_cannot_build_again`. After the handoff, rootsup tries the
+  two primitives that build things (retype a page, retype a kernel object) and reports the result from
+  *inside* the process, because what matters is what the holder can do and only the holder can ask.
+  Both fail, and they fail with `NoSuchSlot` (there is nothing there), not `NotPermitted` (there is
+  something there and you may not use it). That distinction is the whole difference between "we asked
+  init not to" and "init cannot".
+- `a_dead_sub_server_is_restarted_by_its_supervisor_not_by_init`. The sub-server runs as attempt 0 and
+  faults on a load from an unmapped address; the supervisor receives `FAULT`, reaps the corpse through
+  the spawner, and asks for attempt 1; attempt 1 runs and exits cleanly; the supervisor receives
+  `EXIT` and does **not** restart it. Exactly five reports arrive and the endpoint then has no parked
+  sender, which is how "and then nothing else happened" is asserted without a blocking receive.
+
+**"Without init's involvement" is an authority argument, not a timing one.** init cannot retype a
+page by then, and a process that cannot retype a page cannot have built the replacement. Scheduling
+order is not the evidence; the empty capability slot is.
+
+### The bug this work found
+
+The supervision-tree tests enter more processes per run than anything before them, and that surfaced a
+**pre-existing race in the exception-return path** on both architectures: staging `SPSR_EL1`/`ELR_EL1`
+(and `sepc`/`sstatus`) for the `eret` is not atomic with respect to a nested exception, so an interrupt
+in a two-instruction window could return a brand-new process to its entry point *at EL1*. Fixed by
+masking interrupts at the top of the restore. Full account in notes/exceptions.md; it is written up
+there rather than here because it is an exception-path fact, not an init fact.
+
+### Two design forks found and deliberately not built through
+
+1. **Reaping requires the same right as building.** `Untyped::DESTROY` needs `WRITE` on the region,
+   and so does `RETYPE`. So a root supervisor that could restart a dead tier-one server is a root
+   supervisor that can build processes, which is exactly the authority we set out to give away.
+   rootsup therefore chooses to be *unable* to build, and its policy for a dead tier-one server is
+   "report and stop", the fail-closed floor pushed as high and as small as it goes. Splitting a
+   reap-only right out of `WRITE` (a rights bit, or a distinct `Untyped::REAP`) would let a root
+   supervisor recover without regaining construction authority. That is a kernel surface change and a
+   rights-model change, so it is Chris's call, not a thing to slip in.
+2. **A supervisor cannot turn a tid into a handle.** The kernel's fault message names the dead thread
+   by tid (§26.5), but no method turns a tid into something a builder holds, so `subsup` names
+   instances by a handle the *spawner* issues instead. That works because this tree runs one
+   sub-server at a time; a supervisor with many children would need the mapping. The options are a
+   `Tcb::NAME` method (small, and the tid is already exposed in the fault message, so it discloses
+   nothing new), per-child fault endpoints (costs a thread or a wait-any primitive, which §26.5
+   rejected), or the builder reporting the tid it created. Recorded, not chosen.
+
+### What is left of milestone 22 phase B
+
+The tree proves the pattern on the real capability system, with real programs, on both ISAs. It is
+**not yet the interactive boot's init**: `sysinit` (riscv) and `hello`'s init role (aarch64) still hold
+their budgets for life, because they stay the shell's spawn service. Migrating them is the next
+increment, and it is deliberately not done blind in the same pass: that boot path is validated by hand
+(the automated suite cannot inject keystrokes), so changing who holds the spawn service there wants an
+interactive run to confirm, not a green unit test. The shape it would take is already clear from this
+tree: the spawn service becomes a sub-server holding the archive and a budget, init wires the shell to
+*it* instead of to itself, and init then drops what it no longer needs.
+
+The other honest gap: `suptree.rs`'s child builder is a generalization of `sysinit.rs`'s
+`build_child` rather than a replacement for it, so that loader logic exists twice until sysinit
+migrates. Recorded here so the duplication is a scheduled removal and not a surprise.
+
 ## Not covered, deliberately
 
 The kernel measures the program **it** loads. Every other program in the archive (`console`, `input`,
