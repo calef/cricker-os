@@ -155,6 +155,21 @@ if [ -n "$CRICKER_GPU" ]; then
     GPU="-device virtio-gpu-pci,disable-legacy=on,iommu_platform=on"
 fi
 
+# Attach a virtio keyboard when CRICKER_KBD is set (milestone 29's input).
+#
+# PCIe here is a CHOICE, not a constraint: unlike the GPU, this machine does offer a
+# virtio-keyboard-device on the virtio-mmio bus. The keyboard rides PCIe anyway so it lands in the
+# same IOMMU domain the GPU does, and iommu_platform=on is what puts it there. A keyboard is the one
+# device whose DMA you would least like unconfined: its buffers are where every keystroke lands.
+#
+# The keys themselves come from the HOST, over the QEMU monitor below (`sendkey`), because nothing in
+# the guest can press one. QEMU drops key events until a driver sets DRIVER_OK, so xtask can send
+# them from the start of the run with nothing to synchronize.
+KBD=""
+if [ -n "$CRICKER_KBD" ]; then
+    KBD="-device virtio-keyboard-pci,disable-legacy=on,iommu_platform=on"
+fi
+
 # A QEMU monitor on a unix socket, when CRICKER_GPU_MON names one (milestone 29). This is how the
 # **scanout** gets proven rather than only the framebuffer: `screendump` writes a PPM of the scanout
 # and it works with -display none (verified against QEMU 11.0.2), so the host can see the pixels the
@@ -168,7 +183,7 @@ if [ -n "$CRICKER_GPU_MON" ]; then
     MON="-monitor unix:$CRICKER_GPU_MON,server,nowait"
 fi
 
-# shellcheck disable=SC2086  # $INITRD, $DISK, $NET and $GPU are deliberately word-split or empty
+# shellcheck disable=SC2086  # $INITRD, $DISK, $NET, $GPU and $KBD are deliberately word-split or empty
 # CPU and accelerator.
 #
 # By default we run under TCG (QEMU translates every aarch64 instruction), with an emulated
@@ -214,5 +229,6 @@ exec qemu-system-aarch64 \
     $DISK \
     $NET \
     $GPU \
+    $KBD \
     $MON \
     "$@"

@@ -46,6 +46,7 @@
 
 #![no_std]
 
+pub mod keymap;
 pub mod script;
 
 // ================================================================================================
@@ -774,6 +775,12 @@ pub mod status {
     pub const MODE_DISPLAY: u64 = 0;
     /// The terminal is a compositor client, owning one window (`compose COMMIT`).
     pub const MODE_WINDOW: u64 = 1;
+
+    /// The keyboard driver is up: `send(REPORT, KBD_UP, buffers posted, 0)`. The device is
+    /// enumerated, the event queue is programmed through the confined transport, and every
+    /// device-writable buffer is posted, so a spawner that sees this knows a key pressed from here
+    /// on has somewhere to land. Also one report, ever, and for the same reason [`TERM_UP`] is.
+    pub const KBD_UP: u64 = 0x7E7_0002;
 }
 
 #[cfg(test)]

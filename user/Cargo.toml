@@ -250,6 +250,15 @@ path = "src/vterm.rs"
 test = false
 bench = false
 
+# The keyboard driver (milestone 29's input): a confined userspace virtio-input driver whose whole
+# power to inject a keystroke is the mapping of the compositor's input ring, not the doorbell every
+# client holds. `mkinitrd` packs it as "kbd" for both ISAs.
+[[bin]]
+name = "kbd"
+path = "src/kbd.rs"
+test = false
+bench = false
+
 [dependencies]
 abi = { version = "0.1.0", path = "../crates/abi" }
 bitfont = { version = "0.1.0", path = "../crates/bitfont" }

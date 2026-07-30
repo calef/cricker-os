@@ -79,6 +79,14 @@ pub const VIRTIO_NET_TRANSITIONAL: u16 = 0x1000;
 /// than inventing one. QEMU's `virtio-gpu-pci` presents exactly this id.
 pub const VIRTIO_GPU_MODERN: u16 = 0x1050;
 
+/// The modern virtio-input device id (0x1040 + device type 18), milestone 29's keyboard. **No
+/// transitional twin**, for the same reason virtio-gpu has none: the device type was allocated long
+/// after the legacy id space. QEMU's `virtio-keyboard-pci` presents exactly this id, and so does
+/// `virtio-tablet-pci`, which is worth knowing rather than discovering: **the id names the device
+/// class, not the keyboard**, so a machine with both would have to read the device's configuration
+/// space to tell them apart. We attach only a keyboard.
+pub const VIRTIO_INPUT_MODERN: u16 = 0x1052;
+
 /// The virtio **device type** numbers, as the virtio-mmio `DeviceID` register reports them and as
 /// the PCI ids above encode them (`0x1040 + type`). The kernel carries the type through the PCI
 /// transport so a driver's `DeviceID` read answers truthfully on either bus; see
@@ -86,6 +94,7 @@ pub const VIRTIO_GPU_MODERN: u16 = 0x1050;
 pub const VIRTIO_TYPE_NET: u32 = 1;
 pub const VIRTIO_TYPE_BLOCK: u32 = 2;
 pub const VIRTIO_TYPE_GPU: u32 = 16;
+pub const VIRTIO_TYPE_INPUT: u32 = 18;
 
 /// Walk every function on `buses` buses and call `f` with (bdf, vendor, device). Empty slots
 /// read vendor 0xffff (the bus's way of saying "nobody home") and are skipped; a single-function
@@ -645,5 +654,6 @@ mod tests {
         assert_eq!(VIRTIO_NET_MODERN as u32, 0x1040 + VIRTIO_TYPE_NET);
         assert_eq!(VIRTIO_BLK_MODERN as u32, 0x1040 + VIRTIO_TYPE_BLOCK);
         assert_eq!(VIRTIO_GPU_MODERN as u32, 0x1040 + VIRTIO_TYPE_GPU);
+        assert_eq!(VIRTIO_INPUT_MODERN as u32, 0x1040 + VIRTIO_TYPE_INPUT);
     }
 }
