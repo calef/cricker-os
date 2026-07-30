@@ -94,7 +94,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 42 | NOT-STARTED | Supply chain and fuzzing in CI (extends the 2026-07-30 CI audit) | we confine code we did not write; an advisory against it is invisible today |
 | 43 | NOT-STARTED | A second security audit, with a different lens | the attack surface roughly doubled after the first audit was written |
 | 44 | NOT-STARTED | GitHub repository hardening: policy, private reporting, code scanning, pull requests | a repository with a security thesis should be able to receive a report privately |
-| 45 | NOT-STARTED | Triage the CodeQL code-scanning alerts, and decide what the tool is for | the alerts land on this project's most-used unsafe abstraction |
+| 45 | BUILT | Triage the CodeQL code-scanning alerts, and decide what the tool is for | the alerts land on this project's most-used unsafe abstraction |
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
 comparison), with the multikernel work (17) as
@@ -1439,6 +1439,28 @@ must not be folded into feature work.
 **Why it matters.** **a public repository with a security thesis should be able to receive a security report privately**, which today it cannot. The pull-request item also changes how this project is built: work currently lands by merging feature branches into `main` locally, and requiring PRs would put every merge behind the same gate rather than trusting the person merging, which is the discipline that caught the reap flake and the conflict markers only because I happened to run the gates by hand
 
 ### 45. Triage the CodeQL code-scanning alerts, and decide what the tool is for
+
+**Built 2026-07-30. All nine alerts are fixed, and the policy is DECISIONS §35.** The seven
+`actions/missing-workflow-permissions` went first: every CI job held a `GITHUB_TOKEN` with permissions
+it never used, which is an odd default for a project whose thesis is that a component holds the
+authority its job needs and nothing more.
+
+The two `rust/access-invalid-pointer` alerts turned out to be two different findings wearing one label.
+**Nullness was structurally fixable and the type was failing to say so**: every pointer entering the
+intrusive queues comes from a `&mut Thread`, so non-nullness is a fact of construction rather than a
+caller's promise. `Fifo`, `Endpoint` and the `Node` trait moved to `NonNull`, every conversion at every
+call site is infallible (`NonNull::from`, never `NonNull::new(..).unwrap()`), and `Option<NonNull<T>>`
+is the same size as `*mut T` through the niche, so it costs nothing. **Validity and aliasing remain
+inexpressible**, which is the design of an intrusive queue rather than a gap, and that reasoning now
+lives in the crate's own docs as the standing caveat.
+
+Two things recorded because they were wrong or nearly so. I predicted twice that `NonNull` would improve
+the code *without* satisfying CodeQL, reasoning that the rule was about validity generally; it cleared
+both alerts, so the rule was more precise than I credited. And I first "proved" that with a query
+against `refs/heads/<branch>`, which has **zero analyses**, so it would have returned zero whatever the
+code did. The real comparison is `/language:rust`: 2 results on `refs/heads/main`, 0 on
+`refs/pull/5/head`, holding across four commits each side.
+
 
 **In brief.** Nine alerts on first run. Seven (`actions/missing-workflow-permissions`) were fixed immediately by giving every workflow an explicit least-privilege `permissions: contents: read`, which is the right call for this repo specifically: a project whose thesis is that a component holds the authority its job needs and nothing more has no business letting its CI token default to write access it never uses. **The two that remain are high severity and need judgement, not configuration**: `rust/access-invalid-pointer` at `crates/intrusive/src/lib.rs:93` and `:109`, the raw-pointer dereferences in the intrusive wait-queue's `push_back` and `pop_front`. Both already carry `SAFETY` comments citing the queue's caller contract, and `intrusive` is one of the 13 Kani-proved crates, so the question is precisely what CodeQL sees that Kani does not: Kani proves the pure logic under chosen bounds, while the pointer validity here rests on a *caller* contract enforced by convention rather than by the type system. Decide per alert whether it is a true positive worth restructuring for, or a false positive to dismiss **with a written reason**; then set the standing policy for how alerts get triaged, since an alert list nobody dispositions decays into wallpaper
 

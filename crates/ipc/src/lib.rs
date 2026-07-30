@@ -22,6 +22,8 @@
 
 #![cfg_attr(not(test), no_std)]
 
+use core::ptr::NonNull;
+
 use intrusive::{Fifo, Node};
 
 /// One IPC endpoint: two intrusive wait queues and the pending-signal count.
@@ -37,7 +39,7 @@ pub struct Endpoint<T: Node> {
 /// What a [`send`](Endpoint::send) decided.
 pub enum Send<T> {
     /// A receiver was waiting: rendezvous with this one, and the sender does not join a queue.
-    Rendezvous(*mut T),
+    Rendezvous(NonNull<T>),
     /// Nobody was waiting: the sender is now queued on this endpoint.
     Blocked,
 }
@@ -47,7 +49,7 @@ pub enum Recv<T> {
     /// A pending async signal was drained; the receiver does not block.
     Signal,
     /// This queued sender was collected; the caller decides whether to wake it.
-    FromSender(*mut T),
+    FromSender(NonNull<T>),
     /// Nobody was waiting: the receiver is now queued on this endpoint.
     Blocked,
 }
@@ -125,7 +127,7 @@ impl<T: Node> Endpoint<T> {
     /// link, so `f` may re-queue it onto a run queue) and the caller wakes it with an error. After
     /// this both queues are empty, so [`is_idle`](Self::is_idle) holds and the one-queue invariant
     /// trivially does.
-    pub fn drain_waiters(&mut self, mut f: impl FnMut(*mut T)) {
+    pub fn drain_waiters(&mut self, mut f: impl FnMut(NonNull<T>)) {
         while let Some(w) = self.senders.pop_front() {
             f(w);
         }
@@ -154,11 +156,11 @@ impl<T: Node> Endpoint<T> {
     /// `victim` is compared by pointer, never dereferenced. Every *other* queued sender is popped
     /// and pushed again, so they must all still satisfy the queue's contract (they do: a queued
     /// sender is blocked or a corpse, and neither is freed while linked).
-    pub unsafe fn remove_sender(&mut self, victim: *mut T) -> bool {
+    pub unsafe fn remove_sender(&mut self, victim: NonNull<T>) -> bool {
         let mut kept: Fifo<T> = Fifo::new();
         let mut found = false;
         while let Some(node) = self.senders.pop_front() {
-            if core::ptr::eq(node, victim) {
+            if node == victim {
                 found = true;
             } else {
                 // SAFETY: just popped from this queue, so it is valid and on no queue.
@@ -177,7 +179,7 @@ impl<T: Node> Endpoint<T> {
     /// `me` must satisfy the intrusive contract: valid, on no queue, and it must stay valid for
     /// as long as it may be queued here. (The kernel's discipline: `me` is the running thread,
     /// and a thread queued here is `Blocked`, which the reaper never touches.)
-    pub unsafe fn send(&mut self, me: *mut T) -> Send<T> {
+    pub unsafe fn send(&mut self, me: NonNull<T>) -> Send<T> {
         if let Some(receiver) = self.receivers.pop_front() {
             Send::Rendezvous(receiver)
         } else {
@@ -194,7 +196,7 @@ impl<T: Node> Endpoint<T> {
     /// # Safety
     ///
     /// As for [`send`](Self::send).
-    pub unsafe fn recv(&mut self, me: *mut T) -> Recv<T> {
+    pub unsafe fn recv(&mut self, me: NonNull<T>) -> Recv<T> {
         if self.pending > 0 {
             self.pending -= 1;
             Recv::Signal
@@ -210,7 +212,7 @@ impl<T: Node> Endpoint<T> {
     /// An async signal arrives. Wake a waiting receiver (returned, already dequeued), or count it
     /// for the next receive. **Not a rendezvous:** it never joins the sender queue and is never
     /// lost. Safe: signalling queues nothing.
-    pub fn signal(&mut self) -> Option<*mut T> {
+    pub fn signal(&mut self) -> Option<NonNull<T>> {
         if let Some(receiver) = self.receivers.pop_front() {
             Some(receiver)
         } else {
@@ -243,22 +245,20 @@ mod verification {
 
     /// A minimal node: a link and nothing else, the way the proofs like it.
     struct N {
-        next: *mut N,
+        next: Option<NonNull<N>>,
     }
 
     impl N {
         fn new() -> Self {
-            N {
-                next: core::ptr::null_mut(),
-            }
+            N { next: None }
         }
     }
 
     unsafe impl Node for N {
-        fn next(&self) -> *mut Self {
+        fn next(&self) -> Option<NonNull<Self>> {
             self.next
         }
-        fn set_next(&mut self, next: *mut Self) {
+        fn set_next(&mut self, next: Option<NonNull<Self>>) {
             self.next = next;
         }
     }
@@ -269,7 +269,7 @@ mod verification {
     ///
     /// # Safety
     /// `sender` and `receiver` must be valid, distinct, unqueued nodes outliving `e`.
-    unsafe fn seed(e: &mut Endpoint<N>, sender: *mut N, receiver: *mut N) {
+    unsafe fn seed(e: &mut Endpoint<N>, sender: NonNull<N>, receiver: NonNull<N>) {
         e.pending = kani::any();
         match kani::any::<u8>() {
             // SAFETY: caller's contract.
@@ -284,8 +284,8 @@ mod verification {
         let (mut s, mut r, mut me) = (N::new(), N::new(), N::new());
         let mut e: Endpoint<N> = Endpoint::new();
         unsafe {
-            seed(&mut e, &mut s, &mut r);
-            e.send(&mut me);
+            seed(&mut e, NonNull::from(&mut s), NonNull::from(&mut r));
+            e.send(NonNull::from(&mut me));
         }
         assert!(e.one_queue_invariant());
     }
@@ -295,8 +295,8 @@ mod verification {
         let (mut s, mut r, mut me) = (N::new(), N::new(), N::new());
         let mut e: Endpoint<N> = Endpoint::new();
         unsafe {
-            seed(&mut e, &mut s, &mut r);
-            e.recv(&mut me);
+            seed(&mut e, NonNull::from(&mut s), NonNull::from(&mut r));
+            e.recv(NonNull::from(&mut me));
         }
         assert!(e.one_queue_invariant());
     }
@@ -305,7 +305,7 @@ mod verification {
     fn signal_preserves_the_invariant() {
         let (mut s, mut r) = (N::new(), N::new());
         let mut e: Endpoint<N> = Endpoint::new();
-        unsafe { seed(&mut e, &mut s, &mut r) };
+        unsafe { seed(&mut e, NonNull::from(&mut s), NonNull::from(&mut r)) };
         e.signal();
         assert!(e.one_queue_invariant());
     }
@@ -316,12 +316,12 @@ mod verification {
     #[kani::proof]
     fn send_rendezvous_iff_a_receiver_waited() {
         let (mut s, mut r, mut me) = (N::new(), N::new(), N::new());
-        let receiver_ptr: *mut N = &mut r;
+        let receiver_ptr = NonNull::from(&mut r);
         let mut e: Endpoint<N> = Endpoint::new();
-        unsafe { seed(&mut e, &mut s, receiver_ptr) };
+        unsafe { seed(&mut e, NonNull::from(&mut s), receiver_ptr) };
 
         let had_receiver = !e.receivers.is_empty();
-        match unsafe { e.send(&mut me) } {
+        match unsafe { e.send(NonNull::from(&mut me)) } {
             Send::Rendezvous(got) => {
                 assert!(had_receiver);
                 assert_eq!(
@@ -340,9 +340,9 @@ mod verification {
     fn recv_drains_a_pending_signal_first() {
         let (mut s, mut r, mut me) = (N::new(), N::new(), N::new());
         let mut e: Endpoint<N> = Endpoint::new();
-        unsafe { seed(&mut e, &mut s, &mut r) };
+        unsafe { seed(&mut e, NonNull::from(&mut s), NonNull::from(&mut r)) };
         if e.pending > 0 {
-            assert_eq!(unsafe { e.recv(&mut me) }, Recv::Signal);
+            assert_eq!(unsafe { e.recv(NonNull::from(&mut me)) }, Recv::Signal);
         }
     }
 
@@ -361,10 +361,16 @@ mod verification {
     fn a_collected_sender_is_forgotten() {
         let (mut s, mut r, mut me, mut me2) = (N::new(), N::new(), N::new(), N::new());
         let mut e: Endpoint<N> = Endpoint::new();
-        unsafe { seed(&mut e, &mut s, &mut r) };
-        if matches!(unsafe { e.recv(&mut me) }, Recv::FromSender(_)) {
+        unsafe { seed(&mut e, NonNull::from(&mut s), NonNull::from(&mut r)) };
+        if matches!(
+            unsafe { e.recv(NonNull::from(&mut me)) },
+            Recv::FromSender(_)
+        ) {
             assert!(e.senders.is_empty() && e.receivers.is_empty());
-            assert!(!matches!(unsafe { e.recv(&mut me2) }, Recv::FromSender(_)));
+            assert!(!matches!(
+                unsafe { e.recv(NonNull::from(&mut me2)) },
+                Recv::FromSender(_)
+            ));
         }
     }
 }
@@ -374,22 +380,20 @@ mod tests {
     use super::*;
 
     struct N {
-        next: *mut N,
+        next: Option<NonNull<N>>,
     }
 
     unsafe impl Node for N {
-        fn next(&self) -> *mut Self {
+        fn next(&self) -> Option<NonNull<Self>> {
             self.next
         }
-        fn set_next(&mut self, next: *mut Self) {
+        fn set_next(&mut self, next: Option<NonNull<Self>>) {
             self.next = next;
         }
     }
 
     fn node() -> Box<N> {
-        Box::new(N {
-            next: core::ptr::null_mut(),
-        })
+        Box::new(N { next: None })
     }
 
     /// The rendezvous, both orderings: whoever arrives first waits, the second completes the pair
@@ -397,35 +401,47 @@ mod tests {
     #[test]
     fn sender_first_then_receiver_rendezvous() {
         let (mut s, mut r) = (node(), node());
-        let sp: *mut N = &mut *s;
+        let sp = NonNull::from(&mut *s);
         let mut e: Endpoint<N> = Endpoint::new();
 
         assert_eq!(unsafe { e.send(sp) }, Send::Blocked); // nobody waiting: park the sender
-        assert_eq!(unsafe { e.recv(&mut *r) }, Recv::FromSender(sp)); // receiver collects it
+        assert_eq!(
+            unsafe { e.recv(NonNull::from(&mut *r)) },
+            Recv::FromSender(sp)
+        ); // receiver collects it
         assert!(e.one_queue_invariant());
     }
 
     #[test]
     fn receiver_first_then_sender_rendezvous() {
         let (mut s, mut r) = (node(), node());
-        let rp: *mut N = &mut *r;
+        let rp = NonNull::from(&mut *r);
         let mut e: Endpoint<N> = Endpoint::new();
 
         assert_eq!(unsafe { e.recv(rp) }, Recv::Blocked);
-        assert_eq!(unsafe { e.send(&mut *s) }, Send::Rendezvous(rp)); // sender meets the waiter
+        assert_eq!(
+            unsafe { e.send(NonNull::from(&mut *s)) },
+            Send::Rendezvous(rp)
+        ); // sender meets the waiter
     }
 
     /// Two senders queue in FIFO order; two receivers drain them in the same order.
     #[test]
     fn senders_queue_fifo() {
         let (mut a, mut b, mut r) = (node(), node(), node());
-        let (ap, bp): (*mut N, *mut N) = (&mut *a, &mut *b);
+        let (ap, bp) = (NonNull::from(&mut *a), NonNull::from(&mut *b));
         let mut e: Endpoint<N> = Endpoint::new();
 
         assert_eq!(unsafe { e.send(ap) }, Send::Blocked);
         assert_eq!(unsafe { e.send(bp) }, Send::Blocked);
-        assert_eq!(unsafe { e.recv(&mut *r) }, Recv::FromSender(ap));
-        assert_eq!(unsafe { e.recv(&mut *r) }, Recv::FromSender(bp));
+        assert_eq!(
+            unsafe { e.recv(NonNull::from(&mut *r)) },
+            Recv::FromSender(ap)
+        );
+        assert_eq!(
+            unsafe { e.recv(NonNull::from(&mut *r)) },
+            Recv::FromSender(bp)
+        );
     }
 
     /// A signal with nobody waiting is counted; the next receives drain it, then block.
@@ -436,9 +452,9 @@ mod tests {
 
         assert_eq!(e.signal(), None); // counted
         assert_eq!(e.signal(), None);
-        assert_eq!(unsafe { e.recv(&mut *r) }, Recv::Signal);
-        assert_eq!(unsafe { e.recv(&mut *r) }, Recv::Signal);
-        assert_eq!(unsafe { e.recv(&mut *r) }, Recv::Blocked);
+        assert_eq!(unsafe { e.recv(NonNull::from(&mut *r)) }, Recv::Signal);
+        assert_eq!(unsafe { e.recv(NonNull::from(&mut *r)) }, Recv::Signal);
+        assert_eq!(unsafe { e.recv(NonNull::from(&mut *r)) }, Recv::Blocked);
     }
 
     /// The endpoint-destroy contract (object revocation): `drain_waiters` hands back every parked
@@ -448,7 +464,7 @@ mod tests {
     #[test]
     fn drain_hands_back_every_waiter_and_leaves_the_endpoint_idle() {
         let (mut a, mut b, mut r) = (node(), node(), node());
-        let (ap, bp): (*mut N, *mut N) = (&mut *a, &mut *b);
+        let (ap, bp) = (NonNull::from(&mut *a), NonNull::from(&mut *b));
         // Via `default()`: the kernel retypes endpoint pages through it, not through `new()`.
         let mut e: Endpoint<N> = Endpoint::default();
 
@@ -462,7 +478,7 @@ mod tests {
         assert!(e.is_idle());
 
         // The other queue drains through the same path: a receiver can be parked too.
-        let rp: *mut N = &mut *r;
+        let rp = NonNull::from(&mut *r);
         assert_eq!(unsafe { e.recv(rp) }, Recv::Blocked);
         drained.clear();
         e.drain_waiters(|w| drained.push(w));
@@ -490,7 +506,11 @@ mod tests {
     #[test]
     fn a_queued_sender_can_be_removed_from_the_middle() {
         let (mut a, mut b, mut c, mut r) = (node(), node(), node(), node());
-        let (ap, bp, cp): (*mut N, *mut N, *mut N) = (&mut *a, &mut *b, &mut *c);
+        let (ap, bp, cp) = (
+            NonNull::from(&mut *a),
+            NonNull::from(&mut *b),
+            NonNull::from(&mut *c),
+        );
         let mut e: Endpoint<N> = Endpoint::new();
 
         for p in [ap, bp, cp] {
@@ -498,9 +518,15 @@ mod tests {
         }
         assert!(unsafe { e.remove_sender(bp) }, "b was queued");
         assert_eq!(e.debug_counts().0, 2, "exactly one sender left the queue");
-        assert_eq!(unsafe { e.recv(&mut *r) }, Recv::FromSender(ap));
-        assert_eq!(unsafe { e.recv(&mut *r) }, Recv::FromSender(cp));
-        assert_eq!(unsafe { e.recv(&mut *r) }, Recv::Blocked);
+        assert_eq!(
+            unsafe { e.recv(NonNull::from(&mut *r)) },
+            Recv::FromSender(ap)
+        );
+        assert_eq!(
+            unsafe { e.recv(NonNull::from(&mut *r)) },
+            Recv::FromSender(cp)
+        );
+        assert_eq!(unsafe { e.recv(NonNull::from(&mut *r)) }, Recv::Blocked);
 
         // Not queued (already collected, the ordinary case): a no-op that says so.
         let mut e2: Endpoint<N> = Endpoint::new();
@@ -514,13 +540,13 @@ mod tests {
     #[test]
     fn removing_the_only_sender_leaves_the_endpoint_idle() {
         let (mut a, mut r) = (node(), node());
-        let ap: *mut N = &mut *a;
+        let ap = NonNull::from(&mut *a);
         let mut e: Endpoint<N> = Endpoint::new();
 
         assert_eq!(unsafe { e.send(ap) }, Send::Blocked);
         assert!(unsafe { e.remove_sender(ap) });
         assert!(e.is_idle(), "the endpoint still holds a sender");
-        assert_eq!(unsafe { e.recv(&mut *r) }, Recv::Blocked);
+        assert_eq!(unsafe { e.recv(NonNull::from(&mut *r)) }, Recv::Blocked);
         // And it can be used again afterwards: push, pop, no ghost.
         assert!(e.one_queue_invariant());
     }
@@ -529,7 +555,7 @@ mod tests {
     #[test]
     fn a_signal_wakes_a_waiting_receiver() {
         let mut r = node();
-        let rp: *mut N = &mut *r;
+        let rp = NonNull::from(&mut *r);
         let mut e: Endpoint<N> = Endpoint::new();
 
         assert_eq!(unsafe { e.recv(rp) }, Recv::Blocked);

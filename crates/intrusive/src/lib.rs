@@ -30,8 +30,36 @@
 //!    `Finished` threads are ever freed).
 //! 3. All access to a queue and its nodes' links is serialized by the caller (the kernel: a run
 //!    queue is single-core with interrupts masked; an inbox is behind its mutex).
+//!
+//! # What a static analyser sees here, and why it is right (DECISIONS §35)
+//!
+//! CodeQL flagged the dereferences in [`Fifo::push_back`] and [`Fifo::pop_front`] as
+//! `rust/access-invalid-pointer`. **Both alerts are now fixed rather than dismissed**, and the
+//! measurement is worth recording because the expectation was wrong: the rule reads as being about
+//! pointer validity in general, so the prediction was that moving to [`NonNull`] would improve the
+//! code without satisfying the tool. It satisfied the tool outright, main going from two open alerts
+//! to zero on this change (`/language:rust`: 2 results on `refs/heads/main`, 0 on `refs/pull/5/head`).
+//! The rule was more precise than it looked, and it was pointing at nullness.
+//!
+//! **Nullness is gone from the contract**: the API takes and returns [`NonNull`], and every caller
+//! converts from a reference (`NonNull::from`, never `NonNull::new(..).unwrap()`), so non-nullness is
+//! a fact of construction rather than a promise anyone keeps.
+//!
+//! **Validity is still not expressible**, and no tool result changes that. Rule 2 above says a node outlives its
+//! time on the queue, and no type available to us can carry that for a structure whose entire purpose
+//! is that the queue does *not* own its nodes. What upholds it is the kernel's state machine: only
+//! `Finished` threads are ever freed, a `Finished` thread is on no queue, and one link per node makes
+//! "on at most one queue" physical rather than remembered.
+//!
+//! So the honest statement is that **this queue is safe because its callers are correct, and nothing
+//! in this crate can check that**. The Kani harness below proves the FIFO's *logic* over a symbolic
+//! operation sequence against nodes it holds valid by construction; it answers "is the ordering
+//! right", never "did a caller free a queued node". Neither tool covers that, and a reader should
+//! know it rather than infer safety from two green checkmarks.
 
 #![cfg_attr(not(test), no_std)]
+
+use core::ptr::NonNull;
 
 /// A type that carries its own queue link.
 ///
@@ -41,16 +69,16 @@
 /// nothing else. The queue threads its structure through these two methods, so a clever
 /// implementation is a corrupted queue.
 pub unsafe trait Node: Sized {
-    fn next(&self) -> *mut Self;
-    fn set_next(&mut self, next: *mut Self);
+    fn next(&self) -> Option<NonNull<Self>>;
+    fn set_next(&mut self, next: Option<NonNull<Self>>);
 }
 
 /// The queue: two pointers into nodes it does not own, plus a count.
 ///
 /// FIFO because the scheduler's queues are round-robin: threads leave in the order they arrived.
 pub struct Fifo<T: Node> {
-    head: *mut T,
-    tail: *mut T,
+    head: Option<NonNull<T>>,
+    tail: Option<NonNull<T>>,
     len: usize,
 }
 
@@ -62,14 +90,14 @@ unsafe impl<T: Node> Send for Fifo<T> {}
 impl<T: Node> Fifo<T> {
     pub const fn new() -> Self {
         Self {
-            head: core::ptr::null_mut(),
-            tail: core::ptr::null_mut(),
+            head: None,
+            tail: None,
             len: 0,
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.head.is_null()
+        self.head.is_none()
     }
 
     pub fn len(&self) -> usize {
@@ -81,36 +109,33 @@ impl<T: Node> Fifo<T> {
     /// # Safety
     ///
     /// `node` must be valid to dereference, not currently on any queue, and must stay valid
-    /// until popped (the contract in the crate docs).
-    pub unsafe fn push_back(&mut self, node: *mut T) {
+    /// until popped (the contract in the crate docs). Null is no longer part of that contract:
+    /// [`NonNull`] carries it in the type.
+    pub unsafe fn push_back(&mut self, node: NonNull<T>) {
         // SAFETY: valid and exclusively ours to link, per the caller's contract.
-        unsafe { (*node).set_next(core::ptr::null_mut()) };
+        unsafe { (*node.as_ptr()).set_next(None) };
 
-        if self.tail.is_null() {
-            self.head = node;
-        } else {
+        match self.tail {
             // SAFETY: `tail` was pushed earlier under the same contract and not yet popped.
-            unsafe { (*self.tail).set_next(node) };
+            Some(tail) => unsafe { (*tail.as_ptr()).set_next(Some(node)) },
+            None => self.head = Some(node),
         }
-        self.tail = node;
+        self.tail = Some(node);
         self.len += 1;
     }
 
     /// Detach and return the oldest node. The returned node's link is cleared: it leaves the
     /// queue carrying no dangling reference into it.
-    pub fn pop_front(&mut self) -> Option<*mut T> {
-        if self.head.is_null() {
-            return None;
-        }
-        let node = self.head;
+    pub fn pop_front(&mut self) -> Option<NonNull<T>> {
+        let node = self.head?;
         // SAFETY: every node between head and tail was pushed under the contract and is still
         // valid (rule 2); we are the only accessor (rule 3).
         unsafe {
-            self.head = (*node).next();
-            if self.head.is_null() {
-                self.tail = core::ptr::null_mut();
+            self.head = (*node.as_ptr()).next();
+            if self.head.is_none() {
+                self.tail = None;
             }
-            (*node).set_next(core::ptr::null_mut());
+            (*node.as_ptr()).set_next(None);
         }
         self.len -= 1;
         Some(node)
@@ -133,15 +158,15 @@ mod verification {
     use super::*;
 
     struct N {
-        next: *mut N,
+        next: Option<NonNull<N>>,
         tag: usize,
     }
 
     unsafe impl Node for N {
-        fn next(&self) -> *mut Self {
+        fn next(&self) -> Option<NonNull<Self>> {
             self.next
         }
-        fn set_next(&mut self, next: *mut Self) {
+        fn set_next(&mut self, next: Option<NonNull<Self>>) {
             self.next = next;
         }
     }
@@ -154,20 +179,16 @@ mod verification {
     #[kani::proof]
     fn any_push_pop_interleaving_is_fifo_and_lossless() {
         let mut nodes = [
-            N {
-                next: core::ptr::null_mut(),
-                tag: 0,
-            },
-            N {
-                next: core::ptr::null_mut(),
-                tag: 1,
-            },
-            N {
-                next: core::ptr::null_mut(),
-                tag: 2,
-            },
+            N { next: None, tag: 0 },
+            N { next: None, tag: 1 },
+            N { next: None, tag: 2 },
         ];
-        let ptrs: [*mut N; 3] = [&mut nodes[0], &mut nodes[1], &mut nodes[2]];
+        // NonNull, taken from references, so the harness proves the same API the kernel calls.
+        let ptrs: [NonNull<N>; 3] = [
+            NonNull::from(&mut nodes[0]),
+            NonNull::from(&mut nodes[1]),
+            NonNull::from(&mut nodes[2]),
+        ];
 
         let mut q: Fifo<N> = Fifo::new();
 
@@ -197,7 +218,7 @@ mod verification {
                     m_head += 1;
                     queued[expect] = false;
                     // SAFETY: pop returns only nodes we pushed, all still valid.
-                    let got = unsafe { (*popped.expect("lost a node")).tag };
+                    let got = unsafe { (*popped.expect("lost a node").as_ptr()).tag };
                     assert_eq!(got, expect, "not FIFO");
                 }
             }
@@ -212,24 +233,21 @@ mod tests {
     use super::*;
 
     struct N {
-        next: *mut N,
+        next: Option<NonNull<N>>,
         tag: u32,
     }
 
     unsafe impl Node for N {
-        fn next(&self) -> *mut Self {
+        fn next(&self) -> Option<NonNull<Self>> {
             self.next
         }
-        fn set_next(&mut self, next: *mut Self) {
+        fn set_next(&mut self, next: Option<NonNull<Self>>) {
             self.next = next;
         }
     }
 
     fn node(tag: u32) -> Box<N> {
-        Box::new(N {
-            next: core::ptr::null_mut(),
-            tag,
-        })
+        Box::new(N { next: None, tag })
     }
 
     #[test]
@@ -239,14 +257,14 @@ mod tests {
         assert!(q.is_empty());
 
         unsafe {
-            q.push_back(&mut *a);
-            q.push_back(&mut *b);
-            q.push_back(&mut *c);
+            q.push_back(NonNull::from(&mut *a));
+            q.push_back(NonNull::from(&mut *b));
+            q.push_back(NonNull::from(&mut *c));
         }
         assert_eq!(q.len(), 3);
 
         let tags: Vec<u32> = core::iter::from_fn(|| q.pop_front())
-            .map(|p| unsafe { (*p).tag })
+            .map(|p| unsafe { (*p.as_ptr()).tag })
             .collect();
         assert_eq!(tags, vec![1, 2, 3]);
         assert!(q.is_empty());
@@ -259,16 +277,16 @@ mod tests {
         let (mut a, mut b) = (node(1), node(2));
         let mut q: Fifo<N> = Fifo::new();
 
-        unsafe { q.push_back(&mut *a) };
-        assert_eq!(q.pop_front().map(|p| unsafe { (*p).tag }), Some(1));
+        unsafe { q.push_back(NonNull::from(&mut *a)) };
+        assert_eq!(q.pop_front().map(|p| unsafe { (*p.as_ptr()).tag }), Some(1));
         assert!(q.pop_front().is_none());
 
         unsafe {
-            q.push_back(&mut *b);
-            q.push_back(&mut *a); // popped above, so it may be queued again
+            q.push_back(NonNull::from(&mut *b));
+            q.push_back(NonNull::from(&mut *a)); // popped above, so it may be queued again
         }
-        assert_eq!(q.pop_front().map(|p| unsafe { (*p).tag }), Some(2));
-        assert_eq!(q.pop_front().map(|p| unsafe { (*p).tag }), Some(1));
+        assert_eq!(q.pop_front().map(|p| unsafe { (*p.as_ptr()).tag }), Some(2));
+        assert_eq!(q.pop_front().map(|p| unsafe { (*p.as_ptr()).tag }), Some(1));
         assert!(q.is_empty());
     }
 
@@ -278,10 +296,10 @@ mod tests {
         let (mut a, mut b) = (node(1), node(2));
         let mut q: Fifo<N> = Fifo::new();
         unsafe {
-            q.push_back(&mut *a);
-            q.push_back(&mut *b);
+            q.push_back(NonNull::from(&mut *a));
+            q.push_back(NonNull::from(&mut *b));
         }
         let p = q.pop_front().unwrap();
-        assert!(unsafe { (*p).next() }.is_null());
+        assert!(unsafe { (*p.as_ptr()).next() }.is_none());
     }
 }
