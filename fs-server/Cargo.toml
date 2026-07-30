@@ -21,6 +21,16 @@ license = "MIT OR Apache-2.0"
 name = "fs_server"
 path = "src/lib.rs"
 
+# The second-mount repro (fix/redoxfs-second-mount): runs the engine under the FS server's own
+# allocator, capped the way the device caps it, and does two mounts in one process. Host-only (it
+# needs std RedoxFS to build the fixture), so it rides `hosttest` and never enters the el0 build.
+[[bin]]
+name = "second_mount"
+path = "src/bin/second_mount.rs"
+required-features = ["hosttest"]
+test = false
+bench = false
+
 # The EL0 binary. Behind `el0` so a host `cargo test` (which cannot compile user_rt's EL0 asm)
 # never tries to build it; the target build turns defaults off and el0 on. test/bench off for the
 # same reason every dedicated binary sets them: the default libtest target needs `extern crate test`,
@@ -51,6 +61,10 @@ strip = "debuginfo"
 [dependencies]
 # The vendored engine, no default features: the pure no_std core (creation APIs stay host-side).
 redoxfs = { path = "../vendor/redoxfs", default-features = false }
+# The untyped heap's ALGORITHM (the EL0 binary uses it through user_rt::heap). Depended on directly so
+# the `second_mount` host repro can run the engine under the same allocator, capped the same way, with
+# no syscalls and no emulator. Tiny and no_std, so it is harmless in the el0 build too.
+uheap = { version = "0.1.0", path = "../crates/uheap" }
 # The same redox_syscall (lib name `syscall`) RedoxFS uses, so our Server's `syscall::error::Result`
 # is byte-for-byte the trait's. Cargo unifies the two at one version.
 redox_syscall = { version = "0.9.0", default-features = false }
