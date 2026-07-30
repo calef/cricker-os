@@ -197,6 +197,50 @@ mod tests {
         assert_eq!(srv.fstat(h).unwrap(), payload.len() as u64);
     }
 
+    /// The payload for pass `n` of the repeat-write test: a fixed 64 bytes, tagged with the pass and
+    /// position-dependent after that, so every pass has the same length (no truncation confusion) and
+    /// a stale or shifted read cannot match. Shared with the on-device client through
+    /// `fs_proto::fixture` where that matters.
+    fn repeat_write_payload(pass: u8) -> [u8; 64] {
+        let mut p = [0u8; 64];
+        p[..8].copy_from_slice(b"CRKRPT__");
+        p[7] = b'0' + pass;
+        for (i, b) in p.iter_mut().enumerate().skip(8) {
+            *b = (i as u8).wrapping_mul(31) ^ pass;
+        }
+        p
+    }
+
+    /// **The repeat-write gate** (fix/redoxfs-repeat-write). A first write to a pristine block
+    /// worked all along; a write to a block that has ALREADY been written is what loops on device.
+    /// The old gate never saw it because `mkredoxfs` rewrites the target to a placeholder before
+    /// every run, so every gated write was a first write and the bug hid behind the harness.
+    ///
+    /// This writes the same file TWICE in one run, which is the honest reproduction: it depends on
+    /// nothing left over from a previous invocation. It is also the decisive host-vs-device
+    /// comparison: if this loops, the bug is reachable with no cricker runtime at all (upstream or
+    /// our chunking); if it passes, the divergence is ours, in the device I/O path.
+    #[test]
+    fn a_second_write_to_the_same_block_does_not_loop() {
+        let mut srv = server_with(&[("scratch", b"(placeholder)")]);
+        let h = srv.open_file("scratch").unwrap();
+
+        // Equal-length, position-dependent payloads: each write fully replaces the last (a shorter
+        // write at offset 0 does not truncate, which is correct filesystem behaviour but would muddy
+        // the comparison), and a buffer that came back shifted or stale cannot match.
+        let mut buf = [0u8; 128];
+        for pass in 1..=3u8 {
+            let payload = repeat_write_payload(pass);
+            assert_eq!(
+                srv.write(h, 0, &payload).unwrap(),
+                payload.len(),
+                "write {pass} was short"
+            );
+            let n = srv.read(h, 0, &mut buf).unwrap();
+            assert_eq!(&buf[..n], &payload[..], "write {pass} did not read back");
+        }
+    }
+
     #[test]
     fn a_write_survives_a_full_close_and_reopen() {
         // Persistence across a full close/reopen is what the on-disk image buys, and it is the
