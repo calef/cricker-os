@@ -2122,14 +2122,24 @@ pub fn dump_threads() {
             .as_ref()
             .map(|s| crate::arch::exceptions::user_pc(s.top()))
             .unwrap_or(0);
+        // The address-space root, which is what tells threads of DIFFERENT PROCESSES apart. Without
+        // it a `pc` in this dump is close to useless for a userspace hang: every user program is
+        // linked at the same base (0x40_0000), so a bare PC resolves plausibly against several
+        // binaries at once and invites exactly the wrong conclusion. That is not hypothetical, it
+        // cost an hour on 2026-07-30: three spinning threads read equally well as three FS servers
+        // in RedoxFS directory code or as one std client looping in `read_to_end`, and the PCs alone
+        // could not say which. Threads sharing a root are one process; distinct roots are distinct
+        // processes, and 0 is a kernel thread with no user address space.
+        let root = t.space.as_ref().map(|s| s.root()).unwrap_or(0);
         crate::println!(
-            "  tid={:#06x} state={:?} on_cpu={} wake_pending={} has_outgoing_cap={} pc={:#010x}",
+            "  tid={:#06x} state={:?} on_cpu={} wake_pending={} has_outgoing_cap={} pc={:#010x} aspace={:#010x}",
             t.id,
             t.state,
             t.on_cpu,
             t.wake_pending,
             t.outgoing_cap.is_some(),
             pc,
+            root,
         );
     }
     // Endpoint topology: which endpoint each blocked thread is queued on, so a deadlock shows as a

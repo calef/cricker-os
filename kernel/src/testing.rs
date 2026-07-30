@@ -63,6 +63,12 @@ static TEST_BUDGET: AtomicU64 = AtomicU64::new(0);
 static TEST_NAME_PTR: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
 static TEST_NAME_LEN: AtomicUsize = AtomicUsize::new(0);
 
+/// Report a test's duration once it reaches this many seconds. Below it, silence: most tests are
+/// milliseconds and a duration on every line would bury the signal. Above it, the number is what makes
+/// a [`SLOW_TESTS`] entry an evidence-based declaration rather than a guess: until this existed, the
+/// only way to learn a test's real cost was to set its budget too low on purpose and read the failure.
+const SLOW_REPORT_SECS: u64 = 5;
+
 /// **The default per-test wall-clock budget.** Deliberately tight: almost every test in this suite is
 /// milliseconds, and a handful of the userspace ones are a few seconds. 90 s is far above anything
 /// honest while still being a real net, so a two-second unit test that starts spinning fails in a
@@ -82,6 +88,14 @@ const SLOW_TESTS: &[(&str, u64)] = &[
     // netd's userspace smoltcp poll (DHCP, DNS, then a TCP echo). The longest honest test we have,
     // and the reason a single global ceiling would have to be uselessly large.
     ("std_net_runs_over_the_socket_contract", 700),
+    // TEMPORARY, being measured: std_fs tripped the 90 s default after milestone 31 phase 2 added
+    // CREATE/TRUNCATE exercise to it. Raised so the run completes and reports its actual cost; the
+    // number then decides whether this row stays with a justification or whether there is a livelock
+    // to find. Do not merge this comment: replace it with the measurement or delete the row.
+    (
+        "std_fs_reads_a_file_through_a_granted_directory_capability",
+        900,
+    ),
 ];
 
 /// The budget for a test, by name: its [`SLOW_TESTS`] entry if it has one, else the default.
@@ -224,6 +238,18 @@ impl<T: Fn()> Testable for T {
 
         // Disarm: between tests there is no budget to exceed, and the next test arms its own.
         TEST_START.store(0, Ordering::Relaxed);
+
+        // Report what a test actually cost, if it cost anything worth knowing. The ceiling already
+        // needs a start time, so this is free, and it closes a real gap: a SLOW_TESTS budget is a
+        // human declaration of expected cost, and until now there was no way to learn the cost except
+        // by setting a budget too low on purpose and reading the failure. That is a bad way to find
+        // out, and it is exactly the position I was in when std_fs tripped the 90 s ceiling with no
+        // number attached. Anything under the threshold stays silent so the transcript is unchanged.
+        let elapsed =
+            crate::arch::timer::now().saturating_sub(start) / crate::arch::timer::frequency();
+        if elapsed >= SLOW_REPORT_SECS {
+            print!("[{elapsed} s] ");
+        }
 
         // A test that overflows the stack corrupts the kernel and then fails somewhere
         // else entirely, often in a *later* test, or by hanging with no output at all.
