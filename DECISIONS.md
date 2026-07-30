@@ -2184,10 +2184,14 @@ harder reaches them, and teaching the transport to parse device commands would p
 the layer §18 keeps neutral and start a per-device arms race. So:
 
 - an address reaching a device through a **descriptor** is *provably* confined to the driver's grant;
-- an address reaching a device inside a **command payload** is confined by the **IOMMU alone**, and
-  that confinement is **attacker-tested, not proved**
+- an address reaching a device inside a **command payload** is confined by the **IOMMU alone**. Item 3
+  above is the one useful thing this milestone could prove about that path, and it is a narrowing rather
+  than a closing: such an address is stopped by having no translation in the device's domain, so "the
+  domain maps exactly the grant" is precisely the property the barrier rests on, and it is now proved for
+  every grant. That the hardware then faults an out-of-grant address stays an attacker test
   (`the_iommu_refuses_the_gpu_a_framebuffer_outside_the_drivers_grant`, both ISAs, asserting on the
-  hardware's own fault queue);
+  hardware's own fault queue). The transport still cannot see these addresses, and the enforcement is
+  still the hardware's;
 - on a board with **no IOMMU, nothing confines the payload path.** Not the validator, not the hardware.
 
 That last point is where 16a's reasoning inverts, and it is the thing this section exists to prevent

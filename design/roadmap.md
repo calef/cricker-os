@@ -528,7 +528,9 @@ is does damage.** The proof is about *descriptor chains*. Per §29, a virtio-gpu
 in a `RESOURCE_ATTACH_BACKING` **command payload**, which the validator **structurally cannot see** (the
 addresses are not in its input), and teaching the transport to parse device commands would breach §18.
 So: descriptor-borne addresses are provably confined; payload-borne addresses are confined by the
-**IOMMU alone**, tested and not proved; and **on a board with no IOMMU nothing confines them at all.**
+**IOMMU alone**, whose allow-list item 3 now proves exact (a narrowing, not a closing: the hardware
+honouring that allow-list stays an attacker test, and the transport still cannot see the addresses); and
+**on a board with no IOMMU nothing confines them at all.**
 That inverts this milestone's own load-bearing argument for the payload path: "prove the validator
 because on the VisionFive 2 it is all there is" holds only where the validator can look. On that board a
 display driver is either trusted with all of physical memory or the transport grows a device-aware

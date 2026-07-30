@@ -410,7 +410,14 @@ So the two paths have genuinely different evidence, and conflating them is the e
 | Path | What confines it | Strength of the evidence |
 |---|---|---|
 | Addresses in **descriptors** (disk, NIC, and the GPU's own command ring) | the shadow-ring validator, plus the IOMMU where present | **machine-checked for every input** (`crates/dma_validate`), plus end-to-end attacker tests on both ISAs and both transports |
-| Addresses in a **command payload** (virtio-gpu backings) | the IOMMU, and *only* the IOMMU | **attacker-tested, not proved**: `the_iommu_refuses_the_gpu_a_framebuffer_outside_the_drivers_grant` points a backing at a frame left out of the domain and asserts the IOMMU's fault queue recorded a fault there, on both ISAs |
+| Addresses in a **command payload** (virtio-gpu backings) | the IOMMU, and *only* the IOMMU | **the barrier's allow-list is proved exact; the hardware honouring it is attacker-tested.** `an_enumerated_page_lies_inside_the_grant` and `every_whole_page_of_the_grant_is_enumerated` prove the domain maps exactly the granted pages, which is the property that makes an out-of-grant payload address untranslatable; `the_iommu_refuses_the_gpu_a_framebuffer_outside_the_drivers_grant` then points a backing at a frame left out of the domain and asserts the IOMMU's fault queue recorded a fault there, on both ISAs |
+
+The middle column of that second row is the one useful thing this milestone could prove about the payload
+path, and it is worth naming rather than leaving as a side effect of item 3. A payload-borne address is
+stopped by having **no translation in the device's domain**, so "the domain maps exactly the grant" is
+exactly the property that barrier rests on. Proving it moved the payload path from "tested end to end" to
+"the allow-list is proved exact, the hardware honouring it is tested end to end". A narrowing, not a
+closing: the transport still cannot see these addresses, and the enforcement is still the hardware's.
 
 And the consequence that made milestone 35 load-bearing in the first place cuts the other way here.
 The reason to prove the validator now, rather than later, is that **milestone 16a's board has no

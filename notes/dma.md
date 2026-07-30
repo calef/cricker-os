@@ -72,7 +72,15 @@ that matters for milestone 16a:
 |---|---|---|
 | An address in a **virtqueue descriptor** (every byte a disk or a NIC touches, and the GPU's command ring) | the shadow-ring validator below, plus the IOMMU where there is one | **Proved for every input.** Seven Kani harnesses over `crates/dma_validate`: both directions, indirect descriptors, chain cycles, ring-index wraparound, overflowing arithmetic, multi-queue blocks, and the mutated-after-validation race. Plus the end-to-end attacker tests, both ISAs, both transports. |
 | The **page set of an IOMMU domain** (which frames the hardware will translate at all) | the domain builder | **Proved for every grant.** Six harnesses over `paging::domain`: the domain maps every whole page of the grant and no byte outside it. Format-independent, so one proof covers SMMUv3 and the RISC-V IOMMU. The remaining link (`Mapper::map` writes exactly the one leaf it is told) stays tested on both formats. |
-| An address in a **device command payload** (virtio-gpu resource backings) | the IOMMU, and nothing else | **Tested, not proved, and structurally unprovable here.** The validator cannot see these addresses at all: they are not in its input. |
+| An address in a **device command payload** (virtio-gpu resource backings) | the IOMMU, and nothing else | **Partly proved, by the row above, and only there.** The validator cannot see these addresses at all: they are not in its input, so nothing about them is provable *from the transport*. What the domain proof buys is that the barrier's allow-list is exact; that the hardware then faults an address outside it stays an attacker test. |
+
+Note what the middle row does for the third, because it is the one useful thing milestone 35 could prove
+about the payload path and it is easy to miss. A payload-borne address is stopped by having **no
+translation in the device's domain**, so "the domain maps exactly the grant" is precisely the property
+that barrier needs, and it is now proved for every grant rather than tested on a few. The payload path
+therefore improved from "tested end to end" to "the allow-list is proved exact, the hardware honouring it
+is tested end to end". That is a real narrowing of the gap and it is *not* the same as closing it: the
+transport still cannot see these addresses, and the hardware is still doing the enforcing.
 
 That third row is the one to carry away. A virtio-gpu's backing addresses ride inside a
 `RESOURCE_ATTACH_BACKING` **command payload** (DECISIONS §29, notes/framebuffer-contract.md). The
