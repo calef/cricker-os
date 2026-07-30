@@ -10,6 +10,14 @@
 //! make an endpoint, cannot allocate a page. Its entire power is to ask the spawner for a rebuild of
 //! the one program the spawner can build. A compromised supervisor is a restart loop, not a foothold.
 //!
+//! **It reaps its own children now** (DECISIONS §32). It used to ask the spawner to, because reaping
+//! meant `Untyped::DESTROY` and only the spawner held the region capability; the reap is a method on
+//! the supervision endpoint this program already holds, so the proxy hop is gone. Nothing about what
+//! it holds has grown: still no memory, still nothing it can build with. The reclaimed pages go back
+//! to the *spawner's* budget, because that is who owns the region (§13). The instance handle the
+//! spawner used to issue is gone too: the kernel stamps a tid on the death message, and §32
+//! authorizes that tid relative to the endpoint it arrived on.
+//!
 //! init is not involved in any of this, and cannot be: by the time the first death arrives, rootsup
 //! has deleted the construction budget it would need. See notes/trusted-init.md.
 
@@ -24,9 +32,7 @@ use user_rt::{recv, send};
 #[allow(dead_code)]
 mod suptree;
 
-use suptree::{
-    REP_BUILT, REPORT_FAILED, REPORT_SUP_GAVE_UP, REPORT_SUP_SAW_DEATH, REQ_BUILD, REQ_REAP,
-};
+use suptree::{REP_BUILT, REPORT_FAILED, REPORT_SUP_GAVE_UP, REPORT_SUP_SAW_DEATH, REQ_BUILD};
 
 /// What rootsup endowed us with, in order. Notice what is missing: memory.
 const REQ: u64 = 0; // WRITE: ask the spawner to build or reap
@@ -44,10 +50,10 @@ const MAX_RESTARTS: u64 = 2;
 pub extern "C" fn _start(_a0: u64, _a1: u64, _a2: u64) -> ! {
     let mut attempt = 0u64;
     let mut restarts = 0u64;
-    let Some(mut instance) = build(attempt) else {
+    if !build(attempt) {
         send(REPORT, REPORT_FAILED, 20, 0);
         suptree::fail()
-    };
+    }
 
     loop {
         // The kernel is the only sender here, so the tid is trustworthy without a badge (§26.5).
@@ -56,7 +62,10 @@ pub extern "C" fn _start(_a0: u64, _a1: u64, _a2: u64) -> ! {
 
         // Reap first, either way: the corpse is dead-until-reaped, so its region stays pinned until we
         // say so. Reaping a finished child matters as much as reaping a crashed one.
-        reap(instance);
+        if !reap(tid) {
+            send(REPORT, REPORT_FAILED, 22, 0);
+            suptree::fail()
+        }
 
         if event != abi::fault::EVENT_FAULT {
             // A clean exit is not a reason to restart. This distinction is exactly why §26 delivers
@@ -70,12 +79,9 @@ pub extern "C" fn _start(_a0: u64, _a1: u64, _a2: u64) -> ! {
             break;
         }
         attempt += 1;
-        match build(attempt) {
-            Some(next) => instance = next,
-            None => {
-                send(REPORT, REPORT_FAILED, 21, 0);
-                break;
-            }
+        if !build(attempt) {
+            send(REPORT, REPORT_FAILED, 21, 0);
+            break;
         }
     }
 
@@ -87,18 +93,26 @@ pub extern "C" fn _start(_a0: u64, _a1: u64, _a2: u64) -> ! {
     }
 }
 
-/// Ask the spawner to build the next instance. We name the attempt; it names the instance.
-fn build(attempt: u64) -> Option<u64> {
+/// Ask the spawner to build the next instance. We name the attempt; it builds, and tells us nothing
+/// but whether it worked. It has nothing else to tell us: the kernel names the child, on the death
+/// message, when the time comes.
+fn build(attempt: u64) -> bool {
     send(REQ, REQ_BUILD, attempt, 0);
-    let (verdict, instance, _) = recv(REP);
-    (verdict == REP_BUILT).then_some(instance)
+    let (verdict, _, _) = recv(REP);
+    verdict == REP_BUILT
 }
 
-/// Ask the spawner to reap an instance's region (§16 revocation). We hold no memory, so we cannot do
-/// this ourselves, which is the authority split working as designed rather than a limitation.
-fn reap(instance: u64) {
-    send(REQ, REQ_REAP, instance, 0);
-    let _ = recv(REP);
+/// **Collect the corpse** (§32): a method on the supervision endpoint we already hold, naming the
+/// tid the kernel stamped on the death message we just received. We hold no memory and cannot build
+/// anything, and this does not change that: the pages go back to the spawner's budget, because the
+/// spawner owns the region (§13). We can free our child's memory; we cannot spend it.
+///
+/// A `StillAlive` refusal cannot happen here, because we only ever call this on a tid that arrived
+/// on a death message. It is reported rather than ignored anyway: if it ever did happen it would mean
+/// the kernel had told us a thread was dead and then said otherwise, which is worth failing loudly
+/// over rather than silently leaking a corpse.
+fn reap(tid: u64) -> bool {
+    user_rt::reap(FAULT, tid) == 0
 }
 
 #[panic_handler]
