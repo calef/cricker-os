@@ -129,21 +129,27 @@ fn compile_c_component(manifest_dir: &Path) {
 /// stops predicting anything about riscv64, and the failure would surface halfway through a build
 /// rather than here.
 fn resolve_clang() -> Option<PathBuf> {
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    // The escape hatch, first: a distro or a nix profile can put a suitable clang anywhere.
-    if let Ok(explicit) = std::env::var("CRICKER_CC") {
-        if !explicit.is_empty() {
-            candidates.push(PathBuf::from(explicit));
-        }
+    // The escape hatch **overrides** the search rather than joining it: "use this compiler" has to
+    // mean that, or a typo in the path silently falls back to a different compiler and the build is
+    // no longer reproducible in the way the setter thought it was. It is still capability-checked,
+    // because a named compiler that cannot emit RISC-V is the same problem by a different route.
+    if let Ok(explicit) = std::env::var("CRICKER_CC")
+        && !explicit.is_empty()
+    {
+        let cc = PathBuf::from(explicit);
+        return has_both_backends(&cc).then_some(cc);
     }
-    // Homebrew's `llvm` keg, which is what `script/bootstrap` installs on macOS. It is not
-    // symlinked onto `PATH` by design (it would shadow Apple's clang), so name it directly.
-    candidates.push(PathBuf::from("/opt/homebrew/opt/llvm/bin/clang"));
-    candidates.push(PathBuf::from("/usr/local/opt/llvm/bin/clang"));
-    // A distro clang (Debian/Ubuntu build every LLVM backend in, so this is the usual CI answer).
-    candidates.push(PathBuf::from("clang"));
-
-    candidates.into_iter().find(|c| has_both_backends(c))
+    [
+        // Homebrew's `llvm` keg, which is what `script/bootstrap` installs on macOS. It is not
+        // symlinked onto `PATH` by design (it would shadow Apple's clang), so name it directly.
+        "/opt/homebrew/opt/llvm/bin/clang",
+        "/usr/local/opt/llvm/bin/clang",
+        // A distro clang (Debian/Ubuntu build every LLVM backend in, so this is the usual CI answer).
+        "clang",
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .find(|c| has_both_backends(c))
 }
 
 /// Does this clang have the AArch64 *and* RISC-V backends registered? `-print-targets` answers

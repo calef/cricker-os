@@ -49,7 +49,7 @@ IPC and the MMU invariants are next. This threads through the list rather than b
 | 22 | Trusted init: verify it, and shrink what a broken one can do | Measured/secure boot that checks init before running it; reduce init's authority so a compromise is bounded | **closes the thesis's own soft spot:** init is the privileged *unverified* component the whole system is built by |
 | 23 | A capability-routed component OS with live replacement | Every userspace component (driver, server, app) is a swappable, vendor-shippable unit behind a stable contract; operators replace them live, no reboot. The console hot-swap is instance one; a durable queue-broker decouples component lifecycles (opt-in per channel, for latency) | **the flagship payoff and a product ambition:** competing vendor components, confined by the kernel and swapped live; the verified core is the one fixed thing |
 | 35 | Prove the DMA-confinement boundary (extends 18) | Extract the shadow-ring validator (`validate_and_shadow`) out of `kernel/src/virtio.rs` into a host-testable logic crate and machine-check it: no validated descriptor chain, in either direction and including indirect descriptors and multi-queue, can reference memory outside the driver's granted DMA region. Add the `Untyped::SPLIT` "never widens rights" harness (the one fresh-mint site the caps proof doesn't reach) and confirm the IOMMU domain builder's *maps-exactly-the-grant* property is proved, not just tested. | **closes the one isolation boundary we test instead of prove.** Every other confinement seam (caps, MMU, IPC, generational names) is Kani-proved for all inputs; DMA is attacker-tested only. It is also the boundary that makes "don't trust the driver" true, so the proof belongs here, not on the confined component. **Load-bearing for 16a:** the VisionFive 2 has no IOMMU, so on first silicon this validator is the *sole* DMA confinement, not defence in depth |
-| 36 | A foreign-language component, seam first (spike; feeds 29 and 23) | Prove the FFI seam end to end with a *minimal* C component before committing to a large one: bare-metal clang for both bare targets in the build, a Rust `user_rt` shell that holds every capability and does every syscall while the C code gets plain buffers over the C ABI (so the §4 surface does not widen), and only the handful of libc symbols the component actually needs, with `malloc` on milestone 27's untyped-backed `GlobalAlloc`. The deliverable that matters is one test: a deliberate out-of-bounds write in the C code faults the process, touches nothing outside its grant, and its supervisor restarts it. | **the thesis in one assertion.** Memory-unsafe foreign code is not a dilution of "a verified core that confines unverified workloads", it is the strongest available demonstration of it: the more unverified the component, the more the confinement has to prove. It also de-risks 29's libghostty-vt rung and 23's vendor-component claim *before* we owe anything to another project's toolchain or API churn |
+| 36 | A foreign-language component, seam first (spike; feeds 29 and 23) | Prove the FFI seam end to end with a *minimal* C component before committing to a large one: bare-metal clang for both bare targets in the build, a Rust `user_rt` shell that holds every capability and does every syscall while the C code gets plain buffers over the C ABI (so the §4 surface does not widen), and only the handful of libc symbols the component actually needs, with `malloc` on milestone 27's untyped-backed `GlobalAlloc`. The deliverable that matters is one test: a deliberate out-of-bounds write in the C code faults the process, touches nothing outside its grant, and its supervisor restarts it. **Built, DECISIONS §30, both ISAs**: clang capability-checked for both backends from one compiler (Apple's is rejected: no RISC-V), `cshim` holds every capability so the C holds none, the libc turned out to be **two** symbols not five (`compiler_builtins` already supplies the rest), and two witnesses prove the confinement (a read-only page that is the *same physical frame*, and a different frame at the same virtual address). notes/c-seam.md | **the thesis in one assertion.** Memory-unsafe foreign code is not a dilution of "a verified core that confines unverified workloads", it is the strongest available demonstration of it: the more unverified the component, the more the confinement has to prove. It also de-risks 29's libghostty-vt rung and 23's vendor-component claim *before* we owe anything to another project's toolchain or API churn |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -857,6 +857,44 @@ than ghostty-vt would buy). Feeds 31 (per-file grants), 23 (a component with rea
 hand off across a live swap, the hardest handoff case yet named), 27 (`std::fs`). Effort L.
 
 ### 36. A foreign-language component, seam first (spike; feeds 29 and 23)
+
+**DONE 2026-07-29**, both ISAs, in QEMU. DECISIONS §30; concept note notes/c-seam.md.
+
+All four deliverables landed as specified, and the two that produced findings are worth reading before
+the next foreign component:
+
+1. **Toolchain.** `user/build.rs` compiles `user/c/cseam.c` with a clang resolved from a candidate list
+   and *capability-checked* (`-print-targets` must list both aarch64 and riscv64), object handed to the
+   linker for the `cshim` binary only. One compiler for both ISAs is §19 applied to the toolchain, which
+   means **Apple's clang is rejected on purpose** (no RISC-V backend) even though it would compile the
+   aarch64 half. `script/bootstrap` grew `brew install llvm` / `apt-get install clang`, and the CI
+   clippy job grew the same, since it clippies `user`.
+2. **Linkage.** `cshim` (Rust) holds every capability and makes every syscall; the C gets `(u8*, usize)`
+   and returns a scalar. The syscall surface did not change, and could not have: the C cannot name a
+   capability slot.
+3. **libc.** The object demands five symbols; the linker demands **two** (`malloc`, `free`), because
+   `compiler_builtins` already supplies `memcpy`/`memset`/`strlen` weakly for bare targets. **Do not
+   shim the other three:** the obvious Rust `memcpy` is `copy_nonoverlapping`, which lowers to a call to
+   `memcpy`, so it calls itself, and the symptom is a store fault at `sp` that reads like a stack-size
+   problem at any stack size. `malloc` is milestone 27's untyped heap on the instance's own region, so
+   one `DESTROY` reclaims it.
+4. **The test.** `c_seam_tests`, both ISAs: two out-of-bounds writes (one byte past into a read-only
+   page that is the *same physical frame* the warden holds read/write; one page past into an address the
+   component has no mapping for and the warden does), both fault at exactly the address the C computed,
+   both leave a position-derived witness pattern intact byte for byte, and the third instance does real
+   C work whose output is checked against an independent Rust computation. The control that makes it
+   mean anything: each bug stores *inside* its grant first, and that store must be visible.
+
+**The fork this fed, stated concretely.** The warden is builder, supervisor, and checker in one process,
+because reaping needs `WRITE` on the region and `WRITE` is also what builds one. **A supervisor needs
+exactly `DESTROY` on one region it did not create**, and nothing narrower exists. Milestone 22 phase
+B.2's IPC proxy is the workaround that exists today; this spike deliberately did not use it, so the
+requirement is visible in one program instead of hidden behind a hop.
+
+**What it does not prove**, recorded so 29 and 23 do not inherit false confidence: one `clang -c` is
+not a build system, one translation unit is not a link order, this component's five symbols are not
+another's, and confined is not correct. Sequencing holds: libghostty-vt is tier one (freestanding),
+which is the cheapest step up from here.
 
 **Added 2026-07-29, from Chris's question: can we run user services in other languages, like a C
 FAT32 that a monolith would have put in the kernel?** The answer is yes, and the roadmap already

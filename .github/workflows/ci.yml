@@ -55,6 +55,12 @@ jobs:
         run: |
           rustup toolchain install nightly --profile minimal --component clippy
           rustup target add --toolchain nightly aarch64-unknown-none-softfloat
+      # `script/lint` clippies the `user` package, whose build.rs compiles the C component with a
+      # bare-metal clang (milestone 36, DECISIONS §30). The test job gets this from script/bootstrap;
+      # this job does not run bootstrap (it would install QEMU it never uses), so install clang here.
+      # Ubuntu's clang carries every LLVM backend, including RISC-V.
+      - name: Install clang (the C component's compiler)
+        run: sudo apt-get update && sudo apt-get install -y clang
       - uses: Swatinem/rust-cache@v2
       - run: script/lint
 

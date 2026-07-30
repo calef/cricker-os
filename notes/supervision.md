@@ -92,3 +92,25 @@ and address, the corpse still holds its fault message after delivery, revocation
 fresh child runs in its place; a second test drives the clean-exit path and asserts the `EXIT` event.
 See DECISIONS §26, notes/abi.md (the message format and spawn-slot convention), and
 notes/object-revocation.md (the reap the supervisor uses).
+
+## The reap authority a supervisor actually needs, stated concretely
+
+Milestone 36 (notes/c-seam.md) is the first thing outside milestone 22 to build a supervisor that
+restarts a real component, and it pinned down the requirement §26's phase-B block left open.
+
+Reaping is `Untyped::DESTROY`, which needs `WRITE` on the region. **`WRITE` on a region is also what
+builds a process from it** (`RETYPE`, `RETYPE_OBJ`, `SPLIT`). So a supervisor that can restart its
+child is a supervisor that can build processes, unless it proxies the reap through something else.
+
+- The **proxy** exists today: phase B.2's `subsup` holds no memory and asks `spawner` to reap. Right
+  for a system's init, where the point is that init can no longer build.
+- Milestone 36's `cwarden` takes the **direct route** and therefore holds a full untyped budget for its
+  whole life, which is exactly the bundling the open fork is about.
+- **The requirement, in one sentence: a supervisor needs `DESTROY` on one region it did not create.**
+  Not `RETYPE`, not `SPLIT`, not a whole budget. Whether that becomes a rights bit split out of `WRITE`
+  or a distinct `Untyped::REAP` method changes the rights model and the syscall surface, so it stays a
+  decision rather than an implementation detail.
+
+The second half of the same gap is unchanged: nothing maps a tid to a handle a builder holds, so a
+supervisor names instances by a handle it or its builder issued, which is sufficient for one child and
+insufficient in general.

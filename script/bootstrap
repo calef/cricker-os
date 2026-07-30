@@ -58,4 +58,58 @@ else
     esac
 fi
 
+# --- A bare-metal C compiler ----------------------------------------------------------------
+# Milestone 36 links a C component into the `cshim` userspace program (user/c/cseam.c, DECISIONS
+# §30), so building `user` now needs a clang with BOTH the AArch64 and RISC-V backends. One
+# compiler for both ISAs, not two, because architectural parity is a gate (DECISIONS §19) and two
+# clangs would mean "works on aarch64" stopped predicting anything about riscv64.
+#
+# The check is a capability check, not a `command -v`, because the clang most likely already
+# present on a macOS dev machine is Apple's, and Apple's has no RISC-V backend at all. The same
+# resolution order lives in user/build.rs, which is what actually runs the compiler; this only
+# installs one so that build succeeds. Set CRICKER_CC to point either at something else.
+have_cross_clang() {
+    for cc in "$CRICKER_CC" /opt/homebrew/opt/llvm/bin/clang /usr/local/opt/llvm/bin/clang clang; do
+        [ -n "$cc" ] || continue
+        targets="$("$cc" -print-targets 2>/dev/null || true)"
+        if echo "$targets" | grep -qE '^ *aarch64 ' && echo "$targets" | grep -qE '^ *riscv64 '; then
+            echo "==> Cross clang present: $cc"
+            return 0
+        fi
+    done
+    return 1
+}
+
+if have_cross_clang; then
+    :
+else
+    echo "==> Installing a clang with the AArch64 and RISC-V backends"
+    case "$os" in
+    Darwin)
+        if ! command -v brew >/dev/null 2>&1; then
+            echo "bootstrap: Homebrew not found; install it from https://brew.sh, then re-run." >&2
+            exit 1
+        fi
+        # Homebrew's llvm keg ships every LLVM backend. It is deliberately not linked onto PATH
+        # (that would shadow Apple's clang), so user/build.rs names the keg path directly.
+        brew install llvm
+        ;;
+    Linux)
+        # Debian/Ubuntu build every LLVM backend into their clang packages.
+        sudo apt-get update
+        sudo apt-get install -y clang
+        ;;
+    *)
+        echo "bootstrap: unknown OS '$os'; install a clang whose \`clang -print-targets\` lists" >&2
+        echo "           both aarch64 and riscv64, then re-run." >&2
+        exit 1
+        ;;
+    esac
+    have_cross_clang || {
+        echo "bootstrap: still no clang that can target both aarch64 and riscv64." >&2
+        echo "           Set CRICKER_CC=/path/to/clang and re-run." >&2
+        exit 1
+    }
+fi
+
 echo "==> Bootstrap complete"

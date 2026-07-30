@@ -19,10 +19,11 @@
  * corrupt memory inside a grant the Rust shell already had, and it cannot widen the
  * kernel's syscall surface by so much as one method, because it cannot reach it.
  *
- * The five libc symbols below are the whole libc. They are defined in Rust, in
- * cshim.rs; there is no libc on this target, and nothing behind these needs POSIX
- * semantics. See notes/c-seam.md for how that list was discovered (by letting the
- * linker fail and reading the error, not by guessing).
+ * The five libc symbols below are this component's whole libc. Two of them are defined
+ * in Rust in cshim.rs, and the other three the Rust bare-metal runtime already supplies;
+ * there is no libc on this target, and nothing behind these needs POSIX semantics. See
+ * notes/c-seam.md for how that list was discovered (by letting the build fail and reading
+ * the error, not by guessing) and for why shimming `memcpy` in Rust is a trap.
  */
 
 #include <stddef.h>
@@ -35,8 +36,8 @@ void *malloc(size_t n);
 void free(void *p);
 
 /*
- * The grant's layout. Mirrored in user/src/cshim.rs and user/src/cseam.rs; the two
- * sides agree by convention, because a C ABI cannot express a shared struct without
+ * The grant's layout. Mirrored in user/src/cseam.rs, the module both Rust programs
+ * on the other side of this seam compile; the two sides agree by convention, because a C ABI cannot express a shared struct without
  * one of the two languages generating it, and generating bindings for one page of
  * bytes would be more machinery than the agreement is worth. The comment is the
  * contract, the same way every cricker-os program's capability slots are.

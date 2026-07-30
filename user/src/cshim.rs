@@ -97,7 +97,8 @@ pub extern "C" fn _start(_a0: u64, attempt: u64, _a2: u64) -> ! {
 // ===========================================================================================
 // The libc, in full: TWO symbols.
 //
-// Tier two of the three tiers in notes/std.md (freestanding / a handful of symbols / full POSIX).
+// Tier two of the three tiers in design/roadmap.md's milestone-36 block (freestanding / a handful of
+// symbols / full POSIX).
 // The C references five symbols; this file defines two of them. Both halves of that sentence were
 // discovered by letting the build fail and reading the error, which is the only honest way to learn
 // what a foreign object file actually demands.
