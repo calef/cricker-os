@@ -544,14 +544,22 @@ fn coremark_compute() {
 /// stack is proven by the fs-server test), self-skipping everywhere else via the same
 /// `online_count() > 1` gate as the throughput bench, so `bench/baseline.txt` never sees it.
 ///
-/// **What the number means, and the honest comparison.** The loop reads the same block repeatedly, so
-/// after warmup the read is served from the FS server's cache: it measures the *contract* cost (client
-/// CALL, FS-server dispatch, handle validation, engine read, copy into the shared frame, reply), not
-/// disk latency. Set against the bare `ipc_rtt_el0` round trip, the difference is what the FS-server
-/// file contract costs above a raw endpoint call. It is NOT the raw blk-IPC path minus the FS layer:
-/// a warm read does not re-enter the block server, so this isolates the file-server serving cost, and
-/// notes/benchmarks.md says so. A cache-cold read additionally pays a block-server round trip, which
-/// is the blk-IPC path the fs-server test already exercises end to end.
+/// **What the number means: whole-path cost, dominated by the device.** ~204 us/read (HVF,
+/// `--release --smp`). A read is **not** served warm from a cache: it goes to the block server, which
+/// does a DMA transfer and waits on the disk's completion interrupt, roughly 200 us per block under
+/// HVF. That swamps the FS server's own IPC-contract tax, which `relay_rtt` puts at a few hundred
+/// *nanoseconds*. So this is the honest whole-path cost of a userspace file read, not an isolated
+/// server tax, which is exactly the case milestone 21's rule names: when device latency swamps the
+/// isolation, measure the whole path and say so rather than report a fictional isolated number.
+///
+/// The isolated file-server cost was attempted and abandoned, and this comment used to describe that
+/// abandoned design (claiming a warm cache and a contract-cost measurement), which contradicted
+/// notes/benchmarks.md for long enough to mislead a reader. Corrected here: a few hundred ns of
+/// serving layer sitting on a ~200 us block read with its own run-to-run spread puts the delta inside
+/// the device noise. The per-hop tax lives in `relay_rtt`, where it is measurable and gated.
+///
+/// **What it is not:** a filesystem throughput number. There is no MB/s figure and no comparison
+/// against ext4 or APFS, which is DECISIONS §34's unmet condition 2 and milestone 38.
 fn fs_read() {
     // Same gate as the throughput bench: meaningful only on the `--real --smp` boot, which is where
     // the RedoxFS disk is attached and the whole stack is proven. Single hart (icount, default

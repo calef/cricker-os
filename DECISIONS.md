@@ -2657,14 +2657,16 @@ nobody wrote down is a decision nobody can revisit.
 
 ### The three conditions
 
-1. **Crash consistency must be tested, not asserted.** It is RedoxFS's central selling point and we
-   have never injected a torn write or a power cut. Today the claim rests on the upstream design
-   description. For a project whose rule is measure rather than argue, this gap is worse than the
-   missing verbs were, and it is the first thing a skeptic should ask about. Until it is tested, the
-   docs say "designed for crash consistency", never "crash consistent".
-2. **Throughput must be measured.** `fs_read` is in the service-path benchmarks with the
-   userspace-server tax stated honestly, but there is nothing next to ext4 or APFS. The phrase
-   "primary filesystem" invites a comparison we currently cannot make.
+1. **Crash consistency must be tested, not asserted (milestone 37).** It is RedoxFS's central selling
+   point and we have never injected a torn write or a power cut. Today the claim rests on the upstream
+   design description. For a project whose rule is measure rather than argue, this gap is worse than
+   the missing verbs were, and it is the first thing a skeptic should ask about. Until it is tested,
+   the docs say "designed for crash consistency", never "crash consistent".
+2. **Throughput must be measured (milestone 38).** `fs_read` reports the whole-path cost of a real
+   read (~204 us under HVF, device-dominated, with `relay_rtt` putting the isolation tax three orders
+   of magnitude below it), and it is deliberately ungated because the path is interrupt-driven. What
+   does not exist is any MB/s figure, or any comparison against ext4 or APFS. The phrase "primary
+   filesystem" invites a comparison we currently cannot make.
 3. **The write path must be honestly complete**, which is `CREATE` and `TRUNCATE` (milestone 31 phase
    two, in flight). §27 records why `TRUNCATE` is not merely a feature: a write that half-works reads
    as a write that failed, and that sharp edge cost a day and produced three wrong root causes.
