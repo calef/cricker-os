@@ -2,8 +2,8 @@
 //!
 //! Milestone 11, and DECISIONS.md §10's deliberately-deferred third axis. The idea, from seL4:
 //! the kernel does not own a pool it hands out from. Instead a process holds a capability to a
-//! chunk of raw memory (an [`Untyped`] region), and to get a page it **retypes** part of that
-//! memory into the thing it wants. The kernel is a bookkeeper: it advances a watermark and hands
+//! chunk of raw memory (an `Untyped` region, `caps::Object::Untyped`), and to get a page it
+//! **retypes** part of that memory into the thing it wants. The kernel is a bookkeeper: it advances a watermark and hands
 //! back a physical address. It calls no allocator.
 //!
 //! # What this buys, and the one number that proves it

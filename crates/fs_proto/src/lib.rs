@@ -98,9 +98,9 @@ pub mod blk {
 
 /// **The file-service protocol** (client → FS server). The contract is capability-shaped from birth
 /// (notes/fs-server.md): the endpoint a client holds IS the directory capability, bound in the
-/// server to one directory node, and every name in [`OPEN`] is resolved relative to it. There is no
+/// server to one directory node, and every name in [`fs::OPEN`] is resolved relative to it. There is no
 /// global namespace and no absolute path; a client with no such endpoint can open nothing, and the
-/// refusal is "no such capability" (it holds no endpoint), never a permission check. A [`OPEN`]
+/// refusal is "no such capability" (it holds no endpoint), never a permission check. An [`fs::OPEN`]
 /// hands back a **handle**, a small integer the server issues and validates against this session's
 /// table; a handle is likewise a capability, meaningless to forge because the server only honors the
 /// ones it minted.

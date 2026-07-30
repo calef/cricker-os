@@ -609,7 +609,7 @@ pub mod status {
     pub const COMP_UP: u64 = 0xC33_0001;
 
     /// A client painted and committed: `send(REPORT, WIN_PAINTED, digest, seq)`, where `digest` is
-    /// [`surface_checksum`] over its own surface read back after the commit.
+    /// [`super::surface_checksum`] over its own surface read back after the commit.
     pub const WIN_PAINTED: u64 = 0xC33_0011;
     /// A client asked for something it holds no capability for and was refused:
     /// `send(REPORT, WIN_REFUSED, errno, what)`. `errno` is the kernel's, and the whole point is

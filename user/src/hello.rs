@@ -692,7 +692,7 @@ fn init_irq(initrd_len: u64) -> ! {
 
 /// **init builds a worker and hands it an argument, milestone 19e.** The first workload that needs
 /// `START` to carry *data*, not just a role: every child before this took only its role in `x0`,
-/// but a worker computes on an input, and that input has to reach it. init builds a [`WORKER`]
+/// but a worker computes on an input, and that input has to reach it. init builds a `worker`
 /// child endowed with the report endpoint (slot 0) and starts it with [`WORKER_INPUT`] in `x1`
 /// (the second `START` argument, new in 19e). The worker squares it and reports home. Receiving
 /// `WORKER_INPUT * WORKER_INPUT` proves the argument crossed the `START` boundary intact: the

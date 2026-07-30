@@ -375,7 +375,7 @@ pub fn run_attack_indirect(dma_phys: u64) -> ! {
 }
 
 /// Find a file in the crickerfs directory sitting in the block-0 buffer, returning its start
-/// block. The format: magic(8), count u32, then entries of { name[24], start_block u32, len u32 }.
+/// block. The format: magic(8), count u32, then entries of { name\[24\], start_block u32, len u32 }.
 fn find_file(name: &[u8]) -> Option<u32> {
     let count = dma_read::<u32>(OFF_DATA + 8);
     for i in 0..count.min(15) as u64 {

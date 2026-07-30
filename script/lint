@@ -68,3 +68,19 @@ fi
 # missing. Documentation is part of this project's deliverable, so its index gets a gate.
 echo "==> roadmap status"
 "$(dirname "$0")/roadmap" --check
+
+# Intra-doc links, denied when broken. This codebase leans unusually hard on `[`Item`]` links to
+# stitch the code to itself and to the notes, which is deliberate (see CLAUDE.md on commenting) and
+# makes a broken link a real loss rather than cosmetic. Nothing checked them until 2026-07-30, and
+# there were TEN, including a whole crate's worth in `abi` where nested modules linked crate-root
+# items without a path, plus `name[24]` in a comment that markdown read as a link.
+#
+# Split three ways because the workspace is not one target: the bare crates document for aarch64
+# (riscv64 would refuse `xtask`, which needs std), `xtask` is a host tool, and fs-server is its own
+# workspace.
+echo "==> rustdoc (broken intra-doc links)"
+DOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::invalid_html_tags"
+RUSTDOCFLAGS="$DOCFLAGS" cargo doc --no-deps --quiet --workspace --exclude xtask \
+    --target aarch64-unknown-none-softfloat
+RUSTDOCFLAGS="$DOCFLAGS" cargo doc --no-deps --quiet -p xtask
+RUSTDOCFLAGS="$DOCFLAGS" cargo doc --no-deps --quiet --manifest-path fs-server/Cargo.toml --lib

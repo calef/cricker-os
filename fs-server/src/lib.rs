@@ -1,6 +1,6 @@
 //! **The FS-server core: RedoxFS behind a capability-shaped file service** (milestone 32 phase 2).
 //!
-//! This is the sans-IO heart of the FS server, in the [`linedisc`] spirit: the filesystem logic
+//! This is the sans-IO heart of the FS server, in the `linedisc` spirit: the filesystem logic
 //! with no IPC and no device in it, so it is host-tested in milliseconds against a real RedoxFS
 //! image and only the wiring needs QEMU. The EL0 binary (this crate's `el0` build) wraps a
 //! [`Server`] in the block-IPC [`redoxfs::Disk`] and the file-service serve loop; everything the
