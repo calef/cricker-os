@@ -133,10 +133,145 @@ impl<D: Disk> Server<D> {
     }
 }
 
+/// One filesystem block, in bytes (RedoxFS's `BLOCK_SIZE`): the unit [`BlockIo`] transfers.
+pub const BLOCK: usize = 4096;
+
+/// A block-granular transport: read or write one whole filesystem block, or report the disk size.
+/// The EL0 binary implements this over blk IPC; a host test implements it over a `Vec`.
+///
+/// This exists so the **chunking** that bridges RedoxFS's byte-addressed, arbitrary-length `Disk`
+/// calls to whole-block transfers is written once and host-tested, instead of living only in the EL0
+/// binary where no host test can reach it. That gap is what let the repeat-write bug hide.
+pub trait BlockIo {
+    /// Read filesystem block `block` into `buf` (exactly [`BLOCK`] bytes).
+    fn read_block(&mut self, block: u64, buf: &mut [u8; BLOCK]) -> Result<()>;
+    /// Write `buf` (exactly [`BLOCK`] bytes) to filesystem block `block`.
+    fn write_block(&mut self, block: u64, buf: &[u8; BLOCK]) -> Result<()>;
+    /// The disk size, in bytes.
+    fn size_bytes(&mut self) -> Result<u64>;
+}
+
+/// A RedoxFS [`Disk`] over a [`BlockIo`]. RedoxFS calls `read_at`/`write_at` with a block index and a
+/// buffer that may be shorter than a block (a compressed record), exactly a block, or many blocks
+/// long (an uncompressed 128 KiB record), so this splits each call into whole-block transfers.
+///
+/// A write whose final chunk is short is **read-modify-written**: the block is read first, the chunk
+/// overwrites its front, and the whole block goes back. That preserves the bytes past the chunk,
+/// which is what a byte-addressed disk (`DiskFile`, where `write_at` writes exactly the buffer) does,
+/// and RedoxFS relies on it for compressed records.
+pub struct BlockDisk<T>(pub T);
+
+impl<T: BlockIo> Disk for BlockDisk<T> {
+    unsafe fn read_at(&mut self, block: u64, buffer: &mut [u8]) -> Result<usize> {
+        let mut scratch = [0u8; BLOCK];
+        for (i, chunk) in buffer.chunks_mut(BLOCK).enumerate() {
+            self.0.read_block(block + i as u64, &mut scratch)?;
+            chunk.copy_from_slice(&scratch[..chunk.len()]);
+        }
+        Ok(buffer.len())
+    }
+
+    unsafe fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
+        let mut scratch = [0u8; BLOCK];
+        for (i, chunk) in buffer.chunks(BLOCK).enumerate() {
+            let b = block + i as u64;
+            if chunk.len() < BLOCK {
+                self.0.read_block(b, &mut scratch)?;
+            }
+            scratch[..chunk.len()].copy_from_slice(chunk);
+            self.0.write_block(b, &scratch)?;
+        }
+        Ok(buffer.len())
+    }
+
+    fn size(&mut self) -> Result<u64> {
+        self.0.size_bytes()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use redoxfs::DiskMemory;
+
+    /// A [`BlockIo`] over an in-memory image, so the exact chunking the EL0 binary uses is exercised
+    /// on the host. Byte for byte it must behave like `DiskMemory`.
+    struct VecIo(Vec<u8>);
+    impl BlockIo for VecIo {
+        fn read_block(&mut self, block: u64, buf: &mut [u8; BLOCK]) -> Result<()> {
+            let off = block as usize * BLOCK;
+            buf.copy_from_slice(&self.0[off..off + BLOCK]);
+            Ok(())
+        }
+        fn write_block(&mut self, block: u64, buf: &[u8; BLOCK]) -> Result<()> {
+            let off = block as usize * BLOCK;
+            self.0[off..off + BLOCK].copy_from_slice(buf);
+            Ok(())
+        }
+        fn size_bytes(&mut self) -> Result<u64> {
+            Ok(self.0.len() as u64)
+        }
+    }
+
+    /// **Repeat writes through the EL0 binary's exact chunking.** The device's `IpcDisk` and this
+    /// `BlockDisk` split `Disk` calls the same way, so if the chunking is what breaks a repeat write
+    /// (the partial-block read-modify-write is the suspicious part, and compression plus a growing
+    /// allocator log exercise it more on later writes), it breaks here, on the host, in milliseconds.
+    #[test]
+    fn repeat_writes_through_the_block_chunking_do_not_loop() {
+        let mut fs = FileSystem::create(BlockDisk(VecIo(vec![0u8; 16 * 1024 * 1024])), None, 0, 0)
+            .expect("mkfs through BlockDisk");
+        fs.tx(|tx| {
+            let ptr = tx
+                .create_node(TreePtr::root(), "scratch", Node::MODE_FILE | 0o644, 0, 0)?
+                .ptr();
+            tx.write_node(ptr, 0, b"(placeholder)", 0, 0)?;
+            Ok(())
+        })
+        .expect("populate");
+        let image = fs.disk.0.0;
+
+        let mut srv = Server::open(BlockDisk(VecIo(image))).expect("Server::open");
+        let h = srv.open_file("scratch").expect("open scratch");
+        let mut buf = [0u8; 128];
+        for pass in 1..=3u8 {
+            let payload = repeat_write_payload(pass);
+            assert_eq!(srv.write(h, 0, &payload).unwrap(), payload.len());
+            let n = srv.read(h, 0, &mut buf).unwrap();
+            assert_eq!(&buf[..n], &payload[..], "pass {pass} through the chunking");
+        }
+    }
+
+    /// Repeat writes of a **record-sized** payload, so the chunking's multi-block path and the
+    /// compressed-record partial tail both get exercised across generations. 160 KiB is larger than
+    /// RedoxFS's 128 KiB record, so a write spans records and the tail is partial.
+    #[test]
+    fn repeat_record_sized_writes_through_the_chunking_do_not_loop() {
+        let mut fs = FileSystem::create(BlockDisk(VecIo(vec![0u8; 32 * 1024 * 1024])), None, 0, 0)
+            .expect("mkfs");
+        fs.tx(|tx| {
+            tx.create_node(TreePtr::root(), "big", Node::MODE_FILE | 0o644, 0, 0)?;
+            Ok(())
+        })
+        .expect("populate");
+        let image = fs.disk.0.0;
+
+        let mut srv = Server::open(BlockDisk(VecIo(image))).expect("open");
+        let h = srv.open_file("big").expect("open big");
+        let len = 160 * 1024;
+        for pass in 1..=3u8 {
+            // Position-dependent and pass-dependent, and deliberately not compressible to a tiny
+            // size, so the record path does real work each pass.
+            let data: Vec<u8> = (0..len)
+                .map(|i| ((i as u32).wrapping_mul(2_654_435_761) >> 16) as u8 ^ pass)
+                .collect();
+            assert_eq!(srv.write(h, 0, &data).unwrap(), len);
+            let mut back = vec![0u8; len];
+            let n = srv.read(h, 0, &mut back).unwrap();
+            assert_eq!(n, len, "pass {pass} short read");
+            assert!(back == data, "pass {pass} record data mismatch");
+        }
+    }
 
     /// Build a 16 MiB RedoxFS image in memory with the given files in its root (using the std
     /// creation APIs the host tool uses), then reopen it through a fresh [`Server`], exactly as the
@@ -195,6 +330,81 @@ mod tests {
         let m = srv.read(h, 0, &mut buf).unwrap();
         assert_eq!(&buf[..m], payload);
         assert_eq!(srv.fstat(h).unwrap(), payload.len() as u64);
+    }
+
+    /// The payload for pass `n` of the repeat-write test: a fixed 64 bytes, tagged with the pass and
+    /// position-dependent after that, so every pass has the same length (no truncation confusion) and
+    /// a stale or shifted read cannot match. Shared with the on-device client through
+    /// `fs_proto::fixture` where that matters.
+    fn repeat_write_payload(pass: u8) -> [u8; 64] {
+        let mut p = [0u8; 64];
+        p[..8].copy_from_slice(b"CRKRPT__");
+        p[7] = b'0' + pass;
+        for (i, b) in p.iter_mut().enumerate().skip(8) {
+            *b = (i as u8).wrapping_mul(31) ^ pass;
+        }
+        p
+    }
+
+    /// **The repeat-write gate** (fix/redoxfs-repeat-write). A first write to a pristine block
+    /// worked all along; a write to a block that has ALREADY been written is what loops on device.
+    /// The old gate never saw it because `mkredoxfs` rewrites the target to a placeholder before
+    /// every run, so every gated write was a first write and the bug hid behind the harness.
+    ///
+    /// This writes the same file TWICE in one run, which is the honest reproduction: it depends on
+    /// nothing left over from a previous invocation. It is also the decisive host-vs-device
+    /// comparison: if this loops, the bug is reachable with no cricker runtime at all (upstream or
+    /// our chunking); if it passes, the divergence is ours, in the device I/O path.
+    #[test]
+    fn a_second_write_to_the_same_block_does_not_loop() {
+        let mut srv = server_with(&[("scratch", b"(placeholder)")]);
+        let h = srv.open_file("scratch").unwrap();
+
+        // Equal-length, position-dependent payloads: each write fully replaces the last (a shorter
+        // write at offset 0 does not truncate, which is correct filesystem behaviour but would muddy
+        // the comparison), and a buffer that came back shifted or stale cannot match.
+        let mut buf = [0u8; 128];
+        for pass in 1..=3u8 {
+            let payload = repeat_write_payload(pass);
+            assert_eq!(
+                srv.write(h, 0, &payload).unwrap(),
+                payload.len(),
+                "write {pass} was short"
+            );
+            let n = srv.read(h, 0, &mut buf).unwrap();
+            assert_eq!(&buf[..n], &payload[..], "write {pass} did not read back");
+        }
+    }
+
+    /// **The real trigger** (fix/redoxfs-repeat-write): write, drop the mount WITHOUT a clean
+    /// unmount, reopen, and write again. Every existing test stopped short of this. The one that
+    /// looked closest, `a_write_survives_a_full_close_and_reopen`, only READS after the reopen.
+    ///
+    /// This is exactly what the gate does across its two ISA legs: `mkredoxfs` runs once, the aarch64
+    /// leg mounts and writes (a first write, which works), the process dies without unmounting, and
+    /// then the riscv leg mounts the same image and writes again. That second boot's write is what
+    /// fails, which is why the bug looked like "repeat write" and why one leg passing hid it.
+    #[test]
+    fn a_write_after_a_reopen_of_a_previously_written_image_does_not_loop() {
+        let mut disk = image_with(&[("scratch", b"(placeholder)")]);
+
+        // Boot 1: mount, write, and drop the mount the way a dying process does (no unmount).
+        {
+            let mut srv = Server::open(disk).expect("open 1");
+            let h = srv.open_file("scratch").expect("open scratch 1");
+            let p1 = repeat_write_payload(1);
+            assert_eq!(srv.write(h, 0, &p1).unwrap(), p1.len());
+            disk = srv.fs.disk; // take the disk back; no unmount, as on device
+        }
+
+        // Boot 2: mount the image boot 1 wrote, and write again.
+        let mut srv = Server::open(disk).expect("open 2");
+        let h = srv.open_file("scratch").expect("open scratch 2");
+        let p2 = repeat_write_payload(2);
+        assert_eq!(srv.write(h, 0, &p2).unwrap(), p2.len(), "boot-2 write");
+        let mut buf = [0u8; 128];
+        let n = srv.read(h, 0, &mut buf).unwrap();
+        assert_eq!(&buf[..n], &p2[..], "boot-2 write did not read back");
     }
 
     #[test]

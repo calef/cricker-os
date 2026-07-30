@@ -54,6 +54,13 @@ const HEAP_MAX: u64 = 8 * 1024 * 1024;
 #[global_allocator]
 static HEAP: user_rt::heap::UntypedHeap = user_rt::heap::UntypedHeap::new();
 
+/// Read every written block straight back and compare (a `fix/redoxfs-repeat-write` diagnostic). Off
+/// by default: it doubles the write cost, and its scratch block is 4 KiB of stack inside a call
+/// RedoxFS makes from deep recursion, which is enough to overflow this server's stack and produce a
+/// *different* failure than the one being chased. Turn it on deliberately, and raise the FS server's
+/// stack grant if you do.
+const VERIFY_WRITES: bool = false;
+
 /// The RedoxFS `Disk` over blk IPC. Stateless: everything it needs (the endpoint slot, the shared
 /// page) is a fixed convention, so it is a zero-sized handle the `Server` owns.
 struct IpcDisk;
@@ -108,6 +115,21 @@ impl Disk for IpcDisk {
             Self::to_page(chunk);
             if Self::blk(blk::WRITE, b) < 0 {
                 return Err(Error::new(EIO));
+            }
+            // WRITE-VERIFY (fix/redoxfs-repeat-write diagnostic): read the block straight back and
+            // compare. If the transport is lossy (a write that does not land, or a read that returns
+            // stale bytes), the engine would later walk a corrupt allocator chain and spin; catching
+            // it here turns that far-away hang into an immediate, located fault.
+            if VERIFY_WRITES {
+                let mut echo = [0u8; BLOCK];
+                if Self::blk(blk::READ, b) < 0 {
+                    return Err(Error::new(EIO));
+                }
+                Self::from_page(&mut echo);
+                if echo[..chunk.len()] != *chunk {
+                    // The block did not read back as written: the transport lost or reordered it.
+                    panic!();
+                }
             }
         }
         Ok(buffer.len())
