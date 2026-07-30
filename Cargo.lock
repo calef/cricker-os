@@ -346,6 +346,7 @@ dependencies = [
 name = "xtask"
 version = "0.1.0"
 dependencies = [
+ "compose",
  "crickerfs",
  "fs_proto",
  "gfx_proto",

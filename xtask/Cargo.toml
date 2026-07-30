@@ -14,3 +14,7 @@ measure = { version = "0.1.0", path = "../crates/measure" }
 # The framebuffer contract (milestone 29): the host-side scanout check compares QEMU's screendump
 # against the same pattern the guest painted, from the same definition, so the two cannot drift.
 gfx_proto = { version = "0.1.0", path = "../crates/gfx_proto" }
+# The compositor contract (milestone 33): the same scanout check also verifies the screen the
+# compositor composed, against the same scene and the same per-pixel definition the guest used. A
+# compositor's output is the thing a guest-side digest cannot confirm on its own.
+compose = { version = "0.1.0", path = "../crates/compose" }

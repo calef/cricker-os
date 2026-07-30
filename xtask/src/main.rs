@@ -626,15 +626,42 @@ fn gpu_shot_path(arch: &str) -> PathBuf {
     workspace_root().join(format!("target/gpu-scanout-{arch}.ppm"))
 }
 
-/// Does this PPM hold the pattern the guest painted?
+/// Where the composed screen's matching dump is kept (milestone 33). A separate file because the
+/// composed screen is transient: the poll loop overwrites [`gpu_shot_path`] on every dump, so the one
+/// that matched has to be copied aside or there is nothing left to look at after a run.
+fn gpu_compose_path(arch: &str) -> PathBuf {
+    workspace_root().join(format!("target/gpu-compose-{arch}.ppm"))
+}
+
+/// Does this PPM hold the pattern rung one's client painted (milestone 29)?
 ///
 /// Compares against `gfx_proto::pixel`, the same definition the client painted from and the kernel
-/// test digested against, so the host cannot disagree with the guest about what the pattern is. The
-/// geometry must match too: a scanout of the wrong size is a `SET_SCANOUT` bug, not a near miss.
+/// test digested against, so the host cannot disagree with the guest about what the pattern is.
+fn scanout_holds_the_pattern(ppm: &[u8]) -> Result<(), String> {
+    scanout_matches(ppm, gfx_proto::pixel)
+}
+
+/// Does this PPM hold the screen rung two's compositor composed (milestone 33)?
+///
+/// The same check against a different definition: `compose::expected_screen_pixel` with every window
+/// of the scene committed, which is the picture the kernel test predicted and the capture client
+/// digested. **This is the check a guest-side digest cannot replace.** Three witnesses inside the
+/// guest agree about the framebuffer; only the host can see what the device is actually scanning out,
+/// so a wrong pixel format, a wrong scanout rectangle, or a compositor that wrote its picture
+/// somewhere other than the scanout would pass all three and fail here.
+fn scanout_holds_the_composed_screen(ppm: &[u8]) -> Result<(), String> {
+    scanout_matches(ppm, |x, y| {
+        compose::expected_screen_pixel(compose::SCENE.len(), x, y)
+    })
+}
+
+/// Compare a `screendump` PPM against a per-pixel definition of what should be on the screen.
+///
+/// The geometry must match too: a scanout of the wrong size is a `SET_SCANOUT` bug, not a near miss.
 ///
 /// Returns `Err(reason)` rather than a bool so a mismatch says which pixel and what it should have
 /// been, since "the screen is wrong" is otherwise the least actionable failure in graphics.
-fn scanout_holds_the_pattern(ppm: &[u8]) -> Result<(), String> {
+fn scanout_matches(ppm: &[u8], want_pixel: impl Fn(u32, u32) -> u32) -> Result<(), String> {
     // P6 header: "P6\n<w> <h>\n<maxval>\n", then w*h*3 bytes, RGB per pixel.
     let text = String::from_utf8_lossy(&ppm[..ppm.len().min(64)]).to_string();
     let mut fields = text.split_ascii_whitespace();
@@ -685,7 +712,7 @@ fn scanout_holds_the_pattern(ppm: &[u8]) -> Result<(), String> {
     for y in 0..h {
         for x in 0..w {
             let o = ((y * w + x) * 3) as usize;
-            let want = gfx_proto::pixel(x, y);
+            let want = want_pixel(x, y);
             let (r, g, b) = (
                 ((want >> 16) & 0xff) as u8,
                 ((want >> 8) & 0xff) as u8,
@@ -693,7 +720,7 @@ fn scanout_holds_the_pattern(ppm: &[u8]) -> Result<(), String> {
             );
             if (pixels[o], pixels[o + 1], pixels[o + 2]) != (r, g, b) {
                 return Err(format!(
-                    "pixel ({x},{y}) is rgb({},{},{}), the pattern says rgb({r},{g},{b})",
+                    "pixel ({x},{y}) is rgb({},{},{}), it should be rgb({r},{g},{b})",
                     pixels[o],
                     pixels[o + 1],
                     pixels[o + 2],
@@ -723,16 +750,27 @@ fn screendump(sock: &str, out: &Path) -> bool {
     true
 }
 
-/// **Run the kernel test suite for `arch` and prove the scanout while it runs.** `test_args` is the
+/// **Run the kernel test suite for `arch` and prove BOTH scanouts while it runs.** `test_args` is the
 /// cargo invocation the caller would otherwise have handed to [`run`].
 ///
-/// The child inherits stdio, so the suite's output streams exactly as before; this only adds a poll
-/// loop beside it. Returns false if the suite failed OR if the scanout never showed the pattern.
+/// Two pictures reach the device's scanout over one boot, in this order, because that is the order the
+/// suite runs them in (`compositor_tests` sorts before `display_tests`):
+///
+/// 1. rung two's **composed screen** (milestone 33): three clients' surfaces, composited by `compd`.
+///    The compositor test holds it up for a few seconds precisely so this poll cannot miss it;
+/// 2. rung one's **test pattern** (milestone 29), which then stays on the scanout until QEMU exits.
+///
+/// Both must be seen or the run fails, and the order is part of the check: this looks for the composed
+/// screen until it finds it, and only then starts looking for the pattern. So a reordering of the
+/// suite, or a compositor that never got its picture to the device, fails loudly instead of being
+/// waved through. The child inherits stdio, so the suite's output streams exactly as before.
 fn cargo_test_with_scanout_check(arch: &str, test_args: &[&str]) -> bool {
     let sock = gpu_mon_socket(arch);
     let shot = gpu_shot_path(arch);
+    let composed_shot = gpu_compose_path(arch);
     let _ = std::fs::remove_file(&sock);
     let _ = std::fs::remove_file(&shot);
+    let _ = std::fs::remove_file(&composed_shot);
 
     unsafe { std::env::set_var("CRICKER_GPU_MON", &sock) };
     let mut child = match Command::new("cargo").args(test_args).spawn() {
@@ -743,8 +781,11 @@ fn cargo_test_with_scanout_check(arch: &str, test_args: &[&str]) -> bool {
         }
     };
 
+    let mut composed: Option<String> = None;
     let mut matched: Option<String> = None;
-    let mut last_reason = String::from("no screendump was ever taken (did QEMU get a monitor?)");
+    let missing = String::from("no screendump was ever taken (did QEMU get a monitor?)");
+    let mut last_composed = missing.clone();
+    let mut last_reason = missing;
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
@@ -763,25 +804,55 @@ fn cargo_test_with_scanout_check(arch: &str, test_args: &[&str]) -> bool {
             && screendump(&sock, &shot)
             && let Ok(bytes) = std::fs::read(&shot)
         {
-            match scanout_holds_the_pattern(&bytes) {
-                Ok(()) => matched = Some(format!("{}", shot.display())),
-                Err(reason) => last_reason = reason,
+            if composed.is_none() {
+                // The composed screen comes first and is transient (the next display test resets the
+                // device). Keep the dump that matched, since `shot` is overwritten on every poll.
+                match scanout_holds_the_composed_screen(&bytes) {
+                    Ok(()) => {
+                        let _ = std::fs::write(&composed_shot, &bytes);
+                        composed = Some(format!("{}", composed_shot.display()));
+                    }
+                    Err(reason) => last_composed = reason,
+                }
+            } else {
+                match scanout_holds_the_pattern(&bytes) {
+                    Ok(()) => matched = Some(format!("{}", shot.display())),
+                    Err(reason) => last_reason = reason,
+                }
             }
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     let _ = std::fs::remove_file(&sock);
 
-    match matched {
-        Some(path) => {
+    let mut ok = true;
+    match &composed {
+        Some(path) => eprintln!(
+            "scanout check ({arch}): the compositor's {} windows reached the DEVICE's scanout, \
+             verified pixel for pixel against compose::expected_screen_pixel ({path})",
+            compose::SCENE.len(),
+        ),
+        None => {
+            eprintln!();
             eprintln!(
-                "scanout check ({arch}): the {}x{} pattern reached the DEVICE's scanout, verified \
-                 pixel for pixel against gfx_proto::pixel ({path})",
-                gfx_proto::WIDTH,
-                gfx_proto::HEIGHT,
+                "scanout check ({arch}) FAILED: the compositor test passed, so the guest's witnesses \
+                 agree about the framebuffer, but QEMU's scanout never held the composed screen. Last \
+                 mismatch: {last_composed}"
             );
-            true
+            eprintln!(
+                "  A compositor's output is exactly what a guest-side digest cannot confirm; this is \
+                 the check that can. See notes/compositor.md."
+            );
+            ok = false;
         }
+    }
+    match &matched {
+        Some(path) => eprintln!(
+            "scanout check ({arch}): the {}x{} pattern reached the DEVICE's scanout, verified pixel \
+             for pixel against gfx_proto::pixel ({path})",
+            gfx_proto::WIDTH,
+            gfx_proto::HEIGHT,
+        ),
         None => {
             eprintln!();
             eprintln!(
@@ -792,9 +863,10 @@ fn cargo_test_with_scanout_check(arch: &str, test_args: &[&str]) -> bool {
                 "  This is the check that catches a wrong pixel format or scanout rectangle, which \
                  the in-guest test cannot see. See notes/framebuffer-contract.md."
             );
-            false
+            ok = false;
         }
     }
+    ok
 }
 
 /// Where the packed initrd archive is written.
@@ -2135,5 +2207,104 @@ mod tests {
         // A dump caught mid-write is not a failure, but it must not be a pass either.
         let short = &ppm(pattern_rgb)[..1000];
         assert!(scanout_holds_the_pattern(short).is_err());
+    }
+
+    fn composed_rgb(x: u32, y: u32) -> (u8, u8, u8) {
+        let w = compose::expected_screen_pixel(compose::SCENE.len(), x, y);
+        (
+            ((w >> 16) & 0xff) as u8,
+            ((w >> 8) & 0xff) as u8,
+            (w & 0xff) as u8,
+        )
+    }
+
+    /// **The composed-screen check accepts the compositor's screen and rejects the ways a compositor
+    /// goes wrong** (milestone 33).
+    ///
+    /// The negative control for the rung-two half of the scanout proof, and the failure modes are
+    /// different from rung one's, which is why it needs its own. In particular a **z-order inversion**
+    /// and a **missing window** are both pictures made entirely of correct pixels in almost the right
+    /// places: exactly the sort of thing a checker written as "is it not black?" would wave through,
+    /// and exactly what a compositor gets wrong.
+    #[test]
+    fn the_composed_check_accepts_the_screen_and_rejects_the_compositors_own_bugs() {
+        assert!(scanout_holds_the_composed_screen(&ppm(composed_rgb)).is_ok());
+
+        assert!(
+            scanout_holds_the_composed_screen(&ppm(|_, _| (0, 0, 0))).is_err(),
+            "a black screen was accepted",
+        );
+
+        // Rung one's pattern is not rung two's screen. Both are 128x64 and both are legitimate
+        // pictures, so this pins that the two checks cannot be satisfied by the same dump: if they
+        // could, the ordering the poll loop relies on would be meaningless.
+        assert!(
+            scanout_holds_the_composed_screen(&ppm(pattern_rgb)).is_err(),
+            "rung one's test pattern was accepted as the composed screen",
+        );
+        assert!(
+            scanout_holds_the_pattern(&ppm(composed_rgb)).is_err(),
+            "the composed screen was accepted as rung one's test pattern",
+        );
+
+        // **Stacking order inverted**: the bottom-most window covering a pixel wins instead of the top.
+        // Every pixel is a real window pixel; only the order is wrong.
+        assert!(
+            scanout_holds_the_composed_screen(&ppm(|x, y| {
+                for (i, win) in compose::SCENE.iter().enumerate() {
+                    if win.rect().contains(x as i32, y as i32) {
+                        let w = compose::window_pixel(
+                            i as u32,
+                            (x as i32 - win.origin_x) as u32,
+                            (y as i32 - win.origin_y) as u32,
+                        );
+                        return (
+                            ((w >> 16) & 0xff) as u8,
+                            ((w >> 8) & 0xff) as u8,
+                            (w & 0xff) as u8,
+                        );
+                    }
+                }
+                composed_rgb(x, y)
+            }))
+            .is_err(),
+            "a screen with the windows stacked in the wrong order was accepted",
+        );
+
+        // **One window missing**: the picture as if the last client never committed. This is what a
+        // compositor that dropped a commit, or never mapped a surface, produces.
+        assert!(
+            scanout_holds_the_composed_screen(&ppm(|x, y| {
+                let w = compose::expected_screen_pixel(compose::SCENE.len() - 1, x, y);
+                (
+                    ((w >> 16) & 0xff) as u8,
+                    ((w >> 8) & 0xff) as u8,
+                    (w & 0xff) as u8,
+                )
+            }))
+            .is_err(),
+            "a screen missing its top window was accepted",
+        );
+
+        // **Windows placed one pixel off**: the classic clipping error, and the reason the crate's
+        // rectangle math is host-tested.
+        assert!(
+            scanout_holds_the_composed_screen(&ppm(|x, y| composed_rgb(
+                (x + 1) % compose::SCREEN_W,
+                y
+            )))
+            .is_err(),
+            "a screen shifted one pixel left was accepted",
+        );
+
+        // Red and blue swapped, the format bug the guest cannot see.
+        assert!(
+            scanout_holds_the_composed_screen(&ppm(|x, y| {
+                let (r, g, b) = composed_rgb(x, y);
+                (b, g, r)
+            }))
+            .is_err(),
+            "a red/blue-swapped composed screen was accepted",
+        );
     }
 }
