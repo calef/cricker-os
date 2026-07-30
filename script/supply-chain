@@ -1,0 +1,54 @@
+#!/bin/sh
+#
+# script/supply-chain: the milestone-42 gate. Two questions nothing else in the suite asks.
+#
+#   1. Does anything in the dependency graph carry a published advisory, an unmaintained notice, a
+#      yank, a licence we have not accepted, a duplicate version, or a source that is not crates.io?
+#      That is cargo-deny, configured in deny.toml with a reason next to every knob.
+#   2. Is the vendored tree actually the upstream release we say it is? That is script/vendor-verify.
+#
+# **Why this is a gate and not a report.** The thesis is that this kernel confines code it did not
+# write (DECISIONS §14, §27, §31, notes/redoxfs-audit.md). Not knowing when that code has a published
+# advisory was an odd blind spot for a project making that claim, and it stays a blind spot unless
+# something red-lights.
+#
+# Not part of script/lint on purpose: lint is the offline inner-loop gate, and both halves here need
+# the network (an advisory-database clone, a crates.io tarball on a cold cache). It gets its own CI
+# job for the same reason.
+#
+# **The tree has five cargo workspaces**, and cargo-deny works one graph at a time, so this runs it
+# once per manifest against the one shared deny.toml. One policy everywhere is the point: a licence
+# we would refuse in the kernel is not acceptable in the host tooling either. Three are checked; the
+# other two are skipped for stated reasons rather than by omission:
+#
+#   - **vendor/redoxfs** enters our builds only through the two consumers below, at the feature sets
+#     we actually build. Checking it standalone would evaluate its default features (`fuse`, which
+#     wants macFUSE) and report on code nothing here ever compiles.
+#   - **user-std** (milestone 27's std demo) has exactly one dependency, an in-tree path dep on
+#     crates/fs_proto, which the main workspace already covers. There is no third-party graph to check.
+#
+# See notes/scripts.md.
+
+set -e
+cd "$(dirname "$0")/.."
+
+# Auto-install on first run, the same trade script/coverage makes: script/bootstrap runs in the CI
+# test job, which must not spend minutes compiling a tool it never uses. CI installs a prebuilt
+# binary in the one job that needs it.
+if ! cargo deny --version >/dev/null 2>&1; then
+    echo "==> Installing cargo-deny (first run only)"
+    cargo install --locked cargo-deny
+fi
+
+# -A unmatched-skip: deny.toml's `[bans] skip` list is written for the workspace that needs each
+# entry, and the same file is applied to all three. A skip that is irrelevant to the workspace being
+# checked is expected, not a finding. (The mirror-image warning for licences is handled in the config
+# itself, via `unused-allowed-license`.)
+for manifest in Cargo.toml fs-server/Cargo.toml tools/redoxfs-host/Cargo.toml; do
+    echo "==> cargo-deny: $manifest"
+    cargo deny --manifest-path "$manifest" --all-features \
+        check --config deny.toml -A unmatched-skip
+done
+
+echo "==> vendored integrity"
+"$(dirname "$0")/vendor-verify"

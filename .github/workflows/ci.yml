@@ -149,6 +149,31 @@ jobs:
       - run: script/bench --check
       - run: script/bench --riscv --check
 
+  supply-chain:
+    name: supply chain (advisories, licences, vendored integrity)
+    runs-on: ubuntu-24.04-arm
+    # No permissions block of its own: the workflow-level `contents: read` above already gives every
+    # job the least privilege that works, and this job wants exactly that (read the source, read the
+    # advisory database, fetch a tarball from crates.io). Adding a redundant per-job copy would make
+    # the workflow-level grant look like a default rather than the decision it is.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      # A prebuilt binary rather than `cargo install`, the same trade the coverage job makes: this
+      # job compiles nothing of ours, so it has no business compiling a tool either.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      # The published .crate tarballs script/vendor-verify hashes. Keyed on the pin files, so
+      # changing a pin correctly misses the cache and refetches. A miss costs one HTTP request.
+      - name: Cache the vendored tarballs
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/cricker-vendor
+          key: cricker-vendor-${{ hashFiles('vendor/*.pin') }}
+      - uses: Swatinem/rust-cache@v2
+      - run: script/supply-chain
+
   coverage:
     name: coverage (host crates)
     runs-on: ubuntu-24.04-arm
