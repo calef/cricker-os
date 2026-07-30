@@ -62,14 +62,52 @@ This is a software stand-in for an IOMMU. It is less general (it understands the
 closes the hole: the device can only ever DMA within the driver's own region, so a hostile driver
 can, at worst, corrupt itself.
 
+## What is proved, and what is only mitigated (read this before quoting the milestone)
+
+Milestone 35 machine-checked this boundary, and the shortest true summary of the result is longer than
+one clause. So, the whole map first, because "DMA confinement is proved" said flat is wrong in a way
+that matters for milestone 16a:
+
+| The address path | What confines it | The evidence |
+|---|---|---|
+| An address in a **virtqueue descriptor** (every byte a disk or a NIC touches, and the GPU's command ring) | the shadow-ring validator below, plus the IOMMU where there is one | **Proved for every input.** Seven Kani harnesses over `crates/dma_validate`: both directions, indirect descriptors, chain cycles, ring-index wraparound, overflowing arithmetic, multi-queue blocks, and the mutated-after-validation race. Plus the end-to-end attacker tests, both ISAs, both transports. |
+| The **page set of an IOMMU domain** (which frames the hardware will translate at all) | the domain builder | **Proved for every grant.** Six harnesses over `paging::domain`: the domain maps every whole page of the grant and no byte outside it. Format-independent, so one proof covers SMMUv3 and the RISC-V IOMMU. The remaining link (`Mapper::map` writes exactly the one leaf it is told) stays tested on both formats. |
+| An address in a **device command payload** (virtio-gpu resource backings) | the IOMMU, and nothing else | **Tested, not proved, and structurally unprovable here.** The validator cannot see these addresses at all: they are not in its input. |
+
+That third row is the one to carry away. A virtio-gpu's backing addresses ride inside a
+`RESOURCE_ATTACH_BACKING` **command payload** (DECISIONS §29, notes/framebuffer-contract.md). The
+kernel bounds the descriptor that *carries* the command, so the payload bytes are in-region; the
+addresses inside those bytes are never parsed. Proving the validator harder does nothing for this,
+because the addresses never enter it, and teaching the transport to read virtio-gpu commands would put
+device knowledge in the layer DECISIONS §18 keeps device-neutral and start a per-device arms race.
+`the_iommu_refuses_the_gpu_a_framebuffer_outside_the_drivers_grant` is the evidence that the IOMMU
+catches it, on both ISAs, by asserting on the hardware's own fault queue.
+
+**And this is exactly where the argument for proving the validator now, rather than later, inverts.**
+The reason milestone 35 was load-bearing is that milestone 16a's board, the VisionFive 2, **has no
+IOMMU**: on first silicon the validator stops being defence in depth and becomes the sole DMA
+confinement, so it had better be proved rather than sampled. That reasoning holds for the descriptor
+path because the validator covers it. For the payload path there is no such comfort: with no IOMMU,
+**nothing covers it.** Not the validator (wrong input), not the hardware (absent). A display driver on
+that board is therefore either trusted with all of physical memory, or the transport grows a
+virtio-gpu-aware check and pays the §18 cost on purpose. Whoever sequences 16a picks one; this note
+exists so it is a decision and not a discovery. Under HVF the same gap is open, PCIe DMA being
+unconfined there by standing default.
+
 ## The validator
 
 Since milestone 35 the validation logic lives in `crates/dma_validate`, a host-testable pure-logic
-crate the kernel's `validate_and_shadow` calls, and it is **machine-checked**: six Kani harnesses
+crate the kernel's `validate_and_shadow` calls, and it is **machine-checked**: seven Kani harnesses
 prove no descriptor the walk copies into the shadow escapes the granted region or is indirect, for
-every input (both directions, multi-queue, and the mutated-after-validation race). This was the last
-isolation boundary that was attacker-tested but not proved; see notes/verification.md. The rest of
-this section describes what that logic does.
+every input (both directions, multi-queue, chain cycles, ring-index wraparound, and the
+mutated-after-validation race), and that the walk terminates. This was the last isolation boundary
+that was attacker-tested but not proved; notes/verification.md has the harness table and, more
+important, **the bounds with their justifications** (the short version: the queue size the proof fixes
+is the system's own `QSIZE`, not a proof convenience, and the loop bounds are set one above what the
+code can need so Kani's unwinding assertion turns them into a termination proof). The crate also now
+*owns* the ring layout constants that `kernel/src/virtio.rs` aliases, because a proof about a copy of
+the layout proves nothing about the layout that runs. The rest of this section describes what that
+logic does.
 
 `kernel/src/virtio.rs::validate_and_shadow` is the security-critical code. On `NOTIFY` it walks the
 available ring from the last-validated index to the current one, and for each new head follows the

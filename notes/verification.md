@@ -280,7 +280,7 @@ Four in `crates/pci/src/lib.rs`, the config-space decode the kernel runs on **de
 | `read_bars_is_total_for_any_device` | the BAR size probe never panics on garbage device answers (`!mask + 1` cannot overflow: the type bits are masked first) |
 | `the_capability_walk_terminates_on_any_device` | a capability list forming ANY graph, cycles included, is walked at most 64 hops; the bounded-walk discipline proved rather than argued |
 
-Six in `crates/dma_validate/src/lib.rs`, the DMA-confinement validator (milestone 35). This is the
+Seven in `crates/dma_validate/src/lib.rs`, the DMA-confinement validator (milestone 35). This is the
 last isolation boundary in the system that was attacker-tested but never proved. It confines a
 userspace virtio driver's DMA: on every `NOTIFY` the kernel walks the driver's descriptors, refuses
 any whose buffer escapes the driver's granted region (or is indirect), and copies the validated ones
@@ -297,7 +297,8 @@ the extraction is faithful.
 | `validate_and_shadow_confines_every_chain` | **the main theorem**: over a fully symbolic driver descriptor table and region, no descriptor the walk copies into the shadow is ever out-of-region or indirect, so the device only ever reads confined descriptors. Symbolic-index-bounded, so it also proves the walk never reads or writes past a ring |
 | `an_oversized_batch_is_refused` | a batch claiming more than `qsize` new entries is refused before a single descriptor is read or written (the DoS bound on the outer loop; the memory closures panic if called) |
 | `a_descriptor_mutated_after_validation_cannot_reach_the_device` | the shadow ring closes the time-of-check/time-of-use race: after a validated copy, the driver aiming its own descriptor at any address cannot change what the device reads from the shadow |
-| `distinct_queues_occupy_disjoint_blocks` | multi-queue isolation (milestone 30): for any two distinct in-range queues, one queue's whole ring area ends before the other's block begins, so validating a NIC's receive queue never touches its transmit queue's rings |
+| `the_outer_walk_stays_inside_the_rings_and_terminates` | the loop that feeds the chain walk: for **every** `(from_idx, to_idx)` pair, wraparound included, every ring access lands inside its own ring and the loop terminates |
+| `distinct_queues_occupy_disjoint_blocks` | multi-queue isolation (milestone 30): for any two distinct in-range queues, one queue's whole ring area ends before the other's block begins, and a queue's descriptor table ends before its own available ring begins |
 
 The main theorem proves the confinement core, `shadow_one_head`, which the write closure instruments
 so it asserts "in-region and not indirect" the instant each descriptor lands in the shadow. It is
@@ -309,28 +310,123 @@ content and position; the outer loop only repeats that validated processing for 
 the whole ring pushed the SAT formula to `qsize * qsize` symbolic reads and out of a practical
 `script/verify` budget (three minutes) for no added coverage; the single-head form verifies in ~20s.
 
-### The one isolation seam still on tests, and why: the IOMMU domain
+### The bounds, and why each one is adequate
+
+Bounded model checking means somebody chose the bounds, and a proof whose bounds hide the interesting
+case reads as stronger than a test while being worth less. So, each bound in the DMA harnesses, stated
+with its justification:
+
+| Bound | Value | Why it is adequate |
+|---|---|---|
+| queue size (`QS`) | 8 | **It is the system's own bound, not a proof convenience.** `dma_validate::LAYOUT_QSIZE` is the kernel's `QSIZE`, `setup_queue` refuses `num > QSIZE`, and the kernel now *aliases* the crate's constant rather than keeping a copy. So the proof is over the shipping configuration, and no larger ring can exist to be unproved. |
+| chain length | ≤ `qsize` = 8 | The walk is `for _ in 0..qsize`, and a chain cannot usefully be longer: there are only 8 descriptors, so any longer walk is revisiting one. A **cycle** is therefore covered rather than excluded: `next` is fully symbolic, so `0 → 1 → 0 → …` is among the proved inputs, and the loop bound is what makes it terminate instead of hanging. |
+| loop unrolling | `unwind(10)` / `unwind(11)` | One more than each loop can need, so Kani's *unwinding assertion* is part of the proof: if any input could drive a loop longer, verification fails. That turns the bound from an assumption into the **termination proof**. Checked by falsification: delete `validate_and_shadow`'s batch-size guard and the unwinding assertion fails at iteration 11. |
+| batch size | ≤ `qsize` | Proved as a property (`an_oversized_batch_is_refused`), not assumed: a claim of more than `qsize` new entries is refused before a single read. |
+| queue count | `MAX_QUEUES` = 2 | Compile-time asserted in the kernel (`MAX_QUEUES * RING_BLOCK <= FRAME_SIZE`, one shadow frame per device) and enforced at runtime (`setup_queue`/`notify` refuse `queue >= MAX_QUEUES`). |
+| region base/size, descriptor `addr`/`len`/`flags`/`next`, ring indices | **unbounded** | Fully symbolic `u64`/`u16`. Every attacker-controlled value is unconstrained, which is the point: the bounds above are all structural (how many slots a ring has), never a restriction on what an attacker may write into one. |
+
+The one place the composition is an argument rather than a single harness, said plainly: "the whole
+batch is confined" follows from the per-head theorem, the per-write invariant, the outer-loop bound,
+and the ring-bounds harness *taken together*. Each leg is proved; joining them is a reading of four
+harnesses, not a fifth harness. That is the same shape as the one-shot Reply's three legs below, and
+it is recorded for the same reason.
+
+### The IOMMU domain: proved where it can be, tested where it cannot
 
 Milestone 35's third item was to confirm the IOMMU domain builder
 (`paging::domain::build_identity_domain`, milestone 16b) has a *maps-exactly-the-grant* proof, the
 hardware sibling of the validator property (the device's DMA domain maps precisely the granted frames
-and nothing else). **It does not, and it stays on tests, on purpose.** The property is a `Mapper`
-build-and-translate round trip: build the domain's four-level (VMSAv8-64) or three-level (Sv39) page
-tables over the granted frames, then translate a symbolic IOVA and assert it maps identity in-region
-and faults out. That is exactly the round trip this note already declined as the BMC wall (see the
-`paging` section's "deliberately not proved"): a symbolic address walking a *built* table is the
-"BMC over real memory" case that walled the ELF parser, and it is a formula-size wall, not an unwind
-bound (the level count is fixed). The existing `paging` harnesses deliberately prove the *arithmetic*
-under the walk instead of building tables, and that arithmetic is what underwrites the domain:
-`distinct_pages_take_distinct_paths` (two page-aligned addresses with the same indices are the same
-page, so an ungranted page cannot alias a granted leaf), `index_is_always_in_bounds`, the leaf codec
-keeping address and permissions apart, and the two-halves-disjoint gate. The build-and-translate
-itself is covered on **both formats** by `crates/paging/src/domain.rs`'s tests: an in-region IOVA
-translates to its own PA, a page past the region does not, and the gap between two granted regions
-does not (`aarch64_domain_confines_a_region`, `sv39_domain_confines_a_region`,
-`two_disjoint_regions_map_and_the_gap_does_not`). So the domain property is proved-by-composition plus
-tested on both formats, which is the honest status; forcing a walling harness would buy nothing the
-arithmetic harnesses do not already give.
+and nothing else). The first pass at the milestone **declined** it: the property is a `Mapper`
+build-and-translate round trip (a symbolic IOVA walking a *built* four-level table), which is the
+BMC-over-real-memory wall this note already declined for the ELF parser and for `Mapper` itself.
+
+That was the right diagnosis of the wrong target, and the correction is on the record because it is
+this note's own rule being applied: **prefer refactoring the logic to shrinking the proof.** The
+domain is "an identity map over exactly the granted pages," and the *page set* is loopless arithmetic
+that needs no tables at all. Factored out (`grant_pages`, `grant_page`) it proves in a quarter of a
+second, and the builder now calls it instead of `map_range`'s unchecked `va + i * PAGE_SIZE`, so the
+proved page set is the page set that runs.
+
+Six in `crates/paging/src/domain.rs`:
+
+| Harness | Property |
+|---|---|
+| `an_enumerated_page_lies_inside_the_grant` | **soundness, the security direction**: every page the domain maps is page-aligned and lies wholly inside a granted region, so no ungranted byte becomes device-reachable (and since IOVA == PA, no ungranted physical memory is translatable) |
+| `every_whole_page_of_the_grant_is_enumerated` | **completeness, the functional direction**: every whole page of a grant is mapped, proved *constructively* (the witness index is `(iova - base) / PAGE_SIZE`, so it says which iteration maps it) |
+| `the_enumeration_is_injective` | no page is enumerated twice, so a legal grant cannot fail its own build against `AlreadyMapped` |
+| `the_grant_enumeration_is_total` | neither entry point panics or overflows, for any base, size, or index |
+| `a_page_index_below_the_count_always_resolves` | the builder's defensive `ok_or` is dead code, provably |
+| `a_grant_the_domain_cannot_express_is_refused` | the two inputs that could produce an over-map (an unaligned base, an end that wraps `u64`) are refused, so the builder maps nothing rather than something rounded |
+
+Completeness is there because without it the property is half a property: **a domain that mapped
+nothing at all would satisfy soundness perfectly** and confine the device by starving it, surfacing
+as a mysterious device fault rather than a refusal. Proving both directions is what makes
+"*exactly* the grant" mean what it says.
+
+One proof covers **both** IOMMUs, which is the right shape for a §19 parity gate: the page set does
+not depend on the page-table format, so the same harnesses underwrite the SMMUv3 (VMSAv8-64) domain
+on aarch64 and the RISC-V IOMMU (Sv39) domain on riscv. No second harness, no parity gap.
+
+**The residual, named rather than implied.** These prove the page set the builder *asks* the mapper
+for. They do not prove "`Mapper::map` writes exactly one leaf for the page it is told and touches
+nothing else". That is the build-and-translate round trip, and it stays on the wall. It is
+underwritten by the proved walk arithmetic (`distinct_pages_take_distinct_paths`, so an ungranted page
+cannot alias a granted leaf; `index_is_always_in_bounds`; the leaf codec keeping address and
+permissions apart, proved for *both* formats in `aarch64.rs` and `sv39.rs`; the two-halves-disjoint
+gate) plus `domain.rs`'s build-and-translate tests on both formats (`aarch64_domain_confines_a_region`,
+`sv39_domain_confines_a_region`, `two_disjoint_regions_map_and_the_gap_does_not`) and milestone 16b's
+end-to-end attacker test in which the hardware faults an escaping DMA. So: the page set is proved,
+the mapper writing it faithfully is tested and composed. That is the honest line, and it is a better
+line than the first pass drew.
+
+**Every one of these properties was falsified before it was believed.** Round the page count up and
+soundness fails; round it down and completeness fails while soundness correctly still holds (an
+under-map is safe); drop the wrap refusal and soundness fails. One falsification corrected a claim in
+the code: soundness rests on `grant_pages` **flooring**, not on `grant_page`'s partial-page guard,
+which cannot fire for any index the builder passes. The comment there now says so, because a reader
+hardening the wrong line would have thought the guard was the load-bearing one.
+
+### What the DMA proof does NOT establish: addresses that never enter a descriptor
+
+This is the part to read before repeating "DMA confinement is proved," because said without it that
+sentence is wrong in a way that matters.
+
+**The proof is about descriptor chains.** `validate_and_shadow` sees the descriptors a driver
+publishes in a virtqueue, and the harnesses above quantify over every one of them. That is the whole
+address surface for a disk and for a NIC: every byte those devices touch is named by a descriptor the
+kernel validated and copied into a shadow the driver cannot reach.
+
+**It is not the whole address surface for a GPU.** Milestone 29 found this and DECISIONS §29 records
+it: virtio-gpu's *backing* addresses ride inside a `RESOURCE_ATTACH_BACKING` **command payload**, not
+in a descriptor. The kernel bounds the descriptor carrying that command, so the payload is in-region
+bytes; the addresses *inside* it are bytes the transport does not parse. The validator therefore
+**structurally cannot see them**, and no amount of proving it harder changes that: the addresses are
+not in its input. Teaching it to parse them would push virtio-gpu knowledge into the layer DECISIONS
+§18 keeps device-neutral, and would start a per-device arms race with the next device class that
+carries addresses in a payload.
+
+So the two paths have genuinely different evidence, and conflating them is the error to avoid:
+
+| Path | What confines it | Strength of the evidence |
+|---|---|---|
+| Addresses in **descriptors** (disk, NIC, and the GPU's own command ring) | the shadow-ring validator, plus the IOMMU where present | **machine-checked for every input** (`crates/dma_validate`), plus end-to-end attacker tests on both ISAs and both transports |
+| Addresses in a **command payload** (virtio-gpu backings) | the IOMMU, and *only* the IOMMU | **attacker-tested, not proved**: `the_iommu_refuses_the_gpu_a_framebuffer_outside_the_drivers_grant` points a backing at a frame left out of the domain and asserts the IOMMU's fault queue recorded a fault there, on both ISAs |
+
+And the consequence that made milestone 35 load-bearing in the first place cuts the other way here.
+The reason to prove the validator now, rather than later, is that **milestone 16a's board has no
+IOMMU** (the VisionFive 2; notes/target-hardware.md), so on first silicon the validator stops being
+defence in depth and becomes the sole DMA confinement. That argument works for the descriptor path
+precisely because the validator covers it. For the payload path it inverts: on a board with no IOMMU,
+**nothing covers it.** Not the validator (the addresses are not in its input), not the hardware (there
+is none). A display driver on the VisionFive 2 is therefore either *trusted* with all of physical
+memory, or the transport grows a virtio-gpu-aware check and pays the §18 cost knowingly. That is a
+decision for whoever sequences 16a; what this note owes them is that it is a decision and not an
+oversight. The same holds under HVF, where PCIe DMA runs unconfined by standing default.
+
+Stated for a skeptic in one sentence, which is how it should be stated: *every address that reaches a
+device through a virtqueue descriptor is provably confined to the driver's grant; addresses that reach
+a device inside a command payload are confined by the IOMMU alone, that confinement is tested rather
+than proved, and on a board without an IOMMU it does not exist.*
 
 ## Where BMC hit a wall: the ELF parser
 
@@ -378,8 +474,10 @@ script/verify
 ```
 
 Self-installs Kani on first run (its own nightly toolchain and a CBMC backend, a minute of
-download), then runs `cargo kani -p caps`. Not in `script/bootstrap`, because the kernel build does
-not need it; same self-install pattern as `script/coverage`.
+download), then runs `cargo kani` over every crate carrying harnesses: **67 harnesses across 13
+crates** as of milestone 35, in a few minutes. Not in `script/bootstrap`, because the kernel build does
+not need it; same self-install pattern as `script/coverage`. A new proof crate goes in that script's
+list, and a new harness in an existing crate is picked up with no change.
 
 ## The rules that keep proofs cheap and honest
 

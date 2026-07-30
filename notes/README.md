@@ -216,7 +216,11 @@ in the code or the conversation doesn't make sense, it belongs here.
   could DMA over the kernel. Closed by kernel-mediated descriptor validation: the kernel owns the
   ring addresses and the notify, and refuses any descriptor outside the driver's own DMA region.
   Now also the write direction (milestone 32: same check, both hazards) and the kill-mid-write
-  record, including the DMA-frame-reclaim caveat.
+  record, including the DMA-frame-reclaim caveat. **Opens (milestone 35) with the map of what is
+  proved and what is only mitigated**, because "DMA confinement is proved" is wrong said flat: every
+  address arriving in a *descriptor* is machine-checked, but a virtio-gpu's backing addresses arrive
+  in a *command payload* the validator structurally cannot see, so only an IOMMU stops those, and on
+  a board without one (the VisionFive 2, milestone 16a) nothing does.
 - [Confining DMA with an IOMMU](iommu.md) — the hardware version (milestone 16b, DECISIONS §20), on
   both ISAs behind one seam: the format-generic `paging` crate builds a device's DMA domain (an
   identity map over the frames it may reach) the same way it builds a process address space, and two
@@ -236,6 +240,11 @@ in the code or the conversation doesn't make sense, it belongs here.
   practice: the capability model is proved for *every* input, not just tested on the cases we wrote.
   Run by `script/verify`. Milestone 18 completed the spread inward: `caps`, then IPC (rendezvous and
   the one-shot Reply), then the MMU isolation invariants, each proof landing on code the kernel runs.
+  Milestone 35 reached the last unproved isolation boundary (the DMA validator and the IOMMU domain's
+  page set) and added the two things that keep a proof honest: **the bounds with their justifications**,
+  and a plain statement of **what the proof does not establish** (addresses carried in a device command
+  payload rather than a descriptor). Also the record of a declined proof being reversed by aiming at a
+  smaller target, and of every new property being falsified before it was believed.
 - [Generational names](generational-names.md) — milestone 14 phase A: the thread table becomes a
   fixed generational slot table (`crates/slots`). A Tid is `(generation, slot)`; a dead thread's
   name can never resolve again, even after slot reuse. Bounded like an array, safe like a

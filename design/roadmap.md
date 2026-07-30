@@ -444,13 +444,17 @@ harnesses, covering `caps`, `ipc` (rendezvous, one-shot reply, the collected-sen
 codec on *both* formats (`paging`: VMSAv8-64 and Sv39, level-walk and leaf permission separation),
 generational names (`slots`: a removed name never resolves again), frame allocation, region
 split/destroy arithmetic, ELF parsing, the device-tree reader, ASID allocation, PCI decode, and now
-the DMA-confinement validator (`dma_validate`, milestone 35). An audit against the TCB (prompted by
-asking "what should we prove that we haven't") found the boundaries proved with **one glaring
-exception: the DMA-confinement validator was attacker-tested, never proved.** Milestone 35 closed it:
-the validator is extracted and proved for every input, the `Untyped::SPLIT` mint site is proved not
-to widen rights, and the IOMMU domain's *maps-exactly* property is confirmed to sit on the declined
-build-and-translate BMC wall (proved-by-composition plus tested on both formats). See
-notes/verification.md.
+the DMA-confinement validator (`dma_validate`) and the IOMMU domain's page set (`paging::domain`), both
+milestone 35. An audit against the TCB (prompted by asking "what should we prove that we haven't")
+found the boundaries proved with **one glaring exception: the DMA-confinement validator was
+attacker-tested, never proved.** Milestone 35 closed it: the validator is extracted and proved for every
+input, the `Untyped::SPLIT` mint site is proved to hand a child *exactly* its parent's rights, and the
+IOMMU domain's *maps-exactly* property is proved too (its page set, in both directions,
+format-independently, so one proof covers both IOMMUs; the build-and-translate round trip stays on the
+declined BMC wall and on tests). What milestone 35 explicitly does **not** prove, and says so in three
+places rather than leaving it to be inferred: addresses that reach a device inside a **command payload**
+instead of a descriptor, which the validator structurally cannot see and only an IOMMU stops, so on a
+board without one they are unconfined. See DECISIONS §30 and notes/verification.md.
 
 ### 35. Prove the DMA-confinement boundary (extends 18)
 
@@ -483,19 +487,52 @@ the validator sits inside the kernel crate.
    property (the device domain maps precisely the granted frames and nothing else), not just a
    test. It is the sibling of the validator property, on the hardware side.
 
-**Done (2026-07-29).** (1) The validator is `crates/dma_validate`, host-testable pure logic the
-kernel's `validate_and_shadow` now calls; six Kani harnesses prove no descriptor the walk shadows
-escapes the granted region or is indirect, covering both directions (symbolic flags include the RX
-device-writable bit), indirect descriptors, multi-queue block isolation, the oversized-batch bound,
-and the mutated-after-validation (TOCTOU) case. The QEMU attacker suite (DMA-escape and
-indirect-escape, both ISAs) is unchanged and green, so the extraction is faithful. (2)
-`split_never_widens_rights` in `crates/caps` proves the `Untyped::SPLIT` mint (now routed through
-`Cap::mint_child`) hands a child no more authority than the parent, the mint site the `derive` proof
-did not reach. (3) The IOMMU *maps-exactly* property has **no** harness and stays on tests, on
-purpose: it is a `Mapper` build-and-translate round trip (a symbolic IOVA walking a built four-level
-table), which is the BMC-over-real-memory wall notes/verification.md already declined; the domain's
-soundness rests on the proved walk arithmetic (`distinct_pages_take_distinct_paths` and the leaf
-codec) plus `domain.rs`'s tests on both formats. See notes/verification.md.
+**Done (2026-07-29).** DECISIONS §30 is the decision record; notes/verification.md has the harness
+tables, the bounds with their justifications, and the boundary statement; notes/dma.md leads with the
+what-is-proved-and-what-is-not map.
+
+1. **The validator** is `crates/dma_validate`, host-testable pure logic the kernel's
+   `validate_and_shadow` calls; **seven** Kani harnesses prove no descriptor the walk shadows escapes
+   the granted region or is indirect, covering both directions (symbolic flags include the RX
+   device-writable bit), indirect descriptors, chains including cycles, **ring-index wraparound through
+   `u16` and outer-loop termination**, overflowing address arithmetic, multi-queue block isolation, the
+   oversized-batch bound, and the mutated-after-validation (TOCTOU) case. The QEMU attacker suite
+   (DMA-escape and indirect-escape, both ISAs, both transports) is unchanged and green, so the
+   extraction is faithful. The ring layout constants moved *into* the crate with the kernel aliasing
+   them, because a proof about a copy of the layout proves nothing about the layout that runs.
+2. **`split_never_widens_rights`** in `crates/caps` proves the `Untyped::SPLIT` mint (routed through
+   `Cap::mint_child`) gives the child **exactly** the parent's rights. §16's amendment (SPLIT grants
+   `GRANT` so a budget is delegable) makes the loose phrasing wrong, so the property is stated and
+   proved as equality: `mint_child` takes no rights argument, delegability is a property of the *root's*
+   mint, and rights down a budget tree are monotonically non-increasing.
+3. **The IOMMU domain's *maps-exactly* property is proved**, reversing this milestone's own first
+   answer. That answer declined it as the build-and-translate BMC wall, which was the right diagnosis of
+   the wrong target: the wall is a symbolic IOVA walking a *built* table, and the *page set* the builder
+   feeds the mapper is loopless arithmetic needing no tables. Factored out (`paging::domain::grant_pages`,
+   `grant_page`, which `build_identity_domain` now calls instead of `map_range`'s unchecked
+   `va + i * PAGE_SIZE`) and proved by six harnesses in both directions: soundness (no page outside the
+   grant) and completeness (no whole page of the grant unmapped, because a domain mapping *nothing*
+   would satisfy soundness perfectly and confine by starvation). Format-independent, so one proof covers
+   SMMUv3 and the RISC-V IOMMU with no parity gap. The residual link, "`Mapper::map` writes exactly one
+   leaf and touches nothing else", stays on the proved walk arithmetic plus `domain.rs`'s
+   build-and-translate tests on both formats and 16b's hardware attacker test.
+
+**Every new property was falsified before it was believed**, and one falsification corrected the code's
+own comment: soundness rests on `grant_pages` flooring, not on `grant_page`'s partial-page guard, which
+cannot fire for any index the builder passes. Proving the domain also hardened it against a region whose
+`base + size` wraps `u64` (recorded as a proof obligation closed, not a reachable bug: the frame
+allocator would run dry long before the multiply could wrap).
+
+**The residual gap this milestone does NOT close, stated because a proof that reads as broader than it
+is does damage.** The proof is about *descriptor chains*. Per §29, a virtio-gpu's backing addresses ride
+in a `RESOURCE_ATTACH_BACKING` **command payload**, which the validator **structurally cannot see** (the
+addresses are not in its input), and teaching the transport to parse device commands would breach §18.
+So: descriptor-borne addresses are provably confined; payload-borne addresses are confined by the
+**IOMMU alone**, tested and not proved; and **on a board with no IOMMU nothing confines them at all.**
+That inverts this milestone's own load-bearing argument for the payload path: "prove the validator
+because on the VisionFive 2 it is all there is" holds only where the validator can look. On that board a
+display driver is either trusted with all of physical memory or the transport grows a device-aware
+check. Whoever sequences 16a decides; it is a decision, not an oversight.
 
 **Why it is load-bearing now, not later.** Milestone 16a's board, the VisionFive 2, **has no
 IOMMU** (notes/target-hardware.md). We demoted the software validator to "defence in depth" when
