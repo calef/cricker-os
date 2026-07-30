@@ -419,7 +419,12 @@ pub extern "C" fn _start(_arg0: u64, dma_phys: u64, _arg2: u64) -> ! {
     // display endpoint, through the kernel-minted one-shot Reply, so it never names its caller.
     let mut reported_flush = false;
     loop {
-        let (w0, reply_slot, operand) = recv_cap(DISPLAY);
+        // The opcode AND the damage rectangle both ride in the first word (`gfx::req` packs the
+        // rectangle into its low 56 bits), so a flush is one message with no second word to keep in
+        // step. `recv_cap`'s third value is the caller's second word, which this contract does not
+        // use; reading the rectangle out of it instead of out of `w0` was the first bug this test
+        // caught, and it presented as a flush refused for an empty rectangle.
+        let (w0, reply_slot, _) = recv_cap(DISPLAY);
         let r0: i64 = match gfx::op(w0) {
             gfx::display::INFO => {
                 // The runtime half of the geometry contract. The reply's second word carries it, so
@@ -427,7 +432,7 @@ pub extern "C" fn _start(_arg0: u64, dma_phys: u64, _arg2: u64) -> ! {
                 0
             }
             gfx::display::FLUSH => {
-                let (x, y, w, h) = gfx::unrect(operand);
+                let (x, y, w, h) = gfx::unrect(gfx::operand(w0));
                 flush(dma_phys, x, y, w, h)
             }
             _ => gfx::EINVAL,

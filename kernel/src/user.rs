@@ -2819,6 +2819,162 @@ mod heap_tests {
     }
 }
 
+/// **The display: virtio-gpu, a confined driver, and a client that draws** (milestone 29, rung one
+/// of the display ladder).
+///
+/// Arch-neutral on purpose, unlike most of the device tests here: the driver and the client are
+/// portable binaries in both archives, the transport is the same PCIe seam on both boards, and the
+/// contract is one host-tested crate, so **both ISAs run literally this test** rather than two
+/// copies of it that can drift (DECISIONS §19: parity is a gate).
+#[cfg(test)]
+mod display_tests {
+    use super::*;
+    use crate::sched;
+    use gfx_proto as gfx;
+
+    /// **A confined userspace driver puts a known pattern in a scanout framebuffer.**
+    ///
+    /// # What this proves, precisely
+    ///
+    /// The pattern is a per-coordinate function ([`gfx_proto::pixel`]), not a fill, and the digest is
+    /// position sensitive, so a blank, stale, shifted, transposed, or truncated surface cannot pass
+    /// (crates/gfx_proto's host tests assert exactly those properties of the pattern itself). Two
+    /// independent witnesses report it, from two different address spaces: the **client** digests the
+    /// surface after the flush through its own mapping, and the **driver** digests it through a
+    /// different mapping after the device reported the transfer complete. The kernel compares both
+    /// against a value it computed itself from the contract, so neither process is grading its own
+    /// homework.
+    ///
+    /// It also proves the device could reach those exact frames and no others: the surface lives
+    /// inside the driver's registered DMA region, the IOMMU domain maps exactly that region, and
+    /// `RESOURCE_ATTACH_BACKING` naming it succeeded, which under translation only happens if the
+    /// address translated.
+    ///
+    /// # What this does NOT prove, stated plainly
+    ///
+    /// **It proves the framebuffer, not the scanout.** The suite runs `-display none`, and nothing
+    /// inside the guest can read back QEMU's host-side surface, so "the bytes we handed the device are
+    /// the bytes it read out of our frames" is as far as an in-guest test reaches. A wrong pixel
+    /// *format* or a wrong scanout rectangle would still pass this test while showing garbage on a
+    /// real screen. The recipe for closing that gap is known and verified to work under
+    /// `-display none` (a QEMU monitor socket plus `screendump`, which yields a PPM of the scanout);
+    /// see notes/framebuffer-contract.md, "What the test proves, and the one thing it does not".
+    #[test_case]
+    fn a_confined_userspace_driver_puts_a_known_pattern_in_a_framebuffer() {
+        let gpud = program("gpud").expect("no gpud program in the initrd archive");
+        let painter = program("painter").expect("no painter program in the initrd archive");
+        let threads_before = sched::thread_count();
+
+        // A GPU asked for but not enumerated is a build-order mistake wearing a machine fact's
+        // clothes, the hazard the runners were taught to fail loudly on. The test legs always attach
+        // one, so absence is a failure, not a skip.
+        let (driver_report, client_report) = display_service::start(gpud, painter).expect(
+            "no virtio-gpu-pci function on the bus: is CRICKER_GPU missing from the test leg, or \
+             the -device virtio-gpu-pci line from the runner?",
+        );
+
+        // And a GPU present while the IOMMU is not means every pixel read is bypassing translation.
+        // That matters more for a GPU than for a disk: its backing addresses ride in a device-level
+        // command payload, not in a descriptor, so the transport's validator never sees them and the
+        // IOMMU is the only thing bounding them (notes/framebuffer-contract.md).
+        assert!(
+            crate::iommu::active(),
+            "a virtio-gpu is present but the IOMMU is not active: the GPU's pixel reads are \
+             unconfined (is iommu=smmuv3 / -device riscv-iommu-pci or iommu_platform=on missing?)",
+        );
+
+        // 1. The driver came up: device enumerated, resource created and backed, scanout set. Taken
+        //    first because these are rendezvous SENDs, so the driver is parked here until we look.
+        let [tag, geometry, display, ..] = sched::ipc_recv(driver_report);
+        assert_eq!(
+            tag,
+            gfx::status::UP,
+            "the display driver did not come up (it reported {tag:#x}; a 0xDEAD_.. word's low byte \
+             is the bring-up step that failed, see user/src/gpud.rs)",
+        );
+        assert_eq!(
+            geometry,
+            gfx::WIDTH as u64 | ((gfx::HEIGHT as u64) << 32),
+            "the driver created a surface of the wrong geometry",
+        );
+        assert!(
+            (display & 0xffff_ffff) >= gfx::WIDTH as u64,
+            "the device reported a display narrower than our surface: {display:#x}",
+        );
+
+        // 2. The driver's own account of what it handed the device, digested in the driver's address
+        //    space after the device completed the transfer. This must be taken BEFORE the client's
+        //    verdict: the driver blocks in this SEND right after replying to the first flush, so a
+        //    test that waited on the client first would deadlock against the client's second CALL.
+        let [tag, driver_digest, pixels, ..] = sched::ipc_recv(driver_report);
+        assert_eq!(
+            tag,
+            gfx::status::FLUSHED,
+            "the driver never served a flush (it reported {tag:#x})",
+        );
+        assert_eq!(
+            pixels,
+            gfx::PIXELS as u64,
+            "the driver flushed a different surface size"
+        );
+        assert_eq!(
+            driver_digest,
+            gfx::expected_checksum(),
+            "the driver's digest of the frames it handed the device is not the pattern: the pixels \
+             the device read are not the pixels the client painted",
+        );
+
+        // 3. The client's verdict: the surface read back through its own mapping after the flush.
+        let [tag, client_digest, mismatch, ..] = sched::ipc_recv(client_report);
+        assert_eq!(
+            tag,
+            gfx::status::PAINTED,
+            "the painting client did not report a verdict (it reported {tag:#x}; a 0xDEAD_.. word's \
+             low byte names the step, see user/src/painter.rs)",
+        );
+        assert_eq!(
+            mismatch,
+            gfx::NO_MISMATCH,
+            "the client read back a wrong pixel at index {mismatch} of {}",
+            gfx::PIXELS,
+        );
+        assert_eq!(
+            client_digest,
+            gfx::expected_checksum(),
+            "the client's read-back digest is not the pattern it painted",
+        );
+
+        // The two witnesses must agree. They are digests of the same frames taken from different
+        // address spaces at different moments, so a disagreement would mean the surface changed under
+        // one of them, which is the mapping bug this shared-frame contract exists to not have.
+        assert_eq!(
+            driver_digest, client_digest,
+            "the driver and the client disagree about the surface's contents",
+        );
+
+        // **Wait for the one-shot client to be reaped before returning.** Two reasons, and the second
+        // is why this is not optional. It proves a client that finished is reaped rather than leaked,
+        // the discipline every one-shot program here follows. And a process's frames come back
+        // asynchronously at reap, so a client still unreaped when this test returns drops ~20 frames
+        // into whatever the *next* test measures; `destroy_force_kills_a_runaway_and_reclaims_its_
+        // region` asserts an exact free-frame count and failed on precisely that. The driver is a
+        // long-lived server and never exits, so the target is one thread above the baseline.
+        //
+        // Clock-based, not a yield count: with work spread across cores a yield on an idle core
+        // returns instantly and a fixed count elapses in almost no real time (DECISIONS §28).
+        let deadline = crate::arch::timer::now() + 2 * crate::arch::timer::frequency();
+        while crate::arch::timer::now() < deadline && sched::thread_count() > threads_before + 1 {
+            sched::yield_now();
+        }
+        assert!(
+            sched::thread_count() <= threads_before + 1,
+            "the painting client reported its verdict but was never reaped (threads {} > {})",
+            sched::thread_count(),
+            threads_before + 1,
+        );
+    }
+}
+
 /// **Rust `std` on the native ABI** (milestone 27): spawn the `hellostd` demo, an ordinary Rust
 /// program (no `no_std`, no attributes) built for the `*-unknown-cricker` custom target with std's
 /// PAL implemented directly over the capability ABI. It gets the same two grants as `allocdemo`,

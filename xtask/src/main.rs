@@ -673,6 +673,10 @@ fn initrd_riscv() -> bool {
             "subsup",
             "--bin",
             "flaky",
+            "--bin",
+            "gpud",
+            "--bin",
+            "painter",
             "--target",
             RISCV_TARGET,
         ],
@@ -714,6 +718,10 @@ fn initrd_riscv() -> bool {
         ("spawner", "spawner"),
         ("subsup", "subsup"),
         ("flaky", "flaky"),
+        // The display pair (milestone 29): the confined virtio-gpu driver and the client that draws
+        // into the surface it serves. Portable, so both archives carry both.
+        ("gpud", "gpud"),
+        ("painter", "painter"),
     ];
     let mut blobs: Vec<(&str, Vec<u8>)> = Vec::new();
     for &(archive_name, bin_name) in entries {
@@ -872,8 +880,10 @@ fn mkinitrd() -> bool {
     // in the one archive.
     // The authority-shrinking supervision tree (milestone 22 phase B.2), read as a group: four small
     // portable programs that share one module, packed under their own names for both ISAs.
+    // The display pair (milestone 29) reads as a group for the same reason: the confined virtio-gpu
+    // driver and the client that draws into the surface it serves, both portable.
     let mut tree: Vec<(&str, Vec<u8>)> = Vec::new();
-    for name in ["rootsup", "spawner", "subsup", "flaky"] {
+    for name in ["rootsup", "spawner", "subsup", "flaky", "gpud", "painter"] {
         match std::fs::read(bin_elf(name)) {
             Ok(bytes) => tree.push((name, bytes)),
             Err(e) => {
@@ -1280,6 +1290,12 @@ fn test() -> bool {
     if !user() || !mkdisk() || !mkredoxfs() {
         return false;
     }
+    // Attach a virtio-gpu for the display test (milestone 29). Set here, in `test`, rather than in
+    // `cargo()`: the benchmark boot uses the same runner and adding a device to it would change what
+    // the icount instrument measures, so the GPU is a test-leg device only. Both ISA legs get it,
+    // because parity is the gate (§19), and the display test ASSERTS the device is present rather
+    // than skipping, so a leg that lost this line fails loudly.
+    unsafe { std::env::set_var("CRICKER_GPU", "1") };
     if !cargo(&["test", "-p", "kernel", "--target", TARGET]) {
         return false;
     }

@@ -88,6 +88,17 @@ if [ -n "$CRICKER_NET" ]; then
     NET="-netdev user,id=net0,$GUESTFWD -device virtio-net-device,netdev=net0 -netdev user,id=net1,$GUESTFWD -device virtio-net-pci,netdev=net1,disable-legacy=on,iommu_platform=on"
 fi
 
+# A virtio-gpu when CRICKER_GPU is set (milestone 29), the twin of the aarch64 runner's block. PCIe
+# only (there is no mmio GPU on this machine either), modern (disable-legacy=on, device id 0x1050),
+# and behind the RISC-V IOMMU (iommu_platform=on). That last flag matters more for the GPU than for
+# the disk: a virtio-gpu's backing addresses ride in a device-level command payload rather than in a
+# descriptor, so the transport's shadow-ring validator never sees them and the IOMMU is the only thing
+# that bounds them. See notes/framebuffer-contract.md and the aarch64 runner.
+GPU=""
+if [ -n "$CRICKER_GPU" ]; then
+    GPU="-device virtio-gpu-pci,disable-legacy=on,iommu_platform=on"
+fi
+
 # The RISC-V IOMMU (milestone 16b): the ratified v1.0.1 IOMMU as a PCI function (riscv-iommu-pci,
 # Red Hat 1b36:0014) in front of the PCIe bus. Present on every boot for parity with the aarch64
 # SMMU that is always on the machine; the kernel enumerates it, places its BAR, and brings it up
@@ -108,4 +119,5 @@ exec qemu-system-riscv64 \
     $INITRD \
     $DISK \
     $NET \
+    $GPU \
     "$@"
