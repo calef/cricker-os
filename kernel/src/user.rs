@@ -4807,16 +4807,16 @@ mod tests {
         let got = crate::sched::ipc_recv(report)[0];
         assert_eq!(got, REPORT_WORD, "the child never reported");
 
-        // Let the reaper collect the now-Finished child (removed when it is switched away from).
-        for _ in 0..100 {
-            if crate::sched::thread_count() == threads_before {
-                break;
-            }
-            crate::sched::yield_now();
-        }
-        assert_eq!(
-            crate::sched::thread_count(),
-            threads_before,
+        // Let the reaper collect the now-Finished child. A Finished thread is removed when its own
+        // core switches away from it, and DECISIONS §28's placement can have put this child on
+        // ANOTHER core, so yielding on THIS core cannot make that happen: a hundred cheap yields
+        // complete long before the remote core's next timer tick. So wait on the clock, not on a
+        // yield count. Still a leak trap rather than a masked failure: a child that is never reaped
+        // times out and fails; only cross-core reap lag is tolerated. This wait was a yield count
+        // until it failed about one full-suite run in four once §28 started scattering threads;
+        // clock-based, it survived four consecutive runs. Two sibling waits had the same defect.
+        assert!(
+            wait_for(|| crate::sched::thread_count() == threads_before),
             "the exited child was never reaped",
         );
 
@@ -4894,12 +4894,13 @@ mod tests {
                 REPORT_WORD,
                 "round {round}: the child never reported"
             );
-            for _ in 0..100 {
-                if crate::sched::thread_count() == threads_before {
-                    break;
-                }
-                crate::sched::yield_now();
-            }
+            // On the clock, not on yields, for the reason spelled out in the test above: §28 can
+            // place the child on another core and only that core's switch reaps it. A lagging reap
+            // here would surface as the reclaim below refusing a region that still holds a thread.
+            assert!(
+                wait_for(|| crate::sched::thread_count() == threads_before),
+                "round {round}: the child was never reaped",
+            );
             crate::sched::reclaim_region(tcb_region).expect("reclaim tcb region");
             crate::sched::reclaim_region(as_region).expect("reclaim aspace region");
 
@@ -6186,10 +6187,22 @@ mod no_leaked_threads {
 
     #[test_case]
     fn the_suite_left_no_runnable_thread_spinning() {
-        // Quiesce: 200 yields is far more than enough for every Finished thread to be switched away
-        // from and reaped, and for any thread mid-exit to get there. What stays runnable after this
-        // is a genuine leak (a thread that never blocks and never exits).
-        for _ in 0..200 {
+        // Quiesce on the CLOCK, not on a yield count. A Finished thread is reaped when its OWN core
+        // switches away from it, and DECISIONS §28 scatters threads across cores, so yields on this
+        // core do not make a remote core reap: two hundred cheap yields can all complete before
+        // another core's next timer tick. Give every core a couple of ticks to get there, then judge.
+        // What stays runnable after that is still a genuine leak (a thread that never blocks and
+        // never exits), so this tolerates cross-core lag without masking the thing it guards.
+        let deadline = crate::arch::timer::now() + 2 * crate::arch::timer::frequency();
+        while crate::arch::timer::now() < deadline {
+            // Scoped so nothing from `current()` is held across the yield.
+            if {
+                let me = sched::current();
+                sched::runnable_non_idle_count(&me)
+            } == 0
+            {
+                break;
+            }
             sched::yield_now();
         }
         let me = sched::current();
