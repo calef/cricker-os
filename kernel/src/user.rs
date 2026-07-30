@@ -4287,7 +4287,11 @@ mod std_tests {
             fs_proto::fixture::MOTD,
             b"read_to_string 70\nmetadata len 70\n".as_slice(),
             b"absolute refused\ndotdot refused\nnested refused\n".as_slice(),
-            b"missing not found\ncreate unsupported\n".as_slice(),
+            b"missing not found\n".as_slice(),
+            // Milestone 31 phase 2: `create unsupported` became `write create ok`, plus the two
+            // refusals that prove CREATE did not widen what a client can reach.
+            b"write create ok\ncreate_new refused\n".as_slice(),
+            b"create refused absolute\ncreate refused dotdot\n".as_slice(),
             b"write readback ok\nfs ok\n".as_slice(),
         ] {
             buf[n..n + part.len()].copy_from_slice(part);
@@ -5898,7 +5902,28 @@ mod tests {
         assert!(wait_for(|| USER_FAULTS.load(Ordering::Relaxed) > f0));
         assert!(wait_for(|| sched::thread_count() <= baseline));
 
-        let before = used();
+        // Sample the baseline only once `used()` has STOPPED MOVING, for the same reason the
+        // assertion below waits rather than reading instantly, applied to the other end. The warm-up
+        // outlaw's address space is freed by `finish_switch` on whatever core actually ran it, which
+        // under §28 placement need not be this one, and that free lands a beat *after*
+        // `thread_count` falls. Sampling `before` inside that window captures frames that are about
+        // to come back, `used()` then settles BELOW `before`, and the wait for equality can never
+        // succeed. The failure says so plainly when it happens: it reported "-18 frames did not come
+        // back", a NEGATIVE leak, which no real leak can produce. Found when an unrelated change to
+        // the std::fs test shifted this test's timing; the race was already here.
+        // Two agreeing samples a yield apart mean nothing is in flight. Bounded by `wait_for`'s own
+        // deadline, so a genuinely unstable allocator fails the test rather than spinning here.
+        let mut last = used();
+        let settled = wait_for(|| {
+            sched::yield_now();
+            let now = core::mem::replace(&mut last, used());
+            now == last
+        });
+        assert!(
+            settled,
+            "frame accounting never settled before the baseline"
+        );
+        let before = last;
 
         for _ in 0..4 {
             let f = USER_FAULTS.load(Ordering::Relaxed);
