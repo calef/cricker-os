@@ -652,3 +652,24 @@ EL0 round trip those build on, `ipc_rtt_el0` above, is the raw baseline; the `re
 confined-server tax netd pays on top of it, the same as the FS server. Recording it this way, one
 gated topology tax plus the two real servers measured where each is sound, is the honest fit to what
 the two instruments can and cannot see.
+
+## 2026-07-29: both baselines re-saved for one instruction on the exception-return path
+
+Milestone 22 phase B.2 fixed a real race in the exception-return path (notes/exceptions.md: staging
+`SPSR_EL1`/`ELR_EL1`, or `sepc`/`sstatus` on RISC-V, is not atomic with respect to a nested exception).
+The fix is one instruction at the top of the restore, masking interrupts, and it therefore lands on
+**every return from an exception**, which is the hottest path either instrument measures.
+
+The movement is well under 1% and both baselines were re-saved in the commit that caused it, per the
+milestone-21 discipline. aarch64 `null_syscall` 457503 -> 458753 ticks over 20000 iterations (+0.3%),
+`ipc_rtt_el0` +0.2%, `ctx_switch` +0.1%; RISC-V shows the same order, mixed in sign (`null_syscall`
++0.3%, `ipc_rtt` -2.2%), which is the build-to-build icount drift the 2026-07-28 attribution section
+already documents rather than anything the change did.
+
+Worth stating plainly, because it is the kind of number that invites a wrong conclusion: this is not a
+regression that was traded for correctness. One masked-interrupt instruction per exception return is
+what the *correct* version of that path always cost, and the previous numbers were measuring a version
+that could return a new process to its entry point at the wrong exception level.
+
+Measured-boot (phase B.1) moved nothing on either ISA, which is expected: the bench boot enters no boot
+program, so the SHA-256 over init never runs there.
