@@ -224,28 +224,54 @@ struct Scheduler {
     /// machinery as Tids) is what an `Object::Endpoint` capability carries, so the day endpoints
     /// can die, stale names will already fail safely.
     endpoints: slots::Table<u64, MAX_ENDPOINTS>,
-    /// The kernel's own object region: where the kernel's endpoints (boot services, tests) are
-    /// retyped from, so every endpoint lives uniformly in a pinned page regardless of who paid.
-    /// Carved lazily on the first [`create_endpoint`].
+    /// The kernel's **current** object chunk: where the kernel's endpoints (boot services, tests)
+    /// are retyped from, so every endpoint lives uniformly in a pinned page regardless of who paid.
+    /// Carved lazily on the first [`create_endpoint`] and **replaced when it fills**, which is what
+    /// makes the kernel's endpoint supply grow instead of being a compile-time guess.
+    ///
+    /// A filled chunk's handle is deliberately forgotten. Its pages stay pinned and its endpoints
+    /// stay live, and nothing ever hands a kernel chunk back: kernel endpoints are destroyed only by
+    /// tearing down the region hosting them (see the `doomed_eps` walk), and no path tears down a
+    /// kernel chunk. If one ever should, this becomes an array and that is the change to make.
     kernel_ep_region: Option<u64>,
+    /// How many chunks have been carved, so growth is bounded by something rather than by nothing.
+    kernel_ep_chunks: usize,
 }
 
-/// The most endpoints that can ever exist: the registry's bound. Endpoint teardown does not
-/// exist yet (regions hosting endpoints are pinned), so this caps creations over the kernel's
-/// lifetime, not concurrent use.
+/// The most endpoints that can exist **at once**: the registry's bound.
+///
+/// This used to say it capped creations over the kernel's lifetime, on the grounds that endpoint
+/// teardown did not exist. That went stale when object revocation made destruction real: tearing
+/// down a region removes every endpoint whose page lives in it and `slots::Table::remove` frees the
+/// slot for reuse, so this is a concurrent bound now. Corrected rather than left, because a stale
+/// bound is the kind of comment that gets believed during a capacity argument.
 const MAX_ENDPOINTS: usize = 512;
 
 /// An endpoint's name: a generational `slots` name over the endpoint registry (19a). What an
 /// `Object::Endpoint` capability carries. `u64` like a Tid, and stale-safe the same way.
 pub type EpId = u64;
 
-/// The pages the kernel carves for its own endpoints. This grows with the SUITE, not the system:
-/// 64 lasted until the 27+28 merge, 96 until supervision and std::net merged the same day. Each
-/// parallel branch fits alone; the union of their test boots is what crosses the line, a cost no
-/// branch can see before merge. 128 covers today's suite; exhaustion panics in
-/// [`create_endpoint`] with the number to raise. If this grows again, consider making the test
-/// harness reap its boot services between modules instead of raising further.
-const KERNEL_EP_PAGES: u64 = 128;
+/// The pages in one of the kernel's endpoint chunks. **Not a ceiling.** When a chunk fills,
+/// [`create_endpoint`] carves another, so this is a batch size and nothing else.
+///
+/// It used to be a ceiling, and it was the wrong shape of number, because it grew with the SUITE
+/// rather than with the system: 64 lasted until the 27+28 merge, 96 until supervision and std::net
+/// merged the same day, 128 until the compositor. Every parallel branch fit on its own, and the union
+/// of their test boots is what crossed the line, which is a cost no branch can see before it merges.
+/// So the failure mode was a merge-time panic telling whoever merged to raise a constant, over and
+/// over, for a reason none of them caused. Growing on demand retires that whole class of papercut:
+/// there is no number to raise, and the only remaining limit is [`MAX_ENDPOINTS`], which is a real
+/// bound with a real meaning.
+///
+/// 32 pages (128 KiB) is deliberately modest. A normal boot carves exactly one chunk and the rest of
+/// the supply is never touched, which is the point of carving lazily.
+const KERNEL_EP_CHUNK_PAGES: u64 = 32;
+
+/// How many chunks the kernel will carve before refusing. Derived so the **page supply can never be
+/// the binding limit before the registry is**: enough chunks to host [`MAX_ENDPOINTS`] endpoints, one
+/// page each. That is what makes exhaustion always report the honest reason (the registry is full)
+/// rather than an arbitrary carve size. Derived rather than written down so the two cannot drift.
+const MAX_KERNEL_EP_CHUNKS: usize = MAX_ENDPOINTS.div_ceil(KERNEL_EP_CHUNK_PAGES as usize);
 
 /// The endpoint behind a name, or `None` if the name no longer resolves. Caller holds `SCHED`.
 ///
@@ -325,6 +351,7 @@ pub fn init() {
         threads,
         endpoints: slots::Table::new(),
         kernel_ep_region: None,
+        kernel_ep_chunks: 0,
     });
     drop(sched); // release before spawning, which takes the lock itself
 
@@ -1038,48 +1065,106 @@ pub fn irq_notify(ep: EpId) {
     }
 }
 
+/// Why creating an endpoint failed. The two causes need telling apart because they call for opposite
+/// responses: a full region means carve more memory and retry, a full registry means give up.
+///
+/// They used to be one `None`, which is also why the registry-full case leaked a page: the caller
+/// could not know the page it had just spent was about to be thrown away.
+enum EpFail {
+    /// The region has no page left to retype. Nothing was spent.
+    RegionFull,
+    /// The registry is at [`MAX_ENDPOINTS`]. Checked *before* spending a page, so nothing was spent.
+    RegistryFull,
+}
+
 /// Create an endpoint **in `region`'s memory** (milestone 19a): one page retyped and pinned, the
 /// endpoint at its start, a fresh generational name in the registry. The shared engine of the
-/// `RETYPE_OBJ` syscall and the kernel's own [`create_endpoint`]. `None` when the region is out
-/// of budget or the registry is full (in which case the retyped page is spent but unused: a
-/// process-local loss on its own budget, same as every failed spend since B.4).
-pub fn create_endpoint_from(region: u64) -> Option<EpId> {
+/// `RETYPE_OBJ` syscall and the kernel's own [`create_endpoint`].
+fn try_create_endpoint_from(region: u64) -> Result<EpId, EpFail> {
     let mut guard = SCHED.lock();
-    let sched = guard.as_mut()?;
+    let sched = guard.as_mut().ok_or(EpFail::RegistryFull)?;
+
+    // Checked BEFORE the retype, which is a fix and not just tidiness: this used to retype a page and
+    // then discover the registry was full, spending the page for nothing. The old comment called that
+    // "a process-local loss on its own budget", which is true and is still a leak a caller cannot see
+    // or recover. Asking first costs a compare.
+    if sched.endpoints.len() >= MAX_ENDPOINTS {
+        return Err(EpFail::RegistryFull);
+    }
 
     // Rank: UNTYPED (58) under SCHED (60) is a legal descent; the pin rides in the same lock
     // hold as the carve, so no destroy can race the page away (see retype_object_page).
-    let phys = crate::untyped::retype_object_page(region)?;
+    let phys = crate::untyped::retype_object_page(region).ok_or(EpFail::RegionFull)?;
 
     // The page arrives zeroed, and an all-zero Endpoint happens to be valid; write it explicitly
     // anyway, because "happens to be" is the kind of truth that stops being one silently.
     // SAFETY: fresh page, exclusively ours, direct-mapped.
     unsafe { (crate::arch::mmu::phys_to_virt(phys) as *mut Endpoint).write(Endpoint::new()) };
 
-    sched.endpoints.insert_with(|_| phys)
+    // Cannot fail: capacity was checked above under this same lock hold.
+    sched
+        .endpoints
+        .insert_with(|_| phys)
+        .ok_or(EpFail::RegistryFull)
+}
+
+/// Create an endpoint in `region`'s memory. `None` when the region is out of budget or the registry
+/// is full. The `RETYPE_OBJ` syscall's engine; userspace gets one flat failure because a process
+/// cannot act on the difference (it holds one region and cannot enlarge the kernel's registry).
+pub fn create_endpoint_from(region: u64) -> Option<EpId> {
+    try_create_endpoint_from(region).ok()
 }
 
 /// Create an IPC endpoint on the kernel's own budget. Returns the name that goes inside an
-/// `Object::Endpoint`. The kernel's object region is carved lazily on first use and pinned like
-/// any other endpoint host.
+/// `Object::Endpoint`. Chunks are carved lazily and **grown on demand**, so this does not depend on
+/// anyone having guessed the suite's eventual size.
 ///
-/// Panics on exhaustion: every caller is the kernel or a test wiring a service, so running out
-/// is a misconfigured image (raise KERNEL_EP_PAGES or MAX_ENDPOINTS), not a runtime condition.
+/// Panics only on a genuinely unrecoverable condition: the registry at [`MAX_ENDPOINTS`], the chunk
+/// bound reached (which cannot happen before the registry fills, by construction), or no memory left
+/// to carve from. Every caller is the kernel or a test wiring a service, so there is no user to
+/// return an error to.
 pub fn create_endpoint() -> EpId {
-    let region = {
-        let mut guard = SCHED.lock();
-        let sched = guard.as_mut().expect("no scheduler");
-        match sched.kernel_ep_region {
-            Some(r) => r,
-            None => {
-                let r = crate::untyped::create(KERNEL_EP_PAGES)
-                    .expect("no memory for the kernel's endpoint region");
-                sched.kernel_ep_region = Some(r);
-                r
+    loop {
+        // Take, or lazily carve, the current chunk.
+        let region = {
+            let mut guard = SCHED.lock();
+            let sched = guard.as_mut().expect("no scheduler");
+            match sched.kernel_ep_region {
+                Some(r) => r,
+                None => {
+                    assert!(
+                        sched.kernel_ep_chunks < MAX_KERNEL_EP_CHUNKS,
+                        "the kernel carved all {MAX_KERNEL_EP_CHUNKS} endpoint chunks; \
+                         with {MAX_ENDPOINTS} registry slots this should be unreachable",
+                    );
+                    let r = crate::untyped::create(KERNEL_EP_CHUNK_PAGES)
+                        .expect("no memory for a kernel endpoint chunk");
+                    sched.kernel_ep_chunks += 1;
+                    sched.kernel_ep_region = Some(r);
+                    r
+                }
+            }
+        };
+
+        match try_create_endpoint_from(region) {
+            Ok(ep) => return ep,
+            // The chunk is spent. Drop it and let the next pass carve a fresh one; the loop runs at
+            // most twice per call, because a fresh chunk always has a page. Clearing the handle is
+            // what "forgotten deliberately" means in the field's doc comment: the pages stay pinned
+            // and the endpoints already in them stay live.
+            Err(EpFail::RegionFull) => {
+                let mut guard = SCHED.lock();
+                let sched = guard.as_mut().expect("no scheduler");
+                // Only clear the handle we just failed on. Another core may already have replaced it.
+                if sched.kernel_ep_region == Some(region) {
+                    sched.kernel_ep_region = None;
+                }
+            }
+            Err(EpFail::RegistryFull) => {
+                panic!("out of endpoints: {MAX_ENDPOINTS} live at once, raise MAX_ENDPOINTS")
             }
         }
-    };
-    create_endpoint_from(region).expect("out of endpoints: raise KERNEL_EP_PAGES / MAX_ENDPOINTS")
+    }
 }
 
 /// **Which core should a device-IRQ wake place its driver on** (DECISIONS §28.2). The least-loaded
@@ -2971,5 +3056,42 @@ mod tests {
             SAW.load(Ordering::SeqCst),
             "an interrupt that fired before the WAIT was lost",
         );
+    }
+
+    /// The kernel's endpoint supply grows past one chunk, and a retired chunk's endpoints keep working.
+    ///
+    /// This exists because `KERNEL_EP_PAGES` used to be a ceiling that grew with the *test suite*
+    /// rather than the system, so every few merges someone hit a panic telling them to raise a
+    /// constant for a reason no single branch had caused. Growth on demand retires that, and this test
+    /// is what keeps it retired.
+    ///
+    /// Creating `KERNEL_EP_CHUNK_PAGES + 1` endpoints crosses a chunk boundary wherever in the current
+    /// chunk we happen to start, so the carve-a-new-chunk path is exercised rather than assumed. The
+    /// second assertion is the one that matters more: an endpoint minted *before* the transition must
+    /// still resolve afterwards, which is what proves that forgetting a filled chunk's handle
+    /// (deliberate, see the field's doc comment) does not orphan the endpoints living in it.
+    #[test_case]
+    fn the_kernels_endpoint_supply_grows_past_one_chunk() {
+        let mut names = [0u64; super::KERNEL_EP_CHUNK_PAGES as usize + 1];
+        for slot in names.iter_mut() {
+            *slot = super::create_endpoint();
+        }
+
+        // Distinct names: a chunk transition that handed back the same page twice would show here.
+        for (i, &a) in names.iter().enumerate() {
+            for &b in &names[i + 1..] {
+                assert_ne!(a, b, "two endpoints share a name across a chunk transition");
+            }
+        }
+
+        // Every one still resolves, including the earliest, which is in a chunk we have since retired.
+        let mut guard = super::SCHED.lock();
+        let sched = guard.as_mut().expect("no scheduler");
+        for (i, &ep) in names.iter().enumerate() {
+            assert!(
+                super::endpoint_of(sched, ep).is_some(),
+                "endpoint {i} stopped resolving after the supply grew",
+            );
+        }
     }
 }
