@@ -192,7 +192,7 @@ impl BlockIo for StaticImage {
 fn mark(s: &str) {
     use std::io::Write;
     let mut e = std::io::stderr();
-        let _ = e.write_all(s.as_bytes());
+    let _ = e.write_all(s.as_bytes());
     let _ = e.write_all(b"\n");
     let _ = e.flush();
 }
