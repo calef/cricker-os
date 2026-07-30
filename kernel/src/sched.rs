@@ -1552,6 +1552,27 @@ pub fn grant(cap: crate::cap::Cap) -> Result<u64, crate::cap::Error> {
         .insert(cap)
 }
 
+/// Hand the current thread a capability **at an explicit slot**, leaving lower slots empty.
+///
+/// [`grant`] fills the first free slot, which is what an ordinary `Spawn` literal wants: slot 0 is
+/// `grants[0]` and reading the literal tells you the whole authority. But some out-of-band
+/// conventions (notes/abi.md §4) name a *fixed* slot that a program may hold without holding the
+/// ones below it: a std program granted a directory capability but not the network holds slot 4
+/// with 2 and 3 empty, and the emptiness is load-bearing (it is how `std::net` knows it has no
+/// network). This is the same explicit-target move `Tcb::CAP_INSERT` already offers a userspace
+/// loader, available to the kernel's own service wiring.
+pub fn grant_at(slot: u64, cap: crate::cap::Cap) -> Result<u64, crate::cap::Error> {
+    let mut guard = SCHED.lock();
+    let sched = guard.as_mut().ok_or(crate::cap::Error::NoFreeSlot)?;
+    let current = current_tid();
+    sched
+        .threads
+        .get_mut(current)
+        .ok_or(crate::cap::Error::NoFreeSlot)?
+        .cspace
+        .insert_at(slot, cap)
+}
+
 /// Hand a **specific** thread a capability. Used to wire up a scenario before the thread runs.
 pub fn grant_to(tid: Tid, cap: crate::cap::Cap) -> Result<u64, crate::cap::Error> {
     let mut guard = SCHED.lock();

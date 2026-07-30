@@ -25,12 +25,32 @@
 //!   `TcpStream`/`UdpSocket` operation returns `Unsupported` rather than blocking.
 //! - **slot 3**: an untyped budget the net PAL mints and maps each socket's shared frame from.
 //!
-//! Programs that never allocate, print, or open a socket never touch the slots they do not use.
+//! And one more, granted only to a std program that is given a **directory** (milestone 27 phase
+//! two, the FS-service half; the fs PAL in `sys/fs` binds it, DECISIONS §27):
+//!
+//! - **slot 4**: the FS-service endpoint with WRITE. That endpoint **is** the directory
+//!   capability: the server it reaches is bound to one directory node, and every name `std::fs`
+//!   sends is resolved under that directory. There is no global namespace to reach past it, so a
+//!   path that tries to leave the directory is refused before it ever reaches the wire. The grant
+//!   comes with one page the loader maps at [`FS_PAGE`], the contract's unit of transfer. A
+//!   program left this slot empty gets `Unsupported` from every `std::fs` call, which is what "no
+//!   ambient filesystem" feels like from inside a process.
+//!
+//! Programs that never allocate, print, open a socket, or open a file never touch the slots they
+//! do not use.
 
 pub const UNTYPED_SLOT: u64 = 0;
 pub const STDOUT_SLOT: u64 = 1;
 pub const STACK_SLOT: u64 = 2;
 pub const NET_UNTYPED_SLOT: u64 = 3;
+pub const FS_DIR_SLOT: u64 = 4;
+
+/// Where the loader maps the page a std program shares with its FS server: 4096 bytes, one file
+/// block, carrying a name out on `OPEN` and file bytes both ways on `READ`/`WRITE`. Clear of the
+/// program image (0x40_0000), its stack (below 0x50_0000), the net PAL's per-socket frames
+/// (0x1000_0000 upward, one page per socket id), and the heap (0x4000_0000). The kernel-side
+/// wiring maps the same physical frame the FS server holds; see `fs_service` in kernel/src/user.rs.
+pub const FS_PAGE: u64 = 0x1100_0000;
 
 /// Where the heap lives: 1 GiB, clear of the program image (0x40_0000), stacks, shared pages,
 /// and the initrd window (0x2000_0000). Same value as `user_rt::heap::DEFAULT_BASE`.

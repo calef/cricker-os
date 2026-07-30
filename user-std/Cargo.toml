@@ -14,6 +14,13 @@ license = "MIT OR Apache-2.0"
 
 [workspace]
 
+# The FS-service contract's shared fixture (the file the test image ships and its exact bytes), so
+# the demo, the host image builder, and the kernel test agree on one definition. `fs_proto` is
+# `no_std` and dependency-free, and the demo touches only its `fixture` module: it does NOT speak
+# the wire protocol, because that is `std::fs`'s job now (the whole point of this milestone).
+[dependencies]
+fs_proto = { path = "../crates/fs_proto" }
+
 # The kernel's ELF loader maps whole pages per segment and the initrd carries the file; keep the
 # binary small and the build deterministic.
 [profile.release]
