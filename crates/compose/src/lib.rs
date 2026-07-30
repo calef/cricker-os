@@ -482,11 +482,15 @@ pub mod proto {
     /// compositor's read of its own pixels. That is flow control by rendezvous, not by trust.
     pub const COMMIT: u64 = 2;
 
-    /// `CALL(req(CAPTURE, 0), 0)` -> `(0, 0)`. "Copy the screen into the capture mapping." **Not a
-    /// privilege check**: any client may send this word, and a client that holds no capture mapping
-    /// gets a copy made into memory it cannot read. The authority is the mapping, so the verb needs
-    /// no guard, which is the property that makes a shared doorbell safe.
-    pub const CAPTURE: u64 = 3;
+    // **There is no capture verb, and no enumerate verb**, and their absence is the design rather
+    // than a gap. A `CAPTURE` opcode was drafted and dropped: it would have been safe (the pixels
+    // would land in a mapping the caller may not hold, so a forging client would learn nothing), but
+    // it would also have been a verb that does nothing for anyone who does not already hold the
+    // mapping that *is* the authority. Reading the screen is a read-only mapping; enumerating windows
+    // is a read-only page. A client holding neither has nothing to call and nowhere to look, which is
+    // a stronger statement than a guarded verb and a smaller protocol. The one thing it costs is a
+    // consistent snapshot (a live mapping can be read mid-composite); notes/compositor.md records that
+    // as a limit and the served-copy path as what would fix it.
 
     /// The reply to a word whose opcode the compositor does not implement. Negative-is-an-error, the
     /// convention `fs_proto` set and `gfx_proto` follows.
@@ -597,14 +601,13 @@ pub mod proto {
 pub mod status {
     /// The compositor is up: `send(REPORT, COMP_UP, window count, focused)`. Its control pages are
     /// published and it is serving the doorbell.
+    /// `COMP_UP` is the compositor's **only** report, ever, and that is deliberate: a status `SEND`
+    /// is a rendezvous, so a compositor that narrated each frame would block until its spawner
+    /// listened, and a spawner that stopped listening would deadlock the clients behind it. What was
+    /// flushed is observable where it belongs, at the display endpoint (kernel/src/user.rs's display
+    /// stand-in reads the rectangle straight off the `FLUSH`).
     pub const COMP_UP: u64 = 0xC33_0001;
-    /// The compositor composited and flushed a frame: `send(REPORT, COMP_FRAME, flush rect, area)`,
-    /// the rectangle packed by [`gfx_proto::rect`]. This is how a test sees *what* was flushed rather
-    /// than only that something was.
-    pub const COMP_FRAME: u64 = 0xC33_0002;
 
-    /// A client read its control page: `send(REPORT, WIN_GEOMETRY, id, w | h << 32)`.
-    pub const WIN_GEOMETRY: u64 = 0xC33_0010;
     /// A client painted and committed: `send(REPORT, WIN_PAINTED, digest, seq)`, where `digest` is
     /// [`surface_checksum`] over its own surface read back after the commit.
     pub const WIN_PAINTED: u64 = 0xC33_0011;
@@ -1111,13 +1114,20 @@ mod tests {
     /// message vocabulary is three content-free words, which is the point; this pins them.
     #[test]
     fn the_request_words_round_trip() {
-        for op in [proto::HELLO, proto::COMMIT, proto::CAPTURE] {
+        for op in [proto::HELLO, proto::COMMIT] {
             let w = proto::req(op, 0);
             assert_eq!(proto::op(w), op);
             assert_eq!(proto::operand(w), 0, "these verbs carry no operand at all");
         }
         assert_ne!(proto::HELLO, proto::COMMIT);
         assert_eq!(proto::EBADOP, -22);
+        // Two verbs, both content-free, is the whole vocabulary. If a third ever arrives, the question
+        // to ask first is whether it needs to know who is calling, because this endpoint cannot say.
+        assert_eq!(
+            proto::COMMIT,
+            2,
+            "the protocol grew a verb without a decision"
+        );
     }
 
     /// The per-window digest a client reports is the digest of that window's pattern, and no two
