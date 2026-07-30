@@ -45,6 +45,7 @@ IPC and the MMU invariants are next. This threads through the list rather than b
 | 30 | The network stack as a confined component | A userspace **virtio-net** driver behind the DMA confinement (extended to multi-queue: RX means the device writes INTO driver memory), and the TCP/IP stack itself (`smoltcp`) as a swappable userspace component with a capability-shaped socket contract; backs `std::net` for 27 | **the canonical microkernel component**, the one people ask about first when a minimal kernel claims to stand next to Linux; and milestone 23's most convincing instance, hot-swapping a network stack under open connections. The reuse call is the plan's easiest: the thesis is the kernel confining the stack, not the stack |
 | 31 | A capability shell: designation is authorization | The command line becomes a **grant expression**: naming a resource in a command IS the capability grant (`run wc report.txt` passes one readable file cap; `run wc` alone can read nothing, and the refusal is "no such capability", not EPERM); untyped budgets as first-class grants; a SHILL-style manifest per program checked at spawn; a `caps` command printing a process's whole endowment. **Phase 1 built, both ISAs**: `capsh` (host-tested parse + manifest + spawn protocol), the shell over the existing surface, `run --mem N` made real by the `budgeter` program (from the shell's own budget, via a `SEND_CAP`-to-init spawn protocol), manifest refusals and the "you hold no such capability" file refusal at the prompt, `caps`/`caps run ...` introspection. One kernel bug fix: `Untyped::SPLIT` now grants the child `GRANT` so a budget is delegable (DECISIONS §16 amendment). Notes: grant-expression.md, program-manifest.md. Per-file grants wait on milestone 32 | **no-ambient-authority made user-visible**: the inversion of Unix's model at the one interface a human touches. Milestone 23's component contract in embryo, met first at the shell |
 | 32 | A real filesystem: RedoxFS behind a capability FS server | A write-capable block path, an FS-server **component** whose handles are capabilities from birth (open-by-path exists only INSIDE the server, relative to a granted directory cap), and **RedoxFS** as the on-disk engine, ported behind its own `Disk` trait over blk IPC | the flagship **userspace-reuse** story the prior-art note predicted: a real CoW filesystem we did not write, running confined; and the thing 31's per-file grants point at |
+| 33 | A compositor: one screen, mutually distrusting clients | **Built (2026-07-29), both ISAs**, rung two of the display ladder: `compd` multiplexing one screen among three clients, each holding a capability to its own surface; software composition honouring a damage rectangle; input routed by capability over the terminal contract's `OP_BYTES`; enumeration and screenshots as read-only mappings rather than verbs. No new syscall and no new method. notes/compositor.md, DECISIONS §33 | **the canonical multiplexer of one device among distrusting clients**, and the thesis at its sharpest: a client is *proved* unable to reach its neighbour's pixels even when handed the exact address of them, and the compositor holds no authorization code because the authority is a mapping rather than a message. It also found the kernel's one missing primitive (no wait-any), recorded as a fork |
 | 25 | Cross-OS performance comparison (extends 21) | EL0-measured primitive benchmarks (syscall, context switch, IPC, map, spawn) the lmbench way, so the numbers include the trap the kernel-side benchmarks skip; then line them up against lmbench (Linux, macOS guests) and `sel4bench` (seL4), at a matched virtualization tier, with release builds. Fold in the icount codegen-sensitivity fix. | **turns perf claims into cross-OS numbers**: where does a Rust capability microkernel stand next to Linux, macOS's XNU, and seL4 on the primitives that define an OS. **Largely done**: four EL0 primitives (null syscall, context switch, IPC, page map) on both instruments, a release build path, and the three-way comparison (cricker-os vs Linux-under-HVF vs native macOS) with cricker-os winning null/IPC ~5x. `spawn` landed too (its real prerequisite was never retype, which had already shipped, but **object revocation**, reclaiming a child's TCB/aspace/endpoint so a spawn loop can repeat; that shipped as its own milestone, notes/object-revocation.md, and the EL0 `lat_proc` bench, `spawn_el0`, is in the suite and the committed baseline). **Remaining**: only `sel4bench` (built and booting for qemu-arm-virt, but it times single ops via the PMU cycle counter, which neither QEMU-TCG nor Apple HVF provides, so it is **deferred to real hardware**, the milestone-16 machine, which has a real PMU; this validates our CNTVCT + long-loop design). notes/benchmarks.md |
 | 22 | Trusted init: verify it, and shrink what a broken one can do | Measured/secure boot that checks init before running it; reduce init's authority so a compromise is bounded | **closes the thesis's own soft spot:** init is the privileged *unverified* component the whole system is built by |
 | 23 | A capability-routed component OS with live replacement | Every userspace component (driver, server, app) is a swappable, vendor-shippable unit behind a stable contract; operators replace them live, no reboot. The console hot-swap is instance one; a durable queue-broker decouples component lifecycles (opt-in per channel, for latency) | **the flagship payoff and a product ambition:** competing vendor components, confined by the kernel and swapped live; the verified core is the one fixed thing |
@@ -958,16 +959,41 @@ honest. COSMIC's shape is Rust clients rendering into shared buffers, a composit
 them to scanout, everything message-passing; cricker-os already has shared frames and endpoints,
 so the *architecture* is aligned even where the drivers are mountains.
 
-1. **Rung one: milestone 29 as specified** (promoted from optional). The VT terminal over
-   virtio-gpu/framebuffer under QEMU: the framebuffer component and the seam everything above
-   rides on.
-2. **Rung two: a compositor component (milestone 33).** Multiple clients, each holding a
-   capability to its own surface (a shared frame); software composition to the framebuffer;
-   input routed by capability from the terminal contract. No ambient display: window enumeration,
-   screenshots, and screen sharing are grants, not defaults. A compositor is the canonical
-   multiplexer of one device among mutually distrusting clients, so this rung is thesis work
-   (milestone 23's component story), not decoration. Wayland's model is the prior art; the
-   capability routing is what Wayland's security model approximates.
+**Status (2026-07-29): rungs one and two are built.** Rung one shipped as specified minus the VT
+engine (which it deliberately deferred as a *client* of its contract), rung two shipped whole, both on
+both ISAs, both with the pixels verified from the host as well as the guest. Rung three is the next
+step and is where the parked competitor question below has to be answered on purpose.
+
+1. **Rung one: milestone 29** (promoted from optional). **Built**: a confined userspace virtio-gpu
+   driver (`gpud`), a client that draws (`painter`), and the framebuffer contract between them
+   (`crates/gfx_proto`, notes/framebuffer-contract.md, DECISIONS §29). The framebuffer is a bigger
+   grant and never an exemption; the pixels are proved in the guest by two witnesses in two address
+   spaces and from the host by comparing QEMU's `screendump` against the pattern definition. Font
+   rendering and the VT state engine were deferred on purpose: the contract carries pixels, not text,
+   so a terminal arrives above it as another client (and the VT engine's language, libghostty-vt in
+   Zig or `vte` in Rust, stays an open choice).
+2. **Rung two: a compositor component (milestone 33). Built**, both ISAs: `compd` multiplexing one
+   screen among three mutually distrusting clients, each holding a capability to its own surface;
+   software composition honouring a damage rectangle; input routed by capability using the terminal
+   contract's `OP_BYTES` driver half, so a terminal drops in unchanged. No ambient display: window
+   enumeration and screenshots are **read-only mappings**, not verbs, so a client that holds neither
+   has nothing to call and nowhere to look. See notes/compositor.md and DECISIONS §33. The design's
+   load-bearing idea, which was not the obvious one: the shared doorbell endpoint carries **no
+   authority at all** (a shared endpoint has no sender identity, so anything named in a message would
+   be forgeable), every per-client fact lives in per-client memory, and the compositor therefore
+   contains no authorization code. Wayland's model is the prior art and this is the difference in kind
+   from it: Wayland attaches client identity at the transport and decides in code, so its security is a
+   property of that code.
+
+   **The rung also found the one primitive this kernel lacks**, and it is recorded as a fork rather
+   than built: there is no wait-any, and two threads cannot share an address space, so a process has
+   exactly one blocking wait point. A component that must distinguish more than one *class* of sender
+   must therefore be more than one process, or carry authority somewhere other than its messages. The
+   compositor took the second road, and it turned out stronger; but with the primitive, per-client
+   endpoints would give unforgeable identity for free (letting a bad damage rectangle be refused to its
+   author rather than clipped), a screenshot could be a consistent served snapshot, and input delivery
+   would stop being a blocking `CALL` into a client. DECISIONS §33 has the two candidate forms and
+   their costs. **Architect's call.**
 3. **Rung three: real applications.** iced's software-rendering path and cosmic-text on the
    milestone 27 std PAL. Something COSMIC-like appears here, before any GPU.
 4. **Rung four: GPU acceleration via virtio-gpu 3D (milestone 34).** The Venus path (Vulkan over
@@ -984,7 +1010,8 @@ so the *architecture* is aligned even where the drivers are mountains.
 
 Governance, stated now so it is not smuggled later: rungs one and two are demonstrator work.
 Rungs three and four reopen the parked competitor question below, which is the architect's call
-to make consciously when rung two is real.
+to make consciously when rung two is real. **Rung two is now real, so that call is live**, and
+milestone 33 deliberately stopped at its edge: no iced, no cosmic-text, no application work.
 
 ## The rival worth understanding, not building
 
