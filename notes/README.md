@@ -252,6 +252,10 @@ in the code or the conversation doesn't make sense, it belongs here.
   prior art (seL4 dataports, Fuchsia Netstack3, Plan 9 /net as the counter-design), the socket
   contract proposal and its open fork, the smoltcp 0.13.1 pin, and the driver/server work that
   follows.
+- [Hardening the repository itself](repo-hardening.md) — milestone 44's other half: the GitHub
+  settings that cannot be committed. Private vulnerability reporting, and the exact ruleset for
+  `main` with the seven required checks, written to be followed rather than interpreted. Includes the
+  measured caveat behind CodeQL's "0 alerts" and the reason `--auto` merging silently did nothing.
 - [A security audit](security.md) — an adversarial four-part review of the whole kernel. The
   MMU and capability confinement held up; two panics on untrusted input were fixed; the DMA/no-IOMMU
   limitation and the missing resource quotas are named rather than hidden.
