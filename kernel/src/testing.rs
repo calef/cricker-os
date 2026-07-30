@@ -44,6 +44,19 @@ use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 //     it looks. It cannot fire faster than the budget, so it is a backstop, not a diagnostic.
 //   - Neither can tell a livelock from slow-but-correct work *while it is running*; only the budget,
 //     which is a human declaration of expected cost, separates them. That is the honest limit.
+//   - **The heartbeat credits work by ANY thread, including leftovers from earlier tests, and that
+//     blinded it once for real** (milestone 31 phase 2). The FS server died of a stack overflow, its
+//     client blocked on a `CALL` nobody would ever answer, and nothing in that test made progress
+//     again; but processes left spinning by earlier tests kept `any_core_running_real_work` true, so
+//     the 60 s stall never registered and only the ceiling fired. Attributing a thread to the running
+//     test would fix it and the kernel cannot: a test's processes are ordinary processes. The defence
+//     is the ceiling, plus reading the thread dump's **address-space roots** rather than its program
+//     counters, which is what tells a leftover spinner from the process under test.
+//   - **A ceiling failure reports the ceiling, not the cost.** "ran 900 s" against a 900 s budget is
+//     the budget being spent and says nothing about how long the work would take. The same incident
+//     had that number read as evidence of honest slowness, which sent an investigation looking for a
+//     slow path in a test whose server was already dead. Raising a budget to "measure" something
+//     returns only the new budget.
 //   - `scripts/qemu-bounded.sh` remains the outermost backstop, for a kernel that wedges so hard the
 //     timer IRQ itself stops. It did NOT fire in the reported case because that run invoked `cargo`
 //     directly instead of going through the wrapper: **a bypassable backstop is not a backstop**,
@@ -62,6 +75,12 @@ static TEST_START: AtomicU64 = AtomicU64::new(0);
 static TEST_BUDGET: AtomicU64 = AtomicU64::new(0);
 static TEST_NAME_PTR: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
 static TEST_NAME_LEN: AtomicUsize = AtomicUsize::new(0);
+
+/// Report a test's duration once it reaches this many seconds. Below it, silence: most tests are
+/// milliseconds and a duration on every line would bury the signal. Above it, the number is what makes
+/// a [`SLOW_TESTS`] entry an evidence-based declaration rather than a guess: until this existed, the
+/// only way to learn a test's real cost was to set its budget too low on purpose and read the failure.
+const SLOW_REPORT_SECS: u64 = 5;
 
 /// **The default per-test wall-clock budget.** Deliberately tight: almost every test in this suite is
 /// milliseconds, and a handful of the userspace ones are a few seconds. 90 s is far above anything
@@ -224,6 +243,18 @@ impl<T: Fn()> Testable for T {
 
         // Disarm: between tests there is no budget to exceed, and the next test arms its own.
         TEST_START.store(0, Ordering::Relaxed);
+
+        // Report what a test actually cost, if it cost anything worth knowing. The ceiling already
+        // needs a start time, so this is free, and it closes a real gap: a SLOW_TESTS budget is a
+        // human declaration of expected cost, and until now there was no way to learn the cost except
+        // by setting a budget too low on purpose and reading the failure. That is a bad way to find
+        // out, and it is exactly the position I was in when std_fs tripped the 90 s ceiling with no
+        // number attached. Anything under the threshold stays silent so the transcript is unchanged.
+        let elapsed =
+            crate::arch::timer::now().saturating_sub(start) / crate::arch::timer::frequency();
+        if elapsed >= SLOW_REPORT_SECS {
+            print!("[{elapsed} s] ");
+        }
 
         // A test that overflows the stack corrupts the kernel and then fails somewhere
         // else entirely, often in a *later* test, or by hanging with no output at all.

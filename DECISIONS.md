@@ -1472,7 +1472,9 @@ reaches the wire so a would-be escape becomes a legible error rather than an `EN
   (§26's fault slot uses it). notes/abi.md §4 records the convention.
 
 Bound: open, read, write, seek, `metadata`/`len`, close on `Drop`, plus `metadata`/`read`/`exists` by
-name. **Honestly `Unsupported`, because the contract has no verb for them:** creating a file and
+name. **Honestly `Unsupported`, because the contract has no verb for them** *(the create and truncate
+half of this list is superseded by the phase-2 amendment two paragraphs down; the rest still holds)*:
+creating a file and
 truncating one (so `std::fs::write` and `File::create` are Unsupported by construction, and writing
 means opening a file the image already carries), directory iteration, `mkdir`/`unlink`/`rename`,
 symlinks and hard links, `canonicalize`, permissions, file times, locks, and `duplicate`. Proven on
@@ -1484,6 +1486,30 @@ one assertion covers disk, block server, FS server, contract, PAL, and endpoint.
 and `TRUNCATE` verbs to the contract, which is what `std::fs::write` needs; and the overlap between
 the wire's negated-errno space and the kernel's invoke-error space (-1..-8), where `-2` is both
 `ENOENT` and `WrongObject`.
+
+**Amendment (milestone 31 phase 2, 2026-07-30): `File::create` and `std::fs::write` work.** The first
+of those two reported items is built (§27's amendment carries the contract side), so the PAL binds
+`create`/`create_new` to `CREATE` and `truncate` to `TRUNCATE`, and the "creating a file and
+truncating one are honestly Unsupported" line above is retired. The order in `File::open` is POSIX's
+and it matters: open, then create only if the open reported `NotFound` and the caller asked for it,
+then truncate after a successful open. `std::fs::write` is `create(true).truncate(true)`, so getting
+that order wrong would leave the old tail behind on exactly the path that exists to *replace* a
+file's contents, which is the day-costing confusion §27 records being corrected four times. A
+`create_new` over a name that exists closes the handle the probing open minted and returns
+`AlreadyExists`, rather than leaking it for the life of the process: the error path is the one nobody
+exercises, so it is the one that leaks.
+
+Creating a *file* was never what §27 kept host-side. That was creating a *filesystem*, which needs
+uuid and getrandom; `Transaction::create_node` is not std-gated, so a file is made on-device without
+entropy ever becoming a userspace dependency. The read of §27 that conflated the two is corrected
+there.
+
+Still Unsupported, each because no verb backs it: directory iteration, `mkdir`/`unlink`/`rename`,
+symlinks and hard links, `canonicalize`, permissions, file times, locks, and `duplicate`. And a
+program holding a **per-file** grant rather than a directory (§27's caretaker) sees the narrowing
+through ordinary `std::fs` errors: the one granted name opens, any other is `NotFound`, and a write
+through a read-only grant is `ReadOnlyFilesystem`. No std API had to change to express that, which is
+the point of having bound the PAL to a capability contract rather than to a namespace.
 
 ## 23. Multi-queue DMA confinement: the validator's second direction (milestone 30)
 
@@ -1982,6 +2008,83 @@ and adding them is a change to `fs_proto`, the FS server, and this section, so i
 take deliberately rather than a hole to plug. Reported up, with the reply-space overlap noted in
 notes/std.md (the wire's negated errnos collide with the kernel's invoke errors, -1..-8). See
 notes/fs-server.md.
+
+### Amendment (milestone 31 phase 2, 2026-07-30): `CREATE` and `TRUNCATE` exist, and a per-file grant is a caretaker process
+
+**The two verbs are built.** `CREATE` (opcode 6) resolves a name under the bound directory and makes
+it, answering `EEXIST` if it is already there and modifying nothing: create is create, not
+create-or-open, because a caller that wants either has to say which it got, and the alternative is
+what makes a partly-working write read as a working one. `TRUNCATE` (opcode 7) sets a file's size in
+**both** directions, growing with zeroes and shrinking by discarding, with the new size in the second
+word rather than the length field (the length field is clamped to one page, which would silently cap
+a truncate at 4096 bytes). Both are host-tested in the sans-IO core and bound in `std::fs`, so
+`File::create` and `std::fs::write` work rather than returning `Unsupported` (§22's amendment).
+
+**One gap closed while adding them, and it was ours rather than RedoxFS's.** RedoxFS's `check_name`
+rejects `:`, over-long names, and duplicates; `/`, `.` and `..` pass straight through. Nothing walked
+paths, so nothing escaped, which made the "one component, no `..`" rule true by the absence of a
+walker rather than by a check. `CREATE` turned that from a latent oddity into something a client
+could *write*: `create_file("../escape")` made an entry literally named that. `check_component` now
+enforces the rule at our boundary, deliberately there and not patched into the vendored engine,
+because it is a rule of this contract and not a bug in a component whose callers may name entries
+whatever they like.
+
+**A per-file grant is a separate process, and that is the decision.** Milestone 31's `run wc
+report.txt` must hand over one file; the unit of authority here is a directory. The narrowing is
+`user/src/fwarden.rs`, a **caretaker** (Mark Miller's term): it holds the directory capability, opens
+the granted name once at startup, and serves the same `fs_proto::fs` contract on its own endpoint
+with a namespace of exactly one name. Three rules, each phrased as a fact about what the holder has
+rather than as a permission refusal, because there is no policy here to consult:
+
+- `OPEN` of any other name is `ENOENT`. In this scope there is no such name. The holder cannot
+  enumerate and cannot learn what else the directory holds.
+- `CREATE` is `ENOTDIR`. A file capability is not a directory, so "make a name in it" is not a
+  request that means anything.
+- `WRITE` and `TRUNCATE` are `EROFS` without the write direction. `EACCES` was rejected on purpose:
+  it implies a policy that could have said yes.
+
+**Why a process and not a check inside the FS server.** The server receives on one endpoint. Serving
+a second, narrower one would need a receive over a *set* of endpoints, which this kernel does not
+offer; adding it means giving endpoint capabilities a **badge** (seL4's answer), which is a design
+fork and is recorded here as the alternative rather than taken. The caretaker needs nothing new: it
+is an ordinary FS client above and an ordinary FS server below. And it is the stronger form of the
+claim. The confined program holds an endpoint to the warden and nothing that names the FS server, so
+"it cannot reach a second file" is a property of its cspace rather than of a branch it is trusted to
+take. The boundary is an address space, which is the same reason §31's checker lives outside the
+component it checks.
+
+The grant costs no memory: the name and direction ride in the warden's three `START` argument words
+(`fs_proto::grant`, 16 bytes of name), and the one frame is shared by all three processes, which is
+sound because every request on both hops is a blocking `CALL`, so the client is parked inside its own
+call for the whole time the warden is using the page.
+
+**Proven on both ISAs by an attacker, twice, and the second run is what makes the first mean
+anything.** The attacker reports a bitmap of what got through rather than a pass. Read-only: every
+bit clear, against a neighbouring file that really exists and that the warden really could open.
+Read/write, same shape: the two write bits **set** and everything else clear. A warden that refused
+every request passes the first test and fails the second. Each accepted write is read straight back,
+because "the server accepted my write" and "my write landed" are different claims.
+
+**The interactive shell still refuses `file:`, and that refusal is true rather than pending.** The
+boot that starts the shell wires no FS service, so the shell holds no directory to narrow, and `caps`
+says so in those words. `capsh` carries the whole vocabulary (a `FileSpec` in the manifest, a
+`FileGrant` in the endowment, refusals both ways) and the decision is a function of what the shell
+*holds*, not of the calendar; phase 1 hardcoded that refusal, which was true when written and would
+have quietly become a lie. Wiring an FS service into the interactive boot is the remaining step, and
+nothing in the suite gates that boot, which is why it is recorded here instead of built.
+
+**Also settled, by measurement: the FS server's stack.** RedoxFS recurses in 8 KiB frames, and the 33
+pages it had were **528 bytes short** once `CREATE` and `TRUNCATE` added a level of tree recursion.
+The server died mid-request and its client blocked forever on a `CALL` nobody would answer. The size
+is now measured rather than chosen: the kernel poisons every FS-server stack page and
+`fs_service::fs_stack_used` reports the deepest word that is no longer poison (135,696 bytes on
+aarch64, 135,824 on riscv64, of a 397,312-byte grant), with a test on both ISAs that prints it every
+run and fails under a quarter left. notes/fs-server.md carries the incident, including the two
+instruments it blinded and why a ceiling failure reports the ceiling and not the cost.
+
+**The remaining honest gap: a client of a dead server blocks forever.** §26's fault endpoint is the
+mechanism that would turn that into a message a supervisor can act on, and wiring the FS service into
+a supervision tree belongs to milestone 23.
 
 **The missing `TRUNCATE` is no longer only a missing feature; it is a sharp edge that cost a day.**
 The four-times-corrected amendment above traces to exactly this gap: a short write leaves the old

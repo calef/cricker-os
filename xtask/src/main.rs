@@ -1017,6 +1017,8 @@ fn initrd_riscv() -> bool {
             "--bin",
             "fsclient",
             "--bin",
+            "fwarden",
+            "--bin",
             "heeder",
             "--bin",
             "spinner",
@@ -1076,6 +1078,7 @@ fn initrd_riscv() -> bool {
         ("netd", "netd"),
         ("budgeter", "budgeter"),
         ("fsclient", "fsclient"),
+        ("fwarden", "fwarden"),
         ("heeder", "heeder"),
         ("spinner", "spinner"),
         // The authority-shrinking supervision tree (milestone 22 phase B.2): an init that hands its
@@ -1232,6 +1235,13 @@ fn mkinitrd() -> bool {
             return false;
         }
     };
+    let fwarden = match std::fs::read(bin_elf("fwarden")) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("fwarden"));
+            return false;
+        }
+    };
     let fsclient = match std::fs::read(bin_elf("fsclient")) {
         Ok(bytes) => bytes,
         Err(e) => {
@@ -1294,6 +1304,7 @@ fn mkinitrd() -> bool {
         ("netd", &netd),
         ("budgeter", &budgeter),
         ("fsclient", &fsclient),
+        ("fwarden", &fwarden),
         ("heeder", &heeder),
         ("spinner", &spinner),
     ];

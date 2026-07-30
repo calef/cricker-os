@@ -4,7 +4,7 @@ A real copy-on-write filesystem we did not write, RedoxFS, running confined as a
 component and served over a capability-shaped contract. This is the flagship userspace-reuse
 story the prior-art survey predicted (notes/prior-art.md, notes/redoxfs-audit.md): the kernel
 confines a serious component it knows nothing about, and the thing milestone 31's per-file grants
-will point at.
+point at (they now exist; see the caretaker section below).
 
 The written contract lives with its code in `crates/fs_proto`, the way the terminal contract lives
 in `linedisc::proto` (notes/terminal-contract.md). This note is the design around it.
@@ -98,6 +98,68 @@ The disk order matters and is a real hazard. QEMU's `virt` assigns virtio-mmio d
 place the crickerfs disk LAST on the command line to keep it at slot 0 (the phase-1 driver tests use
 `find_block_device`), which leaves the RedoxFS disk at the next slot for `find_block_device_n(1)`.
 Getting this backwards silently hands the phase-1 tests the wrong disk; the runner comments say so.
+
+## The FS server's stack is sized by measurement, because guessing it cost a day
+
+RedoxFS recurses. A single `Transaction::read_block::<TreeList<..>>` activation carries a whole
+4096-byte block plus scratch, so **one frame is 8 KiB**, and a tree walk stacks a dozen or more of
+them. The FS server therefore gets a deep stack: `run` maps one page at `USER_STACK_VA` and
+`fs_service::wire_servers` maps `FS_STACK_PAGES` more directly below it, out of fresh frames, so the
+process sees one contiguous run down from `USER_STACK_TOP`.
+
+That number used to be 32 (33 pages, 135,168 bytes), and it was chosen to be comfortably above the
+read-and-write path. Adding `CREATE` and `TRUNCATE` (milestone 31 phase 2) took one more level of
+tree recursion and it was **528 bytes short**. The FS server ran off the bottom of its stack
+mid-request and the kernel killed it, correctly and legibly:
+
+```text
+  user thread 8589934629 killed: Data abort from a lower EL
+    pc 0x00000000004000b0   far 0x00000000004dfe90   user sp 0x00000000004dfe90   esr 0x92000047
+```
+
+`far == sp`, one page below the bottom of the mapping, and `pc` disassembles inside
+`read_block::<TreeList<TreeList<TreeList<BlockRaw>>>>` in the middle of its two 4 KiB `sub sp`
+instructions. Nothing about that is ambiguous once you look at it. **What was not legible was
+anything downstream**, and that is the part worth carrying off:
+
+- The std client sat `Blocked` on a `CALL` that nobody would ever answer, because the endpoint's only
+  receiver had just died. Blocking IPC has no "the server is gone" reply, so a dead server is
+  indistinguishable, from a client, from a slow one.
+- The suite's no-progress heartbeat credits work by *any* running thread, and earlier tests had left
+  processes spinning on other cores, so it saw a healthy system for as long as you cared to wait.
+- The only instrument that could fire was the per-test wall-clock ceiling. It fired at the budget,
+  and **a ceiling failure reports the budget, not the cost**: "std_fs ran 914 s against a 900 s
+  budget" was read as evidence of honest slowness and sent an investigation looking for a slow path
+  in a test whose server had been dead since second three.
+
+Two things came out of it. The thread dump now prints each thread's **address-space root**
+(`sched::dump_threads`), because every user program links at `0x40_0000` and a bare `pc` resolves
+plausibly against several binaries at once; threads sharing a root are one process, distinct roots
+are distinct processes, and it is what separates a leftover spinner from the process under test. And
+the stack size is now a measurement: the kernel fills every FS-server stack page with a poison word
+before the process starts, and `fs_service::fs_stack_used` reports the deepest word that no longer
+reads as poison. Measured across a mount, reads, writes, a create and two truncates:
+
+| leg | high-water | of grant | headroom |
+|---|---|---|---|
+| aarch64 | 135,696 bytes | 397,312 | 66% |
+| riscv64 | 135,824 bytes | 397,312 | 66% |
+
+Both were over the old 135,168-byte grant, so both legs were broken; the riscv leg needs slightly
+more for the same recursion, which is why the number is measured per ISA rather than assumed to
+transfer. `the_fs_servers_stack_still_has_headroom` (both ISAs) prints it every run and fails under a
+quarter left, so the next verb that deepens a tree walk fails with a number instead of a mystery.
+
+The grant is 96 extra pages. That is deliberately well above the measurement rather than just above
+it: recursion depth here tracks the *tree* depth, which grows with the image, so a size proven on a
+16 MiB fixture is not proven on a real disk. 384 KiB of frames once per boot is cheap beside the FS
+server's 8 MiB heap budget.
+
+**Still open, and named rather than fixed:** a client of a dead server blocks forever. §26's fault
+endpoint is the mechanism that would turn that into a message a supervisor can act on, and wiring the
+FS service into a supervision tree is milestone 23's problem, not this one's. Until then, "the server
+died" presents to a client as "the server is taking a while", which is the same shape of invisibility
+this whole section is about.
 
 ## Never create on-device
 
@@ -202,20 +264,61 @@ edge: a fixture that one test *mutates* and another *asserts on* couples them ju
 order does, and the coupling is harder to see because both tests look self-contained. The client now
 restores the fixture pattern as its last write for exactly this reason.
 
-**The remaining gap is in the contract, not the write path.** There is no `CREATE` and no `TRUNCATE`
-verb, so `std::fs::write` and `File::create` are honestly `Unsupported` and writing means opening a
-file the image already carries. Adding both verbs is possible (`Transaction::create_node` is not
-std-gated; "never create on-device" below is about creating a *filesystem*, which needs uuid and
-getrandom, not a file), but it widens the contract and belongs to a deliberate decision. See
-notes/std.md.
+**That gap is closed** (milestone 31 phase 2). `CREATE` and `TRUNCATE` are in the contract, so
+`std::fs::write` and `File::create` work; see the next section for the semantics and DECISIONS §27's
+amendment for why `TRUNCATE` was a sharp edge and not merely a missing feature.
+
+## The write path is complete: `CREATE`, `TRUNCATE`, and one rule that was ours
+
+`CREATE` (opcode 6) resolves a name under the bound directory and makes it, returning a handle.
+**`EEXIST` if the name is already there, and nothing is modified**: create is create, not
+create-or-open. A caller that wants either has to ask for both and say which it got, because the
+alternative silently makes a partly-working write look like a working one, which is exactly the
+failure §27 records.
+
+`TRUNCATE` (opcode 7) sets a file's size in **both** directions: growing extends with zeroes,
+shrinking discards. The shrink is the point. The new size rides in the *second word*, not the length
+field, because the length field is clamped to one page in the serve loop and would have silently
+capped every truncate at 4096 bytes.
+
+Adding `CREATE` surfaced a rule that had been true by accident. RedoxFS's `check_name` rejects `:`,
+over-long names, and duplicates; `/`, `.` and `..` pass straight through. Nothing walked paths, so
+nothing escaped, and the "one component, no `..`" invariant held by the *absence of a walker* rather
+than by a check. With `CREATE` a client could write one: `create_file("../escape")` made a directory
+entry literally named that. Still not a traversal, and still a landmine, because the moment anything
+does walk paths (a per-directory grant, the host tool, the image mounted through Redox's FUSE driver)
+that entry means something it was never allowed to mean. `check_component` now enforces it at our
+boundary, deliberately there and not patched into the vendored engine: it is a rule of *this*
+contract, not a bug in RedoxFS, whose other callers may name entries whatever they like.
+
+## A per-file grant: the caretaker between the directory and the program
+
+Milestone 31's `run wc report.txt` grants one file, and the unit of authority here is a *directory*.
+`user/src/fwarden.rs` is the difference: a caretaker process that holds the directory capability,
+opens the granted name once, and serves this same contract on its own endpoint with a namespace of
+exactly one name and a direction it cannot widen. The design, the three refusals, and the two
+attacker witnesses that prove it are written up in [grant-expression.md](grant-expression.md); the
+part that belongs here is why it is a process:
+
+**This server receives on one endpoint.** Serving a second, narrower one would need a receive over a
+*set* of endpoints, which the kernel does not offer, and the way to add it is to badge endpoint
+capabilities (seL4's answer). That is a design fork, recorded rather than taken. The caretaker needs
+nothing new: it is an ordinary client of this contract above, and an ordinary server of it below. The
+"bound directory" seam this note has always advertised for milestone 31 turned out to be used from
+the *other* side: the warden binds nothing new here, it just never asks for more than one name.
 
 ## For later milestones
 
-- **31 (capability shell)** hands out endpoints bound to specific directories or files as grant
-  expressions; the server's bound-directory and handle-table seams are already the shape it needs.
+- **31 (capability shell)** is **done** as a mechanism: per-file grants exist, proven on both ISAs by
+  a read-only and a writable attacker. What is left is the interactive boot wiring an FS service so
+  the shell holds a directory to narrow; see grant-expression.md.
 - **27 (`std::fs`)** is **done**: the PAL binds `File` to this contract, and the endpoint's bound
   directory becomes the thing `File::open`'s path resolves under, so a path that would leave it is
   refused rather than served. The std program holds the endpoint at slot 4 of the std slot convention
-  and nothing else that names a filesystem. See notes/std.md and notes/abi.md §4.
+  and nothing else that names a filesystem. A program handed a *narrowed* endpoint instead needs no
+  std change at all: the one granted name opens and every other is `NotFound`. See notes/std.md and
+  notes/abi.md §4.
 - **23 (live replacement)** gets its hardest state-handoff case here: an FS server with open handles
-  and in-flight writes is the "serialise-old / absorb-new" problem the console swap never had.
+  and in-flight writes is the "serialise-old / absorb-new" problem the console swap never had. It
+  also owns the open item above: a client of a dead server blocks forever, and §26's fault endpoint
+  is the mechanism that turns that into a message a supervisor can act on.

@@ -5,3 +5,10 @@ edition = "2024"
 license.workspace = true
 
 [dependencies]
+
+# `fs_proto` is a DEV dependency only, and deliberately: the shell must be able to check a command
+# line without linking the filesystem contract. It is here so one host test can pin the grant name
+# limit against the contract that actually carries it, which is what makes the duplicated constant
+# safe rather than a drift waiting to happen.
+[dev-dependencies]
+fs_proto = { path = "../fs_proto" }
