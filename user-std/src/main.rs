@@ -153,6 +153,29 @@ fn fs_demo(mut motd: File) {
         other => panic!("fs::write did not refuse a create+truncate open: {other:?}"),
     }
 
+    // **The on-device write path, and a correction to the record.** notes/fs-server.md recorded
+    // that an end-to-end write looped inside RedoxFS's allocator commit on bare metal, so the
+    // milestone-32 client's test stayed read-only. With interrupt-driven block completion restored
+    // it completes: this writes over a file the image ships (there is no create verb, so `scratch`
+    // must already exist), reads it back, and the host tool re-reads the image after the run to
+    // prove the bytes reached the disk rather than a cache.
+    let mut scratch = std::fs::OpenOptions::new()
+        .write(true)
+        .open(fs_proto::fixture::SCRATCH_NAME)
+        .expect("opening scratch for writing through std::fs failed");
+    scratch
+        .write_all(fs_proto::fixture::WRITE_PATTERN)
+        .expect("writing scratch through std::fs failed");
+    drop(scratch);
+    let back = std::fs::read(fs_proto::fixture::SCRATCH_NAME)
+        .expect("reading scratch back through std::fs failed");
+    assert_eq!(
+        back,
+        fs_proto::fixture::WRITE_PATTERN,
+        "the write did not read back"
+    );
+    println!("write readback ok");
+
     println!("fs ok");
 }
 

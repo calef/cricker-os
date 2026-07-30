@@ -982,12 +982,26 @@ fn mkredoxfs() -> bool {
         && redoxfs_host(&["put", &img, fs_proto::fixture::SCRATCH_NAME, &scratch])
 }
 
-/// After a test run, reopen the image with the host tool and confirm it still parses and the file
-/// the FS server served reads back byte for byte. `cat` succeeding at all proves the image is still
-/// a consistent RedoxFS after the run (the FS server opened it read-write with cleanup, which
-/// advances the header ring); the bytes prove nothing was corrupted. The write path's own on-disk
-/// verification waits on the write blocker (notes/fs-server.md).
+/// After a test run, reopen the image with the host tool and confirm it still parses, that the file
+/// the FS server served reads back byte for byte, and that the write the `std::fs` test performed
+/// **reached the disk**. `cat` succeeding at all proves the image is still a consistent RedoxFS
+/// after the run (the FS server opened it read-write with cleanup, which advances the header ring);
+/// the bytes prove nothing was corrupted.
+///
+/// The `scratch` half is the on-disk half of the write proof, and it is the part a cache cannot
+/// fake: the guest read its own write back through the same FS server, but this reopens the image
+/// with a different process and the pinned engine. It is also what closes the write blocker
+/// notes/fs-server.md used to record, so it belongs in the gate, not in a comment.
 fn redoxfs_check_after_run() -> bool {
+    redoxfs_reads_back(fs_proto::fixture::MOTD_NAME, fs_proto::fixture::MOTD)
+        && redoxfs_reads_back(
+            fs_proto::fixture::SCRATCH_NAME,
+            fs_proto::fixture::WRITE_PATTERN,
+        )
+}
+
+/// `cat` one file out of the post-run image with the host tool and compare it byte for byte.
+fn redoxfs_reads_back(name: &str, want: &[u8]) -> bool {
     let out = capture(
         "cargo",
         &[
@@ -998,14 +1012,14 @@ fn redoxfs_check_after_run() -> bool {
             "--",
             "cat",
             &redoxfs_disk_path(),
-            fs_proto::fixture::MOTD_NAME,
+            name,
         ],
     );
     match out {
-        Some(s) if s.as_bytes() == fs_proto::fixture::MOTD => true,
+        Some(s) if s.as_bytes() == want => true,
         other => {
             eprintln!(
-                "redoxfs consistency check failed: motd did not read back after the run (got {:?})",
+                "redoxfs consistency check failed: {name} did not read back after the run (got {:?})",
                 other.as_deref().unwrap_or("<host tool error>")
             );
             false

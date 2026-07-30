@@ -2832,7 +2832,8 @@ mod std_tests {
             fs_proto::fixture::MOTD,
             b"read_to_string 70\nmetadata len 70\n".as_slice(),
             b"absolute refused\ndotdot refused\nnested refused\n".as_slice(),
-            b"missing not found\ncreate unsupported\nfs ok\n".as_slice(),
+            b"missing not found\ncreate unsupported\n".as_slice(),
+            b"write readback ok\nfs ok\n".as_slice(),
         ] {
             buf[n..n + part.len()].copy_from_slice(part);
             n += part.len();
