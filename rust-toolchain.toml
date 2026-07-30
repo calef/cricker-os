@@ -2,6 +2,25 @@
 # Nightly is required for `custom_test_frameworks` (our QEMU test harness, see
 # DECISIONS.md §7). This is the normal, well-trodden path for OS development in
 # Rust, but it is a real dependency and we'd rather name it than hide it.
-channel = "nightly"
+# PINNED to a date, not the floating `nightly` channel, and this is a fix rather than caution.
+#
+# It said `channel = "nightly"` until 2026-07-30, while CLAUDE.md and the notes both described the
+# toolchain as "pinned". It was not: every machine and every CI run resolved whatever nightly was
+# current that day, so the build was not reproducible across two days, let alone across machines.
+#
+# It broke exactly the way an unpinned toolchain does. A developer machine on the 2026-07-26 nightly
+# was green while CI, installing a newer one, failed to compile our `std` overlay: upstream had added
+# `set_perm_nofollow` to `sys::fs`, `fs.rs` began calling it, and our overlay's re-export list did not
+# carry it. The change was unrelated to anything in the failing commits, which is the signature of
+# this class of failure and the reason it wastes so much time: the diff never explains the break.
+#
+# The `std` overlay (patches/std-cricker) is the most exposed part of the tree, because it patches
+# std's own source and therefore tracks upstream's internals rather than a stable API.
+#
+# BUMPING THIS IS A DELIBERATE COMMIT. Raise the date, run script/test, and expect the overlay's
+# `pub use unsupported_fs::{...}` list in sys/fs/cricker.rs to need new names; `set_perm_nofollow` is
+# the one already known to be waiting. A scheduled non-gating CI job against a newer nightly, so the
+# bump is a notice rather than a surprise, is still outstanding (roadmap milestone 42's neighbourhood).
+channel = "nightly-2026-07-26"
 components = ["rust-src", "llvm-tools", "rustfmt", "clippy"]
 targets = ["aarch64-unknown-none-softfloat", "riscv64imac-unknown-none-elf"]
