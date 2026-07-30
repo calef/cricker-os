@@ -395,6 +395,17 @@ pub struct Thread {
     /// until reaped; a thread with `None` dies and is reaped immediately, today's behaviour.
     pub(crate) fault_ep: Option<crate::sched::EpId>,
 
+    /// **The untyped region this TCB's page was retyped out of** (DECISIONS §32), or `None` for a
+    /// kernel-created thread whose page came from `kmem`. Recorded at `create_tcb`, which is the one
+    /// place the answer is known for certain, and it is what an endpoint reap reclaims: the same
+    /// region name the region's owner would have passed to `Untyped::DESTROY`, so there is one
+    /// teardown path and not two. A supervisor never sees this number and holds no capability to it;
+    /// naming the region is the kernel's job precisely because the supervisor cannot.
+    ///
+    /// It goes stale like any other region name (the slot's generation bumps at destroy), so a
+    /// second reap of the same corpse finds nothing to reclaim rather than somebody else's region.
+    pub(crate) tcb_region: Option<u64>,
+
     /// **The fault/exit message this thread's corpse carries** (milestone 22), retained after death
     /// so a test can prove a `Dead` TCB still holds its fault-time state. Set when the thread dies
     /// with a `fault_ep`; `None` while it lives. The words are the §26 format
@@ -442,6 +453,7 @@ impl Thread {
             tcb_kmem: true,
             killed: false,
             fault_ep: None,
+            tcb_region: None,
             fault_msg: None,
         }
     }
@@ -473,6 +485,7 @@ impl Thread {
             tcb_kmem: true,
             killed: false,
             fault_ep: None,
+            tcb_region: None,
             fault_msg: None,
         }
     }
@@ -546,6 +559,7 @@ impl Thread {
             tcb_kmem: true,
             killed: false,
             fault_ep: None,
+            tcb_region: None,
             fault_msg: None,
         })
     }
@@ -574,6 +588,7 @@ impl Thread {
             tcb_kmem: false, // a user-retyped TCB page; the region owns it
             killed: false,
             fault_ep: None,
+            tcb_region: None,
             fault_msg: None,
         }
     }

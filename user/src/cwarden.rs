@@ -12,14 +12,22 @@
 //!    grant changed" is asserted from the other side of an MMU boundary rather than from inside the
 //!    process that just misbehaved.
 //!
-//! **Why roles 1 and 2 are one process here, and what that costs.** Reaping a corpse needs `WRITE`
-//! on the region it lives in, which is the same right that builds one; there is no narrower
-//! reap-only authority in the ABI today. So a supervisor that restarts its child either holds
-//! construction authority or proxies the reap through something that does. Milestone 22 phase B.2
-//! built the proxy (its `subsup` holds no memory and asks `spawner`), which is the right answer for a
-//! system's init. This spike takes the direct route on purpose: the requirement is then visible in
-//! one program instead of hidden behind an IPC hop, and the requirement is the interesting part. See
-//! DECISIONS §31's "what the supervisor had to hold" and §26's phase-B fork note.
+//! **Why roles 1 and 2 are one process here, and what that no longer costs.** This program is the
+//! measurement that produced DECISIONS §32: reaping used to need `WRITE` on the region the corpse
+//! lives in, which is the same right that *builds* a process out of it, so a supervisor that
+//! restarted its child either held construction authority or proxied the reap through something that
+//! did. §32 put the reap on the supervision endpoint instead, and role 2 here now uses it: the
+//! corpse is collected with `user_rt::reap`, and the per-instance region capability is deleted as
+//! soon as the child is started rather than held for the instance's whole life.
+//!
+//! **What that did not remove, which is itself a finding about §32.** This program still holds a full
+//! construction budget, because it is *also* role 1, the builder: it splits a region per instance and
+//! lays `cshim` out in it, and §32 does not touch construction. What §32 removed is the reason a
+//! *supervisor* had to hold one. Read as a measurement: the bundling §31 recorded was two things, and
+//! only one of them was the reap. Split roles 1 and 2 into separate processes and the supervisor half
+//! would now hold nothing but endpoints, which is exactly what milestone 22's `subsup` does since
+//! §32. Keeping them fused here is still deliberate (§31: the requirement is visible in one program
+//! instead of hidden behind an IPC hop). See DECISIONS §31's "what the supervisor had to hold".
 //!
 //! Role 3 is genuinely separate from the C component and must be: a checker inside the faulting
 //! address space could only report what that address space could see, which is exactly the thing
@@ -47,7 +55,7 @@ use suptree::Endow;
 const INITRD_VA: u64 = 0x2000_0000;
 
 /// What the kernel grants us, and nothing else.
-const ROOT_UT: u64 = 0; // the construction budget: also what makes us able to reap
+const ROOT_UT: u64 = 0; // the construction budget: what we build each instance out of
 const REPORT: u64 = 1; // WRITE|GRANT, so each instance gets its own narrowed view
 
 /// Pages per instance region. A debug-build `cshim` is a couple of dozen pages of segments plus its
@@ -140,9 +148,13 @@ pub extern "C" fn _start(_a0: u64, initrd_len: u64, _a2: u64) -> ! {
         if !suptree::tcb_start(tcb, 0, attempt, 0) {
             bail(12)
         }
-        // The TCB capability is not the thread: dropping it leaves the thread running, and the region
-        // capability is what still reaches the corpse.
+        // Neither capability is the thing itself, and neither is needed any more. The TCB capability
+        // is not the thread (dropping it leaves the thread running), and since §32 the region
+        // capability is not the reap: the corpse is collected through the supervision endpoint. So we
+        // hold nothing that reaches a live instance's memory, and the child keeps the narrowed copy of
+        // the region it was endowed with, which is what `malloc` spends.
         cap_delete(tcb);
+        cap_delete(region);
 
         // Block until the child dies, one way or the other. All five words, because the fourth is the
         // faulting address and this is the program that cares where the C code pointed.
@@ -156,12 +168,14 @@ pub extern "C" fn _start(_a0: u64, initrd_len: u64, _a2: u64) -> ! {
             verdict(attempt, event, pc, addr),
         );
 
-        // Reap. The corpse is dead-until-reaped (§26.4), so its region stays pinned until we say so,
-        // and the verdict above was computed while it was still there to inspect.
-        if !suptree::untyped_destroy(region) {
+        // Reap, through the supervision endpoint the death arrived on, naming the tid the kernel
+        // stamped on it (§32). The corpse is dead-until-reaped (§26.4), so its region stayed pinned
+        // until now and the verdict above was computed while it was still there to inspect. We hold no
+        // capability to that region: the authority for this is the supervision relationship, and the
+        // pages go back to ROOT_UT, which is where they came from.
+        if user_rt::reap(faultep, tid) != 0 {
             bail(13)
         }
-        cap_delete(region);
 
         if event != abi::fault::EVENT_FAULT {
             // A clean exit is "finished", not "crashed", and that distinction is why §26 delivers both

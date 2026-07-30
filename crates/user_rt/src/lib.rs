@@ -85,6 +85,20 @@ pub fn send(slot: u64, w0: u64, w1: u64, w2: u64) -> i64 {
     unsafe { invoke(slot, abi::endpoint::SEND, w0, w1, w2) }
 }
 
+/// **Collect the corpse of a child this supervision endpoint supervises** (DECISIONS §32).
+/// `tid` is the thread id the kernel stamped on the death message [`recv_fault`] returned. `0` on
+/// success; a negative [`abi::Error`] otherwise, and the three that matter are worth telling apart:
+/// `StillAlive` (not dead yet, so wait or escalate to the owner's `Untyped::DESTROY`),
+/// `NotSupervised` (not a child of this endpoint, or already collected), and `NotPermitted` (the
+/// corpse's region is not reclaimable yet).
+///
+/// The point of the method: this needs no capability to the child's memory, so a supervisor can be
+/// a process that cannot build one. The reclaimed pages go back to the builder's budget.
+pub fn reap(slot: u64, tid: u64) -> i64 {
+    // SAFETY: `svc`/`ecall`; the kernel validates the capability and the supervision relationship.
+    unsafe { invoke(slot, abi::endpoint::REAP, tid, 0, 0) }
+}
+
 /// `RECV` three words on the endpoint capability in `slot`. Blocks until a sender arrives; returns
 /// the three words the sender passed in `x0`, `x1`, `x2`.
 #[cfg(target_arch = "aarch64")]

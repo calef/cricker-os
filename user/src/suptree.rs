@@ -37,16 +37,18 @@ pub const REPORT_FAILED: u64 = 9;
 // The construction protocol: the supervisor asks, the spawner builds. This is the authority split
 // made concrete. The supervisor holds no memory at all, so it cannot build anything itself; the
 // spawner holds a budget and exactly one program image, so it cannot build anything else.
+//
+// **Building is all that is asked here now** (DECISIONS §32). There used to be a `REQ_REAP` too,
+// because reaping was `Untyped::DESTROY` and only the spawner held the region capability, so the
+// supervisor had to proxy the reap through the process that could. §32 put the reap on the
+// supervision endpoint the supervisor already holds, so the hop is gone and with it the handle the
+// spawner had to invent to name an instance the kernel names by tid.
 // ===========================================================================================
 
-/// `send(req, REQ_BUILD, attempt, 0)` -> `(REP_BUILT, tid, 0)` or `(REP_FAILED, 0, 0)`.
+/// `send(req, REQ_BUILD, attempt, 0)` -> `(REP_BUILT, 0, 0)` or `(REP_FAILED, 0, 0)`.
 pub const REQ_BUILD: u64 = 1;
-/// `send(req, REQ_REAP, tid, 0)` -> `(REP_REAPED, 0, 0)` or `(REP_FAILED, 0, 0)`. Reaping is §16
-/// revocation of the region the instance was built in; the corpse is dead until this happens.
-pub const REQ_REAP: u64 = 2;
 
 pub const REP_BUILT: u64 = 1;
-pub const REP_REAPED: u64 = 2;
 pub const REP_FAILED: u64 = 3;
 
 // ===========================================================================================
@@ -259,8 +261,10 @@ pub fn untyped_split(ut: u64, pages: u64) -> Result<u64, i64> {
     if r < 0 { Err(r) } else { Ok(r as u64) }
 }
 
-/// §16 object revocation: reclaim a region and every object retyped from it. This is how a corpse is
-/// reaped, and it is the supervisor's explicit act, never the kernel's reflex.
+/// §16 object revocation: reclaim a region and every object retyped from it, by its **owner**. The
+/// stronger of the two reaps, because `WRITE` on a region is also what builds a process out of it,
+/// and the only one that can tear down a *live* thread (§16's amendment arms the kill). A supervisor
+/// collecting a dead child wants `user_rt::reap` instead (§32).
 pub fn untyped_destroy(ut: u64) -> bool {
     unsafe { invoke(ut, abi::untyped::DESTROY, 0, 0, 0) == 0 }
 }

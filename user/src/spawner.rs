@@ -5,12 +5,21 @@
 //! address space by rootsup. It does not hold the initrd, so "build me program X" is not a thing that
 //! can be asked of it: the only program it can name is the one it was handed.
 //!
-//! Each instance is built in its **own region** split off the budget, which is what makes reaping a
-//! single `Untyped::DESTROY` (§16 object revocation) and keeps one instance's corpse from pinning
-//! another's memory. A LIFO reap returns the pages to the budget (§16's return-of-pages), so a
-//! restart loop is not a leak. The spawner keeps that region capability so it can reap on request,
-//! and it is the only process in the tree that can: the supervisor decides *whether* to reap and
-//! rebuild, the spawner is what *can*. Policy and authority, split.
+//! Each instance is built in its **own region** split off the budget, which keeps one instance's
+//! corpse from pinning another's memory. A LIFO reap returns the pages to this budget (§16's
+//! return-of-pages), so a restart loop is not a leak.
+//!
+//! **It does not hold the instance regions** (DECISIONS §32). It used to keep each region capability
+//! for its whole life, because reaping meant `Untyped::DESTROY` and the supervisor could not do that
+//! without construction authority, so the spawner had to reap on request. §32 put the reap on the
+//! supervision endpoint, so the capability's only remaining purpose was gone and it is deleted as
+//! soon as the child is started. Nothing in the tree now holds a capability to a *live* instance's
+//! memory, and the pages still come home when the supervisor collects the corpse.
+//!
+//! The honest note on what that gives up: nothing, today. A hung instance (livelocked, never dying)
+//! was already unreclaimable, because the reap only ever happened on a supervisor's request and a
+//! supervisor's requests only ever followed a death message. §32 records that case as the watchdog
+//! case and deliberately leaves it open.
 //!
 //! It is not the supervisor. It never reads a fault message and it holds no policy; it answers
 //! requests in the order they arrive. See notes/trusted-init.md.
@@ -26,7 +35,7 @@ use user_rt::{cap_delete, recv, send};
 #[allow(dead_code)]
 mod suptree;
 
-use suptree::{Endow, REP_BUILT, REP_FAILED, REP_REAPED, REQ_BUILD, REQ_REAP};
+use suptree::{Endow, REP_BUILT, REP_FAILED, REQ_BUILD};
 
 /// The capabilities rootsup endowed us with, in order.
 const REQ: u64 = 0; // READ: build/reap requests arrive here
@@ -42,11 +51,6 @@ const IMAGE_VA: u64 = 0x3000_0000;
 /// tables, and its TCB. A debug build of a tiny program is a handful of pages.
 const INSTANCE_PAGES: u64 = 48;
 
-/// How many instances we track at once. The tree runs one sub-server and a restart reaps the corpse
-/// before building the replacement, so three is already slack. It is also a cspace budget: each live
-/// instance costs one slot for its region capability.
-const MAX_INSTANCES: usize = 3;
-
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(_a0: u64, image_len: u64, _a2: u64) -> ! {
     // SAFETY: rootsup mapped `image_len` bytes of program image read-only at IMAGE_VA.
@@ -55,35 +59,12 @@ pub extern "C" fn _start(_a0: u64, image_len: u64, _a2: u64) -> ! {
         suptree::fail()
     };
 
-    // Instance id (1-based, so 0 means "no instance") -> the region capability it was built in. The
-    // region is what `DESTROY` reaps; the id is the handle the supervisor names it by. The kernel's
-    // fault message carries a *tid*, and no method turns a tid into anything the spawner holds, so the
-    // handle is ours to issue. See the note in notes/trusted-init.md on the tid-to-instance gap.
-    let mut region: [u64; MAX_INSTANCES] = [0; MAX_INSTANCES];
-
     loop {
         let (op, arg, _w2) = recv(REQ);
         match op {
             REQ_BUILD => {
-                match build(&elf, arg, &mut region) {
-                    Some(instance) => send(REP, REP_BUILT, instance, 0),
-                    None => send(REP, REP_FAILED, 0, 0),
-                };
-            }
-            REQ_REAP => {
-                let idx = arg.wrapping_sub(1) as usize;
-                let ok = match region.get(idx) {
-                    Some(&r) if arg != 0 && r != 0 => {
-                        let reaped = suptree::untyped_destroy(r);
-                        if reaped {
-                            cap_delete(r);
-                            region[idx] = 0;
-                        }
-                        reaped
-                    }
-                    _ => false,
-                };
-                send(REP, if ok { REP_REAPED } else { REP_FAILED }, 0, 0);
+                let ok = build(&elf, arg);
+                send(REP, if ok { REP_BUILT } else { REP_FAILED }, 0, 0);
             }
             _ => {
                 send(REP, REP_FAILED, 0, 0);
@@ -93,13 +74,19 @@ pub extern "C" fn _start(_a0: u64, image_len: u64, _a2: u64) -> ! {
 }
 
 /// Build one instance in its own region, endowed with a report endpoint and its supervision endpoint,
-/// started with `attempt` in its second argument register. Returns the instance handle.
-fn build(elf: &elf::Elf, attempt: u64, region: &mut [u64; MAX_INSTANCES]) -> Option<u64> {
-    let free = region.iter().position(|&r| r == 0)?;
-    let r = suptree::untyped_split(BUDGET, INSTANCE_PAGES).ok()?;
-    let tcb = suptree::build_child(
+/// started with `attempt` in its second argument register.
+///
+/// We keep nothing afterwards, and there is nothing left for us to keep: the TCB capability is not
+/// the thread (dropping it leaves the thread running), and since §32 the region capability is not the
+/// reap either. The supervisor collects the corpse through its supervision endpoint, and these pages
+/// come back to this budget when it does.
+fn build(elf: &elf::Elf, attempt: u64) -> bool {
+    let Ok(region) = suptree::untyped_split(BUDGET, INSTANCE_PAGES) else {
+        return false;
+    };
+    let Ok(tcb) = suptree::build_child(
         BUDGET,
-        r,
+        region,
         elf,
         &Endow {
             caps: &[(REPORT, abi::rights::WRITE)],
@@ -107,16 +94,15 @@ fn build(elf: &elf::Elf, attempt: u64, region: &mut [u64; MAX_INSTANCES]) -> Opt
             blobs: &[],
             fault: Some(CHILDFAULT),
         },
-    )
-    .ok()?;
+    ) else {
+        return false;
+    };
     if !suptree::tcb_start(tcb, 0, attempt, 0) {
-        return None;
+        return false;
     }
-    // The TCB capability is not the thread: dropping it leaves the thread running, and the region
-    // capability is what still reaches the corpse later.
     cap_delete(tcb);
-    region[free] = r;
-    Some(free as u64 + 1)
+    cap_delete(region);
+    true
 }
 
 #[panic_handler]
