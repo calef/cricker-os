@@ -75,6 +75,7 @@ right, because the block is where the work was written down; fix the column.
 | 38 | NOT-STARTED | Filesystem throughput, and the comparison (DECISIONS §34, condition 2; extends 21/25) | Sequential and random read/write throughput through the confined FS server, against ext4 on Linux and APFS on macOS at a matched virtualization tier, the way milestone 25 did the primitives. Requires deciding what is honestly comparable: our reads are device-latency-dominated (`fs_read` is ~204 us/read under HVF, and `relay_rtt` puts the isolation tax a thousand times below that), so the interesting question is whether the userspace-server architecture costs throughput once the device dominates, which is a claim a microkernel skeptic will press | **"primary filesystem" invites a comparison we cannot currently make.** We have the per-request numbers and the isolation tax, and no MB/s figure at all. Milestone 21's rule is measure rather than argue, and 25 already established that the honest way to do this is EL0-measured against real systems rather than self-reported. This is where the "userspace servers are too slow" objection gets an answer or a concession |
 | 39 | RECORDED | Repository structure for a loosely-coupled OS, and the road to a distribution | **Analysis recorded, no decision taken.** The tree is a monorepo for a deliberately loosely-coupled system, and it is straining in measurable ways: `user/` is 28 binaries and 9,324 lines in one crate that is also a shared library, `fs-server/` has already escaped into its own workspace for real dependency reasons, `crates/` conflates kernel proof crates with wire contracts and userspace runtime so the boundary a third party cares about is invisible, and every crate is version 0.1.0. Four options are written up with their trade-offs (restructure in place; multiple workspaces in one repo; split repos; monorepo plus a later distribution *manifest* repo), along with a naming argument (**components** and **services**, never "daemons", because a Unix daemon is defined by the ambient authority this OS does not have) and the observation that milestone 31's program manifest plus §22's measured-boot hashing are already three quarters of a package format | **the structure has to serve the thesis, and one constraint dominates.** A single `script/test` proving the whole system on both ISAs is this project's credibility mechanism and what makes rule 5 a gate rather than an aspiration; splitting repos trades that for decoupling nothing external needs yet. Recommendation recorded (monorepo now, distribution as a separate manifest repo, executed as multiple workspaces, not before 23 forces it) so the eventual decision starts from evidence rather than from taste |
 | 40 | NOT-STARTED | Documentation as a system service: searchable, rendered, and installed by packages | Markdown authored, **rendered** for display rather than shown raw, searchable locally, and installed by the package that owns it. Reuse `pulldown-cmark` for parsing (CommonMark is a fiddly spec worth taking from someone else) and write the ANSI renderer against `linedisc`'s contract, because `termimad`/`mdcat` sit on `crossterm` and assume a POSIX terminal we do not have. Phase 1 is a terminal viewer and pager, phase 2 a host-built inverted index shipped as a per-package shard, phase 3 a graphical viewer riding the display ladder. Two constraints found while scoping: **`readdir` refuses and the §27 contract has no such verb**, so nothing can walk a tree for documents, and **font rendering is still milestone 29's remaining increment**, so the terminal comes first | **the OS explains itself, on itself.** The project's whole argument is already markdown (DECISIONS, thirty-plus notes, this roadmap), so a capability-confined viewer serving them is a better milestone-23 demonstration than another synthetic test and costs the documentation nothing. The missing `readdir` turns out to be a feature: **enumeration is authority**, so indexing at package-build time is both the way around the gap and the more honest shape, which is the same answer `apropos` reached for a different reason. And `doc notes/ipc-naming.md` granting exactly one readable file is milestone 31's designation-is-authorization made into something a person uses |
+| 41 | NOT-STARTED | Dead code: triage the suppressions, and un-blindfold the gate | Triage all **79** `allow(dead_code)`/`allow(unused)` suppressions in the tree, delete what is dead, and replace the module-wide ones with per-item allows that carry a reason. Three distinct classes, only one of which is tidying. (1) **The gate is blindfolded over 5,831 lines**: six files carry module-wide `#![allow(dead_code)]`, including `sched.rs` (3,166 lines) and `arch/aarch64/mmu.rs` (1,275), so `-D warnings` cannot see dead code in the two largest and most security-relevant files in the kernel. (2) **Suppressions whose own comments name milestones that have since shipped**, e.g. `cpu.rs`'s "by the scheduler in step 3" and `smp.rs`'s "by spawn's placement policy" (both landed as §28), `cap.rs`'s "in 9b", `interrupts.rs`'s "milestone 5's first non-test caller", and two in `mmu.rs` pointing at milestone 8's in-kernel console, which §21 moved to userspace. Each is either now-used (delete the attribute) or genuinely dead (delete the code); either way the comment is false. (3) **Superseded demo payloads** in `user.rs`, which say so themselves ("7c handed the demo over to the real ELF"). Ends with a lint gate refusing new module-wide suppressions, the same shape as the conflict-marker and roadmap checks | **a `-D warnings` gate with holes in a third of the kernel is a gate that reports success it has not earned**, which is the same class of problem as the four-times-corrected §27 record and the contradicted `fs_read` comment: the tooling said fine while nobody was looking. It also protects a real asset, since this codebase's unusually heavy commenting is only valuable while the comments are true, and a suppression citing a milestone that shipped weeks ago actively misleads. **Explicitly NOT in scope:** hardware register definitions (`gic.rs`, `timer.rs`, `semihosting.rs`, `mmu.rs` field encodings) where a complete definition is the point, and deliberate diagnostics (`VERIFY_WRITES`, `second_mount`) that encode measurements which killed hypotheses. Those keep their allows and gain a stated reason, which is the difference between a suppression and a decision |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -1026,6 +1027,74 @@ board), which is a 16a story to do in Rust when first silicon makes it concrete.
 component at, and before committing to libghostty-vt. Effort S to M. The whole value is that it is
 cheap and it fails early: if the toolchain, the shim, or the confinement story has a problem, we
 find it with a throwaway component rather than half way into a port.
+
+### 41. Dead code: triage the suppressions, and un-blindfold the gate
+
+**Chris's question, 2026-07-30: is there dead code that should be removed?** Answered by measurement
+rather than impression, and the answer is more interesting than a list of unused functions.
+
+**The negative result first, because it is worth recording.** There are **no dead binaries**. All 28
+programs in `user/` are packed into an image and reached by a test. My first sweep reported `hello` as
+never packed, which was wrong: it is packed under the archive name `init` through a variable my pattern
+missed. Correcting that before reporting it is the whole reason the sweep is written down here rather
+than delivered as a verdict.
+
+**The real finding: the `-D warnings` gate is blindfolded over 5,831 lines.** Six files carry
+module-wide `#![allow(dead_code)]`:
+
+| File | Lines |
+|---|---|
+| `kernel/src/sched.rs` | 3,166 |
+| `kernel/src/arch/aarch64/mmu.rs` | 1,275 |
+| `kernel/src/memory.rs` | 631 |
+| `kernel/src/arch/aarch64/timer.rs` | 430 |
+| `kernel/src/drivers/gic.rs` | 274 |
+| `kernel/src/arch/aarch64/semihosting.rs` | 55 |
+
+That includes the two largest and most security-relevant files in the kernel. Clippy runs with
+`-D warnings` and cannot see dead code in any of them, so the gate reports success it has not earned.
+This is the same class of problem as §27's four-times-corrected record, the `fs_read` doc comment that
+contradicted `notes/benchmarks.md`, and the conflict markers that survived a full gate run: **the
+tooling said fine because nothing was looking.**
+
+**Second class: suppressions whose own comments cite milestones that have shipped.** Each of these is
+either now-used, in which case the attribute should go, or genuinely dead, in which case the code
+should. Either way the comment is false today, and false comments are expensive here specifically
+because this codebase is commented far more heavily than production code on purpose. A suppression
+citing a milestone that landed weeks ago actively misleads a reader who is trusting the prose.
+
+- `kernel/src/cpu.rs:243` — "used by the tests now, and by the scheduler in step 3". Step 3 shipped as §28.
+- `kernel/src/smp.rs:64` — "used by the SMP tests now, and by spawn's placement policy when it...". Also §28.
+- `kernel/src/cap.rs:130` — "first used by the virtio driver setup in 9b".
+- `kernel/src/arch/aarch64/interrupts.rs:63` — "milestone 5's first non-test caller".
+- `kernel/src/arch/aarch64/mmu.rs:647` and `:660` — both point at milestone 8's *in-kernel* console, which §21 moved into userspace and retired.
+
+**Third class: superseded demo payloads** in `user.rs`, which admit it in place ("`allow(dead_code)`
+because 7c handed the demo over to the real ELF").
+
+#### Deliverable
+
+Triage all 79 suppressions; delete what is dead; convert the module-wide ones into per-item allows that
+each carry a reason; and finish with a `script/lint` check that refuses a new module-wide
+`#![allow(dead_code)]`, the same shape as the conflict-marker and roadmap-status gates. The point of
+that last step is that this is a ratchet: without it the file-level suppression comes back the first
+time someone finds it inconvenient.
+
+#### Explicitly not in scope
+
+- **Hardware register definitions** (`gic.rs`, `timer.rs`, `semihosting.rs`, and `mmu.rs`'s field
+  encodings), where defining the complete register set is the point and using only part of it is normal.
+- **Deliberate diagnostics** that encode measurements which killed hypotheses: `VERIFY_WRITES` in the FS
+  server (off by default, and its comment explains that turning it on overflows the server's stack from
+  RedoxFS's deep recursion) and `second_mount`, whose 30-cycle flat-heap measurement is what disproved
+  the accumulated-mount-state theory.
+
+Both keep their suppressions and gain a stated reason. That is the distinction the milestone is really
+about: **a suppression with a reason is a decision, and one without is a leak.**
+
+**Sequencing.** Independent of everything else, and a good candidate for a low-priority background lane
+precisely because it touches many files shallowly and conflicts with any lane editing the same files. Do
+it when no other lane is open, or accept the rebases. Effort M, mostly reading.
 
 ### 40. Documentation as a system service: searchable, rendered, and installed by packages
 
