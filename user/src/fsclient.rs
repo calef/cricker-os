@@ -167,7 +167,7 @@ fn proof() -> ! {
         let m = read(scratch, 0, payload.len());
         check(m == payload.len());
         get_page(m, &mut buf);
-        check(&buf[..m] == &payload[..]);
+        check(buf[..m] == payload[..]);
         pass += 1;
     }
 
