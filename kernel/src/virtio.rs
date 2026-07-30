@@ -428,7 +428,14 @@ struct Device {
 /// reader, two attackers, the PCIe reader, two writers, the abandoner, and its post-kill reader
 /// already make eight, and milestone 30 adds the net driver and net server over both buses (four
 /// more), so the ceiling grew again. Fixed-size (milestone 14 phase B.1): probing never allocates.
-const MAX_DEVICES: usize = 24;
+///
+/// **Bumped to 26 for milestone 29's display terminal**, which spawns a third `gpud` over the same
+/// physical GPU (the confinement test, the terminal test, and the pattern test each program the
+/// device from scratch). Recorded rather than quietly widened, with the standing suggestion this
+/// number's history keeps earning: the honest fix is releasing a transport when its driver dies,
+/// which is its own piece of work because nothing here unregisters. The same suggestion DECISIONS
+/// §33 made about `KERNEL_EP_PAGES`, for the same reason.
+const MAX_DEVICES: usize = 26;
 
 /// The device table, fixed. `get`/`get_mut` mirror the slice API the call sites already used.
 struct Devices {

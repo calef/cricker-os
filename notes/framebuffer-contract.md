@@ -291,19 +291,40 @@ Two predictions in the list below came out exactly as written, and one was answe
 The scanout check grew accordingly: `cargo xtask` now proves **two** pictures over one boot, the
 composed screen first and this rung's pattern second, both on both ISAs.
 
+## What the display terminal did with this contract (milestone 29's text increment)
+
+Written back here on 2026-07-30, for the same reason rung two's section exists: a contract's real test
+is what happened when the next thing implemented against it. **Nothing in this rung changed.**
+
+`crates/gfx_proto` and `user/src/gpud.rs` are byte-for-byte the same again. The display terminal
+(`user/src/vterm.rs`) takes `painter`'s place at this seam with **exactly `painter`'s authority**: a
+report endpoint, the display endpoint, and the surface frames. It draws glyphs instead of a
+coordinate pattern and calls `FLUSH` with the rectangle of cells that changed, which is what this
+note said a client does. The only addition on this side is a kernel wiring entry point
+(`display_service::start_terminal`), and the only thing the terminal adds over `painter` belongs to
+the *terminal* contract rather than this one: an endpoint it serves, and a page an application writes
+text into.
+
+So the prediction in the list below came out exactly as written, and the seam claim is now made twice
+in one milestone: the same binary is also a compositor client, with exactly `window`'s authority, and
+`compd` cannot tell it from the client that painted a pattern either. See notes/glyphs.md.
+
+The scanout check grew accordingly: `cargo xtask` now proves **three** pictures over one boot, in
+order (the composed screen, the terminal's text, then this rung's pattern), on both ISAs.
+
 ## The seams left open
 
 Deliberately not in rung one, each with the seam it will use:
 
-- **Font rendering and a VT state engine.** They arrive as a *client* of this contract, not as code
-  in the driver: a terminal draws glyphs into a surface and calls `FLUSH`. The VT engine's language
-  is an open question (libghostty-vt in Zig through its C ABI, or `vte` in Rust as the
-  single-toolchain fallback; design/roadmap.md §29). Nothing here chooses, and nothing here needs to:
-  the contract carries pixels, not text.
-- **Input.** A keyboard is a second device with its own driver and its own capability, and the
-  routing question ("which client's surface has focus") is the compositor's, not the driver's. The
-  terminal contract (notes/terminal-contract.md) already carries keystrokes to an application; rung
-  two decides who is listening.
+- **Font rendering and a VT state engine.** ~~They arrive as a *client* of this contract~~ **Done,
+  2026-07-30**, and as predicted: a terminal draws glyphs into a surface and calls `FLUSH`, with no
+  change here. The VT engine is Rust (`crates/vt`); libghostty-vt is still an open choice and
+  notes/glyphs.md prices it now that there is a built engine to compare against.
+- **Input.** **Done, 2026-07-30.** A keyboard is a second device with its own driver and its own
+  capability (`user/src/kbd.rs`, virtio-input over this same PCIe transport and behind the same IOMMU
+  domain), and the routing question turned out to be the compositor's exactly as predicted. What this
+  note did not predict is where the *typing* authority lives: it is the input ring's mapping, not the
+  driver's device, and the doorbell it rings carries nothing at all. See notes/glyphs.md.
 - **Several surfaces.** One resource id today, hardwired. The contract routes by *endpoint*, so a
   compositor holding one endpoint per client surface needs a driver change and not a contract change.
 - **Damage tracking.** `FLUSH` already takes a rectangle and the driver honours it (the transfer's
