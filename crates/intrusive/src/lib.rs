@@ -30,6 +30,28 @@
 //!    `Finished` threads are ever freed).
 //! 3. All access to a queue and its nodes' links is serialized by the caller (the kernel: a run
 //!    queue is single-core with interrupts masked; an inbox is behind its mutex).
+//!
+//! # What a static analyser sees here, and why it is right (DECISIONS §35)
+//!
+//! CodeQL flags the dereferences in [`Fifo::push_back`] and [`Fifo::pop_front`] as
+//! `rust/access-invalid-pointer`. It is not wrong, and the alerts are dismissed with this paragraph
+//! as the reason rather than silently suppressed.
+//!
+//! **Nullness is gone from the contract**: the API takes and returns [`NonNull`], and every caller
+//! converts from a reference, so non-nullness is a fact of construction rather than a promise. That
+//! half of the alert was a real defect and was fixed.
+//!
+//! **Validity is not expressible**, and that is the design. Rule 2 above says a node outlives its
+//! time on the queue, and no type available to us can carry that for a structure whose entire purpose
+//! is that the queue does *not* own its nodes. What upholds it is the kernel's state machine: only
+//! `Finished` threads are ever freed, a `Finished` thread is on no queue, and one link per node makes
+//! "on at most one queue" physical rather than remembered.
+//!
+//! So the honest statement is that **this queue is safe because its callers are correct, and nothing
+//! in this crate can check that**. The Kani harness below proves the FIFO's *logic* over a symbolic
+//! operation sequence against nodes it holds valid by construction; it answers "is the ordering
+//! right", never "did a caller free a queued node". Neither tool covers that, and a reader should
+//! know it rather than infer safety from two green checkmarks.
 
 #![cfg_attr(not(test), no_std)]
 
