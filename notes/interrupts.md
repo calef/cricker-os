@@ -324,21 +324,85 @@ for S-mode on QEMU `virt`), so the pieces are:
   `ISENABLER`/`ICENABLER` are write-1-to-set and write-1-to-clear, so one store touches one line and
   the architecture supplies the atomicity that the PLIC's plain read/write bits do not.
 
+### The lost update, step by step
+
+The abstract phrase "read-modify-write" hides the bug, so here it is concretely. Say the disk is
+source 8 and the NIC is source 10. Both bits live in the same 32-bit enable word (sources 0..31 of
+that context), so a driver touching *its own* source still writes the neighbour's bit back, because
+the only way to change one bit of that word is to store all 32.
+
+Hart 0 is in thread context enabling the disk. Hart 1 is inside its handler masking the NIC. Without
+the lock they interleave:
+
+| step | hart 0 (`enable(8)`)        | hart 1 (`disable(10)`)      | word in the PLIC |
+|------|----------------------------|-----------------------------|------------------|
+| 1    | read → `0b0100` (bit 10)   |                             | `0b0100_0000_0000` |
+| 2    |                            | read → `0b0100` (bit 10)    | `0b0100_0000_0000` |
+| 3    | or in bit 8                |                             | `0b0100_0000_0000` |
+| 4    | write `bits 8,10`          |                             | `0b0101_0000_0000` |
+| 5    |                            | clear bit 10 from ITS copy  | `0b0101_0000_0000` |
+| 6    |                            | write `0b0000`              | `0b0000_0000_0000` |
+
+Hart 1's copy of the word was read at step 2, before hart 0's store at step 4. Its store at step 6
+is computed from that stale copy, so it does not just clear bit 10, it *un-sets bit 8 as collateral*.
+Hart 0's enable is gone, and nothing anywhere reports an error: the PLIC has no notion of a
+disagreement, it just holds whichever word was written last.
+
+Both directions of that race are bad, and they fail differently, which is why neither is tolerable:
+
+- **A lost `enable`** (above) silently masks a device forever. The driver blocks in `Irq::WAIT` on an
+  interrupt the PLIC will never route to it. The symptom is a hang in code that has no bug.
+- **A lost `disable`** is the mirror: the handler thinks it masked a level-triggered source, but the
+  bit is back on and the line is still asserted, so the PLIC re-delivers immediately, forever. That
+  is an interrupt storm, and the hart it lands on stops making progress.
+
+This is also why the window is small but not negligible. It is the few instructions between the read
+and the write, hit only when two harts touch the same 32-source word at once, which is exactly the
+kind of race that passes a thousand test runs and then fails in front of an audience. The audit found
+it by reading for the pattern rather than by waiting for it to bite ([arch-audit.md](arch-audit.md),
+finding 3).
+
+The fix is one `IrqSafeMutex` around the read and the write together, so steps 1-4 and 2-6 cannot
+interleave: whichever hart takes the lock second re-reads the word *after* the first hart's store and
+computes from current state. It is the smallest possible critical section (a read, an or/and-not, a
+write) and it is off the hot path, so it costs nothing measurable.
+
 Proven the same way as the GIC: the riscv suite is green at the 4-hart boot with device sources
 spread across harts (disk read, the interrupt-driven fs-server block server, both routed to whatever
 hart the round-robin picked, plus the SMP placement tests). As on aarch64, this distributes the
 interrupt and the wake it causes; it does not by itself parallelize the `std_net` pipeline, which
 needs the load-aware rendezvous wake (see below).
 
-## The `std_net` SMP hang is not an interrupt-delivery bug
+## The `std_net` SMP hang was not an interrupt-delivery bug (resolved)
 
-Recorded so it is not re-diagnosed as one. The `std_net` test (smoltcp in `netd` serving a std
-program's `UdpSocket`/`TcpStream`) hangs under the 4-core boot on **both** ISAs, watchdog-killed at
-60 s, while in the same run the hand-built DHCP round trips (`virtio_net`, `virtio_net_pci`) pass and
-the interrupt-driven fs-server block server passes. So interrupt delivery under SMP is sound; the
-hang is specific to the heavier, longer, timer-driven smoltcp pipeline. Its threads are woken by a
-mix of device IRQ and IPC rendezvous, and both wakes currently pin to one core, so the pipeline
-serializes there instead of spreading; a request/response chain that fits in 60 s on a real single
-core does not when it shares a machine with three cores it cannot use. The fix is load-aware wake
-placement in the scheduler (DECISIONS §28), with the IRQ affinity above as the necessary
-interrupt-side half. This is out of the IRQ-delivery lane and is left to that work.
+Recorded so it is not re-diagnosed as one, and left in place with its resolution because the wrong
+diagnosis was tempting and the right one took two agents to reach.
+
+The `std_net` test (smoltcp in `netd` serving a std program's `UdpSocket`/`TcpStream`) used to hang
+under the 4-core boot on **both** ISAs, watchdog-killed at 60 s, while in the same run the hand-built
+DHCP round trips (`virtio_net`, `virtio_net_pci`) passed and the interrupt-driven fs-server block
+server passed. That asymmetry was the tell: interrupt delivery under SMP was sound, and the hang was
+specific to the heavier, longer, timer-driven smoltcp pipeline.
+
+Two things were wrong, and only one of them was scheduling:
+
+1. **A real deadlock.** `netd` blocked on the NIC interrupt while smoltcp still had a retransmit
+   pending, so neither side would move: the timer that would have retransmitted was never polled
+   because the thread was parked in `Irq::WAIT`, and no packet was coming to wake it. That is a
+   mutual-idle deadlock, not slowness, and no amount of core placement fixes it. `netd` now bounds
+   its wait by smoltcp's own next-poll deadline.
+2. **Serialization on one core.** With the deadlock gone the pipeline ran, but slowly: its threads
+   are woken by a mix of device IRQ and IPC rendezvous, and both wakes pinned to one core. DECISIONS
+   §28's wake split fixed the half that mattered (device-IRQ wakes go load-aware, IPC rendezvous
+   wakes stay local, because a rendezvous partner is about to run on the caller's core and moving it
+   only adds a migration).
+
+An intermediate hypothesis of mine was **wrong and worth keeping written down**: I expected IRQ
+affinity alone to fix it. It cannot. Spreading interrupts across harts relocates where a wake lands;
+it does not parallelize a chain of request/response rendezvous, which is serial by construction. The
+agent disproved it by measurement rather than argument.
+
+`std_net` now passes on both ISAs. It is also the longest honest test in the suite at roughly 300 to
+344 s on aarch64, because it is a real DHCP lease plus TCP and UDP round trips through an emulated NIC
+under TCG. That length is legitimate work, not a symptom, which is precisely what makes it awkward for
+the watchdogs: see the per-test ceiling discussion in [scheduler.md](scheduler.md).
