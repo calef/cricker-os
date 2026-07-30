@@ -48,3 +48,16 @@ for tgt in aarch64-unknown-none-softfloat riscv64imac-unknown-none-elf; do
     echo "==> clippy: kernel --features watchdog_probe ($tgt)"
     cargo clippy -p kernel --features watchdog_probe --target "$tgt" --all-targets -- -D warnings
 done
+
+# No merge conflict markers, anywhere. This is not a style rule, it is a scar: a compositor merge
+# resolved only the conflicts visible in a truncated `git merge` summary, and `git add -A` then
+# committed DECISIONS.md with its markers intact and pushed them to main. Both sides' prose survived,
+# so nothing failed and no test noticed, which is exactly why it needs a gate: broken markup in a
+# documentation deliverable is invisible to every other check we run. Costs a grep.
+echo "==> conflict markers"
+if git grep -nE '^(<{7}|={7}|>{7})( |$)' -- \
+    ':!vendor' ':!*.lock' > /tmp/cricker-conflict-markers.txt 2>/dev/null; then
+    echo "lint: merge conflict markers left in tracked files:" >&2
+    cat /tmp/cricker-conflict-markers.txt >&2
+    exit 1
+fi

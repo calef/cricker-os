@@ -2299,7 +2299,6 @@ ring indices) is unbounded. notes/verification.md carries the full table with ea
 justification, and the one place the composition is an argument over four harnesses rather than a fifth
 harness is named there too.
 
-<<<<<<< HEAD
 ## 31. The foreign-language seam: C holds no capabilities and makes no syscalls (milestone 36)
 
 **Built 2026-07-29**, both ISAs, in QEMU. *(Section number claimed while two other lanes were open;
@@ -2509,7 +2508,6 @@ alternative is recorded here in case it reads otherwise.
 - **Leaving it on construction authority until milestone 23 forces it.** Defensible, and rejected
   because 23 is the flagship and this is not work to be designing under that deadline. Milestone
   36 having already hit it in anger is the argument against waiting for a third instance.
-=======
 ## 33. The compositor's authority is memory, not messages (milestone 33, the display ladder's rung two)
 
 **Built 2026-07-29**, both ISAs, in QEMU. One screen multiplexed among mutually distrusting clients,
@@ -2628,7 +2626,6 @@ can tear. And **no defence against denial of service**: a client can spam the do
 answer an input `CALL` and slow or stall the compositor's single thread. Confidentiality and integrity
 are what this rung proves; availability wants the missing primitive and a policy, and Wayland does not
 solve it either.
->>>>>>> origin/milestone/33-compositor
 
 ## Reading
 
