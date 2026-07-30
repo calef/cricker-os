@@ -52,20 +52,48 @@ fn get_page(n: usize, out: &mut [u8]) {
 }
 
 /// Open a name under the bound directory; returns the handle. A negative reply (no such file, or a
-/// forged request) faults the client, which is the correct end for a broken invariant.
+/// forged request) is REPORTED, not trapped, so the server's reason survives the failure.
 fn open(name: &str) -> u64 {
     put_page(name.as_bytes());
     let (r0, _) = call(FILE, fs::req(fs::OPEN, 0, name.len() as u64), 0);
-    check((r0 as i64) >= 0);
+    if (r0 as i64) < 0 {
+        fail(STAGE_OPEN, r0);
+    }
     r0
 }
 
-/// Read up to `n` bytes from `handle` at `offset` into the shared page; returns the count.
+/// Stage tags for [`fail`], so a reported failure says *which* request the server refused.
+const STAGE_OPEN: u64 = 1;
+const STAGE_READ: u64 = 2;
+const STAGE_WRITE: u64 = 3;
+
+/// **Report a refused request instead of faulting.** A `check` failure traps, and a trapped client
+/// tells the waiting test only that something went wrong; the server's *reason* dies with it. This
+/// sends it instead, so the reason reaches the kernel test's assertion, which prints the value it
+/// compared against `SUCCESS`.
+///
+/// `w0` is the raw reply word, `w1` is `0xBADD_0000 | stage << 12 | errno`. The errno is recovered
+/// with `fs_proto::reply_errno`'s rule (a negative reply is a negated errno). Note the known
+/// reply-space overlap (notes/std.md): the kernel's own `invoke` errors are -1..-8, so a small value
+/// here is ambiguous between "the server returned this errno" and "the IPC itself failed". The raw
+/// word travels in `w0` precisely so that ambiguity is visible rather than hidden.
+fn fail(stage: u64, r0: u64) -> ! {
+    let errno = if (r0 as i64) < 0 {
+        (-(r0 as i64)) as u64
+    } else {
+        0
+    };
+    send(REPORT, r0, 0xBADD_0000 | (stage << 12) | errno, 0);
+    exit();
+}
+
 /// Write `data` to `handle` at `offset`; checks the server accepted the whole slice.
 fn write(handle: u64, offset: u64, data: &[u8]) {
     put_page(data);
     let (r0, _) = call(FILE, fs::req(fs::WRITE, handle, data.len() as u64), offset);
-    check((r0 as i64) >= 0);
+    if (r0 as i64) < 0 {
+        fail(STAGE_WRITE, r0);
+    }
     check(r0 as usize == data.len());
 }
 
@@ -90,9 +118,12 @@ fn repeat_payload(pass: u8) -> [u8; REPEAT_LEN] {
     p
 }
 
+/// Read up to `n` bytes from `handle` at `offset` into the shared page; returns the count.
 fn read(handle: u64, offset: u64, n: usize) -> usize {
     let (r0, _) = call(FILE, fs::req(fs::READ, handle, n as u64), offset);
-    check((r0 as i64) >= 0);
+    if (r0 as i64) < 0 {
+        fail(STAGE_READ, r0);
+    }
     r0 as usize
 }
 
