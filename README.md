@@ -54,8 +54,11 @@ builds us; it is informational and never blocks a merge.
 
 ## Status
 
-The eleven v1 milestones are done, and so is most of the post-v1 roadmap
-([design/roadmap.md](design/roadmap.md)). Where it stands:
+**[design/roadmap.md](design/roadmap.md) is the canonical status**, one row per milestone with a
+gated status column, and this section deliberately does not restate it: a second place where status
+lives is a second thing to keep true, and this section had already drifted (it claimed test counts
+that were two days out of date). What follows is what the system *is*, which changes slowly. What it
+*has done lately* is one link away.
 
 - **The capability core is proved.** The `caps` model, the IPC rendezvous with one-shot reply,
   and the MMU isolation invariants all carry machine-checked proofs (Kani) via `script/verify`.
@@ -68,8 +71,9 @@ The eleven v1 milestones are done, and so is most of the post-v1 roadmap
 - **It runs a real workload.** A CoreMark-derived compute program, spawned against the written
   native ABI ([notes/abi.md](notes/abi.md)) from a crickerfs archive, by init, at EL0.
 - **Two ISAs at parity.** Everything architecture-specific lives under `kernel/src/arch/`, and
-  riscv64 proves it: SMP, the full test suite (117 tests on aarch64, 59 on riscv64), the
-  interactive shell, and the benchmarks all run on both.
+  riscv64 proves it: SMP, the whole test suite, the interactive shell, and the benchmarks all run on
+  both. Parity is a gate rather than an aspiration (DECISIONS §19), so the counts are whatever
+  `script/test` prints today rather than a number written here to go stale.
 - **SMP.** Four cores via PSCI (aarch64) and SBI (riscv64), per-CPU run queues, cross-core
   placement by inbox plus a reschedule IPI. No shared run-queue lock.
 - **Benchmarked against Linux and macOS, honestly.** Same Apple Silicon core, same
