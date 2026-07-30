@@ -32,12 +32,22 @@
 set -e
 cd "$(dirname "$0")/.."
 
-# Auto-install on first run, the same trade script/coverage makes: script/bootstrap runs in the CI
-# test job, which must not spend minutes compiling a tool it never uses. CI installs a prebuilt
-# binary in the one job that needs it.
-if ! cargo deny --version >/dev/null 2>&1; then
-    echo "==> Installing cargo-deny (first run only)"
-    cargo install --locked cargo-deny
+# The version is PINNED in .cargo-deny-version, the same discipline as .qemu-version and
+# rust-toolchain.toml, and this one is a scar rather than caution. The first CI run of this script
+# failed instantly: the developer machine had 0.19.1, where `--config` belongs to the `check`
+# subcommand, and CI installed 0.20.2, where it belongs to the top level and defaults to
+# `<cwd>/deny.toml` instead of the workspace root. Same config, same tree, two different CLIs and one
+# of them silently reading a different file. A tool whose verdict is a gate has to be the same tool
+# everywhere.
+#
+# Auto-install on absence or mismatch, the same trade script/coverage makes: script/bootstrap runs in
+# the CI test job, which must not spend minutes compiling a tool it never uses. CI installs a
+# prebuilt binary of the pinned version in the one job that needs it.
+pinned="$(cat .cargo-deny-version)"
+installed="$(cargo deny --version 2>/dev/null | awk '{print $2}')"
+if [ "$installed" != "$pinned" ]; then
+    echo "==> Installing cargo-deny $pinned (have: ${installed:-none})"
+    cargo install --locked "cargo-deny@$pinned"
 fi
 
 # -A unmatched-skip: deny.toml's `[bans] skip` list is written for the workspace that needs each
@@ -46,8 +56,8 @@ fi
 # itself, via `unused-allowed-license`.)
 for manifest in Cargo.toml fs-server/Cargo.toml tools/redoxfs-host/Cargo.toml; do
     echo "==> cargo-deny: $manifest"
-    cargo deny --manifest-path "$manifest" --all-features \
-        check --config deny.toml -A unmatched-skip
+    cargo deny --manifest-path "$manifest" --all-features --config deny.toml \
+        check -A unmatched-skip
 done
 
 echo "==> vendored integrity"
