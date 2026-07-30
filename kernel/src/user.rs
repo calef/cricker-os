@@ -2095,6 +2095,7 @@ pub mod fs_service {
         blk_image: &'static [u8],
         fsserver_image: &'static [u8],
         client_image: &'static [u8],
+        client_role: u64,
     ) -> Option<(EpId, EpId, EpId)> {
         let dev = crate::virtio::find_block_device_n(1)?;
 
@@ -2232,7 +2233,7 @@ pub mod fs_service {
             run(
                 client_image,
                 Spawn {
-                    arg0: 0,
+                    arg0: client_role, // 0 = the end-to-end proof; 1 = the fs_read benchmark loop
                     arg1: 0,
                     arg2: 0,
                     grants: &[
@@ -3620,6 +3621,7 @@ mod tests {
             init_image(),
             program("fsserver").expect("no fsserver program in the initrd archive"),
             program("fsclient").expect("no fsclient program in the initrd archive"),
+            0, // the end-to-end proof role, not the benchmark loop
         ) {
             Some(r) => r,
             None => {
@@ -5265,6 +5267,7 @@ mod riscv_virtio_tests {
             blk_image(),
             program("fsserver").expect("no fsserver program in the initrd archive"),
             program("fsclient").expect("no fsclient program in the initrd archive"),
+            0, // the end-to-end proof role, not the benchmark loop
         ) {
             Some(r) => r,
             None => {

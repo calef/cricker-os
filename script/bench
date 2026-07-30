@@ -4,8 +4,11 @@
 #   script/bench             deterministic icount counts (TCG); the regression currency
 #   script/bench --check     diff against bench/baseline.txt; FAILS on >10% drift
 #   script/bench --save      rewrite the baseline (do it in the commit that moved the numbers)
-#   script/bench --real      HVF: natively on the Apple Silicon core; real magnitudes, no gating
+#   script/bench --real      HVF: natively on the Apple Silicon core; per-core magnitudes, no gating
+#   script/bench --real --smp  HVF on 4 harts; adds the multi-hart throughput bench (smp_throughput)
 #
+# --real is single-hart by default so the primitive magnitudes are per-core (the cross-OS comparison
+# reads them that way); --smp boots the whole machine for the aggregate-throughput bench.
 # See design/roadmap.md milestone 21 and notes/benchmarks.md.
 
 set -e

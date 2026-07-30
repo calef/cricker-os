@@ -114,7 +114,9 @@ fn main() -> ExitCode {
             eprintln!(
                 "usage: cargo xtask <build|run|shell|initboot|initrd-riscv|std-src|user-std|test|bench|gdb|objdump|image> [--hvf]"
             );
-            eprintln!("       cargo xtask bench [--riscv] [--real] [--release] [--check] [--save]");
+            eprintln!(
+                "       cargo xtask bench [--riscv] [--real] [--release] [--smp] [--check] [--save]"
+            );
             return ExitCode::FAILURE;
         }
     };
@@ -1212,8 +1214,21 @@ fn bench() -> bool {
         return bench_riscv(check, save);
     }
 
-    if !mkdisk()
+    // `--smp`: boot the full 4-hart machine under HVF so the multi-hart throughput bench
+    // (`smp_throughput`, DECISIONS §28) and the FS service-path bench (`fs_read`, DECISIONS §32) have
+    // cores and, for the FS one, a filesystem to work with. Both self-skip on one hart, so without
+    // this flag the `--real` run is single-hart and neither builds the FS image nor prints their
+    // lines. Only meaningful with `--real`.
+    let smp = std::env::args().any(|a| a == "--smp");
+
+    // For --smp, build the FS server (before user(), so mkinitrd packs the fsserver ELF) and the
+    // RedoxFS test image the runner attaches as the second mmio disk. The fs_read bench opens it; on
+    // any run without the image the bench finds no second disk and skips, so this stays out of the
+    // icount gate's build entirely.
+    if (smp && !fs_server_build(TARGET))
+        || !mkdisk()
         || !user()
+        || (smp && !mkredoxfs())
         || !cargo_profiled(&[
             "build",
             "-p",
@@ -1234,7 +1249,30 @@ fn bench() -> bool {
     cmd.arg(kernel_elf());
     if real {
         cmd.env("CRICKER_ACCEL", "hvf");
-        eprintln!("--- bench: HVF, natively on the host core (statistical; medians matter) ---");
+        if smp {
+            // The full machine, for the aggregate-throughput bench. The per-core primitive magnitudes
+            // in this same run are then NOT per-core clean (the reap-heavy ones, spawn_el0 and
+            // spawn_reap, inflate and go noisy under cross-core reap lag); read those from the default
+            // single-hart run instead. See notes/benchmarks.md, the multi-hart section.
+            // "4" matches the kernel's MAX_CPUS and the runner's default; the throughput bench reads
+            // the actual online count at runtime, so this only needs to be more than one.
+            cmd.env("CRICKER_SMP", "4");
+            eprintln!(
+                "--- bench: HVF, 4 harts (for smp_throughput; primitives are not per-core here) ---"
+            );
+        } else {
+            // One hart by default, the same choice the icount instrument makes and for a kindred
+            // reason: a primitive magnitude is a PER-CORE number, and the cross-OS comparison
+            // (notes/benchmarks.md) reads it as one. At `-smp 4` the reap-heavy primitives pick up
+            // cross-core reap lag that has nothing to do with per-core cost (spawn_el0 ~4.8 us here
+            // goes ~13.6 us and swings wildly there; spawn_reap likewise). So the default `--real`
+            // run is single-hart and clean; `--real --smp` boots the whole machine for the throughput
+            // bench, which needs more than one core to mean anything.
+            cmd.env("CRICKER_SMP", "1");
+            eprintln!(
+                "--- bench: HVF, single hart, per-core magnitudes (statistical; medians matter) ---"
+            );
+        }
     } else {
         cmd.env_remove("CRICKER_ACCEL");
         cmd.args(["-icount", "shift=0,sleep=off"]);
