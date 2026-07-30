@@ -162,12 +162,30 @@ The gate now regenerates the fixture before **each** leg, so both legs are repro
 That is determinism, not a fix, and it deliberately separates the two questions. **The tracked open
 item is the cross-boot write**, and the recipe is exact: generate the image once, run one ISA leg,
 then run the other without regenerating in between (or run a leg twice), and the second boot's write
-fails. The leading hypothesis is accumulated mount state rather than data: a used image carries a
-higher header generation, a longer allocator log and more live tree blocks, so the second mount both
-allocates more heap (the FS server's is capped at 8 MiB in `fsserver.rs`, and `FS_BUDGET_PAGES` bounds
-it in `kernel/src/user.rs`) and may take the allocator's squash path that a pristine mount never
-reaches. Reading the errno the server actually returns is the next step and needs a diagnostic the
-client can surface; nothing in the current wiring prints it.
+fails.
+
+**The heap hypothesis is dead. It was measured, not argued.** This note used to say the likely cause
+was accumulated mount state: a used image carries a higher header generation, a longer allocator log
+and more live tree blocks, so the second mount would drive the FS server past its 8 MiB cap
+(`HEAP_MAX` in `fsserver.rs`, matched by `FS_BUDGET_PAGES` in `kernel/src/user.rs`). It does not.
+`fs-server/src/bin/second_mount.rs` runs the real engine under the **same allocator the FS server
+uses** (`uheap`, the algorithm behind `user_rt::heap::UntypedHeap`), grown incrementally and capped
+identically, with the image in a `static` so it stays off the heap exactly as a real disk does. At the
+device's own 8 MiB cap it completes **30 mount-and-write cycles**, every one fine, with the heap
+high-water **flat at 352 KiB** and the cap never once refusing a growth. Four percent of the budget,
+and thirty generations of accumulation move it nowhere.
+
+Two things follow, and the second one is the useful one. Heap exhaustion is not the mechanism, so
+raising the budget would fix nothing and any number chosen to make a test pass would be a
+coincidence. And the host does not reproduce the failure at all, not at the device cap and not across
+thirty accumulated generations, which puts the cause back in the device path rather than in the
+engine or the allocator. The dials are deliberate (`CRICKER_HEAP_MIB`, `CRICKER_MOUNTS`) so this is
+re-runnable rather than a claim to trust.
+
+The next step is the errno the server actually returns, which nothing in the current wiring surfaces:
+the server replies with an error, and the client positioned to read it is the one whose leg aborts
+first. Three rounds of investigation have now guessed instead of reading it, and the guesses have
+cost more than the plumbing will.
 
 **The remaining gap is in the contract, not the write path.** There is no `CREATE` and no `TRUNCATE`
 verb, so `std::fs::write` and `File::create` are honestly `Unsupported` and writing means opening a
