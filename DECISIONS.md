@@ -2725,7 +2725,16 @@ more than the choice.
 **Decided 2026-07-30 (milestone 45), the first time code scanning actually ran.** CodeQL found nine
 things, and **all nine are fixed**: seven CI jobs holding a `GITHUB_TOKEN` with permissions they never
 used, and two `rust/access-invalid-pointer` in `crates/intrusive` that moving the queue API to
-`NonNull` cleared outright (same query both sides: main two open, the branch zero).
+`NonNull` cleared outright: `/language:rust` reports **2 results on `refs/heads/main`** and **0 on
+`refs/pull/5/head`**, holding across four commits on each side, the oldest zero being the NonNull
+commit itself.
+
+**The evidence path is worth recording, because the first one was invalid.** I originally checked
+`?ref=refs/heads/<branch>` and read the zero it returned as "cleared". CodeQL does not store a PR's
+analyses under the branch ref: that ref has **zero analyses**, so the query would have returned zero
+whatever the code did. A right answer from a query that could not have produced a wrong one is not
+evidence, and this section is the wrong place to be sloppy about that. The controlled comparison
+above is the real result.
 
 The policy below is recorded anyway, and deliberately, because the *next* finding will not be so tidy
 and the question milestone 44 left open is still open: what happens to a finding we do not intend to
