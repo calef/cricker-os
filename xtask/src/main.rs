@@ -1130,8 +1130,14 @@ fn initrd_riscv() -> bool {
     let files: Vec<(&str, &[u8])> = blobs.iter().map(|(n, b)| (*n, b.as_slice())).collect();
     let size = crickerfs::image_size(&files);
     let mut img = std::vec![0u8; size];
-    if crickerfs::write_image(&files, &mut img).is_err() {
-        eprintln!("initrd-riscv: could not build the archive");
+    // Carry the reason. "could not build the archive" with the error thrown away sent me hunting
+    // through MAX_FILES, image_size and write_image's bounds check by hand; the error names which.
+    if let Err(e) = crickerfs::write_image(&files, &mut img) {
+        eprintln!(
+            "initrd-riscv: could not build the archive: {e:?} ({} files, {} bytes)",
+            files.len(),
+            size
+        );
         return false;
     }
     if let Err(e) = std::fs::write(riscv_initrd_path(), &img) {
