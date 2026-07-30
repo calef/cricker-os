@@ -75,7 +75,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 24 | OPTIONAL | A second aarch64 *board*: Virtualization.framework (optional) | proves the `arch/` **board** boundary on a second machine of the same ISA; optional |
 | 27 | BUILT | Rust `std` on the native ABI | widens "runs real workloads" by orders of magnitude |
 | 28 | BUILT | A solid terminal: the line discipline as a component | a terminal with real behaviour, which 27's stdio semantics need |
-| 29 | PARTIAL | A display terminal (framebuffer, virtio-gpu) | the first pixels the demonstrator ever puts on a screen |
+| 29 | BUILT | A display terminal (framebuffer, virtio-gpu) | the first pixels the demonstrator ever puts on a screen, and then the first letters |
 | 30 | BUILT | The network stack as a confined component | the canonical microkernel component, and the one people ask about first |
 | 31 | IN-PROGRESS | A capability shell: designation is authorization | no-ambient-authority made user-visible, at the one interface a human touches |
 | 32 | BUILT | A real filesystem: RedoxFS behind a capability FS server | the flagship userspace-reuse story: a real filesystem we did not write, confined |
@@ -859,9 +859,31 @@ pixel for pixel (both ISAs, with a negative control on the checker). The memory 
 generalized to a rule (a framebuffer is a bigger grant, never an exemption) and the GPU's own
 confinement hazard (backing addresses ride in a command payload the transport validator cannot see, so
 the IOMMU is the barrier) is proved by an attacker test. DECISIONS §29,
-notes/framebuffer-contract.md. **Still to come in this milestone:** font rendering, the VT state
-engine, scrollback, and virtio-input, all of which arrive as clients of the contract rung one drew;
-the VT engine's language remains an open question.
+notes/framebuffer-contract.md.
+
+**Increment two built (2026-07-30, both ISAs): glyphs, the grid, and a real keyboard.** DECISIONS
+§36, notes/glyphs.md. A public-domain 8x8 bitmap font (`crates/bitfont`; the licence drove the choice,
+because a font is compiled into the image), a **sans-IO VT engine** (`crates/vt`) checked against the
+*real* line discipline's echo stream rather than a written-down list of escape sequences, a display
+terminal (`user/src/vterm.rs`) that is a client at **both** display seams with exactly `painter`'s and
+exactly `window`'s authority, and a confined virtio-input keyboard driver (`user/src/kbd.rs`).
+
+Three things are worth carrying forward from it. **The picture is a value three witnesses compute
+independently** (the terminal to draw, the kernel to predict the framebuffer, the host to grade QEMU's
+scanout), which is what replaces "it looked right" for text; the host checker's negative control is a
+screen with **one letter changed**. **Neither display contract needed a line changed**, and that is
+now a spawn literal rather than a claim. And **the authority to type is a mapping**: the keyboard's
+power is the input ring no client maps, while the doorbell it rings carries nothing, so focus stays a
+capability from the producing side as well as the receiving one.
+
+**Still deferred, and stated rather than implied:** scrollback (it wants a ring of off-screen rows and
+a viewport, which changes the damage model), UTF-8, reflow, and line editing in the display terminal
+(`termd` composes in front of it with no new protocol, which `crates/vt` proves on the host). The VT
+engine's language remains an open question, and notes/glyphs.md now **prices** it: building the Rust
+engine first changed what the comparison is about, because a VT engine fits the §31 C seam's shape
+almost perfectly and the real cost of adopting libghostty-vt is rebuilding the *proof structure*, not
+the rendering. The recommendation there is to adopt it as a second engine behind the same seam rather
+than a replacement. **Architect's call.**
 
 **Deliverable.** The demonstrator's first pixels: a userspace **virtio-gpu** driver (the device
 arrives over PCIe on both `virt` boards, which the §18 transport just made reachable), a
@@ -1224,8 +1246,10 @@ ladder that anybody would actually use.
    *package build time* and ships the index, which sidesteps the missing verb and is the more honest
    shape. Unix reached the same answer for a different reason: `apropos` reads a prebuilt `mandb`
    because scanning was slow.
-2. **There is no font rendering yet.** Milestone 29 shipped pixels, and glyphs plus the VT engine are
-   its remaining increment. So a *graphical* documentation browser cannot be first; the terminal can.
+2. ~~**There is no font rendering yet.**~~ **There is now** (milestone 29, 2026-07-30): a bitmap
+   font, a VT engine, and a display terminal that is a compositor client. A *graphical* documentation
+   browser is therefore unblocked in principle, though the honest limits still argue for the terminal
+   first: a 16x8 grid, no scrollback, and no UTF-8 (notes/glyphs.md).
 
 #### Reuse: take the parser, write the renderer
 
@@ -1474,19 +1498,28 @@ honest. COSMIC's shape is Rust clients rendering into shared buffers, a composit
 them to scanout, everything message-passing; cricker-os already has shared frames and endpoints,
 so the *architecture* is aligned even where the drivers are mountains.
 
-**Status (2026-07-29): rungs one and two are built.** Rung one shipped as specified minus the VT
-engine (which it deliberately deferred as a *client* of its contract), rung two shipped whole, both on
-both ISAs, both with the pixels verified from the host as well as the guest. Rung three is the next
-step and is where the parked competitor question below has to be answered on purpose.
+**Status (2026-07-30): rungs one and two are built, and rung one's deferred VT engine now is too.**
+Rung one shipped its contract and its pixels, rung two shipped whole, and milestone 29's remaining
+increment closed the gap with a bitmap font, a sans-IO VT engine, a display terminal that is a client
+at both seams, and a confined virtio keyboard (DECISIONS §36, notes/glyphs.md). All on both ISAs, all
+with the pictures verified from the host as well as the guest: `cargo xtask` now proves **three**
+pictures over one boot, in order, and the text check's negative control is a screen with one letter
+changed. Rung three is the next step and is where the parked competitor question below has to be
+answered on purpose.
 
 1. **Rung one: milestone 29** (promoted from optional). **Built**: a confined userspace virtio-gpu
    driver (`gpud`), a client that draws (`painter`), and the framebuffer contract between them
    (`crates/gfx_proto`, notes/framebuffer-contract.md, DECISIONS §29). The framebuffer is a bigger
    grant and never an exemption; the pixels are proved in the guest by two witnesses in two address
-   spaces and from the host by comparing QEMU's `screendump` against the pattern definition. Font
-   rendering and the VT state engine were deferred on purpose: the contract carries pixels, not text,
-   so a terminal arrives above it as another client (and the VT engine's language, libghostty-vt in
-   Zig or `vte` in Rust, stays an open choice).
+   spaces and from the host by comparing QEMU's `screendump` against the pattern definition.
+
+   **Its deferred half is built too** (2026-07-30, DECISIONS §36, notes/glyphs.md): a public-domain
+   8x8 bitmap font, a sans-IO VT engine, a display terminal, and a virtio keyboard. The deferral's
+   premise held exactly as written: the contract carries pixels, not text, so the terminal arrived as
+   another client and **neither `gfx_proto` nor `gpud` changed a line**, which the same binary then
+   demonstrated a second time by being a compositor client with `window`'s authority. The VT engine's
+   language is still an open choice, and notes/glyphs.md now prices libghostty-vt against a built
+   Rust engine rather than against an estimate.
 2. **Rung two: a compositor component (milestone 33). Built**, both ISAs: `compd` multiplexing one
    screen among three mutually distrusting clients, each holding a capability to its own surface;
    software composition honouring a damage rectangle; input routed by capability using the terminal

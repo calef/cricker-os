@@ -218,6 +218,17 @@ in the code or the conversation doesn't make sense, it belongs here.
   the two dialects of "you hold no such capability" (an empty cspace slot and an unmapped page),
   enumeration and screenshots as read-only mappings rather than verbs, focus as a capability, and the
   wait-any primitive whose absence shaped the whole design.
+- [Glyphs, the VT engine, and input](glyphs.md) — milestone 29's remaining increment: the piece that
+  makes the framebuffer readable. A public-domain 8x8 bitmap font (and why the licence drove the
+  choice, since a font is compiled into the image), a sans-IO VT engine checked against the *real*
+  line discipline's echo rather than a list of escape sequences, and a display terminal that is a
+  client at **both** display seams with exactly `painter`'s and `window`'s authority, which is how
+  "neither contract needed changing to carry text" became a spawn literal instead of a claim. Also:
+  why the expected picture is a value three witnesses compute independently and what the host's
+  one-letter-wrong negative control is for, the deadlock that stopped a terminal ringing the doorbell
+  for a keystroke (and why the design it ruled out was the worse one), a virtio keyboard whose power
+  to type is a page nobody else maps, and the honest limits (no scrollback, no UTF-8, a US layout).
+  Ends with what adopting libghostty-vt would now cost, as a recommendation rather than a decision.
 
 - [Running under virtualization on Apple Silicon](virtualization.md) — `cargo xtask run --hvf`
   puts the kernel on the real M3 core via Apple's Hypervisor.framework. It found two QEMU-shaped
