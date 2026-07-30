@@ -147,6 +147,19 @@ pub fn find_gpu_device() -> Option<PciVirtioDevice> {
     bring_up(bdf, pci::VIRTIO_TYPE_GPU)
 }
 
+/// Find the first modern virtio-input function on the bus and bring it up (milestone 29's keyboard).
+/// `None` if there is no PCI input device.
+///
+/// PCIe only, and here that **is** a choice rather than a constraint: unlike the GPU, both `virt`
+/// machines do offer a `virtio-keyboard-device` on the virtio-mmio bus. The keyboard rides PCIe
+/// anyway so it sits behind the same IOMMU domain the GPU does and the display's two devices are
+/// confined the same way. A keyboard is the one device whose DMA a user would least like
+/// unconfined: its buffers are where every keystroke lands.
+pub fn find_input_device() -> Option<PciVirtioDevice> {
+    let bdf = find_virtio_bdf(pci::VIRTIO_INPUT_MODERN, None, "virtio-input")?;
+    bring_up(bdf, pci::VIRTIO_TYPE_INPUT)
+}
+
 /// Enumerate the bus for the first function matching `modern`, warning (once) if only a
 /// `transitional` (legacy) twin is present, since we drive modern only. `kind` names the device for
 /// that warning. `transitional` is `None` for a device type that has no legacy id at all

@@ -65,6 +65,18 @@ pub const WINDOW_BANNER: [&[u8]; 2] = [b"term0", b"term1"];
 /// (DECISIONS §33), this is the capability claim made visible in pixels.
 pub const WINDOW_TYPED: [&[u8]; 2] = [b"\r\nA", b"\r\nB"];
 
+/// **The key the host presses on the real keyboard device**, as QEMU's monitor `sendkey` names it.
+///
+/// The keyboard test's one genuinely host-driven input: nothing in the guest can press a key, so
+/// `cargo xtask` sends this on the monitor beside the suite, the same connection the scanout check
+/// already uses. Shared here so the side that presses and the side that asserts cannot disagree
+/// about which key it was.
+pub const HOST_KEY: &str = "a";
+
+/// The byte [`HOST_KEY`] must arrive as, once the driver's evdev event has been through
+/// [`crate::keymap`]. Unshifted, so this is the plain letter.
+pub const HOST_KEY_BYTE: u8 = b'a';
+
 /// The terminal a full-scanout wiring shows after the whole script: the greeting, then the typing.
 ///
 /// Built rather than stored, because the *engine* is the definition. A stored bitmap would be a

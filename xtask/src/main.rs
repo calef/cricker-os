@@ -753,6 +753,28 @@ fn scanout_matches(ppm: &[u8], want_pixel: impl Fn(u32, u32) -> u32) -> Result<(
     Ok(())
 }
 
+/// **Press a key on the guest's keyboard**, over the same monitor the scanout check uses.
+///
+/// Nothing inside the guest can press a key, which is the point of testing a real input device, so
+/// this is the one place the host is an *actor* rather than an observer. `sendkey` sends a press and
+/// a release, which is also what makes the driver's handling of the event's value field checkable:
+/// counting the release would double every character.
+///
+/// Sent on every poll, from the start of the run. That needs no synchronization with the guest
+/// because QEMU **drops key events until a driver sets `DRIVER_OK`**, so keys pressed before the
+/// keyboard driver exists go nowhere, and once it exists the next one lands. `vt::script::HOST_KEY`
+/// is the one definition of which key, shared with the kernel test that asserts the byte.
+fn sendkey(sock: &str, key: &str) {
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+
+    let Ok(mut s) = UnixStream::connect(sock) else {
+        return;
+    };
+    let _ = s.write_all(format!("sendkey {key}\n").as_bytes());
+    let _ = s.flush();
+}
+
 /// Ask the QEMU monitor on `sock` for a screendump into `out`. Returns false while the socket is not
 /// there yet (QEMU still starting, or already gone), which the caller treats as "try again".
 fn screendump(sock: &str, out: &Path) -> bool {
@@ -829,6 +851,10 @@ fn cargo_test_with_scanout_check(arch: &str, test_args: &[&str]) -> bool {
                 return false;
             }
         }
+        // Press a key every poll. Harmless before the keyboard driver exists (QEMU drops the event)
+        // and harmless after its test has passed (the driver ends up parked in a `CALL` nobody
+        // answers), so there is nothing to time.
+        sendkey(&sock, vt::script::HOST_KEY);
         if matched.is_none()
             && screendump(&sock, &shot)
             && let Ok(bytes) = std::fs::read(&shot)
@@ -1016,6 +1042,8 @@ fn initrd_riscv() -> bool {
             "window",
             "--bin",
             "vterm",
+            "--bin",
+            "kbd",
             "--target",
             RISCV_TARGET,
         ],
@@ -1073,6 +1101,8 @@ fn initrd_riscv() -> bool {
         // The display terminal (milestone 29's text increment): one binary, two wirings. Portable,
         // so both archives carry it and both ISAs run literally the same test.
         ("vterm", "vterm"),
+        // The keyboard driver (milestone 29's input). Portable, so both archives carry it.
+        ("kbd", "kbd"),
     ];
     let mut blobs: Vec<(&str, Vec<u8>)> = Vec::new();
     for &(archive_name, bin_name) in entries {
@@ -1240,7 +1270,7 @@ fn mkinitrd() -> bool {
     let mut tree: Vec<(&str, Vec<u8>)> = Vec::new();
     for name in [
         "rootsup", "spawner", "subsup", "flaky", "gpud", "painter", "cwarden", "cshim", "compd",
-        "window", "vterm",
+        "window", "vterm", "kbd",
     ] {
         match std::fs::read(bin_elf(name)) {
             Ok(bytes) => tree.push((name, bytes)),
@@ -1668,6 +1698,10 @@ fn test() -> bool {
     // because parity is the gate (§19), and the display test ASSERTS the device is present rather
     // than skipping, so a leg that lost this line fails loudly.
     unsafe { std::env::set_var("CRICKER_GPU", "1") };
+    // And a virtio keyboard (milestone 29's input), on the same terms and for the same reason: a
+    // test-leg device only, on both ISA legs, and the keyboard test ASSERTS one is present rather
+    // than skipping, so a leg that lost this line fails loudly instead of quietly proving nothing.
+    unsafe { std::env::set_var("CRICKER_KBD", "1") };
     // `cargo()` only exports the env the runner needs; the test itself runs under the scanout check,
     // which drives QEMU's monitor beside the suite and proves the pixels reached the device's scanout
     // rather than only the driver's frames.
