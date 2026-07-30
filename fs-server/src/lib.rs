@@ -31,7 +31,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use redoxfs::{Disk, FileSystem, Node, TreePtr};
-use syscall::error::{EBADF, Error, Result};
+use syscall::error::{EBADF, EEXIST, EINVAL, Error, Result};
 
 /// A file service over one RedoxFS image on one [`Disk`]. Generic over the disk so the host tests
 /// drive a `DiskMemory`/`DiskFile` and the EL0 binary drives the block-IPC client, with identical
@@ -71,6 +71,7 @@ impl<D: Disk> Server<D> {
     /// such entry. The name is a single component resolved in the bound directory; it is not a path,
     /// which is the whole point (no walk, no escape).
     pub fn open_file(&mut self, name: &str) -> Result<u32> {
+        check_component(name)?;
         let dir = self.dir;
         let node = self.fs.tx(|tx| tx.find_node(dir, name))?;
         let ptr = node.ptr();
@@ -98,6 +99,55 @@ impl<D: Disk> Server<D> {
     pub fn fstat(&mut self, handle: u32) -> Result<u64> {
         let ptr = self.node(handle)?;
         self.fs.tx(|tx| Ok(tx.read_tree(ptr)?.data().size()))
+    }
+
+    /// Create `name` under the bound directory and return a handle for it (milestone 31 phase 2).
+    ///
+    /// **Semantics, stated because the absence of these verbs cost a day.** If `name` does not exist
+    /// it is created empty and opened. If it *does* exist this returns `EEXIST` and creates nothing:
+    /// create is create, not create-or-open, so a caller that wants either has to say which it wants.
+    /// The alternative (silently opening an existing file) is what makes a partly-working write look
+    /// like a working one, which is the exact failure mode §27 records.
+    ///
+    /// Resolved under the bound directory like every other name, so this cannot create outside the
+    /// granted subtree, and [`check_component`] rejects a path rather than walking one.
+    pub fn create_file(&mut self, name: &str) -> Result<u32> {
+        check_component(name)?;
+        let dir = self.dir;
+        // Existence is checked inside the same transaction as the create, so two clients racing on
+        // one name cannot both be told they created it.
+        self.clock += 1;
+        let now = self.clock;
+        let node = self.fs.tx(|tx| {
+            if tx.find_node(dir, name).is_ok() {
+                return Err(Error::new(EEXIST));
+            }
+            tx.create_node(dir, name, Node::MODE_FILE | 0o644, now, 0)
+        })?;
+        let ptr = node.ptr();
+        Ok(self.install(ptr))
+    }
+
+    /// Set the size of the file a handle names to exactly `size` bytes (milestone 31 phase 2).
+    ///
+    /// **Both directions, deliberately.** Shrinking discards the bytes past `size`; growing extends
+    /// with zeroes. That is POSIX `ftruncate` semantics and it is what makes a shorter write able to
+    /// *replace* a file's contents rather than leave the old tail behind. §27 records what the absence
+    /// of this cost: a 61-byte write over a 64-byte file left a 64-byte file, three investigations read
+    /// the resulting assertion failure as a write failure, and the engine was never at fault.
+    ///
+    /// **What is guaranteed if the machine dies mid-truncate: untested (milestone 37).** RedoxFS is
+    /// copy-on-write and commits through a header ring, and the server always mounts with the
+    /// `cleanup: true` replay that walks back to the newest *consistent* generation, so the engine's
+    /// design says a torn truncate leaves either the old size or the new one. We have not injected a
+    /// torn or dropped write to check, so that is a design claim and not a measurement. Truncate and
+    /// create are the first verbs that change a file's *shape* rather than its bytes, which makes them
+    /// the most interesting cases for milestone 37 to attack.
+    pub fn truncate(&mut self, handle: u32, size: u64) -> Result<()> {
+        let ptr = self.node(handle)?;
+        self.clock += 1;
+        let now = self.clock;
+        self.fs.tx(|tx| tx.truncate_node(ptr, size, now, 0))
     }
 
     /// Release a handle. `EBADF` if it was not open.
@@ -131,6 +181,38 @@ impl<D: Disk> Server<D> {
             .flatten()
             .ok_or(Error::new(EBADF))
     }
+}
+
+/// Reject anything that is not a single path component, with `EINVAL`.
+///
+/// **This is our rule, enforced at our boundary, and it was previously true only by accident.** The
+/// contract has always said a name is a single component resolved under the bound directory, with no
+/// absolute path and no `..` escape (§27, and this module's own header). RedoxFS does not enforce that:
+/// its `check_name` rejects only `:`, over-long names, and duplicates, so `/`, `.` and `..` pass
+/// straight through. Nothing walked paths, so nothing escaped, which made the invariant hold by the
+/// absence of a walker rather than by a check.
+///
+/// Adding `CREATE` (milestone 31 phase 2) turned that from a latent oddity into something a client
+/// could *write*: `create_file("../escape")` created a directory entry literally named `../escape` in
+/// the bound directory. Still not a traversal, and still a landmine, because the moment anything walks
+/// paths (a per-directory grant binding a subtree, the host tool, or the image mounted through Redox's
+/// FUSE driver) that entry means something it should never have been able to mean. A found-and-fixed
+/// gap, not a theoretical one: the test that caught it asserted a property the docs already claimed.
+///
+/// Deliberately checked here rather than patched into the vendored engine: it is a rule of *our*
+/// contract, not a bug in RedoxFS, whose callers are free to name entries whatever they like.
+fn check_component(name: &str) -> Result<()> {
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains(':')
+        || name.contains('\0')
+    {
+        return Err(Error::new(EINVAL));
+    }
+    Ok(())
 }
 
 /// One filesystem block, in bytes (RedoxFS's `BLOCK_SIZE`): the unit [`BlockIo`] transfers.
@@ -438,7 +520,7 @@ mod tests {
         assert_eq!(
             srv.fstat(h).unwrap(),
             64,
-            "a shorter write must not truncate; if this ever changes, the contract grew a verb"
+            "a shorter write must not truncate; TRUNCATE is the verb that fixes this, not WRITE"
         );
         let mut buf = [0u8; 128];
         let n = srv.read(h, 0, &mut buf).unwrap();
@@ -485,5 +567,134 @@ mod tests {
         srv.close(h0).unwrap();
         let h1 = srv.open_file("b").unwrap();
         assert_eq!(h0, h1, "a freed slot is reused before growing the table");
+    }
+    // --- CREATE and TRUNCATE (milestone 31 phase 2) ---
+
+    #[test]
+    fn create_makes_an_empty_file_and_refuses_an_existing_name() {
+        let mut srv = server_with(&[("already", b"here")]);
+
+        let h = srv.create_file("fresh").unwrap();
+        assert_eq!(srv.fstat(h).unwrap(), 0, "a created file starts empty");
+
+        // Create is create, not create-or-open. Silently opening an existing file is how a
+        // partly-working write comes to look like a working one (the §27 failure mode).
+        assert_eq!(
+            srv.create_file("already").err().map(|e| e.errno),
+            Some(EEXIST),
+            "creating over an existing name must refuse, and must not truncate it either",
+        );
+        let h2 = srv.open_file("already").unwrap();
+        assert_eq!(srv.fstat(h2).unwrap(), 4, "the refused create left the file alone");
+
+        // And the refusal did not half-create anything: the name still resolves to the old file.
+        let mut buf = [0u8; 8];
+        assert_eq!(srv.read(h2, 0, &mut buf).unwrap(), 4);
+        assert_eq!(&buf[..4], b"here");
+    }
+
+    #[test]
+    fn truncate_shrinks_and_discards_the_tail_which_is_the_bug_it_exists_to_fix() {
+        // The exact byte counts from DECISIONS §27: a 64-byte payload from one boot, a 61-byte
+        // write from the next, and the three-byte tail that made a good write look like a failure.
+        let mut srv = server_with(&[("scratch", b"(placeholder)")]);
+        let h = srv.open_file("scratch").unwrap();
+        assert_eq!(srv.write(h, 0, &[b'L'; 64]).unwrap(), 64);
+
+        let short = [b'S'; 61];
+        assert_eq!(srv.write(h, 0, &short).unwrap(), 61);
+        srv.truncate(h, short.len() as u64).unwrap();
+
+        assert_eq!(srv.fstat(h).unwrap(), 61, "truncate sets the size exactly");
+        let mut buf = [0u8; 128];
+        let n = srv.read(h, 0, &mut buf).unwrap();
+        assert_eq!(n, 61, "and a whole-file read returns only what was written");
+        assert_eq!(&buf[..61], &short[..], "with the new bytes intact");
+    }
+
+    #[test]
+    fn truncate_grows_with_zeroes_and_is_idempotent() {
+        let mut srv = server_with(&[("f", b"abc")]);
+        let h = srv.open_file("f").unwrap();
+
+        srv.truncate(h, 8).unwrap();
+        assert_eq!(srv.fstat(h).unwrap(), 8);
+        let mut buf = [0xffu8; 16];
+        assert_eq!(srv.read(h, 0, &mut buf).unwrap(), 8);
+        assert_eq!(&buf[..3], b"abc", "the original bytes survive a grow");
+        assert_eq!(&buf[3..8], &[0, 0, 0, 0, 0], "and the extension reads as zeroes");
+
+        // Truncating to the current size changes nothing, which matters because std::fs::write
+        // opens-creates-truncates unconditionally and would otherwise churn the tree every call.
+        srv.truncate(h, 8).unwrap();
+        assert_eq!(srv.fstat(h).unwrap(), 8);
+
+        srv.truncate(h, 0).unwrap();
+        assert_eq!(srv.fstat(h).unwrap(), 0, "and shrinking to empty is allowed");
+        assert_eq!(srv.read(h, 0, &mut buf).unwrap(), 0);
+    }
+
+    #[test]
+    fn create_write_truncate_all_survive_a_close_and_reopen() {
+        // The half a cache cannot fake: drop the mount entirely and reopen the same disk. The disk is
+        // taken back out of the server rather than cloned, which is also how a dying process leaves
+        // it: no unmount, exactly as the cross-boot test does.
+        let mut disk = image_with(&[]);
+        let payload = b"created, written, and truncated to exactly this";
+
+        {
+            let mut srv = Server::open(disk).expect("open");
+            let h = srv.create_file("made").unwrap();
+            assert_eq!(srv.write(h, 0, payload).unwrap(), payload.len());
+            assert_eq!(srv.write(h, 0, &[b'X'; 200]).unwrap(), 200);
+            assert_eq!(srv.write(h, 0, payload).unwrap(), payload.len());
+            srv.truncate(h, payload.len() as u64).unwrap();
+            disk = srv.fs.disk;
+        }
+
+        let mut srv = Server::open(disk).expect("reopen");
+        let h = srv.open_file("made").expect("the created name survived the reopen");
+        assert_eq!(srv.fstat(h).unwrap(), payload.len() as u64);
+        let mut buf = [0u8; 512];
+        let n = srv.read(h, 0, &mut buf).unwrap();
+        assert_eq!(&buf[..n], payload, "the truncated contents are what persisted");
+    }
+
+    #[test]
+    fn create_and_truncate_refuse_what_every_other_verb_refuses() {
+        let mut srv = server_with(&[("f", b"x")]);
+
+        // A forged handle is EBADF in exactly one place, and the new verb goes through it too.
+        assert_eq!(
+            srv.truncate(99, 0).err().map(|e| e.errno),
+            Some(EBADF),
+            "truncate must validate the handle like every other operation",
+        );
+
+        // A name is a single component, not a path, and both verbs enforce it. RedoxFS does NOT:
+        // its check_name passes `/`, `.` and `..` through, so before this check create_file("../escape")
+        // happily made an entry literally named `../escape`. Not a traversal, because nothing walks
+        // paths, and a landmine for the first thing that does.
+        for bad in [
+            "../escape",
+            "sub/deep",
+            "/absolute",
+            ".",
+            "..",
+            "",
+            "with:colon",
+            "back\\slash",
+        ] {
+            assert_eq!(
+                srv.create_file(bad).err().map(|e| e.errno),
+                Some(EINVAL),
+                "create must refuse {bad:?} as EINVAL: a name is not a path",
+            );
+            assert_eq!(
+                srv.open_file(bad).err().map(|e| e.errno),
+                Some(EINVAL),
+                "and open must refuse {bad:?} the same way, not fall through to ENOENT",
+            );
+        }
     }
 }
