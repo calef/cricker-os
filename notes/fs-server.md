@@ -129,22 +129,45 @@ cannot fake. That reopen is in the gate: `redoxfs_check_after_run` compares `scr
 fixture, and `mkredoxfs` rewrites it to a placeholder before every run, so the check passing means
 this run's guest write landed on the disk.
 
-**Narrowed again the same day, and this direction matters more.** The claim above is true only for
-a *pristine* target block. Reproduced on main by a second agent: a write to a `scratch` block that
-has **already been written** loops in exactly the way the original open item described, at ~400% CPU.
-The gate never sees it because `mkredoxfs` rewrites `scratch` to a placeholder before every run, so
-every gated write is a first write; the loop only appears when the image carries a previous run's
-write, which is what invoking `cargo test -p kernel` directly (skipping `mkredoxfs`) produces. So the
-honest statement is: **a first on-device write works and is proven; a repeat write to the same block
-still loops.** The original blocker was not stale, it was narrower than recorded. Under
-investigation; do not read the paragraph above as "writes work" without this qualification.
+**Narrowed a third time, and this is where it actually stands** (fix/redoxfs-repeat-write). "A repeat
+write to the same block loops" is also not quite the shape of it. What is now proven, with tests in
+the tree rather than by reasoning:
 
-The likely reason the first write works is the interrupt-delivery fix above: the block server WAITs on the
-device's completion interrupt instead of polling the used ring, the same correction this note already
-had to make for the read path. That is stated as *likely*, not proven: what was measured is that the
-write completes, not why the poll path did not. The milestone-32 client stays read-only by choice
-now rather than by blocker, and its source says so; the write is proven through `std::fs`, which
-drives the same contract through more layers.
+- **A repeat write inside one run works, on both ISAs.** The FS client writes the same block three
+  times in one run (`user/src/fsclient.rs`), and it passes on aarch64 and riscv64 against a freshly
+  generated image. The image afterwards carries the pass-3 payload, so the third write really reached
+  the disk. This is the reproduction the old gate could not perform: it depends on nothing left over
+  from a previous invocation, so it cannot hide behind `mkredoxfs` rewriting the target first.
+- **The host does not reproduce any of it.** Four `fs-server` host tests, all green in milliseconds:
+  three writes to one block; the same through the EL0 binary's exact chunking; record-sized repeat
+  writes (the multi-block and compressed-tail paths); and write, drop the mount with no unmount,
+  reopen, and write again. That last one is the shape the device fails at, and on the host it passes.
+- **The transport is faithful.** `IpcDisk` has a `VERIFY_WRITES` switch that reads every written block
+  straight back and compares. It never fired. So no write is lost or misdirected and no read returns
+  stale bytes; the blk IPC path carries what it is given. (It is off by default: its 4 KiB scratch sits
+  on the stack inside a call RedoxFS makes from deep recursion, which is enough to overflow the FS
+  server's stack and produce a *different* failure than the one being chased. That cost an hour; it is
+  recorded here so the next reader does not pay it again.)
+
+**The failure that remains is cross-boot, and test ordering was hiding it.** `mkredoxfs` ran once for
+*both* ISA legs, and the aarch64 leg writes the image (both the `std::fs` test and the FS client do).
+So the riscv leg was mounting an image a previous boot had mutated, and *that* second boot's write is
+what fails. It is not a spin: the FS server replies with an error and the std program's own `expect`
+panics, which is why the transcript stops right after `create unsupported`. Two facts bound it: on a
+freshly generated image the riscv leg passes all 93 tests including the three repeat writes, and the
+host tool can write the very same post-boot image afterwards without complaint, so the image is not
+corrupt and the engine is not stuck.
+
+The gate now regenerates the fixture before **each** leg, so both legs are reproducible on their own.
+That is determinism, not a fix, and it deliberately separates the two questions. **The tracked open
+item is the cross-boot write**, and the recipe is exact: generate the image once, run one ISA leg,
+then run the other without regenerating in between (or run a leg twice), and the second boot's write
+fails. The leading hypothesis is accumulated mount state rather than data: a used image carries a
+higher header generation, a longer allocator log and more live tree blocks, so the second mount both
+allocates more heap (the FS server's is capped at 8 MiB in `fsserver.rs`, and `FS_BUDGET_PAGES` bounds
+it in `kernel/src/user.rs`) and may take the allocator's squash path that a pristine mount never
+reaches. Reading the errno the server actually returns is the next step and needs a diagnostic the
+client can surface; nothing in the current wiring prints it.
 
 **The remaining gap is in the contract, not the write path.** There is no `CREATE` and no `TRUNCATE`
 verb, so `std::fs::write` and `File::create` are honestly `Unsupported` and writing means opening a

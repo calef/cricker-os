@@ -69,16 +69,21 @@ fn write(handle: u64, offset: u64, data: &[u8]) {
     check(r0 as usize == data.len());
 }
 
-/// The payload for repeat-write pass `n`: a fixed 64 bytes, tagged with the pass and
-/// position-dependent after that. Every pass is the same length, so each write fully replaces the
-/// last (a shorter write at offset 0 would not truncate, leaving the previous tail), and a stale or
-/// shifted read cannot match. The twin of `fs-server`'s host-side `repeat_write_payload`.
-fn repeat_payload(pass: u8) -> [u8; 64] {
-    let mut p = [0u8; 64];
+/// How long each repeat-write payload is: exactly the fixture pattern's length, so every write in
+/// this test (including the final one, which restores the fixture) replaces the file's contents
+/// completely. There is no truncate verb, so a shorter write would leave the previous tail behind and
+/// the gate's post-run check would see a mixture.
+const REPEAT_LEN: usize = fixture::WRITE_PATTERN.len();
+
+/// The payload for repeat-write pass `n`: tagged with the pass, position-dependent after that, and
+/// [`REPEAT_LEN`] bytes like every other write here, so a stale or shifted read cannot match. The
+/// twin of `fs-server`'s host-side `repeat_write_payload`.
+fn repeat_payload(pass: u8) -> [u8; REPEAT_LEN] {
+    let mut p = [0u8; REPEAT_LEN];
     p[..8].copy_from_slice(b"CRKRPT__");
     p[7] = b'0' + pass;
     let mut i = 8;
-    while i < 64 {
+    while i < REPEAT_LEN {
         p[i] = (i as u8).wrapping_mul(31) ^ pass;
         i += 1;
     }
@@ -165,6 +170,16 @@ fn proof() -> ! {
         check(&buf[..m] == &payload[..]);
         pass += 1;
     }
+
+    // Leave the fixture pattern behind as the LAST write, so the gate's post-run host-tool check
+    // (`redoxfs_check_after_run`, which reopens the image with the pinned engine and compares
+    // `scratch` against `WRITE_PATTERN`) still validates a documented value. Every write above is the
+    // same length as this one, so this replaces them completely.
+    write(scratch, 0, fixture::WRITE_PATTERN);
+    let f = read(scratch, 0, fixture::WRITE_PATTERN.len());
+    check(f == fixture::WRITE_PATTERN.len());
+    get_page(f, &mut buf);
+    check(&buf[..f] == fixture::WRITE_PATTERN);
 
     // Report the motd head plus the success sentinel; the kernel asserts both.
     send(REPORT, u64::from_le_bytes(head), fixture::SUCCESS, 0);
