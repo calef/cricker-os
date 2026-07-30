@@ -49,7 +49,8 @@ than a formality:
 | `script/test` | The host-logic crates, then the kernel under QEMU on **both ISAs**, aarch64 and riscv64. Architectural parity is a gate, not an aspiration (DECISIONS §19). |
 | `script/verify` | 69 Kani harnesses across 13 crates: the capability model, IPC, MMU isolation, the DMA validator, the IOMMU domain. |
 | `script/bench --check` | icount instruction counts against a committed baseline, on both ISAs, so a performance regression surfaces next to the change that caused it. |
-| `script/lint` | clippy at `-D warnings`, plus broken intra-doc links, stray conflict markers, and the roadmap's status vocabulary. |
+| `script/lint` | clippy at `-D warnings`, plus broken intra-doc links, stray conflict markers, the roadmap's status vocabulary, DECISIONS numbering and citations, and that every script is documented. |
+| `script/supply-chain` | cargo-deny (advisories, licences, bans, sources) over every workspace, and proof that each vendored tree is the published tarball plus exactly its recorded patches. |
 | `script/fmt`, coverage | Formatting, and an 80%-per-file line-coverage floor on the host crates. |
 
 CI runs on an **aarch64** runner deliberately: this kernel targets a weakly-ordered machine, and a
@@ -281,6 +282,13 @@ thing in [notes/stack.md](notes/stack.md).
 - The [OSDev wiki](https://wiki.osdev.org), as a reference rather than a tutorial
 - [Compiler Explorer](https://godbolt.org), set to Rust + aarch64. The fastest way to build
   assembly intuition that exists.
+
+## Security
+
+[SECURITY.md](SECURITY.md) says what is in scope (the confinement boundaries this kernel claims to
+enforce), what is not (a demonstrator under QEMU is not a production system), and how to report
+something privately. Two adversarial reviews are already on the record:
+[notes/security.md](notes/security.md) and [notes/arch-audit.md](notes/arch-audit.md).
 
 ## License
 
