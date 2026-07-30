@@ -116,6 +116,29 @@ trap_return:
     # SIE costs nothing: the `csrw sstatus` and then the `sret` set the final state regardless.
     csrci   sstatus, 2          # clear SIE (bit 1)
 
+    # AND THE GUARD IS NOT SELF-SUFFICIENT HERE, WHICH IS WHERE RISC-V DIVERGES FROM AARCH64. The
+    # aarch64 comment says the mask covers any future path "by construction"; that claim is true
+    # there and NOT true here, so do not read it across.
+    #
+    # aarch64 stages the return state in SPSR_EL1, a register separate from the live PSTATE, so
+    # nothing between the `msr daifset` and the `eret` can put interrupts back on. RISC-V has ONE
+    # register: `sstatus` holds both the staged fields (SPP, SPIE) and the LIVE enable bit (SIE). So
+    # the `csrw sstatus, t0` thirteen lines below writes the frame's SIE straight into the live bit,
+    # and if a frame ever carried SIE = 1 it would re-open interrupts for the ~32 instructions
+    # between there and the `sret`, with `sepc` already staged. The `csrci` above would have bought
+    # nothing.
+    #
+    # It is safe today because of an INVARIANT, not because of this instruction: every trap frame
+    # carries SIE = 0. Two sources, both checked:
+    #
+    #   - a real trap: the hardware clears SIE on trap entry (moving it to SPIE), so the `csrr t1,
+    #     sstatus` in trap_entry above always reads SIE = 0;
+    #   - a fabricated frame: TrapFrame::for_user_entry sets SPIE and UXL only. There is a
+    #     compile-time assertion next to it that keeps SIE out; see exceptions.rs.
+    #
+    # If you add a third way to build a frame, that assertion is the thing to copy. See
+    # notes/arch-audit.md, finding 1.
+
     ld      t0, 35*8(sp)        # sstatus
     andi    t1, t0, 0x100       # SPP (bit 8): 1 = return to S-mode, 0 = return to U-mode
     bnez    t1, 3f
