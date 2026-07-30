@@ -12,24 +12,31 @@
 //!
 //! Requires QEMU's `-semihosting` flag.
 
-// Only the test harness and the test-mode panic handler call this today, so a normal
-// `cargo build` sees it as dead. It isn't; it's just conditionally reachable.
-#![allow(dead_code)]
+// Every item here is reachable only from the test harness (`testing.rs`) and the test-mode arm of
+// the panic handler, both `cfg(test)`. So a plain `cargo build` has no caller for any of it, and
+// the allows below say exactly that: `not(test)`, not "everywhere". The distinction matters,
+// because it means the test build still holds this file to the dead-code gate, and a day when
+// nothing calls `exit` any more is a day the gate speaks up.
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub const EXIT_SUCCESS: u32 = 0;
+#[cfg_attr(not(test), allow(dead_code))]
 pub const EXIT_FAILURE: u32 = 1;
 
 /// Semihosting operation number for "terminate".
+#[cfg_attr(not(test), allow(dead_code))]
 const SYS_EXIT: u64 = 0x18;
 
 /// Reason code: the application exited normally (as opposed to hitting a
 /// breakpoint, running out of memory, etc).
+#[cfg_attr(not(test), allow(dead_code))]
 const ADP_STOPPED_APPLICATION_EXIT: u64 = 0x2_0026;
 
 /// Ask the host to terminate the emulator with `code` as its exit status.
 ///
 /// `cargo test` interprets a nonzero exit status as a test failure, so this is the
 /// whole reporting mechanism.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn exit(code: u32) -> ! {
     // On aarch64, SYS_EXIT wants x1 to point at a two-word block:
     //   [0] = reason code
