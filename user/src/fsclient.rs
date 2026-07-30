@@ -116,11 +116,11 @@ fn proof() -> ! {
     // FS server over blk IPC, its files opened by name under a granted directory capability and read
     // by a client that names nothing else in the system.
     //
-    // The WRITE path is deliberately not exercised here. Its logic is proven in the host lib tests
-    // (fs-server, `a_write_persists_and_reads_back`), and the on-device write plumbing is in place
-    // (blk::WRITE, IpcDisk::write_at, Server::write, the block server's write submit), but the
-    // on-device end-to-end write currently loops inside RedoxFS's allocator commit on bare metal
-    // even on a pristine image. See notes/fs-server.md; that is the milestone's open item.
+    // This client stays read-only, and that is now a scope choice rather than a blocker. It used to
+    // say the on-device write looped inside RedoxFS's allocator commit; it does not (the machine
+    // overruled the note once interrupt-driven block completion was restored). The on-device write
+    // is proven end to end by the `std::fs` test instead, which drives the same contract through
+    // more layers and has the host tool re-read the image afterwards. See notes/fs-server.md.
     let motd = open(fixture::MOTD_NAME);
     let n = read(motd, 0, fixture::MOTD.len());
     check(n == fixture::MOTD.len());

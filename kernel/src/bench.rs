@@ -569,15 +569,18 @@ fn fs_read() {
         return;
     };
     // Spawn the block server, the FS server, and the client in its ROLE_BENCH (timed) role.
-    let Some((blk_ready, ready, report)) =
+    let Some((readiness, report)) =
         crate::user::fs_service::start(blk_image, fsserver, fsclient, 1)
     else {
         return; // no RedoxFS disk on this run
     };
     // Sequence on readiness, exactly as the test does: the block server brings the device up, then
-    // the FS server mounts the image, then the client's timed loop reports.
-    let _ = sched::ipc_recv(blk_ready);
-    let _ = sched::ipc_recv(ready);
+    // the FS server mounts the image, then the client's timed loop reports. The bench boot is the
+    // only caller, so it always gets the readiness endpoints (nothing wired the service first).
+    if let Some((blk_ready, ready)) = readiness {
+        let _ = sched::ipc_recv(blk_ready);
+        let _ = sched::ipc_recv(ready);
+    }
     let [ticks, iters, ..] = sched::ipc_recv(report);
     println!("bench: fs_read {ticks} {iters}");
 }

@@ -2077,6 +2077,14 @@ pub mod fs_service {
     const FILE_PAGE_FS: u64 = 0x5000_1000; // FS server's file page (fsserver.rs FILE_PAGE)
     const FILE_VA_CLIENT: u64 = 0x0000_0000_0060_0000; // client's file page (fsclient.rs FILE_VA)
 
+    /// A std program's half of the same agreement (notes/abi.md §4, notes/std.md). Both constants
+    /// MUST match the std PAL's `sys/pal/cricker/rt.rs`: the slot it looks for the FS-service
+    /// endpoint in, and the VA it expects the shared file page at. A std program's slot layout
+    /// differs from the hand-written client's because std already owes slots 0 and 1 to its heap and
+    /// its stdout, and 2 and 3 to `std::net`.
+    const FS_DIR_SLOT: u64 = 4;
+    const FS_PAGE_STD: u64 = 0x0000_0000_1100_0000;
+
     /// A fresh, zeroed frame, returned by physical address. Zeroed so no stale RAM is ever visible
     /// across a share, and (for the DMA frame) so the device never reads a stale descriptor.
     fn frame() -> u64 {
@@ -2088,15 +2096,49 @@ pub mod fs_service {
         p
     }
 
-    /// Wire and spawn the block server, the FS server, and the client. `blk_image` is the driver
-    /// binary carrying the block-server role (hello on aarch64, `blk` on riscv); `fsserver_image`
-    /// and `client_image` are the same on both ISAs. Returns the endpoint the client reports on.
-    pub fn start(
+    /// **One boot, one FS service**, remembered here.
+    ///
+    /// The block server owns the RedoxFS device: a second wiring would put a second driver on the
+    /// same virtio slot and re-bind its interrupt, so the two client tests (the hand-written
+    /// `fsclient` and the std program) share one wired service instead. Whichever runs first pays
+    /// for the wiring and receives the two readiness endpoints; the other sees `None` for them,
+    /// because a readiness sentinel is sent once and has already been taken. Plain atomics rather
+    /// than a lock: the only writer is the boot/test thread that calls these functions.
+    static WIRED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+    static FILE_EP: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+    static FILE_SHARED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+    /// The wired service: the file-service endpoint clients `CALL`, the physical frame they share
+    /// with the FS server, and (only on the call that did the wiring) the block server's and FS
+    /// server's readiness endpoints.
+    type Service = (EpId, u64, Option<(EpId, EpId)>);
+
+    /// Wire the block server and the FS server if this boot has not already, else hand back what is
+    /// already running. `None` means no RedoxFS disk is attached.
+    fn ensure(blk_image: &'static [u8], fsserver_image: &'static [u8]) -> Option<Service> {
+        use core::sync::atomic::Ordering;
+
+        if WIRED.load(Ordering::Acquire) {
+            return Some((
+                FILE_EP.load(Ordering::Relaxed),
+                FILE_SHARED.load(Ordering::Relaxed),
+                None,
+            ));
+        }
+        let (blk_ready, ready, file_ep, file_shared) = wire_servers(blk_image, fsserver_image)?;
+        FILE_EP.store(file_ep, Ordering::Relaxed);
+        FILE_SHARED.store(file_shared, Ordering::Relaxed);
+        WIRED.store(true, Ordering::Release);
+        Some((file_ep, file_shared, Some((blk_ready, ready))))
+    }
+
+    /// Wire and spawn the block server and the FS server. `blk_image` is the driver binary carrying
+    /// the block-server role (hello on aarch64, `blk` on riscv); `fsserver_image` is the same on
+    /// both ISAs. Returns `(blk_ready, ready, file_ep, file_shared)`.
+    fn wire_servers(
         blk_image: &'static [u8],
         fsserver_image: &'static [u8],
-        client_image: &'static [u8],
-        client_role: u64,
-    ) -> Option<(EpId, EpId, EpId)> {
+    ) -> Option<(EpId, EpId, EpId, u64)> {
         let dev = crate::virtio::find_block_device_n(1)?;
 
         // The block server's DMA region is TWO contiguous pages: page 0 for the rings, request
@@ -2122,7 +2164,6 @@ pub mod fs_service {
         // The endpoints. Rights split each into a request side and an answer side.
         let blk_ep = crate::sched::create_endpoint(); // FS server WRITE (CALL) -> block server READ
         let file_ep = crate::sched::create_endpoint(); // client WRITE (CALL) -> FS server READ
-        let report = crate::sched::create_endpoint(); // client WRITE -> the kernel test RECVs
         let ready = crate::sched::create_endpoint(); // FS server WRITE -> the kernel test RECVs
         let blk_ready = crate::sched::create_endpoint(); // block server WRITE -> the kernel test RECVs
 
@@ -2227,8 +2268,24 @@ pub mod fs_service {
         })
         .expect("could not spawn the FS server");
 
-        // --- the client: the file-service endpoint (its directory capability) and the report
-        // endpoint, plus its view of the file page. It names nothing else in the system. ---
+        Some((blk_ready, ready, file_ep, file_shared))
+    }
+
+    /// Wire the service (or reuse this boot's) and spawn the hand-written client
+    /// (`user/src/fsclient.rs`): the file-service endpoint, which IS its directory capability, the
+    /// report endpoint, and its view of the shared file page. It names nothing else in the system.
+    ///
+    /// Returns `(readiness, report)`: the two readiness endpoints if this call wired the service,
+    /// and the endpoint the client reports on.
+    pub fn start(
+        blk_image: &'static [u8],
+        fsserver_image: &'static [u8],
+        client_image: &'static [u8],
+        client_role: u64,
+    ) -> Option<(Option<(EpId, EpId)>, EpId)> {
+        let (file_ep, file_shared, readiness) = ensure(blk_image, fsserver_image)?;
+        let report = crate::sched::create_endpoint();
+
         crate::sched::spawn(move || {
             run(
                 client_image,
@@ -2250,7 +2307,80 @@ pub mod fs_service {
         })
         .expect("could not spawn the FS client");
 
-        Some((blk_ready, ready, report))
+        Some((readiness, report))
+    }
+
+    /// The `std::fs` client's heap budget and extra stack. Same magnitudes as the networked std
+    /// program: it is a full std program (formatting, `Vec`, `String`, `read_to_string`), so it
+    /// needs the generous heap and the deep stack std's machinery wants.
+    const STD_FS_HEAP_PAGES: u64 = 256;
+    const STD_FS_STACK_PAGES: u64 = 32;
+
+    /// **Wire the service and endow a std program with a directory capability** (milestone 27 phase
+    /// two, the FS half).
+    ///
+    /// This is the one spawn site that makes `std::fs` work: an ordinary std ELF, given the std slot
+    /// convention (heap untyped at 0, stdout at 1) **plus the FS-service endpoint at slot 4** and
+    /// the page it shares with the FS server, mapped at the VA the PAL expects
+    /// (`sys/pal/cricker/rt.rs::FS_PAGE`). Slots 2 and 3 are deliberately left EMPTY, which is why
+    /// the grants go in by explicit slot instead of in order: this program holds a filesystem and no
+    /// network, and `std::net` must be able to tell.
+    ///
+    /// The same binary spawned without slot 4 gets `Unsupported` from every `std::fs` call. That is
+    /// the whole point: the code never chose to have a filesystem, its cspace did.
+    ///
+    /// Returns `(readiness, stdout)`: the readiness endpoints if this call wired the service, and
+    /// the program's stdout endpoint for the test to reassemble.
+    pub fn start_std(
+        blk_image: &'static [u8],
+        fsserver_image: &'static [u8],
+        std_image: &'static [u8],
+    ) -> Option<(Option<(EpId, EpId)>, EpId)> {
+        let (file_ep, file_shared, readiness) = ensure(blk_image, fsserver_image)?;
+        let report = crate::sched::create_endpoint();
+        let heap =
+            crate::untyped::create(STD_FS_HEAP_PAGES).expect("no untyped for the std fs heap");
+
+        // The shared file page, then the deep stack std needs. `run` maps one stack page; std's
+        // startup and formatting overflow it immediately, the same reason the other std spawns map
+        // extra pages below it.
+        let mut maps = [Mapping {
+            va: 0,
+            phys: 0,
+            flags: Flags::user_data(),
+        }; 1 + STD_FS_STACK_PAGES as usize];
+        maps[0] = Mapping {
+            va: FS_PAGE_STD,
+            phys: file_shared,
+            flags: Flags::user_data(),
+        };
+        for (k, m) in maps[1..].iter_mut().enumerate() {
+            m.va = USER_STACK_VA - (k as u64 + 1) * FRAME_SIZE;
+            m.phys = frame();
+        }
+
+        crate::sched::spawn(move || {
+            // The directory capability goes in at its named slot BEFORE `run` grants in order, so
+            // `run`'s two grants land at 0 and 1 and slots 2 and 3 stay empty. See `grant_at`.
+            crate::sched::grant_at(FS_DIR_SLOT, endpoint_cap(file_ep, Rights::WRITE))
+                .expect("the std fs slot was already occupied");
+            run(
+                std_image,
+                Spawn {
+                    arg0: 0,
+                    arg1: 0,
+                    arg2: 0,
+                    grants: &[
+                        untyped_cap(heap),                   // slot 0: the heap's budget
+                        endpoint_cap(report, Rights::WRITE), // slot 1: stdout/stderr
+                    ],
+                    maps: &maps,
+                },
+            )
+        })
+        .expect("could not spawn the std fs program");
+
+        Some((readiness, report))
     }
 }
 
@@ -2626,6 +2756,91 @@ pub mod std_service {
 mod std_tests {
     use super::*;
 
+    /// Reassemble a std program's stdout off its endpoint until `want` bytes have arrived, and
+    /// compare byte for byte. The PAL SENDs 16 bytes per message (w0 = byte count, w1|w2 = the
+    /// bytes, little-endian), and `SEND` blocks until a receiver takes it, so taking exactly
+    /// `want.len()` bytes consumes exactly the messages the program sent, and the program has
+    /// reached `SYS_EXIT` by the time the last one lands.
+    ///
+    /// Shared by every std test on both ISAs (the arch-gated test modules reach it here), so all of
+    /// them assert the same way and a drift in one is a diff in one place.
+    pub(super) fn assert_std_transcript(report: crate::sched::EpId, want: &[u8], what: &str) {
+        let mut got = [0u8; 512];
+        let mut len = 0usize;
+        while len < want.len() {
+            let words = crate::sched::ipc_recv(report);
+            let count = words[0] as usize;
+            assert!(
+                (1..=16).contains(&count),
+                "{what}: stdout message with a bad byte count: {count}"
+            );
+            let mut chunk = [0u8; 16];
+            chunk[..8].copy_from_slice(&words[1].to_le_bytes());
+            chunk[8..].copy_from_slice(&words[2].to_le_bytes());
+            for &b in &chunk[..count] {
+                assert!(len < got.len(), "{what}: printed more than the transcript");
+                got[len] = b;
+                len += 1;
+            }
+        }
+        assert_eq!(
+            &got[..len],
+            want,
+            "{what}: stdout did not match the transcript"
+        );
+    }
+
+    /// Consume the FS service's two readiness sentinels, if this caller is the one that wired it.
+    ///
+    /// One boot has one FS service (the block server owns the device), so the hand-written client's
+    /// test and the `std::fs` test share it, and only the first of them to run gets the sentinels.
+    /// Asserting on them where they exist is what separates a hang in the mount from one in the
+    /// serve path.
+    pub(super) fn assert_fs_service_ready(
+        readiness: Option<(crate::sched::EpId, crate::sched::EpId)>,
+    ) {
+        let Some((blk_ready, ready)) = readiness else {
+            return;
+        };
+        assert_eq!(
+            crate::sched::ipc_recv(blk_ready)[0],
+            fs_proto::fixture::READY,
+            "the block server did not bring the RedoxFS device up",
+        );
+        assert_eq!(
+            crate::sched::ipc_recv(ready)[0],
+            fs_proto::fixture::READY,
+            "the FS server did not open the RedoxFS image",
+        );
+    }
+
+    /// Build the exact bytes `hellostd` prints when it is granted a directory capability, into
+    /// `buf`; returns the length. Not a `const` because the motd's contents are spliced in from the
+    /// shared fixture, and that is the load-bearing part: those bytes came off the RedoxFS image,
+    /// through the FS server, through `std::fs`, and out the stdout endpoint.
+    pub(super) fn std_fs_expected(buf: &mut [u8; 512]) -> usize {
+        // The lengths spelled out below are the motd's; if the fixture changes, fail here rather
+        // than in a byte comparison nobody can read.
+        assert_eq!(
+            fs_proto::fixture::MOTD.len(),
+            70,
+            "the motd fixture changed; the expected transcript's lengths must change with it",
+        );
+        let mut n = 0;
+        for part in [
+            b"std fs on cricker-os\n".as_slice(),
+            fs_proto::fixture::MOTD,
+            b"read_to_string 70\nmetadata len 70\n".as_slice(),
+            b"absolute refused\ndotdot refused\nnested refused\n".as_slice(),
+            b"missing not found\ncreate unsupported\n".as_slice(),
+            b"write readback ok\nfs ok\n".as_slice(),
+        ] {
+            buf[n..n + part.len()].copy_from_slice(part);
+            n += part.len();
+        }
+        n
+    }
+
     /// The exact bytes `hellostd` prints, in order. `println!` is line-buffered and every line
     /// ends in `\n`, so the whole transcript is flushed by the time the program exits. Pinned here
     /// so a drift in std's behaviour, the PAL, or the demo is a loud diff rather than a mystery.
@@ -2642,42 +2857,14 @@ mod std_tests {
 
     /// A whole Rust `std` program runs on the native ABI and its output is exactly right.
     ///
-    /// The program SENDs its stdout as 16-byte endpoint messages (w0 = byte count, w1|w2 = the
-    /// bytes, little-endian); we reassemble the stream and compare. Because `SEND` blocks until a
-    /// receiver takes it, recving exactly `EXPECTED.len()` bytes consumes exactly the messages the
-    /// program sent, and the program has reached `SYS_EXIT` by the time the last one lands.
+    /// Granted only a heap and a stdout endpoint, so both `fs` and `net` refuse: the two
+    /// `unsupported` lines in the transcript are "no ambient filesystem" and "no ambient network"
+    /// felt from inside std, on a binary that also runs both for real when it is granted them.
     #[test_case]
     fn a_whole_std_program_runs_on_the_native_abi() {
         let image = program("hellostd").expect("no hellostd program in the initrd archive");
         let report = std_service::start(image);
-
-        let mut got = [0u8; 256];
-        let mut len = 0usize;
-        while len < EXPECTED.len() {
-            let words = crate::sched::ipc_recv(report);
-            let count = words[0] as usize;
-            assert!(
-                (1..=16).contains(&count),
-                "stdout message with a bad byte count: {count}"
-            );
-            let mut chunk = [0u8; 16];
-            chunk[..8].copy_from_slice(&words[1].to_le_bytes());
-            chunk[8..].copy_from_slice(&words[2].to_le_bytes());
-            for &b in &chunk[..count] {
-                assert!(
-                    len < got.len(),
-                    "hellostd printed more than the expected transcript"
-                );
-                got[len] = b;
-                len += 1;
-            }
-        }
-
-        assert_eq!(
-            &got[..len],
-            EXPECTED,
-            "hellostd's stdout did not match the expected transcript",
-        );
+        assert_std_transcript(report, EXPECTED, "hellostd");
     }
 }
 
@@ -3018,6 +3205,9 @@ mod tests {
     };
     use crate::arch::timer;
     use crate::sched;
+    // The std-transcript and FS-readiness assertions live with the std tests so both ISAs share one
+    // copy; see `std_tests`.
+    use super::std_tests::{assert_fs_service_ready, assert_std_transcript, std_fs_expected};
     use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
     /// The `init` program's ELF bytes, pulled out of the initrd archive by name (milestone 19f). A
@@ -3608,6 +3798,39 @@ mod tests {
         );
     }
 
+    /// **`std::fs` end to end over the FS-service contract** (milestone 27 phase two, the FS half).
+    ///
+    /// An ordinary Rust program, granted **one directory capability** and nothing else that names a
+    /// filesystem, opens the file the host-made RedoxFS image ships, reads it with `Read` and
+    /// `read_to_string`, stats it, and gets refused when it tries to name anything outside that
+    /// directory. The bytes it prints are the file's own, so the assertion covers the whole path:
+    /// disk, DMA-confined block server, FS server running an engine we did not write, the file
+    /// contract, std's PAL, and the stdout endpoint.
+    ///
+    /// What it proves that the hand-written client's test does not: `std::fs::File::open` has no
+    /// global namespace to resolve against, and the mapping to a granted directory holds from inside
+    /// std, including the refusal of `..`, of an absolute path, and of a nested path. And the same
+    /// binary run without slot 4 gets `Unsupported`, which the offline std test asserts.
+    #[test_case]
+    fn std_fs_reads_a_file_through_a_granted_directory_capability() {
+        let (readiness, report) = match fs_service::start_std(
+            init_image(),
+            program("fsserver").expect("no fsserver program in the initrd archive"),
+            hellostd_image(),
+        ) {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no RedoxFS disk attached; skipping)");
+                return;
+            }
+        };
+        assert_fs_service_ready(readiness);
+
+        let mut want = [0u8; 512];
+        let n = std_fs_expected(&mut want);
+        assert_std_transcript(report, &want[..n], "std fs");
+    }
+
     /// **The RedoxFS filesystem service, end to end** (milestone 32 phase 2, the flagship
     /// userspace-reuse story). Three confined processes: a block server drives the RedoxFS disk over
     /// DMA, an FS server mounts it over blk IPC and serves files from its own heap, and a client
@@ -3617,7 +3840,7 @@ mod tests {
     /// handle is a server-minted token, and a real CoW filesystem we did not write runs confined.
     #[test_case]
     fn the_fs_server_serves_redoxfs_over_a_capability_contract() {
-        let (blk_ready, ready, report) = match fs_service::start(
+        let (readiness, report) = match fs_service::start(
             init_image(),
             program("fsserver").expect("no fsserver program in the initrd archive"),
             program("fsclient").expect("no fsclient program in the initrd archive"),
@@ -3631,18 +3854,9 @@ mod tests {
             }
         };
 
-        // First: the block server brought the RedoxFS device up.
-        assert_eq!(
-            sched::ipc_recv(blk_ready)[0],
-            fs_proto::fixture::READY,
-            "the block server did not bring the RedoxFS device up",
-        );
-        // Then: the FS server opened the image over blk IPC.
-        assert_eq!(
-            sched::ipc_recv(ready)[0],
-            fs_proto::fixture::READY,
-            "the FS server did not open the RedoxFS image",
-        );
+        // The two servers' readiness sentinels, if this test is the one that wired them (the
+        // `std::fs` test shares the same service, and each sentinel is sent exactly once).
+        assert_fs_service_ready(readiness);
 
         // Then: the client has read motd, round-tripped scratch, and reported. If any of the three
         // processes faults, it never sends and the QEMU-level timeout is the backstop.
@@ -3890,32 +4104,7 @@ mod tests {
             }
         };
 
-        let mut got = [0u8; 256];
-        let mut len = 0usize;
-        while len < STD_NET_EXPECTED.len() {
-            let words = sched::ipc_recv(report);
-            let count = words[0] as usize;
-            assert!(
-                (1..=16).contains(&count),
-                "std net stdout message with a bad byte count: {count}"
-            );
-            let mut chunk = [0u8; 16];
-            chunk[..8].copy_from_slice(&words[1].to_le_bytes());
-            chunk[8..].copy_from_slice(&words[2].to_le_bytes());
-            for &b in &chunk[..count] {
-                assert!(
-                    len < got.len(),
-                    "the std net program printed more than the transcript"
-                );
-                got[len] = b;
-                len += 1;
-            }
-        }
-        assert_eq!(
-            &got[..len],
-            STD_NET_EXPECTED,
-            "the std net program's stdout did not match the expected transcript",
-        );
+        assert_std_transcript(report, STD_NET_EXPECTED, "std net");
     }
 
     /// **The shell's `run` mechanism: spawn a process, get its answer.** Milestone 10's core.
@@ -5145,6 +5334,8 @@ mod supervision_tests {
 #[cfg(all(test, target_arch = "riscv64"))]
 mod riscv_virtio_tests {
     use super::*;
+    // Shared with the aarch64 module so both ISAs assert a std transcript the same way.
+    use super::std_tests::{assert_fs_service_ready, assert_std_transcript, std_fs_expected};
     use crate::sched;
     use core::sync::atomic::Ordering;
 
@@ -5263,7 +5454,7 @@ mod riscv_virtio_tests {
     /// the portable `blk` binary here instead of hello.
     #[test_case]
     fn the_fs_server_serves_redoxfs_over_a_capability_contract() {
-        let (blk_ready, ready, report) = match fs_service::start(
+        let (readiness, report) = match fs_service::start(
             blk_image(),
             program("fsserver").expect("no fsserver program in the initrd archive"),
             program("fsclient").expect("no fsclient program in the initrd archive"),
@@ -5276,16 +5467,7 @@ mod riscv_virtio_tests {
             }
         };
 
-        assert_eq!(
-            sched::ipc_recv(blk_ready)[0],
-            fs_proto::fixture::READY,
-            "the block server did not bring the RedoxFS device up",
-        );
-        assert_eq!(
-            sched::ipc_recv(ready)[0],
-            fs_proto::fixture::READY,
-            "the FS server did not open the RedoxFS image",
-        );
+        assert_fs_service_ready(readiness);
         let [head, status, ..] = sched::ipc_recv(report);
         assert_eq!(
             status,
@@ -5297,6 +5479,30 @@ mod riscv_virtio_tests {
             &fs_proto::fixture::MOTD[..8],
             "the client read the wrong motd bytes off the RedoxFS image",
         );
+    }
+
+    /// **`std::fs` over the FS-service contract, on the second ISA** (milestone 27 phase two, the
+    /// parity gate). The aarch64 twin's proof, same binary, same contract, same transcript: a std
+    /// program granted one directory capability reads the file the RedoxFS image ships and is
+    /// refused every path that would leave that directory. See the aarch64 twin for what it proves.
+    #[test_case]
+    fn std_fs_reads_a_file_through_a_granted_directory_capability() {
+        let (readiness, report) = match fs_service::start_std(
+            blk_image(),
+            program("fsserver").expect("no fsserver program in the initrd archive"),
+            program("hellostd").expect("no hellostd program in the initrd archive"),
+        ) {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no RedoxFS disk attached; skipping)");
+                return;
+            }
+        };
+        assert_fs_service_ready(readiness);
+
+        let mut want = [0u8; 512];
+        let n = std_fs_expected(&mut want);
+        assert_std_transcript(report, &want[..n], "std fs");
     }
 
     /// The virtio-net DHCP round trip, on the second ISA (milestone 30): a driver at EL0 brings up
@@ -5493,32 +5699,7 @@ mod riscv_virtio_tests {
             }
         };
 
-        let mut got = [0u8; 256];
-        let mut len = 0usize;
-        while len < STD_NET_EXPECTED.len() {
-            let words = sched::ipc_recv(report);
-            let count = words[0] as usize;
-            assert!(
-                (1..=16).contains(&count),
-                "std net stdout message with a bad byte count: {count}"
-            );
-            let mut chunk = [0u8; 16];
-            chunk[..8].copy_from_slice(&words[1].to_le_bytes());
-            chunk[8..].copy_from_slice(&words[2].to_le_bytes());
-            for &b in &chunk[..count] {
-                assert!(
-                    len < got.len(),
-                    "the std net program printed more than the transcript"
-                );
-                got[len] = b;
-                len += 1;
-            }
-        }
-        assert_eq!(
-            &got[..len],
-            STD_NET_EXPECTED,
-            "the std net program's stdout did not match the expected transcript",
-        );
+        assert_std_transcript(report, STD_NET_EXPECTED, "std net");
     }
 
     /// The DMA confinement holds on riscv: a descriptor aimed at kernel memory is refused and

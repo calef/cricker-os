@@ -114,11 +114,13 @@ in the code or the conversation doesn't make sense, it belongs here.
   convention down instead of building a BootInfo, and what a POSIX shim would cost (nothing, later).
 - [Rust `std` on the native ABI](std.md) — milestone 27: std's platform layer implemented directly
   on the capability ABI (Hermit's shape, not a POSIX shim). Heap from an untyped budget, stdout to an
-  endpoint, time from the virtual counter, `panic!` faults, `thread::spawn`/`fs` honestly
-  `Unsupported`, and (phase two) `std::net`'s `TcpStream`/outbound `UdpSocket` bound to netd's socket
-  contract. How build-std runs against a hardlink-cloned, patched rust-src, why the symlink farm
-  was measured to fail, and the honest caveats (monotonic-only clock, non-crypto random, std-internals
-  coupling).
+  endpoint, time from the virtual counter, `panic!` faults, `thread::spawn` honestly `Unsupported`,
+  and (phase two) `std::net` bound to netd's socket contract and `std::fs` bound to the FS service.
+  What a path *means* with no global namespace ("under the directory I hold", so `..` and an absolute
+  path are refused as un-nameable rather than served), how a program detects it holds no filesystem
+  without faulting on an unmapped page, how build-std runs against a hardlink-cloned patched
+  rust-src, why the symlink farm was measured to fail, and the honest caveats (no create or truncate
+  verb, monotonic-only clock, non-crypto random, std-internals coupling).
 - [How authority moves, narrows, and ends](capability-lifecycle.md) — capabilities spread by
   copy-with-narrowing (never widening), `SEND_CAP` is share not move, the two independent
   narrowings (rights vs. GRANT), and why there's no revocation yet (a control gap, not a
@@ -269,9 +271,10 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [The RedoxFS filesystem server](fs-server.md) — milestone 32 phase 2: RedoxFS confined as a
   userspace component behind a capability-shaped contract (the endpoint IS the directory
   capability, a handle is a server-minted token, open-by-path lives only inside the server). The
-  three-process design (block server, FS server, client), why the block server polls, the error
-  boundary mapped once, and the honest open item: the read path is proven end to end on both ISAs,
-  on-device writes loop inside RedoxFS's allocator commit and are the remaining work.
+  three-process design (block server, FS server, client), why the block server waits on the
+  completion interrupt, and the error boundary mapped once. Read AND write are now proven end to end
+  on both ISAs, the write with a host-tool reopen of the image; the old "writes loop in the allocator
+  commit" open item was stale and the note records the correction.
 - [Prior art and reuse](prior-art.md) — where to look before building (Redox, rCore, Tock,
   Hubris, seL4, Fuchsia) and the rule that decides build-vs-reuse: the reuse boundary is the
   TCB boundary. Inside it, always build; userspace components, actively prefer porting,

@@ -3,26 +3,40 @@
 //! endpoint (slot 1), collections draw from the untyped budget (slot 0), `Instant` reads the
 //! virtual counter, and `fs` returns honestly `Unsupported`.
 //!
-//! **One binary, two behaviours, chosen by the authority it was granted.** A std program does
-//! networking only if it holds the network (no ambient network, DECISIONS §10, §25). This program
-//! probes for it with a single `UdpSocket::bind`:
-//!   - **granted the network** (the loader placed a `Stack` endpoint and a frame untyped in slots 2
-//!     and 3): it runs a real UDP DNS query and a TCP echo round trip through `std::net`
-//!     (milestone 27 phase two), the same netd socket contract the hand-written client uses.
-//!   - **not granted** (only the heap and stdout slots): `std::net` returns `Unsupported`, and the
+//! **One binary, three behaviours, chosen by the authority it was granted.** A std program reaches
+//! the network only if it holds the network, and the filesystem only if it holds a directory (no
+//! ambient authority, DECISIONS §10, §25, §27). So it probes, and its grants decide:
+//!   - **granted a directory** (the loader placed an FS-service endpoint in slot 4 and mapped the
+//!     page it shares with the FS server): it opens the file the RedoxFS image ships, reads it
+//!     through `std::fs`, and proves that a path trying to leave the granted directory is refused.
+//!   - **granted the network** (a `Stack` endpoint and a frame untyped in slots 2 and 3): it runs a
+//!     real UDP DNS query and a TCP echo round trip through `std::net` (milestone 27 phase two),
+//!     the same netd socket contract the hand-written client uses.
+//!   - **granted neither** (only the heap and stdout slots): both return `Unsupported`, and the
 //!     program runs the phase-one transcript, proving the collections, timing, and the honest
-//!     refusal of `fs`/`net`.
+//!     refusals.
 //!
 //! One binary keeps the initrd under its 15-file directory limit (crickerfs `MAX_FILES`) while
-//! still proving both. The kernel test suite spawns it both ways and checks each transcript byte
-//! for byte, on both ISAs.
+//! still proving all three. The kernel test suite spawns it three ways and checks each transcript
+//! byte for byte, on both ISAs.
 
 use std::collections::HashMap;
+use std::fs::File;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, UdpSocket};
 use std::time::Instant;
 
 fn main() {
+    // Probe for a directory capability first: an `Unsupported` open means no FS-service endpoint in
+    // slot 4, i.e. this process holds no directory and there is no ambient filesystem to fall back
+    // on. Anything else means the filesystem IS granted, so a failure to open the file the image
+    // ships is a real failure and must not be silently swallowed by falling through to the net.
+    match File::open(fs_proto::fixture::MOTD_NAME) {
+        Ok(f) => return fs_demo(f),
+        Err(e) if e.kind() == ErrorKind::Unsupported => {}
+        Err(e) => panic!("a directory capability was granted but the motd would not open: {e:?}"),
+    }
+
     // Probe for the network by trying to open a UDP socket. A program not granted the `Stack`
     // endpoint and a frame untyped gets `Unsupported` here (the RETYPE of a shared frame fails
     // with no untyped in slot 3), which is the signal to run the offline transcript instead.
@@ -78,6 +92,99 @@ fn offline_demo() {
         "no time passed across real work"
     );
     println!("instant monotonic ok");
+}
+
+/// **The `std::fs` transcript** (milestone 27 phase two, the FS half): ordinary `File`, `Read`,
+/// `read_to_string`, and `metadata`, all served by the RedoxFS FS server over the §27 contract, and
+/// all reached through the one directory capability this process was granted.
+///
+/// The interesting half is the refusals. `File::open` takes a path, but this system has no global
+/// namespace: a name means "under the directory I hold", so `/etc/passwd`, `../motd`, and
+/// `sub/motd` are not things this process can express, and each is refused *before* a byte reaches
+/// the server. The refusal is `InvalidFilename` (there is no such name here), never
+/// `PermissionDenied`, because nothing checked a permission. A name that IS expressible but absent
+/// is an ordinary `NotFound`, which is what makes the difference legible.
+///
+/// `motd` is already open when this runs: opening it was the probe that chose this branch.
+fn fs_demo(mut motd: File) {
+    println!("std fs on cricker-os");
+
+    // Bytes off a real RedoxFS image, through a confined FS server, reached with `Read` on an
+    // ordinary `File`. Printed as well as asserted, so the kernel test compares the file's contents
+    // byte for byte after they have crossed the whole stack.
+    let mut bytes = Vec::new();
+    motd.read_to_end(&mut bytes)
+        .expect("reading the motd through std::fs failed");
+    assert_eq!(
+        bytes,
+        fs_proto::fixture::MOTD,
+        "std::fs read the wrong bytes off the image"
+    );
+    print!(
+        "{}",
+        String::from_utf8(bytes).expect("the motd is UTF-8 and ends in a newline")
+    );
+    drop(motd); // Drop CLOSEs the handle the server minted for us.
+
+    // read_to_string reopens the same name and leans on the size hint the PAL answers with FSTAT.
+    let text = std::fs::read_to_string(fs_proto::fixture::MOTD_NAME)
+        .expect("read_to_string through std::fs failed");
+    println!("read_to_string {}", text.len());
+
+    let meta =
+        std::fs::metadata(fs_proto::fixture::MOTD_NAME).expect("metadata through std::fs failed");
+    assert!(meta.is_file(), "the motd is a regular file");
+    println!("metadata len {}", meta.len());
+
+    refused("/etc/passwd", "absolute");
+    refused("../motd", "dotdot");
+    refused("sub/motd", "nested");
+
+    match File::open("definitely-not-here") {
+        Err(e) if e.kind() == ErrorKind::NotFound => println!("missing not found"),
+        other => panic!("a missing name did not read as NotFound: {other:?}"),
+    }
+
+    // Creating and truncating need verbs the contract does not have (§27: the server only ever
+    // opens an image it did not make), so std's convenience writers refuse honestly rather than
+    // silently leaving a tail of the old contents behind.
+    match std::fs::write(fs_proto::fixture::SCRATCH_NAME, b"x") {
+        Err(e) if e.kind() == ErrorKind::Unsupported => println!("create unsupported"),
+        other => panic!("fs::write did not refuse a create+truncate open: {other:?}"),
+    }
+
+    // **The on-device write path, and a correction to the record.** notes/fs-server.md recorded
+    // that an end-to-end write looped inside RedoxFS's allocator commit on bare metal, so the
+    // milestone-32 client's test stayed read-only. With interrupt-driven block completion restored
+    // it completes: this writes over a file the image ships (there is no create verb, so `scratch`
+    // must already exist), reads it back, and the host tool re-reads the image after the run to
+    // prove the bytes reached the disk rather than a cache.
+    let mut scratch = std::fs::OpenOptions::new()
+        .write(true)
+        .open(fs_proto::fixture::SCRATCH_NAME)
+        .expect("opening scratch for writing through std::fs failed");
+    scratch
+        .write_all(fs_proto::fixture::WRITE_PATTERN)
+        .expect("writing scratch through std::fs failed");
+    drop(scratch);
+    let back = std::fs::read(fs_proto::fixture::SCRATCH_NAME)
+        .expect("reading scratch back through std::fs failed");
+    assert_eq!(
+        back,
+        fs_proto::fixture::WRITE_PATTERN,
+        "the write did not read back"
+    );
+    println!("write readback ok");
+
+    println!("fs ok");
+}
+
+/// Assert that a path is refused as un-nameable, and say which case it was.
+fn refused(path: &str, label: &str) {
+    match File::open(path) {
+        Err(e) if e.kind() == ErrorKind::InvalidFilename => println!("{label} refused"),
+        other => panic!("{path} was not refused as un-nameable: {other:?}"),
+    }
 }
 
 /// slirp's built-in resolver and the guestfwd echo peer the test runners attach.

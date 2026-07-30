@@ -16,8 +16,9 @@ available. Re-point new agents at it.
 
 - **Milestone 32 (RedoxFS FS service):** capability-shaped contract, open-by-path only inside
   the server against a granted directory cap. DECISIONS §27, notes/fs-server.md. Read path
-  proven; the interrupt-driven completion path is fixed (see IRQ below), so on-device writes
-  are unblocked, confirm the write path end-to-end is exercised if not already.
+  proven; the interrupt-driven completion path is fixed (see IRQ below). **The write path was
+  confirmed end to end on 2026-07-29** through `std::fs`, so the old allocator-commit blocker is
+  retired; see item 3 below.
 - **§28 SMP placement:** two-choice spawn placement, message-shaped idle stealing, wake split
   (IPC rendezvous local, device-IRQ load-aware). DECISIONS §28 + implementation amendment,
   notes/scheduler.md. Exposed and fixed a **latent RISC-V switch bug** (stale `tp` restored
@@ -54,7 +55,13 @@ service), §28 (SMP placement) + amendment, §16 amendment (SPLIT rights inherit
 2. **Milestone 22 phase B** (trusted init): verify init's bytes (measured/signed boot) and
    shrink its authority. The fault endpoint (§26) is built; this is the boot-verification half.
    Its DMA-tamper precondition was closed by 16b (the IOMMU).
-3. **Milestone 27 phase 2 completion:** std::fs binding to the FS server (std::net already done).
+3. ~~**Milestone 27 phase 2 completion:** std::fs binding to the FS server.~~ **DONE 2026-07-29**
+   (DECISIONS §22 phase-two amendment, notes/std.md): `std::fs` binds to the §27 contract through a
+   directory capability at slot 4, escapes refused as un-nameable, `Unsupported` without the grant.
+   It also settled the question this note left open: the on-device write path **works**, and the
+   recorded "loops in RedoxFS's allocator commit" blocker was stale (§27 amended, host-tool reopen of
+   the image now in the gate). What is left there is a contract gap, no `CREATE`/`TRUNCATE` verb, so
+   `std::fs::write` stays Unsupported; that is a decision for Chris, not a bug.
 4. **Milestone 31 phase 2:** per-file grants pointing at FS-server directory caps.
 5. **Milestone 23** (the flagship): capability-routed component OS with live replacement. All
    prerequisites now exist (revocation, supervision, dedicated binaries, components with real

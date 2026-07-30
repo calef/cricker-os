@@ -109,35 +109,47 @@ opens without truncating, so `mkfs` over an existing image left stale blocks pas
 produced an image that failed to open. Removing the file first makes it idempotent, which the test
 flow relies on (it regenerates the image every run).
 
-## What is proven, and the open item
+## What is proven
 
 **Proven end to end, both ISAs** (the parity gate, DECISIONS §19): a host-made RedoxFS image, a
 block server driving it over DMA, an FS server mounting it over blk IPC and serving from its own
 heap, and a client opening the shipped `motd` through a granted directory capability and reading it
-back byte for byte. This is the whole read path: the engine mounts, the contract holds, the
-confinement holds. The sans-IO core is host-tested for both read AND write against a `DiskMemory`
-image (`fs-server` lib tests), so the filesystem *logic* is proven on both paths.
+back byte for byte. The engine mounts, the contract holds, the confinement holds. The sans-IO core is
+host-tested for both read AND write against a `DiskMemory` image (`fs-server` lib tests), so the
+filesystem *logic* is proven on both paths independently of any device.
 
-**The open item: on-device writes.** The write plumbing is all in place and host-proven (the
-`Server::write` lib test round-trips a write through a full close and reopen), but the on-device
-end-to-end write currently **loops inside RedoxFS's allocator commit on bare metal**, even on a
-pristine, freshly-created image. The symptom, from instrumenting the kernel's virtio submit path:
-the FS server issues one write, then spins re-reading the same handful of allocator blocks (the
-`prev`-chain walk in `Transaction::sync_allocator`, `vendor/redoxfs/src/transaction.rs`), issuing no
-further writes, until the watchdog fires. The reads return correct data (the on-disk image stays
-intact and the host tool reads it after the run), so it is not disk corruption and not a blk-IPC
-stall; the identical `write_node`+commit runs cleanly on the host with `DiskMemory` and the std
-allocator. The difference is the cricker runtime, `IpcDisk` and the untyped-backed `GlobalAlloc`,
-against the vendored engine's no_std write path, which the 0.9.1 audit compiled but never ran a
-write through on bare metal. This is the milestone's remaining work: a design/redoxfs-internals
-investigation (heap-interaction or a no_std write bug worth reporting upstream), raised rather than
-papered over. The client's green test is read-only by consequence, and says so in its source.
+**The write path is proven on-device too, which is a correction** (2026-07-29, milestone 27 phase
+two). This note used to record an open item: the end-to-end write "loops inside RedoxFS's allocator
+commit on bare metal even on a pristine image", spinning on the `prev`-chain walk in
+`Transaction::sync_allocator` and issuing no further writes until the watchdog fired. It does not.
+Driven through `std::fs` (the milestone-27 PAL, `OpenOptions::write(true)` on the image's `scratch`
+file), the write completes on both ISAs, reads back through the server, and reads back byte for byte
+when the **host tool reopens the image afterwards** with the pinned engine, which is the part a cache
+cannot fake. That reopen is in the gate: `redoxfs_check_after_run` compares `scratch` against the
+fixture, and `mkredoxfs` rewrites it to a placeholder before every run, so the check passing means
+this run's guest write landed on the disk.
+
+The likely reason it works now is the interrupt-delivery fix above: the block server WAITs on the
+device's completion interrupt instead of polling the used ring, the same correction this note already
+had to make for the read path. That is stated as *likely*, not proven: what was measured is that the
+write completes, not why the poll path did not. The milestone-32 client stays read-only by choice
+now rather than by blocker, and its source says so; the write is proven through `std::fs`, which
+drives the same contract through more layers.
+
+**The remaining gap is in the contract, not the write path.** There is no `CREATE` and no `TRUNCATE`
+verb, so `std::fs::write` and `File::create` are honestly `Unsupported` and writing means opening a
+file the image already carries. Adding both verbs is possible (`Transaction::create_node` is not
+std-gated; "never create on-device" below is about creating a *filesystem*, which needs uuid and
+getrandom, not a file), but it widens the contract and belongs to a deliberate decision. See
+notes/std.md.
 
 ## For later milestones
 
 - **31 (capability shell)** hands out endpoints bound to specific directories or files as grant
   expressions; the server's bound-directory and handle-table seams are already the shape it needs.
-- **27 (`std::fs`)** binds its `Unsupported` `fs` paths to this contract, phase two of that
-  milestone, not this one.
+- **27 (`std::fs`)** is **done**: the PAL binds `File` to this contract, and the endpoint's bound
+  directory becomes the thing `File::open`'s path resolves under, so a path that would leave it is
+  refused rather than served. The std program holds the endpoint at slot 4 of the std slot convention
+  and nothing else that names a filesystem. See notes/std.md and notes/abi.md §4.
 - **23 (live replacement)** gets its hardest state-handoff case here: an FS server with open handles
   and in-flight writes is the "serialise-old / absorb-new" problem the console swap never had.
