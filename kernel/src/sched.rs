@@ -455,11 +455,22 @@ pub fn drain_inbox() {
 /// reaper frees only `Finished` threads, and a thread is never two of those at once. The `Box` in
 /// the table pins the address (see `Scheduler::threads`), so a pointer taken here is good until
 /// the thread is popped, however many queue hops (inbox to run queue) it makes in between.
-fn tcb_ptr(sched: &mut Scheduler, tid: Tid) -> *mut Thread {
-    sched
-        .threads
-        .get_mut(tid)
-        .expect("tcb_ptr of a dead thread")
+/// The queue-able pointer to a live thread.
+///
+/// Returns [`core::ptr::NonNull`] rather than `*mut`, and that is not decoration: the pointer is derived from a
+/// `&mut Thread` handed out by the thread table, so **non-nullness is a fact of construction rather
+/// than a promise the caller keeps**. Saying so in the type removes null from the intrusive queue's
+/// safety contract entirely, which is one of the two things CodeQL's `rust/access-invalid-pointer`
+/// alerts were pointing at (milestone 45). What the type still cannot express is that the pointee
+/// outlives its time on the queue; that is the caller's rule 2, and no type available here can carry
+/// it for an intrusive structure.
+fn tcb_ptr(sched: &mut Scheduler, tid: Tid) -> core::ptr::NonNull<Thread> {
+    core::ptr::NonNull::from(
+        sched
+            .threads
+            .get_mut(tid)
+            .expect("tcb_ptr of a dead thread"),
+    )
 }
 
 /// Put an already-created thread onto core `target`'s run queue. Caller holds `SCHED`.
@@ -468,7 +479,7 @@ fn tcb_ptr(sched: &mut Scheduler, tid: Tid) -> *mut Thread {
 /// into the target's inbox, and the SGI (sent after SCHED is released, by the caller) makes it
 /// drain. The inbox push under SCHED is rank-safe (INBOX < SCHED), and the inbox's own lock supplies
 /// the release/acquire that orders our thread-table insert before the target's drain (§11).
-fn place_on(target: usize, thread: *mut Thread) {
+fn place_on(target: usize, thread: core::ptr::NonNull<Thread>) {
     if target == cpu::id() {
         // SAFETY: `thread` is a live Ready thread (see tcb_ptr), on no other queue.
         cpu::current().with_runq(|q| unsafe { q.push_back(thread) });
@@ -776,7 +787,7 @@ fn deliver_death(sched: &mut Scheduler, corpse: Tid, ep: EpId, msg: [u64; 5]) {
     match unsafe { endpoint.send(me) } {
         ipc::Send::Rendezvous(receiver) => {
             // SAFETY: wait-queue entries are live Blocked threads; the id revalidates it.
-            let receiver = unsafe { (*receiver).id };
+            let receiver = unsafe { (*receiver.as_ptr()).id };
             sched.threads.get_mut(receiver).unwrap().mailbox = msg;
             wake(sched, receiver);
         }
@@ -850,7 +861,7 @@ pub fn schedule() {
         let next = match cpu::current().with_runq(|q| q.pop_front()) {
             // SAFETY: only live Ready threads are ever queued; reading the id is the last thing
             // that happens before the pointer is dropped in favor of the (validated) Tid.
-            Some(t) => unsafe { (*t).id },
+            Some(t) => unsafe { (*t.as_ptr()).id },
             None => {
                 if runnable {
                     // Keep it. A thread yielding into an empty run queue simply carries on. (The
@@ -1055,7 +1066,7 @@ pub fn irq_notify(ep: EpId) {
         if let Some(waiter) = endpoint.signal() {
             // SAFETY: only live Blocked threads sit on wait queues; reading the id revalidates it
             // through the table for everything after.
-            let waiter = unsafe { (*waiter).id };
+            let waiter = unsafe { (*waiter.as_ptr()).id };
             sched.threads.get_mut(waiter).unwrap().mailbox = [1, 0, 0, 0, 0];
             wake_load_aware(sched, waiter)
         } else {
@@ -1217,7 +1228,7 @@ fn wake_load_aware(sched: &mut Scheduler, tid: Tid) -> Option<usize> {
         return None;
     }
     t.state = State::Ready;
-    let ptr: *mut Thread = t;
+    let ptr = core::ptr::NonNull::from(t);
     let target = pick_wake_target();
     if target == cpu::id() {
         // SAFETY: just Blocked -> Ready, on no queue; SCHED masks interrupts, which with_runq needs.
@@ -1252,7 +1263,7 @@ fn wake(sched: &mut Scheduler, tid: Tid) {
             return;
         }
         t.state = State::Ready;
-        let ptr: *mut Thread = t;
+        let ptr = core::ptr::NonNull::from(t);
         // Onto this core's queue. Every caller (ipc_*, irq_notify) holds SCHED, so interrupts
         // are masked. Step 3c makes this place the thread on the *right* core via its inbox.
         // SAFETY: just transitioned Blocked -> Ready, so it was on no queue and now joins one.
@@ -1300,7 +1311,7 @@ pub fn ipc_send(ep: EpId, msg: [u64; 3]) {
         match unsafe { endpoint.send(me) } {
             ipc::Send::Rendezvous(receiver) => {
                 // SAFETY: wait-queue entries are live Blocked threads; the id revalidates it.
-                let receiver = unsafe { (*receiver).id };
+                let receiver = unsafe { (*receiver.as_ptr()).id };
                 sched.threads.get_mut(receiver).unwrap().mailbox = msg;
                 wake(sched, receiver);
                 false
@@ -1344,7 +1355,7 @@ pub fn ipc_recv(ep: EpId) -> [u64; 5] {
             ipc::Recv::Signal => Some([1, 0, 0, 0, 0]),
             ipc::Recv::FromSender(sender) => {
                 // SAFETY: wait-queue entries are live Blocked threads; the id revalidates it.
-                let sender = unsafe { (*sender).id };
+                let sender = unsafe { (*sender.as_ptr()).id };
                 let msg = sched.threads.get(sender).unwrap().mailbox;
                 // A caller (its outgoing cap is the one-shot Reply the kernel minted for a CALL, §12)
                 // is awaiting a *reply*, which a plain RECV cannot furnish: only RECV_CAP delivers the
@@ -1418,7 +1429,7 @@ pub fn ipc_send_cap(ep: EpId, data: u64, cap: crate::cap::Cap) {
         match unsafe { endpoint.send(me) } {
             ipc::Send::Rendezvous(receiver) => {
                 // SAFETY: wait-queue entries are live Blocked threads; the id revalidates it.
-                let receiver = unsafe { (*receiver).id };
+                let receiver = unsafe { (*receiver.as_ptr()).id };
                 let r = sched.threads.get_mut(receiver).unwrap();
                 let slot = r.cspace.insert(cap).unwrap_or(NO_CAP);
                 r.mailbox = [data, slot, 0, 0, 0];
@@ -1464,7 +1475,7 @@ pub fn ipc_recv_cap(ep: EpId) -> [u64; 3] {
             ipc::Recv::Signal => Some([1, NO_CAP, 0]),
             ipc::Recv::FromSender(sender) => {
                 // SAFETY: wait-queue entries are live Blocked threads; the id revalidates it.
-                let sender = unsafe { (*sender).id };
+                let sender = unsafe { (*sender.as_ptr()).id };
                 let msg = sched.threads.get(sender).unwrap().mailbox;
                 let cap = sched.threads.get_mut(sender).unwrap().outgoing_cap.take();
                 // A caller's outgoing cap is the one-shot Reply the kernel minted for its CALL (§12); a
@@ -1536,7 +1547,7 @@ pub fn ipc_call(ep: EpId, msg: [u64; 2]) -> [u64; 3] {
         match unsafe { endpoint.send(me) } {
             ipc::Send::Rendezvous(receiver) => {
                 // SAFETY: wait-queue entries are live Blocked threads; the id revalidates it.
-                let receiver = unsafe { (*receiver).id };
+                let receiver = unsafe { (*receiver.as_ptr()).id };
                 // A server is parked in RECV_CAP: hand it the reply cap and the two words now.
                 let r = sched.threads.get_mut(receiver).unwrap();
                 let slot = r.cspace.insert(reply).unwrap_or(NO_CAP);
@@ -1810,7 +1821,7 @@ fn reap_region_objects(base: u64, end: u64) -> Result<(), ()> {
         if let Some(endpoint) = endpoint_of(sched, name) {
             endpoint.drain_waiters(|w| {
                 // SAFETY: wait-queue entries are live Blocked threads; the id revalidates it.
-                waiters[nw] = unsafe { (*w).id };
+                waiters[nw] = unsafe { (*w.as_ptr()).id };
                 nw += 1;
             });
         }

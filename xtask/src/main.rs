@@ -1915,6 +1915,10 @@ fn run_bench(
     if save {
         let mut out = String::from(
             "# bench/baseline.txt: deterministic icount tick counts (cargo xtask bench --save).
+# Recorded against the QEMU pinned in .qemu-version. icount counts guest instructions, so the
+# emulator version is part of what these numbers mean: script/qemu-check warns when the QEMU on
+# PATH is not the pinned one, precisely because that is when a baseline comparison stops being
+# apples to apples.
              # Updating this file is a statement that a performance change is intended and
              # understood; do it in the commit that causes the change. Checked by --check, a coarse
              # 10% tripwire (icount counts drift across builds; see notes/benchmarks.md).
@@ -1943,7 +1947,11 @@ fn run_bench(
             return false;
         };
         let mut ok = true;
-        for line in text.lines().filter(|l| !l.starts_with('#')) {
+        // `trim_start` matters: this file's own header has INDENTED comment lines, which a
+        // column-0-only check treats as data. They survive today only because they happen to split
+        // into more than three tokens and fall through the destructure below. A three-word indented
+        // comment would be silently parsed as a benchmark named after its first word.
+        for line in text.lines().filter(|l| !l.trim_start().starts_with('#')) {
             let parts: Vec<&str> = line.split_whitespace().collect();
             let [name, base, _iters] = parts.as_slice() else {
                 continue;

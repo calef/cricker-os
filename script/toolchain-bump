@@ -1,0 +1,71 @@
+#!/bin/sh
+# script/toolchain-bump [YYYY-MM-DD]: raise the pinned nightly, with evidence.
+#
+# rust-toolchain.toml pins a dated nightly so builds are reproducible and a toolchain change is a
+# deliberate commit rather than a surprise (see the comment in that file for the incident that
+# prompted it). The cost of pinning is that staying current becomes an action somebody has to take;
+# this is that action, so it is one command instead of a remembered sequence.
+#
+# The daily `toolchain drift` workflow is the other half: it builds against the newest nightly and
+# tells you when upstream has moved away from us. When it goes red, run this.
+#
+# With no argument it targets today. On success the working tree holds the new pin and a rebuilt std
+# farm, ready to commit; on failure it says what broke and leaves the old pin in place, because a
+# half-applied toolchain bump is worse than none.
+
+set -e
+cd "$(dirname "$0")/.."
+
+date_arg="${1:-$(date -u +%Y-%m-%d)}"
+new="nightly-$date_arg"
+old="$(awk -F'"' '/^channel/ {print $2}' rust-toolchain.toml)"
+
+if [ "$old" = "$new" ]; then
+    echo "toolchain-bump: already pinned to $new; nothing to do."
+    exit 0
+fi
+
+echo "==> Bumping the pin: $old -> $new"
+
+# Install first. If the date does not exist upstream (a nightly can be missing), fail here, before
+# the tree has been touched.
+rustup toolchain install "$new" --profile minimal \
+    --component rust-src,llvm-tools,rustfmt,clippy
+rustup target add --toolchain "$new" \
+    aarch64-unknown-none-softfloat riscv64imac-unknown-none-elf
+
+# Restore the old pin if anything below fails, so a failed bump leaves a buildable tree.
+restore() {
+    echo "toolchain-bump: FAILED; restoring the pin to $old" >&2
+    sed -i.bak "s|^channel = \"$new\"|channel = \"$old\"|" rust-toolchain.toml
+    rm -f rust-toolchain.toml.bak
+    echo "toolchain-bump: the tree still builds on $old. Nothing was committed." >&2
+}
+trap restore EXIT INT TERM
+
+sed -i.bak "s|^channel = \"$old\"|channel = \"$new\"|" rust-toolchain.toml
+rm -f rust-toolchain.toml.bak
+
+# The std overlay is where a bump actually bites: it patches std's own source, so it tracks upstream
+# internals rather than a stable API. A stale farm would hide exactly the breakage we are checking
+# for, which is how the 2026-07-30 incident stayed invisible on a developer machine for two days.
+echo "==> Rebuilding the std overlay from scratch (the fragile part)"
+rm -rf target/cricker-farm
+if ! cargo xtask user-std; then
+    echo >&2
+    echo "toolchain-bump: the std overlay does not build on $new." >&2
+    echo "  This is the expected failure mode. Look for a symbol upstream added to sys::fs that" >&2
+    echo "  patches/std-cricker/overlay/std/src/sys/fs/cricker.rs does not re-export from" >&2
+    echo "  unsupported_fs, add it to that list, and re-run." >&2
+    exit 1
+fi
+
+echo "==> Full gate on the new toolchain"
+script/fmt
+script/lint
+script/test
+
+trap - EXIT INT TERM
+echo
+echo "==> Bumped to $new, and every gate passed."
+echo "    Commit rust-toolchain.toml (and the overlay, if it needed new re-exports)."

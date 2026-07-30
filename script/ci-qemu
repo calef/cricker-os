@@ -1,0 +1,79 @@
+#!/bin/sh
+# script/ci-qemu: build the QEMU this project needs, into a cacheable prefix. CI only.
+#
+# **Why this exists.** Ubuntu 24.04 ships QEMU 8.2, and `-device riscv-iommu-pci` (milestone 16b, the
+# ratified RISC-V IOMMU, DECISIONS §20) arrived later, so the riscv leg cannot run on the runner's
+# packaged QEMU: it dies with "not a valid device model name". `apt-get install` cannot help, because
+# it already installs the newest package for the release, and GitHub offers no newer Ubuntu ARM image.
+#
+# The alternative was to drop the IOMMU device when QEMU cannot provide it. That is rejected on
+# purpose: it would let the confinement tests pass while testing nothing, which is precisely the
+# silent-degradation failure the CRICKER_DISK check exists to prevent. A test that quietly stops
+# testing is worse than a red build.
+#
+# **Why the version is pinned**, in `.qemu-version`, for the same reason the Rust toolchain is: CI and
+# the developer machine should emulate on the same thing. An emulator version is part of what "the
+# tests passed" means, especially for a project whose benchmarks are instruction counts.
+#
+# Idempotent: if the prefix already holds the wanted version (a warm cache), it does nothing, which is
+# what makes it cheap to call unconditionally.
+
+set -e
+cd "$(dirname "$0")/.."
+
+want="$(tr -d ' \n' < .qemu-version)"
+prefix="${QEMU_PREFIX:-$HOME/.cache/cricker-qemu}"
+
+if [ "$(uname -s)" != "Linux" ]; then
+    echo "ci-qemu: Linux only; on macOS script/bootstrap installs QEMU from Homebrew." >&2
+    exit 1
+fi
+
+# The warm-cache path. `--version` prints "QEMU emulator version X.Y.Z"; match the whole token so
+# 11.0.2 never satisfies a request for 11.0.20.
+if [ -x "$prefix/bin/qemu-system-riscv64" ]; then
+    have="$("$prefix/bin/qemu-system-riscv64" --version | head -1 | awk '{print $4}')"
+    if [ "$have" = "$want" ]; then
+        echo "==> QEMU $want already built at $prefix (cache hit)"
+        exit 0
+    fi
+    echo "==> QEMU at $prefix is $have, want $want; rebuilding"
+fi
+
+echo "==> Building QEMU $want (cold cache; this is the slow path)"
+
+# Build dependencies. libslirp is not optional for us: the network tests use QEMU's user-mode
+# networking (-netdev user), including the guestfwd echo peer and the TFTP fixture the UDP gate reads.
+sudo apt-get update
+sudo apt-get install -y \
+    build-essential ninja-build meson pkg-config python3 python3-venv \
+    libglib2.0-dev libslirp-dev libpixman-1-dev flex bison zlib1g-dev
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+
+curl -fsSL "https://download.qemu.org/qemu-$want.tar.xz" -o "$work/qemu.tar.xz"
+tar -xJf "$work/qemu.tar.xz" -C "$work"
+
+cd "$work/qemu-$want"
+# Only the two system emulators this project boots. Building all of QEMU would multiply the cold-cache
+# cost for targets nothing here runs. Docs and the GUI front ends are off for the same reason; slirp is
+# ON because the net tests depend on it.
+./configure \
+    --prefix="$prefix" \
+    --target-list=aarch64-softmmu,riscv64-softmmu \
+    --enable-slirp \
+    --disable-docs \
+    --disable-gtk \
+    --disable-sdl \
+    --disable-vnc \
+    --disable-werror
+make -j"$(nproc)"
+make install
+
+echo "==> QEMU $want installed at $prefix"
+"$prefix/bin/qemu-system-riscv64" --version | head -1
+
+# Verify through the SAME check the developer machine uses, rather than repeating its device list here.
+# Two copies of "what QEMU must provide" would drift, and the copy in CI is the one nobody reads.
+PATH="$prefix/bin:$PATH" script/qemu-check

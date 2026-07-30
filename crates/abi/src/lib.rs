@@ -94,7 +94,7 @@ pub mod endpoint {
     pub const RECV: u64 = 1;
 
     /// `invoke(cap, SEND_CAP, cap_slot, rights, w0)` -> 0. **Delegate a capability.** Passes the
-    /// capability in the sender's `cap_slot`, narrowed to `rights` (see [`rights`]), plus one data
+    /// capability in the sender's `cap_slot`, narrowed to `rights` (see [`crate::rights`]), plus one data
     /// word, over this endpoint; blocks until a receiver takes it. The endpoint capability needs
     /// `WRITE` (you may send here), and the *delegated* capability needs `GRANT` (you were trusted
     /// to pass it on). `rights` may only narrow what the sender holds, never widen it. This is the
@@ -106,12 +106,12 @@ pub mod endpoint {
     /// second data word in x2, or [`NO_CAP`] in x1 if the message carried no capability. **Blocks
     /// until a message arrives.** The received capability lands in a free slot of the receiver's own
     /// cspace, chosen by the kernel; x1 is where. This is also how a server receives a [`CALL`]: the
-    /// slot in x1 holds a one-shot [`reply`] capability naming the caller. Needs `READ`.
+    /// slot in x1 holds a one-shot [`crate::reply`] capability naming the caller. Needs `READ`.
     pub const RECV_CAP: u64 = 3;
 
     /// `invoke(cap, CALL, w0, w1, _)` -> r0, with r1 in x1. **Send two words and block until
     /// replied.** The atomic send-and-wait a server can answer safely: at the rendezvous the kernel
-    /// mints a one-shot [`reply`] capability naming *this* caller and hands it to the server (through
+    /// mints a one-shot [`crate::reply`] capability naming *this* caller and hands it to the server (through
     /// [`RECV_CAP`]), so the server can answer a caller it was never wired to, exactly once, and only
     /// that caller. Needs `WRITE`. Milestone 12; see notes/ipc-naming.md.
     pub const CALL: u64 = 4;
@@ -132,13 +132,13 @@ pub mod endpoint {
     ///
     /// Three distinct refusals, because a restart policy wants to tell them apart:
     ///
-    /// - [`Error::StillAlive`] the thread is not dead. Collecting a corpse is not killing; killing a
+    /// - [`crate::Error::StillAlive`] the thread is not dead. Collecting a corpse is not killing; killing a
     ///   live child is the stronger act and stays with `Untyped::DESTROY` (§24's forcible `^C`).
-    /// - [`Error::NotSupervised`] no thread by that tid supervised by *this* endpoint: another
+    /// - [`crate::Error::NotSupervised`] no thread by that tid supervised by *this* endpoint: another
     ///   supervisor's child, an already-collected one, or a stale tid whose generational name no
     ///   longer resolves. The two are deliberately one error, so a supervisor cannot probe the tid
     ///   space of children it does not supervise.
-    /// - [`Error::NotPermitted`] the corpse's region cannot be reclaimed yet (the child `SPLIT` its
+    /// - [`crate::Error::NotPermitted`] the corpse's region cannot be reclaimed yet (the child `SPLIT` its
     ///   own budget and those children are still live), the same refusal `DESTROY` gives.
     pub const REAP: u64 = 5;
 
@@ -154,7 +154,7 @@ pub mod endpoint {
 /// reply to the wrong caller, or hoard it. Those are kernel guarantees, not server discipline.
 pub mod reply {
     /// `invoke(reply_cap, REPLY, r0, r1, _)` -> 0. Deliver `{r0, r1}` to the caller, wake it, and
-    /// consume this capability (a second use is [`Error::NoSuchSlot`]).
+    /// consume this capability (a second use is [`crate::Error::NoSuchSlot`]).
     pub const REPLY: u64 = 0;
 }
 
@@ -177,8 +177,8 @@ pub mod objtype {
 
     /// A thread (milestone 19c.3): the retyped page holds the TCB, and the object is born an
     /// **embryo**, in no queue and not runnable. It becomes a running thread only through
-    /// [`tcb::CONFIGURE`] (bind an address space, set entry and stack) and [`tcb::START`], with
-    /// [`tcb::CAP_INSERT`] granting its initial authority in between. A half-built TCB can never
+    /// [`crate::tcb::CONFIGURE`] (bind an address space, set entry and stack) and [`crate::tcb::START`], with
+    /// [`crate::tcb::CAP_INSERT`] granting its initial authority in between. A half-built TCB can never
     /// run: `START` refuses one with no bound space or no entry.
     pub const TCB: u64 = 3;
 }
@@ -244,7 +244,7 @@ pub mod rights {
 /// convention and a spawn-slot convention. No new syscall and no new method (§26).
 pub mod fault {
     /// **The spawn-slot convention.** A supervised child is spawned with its supervision endpoint
-    /// in this reserved cspace slot (via [`tcb::CAP_INSERT`] with an explicit target slot, or a
+    /// in this reserved cspace slot (via [`crate::tcb::CAP_INSERT`] with an explicit target slot, or a
     /// [`Spawn`](../user/struct.Spawn.html) grant). At `START` the kernel reads this slot: if it
     /// holds an `Endpoint` capability the thread is supervised, and the kernel records the endpoint
     /// as the thread's fault target and clears the slot (so the child cannot forge fault messages

@@ -61,3 +61,54 @@ if git grep -nE '^(<{7}|={7}|>{7})( |$)' -- \
     cat /tmp/cricker-conflict-markers.txt >&2
     exit 1
 fi
+
+# The milestone table's status column, validated (see design/roadmap.md's status vocabulary and
+# script/roadmap). Catches a status token nobody defined, a detail block with no table row, and a
+# milestone referenced in prose that the table does not carry, which is exactly how milestone 34 went
+# missing. Documentation is part of this project's deliverable, so its index gets a gate.
+echo "==> roadmap status"
+"$(dirname "$0")/roadmap" --check
+
+# Intra-doc links, denied when broken. This codebase leans unusually hard on `[`Item`]` links to
+# stitch the code to itself and to the notes, which is deliberate (see CLAUDE.md on commenting) and
+# makes a broken link a real loss rather than cosmetic. Nothing checked them until 2026-07-30, and
+# there were TEN, including a whole crate's worth in `abi` where nested modules linked crate-root
+# items without a path, plus `name[24]` in a comment that markdown read as a link.
+#
+# Split three ways because the workspace is not one target: the bare crates document for aarch64
+# (riscv64 would refuse `xtask`, which needs std), `xtask` is a host tool, and fs-server is its own
+# workspace.
+echo "==> rustdoc (broken intra-doc links)"
+DOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::invalid_html_tags"
+RUSTDOCFLAGS="$DOCFLAGS" cargo doc --no-deps --quiet --workspace --exclude xtask \
+    --target aarch64-unknown-none-softfloat
+RUSTDOCFLAGS="$DOCFLAGS" cargo doc --no-deps --quiet -p xtask
+RUSTDOCFLAGS="$DOCFLAGS" cargo doc --no-deps --quiet --manifest-path fs-server/Cargo.toml --lib
+
+# DECISIONS.md's numbering, and that every §N cited in the tree resolves. Two concurrent milestones
+# both claimed §30 on 2026-07-30 and it was caught only because an agent noticed; 418 code comments
+# cite a section by number, so a dangling citation is a broken footnote in the one place this project
+# asks a reader to trust prose. See script/decisions.
+echo "==> decisions"
+"$(dirname "$0")/decisions" --check
+
+# The script/ front door is documented in exactly one comprehensive place, and the README's list is a
+# deliberate SUBSET of it. Two checks, because they fail in opposite directions: a script nobody
+# documented is invisible, and a README naming a script that no longer exists sends a new reader into
+# a wall. notes/scripts.md was missing five entries when this check was written, none of them noticed.
+echo "==> script docs"
+missing=""
+for f in "$(dirname "$0")"/*; do
+    name="$(basename "$f")"
+    # Match the name followed by a non-name character, not a closing backtick: entries carry usage
+    # (`script/toolchain-bump [YYYY-MM-DD]`), and requiring the backtick missed one on the first run.
+    grep -qE "script/$name([^a-z-]|\$)" "$(dirname "$0")/../notes/scripts.md" || missing="$missing $name"
+done
+if [ -n "$missing" ]; then
+    echo "lint: scripts with no entry in notes/scripts.md:$missing" >&2
+    exit 1
+fi
+for name in $(grep -oE "script/[a-z-]+" "$(dirname "$0")/../README.md" | sort -u | cut -d/ -f2); do
+    [ -e "$(dirname "$0")/$name" ] || { echo "lint: README names script/$name, which does not exist" >&2; exit 1; }
+done
+echo "script docs: every script documented, every README reference resolves"
