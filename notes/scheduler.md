@@ -60,8 +60,54 @@ and are now fixed and tested:
   about 300 s in netd's userspace smoltcp poll, CPU-bound, no wakes or output for stretches over a
   minute) must not read as a deadlock. The watchdog credits a completed wake, a line of output, OR
   any core running a non-idle thread; only a real lost wakeup, every thread blocked and every core on
-  its idle thread, stalls it. See `kernel/src/testing.rs`. It does not catch a busy-spin livelock,
-  which is indistinguishable from a live CPU-bound test at runtime.
+  its idle thread, stalls it. See `kernel/src/testing.rs`.
+
+- **And because that alone traded a flake for a silent hang, there is also a per-test wall-clock
+  ceiling.** See the section below: the progress heartbeat is blind to a livelock that keeps doing
+  IPC, which is a real failure we hit, not a theoretical one.
+
+## The two hang watchdogs, and what each one cannot see
+
+The harness asks two independent questions, and either failing fails the run. They exist because there
+are two ways a test never finishes, and no single instrument sees both.
+
+| | **No-progress heartbeat** | **Per-test wall-clock ceiling** |
+|---|---|---|
+| Question | Is anything happening at all? | Has this test taken longer than allowed? |
+| Catches | Deadlock, lost wakeup | Any non-terminating test, livelock included |
+| Window | ~60 s of total silence | The test's budget (90 s default) |
+| Blind to | Any loop that keeps doing IPC | Nothing that fails to terminate, but slow to react |
+| Scope | Anywhere, including before tests start | Only while a test is running |
+
+**Why the ceiling had to be added.** The heartbeat credits a completed rendezvous as progress. The
+RedoxFS repeat-write livelock spins in an allocator commit *while still serving blk IPC*, so every
+rendezvous reset the heartbeat: a failure that had been a loud 60 s trip became an infinite silent
+hang at about 400% CPU with no watchdog fire. A livelock that makes progress is indistinguishable from
+healthy work to a progress-only instrument. Turning a loud failure into a silent one is worse than the
+flake the heartbeat fixed, so both mechanisms are live now.
+
+**Why budgets are per test.** std_net honestly runs 300 to 344 s, so one global ceiling would sit near
+700 s and let a two-second unit test spin for eleven minutes before failing. The default is a tight
+90 s; a test that is honestly slower declares its cost in `SLOW_TESTS` in `testing.rs`, with the
+reason. Keep entries near 2x measured, so host load does not make them flaky.
+
+**The honest limit.** Neither mechanism can tell a livelock from slow-but-correct work while it is
+running. Only the budget, a human declaration of expected cost, separates them. That is why a new
+`SLOW_TESTS` entry deserves a sentence about *why* the test is slow, not just a number.
+
+**Proving it.** The `watchdog_probe` feature adds a test that loops forever doing a full rendezvous
+each pass, so the heartbeat sees a healthy kernel and only the ceiling stops it. It is expected to
+fail, so it is not in the normal suite:
+
+```text
+scripts/qemu-bounded.sh 200 cargo test -p kernel \
+    --features watchdog_probe --target aarch64-unknown-none-softfloat
+```
+
+**The outermost backstop.** `scripts/qemu-bounded.sh` still guards the case where the kernel wedges so
+hard the timer IRQ stops. It did not fire for the RedoxFS livelock only because that run invoked
+`cargo` directly instead of the wrapper: **a bypassable backstop is not a backstop**, which is exactly
+why the ceiling lives in the kernel, where nothing can route around it.
 
 ## Tests that guard this
 

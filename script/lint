@@ -40,3 +40,11 @@ for feat in shell bench initboot; do
     echo "==> clippy: kernel --features $feat (aarch64)"
     cargo clippy -p kernel --features "$feat" --target aarch64-unknown-none-softfloat -- -D warnings
 done
+
+# watchdog_probe is the exception to "bin only" above: it gates a TEST (the livelock probe in
+# testing.rs), so it is invisible without --all-targets. Linted on both ISAs because an unlinted
+# feature rots, and this one is only ever compiled deliberately.
+for tgt in aarch64-unknown-none-softfloat riscv64imac-unknown-none-elf; do
+    echo "==> clippy: kernel --features watchdog_probe ($tgt)"
+    cargo clippy -p kernel --features watchdog_probe --target "$tgt" --all-targets -- -D warnings
+done
