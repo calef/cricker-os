@@ -407,6 +407,50 @@ mod tests {
         assert_eq!(&buf[..n], &p2[..], "boot-2 write did not read back");
     }
 
+    /// **The mechanism behind the "cross-boot second-mount write failure", and it is not a filesystem
+    /// bug at all** (fix/redoxfs-second-mount). There is no TRUNCATE verb, so a write shorter than the
+    /// file leaves the previous write's tail in place. That is correct behaviour, and it is what the
+    /// contract offers today, but it is sharp: a test that writes N bytes and then compares a
+    /// *whole-file* read against those N bytes passes only if the file was not already longer.
+    ///
+    /// That is exactly what happened. One boot's client left a 64-byte payload in `scratch`; the next
+    /// boot's `std::fs` test wrote its 61-byte pattern and asserted the whole file equalled it, got 64
+    /// bytes back, and panicked in the write block. It looked like "a second mount of a used image
+    /// fails its write", and three rounds chased a filesystem bug that was never there. The write
+    /// succeeded every time.
+    ///
+    /// The byte counts here are the real ones so the arithmetic is legible rather than abstract.
+    #[test]
+    fn a_shorter_write_does_not_truncate_and_that_is_what_broke_across_boots() {
+        let mut srv = server_with(&[("scratch", b"(placeholder)")]);
+        let h = srv.open_file("scratch").unwrap();
+
+        // Boot 1's client wrote 64 bytes.
+        let long = [b'L'; 64];
+        assert_eq!(srv.write(h, 0, &long).unwrap(), 64);
+        assert_eq!(srv.fstat(h).unwrap(), 64);
+
+        // Boot 2's std::fs wrote its 61-byte pattern over it. The write itself is fine.
+        let short = [b'S'; 61];
+        assert_eq!(srv.write(h, 0, &short).unwrap(), 61);
+
+        // And the file is STILL 64 bytes, because nothing truncates it.
+        assert_eq!(
+            srv.fstat(h).unwrap(),
+            64,
+            "a shorter write must not truncate; if this ever changes, the contract grew a verb"
+        );
+        let mut buf = [0u8; 128];
+        let n = srv.read(h, 0, &mut buf).unwrap();
+        assert_eq!(n, 64, "a whole-file read returns the OLD length");
+        assert_eq!(&buf[..61], &short[..], "the new bytes landed");
+        assert_eq!(
+            &buf[61..64],
+            b"LLL",
+            "and the longer write's tail survives, which is what failed the comparison"
+        );
+    }
+
     #[test]
     fn a_write_survives_a_full_close_and_reopen() {
         // Persistence across a full close/reopen is what the on-disk image buys, and it is the
