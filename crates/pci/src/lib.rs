@@ -73,6 +73,20 @@ pub const VIRTIO_BLK_TRANSITIONAL: u16 = 0x1001;
 pub const VIRTIO_NET_MODERN: u16 = 0x1041;
 pub const VIRTIO_NET_TRANSITIONAL: u16 = 0x1000;
 
+/// The modern virtio-gpu device id (0x1040 + device type 16), milestone 29. There is **no
+/// transitional twin**: the legacy id space (0x1000..0x103f) was allocated before virtio-gpu
+/// existed, so a GPU is modern-or-nothing and enumeration passes `None` for the legacy id rather
+/// than inventing one. QEMU's `virtio-gpu-pci` presents exactly this id.
+pub const VIRTIO_GPU_MODERN: u16 = 0x1050;
+
+/// The virtio **device type** numbers, as the virtio-mmio `DeviceID` register reports them and as
+/// the PCI ids above encode them (`0x1040 + type`). The kernel carries the type through the PCI
+/// transport so a driver's `DeviceID` read answers truthfully on either bus; see
+/// `kernel/src/virtio.rs`.
+pub const VIRTIO_TYPE_NET: u32 = 1;
+pub const VIRTIO_TYPE_BLOCK: u32 = 2;
+pub const VIRTIO_TYPE_GPU: u32 = 16;
+
 /// Walk every function on `buses` buses and call `f` with (bdf, vendor, device). Empty slots
 /// read vendor 0xffff (the bus's way of saying "nobody home") and are skipped; a single-function
 /// device (header type bit 7 clear) skips functions 1..8. QEMU `virt` is flat on bus 0, but the
@@ -620,5 +634,16 @@ mod tests {
         assert_eq!(intx_irq(32, 2, 1), 34);
         assert_eq!(intx_irq(32, 4, 1), 32);
         assert_eq!(intx_irq(32, 1, 2), 34, "pin B advances the rotation too");
+    }
+
+    /// **A modern virtio PCI device id is `0x1040 + the virtio device type`**, which is what lets
+    /// the kernel hand a driver a truthful `DeviceID` over the PCI transport instead of a
+    /// hardcoded one. The three ids we drive are pinned against that derivation, so a typo in one
+    /// of them is a build-time-cheap test failure rather than a device we quietly never find.
+    #[test]
+    fn a_modern_virtio_pci_id_is_0x1040_plus_the_device_type() {
+        assert_eq!(VIRTIO_NET_MODERN as u32, 0x1040 + VIRTIO_TYPE_NET);
+        assert_eq!(VIRTIO_BLK_MODERN as u32, 0x1040 + VIRTIO_TYPE_BLOCK);
+        assert_eq!(VIRTIO_GPU_MODERN as u32, 0x1040 + VIRTIO_TYPE_GPU);
     }
 }

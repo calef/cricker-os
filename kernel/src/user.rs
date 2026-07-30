@@ -1617,13 +1617,7 @@ pub mod virtio_service {
         let d = crate::pci::find_net_device()?;
         Some(wire(
             image,
-            crate::virtio::Transport::Pci {
-                common: d.common,
-                notify_base: d.notify_base,
-                notify_mult: d.notify_mult,
-                notify_addr: [0; crate::virtio::MAX_QUEUES],
-                isr: d.isr,
-            },
+            crate::virtio::Transport::pci(&d),
             d.intid,
             ROLE_VIRTIO_NET,
             Some(d.rid),
@@ -1664,13 +1658,7 @@ pub mod virtio_service {
         Some(
             wire_net_server(
                 image,
-                crate::virtio::Transport::Pci {
-                    common: d.common,
-                    notify_base: d.notify_base,
-                    notify_mult: d.notify_mult,
-                    notify_addr: [0; crate::virtio::MAX_QUEUES],
-                    isr: d.isr,
-                },
+                crate::virtio::Transport::pci(&d),
                 d.intid,
                 Some(d.rid),
             )
@@ -1774,17 +1762,7 @@ pub mod virtio_service {
 
         let (transport, intid, rid) = if pci {
             let d = crate::pci::find_net_device()?;
-            (
-                crate::virtio::Transport::Pci {
-                    common: d.common,
-                    notify_base: d.notify_base,
-                    notify_mult: d.notify_mult,
-                    notify_addr: [0; crate::virtio::MAX_QUEUES],
-                    isr: d.isr,
-                },
-                d.intid,
-                Some(d.rid),
-            )
+            (crate::virtio::Transport::pci(&d), d.intid, Some(d.rid))
         } else {
             let dev = crate::virtio::find_net_device()?;
             (
@@ -1943,13 +1921,7 @@ pub mod virtio_service {
         let d = crate::pci::find_block_device()?;
         Some(wire(
             image,
-            crate::virtio::Transport::Pci {
-                common: d.common,
-                notify_base: d.notify_base,
-                notify_mult: d.notify_mult,
-                notify_addr: [0; crate::virtio::MAX_QUEUES],
-                isr: d.isr,
-            },
+            crate::virtio::Transport::pci(&d),
             d.intid,
             role,
             Some(d.rid), // the PCIe requester id, the IOMMU keys its tables on it
