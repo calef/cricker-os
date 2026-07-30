@@ -61,6 +61,30 @@ fn open(name: &str) -> u64 {
 }
 
 /// Read up to `n` bytes from `handle` at `offset` into the shared page; returns the count.
+/// Write `data` to `handle` at `offset`; checks the server accepted the whole slice.
+fn write(handle: u64, offset: u64, data: &[u8]) {
+    put_page(data);
+    let (r0, _) = call(FILE, fs::req(fs::WRITE, handle, data.len() as u64), offset);
+    check((r0 as i64) >= 0);
+    check(r0 as usize == data.len());
+}
+
+/// The payload for repeat-write pass `n`: a fixed 64 bytes, tagged with the pass and
+/// position-dependent after that. Every pass is the same length, so each write fully replaces the
+/// last (a shorter write at offset 0 would not truncate, leaving the previous tail), and a stale or
+/// shifted read cannot match. The twin of `fs-server`'s host-side `repeat_write_payload`.
+fn repeat_payload(pass: u8) -> [u8; 64] {
+    let mut p = [0u8; 64];
+    p[..8].copy_from_slice(b"CRKRPT__");
+    p[7] = b'0' + pass;
+    let mut i = 8;
+    while i < 64 {
+        p[i] = (i as u8).wrapping_mul(31) ^ pass;
+        i += 1;
+    }
+    p
+}
+
 fn read(handle: u64, offset: u64, n: usize) -> usize {
     let (r0, _) = call(FILE, fs::req(fs::READ, handle, n as u64), offset);
     check((r0 as i64) >= 0);
@@ -116,11 +140,6 @@ fn proof() -> ! {
     // FS server over blk IPC, its files opened by name under a granted directory capability and read
     // by a client that names nothing else in the system.
     //
-    // This client stays read-only, and that is now a scope choice rather than a blocker. It used to
-    // say the on-device write looped inside RedoxFS's allocator commit; it does not (the machine
-    // overruled the note once interrupt-driven block completion was restored). The on-device write
-    // is proven end to end by the `std::fs` test instead, which drives the same contract through
-    // more layers and has the host tool re-read the image afterwards. See notes/fs-server.md.
     let motd = open(fixture::MOTD_NAME);
     let n = read(motd, 0, fixture::MOTD.len());
     check(n == fixture::MOTD.len());
@@ -129,6 +148,23 @@ fn proof() -> ! {
     check(&buf[..n] == fixture::MOTD);
     let mut head = [0u8; 8];
     head.copy_from_slice(&buf[..8]);
+
+    // **Repeat writes, in one run.** A first write to a pristine block always worked; a write to a
+    // block the image already carries is the case that loops, and the gate could not see it because
+    // `mkredoxfs` rewrites the target to a placeholder before every run, making every gated write a
+    // first write. Writing the same block three times here depends on nothing left over from a
+    // previous invocation, so the bug cannot hide behind the harness again.
+    let scratch = open(fixture::SCRATCH_NAME);
+    let mut pass = 1u8;
+    while pass <= 3 {
+        let payload = repeat_payload(pass);
+        write(scratch, 0, &payload);
+        let m = read(scratch, 0, payload.len());
+        check(m == payload.len());
+        get_page(m, &mut buf);
+        check(&buf[..m] == &payload[..]);
+        pass += 1;
+    }
 
     // Report the motd head plus the success sentinel; the kernel asserts both.
     send(REPORT, u64::from_le_bytes(head), fixture::SUCCESS, 0);
