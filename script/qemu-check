@@ -1,0 +1,67 @@
+#!/bin/sh
+# script/qemu-check: is the QEMU on PATH the one this project expects?
+#
+# `.qemu-version` is the single source of truth, and it is read by three things that must agree: this
+# check, `script/ci-qemu` (which builds that exact version on the runner), and the CI cache key. Change
+# the file and all three move together.
+#
+# **Two different questions, deliberately answered with different severity**, because they are not
+# equally serious:
+#
+#   1. *Does this QEMU have the devices we need?* A hard failure. Without `riscv-iommu-pci` the riscv
+#      leg cannot boot milestone 16b's tests at all, and the tempting workaround (drop the device when
+#      absent) would let the DMA-confinement tests pass while testing nothing. That is the silent
+#      degradation the CRICKER_DISK check exists to prevent.
+#
+#   2. *Is it the exact pinned version?* A warning. Benchmark numbers are icount instruction counts,
+#      so a different QEMU can legitimately shift them, and `bench/baseline.txt` was recorded against
+#      the pinned one. But Homebrew cannot install an arbitrary older QEMU, so demanding an exact
+#      match locally would be a rule nobody could follow. Loud and non-fatal is the honest setting.
+#
+# Run it directly any time; `script/bootstrap` calls it after installing.
+
+set -e
+cd "$(dirname "$0")/.."
+
+want="$(tr -d ' \n' < .qemu-version)"
+
+if ! command -v qemu-system-aarch64 >/dev/null 2>&1 \
+    || ! command -v qemu-system-riscv64 >/dev/null 2>&1; then
+    echo "qemu-check: qemu-system-aarch64 and qemu-system-riscv64 must both be on PATH." >&2
+    echo "  Run script/bootstrap, or on Linux script/ci-qemu to build the pinned version." >&2
+    exit 1
+fi
+
+have="$(qemu-system-aarch64 --version | head -1 | awk '{print $4}')"
+
+# The capability check. These are the devices whose absence silently guts a test rather than failing
+# it, so each is named here rather than discovered at boot. riscv-iommu-pci is the one that actually
+# bit us: Ubuntu 24.04's QEMU 8.2 has no such device and the riscv leg died mid-suite.
+missing=""
+qemu-system-riscv64 -device help 2>&1 | grep -q "riscv-iommu-pci" \
+    || missing="$missing riscv-iommu-pci(riscv64)"
+qemu-system-aarch64 -machine help 2>&1 | grep -q "virt" \
+    || missing="$missing virt(aarch64)"
+
+if [ -n "$missing" ]; then
+    echo "qemu-check: QEMU $have is missing:$missing" >&2
+    echo "  These are required (milestone 16b, DECISIONS §20). Upgrade to $want or newer." >&2
+    echo "  macOS:  brew upgrade qemu" >&2
+    echo "  Linux:  script/ci-qemu   (builds and installs the pinned version)" >&2
+    exit 1
+fi
+
+if [ "$have" != "$want" ]; then
+    echo "qemu-check: WARNING: QEMU $have on PATH, but .qemu-version pins $want."
+    echo "  Every device this project needs is present, so the tests will run."
+    echo "  What can differ is the BENCHMARKS: bench/baseline.txt holds icount instruction counts"
+    echo "  recorded against $want, and a different QEMU can move them (the check has a 10% tolerance)."
+    echo
+    echo "  Pick one, deliberately:"
+    echo "    - keep this QEMU and update the pin:  echo $have > .qemu-version   (commit it; CI"
+    echo "      rebuilds and re-caches, and re-run script/bench --save if the numbers actually moved)"
+    echo "    - keep the pin and hold QEMU still:   brew pin qemu"
+    exit 0
+fi
+
+echo "qemu-check: QEMU $have matches the pin, with every required device present."

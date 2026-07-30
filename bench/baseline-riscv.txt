@@ -1,4 +1,6 @@
 # bench/baseline.txt: deterministic icount tick counts (cargo xtask bench --save).
+# Recorded against the QEMU pinned in .qemu-version. icount counts guest instructions, so the
+# emulator version is part of what these numbers mean (script/qemu-check warns on a mismatch).
              # Updating this file is a statement that a performance change is intended and
              # understood; do it in the commit that causes the change. Checked by --check, a coarse
              # 10% tripwire (icount counts drift across builds; see notes/benchmarks.md).

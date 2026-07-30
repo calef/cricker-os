@@ -74,10 +74,6 @@ make install
 echo "==> QEMU $want installed at $prefix"
 "$prefix/bin/qemu-system-riscv64" --version | head -1
 
-# Fail here rather than three jobs later if the built QEMU somehow lacks the device that motivated all
-# of this. A build that silently omits it would put us back where we started.
-if ! "$prefix/bin/qemu-system-riscv64" -device help 2>&1 | grep -q "riscv-iommu-pci"; then
-    echo "ci-qemu: the built QEMU has no riscv-iommu-pci; milestone 16b's tests cannot run." >&2
-    exit 1
-fi
-echo "==> riscv-iommu-pci present"
+# Verify through the SAME check the developer machine uses, rather than repeating its device list here.
+# Two copies of "what QEMU must provide" would drift, and the copy in CI is the one nobody reads.
+PATH="$prefix/bin:$PATH" script/qemu-check
