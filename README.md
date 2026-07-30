@@ -30,6 +30,12 @@ script/bench               # icount microbenchmarks against the committed baseli
 `script/*` is the normalized "Scripts to Rule Them All" front door; each is a thin wrapper over
 `cargo xtask`, which still does the work (`cargo xtask shell` and friends work too).
 
+**The list above is a deliberate subset**, the seven commands worth knowing on day one. The complete
+reference is [notes/scripts.md](notes/scripts.md), and `script/lint` checks that every script has an
+entry there and that nothing named here has since been renamed away. Two documents, one comprehensive
+and one curated, is fine; two documents both claiming to be complete is not, which is the mistake the
+Status section above made twice.
+
 At the `$` prompt: `help`, `echo hello`, `run 7` (spawns a process that computes 49). Quit with
 Ctrl-C, or `pkill qemu-system-aarch64` from another terminal.
 

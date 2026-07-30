@@ -91,3 +91,24 @@ RUSTDOCFLAGS="$DOCFLAGS" cargo doc --no-deps --quiet --manifest-path fs-server/C
 # asks a reader to trust prose. See script/decisions.
 echo "==> decisions"
 "$(dirname "$0")/decisions" --check
+
+# The script/ front door is documented in exactly one comprehensive place, and the README's list is a
+# deliberate SUBSET of it. Two checks, because they fail in opposite directions: a script nobody
+# documented is invisible, and a README naming a script that no longer exists sends a new reader into
+# a wall. notes/scripts.md was missing five entries when this check was written, none of them noticed.
+echo "==> script docs"
+missing=""
+for f in "$(dirname "$0")"/*; do
+    name="$(basename "$f")"
+    # Match the name followed by a non-name character, not a closing backtick: entries carry usage
+    # (`script/toolchain-bump [YYYY-MM-DD]`), and requiring the backtick missed one on the first run.
+    grep -qE "script/$name([^a-z-]|\$)" "$(dirname "$0")/../notes/scripts.md" || missing="$missing $name"
+done
+if [ -n "$missing" ]; then
+    echo "lint: scripts with no entry in notes/scripts.md:$missing" >&2
+    exit 1
+fi
+for name in $(grep -oE "script/[a-z-]+" "$(dirname "$0")/../README.md" | sort -u | cut -d/ -f2); do
+    [ -e "$(dirname "$0")/$name" ] || { echo "lint: README names script/$name, which does not exist" >&2; exit 1; }
+done
+echo "script docs: every script documented, every README reference resolves"
