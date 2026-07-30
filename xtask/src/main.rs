@@ -633,6 +633,12 @@ fn gpu_compose_path(arch: &str) -> PathBuf {
     workspace_root().join(format!("target/gpu-compose-{arch}.ppm"))
 }
 
+/// Where the display terminal's matching dump is kept (milestone 29's text increment). Transient for
+/// the same reason the composed screen is: rung one's pattern replaces it on the same scanout.
+fn gpu_text_path(arch: &str) -> PathBuf {
+    workspace_root().join(format!("target/gpu-text-{arch}.ppm"))
+}
+
 /// Does this PPM hold the pattern rung one's client painted (milestone 29)?
 ///
 /// Compares against `gfx_proto::pixel`, the same definition the client painted from and the kernel
@@ -653,6 +659,22 @@ fn scanout_holds_the_composed_screen(ppm: &[u8]) -> Result<(), String> {
     scanout_matches(ppm, |x, y| {
         compose::expected_screen_pixel(compose::SCENE.len(), x, y)
     })
+}
+
+/// Does this PPM hold the **text** the display terminal drew (milestone 29's remaining increment)?
+///
+/// The definition is the VT engine itself, run here on the host over `vt::script`, the same script
+/// the kernel sent the terminal and the same engine the terminal drew from. So this is not "is there
+/// ink on the screen": it is every pixel of every glyph, in the right cell, in the right colour,
+/// with the cursor where the engine says it is.
+///
+/// **This is the check a guest-side digest cannot replace**, and for text it matters more than for a
+/// pattern: a wrong pixel format turns a test pattern into an odd-looking test pattern, and it turns
+/// text into text nobody can read. The negative control is
+/// [`the_scanout_check_rejects_text_that_is_one_letter_wrong`].
+fn scanout_holds_the_terminals_text(ppm: &[u8]) -> Result<(), String> {
+    let expect = vt::script::full_screen();
+    scanout_matches(ppm, |x, y| expect.pixel(x, y))
 }
 
 /// Compare a `screendump` PPM against a per-pixel definition of what should be on the screen.
@@ -753,24 +775,29 @@ fn screendump(sock: &str, out: &Path) -> bool {
 /// **Run the kernel test suite for `arch` and prove BOTH scanouts while it runs.** `test_args` is the
 /// cargo invocation the caller would otherwise have handed to [`run`].
 ///
-/// Two pictures reach the device's scanout over one boot, in this order, because that is the order the
-/// suite runs them in (`compositor_tests` sorts before `display_tests`):
+/// **Three** pictures reach the device's scanout over one boot, in this order, because that is the
+/// order the suite runs them in (tests sort by name, so `compositor_tests` comes before
+/// `display_tests`, and within the latter `a_backing...` < `a_bitmap...` < `a_confined...`):
 ///
 /// 1. rung two's **composed screen** (milestone 33): three clients' surfaces, composited by `compd`.
 ///    The compositor test holds it up for a few seconds precisely so this poll cannot miss it;
-/// 2. rung one's **test pattern** (milestone 29), which then stays on the scanout until QEMU exits.
+/// 2. the display terminal's **text** (milestone 29's remaining increment): real glyphs from the
+///    `bitfont` table, laid out by the `vt` engine. Held up the same way, for the same reason;
+/// 3. rung one's **test pattern** (milestone 29), which then stays on the scanout until QEMU exits.
 ///
-/// Both must be seen or the run fails, and the order is part of the check: this looks for the composed
-/// screen until it finds it, and only then starts looking for the pattern. So a reordering of the
-/// suite, or a compositor that never got its picture to the device, fails loudly instead of being
-/// waved through. The child inherits stdio, so the suite's output streams exactly as before.
+/// All three must be seen or the run fails, and the order is part of the check: this looks for each
+/// picture until it finds it and only then starts looking for the next. So a reordering of the suite,
+/// or a component that never got its picture to the device, fails loudly instead of being waved
+/// through. The child inherits stdio, so the suite's output streams exactly as before.
 fn cargo_test_with_scanout_check(arch: &str, test_args: &[&str]) -> bool {
     let sock = gpu_mon_socket(arch);
     let shot = gpu_shot_path(arch);
     let composed_shot = gpu_compose_path(arch);
+    let text_shot = gpu_text_path(arch);
     let _ = std::fs::remove_file(&sock);
     let _ = std::fs::remove_file(&shot);
     let _ = std::fs::remove_file(&composed_shot);
+    let _ = std::fs::remove_file(&text_shot);
 
     unsafe { std::env::set_var("CRICKER_GPU_MON", &sock) };
     let mut child = match Command::new("cargo").args(test_args).spawn() {
@@ -782,9 +809,11 @@ fn cargo_test_with_scanout_check(arch: &str, test_args: &[&str]) -> bool {
     };
 
     let mut composed: Option<String> = None;
+    let mut text: Option<String> = None;
     let mut matched: Option<String> = None;
     let missing = String::from("no screendump was ever taken (did QEMU get a monitor?)");
     let mut last_composed = missing.clone();
+    let mut last_text = missing.clone();
     let mut last_reason = missing;
     loop {
         match child.try_wait() {
@@ -804,15 +833,23 @@ fn cargo_test_with_scanout_check(arch: &str, test_args: &[&str]) -> bool {
             && screendump(&sock, &shot)
             && let Ok(bytes) = std::fs::read(&shot)
         {
+            // Each picture is transient except the last (the next test on the same device replaces
+            // it), so the dump that matched is copied aside: `shot` is overwritten on every poll.
             if composed.is_none() {
-                // The composed screen comes first and is transient (the next display test resets the
-                // device). Keep the dump that matched, since `shot` is overwritten on every poll.
                 match scanout_holds_the_composed_screen(&bytes) {
                     Ok(()) => {
                         let _ = std::fs::write(&composed_shot, &bytes);
                         composed = Some(format!("{}", composed_shot.display()));
                     }
                     Err(reason) => last_composed = reason,
+                }
+            } else if text.is_none() {
+                match scanout_holds_the_terminals_text(&bytes) {
+                    Ok(()) => {
+                        let _ = std::fs::write(&text_shot, &bytes);
+                        text = Some(format!("{}", text_shot.display()));
+                    }
+                    Err(reason) => last_text = reason,
                 }
             } else {
                 match scanout_holds_the_pattern(&bytes) {
@@ -842,6 +879,25 @@ fn cargo_test_with_scanout_check(arch: &str, test_args: &[&str]) -> bool {
             eprintln!(
                 "  A compositor's output is exactly what a guest-side digest cannot confirm; this is \
                  the check that can. See notes/compositor.md."
+            );
+            ok = false;
+        }
+    }
+    match &text {
+        Some(path) => eprintln!(
+            "scanout check ({arch}): the display terminal's text reached the DEVICE's scanout, \
+             verified pixel for pixel against the vt engine run over vt::script ({path})",
+        ),
+        None => {
+            eprintln!();
+            eprintln!(
+                "scanout check ({arch}) FAILED: the display-terminal test passed, so the guest \
+                 agrees about the framebuffer, but QEMU's scanout never held the terminal's text. \
+                 Last mismatch: {last_text}"
+            );
+            eprintln!(
+                "  A wrong pixel format makes a test pattern look odd and makes text unreadable, \
+                 which is why this check exists for glyphs too. See notes/glyphs.md."
             );
             ok = false;
         }
@@ -958,6 +1014,8 @@ fn initrd_riscv() -> bool {
             "compd",
             "--bin",
             "window",
+            "--bin",
+            "vterm",
             "--target",
             RISCV_TARGET,
         ],
@@ -1012,6 +1070,9 @@ fn initrd_riscv() -> bool {
         // has to hold on either ISA or it is not a property.
         ("compd", "compd"),
         ("window", "window"),
+        // The display terminal (milestone 29's text increment): one binary, two wirings. Portable,
+        // so both archives carry it and both ISAs run literally the same test.
+        ("vterm", "vterm"),
     ];
     let mut blobs: Vec<(&str, Vec<u8>)> = Vec::new();
     for &(archive_name, bin_name) in entries {
@@ -1179,7 +1240,7 @@ fn mkinitrd() -> bool {
     let mut tree: Vec<(&str, Vec<u8>)> = Vec::new();
     for name in [
         "rootsup", "spawner", "subsup", "flaky", "gpud", "painter", "cwarden", "cshim", "compd",
-        "window",
+        "window", "vterm",
     ] {
         match std::fs::read(bin_elf(name)) {
             Ok(bytes) => tree.push((name, bytes)),
@@ -2335,5 +2396,108 @@ mod tests {
             .is_err(),
             "a red/blue-swapped composed screen was accepted",
         );
+    }
+
+    fn text_rgb(x: u32, y: u32) -> (u8, u8, u8) {
+        let w = vt::script::full_screen().pixel(x, y);
+        (
+            ((w >> 16) & 0xff) as u8,
+            ((w >> 8) & 0xff) as u8,
+            (w & 0xff) as u8,
+        )
+    }
+
+    /// **The text check accepts the terminal's screen and rejects text that is wrong** (milestone
+    /// 29's remaining increment).
+    ///
+    /// The negative control that makes the glyph proof mean anything, and its failure modes are the
+    /// *terminal's* rather than the compositor's or the driver's. The one that matters most is the
+    /// first: **one letter changed**. Everything else on that screen is identical, every glyph is a
+    /// real glyph, the layout is right, and the picture is wrong. A checker that could not tell the
+    /// difference would report "readable text reached the scanout" for a terminal that drew the wrong
+    /// text, which is the failure this whole increment is about not having.
+    #[test]
+    fn the_scanout_check_rejects_text_that_is_one_letter_wrong() {
+        assert!(scanout_holds_the_terminals_text(&ppm(text_rgb)).is_ok());
+
+        // One letter. `glyphs_ok` against `glyphs_0k`: an `o` for a zero, which is the closest pair
+        // of glyphs in the font and therefore the hardest case, deliberately.
+        let mut typo = vt::Vt::new(vt::script::COLS, vt::script::ROWS);
+        typo.feed(vt::script::GREETING_TYPO);
+        typo.feed(vt::script::TYPED);
+        assert!(
+            scanout_holds_the_terminals_text(&ppm(|x, y| {
+                let w = typo.pixel(x, y);
+                (
+                    ((w >> 16) & 0xff) as u8,
+                    ((w >> 8) & 0xff) as u8,
+                    (w & 0xff) as u8,
+                )
+            }))
+            .is_err(),
+            "a screen with one letter wrong was accepted as the terminal's text",
+        );
+
+        // **The typing never arrived.** A terminal that rendered an application's output but dropped
+        // the keystrokes routed to it draws a picture that is correct as far as it goes.
+        let mut no_input = vt::Vt::new(vt::script::COLS, vt::script::ROWS);
+        no_input.feed(vt::script::GREETING);
+        assert!(
+            scanout_holds_the_terminals_text(&ppm(|x, y| {
+                let w = no_input.pixel(x, y);
+                (
+                    ((w >> 16) & 0xff) as u8,
+                    ((w >> 8) & 0xff) as u8,
+                    (w & 0xff) as u8,
+                )
+            }))
+            .is_err(),
+            "a screen missing the typed input was accepted",
+        );
+
+        // **The rendition ignored.** Every glyph in the right cell, drawn in the default colours: a
+        // terminal that parsed SGR as an unknown sequence and swallowed it. The picture is *nearly*
+        // right, which is the point.
+        let mut plain = vt::Vt::new(vt::script::COLS, vt::script::ROWS);
+        for &b in vt::script::GREETING.iter().chain(vt::script::TYPED) {
+            // Strip the escape sequences by feeding only what a colour-blind terminal would keep.
+            if b != 0x1b {
+                plain.feed(&[b]);
+            }
+        }
+        assert!(
+            scanout_holds_the_terminals_text(&ppm(|x, y| {
+                let w = plain.pixel(x, y);
+                (
+                    ((w >> 16) & 0xff) as u8,
+                    ((w >> 8) & 0xff) as u8,
+                    (w & 0xff) as u8,
+                )
+            }))
+            .is_err(),
+            "a screen that ignored every rendition was accepted",
+        );
+
+        // A blank terminal, which is what a component that came up and drew nothing leaves.
+        let blank = vt::Vt::new(vt::script::COLS, vt::script::ROWS);
+        assert!(
+            scanout_holds_the_terminals_text(&ppm(|x, y| {
+                let w = blank.pixel(x, y);
+                (
+                    ((w >> 16) & 0xff) as u8,
+                    ((w >> 8) & 0xff) as u8,
+                    (w & 0xff) as u8,
+                )
+            }))
+            .is_err(),
+            "a blank terminal was accepted as text",
+        );
+
+        // And the three pictures on this one scanout are mutually exclusive, which is what makes the
+        // poll loop's ordering a real assertion rather than three chances to match once.
+        assert!(scanout_holds_the_terminals_text(&ppm(pattern_rgb)).is_err());
+        assert!(scanout_holds_the_terminals_text(&ppm(composed_rgb)).is_err());
+        assert!(scanout_holds_the_pattern(&ppm(text_rgb)).is_err());
+        assert!(scanout_holds_the_composed_screen(&ppm(text_rgb)).is_err());
     }
 }

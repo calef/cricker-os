@@ -2371,6 +2371,37 @@ pub mod fs_service {
     }
 }
 
+/// **Play an application printing to a display terminal**: put `text` in its output page and
+/// `OP_WRITE` it.
+///
+/// Shared by both of the terminal's wirings (the whole scanout, and a compositor window) because the
+/// terminal contract does not know which one it is in: an `OP_WRITE` is an `OP_WRITE`. Returns when
+/// the reply arrives, which the contract says means the bytes are on the console's side, so a test
+/// needs no polling and no sleep between writes.
+#[allow(dead_code)] // used by the milestone-29 tests, like every other service helper here
+fn term_print(out: u64, ep: crate::sched::EpId, text: &[u8]) {
+    assert!(
+        text.len() <= FRAME_SIZE as usize,
+        "an OP_WRITE past its output page",
+    );
+    let base = mmu::phys_to_virt(out);
+    for (i, &b) in text.iter().enumerate() {
+        // SAFETY: inside the output frame this kernel allocated and shares with the terminal.
+        unsafe { core::ptr::write_volatile((base + i as u64) as *mut u8, b) };
+    }
+    // The bytes must be visible to the terminal before the request that names them.
+    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+    let w0 = linedisc::proto::req(linedisc::proto::OP_WRITE, text.len() as u64);
+    let r = crate::sched::ipc_call(ep, [w0, 0]);
+    assert_eq!(
+        r[0],
+        text.len() as u64,
+        "the terminal consumed {} of {} bytes",
+        r[0],
+        text.len(),
+    );
+}
+
 /// **The display service** (milestone 29, the display ladder's rung one): a confined virtio-gpu
 /// driver and a client that draws, wired by the kernel and then left alone.
 ///
@@ -2559,6 +2590,174 @@ pub mod display_service {
     pub fn start_driver(driver_image: &'static [u8]) -> Option<(EpId, EpId, u64)> {
         wire_driver(driver_image, 0, 0)
     }
+
+    /// Where the display terminal maps the page an application writes text into. Must match
+    /// user/src/vterm.rs `OUT_VA`.
+    const OUT_VA_TERM: u64 = 0x0000_0000_0068_0000;
+
+    /// What the kernel keeps after wiring a display terminal onto the scanout.
+    pub struct TerminalWiring {
+        /// The display driver's status endpoint.
+        pub driver_report: EpId,
+        /// The terminal's status endpoint.
+        pub term_report: EpId,
+        /// The endpoint the terminal serves. The kernel holds WRITE, so it can play **both** classes
+        /// of sender: an application (`OP_WRITE`) and an input source (`OP_BYTES`).
+        pub term: EpId,
+        /// The application's output page, so the kernel can put the bytes of an `OP_WRITE` there.
+        pub out: u64,
+        /// The scanout frames, so the kernel can read the picture back through the direct map and
+        /// grade it against a value it computed itself.
+        pub surface: u64,
+    }
+
+    /// **Wire and spawn the display driver with a terminal on the whole scanout** (milestone 29's
+    /// remaining increment). `None` if no virtio-gpu function is on the bus.
+    ///
+    /// The terminal takes `painter`'s place at the display seam with **exactly `painter`'s
+    /// authority**: a report endpoint, the display endpoint, and the surface frames. It holds no
+    /// device, no interrupt, and no physical address, and `gpud` cannot tell it from the client that
+    /// drew a test pattern. That is the answer to "did the framebuffer contract need changing to
+    /// carry text?", and it is an answer made of a spawn literal rather than an argument.
+    ///
+    /// What it adds over `painter`'s wiring is two things, and both are the terminal contract's, not
+    /// the framebuffer's: an endpoint it **serves** (the terminal contract's IPC half), and a page an
+    /// application writes bytes into (DECISIONS §10's control-by-message, bulk-by-shared-page split).
+    pub fn start_terminal(
+        driver_image: &'static [u8],
+        term_image: &'static [u8],
+    ) -> Option<TerminalWiring> {
+        // A scanout that is not a whole number of character cells would leave a strip the terminal
+        // never paints. A build error, not a runtime surprise.
+        const _: () = assert!(
+            gfx_proto::WIDTH.is_multiple_of(bitfont::GLYPH_W)
+                && gfx_proto::HEIGHT.is_multiple_of(bitfont::GLYPH_H),
+            "the scanout is not a whole number of character cells",
+        );
+        // And the script's geometry is the scanout's, checked here rather than trusted, because the
+        // script is what three independent parties predict the picture from.
+        const _: () = assert!(
+            gfx_proto::WIDTH / bitfont::GLYPH_W == vt::script::COLS
+                && gfx_proto::HEIGHT / bitfont::GLYPH_H == vt::script::ROWS,
+            "vt::script's geometry and the scanout's have drifted apart",
+        );
+
+        let (driver_report, display_ep, surface) = wire_driver(driver_image, 0, 0)?;
+
+        let out = crate::memory::alloc()
+            .expect("no output-page frame for the display terminal")
+            .addr();
+        // SAFETY: a fresh frame, direct-mapped, owned by nobody yet.
+        unsafe {
+            core::ptr::write_bytes(mmu::phys_to_virt(out) as *mut u8, 0, FRAME_SIZE as usize)
+        };
+
+        let term_report = crate::sched::create_endpoint();
+        let term = crate::sched::create_endpoint();
+
+        let mut maps = [Mapping {
+            va: 0,
+            phys: 0,
+            flags: Flags::user_data(),
+        }; gfx_proto::SURFACE_FRAMES as usize + 1];
+        for (k, m) in maps
+            .iter_mut()
+            .take(gfx_proto::SURFACE_FRAMES as usize)
+            .enumerate()
+        {
+            m.va = SURFACE_VA_CLIENT + k as u64 * FRAME_SIZE;
+            m.phys = surface + k as u64 * FRAME_SIZE;
+        }
+        maps[gfx_proto::SURFACE_FRAMES as usize] = Mapping {
+            va: OUT_VA_TERM,
+            phys: out,
+            flags: Flags::user_data(),
+        };
+
+        crate::sched::spawn(move || {
+            run(
+                term_image,
+                Spawn {
+                    arg0: vt::status::MODE_DISPLAY,
+                    arg1: 0, // no physical address: a terminal has no business knowing one
+                    arg2: 0,
+                    grants: &[
+                        endpoint_cap(term_report, Rights::WRITE), // slot 0: status
+                        endpoint_cap(display_ep, Rights::WRITE),  // slot 1: CALL the driver
+                        endpoint_cap(term, Rights::READ),         // slot 2: serve the terminal
+                    ],
+                    maps: &maps,
+                },
+            )
+        })
+        .expect("could not spawn the display terminal");
+
+        Some(TerminalWiring {
+            driver_report,
+            term_report,
+            term,
+            out,
+            surface,
+        })
+    }
+
+    impl TerminalWiring {
+        /// **Play the application**: put `text` in the output page and `OP_WRITE` it.
+        ///
+        /// Returns when the terminal has drawn it and the display driver has put it on the scanout,
+        /// because that is what the terminal contract says an `OP_WRITE` reply means (the bytes are
+        /// on the console's side). So a test needs no polling and no sleep between writes.
+        pub fn print(&self, text: &[u8]) {
+            super::term_print(self.out, self.term, text);
+        }
+
+        /// **Play the input driver**: `OP_BYTES` these keystrokes, eight to a message.
+        ///
+        /// Byte for byte the framing `user/src/input.rs` sends and the compositor forwards
+        /// (DECISIONS §33), which is the point: the display terminal is fed by the same driver half
+        /// as the serial one, so neither contract had to grow anything to carry a keystroke to a
+        /// screen.
+        pub fn type_bytes(&self, bytes: &[u8]) {
+            for chunk in bytes.chunks(8) {
+                let mut w1 = 0u64;
+                for (k, &b) in chunk.iter().enumerate() {
+                    w1 |= (b as u64) << (8 * k);
+                }
+                let w0 = linedisc::proto::req(linedisc::proto::OP_BYTES, chunk.len() as u64);
+                assert_eq!(
+                    crate::sched::ipc_call(self.term, [w0, w1])[0],
+                    0,
+                    "the terminal refused a keystroke",
+                );
+            }
+        }
+
+        /// A scanout pixel, read by the **kernel** through the direct map: a witness that belongs to
+        /// no process in userspace.
+        pub fn screen_pixel(&self, x: u32, y: u32) -> u32 {
+            let at = mmu::phys_to_virt(self.surface) + (y * gfx_proto::WIDTH + x) as u64 * 4;
+            // SAFETY: inside the scanout frames this kernel allocated.
+            unsafe { core::ptr::read_volatile(at as *const u32) }
+        }
+
+        /// **The scanout holds exactly the picture `expect` describes.** Compared pixel for pixel
+        /// rather than by digest, so a failure names a coordinate.
+        pub fn assert_screen_is(&self, expect: &vt::Vt, what: &str) {
+            for y in 0..gfx_proto::HEIGHT {
+                for x in 0..gfx_proto::WIDTH {
+                    let (got, want) = (self.screen_pixel(x, y), expect.pixel(x, y));
+                    assert_eq!(
+                        got,
+                        want,
+                        "{what}: the framebuffer is wrong at ({x},{y}) [cell ({},{})]: {got:#010x}, \
+                         expected {want:#010x}",
+                        x / bitfont::GLYPH_W,
+                        y / bitfont::GLYPH_H,
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// **The compositor: one screen, several mutually distrusting clients** (milestone 33, the display
@@ -2649,6 +2848,10 @@ pub mod compositor_service {
         pub n: usize,
         pub focusable: usize,
         image: &'static [u8],
+        /// The display terminal's image (milestone 29's text increment), so a scene can be built out
+        /// of window clients, terminals, or both. A terminal is a window client with a different
+        /// program inside it and exactly the same authority.
+        term_image: &'static [u8],
         ring_tail: u32,
     }
 
@@ -2663,6 +2866,7 @@ pub mod compositor_service {
         assert!(n <= SCENE.len() && n <= compose::MAX_WINDOWS && focusable <= n);
         let image = program("compd").expect("no compd program in the initrd archive");
         let client_image = program("window").expect("no window program in the initrd archive");
+        let term_image = program("vterm").expect("no vterm program in the initrd archive");
 
         let wlist = zeroed_frame();
         let ring = zeroed_frame();
@@ -2778,6 +2982,7 @@ pub mod compositor_service {
             n,
             focusable,
             image: client_image,
+            term_image,
             ring_tail: 0,
         }
     }
@@ -2938,6 +3143,120 @@ pub mod compositor_service {
         /// Ring the doorbell without typing anything: "look at the surfaces". Returns the reply's `r0`.
         pub fn ring_doorbell(&self, op: u64) -> u64 {
             crate::sched::ipc_call(self.doorbell, [compose::proto::req(op, 0), 0])[0]
+        }
+
+        /// **Spawn a display terminal as window `i`** (milestone 29's text increment).
+        ///
+        /// It takes a `window` client's place with **exactly a window client's authority**: a report
+        /// endpoint, the doorbell, an input endpoint, and its own control page and surface. The
+        /// compositor cannot tell it from the client that painted a coordinate pattern, which is the
+        /// same claim rung two made about `gpud` one seam down, now made about a client.
+        ///
+        /// The one addition is an **output page**, and it belongs to the terminal contract rather
+        /// than to the compositor's: it is where an application puts the bytes of an `OP_WRITE`
+        /// (DECISIONS §10). The kernel holds the other end of that, playing the application.
+        ///
+        /// **Its input endpoint and its terminal endpoint are the same endpoint**, deliberately.
+        /// This process has one wait point (DECISIONS §33), so an application printing and the
+        /// compositor typing must arrive on one endpoint and be told apart by opcode, exactly as
+        /// `termd` does for the serial terminal. The compositor holds WRITE on it because window `i`
+        /// is focusable; the kernel holds it too, as the spawner.
+        ///
+        /// Returns the output page's physical address. `i` must be below `focusable`, or the
+        /// terminal would hold no endpoint to serve and would park forever on its first receive.
+        pub fn spawn_terminal(&self, i: usize) -> TermClient {
+            assert!(
+                i < self.focusable,
+                "a display terminal must be focusable: its input endpoint is the endpoint it serves",
+            );
+            // The window must be a whole number of character cells, for the reason the scanout must
+            // be: a strip the terminal never paints shows whatever the frame held.
+            assert!(
+                SCENE[i].w.is_multiple_of(bitfont::GLYPH_W)
+                    && SCENE[i].h.is_multiple_of(bitfont::GLYPH_H),
+                "window {i} is not a whole number of character cells",
+            );
+
+            let out = crate::memory::alloc()
+                .expect("no output-page frame for a display terminal")
+                .addr();
+            // SAFETY: a fresh frame, direct-mapped, owned by nobody yet.
+            unsafe {
+                core::ptr::write_bytes(mmu::phys_to_virt(out) as *mut u8, 0, FRAME_SIZE as usize)
+            };
+
+            let frames = SCENE[i].frames() as u64;
+            let mut maps = [Mapping {
+                va: 0,
+                phys: 0,
+                flags: Flags::user_data(),
+            }; MAX_CLIENT_MAPS];
+            let mut m = 0;
+            maps[m] = Mapping {
+                va: T_CTL_VA,
+                phys: self.client[i],
+                flags: Flags::user_data(),
+            };
+            m += 1;
+            maps[m] = Mapping {
+                va: T_OUT_VA,
+                phys: out,
+                flags: Flags::user_data(),
+            };
+            m += 1;
+            for k in 0..frames {
+                maps[m] = Mapping {
+                    va: T_SURFACE_VA + k * FRAME_SIZE,
+                    phys: self.client[i] + (1 + k) * FRAME_SIZE,
+                    flags: Flags::user_data(),
+                };
+                m += 1;
+            }
+
+            let grants = [
+                endpoint_cap(self.client_report[i], Rights::WRITE),
+                endpoint_cap(self.doorbell, Rights::WRITE),
+                endpoint_cap(self.input[i], Rights::READ),
+            ];
+            let image = self.term_image;
+            crate::sched::spawn(move || {
+                run(
+                    image,
+                    Spawn {
+                        arg0: vt::status::MODE_WINDOW,
+                        arg1: 0,
+                        arg2: 0,
+                        grants: &grants,
+                        maps: &maps[..m],
+                    },
+                )
+            })
+            .expect("could not spawn a display terminal");
+
+            TermClient {
+                out,
+                ep: self.input[i],
+            }
+        }
+    }
+
+    // A display terminal's address space. Must match user/src/vterm.rs. Different numbers from a
+    // `window` client's, because they are different programs; the kernel picks each binary's.
+    const T_SURFACE_VA: u64 = 0x0000_0000_0060_0000;
+    const T_OUT_VA: u64 = 0x0000_0000_0068_0000;
+    const T_CTL_VA: u64 = 0x0000_0000_0069_0000;
+
+    /// A display terminal running as a compositor client, from the spawner's side: the page it reads
+    /// an application's bytes out of, and the endpoint it serves.
+    pub struct TermClient {
+        pub out: u64,
+        pub ep: crate::sched::EpId,
+    }
+
+    impl TermClient {
+        /// Play the application: `OP_WRITE` this text and return when it is on the screen.
+        pub fn print(&self, text: &[u8]) {
+            super::term_print(self.out, self.ep, text);
         }
     }
 
@@ -3764,6 +4083,123 @@ mod compositor_tests {
         );
     }
 
+    /// **Focus routes a keystroke into one terminal's grid and not its neighbour's** (milestone 29's
+    /// text increment meeting rung two).
+    ///
+    /// Two display terminals, side by side, each a compositor client with exactly a window client's
+    /// authority. The keystroke routing this rung already proved is now **visible in the picture**,
+    /// which is a stronger statement than the endpoint-level one and a different kind of evidence:
+    /// an `A` typed while terminal 0 has focus appears in terminal 0's grid, a TAB moves focus, and
+    /// a `B` appears in terminal 1's. Neither letter appears in the other window, and the kernel
+    /// checks that by comparing every pixel of the composed screen against the two engines it ran
+    /// itself.
+    ///
+    /// # Why this is the capability claim and not a policy claim
+    ///
+    /// Terminal 1 receives the `B` because it **holds an input endpoint**, not because it asked and
+    /// not because the compositor consulted a list (DECISIONS §33). The compositor's whole part in
+    /// it is choosing *which* of the capabilities it holds to use. A client granted no input endpoint
+    /// has an empty cspace slot and cannot be sent a keystroke by anyone, which the neighbouring test
+    /// in this module proves by value (`NoSuchSlot`); this one proves the other half, that a
+    /// keystroke routed to one holder does not land in another's memory.
+    ///
+    /// # And the terminal is a client, unchanged at both seams
+    ///
+    /// `compd` cannot tell a display terminal from the `window` client that paints a coordinate
+    /// pattern: same grants, same control page, same doorbell, same `COMMIT`. Neither `compose` nor
+    /// `gfx_proto` needed a line changed to carry text. That is the seam claim made twice in one
+    /// milestone, once at each rung.
+    ///
+    /// Uses the kernel's display stand-in rather than the GPU, deliberately: this test is about
+    /// routing and composition, the device is proved elsewhere in this file, and a third `gpud`
+    /// against the same physical device would put the scanout's picture in a race with the
+    /// host-side check that reads it.
+    #[test_case]
+    fn focus_routes_a_keystroke_to_one_terminals_grid_and_not_its_neighbours() {
+        let (display, screen) = kernel_display();
+        let mut w = compositor_service::start(2, 2, display, screen);
+        await_compositor(&w);
+
+        // Both terminals up. Each negotiated its geometry out of the control page the compositor
+        // published, so a window whose size the client did not choose is the *normal* case here.
+        let mut terms = [vt::Vt::new(1, 1), vt::Vt::new(1, 1)];
+        let mut clients = [None, None];
+        for i in 0..2 {
+            let c = w.spawn_terminal(i);
+            let [tag, dims, mode, ..] = sched::ipc_recv(w.client_report[i]);
+            assert_eq!(
+                tag,
+                vt::status::TERM_UP,
+                "terminal {i} did not come up (it reported {tag:#x}; a 0xDEAD_.. word's low byte \
+                 names the step, see user/src/vterm.rs)",
+            );
+            assert_eq!(mode, vt::status::MODE_WINDOW);
+            let (cols, rows) = ((dims & 0xffff_ffff) as u32, (dims >> 32) as u32);
+            assert_eq!(
+                (cols, rows),
+                (SCENE[i].w / bitfont::GLYPH_W, SCENE[i].h / bitfont::GLYPH_H),
+                "terminal {i} sized itself to a grid its window cannot hold",
+            );
+            terms[i] = vt::script::window(i, cols, rows);
+            clients[i] = Some(c);
+        }
+
+        // Each terminal prints its own banner. Different text per window, so an OP_WRITE delivered
+        // to the wrong terminal is a wrong picture rather than a duplicate one.
+        for (i, c) in clients.iter().enumerate() {
+            c.as_ref().unwrap().print(vt::script::WINDOW_BANNER[i]);
+        }
+
+        // Type at the focused terminal, move focus with TAB, type at the next one. `type_bytes`
+        // writes the input ring and rings the doorbell, which is exactly what a keyboard driver
+        // does; the authority it exercises is the ring mapping, and no client has one.
+        assert_eq!(w.focused(), 0, "focus should start on the bottom window");
+        w.type_bytes(vt::script::WINDOW_TYPED[0]);
+        assert_eq!(w.focused(), 0, "typing must not move focus");
+        w.type_bytes(&[compose::proto::FOCUS_NEXT]);
+        assert_eq!(
+            w.focused(),
+            1,
+            "TAB did not move focus: the compositor's own policy decision, published in the window \
+             list so it can be witnessed rather than asked for",
+        );
+        w.type_bytes(vt::script::WINDOW_TYPED[1]);
+
+        // The picture. Every pixel of the composed screen, against the two engines the kernel ran
+        // itself: window content from `vt`, placement and stacking from `compose`.
+        for y in 0..compose::SCREEN_H {
+            for x in 0..compose::SCREEN_W {
+                let got = w.screen_pixel(x, y);
+                let want = compose::expected_screen_pixel_with(2, x, y, |i, sx, sy| {
+                    terms[i].pixel(sx, sy)
+                });
+                assert_eq!(
+                    got, want,
+                    "the composed screen is wrong at ({x},{y}): {got:#010x}, expected {want:#010x}",
+                );
+            }
+        }
+
+        // **And the letters really are distinguishable**, so the comparison above has teeth: a
+        // compositor that sent both keystrokes to both terminals, or the wrong one to each, would
+        // have to produce a different picture. Asserted rather than assumed, because if the two
+        // scripts ever became the same text this test would keep passing while proving nothing.
+        let swapped = [
+            vt::script::window(1, terms[0].cols(), terms[0].rows()),
+            vt::script::window(0, terms[1].cols(), terms[1].rows()),
+        ];
+        assert!(
+            (0..compose::SCREEN_H).any(|y| (0..compose::SCREEN_W).any(|x| {
+                compose::expected_screen_pixel_with(2, x, y, |i, sx, sy| swapped[i].pixel(sx, sy))
+                    != compose::expected_screen_pixel_with(2, x, y, |i, sx, sy| {
+                        terms[i].pixel(sx, sy)
+                    })
+            })),
+            "the two terminals show the same thing: this test cannot tell mis-routed input from \
+             correct input",
+        );
+    }
+
     /// **Three clients' surfaces become one screen, and the host confirms it.**
     ///
     /// The end-to-end picture, with a real virtio-gpu under it (rung one's driver, unchanged: the
@@ -4139,6 +4575,134 @@ mod display_tests {
         // later test its own fault assertion. The escape above is sized to produce one fault for the
         // same reason (user/src/gpud.rs).
         while crate::iommu::take_fault().is_some() {}
+    }
+
+    /// **A bitmap font and a VT engine put readable text on the scanout.**
+    ///
+    /// Milestone 29's remaining increment, end to end: a terminal component that is a *client* of
+    /// the framebuffer contract, drawing glyphs into a surface and flushing a damage rectangle.
+    ///
+    /// # What makes this a proof rather than a screenshot
+    ///
+    /// Text is the case where "it looked right" is most tempting and least sufficient, so the
+    /// picture is a **value three parties compute independently**:
+    ///
+    /// - the **terminal** runs the `vt` engine over the bytes it was sent and paints what it says;
+    /// - the **kernel** runs the same engine over the same script (`vt::script`) and compares the
+    ///   scanout frames pixel for pixel through the direct map. It never asks the terminal anything;
+    /// - the **host** runs it again and compares QEMU's `screendump` against the same definition
+    ///   (`cargo xtask`, beside this suite). That one is not optional: `-display none` means nothing
+    ///   in the guest can see the device's own surface, so a wrong pixel format or scanout rectangle
+    ///   would satisfy the first two and show garbage on a screen.
+    ///
+    /// And the host checker has a **negative control**: it must reject the same screen with one
+    /// letter changed (`vt::script::GREETING_TYPO`). A checker that only asked "is there ink?" would
+    /// pass every run including the ones that drew the wrong thing.
+    ///
+    /// # What the script exercises, and why each part is there
+    ///
+    /// Four rows of text (a one-row picture would hide a stride error), three renditions (a terminal
+    /// that ignored SGR would draw every glyph correctly and still fail), a `\r\n` pair (what
+    /// `linedisc::expand_output` puts on the wire for a Unix `\n`), descenders and an underscore (the
+    /// glyph rows a font table truncated to seven would lose), and then **keystrokes**, delivered as
+    /// `OP_BYTES`: the terminal contract's driver half, byte for byte what `user/src/input.rs` sends
+    /// and what the compositor forwards to a focused client.
+    ///
+    /// # And the picture the driver reports is the *blank* terminal, on purpose
+    ///
+    /// `gpud`'s one status report covers its first flush, which here is the terminal's blank grid
+    /// before anything has been written. So it doubles as the check that an empty terminal is a
+    /// *defined* picture (spaces on the default background, with the cursor) rather than whatever
+    /// those frames held at boot, exactly as rung two used it for the empty compositor screen.
+    ///
+    /// **Runs after the confinement test and before the pattern test**, which the name arranges: the
+    /// confinement test resets the device and would wipe this, and the pattern test's picture is the
+    /// one that stays up until QEMU exits. See notes/glyphs.md for the ordering and what breaks it.
+    #[test_case]
+    fn a_bitmap_font_and_a_vt_engine_put_readable_text_on_the_scanout() {
+        let gpud = program("gpud").expect("no gpud program in the initrd archive");
+        let vterm = program("vterm").expect("no vterm program in the initrd archive");
+
+        let w = display_service::start_terminal(gpud, vterm).expect(
+            "no virtio-gpu-pci function on the bus: is CRICKER_GPU missing from the test leg, or \
+             the -device virtio-gpu-pci line from the runner?",
+        );
+
+        // The driver came up. Taken first: these are rendezvous SENDs, so the driver is parked here.
+        let [tag, geometry, ..] = sched::ipc_recv(w.driver_report);
+        assert_eq!(
+            tag,
+            gfx::status::UP,
+            "the display driver did not come up (it reported {tag:#x})",
+        );
+        assert_eq!(geometry, gfx::WIDTH as u64 | ((gfx::HEIGHT as u64) << 32),);
+
+        // The terminal negotiated its geometry from the driver rather than assuming it, and got the
+        // grid the script is written for.
+        let [tag, dims, mode, ..] = sched::ipc_recv(w.term_report);
+        assert_eq!(
+            tag,
+            vt::status::TERM_UP,
+            "the display terminal did not come up (it reported {tag:#x}; a 0xDEAD_.. word's low \
+             byte names the step, see user/src/vterm.rs)",
+        );
+        assert_eq!(
+            dims,
+            vt::script::COLS as u64 | ((vt::script::ROWS as u64) << 32),
+            "the terminal sized itself to a different grid than the script predicts",
+        );
+        assert_eq!(mode, vt::status::MODE_DISPLAY);
+
+        // The driver's account of the terminal's first flush: the blank grid. A second address
+        // space's witness, taken after the device reported the transfer complete.
+        let blank = vt::Vt::new(vt::script::COLS, vt::script::ROWS);
+        let [tag, driver_digest, pixels, ..] = sched::ipc_recv(w.driver_report);
+        assert_eq!(tag, gfx::status::FLUSHED, "the driver served no flush");
+        assert_eq!(pixels, gfx::PIXELS as u64);
+        assert_eq!(
+            driver_digest,
+            gfx::checksum(|i| {
+                let (x, y) = (
+                    (i % gfx::WIDTH as usize) as u32,
+                    (i / gfx::WIDTH as usize) as u32,
+                );
+                blank.pixel(x, y)
+            }),
+            "the frames the device read for the terminal's first flush are not a blank terminal: an \
+             empty terminal must be a defined picture, not whatever was in those frames",
+        );
+        w.assert_screen_is(&blank, "a terminal that has been sent nothing");
+
+        // Play the application, then the input driver. Both replies mean the pixels are on the
+        // device's side, so there is nothing to poll and nothing to sleep for.
+        w.print(vt::script::GREETING);
+        w.type_bytes(vt::script::TYPED);
+
+        // The kernel's own witness: every pixel, against the engine it ran itself.
+        let expect = vt::script::full_screen();
+        w.assert_screen_is(&expect, "after the greeting and the typing");
+
+        // A wrong screen must not pass this. The typo picture differs from the real one in one
+        // letter, so asserting they differ at all is what says the comparison above has teeth: if
+        // `assert_screen_is` were somehow vacuous, this would still be true, which is why the check
+        // is that the two *pictures* differ rather than that the screen is not the typo.
+        let mut typo = vt::Vt::new(vt::script::COLS, vt::script::ROWS);
+        typo.feed(vt::script::GREETING_TYPO);
+        typo.feed(vt::script::TYPED);
+        assert!(
+            (0..gfx::HEIGHT)
+                .any(|y| (0..gfx::WIDTH).any(|x| typo.pixel(x, y) != expect.pixel(x, y))),
+            "the one-letter typo produces an identical picture: the negative control is inert",
+        );
+
+        // **Hold the picture up for the host.** `cargo xtask` polls QEMU's monitor while this suite
+        // runs, and the next test puts rung one's pattern on the same scanout. Three seconds is an
+        // order of magnitude more than the poll needs, and if the host never sees it the run fails at
+        // the scanout check rather than passing quietly.
+        let deadline = crate::arch::timer::now() + 3 * crate::arch::timer::frequency();
+        while crate::arch::timer::now() < deadline {
+            sched::yield_now();
+        }
     }
 }
 

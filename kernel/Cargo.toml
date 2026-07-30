@@ -11,6 +11,11 @@ license.workspace = true
 aarch64-cpu = "11"
 abi = { version = "0.1.0", path = "../crates/abi" }
 asid = { version = "0.1.0", path = "../crates/asid" }
+# The bitmap font and the VT engine (milestone 29's text increment). The kernel does not draw
+# anything; it *predicts*. Its display-terminal tests run the same engine over the same script the
+# terminal was sent and compare the framebuffer pixel for pixel, so no process grades its own
+# homework and the picture is a value rather than a screenshot somebody eyeballed once.
+bitfont = { version = "0.1.0", path = "../crates/bitfont" }
 caps = { version = "0.1.0", path = "../crates/caps" }
 # The compositor contract (milestone 33): the kernel wires the scene and its tests predict the
 # composed screen from the same definition the compositor and its clients paint from.
@@ -26,11 +31,16 @@ elf = { version = "0.1.0", path = "../crates/elf" }
 frames = { version = "0.1.0", path = "../crates/frames" }
 intrusive = { version = "0.1.0", path = "../crates/intrusive" }
 ipc = { version = "0.1.0", path = "../crates/ipc" }
+# The terminal contract's IPC framing (DECISIONS §21): the kernel's display-terminal tests play both
+# an application (OP_WRITE) and an input driver (OP_BYTES), so they speak the same protocol the
+# serial terminal's clients and drivers do rather than a second one invented for a test.
+linedisc = { version = "0.1.0", path = "../crates/linedisc" }
 measure = { version = "0.1.0", path = "../crates/measure" }
 paging = { version = "0.1.0", path = "../crates/paging" }
 regions = { version = "0.1.0", path = "../crates/regions" }
 slots = { version = "0.1.0", path = "../crates/slots" }
 spin = { version = "0.12", default-features = false, features = ["spin_mutex"] }
+vt = { version = "0.1.0", path = "../crates/vt" }
 
 # Typed, compile-time-checked MMIO register blocks. An off-by-four in a device's
 # register layout becomes a build error instead of a mystery at runtime.
