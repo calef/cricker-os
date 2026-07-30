@@ -240,12 +240,18 @@ const MAX_ENDPOINTS: usize = 512;
 pub type EpId = u64;
 
 /// The pages the kernel carves for its own endpoints. This grows with the SUITE, not the system:
-/// 64 lasted until the 27+28 merge, 96 until supervision and std::net merged the same day. Each
-/// parallel branch fits alone; the union of their test boots is what crosses the line, a cost no
-/// branch can see before merge. 128 covers today's suite; exhaustion panics in
-/// [`create_endpoint`] with the number to raise. If this grows again, consider making the test
-/// harness reap its boot services between modules instead of raising further.
-const KERNEL_EP_PAGES: u64 = 128;
+/// 64 lasted until the 27+28 merge, 96 until supervision and std::net merged the same day, 128
+/// until milestone 33's compositor tests (which wire 26 endpoints across four scenes: a display, a
+/// doorbell, a report per client, and an input endpoint per focusable client). Each parallel branch
+/// fits alone; the union of their test boots is what crosses the line, a cost no branch can see
+/// before merge. 160 covers today's suite; exhaustion panics in [`create_endpoint`] with the number
+/// to raise.
+///
+/// **This is now the third bump, so the standing suggestion is worth acting on next time:** make the
+/// test harness reap its boot services between modules instead of raising this further. The reason it
+/// has not been done here is that endpoint teardown does not exist (a region hosting an endpoint is
+/// pinned, DECISIONS §13), so reaping is its own piece of work and not a compositor's to do.
+const KERNEL_EP_PAGES: u64 = 160;
 
 /// The endpoint behind a name, or `None` if the name no longer resolves. Caller holds `SCHED`.
 ///
