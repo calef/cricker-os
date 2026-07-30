@@ -22,6 +22,7 @@ elf = { version = "0.1.0", path = "../crates/elf" }
 frames = { version = "0.1.0", path = "../crates/frames" }
 intrusive = { version = "0.1.0", path = "../crates/intrusive" }
 ipc = { version = "0.1.0", path = "../crates/ipc" }
+measure = { version = "0.1.0", path = "../crates/measure" }
 paging = { version = "0.1.0", path = "../crates/paging" }
 regions = { version = "0.1.0", path = "../crates/regions" }
 slots = { version = "0.1.0", path = "../crates/slots" }
@@ -30,6 +31,11 @@ spin = { version = "0.12", default-features = false, features = ["spin_mutex"] }
 # Typed, compile-time-checked MMIO register blocks. An off-by-four in a device's
 # register layout becomes a build error instead of a mystery at runtime.
 tock-registers = "0.10"
+
+[build-dependencies]
+# The measured-boot digest parser, shared with the kernel proper so the manifest the build writes and
+# the trust root the kernel checks have exactly one definition of the format (milestone 22 phase B.1).
+measure = { version = "0.1.0", path = "../crates/measure" }
 
 [features]
 # The benchmark boot (milestone 21): run the microbenchmarks and halt. See script/bench.

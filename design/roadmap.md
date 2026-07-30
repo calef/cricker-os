@@ -246,11 +246,17 @@ unchecked, and its *authority* is broad, so within that authority a corrupted in
 
 **Deliverable, three halves.**
 
-1. **Verify init before it runs.** A measured or secure boot step: the kernel (or a boot stage
-   ahead of it) checks init's hash, or a signature over it, before dropping to EL0 at its entry.
-   Today `spawn_init` loads whatever initrd it is handed. seL4's high-assurance deployments do
-   exactly this for the root task; it is the single biggest gap between "verified kernel" and
-   "trustworthy system."
+1. **Verify init before it runs. (Phase B.1, BUILT 2026-07-29.)** A measured boot step: the kernel
+   checks init's hash before dropping to EL0/U-mode at its entry. seL4's high-assurance deployments do
+   exactly this for the root task; it was the single biggest gap between "verified kernel" and
+   "trustworthy system." Built as the **measured** variant: the build hashes the archive entry it
+   packed and `kernel/build.rs` compiles the digest into the kernel image, so the check means "this
+   kernel image runs exactly this init" with no keys and no signature code in the TCB. SHA-256,
+   hand-written in `crates/measure`, one implementation shared by the build and the kernel. Fails
+   closed both ways: wrong bytes halt, and an *unmeasured* program halts too (an empty trust root
+   vouches for nothing). Both ISAs. The **signature** variant (update init without rebuilding the
+   kernel, at the cost of Ed25519 in the TCB and a key-custody question) is recorded in DECISIONS §26's
+   phase B block as a follow-up, not built. See notes/trusted-init.md.
 2. **Shrink the blast radius.** Reduce what a compromised init can do: hand most
    process-construction to smaller, less-privileged sub-servers, so init's own authority is
    minimal and short-lived (build the first servers, then drop the untyped). The less init holds,

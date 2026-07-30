@@ -134,6 +134,12 @@ in the code or the conversation doesn't make sense, it belongs here.
   corpse is dead-until-reaped so the supervisor can inspect it and reap it with §16 revocation. No
   new syscall or method: a spawn-slot convention and a message-format convention. Restart policy
   stays in userspace; the kernel never relaunches anything.
+- [Trusted init: measuring the one program the kernel loads itself](trusted-init.md) — milestone 22
+  phase B.1. init's bytes used to be loaded on trust; now the build hashes the boot program and the
+  kernel refuses to enter anything else, digest compiled into its own image ("this kernel runs exactly
+  this init"). Why SHA-256 hand-written and shared by the build and the kernel, why an unmeasured
+  program is a refusal and not a pass, how the build composes without a chicken-and-egg, and the
+  signature variant's cost (Ed25519 in the TCB, key custody) recorded rather than built.
 - [Delegating a capability](delegation.md) — a capability system where processes can't pass
   capabilities isn't one. A process now delegates a capability to another over an IPC endpoint
   (`SEND_CAP`/`RECV_CAP`), narrowing the rights, and only if it holds `GRANT`. Authority composes

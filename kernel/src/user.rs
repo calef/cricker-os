@@ -567,25 +567,32 @@ pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
     crate::sched::bind_irq(UART_RX_INTID, crate::sched::create_endpoint());
     crate::arch::irq::enable(UART_RX_INTID);
 
-    crate::sched::spawn(move || {
-        // The initrd is a crickerfs archive (milestone 19f), not a bare ELF: it carries init plus
-        // the programs init will load. The kernel reads only the one entry it must, "init". This is
-        // the same "honest residue" as before (something has to load the first program), now naming
-        // that program through a fixed archive index instead of assuming it sits at offset 0. Every
-        // other program is init's to parse. See notes/init-and-loading.md.
-        let init_bytes = match crickerfs::Fs::parse(image) {
-            Ok(fs) => match fs.read("init") {
-                Some(bytes) => bytes,
-                None => {
-                    crate::println!("  boot archive has no 'init' program");
-                    crate::sched::exit();
-                }
-            },
-            Err(e) => {
-                crate::println!("  boot archive is not a crickerfs image: {e:?}");
-                crate::sched::exit();
+    // The initrd is a crickerfs archive (milestone 19f), not a bare ELF: it carries init plus the
+    // programs init will load. The kernel reads only the one entry it must, "init". This is the same
+    // "honest residue" as before (something has to load the first program), now naming that program
+    // through a fixed archive index instead of assuming it sits at offset 0. Every other program is
+    // init's to parse. See notes/init-and-loading.md.
+    //
+    // Read and MEASURE it here, on the boot path, before anything is spawned (milestone 22 phase
+    // B.1): the check has to be the thing that decides whether a thread is created at all, not
+    // something the new thread does to itself. `trust::require` halts on a mismatch, so past this
+    // line the bytes are the ones this kernel image was built against.
+    let init_bytes = match crickerfs::Fs::parse(image) {
+        Ok(fs) => match fs.read("init") {
+            Some(bytes) => bytes,
+            None => {
+                crate::println!("  boot archive has no 'init' program");
+                crate::arch::halt();
             }
-        };
+        },
+        Err(e) => {
+            crate::println!("  boot archive is not a crickerfs image: {e:?}");
+            crate::arch::halt();
+        }
+    };
+    crate::trust::require("init", init_bytes);
+
+    crate::sched::spawn(move || {
         let elf = match Elf::parse(init_bytes) {
             Ok(e) => e,
             Err(e) => {
@@ -1092,6 +1099,11 @@ pub fn riscv_initrd_demo(archive: &'static [u8]) -> Result<u64, LoadError> {
     // Read only the one entry the kernel must: "init" (the builder). The rest is init's to parse.
     let fs = crickerfs::Fs::parse(archive).expect("initrd is not a crickerfs archive");
     let init_bytes = fs.read("init").expect("archive has no 'init' program");
+    // Measured boot (milestone 22 phase B.1): the boot program is checked against the digest compiled
+    // into this kernel image before its address space exists, and a mismatch halts. Same check, same
+    // trust root, same place in the sequence as aarch64's `spawn_init`; the parity gate (§19) asks
+    // for exactly that.
+    crate::trust::require("init", init_bytes);
     let elf = Elf::parse(init_bytes).map_err(LoadError::NotLoadable)?;
 
     // init's address space: its own segments, a deep stack (it runs an ELF loader loop), and the
@@ -1262,6 +1274,9 @@ pub fn riscv_shell_boot(archive: &'static [u8], uart_irq: u32) -> Result<(), Loa
     let init_bytes = fs
         .read("sysinit")
         .expect("archive has no 'sysinit' program");
+    // Measured boot (milestone 22 phase B.1): `sysinit` is riscv's boot program, so it is in the
+    // trust root under its own name and checked here, before its address space is built.
+    crate::trust::require("sysinit", init_bytes);
     let elf = Elf::parse(init_bytes).map_err(LoadError::NotLoadable)?;
 
     // sysinit's address space: its segments, a deep stack (it runs an ELF loader that builds three
@@ -4928,6 +4943,77 @@ mod force_kill_tests {
             crate::memory::free_frames(),
             frames_before,
             "reclaiming a force-killed runaway did not return its frames to baseline",
+        );
+    }
+}
+
+/// **Measured boot: the kernel refuses to enter an init it was not built for** (milestone 22 phase
+/// B.1, DECISIONS §22).
+///
+/// Cross-ISA, because the check is portable: one hash implementation (`crates/measure`), one trust
+/// root generated into the kernel image by `build.rs`, called from the boot path on both
+/// architectures (aarch64 `spawn_init`, riscv `riscv_initrd_demo` / `riscv_shell_boot`).
+///
+/// **What these two prove, and why the boot path itself cannot be tested directly.** A real refusal
+/// halts the machine, so a test cannot take that branch and live. What *can* be proven, and is what
+/// actually matters, is the decision: the same function the boot path consults says Ok for the bytes
+/// in the initrd QEMU loaded (which proves the whole build composition end to end: userspace built,
+/// archive packed, digest written, kernel compiled with it, and the digest in the running image
+/// matches the archive in RAM), and says Err for bytes off by one bit. The boot path's only response
+/// to Err is `arch::halt()`, which is three lines up from here in `trust::require` and is the sort of
+/// thing a reader can check by looking.
+#[cfg(test)]
+mod measured_boot_tests {
+    use super::*;
+
+    /// The boot-program entry both architectures' kernels load themselves. (riscv's shell boot loads
+    /// `sysinit` instead, measured under that name by the same trust root; `init` is the entry both
+    /// ISAs have, so it is the one this test can assert on portably.)
+    const BOOT_PROGRAM: &str = "init";
+
+    /// **The initrd in RAM is the initrd this kernel was built against.** The end-to-end build
+    /// composition check: nothing here is hard-coded, the digest comes out of the kernel's own
+    /// `.rodata` and the bytes come out of the archive QEMU loaded, and they have to agree. If the
+    /// build ever writes the manifest after compiling the kernel, or measures the wrong entry, or the
+    /// archive is repacked without a kernel relink, this fails.
+    #[test_case]
+    fn the_boot_program_measures_to_the_compiled_in_trust_root() {
+        let bytes = program(BOOT_PROGRAM).expect("no boot program in the initrd archive");
+        assert!(
+            crate::trust::expected(BOOT_PROGRAM).is_some(),
+            "the kernel image carries no measurement for '{BOOT_PROGRAM}': the build's measurement \
+             step did not run, and an unmeasured boot would be refused at boot time",
+        );
+        assert_eq!(
+            crate::trust::verify(BOOT_PROGRAM, bytes),
+            Ok(()),
+            "the boot program in RAM is not the one this kernel image was built against",
+        );
+    }
+
+    /// **One flipped bit is refused, and an unmeasured name is refused too.** The tamper is measured
+    /// by streaming (flip the first byte, then the rest untouched) rather than by copying a
+    /// 300 KiB ELF, because there is no heap to copy it into; the digest is the same one a real
+    /// tampered initrd would produce.
+    #[test_case]
+    fn a_tampered_boot_program_and_an_unmeasured_name_are_both_refused() {
+        let bytes = program(BOOT_PROGRAM).expect("no boot program in the initrd archive");
+        let mut h = measure::Sha256::new();
+        h.update(&[bytes[0] ^ 1]);
+        h.update(&bytes[1..]);
+        let tampered = h.finalize();
+
+        assert_eq!(
+            measure::verify_digest(crate::trust::TRUST_ROOT, BOOT_PROGRAM, &tampered),
+            Err(measure::VerifyError::Mismatch),
+            "a boot program with one bit flipped still satisfied the trust root",
+        );
+        // Fail-closed on the other axis: a program the trust root says nothing about is refused, not
+        // waved through. This is what makes an empty or stale trust root safe.
+        assert_eq!(
+            crate::trust::verify("no-such-program", bytes),
+            Err(measure::VerifyError::Unmeasured),
+            "the kernel vouched for a program it has no measurement for",
         );
     }
 }
