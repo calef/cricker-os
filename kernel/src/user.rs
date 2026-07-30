@@ -2371,6 +2371,151 @@ pub mod fs_service {
     }
 }
 
+/// **The display service** (milestone 29, the display ladder's rung one): a confined virtio-gpu
+/// driver and a client that draws, wired by the kernel and then left alone.
+///
+/// ```text
+///   virtio-gpu ──virtio (PCIe, behind the IOMMU)──► display driver ──display IPC──► painter
+///        │                                              │                             │
+///        └──── DMA: the whole region ───────────────────►│                             │
+///                                    the surface (pages 1..) ─────── shared ──────────┘
+/// ```
+///
+/// The kernel's part is the same as every other service here: build the wiring, hand each process a
+/// `Spawn` literal, and know nothing about what they do. It never sees a virtio-gpu command, a
+/// pixel, or a rectangle. What is new is the **size** of the DMA region, and that is the whole
+/// memory story: a framebuffer does not fit in the single page the disk and NIC drivers get, so the
+/// region is `1 + gfx_proto::SURFACE_FRAMES` **contiguous** frames, page 0 for the rings and the
+/// control buffers and the rest for the surface. Registering the whole run as the driver's DMA region
+/// is what keeps the framebuffer inside the grant: the shadow-ring validator bounds every descriptor
+/// to it, and `iommu::confine` maps exactly it, so the device can reach the pixels and nothing else.
+/// The block server already took two pages this way (milestone 32); this is the same move, wider.
+///
+/// The client maps only the surface frames. It never sees page 0, so it cannot touch a descriptor
+/// ring, and it holds no `Virtio` capability, no interrupt, and no physical address. See
+/// notes/framebuffer-contract.md.
+#[allow(dead_code)] // spawned only by the milestone-29 test, like every other service module here
+pub mod display_service {
+    use super::*;
+    use crate::cap::{Rights, endpoint_cap, irq_cap, virtio_cap};
+    use crate::sched::EpId;
+
+    /// Where the driver maps its whole DMA region. Must match user/src/gpud.rs `DMA_VA`.
+    const DMA_VA: u64 = 0x0000_0000_0090_0000;
+    /// Where the client maps the surface. Must match user/src/painter.rs `SURFACE_VA`.
+    const SURFACE_VA_CLIENT: u64 = 0x0000_0000_0060_0000;
+
+    /// The DMA region, in frames: one for the rings and control buffers, then the surface.
+    const DMA_FRAMES: u64 = 1 + gfx_proto::SURFACE_FRAMES as u64;
+
+    /// **Wire and spawn the display driver and the painting client.** Returns
+    /// `(driver report, client report)`, or `None` if no virtio-gpu function is on the bus.
+    ///
+    /// One spawn site for two processes on purpose: they are only meaningful together (a driver with
+    /// no client serves nobody, a client with no driver blocks on its first CALL), and the endpoint
+    /// and the shared frames that join them are created here, in the one place that is allowed to
+    /// know both halves.
+    pub fn start(driver_image: &'static [u8], client_image: &'static [u8]) -> Option<(EpId, EpId)> {
+        let d = crate::pci::find_gpu_device()?;
+
+        // The DMA region: contiguous, because the surface must be one run of physical frames for the
+        // device's backing to be a single memory entry and for the IOMMU domain to cover it as one
+        // range. Zeroed, so neither a stale descriptor nor a stale pixel is ever visible to the
+        // device or to the client.
+        let dma = crate::memory::alloc_contiguous(DMA_FRAMES as usize)
+            .expect("no contiguous DMA region for the display driver")
+            .addr();
+        // SAFETY: a fresh contiguous run of frames, reachable through the direct map, owned by
+        // nobody else.
+        unsafe {
+            core::ptr::write_bytes(
+                mmu::phys_to_virt(dma) as *mut u8,
+                0,
+                (DMA_FRAMES * FRAME_SIZE) as usize,
+            );
+        }
+        let surface = dma + FRAME_SIZE; // page 1 onward: the frames the client also maps
+
+        // The device's interrupt, routed to an endpoint so the driver's WAIT receives it as a
+        // message (milestone 9a).
+        let irq_ep = crate::sched::create_endpoint();
+        crate::sched::bind_irq(d.intid, irq_ep);
+        crate::arch::irq::enable(d.intid);
+
+        // Register the transport: the kernel keeps the registers and the two DMA-critical powers,
+        // and confines the device in hardware to exactly this region plus the shadow page.
+        let vid = crate::virtio::register(
+            crate::virtio::Transport::pci(&d),
+            dma,
+            DMA_FRAMES * FRAME_SIZE,
+            Some(d.rid), // the PCIe requester id the IOMMU keys its tables on
+        );
+
+        let display_ep = crate::sched::create_endpoint(); // client WRITE (CALL) -> driver READ
+        let driver_report = crate::sched::create_endpoint();
+        let client_report = crate::sched::create_endpoint();
+
+        // --- the driver: the confined transport, the interrupt, the whole DMA region, and the
+        // display endpoint's serving half. ---
+        let mut driver_maps = [Mapping {
+            va: 0,
+            phys: 0,
+            flags: Flags::user_data(),
+        }; DMA_FRAMES as usize];
+        for (k, m) in driver_maps.iter_mut().enumerate() {
+            m.va = DMA_VA + k as u64 * FRAME_SIZE;
+            m.phys = dma + k as u64 * FRAME_SIZE;
+        }
+        crate::sched::spawn(move || {
+            run(
+                driver_image,
+                Spawn {
+                    arg0: 0,   // gpud is its own binary; no role selector
+                    arg1: dma, // the DMA region's PHYSICAL base: descriptors speak physical
+                    arg2: 0,
+                    grants: &[
+                        endpoint_cap(driver_report, Rights::WRITE), // slot 0: status
+                        irq_cap(d.intid),                           // slot 1: the completion IRQ
+                        virtio_cap(vid), // slot 2: the confined transport
+                        endpoint_cap(display_ep, Rights::READ), // slot 3: serve clients
+                    ],
+                    maps: &driver_maps,
+                },
+            )
+        })
+        .expect("could not spawn the display driver");
+
+        // --- the client: an endpoint and the pixels. Nothing else, which is the point. ---
+        let mut client_maps = [Mapping {
+            va: 0,
+            phys: 0,
+            flags: Flags::user_data(),
+        }; gfx_proto::SURFACE_FRAMES as usize];
+        for (k, m) in client_maps.iter_mut().enumerate() {
+            m.va = SURFACE_VA_CLIENT + k as u64 * FRAME_SIZE;
+            m.phys = surface + k as u64 * FRAME_SIZE;
+        }
+        crate::sched::spawn(move || {
+            run(
+                client_image,
+                Spawn {
+                    arg0: 0,
+                    arg1: 0, // no physical address: a client has no business knowing one
+                    arg2: 0,
+                    grants: &[
+                        endpoint_cap(client_report, Rights::WRITE), // slot 0: its verdict
+                        endpoint_cap(display_ep, Rights::WRITE),    // slot 1: CALL the driver
+                    ],
+                    maps: &client_maps,
+                },
+            )
+        })
+        .expect("could not spawn the painting client");
+
+        Some((driver_report, client_report))
+    }
+}
+
 /// Console **input** in userspace: the receive half of the terminal.
 #[allow(dead_code)]
 pub mod input_service {

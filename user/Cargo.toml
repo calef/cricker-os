@@ -187,6 +187,24 @@ path = "src/netd.rs"
 test = false
 bench = false
 
+# The display driver (milestone 29, the display ladder's rung one): drives the virtio-gpu device
+# over the confined transport and serves the framebuffer contract to clients. `mkinitrd` packs it as
+# "gpud" for both ISAs.
+[[bin]]
+name = "gpud"
+path = "src/gpud.rs"
+test = false
+bench = false
+
+# The client that draws (milestone 29): paints a coordinate-derived pattern into a shared surface and
+# asks the driver to show it. Holds an endpoint and the pixels; no device, no DMA authority. The
+# separation is the increment's point, so it is its own binary rather than a role of gpud.
+[[bin]]
+name = "painter"
+path = "src/painter.rs"
+test = false
+bench = false
+
 [dependencies]
 abi = { version = "0.1.0", path = "../crates/abi" }
 capsh = { version = "0.1.0", path = "../crates/capsh" }
@@ -194,6 +212,7 @@ coremark = { version = "0.1.0", path = "../crates/coremark" }
 crickerfs = { version = "0.1.0", path = "../crates/crickerfs" }
 elf = { version = "0.1.0", path = "../crates/elf" }
 fs_proto = { version = "0.1.0", path = "../crates/fs_proto" }
+gfx_proto = { version = "0.1.0", path = "../crates/gfx_proto" }
 linedisc = { version = "0.1.0", path = "../crates/linedisc" }
 user_rt = { version = "0.1.0", path = "../crates/user_rt" }
 
