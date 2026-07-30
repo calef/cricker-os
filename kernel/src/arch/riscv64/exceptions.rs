@@ -67,6 +67,19 @@ impl TrapFrame {
         // U-mode XLEN illegal, faulting on the first user instruction.
         const SPIE: u64 = 1 << 5;
         const UXL_64: u64 = 2 << 32;
+
+        // **SIE must stay clear in any fabricated frame, and this assertion is load-bearing.**
+        // `trap_return` masks interrupts on entry (the fix for the exception-return race,
+        // notes/exceptions.md) and then writes this whole word into `sstatus`. On RISC-V `sstatus`
+        // holds both the staged fields and the LIVE interrupt-enable bit, so a frame carrying
+        // SIE = 1 would re-enable interrupts right after `sepc` is staged and defeat the mask
+        // outright. Real traps cannot do it (the hardware clears SIE on entry); a hand-built frame
+        // like this one could, silently, so the compiler checks instead of a comment asking nicely.
+        // aarch64 needs no equivalent: its staged `SPSR_EL1` is a different register from PSTATE.
+        // See trap.s `trap_return` and notes/arch-audit.md.
+        const SIE: u64 = 1 << 1;
+        const _: () = assert!((SPIE | UXL_64) & SIE == 0);
+
         let mut x = [0u64; 32];
         x[10] = args[0]; // a0: _start's first argument
         x[11] = args[1]; // a1

@@ -178,6 +178,68 @@ Before milestone 2, a bad memory access killed the machine in silence. Now:
 `FAR_EL1` is the address we tried to touch. `ELR_EL1` is the instruction that touched it, and
 `rust-objdump` or GDB will turn it straight into a source line.
 
+## The exception-return race: mask interrupts before you touch SPSR and ELR
+
+Found 2026-07-29, while landing milestone 22 phase B.2, from a failure that reads as impossible:
+
+```
+[EXCEPTION]  Current EL, SP_ELx, Synchronous
+             Instruction abort from the same EL (EC 0x21)
+  FAR_EL1   0x0000000000400000      <- a USER code address
+  ELR_EL1   0x0000000000400000
+  SPSR_EL1  0x0000000060000345      <- M[3:0] = 0b0101 = EL1h
+```
+
+The kernel was at **EL1**, executing at the *user's* entry point, and faulted because a user code
+page is not executable from EL1 (PXN). x0 held the init role and x1 the initrd length, so the trap
+frame we had just fabricated was intact and correct. Only the exception level was wrong.
+
+**The mechanism.** `SPSR_EL1` and `ELR_EL1` are the `eret`'s only record of where to go and at what
+level, and they are single copies the hardware overwrites on *every* exception. `RESTORE_CONTEXT`
+wrote them from the frame, then restored the general registers, then `eret`'d. An interrupt taken
+between the `msr spsr_el1` and the `msr elr_el1` two instructions later does this:
+
+1. hardware saves the interrupted EL1 state into `SPSR_EL1`/`ELR_EL1`, clobbering ours;
+2. the nested handler runs and its own `RESTORE_CONTEXT` puts the *EL1* state back (SPSR = EL1h);
+3. execution resumes at `msr elr_el1, x1`, which sets ELR back to the user entry;
+4. our `eret` returns to the user's entry point **at EL1**.
+
+**Why it was rare, and why it showed up now.** On a normal trap return the window is already closed,
+because taking the exception set `PSTATE.DAIF`. The exposed path is `enter_userspace`, which branches
+into `exception_restore` from ordinary kernel code with interrupts *enabled*, so every first entry to
+a process carried a two-instruction window. Phase B.2's supervision-tree tests enter several more
+processes per run, and the suite started failing about one run in four.
+
+**The fix** is one instruction at the top of `RESTORE_CONTEXT`:
+
+```asm
+    msr     daifset, #0xf
+```
+
+It costs nothing at the far end, because the `eret` restores DAIF from SPSR anyway, so the state we
+return to is unchanged. It lives in the macro rather than in `enter_userspace` so that any future
+path reaching the restore with interrupts on is covered by construction.
+
+**RISC-V had the same window**, found by inspection rather than by a failure: `trap_return` writes
+`sepc` and then `sstatus`, and a trap taken between the two leaves `sepc` pointing at kernel code
+while `sstatus` says "return to U-mode", so the `sret` would drop a user thread into a kernel address.
+Closed the same way, with `csrci sstatus, 2` (clear `SIE`) at the top of `trap_return`. On that side
+the trap-return path was already safe, because trap entry clears `SIE` and the frame's saved `sstatus`
+carries `SIE = 0` through the `csrw`; again it is the first-entry path (`user_return`) that was
+exposed.
+
+The general lesson, which generalizes past these two files: **any sequence that stages
+return-from-exception state in architectural registers must be atomic with respect to exceptions.**
+There is one copy of those registers, so a nested exception is a write to the thing you are building.
+
+So we went looking for the siblings, in both architectures' assembly, and wrote down what we found
+and what we cleared: [arch-audit.md](arch-audit.md). One correction it makes to the account above,
+worth carrying here: the claim that the mask "covers any future path by construction" is true on
+aarch64 and **not** on RISC-V, because `sstatus` is one register holding both the staged fields and
+the live `SIE` bit, so `trap_return`'s own `csrw sstatus` would put interrupts back on if a frame ever
+carried `SIE = 1`. It never does, and now the compiler enforces that rather than a comment asking for
+it.
+
 ## What moves out of `fatal()` next
 
 Every case currently falls into `fatal()`. As the kernel grows, they migrate into real

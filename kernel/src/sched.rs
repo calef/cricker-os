@@ -2003,6 +2003,23 @@ pub fn dump_threads() {
     crate::println!("--- end thread dump ---");
 }
 
+/// **How many senders are parked on an endpoint.** Test support (milestone 22 phase B.2).
+///
+/// A negative assertion ("the supervisor sent nothing more") cannot be made with `RECV`, which would
+/// block forever on a quiet endpoint. This is the non-blocking look that lets a test say "and then
+/// nothing happened" instead of hanging when the code is right.
+#[cfg(test)]
+pub fn endpoint_waiting_senders(ep: EpId) -> usize {
+    let mut guard = SCHED.lock();
+    let Some(sched) = guard.as_mut() else {
+        return 0;
+    };
+    match endpoint_of(sched, ep) {
+        Some(e) => e.debug_counts().0,
+        None => 0,
+    }
+}
+
 pub fn preemptions() -> u64 {
     PREEMPTIONS.load(Ordering::Relaxed)
 }

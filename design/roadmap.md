@@ -246,15 +246,30 @@ unchecked, and its *authority* is broad, so within that authority a corrupted in
 
 **Deliverable, three halves.**
 
-1. **Verify init before it runs.** A measured or secure boot step: the kernel (or a boot stage
-   ahead of it) checks init's hash, or a signature over it, before dropping to EL0 at its entry.
-   Today `spawn_init` loads whatever initrd it is handed. seL4's high-assurance deployments do
-   exactly this for the root task; it is the single biggest gap between "verified kernel" and
-   "trustworthy system."
-2. **Shrink the blast radius.** Reduce what a compromised init can do: hand most
-   process-construction to smaller, less-privileged sub-servers, so init's own authority is
-   minimal and short-lived (build the first servers, then drop the untyped). The less init holds,
-   the less a broken init costs.
+1. **Verify init before it runs. (Phase B.1, BUILT 2026-07-29.)** A measured boot step: the kernel
+   checks init's hash before dropping to EL0/U-mode at its entry. seL4's high-assurance deployments do
+   exactly this for the root task; it was the single biggest gap between "verified kernel" and
+   "trustworthy system." Built as the **measured** variant: the build hashes the archive entry it
+   packed and `kernel/build.rs` compiles the digest into the kernel image, so the check means "this
+   kernel image runs exactly this init" with no keys and no signature code in the TCB. SHA-256,
+   hand-written in `crates/measure`, one implementation shared by the build and the kernel. Fails
+   closed both ways: wrong bytes halt, and an *unmeasured* program halts too (an empty trust root
+   vouches for nothing). Both ISAs. The **signature** variant (update init without rebuilding the
+   kernel, at the cost of Ed25519 in the TCB and a key-custody question) is recorded in DECISIONS §26's
+   phase B block as a follow-up, not built. See notes/trusted-init.md.
+2. **Shrink the blast radius. (Phase B.2, BUILT 2026-07-29; the interactive boot's migration is the
+   remaining increment.)** Reduce what a compromised init can do: hand most process-construction to
+   smaller, less-privileged sub-servers, so init's own authority is minimal and short-lived (build the
+   first servers, then drop the untyped). The less init holds, the less a broken init costs. Built as a
+   four-program tree (`rootsup`, `spawner`, `subsup`, `flaky`): the spawner holds one program image and
+   a `WRITE`-only budget (not the archive, so it can build exactly one program), the supervisor holds
+   no memory at all and can only *ask*, and the root deletes its untyped once both are running. Proven
+   on both ISAs by authority rather than timing: after the handoff, retyping a page or a kernel object
+   from init fails with `NoSuchSlot`, and a faulting sub-server is reaped and restarted by its own
+   supervisor. `sysinit` and `hello`'s init role still hold their budgets for life (they remain the
+   shell's spawn service); migrating that hand-validated boot path is the next increment. Two design
+   forks found and reported rather than built through (a reap-only right, and turning a tid into a
+   handle). See DECISIONS §26's phase B.2 block and notes/trusted-init.md.
 3. **Supervise, don't relaunch-in-kernel.** What happens when init (or any server) *fails*, as
    distinct from being corrupted. The failure of init degrades to a **halt, never a breach**
    (the kernel's guarantees hold regardless), so the only open question is availability: halt, or

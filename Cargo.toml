@@ -20,6 +20,7 @@ members = [
     "crates/regions",
     "crates/intrusive",
     "crates/linedisc",
+    "crates/measure",
     "crates/slots",
     "crates/uheap",
     "crates/user_rt",
@@ -45,6 +46,14 @@ exclude = [
 # LICENSE-APACHE.
 [workspace.package]
 license = "MIT OR Apache-2.0"
+
+# The measured-boot hash is compiled optimized even in a debug build (milestone 22 phase B.1). init is
+# a 1.2 MB ELF and the kernel hashes it before every boot, including six times per aarch64 test run;
+# an unoptimized SHA-256 makes that a visible tax under TCG for no benefit, since the crate is pure
+# arithmetic with nothing a debugger would want to step through. Its correctness is pinned by host
+# tests against the published FIPS vectors, so the optimized build is not less trustworthy.
+[profile.dev.package.measure]
+opt-level = 2
 
 # Note: we deliberately do NOT set `panic = "abort"` here. The bare-metal target
 # has abort baked in already, and setting it workspace-wide would break `cargo test`

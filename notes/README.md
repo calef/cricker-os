@@ -88,7 +88,13 @@ in the code or the conversation doesn't make sense, it belongs here.
   a *relative* countdown silently lost 30% of our ticks.
 - [Exceptions](exceptions.md) — faults, interrupts, and syscalls are **the same mechanism**
   on aarch64, which is why we build the plumbing once. The vector table's shape is dictated
-  by silicon. Also: why `brk` needs `elr += 4` and `svc` doesn't.
+  by silicon. Also: why `brk` needs `elr += 4` and `svc` doesn't, and the exception-return race
+  that put user code at EL1 for two instructions' worth of bad luck.
+- [Auditing the hand-written arch assembly](arch-audit.md) — the sweep prompted by that race, for
+  every sibling of its bug class on both ISAs: state staged in single-copy hardware registers across
+  more than one instruction. Three findings, the candidates cleared and why, and the meta-point that
+  the Kani proofs stop at the pure-logic crates, so assembly is the **least-verified code in the
+  TCB** and this is how we pay for that.
 
 - [Threads, the context switch, and preemption](threads.md) — a thread is a stack plus a set
   of register values, and here that's literal: 8 bytes. The context switch is fifteen
@@ -136,6 +142,15 @@ in the code or the conversation doesn't make sense, it belongs here.
   corpse is dead-until-reaped so the supervisor can inspect it and reap it with §16 revocation. No
   new syscall or method: a spawn-slot convention and a message-format convention. Restart policy
   stays in userspace; the kernel never relaunches anything.
+- [Trusted init: measuring the one program the kernel loads itself](trusted-init.md) — milestone 22
+  phase B.1. init's bytes used to be loaded on trust; now the build hashes the boot program and the
+  kernel refuses to enter anything else, digest compiled into its own image ("this kernel runs exactly
+  this init"). Why SHA-256 hand-written and shared by the build and the kernel, why an unmeasured
+  program is a refusal and not a pass, how the build composes without a chicken-and-egg, and the
+  signature variant's cost (Ed25519 in the TCB, key custody) recorded rather than built. Phase B.2 is
+  the other half, what a broken init can still reach: a four-program tree where construction moves to a
+  sub-server holding one program image, the supervisor holds no memory at all, and the root deletes its
+  budget, proven by authority (a dropped untyped answers `NoSuchSlot`) rather than by timing.
 - [Delegating a capability](delegation.md) — a capability system where processes can't pass
   capabilities isn't one. A process now delegates a capability to another over an IPC endpoint
   (`SEND_CAP`/`RECV_CAP`), narrowing the rights, and only if it holds `GRANT`. Authority composes

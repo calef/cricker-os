@@ -567,25 +567,32 @@ pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
     crate::sched::bind_irq(UART_RX_INTID, crate::sched::create_endpoint());
     crate::arch::irq::enable(UART_RX_INTID);
 
-    crate::sched::spawn(move || {
-        // The initrd is a crickerfs archive (milestone 19f), not a bare ELF: it carries init plus
-        // the programs init will load. The kernel reads only the one entry it must, "init". This is
-        // the same "honest residue" as before (something has to load the first program), now naming
-        // that program through a fixed archive index instead of assuming it sits at offset 0. Every
-        // other program is init's to parse. See notes/init-and-loading.md.
-        let init_bytes = match crickerfs::Fs::parse(image) {
-            Ok(fs) => match fs.read("init") {
-                Some(bytes) => bytes,
-                None => {
-                    crate::println!("  boot archive has no 'init' program");
-                    crate::sched::exit();
-                }
-            },
-            Err(e) => {
-                crate::println!("  boot archive is not a crickerfs image: {e:?}");
-                crate::sched::exit();
+    // The initrd is a crickerfs archive (milestone 19f), not a bare ELF: it carries init plus the
+    // programs init will load. The kernel reads only the one entry it must, "init". This is the same
+    // "honest residue" as before (something has to load the first program), now naming that program
+    // through a fixed archive index instead of assuming it sits at offset 0. Every other program is
+    // init's to parse. See notes/init-and-loading.md.
+    //
+    // Read and MEASURE it here, on the boot path, before anything is spawned (milestone 22 phase
+    // B.1): the check has to be the thing that decides whether a thread is created at all, not
+    // something the new thread does to itself. `trust::require` halts on a mismatch, so past this
+    // line the bytes are the ones this kernel image was built against.
+    let init_bytes = match crickerfs::Fs::parse(image) {
+        Ok(fs) => match fs.read("init") {
+            Some(bytes) => bytes,
+            None => {
+                crate::println!("  boot archive has no 'init' program");
+                crate::arch::halt();
             }
-        };
+        },
+        Err(e) => {
+            crate::println!("  boot archive is not a crickerfs image: {e:?}");
+            crate::arch::halt();
+        }
+    };
+    crate::trust::require("init", init_bytes);
+
+    crate::sched::spawn(move || {
         let elf = match Elf::parse(init_bytes) {
             Ok(e) => e,
             Err(e) => {
@@ -1092,6 +1099,11 @@ pub fn riscv_initrd_demo(archive: &'static [u8]) -> Result<u64, LoadError> {
     // Read only the one entry the kernel must: "init" (the builder). The rest is init's to parse.
     let fs = crickerfs::Fs::parse(archive).expect("initrd is not a crickerfs archive");
     let init_bytes = fs.read("init").expect("archive has no 'init' program");
+    // Measured boot (milestone 22 phase B.1): the boot program is checked against the digest compiled
+    // into this kernel image before its address space exists, and a mismatch halts. Same check, same
+    // trust root, same place in the sequence as aarch64's `spawn_init`; the parity gate (§19) asks
+    // for exactly that.
+    crate::trust::require("init", init_bytes);
     let elf = Elf::parse(init_bytes).map_err(LoadError::NotLoadable)?;
 
     // init's address space: its own segments, a deep stack (it runs an ELF loader loop), and the
@@ -1262,6 +1274,9 @@ pub fn riscv_shell_boot(archive: &'static [u8], uart_irq: u32) -> Result<(), Loa
     let init_bytes = fs
         .read("sysinit")
         .expect("archive has no 'sysinit' program");
+    // Measured boot (milestone 22 phase B.1): `sysinit` is riscv's boot program, so it is in the
+    // trust root under its own name and checked here, before its address space is built.
+    crate::trust::require("sysinit", init_bytes);
     let elf = Elf::parse(init_bytes).map_err(LoadError::NotLoadable)?;
 
     // sysinit's address space: its segments, a deep stack (it runs an ELF loader that builds three
@@ -4831,16 +4846,16 @@ mod tests {
         let got = crate::sched::ipc_recv(report)[0];
         assert_eq!(got, REPORT_WORD, "the child never reported");
 
-        // Let the reaper collect the now-Finished child (removed when it is switched away from).
-        for _ in 0..100 {
-            if crate::sched::thread_count() == threads_before {
-                break;
-            }
-            crate::sched::yield_now();
-        }
-        assert_eq!(
-            crate::sched::thread_count(),
-            threads_before,
+        // Let the reaper collect the now-Finished child. A Finished thread is removed when its own
+        // core switches away from it, and DECISIONS §28's placement can have put this child on
+        // ANOTHER core, so yielding on THIS core cannot make that happen: a hundred cheap yields
+        // complete long before the remote core's next timer tick. So wait on the clock, not on a
+        // yield count. Still a leak trap rather than a masked failure: a child that is never reaped
+        // times out and fails; only cross-core reap lag is tolerated. This wait was a yield count
+        // until it failed about one full-suite run in four once §28 started scattering threads;
+        // clock-based, it survived four consecutive runs. Two sibling waits had the same defect.
+        assert!(
+            wait_for(|| crate::sched::thread_count() == threads_before),
             "the exited child was never reaped",
         );
 
@@ -4918,12 +4933,13 @@ mod tests {
                 REPORT_WORD,
                 "round {round}: the child never reported"
             );
-            for _ in 0..100 {
-                if crate::sched::thread_count() == threads_before {
-                    break;
-                }
-                crate::sched::yield_now();
-            }
+            // On the clock, not on yields, for the reason spelled out in the test above: §28 can
+            // place the child on another core and only that core's switch reaps it. A lagging reap
+            // here would surface as the reclaim below refusing a region that still holds a thread.
+            assert!(
+                wait_for(|| crate::sched::thread_count() == threads_before),
+                "round {round}: the child was never reaped",
+            );
             crate::sched::reclaim_region(tcb_region).expect("reclaim tcb region");
             crate::sched::reclaim_region(as_region).expect("reclaim aspace region");
 
@@ -5156,6 +5172,313 @@ mod force_kill_tests {
             crate::memory::free_frames(),
             frames_before,
             "reclaiming a force-killed runaway did not return its frames to baseline",
+        );
+    }
+}
+
+/// **An init that gives its authority away, and a supervision tree that outlives it** (milestone 22
+/// phase B.2).
+///
+/// Cross-ISA, because every piece is portable: the whole tree is four ordinary user programs
+/// (`rootsup`, `spawner`, `subsup`, `flaky`) built out of the capability verbs, and the kernel's only
+/// part is the fault endpoint phase A already built.
+///
+/// The kernel spawns `rootsup` the way it spawns init: the archive mapped read-only, one untyped
+/// budget, one report endpoint. rootsup then builds a construction sub-server and a supervisor, hands
+/// each exactly what it needs, and **deletes its own budget**. From then on the tree runs without it:
+/// the sub-server crashes, its supervisor hears about it, reaps it through the spawner, and asks for a
+/// replacement, which runs and exits cleanly. init could not have done any of that, and that is what
+/// these two tests prove.
+#[cfg(test)]
+mod authority_tests {
+    use super::*;
+    use crate::sched;
+
+    /// The report protocol, matching user/src/suptree.rs (the same convention the net client's
+    /// selectors follow: userspace owns the definition, the test mirrors it).
+    const REPORT_INIT_DROPPED: u64 = 1;
+    const REPORT_SERVER_RAN: u64 = 2;
+    const REPORT_SUP_SAW_DEATH: u64 = 3;
+    const REPORT_SUP_GAVE_UP: u64 = 4;
+    const REPORT_FAILED: u64 = 9;
+
+    /// Pages in rootsup's construction budget. It builds two servers out of this, splits the
+    /// spawner's budget from it, and then deletes it; the spawner's split is the only memory the tree
+    /// spends afterwards.
+    const ROOT_BUDGET_PAGES: u64 = 1024;
+
+    /// **Spawn the tree's root the way the kernel spawns init**, and return the report endpoint every
+    /// process in the tree holds a WRITE view of.
+    ///
+    /// Deliberately the same endowment `spawn_init` gives (`INITRD_VA`, an untyped in slot 0, a report
+    /// endpoint in slot 1) so what is being tested is rootsup's *choices*, not a privileged shortcut.
+    fn spawn_tree() -> sched::EpId {
+        let (initrd_start, initrd_len) = memory::initrd_region().expect("no initrd region");
+        let initrd_pages = initrd_len.div_ceil(FRAME_SIZE);
+        let bytes = program("rootsup").expect("no rootsup program in the initrd archive");
+        let elf = Elf::parse(bytes).expect("rootsup is not loadable");
+
+        let content: u64 = elf
+            .segments()
+            .map(|seg| {
+                let (s, e) = seg.page_range(FRAME_SIZE);
+                (e - s) / FRAME_SIZE
+            })
+            .sum::<u64>()
+            + 1
+            + initrd_pages / 512
+            + INIT_STACK_PAGES
+            + 8;
+        let mut space = AddressSpace::new(content).expect("no memory for rootsup");
+        map_segments(&mut space, &elf).expect("could not lay out rootsup");
+        for k in 0..INIT_STACK_PAGES {
+            space
+                .map_new(USER_STACK_VA - k * FRAME_SIZE, Flags::user_data())
+                .expect("could not map rootsup's stack");
+        }
+        for i in 0..initrd_pages {
+            space
+                .map_physical(
+                    INITRD_VA + i * FRAME_SIZE,
+                    initrd_start + i * FRAME_SIZE,
+                    Flags::user_rodata(),
+                )
+                .expect("could not map the initrd");
+        }
+        let aspace = readopt_user_aspace(space).expect("register the rootsup aspace");
+
+        let report = sched::create_endpoint();
+        let budget = crate::untyped::create(ROOT_BUDGET_PAGES).expect("no budget for rootsup");
+        let tcb_region = crate::untyped::create(2).expect("no tcb region");
+        let tid = sched::create_tcb(tcb_region).expect("no tcb");
+        let s0 = sched::tcb_insert_cap(tid, crate::cap::untyped_root_cap(budget), None)
+            .expect("insert budget");
+        assert_eq!(s0, 0, "rootsup's budget must land in slot 0");
+        let s1 = sched::tcb_insert_cap(
+            tid,
+            crate::cap::endpoint_cap(
+                report,
+                crate::cap::Rights::WRITE.union(crate::cap::Rights::GRANT),
+            ),
+            None,
+        )
+        .expect("insert report");
+        assert_eq!(s1, 1, "rootsup's report endpoint must land in slot 1");
+        sched::configure_tcb(tid, elf.entry(), USER_STACK_TOP, aspace).expect("configure");
+        sched::start_tcb(tid, [0, initrd_len, 0]).expect("start");
+        report
+    }
+
+    /// How many reports a healthy run of the tree makes: init's drop, the first instance running, its
+    /// crash reaching the supervisor, the replacement running, and the replacement's clean exit
+    /// reaching the supervisor. Exactly five, which is itself an assertion: a sixth would mean the
+    /// supervisor restarted something it should have left finished, or a tier-one server died.
+    const EXPECTED_REPORTS: usize = 5;
+
+    /// **Run one tree from spawn to quiescence**, returning every report it made.
+    ///
+    /// Runs it to the end rather than stopping at the first interesting message, for a reason worth
+    /// recording: a half-run tree keeps building processes in the background, and the first version of
+    /// these tests left one running, which broke a *later* test's thread accounting
+    /// (`destroy_force_kills_a_runaway` counts threads before and after). A test that leaves work
+    /// running is a test that fails somebody else.
+    ///
+    /// The order of the five is not fixed (init's drop races the sub-server's first run), so callers
+    /// filter by kind; within a kind the order is causal and asserted.
+    fn run_tree() -> [[u64; 5]; EXPECTED_REPORTS] {
+        let report = spawn_tree();
+        let mut msgs = [[0u64; 5]; EXPECTED_REPORTS];
+        for slot in msgs.iter_mut() {
+            let msg = sched::ipc_recv(report);
+            assert_ne!(
+                msg[0], REPORT_FAILED,
+                "the supervision tree could not be built: stage {}",
+                msg[1]
+            );
+            assert_ne!(
+                msg[0], REPORT_SUP_GAVE_UP,
+                "the supervisor exhausted its retry budget ({} restarts): the replacement should \
+                 have survived",
+                msg[1],
+            );
+            *slot = msg;
+        }
+
+        // Let the tree settle, then prove it has nothing more to say. A parked sender here means a
+        // sixth report exists, which is how "the supervisor did not restart a finished server" is
+        // proven without a blocking receive that would hang when the code is right.
+        for _ in 0..400 {
+            sched::yield_now();
+        }
+        assert_eq!(
+            sched::endpoint_waiting_senders(report),
+            0,
+            "the tree made more than {EXPECTED_REPORTS} reports: something acted after the \
+             sub-server finished",
+        );
+        msgs
+    }
+
+    /// Every report of one kind, in arrival order.
+    fn of_kind(msgs: &[[u64; 5]; EXPECTED_REPORTS], kind: u64) -> impl Iterator<Item = &[u64; 5]> {
+        msgs.iter().filter(move |m| m[0] == kind)
+    }
+
+    /// **init drops its construction authority, and the drop is real.**
+    ///
+    /// rootsup builds its two servers, deletes the wiring capabilities and then the untyped budget
+    /// itself, and immediately tries the two primitives that build things: retype a page, and retype a
+    /// kernel object. Both must fail, and they must fail with `NoSuchSlot` (there is nothing there)
+    /// rather than `NotPermitted` (there is something there and you may not use it), because the
+    /// capability is *gone*, not narrowed. That distinction is the whole difference between "we asked
+    /// init not to" and "init cannot."
+    ///
+    /// It is reported from inside the process on purpose: what matters is what the *holder* can do,
+    /// and only the holder can ask.
+    #[test_case]
+    fn init_drops_its_construction_authority_and_cannot_build_again() {
+        let msgs = run_tree();
+        let dropped = of_kind(&msgs, REPORT_INIT_DROPPED)
+            .next()
+            .expect("init never reported dropping its budget");
+        assert_eq!(
+            dropped[1], 1,
+            "init still built a page or a kernel object after deleting its untyped: the authority \
+             was not actually dropped",
+        );
+        assert_eq!(
+            dropped[2], 1,
+            "using the dropped budget failed with error {} (negated), not NoSuchSlot: the slot \
+             should be empty, not merely restricted",
+            dropped[2],
+        );
+    }
+
+    /// **A dead sub-server is restarted by its own supervisor, in userspace, and init cannot have
+    /// helped.**
+    ///
+    /// The sequence: the sub-server runs as attempt 0 and crashes on a load from an unmapped address;
+    /// its supervisor receives the kernel's fault message, reaps the corpse through the spawner (§16
+    /// revocation), and asks for attempt 1; attempt 1 runs and exits cleanly; the supervisor reads
+    /// EXIT as "finished" and does **not** restart it again. Every decision in that paragraph is code
+    /// in an unprivileged process that holds no memory at all, and the kernel's whole contribution is
+    /// one message.
+    ///
+    /// **How "without init's involvement" is proven, and why it is not a timing argument.** init has
+    /// no construction authority by then: it deleted its untyped, and the companion test above
+    /// confirms it can no longer use it. A process that cannot retype a page cannot have built the
+    /// replacement. Authority, not scheduling order, is the evidence.
+    #[test_case]
+    fn a_dead_sub_server_is_restarted_by_its_supervisor_not_by_init() {
+        let msgs = run_tree();
+
+        let mut ran = of_kind(&msgs, REPORT_SERVER_RAN);
+        let first = ran.next().expect("the sub-server never ran at all");
+        assert_eq!(first[1], 0, "the first instance should be attempt 0");
+        let second = ran
+            .next()
+            .expect("the crashed sub-server was never restarted");
+        assert_eq!(
+            second[1], 1,
+            "the replacement was not started as attempt 1: the supervisor's restart policy did not \
+             run, or ran with the wrong state",
+        );
+        assert!(
+            ran.next().is_none(),
+            "a third instance ran: the supervisor restarted a server that had finished",
+        );
+
+        let mut deaths = of_kind(&msgs, REPORT_SUP_SAW_DEATH);
+        let crash = deaths.next().expect("the supervisor saw no death");
+        assert_eq!(
+            crash[2],
+            abi::fault::EVENT_FAULT,
+            "the crash should reach the supervisor as a FAULT event",
+        );
+        assert_ne!(
+            crash[1], 0,
+            "the fault message carried no tid: the supervisor cannot tell who died",
+        );
+        // The other half of §26's "both events flow": a clean exit must arrive as EXIT, because that
+        // is what lets a userspace policy tell "finished" from "crashed" without guessing.
+        let finished = deaths
+            .next()
+            .expect("the replacement's clean exit never reached the supervisor");
+        assert_eq!(
+            finished[2],
+            abi::fault::EVENT_EXIT,
+            "attempt 1 exited cleanly, so the supervisor must see EXIT, not FAULT",
+        );
+    }
+}
+
+/// **Measured boot: the kernel refuses to enter an init it was not built for** (milestone 22 phase
+/// B.1, DECISIONS §22).
+///
+/// Cross-ISA, because the check is portable: one hash implementation (`crates/measure`), one trust
+/// root generated into the kernel image by `build.rs`, called from the boot path on both
+/// architectures (aarch64 `spawn_init`, riscv `riscv_initrd_demo` / `riscv_shell_boot`).
+///
+/// **What these two prove, and why the boot path itself cannot be tested directly.** A real refusal
+/// halts the machine, so a test cannot take that branch and live. What *can* be proven, and is what
+/// actually matters, is the decision: the same function the boot path consults says Ok for the bytes
+/// in the initrd QEMU loaded (which proves the whole build composition end to end: userspace built,
+/// archive packed, digest written, kernel compiled with it, and the digest in the running image
+/// matches the archive in RAM), and says Err for bytes off by one bit. The boot path's only response
+/// to Err is `arch::halt()`, which is three lines up from here in `trust::require` and is the sort of
+/// thing a reader can check by looking.
+#[cfg(test)]
+mod measured_boot_tests {
+    use super::*;
+
+    /// The boot-program entry both architectures' kernels load themselves. (riscv's shell boot loads
+    /// `sysinit` instead, measured under that name by the same trust root; `init` is the entry both
+    /// ISAs have, so it is the one this test can assert on portably.)
+    const BOOT_PROGRAM: &str = "init";
+
+    /// **The initrd in RAM is the initrd this kernel was built against.** The end-to-end build
+    /// composition check: nothing here is hard-coded, the digest comes out of the kernel's own
+    /// `.rodata` and the bytes come out of the archive QEMU loaded, and they have to agree. If the
+    /// build ever writes the manifest after compiling the kernel, or measures the wrong entry, or the
+    /// archive is repacked without a kernel relink, this fails.
+    #[test_case]
+    fn the_boot_program_measures_to_the_compiled_in_trust_root() {
+        let bytes = program(BOOT_PROGRAM).expect("no boot program in the initrd archive");
+        assert!(
+            crate::trust::expected(BOOT_PROGRAM).is_some(),
+            "the kernel image carries no measurement for '{BOOT_PROGRAM}': the build's measurement \
+             step did not run, and an unmeasured boot would be refused at boot time",
+        );
+        assert_eq!(
+            crate::trust::verify(BOOT_PROGRAM, bytes),
+            Ok(()),
+            "the boot program in RAM is not the one this kernel image was built against",
+        );
+    }
+
+    /// **One flipped bit is refused, and an unmeasured name is refused too.** The tamper is measured
+    /// by streaming (flip the first byte, then the rest untouched) rather than by copying a
+    /// 300 KiB ELF, because there is no heap to copy it into; the digest is the same one a real
+    /// tampered initrd would produce.
+    #[test_case]
+    fn a_tampered_boot_program_and_an_unmeasured_name_are_both_refused() {
+        let bytes = program(BOOT_PROGRAM).expect("no boot program in the initrd archive");
+        let mut h = measure::Sha256::new();
+        h.update(&[bytes[0] ^ 1]);
+        h.update(&bytes[1..]);
+        let tampered = h.finalize();
+
+        assert_eq!(
+            measure::verify_digest(crate::trust::TRUST_ROOT, BOOT_PROGRAM, &tampered),
+            Err(measure::VerifyError::Mismatch),
+            "a boot program with one bit flipped still satisfied the trust root",
+        );
+        // Fail-closed on the other axis: a program the trust root says nothing about is refused, not
+        // waved through. This is what makes an empty or stale trust root safe.
+        assert_eq!(
+            crate::trust::verify("no-such-program", bytes),
+            Err(measure::VerifyError::Unmeasured),
+            "the kernel vouched for a program it has no measurement for",
         );
     }
 }
@@ -5933,10 +6256,22 @@ mod no_leaked_threads {
 
     #[test_case]
     fn the_suite_left_no_runnable_thread_spinning() {
-        // Quiesce: 200 yields is far more than enough for every Finished thread to be switched away
-        // from and reaped, and for any thread mid-exit to get there. What stays runnable after this
-        // is a genuine leak (a thread that never blocks and never exits).
-        for _ in 0..200 {
+        // Quiesce on the CLOCK, not on a yield count. A Finished thread is reaped when its OWN core
+        // switches away from it, and DECISIONS §28 scatters threads across cores, so yields on this
+        // core do not make a remote core reap: two hundred cheap yields can all complete before
+        // another core's next timer tick. Give every core a couple of ticks to get there, then judge.
+        // What stays runnable after that is still a genuine leak (a thread that never blocks and
+        // never exits), so this tolerates cross-core lag without masking the thing it guards.
+        let deadline = crate::arch::timer::now() + 2 * crate::arch::timer::frequency();
+        while crate::arch::timer::now() < deadline {
+            // Scoped so nothing from `current()` is held across the yield.
+            if {
+                let me = sched::current();
+                sched::runnable_non_idle_count(&me)
+            } == 0
+            {
+                break;
+            }
             sched::yield_now();
         }
         let me = sched::current();

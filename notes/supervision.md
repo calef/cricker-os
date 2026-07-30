@@ -81,6 +81,11 @@ wants to catch "alive but wedged" layers its own timeout with ordinary IPC and n
 
 ## Proven
 
+**The policy half, built on top of this** (phase B.2, notes/trusted-init.md): a real userspace
+supervision tree where a supervisor holding *no memory at all* applies bounded-retry policy to a
+sub-server a construction server builds, and init has deleted the authority it would need to interfere.
+That is what this mechanism exists for, and it is proven on both ISAs in `authority_tests`.
+
 Cross-ISA kernel tests (`kernel/src/user.rs`, `supervision_tests`): a child built holding a fault
 endpoint crashes on a null load, the supervisor receives `(FAULT, tid, pc, addr)` with the right tid
 and address, the corpse still holds its fault message after delivery, revocation reaps it, and a
