@@ -85,7 +85,7 @@ use core::sync::atomic::Ordering;
 ///        |
 ///   30  FRAMES, RAM     the physical memory map
 ///        |
-///   20  GIC             the interrupt controller
+///   20  IRQ_CONTROLLER  the interrupt controller (the GIC, or the PLIC)
 ///        |
 ///   10  CONSOLE         the leaf: everyone may take it, it takes nothing
 /// ```
@@ -191,12 +191,22 @@ pub mod rank {
     /// near the leaves because it needs nothing beneath it.
     pub const ASIDS: u32 = 15;
 
-    /// The interrupt controller.
+    /// The interrupt controller, whichever one this architecture has: the GIC on aarch64, the PLIC
+    /// on RISC-V.
     ///
     /// Taken by the IRQ handler, which by our own rule (DECISIONS.md §9) holds nothing and
     /// allocates nothing. So it can sit low, just above the console: the handler may still
     /// `println!` a diagnostic while holding it.
-    pub const GIC: u32 = 20;
+    ///
+    /// **One rank, one story, deliberately.** It was `GIC` until the PLIC needed a lock of its own
+    /// (the enable-bit read-modify-write; see drivers/plic.rs). The two drivers are mutually
+    /// exclusive at *compile* time (`drivers/mod.rs` gates each to its ISA), so they are not two
+    /// locks that must be ordered against each other, they are one lock role with two
+    /// implementations. Giving that role two names at the same number would invite the reader to
+    /// wonder which comes first, when the answer is that they never coexist. Renamed rather than
+    /// duplicated, which is also the direction §17's HAL-leak cleanup pushes: portable machinery
+    /// should not be named after one ISA's controller.
+    pub const IRQ_CONTROLLER: u32 = 20;
 
     pub const CONSOLE: u32 = 10;
 

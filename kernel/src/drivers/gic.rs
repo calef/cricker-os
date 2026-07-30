@@ -128,7 +128,7 @@ pub struct Gic {
 // SAFETY: MMIO pointers, not Rust-managed memory. The lock provides exclusion.
 unsafe impl Send for Gic {}
 
-static GIC: IrqSafeMutex<Option<Gic>> = IrqSafeMutex::new(rank::GIC, None);
+static GIC: IrqSafeMutex<Option<Gic>> = IrqSafeMutex::new(rank::IRQ_CONTROLLER, None);
 
 impl Gic {
     fn gicd(&self) -> &Distributor {
