@@ -201,11 +201,16 @@ impl CellRect {
         }
     }
 
-    fn union(self, o: CellRect) -> CellRect {
-        let col = self.col.min(o.col);
-        let row = self.row.min(o.row);
-        let right = (self.col + self.cols).max(o.col + o.cols);
-        let bottom = (self.row + self.rows).max(o.row + o.rows);
+    /// The bounding box of two rectangles. Public because a client that must carry damage forward
+    /// across a frame the compositor has not acknowledged yet does the same accumulation
+    /// (`user/src/vterm.rs`), and two spellings of a bounding box is one too many.
+    pub const fn union(self, o: CellRect) -> CellRect {
+        let col = if self.col < o.col { self.col } else { o.col };
+        let row = if self.row < o.row { self.row } else { o.row };
+        let (sr, or) = (self.col + self.cols, o.col + o.cols);
+        let right = if sr > or { sr } else { or };
+        let (sb, ob) = (self.row + self.rows, o.row + o.rows);
+        let bottom = if sb > ob { sb } else { ob };
         CellRect {
             col,
             row,
@@ -285,11 +290,31 @@ impl Vt {
     /// Clamped rather than refused because the alternative in a `no_std` component is a panic in a
     /// process that has no way to report one, and a terminal that is smaller than asked for is
     /// visibly wrong. The component that wires it asserts the real geometry at compile time.
-    pub fn new(cols: u32, rows: u32) -> Vt {
-        let mut vt = Vt {
-            cells: [Cell::default(); MAX_CELLS],
-            cols: cols.clamp(1, MAX_COLS as u32),
-            rows: rows.clamp(1, MAX_ROWS as u32),
+    ///
+    /// **`const`, so a terminal can live in `.bss`.** A user process here gets one 4 KiB page of
+    /// stack (`kernel/src/user.rs`, `USER_STACK_VA`), and a grid plus the temporary a move would
+    /// make is most of it. So `user/src/vterm.rs` keeps its `Vt` as a `static`, which needs this to
+    /// be a constant expression; the clamps are spelled out rather than using `Ord::clamp`, which is
+    /// not `const`.
+    pub const fn new(cols: u32, rows: u32) -> Vt {
+        let cols = if cols == 0 {
+            1
+        } else if cols > MAX_COLS as u32 {
+            MAX_COLS as u32
+        } else {
+            cols
+        };
+        let rows = if rows == 0 {
+            1
+        } else if rows > MAX_ROWS as u32 {
+            MAX_ROWS as u32
+        } else {
+            rows
+        };
+        Vt {
+            cells: [Cell::blank(Attr::DEFAULT); MAX_CELLS],
+            cols,
+            rows,
             col: 0,
             row: 0,
             attr: Attr::DEFAULT,
@@ -299,10 +324,16 @@ impl Vt {
             params: [0; MAX_PARAMS],
             nparams: 0,
             ignore: false,
-            dirty: None,
-        };
-        vt.damage_all();
-        vt
+            // A fresh terminal is entirely damage: nothing has painted its surface yet, so the
+            // first present must cover the whole grid rather than the empty rectangle "nothing
+            // changed" would give.
+            dirty: Some(CellRect {
+                col: 0,
+                row: 0,
+                cols,
+                rows,
+            }),
+        }
     }
 
     pub const fn cols(&self) -> u32 {
@@ -683,7 +714,7 @@ impl Vt {
     /// one, which is the difference between a reset and an erase.
     fn reset(&mut self) {
         self.attr = Attr::DEFAULT;
-        self.cells = [Cell::default(); MAX_CELLS];
+        self.cells = [Cell::blank(Attr::DEFAULT); MAX_CELLS];
         self.col = 0;
         self.row = 0;
         self.wrap_pending = false;
@@ -720,6 +751,29 @@ impl Vt {
             rows: self.rows,
         });
     }
+}
+
+/// What the display terminal reports to whoever spawned it.
+///
+/// **Status, not contract**: no client can ask for any of this, and it is here rather than in the
+/// terminal contract (`linedisc::proto`) because it is about the *component*, not about the terminal
+/// a program talks to. The engine above is sans-IO and this module is three constants; nothing in
+/// the engine reads them.
+pub mod status {
+    /// The terminal is up: `send(REPORT, TERM_UP, cols | rows << 32, mode)`. Sent once, after the
+    /// blank grid has been presented, so a spawner that sees it knows the geometry was negotiated
+    /// and the first picture reached the screen.
+    ///
+    /// **One report, ever**, for the reason `compose::status::COMP_UP` gives: a status `SEND` is a
+    /// rendezvous, so a component that narrated every frame would block until its spawner listened,
+    /// and a spawner that stopped listening would wedge everything behind it. What is on the screen
+    /// is observable where it belongs: in the frames, and at the display endpoint.
+    pub const TERM_UP: u64 = 0x7E7_0001;
+
+    /// The terminal drives a display endpoint directly (`gfx FLUSH`), owning the whole scanout.
+    pub const MODE_DISPLAY: u64 = 0;
+    /// The terminal is a compositor client, owning one window (`compose COMMIT`).
+    pub const MODE_WINDOW: u64 = 1;
 }
 
 #[cfg(test)]

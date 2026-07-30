@@ -359,13 +359,31 @@ pub const fn background_pixel(x: u32, y: u32) -> u32 {
 /// order), so the two agree only if both are right. The kernel test, the client that captures the
 /// screen, and the host-side `screendump` check all compare against this one.
 pub fn expected_screen_pixel(n: usize, x: u32, y: u32) -> u32 {
+    expected_screen_pixel_with(n, x, y, |i, sx, sy| window_pixel(i as u32, sx, sy))
+}
+
+/// **What screen pixel `(x, y)` must be when the windows draw something other than
+/// [`window_pixel`]**: the same topmost-window-wins lookup, with the per-window picture supplied by
+/// the caller as `content(id, surface_x, surface_y)`.
+///
+/// Added for milestone 29's display terminals (a window whose content is a *character grid* rendered
+/// by the `vt` engine, not a coordinate pattern). The composition rule is the compositor's and the
+/// content is the client's, and keeping that split here rather than teaching this crate about fonts
+/// is why `compose` still does not depend on `vt`: a window is a rectangle of pixels, whatever put
+/// them there.
+pub fn expected_screen_pixel_with(
+    n: usize,
+    x: u32,
+    y: u32,
+    content: impl Fn(usize, u32, u32) -> u32,
+) -> u32 {
     let mut i = n.min(SCENE.len());
     while i > 0 {
         i -= 1;
         let win = &SCENE[i];
         if win.rect().contains(x as i32, y as i32) {
-            return window_pixel(
-                i as u32,
+            return content(
+                i,
                 (x as i32 - win.origin_x) as u32,
                 (y as i32 - win.origin_y) as u32,
             );
