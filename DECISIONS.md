@@ -2313,6 +2313,16 @@ with no server involved, and its attempt to write the screen faults: a thing tha
 may not draw on it. Screen sharing is that grant aimed at a third party, and being a frame mapping it is
 revocable through §13.
 
+**The boundary this rung proves is client-to-client, and that is stated rather than implied.** The
+compositor sees every client's pixels because compositing is reading them, so `compd` is in every
+client's TCB for the contents of its own window, exactly as a Wayland compositor is. The question was
+never whether a compositor could be prevented from reading a surface; it was whether a *client* could
+be. What the capability model buys is that the compositor's authority is enumerated in one spawn literal
+and cannot grow: no device, no interrupt, no DMA authority, no physical address, no way to name a frame
+it was not handed. A compromised compositor can lie about the screen and read the windows it
+composites, and cannot reach the disk, the network, another process, or the GPU's command stream (that
+last one being rung one's confinement, and the reason the driver is a separate process).
+
 **Damage is honoured, and that is observed rather than claimed.** The kernel plays the display server in
 three tests precisely so the flush rectangle is a value it can compare: one commit produces one flush,
 the flush is exactly the client's rectangle placed on the screen, and the poison the kernel wrote over

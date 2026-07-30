@@ -280,6 +280,28 @@ Both forms are real design work with real consequences (a shared address space r
 revocation questions; a wait-any primitive widens the §4 syscall surface), so neither is something this
 milestone gets to decide. It is recorded in DECISIONS §33 as the fork it is.
 
+## Who is trusted with what, stated exactly
+
+The claim this rung proves is **client-to-client** isolation, and the boundary deserves to be drawn
+rather than implied.
+
+**The compositor sees every client's pixels.** It has to: compositing is reading them. So a client's
+confidentiality is against *other clients*, not against the compositor, and `compd` is in every
+client's trusted computing base for the contents of its window. That is true of every compositor,
+Wayland included, and it is the reason the interesting question was never "can the compositor be
+prevented from reading a surface" but "can a client be". What the kernel does buy here is that the
+compositor's authority is **enumerated in one spawn literal** and cannot grow: it holds no device, no
+interrupt, no DMA authority, no physical address, and no way to name a frame it was not handed. A
+compromised compositor can lie about the screen and read the windows it composites; it cannot reach the
+disk, the network, another process's memory, or the GPU's command stream (that last one is rung one's
+confinement, and it is why the driver is a separate process).
+
+**The display driver sees the composed screen** and nothing else of the clients: it never maps a client
+surface. **The kernel is trusted absolutely**, as always here, and in the tests it also plays the roles
+a full system would give to separate components (the input driver, and the display server in three of
+the four tests), which is worth saying so that "the kernel checked it" is not mistaken for "a
+distrusted component was checked".
+
 ## What this does not do that a real compositor would
 
 Stated plainly, because a demonstrator's honest limits are part of the deliverable:
