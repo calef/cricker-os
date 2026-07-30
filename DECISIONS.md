@@ -1983,8 +1983,43 @@ notes/scheduler.md; cross-core stress tests in `sched.rs`, `smp.rs`, and `user.r
   userspace smoltcp poll (CPU-bound, no wakes and no output for stretches over a minute). The
   watchdog now counts progress as a completed wake or a line of output OR any core running a
   non-idle thread; only a genuine lost wakeup (every thread blocked, every core on its idle thread)
-  stalls it. It does not catch a busy-spin livelock, which is indistinguishable from a live
-  CPU-bound test at runtime and is not its target. See `kernel/src/testing.rs`.
+  stalls it. See `kernel/src/testing.rs`.
+
+- **Correction to that correction: a progress-only heartbeat traded a flake for a silent hang, so the
+  test harness also enforces a per-test wall-clock ceiling** (2026-07-29). The caveat recorded above,
+  that the progress heartbeat cannot see a busy-spin livelock, was accepted on the argument that the
+  leaked-spinner regression test and `scripts/qemu-bounded.sh` covered it. **That reasoning was
+  incomplete, and the machine showed it:** the RedoxFS repeat-write livelock spins in an allocator
+  commit *while still serving blk IPC*, so every rendezvous reset the heartbeat, and a failure that
+  had been a loud 60 s watchdog trip became an infinite silent hang at about 400% CPU with no
+  watchdog fire at all. A livelock that makes IPC progress is indistinguishable from healthy work to a
+  progress-only instrument, and turning a loud failure into a silent one is strictly worse than the
+  flake the heartbeat fixed.
+
+  So the harness now asks two questions and either can fail the run. **The heartbeat** ("is anything
+  happening at all?", ~60 s) is unchanged and still catches a deadlock fast, anywhere, including
+  before the first test. **The per-test ceiling** stamps each test with a wall-clock budget and fails
+  when it is exceeded *even while progress is being made*, which is exactly the case the heartbeat
+  cannot see. The failure names the test, its runtime, and its budget, and says which of the two
+  failures it is, so a livelock is diagnosable rather than an anonymous timeout.
+
+  **Budgets are per test, not one global ceiling**, and that is the judgment call worth recording.
+  std_net honestly runs 300 to 344 s, so a single ceiling would have to sit near 700 s, which would
+  let a two-second unit test spin for eleven minutes before failing: a limit that catches almost
+  nothing is not worth the false confidence. Instead the default is a tight 90 s and the known-slow
+  tests declare their own cost in `SLOW_TESTS`, each entry carrying the reason. The exception stays
+  visible and reviewable instead of being absorbed into a number that protects nothing, and the cost
+  is one table with (today) one row.
+
+  **What each mechanism can and cannot see** is stated in `testing.rs` and notes/scheduler.md rather
+  than left implicit, because that is what went wrong the first time. Neither can distinguish a
+  livelock from slow-but-correct work while it runs; only the budget, a human declaration of expected
+  cost, separates them. A feature-gated probe (`watchdog_probe`) loops forever doing a full rendezvous
+  each pass, so the heartbeat sees a healthy kernel and only the ceiling stops it; it is expected to
+  fail and stays out of the normal suite. And `qemu-bounded.sh` remains the outermost backstop, for a
+  kernel wedged so hard the timer IRQ stops: it did not fire in the reported case only because that
+  run invoked `cargo` directly instead of the wrapper, which is the argument for the in-kernel check.
+  **A bypassable backstop is not a backstop.**
 
 ## Reading
 
