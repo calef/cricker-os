@@ -61,3 +61,10 @@ if git grep -nE '^(<{7}|={7}|>{7})( |$)' -- \
     cat /tmp/cricker-conflict-markers.txt >&2
     exit 1
 fi
+
+# The milestone table's status column, validated (see design/roadmap.md's status vocabulary and
+# script/roadmap). Catches a status token nobody defined, a detail block with no table row, and a
+# milestone referenced in prose that the table does not carry, which is exactly how milestone 34 went
+# missing. Documentation is part of this project's deliverable, so its index gets a gate.
+echo "==> roadmap status"
+"$(dirname "$0")/roadmap" --check

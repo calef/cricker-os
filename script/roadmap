@@ -1,0 +1,89 @@
+#!/bin/sh
+#
+# Validate and report the milestone status table in design/roadmap.md.
+#
+# Why this exists: milestone status used to be prose in the detail blocks, phrased a dozen different
+# ways, and a status sweep on 2026-07-30 mis-reported EIGHT milestones because no two blocks said
+# "done" the same way. It also missed that milestone 34 was referenced by the display ladder while
+# having no table row and no block at all. Both failures are cheap to catch mechanically and expensive
+# to catch by reading, which is the definition of something that belongs in a script.
+#
+# With no arguments it prints the normalized status report. `--check` validates and exits non-zero on
+# a problem, which is what a gate wants. See design/roadmap.md's status vocabulary.
+
+set -e
+
+ROOT="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
+ROADMAP="$ROOT/design/roadmap.md"
+
+exec python3 - "$ROADMAP" "${1:-}" <<'PY'
+import re
+import sys
+
+path, mode = sys.argv[1], sys.argv[2]
+text = open(path).read()
+lines = text.split("\n")
+
+VOCAB = ["BUILT", "PARTIAL", "IN-PROGRESS", "NOT-STARTED", "OPTIONAL", "RECORDED"]
+
+rows = {}
+problems = []
+
+for i, line in enumerate(lines, start=1):
+    m = re.match(r"^\| (\d+) \| ([A-Z-]+) \| ([^|]+)\|", line)
+    if not m:
+        continue
+    num, status, title = int(m.group(1)), m.group(2), m.group(3).strip()
+    if num in rows:
+        problems.append(f"milestone {num} has two table rows (line {i})")
+    if status not in VOCAB:
+        problems.append(f"milestone {num}: status {status!r} is not in the vocabulary (line {i})")
+    rows[num] = (status, title, i)
+
+if not rows:
+    problems.append("no milestone rows found: has the table format changed?")
+
+# Every block heading must have a row, and every referenced milestone number must have a row. The
+# second check is the one that caught milestone 34, which the display ladder pointed at while the
+# table did not carry it.
+blocks = {int(m.group(1)) for m in re.finditer(r"^### (\d+)[a-z]?\.", text, re.M)}
+for n in sorted(blocks - set(rows)):
+    problems.append(f"milestone {n} has a detail block but no table row")
+
+for m in re.finditer(r"milestone (\d+)", text):
+    n = int(m.group(1))
+    # Milestones below 12 predate this table (the early history lives in git and DECISIONS).
+    if n >= 12 and n not in rows:
+        problems.append(f"milestone {n} is referenced in prose but has no table row")
+
+# Informational rather than fatal: a row without a block is a gap in the record, not a broken record.
+no_block = sorted(set(rows) - blocks)
+
+if mode == "--check":
+    for p in sorted(set(problems)):
+        print(f"roadmap: {p}", file=sys.stderr)
+    if problems:
+        sys.exit(1)
+    print(f"roadmap: {len(rows)} milestones, status vocabulary clean")
+    if no_block:
+        print(f"roadmap: note: rows with no detail block: {', '.join(map(str, no_block))}")
+    sys.exit(0)
+
+by_status = {}
+for n, (status, title, _) in rows.items():
+    by_status.setdefault(status, []).append((n, title))
+
+for status in VOCAB:
+    items = sorted(by_status.get(status, []))
+    if not items:
+        continue
+    print(f"\n{status} ({len(items)})")
+    for n, title in items:
+        print(f"  {n:>3}  {title[:76]}")
+
+print(f"\ntotal: {len(rows)} milestones")
+if no_block:
+    print(f"rows with no detail block: {', '.join(map(str, no_block))}")
+for p in sorted(set(problems)):
+    print(f"PROBLEM: {p}")
+PY
