@@ -2053,10 +2053,32 @@ pub mod fs_service {
     /// is comfortable and is the process's hard ceiling (its `HEAP_MAX` matches).
     const FS_BUDGET_PAGES: u64 = 2048;
 
-    /// Extra stack pages for the FS server, below the single page `run` maps. RedoxFS's recursive
-    /// tree/htree/transaction code needs far more than 4 KiB; 32 pages (128 KiB) is generous and
-    /// costs 32 frames once per boot.
-    const FS_STACK_PAGES: u64 = 32;
+    /// **Extra stack pages for the FS server**, below the single page `run` maps, so the process
+    /// gets `1 + FS_STACK_PAGES` pages in one contiguous run down from [`USER_STACK_TOP`].
+    ///
+    /// RedoxFS recurses through its tree, htree and transaction code with **8 KiB frames** (one
+    /// `read_block::<TreeList<..>>` activation carries a whole 4096-byte block plus scratch), so this
+    /// is not a "generous round number" question, it is a measured one. It used to be 32, and 32 was
+    /// **528 bytes short** the moment milestone 31 phase 2 added `CREATE` and `TRUNCATE`: the FS
+    /// server took one more level of tree recursion, ran off the bottom of its stack, and was killed
+    /// by a data abort mid-request, which left every client blocked on a `CALL` that would never be
+    /// answered. See [`fs_stack_used`] for the instrument that now measures this instead of guessing,
+    /// and `the_fs_servers_stack_still_has_headroom` for the test that fails the day it is too small
+    /// again. notes/fs-server.md carries the story.
+    ///
+    /// 96 is chosen against the measurement, not above it: the high-water is **135,696 bytes**, and
+    /// `1 + 96` pages is 397,312, which leaves room for roughly thirty more 8 KiB activations. That
+    /// margin is the point, because recursion depth here tracks the *tree* depth, which grows with
+    /// the image; a size proven on a 16 MiB fixture is not proven on a real disk. 384 KiB of frames
+    /// once per boot is cheap next to the FS server's 8 MiB heap budget.
+    const FS_STACK_PAGES: u64 = 96;
+
+    /// The pattern every FS-server stack page is filled with before the process starts. Nothing but
+    /// the FS server's own stack writes ever touch these frames, so a word that still reads as this
+    /// is a word the stack never reached, and the deepest changed word is the high-water mark. The
+    /// value is deliberately not 0 and not a plausible pointer, so a poisoned word cannot be mistaken
+    /// for real data (or vice versa) in a dump.
+    const STACK_POISON: u64 = 0xC71C_5E57_C71C_5E57;
 
     // The VAs each process expects its mappings at. Each MUST match that program's source.
     const DMA_VA: u64 = 0x0000_0000_0090_0000; // block server DMA region, 2 pages (user/src/virtio.rs)
@@ -2081,6 +2103,70 @@ pub mod fs_service {
         // SAFETY: fresh frame, reachable through the direct map.
         unsafe { core::ptr::write_bytes(mmu::phys_to_virt(p) as *mut u8, 0, FRAME_SIZE as usize) };
         p
+    }
+
+    /// A fresh frame filled with [`STACK_POISON`], for one of the FS server's stack pages, and
+    /// remembered in [`FS_STACK_PHYS`] so the depth actually reached can be read back afterwards.
+    fn poisoned_stack_frame(index: usize) -> u64 {
+        let p = crate::memory::alloc()
+            .expect("no frame for the fs server's stack")
+            .addr();
+        // SAFETY: fresh frame, reachable through the direct map, exactly FRAME_SIZE bytes.
+        let words = unsafe {
+            core::slice::from_raw_parts_mut(
+                mmu::phys_to_virt(p) as *mut u64,
+                FRAME_SIZE as usize / 8,
+            )
+        };
+        words.fill(STACK_POISON);
+        FS_STACK_PHYS[index].store(p, core::sync::atomic::Ordering::Relaxed);
+        p
+    }
+
+    /// The physical frames behind the FS server's extra stack pages, index 0 being the page directly
+    /// below [`USER_STACK_VA`]. Written once at wiring, read by [`fs_stack_used`]. Zero means "this
+    /// boot never wired an FS service".
+    static FS_STACK_PHYS: [core::sync::atomic::AtomicU64; FS_STACK_PAGES as usize] =
+        [const { core::sync::atomic::AtomicU64::new(0) }; FS_STACK_PAGES as usize];
+
+    /// **How deep the FS server's stack actually went**, in bytes below [`USER_STACK_TOP`], and how
+    /// much it was given. `None` if this boot wired no FS service.
+    ///
+    /// Read by scanning the poison: the deepest word that is no longer [`STACK_POISON`] is the
+    /// deepest the process ever wrote. This is a measurement of the whole run so far, not a sample,
+    /// because nothing ever un-writes a stack word. The base page `run` maps is counted as fully used
+    /// (it holds the entry frame and cannot be scanned from here), which is true and is why the
+    /// number starts at one page.
+    ///
+    /// The point of it is that a stack size is otherwise a number nobody can defend. The one before
+    /// this was 528 bytes too small, and the way we found out was a mystery hang.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn fs_stack_used() -> Option<(u64, u64)> {
+        use core::sync::atomic::Ordering;
+        let total = (FS_STACK_PAGES + 1) * FRAME_SIZE;
+        let mut deepest = FRAME_SIZE; // the base page, always used
+        let mut wired = false;
+        for (i, slot) in FS_STACK_PHYS.iter().enumerate() {
+            let phys = slot.load(Ordering::Relaxed);
+            if phys == 0 {
+                continue;
+            }
+            wired = true;
+            // SAFETY: a frame this module allocated and still owns, via the direct map.
+            let words = unsafe {
+                core::slice::from_raw_parts(
+                    mmu::phys_to_virt(phys) as *const u64,
+                    FRAME_SIZE as usize / 8,
+                )
+            };
+            // Page `i` spans [USER_STACK_VA - (i+1)*FRAME, USER_STACK_VA - i*FRAME). Word `w` in it
+            // sits that far above the page's base, so a touched word means at least this much depth.
+            if let Some(w) = words.iter().position(|&x| x != STACK_POISON) {
+                let depth = (i as u64 + 2) * FRAME_SIZE - w as u64 * 8;
+                deepest = deepest.max(depth);
+            }
+        }
+        wired.then_some((deepest, total))
     }
 
     /// **One boot, one FS service**, remembered here.
@@ -2210,8 +2296,8 @@ pub mod fs_service {
         let budget =
             crate::untyped::create(FS_BUDGET_PAGES).expect("no heap budget for the FS server");
         let mut stack = [0u64; FS_STACK_PAGES as usize];
-        for f in stack.iter_mut() {
-            *f = frame();
+        for (i, f) in stack.iter_mut().enumerate() {
+            *f = poisoned_stack_frame(i);
         }
         crate::sched::spawn(move || {
             // Build the mapping list: the two shared pages, then the extra stack pages.
@@ -5336,6 +5422,35 @@ mod tests {
         );
     }
 
+    /// **The FS server's stack is sized by measurement, and this is the measurement.**
+    ///
+    /// Runs after both FS clients, so the poison in the server's stack pages has been overwritten to
+    /// exactly the depth RedoxFS reached across a mount, reads, writes, a create and two truncates.
+    /// It prints the number and fails if less than a quarter of the grant is left.
+    ///
+    /// This exists because the previous size was a guess, and the guess was **528 bytes short**.
+    /// Milestone 31 phase 2's `CREATE` and `TRUNCATE` added one more level of tree recursion, the FS
+    /// server ran off the bottom of its stack mid-request, and the kernel killed it, correctly and
+    /// legibly. What was not legible was anything downstream: the std client sat blocked on a `CALL`
+    /// nobody would ever answer, and since other tests had left processes spinning on other cores,
+    /// the no-progress heartbeat saw a healthy system. The only instrument that fired was the
+    /// per-test wall-clock ceiling, so a 368-byte overflow presented as "std_fs takes 914 seconds".
+    /// A number nobody can defend is a number that will be wrong again; this one now has a witness.
+    #[test_case]
+    fn the_fs_servers_stack_still_has_headroom() {
+        let Some((used, total)) = fs_service::fs_stack_used() else {
+            crate::println!("    (no FS service wired this boot; skipping)");
+            return;
+        };
+        crate::println!("    (FS server stack high-water: {used} of {total} bytes) ");
+        assert!(
+            used * 4 <= total * 3,
+            "the FS server used {used} of {total} stack bytes: under a quarter left. RedoxFS \
+             recurses in 8 KiB frames, so the next verb that deepens a tree walk will overflow and \
+             the server will die mid-request. Raise FS_STACK_PAGES.",
+        );
+    }
+
     /// **A userspace driver completes a DHCP round trip over virtio-net.** Milestone 30, end to
     /// end, and the proof the multi-queue confinement carries a real NIC.
     ///
@@ -8093,6 +8208,25 @@ mod riscv_virtio_tests {
         let mut want = [0u8; 512];
         let n = std_fs_expected(&mut want);
         assert_std_transcript(report, &want[..n], "std fs");
+    }
+
+    /// **The FS server's stack headroom, on the second ISA** (the parity gate). The aarch64 twin
+    /// carries the reasoning; the number is worth having on both because the two ISAs do not use the
+    /// same amount of stack for the same recursion, and a size proven on one proves nothing on the
+    /// other.
+    #[test_case]
+    fn the_fs_servers_stack_still_has_headroom() {
+        let Some((used, total)) = fs_service::fs_stack_used() else {
+            crate::println!("    (no FS service wired this boot; skipping)");
+            return;
+        };
+        crate::println!("    (FS server stack high-water: {used} of {total} bytes) ");
+        assert!(
+            used * 4 <= total * 3,
+            "the FS server used {used} of {total} stack bytes: under a quarter left. RedoxFS \
+             recurses in 8 KiB frames, so the next verb that deepens a tree walk will overflow and \
+             the server will die mid-request. Raise FS_STACK_PAGES.",
+        );
     }
 
     /// The virtio-net DHCP round trip, on the second ISA (milestone 30): a driver at EL0 brings up

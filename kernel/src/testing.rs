@@ -44,6 +44,19 @@ use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 //     it looks. It cannot fire faster than the budget, so it is a backstop, not a diagnostic.
 //   - Neither can tell a livelock from slow-but-correct work *while it is running*; only the budget,
 //     which is a human declaration of expected cost, separates them. That is the honest limit.
+//   - **The heartbeat credits work by ANY thread, including leftovers from earlier tests, and that
+//     blinded it once for real** (milestone 31 phase 2). The FS server died of a stack overflow, its
+//     client blocked on a `CALL` nobody would ever answer, and nothing in that test made progress
+//     again; but processes left spinning by earlier tests kept `any_core_running_real_work` true, so
+//     the 60 s stall never registered and only the ceiling fired. Attributing a thread to the running
+//     test would fix it and the kernel cannot: a test's processes are ordinary processes. The defence
+//     is the ceiling, plus reading the thread dump's **address-space roots** rather than its program
+//     counters, which is what tells a leftover spinner from the process under test.
+//   - **A ceiling failure reports the ceiling, not the cost.** "ran 900 s" against a 900 s budget is
+//     the budget being spent and says nothing about how long the work would take. The same incident
+//     had that number read as evidence of honest slowness, which sent an investigation looking for a
+//     slow path in a test whose server was already dead. Raising a budget to "measure" something
+//     returns only the new budget.
 //   - `scripts/qemu-bounded.sh` remains the outermost backstop, for a kernel that wedges so hard the
 //     timer IRQ itself stops. It did NOT fire in the reported case because that run invoked `cargo`
 //     directly instead of going through the wrapper: **a bypassable backstop is not a backstop**,
@@ -88,14 +101,6 @@ const SLOW_TESTS: &[(&str, u64)] = &[
     // netd's userspace smoltcp poll (DHCP, DNS, then a TCP echo). The longest honest test we have,
     // and the reason a single global ceiling would have to be uselessly large.
     ("std_net_runs_over_the_socket_contract", 700),
-    // TEMPORARY, being measured: std_fs tripped the 90 s default after milestone 31 phase 2 added
-    // CREATE/TRUNCATE exercise to it. Raised so the run completes and reports its actual cost; the
-    // number then decides whether this row stays with a justification or whether there is a livelock
-    // to find. Do not merge this comment: replace it with the measurement or delete the row.
-    (
-        "std_fs_reads_a_file_through_a_granted_directory_capability",
-        900,
-    ),
 ];
 
 /// The budget for a test, by name: its [`SLOW_TESTS`] entry if it has one, else the default.
