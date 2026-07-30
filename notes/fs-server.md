@@ -149,25 +149,58 @@ the tree rather than by reasoning:
   server's stack and produce a *different* failure than the one being chased. That cost an hour; it is
   recorded here so the next reader does not pay it again.)
 
-**The failure that remains is cross-boot, and test ordering was hiding it.** `mkredoxfs` ran once for
-*both* ISA legs, and the aarch64 leg writes the image (both the `std::fs` test and the FS client do).
-So the riscv leg was mounting an image a previous boot had mutated, and *that* second boot's write is
-what fails. It is not a spin: the FS server replies with an error and the std program's own `expect`
-panics, which is why the transcript stops right after `create unsupported`. Two facts bound it: on a
-freshly generated image the riscv leg passes all 93 tests including the three repeat writes, and the
-host tool can write the very same post-boot image afterwards without complaint, so the image is not
-corrupt and the engine is not stuck.
+**Resolved: there was never a filesystem bug here.** For three rounds this note carried an open item
+saying a second mount of a *used* image fails its write. The write never failed. The mechanism is the
+missing TRUNCATE verb, and it is documented behaviour rather than a defect:
 
-The gate now regenerates the fixture before **each** leg, so both legs are reproducible on their own.
-That is determinism, not a fix, and it deliberately separates the two questions. **The tracked open
-item is the cross-boot write**, and the recipe is exact: generate the image once, run one ISA leg,
-then run the other without regenerating in between (or run a leg twice), and the second boot's write
-fails. The leading hypothesis is accumulated mount state rather than data: a used image carries a
-higher header generation, a longer allocator log and more live tree blocks, so the second mount both
-allocates more heap (the FS server's is capped at 8 MiB in `fsserver.rs`, and `FS_BUDGET_PAGES` bounds
-it in `kernel/src/user.rs`) and may take the allocator's squash path that a pristine mount never
-reaches. Reading the errno the server actually returns is the next step and needs a diagnostic the
-client can surface; nothing in the current wiring prints it.
+**a write shorter than the file does not truncate it.** So a test that writes N bytes and then compares
+a *whole-file* read against those N bytes passes only while the file was not already longer. One boot's
+FS client left a 64-byte payload in `scratch`; the next boot's `std::fs` test wrote its 61-byte pattern,
+asserted the whole file equalled it, got 64 bytes back (61 new bytes plus the old three-byte tail), and
+panicked inside its write block. That panic, read as "the server refused the write", is the whole bug.
+It explains every observation, including why three investigations disagreed: the symptom depended on
+what the previous boot's client happened to leave behind, and that changed as the client changed.
+
+`fs-server`'s `a_shorter_write_does_not_truncate_and_that_is_what_broke_across_boots` pins the semantics
+with those exact byte counts, so the sharp edge is now a test rather than a trap. If it ever fails, the
+contract grew a verb and that is a deliberate decision.
+
+**Two hypotheses died on the way, and both are worth recording as dead.** Neither was the cause, and a
+disproved guess left standing sends the next reader down a road already walked.
+
+*Heap exhaustion and accumulated mount state: dead, measured.* The note used to say a used image carries
+a higher header generation, a longer allocator log and more live tree blocks, so the second mount would
+drive the FS server past its 8 MiB cap (`HEAP_MAX` in `fsserver.rs`, matched by `FS_BUDGET_PAGES` in
+`kernel/src/user.rs`). It does not. `fs-server/src/bin/second_mount.rs` runs the real engine under the
+**same allocator the FS server uses** (`uheap`, the algorithm behind `user_rt::heap::UntypedHeap`), grown
+incrementally and capped identically, with the image in a `static` so it stays off the heap exactly as a
+real disk does. At the device's own 8 MiB cap it completes **30 mount-and-write cycles**, every one fine,
+heap high-water **flat at 352 KiB**, and the cap never once refuses a growth. Four percent of the budget,
+and thirty generations of accumulation move it nowhere. So raising the budget would have fixed nothing,
+and any number picked to make a test pass would have been a coincidence rather than an argument. The
+dials are deliberate (`CRICKER_HEAP_MIB`, `CRICKER_MOUNTS`) so this is re-runnable.
+
+*A device-only cause: dead too.* Once the heap was ruled out, the remaining reading was that something
+existing only on device was at fault. `CRICKER_KEEP_REDOXFS=1` makes the second-boot case deliberate
+(run the suite, then run it again and every mount is a mount of an image a previous boot wrote), and
+with the client's payloads corrected to one length both ISA legs pass it completely: aarch64 150 tests,
+riscv64 95, including `std_fs` and the FS client's three repeat writes. The device was never the problem
+either.
+
+**The plumbing that should have caught this in round one now exists.** The client used to route every
+failed reply through `check`, which panics, so a trapped client told the waiting test that something
+went wrong and the server's reason died with the process. A negative reply is now SENT instead: `w0`
+carries the raw reply word and `w1` carries `0xBADD_0000 | stage << 12 | errno` with a stage tag for
+which request was refused, and the kernel test prints the word it compared against `SUCCESS`. The raw
+word rides alongside the decoded errno on purpose, because the wire's negated errnos overlap the
+kernel's own `invoke` errors at -1..-8 (the reply-space wart in notes/std.md), so a small value is
+ambiguous between "the server returned this errno" and "the IPC itself failed". Carrying both makes the
+ambiguity visible instead of quietly resolving it the wrong way.
+
+The transferable lesson is the one DECISIONS §27 already draws about order-coupled gates, with a second
+edge: a fixture that one test *mutates* and another *asserts on* couples them just as tightly as leg
+order does, and the coupling is harder to see because both tests look self-contained. The client now
+restores the fixture pattern as its last write for exactly this reason.
 
 **The remaining gap is in the contract, not the write path.** There is no `CREATE` and no `TRUNCATE`
 verb, so `std::fs::write` and `File::create` are honestly `Unsupported` and writing means opening a

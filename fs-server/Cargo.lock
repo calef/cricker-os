@@ -248,6 +248,7 @@ dependencies = [
  "fs_proto",
  "redox_syscall",
  "redoxfs",
+ "uheap",
  "user_rt",
 ]
 
