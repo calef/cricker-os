@@ -13,6 +13,12 @@ uses `cargo xtask` and that one uses `make` and the next uses `npm`.
 | `script/bootstrap` | Install every dependency: the pinned Rust toolchain (via rustup, from `rust-toolchain.toml`) and QEMU. Idempotent — it checks first and installs only what is missing. |
 | `script/setup` | First run after a clone: `bootstrap`, then build. |
 | `script/update` | After pulling new code: `bootstrap` (the pinned toolchain can change), then rebuild. |
+| `script/decisions` | Index DECISIONS.md; `--check` enforces unique section numbers and that every `§N` cited anywhere in the tree resolves. Gated in `script/lint`. |
+| `script/test` | Host-logic crates, then the kernel under QEMU on **both** ISAs. The gate. |
+| `script/verify` | The machine-checked proofs (Kani) over the pure-logic crates. Not in `bootstrap`: Kani pulls its own toolchain and a CBMC backend, so it is installed only where it is used. |
+| `script/bench` | icount microbenchmarks; `--check` fails on >10% drift from `bench/baseline.txt`, `--save` rewrites it, `--real` runs under HVF for magnitudes. |
+| `script/roadmap` | Index the milestones; `--check` validates the status vocabulary and catches a block with no row, or a milestone cited in prose the table does not carry. Gated in `lint`. |
+| `script/initboot` | Boot straight into userspace init, skipping the milestone tour. |
 | `script/qemu-check` | Is the QEMU on PATH the one `.qemu-version` pins, and does it carry the devices the suite needs? **Fails** on a missing device (that would gut a test silently), **warns** on a version mismatch (Homebrew cannot install an arbitrary older QEMU, and an unfollowable rule is worse than none). Called by `bootstrap` and by `ci-qemu`. |
 | `script/ci-qemu` | CI only, Linux only: build the pinned QEMU into a cacheable prefix, because Ubuntu 24.04's 8.2 has no `riscv-iommu-pci` and apt cannot go newer. |
 | `script/toolchain-bump [YYYY-MM-DD]` | Raise the pinned nightly, with evidence: install, rebuild the std farm from scratch, run every gate. Restores the old pin if anything fails, because a half-applied toolchain bump is worse than none. Run it when the daily `toolchain drift` workflow goes red. |
