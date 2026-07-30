@@ -37,9 +37,6 @@
 //! Get the comparison backwards and you get a machine that takes no interrupts and gives you
 //! no clue why.
 
-// is_initialized has no non-test caller yet.
-#![allow(dead_code)]
-
 use crate::sync::{IrqSafeMutex, rank};
 use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::registers::{ReadOnly, ReadWrite, WriteOnly};
@@ -267,8 +264,4 @@ pub fn end_of_interrupt(intid: u32) {
         .as_ref()
         .expect("gic::end_of_interrupt before gic::init");
     gic.gicc().EOIR.set(intid);
-}
-
-pub fn is_initialized() -> bool {
-    GIC.lock().is_some()
 }

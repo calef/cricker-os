@@ -54,9 +54,12 @@
 //! This is the difference between a clock that drifts and a clock that doesn't, and it is one
 //! register.
 
-// A few of these have no non-test caller yet: uptime_ms and now() are the Instant milestone 6
-// and 8 will build on, and missed_ticks is a health counter. They are exercised by the tests.
-#![allow(dead_code)]
+// Four accessors below (`ticks`, `missed_ticks`, `uptime_ms`, `interval`) have no caller outside
+// this file's own test module on aarch64: the tick handler re-arms from CVAL rather than from
+// `interval()`, and the boot banner prints a tick count only on the RISC-V tour. They are each
+// marked `cfg_attr(not(test), allow(dead_code))` rather than the whole module being suppressed,
+// so a test that stops exercising one is a gate failure instead of silence. (The header comment
+// this replaces predicted callers in "milestone 6 and 8", both long since shipped without them.)
 
 use crate::cpu::{self, MAX_CPUS};
 use crate::drivers::gic;
@@ -174,6 +177,7 @@ fn rearm(interval: u64) {
 static MISSED_TICKS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 
 /// This core's missed ticks.
+#[cfg_attr(not(test), allow(dead_code))] // this file's tests are the callers
 pub fn missed_ticks() -> u64 {
     MISSED_TICKS[cpu::id()].load(Ordering::Relaxed)
 }
@@ -195,6 +199,7 @@ pub fn tick() {
 }
 
 /// This core's ticks since it started.
+#[cfg_attr(not(test), allow(dead_code))] // this file's tests are the callers
 pub fn ticks() -> u64 {
     TICKS[cpu::id()].load(Ordering::Relaxed)
 }
@@ -216,6 +221,7 @@ pub fn frequency() -> u64 {
 /// section, a slow handler — the tick count undercounts and time appears to slow down. The
 /// hardware counter cannot lie. This is `Instant`, and it is the thing `core` could never give
 /// us because nothing in `core` knows what time it is.
+#[cfg_attr(not(test), allow(dead_code))] // this file's tests are the callers
 pub fn uptime_ms() -> u64 {
     let freq = CNTFRQ_EL0.get();
     if freq == 0 {
@@ -226,6 +232,14 @@ pub fn uptime_ms() -> u64 {
 
 /// Busy-wait. Uses the counter, so it works with interrupts masked, which is exactly when a
 /// tick-based delay would hang forever.
+///
+/// The callers are the milestone tour and the tests. All three alternate boot modes compile the
+/// tour out and run no tests (`bench` diverges before it; `shell` and `initboot` skip it), so in
+/// those three configurations this has no caller.
+#[cfg_attr(
+    any(feature = "shell", feature = "bench", feature = "initboot"),
+    allow(dead_code)
+)]
 pub fn spin_for(counter_ticks: u64) {
     let start = now();
     while now().wrapping_sub(start) < counter_ticks {
@@ -234,6 +248,7 @@ pub fn spin_for(counter_ticks: u64) {
 }
 
 /// Counter ticks in one timer period.
+#[cfg_attr(not(test), allow(dead_code))] // this file's tests are the callers
 pub fn interval() -> u64 {
     INTERVAL.load(Ordering::Relaxed)
 }

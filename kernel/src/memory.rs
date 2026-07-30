@@ -9,10 +9,6 @@
 //! §7). What's left here is the part that can only happen on the real machine: the
 //! **bootstrap**.
 
-// The allocator's API exists before its callers do. `alloc`/`free` are exercised by the
-// kernel tests today, and milestone 4 (page tables) is the first non-test consumer.
-#![allow(dead_code)]
-
 use crate::arch::mmu::{phys_to_virt, virt_to_phys};
 use crate::println;
 use crate::sync::{IrqSafeMutex, rank};
@@ -267,21 +263,25 @@ pub fn stats() -> Option<Stats> {
 /// Free frames right now. For tests that prove reclamation actually returns memory (the untyped
 /// flat-frame-count property, notes/untyped.md): a region reclaimed by object revocation should
 /// bring this exactly back to where it stood before the region was created.
+#[cfg_attr(not(test), allow(dead_code))] // the reclamation tests in sched.rs and user.rs
 pub fn free_frames() -> usize {
     ALLOCATOR.lock().as_ref().map_or(0, |a| a.stats().free())
 }
 
 /// Is this address inside the kernel image?
+#[cfg_attr(not(test), allow(dead_code))] // this file's bootstrap tests are the callers
 pub fn is_in_kernel_image(addr: u64) -> bool {
     (image_start()..image_end()).contains(&addr)
 }
 
 /// Where the kernel image begins and ends, per the linker.
+#[cfg_attr(not(test), allow(dead_code))] // this file's bootstrap tests are the callers
 pub fn image_bounds() -> (u64, u64) {
     (image_start(), image_end())
 }
 
 /// Is this frame currently marked used?
+#[cfg_attr(not(test), allow(dead_code))] // this file's bootstrap tests are the callers
 pub fn is_frame_used(frame: Frame) -> Option<bool> {
     ALLOCATOR.lock().as_ref()?.is_used(frame)
 }
@@ -302,6 +302,7 @@ pub fn gic_regions() -> Option<((u64, u64), (u64, u64))> {
 
 /// The PLIC's register block (start, size), both **physical**, from the device tree. `None` on
 /// aarch64 or before `init`. RISC-V's `mmu::init` maps it device-typed, like the GIC.
+#[cfg_attr(target_arch = "aarch64", allow(dead_code))] // no PLIC on aarch64; the name is portable
 pub fn plic_region() -> Option<(u64, u64)> {
     *PLIC_REGION.lock()
 }
@@ -330,6 +331,7 @@ pub fn ram_regions() -> impl Iterator<Item = (u64, u64)> {
 }
 
 /// Where the frame bitmap landed, and how big it is. Test support.
+#[cfg_attr(not(test), allow(dead_code))] // this file's bootstrap tests are the callers
 pub fn bitmap_region() -> (u64, u64) {
     (
         BITMAP_START.load(core::sync::atomic::Ordering::Relaxed) as u64,
@@ -388,6 +390,9 @@ static BITMAP_BYTES: AtomicUsize = AtomicUsize::new(0);
 static INITRD_START: AtomicUsize = AtomicUsize::new(0);
 static INITRD_SIZE: AtomicUsize = AtomicUsize::new(0);
 
+/// The boot banner's memory line. Only the banner in `main.rs` calls it, and the test build and the
+/// `bench` boot mode both compile the banner out, so it has no caller in exactly those two.
+#[cfg_attr(any(test, feature = "bench"), allow(dead_code))]
 pub fn print_summary() {
     let Some(s) = stats() else {
         println!("  memory          : uninitialized");
