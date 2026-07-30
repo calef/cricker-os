@@ -1,0 +1,28 @@
+# Pin metadata for vendor/redoxfs, read by script/vendor-verify.
+#
+# The claim this file exists to make checkable: the tree in vendor/redoxfs is the published
+# crates.io package below, plus exactly the changes in the divergence patch, and nothing else.
+# Milestone 32's headline is "a real filesystem we did not write, running confined", and that is
+# only worth as much as our ability to say what we are actually running. See vendor/README.md for
+# the prose account and design/roadmap.md's milestone 42 for why this is a gate.
+#
+# Format: `key = value`, one per line, `#` comments. Deliberately not TOML: this is five fields and
+# a stdlib-only parser, and adding a dependency to the integrity checker would be funny in the
+# wrong way.
+
+name = redoxfs
+version = 0.9.1
+
+# The published package, not a git checkout. A .crate tarball is immutable once published (crates.io
+# refuses to overwrite a version), so its sha256 is a genuine pin; a git tag is not, because a tag
+# can move.
+url = https://static.crates.io/crates/redoxfs/redoxfs-0.9.1.crate
+sha256 = a66d0c043a5768739851a7e5775192a70fdffdbf3418c22fd7927415d41a87c3
+
+# Upstream's own record of which commit produced the package (vendor/redoxfs/.cargo_vcs_info.json).
+# Informational: we verify against the tarball, not against gitlab.
+vcs = 473b4baeb041ebe14504f30693393b1cae52558c
+
+# Every byte of difference from the tarball, in `patch -p1` form. Regenerate with
+# `script/vendor-verify --write-patch` after a deliberate change, and expect to explain the diff.
+divergence = vendor/redoxfs.divergence.patch

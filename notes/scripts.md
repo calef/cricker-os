@@ -29,9 +29,11 @@ uses `cargo xtask` and that one uses `make` and the next uses `npm`.
 | `script/fmt` | Check formatting against the pinned rustfmt (a CI gate). |
 | `script/lint` | Run clippy across the workspace with warnings denied (a CI gate). |
 | `script/coverage` | Coverage for the host-logic crates, gated on an 80%-per-file line floor (a CI gate). Installs cargo-llvm-cov on first run. |
+| `script/vendor-verify` | Prove each `vendor/*.pin` tree is the published tarball (sha256) plus exactly its divergence patch, byte for byte. `--write-patch` regenerates the patch after a deliberate change. Needs network on a cold cache. |
+| `script/supply-chain` | The milestone-42 gate (a CI gate): cargo-deny (advisories, licences, bans, duplicates, sources) over each workspace against `deny.toml`, then `vendor-verify`. Needs network; installs the cargo-deny pinned in `.cargo-deny-version` if the installed one differs, because 0.19 and 0.20 spell `--config` differently and default it to different directories. |
 
-`fmt`, `lint`, and `coverage` are not part of the canonical set; they exist so the CI format,
-clippy, and coverage jobs are one-liners. `coverage` measures only the pure-logic host crates
+`fmt`, `lint`, `coverage`, and `supply-chain` are not part of the canonical set; they exist so the
+CI format, clippy, coverage, and supply-chain jobs are one-liners. `coverage` measures only the pure-logic host crates
 (`abi`, `caps`, `crickerfs`, `dtb`, `elf`, `frames`, `paging`, `pci`, ...): the kernel and user
 crates run under QEMU, out of reach of host instrumentation, which is the same reason DECISIONS.md
 §7 keeps the testable logic in host crates in the first place. It installs its own tool rather than
@@ -64,7 +66,9 @@ because CI has nothing to start with.
 
 ## CI leverages them
 
-`.github/workflows/ci.yml` runs four jobs whose actual work is a script: the test job runs
-`script/cibuild`, the format job runs `script/fmt`, the clippy job runs `script/lint`, and the
-coverage job runs `script/coverage`. So CI executes the same commands a developer does, and one
-place (these files) defines what "test", "lint", and "coverage" mean.
+`.github/workflows/ci.yml` runs seven jobs whose actual work is a script: the test job runs
+`script/cibuild`, the format job runs `script/fmt`, the clippy job runs `script/lint`, the verify
+job runs `script/verify`, the bench job runs `script/bench --check` on both ISAs, the coverage job
+runs `script/coverage`, and the supply-chain job runs `script/supply-chain`. So CI executes the same
+commands a developer does, and one place (these files) defines what "test", "lint", "verify", and
+"supply chain" mean.
