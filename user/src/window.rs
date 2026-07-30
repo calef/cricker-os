@@ -72,6 +72,9 @@ const E_MAGIC: u64 = 0x01;
 const E_GEOMETRY: u64 = 0x02;
 const E_HELLO: u64 = 0x03;
 const E_COMMIT: u64 = 0x04;
+/// The spawner refused a report round trip. Defensive: the kernel-side test always replies 0, so this
+/// firing means the scenario was wired differently than this role expects.
+const E_REPORT: u64 = 0x05;
 
 fn rd32(va: u64) -> u32 {
     // SAFETY: inside a page the kernel mapped into this process at spawn.
@@ -140,8 +143,9 @@ pub extern "C" fn _start(role: u64, neighbour_va: u64, _arg2: u64) -> ! {
     let h = rd32(CTL_VA + ctl::HEIGHT);
     // We are *told* our geometry rather than assuming it: at rung two the compositor really does
     // choose the size, and a client that assumed the constants would paint the wrong shape the first
-    // time a scene changed. Sanity-check it against the frames we were mapped, though, because a
-    // geometry larger than our grant would make us fault on our own painting.
+    // time a scene changed. It is still checked against the largest surface the contract allows,
+    // because a control page claiming more than that describes memory we were not granted, and the
+    // first thing that would happen is a fault while painting our own window.
     if w == 0 || h == 0 || w * h * 4 > compose::MAX_SURFACE_BYTES {
         die(E_GEOMETRY);
     }
@@ -176,7 +180,7 @@ pub extern "C" fn _start(role: u64, neighbour_va: u64, _arg2: u64) -> ! {
         // witness rather than an inference.
         let (r0, _) = call(REPORT, status::WIN_PAINTED, digest);
         if r0 as i64 != 0 {
-            die(E_COMMIT);
+            die(E_REPORT);
         }
         let after = compose::surface_checksum(w, h, px_read);
         send(REPORT, status::WIN_INTACT, after, digest);
@@ -210,7 +214,7 @@ pub extern "C" fn _start(role: u64, neighbour_va: u64, _arg2: u64) -> ! {
         // the poison must survive.
         let (r0, _) = call(REPORT, status::WIN_PAINTED, digest);
         if r0 as i64 != 0 {
-            die(E_COMMIT);
+            die(E_REPORT);
         }
         commit(&mut seq, compose::SMALL_DAMAGE);
         send(REPORT, status::WIN_PAINTED, digest, seq as u64);
