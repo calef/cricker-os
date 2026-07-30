@@ -304,6 +304,25 @@ for S-mode on QEMU `virt`), so the pieces are:
   exactly one hart, so the hart that takes it is the hart it is enabled on, and the mask/complete land
   on the right context. The PLIC driver stays mechanism-only: it is told the context, it does not read
   the hartid (rule #2, DECISIONS §4).
+- **The enable bits are serialized; nothing else in the driver is.** The sentence two bullets up, "the
+  threshold and enable registers are global PLIC MMIO," is exactly what makes this necessary, and the
+  assembly audit ([arch-audit.md](arch-audit.md), finding 3) is where it was caught. One enable
+  register carries **32 sources** of a context, so setting one source's bit is a read-modify-write over
+  a word its neighbours share, and the boot hart running `enable` can collide with another hart's
+  handler running `disable` on a neighbour. A lost update either masks a device forever (its driver
+  blocks on an interrupt that never arrives) or leaves a level-triggered source live after the handler
+  masked it (an interrupt storm on that hart). So `enable`/`disable` go through one helper holding an
+  `IrqSafeMutex` at `rank::IRQ_CONTROLLER`, the same rank the GIC's lock takes.
+
+  It has to be `IrqSafeMutex` rather than a plain lock, and that is the §9 deadlock rather than
+  caution: `disable` runs *in the handler* while `enable` runs in thread context with interrupts on,
+  so a plain spinlock would let a thread take the word on a hart and then have that hart's own
+  handler spin on it forever. Nothing else in the driver takes the lock, deliberately:
+  claim/complete is per-context and therefore hart-local (the hot path stays lock-free), the
+  per-source priority register is unshared, and the threshold write is a whole-word store of `0`, so
+  it is idempotent rather than an RMW. **aarch64 never needed this**: the GIC's
+  `ISENABLER`/`ICENABLER` are write-1-to-set and write-1-to-clear, so one store touches one line and
+  the architecture supplies the atomicity that the PLIC's plain read/write bits do not.
 
 Proven the same way as the GIC: the riscv suite is green at the 4-hart boot with device sources
 spread across harts (disk read, the interrupt-driven fs-server block server, both routed to whatever

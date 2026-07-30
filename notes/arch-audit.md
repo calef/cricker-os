@@ -144,7 +144,7 @@ window. Options, if it is ever worth doing:
    frame) and it is unrecoverable there too; every kernel has a double-fault story, and ours is
    currently "report and halt."
 
-### 3. The PLIC's enable bits are a lock-free read-modify-write over shared MMIO
+### 3. The PLIC's enable bits are a lock-free read-modify-write over shared MMIO (CLOSED)
 
 Not a state-staging bug, but it is the interrupt-controller interleaving the audit went looking for,
 and it is a parity gap.
@@ -176,24 +176,58 @@ up to nine sources (virtio-mmio 1..8, the UART at 10) over four harts several so
 and therefore share the enable word. The window is two MMIO accesses wide and the enables happen a
 handful of times per boot, which is consistent with never having observed it.
 
-**Not fixed here**, because the fix is a lock, and a lock is a protocol change with a new rank rather
-than the "one masking instruction" shape of the two precedents. Options:
-
-1. **An `IrqSafeMutex` around the enable-word access**, which is what the GIC already does. This is
-   the parity-correct answer and it is what DECISIONS §9 would say if the question had been asked.
-   The handler's `disable` holds no other lock at that point, so the rank slots in below `SCHED`
-   cleanly.
-2. **A shadow copy of each context's enable word as the authority**, mutated with `fetch_or` /
-   `fetch_and` and then written out. Cheaper, but two harts can still write the MMIO out of order, so
-   it needs an argument about which write lands last and it is easy to get wrong. The lock is
-   clearer.
-
 **Why aarch64 does not have this.** The GIC's `ISENABLER` / `ICENABLER` are write-1-to-set and
 write-1-to-clear, so enabling one line is a single store that cannot disturb its neighbours: the
 architecture gives you atomicity for free. And `drivers/gic.rs` takes a lock on top of that anyway.
 The PLIC has plain read/write enable bits, which forces the read-modify-write, and the RISC-V driver
 never grew the lock the GIC has. Under rule 5 that asymmetry is the bug, independent of how likely it
 is to fire.
+
+#### Closed
+
+Reported first, then fixed on review, as execution inside decided architecture rather than a design
+fork: §9 already establishes `IrqSafeMutex` plus a rank order, `drivers/gic.rs` already takes a lock
+for this exact operation, and 16b added `rank::IOMMU` without escalating, so a rank is precedented.
+
+`enable` and `disable` now share one helper that holds an `IrqSafeMutex` across the read-modify-write.
+Three things were decided along the way and are worth keeping:
+
+**It must be `IrqSafeMutex`, and that is not belt-and-braces.** `disable` is called *from the
+external-interrupt handler* and `enable` from thread context with interrupts on. A plain spinlock
+would let a thread take the word on hart H, take an external interrupt on H, and spin in the handler
+forever on a lock only the interrupted code can release. One hart, no SMP needed, permanent. This is
+§9's opening paragraph, arrived at in a new place.
+
+**The rank is `rank::IRQ_CONTROLLER`, which used to be `rank::GIC`.** Renamed rather than duplicated.
+The two drivers are mutually exclusive at *compile* time (`drivers/mod.rs` gates each to its ISA), so
+they are not two locks needing an order between them; they are one lock role with two
+implementations, and two names at rank 20 would invite the reader to work out a precedence that does
+not exist. (INBOX/MAPPINGS/KMEM share rank 59 for the opposite reason: those coexist and are declared
+never-nested.) The placement is a leaf with slack in both directions: the body is two MMIO accesses
+and no calls, so nothing is taken beneath it, and it is always taken holding nothing, because the
+handler holds nothing by §9's record-and-defer rule and every `enable` caller has already dropped
+`SCHED` (`bind_irq` and `create_endpoint` take and release it first).
+
+**Scoped to the one register that needs it**, verified register by register rather than assumed. The
+per-source priority word is unshared; the threshold write is a whole-word store of the constant `0`,
+so it is idempotent rather than an RMW, even though the affinity work made it reachable cross-hart;
+and claim/complete is per-context and therefore hart-local, so it stays lock-free. It also does not
+share a word with the enable bits (the 0x2000 and 0x20_0000 blocks), so serializing one did not drag
+in the other. Both icount baselines are byte-identical, which is the confirmation that nothing hot
+was locked.
+
+**On proving it, honestly.** There is no test here that would have caught the original bug, and the
+test module says so. The window is two MMIO accesses; widening it to catch the race would mean
+shipping instrumentation inside the critical section and then testing the instrumented version, and a
+loop of two harts hammering the bits passes with the lock and passes without it. What is pinned
+instead is the half a test can reach: that the read-modify-write preserves the neighbours sharing its
+word, which is exactly the invariant a lost update violates, and which is the regression *this
+change* risked by folding both directions into one helper. It fails on demand (drop the `read` and it
+reports "the read-modify-write dropped it"). A second test pins the irqsave/irqrestore behaviour at
+the two real call-site shapes, because turning the fix into a hang is the more likely way to get this
+wrong later. The serialization itself is attested by the suite it runs inside rather than by an
+assertion: every riscv virtio test calls `enable` from thread context and `disable` from the handler,
+so a misplaced rank would panic with LOCK ORDER VIOLATION and a non-IRQ-safe lock would hang.
 
 ## Candidates cleared, and why each is safe
 
@@ -300,12 +334,19 @@ interior mutability through a shared static rather than as cross-core synchroniz
 
 ## The honest summary
 
-Three findings from a full read of both ISAs' arch trees. One is a documentation-and-hardening fix
-that the audit made structural (finding 1). One is a double-fault failure mode recorded with options
-rather than fixed (finding 2). One is a reachable liveness bug in the PLIC that is a genuine parity
-gap and needs a lock, reported rather than built because a lock is a protocol change (finding 3).
+Three findings from a full read of both ISAs' arch trees, and their dispositions:
+
+| | What | Disposition |
+|---|---|---|
+| 1 | The RISC-V mask was safe by an unstated invariant, not by construction, and the comment claimed otherwise | **Fixed**, and the invariant is now a compile-time assertion |
+| 2 | `trap_entry` leaves a user-controlled value in `sscratch` across the faultable frame stores | **Left documented**, on review: paying hot-path cost to harden behind a kernel-stack overflow that is already fatal is a bad trade |
+| 3 | The PLIC's enable-bit read-modify-write is unserialized, a reachable liveness bug and a parity gap | **Fixed** on review, with an `IrqSafeMutex` at the GIC's rank |
+
 Nothing found was a live privilege or memory-safety hole; the two that were are the two already
-fixed.
+fixed. Finding 3 is the one worth remembering for its shape rather than its severity: it was not a
+missing barrier or a mis-ordered instruction, it was **one ISA quietly getting a guarantee from its
+hardware that the other does not**, and the RISC-V driver having been written as if it did. That is
+the same shape as finding 1, and both are the shape rule 5 exists to catch.
 
 That is a reassuring result, and it should be read with its limit attached: **an audit by reading
 finds what the reader thinks to look for.** The original bug was found by a failure, not by
