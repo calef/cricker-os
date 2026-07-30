@@ -49,6 +49,7 @@ IPC and the MMU invariants are next. This threads through the list rather than b
 | 22 | Trusted init: verify it, and shrink what a broken one can do | Measured/secure boot that checks init before running it; reduce init's authority so a compromise is bounded | **closes the thesis's own soft spot:** init is the privileged *unverified* component the whole system is built by |
 | 23 | A capability-routed component OS with live replacement | Every userspace component (driver, server, app) is a swappable, vendor-shippable unit behind a stable contract; operators replace them live, no reboot. The console hot-swap is instance one; a durable queue-broker decouples component lifecycles (opt-in per channel, for latency) | **the flagship payoff and a product ambition:** competing vendor components, confined by the kernel and swapped live; the verified core is the one fixed thing |
 | 35 | Prove the DMA-confinement boundary (extends 18) | Extract the shadow-ring validator (`validate_and_shadow`) out of `kernel/src/virtio.rs` into a host-testable logic crate and machine-check it: no validated descriptor chain, in either direction and including indirect descriptors and multi-queue, can reference memory outside the driver's granted DMA region. Add the `Untyped::SPLIT` "never widens rights" harness (the one fresh-mint site the caps proof doesn't reach) and confirm the IOMMU domain builder's *maps-exactly-the-grant* property is proved, not just tested. | **closes the one isolation boundary we test instead of prove.** Every other confinement seam (caps, MMU, IPC, generational names) is Kani-proved for all inputs; DMA is attacker-tested only. It is also the boundary that makes "don't trust the driver" true, so the proof belongs here, not on the confined component. **Load-bearing for 16a:** the VisionFive 2 has no IOMMU, so on first silicon this validator is the *sole* DMA confinement, not defence in depth |
+| 36 | A foreign-language component, seam first (spike; feeds 29 and 23) | Prove the FFI seam end to end with a *minimal* C component before committing to a large one: bare-metal clang for both bare targets in the build, a Rust `user_rt` shell that holds every capability and does every syscall while the C code gets plain buffers over the C ABI (so the §4 surface does not widen), and only the handful of libc symbols the component actually needs, with `malloc` on milestone 27's untyped-backed `GlobalAlloc`. The deliverable that matters is one test: a deliberate out-of-bounds write in the C code faults the process, touches nothing outside its grant, and its supervisor restarts it. | **the thesis in one assertion.** Memory-unsafe foreign code is not a dilution of "a verified core that confines unverified workloads", it is the strongest available demonstration of it: the more unverified the component, the more the confinement has to prove. It also de-risks 29's libghostty-vt rung and 23's vendor-component claim *before* we owe anything to another project's toolchain or API churn |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -839,6 +840,61 @@ carry patches, and record divergence, the same discipline as any vendored engine
 and simplicity, no integrity story), littlefs (proven, C, wrong-language FFI for less gain
 than ghostty-vt would buy). Feeds 31 (per-file grants), 23 (a component with real state to
 hand off across a live swap, the hardest handoff case yet named), 27 (`std::fs`). Effort L.
+
+### 36. A foreign-language component, seam first (spike; feeds 29 and 23)
+
+**Added 2026-07-29, from Chris's question: can we run user services in other languages, like a C
+FAT32 that a monolith would have put in the kernel?** The answer is yes, and the roadmap already
+commits to one (libghostty-vt, Zig, at 29). This item exists so the *seam* is proven by something
+tiny before a large foreign component depends on it.
+
+**Why the language does not matter to the confinement.** Isolation here is enforced by mechanisms
+that are entirely language-agnostic: MMU page tables (proved), unforgeable capabilities (proved),
+the DMA validator (proved, milestone 35), and the IOMMU. A C component in a confined process can
+corrupt its own address space and reach nothing else, and when it dies §26's fault endpoint tells
+its supervisor, which restarts it (the tree milestone 22 phase B built). That inverts the usual
+worry: memory-unsafe C is not a problem for the thesis, it is the best demonstration of it. The
+contrast with a monolith is the whole argument, and it is concrete rather than rhetorical: in-kernel
+C means one bug is a kernel compromise (the peer project Atom keeps FAT32, AHCI, and xHCI in the
+kernel today); confined C means one bug scribbles its own grant and gets restarted.
+
+**Deliverable, deliberately small.**
+
+1. **Toolchain in the build.** Bare-metal clang cross-compiling for both targets, driven from the
+   build the way the rest of userspace is; `script/setup` grows a dependency. The roadmap already
+   accepts this cost for Zig at 29, so pay it once, here, where the component is throwaway.
+2. **The linkage shape, which must not widen the syscall surface.** A Rust `user_rt` outer shell
+   holds every capability and performs every IPC; the C logic is linked in and called over the C ABI
+   with plain buffers and makes **zero syscalls**. This is the same sans-IO shape RedoxFS's `Disk`
+   trait already uses, just across a language boundary instead of a trait boundary.
+3. **The libc question, answered by tier.** Shim only the symbols the component actually needs
+   (`memcpy`, `memset`, `strlen`, `malloc`/`free`), with `malloc` backed by milestone 27's
+   untyped-backed `GlobalAlloc` (`crates/uheap` plus `user_rt::heap`).
+4. **The test that is the point.** A deliberate out-of-bounds write in the C code must fault the
+   process, leave everything outside its grant untouched, and be restarted by its supervisor.
+
+**The line this does not cross.** C dependencies come in three tiers: *freestanding* (no libc,
+fixed buffers, no alloc: libghostty-vt, littlefs) is easy; *a handful of symbols* is tractable and
+is what this spike proves; *full POSIX* (`open`, `fork`, `socket`, threads) needs a real libc port,
+which is the relibc road DECISIONS §15 prices at "later, if ever" and Redox took. Tiers one and two
+only. A component wanting the third is a different and much larger project, and saying so here is
+what keeps this from becoming one.
+
+**Candidates, and the honest ranking.** Bring in a foreign language only where the foreign
+implementation genuinely beats the Rust option. **libghostty-vt** is the roadmap's pick and clears
+that bar (a mature VT engine with scrollback and reflow; `vte` is a parser only). **HarfBuzz** if
+`rustybuzz` proves insufficient for 33's text shaping. **SQLite** is the canonical "C you cannot
+beat" but is tier three. **doomgeneric** has real demonstrator value (memory-unsafe C game,
+capability-confined, on a verified core) and Atom already vendored it, so we would be following
+rather than leading. **FAT32, the question that prompted this, is a weak first candidate**: RedoxFS
+already provides a better filesystem, `no_std` Rust FAT crates exist so the FFI cost buys nothing,
+and its real value is host interoperability (write an SD card on a Mac, read it on the milestone-16a
+board), which is a 16a story to do in Rust when first silicon makes it concrete.
+
+**Sequencing.** After 29's rung one, so the framebuffer seam exists as a real consumer to point the
+component at, and before committing to libghostty-vt. Effort S to M. The whole value is that it is
+cheap and it fails early: if the toolchain, the shim, or the confinement story has a problem, we
+find it with a throwaway component rather than half way into a port.
 
 ## The display ladder (recorded 2026-07-28, Chris's direction)
 
