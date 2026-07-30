@@ -1,0 +1,21 @@
+[package]
+name = "compose"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+# The compositor contract of milestone 33 (notes/compositor.md), rung two of the display ladder: the
+# scene (which windows exist, where, and in what stacking order), the pure pixel arithmetic that
+# turns several client surfaces into one screen honouring a damage rectangle, and the protocol the
+# compositor's clients speak. Pure logic, host-tested, no_std, so the compositor, its clients, the
+# kernel-side test, and the host-side scanout check share ONE definition and cannot drift. The same
+# split `gfx_proto` makes for the framebuffer and `linedisc::proto` for the terminal.
+#
+# Clipping and damage-rectangle intersection are where compositors have their bugs, and they are
+# arithmetic, so they belong in a crate whose tests run in milliseconds rather than in an emulator.
+
+[dependencies]
+# The screen IS the framebuffer contract's surface: rung two composites into the same shared frames
+# rung one painted, and flushes through the same display IPC. Depending on gfx_proto rather than
+# redeclaring the geometry is what keeps "the screen" one definition (and one pixel format).
+gfx_proto = { version = "0.1.0", path = "../gfx_proto" }
