@@ -49,6 +49,9 @@ mod stack;
 mod sync;
 mod syscall;
 mod thread;
+// The measured-boot trust root: the digest of the boot program this kernel image was built
+// against (milestone 22 phase B.1, DECISIONS §22). Generated into the image by build.rs.
+mod trust;
 mod untyped;
 mod user;
 mod virtio;

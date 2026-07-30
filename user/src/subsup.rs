@@ -1,0 +1,107 @@
+//! **The sub-server's supervisor: restart policy, in userspace, holding nothing** (milestone 22
+//! phase B.2).
+//!
+//! The kernel turns a death into a message (DECISIONS §26) and stops there. This is the other half:
+//! what to *do* about it. Bounded retries, a clean exit treated as "finished" rather than "crashed",
+//! and a give-up. All of it ordinary code in an unprivileged process, and none of it in the kernel.
+//!
+//! **What it holds is the point.** A request channel to the spawner, the death channel for its child,
+//! and a WRITE view of a report endpoint. **No untyped at all**, so it cannot build a process, cannot
+//! make an endpoint, cannot allocate a page. Its entire power is to ask the spawner for a rebuild of
+//! the one program the spawner can build. A compromised supervisor is a restart loop, not a foothold.
+//!
+//! init is not involved in any of this, and cannot be: by the time the first death arrives, rootsup
+//! has deleted the construction budget it would need. See notes/trusted-init.md.
+
+#![no_std]
+#![no_main]
+
+use user_rt::{recv, send};
+
+// Each binary in the tree compiles the shared module but uses a different slice of it (the sub-server
+// builds nothing, the supervisor holds no memory), so the unused halves are expected, not dead.
+#[path = "suptree.rs"]
+#[allow(dead_code)]
+mod suptree;
+
+use suptree::{
+    REP_BUILT, REPORT_FAILED, REPORT_SUP_GAVE_UP, REPORT_SUP_SAW_DEATH, REQ_BUILD, REQ_REAP,
+};
+
+/// What rootsup endowed us with, in order. Notice what is missing: memory.
+const REQ: u64 = 0; // WRITE: ask the spawner to build or reap
+const REP: u64 = 1; // READ: its answers
+const FAULT: u64 = 2; // READ: our child's deaths, kernel-stamped
+const REPORT: u64 = 3; // WRITE: what we saw and what we decided
+
+/// **The policy.** How many times we will rebuild a crashing sub-server before we stop. Bounded,
+/// because a deterministic fault restarts into the same fault forever; this is the crash-loop guard
+/// that §26 refused to put in the kernel. Two is enough to prove the shape and small enough that a
+/// broken child does not spin the machine.
+const MAX_RESTARTS: u64 = 2;
+
+#[unsafe(no_mangle)]
+pub extern "C" fn _start(_a0: u64, _a1: u64, _a2: u64) -> ! {
+    let mut attempt = 0u64;
+    let mut restarts = 0u64;
+    let Some(mut instance) = build(attempt) else {
+        send(REPORT, REPORT_FAILED, 20, 0);
+        suptree::fail()
+    };
+
+    loop {
+        // The kernel is the only sender here, so the tid is trustworthy without a badge (§26.5).
+        let (event, tid, _pc) = recv(FAULT);
+        send(REPORT, REPORT_SUP_SAW_DEATH, tid, event);
+
+        // Reap first, either way: the corpse is dead-until-reaped, so its region stays pinned until we
+        // say so. Reaping a finished child matters as much as reaping a crashed one.
+        reap(instance);
+
+        if event != abi::fault::EVENT_FAULT {
+            // A clean exit is not a reason to restart. This distinction is exactly why §26 delivers
+            // both events instead of only faults, and it lives here, in userspace, where it belongs.
+            break;
+        }
+
+        restarts += 1;
+        if restarts > MAX_RESTARTS {
+            send(REPORT, REPORT_SUP_GAVE_UP, restarts, 0);
+            break;
+        }
+        attempt += 1;
+        match build(attempt) {
+            Some(next) => instance = next,
+            None => {
+                send(REPORT, REPORT_FAILED, 21, 0);
+                break;
+            }
+        }
+    }
+
+    // Park rather than exit. Exiting would make *us* a death our own supervisor has to handle, and a
+    // supervisor whose last act is to create work for its parent is a poor one.
+    loop {
+        let (event, tid, _pc) = recv(FAULT);
+        send(REPORT, REPORT_SUP_SAW_DEATH, tid, event);
+    }
+}
+
+/// Ask the spawner to build the next instance. We name the attempt; it names the instance.
+fn build(attempt: u64) -> Option<u64> {
+    send(REQ, REQ_BUILD, attempt, 0);
+    let (verdict, instance, _) = recv(REP);
+    (verdict == REP_BUILT).then_some(instance)
+}
+
+/// Ask the spawner to reap an instance's region (§16 revocation). We hold no memory, so we cannot do
+/// this ourselves, which is the authority split working as designed rather than a limitation.
+fn reap(instance: u64) {
+    send(REQ, REQ_REAP, instance, 0);
+    let _ = recv(REP);
+}
+
+#[panic_handler]
+fn panic(_: &core::panic::PanicInfo) -> ! {
+    suptree::fail()
+}

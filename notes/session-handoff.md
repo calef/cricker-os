@@ -52,9 +52,17 @@ service), §28 (SMP placement) + amendment, §16 amendment (SPLIT rights inherit
 1. **`^C` implementation** (§24 decided, not built): two-tier, shell-held. termd detects `^C`,
    shell holds the interrupt endpoint, cooperative then forcible (DESTROY force-kill). Ready to
    schedule; needs no new kernel surface.
-2. **Milestone 22 phase B** (trusted init): verify init's bytes (measured/signed boot) and
-   shrink its authority. The fault endpoint (§26) is built; this is the boot-verification half.
-   Its DMA-tamper precondition was closed by 16b (the IOMMU).
+2. ~~**Milestone 22 phase B** (trusted init).~~ **DONE 2026-07-29** (DECISIONS §26's phase B.1 and
+   B.2 blocks, notes/trusted-init.md). B.1: the build hashes the boot program and the kernel refuses
+   to enter anything else (SHA-256 in `crates/measure`, digest compiled into the kernel image, fails
+   closed on a *missing* measurement too). B.2: a four-program tree where construction moves to a
+   sub-server holding one program image, the supervisor holds no memory at all, and init deletes its
+   budget; proven by authority on both ISAs. **Leftovers:** the interactive boot's init (`sysinit`,
+   `hello`'s init role) still holds its budget for life because it is the shell's spawn service, and
+   migrating that hand-validated path is the next increment; two design forks are recorded for Chris
+   (a reap-only right so a root supervisor can recover without regaining construction authority, and
+   turning a fault message's tid into a handle a builder holds). This work also found and fixed a
+   real pre-existing race in the exception-return path on both ISAs (notes/exceptions.md).
 3. ~~**Milestone 27 phase 2 completion:** std::fs binding to the FS server.~~ **DONE 2026-07-29**
    (DECISIONS §22 phase-two amendment, notes/std.md): `std::fs` binds to the §27 contract through a
    directory capability at slot 4, escapes refused as un-nameable, `Unsupported` without the grant.

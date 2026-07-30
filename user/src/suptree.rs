@@ -1,0 +1,284 @@
+//! **The supervision tree: the shared half** (milestone 22 phase B.2).
+//!
+//! Three programs make up the tree that shrinks init's authority (`rootsup`, `spawner`, `subsup`,
+//! plus the `flaky` sub-server they manage), and this is what they share: the protocol words they
+//! speak, and the userspace ELF loader they build children with. Compiled into each binary with
+//! `#[path = "suptree.rs"] mod suptree;`, the same way `blk` and `hello` share the `virtio` module.
+//!
+//! The loader is a generalization of `sysinit`'s `build_child`: it takes the builder's own budget and
+//! the budget the child is built *from* as separate arguments (they are the same for a server building
+//! out of its own memory, and different for a spawner building each child in its own reclaimable
+//! region), it can place a capability in the reserved fault slot so the child is born supervised, and
+//! it can copy a **blob** into the child. That last one is what lets a construction sub-server hold
+//! exactly the one program image it is allowed to build, instead of the whole initrd.
+
+use user_rt::{cap_delete, invoke};
+
+// ===========================================================================================
+// The report protocol. Every process in the tree holds a WRITE view of one report endpoint and
+// says what happened on it; the kernel test is the receiver. Mirrored in kernel/src/user.rs
+// (`authority_tests`), the same way the net client's selectors are.
+// ===========================================================================================
+
+/// init dropped its construction authority. `w1` = 1 if using the dropped budget then failed,
+/// `w2` = the negated error code (1 = `NoSuchSlot`: the slot is empty, there is nothing to name).
+pub const REPORT_INIT_DROPPED: u64 = 1;
+/// A sub-server instance ran. `w1` = which attempt it is (0 = the original, 1+ = a restart).
+pub const REPORT_SERVER_RAN: u64 = 2;
+/// The sub-server's supervisor saw its child die. `w1` = tid, `w2` = the event (fault or exit).
+pub const REPORT_SUP_SAW_DEATH: u64 = 3;
+/// The supervisor's retry budget ran out; its policy is to stop. `w1` = restarts attempted.
+pub const REPORT_SUP_GAVE_UP: u64 = 4;
+/// Something in the tree could not be built. `w1` = a stage code, so a broken tree is debuggable
+/// rather than silent.
+pub const REPORT_FAILED: u64 = 9;
+
+// ===========================================================================================
+// The construction protocol: the supervisor asks, the spawner builds. This is the authority split
+// made concrete. The supervisor holds no memory at all, so it cannot build anything itself; the
+// spawner holds a budget and exactly one program image, so it cannot build anything else.
+// ===========================================================================================
+
+/// `send(req, REQ_BUILD, attempt, 0)` -> `(REP_BUILT, tid, 0)` or `(REP_FAILED, 0, 0)`.
+pub const REQ_BUILD: u64 = 1;
+/// `send(req, REQ_REAP, tid, 0)` -> `(REP_REAPED, 0, 0)` or `(REP_FAILED, 0, 0)`. Reaping is §16
+/// revocation of the region the instance was built in; the corpse is dead until this happens.
+pub const REQ_REAP: u64 = 2;
+
+pub const REP_BUILT: u64 = 1;
+pub const REP_REAPED: u64 = 2;
+pub const REP_FAILED: u64 = 3;
+
+// ===========================================================================================
+// The loader.
+// ===========================================================================================
+
+pub const PAGE: u64 = 4096;
+
+/// Where a child's stack top sits, and how many pages it gets. Four pages because a child that runs
+/// an ELF loader has a deep call chain; the flaky sub-server would be fine with one.
+pub const CHILD_STACK_VA: u64 = 0x0050_0000;
+pub const CHILD_STACK_PAGES: u64 = 4;
+
+/// An ever-advancing scratch window: where we temporarily map each child frame to fill it. Never
+/// unmapped, so a per-call reset would collide with a previous child's mappings (the bug 19d.2c
+/// found and this inherits the fix for).
+static SCRATCH_NEXT: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0x1000_0000);
+
+/// **Everything a child is born holding.** The same idea as the kernel's `Spawn`: read one of these
+/// and you know the complete authority of the thing about to run.
+pub struct Endow<'a> {
+    /// Capabilities to insert, `(our_slot, rights)`, landing in the child's slots 0, 1, 2, ...
+    pub caps: &'a [(u64, u64)],
+    /// Pages of ours to map into the child, `(child_va, our_slot, mode)`.
+    pub maps: &'a [(u64, u64, u64)],
+    /// Bytes to copy into fresh pages in the child, at consecutive VAs from `va`. This is how a
+    /// child is handed *data* it has no capability to reach: a program image, in our case.
+    pub blobs: &'a [(u64, &'a [u8])],
+    /// Our slot holding the child's supervision endpoint (DECISIONS §26). Placed in the reserved
+    /// `FAULT_EP_SLOT`, where `START` reads it and clears it, so the child is born supervised and
+    /// cannot forge messages on its own death channel.
+    pub fault: Option<u64>,
+}
+
+impl<'a> Endow<'a> {
+    pub const fn new() -> Self {
+        Self {
+            caps: &[],
+            maps: &[],
+            blobs: &[],
+            fault: None,
+        }
+    }
+}
+
+/// Build a child from `elf`: lay each segment W^X at the VA it names, map a stack, copy the blobs in,
+/// map `maps`, retype a TCB, insert the endowment, configure at the entry. Returns the TCB slot,
+/// ready for [`tcb_start`].
+///
+/// `own_ut` pays for **our** scratch mappings (they are ours, and a child's region must not have our
+/// page tables freed under it when the child is reaped). `build_ut` is what the child itself is made
+/// of: its address space, frames, stack, and TCB. Passing a per-child region as `build_ut` is what
+/// makes a single `DESTROY` reap the whole instance.
+pub fn build_child(own_ut: u64, build_ut: u64, elf: &elf::Elf, endow: &Endow) -> Result<u64, ()> {
+    let aspace = retype_obj_from(build_ut, abi::objtype::ASPACE)?;
+
+    for seg in elf.segments() {
+        let mode = if seg.is_executable() {
+            abi::aspace::MAP_CODE
+        } else if seg.is_writable() {
+            abi::aspace::MAP_RW
+        } else {
+            abi::aspace::MAP_RO
+        };
+        let (start, end) = seg.page_range(PAGE);
+        let mut va = start;
+        while va < end {
+            let file_lo = seg.vaddr;
+            let file_hi = seg.vaddr + seg.data.len() as u64;
+            let lo = va.max(file_lo);
+            let hi = (va + PAGE).min(file_hi);
+            let src = if lo < hi {
+                Some((
+                    (lo - va) as usize,
+                    &seg.data[(lo - file_lo) as usize..(hi - file_lo) as usize],
+                ))
+            } else {
+                None
+            };
+            fill_and_map(own_ut, build_ut, aspace, va, src, mode)?;
+            va += PAGE;
+        }
+    }
+
+    for k in 0..CHILD_STACK_PAGES {
+        let stack_frame = retype_frame_from(build_ut)?;
+        let va = CHILD_STACK_VA - k * PAGE;
+        if unsafe {
+            invoke(
+                aspace,
+                abi::aspace::MAP_INTO,
+                va,
+                stack_frame,
+                abi::aspace::MAP_RW,
+            )
+        } != 0
+        {
+            return Err(());
+        }
+        cap_delete(stack_frame);
+    }
+
+    // The blobs: fresh read-only pages carrying bytes we chose. Read-only because a program image
+    // is data the child reads, and a child that could rewrite the image it was handed could hand a
+    // different one on.
+    for &(base, bytes) in endow.blobs {
+        let mut off = 0usize;
+        while off < bytes.len() {
+            let n = core::cmp::min(PAGE as usize, bytes.len() - off);
+            fill_and_map(
+                own_ut,
+                build_ut,
+                aspace,
+                base + off as u64,
+                Some((0, &bytes[off..off + n])),
+                abi::aspace::MAP_RO,
+            )?;
+            off += n;
+        }
+    }
+
+    for &(va, our_slot, mode) in endow.maps {
+        if unsafe { invoke(aspace, abi::aspace::MAP_INTO, va, our_slot, mode) } != 0 {
+            return Err(());
+        }
+    }
+
+    let tcb = retype_obj_from(build_ut, abi::objtype::TCB)?;
+    for &(our_slot, rights) in endow.caps {
+        if unsafe { invoke(tcb, abi::tcb::CAP_INSERT, our_slot, rights, 0) } < 0 {
+            return Err(());
+        }
+    }
+    if let Some(fault) = endow.fault {
+        // The spawn-slot convention: target slot `n + 1` means "slot n", so the supervision endpoint
+        // lands in the reserved last slot rather than wherever first-free fell.
+        if unsafe {
+            invoke(
+                tcb,
+                abi::tcb::CAP_INSERT,
+                fault,
+                abi::rights::READ,
+                abi::fault::FAULT_EP_SLOT + 1,
+            )
+        } < 0
+        {
+            return Err(());
+        }
+    }
+    if unsafe {
+        invoke(
+            tcb,
+            abi::tcb::CONFIGURE,
+            elf.entry(),
+            CHILD_STACK_VA + PAGE,
+            aspace,
+        )
+    } != 0
+    {
+        return Err(());
+    }
+    Ok(tcb)
+}
+
+/// Retype one page out of `build_ut`, fill it (zeroed, then `src` bytes at an offset) through our own
+/// scratch window, and map it into `aspace` at `va`. The one place a page's contents are written, so
+/// segments and blobs cannot drift apart.
+fn fill_and_map(
+    own_ut: u64,
+    build_ut: u64,
+    aspace: u64,
+    va: u64,
+    src: Option<(usize, &[u8])>,
+    mode: u64,
+) -> Result<(), ()> {
+    let frame = retype_frame_from(build_ut)?;
+    let scratch = SCRATCH_NEXT.fetch_add(PAGE, core::sync::atomic::Ordering::Relaxed);
+    if unsafe { invoke(frame, abi::frame::MAP, scratch, 1, own_ut) } != 0 {
+        return Err(());
+    }
+    // SAFETY: `scratch` is a page we just mapped read/write in our own address space.
+    let dst = unsafe { core::slice::from_raw_parts_mut(scratch as *mut u8, PAGE as usize) };
+    dst.fill(0);
+    if let Some((at, bytes)) = src {
+        dst[at..at + bytes.len()].copy_from_slice(bytes);
+    }
+    if unsafe { invoke(aspace, abi::aspace::MAP_INTO, va, frame, mode) } != 0 {
+        return Err(());
+    }
+    cap_delete(frame);
+    Ok(())
+}
+
+pub fn retype_obj_from(ut: u64, objtype: u64) -> Result<u64, ()> {
+    let r = unsafe { invoke(ut, abi::untyped::RETYPE_OBJ, objtype, 0, 0) };
+    if r < 0 { Err(()) } else { Ok(r as u64) }
+}
+
+pub fn retype_frame_from(ut: u64) -> Result<u64, ()> {
+    let r = unsafe { invoke(ut, abi::untyped::RETYPE, 0, 0, 0) };
+    if r < 0 { Err(()) } else { Ok(r as u64) }
+}
+
+/// Carve `pages` off `ut` into a new child untyped we hold in full: the region a single `DESTROY`
+/// reclaims. `Err` carries the negated error code, which is how the dropped-authority proof reports
+/// *why* a retype from a deleted budget failed.
+pub fn untyped_split(ut: u64, pages: u64) -> Result<u64, i64> {
+    let r = unsafe { invoke(ut, abi::untyped::SPLIT, pages, 0, 0) };
+    if r < 0 { Err(r) } else { Ok(r as u64) }
+}
+
+/// §16 object revocation: reclaim a region and every object retyped from it. This is how a corpse is
+/// reaped, and it is the supervisor's explicit act, never the kernel's reflex.
+pub fn untyped_destroy(ut: u64) -> bool {
+    unsafe { invoke(ut, abi::untyped::DESTROY, 0, 0, 0) == 0 }
+}
+
+pub fn tcb_start(tcb: u64, a0: u64, a1: u64, a2: u64) -> bool {
+    unsafe { invoke(tcb, abi::tcb::START, a0, a1, a2) == 0 }
+}
+
+/// Trap. A half-built system is not worth limping along, and a fault is legible: the kernel prints
+/// the pc and the process dies where the mistake was.
+pub fn fail() -> ! {
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("brk #0", options(nostack, nomem))
+    };
+    #[cfg(target_arch = "riscv64")]
+    unsafe {
+        core::arch::asm!("ebreak", options(nostack, nomem))
+    };
+    user_rt::exit()
+}

@@ -150,6 +150,35 @@ path = "src/elbench.rs"
 test = false
 bench = false
 
+# The authority-shrinking supervision tree (milestone 22 phase B.2). Four programs, one shared module
+# (src/suptree.rs): `rootsup` is an init that hands its construction authority to `spawner` and its
+# restart policy to `subsup` and then DELETES its budget; `flaky` is the supervised sub-server that
+# crashes once so the tree has something real to keep alive. Portable, both ISAs; the kernel's
+# authority_tests drive them.
+[[bin]]
+name = "rootsup"
+path = "src/rootsup.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "spawner"
+path = "src/spawner.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "subsup"
+path = "src/subsup.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "flaky"
+path = "src/flaky.rs"
+test = false
+bench = false
+
 # The net server (milestone 30, piece 3): smoltcp as a userspace TCP/IP stack driving the confined
 # NIC. Links `extern crate alloc` over user_rt's heap. `mkinitrd` packs it as "netd" for both ISAs.
 [[bin]]

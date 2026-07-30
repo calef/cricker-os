@@ -8,3 +8,6 @@ publish = false
 [dependencies]
 crickerfs = { version = "0.1.0", path = "../crates/crickerfs" }
 fs_proto = { version = "0.1.0", path = "../crates/fs_proto" }
+# The measured-boot hash (milestone 22 phase B.1): the build and the kernel measure init through the
+# same implementation, so there is one definition of the digest.
+measure = { version = "0.1.0", path = "../crates/measure" }

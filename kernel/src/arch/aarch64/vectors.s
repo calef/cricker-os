@@ -81,6 +81,28 @@
 // the system registers FIRST, then overwrite the scratch registers with their real
 // saved values. Doing it the other way round would corrupt x1 and x2.
 .macro RESTORE_CONTEXT
+    // MASK INTERRUPTS FIRST, and this is not belt-and-braces: it closes a real race that
+    // cost a rare, spectacular failure (milestone 22 phase B.2 found it).
+    //
+    // SPSR_EL1 and ELR_EL1 are the eret's *only* record of where to go and at what level,
+    // and they are single copies the hardware overwrites on every exception. Between the
+    // `msr spsr_el1` below and the `eret` at the end there is a window: an interrupt taken
+    // in it saves its own EL1 state into those two registers, the nested handler's own
+    // RESTORE_CONTEXT puts the EL1 state back (SPSR = EL1h), and our `eret` then returns to
+    // the user's entry point AT EL1. The symptom is an instruction abort at the user's code
+    // address taken "from the same EL", which reads as impossible until you find this.
+    //
+    // On a normal trap return the window is already closed, because taking the exception set
+    // PSTATE.DAIF. The exposed path is `enter_userspace`, which branches in here from
+    // ordinary kernel code with interrupts ENABLED, so every first entry to a process had a
+    // two-instruction window. Rare per entry, and the suite entered enough processes to hit
+    // it about one run in four.
+    //
+    // Masking costs nothing at the far end: the `eret` restores DAIF from SPSR, so the state
+    // we return to is unchanged. It is in the macro rather than in `enter_userspace` so that
+    // any future path reaching here with interrupts on is covered by construction.
+    msr     daifset, #0xf
+
     ldp     x2,  x3,  [sp, #16 * 16]
     ldp     x30, x1,  [sp, #16 * 15]
 

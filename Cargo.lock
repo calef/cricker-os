@@ -160,6 +160,7 @@ dependencies = [
  "fs_proto",
  "intrusive",
  "ipc",
+ "measure",
  "paging",
  "pci",
  "regions",
@@ -177,6 +178,10 @@ name = "managed"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ca88d725a0a943b096803bd34e73a4437208b6077654cc4ecb2947a5f91618d"
+
+[[package]]
+name = "measure"
+version = "0.1.0"
 
 [[package]]
 name = "paging"
@@ -328,4 +333,5 @@ version = "0.1.0"
 dependencies = [
  "crickerfs",
  "fs_proto",
+ "measure",
 ]

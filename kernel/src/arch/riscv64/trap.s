@@ -102,6 +102,20 @@ trap_entry:
 # to U-mode (enter_user). On a return to U-mode (sstatus.SPP == 0), record this thread's kernel-stack
 # top in the hart's stash, so the next U-mode trap lands there.
 trap_return:
+    # MASK INTERRUPTS FIRST. The aarch64 twin of this sequence had a real race here (see the long
+    # comment on RESTORE_CONTEXT in arch/aarch64/vectors.s, milestone 22 phase B.2), and the same
+    # window exists on RISC-V for the same reason: `sepc` and `sstatus` are the sret's only record of
+    # where to go and at what privilege, and a trap taken between the `csrw sepc` below and the
+    # `csrw sstatus` two instructions later overwrites both. The nested handler's own trap_return puts
+    # the S-mode values back, so our `sret` would return to U-mode at a *kernel* address, which reads
+    # as an impossible instruction fault.
+    #
+    # On a trap return the window is already closed (trap entry clears sstatus.SIE, and the frame's
+    # saved sstatus carries SIE = 0 through the `csrw`). The exposed path is `user_return`, the first
+    # entry to U-mode, which is jumped to from ordinary kernel code with interrupts enabled. Clearing
+    # SIE costs nothing: the `csrw sstatus` and then the `sret` set the final state regardless.
+    csrci   sstatus, 2          # clear SIE (bit 1)
+
     ld      t0, 35*8(sp)        # sstatus
     andi    t1, t0, 0x100       # SPP (bit 8): 1 = return to S-mode, 0 = return to U-mode
     bnez    t1, 3f
