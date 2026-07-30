@@ -118,6 +118,25 @@ pub mod fs {
     pub const CLOSE: u64 = 4;
     /// The current size in bytes of the handle's file. Reply `r0` = size (≥ 0), or an error.
     pub const FSTAT: u64 = 5;
+    /// Create the name in the shared page (length is [`req_len`]) under the endpoint's bound
+    /// directory and open it. Second word 0. Reply `r0` = a handle (≥ 0), or an error.
+    ///
+    /// **`EEXIST` if the name already exists, and nothing is modified.** Create is create, not
+    /// create-or-open: a caller that wants either must ask for both and say which it got. The
+    /// alternative makes a partly-working write read as a working one, which is the failure §27
+    /// records. Shares [`OPEN`]'s shape exactly, so a client that can open can create.
+    pub const CREATE: u64 = 6;
+    /// Set the size of the handle's ([`req_handle`]) file to exactly `w1` bytes. [`req_len`] is 0;
+    /// the size rides in the second word because it is an offset-shaped quantity, not a payload
+    /// length. Reply `r0` = 0, or an error.
+    ///
+    /// POSIX `ftruncate` in **both** directions: shrinking discards the bytes past the new size,
+    /// growing extends with zeroes. The shrink is the point. Without it a write shorter than the file
+    /// leaves the old tail in place, so a caller replacing a file's contents gets a longer file than
+    /// it wrote, and a write that half-works reads as a write that failed (DECISIONS §27, four times
+    /// corrected). Truncating to the current size is a no-op, which matters because `std::fs::write`
+    /// truncates unconditionally.
+    pub const TRUNCATE: u64 = 7;
 
     /// The largest length or offset that fits the packing below (40 bits). Far above [`super::PAGE`],
     /// so a single request never carries more than one page of payload regardless; the bound only
@@ -127,8 +146,9 @@ pub mod fs {
     pub const MAX_HANDLE: u64 = 0xffff;
 
     /// Pack a file request's first word: opcode (bits 63:56), handle (bits 55:40), length (bits
-    /// 39:0). [`OPEN`] passes handle 0 and length = the name length; [`READ`]/[`WRITE`] pass the
-    /// handle and the byte count; [`CLOSE`]/[`FSTAT`] pass the handle and length 0.
+    /// 39:0). [`OPEN`] and [`CREATE`] pass handle 0 and length = the name length;
+    /// [`READ`]/[`WRITE`] pass the handle and the byte count; [`CLOSE`]/[`FSTAT`]/[`TRUNCATE`] pass
+    /// the handle and length 0 ([`TRUNCATE`]'s new size rides in the second word).
     pub const fn req(op: u64, handle: u64, len: u64) -> u64 {
         (op << super::OP_SHIFT) | ((handle & MAX_HANDLE) << 40) | (len & MAX_LEN)
     }
@@ -197,6 +217,8 @@ mod tests {
             (fs::WRITE, 1, 4096),
             (fs::CLOSE, 65535, 0),
             (fs::FSTAT, 3, 0),
+            (fs::CREATE, 0, 11),
+            (fs::TRUNCATE, 42, 0),
         ] {
             let w = fs::req(o, h, l);
             assert_eq!(op(w), o, "opcode");
@@ -213,6 +235,38 @@ mod tests {
         assert_eq!(op(w), fs::READ);
         assert_eq!(fs::req_handle(w), fs::MAX_HANDLE);
         assert_eq!(fs::req_len(w) as u64, fs::MAX_LEN);
+    }
+
+    #[test]
+    fn every_opcode_is_distinct_and_fits_its_field() {
+        // Two verbs sharing a number is a wire bug the packing tests cannot see: each would pack and
+        // unpack perfectly and mean the wrong thing. Cheap to assert, so assert it.
+        let ops = [
+            ("OPEN", fs::OPEN),
+            ("READ", fs::READ),
+            ("WRITE", fs::WRITE),
+            ("CLOSE", fs::CLOSE),
+            ("FSTAT", fs::FSTAT),
+            ("CREATE", fs::CREATE),
+            ("TRUNCATE", fs::TRUNCATE),
+        ];
+        for (i, (na, a)) in ops.iter().enumerate() {
+            assert!(*a <= 0xff, "{na} does not fit the 8-bit opcode field");
+            assert_ne!(
+                *a, 0,
+                "0 is not a verb: a zeroed word must not decode as one"
+            );
+            for (nb, b) in &ops[i + 1..] {
+                assert_ne!(a, b, "{na} and {nb} share an opcode");
+            }
+        }
+        // The blk protocol is a separate namespace on a separate endpoint, so its numbers may and do
+        // overlap. Asserted so nobody "fixes" the overlap and renumbers a live wire.
+        assert_eq!(
+            blk::READ,
+            fs::OPEN,
+            "the two protocols are deliberately independent"
+        );
     }
 
     #[test]
