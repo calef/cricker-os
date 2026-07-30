@@ -9198,6 +9198,59 @@ mod riscv_virtio_tests {
         );
     }
 
+    /// **The confused-deputy question, asked on the ISA where the answer is harder** (the RISC-V
+    /// twin of `the_hardware_says_el0_cannot_read_the_kernels_memory`, milestone 41).
+    ///
+    /// aarch64 has `AT S1E0R`, one instruction that makes the silicon answer "could EL0 read
+    /// this". RISC-V has no such instruction, so `mmu::user_can_read` walks the installed tables
+    /// in software and reads the `U` bit. That software answer is the thing under test, and it
+    /// matters more here than on aarch64: RISC-V has one root register, so the **same** page
+    /// tables that translate a user address also translate the kernel's, and the `U` bit is the
+    /// only thing between U-mode and the kernel's own memory. On aarch64 the split TTBR0/TTBR1
+    /// gives a second, structural line of defence. Here there is one line, and this is it.
+    ///
+    /// The precondition assertion is the same one the aarch64 test carries, for the same reason:
+    /// "U-mode cannot read the kernel" proves nothing if the kernel is not mapped here at all.
+    /// On RISC-V it also proves the kernel-half share actually happened.
+    ///
+    /// This test exists because milestone 41 removed the crate-wide `allow(dead_code)` that riscv64
+    /// builds carried, and `user_can_read`/`user_can_write` fell out of it as dead on this ISA
+    /// only: the aarch64 test module proved them, and nothing on RISC-V ever called them.
+    #[test_case]
+    fn the_page_tables_say_u_mode_cannot_read_the_kernels_memory() {
+        // Inside the direct map, so it is mapped for certain and it is the kernel's own memory.
+        let kernel_va = crate::arch::mmu::KERNEL_VA_BASE + 0x8000_0000;
+
+        let image = program("init").expect("no init program in the initrd archive");
+        let (space, _) = load(image).expect("the initrd did not load");
+
+        // SAFETY: nothing is at U-mode; we are a kernel thread mid-test, and the root carries the
+        // kernel half (else this instruction would not retire).
+        unsafe { mmu::activate_user(space.ttbr0()) };
+
+        assert!(
+            mmu::translate(kernel_va).is_some(),
+            "the kernel's direct map is not mapped, so this test proves nothing",
+        );
+        assert!(
+            !mmu::user_can_read(kernel_va),
+            "the page tables say U-mode could read the kernel's own memory",
+        );
+        assert!(!mmu::user_can_write(kernel_va));
+
+        // And it says yes to the process's own text, or the check is a rubber stamp.
+        assert!(
+            mmu::user_can_read(0x40_0000),
+            "U-mode cannot read its own .text, so the check refuses everything and proves nothing",
+        );
+
+        // Not an unmapped address in its own half.
+        assert!(!mmu::user_can_read(0x7000_0000));
+
+        mmu::deactivate_user();
+        drop(space);
+    }
+
     /// The headline, on the second ISA: an unprivileged process drives a real block device over
     /// DMA and reads a file off it, with the kernel owning only the confinement. Interrupt
     /// delivery is asserted too: the completion reached the driver as a message through its Irq
