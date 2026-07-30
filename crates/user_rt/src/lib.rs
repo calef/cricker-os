@@ -128,6 +128,59 @@ pub fn recv(slot: u64) -> (u64, u64, u64) {
     (w0, w1, w2)
 }
 
+/// `RECV` **all five words** on the endpoint capability in `slot`: `(w0, w1, w2, w3, w4)`.
+///
+/// The same `RECV` [`recv`] makes, read to its full width. `RECV` has returned five registers since
+/// milestone 22 phase A (the kernel writes `w1..w4` directly; DECISIONS §26 implementation note 4),
+/// because a fault notification is five words: `(event, tid, pc, addr, reserved)`. Ordinary
+/// three-word IPC leaves the top two zero, which is why [`recv`] can keep ignoring them.
+///
+/// This exists for a **supervisor**, and it is the first thing in userspace to read `w3`: a
+/// restart policy needs the event and the tid, but a *checker* needs the faulting address, which is
+/// the only word that says where the dead thread actually pointed. No new syscall and no new method
+/// (§26's whole surface claim): just the rest of a result that was already being returned.
+#[cfg(target_arch = "aarch64")]
+pub fn recv_fault(slot: u64) -> (u64, u64, u64, u64, u64) {
+    let (mut w0, mut w1, mut w2, mut w3, mut w4): (u64, u64, u64, u64, u64);
+    // SAFETY: `svc`. RECV returns five words in x0..x4.
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            in("x8") abi::SYS_INVOKE,
+            inlateout("x0") slot => w0,
+            in("x1") abi::endpoint::RECV,
+            lateout("x1") w1,
+            lateout("x2") w2,
+            in("x3") 0u64,
+            lateout("x3") w3,
+            in("x4") 0u64,
+            lateout("x4") w4,
+            options(nostack),
+        );
+    }
+    (w0, w1, w2, w3, w4)
+}
+
+/// `RECV` all five words (RISC-V). See the aarch64 twin; `ecall`, the five words in `a0`..`a4`.
+#[cfg(target_arch = "riscv64")]
+pub fn recv_fault(slot: u64) -> (u64, u64, u64, u64, u64) {
+    let (mut w0, mut w1, mut w2, mut w3, mut w4): (u64, u64, u64, u64, u64);
+    // SAFETY: `ecall`. RECV returns five words in a0..a4.
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            in("a7") abi::SYS_INVOKE,
+            inlateout("a0") slot => w0,
+            inlateout("a1") abi::endpoint::RECV => w1,
+            lateout("a2") w2,
+            inlateout("a3") 0u64 => w3,
+            inlateout("a4") 0u64 => w4,
+            options(nostack),
+        );
+    }
+    (w0, w1, w2, w3, w4)
+}
+
 /// `RECV_CAP` on the endpoint capability in `slot`: receive a message that may carry a
 /// capability. Blocks until one arrives; returns `(w0, cap_slot, w1)`, where `cap_slot` is where
 /// the incoming capability landed in this thread's cspace, or [`abi::endpoint::NO_CAP`] if the

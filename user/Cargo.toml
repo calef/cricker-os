@@ -179,6 +179,22 @@ path = "src/flaky.rs"
 test = false
 bench = false
 
+# The C seam (milestone 36). Three files, two binaries: `cshim` is the Rust user_rt shell that links
+# user/c/cseam.c (compiled by build.rs with a bare-metal clang) and holds every capability the
+# foreign component is not allowed to see; `cwarden` builds it, supervises it, and holds the witness
+# pages that prove what the C could not reach. Both portable; both archives carry both.
+[[bin]]
+name = "cshim"
+path = "src/cshim.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "cwarden"
+path = "src/cwarden.rs"
+test = false
+bench = false
+
 # The net server (milestone 30, piece 3): smoltcp as a userspace TCP/IP stack driving the confined
 # NIC. Links `extern crate alloc` over user_rt's heap. `mkinitrd` packs it as "netd" for both ISAs.
 [[bin]]

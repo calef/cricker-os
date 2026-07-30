@@ -127,6 +127,16 @@ in the code or the conversation doesn't make sense, it belongs here.
   without faulting on an unmapped page, how build-std runs against a hardlink-cloned patched
   rust-src, why the symlink farm was measured to fail, and the honest caveats (no create or truncate
   verb, monotonic-only clock, non-crypto random, std-internals coupling).
+- [Running a foreign language: the C seam](c-seam.md) — milestone 36: memory-unsafe C, compiled by
+  bare-metal clang, confined and restarted. Why C is the *best* demonstration of "a verified core that
+  confines unverified workloads" rather than a dilution of it, and the seam's rules: a Rust `user_rt`
+  shell holds every capability and makes every syscall so the C can hold none and make none, which is
+  why a foreign component cannot widen the syscall surface. The libc question answered by tier (the
+  object demands five symbols, the linker demands two, because `compiler_builtins` already supplies
+  three), why a Rust `memcpy` shim calls itself and what that looks like when it does, `malloc` from
+  the process's own untyped budget, and one clang required to target both ISAs so parity stays a gate.
+  Also: the two witnesses that prove nothing outside the grant changed, and the reap-only right the
+  supervisor would rather have held.
 - [How authority moves, narrows, and ends](capability-lifecycle.md) — capabilities spread by
   copy-with-narrowing (never widening), `SEND_CAP` is share not move, the two independent
   narrowings (rights vs. GRANT), and why there's no revocation yet (a control gap, not a
