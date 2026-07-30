@@ -52,37 +52,33 @@ toolchain and QEMU are pinned to exact versions, so "the tests passed" means the
 laptop and on a runner. The second badge is a daily check of whether the *newest* nightly still
 builds us; it is informational and never blocks a merge.
 
-## Status
+## What it does
 
-**[design/roadmap.md](design/roadmap.md) is the canonical status**, one row per milestone with a
-gated status column, and this section deliberately does not restate it: a second place where status
-lives is a second thing to keep true, and this section had already drifted (it claimed test counts
-that were two days out of date). What follows is what the system *is*, which changes slowly. What it
-*has done lately* is one link away.
+This section is deliberately **not** status. Status lives in one place, with a gated status column and
+a checker: **[design/roadmap.md](design/roadmap.md)**. What follows is what the system *is*, and each
+claim points at the artifact that keeps it true rather than repeating a list that goes stale. The
+previous version of this section did repeat them, and drifted twice inside three days.
 
-- **The capability core is proved.** The `caps` model, the IPC rendezvous with one-shot reply,
-  and the MMU isolation invariants all carry machine-checked proofs (Kani) via `script/verify`.
-  See [notes/verification.md](notes/verification.md).
+- **The security-critical logic carries machine-checked proofs.** Kani, run by `script/verify` and
+  gated in CI. Which crates and which properties, with the bounds and their justifications, is
+  [notes/verification.md](notes/verification.md); the count is whatever the gate prints.
 - **The kernel does not allocate.** There is no kernel heap. Page tables, TCBs, endpoints, and
   address spaces are all retyped out of untyped memory that userspace owns and pays for.
 - **Processes come and go.** A userspace init builds the whole system through granular
   capability verbs (retype, configure, insert, start), and object revocation tears a process
   back down: its TCBs, address spaces, endpoints, and the memory behind them, reclaimed safely.
-- **It runs a real workload.** A CoreMark-derived compute program, spawned against the written
-  native ABI ([notes/abi.md](notes/abi.md)) from a crickerfs archive, by init, at EL0.
+- **It runs real workloads.** A CoreMark-derived compute program against the written native ABI
+  ([notes/abi.md](notes/abi.md)), and ordinary Rust `std` programs on a custom target.
 - **Two ISAs at parity.** Everything architecture-specific lives under `kernel/src/arch/`, and
   riscv64 proves it: SMP, the whole test suite, the interactive shell, and the benchmarks all run on
-  both. Parity is a gate rather than an aspiration (DECISIONS §19), so the counts are whatever
-  `script/test` prints today rather than a number written here to go stale.
+  both. Parity is a gate rather than an aspiration (DECISIONS §19).
 - **SMP.** Four cores via PSCI (aarch64) and SBI (riscv64), per-CPU run queues, cross-core
   placement by inbox plus a reschedule IPI. No shared run-queue lock.
-- **Benchmarked against Linux and macOS, honestly.** Same Apple Silicon core, same
-  virtualization tier, release builds: ~5x faster than Linux at the null syscall and the IPC
-  round trip, and faster than native macOS at both. The page map is a tie (both sides are bound
-  by page zeroing), and spawn+reap beats `fork`+`exit` ~2.6x with the caveat that a cricker-os
-  process is a lighter object than a Unix process. Every number and every caveat:
-  [notes/benchmarks.md](notes/benchmarks.md). The seL4 comparison waits on real hardware
-  (`sel4bench` needs a PMU cycle counter QEMU and HVF do not provide).
+- **Every driver and server is an EL0 process**, confined by the MMU and, for DMA, by a validator
+  and an IOMMU. A driver that misbehaves faults; it does not take the kernel with it.
+- **Benchmarked against Linux and macOS, honestly.** Same Apple Silicon core, same virtualization
+  tier, release builds. Every number, and every caveat that makes a comparison not apples to apples,
+  is in [notes/benchmarks.md](notes/benchmarks.md), which is the only place they are written down.
 
 When something faults, you get this instead of a silent death:
 

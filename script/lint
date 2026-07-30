@@ -84,3 +84,10 @@ RUSTDOCFLAGS="$DOCFLAGS" cargo doc --no-deps --quiet --workspace --exclude xtask
     --target aarch64-unknown-none-softfloat
 RUSTDOCFLAGS="$DOCFLAGS" cargo doc --no-deps --quiet -p xtask
 RUSTDOCFLAGS="$DOCFLAGS" cargo doc --no-deps --quiet --manifest-path fs-server/Cargo.toml --lib
+
+# DECISIONS.md's numbering, and that every §N cited in the tree resolves. Two concurrent milestones
+# both claimed §30 on 2026-07-30 and it was caught only because an agent noticed; 418 code comments
+# cite a section by number, so a dangling citation is a broken footnote in the one place this project
+# asks a reader to trust prose. See script/decisions.
+echo "==> decisions"
+"$(dirname "$0")/decisions" --check
