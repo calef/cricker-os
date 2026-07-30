@@ -169,23 +169,6 @@ pub extern "C" fn _start(role: u64, neighbour_va: u64, _arg2: u64) -> ! {
         send(REPORT, status::WIN_REFUSED, r as u64, WHAT_INPUT);
     }
 
-    if role & ROLE_CAPTURE != 0 {
-        // We hold a read-only mapping of the screen and of the window list. That mapping IS the
-        // screenshot capability and the enumeration capability; there is no verb for either.
-        let shot = compose::surface_checksum(compose::SCREEN_W, compose::SCREEN_H, |i| {
-            // SAFETY: inside the read-only screen mapping the kernel gave this role.
-            unsafe { core::ptr::read_volatile((SCREEN_VA + (i * 4) as u64) as *const u32) }
-        });
-        let count = rd32(WLIST_VA + wlist::COUNT);
-        let focused = rd32(WLIST_VA + wlist::FOCUSED);
-        send(
-            REPORT,
-            status::WIN_CAPTURED,
-            shot,
-            focused as u64 | ((count as u64) << 32),
-        );
-    }
-
     if role & ROLE_VICTIM != 0 {
         // Report the digest and **wait**: the kernel replies once the attacker beside us has done its
         // worst, and we then re-read our own surface. A pattern that survives an attack is the witness
@@ -201,6 +184,25 @@ pub extern "C" fn _start(role: u64, neighbour_va: u64, _arg2: u64) -> ! {
     }
 
     send(REPORT, status::WIN_PAINTED, digest, id as u64);
+
+    if role & ROLE_CAPTURE != 0 {
+        // We hold a read-only mapping of the screen and of the window list. That mapping IS the
+        // screenshot capability and the enumeration capability; there is no verb for either, which is
+        // why this block calls nothing and asks nobody. After our own commit, so what we see includes
+        // our own window and is a complete screen rather than a half-composed one.
+        let shot = compose::surface_checksum(compose::SCREEN_W, compose::SCREEN_H, |i| {
+            // SAFETY: inside the read-only screen mapping the kernel gave this role.
+            unsafe { core::ptr::read_volatile((SCREEN_VA + (i * 4) as u64) as *const u32) }
+        });
+        let count = rd32(WLIST_VA + wlist::COUNT);
+        let focused = rd32(WLIST_VA + wlist::FOCUSED);
+        send(
+            REPORT,
+            status::WIN_CAPTURED,
+            shot,
+            focused as u64 | ((count as u64) << 32),
+        );
+    }
 
     if role & ROLE_SMALL_DAMAGE != 0 {
         // A second frame with a *small* damage rectangle, to prove a one-window redraw does not cost a

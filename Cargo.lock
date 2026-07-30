@@ -162,6 +162,7 @@ dependencies = [
  "abi",
  "asid",
  "caps",
+ "compose",
  "coremark",
  "crickerfs",
  "dma_validate",

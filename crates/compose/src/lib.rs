@@ -412,6 +412,11 @@ pub fn damage_to_screen(win: &Window, damage: Rect) -> Rect {
 /// damage. Opaque windows, so "blend" is a copy and the last writer wins, which is what makes the
 /// stacking order observable in the result.
 ///
+/// **An empty source is a window that is not on screen yet.** The compositor passes `&[]` for a client
+/// that has never committed, so the first paint (before any client has run) is the background alone
+/// rather than a screen full of somebody's uninitialised frames. It is also the honest answer to "what
+/// does a window with no content look like": nothing.
+///
 /// Every pixel *outside* `damage` is left exactly as it was. That is the whole point of a damage
 /// rectangle, and it is what the host tests and the kernel test both check by poisoning the rest of
 /// the screen and finding the poison intact afterwards.
@@ -435,6 +440,9 @@ pub fn composite(screen: &mut [u32], sources: &[&[u32]], n: usize, damage: Rect)
             continue;
         }
         let src = sources[i];
+        if src.is_empty() {
+            continue; // never committed: not on screen
+        }
         for y in vis.y..vis.bottom() {
             let sy = (y - win.origin_y) as u32 as usize;
             let drow = (y as u32 as usize) * SCREEN_W as usize;
@@ -966,6 +974,51 @@ mod tests {
             !SCENE[0].rect().intersect(&damage).is_empty(),
             "no window lies under the damaged one: the z-order half of this test is inert",
         );
+    }
+
+    /// **A window that has not committed is not on screen**, and the screen before any client has run
+    /// is exactly the background. This is the state the compositor's first paint produces, and the
+    /// state the kernel test checks the driver's own digest against, so it needs to be a defined
+    /// picture rather than whatever the surfaces happened to hold.
+    #[test]
+    fn an_uncommitted_window_is_not_drawn() {
+        let mut screen = vec![0u32; SCREEN_PIXELS];
+        let none: [&[u32]; 3] = [&[], &[], &[]];
+        composite(&mut screen, &none, SCENE.len(), Rect::screen());
+        for y in 0..SCREEN_H {
+            for x in 0..SCREEN_W {
+                assert_eq!(
+                    screen[(y * SCREEN_W + x) as usize],
+                    background_pixel(x, y),
+                    "({x},{y}) is not background before anyone committed",
+                );
+            }
+        }
+        assert_eq!(
+            gfx_proto::checksum(|i| screen[i]),
+            expected_screen_checksum(0),
+            "the empty screen must be the n=0 expected picture",
+        );
+
+        // And one committed window among uncommitted ones draws only itself.
+        let surfaces = painted_scene();
+        let one: [&[u32]; 3] = [&[], surfaces[1].as_slice(), &[]];
+        composite(&mut screen, &one, SCENE.len(), Rect::screen());
+        for y in 0..SCREEN_H {
+            for x in 0..SCREEN_W {
+                let inside = SCENE[1].rect().contains(x as i32, y as i32);
+                let want = if inside {
+                    window_pixel(
+                        1,
+                        (x as i32 - SCENE[1].origin_x) as u32,
+                        (y as i32 - SCENE[1].origin_y) as u32,
+                    )
+                } else {
+                    background_pixel(x, y)
+                };
+                assert_eq!(screen[(y * SCREEN_W + x) as usize], want, "at ({x},{y})");
+            }
+        }
     }
 
     /// A caller cannot make `composite` write outside the framebuffer, however absurd the rectangle.

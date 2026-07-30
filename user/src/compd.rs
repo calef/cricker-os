@@ -196,7 +196,13 @@ fn drain_input(focusable: usize, focus: &mut u32) {
 /// The caller is blocked in `CALL` throughout, which is what makes reading a client's pixels safe
 /// without a lock: the client that rang cannot be writing while we read. A client that rang *for*
 /// another client's damage gains nothing, since it is still only its own control page it can write.
-fn serve_frame(n: usize, focusable: usize, focus: &mut u32, last_seq: &mut [u32]) {
+fn serve_frame(
+    n: usize,
+    focusable: usize,
+    focus: &mut u32,
+    last_seq: &mut [u32],
+    committed: &mut [bool],
+) {
     drain_input(focusable, focus);
 
     let mut damage = compose::EMPTY;
@@ -207,6 +213,7 @@ fn serve_frame(n: usize, focusable: usize, focus: &mut u32, last_seq: &mut [u32]
             continue; // an idle client costs nothing
         }
         last_seq[i] = seq;
+        committed[i] = true;
 
         // The client's rectangle is **untrusted input**. Clip it to the surface it owns; say so in its
         // own control page if it was out of bounds (per-client feedback through the only channel that
@@ -233,14 +240,18 @@ fn serve_frame(n: usize, focusable: usize, focus: &mut u32, last_seq: &mut [u32]
     if damage.is_empty() {
         return;
     }
-    paint(n, damage);
+    paint(n, damage, committed);
 }
 
-/// Composite `damage` and put it on the screen.
-fn paint(n: usize, damage: Rect) {
+/// Composite `damage` and put it on the screen. A client that has never committed contributes an
+/// **empty** source, so it is not drawn: before anyone has painted, the screen is the background, not
+/// whatever the surfaces happened to hold.
+fn paint(n: usize, damage: Rect, committed: &[bool]) {
     let mut srcs: [&[u32]; compose::MAX_WINDOWS] = [&[]; compose::MAX_WINDOWS];
     for (i, s) in srcs.iter_mut().enumerate().take(n) {
-        *s = source(i);
+        if committed[i] {
+            *s = source(i);
+        }
     }
     compose::composite(screen(), &srcs[..n], n, damage);
     flush(damage);
@@ -255,14 +266,17 @@ pub extern "C" fn _start(windows: u64, focusable: u64, _arg2: u64) -> ! {
     }
     let mut focus: u32 = 0;
     let mut last_seq = [0u32; compose::MAX_WINDOWS];
+    let mut committed = [false; compose::MAX_WINDOWS];
 
     publish(n, focus);
 
     // **Paint the background once, over the whole screen.** Every frame after this is damage-only, so
     // without this pass the parts of the screen no window ever damages would keep whatever the frames
     // held at boot. A real compositor does the same thing for the same reason, and it is also the one
-    // full-screen flush in the program's life.
-    paint(n, Rect::screen());
+    // full-screen flush in the program's life. Nobody has committed, so no window is drawn: the screen
+    // a spawner sees before its clients run is exactly the background, which is a picture a test can
+    // predict rather than "whatever was in those frames".
+    paint(n, Rect::screen(), &committed);
 
     send(REPORT, compose::status::COMP_UP, n as u64, focus as u64);
 
@@ -275,7 +289,7 @@ pub extern "C" fn _start(windows: u64, focusable: u64, _arg2: u64) -> ! {
         let r0: i64 = match compose::proto::op(w0) {
             compose::proto::HELLO => 0,
             compose::proto::COMMIT => {
-                serve_frame(n, focusable, &mut focus, &mut last_seq);
+                serve_frame(n, focusable, &mut focus, &mut last_seq, &mut committed);
                 0
             }
             _ => compose::proto::EBADOP,

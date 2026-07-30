@@ -12,6 +12,9 @@ aarch64-cpu = "11"
 abi = { version = "0.1.0", path = "../crates/abi" }
 asid = { version = "0.1.0", path = "../crates/asid" }
 caps = { version = "0.1.0", path = "../crates/caps" }
+# The compositor contract (milestone 33): the kernel wires the scene and its tests predict the
+# composed screen from the same definition the compositor and its clients paint from.
+compose = { version = "0.1.0", path = "../crates/compose" }
 coremark = { version = "0.1.0", path = "../crates/coremark" }
 crickerfs = { version = "0.1.0", path = "../crates/crickerfs" }
 dma_validate = { version = "0.1.0", path = "../crates/dma_validate" }
