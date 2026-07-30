@@ -88,7 +88,13 @@ in the code or the conversation doesn't make sense, it belongs here.
   a *relative* countdown silently lost 30% of our ticks.
 - [Exceptions](exceptions.md) — faults, interrupts, and syscalls are **the same mechanism**
   on aarch64, which is why we build the plumbing once. The vector table's shape is dictated
-  by silicon. Also: why `brk` needs `elr += 4` and `svc` doesn't.
+  by silicon. Also: why `brk` needs `elr += 4` and `svc` doesn't, and the exception-return race
+  that put user code at EL1 for two instructions' worth of bad luck.
+- [Auditing the hand-written arch assembly](arch-audit.md) — the sweep prompted by that race, for
+  every sibling of its bug class on both ISAs: state staged in single-copy hardware registers across
+  more than one instruction. Three findings, the candidates cleared and why, and the meta-point that
+  the Kani proofs stop at the pure-logic crates, so assembly is the **least-verified code in the
+  TCB** and this is how we pay for that.
 
 - [Threads, the context switch, and preemption](threads.md) — a thread is a stack plus a set
   of register values, and here that's literal: 8 bytes. The context switch is fifteen
