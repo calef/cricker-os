@@ -1879,19 +1879,62 @@ capability and read back byte for byte, plus a host-tool consistency check after
 core is host-tested for read AND write (`fs-server` lib), so the filesystem logic is proven both ways
 independently of any device.
 
-**Amendment (2026-07-29, corrected three times in one day; this paragraph is the settled account).
-There is no allocator loop. The defect was order-coupling in the gate, and a second mount of a
-used image fails its write for an unrelated reason.** The history is left in place below because
-the way this fact wobbled is itself the lesson, but read this first, because the two paragraphs
-after it are superseded.
+**Amendment (2026-07-29, corrected four times in one day; THIS paragraph is the settled account, and
+it is the one that explains the other three). There was never a filesystem bug. The write always
+succeeded.** Everything below this paragraph is superseded and kept only because how this fact
+wobbled is worth more than the fact.
+
+The cause is **the missing `TRUNCATE` verb meeting a whole-file comparison.** A write shorter than
+the file does not truncate it. One boot's FS client left a **64-byte** payload in `scratch`; the next
+boot's `std::fs` test wrote its **61-byte** pattern, asserted the whole file equalled it, got 64
+bytes back (61 new plus the old three-byte tail), and panicked *inside its write block*. That panic,
+read as "the server refused the write," is the entire bug. No allocator loop, no heap exhaustion, no
+accumulated mount state, no device-only defect, and no error reply, which is why nobody ever found
+the errno: **there was none to find.**
+
+That also explains why three investigations produced three incompatible answers while every one of
+them reported honestly. The symptom depended on what the *previous boot's* client happened to leave
+behind, and that changed as the client changed, so each round measured a genuinely different thing.
+Two lessons worth carrying off, because neither is about filesystems:
+
+- **An order-coupled gate manufactures facts.** `mkredoxfs` ran once for both ISA legs and the
+  aarch64 leg mutates the image, so whichever leg ran second failed and neither was reproducible
+  alone. Each leg now regenerates its own fixture, and `CRICKER_KEEP_REDOXFS=1` makes the cross-boot
+  case *deliberate* rather than an accident of ordering.
+- **A test that asserts on whole-file equality asserts on history it did not write.** The fix is at
+  that layer, not in the engine: the client restores the fixture as its last write, all its payloads
+  are one length, and the post-run host check compares content **and length**, so a future client
+  leaving a longer file fails the gate instead of corrupting a later boot's assertion. Pinned by a
+  millisecond host test carrying the real 64/61/3 byte counts, so if it ever fails, the contract grew
+  a verb and that was a decision.
+
+Two hypotheses died by measurement, and both are recorded as dead rather than left looking plausible.
+Heap exhaustion and accumulated mount state: the real engine under the FS server's own allocator,
+capped identically, image in a `static` so it stays off the heap exactly as a real disk does, runs 30
+mount-and-write cycles with the high-water **flat at 352 KiB**, four percent of the 8 MiB budget, the
+cap never once refusing a growth. Raising `FS_BUDGET_PAGES` would have fixed nothing, and a number
+chosen to make a test pass would have been a coincidence rather than an argument.
+
+The errno plumbing built to chase this stays, because the reason it was unreadable was real: the
+client routed every failed reply through a panicking `check`, so a trapped client told the waiting
+test only that something went wrong while the server's reason died with the process. A negative reply
+is now sent, carrying the **raw reply word alongside** the decoded errno rather than instead of it,
+because the wire's negated errnos overlap the kernel's own `invoke` errors at −1..−8 (the
+notes/std.md wart) and a small value is otherwise ambiguous between "the server returned this errno"
+and "the IPC itself failed."
+
+*Superseded (2026-07-29), kept for the record.* The previous settled account said there was no
+allocator loop but that a second mount of a used image failed its write for an unrelated reason. The
+first half was right. The second half named a real symptom and mislocated it: the mount was fine and
+the *assertion* was wrong.
 
 Measured on a clean build: the FS client writes the same block **three times in one run** and passes
 on both ISAs, and the image afterwards carries the third payload, so the repeat write reached the
 disk. A `VERIFY_WRITES` switch that reads every written block back through `IpcDisk` and compares
 never fired, so the blk IPC transport is faithful (nothing lost, nothing misdirected, no stale read).
-And the observed failure was never a spin: the FS server replies with an **error**, and the std
-program's own `expect` panics, which is what truncated the transcript that got read as a hang. The
-"400% CPU looping in `Transaction::sync_allocator`" reading does not survive a correct build.
+And the observed failure was never a spin: the std program's own `expect` panics, which is what
+truncated the transcript that got read as a hang. The "400% CPU looping in
+`Transaction::sync_allocator`" reading does not survive a correct build.
 
 What was actually broken: `mkredoxfs` ran **once for both ISA legs**, and the aarch64 leg writes the
 image, so the riscv leg mounted an image a previous *boot* had mutated. Whichever leg ran second
@@ -1939,6 +1982,14 @@ and adding them is a change to `fs_proto`, the FS server, and this section, so i
 take deliberately rather than a hole to plug. Reported up, with the reply-space overlap noted in
 notes/std.md (the wire's negated errnos collide with the kernel's invoke errors, -1..-8). See
 notes/fs-server.md.
+
+**The missing `TRUNCATE` is no longer only a missing feature; it is a sharp edge that cost a day.**
+The four-times-corrected amendment above traces to exactly this gap: a short write leaves the old
+tail, so a caller that reasonably expects `write` to replace a file's contents gets a longer file than
+it wrote. `std::fs::write` reporting `Unsupported` is honest, but the *partial* capability underneath
+it is the trap, because a write that half-works reads as a write that failed. Adding `TRUNCATE` would
+remove the edge rather than merely add a verb, which is the strongest argument yet for taking the
+decision, and it belongs with `CREATE` in milestone 31 phase 2.
 
 ## 28. SMP placement: two random choices at spawn, message-shaped stealing, local wakes
 
