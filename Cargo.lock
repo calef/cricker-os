@@ -38,6 +38,9 @@ version = "0.1.0"
 [[package]]
 name = "capsh"
 version = "0.1.0"
+dependencies = [
+ "fs_proto",
+]
 
 [[package]]
 name = "cfg-if"

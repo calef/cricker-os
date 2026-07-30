@@ -585,7 +585,11 @@ mod tests {
             "creating over an existing name must refuse, and must not truncate it either",
         );
         let h2 = srv.open_file("already").unwrap();
-        assert_eq!(srv.fstat(h2).unwrap(), 4, "the refused create left the file alone");
+        assert_eq!(
+            srv.fstat(h2).unwrap(),
+            4,
+            "the refused create left the file alone"
+        );
 
         // And the refusal did not half-create anything: the name still resolves to the old file.
         let mut buf = [0u8; 8];
@@ -622,7 +626,11 @@ mod tests {
         let mut buf = [0xffu8; 16];
         assert_eq!(srv.read(h, 0, &mut buf).unwrap(), 8);
         assert_eq!(&buf[..3], b"abc", "the original bytes survive a grow");
-        assert_eq!(&buf[3..8], &[0, 0, 0, 0, 0], "and the extension reads as zeroes");
+        assert_eq!(
+            &buf[3..8],
+            &[0, 0, 0, 0, 0],
+            "and the extension reads as zeroes"
+        );
 
         // Truncating to the current size changes nothing, which matters because std::fs::write
         // opens-creates-truncates unconditionally and would otherwise churn the tree every call.
@@ -630,7 +638,11 @@ mod tests {
         assert_eq!(srv.fstat(h).unwrap(), 8);
 
         srv.truncate(h, 0).unwrap();
-        assert_eq!(srv.fstat(h).unwrap(), 0, "and shrinking to empty is allowed");
+        assert_eq!(
+            srv.fstat(h).unwrap(),
+            0,
+            "and shrinking to empty is allowed"
+        );
         assert_eq!(srv.read(h, 0, &mut buf).unwrap(), 0);
     }
 
@@ -653,11 +665,17 @@ mod tests {
         }
 
         let mut srv = Server::open(disk).expect("reopen");
-        let h = srv.open_file("made").expect("the created name survived the reopen");
+        let h = srv
+            .open_file("made")
+            .expect("the created name survived the reopen");
         assert_eq!(srv.fstat(h).unwrap(), payload.len() as u64);
         let mut buf = [0u8; 512];
         let n = srv.read(h, 0, &mut buf).unwrap();
-        assert_eq!(&buf[..n], payload, "the truncated contents are what persisted");
+        assert_eq!(
+            &buf[..n],
+            payload,
+            "the truncated contents are what persisted"
+        );
     }
 
     #[test]
@@ -723,7 +741,11 @@ mod tests {
         // Call two: the name exists, so open, truncate away 51 bytes, then write 25.
         let h = srv.open_file("made-by-std").unwrap();
         srv.truncate(h, 0).unwrap();
-        assert_eq!(srv.fstat(h).unwrap(), 0, "truncate to 0 must empty the file");
+        assert_eq!(
+            srv.fstat(h).unwrap(),
+            0,
+            "truncate to 0 must empty the file"
+        );
         assert_eq!(srv.write(h, 0, short).unwrap(), short.len());
         assert_eq!(srv.fstat(h).unwrap(), short.len() as u64);
         srv.close(h).unwrap();
@@ -744,8 +766,16 @@ mod tests {
             got.extend_from_slice(&buf[..n]);
             off += n as u64;
         }
-        assert_eq!(got.len(), size, "the read loop did not reach EOF in 16 reads");
-        assert_eq!(&got[..], short, "the shorter write did not replace the contents");
+        assert_eq!(
+            got.len(),
+            size,
+            "the read loop did not reach EOF in 16 reads"
+        );
+        assert_eq!(
+            &got[..],
+            short,
+            "the shorter write did not replace the contents"
+        );
         assert_eq!(
             srv.read(h, off, &mut buf).unwrap(),
             0,
@@ -765,8 +795,14 @@ mod tests {
     fn create_into_a_populated_root_and_look_it_up() {
         // The same names and contents the shipped image carries, so the root's shape matches.
         let mut srv = server_with(&[
-            ("motd", b"redoxfs served this file to an EL0 client through a capability handle\n"),
-            ("scratch", b"(placeholder overwritten by the fs-server write test)"),
+            (
+                "motd",
+                b"redoxfs served this file to an EL0 client through a capability handle\n",
+            ),
+            (
+                "scratch",
+                b"(placeholder overwritten by the fs-server write test)",
+            ),
         ]);
 
         let h = srv.create_file("made-by-std").unwrap();
@@ -776,7 +812,9 @@ mod tests {
         // The lookups that spin on device: the new name, and crucially the pre-existing ones, since a
         // corrupted directory would take every scan down with it, not just the new entry's.
         for name in ["made-by-std", "motd", "scratch"] {
-            let h = srv.open_file(name).unwrap_or_else(|e| panic!("{name} no longer resolves: {e:?}"));
+            let h = srv
+                .open_file(name)
+                .unwrap_or_else(|e| panic!("{name} no longer resolves: {e:?}"));
             srv.close(h).unwrap();
         }
         assert!(
@@ -802,8 +840,14 @@ mod tests {
         // The root the shipped image has when std::fs::write adds a third name to it.
         fs.tx(|tx| {
             for (name, body) in [
-                ("motd", &b"redoxfs served this file to an EL0 client through a capability handle\n"[..]),
-                ("scratch", &b"(placeholder overwritten by the fs-server write test)"[..]),
+                (
+                    "motd",
+                    &b"redoxfs served this file to an EL0 client through a capability handle\n"[..],
+                ),
+                (
+                    "scratch",
+                    &b"(placeholder overwritten by the fs-server write test)"[..],
+                ),
             ] {
                 let ptr = tx
                     .create_node(TreePtr::root(), name, Node::MODE_FILE | 0o644, 0, 0)?
@@ -818,13 +862,17 @@ mod tests {
         let mut srv = Server::open(BlockDisk(VecIo(image))).expect("Server::open");
 
         // What std::fs::write does: create, truncate, write; then again, shorter.
-        let h = srv.create_file("made-by-std").expect("create through chunking");
+        let h = srv
+            .create_file("made-by-std")
+            .expect("create through chunking");
         srv.truncate(h, 0).unwrap();
         let long = b"the first write, deliberately the longer of the two";
         assert_eq!(srv.write(h, 0, long).unwrap(), long.len());
         srv.close(h).unwrap();
 
-        let h = srv.open_file("made-by-std").expect("reopen through chunking");
+        let h = srv
+            .open_file("made-by-std")
+            .expect("reopen through chunking");
         srv.truncate(h, 0).unwrap();
         let short = b"the second write, shorter";
         assert_eq!(srv.write(h, 0, short).unwrap(), short.len());
@@ -833,15 +881,19 @@ mod tests {
         // The lookups that spin on device, including the pre-existing names: a directory damaged by
         // the create would take every scan down with it, not only the new entry's.
         for name in ["made-by-std", "motd", "scratch"] {
-            let h = srv
-                .open_file(name)
-                .unwrap_or_else(|e| panic!("{name} no longer resolves after a chunked create: {e:?}"));
+            let h = srv.open_file(name).unwrap_or_else(|e| {
+                panic!("{name} no longer resolves after a chunked create: {e:?}")
+            });
             srv.close(h).unwrap();
         }
 
         let h = srv.open_file("made-by-std").unwrap();
         let mut buf = [0u8; 256];
         let n = srv.read(h, 0, &mut buf).unwrap();
-        assert_eq!(&buf[..n], short, "the chunked create/truncate/write round trip lost bytes");
+        assert_eq!(
+            &buf[..n],
+            short,
+            "the chunked create/truncate/write round trip lost bytes"
+        );
     }
 }

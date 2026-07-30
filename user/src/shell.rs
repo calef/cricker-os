@@ -11,11 +11,13 @@
 //!
 //! What the shell can grant, it grants from what it *holds*. The headline is `run --mem N prog`,
 //! which endows a program N pages of untyped **split from the shell's own budget** (slot 3) and
-//! delegated to it. The shell holds no filesystem capability yet, so `run prog file:PATH` is refused
-//! "you hold no such capability"; that syntax starts working when milestone 32's FS server lands,
-//! with no change to the grammar. `caps` prints the shell's whole endowment, and `caps run ...`
-//! previews exactly what a command would grant, making DECISIONS §14's "reading one literal tells
-//! you a process's whole authority" interactively true.
+//! delegated to it. `run prog file:NAME` is the second, and it is refused here with "you hold no
+//! such capability", which is a statement about this shell's cspace rather than a placeholder: the
+//! boot that starts it wires no FS service, so there is no directory to narrow. The mechanism a
+//! grant would use exists and is proven on both ISAs (`user/src/fwarden.rs`); see [`holdings`] and
+//! notes/grant-expression.md for exactly what is left. `caps` prints the shell's whole endowment,
+//! and `caps run ...` previews exactly what a command would grant, making DECISIONS §14's "reading
+//! one literal tells you a process's whole authority" interactively true.
 //!
 //! # The shell's world
 //!
@@ -49,6 +51,23 @@ const BUDGET: u64 = 3; // our own untyped; SPLIT a grant off it for `--mem`
 /// The budget init granted us at boot (must match sysinit / hello init_boot's SH_BUDGET_PAGES).
 /// We cannot query how much remains (there is no such syscall), so `caps` prints the initial grant.
 const SH_BUDGET_PAGES: u64 = 128;
+
+/// **What this shell holds, which is what decides whether a `file:` designator can be backed.**
+///
+/// A per-file grant is a directory capability narrowed to one name (milestone 31 phase 2,
+/// `user/src/fwarden.rs`). Narrowing needs a directory to narrow, and this shell's endowment stops
+/// at slot 3: init grants it a terminal, a spawn channel, a result channel and a budget, and nothing
+/// that names a filesystem, because the boot that starts this shell wires no FS service. So the
+/// answer here is `false`, and `run prog file:x` gets the milestone's headline refusal, which is
+/// **true** rather than a placeholder: this shell really does hold no such capability.
+///
+/// It is a function rather than a constant so that the day the boot path wires an FS service and
+/// grants a directory at a slot, the one place that changes is here. The planning, the manifest
+/// vocabulary, and the `caps` preview are already written against it; see notes/grant-expression.md
+/// for what is left.
+fn holdings() -> capsh::Holdings {
+    capsh::Holdings { dir: false }
+}
 
 /// Print through the terminal: write the text into the shared page, CALL OP_WRITE. The reply
 /// means the bytes are on the wire and the page is ours again.
@@ -143,13 +162,14 @@ fn help() {
     print(b"  caps run ...            preview what a run command would grant\n");
     print(b"  run worker <n>          spawn a process that returns n*n\n");
     print(b"  run --mem N budgeter    grant a process N pages from this shell's budget\n");
+    print(b"  run <prog> file:<name>  grant a process one file, and only that file\n");
     print(b"\n  naming a resource grants it; a program that names nothing can touch nothing.\n");
 }
 
 /// Resolve a `run`, then either refuse it at the prompt (a mismatch the manifest caught) or spawn
 /// it, granting exactly what the command named and nothing else.
 fn run(spec: RunSpec) {
-    match capsh::plan(&spec) {
+    match capsh::plan(&spec, holdings()) {
         Err(refusal) => refuse(spec, refusal),
         // A supervised job runs under the two-tier ^C path (milestone 24); a fast job is simply
         // spawned and waited on.
@@ -182,6 +202,17 @@ fn refuse(spec: RunSpec, refusal: Refusal) {
 /// Grant and spawn. The one moment authority moves: split any memory grant off our own budget,
 /// direct init to load the program, delegate the grant, and read the one answer that comes back.
 fn spawn(e: Endowment) {
+    // A grant this path cannot deliver must stop here, loudly. `plan` already refuses a `file:` when
+    // `holdings().dir` is false, so today this is unreachable; it exists because the day that flips,
+    // the thing that must NOT happen is a child spawned without the file the command named while the
+    // prompt says nothing. Authority the user thought they granted must never quietly evaporate,
+    // which is the same rule that makes an unexpected token a refusal instead of a shrug.
+    if e.file.is_some() {
+        print(
+            b"  a file grant needs init to build the warden; this shell cannot deliver one yet\n",
+        );
+        return;
+    }
     // A memory grant is carved from the shell's own untyped. If our budget is spent, say so plainly
     // rather than sending init a promise we cannot keep.
     let mem_slot = if e.mem_pages > 0 {
@@ -261,9 +292,12 @@ fn caps(tail: &[u8]) {
         print(b"    cap 3  untyped   ");
         print_num(SH_BUDGET_PAGES);
         print(b" pages  the memory it grants with --mem (initial)\n");
-        print(
-            b"  it can name no files, no devices, no other process. authority is what it holds.\n",
-        );
+        if holdings().dir {
+            print(b"    cap 4  endpoint  directory  the files it can narrow into file: grants\n");
+        } else {
+            print(b"    (no directory capability: file:<name> has nothing to narrow)\n");
+        }
+        print(b"  it can name no devices and no other process. authority is what it holds.\n");
         return;
     }
     // Only `run` commands carry a grant to preview.
@@ -271,7 +305,7 @@ fn caps(tail: &[u8]) {
         print(b"  caps previews a 'run' command's grant; try: caps run --mem 16 budgeter\n");
         return;
     };
-    match capsh::plan(&spec) {
+    match capsh::plan(&spec, holdings()) {
         Err(refusal) => refuse(spec, refusal),
         Ok(e) => preview(e),
     }
@@ -287,6 +321,19 @@ fn preview(e: Endowment) {
         print(b"    cap 1  untyped   ");
         print_num(e.mem_pages);
         print(b" pages  split from this shell's budget\n");
+    }
+    // A file endowment reads as one line naming the file and the direction, because that IS the
+    // whole authority: an endpoint served by a file warden that will answer for this name and no
+    // other. The direction comes from the program's manifest, not from anything typed, which is why
+    // it is worth printing: the line you typed plus this table is the child's complete authority.
+    if let Some(g) = e.file {
+        print(b"    cap 2  endpoint  file     ");
+        print(g.name);
+        print(if g.writable {
+            b"  (read+write, and nothing else on the disk)\n".as_slice()
+        } else {
+            b"  (read-only, and nothing else on the disk)\n".as_slice()
+        });
     }
     print(b"    arg    ");
     if matches!(e.prog, Prog::Worker) {
