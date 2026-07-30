@@ -14,6 +14,7 @@ members = [
     "crates/elf",
     "crates/frames",
     "crates/fs_proto",
+    "crates/gfx_proto",
     "crates/ipc",
     "crates/paging",
     "crates/pci",

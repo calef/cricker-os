@@ -596,6 +596,207 @@ fn write_measure_manifest(arch: &str, image: &[u8]) -> bool {
     true
 }
 
+// ===========================================================================================
+// The scanout check (milestone 29): prove the pixels reached the DEVICE, not only our buffer.
+//
+// The in-guest test proves the framebuffer byte for byte, and cannot do better: the suite runs
+// `-display none` and nothing inside the guest can read QEMU's host-side surface back, so a wrong
+// pixel format or scanout rectangle would pass it and show garbage on a real screen.
+//
+// QEMU's monitor closes that gap, and it works headlessly: `screendump FILE` writes a PPM of the
+// scanout even with no display backend. So the runners take a monitor socket (CRICKER_GPU_MON), and
+// this drives it **while the ordinary test run is happening**, rather than paying for a second boot:
+// the suite is minutes long per ISA and the pattern stays on the scanout from the display test until
+// QEMU exits, so there is no need to synchronize with the guest at all. Poll, dump, compare; the
+// first match ends the polling.
+//
+// Fail-safe by construction. If the pattern never reaches the scanout, or the display test stops
+// running, or the confinement test's device reset moves after it and wipes the surface, no dump
+// matches and this reports it. Nothing here can make a broken scanout look fine.
+// ===========================================================================================
+
+/// The unix socket the QEMU monitor listens on for `arch`. **In /tmp on purpose**: a unix socket path
+/// must fit in 104 bytes, and a worktree checkout plus `target/` gets close enough to that limit to
+/// break on someone else's machine. The PPM it dumps goes under `target/`, where path length is free.
+fn gpu_mon_socket(arch: &str) -> String {
+    format!("/tmp/cricker-gpu-{arch}-{}.sock", std::process::id())
+}
+
+fn gpu_shot_path(arch: &str) -> PathBuf {
+    workspace_root().join(format!("target/gpu-scanout-{arch}.ppm"))
+}
+
+/// Does this PPM hold the pattern the guest painted?
+///
+/// Compares against `gfx_proto::pixel`, the same definition the client painted from and the kernel
+/// test digested against, so the host cannot disagree with the guest about what the pattern is. The
+/// geometry must match too: a scanout of the wrong size is a `SET_SCANOUT` bug, not a near miss.
+///
+/// Returns `Err(reason)` rather than a bool so a mismatch says which pixel and what it should have
+/// been, since "the screen is wrong" is otherwise the least actionable failure in graphics.
+fn scanout_holds_the_pattern(ppm: &[u8]) -> Result<(), String> {
+    // P6 header: "P6\n<w> <h>\n<maxval>\n", then w*h*3 bytes, RGB per pixel.
+    let text = String::from_utf8_lossy(&ppm[..ppm.len().min(64)]).to_string();
+    let mut fields = text.split_ascii_whitespace();
+    if fields.next() != Some("P6") {
+        return Err("not a P6 PPM".into());
+    }
+    let w: u32 = fields
+        .next()
+        .and_then(|f| f.parse().ok())
+        .ok_or("no width")?;
+    let h: u32 = fields
+        .next()
+        .and_then(|f| f.parse().ok())
+        .ok_or("no height")?;
+    let maxval = fields.next().ok_or("no maxval")?;
+    if maxval != "255" {
+        return Err(format!("maxval {maxval}, expected 255"));
+    }
+    if (w, h) != (gfx_proto::WIDTH, gfx_proto::HEIGHT) {
+        return Err(format!(
+            "scanout is {w}x{h}, the surface is {}x{}",
+            gfx_proto::WIDTH,
+            gfx_proto::HEIGHT
+        ));
+    }
+    // The pixel data starts after the fourth whitespace-terminated field. Find it by walking the
+    // header rather than assuming a byte offset, because QEMU is free to format the header its way.
+    let mut seen = 0;
+    let mut i = 0;
+    while i < ppm.len() && seen < 4 {
+        if ppm[i].is_ascii_whitespace() {
+            seen += 1;
+            while seen < 4 && i + 1 < ppm.len() && ppm[i + 1].is_ascii_whitespace() {
+                i += 1;
+            }
+        }
+        i += 1;
+    }
+    let pixels = &ppm[i..];
+    let want_len = (w * h * 3) as usize;
+    if pixels.len() < want_len {
+        // A dump caught mid-write. Not a failure, just not usable yet.
+        return Err(format!(
+            "short by {} bytes (QEMU may still be writing)",
+            want_len - pixels.len()
+        ));
+    }
+    for y in 0..h {
+        for x in 0..w {
+            let o = ((y * w + x) * 3) as usize;
+            let want = gfx_proto::pixel(x, y);
+            let (r, g, b) = (
+                ((want >> 16) & 0xff) as u8,
+                ((want >> 8) & 0xff) as u8,
+                (want & 0xff) as u8,
+            );
+            if (pixels[o], pixels[o + 1], pixels[o + 2]) != (r, g, b) {
+                return Err(format!(
+                    "pixel ({x},{y}) is rgb({},{},{}), the pattern says rgb({r},{g},{b})",
+                    pixels[o],
+                    pixels[o + 1],
+                    pixels[o + 2],
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Ask the QEMU monitor on `sock` for a screendump into `out`. Returns false while the socket is not
+/// there yet (QEMU still starting, or already gone), which the caller treats as "try again".
+fn screendump(sock: &str, out: &Path) -> bool {
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+
+    let Ok(mut s) = UnixStream::connect(sock) else {
+        return false;
+    };
+    // The monitor greets us, then takes one command per line. We never read the reply: the evidence is
+    // the file, and a reply we misparsed would only be a second way to be wrong.
+    let _ = s.write_all(format!("screendump {}\n", out.display()).as_bytes());
+    let _ = s.flush();
+    // Give QEMU a moment to write the file before the caller reads it. The size check in
+    // `scanout_holds_the_pattern` catches a partial write anyway, so this only reduces retries.
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    true
+}
+
+/// **Run the kernel test suite for `arch` and prove the scanout while it runs.** `test_args` is the
+/// cargo invocation the caller would otherwise have handed to [`run`].
+///
+/// The child inherits stdio, so the suite's output streams exactly as before; this only adds a poll
+/// loop beside it. Returns false if the suite failed OR if the scanout never showed the pattern.
+fn cargo_test_with_scanout_check(arch: &str, test_args: &[&str]) -> bool {
+    let sock = gpu_mon_socket(arch);
+    let shot = gpu_shot_path(arch);
+    let _ = std::fs::remove_file(&sock);
+    let _ = std::fs::remove_file(&shot);
+
+    unsafe { std::env::set_var("CRICKER_GPU_MON", &sock) };
+    let mut child = match Command::new("cargo").args(test_args).spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("failed to run cargo: {e}");
+            return false;
+        }
+    };
+
+    let mut matched: Option<String> = None;
+    let mut last_reason = String::from("no screendump was ever taken (did QEMU get a monitor?)");
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    return false;
+                }
+                break;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                eprintln!("waiting for the test child failed: {e}");
+                return false;
+            }
+        }
+        if matched.is_none()
+            && screendump(&sock, &shot)
+            && let Ok(bytes) = std::fs::read(&shot)
+        {
+            match scanout_holds_the_pattern(&bytes) {
+                Ok(()) => matched = Some(format!("{}", shot.display())),
+                Err(reason) => last_reason = reason,
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let _ = std::fs::remove_file(&sock);
+
+    match matched {
+        Some(path) => {
+            eprintln!(
+                "scanout check ({arch}): the {}x{} pattern reached the DEVICE's scanout, verified \
+                 pixel for pixel against gfx_proto::pixel ({path})",
+                gfx_proto::WIDTH,
+                gfx_proto::HEIGHT,
+            );
+            true
+        }
+        None => {
+            eprintln!();
+            eprintln!(
+                "scanout check ({arch}) FAILED: the display test passed, so the framebuffer holds \
+                 the pattern, but QEMU's scanout never did. Last mismatch: {last_reason}"
+            );
+            eprintln!(
+                "  This is the check that catches a wrong pixel format or scanout rectangle, which \
+                 the in-guest test cannot see. See notes/framebuffer-contract.md."
+            );
+            false
+        }
+    }
+}
+
 /// Where the packed initrd archive is written.
 fn initrd_path() -> String {
     workspace_root()
@@ -673,6 +874,10 @@ fn initrd_riscv() -> bool {
             "subsup",
             "--bin",
             "flaky",
+            "--bin",
+            "gpud",
+            "--bin",
+            "painter",
             "--target",
             RISCV_TARGET,
         ],
@@ -714,6 +919,10 @@ fn initrd_riscv() -> bool {
         ("spawner", "spawner"),
         ("subsup", "subsup"),
         ("flaky", "flaky"),
+        // The display pair (milestone 29): the confined virtio-gpu driver and the client that draws
+        // into the surface it serves. Portable, so both archives carry both.
+        ("gpud", "gpud"),
+        ("painter", "painter"),
     ];
     let mut blobs: Vec<(&str, Vec<u8>)> = Vec::new();
     for &(archive_name, bin_name) in entries {
@@ -872,8 +1081,10 @@ fn mkinitrd() -> bool {
     // in the one archive.
     // The authority-shrinking supervision tree (milestone 22 phase B.2), read as a group: four small
     // portable programs that share one module, packed under their own names for both ISAs.
+    // The display pair (milestone 29) reads as a group for the same reason: the confined virtio-gpu
+    // driver and the client that draws into the surface it serves, both portable.
     let mut tree: Vec<(&str, Vec<u8>)> = Vec::new();
-    for name in ["rootsup", "spawner", "subsup", "flaky"] {
+    for name in ["rootsup", "spawner", "subsup", "flaky", "gpud", "painter"] {
         match std::fs::read(bin_elf(name)) {
             Ok(bytes) => tree.push((name, bytes)),
             Err(e) => {
@@ -1195,6 +1406,10 @@ fn test() -> bool {
         "-p",
         "frames",
         "-p",
+        "gfx_proto",
+        "-p",
+        "xtask",
+        "-p",
         "paging",
         "-p",
         "pci",
@@ -1280,7 +1495,18 @@ fn test() -> bool {
     if !user() || !mkdisk() || !mkredoxfs() {
         return false;
     }
-    if !cargo(&["test", "-p", "kernel", "--target", TARGET]) {
+    // Attach a virtio-gpu for the display test (milestone 29). Set here, in `test`, rather than in
+    // `cargo()`: the benchmark boot uses the same runner and adding a device to it would change what
+    // the icount instrument measures, so the GPU is a test-leg device only. Both ISA legs get it,
+    // because parity is the gate (§19), and the display test ASSERTS the device is present rather
+    // than skipping, so a leg that lost this line fails loudly.
+    unsafe { std::env::set_var("CRICKER_GPU", "1") };
+    // `cargo()` only exports the env the runner needs; the test itself runs under the scanout check,
+    // which drives QEMU's monitor beside the suite and proves the pixels reached the device's scanout
+    // rather than only the driver's frames.
+    if !cargo(&["build", "-p", "kernel", "--target", TARGET])
+        || !cargo_test_with_scanout_check("aarch64", &["test", "-p", "kernel", "--target", TARGET])
+    {
         return false;
     }
 
@@ -1305,7 +1531,10 @@ fn test() -> bool {
     unsafe { std::env::set_var("CRICKER_INITRD", riscv_initrd_path()) };
     unsafe { std::env::set_var("CRICKER_DISK", disk_path()) };
     unsafe { std::env::set_var("CRICKER_NET", "1") }; // a virtio-net NIC for the net test (m30)
-    if !run("cargo", &["test", "-p", "kernel", "--target", RISCV_TARGET]) {
+    if !cargo_test_with_scanout_check(
+        "riscv64",
+        &["test", "-p", "kernel", "--target", RISCV_TARGET],
+    ) {
         return false;
     }
 
@@ -1795,4 +2024,93 @@ fn run(program: &str, args: &[&str]) -> bool {
             eprintln!("failed to run {program}: {e}");
             false
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a P6 PPM of the surface's geometry from a per-pixel function, the way QEMU's
+    /// `screendump` writes one.
+    fn ppm(pixel: impl Fn(u32, u32) -> (u8, u8, u8)) -> Vec<u8> {
+        let (w, h) = (gfx_proto::WIDTH, gfx_proto::HEIGHT);
+        let mut v = format!("P6\n{w} {h}\n255\n").into_bytes();
+        for y in 0..h {
+            for x in 0..w {
+                let (r, g, b) = pixel(x, y);
+                v.extend_from_slice(&[r, g, b]);
+            }
+        }
+        v
+    }
+
+    fn pattern_rgb(x: u32, y: u32) -> (u8, u8, u8) {
+        let w = gfx_proto::pixel(x, y);
+        (
+            ((w >> 16) & 0xff) as u8,
+            ((w >> 8) & 0xff) as u8,
+            (w & 0xff) as u8,
+        )
+    }
+
+    /// **The scanout check accepts the pattern and rejects everything else.**
+    ///
+    /// This is the negative control for the milestone-29 scanout proof, and it matters: a checker that
+    /// accepted anything would report "the pixels reached the device" on every run, which is exactly
+    /// the kind of test that is worse than none. Each rejection below is a real failure mode of a
+    /// framebuffer driver: a scanout never set (the default console size), a resource that was never
+    /// transferred into (black), a channel order mixed up (the single most common framebuffer bug),
+    /// and one wrong pixel.
+    #[test]
+    fn the_scanout_check_accepts_the_pattern_and_rejects_near_misses() {
+        assert!(scanout_holds_the_pattern(&ppm(pattern_rgb)).is_ok());
+
+        assert!(
+            scanout_holds_the_pattern(&ppm(|_, _| (0, 0, 0))).is_err(),
+            "a black scanout was accepted",
+        );
+
+        // Red and blue swapped: what a wrong virtio-gpu format code produces, and precisely what the
+        // in-guest test cannot see (the guest's own bytes are unchanged).
+        assert!(
+            scanout_holds_the_pattern(&ppm(|x, y| {
+                let (r, g, b) = pattern_rgb(x, y);
+                (b, g, r)
+            }))
+            .is_err(),
+            "a red/blue-swapped scanout was accepted: the format check is not doing anything",
+        );
+
+        // Shifted one row: a stride bug.
+        assert!(
+            scanout_holds_the_pattern(&ppm(|x, y| pattern_rgb(x, (y + 1) % gfx_proto::HEIGHT)))
+                .is_err(),
+            "a scanout shifted by one row was accepted",
+        );
+
+        // Exactly one wrong pixel, in the middle.
+        assert!(
+            scanout_holds_the_pattern(&ppm(|x, y| {
+                if (x, y) == (64, 32) {
+                    (1, 2, 3)
+                } else {
+                    pattern_rgb(x, y)
+                }
+            }))
+            .is_err(),
+            "a scanout with one wrong pixel was accepted",
+        );
+
+        // QEMU's default console size, i.e. a scanout that was never set.
+        let mut wrong_geometry = b"P6\n640 480\n255\n".to_vec();
+        wrong_geometry.extend(std::iter::repeat_n(0u8, 640 * 480 * 3));
+        assert!(
+            scanout_holds_the_pattern(&wrong_geometry).is_err(),
+            "the default 640x480 console was accepted as our 128x64 surface",
+        );
+
+        // A dump caught mid-write is not a failure, but it must not be a pass either.
+        let short = &ppm(pattern_rgb)[..1000];
+        assert!(scanout_holds_the_pattern(short).is_err());
+    }
 }

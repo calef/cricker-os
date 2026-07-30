@@ -114,6 +114,10 @@ name = "fs_proto"
 version = "0.1.0"
 
 [[package]]
+name = "gfx_proto"
+version = "0.1.0"
+
+[[package]]
 name = "hash32"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -158,6 +162,7 @@ dependencies = [
  "elf",
  "frames",
  "fs_proto",
+ "gfx_proto",
  "intrusive",
  "ipc",
  "measure",
@@ -314,6 +319,7 @@ dependencies = [
  "crickerfs",
  "elf",
  "fs_proto",
+ "gfx_proto",
  "linedisc",
  "smoltcp",
  "user_rt",
@@ -333,5 +339,6 @@ version = "0.1.0"
 dependencies = [
  "crickerfs",
  "fs_proto",
+ "gfx_proto",
  "measure",
 ]

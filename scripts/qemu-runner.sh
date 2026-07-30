@@ -134,7 +134,41 @@ if [ -n "$CRICKER_NET" ]; then
     NET="-netdev user,id=net0,$GUESTFWD,tftp=$TFTPDIR -device virtio-net-device,netdev=net0 -netdev user,id=net1,$GUESTFWD,tftp=$TFTPDIR -device virtio-net-pci,netdev=net1,disable-legacy=on,iommu_platform=on"
 fi
 
-# shellcheck disable=SC2086  # $INITRD, $DISK and $NET are deliberately word-split or empty
+# Attach a virtio-gpu when CRICKER_GPU is set (milestone 29, the display ladder's rung one).
+#
+# PCIe only, and that is not a shortcut: there is no virtio-gpu on this machine's virtio-mmio bus in
+# any configuration, so unlike the disk and the NIC there is no mmio twin to attach. The parity that
+# matters is aarch64 virt and riscv virt, and both carry virtio-gpu-pci over the §18 transport.
+#
+# disable-legacy=on makes the function MODERN (device id 0x1050); iommu_platform=on puts it BEHIND
+# the SMMU, so the pixel reads its RESOURCE_ATTACH_BACKING asks for are translated through the domain
+# the kernel built. That flag is load-bearing here in a way it is not for the disk: a virtio-gpu's
+# backing addresses ride in a device-level command payload, not in a descriptor, so the transport's
+# shadow-ring validator never sees them and the IOMMU is the only thing that bounds them. Drop the
+# flag and the GPU could name any physical address (see notes/framebuffer-contract.md).
+#
+# There is no image file to fail loud on, as with the NIC. The manufactured-fact hazard (CRICKER_GPU
+# set but no GPU enumerated) is caught in the kernel test, which ASSERTS a GPU is present rather than
+# skipping, and asserts the IOMMU is active while one is.
+GPU=""
+if [ -n "$CRICKER_GPU" ]; then
+    GPU="-device virtio-gpu-pci,disable-legacy=on,iommu_platform=on"
+fi
+
+# A QEMU monitor on a unix socket, when CRICKER_GPU_MON names one (milestone 29). This is how the
+# **scanout** gets proven rather than only the framebuffer: `screendump` writes a PPM of the scanout
+# and it works with -display none (verified against QEMU 11.0.2), so the host can see the pixels the
+# guest cannot read back. xtask drives it while the suite runs (see gpu_shot); nothing else uses it,
+# and without the variable QEMU gets no monitor at all, exactly as before.
+#
+# The path must stay under 104 bytes: that is the OS limit on a unix socket path, and a worktree
+# checkout plus target/ gets close, which is why xtask puts the socket in /tmp and not in target/.
+MON=""
+if [ -n "$CRICKER_GPU_MON" ]; then
+    MON="-monitor unix:$CRICKER_GPU_MON,server,nowait"
+fi
+
+# shellcheck disable=SC2086  # $INITRD, $DISK, $NET and $GPU are deliberately word-split or empty
 # CPU and accelerator.
 #
 # By default we run under TCG (QEMU translates every aarch64 instruction), with an emulated
@@ -179,4 +213,6 @@ exec qemu-system-aarch64 \
     $INITRD \
     $DISK \
     $NET \
+    $GPU \
+    $MON \
     "$@"

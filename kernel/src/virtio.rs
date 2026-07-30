@@ -172,6 +172,12 @@ pub enum Transport {
         common: u64,
         notify_base: u64,
         notify_mult: u32,
+        /// The virtio **device type** (2 = block, 1 = net, 16 = gpu), from the PCI device id
+        /// (`0x1040 + type`). PCI config space has no `DeviceID` register in the mmio sense, so a
+        /// driver's `DeviceID` read is answered from this. It used to be answered with a hardcoded
+        /// 2, which was a manufactured fact for every device that is not a disk; milestone 29's GPU
+        /// driver is the first to check it, and finding the lie is what got it fixed.
+        device_type: u32,
         /// Each queue's resolved doorbell, computed at `setup_queue` (it needs `queue_notify_off`,
         /// which is only readable with that queue selected, and it differs per queue). Zero until
         /// the queue is set up. Indexed by queue number; see `MAX_QUEUES`.
@@ -206,17 +212,37 @@ fn pwrite<T: Copy>(phys: u64, v: T) {
 }
 
 impl Transport {
+    /// The PCI transport for an enumerated function (kernel/src/pci.rs). Five fields copied out of
+    /// one struct, in one place, so a new field (milestone 29's `device_type` was the second) is not
+    /// a five-call-site edit and cannot be filled in differently at one of them.
+    pub fn pci(d: &crate::pci::PciVirtioDevice) -> Transport {
+        Transport::Pci {
+            common: d.common,
+            notify_base: d.notify_base,
+            notify_mult: d.notify_mult,
+            device_type: d.device_type,
+            notify_addr: [0; MAX_QUEUES],
+            isr: d.isr,
+        }
+    }
+
     /// Answer a read in the mmio vocabulary.
     fn read_reg(&self, off: u64) -> u32 {
         match self {
             Transport::Mmio { mmio_phys } => reg_read(*mmio_phys, off),
-            Transport::Pci { common, isr, .. } => match off {
+            Transport::Pci {
+                common,
+                isr,
+                device_type,
+                ..
+            } => match off {
                 // pci has no magic/version/device-id registers: identity was proved from config
                 // space (vendor/device id) before this transport existed. Synthesized so the
-                // driver's sanity checks mean the same thing on both buses.
+                // driver's sanity checks mean the same thing on both buses. The device id is the
+                // virtio device TYPE recovered from the PCI id, not a constant: see `device_type`.
                 REG_MAGIC_RO => 0x7472_6976,
                 REG_VERSION_RO => 2,
-                REG_DEVICE_ID_RO => 2,
+                REG_DEVICE_ID_RO => *device_type,
                 REG_DEVICE_FEATURES => pread::<u32>(common + PCI_DEVICE_FEATURE),
                 // The ISR byte is read-to-ack at the device: the read itself deasserts INTx.
                 // Same bit 0 (queue interrupt) the mmio register reports.
@@ -1161,18 +1187,7 @@ mod tests {
                 frames::FRAME_SIZE as usize,
             );
         }
-        let id = register(
-            Transport::Pci {
-                common: d.common,
-                notify_base: d.notify_base,
-                notify_mult: d.notify_mult,
-                notify_addr: [0; MAX_QUEUES],
-                isr: d.isr,
-            },
-            dma,
-            frames::FRAME_SIZE,
-            Some(d.rid),
-        );
+        let id = register(Transport::pci(&d), dma, frames::FRAME_SIZE, Some(d.rid));
 
         // A frame the domain does not map: the device's escape target.
         let victim = crate::memory::alloc().expect("no victim frame").addr();

@@ -101,6 +101,11 @@ pub struct PciVirtioDevice {
     /// on (milestone 16b). Carried through to `virtio::register` so the device is confined to its
     /// DMA region in hardware.
     pub rid: u32,
+    /// The **virtio device type** (2 = block, 1 = net, 16 = gpu), recovered from the PCI device id
+    /// (`0x1040 + type`). PCI config space has no `DeviceID` register in the virtio-mmio sense, so
+    /// the transport answers a driver's `DeviceID` read from this instead of a hardcoded value; a
+    /// GPU driver that sanity-checks what it is talking to then gets the truth on either bus.
+    pub device_type: u32,
 }
 
 /// Find the first modern virtio-blk function on the bus and bring it up. `None` if there is no
@@ -108,10 +113,10 @@ pub struct PciVirtioDevice {
 pub fn find_block_device() -> Option<PciVirtioDevice> {
     let bdf = find_virtio_bdf(
         pci::VIRTIO_BLK_MODERN,
-        pci::VIRTIO_BLK_TRANSITIONAL,
+        Some(pci::VIRTIO_BLK_TRANSITIONAL),
         "virtio-blk",
     )?;
-    bring_up(bdf)
+    bring_up(bdf, pci::VIRTIO_TYPE_BLOCK)
 }
 
 /// Find the first modern virtio-net function on the bus and bring it up. `None` if there is no
@@ -120,16 +125,34 @@ pub fn find_block_device() -> Option<PciVirtioDevice> {
 pub fn find_net_device() -> Option<PciVirtioDevice> {
     let bdf = find_virtio_bdf(
         pci::VIRTIO_NET_MODERN,
-        pci::VIRTIO_NET_TRANSITIONAL,
+        Some(pci::VIRTIO_NET_TRANSITIONAL),
         "virtio-net",
     )?;
-    bring_up(bdf)
+    bring_up(bdf, pci::VIRTIO_TYPE_NET)
+}
+
+/// Find the first modern virtio-gpu function on the bus and bring it up (milestone 29, the display
+/// ladder's first rung). `None` if there is no PCI GPU.
+///
+/// **PCIe only, on purpose and on both boards.** A virtio-gpu is not on either `virt` machine's
+/// virtio-mmio bus in any configuration we attach, so unlike the disk and the NIC there is no mmio
+/// twin to prove parity over; the parity that matters here is aarch64 `virt` and riscv `virt`, both
+/// of which carry `virtio-gpu-pci` over the §18 transport. Same bring-up as the disk, and the same
+/// hardware confinement: the device is entered behind the IOMMU at `virtio::register`.
+pub fn find_gpu_device() -> Option<PciVirtioDevice> {
+    // No transitional twin exists for virtio-gpu (the legacy id range predates the device), so this
+    // asks for the modern id and nothing else rather than warning about a legacy device that cannot
+    // be on the bus.
+    let bdf = find_virtio_bdf(pci::VIRTIO_GPU_MODERN, None, "virtio-gpu")?;
+    bring_up(bdf, pci::VIRTIO_TYPE_GPU)
 }
 
 /// Enumerate the bus for the first function matching `modern`, warning (once) if only a
 /// `transitional` (legacy) twin is present, since we drive modern only. `kind` names the device for
-/// that warning.
-fn find_virtio_bdf(modern: u16, transitional: u16, kind: &str) -> Option<Bdf> {
+/// that warning. `transitional` is `None` for a device type that has no legacy id at all
+/// (virtio-gpu): there is then no such warning to give, and inventing an id to compare against
+/// would be a fact nobody checked.
+fn find_virtio_bdf(modern: u16, transitional: Option<u16>, kind: &str) -> Option<Bdf> {
     let mut found: Option<Bdf> = None;
     pci::enumerate(
         PCI_ECAM_BUSES,
@@ -138,7 +161,7 @@ fn find_virtio_bdf(modern: u16, transitional: u16, kind: &str) -> Option<Bdf> {
             if found.is_none() && vendor == pci::VIRTIO_VENDOR {
                 if device == modern {
                     found = Some(bdf);
-                } else if device == transitional {
+                } else if Some(device) == transitional {
                     crate::println!(
                         "  pci: {kind} at {:02x}:{:02x}.{} is transitional (legacy); \
                          we drive modern only",
@@ -161,7 +184,7 @@ fn find_virtio_bdf(modern: u16, transitional: u16, kind: &str) -> Option<Bdf> {
 /// 3. parse the virtio vendor capabilities and resolve them against the assigned BARs;
 /// 4. only then set Memory-Space Enable, and Bus-Master last: DMA permission is granted at the
 ///    final moment, after the transport the confinement layer owns is fully described.
-fn bring_up(bdf: Bdf) -> Option<PciVirtioDevice> {
+fn bring_up(bdf: Bdf, device_type: u32) -> Option<PciVirtioDevice> {
     // Size every BAR, then place the unassigned ones from the shared cursor (the IOMMU function
     // draws from the same cursor on riscv, so the two cannot overlap).
     let mut bars = pci::read_bars(bdf, &mut |b, o| cfg_read32(b, o), &mut |b, o, v| {
@@ -208,7 +231,10 @@ fn bring_up(bdf: Bdf) -> Option<PciVirtioDevice> {
     // input. The dtb fixture test holds the swizzle against the machine's own interrupt-map.
     let pin = ((cfg_read32(bdf, 0x3c) >> 8) & 0xff) as u8;
     if pin == 0 {
-        crate::println!("  pci: the virtio-blk function declares no INTx pin");
+        crate::println!(
+            "  pci: the virtio function at {:02x} declares no INTx pin",
+            bdf.dev
+        );
         return None;
     }
     let intid = pci::intx_irq(PCI_IRQ_BASE, bdf.dev, pin);
@@ -221,6 +247,7 @@ fn bring_up(bdf: Bdf) -> Option<PciVirtioDevice> {
         isr,
         intid,
         rid: bdf.requester_id(),
+        device_type,
     })
 }
 
