@@ -5,10 +5,17 @@
 //! ids on the `Stack` endpoint, no ambient network anywhere. It holds a capability to the stack or
 //! it does not; here it was granted one.
 //!
-//! Two exchanges, selected by the entry role, both against QEMU user-mode networking with zero host
+//! The exchanges, selected by the entry role, all against QEMU user-mode networking with zero host
 //! setup:
-//!   - `TEST_UDP_DNS`: a real DNS query to slirp's built-in resolver (10.0.2.3:53), verifying the
-//!     response is ours (transaction id) and is a response (QR bit).
+//!   - `TEST_UDP_TFTP`: a UDP request/response round trip against **slirp's own built-in TFTP
+//!     server** (10.0.2.2:69), which libslirp answers itself with no host network involved. This is
+//!     the gating UDP test: deterministic and offline, the UDP twin of the guestfwd echo peer.
+//!   - `TEST_UDP_DNS`: a real DNS query for `example.com` via 10.0.2.3:53. **This leaves the
+//!     machine.** 10.0.2.3 is not a resolver; libslirp NATs anything sent there to the *host's*
+//!     configured nameserver (`get_dns_addr_libresolv`), so this exchange depends on the developer's
+//!     DNS working at that instant. It is therefore **non-gating**: a host resolver that does not
+//!     answer reports `NO_ANSWER` and the kernel test skips loudly. A malformed or mismatched
+//!     response still fails, because that would be our bug. See notes/net.md.
 //!   - `TEST_TCP_ECHO`: a full TCP round trip to slirp's guestfwd echo peer (10.0.2.9:7777 -> a
 //!     `/bin/cat`): connect (handshake), send, receive the echo, close (teardown).
 //!
@@ -37,18 +44,38 @@ const UNTYPED: u64 = 2;
 pub const TEST_UDP_DNS: u64 = 1;
 pub const TEST_TCP_ECHO: u64 = 2;
 pub const TEST_TCP_REOPEN: u64 = 3;
+pub const TEST_UDP_TFTP: u64 = 4;
 const OK: u64 = 1;
+/// Reported when an exchange could not be completed **for an environmental reason** rather than a
+/// defect in our stack: today only the real-DNS check, whose upstream is the host's resolver. The
+/// kernel test prints and skips on this instead of failing, so the gate never depends on the
+/// developer's network. Distinct from `OK` and from every `0xE0xx` protocol failure.
+const NO_ANSWER: u64 = 2;
 
 /// Where the client maps its shared frame.
 const FRAME_VA: u64 = 0x0000_0000_00A0_0000;
 
-/// slirp's built-in DNS resolver, and the guestfwd echo peer the runners attach.
+/// slirp's guest-visible nameserver address (a NAT to the *host's* resolver, not a resolver), the
+/// gateway that hosts slirp's own TFTP server, and the guestfwd echo peer the runners attach.
 const DNS_IP: [u8; 4] = [10, 0, 2, 3];
 const DNS_PORT: u16 = 53;
+const GW_IP: [u8; 4] = [10, 0, 2, 2];
+const TFTP_PORT: u16 = 69;
 const ECHO_IP: [u8; 4] = [10, 0, 2, 9];
 const ECHO_PORT: u16 = 7777;
 
 const DNS_TXID: u16 = 0x1234;
+
+/// The fixture the runners put in slirp's TFTP directory, and its exact contents. Both sides are
+/// fixed so the round trip is asserted byte for byte (see scripts/qemu-runner*.sh).
+const TFTP_NAME: &[u8] = b"cricker";
+const TFTP_BODY: &[u8] = b"cricker-tftp!";
+
+/// How many times the real-DNS check sends its query before giving up. A DNS client retries; UDP has
+/// no retransmit of its own and the measured single-query loss to a real resolver was ~2.5%, so one
+/// attempt made an environment-dependent test look like a code defect. Three attempts is ordinary
+/// resolver behaviour, not a widened timeout.
+const DNS_ATTEMPTS: u32 = 3;
 
 fn w8(va: u64, v: u8) {
     unsafe { core::ptr::write_volatile(va as *mut u8, v) }
@@ -106,18 +133,15 @@ fn attach_frame(sid: u64) {
     }
 }
 
-fn udp_dns() -> ! {
-    attach_frame(0);
-    if call(STACK, req(OP_OPEN_UDP, 0), 0).0 != REP_OK {
-        done(0xE010);
-    }
+/// Write a byte at `*at` and advance it.
+fn put8(v: u8, at: &mut u64) {
+    w8(*at, v);
+    *at += 1;
+}
 
-    // Build a DNS A-record query for "example.com" into the frame payload.
+/// Build a DNS A-record query for "example.com" into the frame payload. Returns its length.
+fn build_dns_query() -> u64 {
     let mut p = FRAME_VA + OFF_PAYLOAD;
-    let put8 = |v: u8, at: &mut u64| {
-        w8(*at, v);
-        *at += 1;
-    };
     // header: id, flags(0x0100 recursion desired), qd=1, an=ns=ar=0
     put8((DNS_TXID >> 8) as u8, &mut p);
     put8(DNS_TXID as u8, &mut p);
@@ -140,16 +164,36 @@ fn udp_dns() -> ! {
     put8(0x01, &mut p);
     put8(0x00, &mut p); // qclass IN = 0x0001
     put8(0x01, &mut p);
-    let qlen = p - (FRAME_VA + OFF_PAYLOAD);
+    p - (FRAME_VA + OFF_PAYLOAD)
+}
 
-    set_dst(DNS_IP, DNS_PORT);
-    if call(STACK, req(OP_SENDTO, 0), qlen).0 != REP_OK {
-        done(0xE011);
+/// **Real DNS resolution, and therefore NOT a gate.** The query goes to 10.0.2.3, which libslirp
+/// NATs to the *host's* nameserver, so whether it is answered is a fact about the developer's
+/// machine. Retries like any resolver client, then reports `NO_ANSWER` if the host never answered,
+/// which the kernel test turns into a loud skip. A response that arrives but is not ours, or is not
+/// a response, still fails: that would be a defect in the socket contract, not in the network.
+fn udp_dns() -> ! {
+    attach_frame(0);
+    if call(STACK, req(OP_OPEN_UDP, 0), 0).0 != REP_OK {
+        done(0xE010);
     }
 
-    let (rlen, _) = call(STACK, req(OP_RECV, 0), 0);
-    if rlen < 12 || rlen == REP_ERR {
-        done(0xE012); // no response, or too short to be a DNS message
+    let mut got = 0u64;
+    for _ in 0..DNS_ATTEMPTS {
+        let qlen = build_dns_query();
+        set_dst(DNS_IP, DNS_PORT);
+        if call(STACK, req(OP_SENDTO, 0), qlen).0 != REP_OK {
+            done(0xE011);
+        }
+        let (rlen, _) = call(STACK, req(OP_RECV, 0), 0);
+        if rlen != REP_ERR && rlen >= 12 {
+            got = rlen;
+            break;
+        }
+    }
+    if got == 0 {
+        // The host's resolver never answered. Environmental, not ours.
+        done(NO_ANSWER);
     }
 
     // Verify it is a response to our query: transaction id matches, and the QR bit is set.
@@ -160,6 +204,65 @@ fn udp_dns() -> ! {
     }
     if qr == 0 {
         done(0xE014);
+    }
+
+    let _ = call(STACK, req(OP_CLOSE, 0), 0);
+    done(OK);
+}
+
+/// **The gating UDP test: a round trip against slirp's own TFTP server.** libslirp implements TFTP
+/// internally (enabled by `tftp=` on the netdev), so this request and its reply never leave the
+/// emulator: no host resolver, no internet, no packet that can be dropped by somebody else's router.
+/// It proves exactly what the DNS test was there to prove about *our* code, and nothing about the
+/// host: a client holding only a `Stack` endpoint and a shared frame can open a UDP socket by id,
+/// send a datagram to a chosen address, and read the reply back through the same frame.
+///
+/// Send a read request (opcode 1, `octet` mode) for the fixture the runners planted, and require the
+/// first data packet back: opcode 3, block 1, and the fixture's bytes exactly.
+fn udp_tftp() -> ! {
+    attach_frame(0);
+    if call(STACK, req(OP_OPEN_UDP, 0), 0).0 != REP_OK {
+        done(0xE040);
+    }
+
+    // RRQ: { u16 opcode = 1 } filename 0 "octet" 0
+    let mut p = FRAME_VA + OFF_PAYLOAD;
+    put8(0x00, &mut p);
+    put8(0x01, &mut p);
+    for &c in TFTP_NAME {
+        put8(c, &mut p);
+    }
+    put8(0x00, &mut p);
+    for &c in b"octet" {
+        put8(c, &mut p);
+    }
+    put8(0x00, &mut p);
+    let qlen = p - (FRAME_VA + OFF_PAYLOAD);
+
+    set_dst(GW_IP, TFTP_PORT);
+    if call(STACK, req(OP_SENDTO, 0), qlen).0 != REP_OK {
+        done(0xE041);
+    }
+
+    // DATA: { u16 opcode = 3 }{ u16 block = 1 } body. The fixture is one short block, so the whole
+    // file arrives in this first packet and no ACK/continuation is needed.
+    let (rlen, _) = call(STACK, req(OP_RECV, 0), 0);
+    if rlen == REP_ERR || rlen < 4 + TFTP_BODY.len() as u64 {
+        done(0xE042);
+    }
+    let opcode = ((r8(FRAME_VA + OFF_PAYLOAD) as u16) << 8) | r8(FRAME_VA + OFF_PAYLOAD + 1) as u16;
+    let block =
+        ((r8(FRAME_VA + OFF_PAYLOAD + 2) as u16) << 8) | r8(FRAME_VA + OFF_PAYLOAD + 3) as u16;
+    if opcode != 3 {
+        done(0xE043); // an ERROR packet (opcode 5) means the fixture is missing: see the runners
+    }
+    if block != 1 {
+        done(0xE044);
+    }
+    for (i, &b) in TFTP_BODY.iter().enumerate() {
+        if r8(FRAME_VA + OFF_PAYLOAD + 4 + i as u64) != b {
+            done(0xE045); // the bytes came back changed
+        }
     }
 
     let _ = call(STACK, req(OP_CLOSE, 0), 0);
@@ -237,6 +340,7 @@ fn tcp_reopen() -> ! {
 pub fn run(test: u64) -> ! {
     match test {
         TEST_UDP_DNS => udp_dns(),
+        TEST_UDP_TFTP => udp_tftp(),
         TEST_TCP_ECHO => tcp_echo(),
         TEST_TCP_REOPEN => tcp_reopen(),
         _ => done(0xE0FF),

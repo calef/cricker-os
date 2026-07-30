@@ -302,3 +302,51 @@ the exchange, and by a 15 s per-call backstop well under the 60 s watchdog). The
 through the backoff instead of spinning. That is a small kernel-surface addition (an `Irq::WAIT`
 timeout, or a timer notification) and is left as the follow-up; the yield-poll is correct and needs no
 new syscall.
+
+### The UDP gate must not depend on the host's resolver (a testing-hygiene defect, fixed)
+
+The UDP socket-contract test queried `10.0.2.3:53` and called it "slirp's built-in resolver". That
+description was wrong, and the error was not cosmetic: **10.0.2.3 is not a resolver.** libslirp
+implements no DNS server. It NATs anything sent to its guest-visible nameserver address to the
+*host's* configured nameserver, which it looks up with `get_dns_addr_libresolv`. So every run of that
+"zero host setup" gate sent a real query out of the machine to whatever resolver the developer's
+laptop happened to be using, and passed only if that resolver answered in time.
+
+It was measured, not argued. A temporary instrument in the client sent the same `example.com` query
+40 times in one boot and reported what came back:
+
+- **1 of 40 queries got no answer** (2.5%), with a 15 s wait per query, so it is loss and not slowness.
+- The answer's `ANCOUNT` was 2 and its first A record was `0x6814179a` = `104.20.23.154`, byte for
+  byte what `dig @192.168.8.1 example.com` returned on the host at that moment. libslirp carries no
+  zone data for `example.com` and cannot invent Cloudflare's rotating addresses, so this is direct
+  proof that the host's resolver answered the guest's query.
+- The same host resolver, probed directly with `dig +tries=1 +time=2`, dropped 1 of 30.
+
+Two DNS queries ran per suite (mmio and PCIe), so a suite failed a few percent of the time from
+nothing but a dropped packet on somebody's LAN, which matches the roughly one-in-three seen across a
+handful of runs once network conditions were worse. UDP has no retransmit of its own and the client
+sent exactly once, so a single lost datagram was a failed gate.
+
+**The fix keeps the coverage and removes the dependency.** The gating UDP test now talks to slirp's
+**own TFTP server** (`tftp=` on the netdev, at the gateway `10.0.2.2:69`), which libslirp answers
+itself. The client sends a read request for a fixture the runners plant and asserts the reply is
+`DATA`, block 1, with the fixture's exact bytes. This is the UDP twin of the guestfwd `/bin/cat` echo
+peer the TCP gate already used: QEMU provides the service, nothing leaves the emulator, and no packet
+can be dropped by a third party.
+
+What the gate proves now: a client holding only a `Stack` endpoint and a shared frame can open a UDP
+socket by id, send a datagram to an address of its choosing, and read the reply back through the same
+frame, over both the mmio and PCIe transports, on both ISAs. That is the whole client-to-netd-to-
+smoltcp-to-confined-NIC path, which is what the test was ever really for.
+
+What it no longer proves, deliberately: that DNS resolution works, or that the guest can reach
+anything outside the emulator. That case did not get deleted; it became **non-gating**. The client
+still sends a real query (now with three attempts, which is ordinary resolver behaviour rather than a
+widened timeout) and reports a distinct `NO_ANSWER` when the host never replies, which the kernel test
+prints and skips. A reply that arrives but is *not* a valid answer to our transaction still fails the
+suite, because that would be our defect rather than the network's. So a broken host resolver, or an
+offline laptop, now skips a check instead of failing a build, and a broken socket contract still fails
+loudly.
+
+The PCIe DNS variant is gone, not lost: UDP over the PCIe transport is now covered by the TFTP gate's
+PCIe twin, deterministically.

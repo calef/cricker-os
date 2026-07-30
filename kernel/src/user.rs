@@ -3236,7 +3236,11 @@ mod tests {
     const NET_TEST_UDP_DNS: u64 = 1;
     const NET_TEST_TCP_ECHO: u64 = 2;
     const NET_TEST_TCP_REOPEN: u64 = 3;
+    const NET_TEST_UDP_TFTP: u64 = 4;
     const NET_CLIENT_OK: u64 = 1;
+    /// The client could not complete for an ENVIRONMENTAL reason (the host resolver never answered),
+    /// not because of a defect here. Only the non-gating real-DNS check can report it.
+    const NET_CLIENT_NO_ANSWER: u64 = 2;
 
     /// Spin the scheduler until `done()`, or give up after a wall-clock deadline. Returns whether it
     /// happened. **Time-based, not a fixed yield count** (DECISIONS §28): with work spread across
@@ -3978,14 +3982,19 @@ mod tests {
 
     /// **The socket contract, UDP end to end** (milestone 30, piece 3 phase B; DECISIONS §25). A
     /// client process holds a `Stack` endpoint and its own untyped, mints a shared frame, delegates
-    /// it, opens a UDP socket by id, and sends a real DNS query to slirp's built-in resolver
-    /// (10.0.2.3:53), verifying the response is a reply to its own transaction. No ambient network:
-    /// the client acts only through the capability it was granted, and the bytes cross in the shared
-    /// frame, never in a message. Proves the whole path, client to netd to smoltcp to the confined
-    /// NIC, over the mmio transport.
+    /// it, opens a UDP socket by id, sends a datagram, and reads the reply back through the same
+    /// frame. No ambient network: the client acts only through the capability it was granted, and the
+    /// bytes cross in the shared frame, never in a message. Proves the whole path, client to netd to
+    /// smoltcp to the confined NIC, over the mmio transport.
+    ///
+    /// The peer is **slirp's own TFTP server** (10.0.2.2:69), served inside libslirp, so the exchange
+    /// is deterministic and never leaves the emulator. This test used to query 10.0.2.3:53, which
+    /// reads like a local resolver but is not one: libslirp NATs that address to the *host's*
+    /// nameserver, so the gate depended on the developer's DNS answering at that instant and flaked
+    /// (~2.5% per query, measured). The real-resolution case still runs, non-gating, below.
     #[test_case]
-    fn a_client_resolves_dns_through_the_socket_contract() {
-        let report = match virtio_service::start_net_stack(netd_image(), NET_TEST_UDP_DNS, false) {
+    fn a_client_completes_a_udp_round_trip_through_the_socket_contract() {
+        let report = match virtio_service::start_net_stack(netd_image(), NET_TEST_UDP_TFTP, false) {
             Some(r) => r,
             None => {
                 crate::println!("    (no virtio-net device attached; skipping)");
@@ -3995,14 +4004,14 @@ mod tests {
         let verdict = sched::ipc_recv(report)[0];
         assert_eq!(
             verdict, NET_CLIENT_OK,
-            "the UDP DNS exchange through the socket contract failed (client code {verdict:#x})",
+            "the UDP round trip against slirp's TFTP server failed (client code {verdict:#x})",
         );
     }
 
-    /// The same UDP DNS exchange over the PCIe transport, behind the IOMMU.
+    /// The same UDP round trip over the PCIe transport, behind the IOMMU.
     #[test_case]
-    fn a_client_resolves_dns_through_the_socket_contract_pci() {
-        let report = match virtio_service::start_net_stack(netd_image(), NET_TEST_UDP_DNS, true) {
+    fn a_client_completes_a_udp_round_trip_through_the_socket_contract_pci() {
+        let report = match virtio_service::start_net_stack(netd_image(), NET_TEST_UDP_TFTP, true) {
             Some(r) => r,
             None => {
                 crate::println!("    (no virtio-net-pci device attached; skipping)");
@@ -4012,7 +4021,37 @@ mod tests {
         let verdict = sched::ipc_recv(report)[0];
         assert_eq!(
             verdict, NET_CLIENT_OK,
-            "the UDP DNS exchange over PCIe failed (client code {verdict:#x})",
+            "the UDP round trip over PCIe failed (client code {verdict:#x})",
+        );
+    }
+
+    /// **Real DNS resolution, deliberately non-gating.** The query goes to 10.0.2.3, which libslirp
+    /// NATs to the host's configured nameserver (`get_dns_addr_libresolv`), so whether it is answered
+    /// is a fact about the developer's machine, not about this kernel. The client retries like any
+    /// resolver client and reports `NO_ANSWER` if the host never replied, which we print and skip: a
+    /// committed gate must not depend on somebody's router. What still fails loudly is a response
+    /// that arrives and is *wrong* (not our transaction id, or not a response), because that would be
+    /// our defect. The deterministic UDP coverage is the TFTP pair above. See notes/net.md.
+    #[test_case]
+    fn a_client_resolves_a_real_dns_name_when_the_host_resolver_answers() {
+        let report = match virtio_service::start_net_stack(netd_image(), NET_TEST_UDP_DNS, false) {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no virtio-net device attached; skipping)");
+                return;
+            }
+        };
+        let verdict = sched::ipc_recv(report)[0];
+        if verdict == NET_CLIENT_NO_ANSWER {
+            crate::println!(
+                "    (the host's resolver did not answer; real-DNS check skipped, not a failure)"
+            );
+            return;
+        }
+        assert_eq!(
+            verdict, NET_CLIENT_OK,
+            "a DNS response came back but was not a valid reply to our query (client code \
+             {verdict:#x}): a socket-contract defect, not a network problem",
         );
     }
 
@@ -5356,7 +5395,11 @@ mod riscv_virtio_tests {
     const NET_TEST_UDP_DNS: u64 = 1;
     const NET_TEST_TCP_ECHO: u64 = 2;
     const NET_TEST_TCP_REOPEN: u64 = 3;
+    const NET_TEST_UDP_TFTP: u64 = 4;
     const NET_CLIENT_OK: u64 = 1;
+    /// The client could not complete for an ENVIRONMENTAL reason (the host resolver never answered),
+    /// not because of a defect here. Only the non-gating real-DNS check can report it.
+    const NET_CLIENT_NO_ANSWER: u64 = 2;
 
     /// Spin the scheduler until `done()`, or give up after a wall-clock deadline. The aarch64
     /// module's helper, re-declared because that module is aarch64-gated; time-based for the same
@@ -5586,11 +5629,12 @@ mod riscv_virtio_tests {
     }
 
     /// The socket contract, UDP end to end on the second ISA (milestone 30, piece 3 phase B): a
-    /// client resolves a real DNS name through slirp's resolver over the granted `Stack` endpoint
-    /// and shared frame.
+    /// client sends a datagram and reads the reply through the granted `Stack` endpoint and shared
+    /// frame. The peer is slirp's own TFTP server, so the exchange is deterministic and offline; see
+    /// the aarch64 twin for why the old DNS-based version was environment-dependent.
     #[test_case]
-    fn a_client_resolves_dns_through_the_socket_contract() {
-        let report = match virtio_service::start_net_stack(netd_image(), NET_TEST_UDP_DNS, false) {
+    fn a_client_completes_a_udp_round_trip_through_the_socket_contract() {
+        let report = match virtio_service::start_net_stack(netd_image(), NET_TEST_UDP_TFTP, false) {
             Some(r) => r,
             None => {
                 crate::println!("    (no virtio-net device attached; skipping)");
@@ -5600,14 +5644,14 @@ mod riscv_virtio_tests {
         let verdict = sched::ipc_recv(report)[0];
         assert_eq!(
             verdict, NET_CLIENT_OK,
-            "the UDP DNS exchange through the socket contract failed (client code {verdict:#x})",
+            "the UDP round trip against slirp's TFTP server failed (client code {verdict:#x})",
         );
     }
 
-    /// The riscv UDP DNS exchange over PCIe, behind the RISC-V IOMMU.
+    /// The riscv UDP round trip over PCIe, behind the RISC-V IOMMU.
     #[test_case]
-    fn a_client_resolves_dns_through_the_socket_contract_pci() {
-        let report = match virtio_service::start_net_stack(netd_image(), NET_TEST_UDP_DNS, true) {
+    fn a_client_completes_a_udp_round_trip_through_the_socket_contract_pci() {
+        let report = match virtio_service::start_net_stack(netd_image(), NET_TEST_UDP_TFTP, true) {
             Some(r) => r,
             None => {
                 crate::println!("    (no virtio-net-pci device attached; skipping)");
@@ -5617,7 +5661,32 @@ mod riscv_virtio_tests {
         let verdict = sched::ipc_recv(report)[0];
         assert_eq!(
             verdict, NET_CLIENT_OK,
-            "the UDP DNS exchange over PCIe failed (client code {verdict:#x})",
+            "the UDP round trip over PCIe failed (client code {verdict:#x})",
+        );
+    }
+
+    /// Real DNS resolution on the second ISA, non-gating for the same reason as the aarch64 twin: the
+    /// upstream is the host's resolver, so a non-answer is skipped and only a malformed reply fails.
+    #[test_case]
+    fn a_client_resolves_a_real_dns_name_when_the_host_resolver_answers() {
+        let report = match virtio_service::start_net_stack(netd_image(), NET_TEST_UDP_DNS, false) {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no virtio-net device attached; skipping)");
+                return;
+            }
+        };
+        let verdict = sched::ipc_recv(report)[0];
+        if verdict == NET_CLIENT_NO_ANSWER {
+            crate::println!(
+                "    (the host's resolver did not answer; real-DNS check skipped, not a failure)"
+            );
+            return;
+        }
+        assert_eq!(
+            verdict, NET_CLIENT_OK,
+            "a DNS response came back but was not a valid reply to our query (client code \
+             {verdict:#x}): a socket-contract defect, not a network problem",
         );
     }
 
