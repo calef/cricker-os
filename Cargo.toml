@@ -28,6 +28,7 @@ members = [
     "crates/uheap",
     "crates/user_rt",
     "crates/coremark",
+    "crates/vt",
 ]
 
 # The vendored RedoxFS engine (vendor/redoxfs) and the host tool that wraps it (tools/redoxfs-host)
