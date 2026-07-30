@@ -83,7 +83,9 @@ scale.
 **Plan 9 /net, the counter-design.** Everything is a file: a connection is a directory
 (`/net/tcp/clone`, then `ctl`, `data`, `status`), you `write` "connect 1.2.3.4!80" into `ctl`, and
 `read`/`write` the `data` file. It is elegant and it is the wrong fit here, twice over: it needs a
-filesystem-shaped namespace (which arrives with milestone 32, not now), and "everything a file"
+filesystem-shaped **namespace**, which milestone 32's FS server deliberately does not provide (a
+client holds a directory capability, and open-by-path exists only inside the server), and "everything
+a file"
 means "everything reachable by path," which is the ambient authority this project inverts. Read as
 the road not taken: the capability contract is what /net's `ctl` file would be if designation were
 authorization instead of a path lookup.

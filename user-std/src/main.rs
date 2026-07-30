@@ -16,7 +16,7 @@
 //!     program runs the phase-one transcript, proving the collections, timing, and the honest
 //!     refusals.
 //!
-//! One binary keeps the initrd under its 15-file directory limit (crickerfs `MAX_FILES`) while
+//! One binary keeps the initrd inside its crickerfs directory limit (`MAX_FILES`, 31 entries) while
 //! still proving all three. The kernel test suite spawns it three ways and checks each transcript
 //! byte for byte, on both ISAs.
 

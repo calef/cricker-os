@@ -37,7 +37,12 @@ echo <text>
 - `--mem N` designates **N pages of untyped**, carved from the shell's own budget.
 - `<prog>` names the program to spawn (a closed set in phase 1; `worker`, `budgeter`).
 - a bare integer is the program's argument (worker's `n`).
-- `file:PATH` designates a **file**, which the shell cannot grant yet (see below).
+- `file:NAME` designates a **file**: one name, at most 16 bytes, no path. See the per-file grant
+  section below for what the shell narrows it from and what it can back today.
+
+The `file:` prefix is explicit rather than inferring "a bare non-numeric token must be a file",
+because an unplaceable token is refused (`Refusal::Unexpected`) and silently reclassifying it as a
+grant would turn a typo into a capability transfer.
 
 `caps` is introspection: with no argument it prints the shell's whole endowment; with a `run` tail
 it previews exactly what that command would grant, so reading the command is reading the child's
@@ -102,20 +107,113 @@ A refusal is a fact about what the shell holds, phrased in the capability model'
 - `run frobnicate 1` → "frobnicate: no such program." There is nothing to name.
 - `run budgeter` → "budgeter: needs a memory grant; add --mem <pages>." The manifest caught it.
 - `run --mem 8 worker 3` → "worker: takes no memory grant; drop the --mem."
-- `run worker 3 file:report.txt` → "worker: **you hold no such capability**: this shell cannot
-  grant files (arrives with milestone 32)."
+- `run worker 3 file:report.txt` → "worker: **you hold no such capability**: this shell was granted
+  no directory to narrow."
+- With a directory in hand, the same line becomes "worker: takes no file; drop the file: designator",
+  because worker's manifest declares none, and a designator the program has no use for is authority
+  the user thought they were moving. It is refused, not granted-and-dropped.
+- `run wc file:sub/report.txt` → "wc: that is not a name this shell can grant: one component, at most
+  16 bytes." There is no namespace here to walk, so a path is refused where it was typed rather than
+  becoming an `ENOENT` from a server asked something meaningless.
 
-That last one is the headline refusal and the forward-compatibility hook at once. A file designator
-is parsed today, but the shell holds no directory capability, so it cannot back the grant, and the
-honest answer is "there is nothing I hold that could grant this," never a Unix-flavored EPERM.
+The `no such capability` line is the headline refusal, and it is a statement about the shell's own
+cspace: "there is nothing I hold that could grant this," never a Unix-flavored EPERM.
 
-## What waits for the filesystem (milestone 32)
+## Per-file grants: one file, one direction, and a caretaker in between
 
-Per-file grants need something to point at: a directory capability the FS server hands out, resolved
-by path only *inside* the server. The `file:PATH` grammar is designed and parsed now precisely so it
-slots in without a grammar change when milestone 32 lands. Phase 1 grants what exists today: program
-spawns, endpoints, frames, untyped budgets, device caps. The shell demonstrates untyped-budget and
-endpoint grants concretely; the others share the same `SEND_CAP`-to-init path.
+*(Phase 2. The `file:PATH` grammar was designed in phase 1 so this would slot in without a grammar
+change, and it did.)*
+
+The filesystem's unit of authority is a **directory**: the endpoint a client holds IS the directory
+capability, and every name in an `OPEN` resolves under it (DECISIONS §27). `run wc report.txt` says
+less than that. It names one file, so it must grant one file.
+
+The narrowing is a **caretaker**, Mark Miller's pattern: a process that holds the wider capability,
+exports a narrower one, and is the only path between them. `user/src/fwarden.rs` opens the granted
+name once at startup and then serves the *same* `fs_proto::fs` contract on its own endpoint:
+
+```text
+  FS server ──file IPC──► fwarden ──narrowed file IPC──► the confined program
+              (a directory)          (one file, one direction)
+```
+
+Three rules, and each is phrased as a fact about what the holder *has* rather than as a permission
+refusal, because there is no policy here to consult:
+
+| the holder asks | answer | why that answer |
+|---|---|---|
+| `OPEN` any other name | `ENOENT` | in this scope there is no such name. It cannot enumerate, and it cannot learn what else exists |
+| `CREATE` | `ENOTDIR` | a file capability is not a directory; "make a name in it" is not a request that means anything |
+| `WRITE` / `TRUNCATE` without the direction | `EROFS` | the capability carries one direction. `EACCES` was rejected: it implies a policy that could have said yes |
+
+### Why the caretaker is a process and not a check inside the FS server
+
+The FS server receives on **one** endpoint. Serving a second, narrower one would need a receive over
+a *set* of endpoints, which this kernel does not offer; the way to add it is to give endpoint
+capabilities a **badge** (seL4's answer), and that is a design fork, recorded rather than taken. The
+caretaker needs nothing new: it is an ordinary FS client above and an ordinary FS server below.
+
+It is also the stronger form of the claim. The confined program holds an endpoint to the warden and
+**nothing that names the FS server**, so "it cannot reach a second file" is a property of its cspace,
+not of a branch it is trusted to take. The boundary is an address space. That is the same reason
+milestone 36's checker lives outside the component it checks.
+
+The grant costs no memory. The name and the direction ride in the warden's three `START` argument
+words (`fs_proto::grant`, 16 bytes of name), and one frame is shared by all three processes, which is
+sound because every request on both hops is a blocking `CALL`: the client is parked inside its own
+call for the whole time the warden touches the page.
+
+### How it is proven, and why one test would not have been enough
+
+An attacker (`fsclient`'s third role) reports a **bitmap of what got through**, not a pass. It is run
+twice, on both ISAs:
+
+- **Read-only grant of `motd`: every bit must be clear.** It tries to open `scratch`, which exists,
+  sits one directory entry away, and the warden could open on any request it liked. It tries to write
+  and truncate the file it *can* read (refusing a write to a file it cannot even name would prove
+  nothing). It tries to create. It sprays handle numbers.
+- **Read/write grant, same shape: the two write bits must be SET and everything else clear.**
+
+The second run is what makes the first mean anything. A warden that refused every request would pass
+the read-only test, and so would a grant that reached nothing at all; it fails the writable one. Each
+accepted write is read straight back, because "the server accepted my write" and "my write landed"
+are different claims. This is milestone 36's two-witness shape, and milestone 33's rule that an
+attacker must be pointed at a real neighbour rather than a fictional one.
+
+### The manifest declares the direction; the command line designates the file
+
+`run wc report.txt` reads and `run tee report.txt` writes, with no flag either way. The split is
+SHILL's and it is deliberate: whether a program writes is a property of what it does and belongs in
+its published manifest, while *which* file is the human's business and belongs on the line. The
+authority is still exactly what the line says, because the program's half is fixed and readable.
+`caps run wc file:report.txt` prints it:
+
+```text
+  run wc would grant the new process, and nothing else:
+    cap 0  endpoint  result   report its answer back
+    cap 2  endpoint  file     report.txt  (read-only, and nothing else on the disk)
+```
+
+### What the interactive shell cannot do yet, and why that refusal is true
+
+At the prompt today, `run prog file:x` is still refused with "you hold no such capability: this shell
+was granted no directory to narrow". That is a **fact about the shell's cspace**, not a placeholder:
+the boot that starts it wires no FS service, so init grants it a terminal, a spawn channel, a result
+channel and a budget, and nothing that names a filesystem. `caps` prints the absence in those words.
+
+The decision is a function of `capsh::Holdings`, not of the calendar, and that distinction is the
+lesson. Phase 1 hardcoded the refusal ("arrives with milestone 32"), which was true when written and
+would have quietly become a lie the moment the mechanism landed. A refusal that describes what you
+hold stays true as your holdings change; one that describes a release does not.
+
+What remains is wiring an FS service into the interactive boot (kernel boot path, a RedoxFS disk on
+the interactive runner, init building the warden per grant). It is deliberately not built here because
+**nothing in the test suite boots the interactive shell**, so it would ship unexercised. The
+mechanism it would use is proven on both ISAs by the tests above.
+
+Phase 1 grants what exists today: program spawns, endpoints, frames, untyped budgets, device caps.
+The shell demonstrates untyped-budget and endpoint grants concretely; the others share the same
+`SEND_CAP`-to-init path.
 
 ## What phase 1 deliberately does not do
 
