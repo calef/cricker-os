@@ -240,8 +240,28 @@ path = "src/window.rs"
 test = false
 bench = false
 
+# The display terminal (milestone 29's remaining increment): the component that makes the
+# framebuffer readable. One binary, two wirings (rung one's display endpoint, or rung two's
+# doorbell), because being a client at both seams is what proves neither contract needed to change
+# to carry text. `mkinitrd` packs it as "vterm" for both ISAs.
+[[bin]]
+name = "vterm"
+path = "src/vterm.rs"
+test = false
+bench = false
+
+# The keyboard driver (milestone 29's input): a confined userspace virtio-input driver whose whole
+# power to inject a keystroke is the mapping of the compositor's input ring, not the doorbell every
+# client holds. `mkinitrd` packs it as "kbd" for both ISAs.
+[[bin]]
+name = "kbd"
+path = "src/kbd.rs"
+test = false
+bench = false
+
 [dependencies]
 abi = { version = "0.1.0", path = "../crates/abi" }
+bitfont = { version = "0.1.0", path = "../crates/bitfont" }
 capsh = { version = "0.1.0", path = "../crates/capsh" }
 compose = { version = "0.1.0", path = "../crates/compose" }
 coremark = { version = "0.1.0", path = "../crates/coremark" }
@@ -251,6 +271,7 @@ fs_proto = { version = "0.1.0", path = "../crates/fs_proto" }
 gfx_proto = { version = "0.1.0", path = "../crates/gfx_proto" }
 linedisc = { version = "0.1.0", path = "../crates/linedisc" }
 user_rt = { version = "0.1.0", path = "../crates/user_rt" }
+vt = { version = "0.1.0", path = "../crates/vt" }
 
 # smoltcp (milestone 30, piece 3): the userspace TCP/IP stack. no_std, heap over user_rt's
 # UntypedHeap. Pinned at 0.13.1; divergence policy is the vendored-engine discipline (DECISIONS §18).

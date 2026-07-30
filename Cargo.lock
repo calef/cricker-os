@@ -26,6 +26,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 
 [[package]]
+name = "bitfont"
+version = "0.1.0"
+
+[[package]]
 name = "byteorder"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -161,6 +165,7 @@ dependencies = [
  "aarch64-cpu",
  "abi",
  "asid",
+ "bitfont",
  "caps",
  "compose",
  "coremark",
@@ -173,6 +178,7 @@ dependencies = [
  "gfx_proto",
  "intrusive",
  "ipc",
+ "linedisc",
  "measure",
  "paging",
  "pci",
@@ -180,6 +186,7 @@ dependencies = [
  "slots",
  "spin",
  "tock-registers",
+ "vt",
 ]
 
 [[package]]
@@ -322,6 +329,7 @@ name = "user"
 version = "0.1.0"
 dependencies = [
  "abi",
+ "bitfont",
  "capsh",
  "compose",
  "coremark",
@@ -332,6 +340,7 @@ dependencies = [
  "linedisc",
  "smoltcp",
  "user_rt",
+ "vt",
 ]
 
 [[package]]
@@ -343,6 +352,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "vt"
+version = "0.1.0"
+dependencies = [
+ "bitfont",
+ "linedisc",
+]
+
+[[package]]
 name = "xtask"
 version = "0.1.0"
 dependencies = [
@@ -351,4 +368,5 @@ dependencies = [
  "fs_proto",
  "gfx_proto",
  "measure",
+ "vt",
 ]

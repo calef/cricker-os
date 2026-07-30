@@ -18,3 +18,8 @@ gfx_proto = { version = "0.1.0", path = "../crates/gfx_proto" }
 # compositor composed, against the same scene and the same per-pixel definition the guest used. A
 # compositor's output is the thing a guest-side digest cannot confirm on its own.
 compose = { version = "0.1.0", path = "../crates/compose" }
+# The VT engine (milestone 29's text increment): the host-side scanout check runs the same engine
+# over the same script the guest's terminal was sent, so "readable text reached the device" is a
+# pixel-for-pixel claim rather than an impression. Text is the case where eyeballing is most
+# tempting and least sufficient.
+vt = { version = "0.1.0", path = "../crates/vt" }

@@ -107,6 +107,15 @@ if [ -n "$CRICKER_GPU" ]; then
     GPU="-device virtio-gpu-pci,disable-legacy=on,iommu_platform=on"
 fi
 
+# A virtio keyboard when CRICKER_KBD is set (milestone 29's input), the twin of the aarch64 runner's
+# block. PCIe by choice rather than by necessity here (this machine does have a virtio-keyboard-device
+# on the mmio bus), so the keyboard lands in the same IOMMU domain the GPU does. The keys come from
+# the host over the monitor below, because nothing in the guest can press one.
+KBD=""
+if [ -n "$CRICKER_KBD" ]; then
+    KBD="-device virtio-keyboard-pci,disable-legacy=on,iommu_platform=on"
+fi
+
 # A QEMU monitor on a unix socket when CRICKER_GPU_MON names one (milestone 29), the twin of the
 # aarch64 runner's block: `screendump` over it writes a PPM of the scanout even with -display none,
 # which is how the scanout gets proven rather than only the framebuffer. The path must stay under the
@@ -137,5 +146,6 @@ exec qemu-system-riscv64 \
     $DISK \
     $NET \
     $GPU \
+    $KBD \
     $MON \
     "$@"
