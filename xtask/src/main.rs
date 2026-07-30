@@ -1283,8 +1283,18 @@ fn redoxfs_host(args: &[&str]) -> bool {
 /// on-disk format does not depend on the CPU), so one image serves both ISA test legs.
 fn mkredoxfs() -> bool {
     let img = redoxfs_disk_path();
+    // **`CRICKER_KEEP_REDOXFS=1` keeps an existing image instead of rebuilding it.** This is the
+    // deliberate way to run the second-boot case: run the suite once normally, then again with this
+    // set, and every mount in the second run is a mount of an image a previous *boot* wrote. That is
+    // the condition the cross-boot write failure needs, and doing it this way keeps it independent of
+    // which ISA leg happens to run first (the order-coupling that hid the bug for three rounds).
+    // Absent the variable, each leg gets a fresh fixture, which is what makes the legs reproducible.
+    if std::env::var_os("CRICKER_KEEP_REDOXFS").is_some() && std::path::Path::new(&img).exists() {
+        eprintln!("mkredoxfs: keeping the existing image (CRICKER_KEEP_REDOXFS)");
+        return true;
+    }
     // Stage the fixture contents in temp files (the host tool's `put` takes a host file), then load
-    // them. The contents live in fs_proto::fixture, shared with the client and the kernel test.
+    // them. The contents live in fs_proto::fixture, shared with the client and the fixture's readers.
     let motd = workspace_root().join("target/redoxfs-motd.tmp");
     let scratch = workspace_root().join("target/redoxfs-scratch.tmp");
     if std::fs::write(&motd, fs_proto::fixture::MOTD).is_err()
