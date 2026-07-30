@@ -1,5 +1,8 @@
 # cricker-os
 
+[![CI](https://github.com/calef/cricker-os/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/calef/cricker-os/actions/workflows/ci.yml)
+[![toolchain drift](https://github.com/calef/cricker-os/actions/workflows/toolchain-drift.yml/badge.svg)](https://github.com/calef/cricker-os/actions/workflows/toolchain-drift.yml)
+
 A capability microkernel for aarch64 and riscv64, written in Rust, from the first instruction.
 
 The goal (DECISIONS.md §14): a verified-Rust capability microkernel that runs real workloads,
@@ -29,6 +32,25 @@ script/bench               # icount microbenchmarks against the committed baseli
 
 At the `$` prompt: `help`, `echo hello`, `run 7` (spawns a process that computes 49). Quit with
 Ctrl-C, or `pkill qemu-system-aarch64` from another terminal.
+
+## What the badge means
+
+The CI badge above is green only when **every** gate passes, and the gates are the argument rather
+than a formality:
+
+| Gate | What it proves |
+|---|---|
+| `script/test` | The host-logic crates, then the kernel under QEMU on **both ISAs**, aarch64 and riscv64. Architectural parity is a gate, not an aspiration (DECISIONS §19). |
+| `script/verify` | 69 Kani harnesses across 13 crates: the capability model, IPC, MMU isolation, the DMA validator, the IOMMU domain. |
+| `script/bench --check` | icount instruction counts against a committed baseline, on both ISAs, so a performance regression surfaces next to the change that caused it. |
+| `script/lint` | clippy at `-D warnings`, plus broken intra-doc links, stray conflict markers, and the roadmap's status vocabulary. |
+| `script/fmt`, coverage | Formatting, and an 80%-per-file line-coverage floor on the host crates. |
+
+CI runs on an **aarch64** runner deliberately: this kernel targets a weakly-ordered machine, and a
+missing `Acquire`/`Release` passes on an x86_64 host and fails only on real ARM. Both the Rust
+toolchain and QEMU are pinned to exact versions, so "the tests passed" means the same thing on a
+laptop and on a runner. The second badge is a daily check of whether the *newest* nightly still
+builds us; it is informational and never blocks a merge.
 
 ## Status
 
