@@ -26,22 +26,46 @@ Nothing was built, nothing hung. The contract was checked where you could still 
 
 ## The format
 
-A manifest declares three things in phase 1 (`capsh::Manifest`):
+A manifest declares what a program expects to be handed (`capsh::Manifest`):
 
 ```rust
 struct Manifest {
     arg:     ArgSpec,   // Required | Forbidden   -- does it take an integer argument?
     mem:     MemSpec,   // Forbidden | Required { min, max }  -- a memory grant, in pages?
+    file:    FileSpec,  // Forbidden | Required { writable }  -- one file (phase 2)
     reports: bool,      // is it endowed the shared result endpoint?
+    interruptible: bool,// does ^C reach it (milestone 24)?
 }
 ```
 
+### The file endowment declares a direction, not a name
+
+`FileSpec::Required { writable }` is the phase-2 addition, and the interesting part is the split it
+makes: **the manifest declares the direction, the command line designates the file.** So `run wc
+report.txt` reads and `run tee report.txt` writes, and the human never types a mode.
+
+That is SHILL's shape and it is the right one on both halves. Whether a program writes is a property
+of what the program does; it is fixed, publishable, and not the caller's to guess. Which file it
+should touch is entirely the caller's business and belongs on the line. Authority is still exactly
+what the command says, because the program's half is written down where the shell (and the human) can
+read it: `caps run wc file:report.txt` prints "read-only, and nothing else on the disk".
+
+One file, not a list. A program that needs two needs a manifest that says so, and that is a later
+widening rather than something to leave ambiguous now.
+
 The two phase-1 programs:
 
-| program    | arg        | mem                  | reports |
-|------------|------------|----------------------|---------|
-| `worker`   | Required   | Forbidden            | yes     |
-| `budgeter` | Forbidden  | Required 1..=64 pages | yes     |
+| program    | arg        | mem                  | file      | reports |
+|------------|------------|----------------------|-----------|---------|
+| `worker`   | Required   | Forbidden            | Forbidden | yes     |
+| `budgeter` | Forbidden  | Required 1..=64 pages | Forbidden | yes     |
+
+No shipped program declares a file yet, because the shell it would be spawned from holds no directory
+to narrow (notes/grant-expression.md says why, and why that refusal is true rather than pending). The
+`FileSpec::Required` logic is not therefore untested: `plan_against` takes an **explicit** manifest
+rather than reading the static table, so the host tests check a manifest shape no program declares.
+That split was worth making anyway, because milestone 23 needs exactly it: a manifest that travels
+with a component, checked by a composer that did not write the program.
 
 `worker` needs its `n` and no memory; granting `--mem` to it is a refusal. `budgeter` exists to
 spend a budget, so it *requires* `--mem` (the lower bound of 1 makes "budgeter with no grant" a

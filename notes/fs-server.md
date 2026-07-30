@@ -4,7 +4,7 @@ A real copy-on-write filesystem we did not write, RedoxFS, running confined as a
 component and served over a capability-shaped contract. This is the flagship userspace-reuse
 story the prior-art survey predicted (notes/prior-art.md, notes/redoxfs-audit.md): the kernel
 confines a serious component it knows nothing about, and the thing milestone 31's per-file grants
-will point at.
+point at (they now exist; see the caretaker section below).
 
 The written contract lives with its code in `crates/fs_proto`, the way the terminal contract lives
 in `linedisc::proto` (notes/terminal-contract.md). This note is the design around it.
@@ -264,20 +264,61 @@ edge: a fixture that one test *mutates* and another *asserts on* couples them ju
 order does, and the coupling is harder to see because both tests look self-contained. The client now
 restores the fixture pattern as its last write for exactly this reason.
 
-**The remaining gap is in the contract, not the write path.** There is no `CREATE` and no `TRUNCATE`
-verb, so `std::fs::write` and `File::create` are honestly `Unsupported` and writing means opening a
-file the image already carries. Adding both verbs is possible (`Transaction::create_node` is not
-std-gated; "never create on-device" below is about creating a *filesystem*, which needs uuid and
-getrandom, not a file), but it widens the contract and belongs to a deliberate decision. See
-notes/std.md.
+**That gap is closed** (milestone 31 phase 2). `CREATE` and `TRUNCATE` are in the contract, so
+`std::fs::write` and `File::create` work; see the next section for the semantics and DECISIONS §27's
+amendment for why `TRUNCATE` was a sharp edge and not merely a missing feature.
+
+## The write path is complete: `CREATE`, `TRUNCATE`, and one rule that was ours
+
+`CREATE` (opcode 6) resolves a name under the bound directory and makes it, returning a handle.
+**`EEXIST` if the name is already there, and nothing is modified**: create is create, not
+create-or-open. A caller that wants either has to ask for both and say which it got, because the
+alternative silently makes a partly-working write look like a working one, which is exactly the
+failure §27 records.
+
+`TRUNCATE` (opcode 7) sets a file's size in **both** directions: growing extends with zeroes,
+shrinking discards. The shrink is the point. The new size rides in the *second word*, not the length
+field, because the length field is clamped to one page in the serve loop and would have silently
+capped every truncate at 4096 bytes.
+
+Adding `CREATE` surfaced a rule that had been true by accident. RedoxFS's `check_name` rejects `:`,
+over-long names, and duplicates; `/`, `.` and `..` pass straight through. Nothing walked paths, so
+nothing escaped, and the "one component, no `..`" invariant held by the *absence of a walker* rather
+than by a check. With `CREATE` a client could write one: `create_file("../escape")` made a directory
+entry literally named that. Still not a traversal, and still a landmine, because the moment anything
+does walk paths (a per-directory grant, the host tool, the image mounted through Redox's FUSE driver)
+that entry means something it was never allowed to mean. `check_component` now enforces it at our
+boundary, deliberately there and not patched into the vendored engine: it is a rule of *this*
+contract, not a bug in RedoxFS, whose other callers may name entries whatever they like.
+
+## A per-file grant: the caretaker between the directory and the program
+
+Milestone 31's `run wc report.txt` grants one file, and the unit of authority here is a *directory*.
+`user/src/fwarden.rs` is the difference: a caretaker process that holds the directory capability,
+opens the granted name once, and serves this same contract on its own endpoint with a namespace of
+exactly one name and a direction it cannot widen. The design, the three refusals, and the two
+attacker witnesses that prove it are written up in [grant-expression.md](grant-expression.md); the
+part that belongs here is why it is a process:
+
+**This server receives on one endpoint.** Serving a second, narrower one would need a receive over a
+*set* of endpoints, which the kernel does not offer, and the way to add it is to badge endpoint
+capabilities (seL4's answer). That is a design fork, recorded rather than taken. The caretaker needs
+nothing new: it is an ordinary client of this contract above, and an ordinary server of it below. The
+"bound directory" seam this note has always advertised for milestone 31 turned out to be used from
+the *other* side: the warden binds nothing new here, it just never asks for more than one name.
 
 ## For later milestones
 
-- **31 (capability shell)** hands out endpoints bound to specific directories or files as grant
-  expressions; the server's bound-directory and handle-table seams are already the shape it needs.
+- **31 (capability shell)** is **done** as a mechanism: per-file grants exist, proven on both ISAs by
+  a read-only and a writable attacker. What is left is the interactive boot wiring an FS service so
+  the shell holds a directory to narrow; see grant-expression.md.
 - **27 (`std::fs`)** is **done**: the PAL binds `File` to this contract, and the endpoint's bound
   directory becomes the thing `File::open`'s path resolves under, so a path that would leave it is
   refused rather than served. The std program holds the endpoint at slot 4 of the std slot convention
-  and nothing else that names a filesystem. See notes/std.md and notes/abi.md §4.
+  and nothing else that names a filesystem. A program handed a *narrowed* endpoint instead needs no
+  std change at all: the one granted name opens and every other is `NotFound`. See notes/std.md and
+  notes/abi.md §4.
 - **23 (live replacement)** gets its hardest state-handoff case here: an FS server with open handles
-  and in-flight writes is the "serialise-old / absorb-new" problem the console swap never had.
+  and in-flight writes is the "serialise-old / absorb-new" problem the console swap never had. It
+  also owns the open item above: a client of a dead server blocks forever, and §26's fault endpoint
+  is the mechanism that turns that into a message a supervisor can act on.
