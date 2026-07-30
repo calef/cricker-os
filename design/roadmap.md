@@ -44,6 +44,21 @@ A detail block may narrate its state in prose (that is where the evidence and th
 column is what answers "where do we stand". If the two disagree, the column is wrong and the block is
 right, because the block is where the work was written down; fix the column.
 
+**Why this is a markdown table and not GitHub Issues (decided 2026-07-30, Chris).** Issues would buy PR
+linkage, a home for discussion, and a board view. They would cost the things this table is actually for:
+the roadmap stops being version-controlled alongside the code, so a status change is no longer a diff in
+the commit that caused it; `script/roadmap --check` has nothing to validate, and that gate is what caught
+milestone 34 having no row; and the cross-references to `DECISIONS §N` and `notes/*.md` decay from one
+grep into URLs. The deciding argument is that **a second place where status lives is a second source of
+truth**, which is the exact failure this project spent 2026-07-30 cleaning up: `bench.rs` contradicting
+notes/benchmarks.md about what `fs_read` measures, status prose phrased a dozen ways that made a sweep
+mis-report eight milestones, and §27 corrected four times. The linkage only starts paying when more than
+one person files work, so revisit if that changes: with external contributors, the shape would be
+markdown canonical and issues **generated one-way** from it, never synced back.
+
+Note also that GitHub's own *Milestones* feature is a name collision with this list and a poor fit
+besides, being built for dated release grouping; these are capability-shaped and deliberately undated.
+
 | #  | Status | Milestone | What it delivers | Serves §14 by |
 |----|--------|-----------|------------------|---------------|
 | 12 | BUILT | Call/Reply IPC: a one-shot reply capability | Reply-to-caller as a kernel guarantee. **Built, §12.** | the IPC the TCB must get right |
