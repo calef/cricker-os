@@ -200,6 +200,30 @@ pub extern "C" fn secondary_main(cpu_id: usize) -> ! {
 mod tests {
     use super::*;
 
+    /// Wait for `cond`, bounded by the CLOCK rather than by a yield count.
+    ///
+    /// Every wait in this module used to be `spins < 5_000_000` yields, and a yield count is not a
+    /// duration. On the machine the number was calibrated on it was generous; on a four-vCPU CI runner
+    /// emulating four cores under TCG, this core can burn five million cheap yields long before the
+    /// secondaries it is waiting for have been scheduled at all. That is not a hang, it is an
+    /// impatient observer, and it failed `main` on 2026-07-30 in two different places for the same
+    /// reason. Exactly the defect fixed the same day in the reap waits (kernel/src/user.rs): wait on
+    /// the clock, not on a spin count.
+    ///
+    /// Ten seconds is far beyond any honest completion here (these are sub-second locally) and well
+    /// inside the harness's 90 s per-test ceiling, which remains the real backstop for a genuine hang.
+    /// Still a leak trap rather than a masked failure: work that never runs times out and fails.
+    fn wait_for(mut cond: impl FnMut() -> bool) -> bool {
+        let deadline = crate::arch::timer::now() + 10 * crate::arch::timer::frequency();
+        while crate::arch::timer::now() < deadline {
+            if cond() {
+                return true;
+            }
+            crate::sched::yield_now();
+        }
+        cond()
+    }
+
     /// Every secondary reached `secondary_main` and set up its per-CPU pointer.
     ///
     /// `bring_up_secondaries` already waited for the count before `test_main` ran, so the other
@@ -232,15 +256,10 @@ mod tests {
                 .all(|c| RAN_ON[c].load(Ordering::Acquire))
         };
 
-        let mut spins = 0u64;
-        while !all_ran() {
-            crate::sched::yield_now();
-            spins += 1;
-            assert!(
-                spins < 5_000_000,
-                "secondary cores did not run scheduled work in time"
-            );
-        }
+        assert!(
+            wait_for(all_ran),
+            "secondary cores did not run scheduled work in time"
+        );
 
         for (c, ran) in RAN_ON.iter().enumerate() {
             if is_secondary(c) {
@@ -282,12 +301,7 @@ mod tests {
         }
 
         let done = || (0..n).all(|c| SPREAD[c].load(Ordering::Relaxed) != 0);
-        let mut spins = 0u64;
-        while !done() {
-            crate::sched::yield_now();
-            spins += 1;
-            assert!(spins < 5_000_000, "work placed on a core never ran there");
-        }
+        assert!(wait_for(done), "work placed on a core never ran there");
         RELEASE.store(true, Ordering::Relaxed); // let the probes finish and be reaped
     }
 
@@ -326,15 +340,10 @@ mod tests {
         }
 
         let done = || (0..n).all(|c| ON[c].load(Ordering::Relaxed) != 0);
-        let mut spins = 0u64;
-        while !done() {
-            crate::sched::yield_now();
-            spins += 1;
-            assert!(
-                spins < 5_000_000,
-                "cpu-bound work never reached every core: placement + stealing did not fill the machine",
-            );
-        }
+        assert!(
+            wait_for(done),
+            "cpu-bound work never reached every core: placement + stealing did not fill the machine",
+        );
         // Let them all finish, so they are reaped rather than left spinning.
         RELEASE.store(true, Ordering::Relaxed);
     }
