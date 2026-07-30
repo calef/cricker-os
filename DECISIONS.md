@@ -1879,12 +1879,48 @@ capability and read back byte for byte, plus a host-tool consistency check after
 core is host-tested for read AND write (`fs-server` lib), so the filesystem logic is proven both ways
 independently of any device.
 
-**Amendment (2026-07-29, then narrowed the same day): a FIRST on-device write works; a repeat write
-to the same block still loops.** Read the correction below together with this qualification, which a
-second agent established by reproducing the loop on main: the gate only ever performs first writes,
-because `mkredoxfs` rewrites the target block to a placeholder before every run, so the loop hides
-behind the harness rather than being absent. The original blocker was not stale, it was narrower than
-recorded, and the optimistic correction below overstated it. See notes/fs-server.md. This
+**Amendment (2026-07-29, corrected three times in one day; this paragraph is the settled account).
+There is no allocator loop. The defect was order-coupling in the gate, and a second mount of a
+used image fails its write for an unrelated reason.** The history is left in place below because
+the way this fact wobbled is itself the lesson, but read this first, because the two paragraphs
+after it are superseded.
+
+Measured on a clean build: the FS client writes the same block **three times in one run** and passes
+on both ISAs, and the image afterwards carries the third payload, so the repeat write reached the
+disk. A `VERIFY_WRITES` switch that reads every written block back through `IpcDisk` and compares
+never fired, so the blk IPC transport is faithful (nothing lost, nothing misdirected, no stale read).
+And the observed failure was never a spin: the FS server replies with an **error**, and the std
+program's own `expect` panics, which is what truncated the transcript that got read as a hang. The
+"400% CPU looping in `Transaction::sync_allocator`" reading does not survive a correct build.
+
+What was actually broken: `mkredoxfs` ran **once for both ISA legs**, and the aarch64 leg writes the
+image, so the riscv leg mounted an image a previous *boot* had mutated. Whichever leg ran second
+failed, and neither leg was reproducible on its own. That is why three separate investigations,
+each measuring a differently-broken setup, produced three incompatible answers, and it is worth
+naming as a failure mode: **an order-coupled gate manufactures facts.** Each ISA leg now regenerates
+the same known-good fixture.
+
+That is determinism, not a fix. A second mount of a *used* image still fails its write, and the
+recipe is recorded in notes/fs-server.md (generate once, run one leg, then the other without
+regenerating) along with the leading hypothesis: accumulated **mount** state rather than bad data. A
+used image carries a higher header generation, a longer allocator log and more live tree blocks, so
+the second mount allocates more heap (capped at 8 MiB in `fsserver.rs`, bounded by
+`FS_BUDGET_PAGES`) and may reach an allocator squash path a pristine mount never does. The next step
+is reading the errno the server returns, which nothing currently surfaces. Note the cost of the fix:
+the gate no longer exercises the cross-boot case at all, so this bug is now known-and-untested,
+which is the same shape of invisibility that hid it in the first place.
+
+The missing test layer, which should have existed from the start, now does: the EL0 binary's chunking
+was extracted into a host-testable `BlockDisk`/`BlockIo`, because chunking that lives only in the EL0
+binary is chunking no host test can reach. Ten host tests run in milliseconds (repeat writes,
+record-sized writes across the multi-block and compressed-tail paths, and write then drop the mount
+with no unmount then reopen and write again) and all pass. That is the decisive comparison: the host
+does not loop, so there is no upstream RedoxFS bug and no vendored patch to offer.
+
+*Superseded, kept for the record.* An earlier amendment claimed a first write works and a repeat
+write to the same block still loops, reasoning that `mkredoxfs` rewriting the target to a placeholder
+made every gated write a first write. The premise about `mkredoxfs` was right and the conclusion was
+wrong: the harness was indeed hiding something, but not a loop. This
 section used to carry an open item, that an end-to-end write "loops inside RedoxFS's allocator commit
 on bare metal even on a pristine image" (the `prev`-chain walk in `Transaction::sync_allocator`). It
 does not. Driven through `std::fs` (§22's phase-two amendment), the write completes on both ISAs and
