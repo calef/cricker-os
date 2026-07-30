@@ -99,6 +99,68 @@ place the crickerfs disk LAST on the command line to keep it at slot 0 (the phas
 `find_block_device`), which leaves the RedoxFS disk at the next slot for `find_block_device_n(1)`.
 Getting this backwards silently hands the phase-1 tests the wrong disk; the runner comments say so.
 
+## The FS server's stack is sized by measurement, because guessing it cost a day
+
+RedoxFS recurses. A single `Transaction::read_block::<TreeList<..>>` activation carries a whole
+4096-byte block plus scratch, so **one frame is 8 KiB**, and a tree walk stacks a dozen or more of
+them. The FS server therefore gets a deep stack: `run` maps one page at `USER_STACK_VA` and
+`fs_service::wire_servers` maps `FS_STACK_PAGES` more directly below it, out of fresh frames, so the
+process sees one contiguous run down from `USER_STACK_TOP`.
+
+That number used to be 32 (33 pages, 135,168 bytes), and it was chosen to be comfortably above the
+read-and-write path. Adding `CREATE` and `TRUNCATE` (milestone 31 phase 2) took one more level of
+tree recursion and it was **528 bytes short**. The FS server ran off the bottom of its stack
+mid-request and the kernel killed it, correctly and legibly:
+
+```text
+  user thread 8589934629 killed: Data abort from a lower EL
+    pc 0x00000000004000b0   far 0x00000000004dfe90   user sp 0x00000000004dfe90   esr 0x92000047
+```
+
+`far == sp`, one page below the bottom of the mapping, and `pc` disassembles inside
+`read_block::<TreeList<TreeList<TreeList<BlockRaw>>>>` in the middle of its two 4 KiB `sub sp`
+instructions. Nothing about that is ambiguous once you look at it. **What was not legible was
+anything downstream**, and that is the part worth carrying off:
+
+- The std client sat `Blocked` on a `CALL` that nobody would ever answer, because the endpoint's only
+  receiver had just died. Blocking IPC has no "the server is gone" reply, so a dead server is
+  indistinguishable, from a client, from a slow one.
+- The suite's no-progress heartbeat credits work by *any* running thread, and earlier tests had left
+  processes spinning on other cores, so it saw a healthy system for as long as you cared to wait.
+- The only instrument that could fire was the per-test wall-clock ceiling. It fired at the budget,
+  and **a ceiling failure reports the budget, not the cost**: "std_fs ran 914 s against a 900 s
+  budget" was read as evidence of honest slowness and sent an investigation looking for a slow path
+  in a test whose server had been dead since second three.
+
+Two things came out of it. The thread dump now prints each thread's **address-space root**
+(`sched::dump_threads`), because every user program links at `0x40_0000` and a bare `pc` resolves
+plausibly against several binaries at once; threads sharing a root are one process, distinct roots
+are distinct processes, and it is what separates a leftover spinner from the process under test. And
+the stack size is now a measurement: the kernel fills every FS-server stack page with a poison word
+before the process starts, and `fs_service::fs_stack_used` reports the deepest word that no longer
+reads as poison. Measured across a mount, reads, writes, a create and two truncates:
+
+| leg | high-water | of grant | headroom |
+|---|---|---|---|
+| aarch64 | 135,696 bytes | 397,312 | 66% |
+| riscv64 | 135,824 bytes | 397,312 | 66% |
+
+Both were over the old 135,168-byte grant, so both legs were broken; the riscv leg needs slightly
+more for the same recursion, which is why the number is measured per ISA rather than assumed to
+transfer. `the_fs_servers_stack_still_has_headroom` (both ISAs) prints it every run and fails under a
+quarter left, so the next verb that deepens a tree walk fails with a number instead of a mystery.
+
+The grant is 96 extra pages. That is deliberately well above the measurement rather than just above
+it: recursion depth here tracks the *tree* depth, which grows with the image, so a size proven on a
+16 MiB fixture is not proven on a real disk. 384 KiB of frames once per boot is cheap beside the FS
+server's 8 MiB heap budget.
+
+**Still open, and named rather than fixed:** a client of a dead server blocks forever. §26's fault
+endpoint is the mechanism that would turn that into a message a supervisor can act on, and wiring the
+FS service into a supervision tree is milestone 23's problem, not this one's. Until then, "the server
+died" presents to a client as "the server is taking a while", which is the same shape of invisibility
+this whole section is about.
+
 ## Never create on-device
 
 The std-gated core APIs are exactly creation (`FileSystem::create`, uuid v4, getrandom). The FS
