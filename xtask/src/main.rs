@@ -878,6 +878,10 @@ fn initrd_riscv() -> bool {
             "gpud",
             "--bin",
             "painter",
+            "--bin",
+            "cwarden",
+            "--bin",
+            "cshim",
             "--target",
             RISCV_TARGET,
         ],
@@ -923,6 +927,10 @@ fn initrd_riscv() -> bool {
         // into the surface it serves. Portable, so both archives carry both.
         ("gpud", "gpud"),
         ("painter", "painter"),
+        // The C seam (milestone 36): the warden and the Rust shell that links user/c/cseam.c. The C
+        // is compiled for this ISA by user/build.rs, so the riscv shell carries riscv C.
+        ("cwarden", "cwarden"),
+        ("cshim", "cshim"),
     ];
     let mut blobs: Vec<(&str, Vec<u8>)> = Vec::new();
     for &(archive_name, bin_name) in entries {
@@ -1083,8 +1091,12 @@ fn mkinitrd() -> bool {
     // portable programs that share one module, packed under their own names for both ISAs.
     // The display pair (milestone 29) reads as a group for the same reason: the confined virtio-gpu
     // driver and the client that draws into the surface it serves, both portable.
+    // The C seam (milestone 36) reads as a group too: the warden that builds, supervises, and checks
+    // the foreign component, and the Rust shell that links it. Both portable.
     let mut tree: Vec<(&str, Vec<u8>)> = Vec::new();
-    for name in ["rootsup", "spawner", "subsup", "flaky", "gpud", "painter"] {
+    for name in [
+        "rootsup", "spawner", "subsup", "flaky", "gpud", "painter", "cwarden", "cshim",
+    ] {
         match std::fs::read(bin_elf(name)) {
             Ok(bytes) => tree.push((name, bytes)),
             Err(e) => {

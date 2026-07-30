@@ -1,0 +1,291 @@
+//! **The warden: the process that confines a C component and proves it** (milestone 36,
+//! DECISIONS §30).
+//!
+//! It is three roles in one program, and the fusion is deliberate rather than lazy:
+//!
+//! 1. **Builder.** It splits a region off its budget per instance and lays `cshim` out in it, so a
+//!    single `Untyped::DESTROY` reaps a whole instance (§16 object revocation).
+//! 2. **Supervisor.** It holds the C component's supervision endpoint (§26), so a fault becomes a
+//!    five-word message it receives rather than a silence it has to guess at, and it decides whether
+//!    to restart. The kernel relaunches nothing.
+//! 3. **Checker.** It holds the witness pages in *its own* address space, so "nothing outside the
+//!    grant changed" is asserted from the other side of an MMU boundary rather than from inside the
+//!    process that just misbehaved.
+//!
+//! **Why roles 1 and 2 are one process here, and what that costs.** Reaping a corpse needs `WRITE`
+//! on the region it lives in, which is the same right that builds one; there is no narrower
+//! reap-only authority in the ABI today. So a supervisor that restarts its child either holds
+//! construction authority or proxies the reap through something that does. Milestone 22 phase B.2
+//! built the proxy (its `subsup` holds no memory and asks `spawner`), which is the right answer for a
+//! system's init. This spike takes the direct route on purpose: the requirement is then visible in
+//! one program instead of hidden behind an IPC hop, and the requirement is the interesting part. See
+//! DECISIONS §30's "what the supervisor had to hold" and §26's phase-B fork note.
+//!
+//! Role 3 is genuinely separate from the C component and must be: a checker inside the faulting
+//! address space could only report what that address space could see, which is exactly the thing
+//! under suspicion.
+
+#![no_std]
+#![no_main]
+
+use user_rt::{cap_delete, invoke, recv_fault, send};
+
+#[path = "cseam.rs"]
+#[allow(dead_code)]
+mod cseam;
+
+// The loader, shared with the milestone-22 supervision tree. `Endow.maps` and `Endow.fault` are the
+// two parts this milestone leans on: a child born with shared pages and born supervised.
+#[path = "suptree.rs"]
+#[allow(dead_code)]
+mod suptree;
+
+use cseam::checks;
+use suptree::Endow;
+
+/// Where the kernel maps the initrd archive, read-only. Must match the kernel's spawn path.
+const INITRD_VA: u64 = 0x2000_0000;
+
+/// What the kernel grants us, and nothing else.
+const ROOT_UT: u64 = 0; // the construction budget: also what makes us able to reap
+const REPORT: u64 = 1; // WRITE|GRANT, so each instance gets its own narrowed view
+
+/// Pages per instance region. A debug-build `cshim` is a couple of dozen pages of segments plus its
+/// stack, its page tables, its TCB, its address space, and the eight-page heap `malloc` grows into.
+/// Each instance is reaped before the next is built, so this is a peak, not a total.
+const INSTANCE_PAGES: u64 = 96;
+
+#[unsafe(no_mangle)]
+pub extern "C" fn _start(_a0: u64, initrd_len: u64, _a2: u64) -> ! {
+    // SAFETY: the kernel mapped `initrd_len` bytes of reserved RAM read-only at INITRD_VA.
+    let archive =
+        unsafe { core::slice::from_raw_parts(INITRD_VA as *const u8, initrd_len as usize) };
+    let Ok(fs) = crickerfs::Fs::parse(archive) else {
+        bail(1)
+    };
+    let Some(shim) = fs.read("cshim").and_then(|b| elf::Elf::parse(b).ok()) else {
+        bail(2)
+    };
+
+    // The three pages the whole proof rests on. All from our own budget, all ours to start with; the
+    // C component's process will see two of them and never the third.
+    let Ok(grant) = suptree::retype_frame_from(ROOT_UT) else {
+        bail(3)
+    };
+    let Ok(wit_ro) = suptree::retype_frame_from(ROOT_UT) else {
+        bail(4)
+    };
+    let Ok(wit_far) = suptree::retype_frame_from(ROOT_UT) else {
+        bail(5)
+    };
+
+    // Map all three read/write **into ourselves**, at the same virtual addresses the C component will
+    // use. Same numbers on both sides is what lets the wild-store address be compared directly
+    // against the address the kernel reports, with no translation step to get wrong.
+    for (frame, va) in [
+        (grant, cseam::GRANT_VA),
+        (wit_ro, cseam::WITNESS_RO_VA),
+        (wit_far, cseam::WITNESS_FAR_VA),
+    ] {
+        // SAFETY: plain syscall; the kernel validates the frame, the va, and the budget.
+        if unsafe { invoke(frame, abi::frame::MAP, va, 1, ROOT_UT) } != 0 {
+            bail(6)
+        }
+    }
+    for i in 0..cseam::PAGE as usize {
+        witness_ro()[i] = cseam::pattern_ro(i);
+        witness_far()[i] = cseam::pattern_far(i);
+    }
+
+    // Our children's deaths arrive here. We are the only holder with READ, and the kernel is the only
+    // sender (§26.5), so both the tid and the fault address are trustworthy without a badge.
+    let Ok(faultep) = suptree::retype_obj_from(ROOT_UT, abi::objtype::ENDPOINT) else {
+        bail(7)
+    };
+
+    let mut attempt = 0u64;
+    while attempt < cseam::ATTEMPTS {
+        // Reset the grant before every attempt. Necessary, not hygiene: the misbehaving attempts
+        // scribble a marker over the input's first byte, so without this the honest run would be
+        // transforming the wreckage of the previous one.
+        let g = grant_page();
+        g.fill(0);
+        g[cseam::IN_OFF..cseam::IN_OFF + cseam::INPUT.len()].copy_from_slice(cseam::INPUT);
+
+        let Ok(region) = suptree::untyped_split(ROOT_UT, INSTANCE_PAGES) else {
+            bail(10)
+        };
+        let Ok(tcb) = suptree::build_child(
+            ROOT_UT,
+            region,
+            &shim,
+            &Endow {
+                // The shell's whole authority: say what happened, and spend the region it lives in
+                // (which is what pays for `malloc`). No GRANT on either, so it can neither lend the
+                // report endpoint on nor hand its budget to anyone.
+                caps: &[(REPORT, abi::rights::WRITE), (region, abi::rights::WRITE)],
+                // The grant is read/write, which is the authority the C code abuses. The witness page
+                // right behind it is read-only, which is what turns an off-by-one into a fault
+                // instead of a corruption. Nothing maps WITNESS_FAR here, deliberately.
+                maps: &[
+                    (cseam::GRANT_VA, grant, abi::aspace::MAP_RW),
+                    (cseam::WITNESS_RO_VA, wit_ro, abi::aspace::MAP_RO),
+                ],
+                blobs: &[],
+                fault: Some(faultep),
+            },
+        ) else {
+            bail(11)
+        };
+        if !suptree::tcb_start(tcb, 0, attempt, 0) {
+            bail(12)
+        }
+        // The TCB capability is not the thread: dropping it leaves the thread running, and the region
+        // capability is what still reaches the corpse.
+        cap_delete(tcb);
+
+        // Block until the child dies, one way or the other. All five words, because the fourth is the
+        // faulting address and this is the program that cares where the C code pointed.
+        let (event, tid, pc, addr, _reserved) = recv_fault(faultep);
+        send(REPORT, cseam::RPT_DEATH, tid, event);
+        send(REPORT, cseam::RPT_SITE, pc, addr);
+        send(
+            REPORT,
+            cseam::RPT_VERDICT,
+            attempt,
+            verdict(attempt, event, pc, addr),
+        );
+
+        // Reap. The corpse is dead-until-reaped (§26.4), so its region stays pinned until we say so,
+        // and the verdict above was computed while it was still there to inspect.
+        if !suptree::untyped_destroy(region) {
+            bail(13)
+        }
+        cap_delete(region);
+
+        if event != abi::fault::EVENT_FAULT {
+            // A clean exit is "finished", not "crashed", and that distinction is why §26 delivers both
+            // events. It is also what ends this run: the honest attempt is the last one.
+            break;
+        }
+        attempt += 1;
+    }
+
+    // Park rather than exit, so we do not become a death of our own for somebody else to handle.
+    loop {
+        let (event, tid, pc, addr, _) = recv_fault(faultep);
+        send(REPORT, cseam::RPT_DEATH, tid, event);
+        send(REPORT, cseam::RPT_SITE, pc, addr);
+    }
+}
+
+/// **The verdict on one attempt**: a bitmap of the confinement claims that held.
+///
+/// Every bit is a separate question asked of memory, not of the component. The component is not
+/// consulted at all: it is dead by the time this runs.
+fn verdict(attempt: u64, event: u64, pc: u64, addr: u64) -> u64 {
+    let mut bits = 0u64;
+    let g = grant_page();
+
+    // Claim 1: the component's stores *inside* its grant landed. Without this every other bit could
+    // be satisfied by a process whose stores never worked at all, which would prove nothing.
+    let in_grant_landed = if attempt == cseam::ATTEMPT_HONEST {
+        // The honest path writes a checksum, so a non-zero one is the evidence its stores worked.
+        g[cseam::OUT_OFF..cseam::OUT_OFF + 4]
+            .iter()
+            .any(|&b| b != 0)
+    } else {
+        g[0] == cseam::MARK
+    };
+    if in_grant_landed {
+        bits |= checks::IN_GRANT_WRITE_LANDED;
+    }
+
+    // Claim 2 and 3: the witnesses. Read through OUR mappings, in OUR address space, after the
+    // component is dead. Every byte, because a partial overwrite is still an escape.
+    if (0..cseam::PAGE as usize).all(|i| witness_ro()[i] == cseam::pattern_ro(i)) {
+        bits |= checks::WITNESS_RO_INTACT;
+    }
+    if (0..cseam::PAGE as usize).all(|i| witness_far()[i] == cseam::pattern_far(i)) {
+        bits |= checks::WITNESS_FAR_INTACT;
+    }
+
+    // Claim 4: the kernel's fault site is the site the C code computed. This is what rules out "it
+    // crashed for some other reason on the way", which would make the witness checks vacuous.
+    let expect_addr = match attempt {
+        cseam::ATTEMPT_OVERRUN => Some(cseam::WITNESS_RO_VA),
+        cseam::ATTEMPT_WILD => Some(cseam::WITNESS_FAR_VA),
+        _ => None,
+    };
+    let site_ok = match expect_addr {
+        Some(want) => event == abi::fault::EVENT_FAULT && addr == want && pc != 0,
+        // A clean exit reports no site at all, and §26 says both words are zero. Asserting that is
+        // asserting the kernel does not leak a stale register into an EXIT message.
+        None => event == abi::fault::EVENT_EXIT && addr == 0 && pc == 0,
+    };
+    if site_ok {
+        bits |= checks::FAULT_ADDR_AS_EXPECTED;
+    }
+
+    // Claim 5, the honest attempt only: the C actually computed the right answer, checked against an
+    // independent Rust implementation of the same definition. A restart that produced a corpse that
+    // "ran" but computed nothing would otherwise pass.
+    if attempt == cseam::ATTEMPT_HONEST && output_correct(g) {
+        bits |= checks::OUTPUT_CORRECT;
+    }
+
+    bits
+}
+
+/// Is the honest attempt's output in the grant, and right? The checksum against a Rust
+/// recomputation, and the transformed string byte for byte including its terminator.
+fn output_correct(g: &mut [u8]) -> bool {
+    let text = &cseam::INPUT[..cseam::INPUT.len() - 1]; // without the NUL the C stops at
+    let want = cseam::expected_checksum(text);
+    let got = u32::from_le_bytes([
+        g[cseam::OUT_OFF],
+        g[cseam::OUT_OFF + 1],
+        g[cseam::OUT_OFF + 2],
+        g[cseam::OUT_OFF + 3],
+    ]);
+    if got != want {
+        return false;
+    }
+    let out = &g[cseam::OUT_OFF + 4..];
+    cseam::INPUT.iter().enumerate().all(|(i, &b)| {
+        let up = if b.is_ascii_lowercase() { b - 32 } else { b };
+        out[i] == up
+    })
+}
+
+/// The three pages, as slices. Separate functions rather than one static, because each is a distinct
+/// claim and mixing them up in the checker would be the most embarrassing possible bug.
+fn grant_page() -> &'static mut [u8] {
+    // SAFETY: a page we mapped read/write into our own address space at `_start`, and never unmap.
+    unsafe { core::slice::from_raw_parts_mut(cseam::GRANT_VA as *mut u8, cseam::PAGE as usize) }
+}
+fn witness_ro() -> &'static mut [u8] {
+    // SAFETY: ours, read/write, mapped at `_start`. The C component holds a read-only view of the
+    // same physical frame, which is the point.
+    unsafe {
+        core::slice::from_raw_parts_mut(cseam::WITNESS_RO_VA as *mut u8, cseam::PAGE as usize)
+    }
+}
+fn witness_far() -> &'static mut [u8] {
+    // SAFETY: ours, read/write, mapped at `_start`. No other address space maps this frame at all.
+    unsafe {
+        core::slice::from_raw_parts_mut(cseam::WITNESS_FAR_VA as *mut u8, cseam::PAGE as usize)
+    }
+}
+
+/// Report which stage failed, then trap. A half-built harness is not worth limping along, and the
+/// stage code turns "nothing happened" into a legible failure.
+fn bail(stage: u64) -> ! {
+    send(REPORT, cseam::RPT_FAILED, stage, 0);
+    suptree::fail()
+}
+
+#[panic_handler]
+fn panic(_: &core::panic::PanicInfo) -> ! {
+    suptree::fail()
+}
