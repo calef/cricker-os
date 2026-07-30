@@ -303,10 +303,10 @@ history against `vttest` that we would otherwise be writing from scratch for yea
    have to be rebuilt.** That is the cost this increment discovered and could not have known before.
 4. **Their API is in flux**, so any adoption pins a version and takes the divergence-management
    discipline the vendored RedoxFS already has (DECISIONS §18's vendoring policy).
-5. **`crates/vt` would not be deleted.** It is 700 lines including its tests and it is the thing that
-   makes the host-side scanout check possible; keeping it as the reference implementation the foreign
-   one is *checked against* is more valuable than either alone, and it is a better milestone-23
-   demonstration too (swap the engine, run the same suite, compare the grids).
+5. **`crates/vt` would not be deleted.** It is about 1,500 lines including its tests and its keymap,
+   and it is the thing that makes the host-side scanout check possible; keeping it as the reference
+   implementation the foreign one is *checked against* is more valuable than either alone, and it is
+   a better milestone-23 demonstration too (swap the engine, run the same suite, compare the grids).
 
 **The recommendation.** Adopt it as a *second* engine behind the same seam, not as a replacement, and
 do it when there is a reason to want scrollback and UTF-8 rather than to want a Zig dependency. The
