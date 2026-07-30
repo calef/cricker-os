@@ -54,6 +54,7 @@ IPC and the MMU invariants are next. This threads through the list rather than b
 | 37 | Prove RedoxFS's crash consistency (DECISIONS §34, condition 1) | Inject the failure a copy-on-write filesystem exists to survive, and measure whether it does: torn writes (a block partially written), dropped writes (a write the device acknowledged and did not persist), and a kill mid-transaction, then reopen with the same `cleanup: true` header-ring replay the FS server always mounts with, and assert the filesystem is consistent and every acknowledged write is either wholly present or wholly absent. The seam is `IpcDisk` and the block server, which sit between the engine and the device and can drop or truncate a write deliberately; the sans-IO core already runs on the host against a real image, so most of this is host-testable in milliseconds and only the device-level kill needs QEMU. Includes the negative control that makes the rest mean anything: the injector must be shown to actually corrupt something when the replay is disabled | **the condition that decides whether §34's label is earned.** Crash consistency is RedoxFS's central selling point and the reason it beat ext2, and we currently assert it on the strength of the upstream design description rather than any measurement. That is a claim of exactly the kind this project's rules forbid, and it is the first thing a skeptic asks a filesystem. Until it passes, the docs say "designed for crash consistency" and never "crash consistent". Note this is a gap in **our harness, not in RedoxFS**: no candidate engine's crash consistency is tested here, so switching engines would not address it |
 | 38 | Filesystem throughput, and the comparison (DECISIONS §34, condition 2; extends 21/25) | Sequential and random read/write throughput through the confined FS server, against ext4 on Linux and APFS on macOS at a matched virtualization tier, the way milestone 25 did the primitives. Requires deciding what is honestly comparable: our reads are device-latency-dominated (`fs_read` is ~204 us/read under HVF, and `relay_rtt` puts the isolation tax a thousand times below that), so the interesting question is whether the userspace-server architecture costs throughput once the device dominates, which is a claim a microkernel skeptic will press | **"primary filesystem" invites a comparison we cannot currently make.** We have the per-request numbers and the isolation tax, and no MB/s figure at all. Milestone 21's rule is measure rather than argue, and 25 already established that the honest way to do this is EL0-measured against real systems rather than self-reported. This is where the "userspace servers are too slow" objection gets an answer or a concession |
 | 39 | Repository structure for a loosely-coupled OS, and the road to a distribution | **Analysis recorded, no decision taken.** The tree is a monorepo for a deliberately loosely-coupled system, and it is straining in measurable ways: `user/` is 28 binaries and 9,324 lines in one crate that is also a shared library, `fs-server/` has already escaped into its own workspace for real dependency reasons, `crates/` conflates kernel proof crates with wire contracts and userspace runtime so the boundary a third party cares about is invisible, and every crate is version 0.1.0. Four options are written up with their trade-offs (restructure in place; multiple workspaces in one repo; split repos; monorepo plus a later distribution *manifest* repo), along with a naming argument (**components** and **services**, never "daemons", because a Unix daemon is defined by the ambient authority this OS does not have) and the observation that milestone 31's program manifest plus §22's measured-boot hashing are already three quarters of a package format | **the structure has to serve the thesis, and one constraint dominates.** A single `script/test` proving the whole system on both ISAs is this project's credibility mechanism and what makes rule 5 a gate rather than an aspiration; splitting repos trades that for decoupling nothing external needs yet. Recommendation recorded (monorepo now, distribution as a separate manifest repo, executed as multiple workspaces, not before 23 forces it) so the eventual decision starts from evidence rather than from taste |
+| 40 | Documentation as a system service: searchable, rendered, and installed by packages | Markdown authored, **rendered** for display rather than shown raw, searchable locally, and installed by the package that owns it. Reuse `pulldown-cmark` for parsing (CommonMark is a fiddly spec worth taking from someone else) and write the ANSI renderer against `linedisc`'s contract, because `termimad`/`mdcat` sit on `crossterm` and assume a POSIX terminal we do not have. Phase 1 is a terminal viewer and pager, phase 2 a host-built inverted index shipped as a per-package shard, phase 3 a graphical viewer riding the display ladder. Two constraints found while scoping: **`readdir` refuses and the §27 contract has no such verb**, so nothing can walk a tree for documents, and **font rendering is still milestone 29's remaining increment**, so the terminal comes first | **the OS explains itself, on itself.** The project's whole argument is already markdown (DECISIONS, thirty-plus notes, this roadmap), so a capability-confined viewer serving them is a better milestone-23 demonstration than another synthetic test and costs the documentation nothing. The missing `readdir` turns out to be a feature: **enumeration is authority**, so indexing at package-build time is both the way around the gap and the more honest shape, which is the same answer `apropos` reached for a different reason. And `doc notes/ipc-naming.md` granting exactly one readable file is milestone 31's designation-is-authorization made into something a person uses |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -1005,6 +1006,80 @@ board), which is a 16a story to do in Rust when first silicon makes it concrete.
 component at, and before committing to libghostty-vt. Effort S to M. The whole value is that it is
 cheap and it fails early: if the toolchain, the shim, or the confinement story has a problem, we
 find it with a throwaway component rather than half way into a port.
+
+### 40. Documentation as a system service: searchable, rendered, and installed by packages
+
+**Chris's direction, 2026-07-30.** Markdown as the authored format, rendered for display rather than
+shown raw, searchable on the local machine, and installed *by the package that owns it*, so a
+component brings its documentation with it.
+
+**Why this belongs on a demonstrator's roadmap rather than being a nicety.** The project's own
+argument is written in markdown: `DECISIONS.md`, thirty-plus notes, this roadmap. A cricker-os that
+serves its own design notes, on itself, through a capability-confined viewer, is a better
+demonstration of milestone 23's component story than another synthetic test, and it costs the
+documentation nothing because it already exists. It is also the first *application* on the display
+ladder that anybody would actually use.
+
+#### Two constraints found while scoping, both real
+
+1. **There is no directory iteration.** `readdir` refuses in the std PAL and the §27 file contract has
+   no such verb, so nothing can walk a tree looking for documents. Adding one is a decision, not a
+   detail, and **the capability model argues against it anyway: enumeration is authority.** A viewer
+   that can list a directory can discover what it was not given. So the design below indexes at
+   *package build time* and ships the index, which sidesteps the missing verb and is the more honest
+   shape. Unix reached the same answer for a different reason: `apropos` reads a prebuilt `mandb`
+   because scanning was slow.
+2. **There is no font rendering yet.** Milestone 29 shipped pixels, and glyphs plus the VT engine are
+   its remaining increment. So a *graphical* documentation browser cannot be first; the terminal can.
+
+#### Reuse: take the parser, write the renderer
+
+CommonMark is a fiddly specification with a large conformance suite, and parsing it is exactly the
+kind of work worth taking from someone else. Rendering to *our* terminal contract is ours and small.
+That split is the reuse judgment, and it is the same one milestone 32 made about RedoxFS.
+
+| Piece | Option | Judgment |
+|---|---|---|
+| Parse | **`pulldown-cmark`** (pure Rust, CommonMark, event-stream API, few dependencies) | **Take it.** The event stream is the right shape for a renderer that emits ANSI. Milestone 27's `std` is what makes this buildable at all. |
+| Parse | `comrak` (GFM: tables, strikethrough, footnotes) | Consider later if GFM tables matter; more dependencies. |
+| Render | `termimad`, `mdcat` | **Do not take.** Both sit on `crossterm`, which assumes a POSIX terminal (termios, ioctl). Porting that is more work than emitting ANSI against `linedisc`'s contract, which we own and already speak (§21). |
+| Search | `tantivy` | **Too heavy.** It assumes a filesystem and mmap. |
+| Search | A host-built inverted index shipped in the package | **Take this shape.** Built by `xtask` where there are no constraints, merged by the viewer across installed packages. |
+| UI | `ratatui` | Possible for a pager later; needs a backend against our terminal contract first. |
+
+#### Shape
+
+- **A doc bundle is part of a package**: rendered-source markdown plus a small index shard, installed
+  into a documentation store when the component is installed. This is where milestone 39's packaging
+  observation pays: manifest, hash, version, and now a doc bundle.
+- **The viewer holds a directory capability to the doc store** and nothing else. It cannot read the
+  rest of the filesystem, which is the point, and it does not need to because the index tells it what
+  exists.
+- **The index is a merge of shards**, one per installed package, so installing a component makes its
+  documentation searchable without a reindex pass and without any component being able to see
+  another's files.
+- **`doc search <term>`** and **`doc view <topic>`**, shell verbs. Milestone 31's grant expression
+  makes this a demonstration rather than a convenience: `doc notes/ipc-naming.md` passes exactly one
+  readable file capability, and a viewer invoked with no argument can read nothing.
+
+#### Phasing
+
+- **Phase 1, the terminal viewer.** `pulldown-cmark` to an ANSI renderer over `termd`'s contract:
+  headings, emphasis, lists, block quotes, code blocks, and a pager. Works on the serial console
+  today and inherits the display terminal for free when 29's glyph work lands. Host-tested in
+  milliseconds like every other pure-logic piece: markdown in, styled bytes out.
+- **Phase 2, search.** The host-built index, the shard merge, and `doc search`.
+- **Phase 3, the graphical viewer.** Rides the display ladder: needs 29's font rendering and sits as a
+  client of 33's compositor. Rung three of the ladder is where this becomes a real application.
+
+**Prior art worth reading:** `man` plus `apropos` plus `mandb` for the split between format, index and
+pager, which is the architecture this proposes minus the troff. Dash/Zeal *docsets* (a bundle with its
+own index) for the packaging shape. `cargo doc`'s HTML output as the road not taken, since HTML would
+need a browser engine, which is a mountain with no thesis behind it.
+
+**Sequencing.** Phase 1 wants milestone 31 phase 2 finished (per-file grants make `doc <file>` the
+demonstration it should be) and nothing else; it can precede the packaging work and be wired into it
+later. Effort S to M for phase 1, M for phases 2 and 3 together.
 
 ### 39. Repository structure for a loosely-coupled OS, and the road to a distribution
 
