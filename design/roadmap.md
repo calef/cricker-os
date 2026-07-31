@@ -120,6 +120,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 54 | NOT-STARTED | A network file service a Mac can actually mount | the first real workload with a real user, and the security claim backup servers deserve |
 | 55 | NOT-STARTED | Time Machine: SMB3 with Apple's extensions, and mDNS | **likely the largest single piece of work in the project**, and the one that must be scoped before it is started |
 | 56 | NOT-STARTED | Secrets, credentials, and the entropy to make them safe | **our RNG is explicitly not cryptographic**, and a secret is a bearer token where a capability is an unforgeable reference |
+| 57 | NOT-STARTED | Partitioning and formatting a real drive, and extended attributes | you cannot find a partition without reading the table, and **we have no partition-table code at all**; all of it is testable in QEMU before the board lands |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -2844,6 +2845,68 @@ not by object.**
 `std::random`'s caveat currently taints anything security-adjacent anywhere in the tree. The virtio-rng
 driver is testable in QEMU today, with no board required. **Effort: not estimated**; vendoring crypto
 and writing a credential service are well-understood, and the secrets-at-rest question is not.
+
+### 57. Partitioning and formatting a real drive, and extended attributes
+
+**In brief.** Chris's router setup is `parted` then `mkfs.ext4` then three mounted partitions. We have
+**no equivalent of the first step at all**, and the second only as a host tool. Plus the xattr gap
+milestone 55 surfaced. **Nearly all of this is testable in QEMU against virtio-blk with no board**, so
+it is schedulable before 2026-08-21 rather than waiting on hardware.
+
+#### Extended attributes: decided in direction, open in mechanism
+
+**Chris decided 2026-07-30: extended attributes, not AppleDouble sidecars**, on the grounds that we
+will want them anyway. Agreed, and it does not reopen §34: that entry surveyed ext2, FAT32/exFAT,
+littlefs, btrfs, ZFS and F2FS before choosing RedoxFS, and **xattrs were never the deciding axis**, so
+the requirement adds a gap to fill rather than a comparison to redo. ext4 works on the router but
+importing it means importing C, which §34 chose RedoxFS specifically to avoid, and there is no
+`no_std` Rust ext4.
+
+Verified: **RedoxFS has no xattr support.** Two mechanisms, and **the fork is open**:
+
+- **Extend the on-disk format.** Correct, and atomic by construction since the metadata rides
+  RedoxFS's own copy-on-write transaction. The cost is that §34 chose RedoxFS partly for being
+  maintained upstream, pinned at 0.9.1 with a patch discipline that is currently two `Vec` imports; a
+  format extension is a materially larger divergence that every future pin bump pays for. Upstreaming
+  is the mitigation.
+- **Layer xattrs in the FS server.** Normally dismissible, because on Linux anything can open the file
+  directly and bypass the layer. **Here nothing can**: all access goes through `fs_proto`, so a layer
+  above the filesystem is as authoritative as the filesystem. A genuine capability-system advantage.
+
+**The check that decides it, and it is small: does RedoxFS let us group a file write and a metadata
+write into one transaction?** If yes, layering is safe and much cheaper. If no, atomicity between a
+file and its metadata cannot hold across a crash (§42's exact territory, and a rename must move both
+together), and the format extension is the only correct answer. **Do this check before committing
+either way.**
+
+#### The tools, none of which exist
+
+| Need | Status | Note |
+|---|---|---|
+| **GPT parsing** | **None** | Mandatory even if we never write one: you cannot find a partition on a real disk without reading the table |
+| GPT writing | None | The `mkpart` equivalent. Protective MBR, header, entry array, two CRC32s, backup header at the last LBA |
+| `mkfs` on the target | Host only | `redoxfs-host mkfs IMAGE SIZE_MIB` is a std host tool; the FS server is `no_std` |
+| Block device enumeration | None | "What drives are attached", which is enumeration again and bounded by capabilities exactly as milestone 47's globbing and completion are |
+
+**GPT is a good crate to write.** Pure computation, well specified, so it is host-tested with tests in
+milliseconds, and it has real Kani targets: CRC round-trip, primary and backup headers agreeing,
+entry-array bounds, and refusing a table whose entries overlap.
+
+#### The capability shape is the demonstration
+
+Partitioning and `mkfs` are **destructive** and need authority over a *whole block device*. So the
+tool holds one device capability and can destroy exactly that device and nothing else. Compare
+`parted /dev/sda` as root, where a typo reaches any disk in the machine, and Chris's own instructions
+carry a "confirm the target device path before proceeding" warning precisely because the tool cannot
+enforce it. **Here the warning is structural**: the tool was handed one disk.
+
+That also makes it a natural place for milestone 47's `enumerate` right to earn itself: listing
+attached devices and holding one of them are different authorities.
+
+**Sequencing.** The GPT crate and the transaction check are independent of everything and can start
+now. `mkfs` on the target wants the block-device path settled. Real drives arrive with milestone 53.
+**Effort: not estimated**, though the GPT crate alone looks like one lane on the history-calibrated
+scale.
 
 
 ## The display ladder (recorded 2026-07-28, Chris's direction)
