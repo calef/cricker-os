@@ -18,6 +18,7 @@ members = [
     "crates/frames",
     "crates/fs_proto",
     "crates/gfx_proto",
+    "crates/gpt",
     "crates/ipc",
     "crates/paging",
     "crates/pci",
@@ -67,6 +68,14 @@ opt-level = 2
 # arithmetic with nothing a debugger would want to step through. See the test's own comment for why
 # exhaustion beats a bounded solver run here.
 [profile.dev.package.ntp_proto]
+opt-level = 2
+
+# Same reason again (milestone 57). `gpt`'s mutation tests are exhaustive rather than sampled: every
+# byte position in a real header block and a real entry array, crossed with every value that byte
+# could have held, must be rejected. That is 460,000 table validations, each recomputing a CRC-32,
+# and unoptimised it is a minute of nothing for a crate that is byte shuffling and one polynomial.
+# See the tests' own comments for why exhaustion beats a bounded solver run on these two properties.
+[profile.dev.package.gpt]
 opt-level = 2
 
 # Note: we deliberately do NOT set `panic = "abort"` here. The bare-metal target
