@@ -3130,7 +3130,9 @@ not by object.**
 
 #### Decisions to make before building
 
-- **Vendor the crypto, do not write it.** RustCrypto's crates are `no_std` and reviewed, and the
+- **Take the crypto as a dependency, do not write it and do not vendor it** (§46, amended
+  2026-07-31: vendoring is for what must be patched, and RustCrypto needs no patch; a vendored copy is
+  also invisible to `cargo-deny`/`cargo-audit`, which is the one thing crypto most needs). Its crates are `no_std` and reviewed, and the
   supply-chain tooling from milestone 44 (`deny.toml`, `script/supply-chain`, `script/vendor-verify`)
   already exists for exactly this shape. Writing our own AES or SHA is a bad idea and the entry should
   say so rather than leaving it open.
@@ -3150,7 +3152,7 @@ not by object.**
 **Sequencing.** Before milestone 55. **The entropy half is done**, which was worth doing early and on
 its own, since `std::random`'s caveat tainted anything security-adjacent anywhere in the tree and the
 virtio-rng driver was testable in QEMU with no board required. **Effort for the rest: not estimated**;
-vendoring crypto and writing a credential service are well-understood, and the secrets-at-rest
+taking crypto as a dependency and writing a credential service are well-understood, and the secrets-at-rest
 question is not.
 
 ### 57. Partitioning and formatting a real drive, and extended attributes
