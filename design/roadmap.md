@@ -109,7 +109,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 43 | NOT-STARTED | A second security audit, with a different lens | the attack surface roughly doubled after the first audit was written |
 | 44 | PARTIAL | GitHub repository hardening: policy, private reporting, code scanning, pull requests | a repository with a security thesis should be able to receive a report privately |
 | 45 | BUILT | Triage the CodeQL code-scanning alerts, and decide what the tool is for | the alerts land on this project's most-used unsafe abstraction |
-| 46 | NOT-STARTED | Rename the components for what they are, and write down the naming rules | a name is a claim, and `-d` claims something we rejected; conventions that matter get a checker, not a paragraph |
+| 46 | BUILT | Rename the components for what they are, and write down the naming rules | a name is a claim, and `-d` claims something we rejected; conventions that matter get a checker, not a paragraph |
 | 47 | NOT-STARTED | Navigation and naming: cd, pwd, ls, mkdir, rm, paths, and environment | **divergence from Unix must be earned, never stylistic.** Keep the commands; change only what the capability model actually forces, and get one missing primitive right |
 | 48 | NOT-STARTED | Job control: jobs, wait, kill, fg, bg, and a stopped state | **most of it needs no new kernel surface**, and the tty's most tangled feature turns out to be a capability transfer |
 | 49 | NOT-STARTED | Users, login, and attribution: what identity is for once it stops being authority | three of Unix's four uses for a uid are already answered structurally; the fourth, **attribution, has no mechanism at all** |
@@ -1689,10 +1689,17 @@ code did. The real comparison is `/language:rust`: 2 results on `refs/heads/main
 
 ### 46. Rename the components for what they are, and write down the naming rules
 
-**In brief.** Five renames in one mechanical commit: `netd` → `netstack`, `compd` → `compositor`,
-`gpud` → `display`, `termd` → `lineedit`, and the crate `crates/linedisc` → `crates/lineedit`.
-Measured scope: **398 whole-word token replacements across 4 file moves and 1 directory move**
-(`netd` 152, `linedisc` 79, `termd` 70, `gpud` 65, `compd` 32).
+**Built 2026-07-30, both ISAs.** Five renames in one mechanical commit: `netd` → `netstack`,
+`compd` → `compositor`, `gpud` → `display`, `termd` → `lineedit`, and the crate `crates/linedisc` →
+`crates/lineedit`. The scope estimated here at 398 came in at **457 whole-word token replacements
+across 4 file moves and 1 directory move** (`netd` 184, `linedisc` 93, `termd` 77, `gpud` 67,
+`compd` 36); the estimate was measured before milestones 23 and 37 landed and the tree grew under it,
+which is the ordinary way a count like this drifts. The conventions are notes/naming.md, indexed in
+notes/README.md, and four of them are checked in `script/lint`: no name ending in `-d`, the word
+"daemon" nowhere outside the documents that argue about it, one spelling for contract crates, and a
+recognised branch prefix. Each was proved to fail before it was trusted, and the strongest of those
+controls is that the `-d` check run against unmodified `main` reports exactly `compd gpud netd
+termd`.
 
 **Why it matters.** The rule and its argument are DECISIONS §39. The short version: a `-d` suffix
 tells every reader "this is a daemon" before they see a line of code, and a Unix daemon is defined by

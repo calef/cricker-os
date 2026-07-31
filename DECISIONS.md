@@ -3329,6 +3329,13 @@ decays without enforcement, and the checker is what makes a convention survive t
 moment. The part that cannot be checked, "name it for what it is", stays prose because it needs
 judgement.
 
+**Built 2026-07-30.** The rename landed as one commit; the conventions are
+[notes/naming.md](notes/naming.md), and `script/lint`'s `naming conventions` block checks four of
+them. The unfalsifiable-looking half turns out to have a demonstration after all: run the `-d` check
+against `main` before the rename and it names exactly `compd`, `gpud`, `netd`, `termd`. What no check
+reaches is the jargon argument above, because `linedisc` passes every one of them. A person not
+recognising a word is still the only test for that, which is the honest limit of this section.
+
 ## 40. A supervisor's death is its subtree's death; there is no reaper of last resort
 
 **Decided 2026-07-30 (Chris), from the `disown` question in milestone 48.** When a supervisor dies,
