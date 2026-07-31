@@ -1093,6 +1093,8 @@ fn initrd_riscv() -> bool {
             "--bin",
             "date",
             "--bin",
+            "rm",
+            "--bin",
             "entropy",
             "--bin",
             "ntp",
@@ -1172,6 +1174,7 @@ fn initrd_riscv() -> bool {
         // `date` (milestone 51). Portable for the same reason the service is: it reads a page and
         // formats it, and neither half knows which instruction set it is on.
         ("date", "date"),
+        ("rm", "rm"),
         // The entropy service (milestone 56). Portable, so both archives carry it: it holds the
         // virtio-rng driver, and the wiring tells it which bus the device came off.
         ("entropy", "entropy"),
@@ -1387,6 +1390,9 @@ fn mkinitrd() -> bool {
         "broker",
         "clock",
         "date",
+        // `rm` (milestone 47's rmdir lane): the first program endowed a directory capability.
+        // Portable, so both archives carry it.
+        "rm",
         "entropy",
         "ntp",
     ] {
@@ -1646,11 +1652,23 @@ fn stage_subtree() -> Option<String> {
     let sub = root.join(tree::SUB);
     let deeper = sub.join(tree::DEEPER);
     let other = root.join(tree::OTHER);
+    // Milestone 47's `rm -r` tree, a sibling of `sub` so a capability to one is provably not a
+    // capability to the other. `rm-keep` sits beside the doomed tree, inside the same grant: the
+    // program could have removed it and does not, because nothing named it.
+    let rmtree = root.join(tree::RMTREE);
+    let doomed = rmtree.join(tree::RM_DOOMED);
+    let nested = doomed.join(tree::RM_NESTED);
     let ok = std::fs::create_dir_all(&deeper).is_ok()
         && std::fs::create_dir_all(&other).is_ok()
+        && std::fs::create_dir_all(&nested).is_ok()
         && std::fs::write(sub.join(tree::INNER), tree::INNER_BODY).is_ok()
         && std::fs::write(deeper.join(tree::LEAF), tree::LEAF_BODY).is_ok()
-        && std::fs::write(other.join(tree::SECRET), tree::SECRET_BODY).is_ok();
+        && std::fs::write(other.join(tree::SECRET), tree::SECRET_BODY).is_ok()
+        && std::fs::write(rmtree.join(tree::RM_KEEP), tree::RM_KEEP_BODY).is_ok()
+        && std::fs::write(rmtree.join(tree::RM_SOLO), tree::RM_BODY).is_ok()
+        && std::fs::write(doomed.join(tree::RM_ONE), tree::RM_BODY).is_ok()
+        && std::fs::write(doomed.join(tree::RM_TWO), tree::RM_BODY).is_ok()
+        && std::fs::write(nested.join(tree::RM_LEAF), tree::RM_BODY).is_ok();
     if !ok {
         eprintln!("mkredoxfs: cannot stage the milestone-47 subtree");
         return None;
