@@ -75,6 +75,33 @@ pub fn rx_enable() {
     CONSOLE.lock().enable_rx_interrupt();
 }
 
+/// **Raise and lower the console UART's own interrupt line, for the RISC-V interrupt-delivery
+/// tests.** Test builds only.
+///
+/// aarch64 raises a test interrupt with a GIC SGI, which needs no device at all. RISC-V has no SGI:
+/// the only software-raised interrupt it has is the SBI's IPI, which arrives as a *software*
+/// interrupt (`scause` = 1) down a different arm of the trap dispatcher than a device's, so it would
+/// not exercise the PLIC claim/route/complete path at all. What it has instead is a device whose
+/// line software can assert without any transfer or external stimulus: setting the 16550's
+/// transmit-empty interrupt enable makes it interrupt at once, because the transmitter of a polling
+/// console is always empty. Two register writes up, one down.
+///
+/// The console is the right device for it precisely because the kernel does not drive it by
+/// interrupt: transmit is polled (`write_byte` spins on `LSR`), so an asserted transmit line has no
+/// other consumer to disturb, and lowering it restores exactly the state `init` left.
+///
+/// See `kernel::sched::tests` and notes/interrupts.md.
+#[cfg(all(test, target_arch = "riscv64"))]
+pub fn raise_uart_interrupt() {
+    CONSOLE.lock().enable_tx_interrupt();
+}
+
+/// Quiet the line [`raise_uart_interrupt`] raised. Test builds only.
+#[cfg(all(test, target_arch = "riscv64"))]
+pub fn quiet_uart_interrupt() {
+    CONSOLE.lock().disable_interrupts();
+}
+
 /// Break the console lock open. **Panic and fault paths only.**
 ///
 /// # Safety

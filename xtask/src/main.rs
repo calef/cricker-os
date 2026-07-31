@@ -1876,9 +1876,11 @@ fn test() -> bool {
 
     // The same booted kernel test suite on the second architecture (parity workstream B). The
     // portable tests (scheduler, capabilities, revocation, memory, sync) run on RISC-V's real Sv39
-    // kernel; the aarch64-specific ones (the userspace-exec suite, the SGI interrupt tests, and SMP)
-    // are gated to aarch64. RISC-V exits via the sifive_test finisher, same harness. See
-    // notes/riscv-parity-scope.md.
+    // kernel; what stays gated to aarch64 is what genuinely needs aarch64 (the userspace-exec suite's
+    // hand-written machine code, and SMP). The two interrupt-delivery tests used to be on that list
+    // because they trigger with a GIC SGI; milestone 19 made the trigger per-arch instead, so they
+    // run here too. RISC-V exits via the sifive_test finisher, same harness. See
+    // notes/riscv-parity-scope.md and notes/interrupts.md.
     eprintln!();
     eprintln!("--- kernel tests, riscv64 (QEMU) ---");
     // The riscv userspace tests (parity C) load programs from the initrd and read the disk, so

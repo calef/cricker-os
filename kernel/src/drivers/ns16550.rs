@@ -33,6 +33,12 @@ const FCR_ENABLE_CLEAR: u8 = 0b0000_0111;
 const LSR_THRE: u8 = 0b0010_0000;
 // Interrupt Enable bit: Enable Received Data Available Interrupt (fires while the RX FIFO is nonempty).
 const IER_ERBFI: u8 = 0b0000_0001;
+// Interrupt Enable bit: Enable Transmitter Holding Register Empty Interrupt. Asserts as soon as it is
+// set if LSR.THRE is already set, which on a polling console it always is. See `enable_tx_interrupt`.
+// Test builds only, because that is where its only caller is; milestone 41's removal of the crate-wide
+// riscv `allow(dead_code)` means an unused constant here is a build error, which is the point.
+#[cfg(test)]
+const IER_ETBEI: u8 = 0b0000_0010;
 
 /// A handle to one NS16550. Just a base pointer, like `Pl011`.
 pub struct Ns16550 {
@@ -94,6 +100,34 @@ impl Ns16550 {
     /// interrupt and reads nothing. The console still polls for transmit.
     pub fn enable_rx_interrupt(&self) {
         self.write(IER, IER_ERBFI);
+    }
+
+    /// Turn on the transmit-holding-register-empty interrupt, and turn it off again.
+    ///
+    /// A 16550 asserts its line the moment `IER.ETBEI` is set while `LSR.THRE` is already set, and
+    /// on a console that has just finished printing THRE is *always* set. So this pair is a way to
+    /// raise and lower this device's interrupt line with two register writes, no transfer, no
+    /// external stimulus and nothing to read back. That is what `kernel::sched`'s RISC-V
+    /// interrupt-delivery tests use in place of aarch64's SGI, which RISC-V has no equivalent of
+    /// (notes/interrupts.md, "Testing it with no device on RISC-V").
+    ///
+    /// It is 16550 architecture, not a QEMU behaviour, so it should carry to any 16550-compatible
+    /// part (the VisionFive 2's UART is a DesignWare 8250). Nothing in this kernel drives transmit
+    /// by interrupt (the console polls `LSR`), so an asserted THRE line has no other consumer.
+    ///
+    /// Test builds only: a production caller would be a transmit-interrupt console, which this is
+    /// deliberately not.
+    #[cfg(test)]
+    pub fn enable_tx_interrupt(&self) {
+        self.write(IER, IER_ETBEI);
+    }
+
+    /// Mask every interrupt source in this UART, quieting a line raised by
+    /// [`enable_tx_interrupt`]. The console is a polling console, so all-off is its resting state
+    /// (`init` writes the same value). Test builds only, for the same reason as its partner above.
+    #[cfg(test)]
+    pub fn disable_interrupts(&self) {
+        self.write(IER, 0x00);
     }
 }
 
