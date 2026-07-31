@@ -1,7 +1,6 @@
 # cricker-os
 
 [![CI](https://github.com/calef/cricker-os/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/calef/cricker-os/actions/workflows/ci.yml)
-[![toolchain drift](https://github.com/calef/cricker-os/actions/workflows/toolchain-drift.yml/badge.svg)](https://github.com/calef/cricker-os/actions/workflows/toolchain-drift.yml)
 
 A capability microkernel for aarch64 and riscv64, written in Rust, from the first instruction.
 
@@ -56,8 +55,16 @@ than a formality:
 CI runs on an **aarch64** runner deliberately: this kernel targets a weakly-ordered machine, and a
 missing `Acquire`/`Release` passes on an x86_64 host and fails only on real ARM. Both the Rust
 toolchain and QEMU are pinned to exact versions, so "the tests passed" means the same thing on a
-laptop and on a runner. The second badge is a daily check of whether the *newest* nightly still
-builds us; it is informational and never blocks a merge.
+laptop and on a runner.
+
+**Toolchain drift is checked daily and deliberately has no badge.** The
+[toolchain drift](.github/workflows/toolchain-drift.yml) workflow builds against the *newest* nightly
+rather than the pin, so that upstream drifting away from us is discovered early instead of presenting
+the whole bill on the day someone raises the date. It is expected to go red: that is the signal
+working, not a defect in whatever commit happened to trigger the run, and the fix is a bump commit at
+a time of our choosing. A badge for it would be worse than useless — **a badge that is designed to go
+red periodically teaches readers to discount badges**, which is the only thing a badge must not do.
+Its result lives in the Actions tab, where a notice belongs.
 
 ## What it does
 
