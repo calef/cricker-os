@@ -1089,6 +1089,8 @@ fn initrd_riscv() -> bool {
             "--bin",
             "clock",
             "--bin",
+            "date",
+            "--bin",
             "entropy",
             "--target",
             RISCV_TARGET,
@@ -1162,6 +1164,9 @@ fn initrd_riscv() -> bool {
         // The clock service (milestone 51). Portable, so both archives carry it: it holds both RTC
         // drivers and the kernel tells it which one the machine has.
         ("clock", "clock"),
+        // `date` (milestone 51). Portable for the same reason the service is: it reads a page and
+        // formats it, and neither half knows which instruction set it is on.
+        ("date", "date"),
         // The entropy service (milestone 56). Portable, so both archives carry it: it holds the
         // virtio-rng driver, and the wiring tells it which bus the device came off.
         ("entropy", "entropy"),
@@ -1366,6 +1371,7 @@ fn mkinitrd() -> bool {
         "chatty",
         "broker",
         "clock",
+        "date",
         "entropy",
     ] {
         match read_stripped(&bin_elf(name)) {
