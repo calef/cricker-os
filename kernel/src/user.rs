@@ -2076,7 +2076,9 @@ pub mod fs_service {
     /// and `the_fs_servers_stack_still_has_headroom` for the test that fails the day it is too small
     /// again. notes/fs-server.md carries the story.
     ///
-    /// 96 is chosen against the measurement, not above it: the high-water is **135,696 bytes**, and
+    /// 96 is chosen against the measurement, not above it: the high-water is **135,696 bytes** (and
+    /// 127,408 as measured by milestone 37, an unattributed 8 KiB lower; notes/fs-server.md carries
+    /// both and the reasoning), and
     /// `1 + 96` pages is 397,312, which leaves room for roughly thirty more 8 KiB activations. That
     /// margin is the point, because recursion depth here tracks the *tree* depth, which grows with
     /// the image; a size proven on a 16 MiB fixture is not proven on a real disk. 384 KiB of frames

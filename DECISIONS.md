@@ -2092,7 +2092,11 @@ is now measured rather than chosen: the kernel poisons every FS-server stack pag
 `fs_service::fs_stack_used` reports the deepest word that is no longer poison (135,696 bytes on
 aarch64, 135,824 on riscv64, of a 397,312-byte grant), with a test on both ISAs that prints it every
 run and fails under a quarter left. notes/fs-server.md carries the incident, including the two
-instruments it blinded and why a ceiling failure reports the ceiling and not the cost.
+instruments it blinded and why a ceiling failure reports the ceiling and not the cost. *Milestone 37
+measures 127,408 and 127,536 for the same grant, 8 KiB lower, and does not attribute the drop; both
+numbers and the reasoning are in the note. It also widened the instrument to a maximum over every FS
+server a boot starts, so the mount that recovers a crashed disk is measured too, which is the case
+most likely to recurse further than a clean one.*
 
 **The remaining honest gap: a client of a dead server blocks forever.** §26's fault endpoint is the
 mechanism that would turn that into a message a supervisor can act on, and wiring the FS service into
@@ -2772,11 +2776,11 @@ nobody wrote down is a decision nobody can revisit.
 
 ### The three conditions
 
-1. **Crash consistency must be tested, not asserted (milestone 37).** It is RedoxFS's central selling
-   point and we have never injected a torn write or a power cut. Today the claim rests on the upstream
-   design description. For a project whose rule is measure rather than argue, this gap is worse than
-   the missing verbs were, and it is the first thing a skeptic should ask about. Until it is tested,
-   the docs say "designed for crash consistency", never "crash consistent".
+1. **Crash consistency must be tested, not asserted (milestone 37). MET, 2026-07-30**; the
+   measurement and the exact claim it earns are in the amendment below. It is RedoxFS's central
+   selling point and we had never injected a torn write or a power cut. The claim rested on the
+   upstream design description. For a project whose rule is measure rather than argue, that gap was
+   worse than the missing verbs were, and it is the first thing a skeptic should ask about.
 2. **Throughput must be measured (milestone 38).** `fs_read` reports the whole-path cost of a real
    read (~204 us under HVF, device-dominated, with `relay_rtt` putting the isolation tax three orders
    of magnitude below it), and it is deliberately ungated because the path is interrupt-driven. What
@@ -2833,7 +2837,90 @@ on architecture rather than on engine quality, which is why choosing RedoxFS now
 
 Note that switching engines would not address condition 1 at all: **no candidate's crash consistency
 is tested here.** That is a gap in our harness, not in RedoxFS, and it is why the conditions matter
-more than the choice.
+more than the choice. *That sentence was true when it was written and is now the thing milestone 37
+fixed; the harness exists, and it would measure any engine put behind the same trait.*
+
+### Amendment (milestone 37, 2026-07-30): condition 1 is met, and the claim is narrower than the words it replaces
+
+**RedoxFS is crash consistent, in a sense that is now measured rather than described.** The docs may
+stop saying "designed for crash consistency". They should not start saying it without the scope
+below, because the scope is where the interesting part is.
+
+**What is proven.** Take a workload of operations, each acknowledged only after the engine commits
+it, and call the filesystem after the first `p` of them `S(p)`. Then:
+
+> **For every point at which the device could stop, a fresh mount recovers exactly `S(p)` for some
+> `p`.** Never a blend of two states, never a half-applied operation, never a length nobody wrote,
+> never a mount that fails.
+
+That is **prefix consistency**, and it is deliberately stated as a stronger property than the one the
+milestone asked for. "Every acknowledged write is either wholly present or wholly absent" falls out
+of it, and so does the thing that phrasing leaves open: a state where a later operation survived and
+an earlier one did not. Two further assertions make it a measurement rather than a shape. `p` must be
+**non-decreasing** as the cut point advances, so a later crash can never lose more than an earlier
+one; and at the last cut point `p` must be the whole workload, so a filesystem that recovered the
+initial state every time (perfectly prefix-consistent, perfectly useless) fails.
+
+**The numbers, host side, exhaustive** (`fs-server/tests/crash_consistency.rs`, 0.6 s):
+
+| injection | fault points | result |
+|---|---|---|
+| power cut, every write | 93 | all prefix-consistent, `p` monotonic, `p` = 7 with nothing lost |
+| power cut with the last write **torn**, 4 offsets | 372 | all prefix-consistent |
+| a device that **lies** (drop or tear one write, keep persisting after) | 186 | 112 recovered, 1 refused at the mount, 73 refused at a read, **0 silently wrong** |
+
+**The limit, stated as plainly as the guarantee, because it is real.** RedoxFS's `Disk` trait has no
+flush and no barrier, so write *ordering* is the device's job. A device that acknowledges a write it
+has not persisted and then persists later ones can leave a valid commit pointing at a block that
+never landed, and no filesystem promises otherwise. What RedoxFS does promise, and what the third row
+measures, is that this is **never silent**: every `BlockPtr` carries a seahash of the block it names,
+checked on every read, so a lost or torn block is an error rather than a wrong answer. Our block
+server issues no `VIRTIO_BLK_T_FLUSH`, so on real hardware with a volatile write cache the durability
+of the *last* acknowledged write is the device's word rather than ours; that is a gap in our driver,
+not in the engine, and it is recorded here rather than in a footnote.
+
+**The controls, which are the reason the rest counts.** Three, of increasing directness. The
+lying-device sweep needs no tampering at all and still produces 74 images the filesystem refuses, so
+the injector is demonstrably destructive. Removing the header ring's older generations leaves **92 of
+93 fault points unmountable**, which isolates the fallback as the mechanism rather than a guess. And
+a commit torn at 2048 bytes fails `Header::valid()` outright while the previous generation's slot
+stays valid and stays older, which is the whole recovery argument in three assertions and no mount.
+
+**A fourth control arrived unbidden and is worth more than the other three.** The first version of
+the harness read *any* failed lookup as "the name is absent", so a dropped write to a directory's
+tree block produced what looked like a filesystem that never existed, empty root and all. Nine fault
+points reported a filesystem bug that was a test bug: `ENOENT` is the only error that means absence,
+and the engine refusing to guess at a block whose checksum did not match is the property working.
+An instrument that can produce a false positive and did is an instrument that is connected to
+something.
+
+**Two mechanisms we had named wrong, corrected here.** `cleanup: true` is **not** the header-ring
+replay; `FileSystem::open` scans all 256 slots and keeps the newest valid one unconditionally, and
+`cleanup` only releases unused nodes and commits on top. And the recovery is not "the newest
+consistent generation" in any sense the engine computes: it is the newest generation whose *header*
+still hashes, which is enough only because a commit's blocks are all written before it.
+
+**On device, both ISAs, on a disk of its own.** The FS server is killed one block write into its
+second transaction, with that block torn in half by a real virtio write, announcing the cut on its
+readiness endpoint so the kill is provably the injector's. A **different FS-server process** then
+mounts the same disk through the same block server, which is endpoint-only naming doing its job: the
+block server never learns its client died and was replaced, because it never knew who its client was.
+Its readiness sentinel is the consistency result, since `Server::open` refuses an image it cannot
+make sense of. Both legs recover the acknowledged payload, whole, and the host tool re-reads the image
+afterwards with the pinned engine and agrees.
+
+**The crash test owns its disk, and that is §27's lesson applied before the fact rather than after.**
+This test deliberately leaves a filesystem half-written. On the shared fixture, every other FS test's
+result would have depended on whether this one ran first, which is precisely the order-coupled gate
+that manufactured three incompatible root causes from three honest investigations. The fixture is
+regenerated every run, `CRICKER_KEEP_REDOXFS` deliberately does not apply to it, and on the host every
+fault point starts from a byte-identical clone of one image built in-process.
+
+**What is still a design claim.** Ordering and durability at the device, above. Repair and recovery
+tooling for an image the checksums *do* reject, which "What would reverse this" already names as
+unchecked, and which this milestone sharpens rather than answers: we can now produce such an image
+deliberately, and there is still nothing to hand a user who has one. Condition 2 (throughput,
+milestone 38) is untouched.
 
 ## 35. What a scanner is for here, and how its findings get dispositioned
 
