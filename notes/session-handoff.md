@@ -28,7 +28,7 @@ available. Re-point new agents at it.
   the qemu-bounded ceiling cover; ratified 2026-07-29).
 - **Interrupt delivery:** the block server now WAITs on completion instead of polling (the
   "WAIT hangs" belief was a misdiagnosis); GIC + PLIC device-line affinity, both ISAs.
-- **netd smoltcp-timer fix:** poll retransmit/ACK timers instead of blocking only on the NIC
+- **netstack smoltcp-timer fix:** poll retransmit/ACK timers instead of blocking only on the NIC
   IRQ; closed the RISC-V std_net mutual-idle deadlock SMP timing exposed. std_net completes
   both ISAs (~300s aarch64, under the heartbeat on riscv).
 - **Milestone 35 (prove the DMA boundary):** crates/dma_validate proves, for every input, that
@@ -49,7 +49,7 @@ service), §28 (SMP placement) + amendment, §16 amendment (SPLIT rights inherit
 
 ## Wave-3: what's next, roughly in order
 
-1. **`^C` implementation** (§24 decided, not built): two-tier, shell-held. termd detects `^C`,
+1. **`^C` implementation** (§24 decided, not built): two-tier, shell-held. lineedit detects `^C`,
    shell holds the interrupt endpoint, cooperative then forcible (DESTROY force-kill). Ready to
    schedule; needs no new kernel surface.
 2. ~~**Milestone 22 phase B** (trusted init).~~ **DONE 2026-07-29** (DECISIONS §26's phase B.1 and
@@ -73,7 +73,7 @@ service), §28 (SMP placement) + amendment, §16 amendment (SPLIT rights inherit
 4. **Milestone 31 phase 2:** per-file grants pointing at FS-server directory caps.
 5. **Milestone 23** (the flagship): capability-routed component OS with live replacement. All
    prerequisites now exist (revocation, supervision, dedicated binaries, components with real
-   state: netd under open connections, the FS server). Console hot-swap is instance one.
+   state: netstack under open connections, the FS server). Console hot-swap is instance one.
 6. **The display ladder** (roadmap "The display ladder"): 29 (VT terminal over virtio-gpu) ->
    33 (compositor component) -> apps on the std PAL -> 34 (virtio-gpu 3D). Chris's stated
    destination is "something like COSMIC driving a GPU." Rung 5 (bare-metal BXE 3D) is struck.

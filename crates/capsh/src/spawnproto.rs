@@ -4,7 +4,7 @@
 //! child itself: init holds the initrd and is the ELF loader (the parser stays in one place, out of
 //! the shell). So the shell tells init what to spawn and, crucially, *delegates the capabilities it
 //! grants* over the same endpoint. This module is that contract's word layout, the capability-shell
-//! analogue of `linedisc::proto`.
+//! analogue of `lineedit::proto`.
 //!
 //! It is a **userspace** protocol, not kernel ABI. The kernel routes these words the way it routes
 //! any IPC (DECISIONS §10, §12, §21); it never reads them. Adding a field is a change here, not to

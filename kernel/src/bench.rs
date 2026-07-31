@@ -138,7 +138,7 @@ fn ipc_rtt() {
 /// **The confined-server tax: a request routed through a server that fans out to a backend.** This
 /// is the microkernel architecture's per-request cost that a monolith does not pay, and the topology
 /// both real userspace servers use: the FS server CALLs the block server (`client -> fs -> blk -> fs
-/// -> client`), netd CALLs the NIC driver (`client -> netd -> driver -> netd -> client`). Each
+/// -> client`), netstack CALLs the NIC driver (`client -> netstack -> driver -> netstack -> client`). Each
 /// iteration here is that two-hop shape: the client sends to a relay, the relay forwards to a backend
 /// and waits, the backend replies, the relay replies to the client. Two rendezvous become four, two
 /// context switches become four.
@@ -147,7 +147,7 @@ fn ipc_rtt() {
 /// what one confined intermediary that delegates to a backend costs, the "server tax" a skeptic asks
 /// about, isolated and deterministic. It is on the icount baseline for exactly that reason. The real
 /// servers' end-to-end numbers are elsewhere and cannot be gated: `fs_read` (below) is device-latency
-/// dominated (~200 us/block under HVF swamps this few-hundred-tick tax), and netd's path is DHCP- and
+/// dominated (~200 us/block under HVF swamps this few-hundred-tick tax), and netstack's path is DHCP- and
 /// timer-driven, neither deterministic under `-icount`. So this kernel-side topology bench is how the
 /// server tax gets a gated regression number; see notes/benchmarks.md.
 fn relay_rtt() {

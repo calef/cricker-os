@@ -19,7 +19,7 @@
 //! And two more, granted only to a std program that is given the network (milestone 27 phase two;
 //! the net PAL in `sys/net` binds them, DECISIONS §25):
 //!
-//! - **slot 2**: the `Stack` endpoint with WRITE. `std::net` speaks the netd socket contract
+//! - **slot 2**: the `Stack` endpoint with WRITE. `std::net` speaks the netstack socket contract
 //!   (`netproto`) over it: `CALL`s carry a socket id and control words, `SEND_CAP` delegates a
 //!   per-socket shared frame. A program not given the network leaves this slot empty, and every
 //!   `TcpStream`/`UdpSocket` operation returns `Unsupported` rather than blocking.

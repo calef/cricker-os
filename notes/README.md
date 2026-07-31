@@ -121,7 +121,7 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [Rust `std` on the native ABI](std.md) — milestone 27: std's platform layer implemented directly
   on the capability ABI (Hermit's shape, not a POSIX shim). Heap from an untyped budget, stdout to an
   endpoint, time from the virtual counter, `panic!` faults, `thread::spawn` honestly `Unsupported`,
-  and (phase two) `std::net` bound to netd's socket contract and `std::fs` bound to the FS service.
+  and (phase two) `std::net` bound to netstack's socket contract and `std::fs` bound to the FS service.
   What a path *means* with no global namespace ("under the directory I hold", so `..` and an absolute
   path are refused as un-nameable rather than served), how a program detects it holds no filesystem
   without faulting on an unmapped page, how build-std runs against a hardlink-cloned patched
@@ -186,7 +186,7 @@ in the code or the conversation doesn't make sense, it belongs here.
   (console receive), and worker processes spawned on command. Proof the whole stack works, as a
   conversation between processes the kernel only routes.
 - [The line discipline as a userspace component](line-discipline.md) — milestone 28: the tty
-  layer as a process (`termd`) on plain endpoints, a sans-IO editing engine host-tested against a
+  layer as a process (`lineedit`) on plain endpoints, a sans-IO editing engine host-tested against a
   screen model, why it was built rather than porting `noline`/`embedded-cli`, and the Reply-cap
   argument that makes it deadlock-free.
 - [The terminal contract](terminal-contract.md) — milestone 28: the interface a terminal

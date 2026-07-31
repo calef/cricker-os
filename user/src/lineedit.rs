@@ -1,13 +1,13 @@
-//! **termd: the line discipline as a userspace component** (milestone 28).
+//! **lineedit: the line discipline as a userspace component** (milestone 28).
 //!
 //! The layer Unix builds into the kernel as the tty line discipline is here a process. It sits
 //! between the raw input driver and the application, and between the application and the console
 //! server, on plain endpoints:
 //!
 //! ```text
-//!   input driver ──OP_BYTES──►┌───────┐──text──► console server ──► UART
-//!                             │ termd │
-//!        application ◄─lines──└───────┘◄──OP_WRITE / OP_READLINE── application
+//!   input driver ──OP_BYTES──►┌──────────┐──text──► console server ──► UART
+//!                             │ lineedit │
+//!        application ◄─lines──└──────────┘◄──OP_WRITE / OP_READLINE── application
 //! ```
 //!
 //! Nobody in that picture knows what they are talking to. The input driver holds "an endpoint I
@@ -17,11 +17,11 @@
 //! tell, which is milestone 23's hot-swap claim in component form.
 //!
 //! The IPC protocol is the terminal contract, notes/terminal-contract.md; the framing constants
-//! are `linedisc::proto`. Every request is a `CALL`, served through `RECV_CAP`, answered through
+//! are `lineedit::proto`. Every request is a `CALL`, served through `RECV_CAP`, answered through
 //! the kernel's one-shot Reply capability (DECISIONS §12). That choice is what makes the server
 //! deadlock-free: a READLINE with no line ready is *held* (the reply capability parked in a
 //! slot) while the server keeps serving, so a client blocked printing can never interlock with
-//! a server blocked delivering. The editing itself lives in the host-tested `linedisc` crate;
+//! a server blocked delivering. The editing itself lives in the host-tested `lineedit` crate;
 //! this file is only wiring: words in, pages copied, words out.
 //!
 //! Its whole authority: the terminal endpoint (slot 0, RECV), the console server's request and
@@ -32,8 +32,8 @@
 #![no_std]
 #![no_main]
 
-use linedisc::proto;
-use linedisc::{Event, LINE_MAX, LineDisc, PROMPT_MAX, Sink};
+use lineedit::proto;
+use lineedit::{Event, LINE_MAX, LineDisc, PROMPT_MAX, Sink};
 use user_rt::{recv, recv_cap, reply, send};
 
 /// The terminal endpoint (slot 0): clients CALL requests here; we serve it with RECV_CAP.
@@ -42,7 +42,7 @@ const TERM: u64 = 0;
 const CONREQ: u64 = 1;
 /// The console server's reply endpoint (slot 2): we RECV its ack here. The console speaks the
 /// pre-§12 two-endpoint protocol (it serves with plain RECV, which cannot answer a CALL), so
-/// this hop is SEND+RECV, not CALL. Safe with one console client, and termd is that client.
+/// this hop is SEND+RECV, not CALL. Safe with one console client, and lineedit is that client.
 const CONREP: u64 = 2;
 
 /// The console's shared page, mapped read/write: we fill it, the console prints it. The same
@@ -118,7 +118,7 @@ pub extern "C" fn _start(_x0: u64, _x1: u64, _x2: u64) -> ! {
                 while done < len {
                     let n = (len - done).min(chunk.len());
                     copy_in(APP_OUT_VA, done, &mut chunk[..n]);
-                    linedisc::expand_output(&chunk[..n], &mut con);
+                    lineedit::expand_output(&chunk[..n], &mut con);
                     done += n;
                 }
                 con.flush();

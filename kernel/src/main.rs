@@ -793,7 +793,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
 
         // **Milestone 19d.2c, completed at 28: userspace init is the boot path.** The kernel stops
         // wiring services itself. It hands off to init, which brings up the console server, the line
-        // discipline (`termd`, milestone 28), the input driver, and the shell out of its own budget
+        // discipline (`lineedit`, milestone 28), the input driver, and the shell out of its own budget
         // through the granular verbs. This is the line that retires the kernel as the system's
         // builder. Every aarch64 interactive build reaches it: `--features shell` and the milestone
         // tour hand off straight away (the tour after running its demos), the same way `initboot`

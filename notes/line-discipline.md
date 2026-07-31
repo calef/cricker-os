@@ -1,7 +1,7 @@
 # The line discipline as a userspace component
 
 Milestone 28. The layer Unix builds into the kernel as the tty line discipline is here a process,
-`termd`, sitting on plain endpoints between the raw input driver and the application, and between
+`lineedit`, sitting on plain endpoints between the raw input driver and the application, and between
 the application and the console server. This note covers the build-vs-reuse call, the component's
 shape, and the one argument that makes the design correct: it cannot deadlock. The interface it
 presents is written up separately in [terminal-contract.md](terminal-contract.md); the interrupt
@@ -9,7 +9,7 @@ question it raises is [../design/interrupt-routing.md](../design/interrupt-routi
 
 ## Two pieces: a sans-IO engine and a wiring process
 
-The editing lives in the `linedisc` crate, which does no IO and knows nothing about IPC, UARTs,
+The editing lives in the `lineedit` crate, which does no IO and knows nothing about IPC, UARTs,
 or endpoints. Byte in, echo bytes out, completed lines out. That split is DECISIONS §7 applied:
 the editing rules are host-tested in milliseconds against a small terminal model that interprets
 the echo the way a VT does, so the tests assert **what the user sees**, not which escape
@@ -19,7 +19,7 @@ non-destructive browsing and dedup, CR/LF/CRLF endings, `^C`, `^D`'s double duty
 overflow, and output newline expansion. The redraw strategy can change without touching a test,
 which is the payoff of modelling the screen instead of the byte stream.
 
-`termd` (in `user/`) is the other piece: words in, pages copied, words out. It owns no hardware.
+The `lineedit` binary (in `user/`) is the other piece: words in, pages copied, words out. It owns no hardware.
 Its whole authority is the terminal endpoint (serve), the console server's request and reply
 endpoints (print), and three shared pages (the console's, the client's output, the client's
 input). It touches no UART and no interrupt, which is exactly why the component could not exist
@@ -68,8 +68,8 @@ The kernel makes the slot management safe: `cspace.insert` hands each incoming R
 *fresh* free slot, so a parked read's Reply at one slot is never clobbered by the next `CALL`'s
 Reply at another. One outstanding read per terminal (the contract) bounds the parked set to one.
 
-The one place `termd` does block is its own call to the console server, and that is a separate,
-single-client rendezvous (`termd` is the console's only client) that cannot interleave with the
+The one place `lineedit` does block is its own call to the console server, and that is a separate,
+single-client rendezvous (`lineedit` is the console's only client) that cannot interleave with the
 terminal endpoint it serves.
 
 ## Type-ahead, bounded
@@ -86,9 +86,9 @@ input page and the parked Reply is invoked. `^C` clears the queue and fails any 
 Because every party names only an endpoint ([ipc-naming.md](ipc-naming.md)), the discipline can
 be replaced by rewiring endpoints, with no client able to tell. The input driver holds "an
 endpoint I send bytes to"; the shell holds "an endpoint that prints and reads lines." Neither
-holds a name for `termd`. This is milestone 23's "the console hot-swap is instance one" in
+holds a name for `lineedit`. This is milestone 23's "the console hot-swap is instance one" in
 concrete form: a terminal with real behavior is a far better first swap target than a raw echo
-loop. `termd` faults into a clean kill on any bug (it `brk`s / `ebreak`s in its panic handler),
+loop. `lineedit` faults into a clean kill on any bug (it `brk`s / `ebreak`s in its panic handler),
 which is honest rather than reckless precisely because the hot-swap story is what recovers it.
 
 ## Where it runs
@@ -97,7 +97,7 @@ The interactive system is built by userspace init out of its own budget, on both
 aarch64 through `hello`'s init role (the `initboot` path, and now the `shell` feature and the
 default tour hand off to it too, since the kernel-wired `shell_service` cannot host a
 contract-speaking shell), and RISC-V through the portable `sysinit` builder (`riscv_shell_boot`).
-Init creates the terminal endpoint and the shared frames, grants `termd` the serve side and the
+Init creates the terminal endpoint and the shared frames, grants `lineedit` the serve side and the
 drivers and shell the `WRITE` side, and none of the wiring is in the kernel. Proven under QEMU on
 both ISAs: `help`, `echo`, and `run` drive a worker to completion through the full path
 (input driver → line discipline → console server, and shell → line discipline → console server).

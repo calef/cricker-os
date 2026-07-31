@@ -1341,13 +1341,13 @@ kernel still programs the domain. See notes/iommu.md.
 ## 21. The terminal is a userspace component, and the kernel is out of the shell business (milestone 28)
 
 **Decided and built 2026-07-28.** Milestone 28 put the tty line discipline in userspace as a
-swappable component (`termd`), sitting on plain endpoints between the input/console drivers and
+swappable component (`lineedit`), sitting on plain endpoints between the input/console drivers and
 applications. Three things here are decisions, and the reason each gets recorded rather than left
 in code:
 
 - **The terminal protocol is a userspace protocol, not kernel ABI.** The opcodes
   (`OP_WRITE`/`OP_READLINE`/`OP_BYTES`), the read flags, and the shared-page convention live in
-  `linedisc::proto` and are written up in [notes/terminal-contract.md](notes/terminal-contract.md).
+  `lineedit::proto` and are written up in [notes/terminal-contract.md](notes/terminal-contract.md).
   Every request is an endpoint `CALL` served through `RECV_CAP` and answered through the one-shot
   Reply capability (§12); the kernel routes the words without reading them. **No new syscall and no
   new kernel method were added.** This is the §4 boundary held on purpose: a whole tty layer landed
@@ -1437,20 +1437,20 @@ real std program (`Vec`, `String`, `HashMap`, `println!`, `Instant`) spawned as 
 checked byte for byte on both ISAs (the §19 parity gate).
 
 **Amendment (phase two, 2026-07-28): `std::net` binds to the socket contract.** `std::net::TcpStream`
-and outbound `std::net::UdpSocket` now work, backed by netd over the §25 socket contract; the
+and outbound `std::net::UdpSocket` now work, backed by netstack over the §25 socket contract; the
 `net honestly unsupported` line of phase one is retired. The PAL (`sys/net/connection/cricker.rs`) is
 a **pure client** of the frozen contract, no new syscall and no new capability method: it holds a
 `Stack` endpoint (slot 2) and a frame untyped (slot 3), mints a shared frame per socket, and drives
-netd with `netproto` `CALL`s. The wire constants are generated verbatim from `user/src/netproto.rs`
+netstack with `netproto` `CALL`s. The wire constants are generated verbatim from `user/src/netproto.rs`
 into the patched std, the same anti-drift discipline as the ABI and heap crates. A std program does
 networking only if it holds those two slots; without them `std::net` returns `Unsupported`, which is
 "no ambient network" (§10) made visible from inside a process. The same `hellostd` binary proves
 both: spawned without the net slots it runs the offline transcript, spawned with them (and a running
-netd) it does a real UDP DNS query and a TCP echo round trip, each asserted byte for byte on both
+netstack) it does a real UDP DNS query and a TCP echo round trip, each asserted byte for byte on both
 ISAs. Honest gaps carried as `Unsupported`: `TcpListener` (no LISTEN verb), non-blocking mode and
 timeouts (blocking-only contract), DNS resolution (`lookup_host`; numeric addresses only), and IPv6.
-One finding reported up: netd ties a socket's local port to its socket id, so reopening a closed id
-reuses its port and can stall against slirp; the fix is ephemeral local ports in netd, a contract-side
+One finding reported up: netstack ties a socket's local port to its socket id, so reopening a closed id
+reuses its port and can stall against slirp; the fix is ephemeral local ports in netstack, a contract-side
 change (notes/std.md).
 
 **Amendment (phase two, 2026-07-29): `std::fs` binds to the FS-service contract, and a path means
@@ -1612,11 +1612,11 @@ succeeds. The shell's watch loop retries exactly so. A pure `loop {}` spinner is
 the second `^C` on both ISAs.
 
 **The shell learns of `^C` by polling, deliberately (wait A).** The shell must watch the job and the
-`^C` at once, and with only blocking primitives it cannot block on both. It busy-polls `termd`'s new
+`^C` at once, and with only blocking primitives it cannot block on both. It busy-polls `lineedit`'s new
 `OP_INTRCOUNT` (an immediate reply with the running `^C` count) with `yield` between, driving the
 escalation from the count's advance. The escalation policy (first `^C` cooperative, a second `^C` or
 a grace-window timeout forcible) is host-tested in `capsh::Escalation`. Holding `^C` routing in the
-shell, not `termd`, is the §24 premise: job control is the shell's knowledge, and `termd` stays a
+shell, not `lineedit`, is the §24 premise: job control is the shell's knowledge, and `lineedit` stays a
 terminal. The clean blocking form waits for the notification primitive milestone 23's latency
 ladder forecasts; the shared flag and the poll are the honest interim, not the destination. See
 notes/grant-expression.md (the interrupt grant) and notes/terminal-contract.md (the flow).
@@ -1873,7 +1873,7 @@ role of the virtio driver) that serves blocks over blk IPC with the DMA confinem
 no_std RedoxFS core behind a `Disk` trait over blk IPC and allocates from its own untyped budget
 through §22's `GlobalAlloc`; and a **client** that holds only a directory capability. The contract
 and both wire protocols live in `crates/fs_proto`, host-tested, the way the terminal contract lives
-in `linedisc::proto`. Full design in notes/fs-server.md.
+in `lineedit::proto`. Full design in notes/fs-server.md.
 
 **The contract's rules, which milestone 31 will grant against.** The endpoint a client holds IS the
 directory capability: it is bound, in the server, to one directory node, and every name in an `OPEN`
@@ -2166,7 +2166,7 @@ notes/scheduler.md; cross-core stress tests in `sched.rs`, `smp.rs`, and `user.r
 
 - **The wake SPLIT (the addition).** §28.2 said "wake stays local." That is right for an **IPC
   rendezvous**: the partner wakes on the waker's core, message in registers, cache warm, and the
-  serial netd<->std pipeline stays co-located. It is wrong for a **device interrupt**, which carries
+  serial netstack<->std pipeline stays co-located. It is wrong for a **device interrupt**, which carries
   no such locality: pinning the woken driver to the IRQ-handling core re-concentrates the pipeline
   (std_net) or lands it on a busy core. So `irq_notify` wakes LOAD-AWARE via `wake_load_aware` /
   `pick_wake_target`: the least-loaded core, ties won by the current core so a driver taking a
@@ -2185,7 +2185,7 @@ notes/scheduler.md; cross-core stress tests in `sched.rs`, `smp.rs`, and `user.r
 
 - **Correction: the hang watchdog now credits real progress, not test starts.** With migration and a
   slow-but-live workload, the old "did a new test begin in the last 60 s" heartbeat could not tell a
-  deadlock from a slow test, and it tripped std_net, which legitimately runs about 300 s in netd's
+  deadlock from a slow test, and it tripped std_net, which legitimately runs about 300 s in netstack's
   userspace smoltcp poll (CPU-bound, no wakes and no output for stretches over a minute). The
   watchdog now counts progress as a completed wake or a line of output OR any core running a
   non-idle thread; only a genuine lost wakeup (every thread blocked, every core on its idle thread)
@@ -2563,7 +2563,7 @@ one. The supervision relationship, not the memory, becomes the unit of authority
 
 Reaping is §16's `Untyped::DESTROY`, which requires `WRITE` on the region capability, and `WRITE`
 is also what builds a process out of that region. So a supervisor whose entire job is "notice
-`netd` died, restart it" has to hold the authority to construct arbitrary threads and address
+`netstack` died, restart it" has to hold the authority to construct arbitrary threads and address
 spaces. That is a large right granted for a small purpose, and it is backwards for a capability
 system: a compromised supervisor should be able to restart what it supervises and nothing else.
 
@@ -2636,9 +2636,9 @@ against main at `ab2c2bb`, where §30 is the DMA proof, §31 the C seam, and §3
 concurrent lane has claimed 33 by merge time, renumber; the content does not depend on it.)
 
 **Rung one's seam held exactly as promised.** The compositor takes `painter`'s place at the display
-contract and `gpud` cannot tell the difference: `gfx_proto` and the driver needed **no change**, and the
+contract and `display` cannot tell the difference: `gfx_proto` and the driver needed **no change**, and the
 only kernel-side addition is a wiring entry point that starts the driver with no client
-(`display_service::start_driver`). Three of the four tests replace `gpud` with the kernel itself and the
+(`display_service::start_driver`). Three of the four tests replace `display` with the kernel itself and the
 compositor does not notice that either, which is milestone 23's swappable-component claim falling out of
 a contract rather than being demonstrated on purpose.
 
@@ -2693,7 +2693,7 @@ may not draw on it. Screen sharing is that grant aimed at a third party, and bei
 revocable through §13.
 
 **The boundary this rung proves is client-to-client, and that is stated rather than implied.** The
-compositor sees every client's pixels because compositing is reading them, so `compd` is in every
+compositor sees every client's pixels because compositing is reading them, so `compositor` is in every
 client's TCB for the contents of its own window, exactly as a Wayland compositor is. The question was
 never whether a compositor could be prevented from reading a surface; it was whether a *client* could
 be. What the capability model buys is that the compositor's authority is enumerated in one spawn literal
@@ -3142,8 +3142,8 @@ and a font file, and because a pure function is what makes the paragraph above p
 **Neither display contract needed a line changed, and that is now a spawn literal rather than a
 claim.** The same `vterm` binary runs in two wirings: holding rung one's display endpoint and the
 scanout with **exactly `painter`'s authority**, and holding rung two's doorbell and one window with
-**exactly `window`'s authority**. `gpud` cannot tell it from the client that painted a test pattern;
-`compd` cannot tell it from the client that painted a coordinate function. Both contracts carry
+**exactly `window`'s authority**. `display` cannot tell it from the client that painted a test pattern;
+`compositor` cannot tell it from the client that painted a coordinate function. Both contracts carry
 pixels, and a terminal draws pixels. §29's note said a terminal would arrive as another client of that
 contract; it did, twice.
 
@@ -3183,7 +3183,7 @@ it. Verified headlessly on QEMU 11.0.2, both ISAs.
 
 **No new syscall, no new method, no widened surface (§4).** The whole increment is endpoints, shared
 frames, and `Spawn` grants that already existed. One constant moved: `MAX_DEVICES` 24 → 26, because a
-third `gpud` programs the same physical GPU and no transport is ever released. Recorded with the
+third `display` programs the same physical GPU and no transport is ever released. Recorded with the
 standing suggestion the number keeps earning, the same one §33 made about `KERNEL_EP_PAGES`: the
 honest fix is releasing a transport when its driver dies.
 
@@ -3191,12 +3191,12 @@ honest fix is releasing a transport when its driver dies.
 OSC sequence (`ESC ]0;title BEL`, how every program sets a window title) printed the title onto the
 grid. Found on the host, in milliseconds, by the test that now feeds a title-setting sequence on
 purpose. The interoperability test found its own footing the same way: the escape sequences a display
-terminal must understand are the ones `linedisc` emits (§21), so rather than assert that from a list
+terminal must understand are the ones `lineedit` emits (§21), so rather than assert that from a list
 that could drift, the test **runs the real line discipline** and feeds its echo stream to this parser.
 
 **Deferred, and stated rather than implied:** no scrollback (the roadmap named it; it wants a ring of
 off-screen rows and a viewport, which changes the damage model), no UTF-8 (the grid holds bytes and
-the font covers basic latin), no line editing in the display terminal (`termd` composes in front of it
+the font covers basic latin), no line editing in the display terminal (`lineedit` composes in front of it
 through `OP_WRITE` with no new protocol, which the `vt` crate proves on the host by running both), no
 reflow (nothing resizes), a US layout's main block only, and no mouse. notes/glyphs.md carries the
 full list.

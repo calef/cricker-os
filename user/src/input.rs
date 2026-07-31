@@ -3,7 +3,7 @@
 //! The receive half of a terminal, reduced to what a driver actually is: own the UART's receive
 //! side and its interrupt, and forward every byte that arrives. It assembles nothing, echoes
 //! nothing, and interprets nothing; the editing, echo, and line assembly that used to live here
-//! moved to the line discipline component (`termd`), where Unix keeps them too (a UART driver
+//! moved to the line discipline component (`lineedit`), where Unix keeps them too (a UART driver
 //! feeds the tty layer; it is not the tty layer). What remains is the irreducible driver loop:
 //! WAIT on the interrupt, drain the FIFO, hand the bytes on, ACK.
 //!
@@ -24,7 +24,7 @@
 #![no_main]
 
 use abi::irq;
-use linedisc::proto;
+use lineedit::proto;
 use user_rt::{call, invoke};
 
 const UART_VA: u64 = 0x0000_0000_00a0_0000;

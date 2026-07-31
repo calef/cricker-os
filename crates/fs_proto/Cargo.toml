@@ -8,7 +8,7 @@ license.workspace = true
 # server) and the file-service protocol (client <-> FS server). Pure logic, host-tested, no_std, no
 # dependency on redoxfs or the kernel: the constants and packers live in ONE place so the block
 # server, the FS server, the client, and the kernel-side tests cannot drift. This mirrors how
-# `linedisc::proto` holds the terminal contract's framing (notes/terminal-contract.md). The written
+# `lineedit::proto` holds the terminal contract's framing (notes/terminal-contract.md). The written
 # contract is notes/fs-server.md; this crate is its code.
 
 [dependencies]

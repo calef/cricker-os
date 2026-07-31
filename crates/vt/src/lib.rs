@@ -2,7 +2,7 @@
 //! text).
 //!
 //! Bytes in, a character grid out, plus the rectangle that changed. Sans-IO, exactly as the
-//! `linedisc` crate is: this crate holds no endpoint, makes no syscall, and has never heard of a
+//! `lineedit` crate is: this crate holds no endpoint, makes no syscall, and has never heard of a
 //! framebuffer. `user/src/vterm.rs` feeds it and paints what it says.
 //!
 //! # Why this shape
@@ -22,7 +22,7 @@
 //!
 //! The escape sequences here are **the ones the line discipline already emits** (DECISIONS §21,
 //! notes/terminal-contract.md), plus the screen verbs any program expects. That is not a guess: the
-//! interoperability test in this crate runs the real `linedisc` and feeds its echo stream to this
+//! interoperability test in this crate runs the real `lineedit` and feeds its echo stream to this
 //! parser, so the two components are checked against each other rather than against a list somebody
 //! wrote down.
 //!
@@ -757,7 +757,7 @@ impl Vt {
 /// What the display terminal reports to whoever spawned it.
 ///
 /// **Status, not contract**: no client can ask for any of this, and it is here rather than in the
-/// terminal contract (`linedisc::proto`) because it is about the *component*, not about the terminal
+/// terminal contract (`lineedit::proto`) because it is about the *component*, not about the terminal
 /// a program talks to. The engine above is sans-IO and this module is three constants; nothing in
 /// the engine reads them.
 pub mod status {
@@ -808,7 +808,7 @@ mod tests {
     }
 
     /// Text lands in the grid, `CR` returns to column 0, and `LF` goes down without returning.
-    /// The `\r\n` pair is what `linedisc::expand_output` produces from a Unix `\n`, so a terminal
+    /// The `\r\n` pair is what `lineedit::expand_output` produces from a Unix `\n`, so a terminal
     /// that treated `LF` as `CRLF` would look right on that stream and wrong on every other.
     #[test]
     fn printing_moves_the_cursor_the_way_a_terminal_does() {
@@ -1060,13 +1060,13 @@ mod tests {
     ///
     /// This is the interoperability claim milestone 28's contract makes and milestone 29 relies on:
     /// the display terminal's VT engine is fed the same echo stream the serial console gets, so a
-    /// sequence `linedisc` emits and this engine does not understand would be a hole between two
+    /// sequence `lineedit` emits and this engine does not understand would be a hole between two
     /// components that are otherwise separately correct. Feeding the actual editor closes it, and it
-    /// keeps closing it if `linedisc` changes its redraw strategy.
+    /// keeps closing it if `lineedit` changes its redraw strategy.
     #[test]
     fn it_understands_the_line_disciplines_echo() {
         struct Echo(Vec<u8>);
-        impl linedisc::Sink for Echo {
+        impl lineedit::Sink for Echo {
             fn put(&mut self, bytes: &[u8]) {
                 self.0.extend_from_slice(bytes);
             }
@@ -1075,13 +1075,13 @@ mod tests {
         // Type "hello", back up two (^B), insert "XY", delete forward (^D), kill to end (^K), then
         // Enter. That is the editing that produces CSI D, CSI C, CSI K and a mid-line redraw, which
         // is the whole set a display terminal has to understand to show an edited line correctly.
-        let mut ld = linedisc::LineDisc::new();
+        let mut ld = lineedit::LineDisc::new();
         let mut echo = Echo(Vec::new());
-        let mut event = linedisc::Event::None;
+        let mut event = lineedit::Event::None;
         for &b in b"hello\x02\x02XY\x04\x0b\r" {
             event = ld.feed(b, &mut echo);
         }
-        assert_eq!(event, linedisc::Event::Line);
+        assert_eq!(event, lineedit::Event::Line);
         assert!(
             echo.0.windows(3).any(|w| w == b"\x1b[K"),
             "the discipline stopped emitting CSI K: this test is no longer interoperability",

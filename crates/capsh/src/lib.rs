@@ -10,7 +10,7 @@
 //! It performs no IO and makes no syscalls. It turns a line of bytes into a decision: a
 //! [`Command`], and for a `run` command an [`Endowment`] (exactly what to grant the child) or a
 //! typed [`Refusal`] the shell prints at the prompt. That split is DECISIONS §7 applied, the same
-//! shape as `linedisc`: the parsing and the manifest checking are host-tested in milliseconds, and
+//! shape as `lineedit`: the parsing and the manifest checking are host-tested in milliseconds, and
 //! only the wiring (the shell and init that carry the caps) needs QEMU. See
 //! notes/grant-expression.md and notes/program-manifest.md.
 //!
@@ -28,7 +28,7 @@
 //! # The wire half
 //!
 //! [`spawnproto`] is the word layout for the shell-to-init spawn protocol, the capability-shell
-//! analogue of `linedisc::proto`. It is a userspace protocol (DECISIONS §21's shape): the kernel
+//! analogue of `lineedit::proto`. It is a userspace protocol (DECISIONS §21's shape): the kernel
 //! routes the words and never reads them.
 
 #![no_std]

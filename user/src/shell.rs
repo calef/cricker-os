@@ -35,7 +35,7 @@
 #![no_main]
 
 use capsh::{Action, Command, Endowment, Escalation, Prog, Refusal, RunSpec, jobframe, spawnproto};
-use linedisc::proto;
+use lineedit::proto;
 use user_rt::{call, cap_delete, invoke, recv, send, yield_now};
 
 // Pages shared with the terminal (must match the wiring in init).

@@ -34,7 +34,7 @@ ipc = { version = "0.1.0", path = "../crates/ipc" }
 # The terminal contract's IPC framing (DECISIONS §21): the kernel's display-terminal tests play both
 # an application (OP_WRITE) and an input driver (OP_BYTES), so they speak the same protocol the
 # serial terminal's clients and drivers do rather than a second one invented for a test.
-linedisc = { version = "0.1.0", path = "../crates/linedisc" }
+lineedit = { version = "0.1.0", path = "../crates/lineedit" }
 measure = { version = "0.1.0", path = "../crates/measure" }
 paging = { version = "0.1.0", path = "../crates/paging" }
 regions = { version = "0.1.0", path = "../crates/regions" }

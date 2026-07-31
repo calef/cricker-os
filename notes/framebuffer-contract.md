@@ -10,12 +10,12 @@ terminal.
 
 ```text
   virtio-gpu ──virtio (PCIe, behind the IOMMU)──► display driver ──display IPC──► client
-       │                                              │  (gpud)                    (painter)
+       │                                              │  (display)                  (painter)
        └──── DMA: the whole region ──────────────────► │
                                    the surface ────── shared frames ──────────────┘
 ```
 
-Three parties. The **device**, on the PCIe bus. The **display driver** (`user/src/gpud.rs`), which
+Three parties. The **device**, on the PCIe bus. The **display driver** (`user/src/display.rs`), which
 owns the device and serves the contract. The **client** (`user/src/painter.rs`), which owns the
 pixels and has never heard of virtio-gpu.
 
@@ -262,14 +262,14 @@ That is a silicon question (notes/target-hardware.md), not a QEMU one.
 Written back here on 2026-07-29, because a contract's real test is what happened when the next thing
 implemented against it, and the answer is worth recording: **nothing in this rung changed.**
 
-`crates/gfx_proto` and `user/src/gpud.rs` are byte-for-byte the same. The compositor
-(`user/src/compd.rs`) took `painter`'s place at this seam, holding the display endpoint and the scanout
+`crates/gfx_proto` and `user/src/display.rs` are byte-for-byte the same. The compositor
+(`user/src/compositor.rs`) took `painter`'s place at this seam, holding the display endpoint and the scanout
 frames with exactly `painter`'s authority, and the driver cannot tell the difference. The only addition
 on this side of the seam is a kernel wiring entry point that starts the driver **with no client**
 (`display_service::start_driver`), because rung two's client is spawned separately with a scene behind
 it.
 
-Three of the four rung-two tests go further and replace `gpud` with a **kernel stand-in** that serves
+Three of the four rung-two tests go further and replace `display` with a **kernel stand-in** that serves
 `INFO` and `FLUSH` over frames the kernel allocated. The compositor does not notice that either, which
 is milestone 23's swappable-component claim arriving as a side effect of a contract rather than as a
 demonstration built on purpose. It also made the damage rectangle *observable*: a real driver honours a
@@ -281,7 +281,7 @@ Two predictions in the list below came out exactly as written, and one was answe
 - **Damage tracking**: the compositor flushes one rectangle per frame, and the test poisons the rest of
   the scanout and finds the poison intact. As predicted, no driver change.
 - **Input**: the keyboard's routing question turned out to be the compositor's, as predicted, and the
-  answer reuses `linedisc::proto::OP_BYTES` verbatim.
+  answer reuses `lineedit::proto::OP_BYTES` verbatim.
 - **Several surfaces**, differently: the prediction was "a compositor holding one endpoint per client
   surface needs a driver change and not a contract change". Rung two holds **one** endpoint for all its
   clients instead, because a shared endpoint carries no sender identity and per-client surfaces are
@@ -296,7 +296,7 @@ composed screen first and this rung's pattern second, both on both ISAs.
 Written back here on 2026-07-30, for the same reason rung two's section exists: a contract's real test
 is what happened when the next thing implemented against it. **Nothing in this rung changed.**
 
-`crates/gfx_proto` and `user/src/gpud.rs` are byte-for-byte the same again. The display terminal
+`crates/gfx_proto` and `user/src/display.rs` are byte-for-byte the same again. The display terminal
 (`user/src/vterm.rs`) takes `painter`'s place at this seam with **exactly `painter`'s authority**: a
 report endpoint, the display endpoint, and the surface frames. It draws glyphs instead of a
 coordinate pattern and calls `FLUSH` with the rectangle of cells that changed, which is what this
@@ -307,7 +307,7 @@ text into.
 
 So the prediction in the list below came out exactly as written, and the seam claim is now made twice
 in one milestone: the same binary is also a compositor client, with exactly `window`'s authority, and
-`compd` cannot tell it from the client that painted a pattern either. See notes/glyphs.md.
+`compositor` cannot tell it from the client that painted a pattern either. See notes/glyphs.md.
 
 The scanout check grew accordingly: `cargo xtask` now proves **three** pictures over one boot, in
 order (the composed screen, the terminal's text, then this rung's pattern), on both ISAs.
@@ -339,7 +339,7 @@ Deliberately not in rung one, each with the seam it will use:
 | piece | file |
 |---|---|
 | the contract, host-tested | `crates/gfx_proto/src/lib.rs` |
-| the display driver | `user/src/gpud.rs` |
+| the display driver | `user/src/display.rs` |
 | the client that draws | `user/src/painter.rs` |
 | enumeration | `kernel/src/pci.rs` (`find_gpu_device`) |
 | the spawn wiring | `kernel/src/user.rs` (`display_service`) |

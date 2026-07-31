@@ -28,7 +28,7 @@ pub const ROWS: u32 = 8;
 /// - **four rows of text**, so a stride error or a one-row shift is visible (one row would not be);
 /// - **three renditions**: default, a green foreground, and a reversed block. A terminal that
 ///   ignored SGR would draw every glyph correctly and still fail;
-/// - **a `\r\n` pair**, which is what `linedisc::expand_output` puts on the wire for a Unix `\n`, so
+/// - **a `\r\n` pair**, which is what `lineedit::expand_output` puts on the wire for a Unix `\n`, so
 ///   this is the byte stream a real program's output actually becomes;
 /// - **descenders and an underscore** (`y`, `_`), which are the glyph rows a font table truncated to
 ///   seven rows would lose.

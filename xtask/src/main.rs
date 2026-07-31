@@ -206,7 +206,7 @@ fn std_inputs_stamp() -> u64 {
     let mut files: Vec<PathBuf> = vec![
         root.join("crates/abi/src/lib.rs"),
         root.join("crates/uheap/src/lib.rs"),
-        // The net PAL generates its wire constants verbatim from the netd contract; a change to it
+        // The net PAL generates its wire constants verbatim from the netstack contract; a change to it
         // must rebuild the farm just like a change to the ABI crate.
         root.join("user/src/netproto.rs"),
         // Likewise the FS-service contract: `std::fs` is a client of it (milestone 27 phase two),
@@ -349,7 +349,7 @@ fn std_generate_modules() -> bool {
             root.join("crates/uheap/src/lib.rs"),
             farm_std_src().join("sys/alloc/cricker/uheap.rs"),
         ),
-        // The netd socket-contract wire format, verbatim, so the net PAL cannot drift from the
+        // The netstack socket-contract wire format, verbatim, so the net PAL cannot drift from the
         // server it talks to (same discipline as the ABI and heap crates above).
         (
             root.join("user/src/netproto.rs"),
@@ -446,7 +446,7 @@ fn std_patch_dispatch() -> bool {
         "cfg_select! {",
         "    target_os = \"cricker\" => {\n        mod cricker;\n        use cricker as imp;\n    }",
     ) && patch_after(
-        // net: TcpStream + outbound UdpSocket over the netd socket contract (milestone 27 phase
+        // net: TcpStream + outbound UdpSocket over the netstack socket contract (milestone 27 phase
         // two). The first cfg_select in connection/mod.rs is the backend dispatcher; the cricker
         // arm precedes the `_ =>` unsupported fallback that phase one used. hostname has its own
         // `_ =>` fallback to unsupported, so it needs no arm.
@@ -801,7 +801,7 @@ fn screendump(sock: &str, out: &Path) -> bool {
 /// order the suite runs them in (tests sort by name, so `compositor_tests` comes before
 /// `display_tests`, and within the latter `a_backing...` < `a_bitmap...` < `a_confined...`):
 ///
-/// 1. rung two's **composed screen** (milestone 33): three clients' surfaces, composited by `compd`.
+/// 1. rung two's **composed screen** (milestone 33): three clients' surfaces, composited by `compositor`.
 ///    The compositor test holds it up for a few seconds precisely so this poll cannot miss it;
 /// 2. the display terminal's **text** (milestone 29's remaining increment): real glyphs from the
 ///    `bitfont` table, laid out by the `vt` engine. Held up the same way, for the same reason;
@@ -1005,13 +1005,13 @@ fn initrd_riscv() -> bool {
             "--bin",
             "shell",
             "--bin",
-            "termd",
+            "lineedit",
             "--bin",
             "blk",
             "--bin",
             "allocdemo",
             "--bin",
-            "netd",
+            "netstack",
             "--bin",
             "budgeter",
             "--bin",
@@ -1031,7 +1031,7 @@ fn initrd_riscv() -> bool {
             "--bin",
             "flaky",
             "--bin",
-            "gpud",
+            "display",
             "--bin",
             "painter",
             "--bin",
@@ -1039,7 +1039,7 @@ fn initrd_riscv() -> bool {
             "--bin",
             "cshim",
             "--bin",
-            "compd",
+            "compositor",
             "--bin",
             "window",
             "--bin",
@@ -1082,10 +1082,10 @@ fn initrd_riscv() -> bool {
         ("console", "console"),
         ("input", "input"),
         ("shell", "shell"),
-        ("termd", "termd"),
+        ("lineedit", "lineedit"),
         ("blk", "blk"),
         ("allocdemo", "allocdemo"),
-        ("netd", "netd"),
+        ("netstack", "netstack"),
         ("budgeter", "budgeter"),
         ("fsclient", "fsclient"),
         ("fwarden", "fwarden"),
@@ -1100,7 +1100,7 @@ fn initrd_riscv() -> bool {
         ("flaky", "flaky"),
         // The display pair (milestone 29): the confined virtio-gpu driver and the client that draws
         // into the surface it serves. Portable, so both archives carry both.
-        ("gpud", "gpud"),
+        ("display", "display"),
         ("painter", "painter"),
         // The C seam (milestone 36): the warden and the Rust shell that links user/c/cseam.c. The C
         // is compiled for this ISA by user/build.rs, so the riscv shell carries riscv C.
@@ -1109,7 +1109,7 @@ fn initrd_riscv() -> bool {
         // The compositor and a window client (milestone 33, rung two). Portable, so both archives
         // carry both: the isolation this rung proves is a property of the kernel's mappings, and it
         // has to hold on either ISA or it is not a property.
-        ("compd", "compd"),
+        ("compositor", "compositor"),
         ("window", "window"),
         // The display terminal (milestone 29's text increment): one binary, two wirings. Portable,
         // so both archives carry it and both ISAs run literally the same test.
@@ -1232,10 +1232,10 @@ fn mkinitrd() -> bool {
             return false;
         }
     };
-    let termd = match read_stripped(&bin_elf("termd")) {
+    let lineedit = match read_stripped(&bin_elf("lineedit")) {
         Ok(bytes) => bytes,
         Err(e) => {
-            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("termd"));
+            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("lineedit"));
             return false;
         }
     };
@@ -1246,10 +1246,10 @@ fn mkinitrd() -> bool {
             return false;
         }
     };
-    let netd = match read_stripped(&bin_elf("netd")) {
+    let netstack = match read_stripped(&bin_elf("netstack")) {
         Ok(bytes) => bytes,
         Err(e) => {
-            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("netd"));
+            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("netstack"));
             return false;
         }
     };
@@ -1289,7 +1289,7 @@ fn mkinitrd() -> bool {
         }
     };
     // "init" is the hello binary (the kernel loads it, init re-enters it at its remaining roles);
-    // "worker", "console", "input", "shell" are the split system binaries (19f.2-5), "termd" is
+    // "worker", "console", "input", "shell" are the split system binaries (19f.2-5), "lineedit" is
     // the line discipline between them (milestone 28), "coremark" is the compute workload (19e),
     // "elbench" is the EL0 microbenchmark program (primitive suite), and "allocdemo" proves the
     // user_rt heap (milestone 27). init (and the bench boot) load each by name. All are entries
@@ -1304,8 +1304,23 @@ fn mkinitrd() -> bool {
     // reason: one server, one client binary with several roles, both portable.
     let mut tree: Vec<(&str, Vec<u8>)> = Vec::new();
     for name in [
-        "rootsup", "spawner", "subsup", "flaky", "gpud", "painter", "cwarden", "cshim", "compd",
-        "window", "vterm", "kbd", "swapper", "conx", "cconx", "chatty", "broker",
+        "rootsup",
+        "spawner",
+        "subsup",
+        "flaky",
+        "display",
+        "painter",
+        "cwarden",
+        "cshim",
+        "compositor",
+        "window",
+        "vterm",
+        "kbd",
+        "swapper",
+        "conx",
+        "cconx",
+        "chatty",
+        "broker",
     ] {
         match read_stripped(&bin_elf(name)) {
             Ok(bytes) => tree.push((name, bytes)),
@@ -1322,11 +1337,11 @@ fn mkinitrd() -> bool {
         ("console", &console),
         ("input", &input),
         ("shell", &shell),
-        ("termd", &termd),
+        ("lineedit", &lineedit),
         ("coremark", &coremark),
         ("elbench", &elbench),
         ("allocdemo", &allocdemo),
-        ("netd", &netd),
+        ("netstack", &netstack),
         ("budgeter", &budgeter),
         ("fsclient", &fsclient),
         ("fwarden", &fwarden),
@@ -1726,7 +1741,7 @@ fn test() -> bool {
         "-p",
         "ipc",
         "-p",
-        "linedisc",
+        "lineedit",
         "-p",
         "measure",
         "-p",

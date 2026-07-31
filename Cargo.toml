@@ -22,7 +22,7 @@ members = [
     "crates/pci",
     "crates/regions",
     "crates/intrusive",
-    "crates/linedisc",
+    "crates/lineedit",
     "crates/measure",
     "crates/slots",
     "crates/uheap",

@@ -187,7 +187,7 @@ usual signature of a leak.
 - **A hung component.** The whole sequence rests on the outgoing instance answering `OP_QUIESCE`. A
   livelocked one needs the stronger right, which is §32's recorded watchdog case.
 - **The console proper.** The component swapped here owns the real UART and is shaped like a console
-  server, but `termd`/`vterm`/`compd` are not themselves swapped: the interactive stack is not
+  server, but `lineedit`/`vterm`/`compositor` are not themselves swapped: the interactive stack is not
   running under the test harness, and building it there would have measured the harness.
 
 ## See also

@@ -429,7 +429,7 @@ struct Device {
 /// already make eight, and milestone 30 adds the net driver and net server over both buses (four
 /// more), so the ceiling grew again. Fixed-size (milestone 14 phase B.1): probing never allocates.
 ///
-/// **Bumped to 26 for milestone 29's display terminal**, which spawns a third `gpud` over the same
+/// **Bumped to 26 for milestone 29's display terminal**, which spawns a third `display` over the same
 /// physical GPU (the confinement test, the terminal test, and the pattern test each program the
 /// device from scratch). Recorded rather than quietly widened, with the standing suggestion this
 /// number's history keeps earning: the honest fix is releasing a transport when its driver dies,

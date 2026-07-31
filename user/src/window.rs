@@ -2,7 +2,7 @@
 //!
 //! One program, several roles, because the roles differ by one act each and sharing the honest path
 //! is what makes an attack a fair test rather than a different program failing for its own reasons
-//! (the same reason `gpud` carries its own escape role).
+//! (the same reason `display` carries its own escape role).
 //!
 //! What an honest window holds:
 //!
@@ -260,7 +260,7 @@ pub extern "C" fn _start(role: u64, neighbour_va: u64, _arg2: u64) -> ! {
             // rendezvous, and it is the flow control for a fast source.
             // SAFETY: `svc`/`ecall`; the kernel validated the Reply capability and consumes it.
             unsafe { invoke(reply_slot, abi::reply::REPLY, 0, 0, 0) };
-            let n = linedisc::proto::len(w0);
+            let n = lineedit::proto::len(w0);
             for k in 0..n {
                 count += 1;
                 send(REPORT, status::WIN_INPUT, (bytes >> (8 * k)) & 0xff, count);

@@ -181,7 +181,7 @@ dependencies = [
  "gfx_proto",
  "intrusive",
  "ipc",
- "linedisc",
+ "lineedit",
  "measure",
  "paging",
  "pci",
@@ -193,7 +193,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "linedisc"
+name = "lineedit"
 version = "0.1.0"
 
 [[package]]
@@ -340,7 +340,7 @@ dependencies = [
  "elf",
  "fs_proto",
  "gfx_proto",
- "linedisc",
+ "lineedit",
  "smoltcp",
  "user_rt",
  "vt",
@@ -359,7 +359,7 @@ name = "vt"
 version = "0.1.0"
 dependencies = [
  "bitfont",
- "linedisc",
+ "lineedit",
 ]
 
 [[package]]

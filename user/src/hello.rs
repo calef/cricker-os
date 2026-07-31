@@ -395,13 +395,13 @@ fn init_boot(_x1: u64) -> ! {
     // genuinely the shell's own (milestone 31). Must match shell.rs's SH_BUDGET_PAGES.
     const SH_BUDGET_PAGES: u64 = 128;
 
-    // The VAs each program hardcodes. Console, input, termd, and shell are all their own
+    // The VAs each program hardcodes. Console, input, lineedit, and shell are all their own
     // binaries (19f.3-5, 28), each started with no role; the VAs must match
-    // console.rs/input.rs/termd.rs/shell.rs.
-    const CON_SHARED_VA: u64 = 0x0060_0000; // console reads text here; termd writes it
+    // console.rs/input.rs/lineedit.rs/shell.rs.
+    const CON_SHARED_VA: u64 = 0x0060_0000; // console reads text here; lineedit writes it
     const CON_UART_VA: u64 = 0x0070_0000; // console's UART mapping
-    const TERM_OUT_VA: u64 = 0x0080_0000; // termd reads the shell's text/prompts here
-    const TERM_IN_VA: u64 = 0x0090_0000; // termd delivers completed lines here
+    const TERM_OUT_VA: u64 = 0x0080_0000; // lineedit reads the shell's text/prompts here
+    const TERM_IN_VA: u64 = 0x0090_0000; // lineedit delivers completed lines here
     const IN_UART_VA: u64 = 0x00a0_0000; // input driver's UART mapping
     const SH_OUT_VA: u64 = 0x0060_0000; // the shell's view of the TERM_OUT frame
     const LINE_VA: u64 = 0x00b0_0000; // the shell's view of the TERM_IN frame
@@ -421,7 +421,7 @@ fn init_boot(_x1: u64) -> ! {
     let Ok(in_elf) = elf::Elf::parse(in_bytes) else {
         halt_forever()
     };
-    let Some(td_bytes) = program(initrd_len, "termd") else {
+    let Some(td_bytes) = program(initrd_len, "lineedit") else {
         halt_forever()
     };
     let Ok(td_elf) = elf::Elf::parse(td_bytes) else {
@@ -483,15 +483,15 @@ fn init_boot(_x1: u64) -> ! {
         (reply, abi::rights::READ),
     ];
     let td_maps: &[(u64, u64, u64)] = &[
-        (CON_SHARED_VA, con_shared, abi::aspace::MAP_RW), // termd fills what the console reads
+        (CON_SHARED_VA, con_shared, abi::aspace::MAP_RW), // lineedit fills what the console reads
         (TERM_OUT_VA, term_out, abi::aspace::MAP_RO),
         (TERM_IN_VA, term_in, abi::aspace::MAP_RW),
     ];
-    let Ok(termd) = build_child(UNTYPED, &td_elf, td_caps, td_maps) else {
+    let Ok(lineedit) = build_child(UNTYPED, &td_elf, td_caps, td_maps) else {
         halt_forever()
     };
-    check(tcb_start(termd, 0, 0, 0) == 0);
-    cap_delete(termd);
+    check(tcb_start(lineedit, 0, 0, 0) == 0);
+    cap_delete(lineedit);
 
     // 3. Input driver: waits on the UART receive interrupt, forwards raw bytes to the terminal.
     let in_caps: &[(u64, u64)] = &[(term_ep, abi::rights::WRITE), (UART_IRQ, abi::rights::READ)];

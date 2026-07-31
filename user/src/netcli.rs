@@ -22,7 +22,7 @@
 //! On success it reports `OK`; any failure reports a stage code, so the kernel test fails loudly
 //! with a hint rather than hanging.
 //!
-//! This is a **module of the `netd` binary** (dispatched by its entry role), not a separate binary,
+//! This is a **module of the `netstack` binary** (dispatched by its entry role), not a separate binary,
 //! because the initrd archive's directory holds at most 15 files; folding the client in keeps the
 //! entry count under that ceiling (see xtask mkinitrd).
 //!
@@ -318,9 +318,9 @@ fn tcp_echo() -> ! {
 }
 
 /// **Regression: reusing a socket id is safe.** Open a TCP socket on id 0, connect to the echo peer,
-/// close it, then reopen the *same* id and connect again. Before netd assigned ephemeral local ports
+/// close it, then reopen the *same* id and connect again. Before netstack assigned ephemeral local ports
 /// independent of the socket id, the reopen reused the exact local port, and the second connect on a
-/// 4-tuple whose slirp flow had not yet cleared stalled netd's bounded poll forever (found by the
+/// 4-tuple whose slirp flow had not yet cleared stalled netstack's bounded poll forever (found by the
 /// std::net PAL, notes/net.md). With the rotating allocator the reopen gets a fresh port, so both
 /// connects complete.
 fn tcp_reopen() -> ! {
@@ -348,7 +348,7 @@ fn tcp_reopen() -> ! {
     done(OK);
 }
 
-/// Run the selected client exchange. Entered from `netd`'s `_start` when the entry role is nonzero.
+/// Run the selected client exchange. Entered from `netstack`'s `_start` when the entry role is nonzero.
 pub fn run(test: u64) -> ! {
     match test {
         TEST_UDP_DNS => udp_dns(),
