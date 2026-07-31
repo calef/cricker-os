@@ -207,11 +207,13 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [The command line as a grant expression](grant-expression.md) — milestone 31: naming a resource
   in a command is how you grant it (Miller's "designation is authorization"), the inversion of
   Unix's ambient authority at the one interface a human touches. The shell's own budget, the
-  `SEND_CAP`-to-init spawn protocol, `run --mem N` made real by the `budgeter` program, the "you
+  `SEND_CAP`-to-init spawn protocol, `--mem N` made real by the `budgeter` program, the "you
   hold no such capability" refusal, and the `SPLIT`-grants-`GRANT` fix that let untyped be delegated.
   Phase 2 adds **per-file grants**: a caretaker process narrowing a directory capability to one file
   in one direction, proven by a read-only and a writable attacker, and why the second one is what
-  makes the first mean anything.
+  makes the first mean anything. Milestone 47 then deleted two words from the grammar (`run` and
+  `file:`), because the manifest was already doing the work the designator claimed credit for, and
+  records what a shell that could delegate a **clock** to `date` would need.
 - [Live component replacement](live-replacement.md) — milestone 23, the flagship: a running
   component swapped under a client that is talking to it. Why there is **no broker in the fast path**
   (the endpoint is the stable name, so the swap costs nothing and the kernel's own sender queue

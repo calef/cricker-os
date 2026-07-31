@@ -34,7 +34,9 @@ date: clock source: rtc, generation 1
 ```
 
 There is no argv on this ABI; a program gets three words at `_start` (notes/abi.md), so the
-"arguments" are registers. When a shell learns to spawn `date`, that is where the parsing goes.
+"arguments" are registers. The shell spawns `date` with all three zero, which is the default a
+person typing `date` wants; a manifest that could express the selectors needs positional arity
+(notes/program-manifest.md), and that is deferred.
 
 ## The provenance line, and why it is worth a line
 
@@ -128,8 +130,15 @@ Named here rather than in a tracker, next to the feature.
   makes the *page* read consistent; the counter is read just after it. A clock stepped between the
   two is printed as the new time, which is right, but the two lines of an `a2` run can straddle a
   step and disagree. Nothing here needs better.
-- **No shell command.** `date` is spawned by the tests, not from the prompt. Wiring it into `capsh`
-  means a `Prog` entry and a manifest, which is milestone 31's machinery rather than this one's.
+- **The prompt spawns it with the defaults only.** Milestone 47 gave `date` a `Prog` entry and a
+  manifest, so typing `date` at the shell runs it (`Human`, UTC, no provenance line). The three
+  register selectors are not reachable from there: `ArgSpec` is `Required`/`Forbidden` with no
+  position or arity, and growing it is deferred until a program wants both an argument and a file.
+  See notes/program-manifest.md.
+- **The interactive shell can grant it no clock**, so `date` typed at the prompt prints "the time is
+  unknown: this process holds no clock capability" today. That boot starts no clock service and the
+  shell holds nothing to delegate; notes/grant-expression.md records the whole chain a clock grant
+  would need, and `caps date` says it in advance.
 - **A fixed UTC offset is not a time zone.** See above, and notes/calendar.md.
 - **No `strftime`.** Five named formats. A format-string interpreter is a second parser with runtime
   errors in a program that has no allocator, for combinations nothing here asks for.
