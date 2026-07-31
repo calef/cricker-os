@@ -1119,14 +1119,35 @@ mod tests {
         assert_eq!(rows(&t)[1].trim_end(), "", "the old screen survived a ^L");
     }
 
+    /// Each compositor window shows its own banner and its own typed text, so a test that mixed
+    /// two windows up, or drew one twice, cannot pass. `script::window` is what the guest builds;
+    /// covering it here means a change to the shared script fails on the host in milliseconds
+    /// rather than in QEMU minutes later.
+    #[test]
+    fn each_window_shows_its_own_banner_and_its_own_typing() {
+        let a = script::window(0, script::COLS, script::ROWS);
+        let b = script::window(1, script::COLS, script::ROWS);
+        let (ra, rb) = (rows(&a), rows(&b));
+        assert_eq!(ra[0].trim_end(), "term0");
+        assert_eq!(rb[0].trim_end(), "term1");
+        assert_ne!(ra, rb, "two windows rendering identically would pass a mixed-up test");
+        assert!(
+            ra.iter().any(|r| r.contains('A')) && rb.iter().any(|r| r.contains('B')),
+            "each window must show what was typed at it, not at its neighbour",
+        );
+    }
+
     /// The script the milestone-29 tests drive is a fair one: it uses more than one row, more than
     /// one rendition, and leaves a picture that a blank screen, a shifted screen, or a screen
     /// missing its last write cannot match. Asserted here so the QEMU test is not the first thing to
     /// find out otherwise.
     #[test]
     fn the_demo_script_produces_a_picture_worth_checking() {
-        let mut t = Vt::new(script::COLS, script::ROWS);
-        t.feed(script::GREETING);
+        // Drive `script::full_screen()` rather than rebuilding it here. The guest test renders
+        // exactly that, so reconstructing the setup by hand let the two witnesses diverge: this
+        // test fed GREETING and stopped, while the screen being graded in QEMU also had TYPED on
+        // it. `script.rs` exists so every party agrees, which only works if every party calls it.
+        let t = script::full_screen();
         let seen = rows(&t);
         assert_eq!(seen[0].trim_end(), "cricker-os");
         assert!(
