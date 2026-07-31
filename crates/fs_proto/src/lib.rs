@@ -320,11 +320,71 @@ pub mod fixture {
     /// The attacker's report leads with this so a silent client (a trapped one) cannot be mistaken
     /// for a clean verdict of zero.
     pub const VERDICT: u64 = 0xE5_CA9E00;
+
+    /// **The on-device crash test's vocabulary** (milestone 37, DECISIONS §34 condition 1).
+    ///
+    /// The host sweep in `fs-server/tests/crash_consistency.rs` proves the property exhaustively
+    /// against a reconstructed platter. This is the other half: one crash driven all the way through
+    /// the real stack, on its own disk, so the recovery is a real FS-server process mounting a real
+    /// image that a real virtio write left half finished.
+    ///
+    /// **Two payloads of the same length, deliberately.** The contract's `WRITE` does not truncate
+    /// (DECISIONS §27, four times corrected), so a shorter second payload would leave the first
+    /// one's tail behind and "the file is exactly A or exactly B" would stop being a question with
+    /// an answer. Equal lengths make the recovered file unambiguous, which is the whole assertion.
+    pub mod crash {
+        /// The file the crash driver writes. Its own name on its own disk, so nothing this test does
+        /// can be confused with the shared fixture disk's `scratch`.
+        pub const NAME: &str = "cut";
+        /// What the image ships with. The driver's first write is **acknowledged** before the crash,
+        /// so recovering this would mean an acknowledged write vanished, and the test says so.
+        pub const INITIAL: &[u8] =
+            b"CRK37-INITIAL: the value the host tool wrote before this boot ran";
+        /// Payload A: written and acknowledged, and then the server is killed. It must survive.
+        pub const A: &[u8] = b"CRK37-PAYLOAD-A: acknowledged before the kill, must be whole after";
+        /// Payload B: the write the FS server dies in the middle of. Whole or absent, never partial.
+        pub const B: &[u8] = b"CRK37-PAYLOAD-B: the write the server was killed in the middle of!";
+
+        /// The FS server's "I am about to die" word, sent on its readiness endpoint immediately
+        /// before it traps. It is what lets the kernel test start the recovery mount at a defined
+        /// moment rather than guessing, and it is also the evidence that the *injector* killed the
+        /// server rather than something else having gone wrong.
+        pub const CUT: u64 = 0x0C07_DEAD;
+
+        /// What the verifier found in [`NAME`] after the recovery mount, sent as its report's second
+        /// word. Anything else, including silence, fails.
+        pub const SAW_A: u64 = 0x0037_00A0;
+        pub const SAW_B: u64 = 0x0037_00B0;
+        /// The file held something that was never one of the two payloads: a partial write, the
+        /// pre-boot contents, or a length nobody asked for. This is the failure the test exists for.
+        pub const SAW_NEITHER: u64 = 0x0037_00FF;
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The crash fixture's two payloads must be the same length**, and the millisecond test that
+    /// says so is not pedantry: `WRITE` does not truncate, so the moment B is shorter than A the
+    /// recovered file is A's tail with B's head on it, and "exactly A or exactly B" becomes a
+    /// question with no answer. That is DECISIONS §27's four-times-corrected failure, and it cost a
+    /// day when it was discovered from the far end instead of pinned here.
+    #[test]
+    fn the_crash_payloads_replace_each_other_completely() {
+        use fixture::crash;
+        assert_eq!(
+            crash::A.len(),
+            crash::B.len(),
+            "a shorter payload leaves the other's tail behind, so the verifier could see neither",
+        );
+        assert!(
+            crash::INITIAL.len() <= crash::A.len(),
+            "the image's initial contents must not outlive the first write either",
+        );
+        assert_ne!(crash::A, crash::B);
+        assert_ne!(crash::A, crash::INITIAL);
+    }
 
     #[test]
     fn block_request_roundtrips() {
