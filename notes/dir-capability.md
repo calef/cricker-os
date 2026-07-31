@@ -309,6 +309,28 @@ process, on the host, with the pinned engine, reading the image the run left beh
 
 A program that broke out and then lied about it would still have left the file on the disk.
 
+## The FS server's stack, measured before and after
+
+§27 records that this server's stack is sized by measurement rather than chosen, after `CREATE` and
+`TRUNCATE` added a level of tree recursion and left it **528 bytes short**, which presented as a
+mystery 900-second test. So the four verbs this milestone adds are exactly the kind of change that
+warrants looking, and `RENAME` most of all: it is `find_node` twice, then `link_node` and
+`remove_node`, all in one transaction.
+
+The high-water mark went **down**, by 3,776 bytes on aarch64 and 3,696 on riscv64:
+
+| | aarch64 | riscv64 | of a 397,312-byte grant |
+|---|---|---|---|
+| the four verbs, before `RENAME` | 135,744 | 135,856 | 34% |
+| with `RENAME` | 131,968 | 132,160 | 33% |
+
+**Not attributed**, deliberately. A verb that recurses more cannot make the deepest path shallower,
+so this is the compiler laying the serve loop out differently, not `RENAME` being cheap; measuring
+the frame it costs would need an instrument aimed at that request rather than a per-boot maximum.
+Milestone 37 saw the same shape (an 8 KiB drop it also declined to explain) and §27 records both
+numbers rather than a story. What matters for the gate is the headroom, and two thirds of the grant
+is free either way, comfortably above the quarter-left floor the test fails under.
+
 ## BUGS
 
 Known limitations, next to the feature rather than only in a tracker.
