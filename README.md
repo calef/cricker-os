@@ -178,35 +178,10 @@ contact with month four. The short version:
 | **Architecture** | Three declared targets: aarch64 (first: clean exception model, weak ordering as a discipline), riscv64 (at parity), x86_64 (declared, not started). **Parity is a gate, not an aspiration** (DECISIONS §19): a capability ships on every supported ISA under the same suite, or the gap is on the record. |
 | **Target** | QEMU `virt` (TCG and HVF) for daily work; real hardware is milestone 16. |
 | **Kernel shape** | **Capability microkernel** (seL4-shaped, decided at milestone 7): no `open()`, no ambient authority, drivers are EL0 processes, and since milestone 14 the kernel allocates nothing. See DECISIONS.md §10 and §14. |
-| **Execution** | **Preemptive threads with real stacks.** Not async. See below. |
+| **Execution** | **Preemptive threads with real stacks.** Not async: async assumes "I compiled everything that runs", and an operating system's whole purpose is to run code it did not compile ([§5](DECISIONS.md)). |
 | **SMP** | Four cores, per-CPU run queues, cross-core placement by inbox plus IPI. (v1 said "one core, refactor when it hurts"; it hurt, we refactored.) |
 | **Verification** | Machine-checked proofs (Kani) of the capability core: `caps`, IPC, the MMU isolation invariants. The frontier moves inward from the pure-logic crates. |
 | **Testing** | QEMU harness plus host-testable pure-logic crates from the first commit, plus benchmarks with committed baselines that fail on regression. |
-
-### Why not async/await
-
-Because it's a ceiling, not a tradeoff.
-
-A userspace process is an arbitrary ELF binary. It has its own stack, it never yields, and
-it will loop forever, because you will write a bug. Under cooperative scheduling one bad
-user program hangs the machine permanently, with no recovery.
-
-Real user mode *requires* per-thread stacks, a context switch that saves and restores the
-register file, and timer-driven preemption. Async doesn't defer that work. It forecloses
-it. So we build real threads first, and async can come back later in userspace, on top of
-them, exactly the way a real OS lets a program run Tokio.
-
-**Async's core assumption is "I compiled everything that runs." An operating system's entire
-purpose is to run code it did not compile.** That's why Embassy is excellent on a
-microcontroller and impossible here.
-
-And Go corroborates it the hard way. Goroutines were originally cooperative, yielding at
-function calls, and Go owns its compiler and compiles *every line that runs*. It still didn't
-work: a goroutine in a tight loop with no function calls never yields, and the garbage
-collector could never stop it. **Go 1.14 added asynchronous preemption**, which is a timer
-interrupt built in userspace out of signals. If a language that owns its entire toolchain
-couldn't get away with cooperative scheduling, a kernel running arbitrary ELF binaries
-certainly can't. See [DECISIONS.md](DECISIONS.md) §5.
 
 ## Milestones
 
