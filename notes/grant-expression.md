@@ -18,35 +18,83 @@ makes the confused deputy constructible.
 
 The inversion: a cricker-os command grants **exactly what it names, and nothing else**. A program
 that names no resource gets none. There is no ambient pool to draw from, so the question "may I?"
-is never asked; there is simply nothing in the program's hands it was not given. `run worker 9`
-grants a report channel and an argument. `run --mem 16 budgeter` grants a report channel and a
-16-page memory budget. `run budgeter` alone grants a report channel and is refused, because
-budgeter's manifest says it needs memory and the command named none.
+is never asked; there is simply nothing in the program's hands it was not given. `worker 9` grants a
+report channel and an argument. `budgeter --mem 16` grants a report channel and a 16-page memory
+budget. `budgeter` alone grants a report channel and is refused, because budgeter's manifest says it
+needs memory and the command named none.
 
 ## The grammar
 
 ```text
-run [--mem N] <prog> [arg] [file:PATH ...]
-caps [run ...]
+<prog> [--mem N] [token ...]
+caps [command]
 help
 echo <text>
 ```
 
-`run` is the grant expression. Its arguments are designators:
+**The command line itself is the grant expression.** Its parts are designators:
 
+- `<prog>` names the program to spawn (a closed set today: `worker`, `budgeter`, `heeder`,
+  `spinner`, `date`).
 - `--mem N` designates **N pages of untyped**, carved from the shell's own budget.
-- `<prog>` names the program to spawn (a closed set in phase 1; `worker`, `budgeter`).
-- a bare integer is the program's argument (worker's `n`).
-- `file:NAME` designates a **file**: one name, at most 16 bytes, no path. See the per-file grant
-  section below for what the shell narrows it from and what it can back today.
+- a bare token designates whatever the program's manifest declares in that position: the integer
+  argument, then a **file** (one name, at most 16 bytes, no path). See the per-file grant section
+  below for what the shell narrows it from and what it can back today.
 
-The `file:` prefix is explicit rather than inferring "a bare non-numeric token must be a file",
-because an unplaceable token is refused (`Refusal::Unexpected`) and silently reclassifying it as a
-grant would turn a typo into a capability transfer.
-
-`caps` is introspection: with no argument it prints the shell's whole endowment; with a `run` tail
-it previews exactly what that command would grant, so reading the command is reading the child's
+`caps` is introspection: with no argument it prints the shell's whole endowment; with a tail it
+previews exactly what that command would grant, so reading the command is reading the child's
 authority. That is DECISIONS §14's claim made interactive.
+
+## Two words came out of this grammar, and why (milestone 47)
+
+Phase 1 spelled the same thing `run [--mem N] <prog> [arg] [file:PATH ...]`. Chris asked to be
+convinced the two extra words earned their keep; they did not.
+
+**`run` failed on consistency.** Milestone 47 adds `ls`, `cd`, `pwd`, `mkdir` and `rm` as shell
+builtins, and nobody would type `run ls`. Keeping the verb would mean builtins are bare words while
+programs need a prefix, so a user has to know *which class a command is in* before knowing how to
+type it. That is the gratuitous divergence the milestone exists to refuse, and milestone 50 finishes
+the argument: `run a | run b` is indefensible. What replaces it already existed, since resolving a
+name to a program is `Prog::from_name` either way. The cost is three reserved words: `help`, `echo`
+and `caps` win over a program of the same name, so the program namespace must not contain them.
+
+**`file:` failed because it announced the wrong half of the grant.** `wc report.txt` reads and `tee
+report.txt` writes: identical syntax, opposite authority, because the direction lives in the manifest
+by design. The prefix decorated *which file*, which was already on the screen, and was silent about
+read-versus-write, which is the part that decides what the child can do.
+
+Its safety argument failed on inspection too. `worker 5 extra` is refused as unplaceable because
+worker's manifest says `FileSpec::Forbidden`, not because of any prefix: **the manifest was doing all
+the work and the prefix was taking credit.** The one thing the prefix genuinely bought is kept, in
+the place where it applies: a token shaped like a flag (`--secret`) never falls into the file
+position, because that is the one way a typo could become a capability transfer.
+
+The deeper reason a prefix could never carry the thesis: **the capability claim is about absence.**
+That a filename grants access to that file surprises nobody. What `wc report.txt` proves is that wc
+got that file *and nothing else*, and that claim lives in the tokens which are **not** on the line. A
+prefix decorating a token that is present cannot express it. `caps <command>` can, which is what
+makes `caps` the visibility surface now that the designator is gone.
+
+### The parser stopped classifying, and that is the load-bearing part
+
+`parse` keeps the positional tokens in the order typed and refuses to say which is which;
+`plan_against` places them into the slots the manifest declares. So `wc 2026` designates a file named
+`2026`, which a shape-based rule ("a number is the argument") would have got wrong. It also means
+"which token is the file" and "may this program have a file at all" are answered by the same
+declaration, which is the honest version of what the prefix pretended to do.
+
+**The window is why it happened now.** No program today takes both an argument and a file, so
+positional resolution is at most one bare token. The first program that wants both (`grep pattern
+file.txt`) forces `ArgSpec` to grow position and arity, and this change would have been a redesign
+instead of an edit.
+
+**Two limitations, named where a reader meets them.** A file whose name begins with `-` cannot be
+designated (it reads as a flag), which is Unix's problem too and Unix's answer (`--`) is available
+when something needs it. And with the prefix gone, the "you hold no such capability" refusal is only
+reachable through a manifest that declares a file, so no *shipped* program can produce it at the
+prompt today: `worker report.txt` now answers "worker: takes no file; drop the name", which is the
+durable fact about worker rather than an accident of this shell's endowment. That reordering is
+deliberate; see the refusal catalog below.
 
 ## Where the authority actually comes from, and how it moves
 
@@ -75,7 +123,7 @@ literally.
 
 ## Untyped had to become delegable first
 
-Making `run --mem N` real, and not parsed-and-ignored, needed a kernel fix, recorded as an amendment
+Making `--mem N` real, and not parsed-and-ignored, needed a kernel fix, recorded as an amendment
 to DECISIONS §16. `Untyped::SPLIT` minted its child budget with `WRITE` alone, so it could be spent
 but never delegated (`SEND_CAP` and `CAP_INSERT` both gate on `GRANT`). Untyped was the one object
 type no process could hand on, which quietly foreclosed the whole feature.
@@ -93,7 +141,7 @@ child (narrowed to `WRITE`, spend-only). `GRANT` never appears where it was not 
 
 `budgeter` is a program whose whole job is to spend the memory it was granted: it maps pages out of
 its slot-1 untyped until the budget is exhausted, then reports the count. The number it prints is
-the authority the command handed it. `run --mem 16 budgeter` reports **15** pages mapped on both
+the authority the command handed it. `budgeter --mem 16` reports **15** pages mapped on both
 ISAs: the sixteenth paid for the page table that reaches the others (the kernel allocates nothing on
 a process's behalf, DECISIONS §10). Grant more and it maps more; grant nothing and it holds no
 untyped at slot 1 at all, so its first `MAP` returns `NoSuchSlot` and it maps zero. There is no
@@ -104,28 +152,46 @@ number.
 
 A refusal is a fact about what the shell holds, phrased in the capability model's voice:
 
-- `run frobnicate 1` → "frobnicate: no such program." There is nothing to name.
-- `run budgeter` → "budgeter: needs a memory grant; add --mem <pages>." The manifest caught it.
-- `run --mem 8 worker 3` → "worker: takes no memory grant; drop the --mem."
-- `run worker 3 file:report.txt` → "worker: **you hold no such capability**: this shell was granted
-  no directory to narrow."
-- With a directory in hand, the same line becomes "worker: takes no file; drop the file: designator",
-  because worker's manifest declares none, and a designator the program has no use for is authority
-  the user thought they were moving. It is refused, not granted-and-dropped.
-- `run wc file:sub/report.txt` → "wc: that is not a name this shell can grant: one component, at most
-  16 bytes." There is no namespace here to walk, so a path is refused where it was typed rather than
+- `frobnicate 1` → "frobnicate: no such program (try 'help' for the builtins)." There is nothing to
+  name. A mistyped builtin lands here too, now that the first word is either a builtin or a program,
+  which is why the line points at both halves of what the prompt understands.
+- `budgeter` → "budgeter: needs a memory grant; add --mem <pages>." The manifest caught it.
+- `worker 3 --mem 8` → "worker: takes no memory grant; drop the --mem."
+- `worker 5 extra` → "worker: takes no file; drop the name." The token could only have been a file,
+  and worker declares none, so it is refused rather than granted-and-dropped. **The answer is the
+  same in a shell that holds a directory**, which is the point: the manifest decides, not the
+  endowment.
+- `worker eight` → "worker: needs an integer argument." Not a file, because worker has no file slot
+  for the word to fall into.
+- `wc report.txt`, at a program that *does* declare a file, in this shell → "wc: **you hold no such
+  capability**: this shell was granted no directory to narrow."
+- `wc sub/report.txt` → "wc: that is not a name this shell can grant: one component, at most 16
+  bytes." There is no namespace here to walk, so a path is refused where it was typed rather than
   becoming an `ENOENT` from a server asked something meaningless.
+- `wc --secret report.txt` → "wc: unexpected argument (this shell will not grant what it cannot
+  place)." An unknown flag never reaches the file position.
 
 The `no such capability` line is the headline refusal, and it is a statement about the shell's own
 cspace: "there is nothing I hold that could grant this," never a Unix-flavored EPERM.
 
+**One ordering changed with the designator, deliberately.** Phase 1 reported "you hold no such
+capability" before any manifest quibble, so `worker file:x` produced it even though worker takes no
+file. That was the prefix taking credit again: with the designator gone, a program's declaration is
+checked first, and the holdings decide only whether a file the program *does* declare can be backed.
+The reason is that "worker takes no file" stays true whatever this shell holds, while "no directory
+to narrow" is an accident of this boot; the durable fact is the more useful one to print. The visible
+consequence is that no shipped program can reach the headline refusal from the prompt today, because
+none declares `FileSpec::Required`; it is exercised by the host tests through `plan_against`, the
+same door `FileSpec::Required` has always come through.
+
 ## Per-file grants: one file, one direction, and a caretaker in between
 
-*(Phase 2. The `file:PATH` grammar was designed in phase 1 so this would slot in without a grammar
-change, and it did.)*
+*(Phase 2. The designator grammar was designed in phase 1 so this would slot in without a grammar
+change, and it did; milestone 47 then removed the `file:` prefix from it, which changed the spelling
+and not one line of the mechanism below.)*
 
 The filesystem's unit of authority is a **directory**: the endpoint a client holds IS the directory
-capability, and every name in an `OPEN` resolves under it (DECISIONS §27). `run wc report.txt` says
+capability, and every name in an `OPEN` resolves under it (DECISIONS §27). `wc report.txt` says
 less than that. It names one file, so it must grant one file.
 
 The narrowing is a **caretaker**, Mark Miller's pattern: a process that holds the wider capability,
@@ -182,22 +248,23 @@ attacker must be pointed at a real neighbour rather than a fictional one.
 
 ### The manifest declares the direction; the command line designates the file
 
-`run wc report.txt` reads and `run tee report.txt` writes, with no flag either way. The split is
+`wc report.txt` reads and `tee report.txt` writes, with no flag either way. The split is
 SHILL's and it is deliberate: whether a program writes is a property of what it does and belongs in
 its published manifest, while *which* file is the human's business and belongs on the line. The
 authority is still exactly what the line says, because the program's half is fixed and readable.
-`caps run wc file:report.txt` prints it:
+`caps wc report.txt` prints it:
 
 ```text
-  run wc would grant the new process, and nothing else:
+  wc would grant the new process, and nothing else:
     cap 0  endpoint  result   report its answer back
     cap 2  endpoint  file     report.txt  (read-only, and nothing else on the disk)
 ```
 
 ### What the interactive shell cannot do yet, and why that refusal is true
 
-At the prompt today, `run prog file:x` is still refused with "you hold no such capability: this shell
-was granted no directory to narrow". That is a **fact about the shell's cspace**, not a placeholder:
+At the prompt today, a file named at a program that declares one is still refused with "you hold no
+such capability: this shell was granted no directory to narrow". That is a **fact about the shell's
+cspace**, not a placeholder:
 the boot that starts it wires no FS service, so init grants it a terminal, a spawn channel, a result
 channel and a budget, and nothing that names a filesystem. `caps` prints the absence in those words.
 
@@ -214,6 +281,64 @@ mechanism it would use is proven on both ISAs by the tests above.
 Phase 1 grants what exists today: program spawns, endpoints, frames, untyped budgets, device caps.
 The shell demonstrates untyped-budget and endpoint grants concretely; the others share the same
 `SEND_CAP`-to-init path.
+
+## `date` at the prompt, and the authority the command line cannot name
+
+`date` became reachable from the shell with the grammar change, because with `run` gone `date` is
+exactly what a person types. Its manifest is all `Forbidden`: no argument, no memory, no file. It is
+the first program in the table whose **whole authority is something the command line cannot
+designate**, and that is worth being explicit about rather than letting it read as an oversight.
+
+What `date` holds is a read-only mapping of the clock page (DECISIONS §43, notes/clock.md). Read,
+set and propose are three different objects there, and the reason `date -s` cannot exist is that the
+read authority is a page permission rather than a check the program could skip. None of that is
+expressible on a command line, so there is nothing to type and nothing to get wrong.
+
+**In this boot, the shell holds no clock, so `date` prints "the time is unknown: this process holds
+no clock capability."** That sentence is true rather than pending, in the same way the file refusal
+above is: the interactive boot starts no clock service, so there is no clock page anywhere in it to
+map. `caps date` says so *before* you run it, which is what `caps` is for now that it is the only
+visibility surface:
+
+```text
+$ caps date
+  date would grant the new process, and nothing else:
+    cap 0  endpoint  result   report its answer back
+    (clock: this shell holds none to delegate, so it will report the time
+     as unknown. the clock is init's to endow; no token on the line can.)
+    arg    (none)
+  reading the command is reading its whole authority.
+```
+
+### What a shell that could delegate a clock would need (assessed, not built)
+
+The shape that fits is the one `--mem` already uses: **a child's authority is the shell's,
+attenuated.** The shell would hold a `Frame` capability for the clock page with `READ` and nothing
+else, `Manifest` would gain a `clock: bool` the way it has `reports: bool` (a fixed fact about the
+program, not a designation), `Endowment` would carry it, and the preview line above would become a
+cap row. `frame_cap(phys, Rights::READ)` already exists and is what `kernel::user::date_tests` grants
+`date` directly.
+
+It is not built here because the delegation chain is missing at every link, and the links are in
+different subsystems:
+
+1. **The interactive boot starts no clock service.** Every caller of `clock_service::start` is a
+   test. Starting it in the `shell` boot means kernel boot wiring on both ISAs (the aarch64 initboot
+   path and `riscv_shell_boot`), because the service needs the RTC device page mapped and the kernel
+   is what maps it.
+2. **Init has no way to receive the page.** The kernel would have to hand init a read-only frame cap
+   for it, and init would have to keep a copy for the shell.
+3. **The spawn protocol carries no clock.** `capsh::spawnproto` delegates in a fixed order (the
+   interrupt pair, then the `--mem` untyped); a clock is a third position and a new flag word, in
+   both inits.
+4. **The child needs the page mapped *and* the cap inserted**, at `CLOCK_VA` and slot 1, because
+   `date` probes the slot before touching the address (a process with no clock must get an answer,
+   not a fault).
+
+That is a kernel boot change on two ISAs, a protocol change, both inits, the shell and `capsh`, and
+**nothing in the test suite boots the interactive shell**, so all of it would ship unexercised. That
+is the same reason the FS wiring above was left out of phase 2, and the same answer applies: it is
+its own lane, and the honest "no clock capability" line holds the place until then.
 
 ## What phase 1 deliberately does not do
 

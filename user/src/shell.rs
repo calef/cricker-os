@@ -9,15 +9,23 @@
 //! EPERM. The parsing and the manifest checking are the host-tested `capsh` crate; this file is the
 //! wiring that turns a checked grant into real, delegated capabilities.
 //!
-//! What the shell can grant, it grants from what it *holds*. The headline is `run --mem N prog`,
-//! which endows a program N pages of untyped **split from the shell's own budget** (slot 3) and
-//! delegated to it. `run prog file:NAME` is the second, and it is refused here with "you hold no
+//! What the shell can grant, it grants from what it *holds*. The headline is `prog --mem N`, which
+//! endows a program N pages of untyped **split from the shell's own budget** (slot 3) and delegated
+//! to it. A bare name in a file position is the second, and it is refused here with "you hold no
 //! such capability", which is a statement about this shell's cspace rather than a placeholder: the
 //! boot that starts it wires no FS service, so there is no directory to narrow. The mechanism a
 //! grant would use exists and is proven on both ISAs (`user/src/fwarden.rs`); see [`holdings`] and
 //! notes/grant-expression.md for exactly what is left. `caps` prints the shell's whole endowment,
-//! and `caps run ...` previews exactly what a command would grant, making DECISIONS §14's "reading
-//! one literal tells you a process's whole authority" interactively true.
+//! and `caps <command>` previews exactly what that command would grant, making DECISIONS §14's
+//! "reading one literal tells you a process's whole authority" interactively true.
+//!
+//! # The grammar lost two words in milestone 47
+//!
+//! There is no `run` verb: a bare program name spawns it, so builtins and programs are typed the
+//! same way and nobody has to know which class a command is in. And there is no `file:` prefix: a
+//! bare token in a file position designates the file, because the direction (the half that matters)
+//! was always the manifest's to declare and the prefix only marked the half already on the screen.
+//! `caps` is the visibility surface that remains, which is an argument for keeping it good.
 //!
 //! # The shell's world
 //!
@@ -52,14 +60,16 @@ const BUDGET: u64 = 3; // our own untyped; SPLIT a grant off it for `--mem`
 /// We cannot query how much remains (there is no such syscall), so `caps` prints the initial grant.
 const SH_BUDGET_PAGES: u64 = 128;
 
-/// **What this shell holds, which is what decides whether a `file:` designator can be backed.**
+/// **What this shell holds, which is what decides whether a named file can be backed.**
 ///
 /// A per-file grant is a directory capability narrowed to one name (milestone 31 phase 2,
 /// `user/src/fwarden.rs`). Narrowing needs a directory to narrow, and this shell's endowment stops
 /// at slot 3: init grants it a terminal, a spawn channel, a result channel and a budget, and nothing
 /// that names a filesystem, because the boot that starts this shell wires no FS service. So the
-/// answer here is `false`, and `run prog file:x` gets the milestone's headline refusal, which is
-/// **true** rather than a placeholder: this shell really does hold no such capability.
+/// answer here is `false`, and a file named at a program that takes one gets the milestone's
+/// headline refusal, which is **true** rather than a placeholder: this shell really does hold no
+/// such capability. (No shipped program declares `FileSpec::Required` yet, so that refusal is
+/// reachable from `plan_against` and not from the prompt; see notes/grant-expression.md.)
 ///
 /// It is a function rather than a constant so that the day the boot path wires an FS service and
 /// grants a directory at a slot, the one place that changes is here. The planning, the manifest
@@ -119,7 +129,7 @@ fn read_line(prompt: &[u8], out: &mut [u8]) -> (usize, u64) {
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(_x0: u64, _x1: u64, _x2: u64) -> ! {
     print(b"\ncricker-os capability shell. naming a resource in a command IS granting it.\n");
-    print(b"commands: help, echo <text>, caps [command], run [--mem N] <prog> [arg]\n");
+    print(b"commands: help, echo <text>, caps [command], <prog> [--mem N] [arg]\n");
 
     let mut line = [0u8; 128];
     loop {
@@ -151,7 +161,6 @@ fn dispatch(cmd: &[u8]) {
         }
         Command::Caps(tail) => caps(tail),
         Command::Run(spec) => run(spec),
-        Command::Unknown(_) => print(b"  unknown command (try 'help')\n"),
     }
 }
 
@@ -159,15 +168,16 @@ fn help() {
     print(b"  help                    this text\n");
     print(b"  echo <text>             print <text>\n");
     print(b"  caps                    print this shell's whole endowment\n");
-    print(b"  caps run ...            preview what a run command would grant\n");
-    print(b"  run worker <n>          spawn a process that returns n*n\n");
-    print(b"  run --mem N budgeter    grant a process N pages from this shell's budget\n");
-    print(b"  run <prog> file:<name>  grant a process one file, and only that file\n");
+    print(b"  caps <command>          preview what that command would grant\n");
+    print(b"  worker <n>              spawn a process that returns n*n\n");
+    print(b"  budgeter --mem N        grant a process N pages from this shell's budget\n");
+    print(b"  date                    print the wall-clock time\n");
+    print(b"  <prog> <name>           grant a process one file, and only that file\n");
     print(b"\n  naming a resource grants it; a program that names nothing can touch nothing.\n");
 }
 
-/// Resolve a `run`, then either refuse it at the prompt (a mismatch the manifest caught) or spawn
-/// it, granting exactly what the command named and nothing else.
+/// Resolve an invocation, then either refuse it at the prompt (a mismatch the manifest caught) or
+/// spawn it, granting exactly what the command named and nothing else.
 fn run(spec: RunSpec) {
     match capsh::plan(&spec, holdings()) {
         Err(refusal) => refuse(spec, refusal),
@@ -182,12 +192,15 @@ fn run(spec: RunSpec) {
 /// wording cannot drift); the shell supplies the program name where one helps.
 fn refuse(spec: RunSpec, refusal: Refusal) {
     print(b"  ");
-    // A named-but-unresolvable program, or an un-grantable resource, name the offending thing.
+    // A named-but-unresolvable program, or an un-grantable resource, name the offending thing. A
+    // line of nothing but flags (`--mem 16`) names no program at all, and printing an empty name
+    // followed by a colon would be worse than printing the bare refusal.
     match refusal {
-        Refusal::NoSuchProgram => {
+        Refusal::NoSuchProgram if !spec.prog.is_empty() => {
             print(spec.prog);
             print(b": ");
         }
+        Refusal::NoSuchProgram => {}
         _ => {
             if let Some(p) = Prog::from_name(spec.prog) {
                 print(p.name().as_bytes());
@@ -247,10 +260,57 @@ fn spawn(e: Endowment) {
         cap_delete(slot); // our copy is delegated; free the slot
     }
 
-    // One reader, one word: a real program's answer, or init's spawn-failed sentinel.
+    // One reader, one word: a real program's answer, or init's spawn-failed sentinel. `date` is the
+    // exception: it answers in **text**, framed the way every std program's stdout is, so its
+    // messages are drained by a reader that knows that framing.
+    if matches!(e.prog, Prog::Date) {
+        report_text();
+        return;
+    }
     let answer = recv(RESULT).0;
     outcome(e, answer);
 }
+
+/// Drain one framed line of text from the result endpoint and print it.
+///
+/// The framing is the std PAL's stdout framing (`w0` = the byte count, `w1`|`w2` = the bytes,
+/// little-endian), which `date` shares deliberately so there is one convention for "a program
+/// printed something". `SEND` blocks until a receiver takes it, so stopping at the newline consumes
+/// exactly the messages that line was made of and leaves the endpoint clean for the next command.
+///
+/// It reads one line because the programs that answer this way print one, and the shell must not
+/// block the prompt forever waiting for a second that is not coming. A `date` spawned with the
+/// provenance selector prints two, which is why that selector is not reachable from here until the
+/// manifest can declare arity (capsh's `Prog::Date`).
+fn report_text() {
+    print(b"  ");
+    for _ in 0..MAX_TEXT_CHUNKS {
+        let (n, w1, w2) = recv(RESULT);
+        if n == spawnproto::SPAWN_FAILED {
+            print(b"could not spawn (init is out of memory)\n");
+            return;
+        }
+        let n = (n as usize).min(16);
+        let mut buf = [0u8; 16];
+        for (i, b) in buf[..n].iter_mut().enumerate() {
+            *b = if i < 8 {
+                (w1 >> (8 * i)) as u8
+            } else {
+                (w2 >> (8 * (i - 8))) as u8
+            };
+        }
+        print(&buf[..n]);
+        if buf[..n].contains(&b'\n') {
+            return;
+        }
+    }
+    print(b"\n");
+}
+
+/// The most 16-byte chunks one reported line may take before the shell stops reading. `date`'s
+/// longest line is 66 bytes (five chunks); the ceiling exists so a program that never sends its
+/// newline costs one truncated line instead of a hung prompt.
+const MAX_TEXT_CHUNKS: usize = 8;
 
 /// Report what the spawned program did, in terms of the grant it was given.
 fn outcome(e: Endowment, answer: u64) {
@@ -275,8 +335,9 @@ fn outcome(e: Endowment, answer: u64) {
             print_num(e.mem_pages);
             print(b"-page budget you granted (the rest paid for its page tables)\n");
         }
-        // Supervised jobs report through the job frame and the interruptible path, not here.
-        Prog::Heeder | Prog::Spinner => {}
+        // Supervised jobs report through the job frame and the interruptible path, not here; `date`
+        // answers in text and is drained by `report_text` before this is reached.
+        Prog::Heeder | Prog::Spinner | Prog::Date => {}
     }
 }
 
@@ -293,16 +354,19 @@ fn caps(tail: &[u8]) {
         print_num(SH_BUDGET_PAGES);
         print(b" pages  the memory it grants with --mem (initial)\n");
         if holdings().dir {
-            print(b"    cap 4  endpoint  directory  the files it can narrow into file: grants\n");
+            print(
+                b"    cap 4  endpoint  directory  the files it can narrow into per-file grants\n",
+            );
         } else {
-            print(b"    (no directory capability: file:<name> has nothing to narrow)\n");
+            print(b"    (no directory capability: a name on the line has nothing to narrow)\n");
         }
+        print(b"    (no clock: 'date' spawned from here holds no clock capability, and says so)\n");
         print(b"  it can name no devices and no other process. authority is what it holds.\n");
         return;
     }
-    // Only `run` commands carry a grant to preview.
+    // Only a program invocation carries a grant to preview; `caps help` has nothing to say.
     let Command::Run(spec) = capsh::parse(tail) else {
-        print(b"  caps previews a 'run' command's grant; try: caps run --mem 16 budgeter\n");
+        print(b"  caps previews a command's grant; try: caps budgeter --mem 16\n");
         return;
     };
     match capsh::plan(&spec, holdings()) {
@@ -311,9 +375,9 @@ fn caps(tail: &[u8]) {
     }
 }
 
-/// Print the endowment a resolved `run` would hand the new process.
+/// Print the endowment a resolved invocation would hand the new process.
 fn preview(e: Endowment) {
-    print(b"  run ");
+    print(b"  ");
     print(e.prog.name().as_bytes());
     print(b" would grant the new process, and nothing else:\n");
     print(b"    cap 0  endpoint  result   report its answer back\n");
@@ -334,6 +398,15 @@ fn preview(e: Endowment) {
         } else {
             b"  (read-only, and nothing else on the disk)\n".as_slice()
         });
+    }
+    // `date`'s authority is a read-only mapping of the clock page, and it is **init's to endow, not
+    // this shell's**: it is not designated on the line and no token could designate it. Saying so
+    // here is the point of `caps` being the sole visibility surface. The day the shell is granted a
+    // clock to delegate, this line becomes a cap row, and until then the preview must not let a
+    // reader believe the command line is the whole story.
+    if matches!(e.prog, Prog::Date) {
+        print(b"    (clock: this shell holds none to delegate, so it will report the time\n");
+        print(b"     as unknown. the clock is init's to endow; no token on the line can.)\n");
     }
     print(b"    arg    ");
     if matches!(e.prog, Prog::Worker) {
