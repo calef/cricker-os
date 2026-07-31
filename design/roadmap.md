@@ -100,7 +100,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 23 | NOT-STARTED | A capability-routed component OS with live replacement | the flagship payoff, and a product ambition |
 | 35 | BUILT | Prove the DMA-confinement boundary (extends 18) | closes the one isolation boundary we test instead of prove |
 | 36 | BUILT | A foreign-language component, seam first (spike; feeds 29 and 23) | the thesis in one assertion: unverified foreign code, confined and restarted |
-| 37 | NOT-STARTED | Prove RedoxFS's crash consistency (DECISIONS §34, condition 1) | decides whether §34's "primary filesystem" label is earned |
+| 37 | BUILT | Prove RedoxFS's crash consistency (DECISIONS §34, condition 1) | decides whether §34's "primary filesystem" label is earned |
 | 38 | NOT-STARTED | Filesystem throughput, and the comparison (DECISIONS §34, condition 2; extends 21/25) | "primary filesystem" invites a comparison we cannot currently make |
 | 39 | RECORDED | Repository structure for a loosely-coupled OS, and the road to a distribution | the structure has to serve the thesis, and one constraint dominates |
 | 40 | NOT-STARTED | Documentation as a system service: searchable, rendered, and installed by packages | the OS explains itself, on itself |
@@ -1542,6 +1542,28 @@ must not be folded into feature work.
 **Why it matters.** **how every VM gets a GPU without a hardware driver**, and the honest ceiling on the display ladder: rung five (a bare-metal driver for the VisionFive 2's BXE-4-32 3D core) is struck as a Linux-scale multi-year effort that proves nothing this does not. A mountain, priced as such, and it reopens the parked competitor question the ladder's governance note names as the architect's call
 
 ### 37. Prove RedoxFS's crash consistency (DECISIONS §34, condition 1)
+
+**Built 2026-07-30, both ISAs. §34's condition 1 is met, and the claim it earns is narrower and
+sharper than the one it replaces** (DECISIONS §34's amendment carries the full statement).
+
+What is measured, on the host, exhaustively: 93 fault points across a seven-operation workload, each
+one a power cut with the process gone and the recovery a fresh mount. Every one recovers a state that
+**really existed**, the prefix never goes backwards as the cut advances, and at the last cut point
+nothing is lost. The same sweep with the interrupted write **torn** at four offsets: 372 points, same
+result. A separate sweep models a device that *lies* (acknowledges a write it never persists, then
+carries on): 186 damages, 112 recovered, 74 refused at the mount or the read, and **zero silently
+wrong**, which is the honest limit and the honest guarantee in one number.
+
+The controls, which is what makes the rest mean anything: with the header ring's older generations
+removed, **92 of the 93 fault points do not mount at all**; a commit torn at 2048 bytes fails
+`Header::valid()` while the previous generation's slot stays valid and older. And the injector caught
+a bug in the *harness* first, which is the best evidence it bites: nine fault points looked like
+filesystems that never existed until it turned out `snapshot` was reading `EIO` as "the name is
+absent".
+
+On device, on its own disk on both ISAs: the FS server is killed one block write into its second
+transaction, with that block torn in half by a real virtio write, and a **different FS-server
+process** mounts what it left behind through the same block server and reads the file back whole.
 
 **In brief.** Inject the failure a copy-on-write filesystem exists to survive, and measure whether it does: torn writes (a block partially written), dropped writes (a write the device acknowledged and did not persist), and a kill mid-transaction, then reopen with the same `cleanup: true` header-ring replay the FS server always mounts with, and assert the filesystem is consistent and every acknowledged write is either wholly present or wholly absent. The seam is `IpcDisk` and the block server, which sit between the engine and the device and can drop or truncate a write deliberately; the sans-IO core already runs on the host against a real image, so most of this is host-testable in milliseconds and only the device-level kill needs QEMU. Includes the negative control that makes the rest mean anything: the injector must be shown to actually corrupt something when the replay is disabled
 

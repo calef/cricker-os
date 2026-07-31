@@ -149,3 +149,25 @@ introduced would hide. A harness that avoids the scheduler it is meant to test i
 general rule this is an instance of: when a test fails because the system legitimately does something
 the test did not expect, check whether the *test's* claim was ever promised before treating the
 system's behaviour as the defect.
+
+### The bounded-yield tests fail under host CPU contention, and the control says so (2026-07-30)
+
+Recorded so the next person who sees it does not spend the afternoon reading a diff. Several
+`kernel::sched::tests` cases wait for something with a fixed number of `yield_now()` calls, or assert
+a count has settled: `threads_round_robin` ("thread 2 never ran"),
+`an_interrupt_that_arrives_before_the_wait_is_not_lost`, `other_threads_run_while_one_is_blocked`,
+`a_finished_thread_is_reaped_and_its_memory_returned`. Under TCG the guest's four cores are host
+threads, so a fixed yield budget is really a wall-clock budget in disguise, and when the host is busy
+the budget runs out before the work does.
+
+Observed during milestone 37: **three different tests from that list failed across four full-suite
+runs**, every one of them in a module that executes before any of that milestone's code exists, which
+already ruled the diff out structurally. The confirmation was cheaper than the reasoning:
+**unmodified `origin/main`, same machine, same minute, failed too** (a fourth test, the reaper's
+count). Meanwhile a QEMU from another worktree had been holding **200% of the host for 43 minutes**.
+
+Two things follow. A run that fails one of these is not evidence about the branch until it has been
+seen on a quiet machine or contradicted by a control run, and a control run costs ten minutes and
+settles it. And the standing fix is the one this file already argues for elsewhere: these bounds
+should be **progress-based or wall-clock with slack**, not a yield count, because a yield count
+measures the host's spare capacity and calls it the scheduler's behaviour.

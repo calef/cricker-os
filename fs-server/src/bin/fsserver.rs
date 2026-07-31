@@ -61,6 +61,61 @@ static HEAP: user_rt::heap::UntypedHeap = user_rt::heap::UntypedHeap::new();
 /// stack grant if you do.
 const VERIFY_WRITES: bool = false;
 
+/// **The crash injector** (milestone 37, DECISIONS §34 condition 1), armed by this process's START
+/// arguments and inert otherwise.
+///
+/// The seam is [`IpcDisk`]: it sits between the engine and the device, so it is where a block write
+/// can be torn in half and where the process can be killed with a transaction half on the platter.
+/// A dedicated binary would have been the alternative and was rejected: the whole point is that the
+/// thing which crashes is the FS server the gate otherwise runs, not a lookalike. What arms it is
+/// the `Spawn` literal, which is this process's entire authority, so a boot that does not ask for a
+/// crash cannot get one.
+///
+/// - `arg0` (`CRASH_AT_WRITE`): which file-service `WRITE` request to die inside, counted from 1.
+///   Zero disables the injector completely, which is every boot but the crash test's.
+/// - `arg1` (`CRASH_AFTER_BLOCKS`): how many block writes into that request to let through before
+///   dying. **One**, in the test, because one is the count that cannot miss: a write transaction
+///   always issues at least one block write, and a `k` larger than the transaction is a server that
+///   never dies and a test that hangs.
+/// - `arg2` (`CRASH_TEAR_BYTES`): how much of that last block to actually put on the platter. The
+///   block is read first and only this many bytes of the new contents are laid over it, which is a
+///   real torn write at a real device: new bytes in front, the old ones still behind.
+mod inject {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    /// Which `WRITE` request to die in, from 1. Zero means never.
+    pub static AT_WRITE: AtomicU64 = AtomicU64::new(0);
+    /// Block writes to allow inside that request before dying.
+    pub static AFTER_BLOCKS: AtomicU64 = AtomicU64::new(0);
+    /// Bytes of the final block that reach the platter (0 means the write never happens at all).
+    pub static TEAR_BYTES: AtomicU64 = AtomicU64::new(0);
+    /// How many `WRITE` requests the serve loop has begun.
+    pub static WRITES_SEEN: AtomicU64 = AtomicU64::new(0);
+    /// Block writes issued since the armed request began. Only counted once armed.
+    pub static BLOCKS: AtomicU64 = AtomicU64::new(0);
+    /// Set when the serve loop enters the request the injector names.
+    pub static ARMED: AtomicU64 = AtomicU64::new(0);
+
+    /// Called by the serve loop as it begins a `WRITE`. Arms the injector if this is the one.
+    pub fn note_write() {
+        let at = AT_WRITE.load(Ordering::Relaxed);
+        if at != 0 && WRITES_SEEN.fetch_add(1, Ordering::Relaxed) + 1 == at {
+            ARMED.store(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Called by [`super::IpcDisk`] before each block write. `Some(n)` means "this is the one: put
+    /// only `n` bytes of it on the platter and then die".
+    pub fn tear_now() -> Option<usize> {
+        if ARMED.load(Ordering::Relaxed) == 0 {
+            return None;
+        }
+        let n = BLOCKS.fetch_add(1, Ordering::Relaxed) + 1;
+        (n == AFTER_BLOCKS.load(Ordering::Relaxed))
+            .then(|| TEAR_BYTES.load(Ordering::Relaxed) as usize)
+    }
+}
+
 /// The RedoxFS `Disk` over blk IPC. Stateless: everything it needs (the endpoint slot, the shared
 /// page) is a fixed convention, so it is a zero-sized handle the `Server` owns.
 struct IpcDisk;
@@ -105,6 +160,26 @@ impl Disk for IpcDisk {
     unsafe fn write_at(&mut self, block: u64, buffer: &[u8]) -> Result<usize> {
         for (i, chunk) in buffer.chunks(BLOCK).enumerate() {
             let b = block + i as u64;
+            // The crash injection (milestone 37), and the only line the ordinary path pays for it.
+            if let Some(tear) = inject::tear_now() {
+                // A real torn write: read the block, lay the first `tear` bytes of the new contents
+                // over it, and put THAT on the platter. New bytes in front, old bytes behind, which
+                // is what a drive leaves when the rail collapses mid-block.
+                if tear > 0 {
+                    if Self::blk(blk::READ, b) < 0 {
+                        return Err(Error::new(EIO));
+                    }
+                    Self::to_page(&chunk[..tear.min(chunk.len())]);
+                    if Self::blk(blk::WRITE, b) < 0 {
+                        return Err(Error::new(EIO));
+                    }
+                }
+                // Then die, with the transaction's commit still unwritten. Announce it first, on the
+                // readiness endpoint this process already holds, so the waiting test knows the kill
+                // was the injector's and not something else going wrong.
+                send(READY, fs_proto::fixture::crash::CUT, 0, 0);
+                panic!();
+            }
             if chunk.len() < BLOCK {
                 // A partial final block would clobber the rest of the block; read-modify-write so
                 // only the given bytes change. RedoxFS does not do this today, but a Disk owes it.
@@ -186,6 +261,7 @@ fn serve(server: &mut Server<IpcDisk>) -> ! {
                 server.read(handle, offset, buf).map(|n| n as i64)
             }
             fs::WRITE => {
+                inject::note_write(); // milestone 37: arm the crash if this is the named request
                 // SAFETY: the data is `len` bytes the client wrote into the shared page.
                 let data = unsafe { file_page(len) };
                 server.write(handle, offset, data).map(|n| n as i64)
@@ -216,7 +292,15 @@ fn serve(server: &mut Server<IpcDisk>) -> ! {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn _start(_x0: u64, _x1: u64, _x2: u64) -> ! {
+pub extern "C" fn _start(crash_at_write: u64, crash_after_blocks: u64, crash_tear_bytes: u64) -> ! {
+    // The crash injector's arming, straight out of the START arguments (milestone 37). All zero on
+    // every boot but the crash test's, and `AT_WRITE == 0` is what makes the injector inert.
+    {
+        use core::sync::atomic::Ordering;
+        inject::AT_WRITE.store(crash_at_write, Ordering::Relaxed);
+        inject::AFTER_BLOCKS.store(crash_after_blocks, Ordering::Relaxed);
+        inject::TEAR_BYTES.store(crash_tear_bytes, Ordering::Relaxed);
+    }
     HEAP.init(UNTYPED, user_rt::heap::DEFAULT_BASE, HEAP_MAX);
 
     // Open the image over blk IPC and bind to its root. A bad image (or a block server that never
