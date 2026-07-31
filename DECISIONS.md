@@ -3234,7 +3234,13 @@ the phrase is jargon to the system's author, it is jargon in the crate as well.
   what it offers, a **contract** is the wire protocol. "Server" stays a fine role word inside a
   component. "Daemon" appears nowhere.
 
-The rename itself is milestone 46, deliberately its own mechanical commit.
+The rename itself is milestone 46, deliberately its own mechanical commit, which also carries the
+naming conventions and the checks for the ones a machine can check. That pairing is on purpose: this
+rule and the three inconsistencies found alongside it (crate-name word separation, four spellings of
+"the wire contract", and a `feature/`-versus-`feat/` branch-prefix duplicate) are each the kind that
+decays without enforcement, and the checker is what makes a convention survive the first inconvenient
+moment. The part that cannot be checked, "name it for what it is", stays prose because it needs
+judgement.
 
 ## Reading
 
