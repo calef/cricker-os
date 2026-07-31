@@ -121,7 +121,8 @@ Every consumer that used to spawn "a role-6 worker of hello" now loads `"worker"
 it with `x0 = 0` (a standalone binary needs no role selector) and the input in `x1`:
 
 - init's `init_worker` and the initboot spawn service (`hello.rs`), for `run <n>`.
-- the kernel-side `shell_service` (the pre-initboot interactive shell), same `run <n>`.
+- the kernel-side `shell_service` (the pre-initboot interactive shell), same `run <n>`. (Retired as
+  a boot path by DECISIONS §28 and deleted by milestone 41; it is described here as it was.)
 
 Removing the worker from `hello` is what proved the split was real: it broke every one of those call
 sites (a role-6 spawn fell through to hello's default arm and *faulted*), and fixing each to load
@@ -157,8 +158,9 @@ end to end: init builds it, wires a channel, delegates the UART, and the line co
 
 The receive half of the terminal, `user/src/input.rs`, lifted out of hello the same way. It owns the
 PL011 receive side and its RX interrupt, assembles a line character by character (echoing as it
-goes), and hands each completed line to the shell over IPC. Its consumers (init's `init_boot` child
-and the kernel-side `input_service::spawn_wired`) load `"input"` by name and start it with `x0 = 0`;
+goes), and hands each completed line to the shell over IPC. Its consumer is init's `init_boot` child, which loads
+`"input"` by name and starts it with `x0 = 0` (a kernel-side `input_service::spawn_wired` did the
+same until milestone 41 deleted it with the rest of the retired kernel-wired shell);
 `hello` lost the `input` module and role entirely.
 
 With this, the whole interactive stack runs on distinct binaries. Verified end to end by piping real
@@ -172,8 +174,8 @@ capabilities and shared pages.
 
 The last and most-wired program, `user/src/shell.rs`, lifted out of hello. It holds five capability
 slots (console request/reply, the input line endpoint, and the spawn/result endpoints) and two
-shared pages, reads a line, and prints. Its consumers (init's `init_boot` and the kernel-side
-`shell_service::start`) load `"shell"` by name and start it with `x0 = 0`.
+shared pages, reads a line, and prints. Its consumer is init's `init_boot`, which loads `"shell"` by
+name and starts it with `x0 = 0`.
 
 With the shell out, **hello contains none of the system's programs**. Every service is its own binary
 in the archive: `worker`, `console`, `input`, `shell`. hello keeps only init and the milestone-tour
@@ -211,7 +213,8 @@ Two things deliberately stayed out of `user_rt`:
 
 ## What is not here yet
 
-The milestone-tour service wiring the kernel still does (in `console_service`/`input_service`/
-`shell_service`) is the pre-init path; the `initboot` boot already retires it by building the whole
-system inside init from the archive binaries. Folding the tour onto that path, so the kernel has one
-way to reach userspace rather than two, is future cleanup, not a gap in the split.
+**Resolved since this was written.** The kernel's own pre-init service wiring is gone: §28 retired
+`shell_service` as a boot path and milestone 41 deleted it and `input_service` outright, because they
+had no caller in any configuration. `console_service` remains, spawned by the milestone tour only.
+Every interactive build now reaches userspace through `boot_via_init`, so the kernel has one way in
+rather than two.

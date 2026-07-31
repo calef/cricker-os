@@ -39,16 +39,29 @@ lifetime.
 
 `sched::spawn_with_quota(&BUDGET, closure)` returns `None` when the budget is spent **or** the
 kernel is out of memory — the caller cannot tell the two apart and does not need to. The shell's
-process service uses a budget of eight (`shell_service::SPAWN_QUOTA`) and, on `None`, reports "could
+process service used a budget of eight (`shell_service::SPAWN_QUOTA`) and, on `None`, reported "could
 not spawn a process" to the shell rather than panicking (the audit's other spawn finding). So a
-spawn flood, or a pile of workers that block and never exit, is capped at eight live children:
-eight threads, eight stacks, eight address spaces, and no more. Kernel memory from spawning is
+spawn flood, or a pile of workers that block and never exit, was capped at eight live children:
+eight threads, eight stacks, eight address spaces, and no more. Kernel memory from spawning was
 bounded, per spawner, for the first time.
+
+## Where this stands today (corrected 2026-07-30, milestone 41)
+
+**The mechanism is in the kernel and nothing calls it.** Its one caller was the kernel-wired
+`shell_service`'s spawn service, which DECISIONS §28 retired and milestone 41 deleted; `Thread.quota`
+is `None` on every thread that exists. That is not a regression, because **the bound moved**: a
+userspace process spawns out of its own untyped budget (§10, §16), so the budget *is* the quota and
+retyping enforces it instead of a counter. What remains uncovered is a *kernel* thread spawned in a
+loop by something untrusted, and nothing does that.
+
+`spawn_with_quota` is kept rather than deleted, with the disposition written on the function
+(DECISIONS §38), because removing a documented safety mechanism is a design decision and not
+dead-code cleanup. The rest of this note describes the mechanism as designed; read it that way.
 
 ## What it is not
 
-It is a **per-spawner** quota, and today there is one spawner (the shell's service), so it is a
-per-process quota for the process that matters. Generalizing to many spawners is a table of
+It is a **per-spawner** quota, and when it had a caller there was exactly one spawner (the shell's
+service), so it was a per-process quota for the process that mattered. Generalizing to many spawners is a table of
 counters instead of one static, not a new idea. And it bounds *spawns*; it does not bound every
 kind of kernel object a future syscall might create. The complete answer is still the
 untyped-kernel-objects model (a process's entire kernel footprint drawn from its own untyped, as
