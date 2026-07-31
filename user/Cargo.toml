@@ -338,6 +338,16 @@ path = "src/entropy.rs"
 test = false
 bench = false
 
+# The NTP client (milestone 51): holds a network capability and the right to PROPOSE a time, and
+# deliberately not the right to set one. One binary, three roles (the client, the test server that
+# answers it, and the probe that proves the clock page is unreachable). `mkinitrd` packs it as "ntp"
+# for both ISAs.
+[[bin]]
+name = "ntp"
+path = "src/ntp.rs"
+test = false
+bench = false
+
 [dependencies]
 abi = { version = "0.1.0", path = "../crates/abi" }
 bitfont = { version = "0.1.0", path = "../crates/bitfont" }
@@ -352,6 +362,7 @@ entropy_proto = { version = "0.1.0", path = "../crates/entropy_proto" }
 fs_proto = { version = "0.1.0", path = "../crates/fs_proto" }
 gfx_proto = { version = "0.1.0", path = "../crates/gfx_proto" }
 lineedit = { version = "0.1.0", path = "../crates/lineedit" }
+ntp_proto = { version = "0.1.0", path = "../crates/ntp_proto" }
 user_rt = { version = "0.1.0", path = "../crates/user_rt" }
 vt = { version = "0.1.0", path = "../crates/vt" }
 

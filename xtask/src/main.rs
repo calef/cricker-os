@@ -1092,6 +1092,8 @@ fn initrd_riscv() -> bool {
             "date",
             "--bin",
             "entropy",
+            "--bin",
+            "ntp",
             "--target",
             RISCV_TARGET,
         ],
@@ -1170,6 +1172,9 @@ fn initrd_riscv() -> bool {
         // The entropy service (milestone 56). Portable, so both archives carry it: it holds the
         // virtio-rng driver, and the wiring tells it which bus the device came off.
         ("entropy", "entropy"),
+        // The NTP client (milestone 51), with its test server and its clock-page probe as roles of
+        // the same binary. Portable, so both archives carry it and both ISAs run the same tests.
+        ("ntp", "ntp"),
     ];
     let mut blobs: Vec<(&str, Vec<u8>)> = Vec::new();
     for &(archive_name, bin_name) in entries {
@@ -1373,6 +1378,7 @@ fn mkinitrd() -> bool {
         "clock",
         "date",
         "entropy",
+        "ntp",
     ] {
         match read_stripped(&bin_elf(name)) {
             Ok(bytes) => tree.push((name, bytes)),

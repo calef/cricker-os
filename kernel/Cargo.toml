@@ -49,6 +49,10 @@ ipc = { version = "0.1.0", path = "../crates/ipc" }
 # serial terminal's clients and drivers do rather than a second one invented for a test.
 lineedit = { version = "0.1.0", path = "../crates/lineedit" }
 measure = { version = "0.1.0", path = "../crates/measure" }
+# The NTPv4 wire format (milestone 51). The kernel's NTP tests read the request the client actually
+# put on the wire, so the version, mode and port they assert on come from the same definition the
+# client serialised from rather than from three copies of RFC 5905 §7.3.
+ntp_proto = { version = "0.1.0", path = "../crates/ntp_proto" }
 paging = { version = "0.1.0", path = "../crates/paging" }
 regions = { version = "0.1.0", path = "../crates/regions" }
 slots = { version = "0.1.0", path = "../crates/slots" }
