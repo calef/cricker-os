@@ -1974,6 +1974,26 @@ need no such case: a shell holding a subtree cannot name the root, so there is n
 escalation to recursive removal, which is Unix's behaviour and worth keeping for the same reason
 `rmdir` is empty-only.
 
+#### `touch`, and the reason file times were refused has expired
+
+Not built, and it splits the way `mv` and `rm` did. **Creating an empty file if absent** is
+expressible today (`fs_proto::fs::CREATE`, milestone 31 phase 2, and §49's `DirSpec` already shapes
+"a program granted the directory a name lives in"). **Updating the modification time** is not, and the
+reason is narrow: the `std` PAL records that "the server keeps an mtime **but the contract does not
+carry one**". RedoxFS tracks it; `fs_proto` does not expose it.
+
+**The justification for that has gone stale.** `notes/std.md` refused file times partly because "there
+is no wall clock to interpret it against anyway" — true when written, and false since milestone 51
+landed the clock (§43, RTC drivers on both ISAs, `date`). Same shape as §43's own untestability note,
+which milestone 47's `date` work disproved: **a scope note outlives the condition that justified it.**
+
+**The authority question, which should be decided rather than defaulted into.** `touch` does two
+different things to a timestamp: set it to *now*, and `touch -t` set it to *whatever you say*. The
+second is the ability to **lie about history**, which matters for anything reasoning from mtime —
+backups included, and milestone 55 is a Time Machine target. That is §43's asymmetry again (reading
+harmless, setting an authority), one level down: is "set to now" the same right as "set to an
+arbitrary value", and does the file's write right already cover both? Neither answer is obvious.
+
 #### Globbing, which decides how every multi-file operation grants
 
 zsh's glob engine is the best thing in the shell (`**/*.rs`, and qualifiers: `*(.)` for regular
