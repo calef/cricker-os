@@ -119,6 +119,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 53 | NOT-STARTED | The board's own peripherals: network and storage on real silicon | 16a boots the board; this is what makes it able to *do* anything, and it is where virtio stops carrying us |
 | 54 | NOT-STARTED | A network file service a Mac can actually mount | the first real workload with a real user, and the security claim backup servers deserve |
 | 55 | NOT-STARTED | Time Machine: SMB3 with Apple's extensions, and mDNS | **likely the largest single piece of work in the project**, and the one that must be scoped before it is started |
+| 56 | NOT-STARTED | Secrets, credentials, and the entropy to make them safe | **our RNG is explicitly not cryptographic**, and a secret is a bearer token where a capability is an unforgeable reference |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -2683,6 +2684,80 @@ anything else; the general one is a project in its own right.
 
 **Effort: not estimated, and deliberately so.** Anyone picking this up should re-scope it from scratch
 against a verified requirement list rather than trusting this block.
+
+### 56. Secrets, credentials, and the entropy to make them safe
+
+**In brief.** Milestone 55 needs the Mac to authenticate, so it needs an identity, a secret, and
+unguessable challenges. We have none of the three, and one of the gaps is a hard blocker rather than
+a gap. **Prerequisite for 55; feeds milestone 49 (users, login, and attribution).**
+
+#### Two things we do not have, both verified rather than assumed
+
+**The RNG is not cryptographic and says so in its own first line.**
+`patches/std-cricker/.../sys/random/cricker.rs`: "not cryptographic, and saying so is the point" — a
+splitmix64 stream seeded from the virtual counter, "utterly predictable to anyone who can guess
+boot-relative time", and "must not be used for keys, tokens, or anything an adversary cares about".
+NTLMv2's server challenge must be unguessable or it is precomputable, so **this blocks SMB
+authentication outright**. That file already names the intended fix: a virtio-rng driver feeding a
+capability-granted service, replacing the file rather than patching it. On real silicon the StarFive
+JH7110's TRNG is the candidate and **needs verifying** before it is relied on.
+
+**There is no crypto in the tree at all.** NTLMv2 needs MD4 (the NT hash) and HMAC-MD5; SMB3 signing
+needs AES-CMAC; encryption needs AES-CCM or GCM; SMB 3.1.1 preauth integrity needs SHA-512.
+
+#### Identity lives at the boundary, and stops there
+
+Milestone 49 records that identity is not authority here. SMB requires an identity, and the two
+reconcile without compromise: **the adapter authenticates the client because the protocol demands it,
+then uses the directory capability it already holds.** Identity never becomes ambient authority
+inside the system, which is 49's login model exactly — authentication produces or permits the use of
+capabilities rather than setting a field.
+
+The consequence is worth stating plainly because it is the security claim: compromise the SMB adapter
+and you get the share it holds. You do **not** get "authenticated as user X" with powers elsewhere,
+because there is no elsewhere and no user X.
+
+#### The hard part: a secret is a bearer token, a capability is an unforgeable reference
+
+This is the genuinely new problem and it is a real tension in the model. Once a component can **read**
+a password hash it holds it forever and can copy it anywhere; **knowledge cannot be revoked**. Every
+other authority in this system can be.
+
+**The answer is to hand out the operation, not the secret.** A credential service holds the NT hash
+and computes the HMAC on request: the adapter sends a challenge and receives a response, and never
+sees the hash. So the adapter holds a capability to **use** a credential, not to **read** one.
+
+That is an improvement over the reference implementation rather than a reframing of it. In Samba,
+`smbd` reads the password database directly, so compromising it leaks every hash: crackable offline,
+reusable wherever the password was reused. Here a compromised adapter can use the credential while it
+runs and cannot exfiltrate it, and revoking the capability ends the access.
+
+**This is the third appearance of one pattern**, and it should be named as a principle rather than
+rediscovered a fourth time: the NTP client that may *propose* a time but not *set* it (milestone 51),
+the clock's read / set / propose ladder (§43), and now use-but-not-read. **Attenuation by operation,
+not by object.**
+
+#### Decisions to make before building
+
+- **Vendor the crypto, do not write it.** RustCrypto's crates are `no_std` and reviewed, and the
+  supply-chain tooling from milestone 44 (`deny.toml`, `script/supply-chain`, `script/vendor-verify`)
+  already exists for exactly this shape. Writing our own AES or SHA is a bad idea and the entry should
+  say so rather than leaving it open.
+- **We will be shipping known-broken primitives on purpose.** MD4 and MD5 are required by NTLMv2 for
+  wire compatibility. Record that as a deliberate compatibility cost with its blast radius stated, not
+  as an oversight, and keep them out of anything that is not SMB.
+- **Secrets at rest are unsolved and should be scoped small.** Where does the hash live across
+  reboots, and encrypted under what key? That is the same chicken-and-egg as milestone 51's NTS
+  problem (certificates need time, time needs the network). The honest v1 is provisioned at boot and
+  held only in memory; say so plainly rather than implying durability we do not have.
+- **Entropy is a capability**, and the service that holds it should be the only thing that can read
+  the device. Whether `std::random` transparently improves or programs must ask for a real RNG is a
+  design fork: transparent is friendlier, explicit is honest about what a program depends on.
+
+**Sequencing.** Before milestone 55, and the entropy half is worth doing early regardless, since
+`std::random`'s caveat currently taints anything security-adjacent anywhere in the tree. The virtio-rng
+driver is testable in QEMU today, with no board required. **Effort: not estimated**; vendoring crypto
+and writing a credential service are well-understood, and the secrets-at-rest question is not.
 
 
 ## The display ladder (recorded 2026-07-28, Chris's direction)
