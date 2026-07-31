@@ -356,6 +356,106 @@ impl<'a> Dtb<'a> {
         }
     }
 
+    /// The `reg` regions of the first node whose `compatible` list contains `compat`, searched at
+    /// any depth.
+    ///
+    /// The correct way to identify a device, and the one [`node_reg`](Self::node_reg)'s comment
+    /// says a real driver would use. Milestone 51 is where it stopped being theoretical: the RTC
+    /// is `pl031@9010000` on the aarch64 `virt` board and `rtc@101000` on the RISC-V one, so a
+    /// name prefix that finds one finds nothing on the other, while `arm,pl031` and
+    /// `google,goldfish-rtc` name exactly the thing a driver knows how to drive. Matching the
+    /// binding rather than the label is also what makes the answer survive a board that spells its
+    /// node differently, which is the whole point of `compatible`.
+    ///
+    /// `compatible` is a list of NUL-separated strings, most specific first, and a match on **any**
+    /// entry counts: a board whose RTC says `"starfive,jh7110-rtc\0arm,pl031"` is claiming the
+    /// PL031 register layout, and taking it at its word is the binding working as designed.
+    ///
+    /// Unlike `node_reg`, this cannot decide at the `reg` property itself, because `compatible` may
+    /// appear after it in the same node. So every open node's `reg` is remembered and decoded when
+    /// that node closes, by which point both properties have been seen. The bookkeeping is a
+    /// per-depth stack rather than a single slot, so a *parent* that matched is still answered
+    /// correctly after its children have opened and closed.
+    pub fn node_reg_compatible(&self, compat: &[u8], out: &mut [Region]) -> Result<usize, Error> {
+        const MAX_DEPTH: usize = 16;
+        let mut acells = [2u32; MAX_DEPTH];
+        let mut scells = [1u32; MAX_DEPTH];
+        // Per open node: where its `reg` value sits and how wide its cells are, and whether its
+        // `compatible` named the device we are looking for.
+        let mut reg = [None::<(usize, usize, u32, u32)>; MAX_DEPTH];
+        let mut matched = [false; MAX_DEPTH];
+
+        let mut depth = 0usize;
+        let mut at = self.off_struct;
+
+        loop {
+            let token = be32(self.bytes, at)?;
+            at += 4;
+
+            match token {
+                FDT_BEGIN_NODE => {
+                    let name = self.cstr(at)?;
+                    at += align4(name.len() + 1);
+                    depth += 1;
+                    if depth < MAX_DEPTH {
+                        acells[depth] = acells[depth - 1];
+                        scells[depth] = scells[depth - 1];
+                        reg[depth] = None;
+                        matched[depth] = false;
+                    }
+                }
+
+                FDT_END_NODE => {
+                    // Depth 1 is the root, which has no `compatible` worth matching and whose `reg`
+                    // would have no parent to decode against.
+                    if (2..MAX_DEPTH).contains(&depth) && matched[depth] {
+                        return match reg[depth] {
+                            Some((value_at, len, a, s)) => {
+                                self.decode_reg(value_at, len, a, s, out)
+                            }
+                            // Compatible but no `reg`: the device exists and has no register block
+                            // we can name. Zero regions, not an error.
+                            None => Ok(0),
+                        };
+                    }
+                    depth = depth.saturating_sub(1);
+                }
+
+                FDT_PROP => {
+                    let len = be32(self.bytes, at)? as usize;
+                    let name_off = be32(self.bytes, at + 4)? as usize;
+                    let value_at = at + 8;
+                    at = value_at + align4(len);
+
+                    let name = self.cstr(self.off_strings + name_off)?;
+
+                    if depth < MAX_DEPTH {
+                        match name {
+                            b"#address-cells" => acells[depth] = be32(self.bytes, value_at)?,
+                            b"#size-cells" => scells[depth] = be32(self.bytes, value_at)?,
+                            b"reg" if depth >= 2 => {
+                                reg[depth] =
+                                    Some((value_at, len, acells[depth - 1], scells[depth - 1]));
+                            }
+                            b"compatible" => {
+                                let bytes = self
+                                    .bytes
+                                    .get(value_at..value_at + len)
+                                    .ok_or(Error::Truncated)?;
+                                matched[depth] = bytes.split(|&b| b == 0).any(|s| s == compat);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                FDT_NOP => {}
+                FDT_END => return Ok(0),
+                other => return Err(Error::BadToken(other)),
+            }
+        }
+    }
+
     /// The raw bytes of property `name` on the first node whose name starts with `prefix`,
     /// searched at any depth. `Ok(None)` when no such node, or the node has no such property.
     ///
