@@ -175,13 +175,13 @@ impl KernelStack {
     }
 
     /// The unmapped page below the stack. Test support.
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn guard(&self) -> u64 {
         self.guard
     }
 
     /// The lowest usable byte. Test support.
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn bottom(&self) -> u64 {
         self.bottom
     }
@@ -255,6 +255,8 @@ pub enum State {
 pub struct QuotaToken(&'static AtomicU32);
 
 impl QuotaToken {
+    /// Called only by `sched::spawn_with_quota`, which has no caller of its own today.
+    #[allow(dead_code)]
     pub fn new(budget: &'static AtomicU32) -> Self {
         QuotaToken(budget)
     }
@@ -284,6 +286,9 @@ pub struct Thread {
     /// TLB obligation, frees four frames, and hands the address range back. Ownership doing the
     /// work, exactly as notes/heap.md described it: the compiler proving the free happens once,
     /// at the right moment.
+    ///
+    /// So this one stays allowed unconditionally and on purpose: there is no configuration in which
+    /// anything reads it, and that is the design rather than a gap (DECISIONS §38, disposition 3).
     #[allow(dead_code)]
     pub stack: Option<KernelStack>,
 
@@ -326,6 +331,11 @@ pub struct Thread {
 
     /// **A slot in a spawner's quota, or `None` for a thread nobody bounded.** Reaped with the
     /// thread, which is how the slot comes back. See [`QuotaToken`].
+    ///
+    /// Never read, like [`Self::stack`]: it exists to be dropped, and its `Drop` returns the slot.
+    /// It is `None` on every thread today, because `sched::spawn_with_quota` has had no caller since
+    /// §28 retired the kernel-wired shell; see that function for why the mechanism stays.
+    #[allow(dead_code)]
     pub quota: Option<QuotaToken>,
 
     /// **A capability parked here mid-delegation.** When a thread does a capability-carrying send

@@ -104,7 +104,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 38 | NOT-STARTED | Filesystem throughput, and the comparison (DECISIONS §34, condition 2; extends 21/25) | "primary filesystem" invites a comparison we cannot currently make |
 | 39 | RECORDED | Repository structure for a loosely-coupled OS, and the road to a distribution | the structure has to serve the thesis, and one constraint dominates |
 | 40 | NOT-STARTED | Documentation as a system service: searchable, rendered, and installed by packages | the OS explains itself, on itself |
-| 41 | NOT-STARTED | Dead code: triage the suppressions, and un-blindfold the gate | a `-D warnings` gate with holes in a third of the kernel is not a gate |
+| 41 | BUILT | Dead code: triage the suppressions, and un-blindfold the gate | a `-D warnings` gate with holes in a third of the kernel is not a gate |
 | 42 | PARTIAL | Supply chain and fuzzing in CI (extends the 2026-07-30 CI audit) | we confine code we did not write; an advisory against it is invisible today |
 | 43 | NOT-STARTED | A second security audit, with a different lens | the attack surface roughly doubled after the first audit was written |
 | 44 | PARTIAL | GitHub repository hardening: policy, private reporting, code scanning, pull requests | a repository with a security thesis should be able to receive a report privately |
@@ -1210,6 +1210,56 @@ find it with a throwaway component rather than half way into a port.
 **In brief.** Triage all **79** `allow(dead_code)`/`allow(unused)` suppressions in the tree, delete what is dead, and replace the module-wide ones with per-item allows that carry a reason. Three distinct classes, only one of which is tidying. (1) **The gate is blindfolded over 5,831 lines**: six files carry module-wide `#![allow(dead_code)]`, including `sched.rs` (3,166 lines) and `arch/aarch64/mmu.rs` (1,275), so `-D warnings` cannot see dead code in the two largest and most security-relevant files in the kernel. (2) **Suppressions whose own comments name milestones that have since shipped**, e.g. `cpu.rs`'s "by the scheduler in step 3" and `smp.rs`'s "by spawn's placement policy" (both landed as §28), `cap.rs`'s "in 9b", `interrupts.rs`'s "milestone 5's first non-test caller", and two in `mmu.rs` pointing at milestone 8's in-kernel console, which §21 moved to userspace. Each is either now-used (delete the attribute) or genuinely dead (delete the code); either way the comment is false. (3) **Superseded demo payloads** in `user.rs`, which say so themselves ("7c handed the demo over to the real ELF"). Ends with a lint gate refusing new module-wide suppressions, the same shape as the conflict-marker and roadmap checks
 
 **Why it matters.** **a `-D warnings` gate with holes in a third of the kernel is a gate that reports success it has not earned**, which is the same class of problem as the four-times-corrected §27 record and the contradicted `fs_read` comment: the tooling said fine while nobody was looking. It also protects a real asset, since this codebase's unusually heavy commenting is only valuable while the comments are true, and a suppression citing a milestone that shipped weeks ago actively misleads. **Explicitly NOT in scope:** hardware register definitions (`gic.rs`, `timer.rs`, `semihosting.rs`, `mmu.rs` field encodings) where a complete definition is the point, and deliberate diagnostics (`VERIFY_WRITES`, `second_mount`) that encode measurements which killed hypotheses. Those keep their allows and gain a stated reason, which is the difference between a suppression and a decision
+
+#### Built 2026-07-30. The rule is DECISIONS §38, and the ratchet is in `script/lint`.
+
+**Re-measured on the branch point (`b9f4382`), because three lanes had landed since the sweep
+below:** **83** suppressions, not 79, in three shapes rather than two. Eight were module-wide
+`#![allow(...)]`, not six: `user/src/netproto.rs` had one the sweep missed, and **`main.rs` carried
+`#![cfg_attr(target_arch = "riscv64", allow(dead_code))]`, which blindfolded the entire kernel crate
+on one of two supported architectures.** That is bigger than the 5,831 lines the sweep found, and it
+is the finding this milestone actually turned on.
+
+After: **0 module-wide**, 90 conditional per-item `cfg_attr`, 15 bare per-item allows that each state
+why nothing calls them in any configuration. Of the 83 triaged, **7 were deleted as dead** (plus 178
+lines of retired shell wiring), **19 were simply not dead** and the attribute came off, and the rest
+became a `cfg` predicate the compiler can check.
+
+**What the un-blindfolded gate found, which is the question the milestone existed to answer: mostly
+not dead code.** `sched.rs`, 3,166 lines, yielded five items. `mmu.rs`, 1,275 lines, yielded two.
+That is the honest result, and it is why the ratchet matters more than the cleanup: the value was
+never in the deletions, it was in learning that a third of the kernel's dead-code claims were
+unchecked. Four things came out of it that a list of unused functions would not have:
+
+1. **A parity gap on the second ISA.** `user_can_read`/`user_can_write` had no caller anywhere on
+   riscv64, because the confused-deputy test is `cfg(target_arch = "aarch64")`. The check between
+   U-mode and the kernel was proved on the ISA where it matters *less*: RISC-V has one root register,
+   so the same tables translate user and kernel addresses and the `U` bit is the only line of
+   defence. Added the twin test; riscv64 goes 114 -> 115.
+2. **A false doc comment on live-looking code.** `sched::spawn_balanced` said "which is why the SMP
+   balance test uses it", and the test had moved to plain `spawn` when §28 landed.
+3. **A vestigial input path.** `console::rx_read` and `Ns16550::read_byte` were dead in *every*
+   configuration including `--features shell`: the byte is read by the userspace input driver through
+   its device capability, and milestone 20's kernel-side reader had outlived its own design.
+4. **A security mechanism with no enforcement point.** Deleting `shell_service` (which main.rs
+   described as "kept only as dead code for reference") left `sched::spawn_with_quota` with no
+   caller, so **the kernel's spawn quota has been unenforced since §28**. Not a gap, because the
+   bound moved into the untyped budget a process spawns out of, but notes/quotas.md and
+   notes/security.md both still describe the counter as live. Kept, with a doc comment saying exactly
+   where it stands, because removing a documented safety mechanism is a design decision rather than
+   dead-code triage. **Worth a look.**
+
+**Two gate holes closed alongside**, both the same shape as the one this milestone was chartered
+against. `script/lint` linted riscv64 only under `watchdog_probe`, so the whole riscv `shell` boot
+path was compiled by `xtask` and checked by nobody; the boot-mode loop now runs on both ISAs. And
+fs-server, its own workspace, had only ever seen the rustdoc pass, so its code was never clippy'd at
+all; adding the pass found a real `deref_addrof` in `second_mount`.
+
+**Two premises in the scope note turned out not to hold, and are corrected here rather than quietly
+worked around.** The hardware register definitions exempted as out of scope did not need exempting:
+`register_structs!`/`register_bitfields!` generate code the lint does not flag, so `gic.rs` needed
+one deletion and no allows. And `VERIFY_WRITES` and `second_mount` carry **no suppression at all**;
+their existing prose already states the measurement, so there was nothing to give a reason to.
 
 **Chris's question, 2026-07-30: is there dead code that should be removed?** Answered by measurement
 rather than impression, and the answer is more interesting than a list of unused functions.

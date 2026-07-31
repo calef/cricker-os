@@ -25,7 +25,6 @@
 // build and look like dead code, even though the `arch` layer itself is fully implemented. Allow it
 // *only* on riscv64, so the aarch64 build keeps full dead-code checking; it goes away if the RISC-V
 // boot is ever wired into the shared path instead of halting. See notes/riscv-port.md.
-#![cfg_attr(target_arch = "riscv64", allow(dead_code))]
 
 mod arch;
 #[cfg(feature = "bench")]

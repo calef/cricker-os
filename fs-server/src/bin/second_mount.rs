@@ -168,8 +168,10 @@ static mut IMAGE: [u8; IMAGE_SIZE] = [0; IMAGE_SIZE];
 struct StaticImage;
 impl StaticImage {
     fn bytes() -> &'static mut [u8] {
-        // SAFETY: single-threaded repro; the only accessor of IMAGE.
-        unsafe { &mut *&raw mut IMAGE }
+        // SAFETY: single-threaded repro; the only accessor of IMAGE. Built from the raw pointer
+        // rather than `&mut *&raw mut IMAGE`, because that form trips clippy's `deref_addrof` and
+        // the obvious "fix" it suggests (`&mut IMAGE`) is a hard error (`static_mut_refs`).
+        unsafe { core::slice::from_raw_parts_mut((&raw mut IMAGE).cast::<u8>(), IMAGE_SIZE) }
     }
 }
 impl BlockIo for StaticImage {

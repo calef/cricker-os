@@ -60,19 +60,19 @@ pub fn init() {
 }
 
 /// Turn on the console UART's receive interrupt (RISC-V, milestone 20). After this the NS16550 raises
-/// its line into the PLIC whenever a keystroke is waiting. Paired with [`rx_read`], which drains it.
+/// its line into the PLIC whenever a keystroke is waiting.
+///
+/// The kernel arms the device and then stays out of the way: the *byte* is read by the userspace
+/// input driver, which `riscv_shell_boot` hands the NS16550's registers as a `DeviceFrame`
+/// capability. There used to be a kernel-side `rx_read` here to drain it, from milestone 20 when
+/// the input path was still in the kernel; milestone 41 deleted it, along with `Ns16550::read_byte`
+/// and `LSR_DR`, after removing the crate-wide riscv `allow(dead_code)` showed they had no caller
+/// in *any* configuration, `--features shell` included.
+///
 /// riscv-only: the aarch64 console stays polling, and its `ConsoleUart` (a PL011) has no such method.
 #[cfg(target_arch = "riscv64")]
 pub fn rx_enable() {
     CONSOLE.lock().enable_rx_interrupt();
-}
-
-/// Read a byte from the console UART if one is waiting, else `None` (RISC-V, milestone 20). Reading
-/// it clears the receive interrupt at the device. The interrupt-driven input path calls this after
-/// the PLIC delivers the notification.
-#[cfg(target_arch = "riscv64")]
-pub fn rx_read() -> Option<u8> {
-    CONSOLE.lock().read_byte()
 }
 
 /// Break the console lock open. **Panic and fault paths only.**

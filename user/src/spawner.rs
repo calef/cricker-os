@@ -30,7 +30,8 @@
 use user_rt::{cap_delete, recv, send};
 
 // Each binary in the tree compiles the shared module but uses a different slice of it (the sub-server
-// builds nothing, the supervisor holds no memory), so the unused halves are expected, not dead.
+// builds nothing, the supervisor holds no memory), so the unused halves are expected, not dead. This
+// is the one shape where a blanket allow is the honest one: no single binary uses all of it (§38).
 #[path = "suptree.rs"]
 #[allow(dead_code)]
 mod suptree;

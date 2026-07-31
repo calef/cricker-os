@@ -457,11 +457,9 @@ fn handle_irq(_frame: &mut TrapFrame) {
 }
 
 /// Interrupts the GIC raised and then withdrew. Not an error; worth counting.
-#[allow(dead_code)]
 pub static SPURIOUS_IRQS: AtomicUsize = AtomicUsize::new(0);
 
 /// Interrupts we enabled but have no handler for. Definitely worth counting.
-#[allow(dead_code)]
 pub static UNEXPECTED_IRQS: AtomicUsize = AtomicUsize::new(0);
 
 /// Print everything we know and stop.

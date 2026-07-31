@@ -90,7 +90,7 @@ pub fn find_net_device() -> Option<VirtioMmioDevice> {
 /// FS server (milestone 32 phase 2) drives the SECOND mmio block disk (`n = 1`), a RedoxFS image,
 /// leaving the first (the crickerfs disk) to the phase-1 driver tests. QEMU numbers the mmio slots
 /// in device order, so the runner attaches the crickerfs disk first and the RedoxFS disk second.
-#[allow(dead_code)] // called only by fs_service, which the phase-2 test drives
+#[cfg_attr(not(test), allow(dead_code))] // fs_service is the caller, and the phase-2 test drives it
 pub fn find_block_device_n(n: usize) -> Option<VirtioMmioDevice> {
     let mut seen = 0;
     for slot in 0..SLOTS {

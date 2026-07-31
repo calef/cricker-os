@@ -508,10 +508,10 @@ pub struct Spawn<'a> {
 }
 
 /// Load the initrd program and become it, with nothing but a fresh stack. Never returns.
-#[allow(dead_code)] // the bare-client path, exercised by tests
 ///
 /// The bare case: no capabilities, no extra mappings, no argument. It can run its own code and
 /// touch its own memory, and it can name nothing else in the system.
+#[cfg_attr(not(all(test, target_arch = "aarch64")), allow(dead_code))] // the aarch64 tests
 pub fn exec_elf(image: &[u8]) -> ! {
     run(
         image,
@@ -538,12 +538,12 @@ pub const INITRD_VA: u64 = 0x2000_0000;
 /// still loads; init loads the rest (design/init-and-granular-spawn.md).
 /// The software-generated interrupt the kernel routes to init for the IRQ-delegation test
 /// (19d.2b): SGI 3, distinct from the scheduler's RESCHED (0) and the older endpoint SGIs (1, 2).
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(not(all(test, target_arch = "aarch64")), allow(dead_code))]
 pub const INIT_TEST_SGI: u32 = 3;
 
 /// The PL011 receive interrupt on QEMU `virt`: SPI 1 = INTID 33. init routes and delegates it so
 /// the input driver it builds (19d.2c) can wait on keystrokes.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(not(all(test, target_arch = "aarch64")), allow(dead_code))]
 pub const UART_RX_INTID: u32 = 33;
 
 /// Init's stack, in pages (19d.2c): init loads whole ELFs with deep call chains, so its stack is
@@ -551,7 +551,9 @@ pub const UART_RX_INTID: u32 = 33;
 #[cfg_attr(not(test), allow(dead_code))]
 const INIT_STACK_PAGES: u64 = 8;
 
-#[cfg_attr(not(test), allow(dead_code))] // becomes the boot path at 19d.2; test-driven until then
+// The aarch64 test module is the only caller: 19d.2 shipped, and the shape that actually became
+// the boot path is `init_boot` below. RISC-V boots the same system through `riscv_shell_boot`.
+#[cfg_attr(not(all(test, target_arch = "aarch64")), allow(dead_code))]
 pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
     let (initrd_start, initrd_len) = memory::initrd_region().expect("no initrd to hand init");
     let initrd_pages = initrd_len.div_ceil(FRAME_SIZE);
@@ -896,12 +898,13 @@ USER_OUTLAW_END:
 #[cfg(target_arch = "aarch64")]
 macro_rules! user_program {
     ($name:ident, $start:ident, $end:ident) => {
-        /// `allow(dead_code)` because 7c handed the demo over to the real ELF from the initrd,
-        /// and these hand-written programs are now exercised only by the tests. They stay
-        /// because they test things the real binary cannot: `outlaw` deliberately commits a
-        /// privilege violation, and `spin` is a program with no `.data`, no stack use, and
-        /// nothing but a loop, which is the purest form of DECISIONS §5's hostile binary.
-        #[allow(dead_code)]
+        /// Milestone 7c handed the demo over to the real ELF from the initrd, so these
+        /// hand-written programs are now exercised only by the tests, which is what the
+        /// `not(test)` says. They stay because they test things the real binary cannot:
+        /// `outlaw` deliberately commits a privilege violation, and `spin` is a program with no
+        /// `.data`, no stack use, and nothing but a loop, which is the purest form of
+        /// DECISIONS §5's hostile binary.
+        #[cfg_attr(not(test), allow(dead_code))]
         pub fn $name() -> &'static [u8] {
             unsafe extern "C" {
                 static $start: u8;
@@ -1263,6 +1266,7 @@ pub fn riscv_uart_driver_demo(
 /// own budget and wires them together; the kernel touches none of it. Unlike the other demos this
 /// does not block: `sysinit` and its children run on the scheduler while the boot thread parks.
 #[cfg(target_arch = "riscv64")]
+#[cfg_attr(not(feature = "shell"), allow(dead_code))] // the `shell` boot mode is the only caller
 pub fn riscv_shell_boot(archive: &'static [u8], uart_irq: u32) -> Result<(), LoadError> {
     use crate::cap::Rights;
     const UART_PHYS: u64 = 0x1000_0000; // the NS16550 on QEMU virt
@@ -1356,7 +1360,13 @@ pub fn riscv_shell_boot(archive: &'static [u8], uart_irq: u32) -> Result<(), Loa
 /// shared page), spawns the console *server* as a user process that owns the UART, and returns
 /// what a client needs to reach it. The server binary and the client binary are the *same ELF*,
 /// told apart by the argument in `x0`.
-#[allow(dead_code)] // the demo payload: exercised by the boot demo, mechanism unit-tested
+// The milestone tour is the only consumer, so this is dead in exactly the configurations that
+// have no tour: a test build, and the three alternate boot modes. The allow sits on the module
+// because the module is one wiring, not a bag of independent items.
+#[cfg_attr(
+    any(test, feature = "shell", feature = "bench", feature = "initboot"),
+    allow(dead_code)
+)]
 pub mod console_service {
     use super::*;
     use crate::cap::{Rights, endpoint_cap};
@@ -1478,7 +1488,7 @@ pub mod console_service {
 /// block device, then hands a userspace driver everything it needs and nothing it does not: the
 /// device's registers, a DMA page, an interrupt, and an endpoint to report what it read. The
 /// kernel does not touch the device.
-#[allow(dead_code)] // the demo payload; the mechanism is unit-tested
+#[cfg_attr(not(test), allow(dead_code))] // the tour spawns it; the tests drive it
 pub mod virtio_service {
     use super::*;
     use crate::cap::{Rights, endpoint_cap, irq_cap, virtio_cap};
@@ -2039,7 +2049,7 @@ pub mod virtio_service {
 ///
 /// The service drives the **second** mmio block disk (the RedoxFS image); the first is the crickerfs
 /// disk the phase-1 driver tests use. `None` if there is no such disk attached to this run.
-#[allow(dead_code)] // spawned only by the phase-2 test, like every other service module here
+#[cfg_attr(not(test), allow(dead_code))] // spawned only by the phase-2 test
 pub mod fs_service {
     use super::*;
     use crate::cap::{Rights, endpoint_cap, irq_cap, untyped_cap, virtio_cap};
@@ -2589,7 +2599,7 @@ pub mod fs_service {
 /// terminal contract does not know which one it is in: an `OP_WRITE` is an `OP_WRITE`. Returns when
 /// the reply arrives, which the contract says means the bytes are on the console's side, so a test
 /// needs no polling and no sleep between writes.
-#[allow(dead_code)] // used by the milestone-29 tests, like every other service helper here
+#[cfg_attr(not(test), allow(dead_code))] // the milestone-29 tests are the callers
 fn term_print(out: u64, ep: crate::sched::EpId, text: &[u8]) {
     assert!(
         text.len() <= FRAME_SIZE as usize,
@@ -2636,7 +2646,7 @@ fn term_print(out: u64, ep: crate::sched::EpId, text: &[u8]) {
 /// The client maps only the surface frames. It never sees page 0, so it cannot touch a descriptor
 /// ring, and it holds no `Virtio` capability, no interrupt, and no physical address. See
 /// notes/framebuffer-contract.md.
-#[allow(dead_code)] // spawned only by the milestone-29 test, like every other service module here
+#[cfg_attr(not(test), allow(dead_code))] // spawned only by the milestone-29 test
 pub mod display_service {
     use super::*;
     use crate::cap::{Rights, endpoint_cap, irq_cap, virtio_cap};
@@ -2996,7 +3006,7 @@ pub mod display_service {
 /// - the screen and the window list are mapped **read-only** and **only** into a client granted them.
 ///   That mapping is the screenshot capability and the enumeration capability; there is no verb for
 ///   either, and a client without the mapping has nothing to ask and nowhere to look.
-#[allow(dead_code)] // spawned only by the milestone-33 tests, like every other service module here
+#[cfg_attr(not(test), allow(dead_code))] // spawned only by the milestone-33 tests
 pub mod compositor_service {
     use super::*;
     use crate::cap::{Rights, endpoint_cap};
@@ -3352,6 +3362,9 @@ pub mod compositor_service {
         }
 
         /// Ring the doorbell without typing anything: "look at the surfaces". Returns the reply's `r0`.
+        ///
+        /// The milestone tour uses it; the compositor tests all type something first.
+        #[cfg_attr(test, allow(dead_code))]
         pub fn ring_doorbell(&self, op: u64) -> u64 {
             crate::sched::ipc_call(self.doorbell, [compose::proto::req(op, 0), 0])[0]
         }
@@ -3511,7 +3524,7 @@ pub mod compositor_service {
 /// In the test below the **kernel** plays the compositor, which is the same substitution three of the
 /// four rung-two tests make: it holds the doorbell and the ring, so the bytes a real keyboard
 /// produced are a value it can read and compare rather than a picture it has to infer.
-#[allow(dead_code)] // spawned only by the milestone-29 test, like every other service module here
+#[cfg_attr(not(test), allow(dead_code))] // spawned only by the milestone-29 test
 pub mod keyboard_service {
     use super::*;
     use crate::cap::{Rights, endpoint_cap, irq_cap, virtio_cap};
@@ -3660,178 +3673,8 @@ pub mod keyboard_service {
     }
 }
 
-/// Console **input** in userspace: the receive half of the terminal.
-#[allow(dead_code)]
-pub mod input_service {
-    use super::*;
-    use crate::cap::{Rights, endpoint_cap, irq_cap};
-    use crate::sched::EpId;
-
-    const UART_VA: u64 = 0x0000_0000_00a0_0000;
-    const LINE_VA: u64 = 0x0000_0000_00b0_0000;
-    const PL011_PHYS: u64 = 0x0900_0000;
-    /// The PL011 on QEMU `virt` is SPI 1, which is INTID 33 (SPIs start at 32).
-    const UART_INTID: u32 = 33;
-
-    /// Spawn the input driver, wired to the UART and its receive interrupt. Returns (line endpoint,
-    /// line-buffer physical address). The driver is its own binary now (19f.4), loaded by name.
-    pub fn spawn_wired() -> (EpId, u64) {
-        let image = program("input").expect("no input program in the initrd");
-        let line = crate::sched::create_endpoint();
-
-        let irq_ep = crate::sched::create_endpoint();
-        crate::sched::bind_irq(UART_INTID, irq_ep);
-        crate::arch::irq::enable(UART_INTID);
-
-        // The line buffer the driver assembles into. Shared with the reader (the shell) later; a
-        // scratch page for the standalone validator.
-        let line_phys = crate::memory::alloc().expect("no line-buffer frame").addr();
-        // SAFETY: fresh frame, direct-mapped, owned by nobody yet.
-        unsafe {
-            core::ptr::write_bytes(
-                mmu::phys_to_virt(line_phys) as *mut u8,
-                0,
-                FRAME_SIZE as usize,
-            );
-        }
-
-        crate::sched::spawn(move || {
-            run(
-                image,
-                Spawn {
-                    arg0: 0, // no role selector: input is its own binary
-                    arg1: 0,
-                    arg2: 0,
-                    grants: &[
-                        endpoint_cap(line, Rights::WRITE), // slot 0: SEND completed lines
-                        irq_cap(UART_INTID),               // slot 1: WAIT / ACK the RX interrupt
-                    ],
-                    maps: &[
-                        Mapping {
-                            va: UART_VA,
-                            phys: PL011_PHYS,
-                            flags: Flags::user_device(),
-                        },
-                        Mapping {
-                            va: LINE_VA,
-                            phys: line_phys,
-                            flags: Flags::user_data(),
-                        },
-                    ],
-                },
-            )
-        })
-        .expect("could not spawn the input driver");
-
-        (line, line_phys)
-    }
-}
-
-/// The shell, and everything it talks to. **Milestone 10: proof the whole stack works.**
-///
-/// Wires up four processes and the channels between them: the console server (output), the input
-/// driver (a line of text at a time), the shell itself, and a kernel-side spawn service that
-/// starts worker processes on the shell's request. When it returns, an interactive shell is
-/// running at EL0, and everything the user types is a conversation between processes.
-#[allow(dead_code)]
-pub mod shell_service {
-    use super::*;
-    use crate::cap::{Rights, endpoint_cap};
-
-    const OUT_VA: u64 = 0x0000_0000_0060_0000; // shell <-> console server
-    const LINE_VA: u64 = 0x0000_0000_00b0_0000; // shell <-> input driver
-
-    /// **How many children the shell may have alive at once.** The bound that stops a spawn flood
-    /// (or workers that block forever without exiting) from exhausting kernel memory: each live
-    /// child costs a `Thread`, a 16 KiB kernel stack, and an address space, and there can be at
-    /// most this many. A child returns its slot when it is reaped. See notes/quotas.md.
-    static SPAWN_QUOTA: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(8);
-
-    pub fn start() {
-        // Every program the shell stack needs is its own binary now (19f.2-5), loaded by name.
-        let worker = program("worker").expect("no worker program in the initrd");
-        let shell = program("shell").expect("no shell program in the initrd");
-
-        // Output: the console server (milestone 8), and the shell as its client.
-        let console = console_service::start();
-
-        // Input: the receive driver (milestone 10), delivering lines on `line`.
-        let (line, line_phys) = input_service::spawn_wired();
-
-        // The shell asks for spawns here; it receives worker results here.
-        let spawn_ep = crate::sched::create_endpoint();
-        let result_ep = crate::sched::create_endpoint();
-
-        // The spawn service: a kernel thread that starts a worker process for each request. This
-        // is the kernel acting as the "process server"; a full capability system would compose
-        // spawn from Untyped/Tcb capabilities in userspace (milestone 11), but the shell does not
-        // care where the service lives, only that it can name it.
-        crate::sched::spawn(move || {
-            loop {
-                let n = crate::sched::ipc_recv(spawn_ep)[0];
-                let spawned = crate::sched::spawn_with_quota(&SPAWN_QUOTA, move || {
-                    run(
-                        worker,
-                        Spawn {
-                            arg0: 0, // no role selector: worker is its own binary
-                            arg1: n, // the worker's input, in x1
-                            arg2: 0,
-                            grants: &[endpoint_cap(result_ep, Rights::WRITE)],
-                            maps: &[],
-                        },
-                    )
-                });
-                // **Do not panic on out-of-memory.** A spawn flood must degrade, not kill the
-                // machine: if the kernel is out of memory we cannot make the worker, so we tell
-                // the shell its request failed (a sentinel result) and carry on serving. The
-                // security audit flagged the old `.expect(...)` here as a userspace-triggerable
-                // kernel panic. (Per-process spawn quotas are the real fix, and they now exist as
-                // `QuotaToken` in thread.rs, so this path is bounded as well as panic-free. See
-                // notes/quotas.md. Not panicking remains the cheap, honest floor beneath the quota.)
-                if spawned.is_none() {
-                    // u64::MAX is the "could not spawn" sentinel the shell recognises.
-                    crate::sched::ipc_send(result_ep, [u64::MAX, 0, 0]);
-                }
-            }
-        })
-        .expect("could not spawn the process service"); // once, at boot, not attacker-reachable
-
-        // The shell itself, its own binary now (19f.5).
-        crate::sched::spawn(move || {
-            run(
-                shell,
-                Spawn {
-                    arg0: 0, // no role selector: shell is its own binary
-                    arg1: 0,
-                    arg2: 0,
-                    grants: &[
-                        endpoint_cap(console.request, Rights::WRITE), // 0: print
-                        endpoint_cap(console.reply, Rights::READ),    // 1: console ack
-                        endpoint_cap(line, Rights::READ),             // 2: read a line
-                        endpoint_cap(spawn_ep, Rights::WRITE),        // 3: request a spawn
-                        endpoint_cap(result_ep, Rights::READ),        // 4: worker result
-                    ],
-                    maps: &[
-                        Mapping {
-                            va: OUT_VA,
-                            phys: console.shared_phys,
-                            flags: Flags::user_data(),
-                        },
-                        Mapping {
-                            va: LINE_VA,
-                            phys: line_phys,
-                            flags: Flags::user_rodata(),
-                        },
-                    ],
-                },
-            )
-        })
-        .expect("could not spawn the shell");
-    }
-}
-
 /// Milestone 11: hand a process an untyped budget and let it spend it.
-#[allow(dead_code)]
+#[cfg_attr(not(all(test, target_arch = "aarch64")), allow(dead_code))] // the tour and the aarch64 tests
 pub mod untyped_service {
     use super::*;
     use crate::cap::{Rights, endpoint_cap, untyped_cap};
@@ -5392,7 +5235,9 @@ mod std_tests {
 /// copies nothing and pre-arranges nothing: the two processes compose the sharing themselves, and
 /// the read-only narrowing means the consumer can look but not write. See user/src/hello.rs
 /// frame_producer()/frame_consumer().
-#[cfg(test)]
+// The consumers are the `tests` module below, which is aarch64-gated, so on riscv64 this
+// module and everything in it had no caller at all. Compiled out rather than allowed dead.
+#[cfg(all(test, target_arch = "aarch64"))]
 pub mod frame_service {
     use super::*;
     use crate::cap::{Rights, endpoint_cap, untyped_cap};
@@ -5449,7 +5294,9 @@ pub mod frame_service {
     }
 }
 
-#[cfg(test)]
+// The consumers are the `tests` module below, which is aarch64-gated, so on riscv64 this
+// module and everything in it had no caller at all. Compiled out rather than allowed dead.
+#[cfg(all(test, target_arch = "aarch64"))]
 pub mod delegation_service {
     use super::*;
     use crate::cap::{Rights, endpoint_cap};
@@ -5515,7 +5362,9 @@ pub mod delegation_service {
 /// an untyped budget and a channel; the peer holds the channel and a report line. Everything
 /// else, the endpoint itself included, is created at runtime by the maker out of its own pages
 /// and delegated. See user/src/hello.rs ep_maker()/ep_user().
-#[cfg(test)]
+// The consumers are the `tests` module below, which is aarch64-gated, so on riscv64 this
+// module and everything in it had no caller at all. Compiled out rather than allowed dead.
+#[cfg(all(test, target_arch = "aarch64"))]
 pub mod retype_ep_service {
     use super::*;
     use crate::cap::{Rights, endpoint_cap, untyped_cap};
@@ -5571,7 +5420,9 @@ pub mod retype_ep_service {
 
 /// **Milestone 19b: a process builds an address space, at EL0.** One role: an untyped budget
 /// and a report line; everything else it constructs. See user/src/hello.rs aspace_builder().
-#[cfg(test)]
+// The consumers are the `tests` module below, which is aarch64-gated, so on riscv64 this
+// module and everything in it had no caller at all. Compiled out rather than allowed dead.
+#[cfg(all(test, target_arch = "aarch64"))]
 pub mod aspace_service {
     use super::*;
     use crate::cap::{Rights, endpoint_cap, untyped_cap};
@@ -5608,7 +5459,9 @@ pub mod aspace_service {
 /// **Milestone 12: Call/Reply, at EL0.** One request endpoint, a server that answers a caller it was
 /// never wired to, and the one-shot reply capability proven across the boundary. See
 /// user/src/hello.rs call_server()/call_client().
-#[cfg(test)]
+// The consumers are the `tests` module below, which is aarch64-gated, so on riscv64 this
+// module and everything in it had no caller at all. Compiled out rather than allowed dead.
+#[cfg(all(test, target_arch = "aarch64"))]
 pub mod call_service {
     use super::*;
     use crate::cap::{Rights, endpoint_cap};
@@ -5666,7 +5519,9 @@ pub mod call_service {
 /// **Milestone 13: revoke a frame, at EL0.** One process with an untyped budget retypes a frame,
 /// maps it, revokes it, and reports whether the revoke deleted its own capability. See
 /// user/src/hello.rs revoke_demo().
-#[cfg(test)]
+// The consumers are the `tests` module below, which is aarch64-gated, so on riscv64 this
+// module and everything in it had no caller at all. Compiled out rather than allowed dead.
+#[cfg(all(test, target_arch = "aarch64"))]
 pub mod revoke_service {
     use super::*;
     use crate::cap::{Rights, endpoint_cap, untyped_cap};
@@ -9196,6 +9051,59 @@ mod riscv_virtio_tests {
             wait_for(|| sched::thread_count() <= threads),
             "the killed thread was never reaped",
         );
+    }
+
+    /// **The confused-deputy question, asked on the ISA where the answer is harder** (the RISC-V
+    /// twin of `the_hardware_says_el0_cannot_read_the_kernels_memory`, milestone 41).
+    ///
+    /// aarch64 has `AT S1E0R`, one instruction that makes the silicon answer "could EL0 read
+    /// this". RISC-V has no such instruction, so `mmu::user_can_read` walks the installed tables
+    /// in software and reads the `U` bit. That software answer is the thing under test, and it
+    /// matters more here than on aarch64: RISC-V has one root register, so the **same** page
+    /// tables that translate a user address also translate the kernel's, and the `U` bit is the
+    /// only thing between U-mode and the kernel's own memory. On aarch64 the split TTBR0/TTBR1
+    /// gives a second, structural line of defence. Here there is one line, and this is it.
+    ///
+    /// The precondition assertion is the same one the aarch64 test carries, for the same reason:
+    /// "U-mode cannot read the kernel" proves nothing if the kernel is not mapped here at all.
+    /// On RISC-V it also proves the kernel-half share actually happened.
+    ///
+    /// This test exists because milestone 41 removed the crate-wide `allow(dead_code)` that riscv64
+    /// builds carried, and `user_can_read`/`user_can_write` fell out of it as dead on this ISA
+    /// only: the aarch64 test module proved them, and nothing on RISC-V ever called them.
+    #[test_case]
+    fn the_page_tables_say_u_mode_cannot_read_the_kernels_memory() {
+        // Inside the direct map, so it is mapped for certain and it is the kernel's own memory.
+        let kernel_va = crate::arch::mmu::KERNEL_VA_BASE + 0x8000_0000;
+
+        let image = program("init").expect("no init program in the initrd archive");
+        let (space, _) = load(image).expect("the initrd did not load");
+
+        // SAFETY: nothing is at U-mode; we are a kernel thread mid-test, and the root carries the
+        // kernel half (else this instruction would not retire).
+        unsafe { mmu::activate_user(space.ttbr0()) };
+
+        assert!(
+            mmu::translate(kernel_va).is_some(),
+            "the kernel's direct map is not mapped, so this test proves nothing",
+        );
+        assert!(
+            !mmu::user_can_read(kernel_va),
+            "the page tables say U-mode could read the kernel's own memory",
+        );
+        assert!(!mmu::user_can_write(kernel_va));
+
+        // And it says yes to the process's own text, or the check is a rubber stamp.
+        assert!(
+            mmu::user_can_read(0x40_0000),
+            "U-mode cannot read its own .text, so the check refuses everything and proves nothing",
+        );
+
+        // Not an unmapped address in its own half.
+        assert!(!mmu::user_can_read(0x7000_0000));
+
+        mmu::deactivate_user();
+        drop(space);
     }
 
     /// The headline, on the second ISA: an unprivileged process drives a real block device over

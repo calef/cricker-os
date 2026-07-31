@@ -22,8 +22,6 @@
 //!   +0x008  ...    payload     up to DATA_MAX bytes
 //! ```
 
-#![allow(dead_code)] // each binary uses a subset of the ops and helpers
-
 /// Operations. The opcode is the low byte of the request word; the socket id is the next byte.
 pub const OP_ATTACH_FRAME: u64 = 1; // SEND_CAP: delegate the shared frame for this socket id
 pub const OP_OPEN_UDP: u64 = 2; // CALL: create a UDP socket, bind an ephemeral local port

@@ -25,12 +25,6 @@
 //!
 //! See notes/mmu.md and notes/page-tables.md.
 
-// map_page / unmap_page / flush_tlb exist ahead of their first non-test caller. They are the
-// API milestone 7 uses to build and tear down a process address space, and the discipline they
-// encode (break-before-make, an un-ignorable TLB obligation) is much cheaper to get right now
-// than to retrofit across twenty call sites. The kernel tests exercise all of them.
-#![allow(dead_code)]
-
 use crate::memory;
 use crate::println;
 use aarch64_cpu::asm::barrier;
@@ -599,10 +593,18 @@ pub fn flush_asid(asid: u16) {
 
 /// Install a user address space. The low half of memory now means *that process*.
 ///
+/// The running kernel does not call this: it installs address spaces through the context switch,
+/// which goes via [`switch_user_root`] so it can skip the barriers when the process has not
+/// changed. This is the unconditional install, which is what a test wants when it is asserting
+/// about a *specific* address space rather than about scheduling. RISC-V's twin has a non-test
+/// caller (the boot tour in `main.rs` switches `satp` by hand), and parity keeps the two arch
+/// modules offering the same function.
+///
 /// # Safety
 /// `ttbr` must compose ([`ttbr0_value`]) a live L0 table built by a `Mapper` with `Half::Low`
 /// and the ASID that owns it, and the table must outlive every instruction executed at EL0
 /// afterwards.
+#[cfg_attr(not(test), allow(dead_code))]
 pub unsafe fn activate_user(ttbr: u64) {
     unsafe { set_ttbr0(ttbr) };
 }
@@ -644,20 +646,29 @@ pub fn deactivate_user() {
 /// So we do not re-implement the permission model in software and hope it agrees with the
 /// silicon. **We ask the silicon.**
 ///
-/// `allow(dead_code)` since milestone 8: its caller was the kernel's `console::write`, which read
-/// a user's bytes on the user's behalf and needed this to avoid being a confused deputy. That
-/// syscall left the kernel when the console driver did (the data path is shared memory now, and
-/// the kernel is not on it). This primitive stays because the *next* syscall that takes a user
-/// pointer — a filesystem server's `read`, say — will need exactly it, and because notes/
-/// capabilities.md leans on it. It is kept, not speculative: the technique is load-bearing.
-#[allow(dead_code)]
+/// # Why this has no caller in the running kernel
+///
+/// It had one: the kernel's own `console::write` syscall, which read a user's bytes on the user's
+/// behalf and needed this check to avoid being exactly the deputy described above. That syscall
+/// left the kernel with the console driver (DECISIONS §21 moved the terminal to userspace), and
+/// the data path is shared memory now, with the kernel not on it. **No syscall in today's ABI
+/// dereferences a user pointer**, which is the reason the check is idle and also a fact worth
+/// stating out loud, because it is a property of the narrow surface (§4 rule 3) rather than an
+/// accident.
+///
+/// It is kept, not speculative, and it is **proved rather than merely allowed**:
+/// `the_hardware_says_el0_cannot_read_the_kernels_memory` in `user.rs` asserts the silicon says no
+/// to a kernel address and yes to the process's own text, so the technique notes/capabilities.md
+/// leans on is exercised on every test run. Hence `cfg_attr(not(test), ...)`: the attribute names
+/// the one configuration with no caller, instead of blanket-suppressing a function that has one.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn user_can_read(va: u64) -> bool {
     // SAFETY: address translation has no side effects beyond PAR_EL1.
     unsafe { translate_as_el0(va, false) }
 }
 
-/// As [`user_can_read`], for a write. `AT S1E0W`.
-#[allow(dead_code)] // the first writing syscall is milestone 8's console server
+/// As [`user_can_read`], for a write. `AT S1E0W`. Same disposition, same test.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn user_can_write(va: u64) -> bool {
     // SAFETY: as above.
     unsafe { translate_as_el0(va, true) }
@@ -748,7 +759,7 @@ pub fn unmap_user_at(root: u64, va: u64) -> Option<u64> {
 /// Ask the user page tables rooted at `root` what `va` maps to. Like [`translate_user`], but for an
 /// arbitrary root rather than the installed one, so revocation (and its tests) can inspect another
 /// address space. Reads the tables in memory; touches no register.
-#[allow(dead_code)] // used by the §13 tests
+#[cfg_attr(not(test), allow(dead_code))] // the §13 revocation tests are the only callers
 pub fn translate_at(root: u64, va: u64) -> Option<(u64, Flags)> {
     // SAFETY: `root` is an L0 table; the direct map makes `phys_to_ptr` valid.
     let mapper = unsafe { Mapper::<_, _, Aarch64>::new(root, Half::Low, || None, phys_to_ptr) };
@@ -898,7 +909,6 @@ pub fn is_enabled() -> bool {
 /// (The doc comment here used to say `TTBR0_EL1`, which the code has never read. Recorded
 /// rather than quietly fixed, per the house rule: the machine overrules the documentation, and
 /// it overrules us.)
-#[allow(dead_code)] // used by the tests, and by anyone debugging a mapping
 pub fn translate(va: u64) -> Option<(u64, Flags)> {
     let root = TTBR1_EL1.get_baddr();
 
@@ -912,7 +922,7 @@ pub fn translate(va: u64) -> Option<(u64, Flags)> {
 ///
 /// Reads `TTBR0_EL1`, so it answers for whichever address space is installed right now, which
 /// is either a process's or the empty reserved table.
-#[allow(dead_code)] // used by the tests
+#[cfg_attr(not(test), allow(dead_code))] // the address-space tests are the only callers
 pub fn translate_user(va: u64) -> Option<(u64, Flags)> {
     let root = TTBR0_EL1.get_baddr();
 
@@ -921,6 +931,10 @@ pub fn translate_user(va: u64) -> Option<(u64, Flags)> {
     mapper.translate(va)
 }
 
+/// The boot banner's MMU line. Its only caller is the banner in `main.rs`, which the test build and
+/// the `bench` boot mode both compile out (`cfg(not(any(test, feature = "bench")))`), so it has no
+/// caller in exactly those two configurations.
+#[cfg_attr(any(test, feature = "bench"), allow(dead_code))]
 pub fn print_summary() {
     println!(
         "  mmu             : {}, kernel in TTBR1 at {:#018x}, TTBR0 free for userspace",

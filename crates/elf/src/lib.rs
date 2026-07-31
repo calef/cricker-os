@@ -29,9 +29,9 @@ const ET_DYN: u16 = 3;
 /// these as [`EXPECTED_MACHINE`] and compiles the other's branch out, so from that build's point of
 /// view the other constant is unused; we keep both named because the crate documents both machines
 /// it knows, and the tests check rejection of the non-native one.
-#[allow(dead_code)]
+#[cfg_attr(target_arch = "riscv64", allow(dead_code))]
 const EM_AARCH64: u16 = 183;
-#[allow(dead_code)]
+#[cfg_attr(not(target_arch = "riscv64"), allow(dead_code))]
 const EM_RISCV: u16 = 243;
 
 /// The machine this build accepts. A kernel only ever loads binaries for its **own** architecture,
