@@ -2594,13 +2594,23 @@ Time Machine specifically is solved.
 |---|---|---|---|
 | **9P** | **None** | Small | Plan 9's protocol, closest to our model, and Chris cannot mount it. A demonstrator win with no user |
 | **NFSv3** | Built in (`mount_nfs`) | Medium | RPC/XDR, mount protocol, portmapper. Usable immediately for general storage. **Not** a supported Time Machine target |
-| **SMB3** | Built in | **Large** | The only path to Time Machine (milestone 55) |
+| **SMB3** | Built in | **Large** | **The one that is actually required**: the only path to Time Machine (milestone 55) |
 | WebDAV | Built in | Small | HTTP-based, and not a Time Machine target |
 
-**The tension worth deciding deliberately:** 9P is the protocol that fits this system's design and
-would be the honest "lightweight file serving" answer, but it does nothing for the person who asked.
-NFSv3 is materially larger and immediately useful. If milestone 55 is going to happen anyway, some of
-NFSv3's work is thrown away.
+**Chris's router already exposes SMB for Time Machine (2026-07-30), which settles this.** SMB is
+required regardless, so NFSv3 would be work thrown away, and 9P would be a demonstrator exercise with
+no user. **Do not build a second protocol just to have an easier first one.**
+
+What survives is a better decomposition than "pick a protocol". **The file service already exists**:
+`fs_proto` over RedoxFS, milestone 32. A network protocol is therefore an **adapter** that speaks the
+wire on one side and `fs_proto` on the other, holding **one directory capability and one network
+endpoint**. So this milestone is the adapter *pattern* plus whatever protocol milestone 55 needs, and
+9P or NFSv3 become optional later adapters rather than prerequisites.
+
+That framing sharpens the security claim rather than just simplifying the build. The SMB adapter is a
+**protocol translator with no storage authority at all**: it cannot reach the block device, cannot
+enumerate outside the share, and speaks to the FS server only through the same contract every other
+client uses. A compromise yields the share's contents and nothing structural.
 
 **The capability shape, whichever protocol wins.** The service holds the share's directory capability
 and a network endpoint. It cannot enumerate outside the share because no capability reaches there;
@@ -2615,8 +2625,22 @@ backups but not delete them", which is a genuinely useful thing to be able to sa
 recorded at full size deliberately, because the failure mode here is starting it while imagining it is
 "a file server".
 
-**What Time Machine over a network actually requires** (each item **needs verifying against current
-macOS before any of this is scheduled**; this is from knowledge, not measurement):
+#### The scope risk is now measurable, and that should happen before anything is scheduled
+
+**Chris's router serves Time Machine over SMB today (2026-07-30).** That is a working reference
+implementation on his own network, so the requirement list below stops being something to guess at.
+**The first task of this milestone needs no board and no code**: capture the SMB session between the
+Mac and the router and read off the truth. The negotiated dialect, the capability bits, which create
+contexts actually appear, what the mDNS records advertise, and which operations Time Machine really
+issues. That converts this milestone's largest risk from unknown scope into a measured feature list,
+and it is exactly the "measure, do not argue" rule applied to a requirement rather than a benchmark.
+
+**Worth establishing what the router runs**, because it bounds the answer: if it is full Samba with
+`vfs_fruit`, the reference is large; if it is **`ksmbd`** or another minimal server, then a much
+smaller implementation is already known to satisfy Time Machine, and that is the target to match.
+
+**What Time Machine over a network is believed to require** (from knowledge, *superseded by the
+capture above* the moment it exists):
 
 - **SMB3, not AFP.** Apple deprecated and removed AFP serving; SMB is the supported path.
 - **Apple's SMB extensions**, the `AAPL` create context, which is what Samba implements as
