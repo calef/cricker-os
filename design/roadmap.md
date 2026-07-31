@@ -114,7 +114,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 48 | NOT-STARTED | Job control: jobs, wait, kill, fg, bg, and a stopped state | **most of it needs no new kernel surface**, and the tty's most tangled feature turns out to be a capability transfer |
 | 49 | NOT-STARTED | Users, login, and attribution: what identity is for once it stops being authority | three of Unix's four uses for a uid are already answered structurally; the fourth, **attribution, has no mechanism at all** |
 | 50 | NOT-STARTED | Pipes and redirection: one sink protocol, and `\|` turns out to be an endpoint | the mechanism already exists (**stdout is a capability in slot 1**); the work is unifying four byte-sink protocols, not adding a parser rule |
-| 51 | BUILT | Wall-clock time, the `date` command, and an NTP service | **complete 2026-07-31**: two RTC drivers, the clock service (§43), `crates/calendar`, `crates/ntp_proto`, `date`, and an NTP client that holds **propose and not set**. The machine knows what time it is |
+| 51 | PARTIAL | Wall-clock time, the `date` command, and an NTP service | the machine knows what time it is: two RTC drivers, the clock service (§43), `crates/calendar`, `crates/ntp_proto`, `date`, and an NTP client holding **propose and not set**. `date` is **not yet reachable from the shell** |
 | 52 | RECORDED | Subshells without `fork`, and what copying an endowment means | `( ... )` is fork, we deliberately have no fork, and **capability duplication is not a total function** |
 | 53 | NOT-STARTED | The board's own peripherals: network and storage on real silicon | 16a boots the board; this is what makes it able to *do* anything, and it is where virtio stops carrying us |
 | 54 | NOT-STARTED | A network file service a Mac can actually mount | the first real workload with a real user, and the security claim backup servers deserve |
@@ -2474,7 +2474,16 @@ to 2038, and it holds no authority over anything but the network socket it was g
 
 #### `date`, the deliverable
 
-**Built 2026-07-31** (notes/date.md; `user/src/date.rs`, `kernel::user::date_tests`). A hundred
+**Built 2026-07-31** (notes/date.md; `user/src/date.rs`, `kernel::user::date_tests`).
+
+**Reachable from a test, not from the prompt, and that is why this milestone is `PARTIAL` and not
+`BUILT`** (found by Chris, 2026-07-31, by typing `date` at `script/server` and getting "unknown
+command"). The binary is in the initrd and tested on both ISAs, but `capsh::Prog` knows only `worker`,
+`budgeter`, `heeder` and `spinner`, so the shell cannot spawn it. The lane deferred that as
+"milestone 31's manifest machinery", which is a defensible scope call that nonetheless leaves the
+*command* half of "the `date` command" undone. **A program a user cannot invoke is not a command**,
+and the status said otherwise until he checked. Being folded into the milestone 47 grammar lane, which
+owns `capsh` and is removing `run` — after which `date` at the prompt is exactly what he typed. A hundred
 lines, most of them comments, because the design had settled everything interesting first: read the
 page, add the counter, hand the number to `calendar`. Five formats, a fixed UTC offset in minutes,
 and an optional second line naming the clock's **provenance**, which renders `clock_proto`'s four
