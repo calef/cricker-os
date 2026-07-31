@@ -70,6 +70,17 @@ watchdog needed wiring into riscv `timer::tick`; and a genuine race — a timer 
 and no idle thread"), fixed by masking interrupts across init, which aarch64 gets for free by bringing
 the scheduler up before enabling interrupts. Original scoping below.
 
+**Follow-on (milestone 19): the suite was at parity on the portable tests and not on the arch ones.**
+`arch/aarch64` carried 21 unit tests and `arch/riscv64` carried zero, across the same three files, so
+the properties that differ between the ISAs were asserted on one side only. The twins are now
+written, and they found three defects nothing else would have: the timer delivering 80 Hz against a
+configured 100 (the relative-re-arm drift bug aarch64 shipped and fixed back at milestone 5, arrived
+at here by a different route), `missed_ticks` a stub returning 0, and a single global tick counter
+for a per-hart timer. **The lesson is B's own lesson repeated one level down:** a parity claim is only as
+wide as the suite that checks it, and "both ISAs run the same suite" was true of the portable half
+and not of the arch half. See notes/riscv-arch-tests.md, which also sizes the remaining
+`kernel::user::tests` port.
+
 ### B (original scope). In-kernel test suite on RISC-V — M, low-medium risk. Highest value per effort.
 
 The 116 kernel tests boot under QEMU on aarch64 and signal pass/fail via semihosting exit. RISC-V has
