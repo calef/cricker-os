@@ -8892,8 +8892,7 @@ mod live_swap_tests {
         let log = of_kind(msgs, RPT_LOG)
             .next()
             .expect("the operator never reported its verdict");
-        const LOG_CLEAN: u64 =
-            LOG_NO_GAP | LOG_MONOTONE | LOG_BOTH_VERSIONS | LOG_REVOKE_ENFORCED;
+        const LOG_CLEAN: u64 = LOG_NO_GAP | LOG_MONOTONE | LOG_BOTH_VERSIONS | LOG_REVOKE_ENFORCED;
         assert_eq!(
             log[1] & LOG_CLEAN,
             LOG_CLEAN,
