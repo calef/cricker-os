@@ -1138,7 +1138,11 @@ fn initrd_riscv() -> bool {
     }
     // The std demo (milestone 27), built through the cricker-dev toolchain for the riscv custom
     // target, rides along when present, exactly as on aarch64. `test` builds it first.
-    if let Ok(bytes) = read_stripped(&hellostd_elf("riscv64-unknown-cricker").display().to_string()) {
+    if let Ok(bytes) = read_stripped(
+        &hellostd_elf("riscv64-unknown-cricker")
+            .display()
+            .to_string(),
+    ) {
         blobs.push(("hellostd", bytes));
     }
     // The FS server (milestone 32 phase 2), built for the riscv bare target, rides along when
@@ -1354,7 +1358,12 @@ fn mkinitrd() -> bool {
     // The std demo (milestone 27) rides along IFF it has been built (`cargo xtask user-std`, which
     // `test` runs). It builds through a separate toolchain and target, so an interactive `run` that
     // never built it simply ships an initrd without it; nothing loads it there.
-    let hellostd = read_stripped(&hellostd_elf("aarch64-unknown-cricker").display().to_string()).ok();
+    let hellostd = read_stripped(
+        &hellostd_elf("aarch64-unknown-cricker")
+            .display()
+            .to_string(),
+    )
+    .ok();
     if let Some(bytes) = &hellostd {
         files.push(("hellostd", bytes.as_slice()));
     }
