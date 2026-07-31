@@ -1046,6 +1046,16 @@ fn initrd_riscv() -> bool {
             "vterm",
             "--bin",
             "kbd",
+            "--bin",
+            "swapd",
+            "--bin",
+            "conx",
+            "--bin",
+            "cconx",
+            "--bin",
+            "chatty",
+            "--bin",
+            "brokerd",
             "--target",
             RISCV_TARGET,
         ],
@@ -1106,6 +1116,15 @@ fn initrd_riscv() -> bool {
         ("vterm", "vterm"),
         // The keyboard driver (milestone 29's input). Portable, so both archives carry it.
         ("kbd", "kbd"),
+        // Live component replacement (milestone 23): the operator, the two instances of the
+        // swappable component (the second computes its answers in C), the client that talks across
+        // the swap, and the queue broker for the opt-in rung. Portable, so both archives carry all
+        // five and both ISAs run literally the same swap.
+        ("swapd", "swapd"),
+        ("conx", "conx"),
+        ("cconx", "cconx"),
+        ("chatty", "chatty"),
+        ("brokerd", "brokerd"),
     ];
     let mut blobs: Vec<(&str, Vec<u8>)> = Vec::new();
     for &(archive_name, bin_name) in entries {
@@ -1286,7 +1305,7 @@ fn mkinitrd() -> bool {
     let mut tree: Vec<(&str, Vec<u8>)> = Vec::new();
     for name in [
         "rootsup", "spawner", "subsup", "flaky", "gpud", "painter", "cwarden", "cshim", "compd",
-        "window", "vterm", "kbd",
+        "window", "vterm", "kbd", "swapd", "conx", "cconx", "chatty", "brokerd",
     ] {
         match std::fs::read(bin_elf(name)) {
             Ok(bytes) => tree.push((name, bytes)),

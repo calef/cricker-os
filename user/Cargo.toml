@@ -260,6 +260,46 @@ path = "src/vterm.rs"
 test = false
 bench = false
 
+# Live component replacement (milestone 23, DECISIONS §39). Four programs, one shared module
+# (src/swap.rs): `swapd` is the operator that swaps a running component under a talking client;
+# `conx` and `cconx` are the two instances of that component (the second computes its answers in C,
+# so the replacement is a different implementation in a different language); `chatty` is the client
+# that keeps talking across the swap and the attacker that tries to become the server. Portable,
+# both ISAs; the kernel's live_swap_tests drive them.
+[[bin]]
+name = "swapd"
+path = "src/swapd.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "conx"
+path = "src/conx.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "cconx"
+path = "src/cconx.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "chatty"
+path = "src/chatty.rs"
+test = false
+bench = false
+
+# The queue broker (milestone 23, the latency ladder's middle rung): the opt-in, per-channel
+# lifecycle decoupler. A producer never blocks on an absent consumer; the broker buffers in its own
+# budget and the new consumer drains the backlog in order. Never the default, because it costs an
+# extra hop, which `broker_rtt` prices.
+[[bin]]
+name = "brokerd"
+path = "src/brokerd.rs"
+test = false
+bench = false
+
 # The keyboard driver (milestone 29's input): a confined userspace virtio-input driver whose whole
 # power to inject a keystroke is the mapping of the compositor's input ring, not the doorbell every
 # client holds. `mkinitrd` packs it as "kbd" for both ISAs.

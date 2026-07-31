@@ -95,15 +95,34 @@ impl<'a> Endow<'a> {
     }
 }
 
-/// Build a child from `elf`: lay each segment W^X at the VA it names, map a stack, copy the blobs in,
-/// map `maps`, retype a TCB, insert the endowment, configure at the entry. Returns the TCB slot,
-/// ready for [`tcb_start`].
+/// Build a child from `elf` and configure it, ready for [`tcb_start`]. The whole job in one call,
+/// which is what every caller but the hot-swap operator wants.
 ///
 /// `own_ut` pays for **our** scratch mappings (they are ours, and a child's region must not have our
 /// page tables freed under it when the child is reaped). `build_ut` is what the child itself is made
 /// of: its address space, frames, stack, and TCB. Passing a per-child region as `build_ut` is what
 /// makes a single `DESTROY` reap the whole instance.
 pub fn build_child(own_ut: u64, build_ut: u64, elf: &elf::Elf, endow: &Endow) -> Result<u64, ()> {
+    let (tcb, aspace) = build_child_space(own_ut, build_ut, elf, endow)?;
+    configure_child(tcb, aspace, elf.entry())?;
+    Ok(tcb)
+}
+
+/// Everything [`build_child`] does **except** the final `CONFIGURE`: lay each segment W^X at the VA
+/// it names, map a stack, copy the blobs in, map `maps`, retype a TCB, insert the endowment.
+/// Returns `(tcb, aspace)`, both still held by us.
+///
+/// Split out for milestone 23's live replacement (DECISIONS §39), which needs to do one more thing
+/// to the child's address space *between* building it and configuring it: map in a device the
+/// operator could not hand over any earlier, because revoking it from the outgoing owner would have
+/// taken the incoming owner's copy too. `CONFIGURE` consumes the aspace capability, so once it has
+/// run there is no way to reach the child's memory again; this is where that seam is.
+pub fn build_child_space(
+    own_ut: u64,
+    build_ut: u64,
+    elf: &elf::Elf,
+    endow: &Endow,
+) -> Result<(u64, u64), ()> {
     let aspace = retype_obj_from(build_ut, abi::objtype::ASPACE)?;
 
     for seg in elf.segments() {
@@ -199,11 +218,18 @@ pub fn build_child(own_ut: u64, build_ut: u64, elf: &elf::Elf, endow: &Endow) ->
             return Err(());
         }
     }
+    Ok((tcb, aspace))
+}
+
+/// Bind the address space and set the entry point: the last step before [`tcb_start`]. The `aspace`
+/// capability is **consumed** by the kernel here, so this is the moment after which the builder can
+/// no longer shape the child's memory.
+pub fn configure_child(tcb: u64, aspace: u64, entry: u64) -> Result<(), ()> {
     if unsafe {
         invoke(
             tcb,
             abi::tcb::CONFIGURE,
-            elf.entry(),
+            entry,
             CHILD_STACK_VA + PAGE,
             aspace,
         )
@@ -211,7 +237,7 @@ pub fn build_child(own_ut: u64, build_ut: u64, elf: &elf::Elf, endow: &Endow) ->
     {
         return Err(());
     }
-    Ok(tcb)
+    Ok(())
 }
 
 /// Retype one page out of `build_ut`, fill it (zeroed, then `src` bytes at an offset) through our own
