@@ -64,6 +64,17 @@ Two kinds bit us on 2026-07-30:
 --check` verifies that a cited `§N` resolves to *some* section, never that it resolves to the right
 one, so a well-formed wrong citation is invisible to it. This has already produced two of them.
 
+**Delete a lane's branch when you merge it, and never use a branch as a filing cabinet.** Forty-seven
+branches accumulated in about two days of lane work and had to be pruned by hand on 2026-07-31; this
+recurs by default, because merging is what finishes a lane and deleting is a separate act nobody is
+prompted to take. So it belongs in the merge, not in a periodic cleanup.
+
+The rule that matters more than the tidiness: **an unmerged branch is either abandoned or it is
+holding knowledge that is not on `main`, and the second case is a bug in where the knowledge lives.**
+`fix/redoxfs-write-loop` survived that prune because it carried an investigation's conclusion that
+`notes/fs-server.md` does not. **Nobody reads branches.** If a branch holds a finding worth keeping,
+land the finding in `notes/` and then delete the branch; do not keep the branch as the record.
+
 **Benchmarks and cross-OS comparisons are first-class.** Measure, do not argue. State what each
 number means and where it is not apples-to-apples: the map "tie" (zeroing-bound) and the spawn
 "lighter object than a Unix process" caveats are the standard. An honest tie or loss recorded
