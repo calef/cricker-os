@@ -11,4 +11,11 @@ license.workspace = true
 # `lineedit::proto` holds the terminal contract's framing (notes/terminal-contract.md). The written
 # contract is notes/fs-server.md; this crate is its code.
 
+# `kani` is set only by `cargo kani` (script/verify), never by an ordinary build. Declaring it here
+# keeps unexpected_cfgs from flagging the `#[cfg(kani)]` proof module under -D warnings. The property
+# it proves is milestone 47's: a directory capability's child can never carry a right the parent
+# lacked, for every mask rather than for the ones a test thought of.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
 [dependencies]
