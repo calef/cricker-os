@@ -2503,7 +2503,7 @@ pub mod fs_service {
             },
         );
 
-        let driver_report = spawn_fs_client(client_image, file_ep, file_shared, 3, 0);
+        let driver_report = spawn_fs_client(client_image, file_ep, file_shared, 3, 0, 0);
         Some(CrashRun {
             blk_ready,
             fs_ready,
@@ -2542,21 +2542,49 @@ pub mod fs_service {
                 crash: (0, 0, 0), // this one is not armed: it is the one that has to survive
             },
         );
-        let report = spawn_fs_client(client_image, file_ep, file_shared, 4, 0);
+        let report = spawn_fs_client(client_image, file_ep, file_shared, 4, 0, 0);
         (ready, report)
     }
 
-    /// Spawn one `fsclient` role holding exactly a file-service endpoint, a report endpoint and its
-    /// view of the shared page. Returns the report endpoint.
+    /// The most extra stack pages [`spawn_fs_client`] will map below the one `run` gives every
+    /// program. Small on purpose: a client that needs more than this is a client whose frames want
+    /// looking at, not a number that wants raising.
+    const CLIENT_EXTRA_STACK: usize = 4;
+
+    /// Spawn one client holding exactly a file-service endpoint, a report endpoint and its view of
+    /// the shared page. Returns the report endpoint.
+    ///
+    /// `extra_stack` is pages **below** the single one `run` maps. The hand-written `fsclient` roles
+    /// need none: they hold a handle and a small buffer. The navigating shell (milestone 47's
+    /// commands) needs some, and the number is a measurement rather than a guess: with none it
+    /// overflowed by 192 bytes, which presented as a data abort on its own `sp` and then as the
+    /// 60-second lost-wakeup watchdog, because the kernel test was still waiting for a report from a
+    /// process that had died. A shell carries a path stack (eight levels of name), a parsed path,
+    /// and a listing buffer, all by value, so 4 KiB is genuinely tight for it. Same discipline as
+    /// the FS server's stack (DECISIONS §27): sized by what it did, not by what looks generous.
     fn spawn_fs_client(
         client_image: &'static [u8],
         file_ep: EpId,
         file_shared: u64,
         role: u64,
         arg: u64,
+        extra_stack: usize,
     ) -> EpId {
+        assert!(
+            extra_stack <= CLIENT_EXTRA_STACK,
+            "an FS client asked for more stack than this wiring maps",
+        );
         let report = crate::sched::create_endpoint();
         crate::sched::spawn(move || {
+            let mut maps = [Mapping {
+                va: FILE_VA_CLIENT,
+                phys: file_shared,
+                flags: Flags::user_data(),
+            }; 1 + CLIENT_EXTRA_STACK];
+            for (k, m) in maps[1..=extra_stack].iter_mut().enumerate() {
+                m.va = USER_STACK_VA - (k as u64 + 1) * FRAME_SIZE;
+                m.phys = frame();
+            }
             run(
                 client_image,
                 Spawn {
@@ -2567,11 +2595,7 @@ pub mod fs_service {
                         endpoint_cap(file_ep, Rights::WRITE), // slot 0: CALL the FS server
                         endpoint_cap(report, Rights::WRITE),  // slot 1: report to the kernel
                     ],
-                    maps: &[Mapping {
-                        va: FILE_VA_CLIENT,
-                        phys: file_shared,
-                        flags: Flags::user_data(),
-                    }],
+                    maps: &maps[..1 + extra_stack],
                 },
             )
         })
@@ -2593,7 +2617,7 @@ pub mod fs_service {
     ) -> Option<(Option<(EpId, EpId)>, EpId)> {
         let (file_ep, file_shared, readiness) = ensure(blk_image, fsserver_image)?;
         // 0 = the end-to-end proof; 1 = the fs_read benchmark loop.
-        let report = spawn_fs_client(client_image, file_ep, file_shared, client_role, 0);
+        let report = spawn_fs_client(client_image, file_ep, file_shared, client_role, 0, 0);
         Some((readiness, report))
     }
 
@@ -2752,6 +2776,7 @@ pub mod fs_service {
             file_shared,
             client_role,
             client_arg,
+            0,
         ))
     }
 
@@ -2783,6 +2808,9 @@ pub mod fs_service {
         /// The confined program's `arg0` (its role) and `arg1`.
         pub role: u64,
         pub arg: u64,
+        /// Stack pages beyond the one `run` maps, for a confined program that needs them. The
+        /// hand-written attacker needs none; a shell does (see [`spawn_fs_client`]).
+        pub stack_pages: usize,
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -2798,6 +2826,7 @@ pub mod fs_service {
             rights,
             role: client_role,
             arg: client_arg,
+            stack_pages,
         } = grant;
         assert!(
             fs_proto::grant::fits(name.as_bytes()),
@@ -2849,6 +2878,7 @@ pub mod fs_service {
             file_shared,
             client_role,
             client_arg,
+            stack_pages,
         ))
     }
 
@@ -11562,7 +11592,7 @@ mod dir_capability_tests {
 
     /// The binary carrying the block server's role, which is the one thing the two ISAs disagree
     /// about: on aarch64 it is a role of the `init`/hello binary, on riscv the dedicated `blk` one.
-    fn blk_server_image() -> &'static [u8] {
+    pub(super) fn blk_server_image() -> &'static [u8] {
         #[cfg(target_arch = "aarch64")]
         return program("init").expect("no init program in the initrd archive");
         #[cfg(target_arch = "riscv64")]
@@ -11586,6 +11616,7 @@ mod dir_capability_tests {
                 rights,
                 role: 5, // ROLE_DIR_ATTACKER
                 arg: run,
+                stack_pages: 0,
             },
         ) {
             Some(r) => r,
@@ -11733,6 +11764,176 @@ mod dir_capability_tests {
             esc::OPENED_ITS_OWN | esc::CREATED | esc::WROTE,
             "append-only",
         );
+    }
+}
+
+/// **The navigation builtins, and the property that two shells cannot name each other's files**
+/// (milestone 47's commands; notes/shell-navigation.md).
+///
+/// One module for both ISAs, for [`dir_capability_tests`]'s reason: nothing here is
+/// architecture-specific, so the parity gate (DECISIONS §19) is met by the same test running twice.
+///
+/// What is wired is the **real shell binary**, in a role that reads a script instead of a keyboard,
+/// holding a `dwarden`'s narrowed endpoint where the interactive one holds a terminal. So the
+/// builtins under test are the builtins at the prompt rather than a reimplementation of them, and
+/// the thing being confined is a shell.
+#[cfg(test)]
+mod shell_navigation_tests {
+    use super::*;
+    use crate::sched;
+    use fs_proto::dir;
+    use fs_proto::fixture::{navscape as nb, tree};
+
+    /// The `shell` binary's navigating role (`user/src/shell.rs`).
+    const ROLE_NAVIGATE: u64 = 1;
+
+    /// The bits every navigating shell must report whatever it was rooted in: `pwd` at its root,
+    /// `..` clamped, an absolute path refused, a listing, and the whole `mkdir` / create / `rm`
+    /// sequence including the two halves of "unlink is not revoke".
+    const ALWAYS: u64 = nb::PWD_IS_ROOT
+        | nb::CLAMPED_AT_ROOT
+        | nb::ABSOLUTE_REFUSED
+        | nb::LISTED
+        | nb::CREATED
+        | nb::MADE_DIR
+        | nb::UNLINKED
+        | nb::HOLDER_KEPT_READING
+        | nb::NAME_GONE_AFTER_UNLINK
+        | nb::RM_REFUSED_A_DIRECTORY;
+
+    /// Wire a `dwarden` holding a capability to `root` and run the shell's navigation script inside
+    /// it. `run` keeps the names it creates distinct across runs sharing one image.
+    ///
+    /// The run index and the rights ride in one word packed by `fs_proto::grant::spec`, the same
+    /// packing the warden's own grant uses: the shell is **told** what its capability carries
+    /// because nothing on this wire reports what a handle holds, and `OPENDIR` refuses a request
+    /// wider than the parent rather than narrowing it (notes/shell-navigation.md).
+    ///
+    /// `None` when no RedoxFS disk is attached.
+    fn navigate(root: &'static str, run: u64) -> Option<u64> {
+        let report = fs_service::start_granted_dir(
+            dir_capability_tests::blk_server_image(),
+            program("fsserver").expect("no fsserver program in the initrd archive"),
+            program("dwarden").expect("no dwarden program in the initrd archive"),
+            program("shell").expect("no shell program in the initrd archive"),
+            fs_service::DirGrant {
+                name: root,
+                rights: dir::ALL,
+                role: ROLE_NAVIGATE,
+                arg: fs_proto::grant::spec(run as usize, dir::ALL),
+                // Measured, not guessed: see `spawn_fs_client`. A shell carries a path stack, a
+                // parsed path and a listing buffer by value, and one page is 192 bytes short.
+                stack_pages: 2,
+            },
+        )?;
+        let [tag, verdict, ..] = sched::ipc_recv(report);
+        assert_eq!(
+            tag,
+            fs_proto::fixture::VERDICT,
+            "the shell's report is not a verdict word",
+        );
+        Some(verdict)
+    }
+
+    /// Compare a report against the exact set the configuration is specified to produce. Both
+    /// directions are failures and they are different ones: a bit set that should not be is a
+    /// shell reaching past its root, and a bit clear that should be set is a shell that could not
+    /// navigate at all, whose refusals therefore prove nothing.
+    fn assert_report(got: u64, want: u64, what: &str) {
+        assert_eq!(
+            got & !want,
+            0,
+            "the shell rooted at {what} did something it must not: {}",
+            describe(got & !want),
+        );
+        assert_eq!(
+            got & want,
+            want,
+            "the shell rooted at {what} could not do what its capability allows ({:#x} missing), \
+             so every refusal it reported proves nothing",
+            want & !got,
+        );
+    }
+
+    /// Name a bit, so a failure reads as a sentence.
+    fn describe(v: u64) -> &'static str {
+        if v & nb::WALKED_UP != 0 {
+            "`..` climbed out of its root"
+        } else if v & (nb::REACHED_SECRET | nb::REACHED_INNER) != 0 {
+            "it opened a file that exists only in the OTHER shell's root"
+        } else if v & (nb::SAW_SECRET | nb::SAW_INNER) != 0 {
+            "its listing held a name from the other shell's root"
+        } else if v & nb::NAVIGATION_FAILED != 0 {
+            "the navigation itself failed, so nothing was proven"
+        } else if v & nb::DESCENDED != 0 {
+            "it descended into a directory that is not in its root"
+        } else {
+            "something no other bit describes"
+        }
+    }
+
+    /// **A shell navigates the subtree it holds, and cannot climb out of it.**
+    ///
+    /// `pwd` renders `/` at its root because that is the root of the only namespace it has; `..`
+    /// there is refused with nothing sent, because `..` is a pop of the stack of capabilities the
+    /// shell descended through and at the root there is nothing to pop; an absolute path is refused
+    /// as *unnameable*, since there is no namespace to root one in. Then the verbs that change the
+    /// tree, including the one this milestone insists on separating: `rm` removes the **name**, the
+    /// handle the shell still holds keeps reading the bytes, and the name really is gone.
+    #[test_case]
+    fn a_shell_navigates_its_own_subtree_and_clamps_at_its_root() {
+        let Some(v) = navigate(tree::SUB, 4) else {
+            crate::println!("    (no RedoxFS disk attached; skipping)");
+            return;
+        };
+        assert_report(
+            v,
+            ALWAYS | nb::REACHED_INNER | nb::SAW_INNER | nb::DESCENDED | nb::RETURNED,
+            "sub",
+        );
+    }
+
+    /// **The headline: every shell has its own root, and neither can name the other's files.**
+    ///
+    /// Two shells, two subtrees of one image, one script. Each tries to open `sub/inner` and
+    /// `other/secret` and reports which it reached, and it is **told nothing about which subtree it
+    /// was rooted in**, so the property is read off the pair rather than claimed by either. The
+    /// listings are checked the same way, because a listing is a rendering of authority: a name from
+    /// the other shell's root appearing in one would be an escape even though nothing was opened.
+    ///
+    /// Not by policy. The FS server can reach both directories on any request it likes, and the
+    /// wardens one hop up hold the whole image root. What stops each shell is that **no capability
+    /// reaching the other subtree exists in its cspace**, which is why the two runs are sequential
+    /// and it costs nothing: they are separate processes with separate roots, and being alive at the
+    /// same instant would prove no more than this does (they share one page with the FS server, so
+    /// the harness runs them in turn).
+    #[test_case]
+    fn two_shells_with_different_roots_cannot_name_each_others_files() {
+        let Some(a) = navigate(tree::SUB, 5) else {
+            crate::println!("    (no RedoxFS disk attached; skipping)");
+            return;
+        };
+        let b = navigate(tree::OTHER, 6).expect("the service was wired for the first shell");
+
+        assert_report(
+            a,
+            ALWAYS | nb::REACHED_INNER | nb::SAW_INNER | nb::DESCENDED | nb::RETURNED,
+            "sub",
+        );
+        // The second holds a subtree with no child directory in it, so it cannot descend, and that
+        // difference is the point: the same script against a different capability does different
+        // things, and neither shell's world contains the other's.
+        assert_report(b, ALWAYS | nb::REACHED_SECRET | nb::SAW_SECRET, "other");
+
+        // Stated once more as the crossing, because that is the sentence the milestone makes and an
+        // exact-set assertion is easy to read as a list of unrelated facts.
+        assert_eq!(
+            (a & nb::REACHED_SECRET, b & nb::REACHED_INNER),
+            (0, 0),
+            "a shell named a file in the other shell's root",
+        );
+        assert_ne!(a & nb::REACHED_INNER, 0);
+        assert_ne!(b & nb::REACHED_SECRET, 0);
     }
 }
 
