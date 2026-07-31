@@ -2433,6 +2433,16 @@ in a host-tested library crate, not in the service (§14's rule about what compi
 Setting the time is a separate verb with a separate capability, and `date -s` in one binary that does
 both is exactly the conflation this design refuses.
 
+**The library half is built** (2026-07-30): `crates/calendar`, host-tested and Kani-proved, holds the
+civil-date arithmetic, the weekday and day-of-year, five formats and an RFC 3339 parser, and depends
+on nothing in this milestone. Eleven harnesses, ten of them over the full ten-thousand-year range.
+Two scope calls are recorded in notes/calendar.md rather than left ambiguous: **a fixed UTC offset is
+in and the IANA tzdata is out** (zone rules are a data-distribution problem, not a calendar one), and
+there is no `strftime`, five named formats instead. The command itself still waits on the service. The
+lane also produced a verification finding worth more than the crate: a 64-bit division by 86,400 is
+what bounded model checking chokes on here, not the calendar, and the `&str` boundary costs more than
+the parser behind it (notes/verification.md).
+
 #### NTP, and the chicken-and-egg worth recording before it is discovered
 
 Buildable today: `netstack` runs smoltcp, and NTP is UDP on port 123. Two honest problems:

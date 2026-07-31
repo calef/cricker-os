@@ -1,0 +1,18 @@
+[package]
+name = "calendar"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+# Milestone 51's calendar arithmetic: Unix seconds <-> civil date, weekday, day of year, a small
+# fixed set of formats, and an RFC 3339 parser. Pure computation, host-tested, no_std, no allocation
+# and no dependency on the clock service or the NTP client (both of which will depend on this). The
+# roadmap block says it plainly: "Timezone and calendar conversion are pure computation and belong in
+# a host-tested library crate, not in the service." See notes/calendar.md.
+
+[dependencies]
+
+# `kani` is set only by `cargo kani` (script/verify), never by an ordinary build. Declaring it
+# keeps unexpected_cfgs from flagging the `#[cfg(kani)]` proof module under -D warnings.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

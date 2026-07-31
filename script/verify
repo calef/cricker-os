@@ -65,3 +65,6 @@ cargo kani -p ntp_proto
 
 echo "==> kani: gpt (the partition table's CRC-32, its round trips, and partitions that overlap)"
 cargo kani -p gpt
+
+echo "==> kani: calendar (the civil-date arithmetic, and the parser on hostile text)"
+cargo kani -p calendar
