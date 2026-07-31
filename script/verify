@@ -62,3 +62,6 @@ cargo kani -p dma_validate
 
 echo "==> kani: ntp_proto (the 1900-epoch era pivot, and no hostile packet moves the clock)"
 cargo kani -p ntp_proto
+
+echo "==> kani: gpt (the partition table's CRC-32, its round trips, and partitions that overlap)"
+cargo kani -p gpt

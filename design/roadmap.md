@@ -2937,6 +2937,18 @@ either way.**
 milliseconds, and it has real Kani targets: CRC round-trip, primary and backup headers agreeing,
 entry-array bounds, and refusing a table whose entries overlap.
 
+**Built 2026-07-30: `crates/gpt`**, the parsing and writing halves both. Parse, validate (four CRC-32s,
+the geometry, overlapping partitions, the protective MBR, the backup against the primary) and create,
+with no I/O at all: the caller supplies blocks and receives blocks, so the whole thing is host-tested.
+Seven Kani harnesses in `script/verify`. The claim that makes it credible is that it is tested against
+**two real tables this project did not write**, from `sgdisk` and from macOS `diskutil`, committed as
+fixtures; re-emitting `sgdisk`'s table reproduces its bytes exactly, and so does rebuilding it from
+scratch. Two findings landed in notes/gpt.md: **macOS writes no GPT partition names at all**, so
+nothing may identify a partition by its label, and the two tools disagree about the protective MBR's
+CHS fields, which is why those are not validated. The cricker-os partition type GUID is DECISIONS §45.
+What remains on this milestone is unchanged: the transaction check for xattrs, `mkfs` on the target,
+block-device enumeration, and the host extraction tool.
+
 #### The capability shape is the demonstration
 
 Partitioning and `mkfs` are **destructive** and need authority over a *whole block device*. So the
