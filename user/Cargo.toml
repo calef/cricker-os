@@ -152,6 +152,17 @@ path = "src/fwarden.rs"
 test = false
 bench = false
 
+# The directory warden (milestone 47): the same caretaker one rung up, narrowing a directory
+# capability to one SUBTREE with an explicit rights ladder. It is what `cd` and a per-process
+# namespace resolve to, and it is a separate process for fwarden's reason: the FS server's handle
+# table is per server, so only an address-space boundary keeps a program off the parent directory.
+# mkinitrd packs it as "dwarden".
+[[bin]]
+name = "dwarden"
+path = "src/dwarden.rs"
+test = false
+bench = false
+
 # The EL0 microbenchmark program (primitive suite): self-times syscall/IPC primitives from EL0, the
 # lmbench way, so the numbers include the trap the kernel-side benchmarks skip. Run by the bench boot.
 [[bin]]

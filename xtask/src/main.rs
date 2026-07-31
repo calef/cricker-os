@@ -1049,6 +1049,8 @@ fn initrd_riscv() -> bool {
             "--bin",
             "fwarden",
             "--bin",
+            "dwarden",
+            "--bin",
             "heeder",
             "--bin",
             "spinner",
@@ -1125,6 +1127,7 @@ fn initrd_riscv() -> bool {
         ("budgeter", "budgeter"),
         ("fsclient", "fsclient"),
         ("fwarden", "fwarden"),
+        ("dwarden", "dwarden"),
         ("heeder", "heeder"),
         ("spinner", "spinner"),
         // The authority-shrinking supervision tree (milestone 22 phase B.2): an init that hands its
@@ -1316,6 +1319,13 @@ fn mkinitrd() -> bool {
             return false;
         }
     };
+    let dwarden = match read_stripped(&bin_elf("dwarden")) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("dwarden"));
+            return false;
+        }
+    };
     let fsclient = match read_stripped(&bin_elf("fsclient")) {
         Ok(bytes) => bytes,
         Err(e) => {
@@ -1397,6 +1407,7 @@ fn mkinitrd() -> bool {
         ("budgeter", &budgeter),
         ("fsclient", &fsclient),
         ("fwarden", &fwarden),
+        ("dwarden", &dwarden),
         ("heeder", &heeder),
         ("spinner", &spinner),
     ];
@@ -1573,9 +1584,11 @@ fn redoxfs_host(args: &[&str]) -> bool {
 }
 
 /// Build the RedoxFS test image the FS server serves: an empty filesystem with the two fixture
-/// files (`motd`, `scratch`) the client reads and writes. Made host-side with the pinned engine, so
-/// an image the server opens is proven against exactly the code that opens it. Arch-neutral (the
-/// on-disk format does not depend on the CPU), so one image serves both ISA test legs.
+/// files (`motd`, `scratch`) the client reads and writes, plus milestone 47's **subtree**
+/// (`sub/` with a file and a grandchild, and the sibling `other/` a directory capability must not
+/// reach). Made host-side with the pinned engine, so an image the server opens is proven against
+/// exactly the code that opens it. Arch-neutral (the on-disk format does not depend on the CPU), so
+/// one image serves both ISA test legs.
 fn mkredoxfs() -> bool {
     let img = redoxfs_disk_path();
     // **`CRICKER_KEEP_REDOXFS=1` keeps an existing image instead of rebuilding it.** This is the
@@ -1600,9 +1613,43 @@ fn mkredoxfs() -> bool {
     }
     let motd = motd.display().to_string();
     let scratch = scratch.display().to_string();
+    let Some(tree) = stage_subtree() else {
+        return false;
+    };
     redoxfs_host(&["mkfs", &img, "16"])
         && redoxfs_host(&["put", &img, fs_proto::fixture::MOTD_NAME, &motd])
         && redoxfs_host(&["put", &img, fs_proto::fixture::SCRATCH_NAME, &scratch])
+        && redoxfs_host(&["import", &img, &tree])
+}
+
+/// Stage milestone 47's subtree as a host directory and return its path, for `import` to copy into
+/// the image root.
+///
+/// **`import` rather than a new `mkdir` verb on the host tool**, deliberately: `import` is upstream
+/// RedoxFS's own archiver (`redoxfs::archive`), so the directories the confinement tests attack are
+/// written by the people who defined the format rather than by us. notes/host-recovery.md already
+/// makes that argument for `extract`; this is the same one on the write side.
+///
+/// The staging directory is rebuilt from scratch each time, because a name left behind by an older
+/// fixture would end up in the image and fail the post-run `ls /` check for a reason that has
+/// nothing to do with the run.
+fn stage_subtree() -> Option<String> {
+    use fs_proto::fixture::tree;
+    let root = workspace_root().join("target/redoxfs-tree");
+    let _ = std::fs::remove_dir_all(&root);
+    let sub = root.join(tree::SUB);
+    let deeper = sub.join(tree::DEEPER);
+    let other = root.join(tree::OTHER);
+    let ok = std::fs::create_dir_all(&deeper).is_ok()
+        && std::fs::create_dir_all(&other).is_ok()
+        && std::fs::write(sub.join(tree::INNER), tree::INNER_BODY).is_ok()
+        && std::fs::write(deeper.join(tree::LEAF), tree::LEAF_BODY).is_ok()
+        && std::fs::write(other.join(tree::SECRET), tree::SECRET_BODY).is_ok();
+    if !ok {
+        eprintln!("mkredoxfs: cannot stage the milestone-47 subtree");
+        return None;
+    }
+    Some(root.display().to_string())
 }
 
 /// Where the **crash test's** RedoxFS image is written (milestone 37). The runners derive exactly
@@ -1698,6 +1745,102 @@ fn redoxfs_check_after_run() -> bool {
             fs_proto::fixture::SCRATCH_NAME,
             fs_proto::fixture::WRITE_PATTERN,
         )
+        && redoxfs_subtree_was_confined()
+}
+
+/// **The directory capability's confinement, asserted from outside the confined program**
+/// (milestone 47).
+///
+/// The in-guest attacker reports a bitmap of what got through, which is a statement by the thing
+/// being tested. This is the other kind of evidence: a different process, on the host, with the
+/// pinned engine, reading the image the run left behind. Four claims, and each one is an escape
+/// that no in-guest verdict could have reported, because a program that broke out and then lied
+/// would still have left the file on the disk.
+///
+/// 1. **The fixture's own names are all still in the image root.** A capability granted on `sub`
+///    can remove nothing above itself, so a missing name here is an escape too.
+/// 2. **Nothing the attacker made is in the root.** It was granted `sub` and creates inside it, so
+///    a name of its making at this level got out.
+/// 3. **Its creations ARE in `sub`**, which is what stops claim 2 from being vacuous: an attacker
+///    that created nothing would satisfy it perfectly, and so would a warden that refused
+///    everything.
+/// 4. **The two files nothing was granted the authority to change read back byte for byte.**
+///    `other/secret` is one directory entry away from the grant and the FS server can reach it on
+///    any request it likes; `sub/inner` is *inside* the grant, and the attacker writes only to what
+///    it made, so a change there means it wrote through something it should not have.
+///
+/// **BUGS.** Claim 1 checks containment, not equality, and that is deliberate rather than lazy: the
+/// root is shared with every other test in the boot, and the `std::fs` test creates `made-by-std`
+/// in it. An exact comparison would make this check fail whenever an unrelated test started or
+/// stopped writing a file, which is a coupling that manufactures facts (DECISIONS §27). The cost is
+/// that a leaked name whose spelling matches neither fixture prefix would slip past claim 2, so the
+/// attacker's names are the thing this check is precise about.
+fn redoxfs_subtree_was_confined() -> bool {
+    use fs_proto::fixture::tree;
+    let img = redoxfs_disk_path();
+
+    let (Some(root), Some(sub)) = (redoxfs_ls(&img, "/"), redoxfs_ls(&img, tree::SUB)) else {
+        eprintln!("milestone-47 confinement check: the image did not list after the run");
+        return false;
+    };
+    for want in tree::ROOT_ENTRIES {
+        if !root.iter().any(|n| n == want) {
+            eprintln!(
+                "MILESTONE-47 CONFINEMENT FAILED: `{want}` is gone from the image root (it holds \
+                 {root:?}). Nothing in this run held a capability that could remove it.",
+            );
+            return false;
+        }
+    }
+    // A run index is appended to each name so three attacker runs sharing one image do not collide,
+    // so the prefix is what identifies a creation rather than the whole name.
+    let attackers_own = |n: &String| n.starts_with(tree::MADE) || n.starts_with(tree::MADE_DIR);
+    if let Some(leaked) = root.iter().find(|n| attackers_own(n)) {
+        eprintln!(
+            "MILESTONE-47 CONFINEMENT FAILED: `{leaked}` is in the image ROOT. A program granted a \
+             capability to `{}` created a name in its parent.",
+            tree::SUB,
+        );
+        return false;
+    }
+    let made_files = sub.iter().filter(|n| n.starts_with(tree::MADE)).count();
+    let made_dirs = sub.iter().filter(|n| n.starts_with(tree::MADE_DIR)).count();
+    if made_files == 0 || made_dirs == 0 {
+        eprintln!(
+            "milestone-47 confinement check: `{}` holds {sub:?}, with {made_files} created files \
+             and {made_dirs} created directories. The attacker created nothing, so \"nothing it \
+             made escaped to the root\" is true of a capability that reaches nothing at all.",
+            tree::SUB,
+        );
+        return false;
+    }
+    let sibling = format!("{}/{}", tree::OTHER, tree::SECRET);
+    let granted = format!("{}/{}", tree::SUB, tree::INNER);
+    redoxfs_reads_back(&sibling, tree::SECRET_BODY) && redoxfs_reads_back(&granted, tree::INNER_BODY)
+}
+
+/// The names in one directory of the post-run image, sorted, via the host tool's `ls`. Its output is
+/// `kind size name` per line and the fixture's names carry no spaces, so the name is the last field.
+fn redoxfs_ls(image: &str, path: &str) -> Option<Vec<String>> {
+    let out = capture(
+        "cargo",
+        &[
+            "run",
+            "--quiet",
+            "--manifest-path",
+            "tools/redoxfs-host/Cargo.toml",
+            "--",
+            "ls",
+            image,
+            path,
+        ],
+    )?;
+    let mut names: Vec<String> = out
+        .lines()
+        .filter_map(|l| l.split_whitespace().last().map(str::to_string))
+        .collect();
+    names.sort();
+    Some(names)
 }
 
 /// `cat` one file out of the post-run image with the host tool and compare it byte for byte.
