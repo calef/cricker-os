@@ -903,6 +903,10 @@ pub mod fixture {
         /// The file at the bottom: the last thing unlinked and the deepest the walk goes.
         pub const RM_LEAF: &str = "rm-leaf";
         pub const RM_BODY: &[u8] = b"CRK47-RM: a file `rm -r` is expected to take away\n";
+        /// A plain file beside the doomed tree, removed by a plain `rm` with no options. It is what
+        /// makes **silence on success** falsifiable: that run must report a zero status and print
+        /// nothing at all, and `rm(1)`'s `-v` exists precisely because the default prints nothing.
+        pub const RM_SOLO: &str = "rm-solo";
         /// A name that is **not** on the image. `rm` of it is a diagnostic and a non-zero exit;
         /// `rm -f` of it is silence and a zero one, which is the whole of what `-f` means.
         pub const RM_MISSING: &str = "rm-nothing";
@@ -1573,6 +1577,7 @@ mod tests {
             RM_TWO,
             RM_NESTED,
             RM_LEAF,
+            RM_SOLO,
             RM_MISSING,
         ] {
             assert!(
@@ -1609,7 +1614,7 @@ mod tests {
         // The `rm -r` fixture's own shape. `RM_MISSING` is the load-bearing one: the whole of `-f`
         // is that a name which is not there is not an error, so a fixture that accidentally shipped
         // it would make the `-f` run and the plain run indistinguishable.
-        for staged in [RM_KEEP, RM_DOOMED, RM_ONE, RM_TWO, RM_NESTED, RM_LEAF] {
+        for staged in [RM_KEEP, RM_DOOMED, RM_ONE, RM_TWO, RM_NESTED, RM_LEAF, RM_SOLO] {
             assert_ne!(
                 staged, RM_MISSING,
                 "the name `rm -f` is pointed at must not be one the fixture stages",

@@ -542,7 +542,7 @@ fn init_boot(_x1: u64) -> ! {
     let heeder = program(initrd_len, "heeder").and_then(|bytes| elf::Elf::parse(bytes).ok());
     let spinner = program(initrd_len, "spinner").and_then(|bytes| elf::Elf::parse(bytes).ok());
     let date = program(initrd_len, "date").and_then(|bytes| elf::Elf::parse(bytes).ok());
-    // Indexed by Prog::id(): worker=0, budgeter=1, heeder=2, spinner=3, date=4. The array is
+    // Indexed by Prog::id(): worker=0, budgeter=1, heeder=2, spinner=3, date=4, rm=5. The array is
     // `Prog::PROG_COUNT` long because the service indexes it with an id the shell chose; a variant
     // added to `capsh` without a slot here would be an out-of-bounds read in init.
     let progs: [Option<&elf::Elf>; capsh::PROG_COUNT] = [
@@ -551,6 +551,10 @@ fn init_boot(_x1: u64) -> ! {
         heeder.as_ref(),
         spinner.as_ref(),
         date.as_ref(),
+        // `rm` has a slot and no ELF, deliberately: it is endowed a directory capability and this
+        // boot wires no FS service to narrow one from, so the shell refuses the command before it
+        // gets here. See the same slot in sysinit.
+        None,
     ];
 
     // The spawn service (milestone 31's grant expression + milestone 24's supervised jobs;

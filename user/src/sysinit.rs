@@ -183,6 +183,13 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, _x2: u64) -> ! {
             heeder.as_ref(),
             spinner.as_ref(),
             date.as_ref(),
+            // `rm` (milestone 47) has a slot and **deliberately no ELF**: it is endowed a directory
+            // capability, and this boot wires no FS service, so there is nothing to narrow one from.
+            // The shell refuses the command before it reaches here ("you hold no such capability"),
+            // which is why an empty slot is honest rather than a hole: spawning `rm` with nothing to
+            // remove from would be the worst failure this model has, a program told to destroy
+            // something, holding nothing, saying nothing.
+            None,
         ],
     )
 }
