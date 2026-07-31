@@ -114,7 +114,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 48 | NOT-STARTED | Job control: jobs, wait, kill, fg, bg, and a stopped state | **most of it needs no new kernel surface**, and the tty's most tangled feature turns out to be a capability transfer |
 | 49 | NOT-STARTED | Users, login, and attribution: what identity is for once it stops being authority | three of Unix's four uses for a uid are already answered structurally; the fourth, **attribution, has no mechanism at all** |
 | 50 | NOT-STARTED | Pipes and redirection: one sink protocol, and `\|` turns out to be an endpoint | the mechanism already exists (**stdout is a capability in slot 1**); the work is unifying four byte-sink protocols, not adding a parser rule |
-| 51 | PARTIAL | Wall-clock time, the `date` command, and an NTP service | lanes A and C built (two RTC drivers, the clock service with DECISIONS §43, and the NTPv4 wire format): the machine knows what time it is, and **reading the clock is a read-only page while setting it is a writable one**. `date` is built too, reads-only by its wiring, and says plainly when the machine does not know the time. The NTP client remains |
+| 51 | BUILT | Wall-clock time, the `date` command, and an NTP service | **complete 2026-07-31**: two RTC drivers, the clock service (§43), `crates/calendar`, `crates/ntp_proto`, `date`, and an NTP client that holds **propose and not set**. The machine knows what time it is |
 | 52 | RECORDED | Subshells without `fork`, and what copying an endowment means | `( ... )` is fork, we deliberately have no fork, and **capability duplication is not a total function** |
 | 53 | NOT-STARTED | The board's own peripherals: network and storage on real silicon | 16a boots the board; this is what makes it able to *do* anything, and it is where virtio stops carrying us |
 | 54 | NOT-STARTED | A network file service a Mac can actually mount | the first real workload with a real user, and the security claim backup servers deserve |
@@ -2412,8 +2412,8 @@ build settled that this block left open, and one place it went somewhere the blo
 - **The unknown state is the default**, since a zeroed page reads as `UNKNOWN`. Its one uncomfortable
   consequence: `SystemTime::now()` has no error channel, so an unknown clock is a **panic**, and std
   has no way for a program to ask before it asks. Recorded in DECISIONS §43 as a limit, not a win.
-- **Still open, and unchanged by this lane:** the timed-wait fork below, `date` plus the calendar
-  crate, and NTP.
+- **Still open:** nothing in this milestone. The timed-wait fork below is recorded here but is a
+  kernel-surface decision of its own, tracked separately and not a milestone-51 deliverable.
 
 **In brief.** The machine does not know what time it is, and says so in a way that is easy to miss:
 `SystemTime` is the monotonic counter offset from `UNIX_EPOCH`, so **it reports January 1970 plus
@@ -2527,8 +2527,33 @@ response checks that are the whole of plain NTP's spoofing resistance. Host-test
 (the era pivot over all 4.2 billion seconds from 1970 to 2104; parse/serialise and the origin-nonce
 check over all 2^384 packets). Problem 1 above is **recorded, not solved**: the crate is
 unauthenticated NTPv4 and says so in its own documentation, NTS stays a separate decision, and the
-crate does not implement half of it. What remains in this lane is the client that carries the bytes,
-which wants a socket and therefore the service lane's proposal capability.
+crate does not implement half of it.
+
+**The client is built** (2026-07-31, `user/src/ntp.rs`, notes/ntp.md). It holds **five capability
+slots and none of them is the clock page**, so the block's claim above is now a fact the machine
+enforces rather than a design intention: `an_ntp_client_holds_no_writable_clock_page` gives the same
+binary the same five slots plus the exact address a *setter* maps the page at, and it faults. Four
+things the build settled or found:
+
+- **`propose::STATE` is how a client with no mapping reads the time**, which is what the contract
+  crate put it there for. One round trip to anchor against the monotonic counter, and the
+  unknown-clock bootstrap falls out with no branch: the service answers 0, T1 and T4 are measured
+  from 1970, and the proposal lands on the server's time.
+- **The nonce is one draw from the entropy service, and its absence is a refusal.** No capability
+  means no request at all, not a fallback to the counter-seeded stream, because
+  `Query::with_nonce`'s 64 bits are worth nothing if they are guessable (§42's rule, §44's source).
+- **A kiss-o'-death is not retried** while an ordinary rejection is, which is a property of the
+  client rather than of the crate, and the test counts requests to prove it.
+- **It is a one-shot synchroniser, not a continuously polling service,** because the timed-wait fork
+  below is unsettled. A
+  poll interval is a yield-spin; adding a sleep syscall to get a real one would settle that fork by
+  accident. Three attempts a couple of milliseconds apart, one proposal, exit.
+
+The test server is a second role of the same binary holding `READ` on the endpoint the client holds
+`WRITE` on, so the client's network path is substituted **at the capability boundary** and its code
+has no test-only branch. What that leaves unproven is recorded rather than glossed: smoltcp, UDP and
+the NIC are milestone 30's to prove, and nothing in slirp answers UDP 123, so there is no offline
+real server to point a gate at.
 
 #### The fork this exposes, which is bigger than the milestone
 
