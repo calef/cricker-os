@@ -140,15 +140,32 @@ the stack size is now a measurement: the kernel fills every FS-server stack page
 before the process starts, and `fs_service::fs_stack_used` reports the deepest word that no longer
 reads as poison. Measured across a mount, reads, writes, a create and two truncates:
 
-| leg | high-water | of grant | headroom |
-|---|---|---|---|
-| aarch64 | 135,696 bytes | 397,312 | 66% |
-| riscv64 | 135,824 bytes | 397,312 | 66% |
+| leg | high-water | of grant | headroom | when |
+|---|---|---|---|---|
+| aarch64 | 135,696 bytes | 397,312 | 66% | 2026-07-30, milestone 31 phase 2 |
+| riscv64 | 135,824 bytes | 397,312 | 66% | 2026-07-30, milestone 31 phase 2 |
+| aarch64 | 127,408 bytes | 397,312 | 68% | 2026-07-30, milestone 37 |
+| riscv64 | 127,536 bytes | 397,312 | 68% | 2026-07-30, milestone 37 |
 
-Both were over the old 135,168-byte grant, so both legs were broken; the riscv leg needs slightly
-more for the same recursion, which is why the number is measured per ISA rather than assumed to
-transfer. `the_fs_servers_stack_still_has_headroom` (both ISAs) prints it every run and fails under a
-quarter left, so the next verb that deepens a tree walk fails with a number instead of a mystery.
+Both of the first pair were over the old 135,168-byte grant, so both legs were broken; the riscv leg
+needs slightly more for the same recursion, which is why the number is measured per ISA rather than
+assumed to transfer. `the_fs_servers_stack_still_has_headroom` (both ISAs) prints it every run and
+fails under a quarter left, so the next verb that deepens a tree walk fails with a number instead of
+a mystery.
+
+**The second pair is 8 KiB lower and the cause is not attributed**, which is recorded rather than
+smoothed over because an unexplained move in a safety instrument is worth more attention than a
+comfortable one. 8 KiB is exactly one `read_block::<TreeList<..>>` activation, so it reads like one
+less level of tree recursion on the deepest path. Milestones 41 through 45 landed between the two
+measurements and any of them could have changed codegen; nothing in milestone 37 touches the read
+path, and the crash test's own servers run against a shallower image so they can only lower the
+maximum by not raising it. The number to trust is whichever the gate last printed, and the assertion
+that matters (a quarter of the grant still free) is unaffected either way.
+
+Since milestone 37 the high-water is a **maximum over every FS server a boot starts**, which now
+includes the process that mounts a crashed disk. A mount that has to walk back a generation is the
+case most likely to recurse further than a clean one, so it is exactly the case this instrument
+should be watching, and until now it was not being watched at all.
 
 The grant is 96 extra pages. That is deliberately well above the measurement rather than just above
 it: recursion depth here tracks the *tree* depth, which grows with the image, so a size proven on a
@@ -160,6 +177,105 @@ endpoint is the mechanism that would turn that into a message a supervisor can a
 FS service into a supervision tree is milestone 23's problem, not this one's. Until then, "the server
 died" presents to a client as "the server is taking a while", which is the same shape of invisibility
 this whole section is about.
+
+## Crash consistency, measured (milestone 37)
+
+This section used to be a sentence in "What is proven" saying RedoxFS is copy-on-write, so crash
+consistency is designed in. That was a description of somebody else's design document, and DECISIONS
+§34 made it a condition rather than a claim for exactly that reason. It is now a measurement.
+
+**The property, stated so it can fail.** A workload is operations, each acknowledged only after the
+engine commits it. Call the filesystem after the first `p` of them `S(p)`. For every point at which
+the device could stop, a fresh mount recovers exactly `S(p)` for some `p`; `p` never goes backwards
+as the cut advances; and where nothing is lost, `p` is the whole workload. That is prefix
+consistency, and "an acknowledged write is wholly present or wholly absent" is a consequence of it.
+
+**How the injector works, and why it is not an approximation.** The seam is `BlockIo`, the trait the
+FS server reaches its disk through: on device it is `IpcDisk` calling the block server, on the host a
+`Vec`. `fs-server/src/crash.rs` runs the workload **once** against a recorder that applies every
+block write and appends it to an ordered log. That log is what the platter was asked to do, so the
+disk after a failure at point `i` is the pristine image plus the first `i` entries, optionally with
+one of them truncated. For a device that does not reorder, that is not a model of a crash, it *is*
+the crash, and it costs a `memcpy` per fault point instead of a re-run of the engine. It also makes
+every fault point start from a byte-identical image, which matters here more than anywhere: a crash
+harness that leaves state behind between runs produces the exact class of false result the section
+above spends 60 lines on.
+
+| injection | fault points | result |
+|---|---|---|
+| power cut, at every write | 93 | all prefix-consistent |
+| power cut, last write torn, 4 offsets | 372 | all prefix-consistent |
+| a lying device (drop or tear one write, keep persisting after) | 186 | 112 recovered, 74 refused, **0 silently wrong** |
+
+The third row is the honest limit. RedoxFS's `Disk` trait has no flush and no barrier, so ordering is
+the device's job, and a device that acknowledges a write it never persists can leave a valid commit
+pointing at a block that never landed. What is guaranteed is that this is never *silent*: every
+`BlockPtr` carries a seahash of the block it names, checked on every read. Note our block server
+issues no `VIRTIO_BLK_T_FLUSH`, so on real hardware the durability of the last acknowledged write is
+the device's word rather than ours. That is our gap, not the engine's.
+
+**The controls.** Three, and the strongest needs no tampering at all: the lying-device sweep produces
+74 images the filesystem refuses, so the injector is demonstrably destroying things. Then
+`only_this_generation` blanks every header slot but one, taking the ring's history away, and **92 of
+93 fault points stop mounting**, which isolates the fallback as the mechanism. Then, with no mount at
+all, a commit torn at 2048 bytes fails `Header::valid()` while the previous generation's slot stays
+valid and stays older.
+
+**A fourth control turned up on its own, and it is the one worth remembering.** The harness's first
+version treated any failed `open_file` as "the name is absent". A dropped write to a directory's tree
+block makes that lookup answer `EIO`, so nine fault points reported filesystems that never existed,
+empty root and all. It looked like a serious RedoxFS bug for about ten minutes and it was a test bug:
+`ENOENT` is the only error that means absence, and the engine refusing to guess at a block whose
+checksum does not match is the property working. An instrument that can produce a false positive and
+did is an instrument connected to something.
+
+**Two mechanisms this note had named wrong.** `cleanup: true` is **not** the header-ring replay. The
+ring scan is unconditional in `FileSystem::open`: read all 256 slots, keep the newest whose seahash
+checks out, ignore the rest. `cleanup` adds a tidy-up on top (release unused nodes, commit), and the
+server passes it because a mount should not leak, not because recovery depends on it. And what the
+scan keeps is not "the newest consistent generation" in any sense the engine computes; it is the
+newest generation whose *header* still hashes, which suffices only because a commit's blocks are all
+written before it.
+
+### The device-level half, and why it has a disk of its own
+
+The host sweep is exhaustive and the device test is one crash, because they answer different
+questions. The device test's question is whether the property survives the real stack: a real virtio
+write torn in half, a real FS-server process dying inside its own transaction, and a real second
+process recovering the disk it left behind.
+
+The injector lives at `IpcDisk` and is armed by the `Spawn` literal (`arg0` = which `WRITE` request to
+die in, `arg1` = block writes to allow first, `arg2` = bytes of the last one that reach the platter).
+The Spawn literal rather than a build flag, because the thing that crashes has to be the FS server
+the gate otherwise runs and not a lookalike; `arg0 == 0` makes it inert, which is every boot but this
+one. The tear is a read-modify-write with half the new contents laid over the old, which is what a
+drive leaves when the rail collapses mid-block. `arg1` is **one**, because one is the count that
+cannot miss: a write transaction always issues at least one block write, and a larger count is a
+server that never dies and a test that hangs.
+
+The recovery is a second FS-server process on the same block server and the same block page, with its
+own file endpoint and its own stack. It carries nothing from the process that died. That it can do
+this at all is endpoint-only naming doing its job: **the block server never learns its client died and
+was replaced, because it never knew who its client was.** Its readiness sentinel is the consistency
+result, because `Server::open` refuses an image it cannot make sense of.
+
+**The disk is dedicated and regenerated every run.** This test deliberately leaves a filesystem
+half-written; doing that to the shared fixture would make every other FS test's result depend on
+whether this one ran first, which is the order-coupled gate this note already spends a section on.
+`CRICKER_KEEP_REDOXFS` deliberately does not apply to it: the cross-boot case is interesting for the
+shared disk and is nothing but noise for this one.
+
+**The assertion is the property, not an outcome.** Either payload passes; what fails is a mixture, a
+length nobody wrote, or the pre-boot contents, which would mean an acknowledged write had vanished.
+Pinning it to "payload A" would be pinning a detail of when RedoxFS happens to write its commit, and
+the claim is not about that. Both legs currently report A, 66 bytes, whole, and the gate re-reads the
+image afterwards with the host tool and the pinned engine, which is the half a cache cannot fake.
+
+Two ceilings moved for it, and both are receipts rather than tuning. `MAX_DEVICES` went to 27 for the
+second block server, the fourth such bump and another argument for the missing unregister. And the
+crash servers' untyped budget is 2 MiB rather than 8: an untyped is **reserved**, not merely capped,
+and three 8 MiB reservations do not fit in this machine's 128 MiB. The first symptom of that was
+`init` failing to get its own budget several tests later, which is a long way from the cause.
 
 ## Never create on-device
 
