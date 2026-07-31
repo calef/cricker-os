@@ -623,7 +623,7 @@ data path, so the steady state is `call_reply` exactly, and the swap adds nothin
 own sender queue is what buffers the down window: requests that arrive while nobody is receiving park
 there and the replacement drains them.
 
-The **opt-in rung** is `brokerd`, interposed so a producer never blocks on an absent consumer. It is
+The **opt-in rung** is `broker`, interposed so a producer never blocks on an absent consumer. It is
 the same client and the same backend as `call_reply` with a process in between, so the difference is
 the whole tax:
 

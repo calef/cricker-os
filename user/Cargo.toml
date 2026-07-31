@@ -261,14 +261,14 @@ test = false
 bench = false
 
 # Live component replacement (milestone 23, DECISIONS §39). Four programs, one shared module
-# (src/swap.rs): `swapd` is the operator that swaps a running component under a talking client;
+# (src/swap.rs): `swapper` is the operator that swaps a running component under a talking client;
 # `conx` and `cconx` are the two instances of that component (the second computes its answers in C,
 # so the replacement is a different implementation in a different language); `chatty` is the client
 # that keeps talking across the swap and the attacker that tries to become the server. Portable,
 # both ISAs; the kernel's live_swap_tests drive them.
 [[bin]]
-name = "swapd"
-path = "src/swapd.rs"
+name = "swapper"
+path = "src/swapper.rs"
 test = false
 bench = false
 
@@ -295,8 +295,8 @@ bench = false
 # budget and the new consumer drains the backlog in order. Never the default, because it costs an
 # extra hop, which `broker_rtt` prices.
 [[bin]]
-name = "brokerd"
-path = "src/brokerd.rs"
+name = "broker"
+path = "src/broker.rs"
 test = false
 bench = false
 

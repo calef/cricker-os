@@ -12,7 +12,7 @@
 //! - [`ROLE_DIRECT`](swap::ROLE_DIRECT): the default rung. The stable name a client holds is the
 //!   endpoint object itself, and the swap changes who is parked in `RECV_CAP` on it. **No process
 //!   sits in the data path**, so the steady state costs exactly what an unbrokered call costs.
-//! - [`ROLE_QUEUED`](swap::ROLE_QUEUED): the opt-in rung. A `brokerd` stands between producer and
+//! - [`ROLE_QUEUED`](swap::ROLE_QUEUED): the opt-in rung. A `broker` stands between producer and
 //!   backend so the producer never blocks on an absent consumer. One extra hop, priced by the
 //!   `broker_rtt` benchmark, and chosen per channel rather than imposed on every IPC.
 //!
@@ -70,7 +70,7 @@ const DEVICE: u64 = 2; // the UART's registers, WRITE|GRANT: ours to lend, and o
 /// log. Forty is roughly double what any of them uses, and it is a **peak**: this operator never
 /// destroys a region, so all five splits are live at once and the budget below has to cover them
 /// all together.
-const INSTANCE_PAGES: u64 = 40;
+const INSTANCE_PAGES: u64 = 32;
 
 /// The channels this operator owns, created once out of its own budget.
 struct Wiring {
@@ -325,7 +325,7 @@ fn queued(fs: &crickerfs::Fs, w: &Wiring) -> ! {
     let v1 = image(fs, "conx", 2);
     let v2 = image(fs, "cconx", 3);
     let client_img = image(fs, "chatty", 4);
-    let broker_img = image(fs, "brokerd", 40);
+    let broker_img = image(fs, "broker", 40);
 
     // `svc` is the *back* endpoint here: what the broker forwards to and what a backend receives
     // on. `front` is what the producer holds, and it is the stable name on this channel.
@@ -338,10 +338,10 @@ fn queued(fs: &crickerfs::Fs, w: &Wiring) -> ! {
         (w.poke, abi::rights::READ),
     ];
     let broker_caps = [
-        (front, abi::rights::READ),   // brokerd::FRONT
-        (w.svc, abi::rights::WRITE),  // brokerd::BACK
-        (REPORT, abi::rights::WRITE), // brokerd::RPT
-        (w.note, abi::rights::WRITE), // brokerd::NOTE
+        (front, abi::rights::READ),   // broker::FRONT
+        (w.svc, abi::rights::WRITE),  // broker::BACK
+        (REPORT, abi::rights::WRITE), // broker::RPT
+        (w.note, abi::rights::WRITE), // broker::NOTE
     ];
     let producer_caps = [
         (front, abi::rights::WRITE),

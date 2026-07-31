@@ -42,7 +42,7 @@ mod swap;
 
 use swap::client_checks as ck;
 
-/// What `swapd` endowed us with, in order. The attacker gets the same three, deliberately.
+/// What `swapper` endowed us with, in order. The attacker gets the same three, deliberately.
 const SVC: u64 = 0; // WRITE: we may ask. We may not answer.
 const RPT: u64 = 1; // WRITE: our verdict
 const NOTE: u64 = 2; // WRITE: the operator's coordination channel

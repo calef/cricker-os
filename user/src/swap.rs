@@ -1,6 +1,6 @@
 //! **Live component replacement: the shared half** (milestone 23, DECISIONS §39).
 //!
-//! Four programs make up the hot-swap system (`swapd` the operator, `conx` and `cconx` the two
+//! Four programs make up the hot-swap system (`swapper` the operator, `conx` and `cconx` the two
 //! instances of the swappable component, `chatty` the client and the attacker), and this is what
 //! they share: the wire protocol, the addresses of the pages they pass between them, the digest
 //! both language implementations of the component must compute, and the serving loop itself.
@@ -59,7 +59,7 @@ pub const QUIESCED: u64 = 0x5155_4954; // "QUIT"
 pub const BAD_REQUEST: u64 = u64::MAX;
 
 // ===========================================================================================
-// The broker protocol: the latency ladder's middle rung (`brokerd`).
+// The broker protocol: the latency ladder's middle rung (`broker`).
 //
 // **Opt-in per channel, never the default.** A producer that chooses this rung speaks the same
 // `OP_PUT` on the front endpoint and gets one of two answers: the backend's own reply (steady
@@ -215,7 +215,7 @@ pub const ROLE_USURPER: u64 = 1;
 /// The producer on the queued channel: the same conversation, one rung up the latency ladder.
 pub const ROLE_PRODUCER: u64 = 2;
 
-/// `swapd`'s roles. Two systems, one operator, because they share every helper: the loader, the
+/// `swapper`'s roles. Two systems, one operator, because they share every helper: the loader, the
 /// endowments, the log page and the reporting.
 pub const ROLE_DIRECT: u64 = 0;
 pub const ROLE_QUEUED: u64 = 1;

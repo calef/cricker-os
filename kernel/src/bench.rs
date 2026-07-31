@@ -244,7 +244,7 @@ fn call_reply() {
 ///   swap changes who that is. No process stands in the data path, so the steady state *is*
 ///   [`call_reply`] above, instruction for instruction, and the swap adds nothing to it. That is
 ///   the number to quote for milestone 23's flagship.
-/// - **This is the opt-in rung**: `brokerd` interposed, so a producer never blocks on an absent
+/// - **This is the opt-in rung**: `broker` interposed, so a producer never blocks on an absent
 ///   consumer. Read it against `call_reply`, which is deliberately the same client and the same
 ///   backend with nothing in between: the **difference** is the whole tax, and it is paid on every
 ///   request in the steady state, not only during a swap.
