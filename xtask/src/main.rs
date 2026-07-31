@@ -1721,50 +1721,29 @@ fn test() -> bool {
     // the right place for reproducible tests: deterministic, and identical on any host.
     unsafe { std::env::remove_var("CRICKER_ACCEL") };
     eprintln!("--- host tests (pure logic, no emulator) ---");
-    // Every host crate, not just two. `paging`, `heap` and `slab` each carry real tests and
-    // were silently not being run here for four milestones.
+    // Every host crate, by asking cargo which ones those are instead of listing them.
+    //
+    // This was a hand-maintained list of twenty `-p` flags, and it drifted exactly the way a
+    // hand-maintained list does. It was written because `paging`, `heap` and `slab` were silently not
+    // run for four milestones; by milestone 51 it had five crates missing again, and `fs_proto`,
+    // `compose`, `vt`, `bitfont` and `capsh` carried **82 host tests that this gate never ran**. All
+    // 82 passed when finally run, which is the point: nobody noticed because nothing failed, and a
+    // gate that quietly covers less than it claims is the failure mode script/fmt's `--check` bug
+    // already cost this project a day over.
+    //
+    // The exclusions are the three bare-metal crates, and they are the same three script/lint's host
+    // clippy pass excludes, for the same reason: kernel, user and user_rt only compile for aarch64
+    // or riscv64 (user_rt is EL0 syscall `asm!`). Everything else in the workspace is host code by
+    // construction, so a new crate is covered the moment it joins the workspace.
     if !cargo(&[
         "test",
-        "-p",
-        "abi",
-        "-p",
-        "caps",
-        "-p",
-        "crickerfs",
-        "-p",
-        "dma_validate",
-        "-p",
-        "dtb",
-        "-p",
-        "elf",
-        "-p",
-        "frames",
-        "-p",
-        "gfx_proto",
-        "-p",
-        "xtask",
-        "-p",
-        "paging",
-        "-p",
-        "pci",
-        "-p",
-        "ipc",
-        "-p",
-        "lineedit",
-        "-p",
-        "measure",
-        "-p",
-        "slots",
-        "-p",
-        "uheap",
-        "-p",
-        "intrusive",
-        "-p",
-        "asid",
-        "-p",
-        "regions",
-        "-p",
-        "abi",
+        "--workspace",
+        "--exclude",
+        "kernel",
+        "--exclude",
+        "user",
+        "--exclude",
+        "user_rt",
     ]) {
         return false;
     }
