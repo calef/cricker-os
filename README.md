@@ -47,7 +47,7 @@ than a formality:
 | Gate | What it proves |
 |---|---|
 | `script/test` | The host-logic crates, then the kernel under QEMU on **both ISAs**, aarch64 and riscv64. Architectural parity is a gate, not an aspiration (DECISIONS §19). |
-| `script/verify` | 95 Kani harnesses across 16 crates: the capability model, IPC, MMU isolation, the DMA validator, the IOMMU domain, the NTP era pivot. |
+| `script/verify` | 101 Kani harnesses across 17 crates: the capability model, IPC, MMU isolation, the DMA validator, the IOMMU domain, the NTP era pivot. |
 | `script/bench --check` | icount instruction counts against a committed baseline, on both ISAs, so a performance regression surfaces next to the change that caused it. |
 | `script/lint` | clippy at `-D warnings`, plus broken intra-doc links, stray conflict markers, the roadmap's status vocabulary, DECISIONS numbering and citations, and that every script is documented. |
 | `script/supply-chain` | cargo-deny (advisories, licences, bans, sources) over every workspace, and proof that each vendored tree is the published tarball plus exactly its recorded patches. |
