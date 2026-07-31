@@ -300,3 +300,31 @@ if bad or missing:
     sys.exit(1)
 print(f'markdown: {len(md)} files, every relative link resolves, every note indexed')
 PY
+
+echo "==> shellcheck"
+# The 23 `#!/bin/sh` scripts, gated at warning severity. Two reasons this earns a dependency here
+# rather than being generic hygiene:
+#
+# 1. **macOS dev, Ubuntu CI.** `/bin/sh` is bash-in-POSIX-mode on one and dash on the other, so a
+#    bashism runs fine locally and fails on a runner. ShellCheck knows POSIX sh from bash and says
+#    which is which. We currently have zero such findings, which is exactly the property that
+#    regresses silently.
+# 2. **These scripts ARE the gates.** script/fmt shipped for months accepting `--check` and silently
+#    ignoring it, and unformatted code reached main behind a clean report. A gate that fails open is
+#    worse than no gate, and shell is where failing open is easiest.
+#
+# Severity is `warning`, not `note`, and that is a deliberate scope rather than laziness (DECISIONS
+# §38: a suppression is scoped and carries a reason). The tree has ZERO errors and ZERO warnings, so
+# this is green today and is a regression guard. The 13 note-level findings are all SC2086 in the
+# QEMU runners' argument assembly, where `$INITRD`/`$DISK`/`$NET`/`$GPU`/`$KBD`/`$MON` are unquoted
+# ON PURPOSE: each holds a multi-word QEMU fragment, and quoting would pass it as one argument and
+# break the emulator. Raising to note level means restructuring that assembly with `set --` (the
+# pattern script/fmt uses) rather than blanket-disabling the rule, and that is a change to the script
+# every test run depends on, so it is not worth bundling here.
+if ! command -v shellcheck >/dev/null 2>&1; then
+    echo "lint: shellcheck not found; run script/bootstrap (it installs it)." >&2
+    exit 1
+fi
+cd "$(dirname "$0")/.."
+shellcheck --severity=warning script/* scripts/*.sh
+echo "shellcheck: 23 sh scripts, no errors or warnings"

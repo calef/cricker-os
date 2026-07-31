@@ -58,6 +58,33 @@ else
     esac
 fi
 
+# ShellCheck, for the 23 `#!/bin/sh` scripts in script/ and scripts/. Worth a dependency because of
+# where this project runs: macOS `/bin/sh` is bash in POSIX mode and Ubuntu CI's is dash, so a
+# bashism works on a dev machine and fails on a runner. ShellCheck knows the difference and says so.
+# The scripts are the gates; a gate that fails silently is worse than no gate. See notes/scripts.md.
+if command -v shellcheck >/dev/null 2>&1; then
+    echo "==> ShellCheck present: $(shellcheck --version | sed -n 's/^version: //p')"
+else
+    echo "==> Installing ShellCheck"
+    case "$os" in
+    Darwin)
+        if ! command -v brew >/dev/null 2>&1; then
+            echo "bootstrap: Homebrew not found; install it from https://brew.sh, then re-run." >&2
+            exit 1
+        fi
+        brew install shellcheck
+        ;;
+    Linux)
+        sudo apt-get update
+        sudo apt-get install -y shellcheck
+        ;;
+    *)
+        echo "bootstrap: unknown OS '$os'; install shellcheck by hand." >&2
+        exit 1
+        ;;
+    esac
+fi
+
 # Whichever way QEMU got here, it has to be one this project can actually use. The check is separate
 # so it can be re-run any time (a `brew upgrade` months from now is exactly when it matters), and it
 # fails only on a MISSING DEVICE; a version that merely differs from the pin is a loud warning, since
