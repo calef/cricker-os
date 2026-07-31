@@ -2503,7 +2503,7 @@ pub mod fs_service {
             },
         );
 
-        let driver_report = spawn_fs_client(client_image, file_ep, file_shared, 3, 0, 0);
+        let driver_report = spawn_fs_client(client_image, file_ep, file_shared, 3, 0, 0, 0);
         Some(CrashRun {
             blk_ready,
             fs_ready,
@@ -2542,7 +2542,7 @@ pub mod fs_service {
                 crash: (0, 0, 0), // this one is not armed: it is the one that has to survive
             },
         );
-        let report = spawn_fs_client(client_image, file_ep, file_shared, 4, 0, 0);
+        let report = spawn_fs_client(client_image, file_ep, file_shared, 4, 0, 0, 0);
         (ready, report)
     }
 
@@ -2568,6 +2568,7 @@ pub mod fs_service {
         file_shared: u64,
         role: u64,
         arg: u64,
+        arg2: u64,
         extra_stack: usize,
     ) -> EpId {
         assert!(
@@ -2590,7 +2591,10 @@ pub mod fs_service {
                 Spawn {
                     arg0: role,
                     arg1: arg,
-                    arg2: 0,
+                    // A third word, because the `rm` program is started the way a **grant** is
+                    // (`fs_proto::grant`): a spec word and two words of name. Every other client
+                    // here takes a role and one number and leaves this zero.
+                    arg2,
                     grants: &[
                         endpoint_cap(file_ep, Rights::WRITE), // slot 0: CALL the FS server
                         endpoint_cap(report, Rights::WRITE),  // slot 1: report to the kernel
@@ -2617,7 +2621,7 @@ pub mod fs_service {
     ) -> Option<(Option<(EpId, EpId)>, EpId)> {
         let (file_ep, file_shared, readiness) = ensure(blk_image, fsserver_image)?;
         // 0 = the end-to-end proof; 1 = the fs_read benchmark loop.
-        let report = spawn_fs_client(client_image, file_ep, file_shared, client_role, 0, 0);
+        let report = spawn_fs_client(client_image, file_ep, file_shared, client_role, 0, 0, 0);
         Some((readiness, report))
     }
 
@@ -2777,6 +2781,7 @@ pub mod fs_service {
             client_role,
             client_arg,
             0,
+            0,
         ))
     }
 
@@ -2808,6 +2813,10 @@ pub mod fs_service {
         /// The confined program's `arg0` (its role) and `arg1`.
         pub role: u64,
         pub arg: u64,
+        /// Its `arg2`. Zero for every client that takes a role and a number; the `rm` program is
+        /// started with a **grant's** three words instead (a spec and two of name), so it uses all
+        /// three and its "role" word is the spec.
+        pub arg2: u64,
         /// Stack pages beyond the one `run` maps, for a confined program that needs them. The
         /// hand-written attacker needs none; a shell does (see [`spawn_fs_client`]).
         pub stack_pages: usize,
@@ -2826,6 +2835,7 @@ pub mod fs_service {
             rights,
             role: client_role,
             arg: client_arg,
+            arg2: client_arg2,
             stack_pages,
         } = grant;
         assert!(
@@ -2878,6 +2888,7 @@ pub mod fs_service {
             file_shared,
             client_role,
             client_arg,
+            client_arg2,
             stack_pages,
         ))
     }
@@ -11616,6 +11627,7 @@ mod dir_capability_tests {
                 rights,
                 role: 5, // ROLE_DIR_ATTACKER
                 arg: run,
+                arg2: 0,
                 stack_pages: 0,
             },
         ) {
@@ -11799,7 +11811,11 @@ mod shell_navigation_tests {
         | nb::UNLINKED
         | nb::HOLDER_KEPT_READING
         | nb::NAME_GONE_AFTER_UNLINK
-        | nb::RM_REFUSED_A_DIRECTORY;
+        | nb::UNLINK_REFUSED_A_DIRECTORY
+        // The two halves of "no single call takes a subtree away", added with `RMDIR`: a directory
+        // with a name in it is refused, and the same call works once the name is out.
+        | nb::RMDIR_REFUSED_NON_EMPTY
+        | nb::RMDIR_REMOVED_EMPTY;
 
     /// Wire a `dwarden` holding a capability to `root` and run the shell's navigation script inside
     /// it. `run` keeps the names it creates distinct across runs sharing one image.
@@ -11821,6 +11837,7 @@ mod shell_navigation_tests {
                 rights: dir::ALL,
                 role: ROLE_NAVIGATE,
                 arg: fs_proto::grant::spec(run as usize, dir::ALL),
+                arg2: 0,
                 // Measured, not guessed: see `spawn_fs_client`. A shell carries a path stack, a
                 // parsed path and a listing buffer by value, and one page is 192 bytes short.
                 stack_pages: 2,

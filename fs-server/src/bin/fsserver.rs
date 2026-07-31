@@ -325,14 +325,18 @@ fn serve(server: &mut Server<IpcDisk>) -> ! {
                     }
                 }
             }
-            // `rm`'s verb. OPEN's shape again (a name at the start of the shared page, resolved
-            // under the handle), and the reply is 0 rather than a handle: it hands nothing back,
-            // which is the whole difference between removing a name and destroying an object.
-            fs::UNLINK => {
+            // `rm`'s two verbs. OPEN's shape again (a name at the start of the shared page,
+            // resolved under the handle), and the reply is 0 rather than a handle: they hand
+            // nothing back, which is the whole difference between removing a name and destroying an
+            // object. They are one arm because they differ only in the kind they will remove, and
+            // that difference is the safety property: `UNLINK` refuses a directory, `RMDIR` refuses
+            // a non-empty one, and neither spelling removes whatever it finds.
+            fs::UNLINK | fs::RMDIR => {
                 // SAFETY: the name is `len` bytes the client wrote at the start of FILE_PAGE.
                 let name_bytes = unsafe { file_page(len) };
                 match core::str::from_utf8(name_bytes) {
-                    Ok(name) => server.unlink(handle, name).map(|()| 0),
+                    Ok(name) if op(w0) == fs::UNLINK => server.unlink(handle, name).map(|()| 0),
+                    Ok(name) => server.rmdir(handle, name).map(|()| 0),
                     Err(_) => Err(Error::new(EINVAL)),
                 }
             }

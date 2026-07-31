@@ -191,6 +191,7 @@ dependencies = [
  "bitfont",
  "calendar",
  "caps",
+ "capsh",
  "clock_proto",
  "compose",
  "coremark",

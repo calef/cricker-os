@@ -291,12 +291,47 @@ pub mod fs {
     /// is resolved**, so a capability that may not remove cannot use this verb to find out whether a
     /// name is there.
     ///
-    /// **A directory is refused with [`super::dir::EISDIR`]**, POSIX's own answer, and there is no
-    /// `RMDIR` on this contract yet: `mkdir` can therefore make a directory that no verb here can
-    /// take away. That asymmetry is declared rather than papered over with a verb that removes
-    /// whatever it finds, because "remove this name whatever it is" is how `rm` takes a subtree away
-    /// from someone who typed one word.
+    /// **A directory is refused with [`super::dir::EISDIR`]**, POSIX's own answer. [`RMDIR`] is the
+    /// verb for a directory, and it takes only an **empty** one, so no single call on this contract
+    /// can take a subtree away. "Remove this name whatever it is" is how `rm` destroys a tree for
+    /// someone who typed one word, and this contract does not offer it at any opcode.
     pub const UNLINK: u64 = 12;
+    /// **Remove an empty directory. Unix's `rmdir(2)`, and empty-only is the whole safety
+    /// property.**
+    ///
+    /// [`UNLINK`]'s shape exactly: the name in the shared page (length is [`req_len`]), resolved
+    /// under the directory handle in [`req_handle`], second word 0, reply `r0` = 0 or an error. It
+    /// hands nothing back, which is what separates removing a name from destroying an object.
+    ///
+    /// # Empty-only, and why that is not a limitation to be lifted
+    ///
+    /// A directory with anything in it is [`super::dir::ENOTEMPTY`], refused rather than emptied.
+    /// **The recursion in `rm -r` lives in userspace** (`user/src/rm.rs`), as a loop of individually
+    /// safe single-step operations: enumerate, unlink the files, remove the empty directories from
+    /// the bottom up. Each step is one request this server runs to completion, and each step needs
+    /// the rights for it at *that* level, so a recursive removal stops exactly where the
+    /// capabilities stop. A `RMDIR` that removed whatever it found would put the whole subtree
+    /// behind one call, and no capability check afterwards could undo that.
+    ///
+    /// This also means an interrupted `rm -r` leaves a **partial tree**, which is what Unix does
+    /// too. There is no transaction spanning requests, and adding one would mean the server holding
+    /// a transaction open across receives, which breaks the run-one-request-to-completion property
+    /// the concurrency atomicity of [`RENAME`] rests on.
+    ///
+    /// # Rights, the kind check, and what this is not
+    ///
+    /// Needs [`super::dir::REMOVE`] on the parent, refused with [`super::dir::EROFS`] and checked
+    /// **before the name is resolved**, so a capability that may not remove cannot use this verb to
+    /// find out whether a name is there. A **file** is `ENOTDIR`, POSIX's own answer for `rmdir` on
+    /// one, and the mirror of [`UNLINK`]'s `EISDIR`: neither verb will remove the kind the other one
+    /// is for.
+    ///
+    /// **It is not revocation**, for [`UNLINK`]'s reason and not a lesser version of it: the FS
+    /// server's handle table is per *server*, so handles cannot be invalidated for clients the
+    /// server cannot enumerate. A holder of a directory handle whose name this verb removes keeps a
+    /// handle onto a node the engine has freed, and its next request through it fails (`ENOENT`)
+    /// rather than reaching something else. See the BUGS section of notes/rm-recursion.md.
+    pub const RMDIR: u64 = 13;
 
     /// The largest length or offset that fits the packing below (40 bits). Far above [`super::PAGE`],
     /// so a single request never carries more than one page of payload regardless; the bound only
@@ -380,8 +415,9 @@ pub mod dir {
     pub const CREATE: u64 = 1 << 3;
     /// Take a name out of it. This is the right the log-writing case exists to withhold: [`WRITE`]
     /// and [`CREATE`] without [`REMOVE`] is "add to this, destroy nothing", which is milestone 47's
-    /// motivating sentence. Two verbs consult it: [`super::fs::RENAME`], whose source name goes
-    /// away, and [`super::fs::UNLINK`], which is `rm`'s.
+    /// motivating sentence. Three verbs consult it: [`super::fs::RENAME`], whose source name goes
+    /// away, [`super::fs::UNLINK`], which is `rm`'s, and [`super::fs::RMDIR`], which takes an empty
+    /// directory's name out of its parent.
     pub const REMOVE: u64 = 1 << 4;
     /// Walk into a child directory ([`super::fs::OPENDIR`]).
     ///
@@ -395,6 +431,17 @@ pub mod dir {
     /// Every right this contract defines. The mount binds its root with exactly this; nothing below
     /// the root can ever be constructed with more.
     pub const ALL: u64 = ENUMERATE | READ | WRITE | CREATE | REMOVE | DESCEND;
+
+    /// **What a recursive removal needs, at every level** (milestone 47's `rm -r`): [`ENUMERATE`] to
+    /// see what is there, [`DESCEND`] to walk into it, [`REMOVE`] to take names out. Named here
+    /// because the `rm` program asks for exactly this on every descent and the wiring that grants it
+    /// hands over exactly this, so the two cannot drift into a capability nobody meant.
+    ///
+    /// **It carries no [`READ`] and no [`WRITE`]**, which is not an oversight but the interesting
+    /// part: a program handed this can destroy the subtree and cannot read one byte of it. On Unix
+    /// the same `rm` could read every file it is about to unlink, because the authority came from
+    /// the process rather than from the command.
+    pub const REMOVE_TREE: u64 = ENUMERATE | DESCEND | REMOVE;
 
     /// `EROFS`: a mutating right the capability does not carry. The same number and the same
     /// argument as [`super::grant::EROFS`].
@@ -412,7 +459,9 @@ pub mod dir {
     /// `EINVAL`: a name that is not a single component, and [`super::fs::RENAME`]'s refusal to move
     /// a **directory** between two directories (the verb's own doc gives the cycle argument).
     pub const EINVAL: i32 = 22;
-    /// `ENOTEMPTY`: [`super::fs::RENAME`] over a destination directory that still has entries in it.
+    /// `ENOTEMPTY`: [`super::fs::RENAME`] over a destination directory that still has entries in it,
+    /// and [`super::fs::RMDIR`] of one. On `RMDIR` it is the safety property rather than an
+    /// inconvenience: a verb that emptied what it found would put a whole subtree behind one call.
     pub const ENOTEMPTY: i32 = 39;
 
     /// **What a refusal from this contract means, in one sentence a shell can print.**
@@ -813,10 +862,50 @@ pub mod fixture {
         /// What goes into [`NAV_GONE`] before it is unlinked, and what must still be readable
         /// through the open handle after.
         pub const NAV_BODY: &[u8] = b"CRK47-NAV: a name can go while the bytes stay\n";
-        /// The directory a navigating shell makes with `mkdir` and leaves behind. It cannot remove
-        /// it: `rm` is `unlink`, which refuses a directory, and this contract has no `RMDIR`. The
-        /// asymmetry is declared in [`super::super::fs::UNLINK`] rather than hidden.
+        /// The directory a navigating shell makes with `mkdir` and leaves behind. It stays because
+        /// the shell never empties it: [`super::super::fs::UNLINK`] refuses a directory and
+        /// [`super::super::fs::RMDIR`] refuses a non-empty one, so a directory with a name in it
+        /// takes two deliberate steps to remove and neither of them is one word.
         pub const NAV_DIR: &str = "nav-dir";
+        /// The directory a navigating shell makes, puts [`NAV_INSIDE`] in, and then removes with
+        /// `RMDIR` **after** taking that name back out. Two claims ride on it: in-guest, the first
+        /// `RMDIR` is refused with `ENOTEMPTY` and the second succeeds; on the host, this name is
+        /// not in the directory afterwards, so the removal reached the platter.
+        pub const NAV_EMPTY: &str = "nav-empty";
+        /// The one name inside [`NAV_EMPTY`], which is what makes the first `RMDIR` a refusal. It is
+        /// unlinked before the second, so nothing of it survives either.
+        pub const NAV_INSIDE: &str = "in";
+
+        /// **The subtree the `rm` program is granted** (milestone 47's `rm -r`), a sibling of
+        /// [`SUB`] so a capability to one is provably not a capability to the other.
+        ///
+        /// ```text
+        ///   /rmtree                 rm-keep  rm-doomed/     <- the grant is here
+        ///   /rmtree/rm-doomed       rm-one  rm-two  rm-nested/
+        ///   /rmtree/rm-doomed/rm-nested   rm-leaf
+        /// ```
+        ///
+        /// [`RM_KEEP`] is the control that makes the removal a statement about what `rm` was
+        /// **told** rather than about what it could reach: it sits beside the doomed tree, inside
+        /// the same grant, and the same capability could have taken it. It is still there
+        /// afterwards because nothing named it.
+        pub const RMTREE: &str = "rmtree";
+        /// A file beside the doomed tree, inside the grant. Nothing names it, so nothing removes it.
+        pub const RM_KEEP: &str = "rm-keep";
+        pub const RM_KEEP_BODY: &[u8] = b"CRK47-RM: inside the grant, and never named\n";
+        /// The directory `rm -r` is pointed at.
+        pub const RM_DOOMED: &str = "rm-doomed";
+        /// Two files directly inside it, so the walk has something to unlink at the top level.
+        pub const RM_ONE: &str = "rm-one";
+        pub const RM_TWO: &str = "rm-two";
+        /// A directory inside it, so the walk has to recurse and `RMDIR` has to run bottom-up.
+        pub const RM_NESTED: &str = "rm-nested";
+        /// The file at the bottom: the last thing unlinked and the deepest the walk goes.
+        pub const RM_LEAF: &str = "rm-leaf";
+        pub const RM_BODY: &[u8] = b"CRK47-RM: a file `rm -r` is expected to take away\n";
+        /// A name that is **not** on the image. `rm` of it is a diagnostic and a non-zero exit;
+        /// `rm -f` of it is silence and a zero one, which is the whole of what `-f` means.
+        pub const RM_MISSING: &str = "rm-nothing";
 
         /// **The names the image root must still carry after a run**, checked by the post-run host
         /// tool: this is the half of the assertion made from *outside* the confined program, and no
@@ -828,7 +917,8 @@ pub mod fixture {
         /// `made-by-std` in it), so an exact comparison would couple this milestone's gate to what
         /// unrelated tests happen to write. The upward-escape half is checked against [`MADE`] and
         /// [`MADE_DIR`] instead, which are names only the attacker writes.
-        pub const ROOT_ENTRIES: [&str; 4] = [super::MOTD_NAME, OTHER, super::SCRATCH_NAME, SUB];
+        pub const ROOT_ENTRIES: [&str; 5] =
+            [super::MOTD_NAME, OTHER, RMTREE, super::SCRATCH_NAME, SUB];
     }
 
     /// **The directory attacker's report** (milestone 47), a bitmap for the same reason the per-file
@@ -930,12 +1020,53 @@ pub mod fixture {
         /// And the name it removed no longer opens. Without this, the bit above is equally
         /// consistent with an `rm` that did nothing at all.
         pub const NAME_GONE_AFTER_UNLINK: u64 = 1 << 15;
-        /// `rm` of a **directory** was refused. `rm` unlinks a name of a file; a verb that removed
-        /// whatever it found is how one word takes a subtree away.
-        pub const RM_REFUSED_A_DIRECTORY: u64 = 1 << 16;
+        /// `UNLINK` of a **directory** was refused. It unlinks the name of a file; a verb that
+        /// removed whatever it found is how one word takes a subtree away.
+        pub const UNLINK_REFUSED_A_DIRECTORY: u64 = 1 << 16;
         /// **Something that should have worked did not**, so the refusals above prove nothing. The
         /// control bit, in the shape both attackers already use.
         pub const NAVIGATION_FAILED: u64 = 1 << 17;
+        /// `RMDIR` of a directory with a name still in it was refused (`ENOTEMPTY`). The other half
+        /// of "no single call on this contract takes a subtree away": `UNLINK` will not remove a
+        /// directory at all, and `RMDIR` will not remove one that holds anything.
+        pub const RMDIR_REFUSED_NON_EMPTY: u64 = 1 << 18;
+        /// And once the name inside it was taken out, `RMDIR` removed it. Without this, the bit
+        /// above is equally true of a `RMDIR` that refuses everything.
+        pub const RMDIR_REMOVED_EMPTY: u64 = 1 << 19;
+    }
+
+    /// **What the `rm` program reports, and how a diagnostic is told from the verdict**
+    /// (milestone 47's `rm -r`, `user/src/rm.rs`).
+    ///
+    /// `rm` is a **program**, not a shell builtin, so it holds a report endpoint and nothing that
+    /// names a terminal. Two kinds of message go out on it, and they are told apart by the first
+    /// word, which is what makes "silent on success" checkable from the far end:
+    ///
+    /// - **A line of text**, framed exactly as every std program's stdout is (`w0` = the byte count,
+    ///   at most 16, and the bytes little-endian in `w1`|`w2`). Diagnostics always go out this way;
+    ///   `-v` adds one line per name removed.
+    /// - **The verdict**, once, last: `w0` = [`super::VERDICT`], `w1` = the exit status, `w2` = how
+    ///   many names were removed.
+    ///
+    /// A byte count is at most 16 and [`super::VERDICT`] is far larger, so the two never collide. A
+    /// receiver that takes the verdict as its **first** message therefore knows the run printed
+    /// nothing, which is `rm(1)`'s default behaviour asserted rather than assumed: a `SEND` blocks
+    /// until somebody receives it, so a line that was emitted cannot be missed by looking later.
+    pub mod rm {
+        /// The exit status of a run in which everything named was removed. `rm(1)`: "exits 0 if all
+        /// of the named files or file hierarchies were removed".
+        pub const OK: u64 = 0;
+
+        /// A non-zero exit status **is the errno of the first failure**, rather than a generic 1.
+        ///
+        /// `rm(1)` promises only "a value >0", so this is a choice, and it is the one that costs
+        /// nothing and says more: a test that expected `EROFS` and got `ENOENT` has learned that the
+        /// walk stopped somewhere else than it thought. The [`super::super::dir::explain`] sentence
+        /// for that number is what the program prints as its diagnostic, so the status word and the
+        /// text a human reads come from the same decision.
+        pub const fn status(errno: i32) -> u64 {
+            errno as u64
+        }
     }
 
     /// **The on-device crash test's vocabulary** (milestone 37, DECISIONS §34 condition 1).
@@ -1259,6 +1390,7 @@ mod tests {
             ("MKDIR", fs::MKDIR),
             ("RENAME", fs::RENAME),
             ("UNLINK", fs::UNLINK),
+            ("RMDIR", fs::RMDIR),
         ];
         for (i, (na, a)) in ops.iter().enumerate() {
             assert!(*a <= 0xff, "{na} does not fit the 8-bit opcode field");
@@ -1395,8 +1527,10 @@ mod tests {
             UNLINKED,
             HOLDER_KEPT_READING,
             NAME_GONE_AFTER_UNLINK,
-            RM_REFUSED_A_DIRECTORY,
+            UNLINK_REFUSED_A_DIRECTORY,
             NAVIGATION_FAILED,
+            RMDIR_REFUSED_NON_EMPTY,
+            RMDIR_REMOVED_EMPTY,
         ];
         let mut seen = 0u64;
         for b in bits {
@@ -1416,8 +1550,30 @@ mod tests {
     fn the_subtree_fixture_is_grantable_and_unambiguous() {
         use fixture::tree::*;
         for name in [
-            SUB, INNER, DEEPER, LEAF, OTHER, SECRET, MADE, MADE_DIR, MOVED, NAV_KEPT, NAV_GONE,
+            SUB,
+            INNER,
+            DEEPER,
+            LEAF,
+            OTHER,
+            SECRET,
+            MADE,
+            MADE_DIR,
+            MOVED,
+            NAV_KEPT,
+            NAV_GONE,
             NAV_DIR,
+            NAV_EMPTY,
+            NAV_INSIDE,
+            // The `rm -r` subtree. Its names ride in a grant too: the program is *started* with the
+            // one name it is to remove, packed the way every other grant is.
+            RMTREE,
+            RM_KEEP,
+            RM_DOOMED,
+            RM_ONE,
+            RM_TWO,
+            RM_NESTED,
+            RM_LEAF,
+            RM_MISSING,
         ] {
             assert!(
                 grant::fits(name.as_bytes()),
@@ -1427,8 +1583,11 @@ mod tests {
         // The post-run host check identifies the attacker's creations by PREFIX, because a run
         // index is appended to each. A fixture name that started with one of those prefixes would
         // be read as an escape, or would hide one.
-        let probes = [MADE, MADE_DIR, MOVED, NAV_KEPT, NAV_GONE, NAV_DIR];
-        for fixture in ROOT_ENTRIES.iter().chain(&[INNER, DEEPER, LEAF, SECRET]) {
+        let probes = [MADE, MADE_DIR, MOVED, NAV_KEPT, NAV_GONE, NAV_DIR, NAV_EMPTY];
+        for fixture in ROOT_ENTRIES
+            .iter()
+            .chain(&[INNER, DEEPER, LEAF, SECRET, RM_KEEP, RM_DOOMED])
+        {
             for probe in probes {
                 assert!(
                     !fixture.starts_with(probe),
@@ -1447,5 +1606,32 @@ mod tests {
             }
         }
         assert_ne!(SUB, OTHER, "the sibling must be a different directory");
+        // The `rm -r` fixture's own shape. `RM_MISSING` is the load-bearing one: the whole of `-f`
+        // is that a name which is not there is not an error, so a fixture that accidentally shipped
+        // it would make the `-f` run and the plain run indistinguishable.
+        for staged in [RM_KEEP, RM_DOOMED, RM_ONE, RM_TWO, RM_NESTED, RM_LEAF] {
+            assert_ne!(
+                staged, RM_MISSING,
+                "the name `rm -f` is pointed at must not be one the fixture stages",
+            );
+        }
+        assert_ne!(RMTREE, SUB, "the rm grant must not be the shells' subtree");
+    }
+
+    /// **A verdict word cannot be mistaken for a line of text**, which is the one thing the `rm`
+    /// program's report channel rests on: its receiver reads "the first message is the verdict" as
+    /// "the run printed nothing", and `rm(1)`'s default is to print nothing on success.
+    #[test]
+    fn a_text_frame_and_a_verdict_are_told_apart_by_the_first_word() {
+        // A frame's first word is a byte count into the two payload words, so 16 is its ceiling.
+        assert!(
+            fixture::VERDICT > 16,
+            "a verdict word that could be a byte count would make a diagnostic read as a verdict",
+        );
+        // And a non-zero status is the errno, so the two ends agree about what failed rather than
+        // only that something did.
+        assert_eq!(fixture::rm::status(dir::EROFS), dir::EROFS as u64);
+        assert_ne!(fixture::rm::status(dir::EROFS), fixture::rm::OK);
+        assert_eq!(fixture::rm::OK, 0, "success is zero, as every shell expects");
     }
 }

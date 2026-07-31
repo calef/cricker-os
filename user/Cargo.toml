@@ -330,6 +330,16 @@ path = "src/date.rs"
 test = false
 bench = false
 
+# `rm` (milestone 47's rmdir lane): the first program endowed a **directory** capability, and the
+# reason `rm` stopped being a shell builtin. A builtin runs with the shell's whole endowment; this
+# takes an attenuated grant, so its recursion can only reach what it was handed. `mkinitrd` packs it
+# as "rm" for both ISAs.
+[[bin]]
+name = "rm"
+path = "src/rm.rs"
+test = false
+bench = false
+
 # The keyboard driver (milestone 29's input): a confined userspace virtio-input driver whose whole
 # power to inject a keystroke is the mapping of the compositor's input ring, not the doorbell every
 # client holds. `mkinitrd` packs it as "kbd" for both ISAs.
