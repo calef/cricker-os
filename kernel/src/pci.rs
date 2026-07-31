@@ -160,6 +160,24 @@ pub fn find_input_device() -> Option<PciVirtioDevice> {
     bring_up(bdf, pci::VIRTIO_TYPE_INPUT)
 }
 
+/// Find the first modern virtio-rng function on the bus and bring it up (milestone 56's entropy
+/// source). `None` if there is no PCI RNG.
+///
+/// The mmio twin is [`crate::virtio::find_entropy_device`], and both exist because both machines
+/// offer both: the entropy service is wired over whichever one the wiring asked for, and the
+/// milestone-56 test runs it over each in turn. An RNG behind the IOMMU is worth having for the
+/// same reason a keyboard is: its buffer is the one place in memory whose contents must not be
+/// guessable, and an unconfined device could write it anywhere and read the rest.
+#[cfg_attr(not(test), allow(dead_code))] // entropy_service is the caller, and the m56 tests drive it
+pub fn find_rng_device() -> Option<PciVirtioDevice> {
+    let bdf = find_virtio_bdf(
+        pci::VIRTIO_RNG_MODERN,
+        Some(pci::VIRTIO_RNG_TRANSITIONAL),
+        "virtio-rng",
+    )?;
+    bring_up(bdf, pci::VIRTIO_TYPE_ENTROPY)
+}
+
 /// Enumerate the bus for the first function matching `modern`, warning (once) if only a
 /// `transitional` (legacy) twin is present, since we drive modern only. `kind` names the device for
 /// that warning. `transitional` is `None` for a device type that has no legacy id at all

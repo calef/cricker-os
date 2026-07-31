@@ -1,8 +1,13 @@
-//! The std proof (milestone 27): an ordinary Rust program, no `no_std`, no attributes, running on
-//! the native capability ABI. Every line exercises a PAL surface: `println!` SENDs on the stdout
-//! endpoint (slot 1), collections draw from the untyped budget (slot 0), `Instant` reads the
-//! virtual counter, `SystemTime` reads the clock page slot 5 grants (milestone 51), and `fs`
-//! returns honestly `Unsupported`.
+//! The std proof (milestone 27): an ordinary Rust program, no `no_std`, running on the native
+//! capability ABI. Every line exercises a PAL surface: `println!` SENDs on the stdout endpoint
+//! (slot 1), collections draw from the untyped budget (slot 0), `Instant` reads the virtual
+//! counter, `SystemTime` reads the clock page slot 5 grants (milestone 51), `std::random` asks the
+//! entropy service slot 6 grants (milestone 56), and `fs` returns honestly `Unsupported`.
+//!
+//! The one `#![feature]` below is about **the API's stability upstream, not about this platform**:
+//! `std::random` is still unstable in Rust (rust-lang/rust#130703), so any program on any target
+//! that calls it opts in the same way. Everything else here is stable Rust.
+#![feature(random)]
 //!
 //! **One binary, three behaviours, chosen by the authority it was granted.** A std program reaches
 //! the network only if it holds the network, and the filesystem only if it holds a directory (no
@@ -25,6 +30,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, UdpSocket};
+use std::random::{Rng, SystemRng};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 fn main() {
@@ -112,6 +118,20 @@ fn offline_demo() {
     let t2 = Instant::now();
     assert!(t2 >= t1, "the monotonic counter went backwards");
     println!("wall clock ok");
+
+    // **Real entropy** (milestone 56). This process was granted one endpoint that means "you may
+    // obtain randomness"; it names no device, and the entropy service on the other end is the only
+    // thing that can read the virtio-rng. Asserted rather than printed, because random bytes are
+    // the least deterministic transcript imaginable. Two 32-byte draws agreeing is a 2^-256 event
+    // with a real source and a certainty with the counter-seeded stream this replaced, so the
+    // comparison is what says the bytes came off a device.
+    let mut a = [0u8; 32];
+    let mut b = [0u8; 32];
+    SystemRng.fill_bytes(&mut a);
+    SystemRng.fill_bytes(&mut b);
+    assert_ne!(a, b, "two draws from std::random are identical");
+    assert!(a.iter().any(|&x| x != 0), "a draw is all zeros");
+    println!("entropy ok");
 }
 
 /// The same sanity window `clock_proto::policy` applies, restated here because a std program links

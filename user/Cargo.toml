@@ -319,6 +319,16 @@ path = "src/kbd.rs"
 test = false
 bench = false
 
+# The entropy service (milestone 56, DECISIONS §44): owns a virtio-rng device and is the only thing
+# that can read it; clients hold an endpoint that means "you may obtain randomness". The driver rides
+# in it, the way both RTC drivers ride in the clock service, because a separate driver process would
+# add a hop and hold exactly the same authority. `mkinitrd` packs it as "entropy" for both ISAs.
+[[bin]]
+name = "entropy"
+path = "src/entropy.rs"
+test = false
+bench = false
+
 [dependencies]
 abi = { version = "0.1.0", path = "../crates/abi" }
 bitfont = { version = "0.1.0", path = "../crates/bitfont" }
@@ -328,6 +338,7 @@ compose = { version = "0.1.0", path = "../crates/compose" }
 coremark = { version = "0.1.0", path = "../crates/coremark" }
 crickerfs = { version = "0.1.0", path = "../crates/crickerfs" }
 elf = { version = "0.1.0", path = "../crates/elf" }
+entropy_proto = { version = "0.1.0", path = "../crates/entropy_proto" }
 fs_proto = { version = "0.1.0", path = "../crates/fs_proto" }
 gfx_proto = { version = "0.1.0", path = "../crates/gfx_proto" }
 lineedit = { version = "0.1.0", path = "../crates/lineedit" }

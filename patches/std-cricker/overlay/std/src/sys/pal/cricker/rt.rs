@@ -46,6 +46,17 @@
 //!   does not know what time it is and `SystemTime::now()` says so loudly rather than reporting
 //!   1970 plus uptime, which is what it used to do.
 //!
+//! And one more, granted only to a std program that is given **entropy** (milestone 56; the random
+//! PAL in `sys/random` binds it, DECISIONS §44):
+//!
+//! - **slot 6**: the entropy service's request endpoint with WRITE. It means *"you may obtain
+//!   randomness"*, and it names no device: the service holds the virtio-rng transport and this
+//!   program cannot reach it. `std::random::SystemRng` (which promises bytes "suitable for
+//!   cryptographic purposes") is a `CALL` on this endpoint, and a program left this slot empty gets
+//!   a **panic** rather than a predictable stand-in, for the same reason `SystemTime::now()` does:
+//!   the function has no error channel and the alternative is a lie. `HashMap`'s seed is the one
+//!   caller std itself treats as best-effort, and it keeps working either way; see `sys/random`.
+//!
 //! Programs that never allocate, print, open a socket, or open a file never touch the slots they
 //! do not use.
 
@@ -55,6 +66,7 @@ pub const STACK_SLOT: u64 = 2;
 pub const NET_UNTYPED_SLOT: u64 = 3;
 pub const FS_DIR_SLOT: u64 = 4;
 pub const CLOCK_SLOT: u64 = 5;
+pub const ENTROPY_SLOT: u64 = 6;
 
 /// Where the loader maps the clock page a std program reads wall-clock time out of: one frame,
 /// **read-only**, carrying the offset the clock service publishes (`clock_proto`'s layout). Clear

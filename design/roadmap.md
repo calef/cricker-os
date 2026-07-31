@@ -119,7 +119,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 53 | NOT-STARTED | The board's own peripherals: network and storage on real silicon | 16a boots the board; this is what makes it able to *do* anything, and it is where virtio stops carrying us |
 | 54 | NOT-STARTED | A network file service a Mac can actually mount | the first real workload with a real user, and the security claim backup servers deserve |
 | 55 | NOT-STARTED | Time Machine: SMB3 with Apple's extensions, and mDNS | **likely the largest single piece of work in the project**, and the one that must be scoped before it is started |
-| 56 | NOT-STARTED | Secrets, credentials, and the entropy to make them safe | **our RNG is explicitly not cryptographic**, and a secret is a bearer token where a capability is an unforgeable reference |
+| 56 | PARTIAL | Secrets, credentials, and the entropy to make them safe | the entropy half is **built** (§44): a real random source, capability-granted. The crypto and credential halves remain, and a secret is still a bearer token where a capability is an unforgeable reference |
 | 57 | PARTIAL | Partitioning and formatting a real drive, and extended attributes | you cannot find a partition without reading the table, and **we have no partition-table code at all**; all of it is testable in QEMU before the board lands. The host recovery tool (`ls`/`cat`/`extract`) is built; GPT, on-target `mkfs` and xattrs are not |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
@@ -2802,16 +2802,30 @@ a gap. **Prerequisite for 55; feeds milestone 49 (users, login, and attribution)
 serves **three** family members with separate passwords, so the credential service holds multiple
 identities from the start rather than growing into that later.
 
-#### Two things we do not have, both verified rather than assumed
+#### The entropy half: BUILT, 2026-07-30 (DECISIONS §44, notes/entropy.md)
 
-**The RNG is not cryptographic and says so in its own first line.**
-`patches/std-cricker/.../sys/random/cricker.rs`: "not cryptographic, and saying so is the point" — a
-splitmix64 stream seeded from the virtual counter, "utterly predictable to anyone who can guess
-boot-relative time", and "must not be used for keys, tokens, or anything an adversary cares about".
-NTLMv2's server challenge must be unguessable or it is precomputable, so **this blocks SMB
-authentication outright**. That file already names the intended fix: a virtio-rng driver feeding a
-capability-granted service, replacing the file rather than patching it. On real silicon the StarFive
-JH7110's TRNG is the candidate and **needs verifying** before it is relied on.
+The RNG used to be splitmix64 seeded from the virtual counter, predictable to anyone who could guess
+boot-relative time, which blocked SMB authentication outright: an NTLMv2 server challenge that is
+guessable is precomputable. That file has been **replaced, not patched**, exactly as its own last
+paragraph said it should be.
+
+What shipped: a **virtio-rng driver over both transports** (mmio and PCIe, §18's seam, one binary),
+inside an **entropy service** that is the only thing in the system that can read the device. Clients
+hold one endpoint that means *"you may obtain randomness"* and names no device, which is the fourth
+appearance of attenuation by operation rather than by object. The service passes the device's bytes
+through and computes nothing, because whitening without a one-way function is a reversible
+permutation that obscures the claim rather than strengthening it. **The fork is settled**:
+`std::random` improves transparently, split on std's own seam, so `SystemRng` (which promises
+cryptographic strength) panics when the capability is absent while `HashMap`'s seed degrades to the
+old stream and says so. Proven on aarch64 and riscv64, over both buses, plus a std program drawing
+through the PAL.
+
+What it does **not** promise: under QEMU the device is backed by the host's `/dev/urandom`, which is
+a fact about the emulator. On real silicon the StarFive JH7110's TRNG is the candidate and **needs
+verifying** before it is relied on, and there is no health test, so a device that started returning a
+constant would be passed straight through. notes/entropy.md carries the full list.
+
+#### The thing we still do not have
 
 **There is no crypto in the tree at all.** NTLMv2 needs MD4 (the NT hash) and HMAC-MD5; SMB3 signing
 needs AES-CMAC; encryption needs AES-CCM or GCM; SMB 3.1.1 preauth integrity needs SHA-512.
@@ -2861,14 +2875,17 @@ not by object.**
   reboots, and encrypted under what key? That is the same chicken-and-egg as milestone 51's NTS
   problem (certificates need time, time needs the network). The honest v1 is provisioned at boot and
   held only in memory; say so plainly rather than implying durability we do not have.
-- **Entropy is a capability**, and the service that holds it should be the only thing that can read
+- ~~**Entropy is a capability**, and the service that holds it should be the only thing that can read
   the device. Whether `std::random` transparently improves or programs must ask for a real RNG is a
-  design fork: transparent is friendlier, explicit is honest about what a program depends on.
+  design fork.~~ **Settled and built 2026-07-30**, DECISIONS §44: transparent, split on std's own
+  `fill_bytes` / `hashmap_random_keys` seam, so the caller that promises cryptographic strength
+  refuses rather than degrading. The service passes bytes through and does not pool or whiten.
 
-**Sequencing.** Before milestone 55, and the entropy half is worth doing early regardless, since
-`std::random`'s caveat currently taints anything security-adjacent anywhere in the tree. The virtio-rng
-driver is testable in QEMU today, with no board required. **Effort: not estimated**; vendoring crypto
-and writing a credential service are well-understood, and the secrets-at-rest question is not.
+**Sequencing.** Before milestone 55. **The entropy half is done**, which was worth doing early and on
+its own, since `std::random`'s caveat tainted anything security-adjacent anywhere in the tree and the
+virtio-rng driver was testable in QEMU with no board required. **Effort for the rest: not estimated**;
+vendoring crypto and writing a credential service are well-understood, and the secrets-at-rest
+question is not.
 
 ### 57. Partitioning and formatting a real drive, and extended attributes
 
