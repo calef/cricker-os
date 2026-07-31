@@ -36,6 +36,16 @@
 //!   program left this slot empty gets `Unsupported` from every `std::fs` call, which is what "no
 //!   ambient filesystem" feels like from inside a process.
 //!
+//! And one more, granted only to a std program that is given a **wall clock** (milestone 51; the
+//! time PAL in `sys/time` binds it, DECISIONS §43):
+//!
+//! - **slot 5**: a `Frame` capability naming the clock page, with `READ`. The loader maps that
+//!   same page **read-only** at [`CLOCK_PAGE`], and `SystemTime::now()` is then the ambient
+//!   monotonic counter plus the offset the clock service published there: two loads and an add,
+//!   no server round trip, and nothing this program can write. A program left this slot empty
+//!   does not know what time it is and `SystemTime::now()` says so loudly rather than reporting
+//!   1970 plus uptime, which is what it used to do.
+//!
 //! Programs that never allocate, print, open a socket, or open a file never touch the slots they
 //! do not use.
 
@@ -44,6 +54,14 @@ pub const STDOUT_SLOT: u64 = 1;
 pub const STACK_SLOT: u64 = 2;
 pub const NET_UNTYPED_SLOT: u64 = 3;
 pub const FS_DIR_SLOT: u64 = 4;
+pub const CLOCK_SLOT: u64 = 5;
+
+/// Where the loader maps the clock page a std program reads wall-clock time out of: one frame,
+/// **read-only**, carrying the offset the clock service publishes (`clock_proto`'s layout). Clear
+/// of the program image (0x40_0000), its stack, the net PAL's per-socket frames (0x1000_0000
+/// upward), the FS page (0x1100_0000), and the heap (0x4000_0000). The kernel-side wiring maps the
+/// same physical frame the clock service holds read/write; see `clock_service` in kernel/src/user.rs.
+pub const CLOCK_PAGE: u64 = 0x1200_0000;
 
 /// Where the loader maps the page a std program shares with its FS server: 4096 bytes, one file
 /// block, carrying a name out on `OPEN` and file bytes both ways on `READ`/`WRITE`. Clear of the

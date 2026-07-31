@@ -28,6 +28,12 @@ pub(crate) mod netproto;
 // it. `blk`/`fixture` in there belong to the other two parties, hence the allow.
 #[allow(dead_code)]
 pub(crate) mod fsproto;
+// The wall-clock contract (DECISIONS §43): the clock page's layout and its seqlock, the propose
+// protocol, and the policy, generated verbatim from `crates/clock_proto/src/lib.rs` by the same
+// xtask step. The time PAL (`sys/time`) is a *reader* of the page and never a writer, so the
+// publish half and the propose half belong to the other parties; hence the allow.
+#[allow(dead_code)]
+pub(crate) mod clockproto;
 pub(crate) mod rt;
 
 use crate::io;

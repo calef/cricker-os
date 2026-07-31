@@ -359,8 +359,9 @@ impl FileAttr {
     }
 
     pub fn modified(&self) -> io::Result<SystemTime> {
-        // The server keeps an mtime (it advances one on write), but no contract verb reports it,
-        // and there is no wall clock to interpret it against anyway. See notes/std.md.
+        // The server keeps an mtime (it advances one on write), but no contract verb reports it.
+        // There IS a wall clock to interpret one against since milestone 51 (DECISIONS §43), so the
+        // missing piece is now the verb and nothing else. See notes/std.md.
         unsupported()
     }
 
