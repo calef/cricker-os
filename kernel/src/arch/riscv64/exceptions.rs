@@ -8,7 +8,8 @@
 //! through `TrapFrame::{syscall_nr, arg, set_arg}` (see this module's `impl`), so `ecall`'s a7/a0..a5
 //! map correctly without `syscall.rs` naming a register.
 
-use core::sync::atomic::{AtomicUsize, Ordering};
+use crate::arch::{UserFault, UserFaultAccess};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 /// The registers saved on a trap. `x` is the RISC-V general-register file `x0`..`x31` (`x[0]` is the
 /// hardwired zero); the trap CSRs follow. `#[repr(C)]` because the trap-entry assembly (the traps
@@ -182,6 +183,65 @@ pub fn enable_software_interrupts() {
 const CAUSE_ECALL_U: u64 = 8;
 /// `scause` exception code for a breakpoint (`ebreak`).
 const CAUSE_BREAKPOINT: u64 = 3;
+/// `scause` exception code for a page fault on an instruction fetch.
+const CAUSE_INSTRUCTION_PAGE_FAULT: u64 = 12;
+/// `scause` exception code for a page fault on a load.
+const CAUSE_LOAD_PAGE_FAULT: u64 = 13;
+/// `scause` exception code for a page fault on a store or an atomic.
+const CAUSE_STORE_PAGE_FAULT: u64 = 15;
+
+/// The most recent user fault, [`UserFault::encode`]d, and the address it named (`stval`). Read
+/// back through [`last_user_fault`]; the aarch64 twin is `aarch64::exceptions::last_user_fault`.
+static LAST_USER_FAULT: AtomicU64 = AtomicU64::new(0);
+static LAST_USER_FAULT_ADDR: AtomicU64 = AtomicU64::new(0);
+
+/// The last user fault's kind and the address it named, or `None` if no user thread has faulted
+/// yet.
+///
+/// **This is new on RISC-V, and it is the reason the fault tests can run here at all.** Until it
+/// existed the kernel recorded that a user thread faulted and threw away everything about the
+/// fault, so a test on this ISA could assert "something died" and nothing more. See [`classify`]
+/// for what "kind" costs here that it does not cost on aarch64.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn last_user_fault() -> Option<(UserFault, u64)> {
+    let kind = UserFault::decode(LAST_USER_FAULT.load(Ordering::Relaxed))?;
+    Some((kind, LAST_USER_FAULT_ADDR.load(Ordering::Relaxed)))
+}
+
+/// Read a U-mode trap as a [`UserFault`].
+///
+/// **RISC-V is not told the answer, so this derives it.** `scause` has exactly three page-fault
+/// codes, one per access kind, and no field anywhere says *why* the walk refused: a missing leaf
+/// and a leaf whose `U` bit is clear produce the identical `scause` 13. aarch64 gets that
+/// distinction free in `ESR_EL1`'s fault status code. Here the only source of it is the page table,
+/// so we walk it ([`mmu::is_mapped_in_current_space`]) and read "there is a translation" as "the
+/// refusal was about permission".
+///
+/// # BUGS
+///
+/// The walk happens *after* the fault, not during it, so it is evidence about the tables a few
+/// hundred cycles later rather than the hardware's own verdict. If another hart unmapped that page
+/// in the gap, a permission fault would be reported as a translation fault (and the reverse for a
+/// concurrent map). Nothing in the kernel does that to a live user page today, and the tests that
+/// read this record fault a thread that owns the address space alone, but the gap is real and no
+/// amount of care here closes it: the architecture did not record the fact at the instant it had
+/// it. The honest summary is that aarch64's answer is a measurement and RISC-V's is an inference.
+fn classify(frame: &TrapFrame, code: u64) -> UserFault {
+    let access = match code {
+        CAUSE_INSTRUCTION_PAGE_FAULT => UserFaultAccess::Fetch,
+        CAUSE_LOAD_PAGE_FAULT => UserFaultAccess::Read,
+        CAUSE_STORE_PAGE_FAULT => UserFaultAccess::Write,
+        // An illegal instruction, an `ebreak`, a misaligned access: not a memory-permission
+        // question, so neither "permission" nor "translation" is a true thing to say about it.
+        _ => return UserFault::Other,
+    };
+
+    if super::mmu::is_mapped_in_current_space(frame.stval) {
+        UserFault::Permission(access)
+    } else {
+        UserFault::Translation(access)
+    }
+}
 
 /// Unmask supervisor external interrupts (`sie.SEIE`, bit 9): the PLIC's deliveries. The caller must
 /// have `sstatus.SIE` on (the timer step turned it on) for these to actually be taken, exactly as for
@@ -334,6 +394,10 @@ extern "C" fn riscv_trap_dispatch(frame: &mut TrapFrame) {
 /// documents.
 fn user_fault(frame: &TrapFrame, scause: u64, code: u64) -> ! {
     USER_FAULTS.fetch_add(1, Ordering::Relaxed);
+    // Classify BEFORE anything else: the walk reads the address space this thread is still
+    // installed on, and `sched::fault` below is where that stops being true.
+    LAST_USER_FAULT.store(classify(frame, code).encode(), Ordering::Relaxed);
+    LAST_USER_FAULT_ADDR.store(frame.stval, Ordering::Relaxed);
 
     crate::println!();
     crate::println!(

@@ -5226,13 +5226,13 @@ mod compositor_tests {
             wait_for(|| USER_FAULTS.load(Ordering::Relaxed) > faults),
             "a client wrote at {probe_va:#x}, its neighbour's pixels, and was NOT stopped",
         );
-        // aarch64 records the faulting address for tests (FAR_EL1); RISC-V's handler counts faults but
-        // keeps no last-address register of its own (notes/riscv-parity-scope.md), so the exact-address
-        // half of this assertion is aarch64-only while the fault itself is proved on both.
-        #[cfg(target_arch = "aarch64")]
+        // The exact address, on both ISAs. This half used to be aarch64-only, because aarch64 had a
+        // last-fault record (`FAR_EL1`, stashed for tests) and RISC-V had only a fault *count*: it
+        // knew `stval` at the instant of the fault and threw it away. Milestone 19's portable
+        // record keeps it on both, so "something faulted" is no longer all this ISA can say.
         assert_eq!(
-            crate::arch::exceptions::LAST_USER_FAULT_FAR.load(Ordering::Relaxed),
-            probe_va,
+            crate::arch::exceptions::last_user_fault().map(|(_, addr)| addr),
+            Some(probe_va),
             "something faulted, but not at the neighbour's address",
         );
         assert_eq!(
@@ -5268,10 +5268,10 @@ mod compositor_tests {
             "a window client read the composed screen at {screen_va:#x} and was NOT stopped: the \
              display is ambient",
         );
-        #[cfg(target_arch = "aarch64")]
         assert_eq!(
-            crate::arch::exceptions::LAST_USER_FAULT_FAR.load(Ordering::Relaxed),
-            screen_va,
+            crate::arch::exceptions::last_user_fault().map(|(_, addr)| addr),
+            Some(screen_va),
+            "something faulted, but not at the composed screen's address",
         );
         assert_eq!(
             sched::endpoint_waiting_senders(w.client_report[PEEPER]),
@@ -6853,10 +6853,9 @@ pub mod revoke_service {
 #[cfg(all(test, target_arch = "aarch64"))]
 mod tests {
     use super::*;
-    use crate::arch::exceptions::{
-        LAST_USER_FAULT_ESR, LAST_USER_FAULT_FAR, SVC_COUNT, USER_FAULTS,
-    };
+    use crate::arch::exceptions::{SVC_COUNT, USER_FAULTS, last_user_fault};
     use crate::arch::timer;
+    use crate::arch::{UserFault, UserFaultAccess};
     use crate::sched;
     // The std-transcript and FS-readiness assertions live with the std tests so both ISAs share one
     // copy; see `std_tests`.
@@ -6977,13 +6976,15 @@ mod tests {
             "the user program read a kernel address and was NOT stopped",
         );
 
-        let esr = LAST_USER_FAULT_ESR.load(Ordering::Relaxed);
-        let far = LAST_USER_FAULT_FAR.load(Ordering::Relaxed);
+        let (kind, addr) = last_user_fault().expect("the kernel recorded no user fault");
 
-        assert_eq!((esr >> 26) & 0x3f, 0x24, "not a data abort from a lower EL");
-        assert_eq!(esr & 0x3f, 0x0f, "not a PERMISSION fault: esr {esr:#x}");
-        assert_eq!(esr & (1 << 6), 0, "not a read");
-        assert_eq!(far, KERNEL_ADDR, "faulted on the wrong address");
+        assert_eq!(
+            kind,
+            UserFault::Permission(UserFaultAccess::Read),
+            "not a PERMISSION fault on a read: a translation fault would mean we had merely \
+             failed to map something, which proves nothing about the privilege boundary",
+        );
+        assert_eq!(addr, KERNEL_ADDR, "faulted on the wrong address");
 
         // And the kernel is executing this line, which is the other half of the claim.
     }
