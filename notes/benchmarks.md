@@ -612,6 +612,44 @@ its commit. Adding `relay_rtt` shifted the other kernel-side IPC benches a few p
 +6%) through whole-crate codegen, all sub-tripwire, the churn this note documents above; the baseline
 was re-saved to absorb it in the commit that added the bench.
 
+**`broker_rtt`: what the queue broker costs when both ends are up** (milestone 23, DECISIONS §39).
+The same question one rung up. Milestone 23's latency ladder has two rungs built, and this is the
+number that makes "opt-in per channel, never the default" a rule rather than a preference.
+
+The **default rung has no benchmark of its own, because it has no cost of its own**, and that is the
+milestone's headline rather than a dodge. A client holds a capability to a stable *endpoint*, and
+whoever is parked in `RECV_CAP` on it answers; a swap changes who that is. No process stands in the
+data path, so the steady state is `call_reply` exactly, and the swap adds nothing to it. The kernel's
+own sender queue is what buffers the down window: requests that arrive while nobody is receiving park
+there and the replacement drains them.
+
+The **opt-in rung** is `brokerd`, interposed so a producer never blocks on an absent consumer. It is
+the same client and the same backend as `call_reply` with a process in between, so the difference is
+the whole tax:
+
+| bench | topology | icount ticks/iter (aarch64) | HVF ns/iter |
+|---|---|---|---|
+| `call_reply` | client <-> server, one endpoint (**and the swap's steady state**) | ~1,007 | ~1,172 |
+| `broker_rtt` | client -> broker -> backend -> broker -> client | ~2,010 | ~2,368 |
+
+**1.99x, and about 1.2 microseconds of real time per request on this laptop.** RISC-V agrees to
+within a percent (169,282 vs 338,000 ticks/1000, 2.00x). That is the price of decoupling two
+components' lifecycles, and it is why the broker is wired per channel: paying it on every IPC would
+trade the project's measured round-trip advantage for a feature used during swaps. It sits on the
+icount baseline for both ISAs so a regression surfaces against its commit, like `relay_rtt`.
+
+Two honest notes. `broker_rtt` and `relay_rtt` measure the same shape (one confined intermediary) in
+the two different idioms the codebase actually uses, `CALL`/`Reply` and `SEND`/`RECV` pairs, and they
+land within 2.5% of each other, which is a small cross-check that the Reply-capability path costs
+about what a pre-wired reply endpoint does. And the broker's *pass-through* is what is measured here:
+during a down window it does strictly less work per request (one rendezvous, an enqueue, an immediate
+answer), which is the point, but it is not the number to quote, because the steady state is where a
+channel spends its life.
+
+Adding this bench shifted the other kernel-side numbers by a couple of percent through whole-crate
+codegen (`spawn_reap` -2.3%, `ipc_rtt_el0` +0.3%), all sub-tripwire, the churn this note documents
+above; both baselines were re-saved in the commit that added it.
+
 **`fs_read`: the real RedoxFS read, whole path, and why it cannot be the isolated number.** This is
 the flagship: a client opens a file through a granted **directory capability** and reads a block, over
 the real confined stack (a block server driving the RedoxFS disk by DMA, the vendored RedoxFS engine
