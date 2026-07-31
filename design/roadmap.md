@@ -1446,6 +1446,12 @@ later. **Effort: 1 lane estimated per phase**, three phases, and they can land s
 
 ### 39. Repository structure for a loosely-coupled OS, and the road to a distribution
 
+**Prior art to read before designing packaging:** `design/haiku-bfs-and-packages.md`. Haiku's `packagefs`
+**activates** packages rather than installing them, composing the filesystem view from a set of read-only
+package files instead of letting installers mutate shared directories. It reached a shape close to milestone
+47's conclusion that **installing a program is granting it into a namespace**, from an entirely different
+motive (atomic, rollback-able installs), which is the useful kind of convergence.
+
 **In brief.** **Analysis recorded, no decision taken.** The tree is a monorepo for a deliberately loosely-coupled system, and it is straining in measurable ways: `user/` is 28 binaries and 9,324 lines in one crate that is also a shared library, `fs-server/` has already escaped into its own workspace for real dependency reasons, `crates/` conflates kernel proof crates with wire contracts and userspace runtime so the boundary a third party cares about is invisible, and every crate is version 0.1.0. Four options are written up with their trade-offs (restructure in place; multiple workspaces in one repo; split repos; monorepo plus a later distribution *manifest* repo), along with a naming argument (**components** and **services**, never "daemons", because a Unix daemon is defined by the ambient authority this OS does not have) and the observation that milestone 31's program manifest plus §22's measured-boot hashing are already three quarters of a package format
 
 **Why it matters.** **the structure has to serve the thesis, and one constraint dominates.** A single `script/test` proving the whole system on both ISAs is this project's credibility mechanism and what makes rule 5 a gate rather than an aspiration; splitting repos trades that for decoupling nothing external needs yet. Recommendation recorded (monorepo now, distribution as a separate manifest repo, executed as multiple workspaces, not before 23 forces it) so the eventual decision starts from evidence rather than from taste
@@ -2880,7 +2886,11 @@ the requirement adds a gap to fill rather than a comparison to redo. ext4 works 
 importing it means importing C, which §34 chose RedoxFS specifically to avoid, and there is no
 `no_std` Rust ext4.
 
-Verified: **RedoxFS has no xattr support.** Two mechanisms, and **the fork is open**:
+Verified: **RedoxFS has no xattr support.** Two mechanisms, and **the fork is open**.
+Before designing the attribute layer, read `design/haiku-bfs-and-packages.md`: BFS made attributes
+typed and indexed with live queries over them, and the point of knowing that is to avoid designing
+something that **forecloses** indexing later, even though SMB only needs opaque blobs now.
+
 
 - **Extend the on-disk format.** Correct, and atomic by construction since the metadata rides
   RedoxFS's own copy-on-write transaction. The cost is that §34 chose RedoxFS partly for being
