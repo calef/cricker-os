@@ -26,7 +26,7 @@ mod virtio;
 
 use abi::{Error, endpoint};
 use capsh::{Prog, spawnproto};
-use user_rt::{exit, invoke, recv, send};
+use user_rt::{call, cap_delete, exit, invoke, recv, recv_cap as rt_recv_cap, send, yield_now};
 
 /// Roles, as passed in `x0` by the kernel.
 ///
@@ -152,8 +152,7 @@ fn self_check_client() -> ! {
 
     // Make one syscall that needs no capability at all, to prove we reached EL0 and can trap
     // back in. Yield is authority over ourselves; nobody has to grant it.
-    // SAFETY: `svc` traps to EL1; SYS_YIELD takes no arguments and cannot fail.
-    unsafe { core::arch::asm!("svc #0", in("x8") abi::SYS_YIELD, options(nostack, nomem)) };
+    yield_now();
 
     loop {
         core::hint::spin_loop();
@@ -205,65 +204,11 @@ fn print(bytes: &[u8]) -> Result<(), Error> {
 
 /// Receive a data word and, if the sender delegated one, a capability. Returns `(w0, slot)`, where
 /// `slot` is where the received capability landed in our cspace, or `endpoint::NO_CAP` if none came.
+///
+/// A thin shape over `user_rt::recv_cap`, which returns the third word this caller does not want.
 fn recv_cap(slot: u64) -> (u64, u64) {
-    let (mut w0, mut got): (u64, u64);
-    // SAFETY: `svc`. RECV_CAP returns the data word in x0 and the received slot (or NO_CAP) in x1.
-    unsafe {
-        core::arch::asm!(
-            "svc #0",
-            in("x8") abi::SYS_INVOKE,
-            inlateout("x0") slot => w0,
-            in("x1") endpoint::RECV_CAP,
-            lateout("x1") got,
-            in("x2") 0u64,
-            in("x3") 0u64,
-            in("x4") 0u64,
-            options(nostack),
-        );
-    }
+    let (w0, got, _) = rt_recv_cap(slot);
     (w0, got)
-}
-
-/// **Call: send two words and block until replied** (milestone 12). Returns `(r0, r1)`. The kernel
-/// mints a one-shot reply capability naming us into the server, which answers through it.
-fn call(slot: u64, w0: u64, w1: u64) -> (u64, u64) {
-    let (mut r0, mut r1): (u64, u64);
-    // SAFETY: `svc`. x0 = the endpoint slot, x1 = CALL; the reply comes back as r0 in x0, r1 in x1.
-    unsafe {
-        core::arch::asm!(
-            "svc #0",
-            in("x8") abi::SYS_INVOKE,
-            inlateout("x0") slot => r0,
-            inlateout("x1") endpoint::CALL => r1,
-            in("x2") w0,
-            in("x3") w1,
-            in("x4") 0u64,
-            options(nostack),
-        );
-    }
-    (r0, r1)
-}
-
-/// **Receive a call** (milestone 12): like [`recv_cap`], but also returns the second word (x2). The
-/// received slot holds a one-shot reply capability naming the caller; answer with
-/// `invoke(reply_slot, reply::REPLY, r0, r1, 0)`. Returns `(w0, reply_slot, w1)`.
-fn recv_call(slot: u64) -> (u64, u64, u64) {
-    let (mut w0, mut reply_slot, mut w1): (u64, u64, u64);
-    // SAFETY: `svc`. RECV_CAP returns w0 in x0, the delivered slot in x1, the second word in x2.
-    unsafe {
-        core::arch::asm!(
-            "svc #0",
-            in("x8") abi::SYS_INVOKE,
-            inlateout("x0") slot => w0,
-            in("x1") endpoint::RECV_CAP,
-            lateout("x1") reply_slot,
-            lateout("x2") w1,
-            in("x3") 0u64,
-            in("x4") 0u64,
-            options(nostack),
-        );
-    }
-    (w0, reply_slot, w1)
 }
 
 /// **The Call/Reply server, milestone 12.** Holds `RECV` on a request endpoint (slot 0) and a report
@@ -274,7 +219,7 @@ fn call_server() -> ! {
     const EP: u64 = 0;
     const REPORT: u64 = 1;
 
-    let (w0, reply_slot, w1) = recv_call(EP);
+    let (w0, reply_slot, w1) = rt_recv_cap(EP);
     // Answer the caller: w0 + w1. This consumes the one-shot reply capability.
     // SAFETY: `svc`; the kernel validates the reply capability in `reply_slot`.
     check(unsafe { invoke(reply_slot, abi::reply::REPLY, w0 + w1, 0, 0) } == 0);
@@ -648,19 +593,11 @@ fn init_boot(_x1: u64) -> ! {
 /// exit would tear nothing useful down. A `-> !` helper the `else` arms above can fall into.
 fn halt_forever() -> ! {
     loop {
-        yield_syscall();
+        yield_now();
     }
 }
 
-/// Yield the CPU (used by halt_forever).
-fn yield_syscall() {
-    // SAFETY: `svc`; SYS_YIELD gives up the CPU.
-    unsafe {
-        core::arch::asm!("svc #0", in("x8") abi::SYS_YIELD, options(nostack));
-    }
-}
-
-/// **init delegates an interrupt to a driver it builds, milestone 19d.2b.**/// **init delegates an interrupt to a driver it builds, milestone 19d.2b.** The third and last
+/// **init delegates an interrupt to a driver it builds, milestone 19d.2b.** The third and last
 /// delegatable device authority (after endpoints and device MMIO): an *interrupt capability*. init
 /// holds one for a test interrupt (slot 3, the kernel routed it); it builds a child and hands it
 /// that Irq cap, then starts the child. The child blocks in the interrupt's `WAIT` until the
@@ -1072,19 +1009,6 @@ fn tcb_start(tcb: u64, arg0: u64, arg1: u64, arg2: u64) -> i64 {
     unsafe { invoke(tcb, abi::tcb::START, arg0, arg1, arg2) }
 }
 
-/// Delete a capability from our own cspace, freeing the slot for reuse (milestone 19d).
-fn cap_delete(slot: u64) {
-    // SAFETY: `svc`; the kernel drops the slot from our table.
-    unsafe {
-        core::arch::asm!(
-            "svc #0",
-            in("x8") abi::SYS_CAP_DELETE,
-            in("x0") slot,
-            options(nostack),
-        );
-    }
-}
-
 /// **Building another address space, milestone 19b.** Holds an untyped budget (slot 0) and a
 /// report line (slot 1). It retypes part of its own memory into an address space, retypes a
 /// frame, maps the frame into the space it built, and proves the kernel keeps the rules there
@@ -1314,7 +1238,18 @@ fn check(ok: bool) {
 }
 
 fn fail() -> ! {
-    unsafe { core::arch::asm!("brk #0", options(nostack, nomem)) };
+    // The one arch-specific line in the program: aarch64 `brk`, RISC-V `ebreak`. Both trap, and
+    // the kernel turns a trap from userspace into a kill.
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: `brk` raises a breakpoint the kernel turns into a fault. That is the point.
+    unsafe {
+        core::arch::asm!("brk #0", options(nostack, nomem))
+    };
+    #[cfg(target_arch = "riscv64")]
+    // SAFETY: `ebreak` raises a breakpoint the kernel turns into a fault. That is the point.
+    unsafe {
+        core::arch::asm!("ebreak", options(nostack, nomem))
+    };
     loop {
         core::hint::spin_loop();
     }
