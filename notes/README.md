@@ -28,6 +28,11 @@ in the code or the conversation doesn't make sense, it belongs here.
   which four of these conventions `script/lint` checks. The jargon half cannot be checked:
   `linedisc` would have passed every rule.
 
+- [Handing a session over](session-handoff.md) — what a fresh context needs to pick this up:
+  the standing autonomy grant, the merge and lane discipline, which gates are cheap and which
+  are slow, and the traps that have cost real time more than once (leaked QEMU, fixed-iteration
+  waits that measure host load, ceilings that grow with the suite rather than the system).
+
 ## Devices
 
 - [The device tree](device-tree.md) — the machine describing itself. Everything in it is
