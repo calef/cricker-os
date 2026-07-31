@@ -70,7 +70,7 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install rustfmt (pinned nightly)
         run: rustup toolchain install nightly --profile minimal --component rustfmt
-      - run: script/fmt
+      - run: script/fmt --check
 
   clippy:
     name: clippy

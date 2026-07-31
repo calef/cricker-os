@@ -26,7 +26,7 @@ uses `cargo xtask` and that one uses `make` and the next uses `npm`.
 | `script/cibuild` | What CI runs: `bootstrap` (a CI runner starts bare), then the tests. |
 | `script/server` | Boot the OS in QEMU (the milestone tour, then the shell). An OS is the thing you *start*, so it is `server`. |
 | `script/console` | Boot straight to the interactive shell at EL0. For this project the console is literally a shell running as an unprivileged process. |
-| `script/fmt` | Check formatting against the pinned rustfmt (a CI gate). |
+| `script/fmt` | Format the tree with the pinned rustfmt; `--check` reports instead of writing (the CI gate). |
 | `script/lint` | Run clippy across the workspace with warnings denied (a CI gate), on both ISAs and in each boot-mode feature build, plus the non-clippy checks that share its job: broken intra-doc links, conflict markers, the roadmap status vocabulary, DECISIONS numbering, that every `script/` has an entry here, that no file carries a module-wide `#![allow(dead_code)]` (DECISIONS §38), and the naming conventions a machine can check (no `-d` names, none of the rejected Unix vocabulary, one spelling for contract crates, a recognised branch prefix; notes/naming.md). |
 | `script/coverage` | Coverage for the host-logic crates, gated on an 80%-per-file line floor (a CI gate). Installs cargo-llvm-cov on first run. |
 | `script/vendor-verify` | Prove each `vendor/*.pin` tree is the published tarball (sha256) plus exactly its divergence patch, byte for byte. `--write-patch` regenerates the patch after a deliberate change. Needs network on a cold cache. |
@@ -67,7 +67,7 @@ because CI has nothing to start with.
 ## CI leverages them
 
 `.github/workflows/ci.yml` runs seven jobs whose actual work is a script: the test job runs
-`script/cibuild`, the format job runs `script/fmt`, the clippy job runs `script/lint`, the verify
+`script/cibuild`, the format job runs `script/fmt --check`, the clippy job runs `script/lint`, the verify
 job runs `script/verify`, the bench job runs `script/bench --check` on both ISAs, the coverage job
 runs `script/coverage`, and the supply-chain job runs `script/supply-chain`. So CI executes the same
 commands a developer does, and one place (these files) defines what "test", "lint", "verify", and

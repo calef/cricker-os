@@ -105,7 +105,7 @@ three questions was drafted (scratchpad) if Chris chooses to engage.
   origin; in-flight worktree commits are not, so push branches before any restart.
 - Merge discipline: merge per proven piece, run the gates yourself before pushing main
   (`script/test` both ISAs, `script/verify` if a proof-crate changed, `script/lint`,
-  `script/fmt`, `script/bench --check` [+ `--riscv --check`]). Kani/`verify` is the slow gate;
+  `script/fmt --check`, `script/bench --check` [+ `--riscv --check`]). Kani/`verify` is the slow gate;
   skip it only when no proof-relevant crate changed.
 - Lane discipline when running concurrent kernel agents: keep IRQ-routing, context-switch, and
   verification-crate work in disjoint files; tell each agent which files the others own.

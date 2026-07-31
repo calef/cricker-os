@@ -1,14 +1,33 @@
 #!/bin/sh
-# script/fmt: check formatting against the pinned rustfmt (the CI fmt gate, and a developer's
-# "am I formatted?" check). It does not rewrite files; run `cargo fmt` to apply. Not one of the
-# canonical "Scripts to Rule Them All", but it keeps the CI job a one-liner. See notes/scripts.md.
+# script/fmt: format the tree with the pinned rustfmt. `--check` instead reports whether it is
+# already formatted, changes nothing, and exits non-zero if not; that is the form the CI gate and
+# script/toolchain-bump use. Not one of the canonical "Scripts to Rule Them All", but it keeps the
+# CI job a one-liner. See notes/scripts.md.
+#
+# It used to be a checker that never wrote anything, while being named for the thing it did not do.
+# That cost real time: a genuine failure was misread as a bad flag, the checker was re-run, produced
+# no diff (checkers do not), and unformatted code rode onto main behind a "clean" report. DECISIONS
+# §39 is the general rule this is an instance of: a name is a claim.
+#
+# Unknown arguments are a hard error rather than ignored, which is the other half of the same
+# incident: the old script accepted `--check` and silently disregarded it, so what it did could not
+# be inferred from how it was invoked.
 
 set -e
 cd "$(dirname "$0")/.."
 
-cargo fmt --all --check
+case "$1" in
+    --check) set -- --check ;;
+    "") set -- ;;
+    *)
+        echo "script/fmt: unknown argument '$1' (expected --check, or nothing to format)" >&2
+        exit 2
+        ;;
+esac
+
+cargo fmt --all "$@"
 
 # The RedoxFS host tool is its own workspace (see Cargo.toml), so `--all` above does not reach it.
-# Format-check our code there separately. The vendored engine it wraps is external and never
-# formatted by this (we keep it byte-identical to the pin).
-cargo fmt --manifest-path tools/redoxfs-host/Cargo.toml --check
+# Handle our code there separately. The vendored engine it wraps is external and is never touched by
+# this (we keep it byte-identical to the pin).
+cargo fmt --manifest-path tools/redoxfs-host/Cargo.toml "$@"
