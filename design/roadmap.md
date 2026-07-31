@@ -1836,6 +1836,50 @@ capability reaches, structurally. A shell rooted at a subtree cannot recursively
 because no capability naming those files exists in it. Not a guard rail, not a confirmation prompt,
 not a check that could be wrong: there is nothing to name.
 
+#### Globbing, which decides how every multi-file operation grants
+
+zsh's glob engine is the best thing in the shell (`**/*.rs`, and qualifiers: `*(.)` for regular
+files, `*(om[1])` for newest, `*(Lm+1)` for over a megabyte). The mechanism is unremarkable here
+because **a glob is an enumeration**, and the rights ladder above already separates `enumerate` out.
+The fork is not how to match. It is **what a match grants**.
+
+`rm *.txt` with five hundred hits, four candidate answers:
+
+| Answer | Verdict |
+|---|---|
+| Grant 500 file capabilities | Honest, and it exhausts capability slots |
+| Grant the directory plus a name list | Cheap, and it **over-grants catastrophically**: `rm` could touch anything in that directory, which is the thing this whole model refuses |
+| Make `rm` a builtin so the shell deletes and nothing is granted | Dodges the question, and costs `rm` as a program |
+| **A directory capability attenuated to a name set** | **The principled one** |
+
+The last is a smaller change than it looks, and that is the finding. `fwarden` today serves "a
+namespace of exactly one name"; globbing generalizes it to a **set** of names. Same caretaker, same
+`fs_proto` protocol above and below, wider namespace. **Nothing new in the kernel**, and the
+attenuation stays checkable from outside the confined program exactly as it is today.
+
+**The property worth demonstrating: the expansion you see is the grant.** `echo *.txt` prints
+literally the authority that `rm *.txt` would transfer, because the matched set *is* the namespace the
+warden will serve. Unix cannot make that claim, since `rm`'s authority never came from the command
+line at all; the glob merely told it which of its existing powers to use.
+
+**Who expands.** The shell, before planning the grant, which is also what Unix does, so there is no
+divergence to earn. The structural consequence is that `capsh::plan` must see the expanded set rather
+than the pattern, since the endowment is the set.
+
+**Two costs to design rather than gloss.**
+
+- **Qualifiers are not free.** `*(.)` and `*(om[1])` need type, mtime and size *per candidate*, so one
+  `enumerate` becomes N `FSTAT` calls, and they need a read right beyond enumerate. Decide whether
+  qualifiers are in scope at all before building the matcher around them.
+- **`ARG_MAX` becomes a capability limit rather than a buffer limit.** Unix's "argument list too long"
+  is why `xargs` exists; here the ceiling is that you cannot hand a child a hundred thousand
+  capabilities. The same failure with a more honest cause, and it wants the same answer (batching),
+  so `xargs` earns its place for a better reason than Unix had.
+
+**Completion shares this mechanism and should be designed with it**, not after it: tab completion is
+also an enumeration, so the completion menu is a rendering of your authority and cannot offer a path
+no capability reaches.
+
 #### Absolute paths: Plan 9's answer, not DOS's
 
 Distinguish a path as *authority* (`open()` resolving against a namespace nobody granted you: out
