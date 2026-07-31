@@ -13,7 +13,10 @@ The contract lives with its code in `crates/fs_proto` (the `dir` and `dirent` mo
 argument around them. Read [fs-server.md](fs-server.md) first for the contract this extends.
 
 What milestone 47 goes on to build (`cd`, `pwd`, `ls`, `mkdir`, `rm`, globbing, completion) is the
-easy part once this exists, and it is deliberately not here.
+easy part once this exists, and it is deliberately not here. The five commands are built:
+[shell-navigation.md](shell-navigation.md). Four of them were indeed easy; `rm` was not, because
+"remove a name" and "destroy an object" are one operation in the engine underneath until you make
+them two.
 
 ## The ladder, and why there are six rungs
 
@@ -340,8 +343,11 @@ Known limitations, next to the feature rather than only in a tracker.
   reference Samba config), so it is the next step rather than a permanent gap. Binding it is a change
   to `patches/std-cricker`, which rebuilds the std farm and moves the `hellostd` transcript, and it
   was kept out of this lane deliberately.
-- **`UNLINK` does not exist.** `REMOVE` is enforced by `RENAME` alone today. `rm`'s verb, and the
-  unlink/revoke split the roadmap argues for, belong to the commands lane.
+- ~~**`UNLINK` does not exist.**~~ Built by the commands lane, along with the unlink/revoke split the
+  roadmap argues for: see [shell-navigation.md](shell-navigation.md). `REMOVE` now gates two verbs.
+  What that lane found and did not fix: **there is no `RMDIR`**, so `MKDIR` can make a directory this
+  contract cannot remove, and **no verb reports what rights a handle carries**, so a program handed a
+  directory capability must be told out of band or discover by probing.
 - **A directory cannot be moved between directories** (`EINVAL`). The argument is above; it is a real
   restriction against POSIX and it is declared rather than silently approximated.
 - **`READDIR`'s cursor is an index, and the directory is re-read per call.** A name added or removed

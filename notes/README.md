@@ -441,6 +441,20 @@ in the code or the conversation doesn't make sense, it belongs here.
   atomicities stated apart (§42), the crash-atomic half measured at every fault point rather than
   asserted, and the startup ordering bug that one shared frame hides until a warden stages a request
   in it.
+- [Navigating with no global namespace](shell-navigation.md) — milestone 47's commands: `cd`, `pwd`,
+  `ls`, `mkdir`, `rm` as **builtins** (which retires the worry that a listing *program* would hold the
+  power to read everything it lists). The three earned divergences and why each is forced rather than
+  chosen: no absolute paths (the name cannot be *expressed*, so `InvalidFilename` and not
+  `PermissionDenied`), `..` stopping at your root (not a check: the shell pops the stack of
+  capabilities it descended through, and at the root there is nothing to pop), and `pwd` relative to
+  that root. Why the cwd stops at the process boundary, and where in the code it does: a grant records
+  the directory it was resolved in **as a value**, so a child cannot re-resolve a name and a later `cd`
+  cannot change what an earlier grant meant. `rm` is **unlink and says so**, which cost a real
+  implementation: RedoxFS frees a node the moment its last link goes, so the first version was a
+  *revoke*, and registering an open node with the engine's usage table is what makes a holder keep
+  reading. Revocation is not offered, and the reason is the per-server handle table. The headline, with
+  the real shell binary on both ISAs: two shells rooted in two subtrees, each told nothing about which
+  it holds, and neither can name the other's files.
 - [Reading the backup from a MacBook or a Linux host](host-recovery.md) — milestone 57's answer to
   "the board is dead, can I get my data?": `redoxfs-host ls`/`cat`/`extract`, no FUSE, no kernel
   extension, no root, identical on macOS and Linux. Why none of upstream's five binaries already did
