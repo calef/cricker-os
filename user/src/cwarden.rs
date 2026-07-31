@@ -38,6 +38,9 @@
 
 use user_rt::{cap_delete, invoke, recv_fault, send};
 
+// A source file shared by several binaries through `#[path]`, and each uses a different slice of it,
+// so the unused halves are expected. This is the one shape where a blanket allow is the honest one:
+// the module is compiled once per binary and no single binary is meant to use all of it (§38).
 #[path = "cseam.rs"]
 #[allow(dead_code)]
 mod cseam;

@@ -625,6 +625,20 @@ pub fn run_idle() -> ! {
 /// tell the two apart, and does not need to: either way it could not spawn, and it must degrade
 /// rather than panic. This is the bound that stops a spawn flood or a leaked-thread pile-up from
 /// exhausting kernel memory. See notes/quotas.md and notes/security.md.
+///
+/// # It has no caller today, and that is worth saying plainly
+///
+/// Its one caller was the kernel-wired `shell_service`'s spawn service, which DECISIONS §28 retired
+/// and milestone 41 deleted. Nothing in the kernel spawns against a quota now, because **the bound
+/// moved**: a userspace process spawns out of its own untyped budget (§10, §16), so the budget *is*
+/// the quota and it is enforced by retyping rather than by a counter. This function is the bound for
+/// *kernel* threads, and no kernel thread is currently spawned in a loop by anything untrusted.
+///
+/// Kept rather than deleted because removing a documented safety mechanism is a design decision, not
+/// dead-code triage, and notes/quotas.md and notes/security.md both describe it. Allowed
+/// unconditionally and on purpose (DECISIONS §38, disposition 3): there is no configuration in which
+/// something calls it, and pretending otherwise with a `cfg` predicate would be the dishonest option.
+#[allow(dead_code)]
 pub fn spawn_with_quota<F: FnOnce() + Send + 'static>(
     budget: &'static AtomicU32,
     f: F,

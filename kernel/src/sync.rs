@@ -224,7 +224,7 @@ pub mod rank {
 /// core with interrupts masked, so the atomic is for interior mutability, not synchronization.
 ///
 /// What is the lowest-ranked lock we currently hold? Test support.
-#[allow(dead_code)] // used by the tests, and by anyone debugging a lock-order violation
+#[cfg_attr(not(test), allow(dead_code))] // the ranking tests; also a debugger's friend
 pub fn current_rank() -> u32 {
     crate::cpu::current().held_rank.load(Ordering::Relaxed)
 }
@@ -233,7 +233,7 @@ pub fn current_rank() -> u32 {
 ///
 /// Exists because the violation itself is an `assert!`, and an assert in a kernel test is a
 /// dead kernel. This lets the tests check the *predicate* without pulling the trigger.
-#[allow(dead_code)]
+#[cfg_attr(not(test), allow(dead_code))] // the ranking tests are the only callers
 pub fn would_violate(rank: u32) -> bool {
     rank >= current_rank()
 }

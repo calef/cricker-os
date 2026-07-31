@@ -61,7 +61,6 @@ static ONLINE_MASK: AtomicUsize = AtomicUsize::new(0);
 
 /// How many cores are online: the boot core plus the secondaries that came up. Used to spread work
 /// (SMP step 3c) without baking in a core count.
-#[allow(dead_code)] // used by the SMP tests now, and by spawn's placement policy when it distributes
 pub fn online_count() -> usize {
     ONLINE.load(Ordering::Acquire) + 1
 }
