@@ -538,12 +538,12 @@ pub const INITRD_VA: u64 = 0x2000_0000;
 /// still loads; init loads the rest (design/init-and-granular-spawn.md).
 /// The software-generated interrupt the kernel routes to init for the IRQ-delegation test
 /// (19d.2b): SGI 3, distinct from the scheduler's RESCHED (0) and the older endpoint SGIs (1, 2).
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(not(all(test, target_arch = "aarch64")), allow(dead_code))]
 pub const INIT_TEST_SGI: u32 = 3;
 
 /// The PL011 receive interrupt on QEMU `virt`: SPI 1 = INTID 33. init routes and delegates it so
 /// the input driver it builds (19d.2c) can wait on keystrokes.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(not(all(test, target_arch = "aarch64")), allow(dead_code))]
 pub const UART_RX_INTID: u32 = 33;
 
 /// Init's stack, in pages (19d.2c): init loads whole ELFs with deep call chains, so its stack is
@@ -551,7 +551,9 @@ pub const UART_RX_INTID: u32 = 33;
 #[cfg_attr(not(test), allow(dead_code))]
 const INIT_STACK_PAGES: u64 = 8;
 
-#[cfg_attr(not(test), allow(dead_code))] // becomes the boot path at 19d.2; test-driven until then
+// The aarch64 test module is the only caller: 19d.2 shipped, and the shape that actually became
+// the boot path is `init_boot` below. RISC-V boots the same system through `riscv_shell_boot`.
+#[cfg_attr(not(all(test, target_arch = "aarch64")), allow(dead_code))]
 pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
     let (initrd_start, initrd_len) = memory::initrd_region().expect("no initrd to hand init");
     let initrd_pages = initrd_len.div_ceil(FRAME_SIZE);
@@ -1263,6 +1265,7 @@ pub fn riscv_uart_driver_demo(
 /// own budget and wires them together; the kernel touches none of it. Unlike the other demos this
 /// does not block: `sysinit` and its children run on the scheduler while the boot thread parks.
 #[cfg(target_arch = "riscv64")]
+#[cfg_attr(not(feature = "shell"), allow(dead_code))] // the `shell` boot mode is the only caller
 pub fn riscv_shell_boot(archive: &'static [u8], uart_irq: u32) -> Result<(), LoadError> {
     use crate::cap::Rights;
     const UART_PHYS: u64 = 0x1000_0000; // the NS16550 on QEMU virt
@@ -5392,7 +5395,9 @@ mod std_tests {
 /// copies nothing and pre-arranges nothing: the two processes compose the sharing themselves, and
 /// the read-only narrowing means the consumer can look but not write. See user/src/hello.rs
 /// frame_producer()/frame_consumer().
-#[cfg(test)]
+// The consumers are the `tests` module below, which is aarch64-gated, so on riscv64 this
+// module and everything in it had no caller at all. Compiled out rather than allowed dead.
+#[cfg(all(test, target_arch = "aarch64"))]
 pub mod frame_service {
     use super::*;
     use crate::cap::{Rights, endpoint_cap, untyped_cap};
@@ -5449,7 +5454,9 @@ pub mod frame_service {
     }
 }
 
-#[cfg(test)]
+// The consumers are the `tests` module below, which is aarch64-gated, so on riscv64 this
+// module and everything in it had no caller at all. Compiled out rather than allowed dead.
+#[cfg(all(test, target_arch = "aarch64"))]
 pub mod delegation_service {
     use super::*;
     use crate::cap::{Rights, endpoint_cap};
@@ -5515,7 +5522,9 @@ pub mod delegation_service {
 /// an untyped budget and a channel; the peer holds the channel and a report line. Everything
 /// else, the endpoint itself included, is created at runtime by the maker out of its own pages
 /// and delegated. See user/src/hello.rs ep_maker()/ep_user().
-#[cfg(test)]
+// The consumers are the `tests` module below, which is aarch64-gated, so on riscv64 this
+// module and everything in it had no caller at all. Compiled out rather than allowed dead.
+#[cfg(all(test, target_arch = "aarch64"))]
 pub mod retype_ep_service {
     use super::*;
     use crate::cap::{Rights, endpoint_cap, untyped_cap};
@@ -5571,7 +5580,9 @@ pub mod retype_ep_service {
 
 /// **Milestone 19b: a process builds an address space, at EL0.** One role: an untyped budget
 /// and a report line; everything else it constructs. See user/src/hello.rs aspace_builder().
-#[cfg(test)]
+// The consumers are the `tests` module below, which is aarch64-gated, so on riscv64 this
+// module and everything in it had no caller at all. Compiled out rather than allowed dead.
+#[cfg(all(test, target_arch = "aarch64"))]
 pub mod aspace_service {
     use super::*;
     use crate::cap::{Rights, endpoint_cap, untyped_cap};
@@ -5608,7 +5619,9 @@ pub mod aspace_service {
 /// **Milestone 12: Call/Reply, at EL0.** One request endpoint, a server that answers a caller it was
 /// never wired to, and the one-shot reply capability proven across the boundary. See
 /// user/src/hello.rs call_server()/call_client().
-#[cfg(test)]
+// The consumers are the `tests` module below, which is aarch64-gated, so on riscv64 this
+// module and everything in it had no caller at all. Compiled out rather than allowed dead.
+#[cfg(all(test, target_arch = "aarch64"))]
 pub mod call_service {
     use super::*;
     use crate::cap::{Rights, endpoint_cap};
@@ -5666,7 +5679,9 @@ pub mod call_service {
 /// **Milestone 13: revoke a frame, at EL0.** One process with an untyped budget retypes a frame,
 /// maps it, revokes it, and reports whether the revoke deleted its own capability. See
 /// user/src/hello.rs revoke_demo().
-#[cfg(test)]
+// The consumers are the `tests` module below, which is aarch64-gated, so on riscv64 this
+// module and everything in it had no caller at all. Compiled out rather than allowed dead.
+#[cfg(all(test, target_arch = "aarch64"))]
 pub mod revoke_service {
     use super::*;
     use crate::cap::{Rights, endpoint_cap, untyped_cap};

@@ -91,6 +91,11 @@ pub fn ticks() -> u64 {
 }
 
 /// Milliseconds since boot, from the free-running counter (independent of the tick interrupt).
+///
+/// Part of the arch timer contract rather than of any caller: aarch64's twin is exercised by that
+/// file's timer tests, and this ISA has no timer test module of its own yet. Kept so the two arch
+/// modules present the same surface (DECISIONS §19); the missing tests are the honest gap.
+#[allow(dead_code)]
 pub fn uptime_ms() -> u64 {
     now() / (TIMEBASE_HZ / 1000)
 }
@@ -105,6 +110,10 @@ pub fn spin_for(counter_ticks: u64) {
 
 /// How many ticks were missed if the handler ran late. Not tracked yet (SBI set_timer re-arms from
 /// `now`, so a late handler simply spaces the next tick out rather than dropping a count); returns 0.
+///
+/// A deliberate parity stub: it exists so `arch::timer::missed_ticks` means something on both ISAs.
+/// Nothing calls it here, and saying that out loud is better than a blanket allow implying it might.
+#[allow(dead_code)]
 pub fn missed_ticks() -> u64 {
     0
 }

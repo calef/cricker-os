@@ -290,6 +290,7 @@ pub fn is_frame_used(frame: Frame) -> Option<bool> {
 ///
 /// (distributor, cpu_interface), both **physical**. Stashed at `init` because that is the only
 /// moment we have the device tree parsed, and milestone 5 needs it much later.
+#[cfg_attr(target_arch = "riscv64", allow(dead_code))] // riscv has a PLIC, not a GIC
 pub fn gic_regions() -> Option<((u64, u64), (u64, u64))> {
     let g = GIC_REGIONS.lock();
     g.0.map(|d| {
