@@ -3849,10 +3849,20 @@ ISA-keyed driver would compile clean and read garbage on the first real board.
   a host-tested crate (§14), which is a sibling lane. Nothing here formats anything.
 - **No NTP.** The propose endpoint is the seam it will arrive at, and the sanity floor above is the
   anchor its NTS bootstrap needs.
-- **The unknown-clock path is not proven in the guest.** The clock service's refusal to publish an
-  implausible RTC reading is host-tested, and both QEMU boards always have a working RTC, so
-  "`SystemTime::now()` panics on a machine that does not know the time" is proven by construction
-  rather than by a booted test.
+- ~~**The unknown-clock path is not proven in the guest.**~~ **Closed 2026-07-31 by `date`**, and the
+  way it was closed corrects the reasoning above rather than merely satisfying it. This entry argued
+  the path was untestable because "both QEMU boards always have a working RTC" — but that is a claim
+  about the *machine*, and what a reader actually tests against is the *page*. **A frame nobody has
+  published to is exactly that machine as far as any reader can tell.** So the test allocates one,
+  zeroes it, grants it read-only, and requires `date` to say the time is unknown. No absent RTC
+  needed. The general lesson is worth more than the test: a scope note that says "we cannot test this
+  because the hardware always works" is often describing the wrong boundary.
+
+  `date` distinguishes the two causes, because they call for different fixes: *the machine has no
+  clock it believes* versus *this process holds no clock capability*. The second is probed **without
+  touching the page** — a process granted no clock has nothing mapped at `CLOCK_VA`, so reading to
+  find out would fault instead of answering; it invokes the slot with a method no object defines,
+  the same shape as the std PAL's `granted()`.
 
 ## 44. Entropy is a capability, `std::random` improves transparently, and the refusal is loud
 
