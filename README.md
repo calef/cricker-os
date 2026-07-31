@@ -51,7 +51,7 @@ than a formality:
 | `script/bench --check` | icount instruction counts against a committed baseline, on both ISAs, so a performance regression surfaces next to the change that caused it. |
 | `script/lint` | clippy at `-D warnings`, plus broken intra-doc links, stray conflict markers, the roadmap's status vocabulary, DECISIONS numbering and citations, and that every script is documented. |
 | `script/supply-chain` | cargo-deny (advisories, licences, bans, sources) over every workspace, and proof that each vendored tree is the published tarball plus exactly its recorded patches. |
-| `script/fmt`, coverage | Formatting, and an 80%-per-file line-coverage floor on the host crates. |
+| `script/fmt --check`, coverage | Formatting, and an 80%-per-file line-coverage floor on the host crates. |
 
 CI runs on an **aarch64** runner deliberately: this kernel targets a weakly-ordered machine, and a
 missing `Acquire`/`Release` passes on an x86_64 host and fails only on real ARM. Both the Rust

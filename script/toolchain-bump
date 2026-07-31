@@ -61,7 +61,7 @@ if ! cargo xtask user-std; then
 fi
 
 echo "==> Full gate on the new toolchain"
-script/fmt
+script/fmt --check
 script/lint
 script/test
 
