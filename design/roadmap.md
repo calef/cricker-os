@@ -1945,9 +1945,11 @@ for all three rather than for job control alone.
 If the shell drops its capabilities to a job, nobody can reap it, and §26's dead-until-reaped means the
 corpse persists. Unix reparents orphans to init and lets init reap them; here reparenting means
 **transferring the supervision endpoint**, which is an explicit act rather than a rule nobody thinks
-about. See the reaper discussion in milestone 22's notes: the answer is likely that a supervisor's
-death is its subtree's death (region ownership reclaims everything at once), which makes `disown` mean
-"transfer supervision upward" rather than "abandon".
+about. **Decided as DECISIONS §40**: a supervisor's death is its subtree's death, because a child's
+resources come from its supervisor's region and §16's revocation reclaims the whole subtree in one act.
+So `disown` means **transfer supervision upward**, not "abandon" — and §40 records the hole that makes
+the cascade close to the only coherent answer, namely that §32 authorizes reaping by matching the
+child's recorded `fault_ep`, which nobody can satisfy once the supervisor's endpoint is gone.
 
 **Sequencing.** Phase one after milestone 47 (it wants `jobs` alongside the other builtins and the same
 shell surface). Phase two is gated on nothing but the SUSPEND decision. **Effort: 1 lane estimated per
