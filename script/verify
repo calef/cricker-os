@@ -59,3 +59,6 @@ cargo kani -p pci
 
 echo "==> kani: dma_validate (the DMA-confinement validator, no descriptor escapes the grant)"
 cargo kani -p dma_validate
+
+echo "==> kani: calendar (the civil-date arithmetic, and the parser on hostile text)"
+cargo kani -p calendar
