@@ -366,3 +366,114 @@ pub fn self_test() -> usize {
     unsafe { core::arch::asm!("ebreak") };
     BRK_COUNT.load(Ordering::Relaxed) - before
 }
+
+#[cfg(test)]
+mod tests {
+    //! Tests for trap handling.
+    //!
+    //! `registers_survive_a_trap` is the load-bearing one. The [`TrapFrame`](super::TrapFrame)
+    //! layout is a contract with trap.s that the compiler cannot check, and a wrong offset would
+    //! scramble a register while still `sret`ing happily to the right address, corrupting a caller's
+    //! state and blaming innocent code thousands of instructions later.
+
+    /// The trap vector is installed, in direct mode, at an address the hardware will accept.
+    ///
+    /// `stvec` is not a plain pointer: its low two bits are the MODE field (0 = direct, all traps to
+    /// one handler; 1 = vectored, interrupts to `base + 4*cause`). So the base must be 4-byte
+    /// aligned or its low bits *are* a mode selector, and writing a 2-byte-aligned entry point would
+    /// silently select vectored mode and send every interrupt to a wrong address. trap.s's
+    /// `.balign 4` is what makes that impossible, and this is the assertion that says so.
+    ///
+    /// The aarch64 twin checks `VBAR_EL1`'s 2048-byte alignment, which is the same class of rule
+    /// (the hardware assumes low bits are zero) at a very different scale, because that ISA's vector
+    /// is a 16-slot table and this one is a single entry point.
+    #[test_case]
+    fn stvec_points_at_our_trap_entry() {
+        unsafe extern "C" {
+            fn trap_entry();
+        }
+        let expected = trap_entry as *const () as u64;
+
+        let stvec: u64;
+        // SAFETY: reads a CSR. No side effects.
+        unsafe { core::arch::asm!("csrr {}, stvec", out(reg) stvec, options(nomem, nostack)) };
+
+        assert_eq!(
+            stvec & !0b11,
+            expected,
+            "stvec does not point at trap_entry"
+        );
+        assert_eq!(stvec & 0b11, 0, "stvec is not in direct mode: {stvec:#x}");
+        assert_eq!(expected % 4, 0, "trap entry misaligned: {expected:#x}");
+    }
+
+    /// The real one: take a trap and come back from it.
+    ///
+    /// `ebreak` raises a synchronous breakpoint. To reach the line after it, every piece of the
+    /// RISC-V trap path has to be right: `stvec` points at trap.s, the entry recovers the kernel
+    /// `tp` and stack through `sscratch`, it writes a frame matching `TrapFrame`, the dispatcher
+    /// decodes `scause` and recognizes the breakpoint cause, it advances `sepc` past the instruction
+    /// (which the hardware does NOT do for us, unlike `ecall`... which it also does not do, unlike
+    /// aarch64's `svc`), the restore path puts the machine back, and `sret` returns to exactly the
+    /// right address. Get any of that wrong and you do not get a failing assertion; you get an
+    /// infinite loop on the `ebreak`, or a crash. So arriving here at all is most of the test.
+    ///
+    /// **It is also the S-mode witness, which is why this ISA needs no `running_at_el1`.** aarch64
+    /// reads `CurrentEL` and checks it is 1; RISC-V deliberately gives S-mode no way to read its own
+    /// privilege. It does not need one here. The breakpoint arm is guarded by `!from_user`
+    /// (`sstatus.SPP == 1`), so `BRK_COUNT` cannot move unless the trap came from S-mode. And it
+    /// could not have been taken at all in M-mode, where `mtvec` (OpenSBI's) owns the trap and our
+    /// handler never runs. A count that went up is a machine executing in S-mode.
+    ///
+    /// The `ebreak` also exercises the compressed-instruction case: with the C extension the
+    /// assembler emits the 2-byte `c.ebreak`, so `advance_past_trapping_insn` must read the opcode
+    /// and step 2 rather than 4. Stepping 4 would resume in the middle of the next instruction.
+    #[test_case]
+    fn breakpoint_is_caught_and_execution_resumes() {
+        use crate::arch::exceptions::BRK_COUNT;
+        use core::sync::atomic::Ordering;
+
+        let before = BRK_COUNT.load(Ordering::Relaxed);
+
+        // SAFETY: this deliberately traps. We handle it.
+        unsafe { core::arch::asm!("ebreak") };
+
+        assert_eq!(
+            BRK_COUNT.load(Ordering::Relaxed),
+            before + 1,
+            "the handler didn't run, but we resumed anyway?"
+        );
+    }
+
+    /// Proves the trap frame actually round-trips a register.
+    ///
+    /// The previous test proves we *return*. This proves we return with the machine intact, which is
+    /// a different claim. Put a known value in a callee-saved register, take a trap, read it back.
+    ///
+    /// A bug in trap.s's save/restore (a wrong offset, a swapped pair) would scramble registers
+    /// while still `sret`ing perfectly happily to the right address. That is the nastiest possible
+    /// failure: it corrupts a caller's state and blames a completely innocent piece of code
+    /// thousands of instructions later. This is the test that catches it.
+    ///
+    /// `s2` (`x18`) is the register under test: callee-saved, so the compiler is told we clobber it,
+    /// and far enough into the file that an off-by-one in the frame layout lands on it.
+    #[test_case]
+    fn registers_survive_a_trap() {
+        let sent: u64 = 0xdead_beef_cafe_f00d;
+        let got: u64;
+
+        // SAFETY: deliberately traps; we handle it. s2 is callee-saved, so we declare the clobber.
+        unsafe {
+            core::arch::asm!(
+                "mv s2, {sent}",
+                "ebreak",
+                "mv {got}, s2",
+                sent = in(reg) sent,
+                got = out(reg) got,
+                out("s2") _,
+            );
+        }
+
+        assert_eq!(got, sent, "the trap frame scrambled a register");
+    }
+}

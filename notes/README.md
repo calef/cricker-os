@@ -445,6 +445,11 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [Scoping RISC-V / aarch64 parity](riscv-parity-scope.md) — aarch64 is a strict superset once the
   port proved the capability core; this scopes the remaining gap (SMP, an in-kernel test run,
   virtio+DMA, the full boot/shell, benchmarks), what each proves, and the order to close them.
+- [The RISC-V arch tests](riscv-arch-tests.md) — `arch/aarch64` had 21 unit tests and `arch/riscv64`
+  had none, so the properties that differ between the ISAs were asserted on one side only. Writing
+  the twins found the timer running at 80 Hz while reporting 100. What translated, what has no
+  analogue (and why RISC-V needs no `running_at_el1`), how each test was proved able to fail, and
+  which three cannot fail on a machine that booted.
 - [Scoping a PCIe transport](pcie-transport-scope.md) — a PCI root complex (ECAM enumeration, BARs,
   virtio-pci capability parsing, INTx via the PLIC) so a virtio disk can be driven over PCIe, the
   transport QEMU's riscv `virt` and real hardware use. Portable (both boards are ECAM-generic); the

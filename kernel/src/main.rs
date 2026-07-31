@@ -901,9 +901,16 @@ mod tests {
     ///
     /// QEMU's `virt` machine drops us at EL1 by default, which is exactly where a
     /// kernel belongs. If this ever reads EL2, we've been handed the hypervisor
-    /// level and will need to drop down ourselves. See notes/aarch64.md. EL is an
-    /// aarch64 concept, so this is gated; the RISC-V analog (proving we booted in
-    /// S-mode, not M-mode) arrives with the RISC-V boot path.
+    /// level and will need to drop down ourselves. See notes/aarch64.md.
+    ///
+    /// EL is an aarch64 concept, so this is gated. **RISC-V needs no twin, and the older
+    /// comment here promising one "with the RISC-V boot path" outlived the boot path it
+    /// was waiting for.** That ISA deliberately gives S-mode no way to read its own
+    /// privilege level, and it does not need one: `arch::riscv64::exceptions`'s
+    /// `breakpoint_is_caught_and_execution_resumes` proves the same thing sideways, because
+    /// the breakpoint arm it counts is guarded on the trap having come from S-mode, and an
+    /// M-mode `ebreak` would have gone to OpenSBI's `mtvec` and never reached us at all.
+    /// See notes/riscv-arch-tests.md.
     #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn running_at_el1() {
