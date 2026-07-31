@@ -428,6 +428,19 @@ in the code or the conversation doesn't make sense, it belongs here.
   device that lies about persistence, plus the controls that prove the injector bites (with the header
   ring's history removed, 92 of 93 fault points stop mounting) and the honest limit (a lying device is
   never survivable and never silent).
+- [The directory capability](dir-capability.md) — milestone 47's keystone: a directory stops being
+  one authority and becomes a **six-rung rights ladder**, with `OPENDIR` handing back a directory
+  capability rather than bytes. Why `DESCEND` earns its own rung (bundle it with reading and the
+  *shape of the tree* decides how much authority a grant carries, which is ambient authority
+  reintroduced by recursion), why attenuation is `parent & requested` by construction rather than a
+  check anyone could forget, and why the refusal errno is part of the design (`ENOENT` for a naming
+  right, `EROFS` for a mutating one, `EPERM` for `ENUMERATE`, which is the one rung where an empty
+  listing would be a lie about the directory). The structural finding: the FS server's handle table
+  is per *server*, so **the handle is the authority and the endpoint is the boundary**, which is why
+  `dwarden` exists and why, unlike `fwarden`, it performs no rights checks at all. `RENAME`'s two
+  atomicities stated apart (§42), the crash-atomic half measured at every fault point rather than
+  asserted, and the startup ordering bug that one shared frame hides until a warden stages a request
+  in it.
 - [Reading the backup from a MacBook or a Linux host](host-recovery.md) — milestone 57's answer to
   "the board is dead, can I get my data?": `redoxfs-host ls`/`cat`/`extract`, no FUSE, no kernel
   extension, no root, identical on macOS and Linux. Why none of upstream's five binaries already did
