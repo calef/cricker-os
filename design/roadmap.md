@@ -2129,7 +2129,8 @@ preserves the protocol, so a pipe, a file, and a terminal become substitutable.
 #### The result that is better than Unix, and worth stating plainly
 
 `>` and `file:PATH` must stay **different mechanisms**, and the difference is the payoff. `file:report.txt`
-grants the *program* a file its §31 manifest declared it wanted. `> report.txt` substitutes the
+grants the *program* a file its manifest declared it wanted (milestone 31, a capability shell; the
+filesystem contract it grants against is §27). `> report.txt` substitutes the
 *stream the shell owns*, and the program never holds a file capability at all: it cannot seek, cannot
 truncate, cannot re-read, cannot stat. It can append bytes to a sink. **Unix hands the same program fd
 1 with full file semantics**, so our redirection grants strictly less than Unix's while doing the same
