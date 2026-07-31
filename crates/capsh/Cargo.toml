@@ -6,6 +6,12 @@ license.workspace = true
 
 [dependencies]
 
+# The matcher, and only the matcher. `glob` is a total function on two byte strings with no
+# filesystem in it; deciding what a match *grants* is command-line logic, which is this crate's job.
+# Depending on it here is what makes "one matcher, driven by both `echo` and the grant planner" true
+# in the code rather than a convention two callers are trusted to keep.
+glob = { path = "../glob" }
+
 # `fs_proto` is a DEV dependency only, and deliberately: the shell must be able to check a command
 # line without linking the filesystem contract. It is here so one host test can pin the grant name
 # limit against the contract that actually carries it, which is what makes the duplicated constant

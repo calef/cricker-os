@@ -56,9 +56,12 @@
 
 #![no_std]
 
+pub mod expand;
 pub mod jobframe;
 pub mod nav;
 pub mod spawnproto;
+
+use expand::{Expansion, Name, NameSet};
 
 /// A program the shell can spawn. The set is small and closed in phase 1; each variant carries a
 /// static [`Manifest`] and a stable wire id for [`spawnproto`].
@@ -476,8 +479,14 @@ pub const MAX_FLAGS: usize = 8;
 /// What a valid `run` resolves to: exactly the authority to hand the child, and nothing else.
 /// Reading this is reading the whole endowment, which is §14's "one literal tells you a process's
 /// authority" made concrete.
+///
+/// **It borrows nothing from the command line**, and that stopped being an accident with milestone
+/// 47's globbing lane: a name a pattern produced comes out of a directory listing rather than out of
+/// the line, so the grant has to own it. What falls out is the rule the rest of a grant already
+/// followed by hand ([`FileGrant::dir`] is a value, not a pointer at the shell): once an endowment
+/// is planned, nothing that happens afterwards can change what it means.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Endowment<'a> {
+pub struct Endowment {
     pub prog: Prog,
     /// The integer argument to start it with (0 when the program takes none).
     pub arg: u64,
@@ -486,11 +495,12 @@ pub struct Endowment<'a> {
     /// The one file to narrow a directory capability down to, and the direction, or `None`.
     /// Delivered as an endpoint served by a file warden (`user/src/fwarden.rs`), so what the child
     /// ends up holding designates this name and nothing else.
-    pub file: Option<FileGrant<'a>>,
-    /// The one directory to narrow down to, and the name in it the program is to act on, or `None`.
-    /// Delivered as an endpoint served by a **directory** warden (`user/src/dwarden.rs`), so what
-    /// the child ends up holding reaches that directory and nothing above or beside it.
-    pub dir: Option<DirGrant<'a>>,
+    pub file: Option<FileGrant>,
+    /// The one directory to narrow down to, and the **names** in it the program is to act on, or
+    /// `None`. Delivered as an endpoint served by a warden, so what the child ends up holding
+    /// reaches that directory and nothing above or beside it: `user/src/dwarden.rs` for a set of
+    /// one, `user/src/swarden.rs` for the set a pattern matched.
+    pub dir: Option<DirGrant>,
     /// **The short options that were on the line**, as a bitmask: bit `i` is set when the manifest's
     /// `flags[i]` was typed. Numbered by position in the manifest rather than by letter, so nothing
     /// here has to know what any option means; the program and the manifest agree on the order, and
@@ -520,34 +530,52 @@ pub struct Endowment<'a> {
 /// what makes it structural instead of a promise. A `cd` after this grant is planned cannot change
 /// what the grant means, because there is nothing here that points at the shell any more.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct FileGrant<'a> {
+pub struct FileGrant {
     /// The directory the name was resolved in, relative to the shell's root, fixed at plan time.
     pub dir: nav::Cwd,
     /// The final component. Always a single component: a path was resolved into `dir`, not passed
     /// on, because the FS contract takes one component per request and no server here walks a path.
-    pub name: &'a [u8],
+    ///
+    /// Owned rather than borrowed from the line, because a pattern that matched exactly one file is
+    /// a legitimate way to designate one and that name came from a directory listing.
+    pub name: Name,
     pub writable: bool,
 }
 
-/// One resolved **directory** grant (milestone 47's `rm -r`): the directory the child is handed a
-/// capability to, the single name in it the program was told to act on, and whether that capability
-/// must reach below the directory or only name what is directly in it.
+/// One resolved **directory** grant (milestone 47's `rm -r`, generalized by its globbing lane): the
+/// directory the child is handed a capability to, the **set of names** in it the program was told to
+/// act on, and whether that capability must reach below the directory or only name what is directly
+/// in it.
 ///
 /// It is [`FileGrant`]'s shape one rung up, and the same rule holds for the same reason: `dir` is
 /// **where the operand's leading path landed, fixed at plan time**, as a value rather than a pointer
 /// at the shell, so a later `cd` cannot change what an already-planned grant means. The child holds
 /// a capability to that directory, has no cwd, and cannot re-resolve anything.
 ///
-/// **The three of these together are the whole authority**, and that is what makes `caps rm -r logs`
-/// worth typing: the subtree at risk is printed before anything happens, and a bug in the program's
-/// recursion can only reach what this names.
+/// # Why the name is a set
+///
+/// `rm old.txt` designates one name and `rm *.txt` designates five hundred, and the roadmap's four
+/// candidate answers to what the second grants have one survivor: **a directory capability
+/// attenuated to a name set**. Five hundred file capabilities exhausts capability slots; the
+/// directory plus a name list over-grants catastrophically (the program could touch anything in that
+/// directory, which is the thing this model refuses); making `rm` a builtin dodges the question and
+/// costs `rm` as a program.
+///
+/// So [`names`](DirGrant::names) is a set, a literal operand is the set of one, and the generalization
+/// is smaller than it looks: `fwarden` already serves a namespace of exactly one name, and
+/// `user/src/swarden.rs` serves the same protocol over a wider one. **Nothing new in the kernel.**
+///
+/// **These three together are the whole authority**, which is what makes `caps rm -r logs` worth
+/// typing: the names at risk are printed before anything happens, and a bug in the program's
+/// recursion can only reach what this designates.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct DirGrant<'a> {
+pub struct DirGrant {
     /// The directory the capability designates, relative to the shell's root, fixed at plan time.
     pub dir: nav::Cwd,
-    /// The name in it the program is to act on. Always a single component, for [`FileGrant`]'s
-    /// reason: a path was resolved into `dir` rather than passed on.
-    pub name: &'a [u8],
+    /// The names in it the program is to act on: exactly one for a literal operand, the matched set
+    /// for a pattern. Each is a single component, for [`FileGrant`]'s reason: a path was resolved
+    /// into `dir` rather than passed on.
+    pub names: NameSet,
     /// The capability must reach **below** this directory (walk into it and list it), because the
     /// program was given the option its manifest declares for that. False means it may take names
     /// out of this one directory and cannot even see what is under it.
@@ -634,6 +662,32 @@ pub enum Refusal {
     ArgRequired,
     /// The program takes no argument, but one was given.
     ArgForbidden,
+    /// **A pattern matched no name here** (milestone 47's globbing lane). zsh's default rather than
+    /// bash's pass-the-pattern-through, and the model forces it: the expansion *is* the grant, so an
+    /// empty expansion is an empty grant and running the command would be running it with an
+    /// authority nobody named. See [`expand::Expander::finish`].
+    NoMatch,
+    /// **A pattern matched more names than one grant can carry.** Unix's `ARG_MAX` with a more
+    /// honest cause: not a buffer that ran out but a capability the child could neither hold nor be
+    /// shown. Loud at the prompt with nothing spawned, because a glob that quietly granted a prefix
+    /// of what it matched is the worst outcome this mechanism has.
+    TooManyNames,
+    /// A name a pattern matched cannot travel in a grant (longer than
+    /// [`expand::MAX_NAME`]). Refused whole rather than dropped from the set, for
+    /// [`Refusal::TooManyNames`]'s reason.
+    MatchNotNameable,
+    /// A pattern somewhere other than a token's **last** component (`*/report.txt`). Selecting
+    /// directories to walk is an authority question, not a matching one, so it is not something a
+    /// string matcher gets to answer (notes/glob.md).
+    PatternInPath,
+    /// A pattern reached the grant planner with no expansion behind it. It is a fact about the
+    /// shell rather than about the line: expanding needs `ENUMERATE` on the directory, and a shell
+    /// that holds none cannot say what the pattern designates. Never a silent grant of a name with a
+    /// `*` in it, which is a name no directory here has.
+    Unexpanded,
+    /// A pattern matched more than one name at a program that is granted exactly one **file**. The
+    /// count is the designation, so this is a fact about the line rather than a policy.
+    AmbiguousFile,
     /// A token no slot in the manifest can hold, and that no other refusal reads truer for: a
     /// second integer at a program that takes one, a flag that is not `--mem`, a name past the one
     /// file a program is granted. Refused rather than ignored, so authority the user thought they
@@ -673,6 +727,25 @@ impl Refusal {
                 "that is not a name this shell can grant: at most 16 bytes a component, 8 deep"
             }
             Refusal::NoAbsolutePath => nav::Refused::Absolute.message(),
+            // Each of these says what the *pattern* designates, because that is the grant. None of
+            // them can be phrased as a permission, and none should be: nothing was denied, the
+            // command either named something grantable or it did not.
+            Refusal::NoMatch => "no name here matches that pattern, so there is nothing to grant",
+            Refusal::TooManyNames => {
+                "that pattern matched more names than one grant can carry (at most 16)"
+            }
+            Refusal::MatchNotNameable => {
+                "a name it matched cannot travel in a grant: at most 16 bytes"
+            }
+            Refusal::PatternInPath => {
+                "a pattern names files, not directories to walk: only the last component may be one"
+            }
+            Refusal::Unexpanded => {
+                "there is nothing here to expand that pattern against: this shell holds no directory"
+            }
+            Refusal::AmbiguousFile => {
+                "is granted one file, and that pattern matched more than one name"
+            }
             Refusal::MemForbidden => "takes no memory grant; drop the --mem",
             Refusal::MemRequired => "needs a memory grant; add --mem <pages>",
             Refusal::MemOutOfRange { .. } => "memory grant is out of the range it declares",
@@ -827,9 +900,13 @@ pub fn parse_run(line: &[u8]) -> RunSpec<'_> {
 ///
 /// The program is resolved first, because "there is no such program" is a fact about the system and
 /// everything else is a fact about a program that exists.
-pub fn plan<'a>(run: &RunSpec<'a>, holds: Holdings) -> Result<Endowment<'a>, Refusal> {
+/// **`expanded` is why the shell expands before it plans.** A pattern designates the names it
+/// matched, so the endowment *is* the set, and the planner must see the set rather than the pattern.
+/// [`Expansion::none`] is the answer for a line with no pattern on it, which is every line the shell
+/// could plan before milestone 47's globbing lane.
+pub fn plan(run: &RunSpec<'_>, holds: Holdings, expanded: Expansion) -> Result<Endowment, Refusal> {
     let prog = Prog::from_name(run.prog).ok_or(Refusal::NoSuchProgram)?;
-    plan_against(run, prog, prog.manifest(), holds)
+    plan_against(run, prog, prog.manifest(), holds, expanded)
 }
 
 /// [`plan`]'s second half, against an **explicit** manifest rather than the static table.
@@ -843,12 +920,28 @@ pub fn plan<'a>(run: &RunSpec<'a>, holds: Holdings) -> Result<Endowment<'a>, Ref
 /// **This is where the positional tokens acquire meaning**, and the order is the order they are
 /// typed in: the integer argument first if the manifest declares one, then the file if it declares
 /// one. A token past the last declared slot is unplaceable, and unplaceable is a refusal.
-pub fn plan_against<'a>(
-    run: &RunSpec<'a>,
+///
+/// # What globbing changed here, and why it had to
+///
+/// The slots used to be filled by splitting a slice, which was enough while a token was a name. A
+/// token can now be a **pattern**, and a pattern designates the set the shell expanded it into, so
+/// the placement is by **index** and the [`Expansion`] is keyed to that index. The alternative was
+/// to let the planner infer which slot the expansion belonged to, which would have been the parser
+/// classifying tokens again, one layer down and less visibly.
+///
+/// Two guards fall out of that, and both exist so authority cannot move silently:
+///
+/// - a pattern with no expansion behind it is [`Refusal::Unexpanded`], never a grant of a name with
+///   a `*` in it;
+/// - a token with **no** magic never consults the expansion at all, so a name that was typed always
+///   designates itself.
+pub fn plan_against(
+    run: &RunSpec<'_>,
     prog: Prog,
     m: Manifest,
     holds: Holdings,
-) -> Result<Endowment<'a>, Refusal> {
+    expanded: Expansion,
+) -> Result<Endowment, Refusal> {
     // A flag nothing knows, or a token past what any manifest could hold. Nothing about this
     // program's declaration can rescue it, so it is answered before the slots are filled.
     if run.unexpected.is_some() {
@@ -869,15 +962,20 @@ pub fn plan_against<'a>(
         flags |= 1 << bit;
     }
 
-    let mut pos = run.positionals();
+    let pos = run.positionals();
+    let mut next = 0usize;
 
     // The argument takes the first positional, and it must be an integer: `worker eight` is a
     // missing argument, not a file named "eight", because worker's manifest declares no file.
+    //
+    // A pattern can never land here by accident: every magic byte (`*`, `?`, `[`, `\`) is a
+    // non-digit, so `parse_u64` refuses a pattern before the expansion is ever consulted, and
+    // `worker *` is "needs an integer argument" rather than a grant of anything.
     let arg = match m.arg {
         ArgSpec::Required => {
-            let (first, rest) = pos.split_first().ok_or(Refusal::ArgRequired)?;
+            let first = pos.get(next).ok_or(Refusal::ArgRequired)?;
             let v = parse_u64(first).ok_or(Refusal::ArgRequired)?;
-            pos = rest;
+            next += 1;
             v
         }
         ArgSpec::Forbidden => 0,
@@ -889,27 +987,22 @@ pub fn plan_against<'a>(
     let file = match m.file {
         FileSpec::Forbidden => None,
         FileSpec::Required { writable } => {
-            let (token, rest) = pos.split_first().ok_or(Refusal::FileRequired)?;
-            pos = rest;
+            let token = *pos.get(next).ok_or(Refusal::FileRequired)?;
+            let at = next;
+            next += 1;
             // What the shell holds decides whether the designation can be backed at all, and it
             // wins over the name's shape: "there is nothing I hold that could grant this" is a
             // bigger fact than "and that name is too long".
             if !holds.dir {
                 return Err(Refusal::NoSuchCapability(CapKind::File));
             }
-            // **Resolve at grant time.** The leading path is walked here, once, against where the
-            // shell is standing now, and the result is recorded in the grant as a value. Nothing
-            // downstream re-resolves anything: the child gets a capability to one file, and a `cd`
-            // after this line cannot change what that grant means. See [`FileGrant`].
-            let parsed = nav::path(token).map_err(nav_refusal)?;
-            let (lead, name) = parsed
-                .split_last_component()
-                .ok_or(Refusal::FileNotNameable)?;
-            let mut dir = holds.cwd;
-            dir.apply(lead).map_err(nav_refusal)?;
+            let (dir, names) = designate(token, at, holds.cwd, expanded)?;
+            // One file, so a pattern that matched more than one has designated something this
+            // program cannot be handed. The count is the designation; nothing was denied.
+            let name = names.only().ok_or(Refusal::AmbiguousFile)?;
             Some(FileGrant {
                 dir,
-                name,
+                name: Name::new(name).ok_or(Refusal::FileNotNameable)?,
                 writable,
             })
         }
@@ -917,26 +1010,19 @@ pub fn plan_against<'a>(
 
     // The directory grant takes the next positional, and it is resolved exactly as a file grant is:
     // the leading path is walked here, once, against where the shell is standing now, and the
-    // result is recorded as a value. The child is handed a capability to the directory the name is
-    // **in**, plus the name, because taking a name away is an operation on the directory that holds
-    // it and no per-file capability can express it. See [`DirSpec`].
+    // result is recorded as a value. The child is handed a capability to the directory the names
+    // are **in**, plus the names, because taking a name away is an operation on the directory that
+    // holds it and no per-file capability can express it. See [`DirSpec`].
     let dir = match m.dir {
         DirSpec::Forbidden => None,
         DirSpec::Required { subtree_flag } => {
-            let (token, rest) = pos.split_first().ok_or(Refusal::PathRequired)?;
-            pos = rest;
+            let token = *pos.get(next).ok_or(Refusal::PathRequired)?;
+            let at = next;
+            next += 1;
             if !holds.dir {
                 return Err(Refusal::NoSuchCapability(CapKind::File));
             }
-            let parsed = nav::path(token).map_err(nav_refusal)?;
-            let (lead, name) = parsed
-                .split_last_component()
-                .ok_or(Refusal::FileNotNameable)?;
-            if !file_name_fits(name) {
-                return Err(Refusal::FileNotNameable);
-            }
-            let mut at = holds.cwd;
-            at.apply(lead).map_err(nav_refusal)?;
+            let (dir, names) = designate(token, at, holds.cwd, expanded)?;
             // Typing the recursion option is what widens the capability from "take names out of
             // this directory" to "walk what is under it". A program run without it holds no way to
             // descend, so its recursion is not disabled by a branch anybody has to get right.
@@ -950,15 +1036,15 @@ pub fn plan_against<'a>(
                 None => false,
             };
             Some(DirGrant {
-                dir: at,
-                name,
+                dir,
+                names,
                 subtree,
             })
         }
     };
 
     // Anything left designates a slot this program does not have.
-    if let Some(&extra) = pos.first() {
+    if let Some(&extra) = pos.get(next) {
         return Err(unplaceable(extra, m));
     }
 
@@ -988,10 +1074,53 @@ pub fn plan_against<'a>(
     })
 }
 
+/// **What one operand token designates**: the directory its leading path landed in, and the set of
+/// names in that directory.
+///
+/// This is where "resolve at grant time" and "the expansion is the grant" meet, and both halves are
+/// values rather than pointers. The leading path is walked here, once, against where the shell is
+/// standing *now*; the final component is either the name typed or the set the shell expanded it
+/// into. Nothing downstream re-resolves anything, so a `cd` after this line cannot change what an
+/// already-planned grant means, and neither can a file appearing in the directory afterwards.
+fn designate(
+    token: &[u8],
+    at: usize,
+    cwd: nav::Cwd,
+    expanded: Expansion,
+) -> Result<(nav::Cwd, NameSet), Refusal> {
+    // Refuses a pattern anywhere but the last component before anything else looks at the token,
+    // because `a*/b` is not a smaller question than `a*`, it is a different one (notes/glob.md).
+    let magic = expand::magic_component(token)?;
+    let parsed = nav::path(token).map_err(nav_refusal)?;
+    let (lead, last) = parsed
+        .split_last_component()
+        .ok_or(Refusal::FileNotNameable)?;
+    let mut dir = cwd;
+    dir.apply(lead).map_err(nav_refusal)?;
+
+    let names = if magic {
+        // The pattern's whole meaning is the set, so a planner with no set has nothing to grant and
+        // must not fall back on the pattern's own text.
+        let set = expanded.for_positional(at).ok_or(Refusal::Unexpanded)?;
+        if set.is_empty() {
+            return Err(Refusal::NoMatch);
+        }
+        set
+    } else {
+        // A name that was typed always designates itself. The expansion is not consulted, so a
+        // caller cannot substitute a set for a literal and have the grant differ from the line.
+        //
+        // Its type bit reads as "not a directory" because nothing enumerated it; see the BUGS note
+        // in notes/glob-grant.md. Only a set the shell expanded carries types it observed.
+        NameSet::one(last, false).ok_or(Refusal::FileNotNameable)?
+    };
+    Ok((dir, names))
+}
+
 /// A navigation refusal, in the vocabulary the prompt prints for a *grant*. Only the absolute path
 /// keeps its own line, because that one is a statement about the whole model rather than about the
 /// token's shape.
-fn nav_refusal(r: nav::Refused) -> Refusal {
+pub(crate) fn nav_refusal(r: nav::Refused) -> Refusal {
     match r {
         nav::Refused::Absolute => Refusal::NoAbsolutePath,
         _ => Refusal::FileNotNameable,
@@ -1179,6 +1308,23 @@ impl Default for Escalation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use expand::{Expander, MAX_NAMES};
+
+    /// Plan a line with **nothing expanded**, which is every line that has no pattern on it. The two
+    /// shims shadow the real functions so the tests below read as they did before the globbing lane,
+    /// and the tests that *do* expand pass an [`Expansion`] explicitly and are grouped at the end.
+    fn plan(run: &RunSpec<'_>, holds: Holdings) -> Result<Endowment, Refusal> {
+        super::plan(run, holds, Expansion::none())
+    }
+
+    fn plan_against(
+        run: &RunSpec<'_>,
+        prog: Prog,
+        m: Manifest,
+        holds: Holdings,
+    ) -> Result<Endowment, Refusal> {
+        super::plan_against(run, prog, m, holds, Expansion::none())
+    }
 
     #[test]
     fn empty_and_blank_lines_are_empty() {
@@ -1450,7 +1596,7 @@ mod tests {
         assert_eq!(r.positionals(), [&b"report.txt"[..]]);
         let e = plan_against(&r, Prog::Worker, READS_A_FILE, WITH_DIR).unwrap();
         let g = e.file.expect("the name did not become a grant");
-        assert_eq!(g.name, b"report.txt");
+        assert_eq!(g.name.as_bytes(), b"report.txt");
         assert!(
             !g.writable,
             "the manifest declared a read, so the grant reads"
@@ -1473,7 +1619,7 @@ mod tests {
             panic!()
         };
         let e = plan_against(&r, Prog::Worker, READS_A_FILE, WITH_DIR).unwrap();
-        assert_eq!(e.file.unwrap().name, b"2026");
+        assert_eq!(e.file.unwrap().name.as_bytes(), b"2026");
     }
 
     #[test]
@@ -1486,7 +1632,7 @@ mod tests {
         };
         let e = plan_against(&r, Prog::Worker, STAMPS_A_FILE, WITH_DIR).unwrap();
         assert_eq!(e.arg, 7);
-        assert_eq!(e.file.unwrap().name, b"report.txt");
+        assert_eq!(e.file.unwrap().name.as_bytes(), b"report.txt");
         assert!(e.file.unwrap().writable);
 
         let Command::Run(swapped) = parse(b"stamp report.txt 7") else {
@@ -1558,7 +1704,7 @@ mod tests {
             .unwrap()
             .file
             .unwrap();
-        assert_eq!(here.name, b"report.txt");
+        assert_eq!(here.name.as_bytes(), b"report.txt");
         assert_eq!(here.dir.depth(), 1, "resolved where the shell was standing");
 
         // A path operand is resolved to a directory plus one component, so the FS contract still
@@ -1570,7 +1716,7 @@ mod tests {
             .unwrap()
             .file
             .unwrap();
-        assert_eq!(deeper.name, b"report.txt");
+        assert_eq!(deeper.name.as_bytes(), b"report.txt");
         assert_eq!(deeper.dir.depth(), 2);
         assert_eq!(deeper.dir.component(1), b"2026");
 
@@ -1603,9 +1749,9 @@ mod tests {
         };
         assert_eq!(
             plan_against(&r, Prog::Worker, READS_A_FILE, WITH_DIR)
-                .map(|e| e.file.map(|g| g.name))
+                .map(|e| e.file.map(|g| g.name.as_bytes().to_vec()))
                 .unwrap(),
-            Some(&b"report.txt"[..]),
+            Some(b"report.txt".to_vec()),
             "with a directory in hand, the same line is a grant",
         );
         let refused = plan_against(&r, Prog::Worker, READS_A_FILE, Holdings::default());
@@ -1727,7 +1873,7 @@ mod tests {
         let e = plan(&r, WITH_DIR).unwrap();
         assert_eq!(e.prog, Prog::Rm);
         let g = e.dir.expect("the operand did not become a directory grant");
-        assert_eq!(g.name, b"old.txt");
+        assert_eq!(g.names.only(), Some(&b"old.txt"[..]));
         assert_eq!(g.dir.depth(), 0, "resolved where the shell was standing");
         assert!(
             !g.subtree,
@@ -1742,7 +1888,7 @@ mod tests {
             panic!()
         };
         let g = plan(&r, WITH_DIR).unwrap().dir.unwrap();
-        assert_eq!(g.name, b"old.txt");
+        assert_eq!(g.names.only(), Some(&b"old.txt"[..]));
         assert_eq!(g.dir.depth(), 2);
         assert_eq!(g.dir.component(0), b"logs");
         assert_eq!(g.dir.component(1), b"2026");
@@ -1766,7 +1912,7 @@ mod tests {
             };
             plan(&r, WITH_DIR).unwrap()
         };
-        assert_eq!(narrow.dir.unwrap().name, wide.dir.unwrap().name);
+        assert_eq!(narrow.dir.unwrap().names, wide.dir.unwrap().names);
         assert!(!narrow.dir.unwrap().subtree);
         assert!(wide.dir.unwrap().subtree, "-r must widen the grant");
         assert_eq!(narrow.flags, 0);
@@ -1916,6 +2062,229 @@ mod tests {
         assert_eq!(g.dir.component(0), b"logs");
         holds.cwd.ascend();
         assert_eq!(g.dir.depth(), 1, "the grant followed the shell");
+    }
+
+    // ---- globbing: the expansion is the grant (milestone 47's globbing lane) ----
+
+    /// A directory as the shell would enumerate it: two names the pattern takes, one it does not,
+    /// and a subdirectory it does not either. The last two are the controls, and they are what make
+    /// every claim below a statement about *which* names rather than about how many.
+    const LISTING: [(&[u8], bool); 4] = [
+        (b"one.txt", false),
+        (b"two.txt", false),
+        (b"three.log", false),
+        (b"logs", true),
+    ];
+
+    /// Expand a pattern over [`LISTING`], the way both `echo` and the shell's grant path do.
+    fn expanded(pattern: &[u8]) -> Result<expand::NameSet, Refusal> {
+        let mut e = Expander::new(pattern);
+        for (name, is_dir) in LISTING {
+            e.offer(name, is_dir);
+        }
+        e.finish()
+    }
+
+    /// **The headline, at the level a shell can check it: what `echo *.txt` shows is exactly what
+    /// `rm *.txt` transfers.**
+    ///
+    /// The two halves are a separate claim each, and only together do they mean anything:
+    ///
+    /// 1. the planner grants **the set the expander produced**, unnarrowed, unreordered and with
+    ///    nothing added, so nothing between the display and the transfer can edit the authority;
+    /// 2. the set is **not** everything in the directory, which is what makes claim 1 more than
+    ///    "the grant is the directory".
+    ///
+    /// The other half of the demonstration is in the guest, where the shell derives the two
+    /// independently over a real `READDIR` and compares them (`kernel::user::glob_grant_tests`).
+    /// This is the part that can be checked in milliseconds.
+    #[test]
+    fn what_echo_shows_is_what_rm_would_transfer() {
+        let shown = expanded(b"*.txt").expect("the pattern matches two of these names");
+
+        let Command::Run(r) = parse(b"rm *.txt") else {
+            panic!("`rm *.txt` must parse as a program invocation")
+        };
+        let granted = super::plan(&r, WITH_DIR, Expansion::at(0, shown))
+            .unwrap()
+            .dir
+            .expect("the pattern did not become a directory grant")
+            .names;
+
+        assert_eq!(granted, shown, "the grant is not what the expansion showed");
+        assert_eq!(granted.len(), 2);
+        assert!(granted.contains(b"one.txt") && granted.contains(b"two.txt"));
+        assert!(
+            !granted.contains(b"three.log") && !granted.contains(b"logs"),
+            "the grant reached a name in the directory that the pattern did not match",
+        );
+        // And `caps rm *.txt` previews the identical endowment, because the preview re-parses the
+        // command you would have typed and plans it against the same expansion.
+        let Command::Caps(tail) = parse(b"caps rm *.txt") else {
+            panic!()
+        };
+        let Command::Run(previewed) = parse(tail) else {
+            panic!()
+        };
+        assert_eq!(
+            super::plan(&previewed, WITH_DIR, Expansion::at(0, shown)),
+            super::plan(&r, WITH_DIR, Expansion::at(0, shown)),
+        );
+    }
+
+    /// **A literal operand is the set of one**, which is the whole of "this generalizes `fwarden`
+    /// rather than replacing it": the same grant shape carries both, and a name that was typed
+    /// designates itself whatever anybody hands the planner alongside it.
+    #[test]
+    fn a_literal_operand_is_the_set_of_one_and_ignores_any_expansion() {
+        let Command::Run(r) = parse(b"rm old.txt") else {
+            panic!()
+        };
+        let names = plan(&r, WITH_DIR).unwrap().dir.unwrap().names;
+        assert_eq!(names.len(), 1);
+        assert_eq!(names.only(), Some(&b"old.txt"[..]));
+
+        // A set offered for a token with no magic in it must not be able to replace what was typed.
+        // Nothing should ever do this; the point is that it cannot change the grant if it does.
+        let stray = expanded(b"*.txt").unwrap();
+        assert_eq!(
+            super::plan(&r, WITH_DIR, Expansion::at(0, stray))
+                .unwrap()
+                .dir
+                .unwrap()
+                .names,
+            names,
+            "a typed name must designate itself, whatever expansion is offered with it",
+        );
+    }
+
+    /// **A pattern never becomes a name.** Without an expansion behind it the plan refuses, rather
+    /// than granting a capability for a name with a `*` in it: that name is well-formed here
+    /// (nothing refuses `*` in a component), so the grant would be silently useless today and live
+    /// the moment anything created a file called `*.txt`.
+    #[test]
+    fn a_pattern_with_nothing_to_expand_it_against_is_refused_not_taken_literally() {
+        let Command::Run(r) = parse(b"rm *.txt") else {
+            panic!()
+        };
+        assert_eq!(plan(&r, WITH_DIR), Err(Refusal::Unexpanded));
+        assert!(
+            file_name_fits(b"*.txt"),
+            "the refusal above is the ONLY thing stopping a pattern becoming a grantable name",
+        );
+        // In a shell holding no directory the bigger fact wins: there is nothing to narrow, and
+        // therefore nothing to expand against either.
+        assert_eq!(
+            plan(&r, Holdings::default()),
+            Err(Refusal::NoSuchCapability(CapKind::File)),
+        );
+    }
+
+    /// The two costs the roadmap said to design rather than discover, at the prompt.
+    #[test]
+    fn an_empty_match_and_an_oversized_one_are_both_refused_before_anything_spawns() {
+        let Command::Run(r) = parse(b"rm *.rs") else {
+            panic!()
+        };
+        // Nothing matched. The expander refuses first, and the planner refuses an empty set handed
+        // to it anyway, so there are two doors and neither leads to a spawn.
+        assert_eq!(expanded(b"*.rs"), Err(Refusal::NoMatch));
+        assert_eq!(
+            super::plan(&r, WITH_DIR, Expansion::at(0, expand::NameSet::empty())),
+            Err(Refusal::NoMatch),
+        );
+        // Too many matched: the grant is refused whole. Sixteen of seventeen names would have been
+        // a preview and a transfer that disagreed.
+        let mut over = Expander::new(b"*");
+        let mut names = [[b'n'; 4]; MAX_NAMES + 1];
+        for (i, n) in names.iter_mut().enumerate() {
+            n[2] = b'0' + (i / 10) as u8;
+            n[3] = b'0' + (i % 10) as u8;
+        }
+        for n in &names {
+            over.offer(&n[..], false);
+        }
+        assert_eq!(over.finish(), Err(Refusal::TooManyNames));
+        assert!(
+            Refusal::TooManyNames.message().contains("16"),
+            "a bound the prompt will not name is a bound nobody can work around",
+        );
+    }
+
+    /// A pattern lives in the last component or nowhere, and a program granted **one file** needs a
+    /// pattern that designates one name. Both are facts about what was designated; neither is a
+    /// permission.
+    #[test]
+    fn a_pattern_is_refused_where_it_cannot_mean_one_thing() {
+        let Command::Run(r) = parse(b"rm */old.txt") else {
+            panic!()
+        };
+        assert_eq!(plan(&r, WITH_DIR), Err(Refusal::PatternInPath));
+
+        // A file grant takes one name, so a pattern that matched two has designated something this
+        // program cannot be handed.
+        let Command::Run(r) = parse(b"wc *.txt") else {
+            panic!()
+        };
+        assert_eq!(
+            super::plan_against(
+                &r,
+                Prog::Worker,
+                READS_A_FILE,
+                WITH_DIR,
+                Expansion::at(0, expanded(b"*.txt").unwrap()),
+            ),
+            Err(Refusal::AmbiguousFile),
+        );
+        // And one that matched exactly one name is a perfectly good way to name it.
+        let Command::Run(r) = parse(b"wc *.log") else {
+            panic!()
+        };
+        let g = super::plan_against(
+            &r,
+            Prog::Worker,
+            READS_A_FILE,
+            WITH_DIR,
+            Expansion::at(0, expanded(b"*.log").unwrap()),
+        )
+        .unwrap()
+        .file
+        .unwrap();
+        assert_eq!(g.name.as_bytes(), b"three.log");
+    }
+
+    /// A pattern operand is resolved against the shell's position at **plan time**, exactly as a
+    /// typed name is, and the leading path is walked here rather than passed on.
+    #[test]
+    fn a_pattern_is_resolved_where_the_shell_was_standing() {
+        let mut holds = WITH_DIR;
+        assert!(holds.cwd.apply(nav::path(b"logs").unwrap().steps()).is_ok());
+        let Command::Run(r) = parse(b"rm -r 2026/*.txt") else {
+            panic!()
+        };
+        let g = super::plan(&r, holds, Expansion::at(0, expanded(b"*.txt").unwrap()))
+            .unwrap()
+            .dir
+            .unwrap();
+        assert_eq!(g.dir.depth(), 2);
+        assert_eq!(g.dir.component(0), b"logs");
+        assert_eq!(g.dir.component(1), b"2026");
+        assert!(g.subtree, "-r still widens a set grant");
+        holds.cwd.ascend();
+        assert_eq!(g.dir.depth(), 2, "the grant followed the shell");
+    }
+
+    /// The set bound is one number spelled in two crates, for [`MAX_FILE_NAME`]'s reason: `capsh`
+    /// must be able to check a command line without linking the filesystem contract, so the pair is
+    /// pinned here rather than shared.
+    #[test]
+    fn the_set_bound_matches_the_contract_that_carries_the_set() {
+        assert_eq!(MAX_NAMES, fs_proto::nameset::MAX_NAMES);
+        assert_eq!(expand::MAX_NAME, fs_proto::grant::MAX_NAME);
+        // And the widest set this crate can plan must fit the buffer that contract sizes for it.
+        let widest: [(&[u8], bool); MAX_NAMES] = [(b"sixteen-bytes!!!", false); MAX_NAMES];
+        let mut buf = [0u8; fs_proto::nameset::BYTES];
+        assert!(fs_proto::nameset::encode(&widest, &mut buf).is_some());
     }
 
     #[test]

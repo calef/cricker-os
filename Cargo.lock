@@ -48,6 +48,7 @@ name = "capsh"
 version = "0.1.0"
 dependencies = [
  "fs_proto",
+ "glob",
 ]
 
 [[package]]
