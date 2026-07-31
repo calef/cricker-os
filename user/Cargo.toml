@@ -310,6 +310,15 @@ path = "src/clock.rs"
 test = false
 bench = false
 
+# `date` (milestone 51, DECISIONS §43): reads the clock page, hands the number to the host-tested
+# `calendar` crate, prints. It holds a read-only mapping and therefore cannot set the clock; there is
+# no `date -s` here on purpose. `mkinitrd` packs it as "date" for both ISAs.
+[[bin]]
+name = "date"
+path = "src/date.rs"
+test = false
+bench = false
+
 # The keyboard driver (milestone 29's input): a confined userspace virtio-input driver whose whole
 # power to inject a keystroke is the mapping of the compositor's input ring, not the doorbell every
 # client holds. `mkinitrd` packs it as "kbd" for both ISAs.
@@ -332,6 +341,7 @@ bench = false
 [dependencies]
 abi = { version = "0.1.0", path = "../crates/abi" }
 bitfont = { version = "0.1.0", path = "../crates/bitfont" }
+calendar = { version = "0.1.0", path = "../crates/calendar" }
 capsh = { version = "0.1.0", path = "../crates/capsh" }
 clock_proto = { version = "0.1.0", path = "../crates/clock_proto" }
 compose = { version = "0.1.0", path = "../crates/compose" }

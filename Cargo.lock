@@ -185,6 +185,7 @@ dependencies = [
  "abi",
  "asid",
  "bitfont",
+ "calendar",
  "caps",
  "clock_proto",
  "compose",
@@ -355,6 +356,7 @@ version = "0.1.0"
 dependencies = [
  "abi",
  "bitfont",
+ "calendar",
  "capsh",
  "clock_proto",
  "compose",
