@@ -305,28 +305,29 @@ pub mod fs {
 ///
 /// A directory capability was one authority until this module existed, which meant that handing a
 /// program somewhere to write its logs also handed it the power to delete what was already there.
-/// Milestone 47's answer is that a directory is **five separable rights**, and the answer to "can a
-/// child ever carry more than its parent" is *no, by construction*: [`Rights::attenuate`] is a
-/// bitwise AND with the parent, it is the only way to make a non-root [`Rights`], and `a & b` is a
-/// subset of `a` for every `b`. There is no code path that widens, so there is no check to forget.
+/// Milestone 47's answer is that a directory is **six separable rights**, and the answer to "can a
+/// child ever carry more than its parent" is *no, by construction*: [`dir::Rights::attenuate`] is a
+/// bitwise AND with the parent, it is the only way to make a non-root [`dir::Rights`], and `a & b`
+/// is a subset of `a` for every `b`. There is no code path that widens, so there is nothing to
+/// forget.
 ///
 /// # The three refusals, and why they are three
 ///
 /// The errno a missing right answers is a design decision, not a detail, because it decides what the
 /// holder *learns*:
 ///
-/// - **A naming right** ([`READ`]/[`WRITE`] for [`super::fs::OPEN`], [`DESCEND`] for
-///   [`super::fs::OPENDIR`]) answers `ENOENT`. In this scope there is no such name, which is the
+/// - **A naming right** ([`dir::READ`]/[`dir::WRITE`] for [`fs::OPEN`], [`dir::DESCEND`] for
+///   [`fs::OPENDIR`]) answers `ENOENT`. In this scope there is no such name, which is the
 ///   same sentence `fwarden` says for the same reason: a holder must not be able to map what it
 ///   cannot reach.
-/// - **A mutating right** ([`CREATE`], [`REMOVE`], and [`WRITE`] on a file handle) answers
-///   [`EROFS`]. Through this capability that directory is read-only. `EACCES` was rejected here for
-///   the reason DECISIONS §27 rejected it for files: it implies a policy that could have said yes,
-///   and there is no policy, only what the capability is.
-/// - **[`ENUMERATE`]** answers [`EPERM`], and it is the one that cannot use either of the other two.
-///   "No such name" makes no sense (you hold the directory), and an empty listing would be a
-///   statement about the *directory* rather than about the capability, which is exactly the silent
-///   degradation DECISIONS §42 forbids.
+/// - **A mutating right** ([`dir::CREATE`], [`dir::REMOVE`], and [`dir::WRITE`] on a file handle)
+///   answers [`dir::EROFS`]. Through this capability that directory is read-only. `EACCES` was
+///   rejected here for the reason DECISIONS §27 rejected it for files: it implies a policy that
+///   could have said yes, and there is no policy, only what the capability is.
+/// - **[`dir::ENUMERATE`]** answers [`dir::EPERM`], and it is the one that cannot use either of the
+///   other two. "No such name" makes no sense (you hold the directory), and an empty listing would
+///   be a statement about the *directory* rather than about the capability, which is exactly the
+///   silent degradation DECISIONS §42 forbids.
 pub mod dir {
     /// List the names in it ([`super::fs::READDIR`]). Separable because enumeration is the right
     /// globbing and tab completion consume, and "you may open the file I named" should not imply
@@ -1197,7 +1198,9 @@ mod tests {
     #[test]
     fn the_subtree_fixture_is_grantable_and_unambiguous() {
         use fixture::tree::*;
-        for name in [SUB, INNER, DEEPER, LEAF, OTHER, SECRET, MADE, MADE_DIR, MOVED] {
+        for name in [
+            SUB, INNER, DEEPER, LEAF, OTHER, SECRET, MADE, MADE_DIR, MOVED,
+        ] {
             assert!(
                 grant::fits(name.as_bytes()),
                 "{name} cannot ride in a grant"
