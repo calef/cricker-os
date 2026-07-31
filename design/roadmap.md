@@ -2645,7 +2645,73 @@ backups but not delete them", which is a genuinely useful thing to be able to sa
 recorded at full size deliberately, because the failure mode here is starting it while imagining it is
 "a file server".
 
-#### The scope risk is now measurable, and that should happen before anything is scheduled
+#### The reference implementation is known, and Chris supplied its exact configuration
+
+**Chris's router is a GL.iNet GL-BE9300 (Flint 3) running OpenWrt, serving three family Time Machine
+targets through Samba with `vfs_fruit` (2026-07-30).** So the reference is full Samba, not `ksmbd`,
+and the working `[global]` stanza is on the record:
+
+```
+fruit:aapl = yes                 fruit:metadata = stream
+fruit:time machine = yes         fruit:model = TimeCapsule
+vfs objects = catia fruit streams_xattr
+fruit:posix_rename = yes         fruit:nfs_aces = no
+fruit:veto_appledouble = no      fruit:delete_empty_adfiles = yes
+fruit:wipe_intentionally_left_blank_rfork = yes
+```
+
+That is a measured feature list rather than a guess, and it decodes into these requirements:
+
+| Setting | What we must implement |
+|---|---|
+| `fruit:aapl = yes` | **The AAPL SMB2 create context.** The core of it: macOS negotiates Apple extensions on connect and will not accept the share without them |
+| `fruit:time machine = yes`, `model = TimeCapsule` | Advertise the share as a Time Machine target and return the model string |
+| `streams_xattr` + `metadata = stream` | **Alternate data streams**, for Finder metadata and resource forks. See below, this is the expensive one |
+| `fruit:posix_rename = yes` | **Rename over an open file**, POSIX semantics |
+| `catia` | Character mapping for names macOS permits and the backing filesystem does not |
+
+#### The discovery that changes scope: we have no extended attributes at all
+
+Verified, not assumed: **no xattr support in `fs_proto`, in the FS server, or in vendored RedoxFS.**
+`streams_xattr` stores Apple metadata in NTFS-style alternate data streams backed by filesystem
+xattrs, and we have neither layer.
+
+**There is an escape, and it should be chosen deliberately rather than discovered late.** Samba's
+`fruit:metadata` also accepts `netatalk`, which keeps the same metadata in **AppleDouble sidecar
+files** (`._name`) needing no filesystem support whatsoever. Chris's router uses `stream` because ext4
+has xattrs. So this is a **design choice between adding xattrs down the whole stack (protocol, FS
+server, RedoxFS) and accepting sidecar files**, not the hard blocker it first appears to be.
+
+#### `fruit:posix_rename` lands squarely on work already scoped
+
+Rename over an open file, which is precisely the territory of §42 (a filesystem declares what it
+offers and must be truthful) and milestone 47's `mv` section. Note the current state: **`fs_proto` has
+no `RENAME` verb at all** and `rename` is `Unsupported` in the std PAL. So milestone 55 has a hard
+dependency on that gap being closed, and §42's concurrency-versus-crash atomicity split is exactly the
+distinction Time Machine's durability expectations will test.
+
+#### Three users, and this is where the thesis gets a concrete demonstration
+
+Chris's setup serves **graeme, corinne and chris**, one partition and one share each, and privacy
+between family members rests on Samba correctly honouring a "Read-Write User = graeme" line in a
+config file. A Samba bug, a misedit, or a path-traversal flaw crosses that boundary.
+
+**Ours would be three adapter instances, each holding one directory capability**, and one adapter
+**cannot name** another's partition. Not an ACL check that could be wrong: no capability, no path, no
+way to express the request. That is the security claim of the whole project, stated in terms of
+something Chris actually relies on, which makes it the best demonstration target on the roadmap.
+
+It also means milestone 56's credential service holds **three identities**, not one, from the start.
+
+#### One scope question worth resolving early, because it may delete a protocol
+
+Chris's flow adds the share **manually** ("Add Backup Disk, select the matching share"), which
+suggests `_adisk._tcp` mDNS advertisement may be **convenience rather than requirement**: the SMB-side
+`fruit:time machine = yes` may be what actually makes the share acceptable. If manual addition
+suffices, **mDNS drops out of this milestone entirely**, and that is a whole second protocol not
+implemented. Verify before scheduling.
+
+#### The remaining scope risk is still worth measuring directly
 
 **Chris's router serves Time Machine over SMB today (2026-07-30).** That is a working reference
 implementation on his own network, so the requirement list below stops being something to guess at.
@@ -2689,7 +2755,9 @@ against a verified requirement list rather than trusting this block.
 
 **In brief.** Milestone 55 needs the Mac to authenticate, so it needs an identity, a secret, and
 unguessable challenges. We have none of the three, and one of the gaps is a hard blocker rather than
-a gap. **Prerequisite for 55; feeds milestone 49 (users, login, and attribution).**
+a gap. **Prerequisite for 55; feeds milestone 49 (users, login, and attribution).** Chris's existing setup
+serves **three** family members with separate passwords, so the credential service holds multiple
+identities from the start rather than growing into that later.
 
 #### Two things we do not have, both verified rather than assumed
 
