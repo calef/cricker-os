@@ -1948,11 +1948,29 @@ and do not prompt* — a permission failure on a file that exists still reports.
 **idempotency**: `rm -f maybe-there` succeeding is what makes a script re-runnable, and "absence is
 the desired state" is not a lie about failure. The divergence did not earn its keep.
 
-**Two things to settle when building it.** A `rm -r` interrupted halfway leaves a partial tree, and
+**Reporting is Unix's, and it is quieter than an earlier draft of this section claimed.** Checked
+against `rm(1)` rather than remembered: **silence on success** — `-v` exists precisely because the
+default prints nothing ("be verbose when deleting files, showing them as they are removed"). Failure
+is a diagnostic plus exit status: "exits 0 if all of the named files or file hierarchies were
+removed… If an error occurs, rm exits with a value >0." So a partial `rm -r` says what it could not
+do and exits non-zero, and says nothing about what it did. An earlier draft here said it should
+"report what it removed", which is the `-v` behaviour, not the default.
+
+`-f` is also broader than that draft assumed: "attempt to remove the files without prompting for
+confirmation, **regardless of the file's permissions**. If the file does not exist, do not display a
+diagnostic message **or modify the exit status**." So it suppresses the missing-file diagnostic *and*
+its effect on the exit status. The claim that a permission failure still reports under `-f` was wrong.
+
+**One thing to settle when building it.** A `rm -r` interrupted halfway leaves a partial tree, and
 there is no transaction spanning requests — adding one would mean the server holding a transaction
 open across receives, which conflicts with the serve-loop-runs-one-request-to-completion property §47
-relies on for concurrency atomicity. Partial-and-reported is the answer, but it should be a decision
-rather than a discovery. And `rm` on a directory stays a **refusal** (`EISDIR`) rather than a silent
+relies on for concurrency atomicity. Partial, with failures reported and a non-zero exit, is the
+answer, and it happens to be exactly what Unix already does.
+
+**Worth noticing while copying Unix here:** `rm(1)` says "it is an error to attempt to remove the
+files `/`, `.` or `..`". That is a **literal special-case guard for `/`**, shipped in the utility —
+precisely the "guard rail, a check that could be wrong" this milestone contrasts itself against. We
+need no such case: a shell holding a subtree cannot name the root, so there is nothing to special-case. And `rm` on a directory stays a **refusal** (`EISDIR`) rather than a silent
 escalation to recursive removal, which is Unix's behaviour and worth keeping for the same reason
 `rmdir` is empty-only.
 
