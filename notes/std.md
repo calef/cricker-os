@@ -246,9 +246,11 @@ Unsupported, each because **no verb in the contract backs it**, not because the 
 
 - **Directory iteration** (`read_dir`), `mkdir`, `unlink`, `rename`, `rmdir`, `remove_dir_all`,
   `canonicalize`, `hard_link`, symlinks and `read_link`, `copy`.
-- **Permissions and file times.** The server keeps an mtime (a write advances it) but no verb reports
-  one, and there is no wall clock to interpret it against anyway. `Permissions::readonly` is honestly
-  `false`: authority here is a capability, not a mode bit.
+- **Permissions and file times.** The server keeps an mtime (a write advances it) but no verb
+  reports one. The second half of that reason is now stale and is recorded as such: there **is** a
+  wall clock to interpret a timestamp against since milestone 51, so what stands between
+  `File::metadata().modified()` and an answer is a missing contract verb and nothing else.
+  `Permissions::readonly` is honestly `false`: authority here is a capability, not a mode bit.
 - **File locks** and `File::try_lock`.
 - **`File::duplicate`.** A handle is a token the server minted for one session; copying the number
   would forge a second owner of the same handle, including its close.
@@ -293,9 +295,23 @@ completes, not why the poll path did not.
   uses and recorded here for anything that assumes otherwise. Advisory knobs (`set_nodelay`,
   `set_ttl`, keepalive, broadcast, multicast options) accept and return plausible values rather than
   fail; they change nothing on the wire.
-- **`SystemTime` is monotonic-since-boot, not wall-clock.** No RTC, no NTP, so "system time" honestly
-  measures "since this machine came up". Differencing two `SystemTime`s gives a correct duration;
-  reading a calendar date gives 1970 plus uptime, which is the truth available.
+- **`SystemTime` is real wall-clock time when the program was granted a clock** (milestone 51,
+  DECISIONS §43, notes/clock.md). It used to be the monotonic counter offset from `UNIX_EPOCH`, so
+  the machine reported **1970 plus uptime** and nothing in the interface said so; that is gone.
+  A std program's wall-clock authority is **slot 5** (a `Frame` capability naming the clock page,
+  with `READ`) plus a read-only mapping of that page at `rt::CLOCK_PAGE`, and `SystemTime::now()` is
+  the offset it finds there plus the ambient monotonic counter: two loads and an add, no server
+  round trip, and nothing the program can write. `Instant` is untouched and cannot be perturbed by a
+  clock adjustment, by construction.
+
+  **A program granted no clock, or running on a machine that does not know the time, gets a panic
+  from `SystemTime::now()`,** naming which of the two it was. This is the honest limit rather than a
+  clean win: `SystemTime::now()` has no error channel, so the only loud refusal available is a
+  panic, and std has no way to represent "I do not know", which means a program cannot ask whether
+  it *can* ask. The `Unsupported` shape `fs` and `net` use is not available here. Anything that
+  needs to check first reads `clock_proto::state` off the page directly, which is what a `no_std`
+  component does. The alternative considered and rejected was returning a frozen `UNIX_EPOCH`, which
+  is still reporting 1970 and is exactly the confusion §42 forbids.
 - **`std::random` is not cryptographic.** splitmix64 seeded from the virtual counter: fine for
   `HashMap`'s seeds and `sort_unstable`'s pivots, predictable to anyone who can guess boot-relative
   time. Never for keys or tokens. A real entropy story (a virtio-rng service) would replace the file.

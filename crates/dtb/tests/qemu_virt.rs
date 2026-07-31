@@ -202,3 +202,40 @@ fn no_reserved_memory_node_is_zero_regions() {
     let mut regs = [Region { start: 0, size: 0 }; 2];
     assert_eq!(dtb.reserved_memory_regions(&mut regs).unwrap(), 0);
 }
+
+/// **The RTC, found by binding rather than by label** (milestone 51). The aarch64 `virt` board
+/// calls the node `pl031@9010000` and the RISC-V one calls its RTC `rtc@101000`, so no single name
+/// prefix finds both and a driver that matched on the name would silently find nothing on the other
+/// ISA. `compatible` is what the two boards agree to disagree about honestly.
+///
+/// Two properties of the parser ride along here. The node declares
+/// `compatible = "arm,pl031", "arm,primecell"`, so matching it at all proves the NUL-separated list
+/// is split rather than compared whole. And its `reg` is written **before** its `compatible`, which
+/// is why the decode has to wait for the node to close instead of deciding at the `reg` property.
+#[test]
+fn finds_the_rtc_by_compatible() {
+    let dtb = Dtb::from_bytes(QEMU_VIRT).unwrap();
+    let mut regs = [Region { start: 0, size: 0 }; 2];
+
+    assert_eq!(dtb.node_reg_compatible(b"arm,pl031", &mut regs).unwrap(), 1);
+    assert_eq!(
+        regs[0],
+        Region {
+            start: 0x0901_0000,
+            size: 0x1000,
+        }
+    );
+}
+
+/// The RISC-V RTC is not on this board, and asking for it must be an honest zero rather than an
+/// error or a stray match. This is the answer the aarch64 boot gets when it probes for both.
+#[test]
+fn the_goldfish_rtc_is_absent_on_aarch64() {
+    let dtb = Dtb::from_bytes(QEMU_VIRT).unwrap();
+    let mut regs = [Region { start: 0, size: 0 }; 2];
+    assert_eq!(
+        dtb.node_reg_compatible(b"google,goldfish-rtc", &mut regs)
+            .unwrap(),
+        0
+    );
+}

@@ -114,7 +114,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 48 | NOT-STARTED | Job control: jobs, wait, kill, fg, bg, and a stopped state | **most of it needs no new kernel surface**, and the tty's most tangled feature turns out to be a capability transfer |
 | 49 | NOT-STARTED | Users, login, and attribution: what identity is for once it stops being authority | three of Unix's four uses for a uid are already answered structurally; the fourth, **attribution, has no mechanism at all** |
 | 50 | NOT-STARTED | Pipes and redirection: one sink protocol, and `\|` turns out to be an endpoint | the mechanism already exists (**stdout is a capability in slot 1**); the work is unifying four byte-sink protocols, not adding a parser rule |
-| 51 | NOT-STARTED | Wall-clock time, the `date` command, and an NTP service | the machine currently believes it is January 1970; **reading the clock is harmless and setting it is an authority**, which is the whole design |
+| 51 | PARTIAL | Wall-clock time, the `date` command, and an NTP service | lane A built (two RTC drivers, the clock service, DECISIONS §43): the machine knows what time it is and **reading the clock is a read-only page while setting it is a writable one**. `date` and NTP remain |
 | 52 | RECORDED | Subshells without `fork`, and what copying an endowment means | `( ... )` is fork, we deliberately have no fork, and **capability duplication is not a total function** |
 | 53 | NOT-STARTED | The board's own peripherals: network and storage on real silicon | 16a boots the board; this is what makes it able to *do* anything, and it is where virtio stops carrying us |
 | 54 | NOT-STARTED | A network file service a Mac can actually mount | the first real workload with a real user, and the security claim backup servers deserve |
@@ -2341,6 +2341,25 @@ unbuilt work are guesses on a history-calibrated scale, and that the unification
 likely to surprise.
 
 ### 51. Wall-clock time, the `date` command, and an NTP service
+
+**Lane A built 2026-07-30** (the two RTC drivers and the clock service; DECISIONS §43,
+notes/clock.md). The machine knows what time it is, on both ISAs, and `SystemTime` is real. What the
+build settled that this block left open, and one place it went somewhere the block did not predict:
+
+- **The three authorities are three different objects, and only one is a message.** Reading is a
+  **read-only mapping of the clock page** (two loads and an add, no syscall, no server); setting is
+  the **same page mapped writable**; proposing is the endpoint. Nothing new in the syscall surface.
+  The block imagined all three as capabilities without saying what kind; a process has one blocking
+  wait point, so two message-borne authorities would have needed two servers.
+- **Discovery is by `compatible`, not by node name**, because the aarch64 board calls the node
+  `pl031@9010000` and the RISC-V one calls its RTC `rtc@101000`. `dtb::node_reg_compatible` is new
+  for it, and the kernel passes the *binding* to the driver so the register layout comes from the
+  machine rather than from `target_arch` (the VisionFive 2 is riscv64 with neither device).
+- **The unknown state is the default**, since a zeroed page reads as `UNKNOWN`. Its one uncomfortable
+  consequence: `SystemTime::now()` has no error channel, so an unknown clock is a **panic**, and std
+  has no way for a program to ask before it asks. Recorded in DECISIONS §43 as a limit, not a win.
+- **Still open, and unchanged by this lane:** the timed-wait fork below, `date` plus the calendar
+  crate, and NTP.
 
 **In brief.** The machine does not know what time it is, and says so in a way that is easy to miss:
 `SystemTime` is the monotonic counter offset from `UNIX_EPOCH`, so **it reports January 1970 plus

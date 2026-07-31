@@ -223,6 +223,15 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [The program manifest](program-manifest.md) — milestone 31: a program's declared endowment,
   checked against the command at the prompt so a mismatch is a legible refusal, not a mystery hang.
   SHILL's contract shrunk to phase 1, and milestone 23's component contract in embryo.
+- [Wall-clock time](clock.md) — milestone 51 lane A: the machine stops reporting 1970 plus uptime.
+  Wall clock is **counter plus offset**, so adjusting it cannot perturb `Instant` by construction
+  rather than by discipline. The three authorities are three different objects and needed nothing
+  new in the kernel: reading is a read-only page (two loads and an add, no syscall), setting is the
+  same page mapped writable, proposing is an endpoint the service may refuse. Also the seqlock whose
+  memory ordering is load-bearing on a weakly ordered machine, why the backward step limit is three
+  orders of magnitude tighter than the forward one, the two RTC drivers found by `compatible`
+  because no node-name prefix matches both boards, and the "I do not know what time it is" state
+  that is the default rather than an afterthought.
 - [The framebuffer contract](framebuffer-contract.md) — milestone 29, the display ladder's first
   rung: the confined virtio-gpu driver, the client that draws, and the shared-surface contract
   between them, written down so milestone 33's compositor implements against a contract. Also the

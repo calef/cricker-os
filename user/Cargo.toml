@@ -300,6 +300,16 @@ path = "src/broker.rs"
 test = false
 bench = false
 
+# The clock service (milestone 51, DECISIONS §43): owns the RTC's registers and the wall clock's
+# offset, publishes the offset into a page its readers hold read-only, and serves proposals it is
+# free to refuse. Both RTC drivers ride in it, on both ISAs, because the device is a fact about the
+# board rather than the instruction set. `mkinitrd` packs it as "clock" for both ISAs.
+[[bin]]
+name = "clock"
+path = "src/clock.rs"
+test = false
+bench = false
+
 # The keyboard driver (milestone 29's input): a confined userspace virtio-input driver whose whole
 # power to inject a keystroke is the mapping of the compositor's input ring, not the doorbell every
 # client holds. `mkinitrd` packs it as "kbd" for both ISAs.
@@ -313,6 +323,7 @@ bench = false
 abi = { version = "0.1.0", path = "../crates/abi" }
 bitfont = { version = "0.1.0", path = "../crates/bitfont" }
 capsh = { version = "0.1.0", path = "../crates/capsh" }
+clock_proto = { version = "0.1.0", path = "../crates/clock_proto" }
 compose = { version = "0.1.0", path = "../crates/compose" }
 coremark = { version = "0.1.0", path = "../crates/coremark" }
 crickerfs = { version = "0.1.0", path = "../crates/crickerfs" }

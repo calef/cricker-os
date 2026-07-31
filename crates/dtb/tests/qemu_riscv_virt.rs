@@ -80,3 +80,34 @@ fn finds_opensbis_reserved_memory() {
         }
     );
 }
+
+/// **The RTC, found by binding rather than by label** (milestone 51). The twin of the aarch64
+/// fixture's test: same call, different `compatible`, different address, and the node name here
+/// (`rtc@101000`) shares no prefix with aarch64's `pl031@9010000`.
+#[test]
+fn finds_the_rtc_by_compatible() {
+    let dtb = Dtb::from_bytes(QEMU_RISCV_VIRT).unwrap();
+    let mut regs = [Region { start: 0, size: 0 }; 2];
+
+    assert_eq!(
+        dtb.node_reg_compatible(b"google,goldfish-rtc", &mut regs)
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        regs[0],
+        Region {
+            start: 0x0010_1000,
+            size: 0x1000,
+        }
+    );
+}
+
+/// And the PL031 is not on this board. Both boots probe for both devices, so both absences are
+/// answers the code takes every time it runs.
+#[test]
+fn the_pl031_is_absent_on_riscv() {
+    let dtb = Dtb::from_bytes(QEMU_RISCV_VIRT).unwrap();
+    let mut regs = [Region { start: 0, size: 0 }; 2];
+    assert_eq!(dtb.node_reg_compatible(b"arm,pl031", &mut regs).unwrap(), 0);
+}
