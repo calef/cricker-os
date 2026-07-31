@@ -2913,9 +2913,59 @@ enforce it. **Here the warning is structural**: the tool was handed one disk.
 That also makes it a natural place for milestone 47's `enumerate` right to earn itself: listing
 attached devices and holding one of them are different authorities.
 
+#### Reading the drive from a MacBook or a Linux host, which upstream already solved
+
+**The question that makes a backup credible rather than merely functional: the board is dead, can I
+get my data?** Chris asked it, and the answer turns out to be that we disabled the feature.
+
+`vendor/redoxfs` already ships `src/mount/fuse.rs`, a `redoxfs` mount binary, and `redoxfs-ar`,
+`redoxfs-clone`, `redoxfs-resize`. Upstream's default features are `["std", "log", "fuse"]`. Our host
+tool depends on it with `default-features = false, features = ["std"]`, so **`fuse` is excluded by our
+own choice** and re-enabling it is a feature flag plus the `fuser` dependency.
+
+Three paths, and they are not equally good:
+
+| Path | Cost | Verdict |
+|---|---|---|
+| **Extend `tools/redoxfs-host` with `ls` / `cat` / `extract`** | Small; the engine already links there with `std` | **Do this first.** No FUSE, no kernel extension, no root, identical on macOS and Linux. The thing you want at 2am with a dead board. Check whether upstream's `redoxfs-ar` already covers it |
+| **Linux mount via the `fuse` feature** | A feature flag | Nearly free, and upstream maintains it: it is how Redox developers work with images |
+| **macOS mount via macFUSE** | A third-party system extension plus reduced security mode on Apple Silicon | Works, genuinely awkward. **Optional convenience, not the recovery story** |
+
+**This removes the strongest argument for switching filesystems.** Interop was the one thing ext4
+genuinely bought that RedoxFS appeared not to; it turns out RedoxFS buys it too, with a tool instead
+of a kernel driver.
+
+**The operational rule that follows: keep the recovery tool, or its exact source pin, with the
+backup.** We are pinned at 0.9.1 and a reader must match the on-disk format version. A backup readable
+only by software you no longer have is not a backup.
+
+The same-engine objection is weaker than it looks and is recorded so nobody relitigates it: yes, the
+reader shares any bug the writer has, but that is true of every filesystem (`e2fsprogs` shares lineage
+with the kernel driver). The real risk is an *undocumented* format, and RedoxFS is open source with
+upstream tooling.
+
+#### Decided: no filesystem-level encryption on the backup volume
+
+**Chris, 2026-07-30**: "If I'm struggling to get the data off, I'm not all that worried about somebody
+else getting it." RedoxFS supports encryption (`src/key.rs`, and the read path calls `decrypt`), and
+we are deliberately not using it here.
+
+**It is the right call, and for a stronger reason than the one given.** Encryption belongs at the Time
+Machine layer, and Chris's own setup instructions already offer it ("Optionally enable Encrypted
+Backups"). The Mac encrypts before anything is sent, so **the server never holds plaintext**, recovery
+uses the client's key rather than the server's, and filesystem encryption underneath would be
+redundant while putting a key on the machine most likely to be compromised. It also strengthens
+milestone 55's claim: a compromised SMB adapter leaks ciphertext.
+
+Two consequences. The recovery tool needs **no key handling at all**, which is a real simplification.
+And if Time Machine encryption *is* enabled, recovery then depends on that password, which relocates
+the "can I get my data" risk rather than removing it, so the password belongs wherever the family's
+other credentials live rather than only in one Keychain.
+
 **Sequencing.** The GPT crate and the transaction check are independent of everything and can start
-now. `mkfs` on the target wants the block-device path settled. Real drives arrive with milestone 53.
-**Effort: not estimated**, though the GPT crate alone looks like one lane on the history-calibrated
+now. The host extraction tool is likewise independent and is the cheapest credibility win on this
+milestone. `mkfs` on the target wants the block-device path settled. Real drives arrive with milestone
+53. **Effort: not estimated**, though the GPT crate alone looks like one lane on the history-calibrated
 scale.
 
 
