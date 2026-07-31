@@ -1128,7 +1128,7 @@ fn initrd_riscv() -> bool {
     ];
     let mut blobs: Vec<(&str, Vec<u8>)> = Vec::new();
     for &(archive_name, bin_name) in entries {
-        match std::fs::read(bin(bin_name)) {
+        match read_stripped(&bin(bin_name)) {
             Ok(b) => blobs.push((archive_name, b)),
             Err(e) => {
                 eprintln!("initrd-riscv: cannot read {}: {e}", bin(bin_name));
@@ -1138,12 +1138,12 @@ fn initrd_riscv() -> bool {
     }
     // The std demo (milestone 27), built through the cricker-dev toolchain for the riscv custom
     // target, rides along when present, exactly as on aarch64. `test` builds it first.
-    if let Ok(bytes) = std::fs::read(hellostd_elf("riscv64-unknown-cricker")) {
+    if let Ok(bytes) = read_stripped(&hellostd_elf("riscv64-unknown-cricker").display().to_string()) {
         blobs.push(("hellostd", bytes));
     }
     // The FS server (milestone 32 phase 2), built for the riscv bare target, rides along when
     // present, exactly as hellostd does; `test` builds it first.
-    if let Ok(bytes) = std::fs::read(fsserver_elf(RISCV_TARGET)) {
+    if let Ok(bytes) = read_stripped(&fsserver_elf(RISCV_TARGET)) {
         blobs.push(("fsserver", bytes));
     }
     let files: Vec<(&str, &[u8])> = blobs.iter().map(|(n, b)| (*n, b.as_slice())).collect();
@@ -1183,105 +1183,105 @@ fn initrd_riscv() -> bool {
 /// rest by name. Generated, not checked in, exactly like the disk and the flat kernel image: a blob
 /// in git is a blob nobody can review.
 fn mkinitrd() -> bool {
-    let hello = match std::fs::read(user_elf()) {
+    let hello = match read_stripped(&user_elf()) {
         Ok(bytes) => bytes,
         Err(e) => {
             eprintln!("mkinitrd: cannot read {}: {e}", user_elf());
             return false;
         }
     };
-    let worker = match std::fs::read(bin_elf("worker")) {
+    let worker = match read_stripped(&bin_elf("worker")) {
         Ok(bytes) => bytes,
         Err(e) => {
             eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("worker"));
             return false;
         }
     };
-    let console = match std::fs::read(bin_elf("console")) {
+    let console = match read_stripped(&bin_elf("console")) {
         Ok(bytes) => bytes,
         Err(e) => {
             eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("console"));
             return false;
         }
     };
-    let input = match std::fs::read(bin_elf("input")) {
+    let input = match read_stripped(&bin_elf("input")) {
         Ok(bytes) => bytes,
         Err(e) => {
             eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("input"));
             return false;
         }
     };
-    let shell = match std::fs::read(bin_elf("shell")) {
+    let shell = match read_stripped(&bin_elf("shell")) {
         Ok(bytes) => bytes,
         Err(e) => {
             eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("shell"));
             return false;
         }
     };
-    let coremark = match std::fs::read(bin_elf("coremark")) {
+    let coremark = match read_stripped(&bin_elf("coremark")) {
         Ok(bytes) => bytes,
         Err(e) => {
             eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("coremark"));
             return false;
         }
     };
-    let elbench = match std::fs::read(bin_elf("elbench")) {
+    let elbench = match read_stripped(&bin_elf("elbench")) {
         Ok(bytes) => bytes,
         Err(e) => {
             eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("elbench"));
             return false;
         }
     };
-    let termd = match std::fs::read(bin_elf("termd")) {
+    let termd = match read_stripped(&bin_elf("termd")) {
         Ok(bytes) => bytes,
         Err(e) => {
             eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("termd"));
             return false;
         }
     };
-    let allocdemo = match std::fs::read(bin_elf("allocdemo")) {
+    let allocdemo = match read_stripped(&bin_elf("allocdemo")) {
         Ok(bytes) => bytes,
         Err(e) => {
             eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("allocdemo"));
             return false;
         }
     };
-    let netd = match std::fs::read(bin_elf("netd")) {
+    let netd = match read_stripped(&bin_elf("netd")) {
         Ok(bytes) => bytes,
         Err(e) => {
             eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("netd"));
             return false;
         }
     };
-    let budgeter = match std::fs::read(bin_elf("budgeter")) {
+    let budgeter = match read_stripped(&bin_elf("budgeter")) {
         Ok(bytes) => bytes,
         Err(e) => {
             eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("budgeter"));
             return false;
         }
     };
-    let fwarden = match std::fs::read(bin_elf("fwarden")) {
+    let fwarden = match read_stripped(&bin_elf("fwarden")) {
         Ok(bytes) => bytes,
         Err(e) => {
             eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("fwarden"));
             return false;
         }
     };
-    let fsclient = match std::fs::read(bin_elf("fsclient")) {
+    let fsclient = match read_stripped(&bin_elf("fsclient")) {
         Ok(bytes) => bytes,
         Err(e) => {
             eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("fsclient"));
             return false;
         }
     };
-    let heeder = match std::fs::read(bin_elf("heeder")) {
+    let heeder = match read_stripped(&bin_elf("heeder")) {
         Ok(bytes) => bytes,
         Err(e) => {
             eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("heeder"));
             return false;
         }
     };
-    let spinner = match std::fs::read(bin_elf("spinner")) {
+    let spinner = match read_stripped(&bin_elf("spinner")) {
         Ok(bytes) => bytes,
         Err(e) => {
             eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("spinner"));
@@ -1307,7 +1307,7 @@ fn mkinitrd() -> bool {
         "rootsup", "spawner", "subsup", "flaky", "gpud", "painter", "cwarden", "cshim", "compd",
         "window", "vterm", "kbd", "swapper", "conx", "cconx", "chatty", "broker",
     ] {
-        match std::fs::read(bin_elf(name)) {
+        match read_stripped(&bin_elf(name)) {
             Ok(bytes) => tree.push((name, bytes)),
             Err(e) => {
                 eprintln!("mkinitrd: cannot read {}: {e}", bin_elf(name));
@@ -1339,13 +1339,13 @@ fn mkinitrd() -> bool {
     // The std demo (milestone 27) rides along IFF it has been built (`cargo xtask user-std`, which
     // `test` runs). It builds through a separate toolchain and target, so an interactive `run` that
     // never built it simply ships an initrd without it; nothing loads it there.
-    let hellostd = std::fs::read(hellostd_elf("aarch64-unknown-cricker")).ok();
+    let hellostd = read_stripped(&hellostd_elf("aarch64-unknown-cricker").display().to_string()).ok();
     if let Some(bytes) = &hellostd {
         files.push(("hellostd", bytes.as_slice()));
     }
     // The FS server (milestone 32 phase 2) rides along IFF built (its own workspace/target; `test`
     // builds it). Absent for a plain interactive boot, which simply skips the FS-server test.
-    let fsserver = std::fs::read(fsserver_elf(TARGET)).ok();
+    let fsserver = read_stripped(&fsserver_elf(TARGET)).ok();
     if let Some(bytes) = &fsserver {
         files.push(("fsserver", bytes.as_slice()));
     }
@@ -2310,6 +2310,65 @@ fn image() -> bool {
 /// do NOT use the `rust-objdump` / `rust-objcopy` wrappers, because those require a
 /// separate `cargo install cargo-binutils` that nothing else in the project needs,
 /// and its absence produces a confusing "command not found" rather than a real error.
+/// **Read a program ELF for packing, with its debug information removed.**
+///
+/// The initrd is *reserved RAM*: the frame allocator never owns those pages, so every byte in the
+/// archive is a byte the running system does not have. And a debug build is almost entirely debug
+/// information: `conx` is 720 KB, of which **3 KB** is `.text` plus `.rodata` and the other 717 KB is
+/// `.debug_*`. Twenty-odd programs like that made a 26 MB archive out of well under a megabyte of
+/// code, on a machine with 128 MB.
+///
+/// Nothing ever read those bytes. `crates/elf` parses **program headers only** (it has no
+/// section-header code at all), so the loader cannot see a debug section on either side of the
+/// boundary; the kernel prints a raw `pc` on a fault and symbolisation is done offline, against the
+/// unstripped binary that is still sitting in `target/`. So this is pure waste, and milestone 23 is
+/// where it stopped being free: five more programs pushed the archive 4 MB up and a *later,
+/// unrelated* test could no longer find a contiguous eight-megabyte region for init.
+///
+/// `--strip-debug` rather than `--strip-all`, deliberately: it takes the `.debug_*` sections, which
+/// is all of the bulk, and leaves the symbol table for anything that later wants to read it out of
+/// the archive rather than out of `target/`.
+///
+/// A missing `llvm-objcopy` is a hard failure rather than a silent fallback to unstripped bytes,
+/// because the measured-boot digest (§26's phase B.1) is taken over what this returns: a build that
+/// quietly packed different bytes depending on which tools were installed would be a build whose
+/// trust root means something different on each machine.
+fn read_stripped(path: &str) -> std::io::Result<Vec<u8>> {
+    let objcopy = llvm_tool("llvm-objcopy").ok_or_else(|| {
+        std::io::Error::other("llvm-objcopy not found; the llvm-tools rustup component provides it")
+    })?;
+    let out = workspace_root().join("target/stripped");
+    std::fs::create_dir_all(&out)?;
+    let stem = std::path::Path::new(path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("program");
+    // Namespaced by the target directory the binary came from, so the aarch64 and riscv builds of a
+    // program cannot overwrite each other's stripped copy.
+    let tag = if path.contains(RISCV_TARGET) {
+        "riscv"
+    } else if path.contains("cricker") {
+        "std"
+    } else {
+        "host"
+    };
+    let dst = out.join(format!("{tag}-{stem}"));
+    // Fail before running the tool if the input is missing, so the caller's error message names the
+    // binary it wanted rather than objcopy's exit status.
+    std::fs::metadata(path)?;
+    let status = Command::new(&objcopy)
+        .arg("--strip-debug")
+        .arg(path)
+        .arg(&dst)
+        .status()?;
+    if !status.success() {
+        return Err(std::io::Error::other(format!(
+            "{objcopy} --strip-debug {path} failed ({status})"
+        )));
+    }
+    std::fs::read(&dst)
+}
+
 fn llvm_tool(name: &str) -> Option<String> {
     let sysroot = capture("rustc", &["--print", "sysroot"])?;
     let verbose = capture("rustc", &["-vV"])?;
