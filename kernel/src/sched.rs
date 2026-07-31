@@ -1596,6 +1596,29 @@ pub fn delete_frame_caps(phys: u64) {
     }
 }
 
+/// Delete every `DeviceFrame` capability naming `phys` from every cspace **except the calling
+/// thread's** (milestone 23, DECISIONS §41). The caller keeps its own, which is the difference
+/// between reclaiming a page and taking a device back to hand on; [`crate::revoke::
+/// revoke_device_from_others`] has the reasoning.
+pub fn delete_device_frame_caps_from_others(phys: u64) {
+    let mut guard = SCHED.lock();
+    let Some(sched) = guard.as_mut() else {
+        return;
+    };
+    let keeper = current_tid();
+    let target = crate::cap::Object::DeviceFrame(phys);
+    for t in sched.threads.iter_mut() {
+        if t.id == keeper {
+            continue;
+        }
+        for slot in 0..t.cspace.len() as u64 {
+            if t.cspace.get(slot).is_ok_and(|c| c.object == target) {
+                let _ = t.cspace.delete(slot);
+            }
+        }
+    }
+}
+
 /// Remove a capability from the **current thread's** table. Used to consume a one-shot Reply
 /// capability the instant it is invoked (§12), which is what makes a second reply impossible.
 pub fn delete_current_cap(slot: u64) -> Result<(), crate::cap::Error> {

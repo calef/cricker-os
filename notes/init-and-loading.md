@@ -109,6 +109,32 @@ rebuild" property. You can swap userspace without rebuilding the kernel. seL4, o
 instead embeds a cpio of the app ELFs into its root task; we chose the delivered-archive side so the
 RAM boot and the eventual disk boot share one parser.
 
+### The archive carries stripped ELFs (2026-07-30, milestone 23)
+
+**The initrd is reserved RAM**: `memory::init` tells the frame allocator to keep its hands off it, so
+every byte in the archive is a byte the running system does not have, for the whole boot. That was
+free until it was not.
+
+A debug build is almost entirely debug information. `conx` is 720 KB, of which **3 KB** is `.text`
+plus `.rodata` and the other 717 KB is `.debug_*`. Twenty-odd programs like that made a **26 MB**
+archive out of well under a megabyte of code, on a 128 MB machine. Milestone 23 added five programs,
+the archive went to 30.7 MB, and a *later, unrelated* test stopped being able to find a contiguous
+eight-megabyte run for init's building budget: `no building budget for init`, in a test that had
+nothing to do with the change, which is the usual signature of a resource the whole suite shares.
+
+So `mkinitrd` now strips each ELF (`llvm-objcopy --strip-debug`) before packing, and the archive is
+**4.3 MB**. Nothing lost anything: `crates/elf` parses **program headers only** and has no
+section-header code at all, so no loader on either side of the boundary could ever see a debug
+section; the kernel prints a raw `pc` on a fault, and symbolising it is done offline against the
+unstripped binary still sitting in `target/`.
+
+Two deliberate choices. `--strip-debug` rather than `--strip-all`, so the symbol table survives for
+anything that later wants to read it out of the archive. And a missing `llvm-objcopy` is a **hard
+failure** rather than a quiet fallback to unstripped bytes, because the measured-boot digest
+(DECISIONS §26 phase B.1) is taken over exactly these bytes: a build that packed different bytes
+depending on which tools were installed would be a build whose trust root meant something different
+on each machine.
+
 ## The first distinct binary: the worker (milestone 19f.2)
 
 The worker is the first program that is **its own binary**, not a role of `hello`. It lives in
