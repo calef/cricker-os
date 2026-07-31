@@ -1540,6 +1540,51 @@ version; three of those four exist. Naming that as the packaging layer would mak
 assembly step rather than a new subsystem, and would give the contracts a reason to carry real version
 numbers, which is what lets components evolve independently at all.
 
+#### Publishing crates is a different question from splitting the repo (Chris, 2026-07-31)
+
+Chris asked whether the crates should get their own repos and builds, since some are useful outside
+cricker-os. **Two decisions hide in that, and only one is expensive.**
+
+`cargo publish -p calendar` works from a workspace. The thirty crates with no external dependencies
+have no path dependencies to strip either, so **crates can be handed to the world without touching
+the repo structure at all.** Splitting into separate repositories is the costly move, and the
+constraint above already rules on it: a single `script/test` proving the whole system is what makes
+parity a gate, and split repos let a crate be green in isolation while broken in the OS. That is the
+exact failure rule 5 exists to catch, plus cross-repo changes become multi-PR dances.
+
+**How many are actually useful outside is fewer than it feels: two to four of about thirty.**
+
+| Crate | External value |
+|---|---|
+| `gpt` | **Real.** `no_std`, zero I/O, 8 machine-checked proofs. crates.io's `gpt` uses `std::io`, so an I/O-free proof-carrying one is a genuine gap |
+| `calendar` | **Real**, competing with `time` and `chrono`; the differentiator is the proofs plus strict `no_std` |
+| `dtb`, `pci` | Plausible, though `fdt` already occupies much of that space |
+| `ntp_proto` | Overlaps heavily with ntpd-rs's mature `ntp-proto` |
+| Everything else | Bound to our kernel model (`caps`, `slots`, `frames`, `regions`, `ipc`, `paging`, `asid`) or specific to us (`crickerfs`, `capsh`, `dma_validate`) |
+
+**The argument for publishing is a thesis argument, not a utility one**, and that is the version worth
+acting on. A `no_std`, I/O-free GPT parser carrying eight machine-checked proofs is a **publishable
+artifact**, and it is stronger evidence for the verified-Rust claim than any write-up, because a
+stranger can run the harnesses. Same for `calendar` over all 3,652,425 days in range. Publishing then
+is not about sharing utilities; it is about putting the verification claim somewhere it can be checked
+by people with no stake in agreeing with us.
+
+**The trigger: wait until each crate has a real in-tree consumer.** `calendar` shipped 2026-07-30 and
+`date` does not exist yet; `gpt` has no caller at all. **An API that has never had a consumer is not
+ready to publish**, because the first real caller always finds the shape wrong, and after publication
+that costs a semver break rather than an edit. So `date` exercises `calendar`, `mkfs`/partitioning
+exercises `gpt`, the NTP client exercises `ntp_proto` — publish after, not before.
+
+**Two frictions to know now.** The crates.io names `gpt` and `calendar` are almost certainly taken
+(worth checking rather than assuming), so they would need prefixing, which quietly weakens the
+generally-useful-library pitch. And publishing a proof-carrying crate is a **promise to strangers that
+the proofs keep passing across Kani versions**, which is a maintenance obligation §14 does not ask
+for: we are a demonstrator, not a library vendor. `design/capsicum-and-the-retrofit-question.md`
+records CloudABI dying partly of maintenance rather than of being wrong.
+
+**Recommendation, not a decision:** keep the monorepo, publish selectively once each crate has an
+in-tree consumer, and treat publication as evidence rather than as a product line.
+
 #### The cheap first move, which commits to none of the four
 
 **Split `user/` three ways**: `components/` for the services, `fixtures/` for the test programs, and
