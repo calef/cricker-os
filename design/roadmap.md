@@ -110,6 +110,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 44 | PARTIAL | GitHub repository hardening: policy, private reporting, code scanning, pull requests | a repository with a security thesis should be able to receive a report privately |
 | 45 | BUILT | Triage the CodeQL code-scanning alerts, and decide what the tool is for | the alerts land on this project's most-used unsafe abstraction |
 | 46 | NOT-STARTED | Rename the components for what they are, and write down the naming rules | a name is a claim, and `-d` claims something we rejected; conventions that matter get a checker, not a paragraph |
+| 47 | NOT-STARTED | Filesystem navigation: cd, pwd, ls, mkdir, rm, and what a path means | **divergence from Unix must be earned, never stylistic.** Keep the commands; change only what the capability model actually forces, and get one missing primitive right |
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
 comparison), with the multikernel work (17) as
@@ -1701,6 +1702,127 @@ would fail until the rename lands. Splitting them would mean writing documentati
 arrival, or a checker that is red on arrival.
 
 **Effort: 1 lane estimated**, almost entirely verification rather than editing.
+
+### 47. Filesystem navigation: `cd`, `pwd`, `ls`, `mkdir`, `rm`, and what a path means
+
+**In brief.** A navigation model for a system with no global namespace. Keep the Unix command names
+and behaviour wherever they can work honestly; diverge only where the capability model forces it, and
+say why each divergence is earned. **Nothing here exists yet**: no `cd`, `pwd`, `ls`, `mkdir` or `rm`,
+no enumeration verb, and `mkdir`/`unlink`/`rename`/`rmdir` are all `Unsupported` in the `std` PAL,
+backed by no verb.
+
+**Why it matters.** Chris's framing, and it is the governing constraint: *"I hate Windows/DOS
+specifically because they went differently than virtually every other OS I've used."* Gratuitous
+divergence taxes every user forever. So the bar is not "is this more capability-pure", it is **"does
+the model actually force this."** Three divergences clear that bar; the rest of Unix's surface should
+survive unchanged.
+
+#### The reframe: `cd` was never the problem
+
+A working directory, in capability terms, is *a directory capability the shell holds, used as the
+default base for resolving names*. Held by the shell that is entirely legitimate, the same as its
+untyped budget. The badness in Unix is three specific things, none of which is `cd` itself:
+
+1. **Children inherit it silently**, so every process gets a starting point nobody granted it.
+2. **Relative paths resolve implicitly**, so a program's reach depends on invisible state.
+3. **`..` walks out**, so the cwd bounds nothing.
+
+Fix those three and the command is fine.
+
+#### `cd`, `pwd`, `ls` are shell builtins, not programs
+
+The same category as `caps`, which already prints the shell's whole endowment: they spawn nothing,
+need no grant, and confer no new authority, because the shell is reading and rebinding what it already
+holds. This also retires a worry raised while designing `ls` — that a listing program would be
+over-granted, holding the power to read everything it lists. It is not a program.
+
+**The cwd stops at the process boundary.** `run wc file:report.txt` resolves the name against the
+shell's current directory *at the moment the grant is made*, and the child receives a capability to
+that one file. The child has no cwd, inherits nothing, and cannot re-resolve anything. The convenience
+is the shell's; the authority is explicit.
+
+#### The three earned divergences
+
+- **No global absolute paths.** There is no namespace to root them in. Already true and already
+  correct in the `std` PAL, which answers `InvalidFilename` rather than `PermissionDenied`: nothing
+  checked a permission, the name simply cannot be expressed.
+- **`..` stops at your root.** You descend from what you hold and never ascend past it. This is
+  chroot's shape arrived at from the other direction.
+- **`pwd` is relative to your root**, because naming anything above it implies a namespace that does
+  not exist.
+
+What that buys, and Unix cannot: **every shell has its own root.** Two shells can hold different
+subtrees and neither can name the other's files, not by policy but because no capability reaching them
+exists.
+
+#### `mkdir` and `rm`
+
+**`mkdir` is the same verb family as descending**: it mints a directory node and hands back a
+capability to it, exactly as `CREATE` already returns a file handle. `mkdir` is descend-with-creation,
+and the two should be designed together rather than separately.
+
+**`rm` is where Unix conflated two operations.** `rm` unlinks a name; the data survives while anyone
+holds a descriptor, and the blocks survive after that, so it cannot promise what people mean when they
+delete something sensitive (and `shred` only pretends to on a copy-on-write filesystem like ours).
+Separate them:
+
+- **Unlink**: remove a name from a directory; existing capability holders keep reading. Unix's
+  semantics, and genuinely useful (atomic replace and the temp-file idiom both depend on it).
+- **Revoke**: the object dies and *every* capability to it goes stale.
+
+The second is not exotic here: §13 revokes frames, §16 revokes objects, and generational names
+(`crates/slots`) make a stale capability fail safely rather than point somewhere wrong. **One
+implementation caveat to design rather than gloss:** the FS server validates handles against its own
+table, so invalidating them is mechanically easy, but that table is per-session and the server does
+not track all outstanding sessions today.
+
+**The rights ladder becomes explicit**: a directory capability needs separable **enumerate**, **open**
+(read versus write), **create** and **remove**. A program handed a directory to write logs into should
+not thereby be able to delete what is there. `FileSpec` already makes this split for files, where the
+manifest declares direction and the human designates the file without typing a mode.
+
+**And one safety property falls out free.** `rm -rf /` is bounded here by what your directory
+capability reaches, structurally. A shell rooted at a subtree cannot recursively delete the system,
+because no capability naming those files exists in it. Not a guard rail, not a confirmation prompt,
+not a check that could be wrong: there is nothing to name.
+
+#### Absolute paths: Plan 9's answer, not DOS's
+
+Distinguish a path as *authority* (`open()` resolving against a namespace nobody granted you: out
+permanently) from a path as a *name* (a string, and a name is not a capability). The syntax can
+survive even though the semantics cannot.
+
+**Plan 9 kept absolute paths and made `/` the root of *your* namespace**, assembled from what you were
+given, so two processes can both open `/lib/foo` and get different files. That is the counter-example
+to gratuitous divergence: the system that took namespaces furthest did not abolish paths, it made them
+personal. It also lines up with "every shell has its own root" above, which is not a coincidence.
+
+**The real decision is where the resolver lives**, and it changes the security story:
+
+- *In the FS server*: it accepts multi-component paths and walks them. Workable, but it puts
+  path-walking back into a server, against §27's discipline that open-by-path exists only inside the
+  server relative to one bound directory.
+- *In the client's runtime* (`user_rt`): a small table of prefix to directory capability, granted at
+  spawn, resolved locally and privately. The server still only ever sees a **single-component name
+  relative to a capability presented to it**, leaving §27 intact.
+
+**Recommendation: the client's runtime.** It yields absolute-looking paths with no server learning a
+name it did not already own, and the namespace becomes another endowment, inspectable in `caps` —
+which Unix cannot do, since you cannot enumerate what your paths could reach. The honest cost is that
+two processes seeing different files at one path is powerful and confusing, and Plan 9 users will
+attest to both halves.
+
+#### The finding that should drive the build order
+
+`cd`, `mkdir`, and per-process namespaces each converge on the same missing primitive: **a verb that
+returns a directory capability rather than bytes.** It would be the first place this contract hands
+back authority instead of data, and it deserves the care `Endpoint::REAP` got (§32): what rights does
+the child directory carry, can they ever exceed the parent's, and who may call it. Build that first;
+the commands are the easy part once it exists.
+
+**Sequencing.** After milestone 37, which owns the FS server's block path. **Effort: 2 lanes
+estimated** — one for the descend/create verb and the builtins, one for namespaces — noting that
+estimates for unbuilt work are guesses on a scale calibrated from history, not measurements.
 
 ## The display ladder (recorded 2026-07-28, Chris's direction)
 
