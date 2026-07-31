@@ -30,7 +30,7 @@ out-of-band convention (notes/abi.md §4) grants them at fixed slots:
 Three more slots exist, and a program holds each only if it was *given* the thing behind it
 (milestone 27 phase two, the `std::net` and `std::fs` bindings below):
 
-- **slot 2: a `Stack` endpoint with WRITE.** `std::net` speaks netd's socket contract over it.
+- **slot 2: a `Stack` endpoint with WRITE.** `std::net` speaks netstack's socket contract over it.
 - **slot 3: an untyped budget** the net PAL mints each socket's shared frame from.
 - **slot 4: an FS-service endpoint with WRITE**, which *is* a directory capability, plus the page it
   shares with the FS server mapped at `0x1100_0000`. `std::fs` speaks the §27 file contract over it.
@@ -54,7 +54,7 @@ std by `cargo xtask std-src`. Each file binds one std concept to the ABI:
 | `Instant`, `SystemTime` | the virtual counter, `CNTVCT_EL0` / `rdtime` (`sys/time/cricker.rs`) |
 | `panic!` | print, then `brk`/`ebreak`: a fault the kernel attributes. No unwinding. |
 | `thread::spawn` | `Unsupported` in phase one; `sleep`/`yield` are real |
-| `net` (`TcpStream`, outbound `UdpSocket`) | netd's socket contract on slots 2/3 (`sys/net/connection/cricker.rs`), or `Unsupported` when not granted |
+| `net` (`TcpStream`, outbound `UdpSocket`) | netstack's socket contract on slots 2/3 (`sys/net/connection/cricker.rs`), or `Unsupported` when not granted |
 | `fs` (`File`, `metadata`, `read`/`write`) | the FS service's file contract on slot 4 (`sys/fs/cricker.rs`), or `Unsupported` when no directory was granted |
 | `HashMap` seed | splitmix64 from the counter (`sys/random/cricker.rs`), **not** cryptographic |
 | `std::env::consts::OS` | `"cricker"` (patched into `env_consts.rs`) |
@@ -114,10 +114,10 @@ the bare target.
 
 ## `std::net` over the socket contract (milestone 27 phase two)
 
-`sys/net/connection/cricker.rs` binds std's `TcpStream` and outbound `UdpSocket` to netd's socket
+`sys/net/connection/cricker.rs` binds std's `TcpStream` and outbound `UdpSocket` to netstack's socket
 contract (DECISIONS §25, notes/net.md, `user/src/netproto.rs`). The PAL is a **client** of the
 frozen contract, nothing more: it holds the `Stack` endpoint (slot 2) and a frame untyped (slot 3),
-and for each socket it mints a shared `Frame`, maps it, delegates it to netd (`SEND_CAP`,
+and for each socket it mints a shared `Frame`, maps it, delegates it to netstack (`SEND_CAP`,
 `OP_ATTACH_FRAME`), and then drives the socket with `CALL`s carrying a socket id. Control words ride
 the message; bytes sit in the shared frame. This is the exact path the hand-written `netcli` client
 walks, reached through std's blocking API instead.
@@ -129,28 +129,28 @@ into `sys/pal/cricker/netproto.rs` by `std-src`, the same anti-drift discipline 
 What binds, and how it maps to the contract:
 
 - **`TcpStream::{connect, read, write, ...}`** -> `OP_OPEN_TCP`, `OP_CONNECT`, `OP_RECV`, `OP_SEND`,
-  `OP_CLOSE` (on `Drop`). `read` blocks in netd until data arrives (a blocked `RECV`), the blocking
+  `OP_CLOSE` (on `Drop`). `read` blocks in netstack until data arrives (a blocked `RECV`), the blocking
   semantics std's default API wants. A short `read` keeps the segment's tail in a per-socket residual
   buffer, so a stream never drops bytes.
 - **`UdpSocket::{bind, connect, send, recv, send_to, recv_from}`** -> `OP_OPEN_UDP`, `OP_SENDTO`,
   `OP_RECV`. UDP `connect` only fixes a default peer (no contract call, matching Unix). `bind`'s
-  local address is validated but not honored: netd assigns an ephemeral local port.
-- **Errors map by meaning, no errno.** A refused TCP connect is `ConnectionRefused`; a netd timeout
+  local address is validated but not honored: netstack assigns an ephemeral local port.
+- **Errors map by meaning, no errno.** A refused TCP connect is `ConnectionRefused`; a netstack timeout
   on `RECV` is `TimedOut`; a datagram larger than the frame is `InvalidInput`; an IPv6 address is
-  `Unsupported` (netd is IPv4-only). A `CALL` on an empty `Stack` slot (no network granted) reads
+  `Unsupported` (netstack is IPv4-only). A `CALL` on an empty `Stack` slot (no network granted) reads
   back negative and becomes `Unsupported`, the same answer a program with no net grants gets.
 
 The concurrency model is the contract's: single-threaded, one synchronous exchange at a time. A
 program can hold up to `MAX_SOCKETS` (4) sockets at once and interleave them, but there is only ever
 one operation in flight, which is all a single-threaded process can do anyway.
 
-**A finding, recorded honestly.** netd derives a socket's local port from its socket id
+**A finding, recorded honestly.** netstack derives a socket's local port from its socket id
 (`LOCAL_PORT_BASE + sid`), so an id is not an ephemeral port that rotates; reopening a just-closed id
 reuses its exact local port. Against QEMU's slirp, a TCP connect that reuses a port whose previous
-flow has not cleared stalls (the SYN's answer never comes, and netd blocks in its bounded poll on
+flow has not cleared stalls (the SYN's answer never comes, and netstack blocks in its bounded poll on
 the NIC interrupt). The PAL softens this by handing out ids round-robin, so consecutive opens prefer
 different ids and ports, but a program that churns through more than `MAX_SOCKETS` sockets quickly
-can still hit a reused port. The real fix is netd assigning ephemeral local ports independent of the
+can still hit a reused port. The real fix is netstack assigning ephemeral local ports independent of the
 socket id, which is a **contract-side change reported up, not a client workaround**. The demo
 sidesteps it by keeping its UDP and TCP sockets on distinct ids at once.
 
@@ -286,7 +286,7 @@ completes, not why the poll path did not.
   Unsupported list is `TcpListener` (no LISTEN/accept verb in the contract), non-blocking mode and
   read/write timeouts (the contract is blocking-only, no poll verb), DNS via `lookup_host` (no
   resolver rides the contract, so `ToSocketAddrs` handles numeric addresses only, and a program that
-  wants DNS does it as a plain UDP query, as the demo does), IPv6 (netd is IPv4-only), and `peek` /
+  wants DNS does it as a plain UDP query, as the demo does), IPv6 (netstack is IPv4-only), and `peek` /
   socket duplication / multicast join-leave (no contract verb backs them). `UdpSocket::recv_from`
   reports the connected peer or the last send destination as the datagram source, because the
   contract's `RECV` does not carry it; that is correct for the request/response pattern the demo
@@ -324,7 +324,7 @@ a directory capability (`File::open` on the fixture name) and then for the netwo
   `/tmp/escape` or `../escape` is refused exactly as opening them is, so `CREATE` did not widen what a
   client can reach. The kernel test `std_fs_reads_a_file_through_a_granted_directory_capability`
   spawns it this way.
-- **Granted the network** (slots 2 and 3, alongside a running netd): the bind succeeds, and the
+- **Granted the network** (slots 2 and 3, alongside a running netstack): the bind succeeds, and the
   program does a real UDP DNS query to slirp's resolver and a TCP echo round trip to slirp's
   guestfwd peer, both through `std::net` and both asserted. The kernel test
   `std_net_runs_over_the_socket_contract` spawns it this way.

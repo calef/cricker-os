@@ -2,7 +2,7 @@
 //!
 //! This crate is the pure logic of the layer Unix calls the tty line discipline: byte in,
 //! echo bytes out, completed lines out. It performs no IO and knows nothing about IPC, UARTs,
-//! or endpoints; the `termd` userspace component feeds it one byte at a time and forwards
+//! or endpoints; the `lineedit` userspace component feeds it one byte at a time and forwards
 //! whatever it emits. That split is DECISIONS §7 applied: the editing rules are host-tested in
 //! milliseconds (with a small terminal model, see the tests), and only the wiring needs QEMU.
 //!

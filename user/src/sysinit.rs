@@ -8,7 +8,7 @@
 //!
 //! 1. the **console** server (output): reads text from a shared page, writes it to the UART;
 //! 2. the **input** driver (keystrokes): waits on the UART receive interrupt, forwards bytes;
-//! 3. the **line discipline** (`termd`, milestone 28): editing, echo, history, between them;
+//! 3. the **line discipline** (`lineedit`, milestone 28): editing, echo, history, between them;
 //! 4. the **shell**: prints and reads lines through the terminal endpoint, runs commands;
 //!
 //! wired together with endpoints and shared pages this program creates. The kernel wires none of it.
@@ -46,11 +46,11 @@ const CHILD_JOBFRAME_VA: u64 = 0x0030_0000;
 /// phase 1, so this is a session budget, not a renewable one.
 const SH_BUDGET_PAGES: u64 = 128;
 
-// The VAs each program hardcodes; they must match console.rs / input.rs / termd.rs / shell.rs.
-const CON_SHARED_VA: u64 = 0x0060_0000; // console reads text here; termd writes it
+// The VAs each program hardcodes; they must match console.rs / input.rs / lineedit.rs / shell.rs.
+const CON_SHARED_VA: u64 = 0x0060_0000; // console reads text here; lineedit writes it
 const CON_UART_VA: u64 = 0x0070_0000; // console's UART mapping
-const TERM_OUT_VA: u64 = 0x0080_0000; // termd reads the shell's text/prompts here
-const TERM_IN_VA: u64 = 0x0090_0000; // termd delivers completed lines here
+const TERM_OUT_VA: u64 = 0x0080_0000; // lineedit reads the shell's text/prompts here
+const TERM_IN_VA: u64 = 0x0090_0000; // lineedit delivers completed lines here
 const IN_UART_VA: u64 = 0x00a0_0000; // input driver's UART mapping
 const SH_OUT_VA: u64 = 0x0060_0000; // the shell's view of the TERM_OUT frame
 const LINE_VA: u64 = 0x00b0_0000; // the shell's view of the TERM_IN frame
@@ -71,7 +71,7 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, _x2: u64) -> ! {
     let Some(in_elf) = fs.read("input").and_then(|b| elf::Elf::parse(b).ok()) else {
         fail()
     };
-    let Some(td_elf) = fs.read("termd").and_then(|b| elf::Elf::parse(b).ok()) else {
+    let Some(td_elf) = fs.read("lineedit").and_then(|b| elf::Elf::parse(b).ok()) else {
         fail()
     };
     let Some(sh_elf) = fs.read("shell").and_then(|b| elf::Elf::parse(b).ok()) else {
@@ -87,9 +87,9 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, _x2: u64) -> ! {
     let term_ep = must(retype_obj(abi::objtype::ENDPOINT));
     let spawn_ep = must(retype_obj(abi::objtype::ENDPOINT));
     let result_ep = must(retype_obj(abi::objtype::ENDPOINT));
-    let con_shared = must(retype_frame()); // termd -> console text
-    let term_out = must(retype_frame()); // shell -> termd text and prompts
-    let term_in = must(retype_frame()); // termd -> shell completed lines
+    let con_shared = must(retype_frame()); // lineedit -> console text
+    let term_out = must(retype_frame()); // shell -> lineedit text and prompts
+    let term_in = must(retype_frame()); // lineedit -> shell completed lines
 
     // 1. Console server: reads text from the shared page, writes it to the UART.
     let con = must(build_child(
@@ -106,7 +106,7 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, _x2: u64) -> ! {
 
     // 2. The line discipline: serves the terminal endpoint, prints through the console. It is
     // the console's only client; everyone else prints through it.
-    let termd = must(build_child(
+    let lineedit = must(build_child(
         UNTYPED,
         &td_elf,
         &[
@@ -115,13 +115,13 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, _x2: u64) -> ! {
             (reply, abi::rights::READ),
         ],
         &[
-            (CON_SHARED_VA, con_shared, abi::aspace::MAP_RW), // termd fills what the console reads
+            (CON_SHARED_VA, con_shared, abi::aspace::MAP_RW), // lineedit fills what the console reads
             (TERM_OUT_VA, term_out, abi::aspace::MAP_RO),
             (TERM_IN_VA, term_in, abi::aspace::MAP_RW),
         ],
     ));
-    must0(tcb_start(termd, 0, 0, 0));
-    cap_delete(termd);
+    must0(tcb_start(lineedit, 0, 0, 0));
+    cap_delete(lineedit);
 
     // 3. Input driver: waits on the UART receive interrupt, forwards raw bytes to the terminal.
     let input = must(build_child(

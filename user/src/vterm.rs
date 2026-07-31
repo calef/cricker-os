@@ -33,7 +33,7 @@
 //! DECISIONS §33 recorded that a process here has exactly **one blocking wait point** (one `RECV`,
 //! no wait-any, and two threads cannot share an address space), so distinguishing them by endpoint
 //! is not available. They arrive on **one** endpoint and are distinguished by opcode, which is what
-//! `termd` already does for the serial terminal, and the security consequence is stated rather than
+//! `lineedit` already does for the serial terminal, and the security consequence is stated rather than
 //! hidden: an application holding this endpoint could send `OP_BYTES` and forge a keystroke into its
 //! own terminal. It gains nothing by it (the keystrokes come back to the same grid it is already
 //! printing on), and the boundary that matters, one client's input not reaching another's, is the
@@ -58,7 +58,7 @@
 
 use compose::proto::ctl;
 use gfx_proto as gfx;
-use linedisc::proto;
+use lineedit::proto;
 use user_rt::{call, invoke, recv_cap, send};
 use vt::status::{MODE_DISPLAY, MODE_WINDOW};
 
@@ -297,7 +297,7 @@ pub extern "C" fn _start(mode: u64, _arg1: u64, _arg2: u64) -> ! {
         let mut r0: u64 = 0;
         match proto::op(w0) {
             // The application half: print `len` bytes from the shared output page. The terminal
-            // performs no newline translation, deliberately: `linedisc::expand_output` already put
+            // performs no newline translation, deliberately: `lineedit::expand_output` already put
             // `\r\n` on the wire for a Unix `\n`, and a second translation here would move the
             // carriage twice. The engine treats a bare `LF` as a line feed, which is what a VT does.
             proto::OP_WRITE => {
@@ -326,8 +326,8 @@ pub extern "C" fn _start(mode: u64, _arg1: u64, _arg2: u64) -> ! {
             }
             // `OP_READLINE` and `OP_INTRCOUNT` are the line discipline's, and this component is not
             // one: it renders a stream and echoes keystrokes. A client that wants edited lines puts
-            // `termd` in front of this and prints its echo through `OP_WRITE`, which needs no new
-            // protocol because `linedisc`'s echo is exactly a byte stream this engine parses (the
+            // `lineedit` in front of this and prints its echo through `OP_WRITE`, which needs no new
+            // protocol because `lineedit`'s echo is exactly a byte stream this engine parses (the
             // `vt` crate's interoperability test proves that on the host). Recorded as a limit in
             // notes/glyphs.md rather than half-implemented.
             _ => r0 = proto::BAD_REQUEST,

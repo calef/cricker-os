@@ -115,7 +115,7 @@ is the contract, and it is **per program**, published in that program's own sour
 - the **shell** holds five endpoints (slots 0–4) and two shared pages.
 - a **std program** (milestone 27) gets an untyped budget at slot 0 (its heap) and a WRITE endpoint
   at slot 1 (stdout/stderr). A std program *given the network* (milestone 27 phase two) also gets a
-  WRITE `Stack` endpoint at slot 2 (netd's socket contract, DECISIONS §25) and a second untyped
+  WRITE `Stack` endpoint at slot 2 (netstack's socket contract, DECISIONS §25) and a second untyped
   budget at slot 3 (the per-socket shared frames `std::net` mints). Absent slots 2 and 3, `std::net`
   returns `Unsupported`: no ambient network, felt from inside the process. See notes/std.md.
 - a std program *given a directory* (milestone 27 phase two, the FS half) gets a WRITE FS-service

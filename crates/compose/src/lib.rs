@@ -4,10 +4,10 @@
 //! part of that which is arithmetic and can therefore be checked on the host in milliseconds: the
 //! scene (which windows exist, where, and in what order they stack), the clipping and
 //! damage-rectangle math, the composition itself, and the protocol the parties speak. The prose
-//! contract is notes/compositor.md; the processes are `user/src/compd.rs` (the compositor) and
+//! contract is notes/compositor.md; the processes are `user/src/compositor.rs` (the compositor) and
 //! `user/src/window.rs` (a client).
 //!
-//! The split is the one `gfx_proto` makes for the framebuffer and `linedisc::proto` for the
+//! The split is the one `gfx_proto` makes for the framebuffer and `lineedit::proto` for the
 //! terminal: one definition, shared by the compositor, its clients, the kernel-side test, and the
 //! host-side scanout check, so none of them can drift from the others about what the screen should
 //! look like.
@@ -15,13 +15,13 @@
 //! # The shape
 //!
 //! ```text
-//!   virtio-gpu ──► gpud ──gfx FLUSH(damage)──► compd ◄──doorbell CALL──── window clients
-//!                   │      (rung one's         │  │                       (one surface each)
-//!                   └──the scanout, shared─────┘  └──per-client input endpoint (focus)
+//!   virtio-gpu ──► display ──gfx FLUSH(damage)──► compositor ◄──doorbell CALL──── window clients
+//!                   │      (rung one's            │  │                        (one surface each)
+//!                   └──the scanout, shared────────┘  └──per-client input endpoint (focus)
 //! ```
 //!
 //! The compositor is **rung one's client, unchanged**: it holds the display endpoint and the scanout
-//! frames exactly as `painter` did, and `gpud` cannot tell the difference. Everything rung two adds
+//! frames exactly as `painter` did, and `display` cannot tell the difference. Everything rung two adds
 //! is above that seam.
 //!
 //! # Where authority lives, and why the doorbell can be shared
@@ -480,7 +480,7 @@ pub fn composite(screen: &mut [u32], sources: &[&[u32]], n: usize, damage: Rect)
 /// The IPC the compositor serves, and the shared-memory layouts that carry everything the IPC
 /// deliberately does not.
 ///
-/// Request words are packed the way `gfx_proto` and `linedisc::proto` pack theirs (opcode in bits
+/// Request words are packed the way `gfx_proto` and `lineedit::proto` pack theirs (opcode in bits
 /// 63:56), and the helpers are re-exported rather than redefined so all three contracts read alike.
 pub mod proto {
     pub use gfx_proto::{op, operand, req};
@@ -595,7 +595,7 @@ pub mod proto {
     /// and it is a mapping no client has.
     ///
     /// The compositor forwards what it reads here to the focused client as
-    /// `linedisc::proto::OP_BYTES`, the terminal contract's driver half verbatim
+    /// `lineedit::proto::OP_BYTES`, the terminal contract's driver half verbatim
     /// (notes/terminal-contract.md), so a terminal is a client of this compositor without changing a
     /// line of either contract.
     pub mod ring {

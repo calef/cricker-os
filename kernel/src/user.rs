@@ -1635,14 +1635,14 @@ pub mod virtio_service {
     }
 
     /// The heap budget the net server (smoltcp) draws from, in pages: the socket set, per-frame
-    /// transmit buffers, and caches, plus the program's own page tables. netd caps its heap at 128
+    /// transmit buffers, and caches, plus the program's own page tables. netstack caps its heap at 128
     /// pages, so 192 leaves headroom without being unbounded.
     const NET_SERVER_BUDGET_PAGES: u64 = 192;
     /// smoltcp builds packets on the stack; one mapped stack page is not enough. Eight extra keeps
     /// the poll loop clear (allocdemo needed three for `alloc` collections; smoltcp asks more).
     const NET_SERVER_STACK_PAGES: u64 = 8;
 
-    /// Start the **net server** (milestone 30, piece 3): the `netd` binary, which runs smoltcp over
+    /// Start the **net server** (milestone 30, piece 3): the `netstack` binary, which runs smoltcp over
     /// the confined NIC and does DHCP. Like [`wire`] it hands the confined `Virtio` capability, the
     /// interrupt, a DMA page, and a report endpoint; unlike it, the server also gets an **untyped
     /// budget** (slot 3) for the heap smoltcp allocates against, and extra stack pages. Returns the
@@ -1678,9 +1678,9 @@ pub mod virtio_service {
 
     /// [`wire`] for the net server: the same confined transport, interrupt, DMA page, and report
     /// endpoint, plus an untyped budget for the heap, extra stack pages, and a **`Stack` endpoint**
-    /// (slot 4) where clients' socket-contract requests arrive. `netd` is its own binary (loaded by
+    /// (slot 4) where clients' socket-contract requests arrive. `netstack` is its own binary (loaded by
     /// name), so no role selector is passed. Returns `(report endpoint, stack endpoint)`; a caller
-    /// that has no client (the phase-A DHCP tests) ignores the stack, and netd simply blocks on it.
+    /// that has no client (the phase-A DHCP tests) ignores the stack, and netstack simply blocks on it.
     fn wire_net_server(
         image: &'static [u8],
         transport: crate::virtio::Transport,
@@ -1705,7 +1705,8 @@ pub mod virtio_service {
         let report = crate::sched::create_endpoint();
         let stack = crate::sched::create_endpoint();
         let vid = crate::virtio::register(transport, dma, FRAME_SIZE, rid);
-        let budget = crate::untyped::create(NET_SERVER_BUDGET_PAGES).expect("no untyped for netd");
+        let budget =
+            crate::untyped::create(NET_SERVER_BUDGET_PAGES).expect("no untyped for netstack");
 
         // The DMA mapping plus the extra stack pages, in one array the spawn closure owns.
         let mut maps = [Mapping {
@@ -1737,7 +1738,7 @@ pub mod virtio_service {
             run(
                 image,
                 Spawn {
-                    arg0: 0, // netd is its own binary; no role selector
+                    arg0: 0, // netstack is its own binary; no role selector
                     arg1: dma,
                     arg2: 0,
                     grants: &[
@@ -1761,9 +1762,9 @@ pub mod virtio_service {
     const NET_CLIENT_BUDGET_PAGES: u64 = 16;
 
     /// **Spawn the net server and a client of its socket contract** (milestone 30, piece 3 phase B).
-    /// Both are the `netd` binary (`image`): the server is entry role 0, the client is a nonzero
+    /// Both are the `netstack` binary (`image`): the server is entry role 0, the client is a nonzero
     /// role (the client rides in the same binary to keep the initrd under its 15-file directory
-    /// limit). They share a `Stack` endpoint: netd holds `READ` (it serves), the client holds
+    /// limit). They share a `Stack` endpoint: netstack holds `READ` (it serves), the client holds
     /// `WRITE` (it requests). The client also gets its own untyped (to mint and delegate the shared
     /// frame) and a report endpoint. `cli_arg` selects which exchange the client drives (UDP DNS or
     /// TCP echo). Returns the client's report endpoint, or `None` if no NIC is attached.
@@ -1784,7 +1785,7 @@ pub mod virtio_service {
             )
         };
 
-        let (netd_report, stack) = wire_net_server(image, transport, intid, rid);
+        let (netstack_report, stack) = wire_net_server(image, transport, intid, rid);
 
         // The client: WRITE on the shared stack endpoint, its own untyped, a report endpoint. Two
         // extra stack pages cover its DNS-query building and IPC; it links no heap.
@@ -1810,7 +1811,7 @@ pub mod virtio_service {
 
         crate::sched::spawn(move || {
             run(
-                image, // the netd binary again; a nonzero entry role runs its client half
+                image, // the netstack binary again; a nonzero entry role runs its client half
                 Spawn {
                     arg0: cli_arg,
                     arg1: 0,
@@ -1828,11 +1829,11 @@ pub mod virtio_service {
         })
         .expect("could not spawn the net client");
 
-        // netd reports its DHCP lease with a blocking `send`; drain it here so netd unblocks and
+        // netstack reports its DHCP lease with a blocking `send`; drain it here so netstack unblocks and
         // enters its serve loop (the client's first request blocks until it does). This also
         // confirms DHCP completed before the client's exchange runs. The client, spawned above,
         // waits at its first request meanwhile.
-        crate::sched::ipc_recv(netd_report);
+        crate::sched::ipc_recv(netstack_report);
 
         Some(cli_report)
     }
@@ -1846,7 +1847,7 @@ pub mod virtio_service {
     /// **Spawn the net server and a `std::net` client** (milestone 27 phase two): the same
     /// `hellostd` std binary, but now given the network, so its `UdpSocket::bind` probe succeeds
     /// and it drives a real UDP DNS query and a TCP echo round trip through `std::net`, whose PAL
-    /// binds to this same netd socket contract. netd is `netd_image` (entry role 0, holding the
+    /// binds to this same netstack socket contract. netstack is `netstack_image` (entry role 0, holding the
     /// NIC and `READ` on the `Stack` endpoint); `std_image` is the ordinary std ELF given the std
     /// slot convention (heap untyped at 0, stdout at 1) plus the two net slots (the `Stack`
     /// endpoint `WRITE` at 2, an untyped budget for its per-socket shared frames at 3). Over the
@@ -1854,14 +1855,14 @@ pub mod virtio_service {
     /// same binary spawned without slots 2 and 3 runs the offline transcript instead, which is what
     /// makes "no ambient network" visible: authority, not the code, decides. Returns the program's
     /// stdout endpoint for the test to reassemble, or `None` if no NIC is attached.
-    pub fn start_net_std(netd_image: &'static [u8], std_image: &'static [u8]) -> Option<EpId> {
+    pub fn start_net_std(netstack_image: &'static [u8], std_image: &'static [u8]) -> Option<EpId> {
         use crate::cap::untyped_cap;
 
         let dev = crate::virtio::find_net_device()?;
         let transport = crate::virtio::Transport::Mmio {
             mmio_phys: dev.mmio_phys,
         };
-        let (netd_report, stack) = wire_net_server(netd_image, transport, dev.intid, None);
+        let (netstack_report, stack) = wire_net_server(netstack_image, transport, dev.intid, None);
 
         let report = crate::sched::create_endpoint();
         let heap =
@@ -1905,9 +1906,9 @@ pub mod virtio_service {
         })
         .expect("could not spawn the networked std program");
 
-        // Same discipline as start_net_stack: drain netd's blocking DHCP report so it reaches its
+        // Same discipline as start_net_stack: drain netstack's blocking DHCP report so it reaches its
         // serve loop before the std program's first request, and confirm DHCP completed.
-        crate::sched::ipc_recv(netd_report);
+        crate::sched::ipc_recv(netstack_report);
 
         Some(report)
     }
@@ -2801,7 +2802,7 @@ fn term_print(out: u64, ep: crate::sched::EpId, text: &[u8]) {
     }
     // The bytes must be visible to the terminal before the request that names them.
     core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-    let w0 = linedisc::proto::req(linedisc::proto::OP_WRITE, text.len() as u64);
+    let w0 = lineedit::proto::req(lineedit::proto::OP_WRITE, text.len() as u64);
     let r = crate::sched::ipc_call(ep, [w0, 0]);
     assert_eq!(
         r[0],
@@ -2841,7 +2842,7 @@ pub mod display_service {
     use crate::cap::{Rights, endpoint_cap, irq_cap, virtio_cap};
     use crate::sched::EpId;
 
-    /// Where the driver maps its whole DMA region. Must match user/src/gpud.rs `DMA_VA`.
+    /// Where the driver maps its whole DMA region. Must match user/src/display.rs `DMA_VA`.
     const DMA_VA: u64 = 0x0000_0000_0090_0000;
     /// Where the client maps the surface. Must match user/src/painter.rs `SURFACE_VA`.
     const SURFACE_VA_CLIENT: u64 = 0x0000_0000_0060_0000;
@@ -2849,7 +2850,7 @@ pub mod display_service {
     /// The DMA region, in frames: one for the rings and control buffers, then the surface.
     const DMA_FRAMES: u64 = 1 + gfx_proto::SURFACE_FRAMES as u64;
 
-    /// The driver binary's escape-attempt role; must match user/src/gpud.rs `ROLE_BACKING_ESCAPE`.
+    /// The driver binary's escape-attempt role; must match user/src/display.rs `ROLE_BACKING_ESCAPE`.
     const ROLE_BACKING_ESCAPE: u64 = 1;
 
     /// **Wire and spawn the display driver and the painting client.** Returns
@@ -2893,7 +2894,7 @@ pub mod display_service {
         Some((driver_report, client_report))
     }
 
-    /// **Spawn a driver that attacks its own confinement** (user/src/gpud.rs `run_backing_escape`):
+    /// **Spawn a driver that attacks its own confinement** (user/src/display.rs `run_backing_escape`):
     /// it asks the device to read pixels out of a frame outside its grant. Returns
     /// `(report endpoint, the victim frame's physical address)`, or `None` if no GPU is on the bus.
     ///
@@ -3026,7 +3027,7 @@ pub mod display_service {
     ///
     /// The terminal takes `painter`'s place at the display seam with **exactly `painter`'s
     /// authority**: a report endpoint, the display endpoint, and the surface frames. It holds no
-    /// device, no interrupt, and no physical address, and `gpud` cannot tell it from the client that
+    /// device, no interrupt, and no physical address, and `display` cannot tell it from the client that
     /// drew a test pattern. That is the answer to "did the framebuffer contract need changing to
     /// carry text?", and it is an answer made of a spawn literal rather than an argument.
     ///
@@ -3133,7 +3134,7 @@ pub mod display_service {
                 for (k, &b) in chunk.iter().enumerate() {
                     w1 |= (b as u64) << (8 * k);
                 }
-                let w0 = linedisc::proto::req(linedisc::proto::OP_BYTES, chunk.len() as u64);
+                let w0 = lineedit::proto::req(lineedit::proto::OP_BYTES, chunk.len() as u64);
                 assert_eq!(
                     crate::sched::ipc_call(self.term, [w0, w1])[0],
                     0,
@@ -3174,9 +3175,9 @@ pub mod display_service {
 /// ladder's rung two).
 ///
 /// ```text
-///   gpud (or a kernel stand-in) ──gfx FLUSH(damage)──► compd ◄──one doorbell──── window clients
-///                                    the scanout, shared ──┘  │                 (a surface each)
-///                                                             └─► one input endpoint per focusable
+///   display (or a kernel stand-in) ──gfx FLUSH(damage)──► compositor ◄──one doorbell──── window clients
+///                                            the scanout, shared ──┘  │                 (a surface each)
+///                                                                     └─► one input endpoint per focusable
 /// ```
 ///
 /// The kernel's part is what it always is: allocate the frames, mint the endpoints, hand each process
@@ -3202,7 +3203,7 @@ pub mod compositor_service {
     use crate::sched::EpId;
     use compose::SCENE;
 
-    // The compositor's address space. Must match user/src/compd.rs.
+    // The compositor's address space. Must match user/src/compositor.rs.
     const SCREEN_VA: u64 = 0x0000_0000_0080_0000;
     const WLIST_VA: u64 = 0x0000_0000_0081_0000;
     const RING_VA: u64 = 0x0000_0000_0082_0000;
@@ -3266,7 +3267,7 @@ pub mod compositor_service {
     }
 
     /// **Wire the scene and start the compositor.** `display` is an endpoint speaking the rung-one
-    /// display contract (`gpud`, or a kernel stand-in for the tests that do not need a device), and
+    /// display contract (`display`, or a kernel stand-in for the tests that do not need a device), and
     /// `screen` the frames it scans out.
     ///
     /// Returns once the compositor is spawned; the caller should wait for `status::COMP_UP` on
@@ -3274,7 +3275,7 @@ pub mod compositor_service {
     /// content-free `HELLO`: either order works.
     pub fn start(n: usize, focusable: usize, display: EpId, screen: u64) -> Wiring {
         assert!(n <= SCENE.len() && n <= compose::MAX_WINDOWS && focusable <= n);
-        let image = program("compd").expect("no compd program in the initrd archive");
+        let image = program("compositor").expect("no compositor program in the initrd archive");
         let client_image = program("window").expect("no window program in the initrd archive");
         let term_image = program("vterm").expect("no vterm program in the initrd archive");
 
@@ -3563,7 +3564,7 @@ pub mod compositor_service {
         /// It takes a `window` client's place with **exactly a window client's authority**: a report
         /// endpoint, the doorbell, an input endpoint, and its own control page and surface. The
         /// compositor cannot tell it from the client that painted a coordinate pattern, which is the
-        /// same claim rung two made about `gpud` one seam down, now made about a client.
+        /// same claim rung two made about `display` one seam down, now made about a client.
         ///
         /// The one addition is an **output page**, and it belongs to the terminal contract rather
         /// than to the compositor's: it is where an application puts the bytes of an `OP_WRITE`
@@ -3572,7 +3573,7 @@ pub mod compositor_service {
         /// **Its input endpoint and its terminal endpoint are the same endpoint**, deliberately.
         /// This process has one wait point (DECISIONS §33), so an application printing and the
         /// compositor typing must arrive on one endpoint and be told apart by opcode, exactly as
-        /// `termd` does for the serial terminal. The compositor holds WRITE on it because window `i`
+        /// `lineedit` does for the serial terminal. The compositor holds WRITE on it because window `i`
         /// is focusable; the kernel holds it too, as the spawner.
         ///
         /// Returns the output page's physical address. `i` must be below `focusable`, or the
@@ -3741,7 +3742,7 @@ pub mod keyboard_service {
     /// **Wire and spawn the keyboard driver.** `None` if no virtio-input function is on the bus.
     ///
     /// The kernel keeps the doorbell's receiving half and the ring, so it can stand in for the
-    /// compositor; a real system hands both to `compd` instead and nothing about this driver
+    /// compositor; a real system hands both to `compositor` instead and nothing about this driver
     /// changes, which is the same swap rung two made at the display seam.
     pub fn start(image: &'static [u8]) -> Option<Wiring> {
         let d = crate::pci::find_input_device()?;
@@ -4106,7 +4107,7 @@ mod compositor_tests {
             tag,
             status::COMP_UP,
             "the compositor did not come up (it reported {tag:#x}; a 0xDEAD_.. word's low byte names \
-             the step, see user/src/compd.rs)",
+             the step, see user/src/compositor.rs)",
         );
         assert_eq!(windows, w.n as u64, "the compositor wired the wrong scene");
         assert_eq!(focus, 0, "focus should start on the bottom window");
@@ -4517,13 +4518,13 @@ mod compositor_tests {
     ///
     /// # And the terminal is a client, unchanged at both seams
     ///
-    /// `compd` cannot tell a display terminal from the `window` client that paints a coordinate
+    /// `compositor` cannot tell a display terminal from the `window` client that paints a coordinate
     /// pattern: same grants, same control page, same doorbell, same `COMMIT`. Neither `compose` nor
     /// `gfx_proto` needed a line changed to carry text. That is the seam claim made twice in one
     /// milestone, once at each rung.
     ///
     /// Uses the kernel's display stand-in rather than the GPU, deliberately: this test is about
-    /// routing and composition, the device is proved elsewhere in this file, and a third `gpud`
+    /// routing and composition, the device is proved elsewhere in this file, and a third `display`
     /// against the same physical device would put the scanout's picture in a race with the
     /// host-side check that reads it.
     #[test_case]
@@ -4615,7 +4616,7 @@ mod compositor_tests {
     /// **Three clients' surfaces become one screen, and the host confirms it.**
     ///
     /// The end-to-end picture, with a real virtio-gpu under it (rung one's driver, unchanged: the
-    /// compositor takes `painter`'s place at that seam and `gpud` cannot tell). Four witnesses, which is
+    /// compositor takes `painter`'s place at that seam and `display` cannot tell). Four witnesses, which is
     /// the point, because a compositor's output is exactly the thing one digest cannot be trusted about:
     ///
     /// 1. **the driver**, digesting the frames it handed the device after the device said it had them.
@@ -4636,8 +4637,8 @@ mod compositor_tests {
     /// on it.
     #[test_case]
     fn three_clients_compose_into_one_scanout_and_the_host_sees_it() {
-        let gpud = program("gpud").expect("no gpud program in the initrd archive");
-        let (driver_report, display, screen) = display_service::start_driver(gpud).expect(
+        let display = program("display").expect("no display program in the initrd archive");
+        let (driver_report, display, screen) = display_service::start_driver(display).expect(
             "no virtio-gpu-pci function on the bus: is CRICKER_GPU missing from the test leg, or \
              the -device virtio-gpu-pci line from the runner?",
         );
@@ -4784,14 +4785,14 @@ mod display_tests {
     /// notes/framebuffer-contract.md, "Proving the scanout, from the host".
     #[test_case]
     fn a_confined_userspace_driver_puts_a_known_pattern_in_a_framebuffer() {
-        let gpud = program("gpud").expect("no gpud program in the initrd archive");
+        let display = program("display").expect("no display program in the initrd archive");
         let painter = program("painter").expect("no painter program in the initrd archive");
         let threads_before = sched::thread_count();
 
         // A GPU asked for but not enumerated is a build-order mistake wearing a machine fact's
         // clothes, the hazard the runners were taught to fail loudly on. The test legs always attach
         // one, so absence is a failure, not a skip.
-        let (driver_report, client_report) = display_service::start(gpud, painter).expect(
+        let (driver_report, client_report) = display_service::start(display, painter).expect(
             "no virtio-gpu-pci function on the bus: is CRICKER_GPU missing from the test leg, or \
              the -device virtio-gpu-pci line from the runner?",
         );
@@ -4813,7 +4814,7 @@ mod display_tests {
             tag,
             gfx::status::UP,
             "the display driver did not come up (it reported {tag:#x}; a 0xDEAD_.. word's low byte \
-             is the bring-up step that failed, see user/src/gpud.rs)",
+             is the bring-up step that failed, see user/src/display.rs)",
         );
         assert_eq!(
             geometry,
@@ -4932,12 +4933,12 @@ mod display_tests {
     /// fails the scanout check loudly, which is the right way to be wrong.
     #[test_case]
     fn a_backing_outside_the_grant_is_refused_by_the_iommu() {
-        let gpud = program("gpud").expect("no gpud program in the initrd archive");
+        let display = program("display").expect("no display program in the initrd archive");
 
         // Drain any stale fault first, so what we observe is this test's.
         while crate::iommu::take_fault().is_some() {}
 
-        let (report, victim) = display_service::start_backing_escape(gpud).expect(
+        let (report, victim) = display_service::start_backing_escape(display).expect(
             "no virtio-gpu-pci function on the bus: is CRICKER_GPU missing from the test leg?",
         );
         assert!(
@@ -4951,7 +4952,7 @@ mod display_tests {
             tag,
             gfx::status::BACKING,
             "the escape driver did not reach its attach (it reported {tag:#x}; a 0xDEAD_.. word's \
-             low byte names the bring-up step, see user/src/gpud.rs)",
+             low byte names the bring-up step, see user/src/display.rs)",
         );
 
         // The evidence. QEMU records the fault as it processes the command under TCG, so a bounded
@@ -4985,7 +4986,7 @@ mod display_tests {
         // Leave the fault queue as we found it. Not tidiness: the RISC-V IOMMU's queue holds 128
         // records and the driver does not clear its overflow bit, so records left behind here cost a
         // later test its own fault assertion. The escape above is sized to produce one fault for the
-        // same reason (user/src/gpud.rs).
+        // same reason (user/src/display.rs).
         while crate::iommu::take_fault().is_some() {}
     }
 
@@ -5015,14 +5016,14 @@ mod display_tests {
     ///
     /// Four rows of text (a one-row picture would hide a stride error), three renditions (a terminal
     /// that ignored SGR would draw every glyph correctly and still fail), a `\r\n` pair (what
-    /// `linedisc::expand_output` puts on the wire for a Unix `\n`), descenders and an underscore (the
+    /// `lineedit::expand_output` puts on the wire for a Unix `\n`), descenders and an underscore (the
     /// glyph rows a font table truncated to seven would lose), and then **keystrokes**, delivered as
     /// `OP_BYTES`: the terminal contract's driver half, byte for byte what `user/src/input.rs` sends
     /// and what the compositor forwards to a focused client.
     ///
     /// # And the picture the driver reports is the *blank* terminal, on purpose
     ///
-    /// `gpud`'s one status report covers its first flush, which here is the terminal's blank grid
+    /// `display`'s one status report covers its first flush, which here is the terminal's blank grid
     /// before anything has been written. So it doubles as the check that an empty terminal is a
     /// *defined* picture (spaces on the default background, with the cursor) rather than whatever
     /// those frames held at boot, exactly as rung two used it for the empty compositor screen.
@@ -5032,10 +5033,10 @@ mod display_tests {
     /// one that stays up until QEMU exits. See notes/glyphs.md for the ordering and what breaks it.
     #[test_case]
     fn a_bitmap_font_and_a_vt_engine_put_readable_text_on_the_scanout() {
-        let gpud = program("gpud").expect("no gpud program in the initrd archive");
+        let display = program("display").expect("no display program in the initrd archive");
         let vterm = program("vterm").expect("no vterm program in the initrd archive");
 
-        let w = display_service::start_terminal(gpud, vterm).expect(
+        let w = display_service::start_terminal(display, vterm).expect(
             "no virtio-gpu-pci function on the bus: is CRICKER_GPU missing from the test leg, or \
              the -device virtio-gpu-pci line from the runner?",
         );
@@ -5856,14 +5857,14 @@ mod tests {
         program("worker").expect("no worker program in the initrd archive")
     }
 
-    /// The `netd` program's ELF bytes (milestone 30, piece 3): the smoltcp net server, a distinct
+    /// The `netstack` program's ELF bytes (milestone 30, piece 3): the smoltcp net server, a distinct
     /// binary loaded by name.
-    fn netd_image() -> &'static [u8] {
-        program("netd").expect("no netd program in the initrd archive")
+    fn netstack_image() -> &'static [u8] {
+        program("netstack").expect("no netstack program in the initrd archive")
     }
 
     /// The net client's test selectors and its success word, matching user/src/netcli.rs. The
-    /// client is a nonzero entry role of the `netd` binary, so it needs no image of its own.
+    /// client is a nonzero entry role of the `netstack` binary, so it needs no image of its own.
     const NET_TEST_UDP_DNS: u64 = 1;
     const NET_TEST_TCP_ECHO: u64 = 2;
     const NET_TEST_TCP_REOPEN: u64 = 3;
@@ -6735,7 +6736,7 @@ mod tests {
     /// smoltcp over the confined NIC can produce it.
     #[test_case]
     fn the_net_server_acquires_a_dhcp_lease_over_smoltcp() {
-        let report = match virtio_service::start_net_server(netd_image()) {
+        let report = match virtio_service::start_net_server(netstack_image()) {
             Some(r) => r,
             None => {
                 crate::println!("    (no virtio-net device attached; skipping)");
@@ -6754,7 +6755,7 @@ mod tests {
     /// a NIC confined in hardware and still gets its lease.
     #[test_case]
     fn the_net_server_acquires_a_dhcp_lease_over_smoltcp_pci() {
-        let report = match virtio_service::start_net_server_pci(netd_image()) {
+        let report = match virtio_service::start_net_server_pci(netstack_image()) {
             Some(r) => r,
             None => {
                 crate::println!("    (no virtio-net-pci device attached; skipping)");
@@ -6773,7 +6774,7 @@ mod tests {
     /// client process holds a `Stack` endpoint and its own untyped, mints a shared frame, delegates
     /// it, opens a UDP socket by id, sends a datagram, and reads the reply back through the same
     /// frame. No ambient network: the client acts only through the capability it was granted, and the
-    /// bytes cross in the shared frame, never in a message. Proves the whole path, client to netd to
+    /// bytes cross in the shared frame, never in a message. Proves the whole path, client to netstack to
     /// smoltcp to the confined NIC, over the mmio transport.
     ///
     /// The peer is **slirp's own TFTP server** (10.0.2.2:69), served inside libslirp, so the exchange
@@ -6783,13 +6784,14 @@ mod tests {
     /// (~2.5% per query, measured). The real-resolution case still runs, non-gating, below.
     #[test_case]
     fn a_client_completes_a_udp_round_trip_through_the_socket_contract() {
-        let report = match virtio_service::start_net_stack(netd_image(), NET_TEST_UDP_TFTP, false) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no virtio-net device attached; skipping)");
-                return;
-            }
-        };
+        let report =
+            match virtio_service::start_net_stack(netstack_image(), NET_TEST_UDP_TFTP, false) {
+                Some(r) => r,
+                None => {
+                    crate::println!("    (no virtio-net device attached; skipping)");
+                    return;
+                }
+            };
         let verdict = sched::ipc_recv(report)[0];
         assert_eq!(
             verdict, NET_CLIENT_OK,
@@ -6800,13 +6802,14 @@ mod tests {
     /// The same UDP round trip over the PCIe transport, behind the IOMMU.
     #[test_case]
     fn a_client_completes_a_udp_round_trip_through_the_socket_contract_pci() {
-        let report = match virtio_service::start_net_stack(netd_image(), NET_TEST_UDP_TFTP, true) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no virtio-net-pci device attached; skipping)");
-                return;
-            }
-        };
+        let report =
+            match virtio_service::start_net_stack(netstack_image(), NET_TEST_UDP_TFTP, true) {
+                Some(r) => r,
+                None => {
+                    crate::println!("    (no virtio-net-pci device attached; skipping)");
+                    return;
+                }
+            };
         let verdict = sched::ipc_recv(report)[0];
         assert_eq!(
             verdict, NET_CLIENT_OK,
@@ -6823,13 +6826,14 @@ mod tests {
     /// our defect. The deterministic UDP coverage is the TFTP pair above. See notes/net.md.
     #[test_case]
     fn a_client_resolves_a_real_dns_name_when_the_host_resolver_answers() {
-        let report = match virtio_service::start_net_stack(netd_image(), NET_TEST_UDP_DNS, false) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no virtio-net device attached; skipping)");
-                return;
-            }
-        };
+        let report =
+            match virtio_service::start_net_stack(netstack_image(), NET_TEST_UDP_DNS, false) {
+                Some(r) => r,
+                None => {
+                    crate::println!("    (no virtio-net device attached; skipping)");
+                    return;
+                }
+            };
         let verdict = sched::ipc_recv(report)[0];
         if verdict == NET_CLIENT_NO_ANSWER {
             crate::println!(
@@ -6848,16 +6852,17 @@ mod tests {
     /// socket by id, connects to slirp's guestfwd echo peer (10.0.2.9:7777, piped to `/bin/cat`),
     /// sends a payload, receives the echo, and closes. The full round trip, handshake through
     /// bidirectional data to teardown, deterministic and zero-host-setup (nothing outlives QEMU),
-    /// through the client, netd, smoltcp, and the confined NIC.
+    /// through the client, netstack, smoltcp, and the confined NIC.
     #[test_case]
     fn a_client_echoes_over_tcp_through_the_socket_contract() {
-        let report = match virtio_service::start_net_stack(netd_image(), NET_TEST_TCP_ECHO, false) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no virtio-net device attached; skipping)");
-                return;
-            }
-        };
+        let report =
+            match virtio_service::start_net_stack(netstack_image(), NET_TEST_TCP_ECHO, false) {
+                Some(r) => r,
+                None => {
+                    crate::println!("    (no virtio-net device attached; skipping)");
+                    return;
+                }
+            };
         let verdict = sched::ipc_recv(report)[0];
         assert_eq!(
             verdict, NET_CLIENT_OK,
@@ -6868,13 +6873,14 @@ mod tests {
     /// The same TCP echo round trip over the PCIe transport, behind the IOMMU.
     #[test_case]
     fn a_client_echoes_over_tcp_through_the_socket_contract_pci() {
-        let report = match virtio_service::start_net_stack(netd_image(), NET_TEST_TCP_ECHO, true) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no virtio-net-pci device attached; skipping)");
-                return;
-            }
-        };
+        let report =
+            match virtio_service::start_net_stack(netstack_image(), NET_TEST_TCP_ECHO, true) {
+                Some(r) => r,
+                None => {
+                    crate::println!("    (no virtio-net-pci device attached; skipping)");
+                    return;
+                }
+            };
         let verdict = sched::ipc_recv(report)[0];
         assert_eq!(
             verdict, NET_CLIENT_OK,
@@ -6884,19 +6890,19 @@ mod tests {
 
     /// **Regression: reusing a socket id is safe** (the ephemeral-port fix). A client opens a TCP
     /// socket on id 0, connects to the echo peer, closes it, then reopens the same id and connects
-    /// again. netd derived the local port from the socket id, so the reopen reused the exact port and
+    /// again. netstack derived the local port from the socket id, so the reopen reused the exact port and
     /// the second connect stalled on a slirp flow that had not cleared; the rotating allocator hands
     /// the reopen a fresh port, so both connects complete. The client reports OK only if they do.
     #[test_case]
     fn a_reopened_socket_id_connects_again_over_tcp() {
-        let report = match virtio_service::start_net_stack(netd_image(), NET_TEST_TCP_REOPEN, false)
-        {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no virtio-net device attached; skipping)");
-                return;
-            }
-        };
+        let report =
+            match virtio_service::start_net_stack(netstack_image(), NET_TEST_TCP_REOPEN, false) {
+                Some(r) => r,
+                None => {
+                    crate::println!("    (no virtio-net device attached; skipping)");
+                    return;
+                }
+            };
         let verdict = sched::ipc_recv(report)[0];
         assert_eq!(
             verdict, NET_CLIENT_OK,
@@ -6917,14 +6923,14 @@ mod tests {
 
     /// **`std::net` end to end over the socket contract** (milestone 27 phase two): the `hellostd`
     /// std binary, given the network, does a real UDP DNS query and a TCP echo round trip through
-    /// `std::net::{UdpSocket, TcpStream}`, whose PAL binds to netd's contract. The program never
+    /// `std::net::{UdpSocket, TcpStream}`, whose PAL binds to netstack's contract. The program never
     /// sees a capability or a socket id; it writes to a socket and reads from it. This closes the
     /// `net honestly unsupported` gap from phase one: std's networking runs on the native ABI,
     /// reaching the same path the hand-written client does through std's blocking API. Its stdout
     /// is reassembled off the endpoint and compared byte for byte, the `hellostd` discipline.
     #[test_case]
     fn std_net_runs_over_the_socket_contract() {
-        let report = match virtio_service::start_net_std(netd_image(), hellostd_image()) {
+        let report = match virtio_service::start_net_std(netstack_image(), hellostd_image()) {
             Some(r) => r,
             None => {
                 crate::println!("    (no virtio-net device attached; skipping)");
@@ -9763,13 +9769,13 @@ mod riscv_virtio_tests {
         program("blk").expect("no blk program in the initrd archive")
     }
 
-    /// The `netd` program's ELF bytes (milestone 30, piece 3): the smoltcp net server.
-    fn netd_image() -> &'static [u8] {
-        program("netd").expect("no netd program in the initrd archive")
+    /// The `netstack` program's ELF bytes (milestone 30, piece 3): the smoltcp net server.
+    fn netstack_image() -> &'static [u8] {
+        program("netstack").expect("no netstack program in the initrd archive")
     }
 
     /// The net client's test selectors and success word, matching user/src/netcli.rs. The client is
-    /// a nonzero entry role of the `netd` binary, so it needs no image of its own.
+    /// a nonzero entry role of the `netstack` binary, so it needs no image of its own.
     const NET_TEST_UDP_DNS: u64 = 1;
     const NET_TEST_TCP_ECHO: u64 = 2;
     const NET_TEST_TCP_REOPEN: u64 = 3;
@@ -10125,7 +10131,7 @@ mod riscv_virtio_tests {
     /// (milestone 30, piece 3). A reused userspace TCP/IP stack, driving a kernel-confined device.
     #[test_case]
     fn the_net_server_acquires_a_dhcp_lease_over_smoltcp() {
-        let report = match virtio_service::start_net_server(netd_image()) {
+        let report = match virtio_service::start_net_server(netstack_image()) {
             Some(r) => r,
             None => {
                 crate::println!("    (no virtio-net device attached; skipping)");
@@ -10143,7 +10149,7 @@ mod riscv_virtio_tests {
     /// The riscv net server over PCIe, behind the RISC-V IOMMU (milestone 30, §20).
     #[test_case]
     fn the_net_server_acquires_a_dhcp_lease_over_smoltcp_pci() {
-        let report = match virtio_service::start_net_server_pci(netd_image()) {
+        let report = match virtio_service::start_net_server_pci(netstack_image()) {
             Some(r) => r,
             None => {
                 crate::println!("    (no virtio-net-pci device attached; skipping)");
@@ -10164,13 +10170,14 @@ mod riscv_virtio_tests {
     /// the aarch64 twin for why the old DNS-based version was environment-dependent.
     #[test_case]
     fn a_client_completes_a_udp_round_trip_through_the_socket_contract() {
-        let report = match virtio_service::start_net_stack(netd_image(), NET_TEST_UDP_TFTP, false) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no virtio-net device attached; skipping)");
-                return;
-            }
-        };
+        let report =
+            match virtio_service::start_net_stack(netstack_image(), NET_TEST_UDP_TFTP, false) {
+                Some(r) => r,
+                None => {
+                    crate::println!("    (no virtio-net device attached; skipping)");
+                    return;
+                }
+            };
         let verdict = sched::ipc_recv(report)[0];
         assert_eq!(
             verdict, NET_CLIENT_OK,
@@ -10181,13 +10188,14 @@ mod riscv_virtio_tests {
     /// The riscv UDP round trip over PCIe, behind the RISC-V IOMMU.
     #[test_case]
     fn a_client_completes_a_udp_round_trip_through_the_socket_contract_pci() {
-        let report = match virtio_service::start_net_stack(netd_image(), NET_TEST_UDP_TFTP, true) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no virtio-net-pci device attached; skipping)");
-                return;
-            }
-        };
+        let report =
+            match virtio_service::start_net_stack(netstack_image(), NET_TEST_UDP_TFTP, true) {
+                Some(r) => r,
+                None => {
+                    crate::println!("    (no virtio-net-pci device attached; skipping)");
+                    return;
+                }
+            };
         let verdict = sched::ipc_recv(report)[0];
         assert_eq!(
             verdict, NET_CLIENT_OK,
@@ -10199,13 +10207,14 @@ mod riscv_virtio_tests {
     /// upstream is the host's resolver, so a non-answer is skipped and only a malformed reply fails.
     #[test_case]
     fn a_client_resolves_a_real_dns_name_when_the_host_resolver_answers() {
-        let report = match virtio_service::start_net_stack(netd_image(), NET_TEST_UDP_DNS, false) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no virtio-net device attached; skipping)");
-                return;
-            }
-        };
+        let report =
+            match virtio_service::start_net_stack(netstack_image(), NET_TEST_UDP_DNS, false) {
+                Some(r) => r,
+                None => {
+                    crate::println!("    (no virtio-net device attached; skipping)");
+                    return;
+                }
+            };
         let verdict = sched::ipc_recv(report)[0];
         if verdict == NET_CLIENT_NO_ANSWER {
             crate::println!(
@@ -10224,13 +10233,14 @@ mod riscv_virtio_tests {
     /// send, receive the echo, close, the full round trip through the confined NIC.
     #[test_case]
     fn a_client_echoes_over_tcp_through_the_socket_contract() {
-        let report = match virtio_service::start_net_stack(netd_image(), NET_TEST_TCP_ECHO, false) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no virtio-net device attached; skipping)");
-                return;
-            }
-        };
+        let report =
+            match virtio_service::start_net_stack(netstack_image(), NET_TEST_TCP_ECHO, false) {
+                Some(r) => r,
+                None => {
+                    crate::println!("    (no virtio-net device attached; skipping)");
+                    return;
+                }
+            };
         let verdict = sched::ipc_recv(report)[0];
         assert_eq!(
             verdict, NET_CLIENT_OK,
@@ -10241,13 +10251,14 @@ mod riscv_virtio_tests {
     /// The riscv TCP echo round trip over PCIe, behind the RISC-V IOMMU.
     #[test_case]
     fn a_client_echoes_over_tcp_through_the_socket_contract_pci() {
-        let report = match virtio_service::start_net_stack(netd_image(), NET_TEST_TCP_ECHO, true) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no virtio-net-pci device attached; skipping)");
-                return;
-            }
-        };
+        let report =
+            match virtio_service::start_net_stack(netstack_image(), NET_TEST_TCP_ECHO, true) {
+                Some(r) => r,
+                None => {
+                    crate::println!("    (no virtio-net-pci device attached; skipping)");
+                    return;
+                }
+            };
         let verdict = sched::ipc_recv(report)[0];
         assert_eq!(
             verdict, NET_CLIENT_OK,
@@ -10259,14 +10270,14 @@ mod riscv_virtio_tests {
     /// ephemeral-port fix). See the aarch64 twin for the finding.
     #[test_case]
     fn a_reopened_socket_id_connects_again_over_tcp() {
-        let report = match virtio_service::start_net_stack(netd_image(), NET_TEST_TCP_REOPEN, false)
-        {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no virtio-net device attached; skipping)");
-                return;
-            }
-        };
+        let report =
+            match virtio_service::start_net_stack(netstack_image(), NET_TEST_TCP_REOPEN, false) {
+                Some(r) => r,
+                None => {
+                    crate::println!("    (no virtio-net device attached; skipping)");
+                    return;
+                }
+            };
         let verdict = sched::ipc_recv(report)[0];
         assert_eq!(
             verdict, NET_CLIENT_OK,
@@ -10286,11 +10297,11 @@ mod riscv_virtio_tests {
     /// **`std::net` end to end over the socket contract, on the second ISA** (milestone 27 phase
     /// two): the riscv twin of the aarch64 std-net test. The `hellostd` std binary, given the
     /// network, does a real UDP DNS query and a TCP echo round trip through `std::net`, whose PAL
-    /// binds to netd's contract, proving std's networking runs on the native ABI on both
+    /// binds to netstack's contract, proving std's networking runs on the native ABI on both
     /// architectures (the §19 parity gate). Its stdout is reassembled and compared byte for byte.
     #[test_case]
     fn std_net_runs_over_the_socket_contract() {
-        let report = match virtio_service::start_net_std(netd_image(), hellostd_image()) {
+        let report = match virtio_service::start_net_std(netstack_image(), hellostd_image()) {
             Some(r) => r,
             None => {
                 crate::println!("    (no virtio-net device attached; skipping)");

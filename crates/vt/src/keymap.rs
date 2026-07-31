@@ -6,7 +6,7 @@
 //! a table plus one bit of state, which makes it exactly the kind of thing that belongs on the host
 //! (DECISIONS §7) rather than in a driver where a wrong row costs a QEMU boot to find.
 //!
-//! It lives in this crate rather than in `linedisc` because it is the *display* terminal's input
+//! It lives in this crate rather than in `lineedit` because it is the *display* terminal's input
 //! half, and because the driver that uses it (`user/src/kbd.rs`) already depends on nothing else
 //! here. The bytes it produces are the terminal contract's driver half either way
 //! (notes/terminal-contract.md, `OP_BYTES`), so a keystroke from this device and a keystroke from the
@@ -17,7 +17,7 @@
 //! A **US layout's main block**: the alphanumerics, the symbol keys, space, enter, tab, backspace,
 //! and escape, shifted and unshifted. That is what a terminal needs to be usable and it is where the
 //! honest line is: no keypad, no function keys, no arrow keys (a terminal sends escape sequences for
-//! those, and this device's codes for them are the *other* half of a mapping `linedisc` already has
+//! those, and this device's codes for them are the *other* half of a mapping `lineedit` already has
 //! on the receiving side), no compose, no dead keys, no other layout, and no key repeat beyond what
 //! the device itself sends. Recorded in notes/glyphs.md rather than half-built.
 

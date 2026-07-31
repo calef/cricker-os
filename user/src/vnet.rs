@@ -333,7 +333,7 @@ impl phy::RxToken for VnetRxToken {
 }
 
 /// Carries a raw pointer to the device rather than a borrow, so a receive token and a transmit
-/// token can coexist (both are returned from one `&mut self` call). netd is single-threaded, and
+/// token can coexist (both are returned from one `&mut self` call). netstack is single-threaded, and
 /// the device outlives any token within a poll, so the deref in `consume` is sound.
 pub struct VnetTxToken {
     dev: *mut VirtioNet,

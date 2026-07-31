@@ -11,7 +11,7 @@
 //!     through `std::fs`, and proves that a path trying to leave the granted directory is refused.
 //!   - **granted the network** (a `Stack` endpoint and a frame untyped in slots 2 and 3): it runs a
 //!     real UDP DNS query and a TCP echo round trip through `std::net` (milestone 27 phase two),
-//!     the same netd socket contract the hand-written client uses.
+//!     the same netstack socket contract the hand-written client uses.
 //!   - **granted neither** (only the heap and stdout slots): both return `Unsupported`, and the
 //!     program runs the phase-one transcript, proving the collections, timing, and the honest
 //!     refusals.
@@ -238,7 +238,7 @@ fn net_demo(sock: UdpSocket) {
     println!("udp ok");
 
     // The UDP socket is held (by ref) across the TCP exchange so the two use distinct socket ids,
-    // and thus distinct netd local ports: netd derives a socket's local port from its id, so a TCP
+    // and thus distinct netstack local ports: netstack derives a socket's local port from its id, so a TCP
     // connect that reused a just-closed UDP socket's id would reuse its port against slirp and can
     // stall (notes/std.md, the reuse finding). Keeping both open sidesteps it cleanly.
     assert!(

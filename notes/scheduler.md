@@ -35,7 +35,7 @@ uncertainty, and no shared run-queue lock ever appears. Cost: a steal lands a ti
 ## Wakes: local for a rendezvous, load-aware for a device interrupt (§28.2, as amended)
 
 An IPC rendezvous wakes its partner on the **waker's** core: the message is in registers, the cache
-is warm, and a serial pipeline (netd<->std) stays co-located and fast. `wake` does this, and every
+is warm, and a serial pipeline (netstack<->std) stays co-located and fast. `wake` does this, and every
 IPC path, supervision, and revocation uses it.
 
 A **device interrupt** is different: it carries no locality, and pinning the woken driver to the
@@ -57,7 +57,7 @@ and are now fixed and tested:
   rule 4 (assume weak ordering) and rule 1 (arch state lives in arch).
 
 - **The hang watchdog counts progress, not test starts.** A slow-but-live workload (std_net spends
-  about 300 s in netd's userspace smoltcp poll, CPU-bound, no wakes or output for stretches over a
+  about 300 s in netstack's userspace smoltcp poll, CPU-bound, no wakes or output for stretches over a
   minute) must not read as a deadlock. The watchdog credits a completed wake, a line of output, OR
   any core running a non-idle thread; only a real lost wakeup, every thread blocked and every core on
   its idle thread, stalls it. See `kernel/src/testing.rs`.

@@ -5,7 +5,7 @@
 //! and 2), and a real, reused TCP/IP stack (smoltcp, not hand-built) runs it entirely at EL0. The
 //! kernel knows nothing about TCP, UDP, or DHCP; it owns only the DMA confinement.
 //!
-//! netd brings the NIC up, runs DHCP to completion (reporting the lease), then serves a
+//! netstack brings the NIC up, runs DHCP to completion (reporting the lease), then serves a
 //! capability-shaped socket contract on a `Stack` endpoint (DECISIONS §25, notes/net.md,
 //! user/src/netproto.rs): a socket is a socket id, per-connection bytes cross in a shared frame the
 //! client delegates, and every operation is one message. Phase one is single-threaded and
@@ -57,7 +57,7 @@ static HEAP: user_rt::heap::UntypedHeap = user_rt::heap::UntypedHeap::new();
 /// Our MAC. Locally administered; slirp routes DHCP regardless.
 const MAC: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
 
-/// Where a client's shared frame for socket `sid` is mapped in netd's address space. Above the DMA
+/// Where a client's shared frame for socket `sid` is mapped in netstack's address space. Above the DMA
 /// page (0x90_0000) and well below the heap (1 GiB).
 fn socket_va(sid: usize) -> u64 {
     0x0000_0000_00A0_0000 + sid as u64 * 0x1000
@@ -90,7 +90,7 @@ struct Sock {
     local_port: u16,
 }
 
-/// The private ephemeral-port range netd allocates local ports from, and a **rotating** allocator
+/// The private ephemeral-port range netstack allocates local ports from, and a **rotating** allocator
 /// over it. The local port must be independent of the socket id: deriving it from the id (the
 /// original bug, found by the std::net PAL) means reopening a just-closed id reuses the exact port,
 /// and a TCP connect on a 4-tuple whose slirp flow has not yet cleared stalls in the bounded poll
@@ -191,7 +191,7 @@ fn server(dma_phys: u64) -> ! {
         match op {
             OP_ATTACH_FRAME => {
                 // cap_slot holds the delegated frame. Map it writable at this socket's VA, paid for
-                // from netd's untyped; the mapping outlives the cap, so drop the cap after. ATTACH
+                // from netstack's untyped; the mapping outlives the cap, so drop the cap after. ATTACH
                 // is a SEND_CAP, so there is no reply cap to answer on.
                 let va = socket_va(sid);
                 let r = unsafe { invoke(cap_slot, fr::MAP, va, 1, UNTYPED) };

@@ -12,13 +12,13 @@ driver). This is the prose half.
 ## The shape
 
 ```text
-  virtio-input ──virtio (PCIe, IOMMU)──► kbd ──the input ring──► compd ──OP_BYTES──►┌───────┐
-  (a keyboard)                                                                       │ vterm │
-                                                    application ──OP_WRITE──────────►└───────┘
-                                                                                         │ glyphs
-                                                                    its surface ◄────────┘
+  virtio-input ──virtio (PCIe, IOMMU)──► kbd ──the input ring──► compositor ──OP_BYTES──►┌───────┐
+  (a keyboard)                                                                            │ vterm │
+                                                         application ──OP_WRITE──────────►└───────┘
+                                                                                              │ glyphs
+                                                                    its surface ◄─────────────┘
                                                                          │
-                              gpud ◄──gfx FLUSH(damage)── compd ◄──COMMIT─┘
+                     display ◄──gfx FLUSH(damage)── compositor ◄──COMMIT─┘
 ```
 
 Everything above the surface is text; everything below it is rung one's contract, unchanged.
@@ -63,12 +63,12 @@ Two details the font's own tests pin, because both are invisible in review:
 ## The VT engine: sans-IO, and checked against the real line discipline
 
 `crates/vt` keeps the grid: bytes in, a character grid out, plus the rectangle that changed. It holds
-no endpoint, makes no syscall, and has never heard of a framebuffer, exactly as `linedisc` does for
+no endpoint, makes no syscall, and has never heard of a framebuffer, exactly as `lineedit` does for
 the serial terminal ([line-discipline.md](line-discipline.md)).
 
 **What it implements is not a guess.** The escape sequences a display terminal must understand are
 the ones the line discipline already emits (DECISIONS §21), and rather than assert that from a
-hand-written list that could drift, the crate's interoperability test **runs the real `linedisc`**
+hand-written list that could drift, the crate's interoperability test **runs the real `lineedit`**
 and feeds its echo stream to this parser: type a line, back up, insert, delete, kill, press Enter,
 press ^L, and the grid must show the line the discipline says it assembled. Two separately-correct
 components now fail together or not at all.
@@ -114,7 +114,7 @@ One binary, two wirings, chosen by `arg0`:
 **That is `painter`'s authority in the first column and `window`'s in the second**, and it is the
 answer to the question this increment was asked to check: *did the framebuffer contract need
 changing to carry text?* No. Neither did the compositor's. Both carry pixels, and a terminal draws
-pixels; `gpud` cannot tell `vterm` from the client that painted a test pattern, and `compd` cannot
+pixels; `display` cannot tell `vterm` from the client that painted a test pattern, and `compositor` cannot
 tell it from the client that painted a coordinate function. The answer is a spawn literal rather than
 an argument.
 
@@ -123,7 +123,7 @@ an argument.
 A terminal has two classes of sender: an application printing and an input source typing. DECISIONS
 §33 recorded that a process here has exactly **one blocking wait point** (one `RECV`, no wait-any,
 and two threads cannot share an address space), so telling them apart by endpoint is not available.
-They arrive on one endpoint and are told apart by opcode, which is what `termd` already does.
+They arrive on one endpoint and are told apart by opcode, which is what `lineedit` already does.
 
 The security consequence is stated rather than hidden: an application holding that endpoint could
 send `OP_BYTES` and forge a keystroke into **its own** terminal. It gains nothing (the bytes come
@@ -210,7 +210,7 @@ the terminal's rather than the driver's or the compositor's. It must reject:
 - a blank terminal, and the other two pictures on the same scanout.
 
 The script is chosen so a lucky pass is hard: four rows (a one-row picture hides a stride error),
-three renditions, a `\r\n` pair (what `linedisc::expand_output` puts on the wire for a Unix `\n`),
+three renditions, a `\r\n` pair (what `lineedit::expand_output` puts on the wire for a Unix `\n`),
 and descenders plus an underscore (the glyph rows a font table truncated to seven would lose).
 
 ### Ordering, and what breaks it
@@ -256,8 +256,8 @@ Stated plainly, because a demonstrator's caveats are part of the deliverable.
   have nothing to draw for most of what it decoded. When there is a font with the coverage to justify
   one, the decoder goes in the VT engine and `bitfont::glyph`'s signature becomes `char`.
 - **No line editing in the display terminal.** It renders a stream and echoes keystrokes; it does not
-  serve `OP_READLINE`. A client that wants edited lines puts `termd` in front of it and prints the
-  discipline's echo through `OP_WRITE`, which needs no new protocol at all, because `linedisc`'s echo
+  serve `OP_READLINE`. A client that wants edited lines puts `lineedit` in front of it and prints the
+  discipline's echo through `OP_WRITE`, which needs no new protocol at all, because `lineedit`'s echo
   is exactly a byte stream this engine parses. That is not a hope: the `vt` crate proves it on the
   host by running both.
 - **A 16x8 grid.** The scanout is 128x64 and the font is 8x8. That is what the display ladder's

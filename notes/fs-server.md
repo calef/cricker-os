@@ -7,7 +7,7 @@ confines a serious component it knows nothing about, and the thing milestone 31'
 point at (they now exist; see the caretaker section below).
 
 The written contract lives with its code in `crates/fs_proto`, the way the terminal contract lives
-in `linedisc::proto` (notes/terminal-contract.md). This note is the design around it.
+in `lineedit::proto` (notes/terminal-contract.md). This note is the design around it.
 
 ## Three processes, two protocols
 

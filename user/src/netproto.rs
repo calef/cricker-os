@@ -1,4 +1,4 @@
-//! The socket contract wire format, shared by the net server (`netd`) and its clients (milestone
+//! The socket contract wire format, shared by the net server (`netstack`) and its clients (milestone
 //! 30, piece 3 phase B; DECISIONS §25).
 //!
 //! A process holds a `Stack` endpoint capability and a per-connection **shared frame**. A socket is

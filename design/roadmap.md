@@ -445,7 +445,7 @@ which is the "deferred CDT finally earns its keep" this block predicted, at one 
 (the component here is near-stateless, which is what makes kill-and-replace sufficient), a component
 manifest (endowments are literals in the operator's source), dependency-aware orchestration, and the
 hung-component case (§32's watchdog). Also the console proper: the component swapped owns the real
-UART and is shaped like a console server, but `termd`/`vterm`/`compd` are not themselves swapped,
+UART and is shaped like a console server, but `lineedit`/`vterm`/`compositor` are not themselves swapped,
 because the interactive stack is not running under the test harness.
 
 **The destination the design points at, and a product ambition.** A client names an *endpoint*,
@@ -693,7 +693,7 @@ claim currently rests on testing.
 **What stays unproved, on purpose.** The confined components themselves (`smoltcp`, RedoxFS, the
 drivers) are *not* proof targets: the whole point of the capability core is that a confined
 component need not be trusted. Proof effort belongs at the confinement boundary, not on the code
-it confines. Likewise the userspace-only crates (`uheap`, `capsh`, `linedisc`) and scheduler
+it confines. Likewise the userspace-only crates (`uheap`, `capsh`, `lineedit`) and scheduler
 placement policy stay host-tested; a bad placement is a performance bug, not a safety hole.
 
 ### 19. Run a real workload
@@ -822,7 +822,7 @@ workloads" is committed). What remains open:
 **Built 2026-07-28, both ISAs green; phase two complete 2026-07-29.** std's platform layer runs
 directly on the capability ABI (Hermit's shape); a real std program (`Vec`, `String`, `HashMap`,
 `println!`, `Instant`) is spawned and checked byte for byte on aarch64 and riscv64. Phase two bound
-**`std::net`** to netd's socket contract and **`std::fs`** to the §27 FS service, so the same binary
+**`std::net`** to netstack's socket contract and **`std::fs`** to the §27 FS service, so the same binary
 now has three behaviours chosen by its grants alone: a filesystem if it holds a directory capability,
 a network if it holds a `Stack` endpoint, and honest `Unsupported` for whichever it was not given.
 `std::fs`'s interesting half is what a path *means* with no global namespace: "under the directory I
@@ -861,7 +861,7 @@ the history here cannot bound). Off the thesis path, like 20 was: a reach the de
 
 ### 28. A solid terminal: the line discipline as a component
 
-**In brief.** Line editing, history, ANSI in/out, control characters, and a written terminal contract, as a **swappable userspace component** between the input/console drivers and applications; Ctrl-C as a capability-routed interrupt to the foreground process, not a Unix signal. **Built, §21**: `termd` on both ISAs, a sans-IO engine (20 host tests), the contract in notes/terminal-contract.md, `shell_service` retired for userspace init; Ctrl-C routing **built** (two-tier, DECISIONS §24 amendment): a shared-flag cooperative tier and an `Untyped::DESTROY` forcible tier, shell-held, proven on both ISAs with `heeder`/`spinner`; the shell learns of `^C` through `termd`'s `OP_INTRCOUNT`
+**In brief.** Line editing, history, ANSI in/out, control characters, and a written terminal contract, as a **swappable userspace component** between the input/console drivers and applications; Ctrl-C as a capability-routed interrupt to the foreground process, not a Unix signal. **Built, §21**: `lineedit` on both ISAs, a sans-IO engine (20 host tests), the contract in notes/terminal-contract.md, `shell_service` retired for userspace init; Ctrl-C routing **built** (two-tier, DECISIONS §24 amendment): a shared-flag cooperative tier and an `Untyped::DESTROY` forcible tier, shell-held, proven on both ISAs with `heeder`/`spinner`; the shell learns of `^C` through `lineedit`'s `OP_INTRCOUNT`
 
 **Why it matters.** a terminal with real behavior is a far better "instance one" for milestone 23's live component replacement than the raw echo loop, and 27's stdio semantics need a terminal that has semantics. Serial, deliberately; the display terminal is 29, and they must not be confused
 
@@ -894,7 +894,7 @@ counter-design. **Effort: 1 lane** (measured: it took one).
 **Why it matters.** the first pixels the demonstrator ever puts on a screen, and the strongest form of the milestone-23 claim if the VT engine is **libghostty-vt** (zero-dependency, no-libc, no-alloc, C ABI, Zig): a vendor component in a foreign language, capability-confined and hot-swappable. **Promoted from optional (2026-07-28): rung one of the display ladder (see "The display ladder" below), whose destination is a capability-routed compositor**
 
 **Increment one built (2026-07-29, both ISAs): the first pixels, and the framebuffer seam.** A
-confined userspace virtio-gpu driver (`gpud`) drives the control queue through the proved validator
+confined userspace virtio-gpu driver (`display`) drives the control queue through the proved validator
 over the §18 PCIe transport on both `virt` boards, behind the IOMMU; a *separate* client (`painter`)
 holds only an endpoint and a shared surface and draws a coordinate-derived pattern into it. Two
 witnesses in two address spaces digest the result against a value the kernel computes itself, so the
@@ -923,7 +923,7 @@ capability from the producing side as well as the receiving one.
 
 **Still deferred, and stated rather than implied:** scrollback (it wants a ring of off-screen rows and
 a viewport, which changes the damage model), UTF-8, reflow, and line editing in the display terminal
-(`termd` composes in front of it with no new protocol, which `crates/vt` proves on the host). The VT
+(`lineedit` composes in front of it with no new protocol, which `crates/vt` proves on the host). The VT
 engine's language remains an open question, and notes/glyphs.md now **prices** it: building the Rust
 engine first changed what the comparison is about, because a VT engine fits the §31 C seam's shape
 almost perfectly and the real cost of adopting libghostty-vt is rebuilding the *proof structure*, not
@@ -983,7 +983,7 @@ file). Testing is cheap: QEMU's user-mode networking NATs the guest with zero ho
 
 **Sequencing.** After the PCIe transport (done); the multi-queue confinement is the
 prerequisite piece and worth building first as its own tested step. Feeds 23 and 27.
-**Effort: 3 lanes** (measured: multi-queue confinement, the driver and netd, then the socket contract).
+**Effort: 3 lanes** (measured: multi-queue confinement, the driver and netstack, then the socket contract).
 
 ### 31. A capability shell: designation is authorization
 
@@ -1359,7 +1359,7 @@ it when no other lane is open, or accept the rebases. **Effort: 1 lane estimated
 
 ### 40. Documentation as a system service: searchable, rendered, and installed by packages
 
-**In brief.** Markdown authored, **rendered** for display rather than shown raw, searchable locally, and installed by the package that owns it. Reuse `pulldown-cmark` for parsing (CommonMark is a fiddly spec worth taking from someone else) and write the ANSI renderer against `linedisc`'s contract, because `termimad`/`mdcat` sit on `crossterm` and assume a POSIX terminal we do not have. Phase 1 is a terminal viewer and pager, phase 2 a host-built inverted index shipped as a per-package shard, phase 3 a graphical viewer riding the display ladder. Two constraints found while scoping: **`readdir` refuses and the §27 contract has no such verb**, so nothing can walk a tree for documents, and **font rendering is still milestone 29's remaining increment**, so the terminal comes first
+**In brief.** Markdown authored, **rendered** for display rather than shown raw, searchable locally, and installed by the package that owns it. Reuse `pulldown-cmark` for parsing (CommonMark is a fiddly spec worth taking from someone else) and write the ANSI renderer against `lineedit`'s contract, because `termimad`/`mdcat` sit on `crossterm` and assume a POSIX terminal we do not have. Phase 1 is a terminal viewer and pager, phase 2 a host-built inverted index shipped as a per-package shard, phase 3 a graphical viewer riding the display ladder. Two constraints found while scoping: **`readdir` refuses and the §27 contract has no such verb**, so nothing can walk a tree for documents, and **font rendering is still milestone 29's remaining increment**, so the terminal comes first
 
 **Why it matters.** **the OS explains itself, on itself.** The project's whole argument is already markdown (DECISIONS, thirty-plus notes, this roadmap), so a capability-confined viewer serving them is a better milestone-23 demonstration than another synthetic test and costs the documentation nothing. The missing `readdir` turns out to be a feature: **enumeration is authority**, so indexing at package-build time is both the way around the gap and the more honest shape, which is the same answer `apropos` reached for a different reason. And `doc notes/ipc-naming.md` granting exactly one readable file is milestone 31's designation-is-authorization made into something a person uses
 
@@ -1398,7 +1398,7 @@ That split is the reuse judgment, and it is the same one milestone 32 made about
 |---|---|---|
 | Parse | **`pulldown-cmark`** (pure Rust, CommonMark, event-stream API, few dependencies) | **Take it.** The event stream is the right shape for a renderer that emits ANSI. Milestone 27's `std` is what makes this buildable at all. |
 | Parse | `comrak` (GFM: tables, strikethrough, footnotes) | Consider later if GFM tables matter; more dependencies. |
-| Render | `termimad`, `mdcat` | **Do not take.** Both sit on `crossterm`, which assumes a POSIX terminal (termios, ioctl). Porting that is more work than emitting ANSI against `linedisc`'s contract, which we own and already speak (§21). |
+| Render | `termimad`, `mdcat` | **Do not take.** Both sit on `crossterm`, which assumes a POSIX terminal (termios, ioctl). Porting that is more work than emitting ANSI against `lineedit`'s contract, which we own and already speak (§21). |
 | Search | `tantivy` | **Too heavy.** It assumes a filesystem and mmap. |
 | Search | A host-built inverted index shipped in the package | **Take this shape.** Built by `xtask` where there are no constraints, merged by the viewer across installed packages. |
 | UI | `ratatui` | Possible for a pager later; needs a backend against our terminal contract first. |
@@ -1420,7 +1420,7 @@ That split is the reuse judgment, and it is the same one milestone 32 made about
 
 #### Phasing
 
-- **Phase 1, the terminal viewer.** `pulldown-cmark` to an ANSI renderer over `termd`'s contract:
+- **Phase 1, the terminal viewer.** `pulldown-cmark` to an ANSI renderer over `lineedit`'s contract:
   headings, emphasis, lists, block quotes, code blocks, and a pager. Works on the serial console
   today and inherits the display terminal for free when 29's glyph work lands. Host-tested in
   milliseconds like every other pure-logic piece: markdown in, styled bytes out.
@@ -1468,15 +1468,15 @@ a Linux-distribution-shaped layer will eventually sit on top of the OS component
 - **`crates/` conflates three audiences with different rules**, so the boundary a third party would
   care about is invisible: kernel proof crates (`caps`, `paging`, `frames`, `regions`, `slots`,
   `asid`, `intrusive`, `dtb`, `elf`, `dma_validate`, `measure`, `uheap`, Kani-proved and nobody
-  else's business), wire contracts (`fs_proto`, `gfx_proto`, `linedisc`, `compose`, `abi`, the
+  else's business), wire contracts (`fs_proto`, `gfx_proto`, `lineedit`, `compose`, `abi`, the
   **only** things an external component needs), and userspace runtime (`user_rt`, `capsh`,
   `crickerfs`, `pci`).
 - **Every crate is `version = "0.1.0"`.** Correct for internal crates, fatal for a published
   contract, and contracts are exactly what milestone 23's live replacement makes into a compatibility
   surface.
 - **Not everything in `user/` is a service.** `heeder`, `spinner`, `flaky`, `allocdemo`, `worker`,
-  `builder`, `coremark`, `elbench` are fixtures and benchmarks. Mixing them with `netd`, `gpud`,
-  `compd` and `termd` is much of why the directory reads as shapeless.
+  `builder`, `coremark`, `elbench` are fixtures and benchmarks. Mixing them with `netstack`, `display`,
+  `compositor` and `lineedit` is much of why the directory reads as shapeless.
 
 #### Naming: components and services, not daemons
 
@@ -1559,7 +1559,7 @@ must not be folded into feature work.
 
 ### 33. A compositor: one screen, mutually distrusting clients
 
-**In brief.** **Built (2026-07-29), both ISAs**, rung two of the display ladder: `compd` multiplexing one screen among three clients, each holding a capability to its own surface; software composition honouring a damage rectangle; input routed by capability over the terminal contract's `OP_BYTES`; enumeration and screenshots as read-only mappings rather than verbs. No new syscall and no new method. notes/compositor.md, DECISIONS §33
+**In brief.** **Built (2026-07-29), both ISAs**, rung two of the display ladder: `compositor` multiplexing one screen among three clients, each holding a capability to its own surface; software composition honouring a damage rectangle; input routed by capability over the terminal contract's `OP_BYTES`; enumeration and screenshots as read-only mappings rather than verbs. No new syscall and no new method. notes/compositor.md, DECISIONS §33
 
 **Why it matters.** **the canonical multiplexer of one device among distrusting clients**, and the thesis at its sharpest: a client is *proved* unable to reach its neighbour's pixels even when handed the exact address of them, and the compositor holds no authorization code because the authority is a mapping rather than a message. It also found the kernel's one missing primitive (no wait-any), recorded as a fork
 
@@ -1624,13 +1624,13 @@ have proved that either.
 and how a fuzzer's findings triage against §35's three dispositions is its own design pass; bolting a
 `cargo-fuzz` job onto milestone 44's lane would have produced a job nobody reads.
 
-**In brief.** Three things CI does not do. **Advisories and licences**: no `cargo-audit`/`cargo-deny`, so a published advisory against a dependency is invisible, and licence obligations go unrecorded, which stops being cosmetic the moment milestone 39's distribution exists. **Vendored integrity**: `vendor/redoxfs` is pinned at 0.9.1 with a `patches/` discipline and *nothing verifies the tree equals upstream-plus-our-patches*. **Fuzzing the parse surface**: Kani proves `elf`, `dtb` and `crickerfs` under *chosen bounds*, and a fuzzer explores byte sequences past those bounds and finds panics rather than property violations, which is complementary rather than redundant. Several crates are unproved entirely and take attacker-shaped input: the `fs_proto`/`gfx_proto`/`linedisc` decoders, `capsh` (which parses the human's command line), `compose` (clipping arithmetic, where its own note says off-by-one is the classic bug), and `measure`, the SHA-256 behind the measured-boot trust root
+**In brief.** Three things CI does not do. **Advisories and licences**: no `cargo-audit`/`cargo-deny`, so a published advisory against a dependency is invisible, and licence obligations go unrecorded, which stops being cosmetic the moment milestone 39's distribution exists. **Vendored integrity**: `vendor/redoxfs` is pinned at 0.9.1 with a `patches/` discipline and *nothing verifies the tree equals upstream-plus-our-patches*. **Fuzzing the parse surface**: Kani proves `elf`, `dtb` and `crickerfs` under *chosen bounds*, and a fuzzer explores byte sequences past those bounds and finds panics rather than property violations, which is complementary rather than redundant. Several crates are unproved entirely and take attacker-shaped input: the `fs_proto`/`gfx_proto`/`lineedit` decoders, `capsh` (which parses the human's command line), `compose` (clipping arithmetic, where its own note says off-by-one is the classic bug), and `measure`, the SHA-256 behind the measured-boot trust root
 
 **Why it matters.** **the thesis is confining code we did not write, so not knowing when that code has a published advisory is an odd blind spot**, and milestone 32's flagship claim ("a real filesystem we did not write") is only as good as our ability to say what we are actually running. Fuzzing is the honest complement to bounded model checking: Kani answers "is the property true inside these bounds", a fuzzer answers "does anything crash outside them", and the project currently only asks the first
 
 ### 43. A second security audit, with a different lens
 
-**In brief.** The first audit (notes/arch-audit.md) read the **assembly and arch layer** and found three real bugs: the `eret`/`sret` privilege-escalation staging race, a stale `tp` on S-mode trap return corrupting cross-hart per-CPU data, and the PLIC's lock-free read-modify-write. A second pass should deliberately NOT re-read that, and should take the surface that has appeared since. Headline lens: **time-of-check to time-of-use across shared pages.** Every service contract now moves bulk data through a page shared with the client (blk, file, gfx, compose, linedisc, netd), so a server that validates a length or an offset from the request word and *then* reads the page has a double-fetch window a malicious client controls; 19 files touch that pattern. Further lenses: integer overflow in the wire's size and offset arithmetic (`fs_proto` packs a 40-bit length, and `TRUNCATE` takes a size in the second word); capability lifetime races between revocation and an in-flight use, now that generational names, `Untyped::DESTROY` and `Endpoint::REAP` all reclaim; and a census of the **804** `unsafe` occurrences, triaging which carry a stated safety argument
+**In brief.** The first audit (notes/arch-audit.md) read the **assembly and arch layer** and found three real bugs: the `eret`/`sret` privilege-escalation staging race, a stale `tp` on S-mode trap return corrupting cross-hart per-CPU data, and the PLIC's lock-free read-modify-write. A second pass should deliberately NOT re-read that, and should take the surface that has appeared since. Headline lens: **time-of-check to time-of-use across shared pages.** Every service contract now moves bulk data through a page shared with the client (blk, file, gfx, compose, lineedit, netstack), so a server that validates a length or an offset from the request word and *then* reads the page has a double-fetch window a malicious client controls; 19 files touch that pattern. Further lenses: integer overflow in the wire's size and offset arithmetic (`fs_proto` packs a 40-bit length, and `TRUNCATE` takes a size in the second word); capability lifetime races between revocation and an in-flight use, now that generational names, `Untyped::DESTROY` and `Endpoint::REAP` all reclaim; and a census of the **804** `unsafe` occurrences, triaging which carry a stated safety argument
 
 **Why it matters.** **the attack surface roughly doubled after the first audit was written**: the compositor's shared surfaces, the C seam, the reap right, `std::fs`/`std::net`, and the FS service all arrived afterwards. The first audit's value came from reading for a *pattern* rather than waiting for a failure (it found the PLIC race that way), so the return on a second pass depends entirely on choosing a lens the first one did not use. Double-fetch is that lens: it is invisible to every gate we run, because both the check and the use are individually correct
 
@@ -1722,10 +1722,10 @@ Looking for the tree's naming conventions on 2026-07-30 turned up three real inc
 them anybody's decision:
 
 - **Word separation in crate names is split down the middle.** `fs_proto`, `gfx_proto`,
-  `dma_validate`, `user_rt` use underscores; `capsh`, `crickerfs`, `bitfont`, `linedisc`, `coremark`
+  `dma_validate`, `user_rt` use underscores; `capsh`, `crickerfs`, `bitfont`, `lineedit`, `coremark`
   run the words together. Two habits, no rule.
 - **The wire contract is spelled four ways**: `fs_proto` and `gfx_proto` (crates, underscore),
-  `netproto` (a module, no underscore), and `linedisc::proto` (a submodule). One concept.
+  `netproto` (a module, no underscore), and `lineedit::proto` (a submodule). One concept.
 - **Branch prefixes contain a literal duplicate**: eight in use, including both `feature/` and `feat/`.
 
 Write the *principle* in prose, because it needs judgement and no checker can evaluate it: name a
@@ -2203,7 +2203,7 @@ spawner chose**, and redirection is putting a different capability in that slot.
 new object, no `dup2`. The existing doc comment even anticipates the case: a failed SEND is swallowed
 so "a program without a console still runs, it just prints into the void".
 
-The same is true at the other end of the design. `linedisc::proto::OP_BYTES` already documents
+The same is true at the other end of the design. `lineedit::proto::OP_BYTES` already documents
 `the rendezvous is the flow control`, which is exactly a pipe's back-pressure story.
 
 #### A pipe is an endpoint, not an object
@@ -2237,7 +2237,7 @@ the result.
 | Sink | Protocol today |
 |---|---|
 | std `println!` | SEND, register-only, 16 bytes/msg, w0 = len, w1\|w2 = bytes |
-| `linedisc` (`termd`) | CALL, shared page, `OP_WRITE`, r0 = bytes consumed |
+| `lineedit` (crate and component) | CALL, shared page, `OP_WRITE`, r0 = bytes consumed |
 | `fs_proto` | CALL, handle + offset + shared page, `WRITE` |
 | console server | shared page, SEND length, ACK on a separate reply endpoint |
 
@@ -2298,7 +2298,7 @@ changed. Rung three is the next step and is where the parked competitor question
 answered on purpose.
 
 1. **Rung one: milestone 29** (promoted from optional). **Built**: a confined userspace virtio-gpu
-   driver (`gpud`), a client that draws (`painter`), and the framebuffer contract between them
+   driver (`display`), a client that draws (`painter`), and the framebuffer contract between them
    (`crates/gfx_proto`, notes/framebuffer-contract.md, DECISIONS §29). The framebuffer is a bigger
    grant and never an exemption; the pixels are proved in the guest by two witnesses in two address
    spaces and from the host by comparing QEMU's `screendump` against the pattern definition.
@@ -2306,11 +2306,11 @@ answered on purpose.
    **Its deferred half is built too** (2026-07-30, DECISIONS §37, notes/glyphs.md): a public-domain
    8x8 bitmap font, a sans-IO VT engine, a display terminal, and a virtio keyboard. The deferral's
    premise held exactly as written: the contract carries pixels, not text, so the terminal arrived as
-   another client and **neither `gfx_proto` nor `gpud` changed a line**, which the same binary then
+   another client and **neither `gfx_proto` nor `display` changed a line**, which the same binary then
    demonstrated a second time by being a compositor client with `window`'s authority. The VT engine's
    language is still an open choice, and notes/glyphs.md now prices libghostty-vt against a built
    Rust engine rather than against an estimate.
-2. **Rung two: a compositor component (milestone 33). Built**, both ISAs: `compd` multiplexing one
+2. **Rung two: a compositor component (milestone 33). Built**, both ISAs: `compositor` multiplexing one
    screen among three mutually distrusting clients, each holding a capability to its own surface;
    software composition honouring a damage rectangle; input routed by capability using the terminal
    contract's `OP_BYTES` driver half, so a terminal drops in unchanged. No ambient display: window

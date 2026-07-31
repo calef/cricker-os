@@ -9,7 +9,7 @@ license.workspace = true
 # turns several client surfaces into one screen honouring a damage rectangle, and the protocol the
 # compositor's clients speak. Pure logic, host-tested, no_std, so the compositor, its clients, the
 # kernel-side test, and the host-side scanout check share ONE definition and cannot drift. The same
-# split `gfx_proto` makes for the framebuffer and `linedisc::proto` for the terminal.
+# split `gfx_proto` makes for the framebuffer and `lineedit::proto` for the terminal.
 #
 # Clipping and damage-rectangle intersection are where compositors have their bugs, and they are
 # arithmetic, so they belong in a crate whose tests run in milliseconds rather than in an emulator.

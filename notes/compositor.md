@@ -2,7 +2,7 @@
 
 Milestone 33, rung two of the display ladder. One screen, several mutually distrusting clients, each
 holding a capability to its own surface. The code halves are `crates/compose` (the contract and the
-pixel arithmetic), `user/src/compd.rs` (the compositor), and `user/src/window.rs` (a client); this is
+pixel arithmetic), `user/src/compositor.rs` (the compositor), and `user/src/window.rs` (a client); this is
 the prose half, the same split [framebuffer-contract.md](framebuffer-contract.md) makes for rung one
 and [terminal-contract.md](terminal-contract.md) for the terminal.
 
@@ -13,24 +13,24 @@ screen without being able to reach each other?**
 ## The shape
 
 ```text
-  virtio-gpu ──virtio (PCIe, IOMMU)──► gpud ──gfx FLUSH(damage)──► compd ◄──doorbell CALL── clients
-                                        │      (rung one's contract) │  │                   (a surface each)
-                                        └────── the scanout, shared ─┘  ├── input ring (shared with the
-                                                                        │   input source only)
-                                                                        └── one input endpoint per
-                                                                            focusable client
+  virtio-gpu ──virtio (PCIe, IOMMU)──► display ──gfx FLUSH(damage)──► compositor ◄──doorbell CALL── clients
+                                        │      (rung one's contract)    │  │                        (a surface each)
+                                        └───────── the scanout, shared ─┘  ├── input ring (shared with the
+                                                                           │   input source only)
+                                                                           └── one input endpoint per
+                                                                               focusable client
 ```
 
 **The compositor is rung one's client, unchanged at that seam.** It holds the display endpoint and the
-scanout frames exactly as `painter` did, and `gpud` cannot tell the difference; three of the four
-kernel tests replace `gpud` with the kernel itself and the compositor does not notice that either.
+scanout frames exactly as `painter` did, and `display` cannot tell the difference; three of the four
+kernel tests replace `display` with the kernel itself and the compositor does not notice that either.
 That was the promise the framebuffer contract made when it said routing was by endpoint, and it cost
-nothing to keep: `gpud` and `gfx_proto` needed no change for this milestone beyond one new
+nothing to keep: `display` and `gfx_proto` needed no change for this milestone beyond one new
 kernel-side wiring entry point (`display_service::start_driver`, the driver with no client).
 
 What each party holds:
 
-| | compd | an honest client | a capture client |
+| | compositor | an honest client | a capture client |
 |---|---|---|---|
 | slot 0 | report endpoint | report endpoint | report endpoint |
 | slot 1 | display endpoint, WRITE | the doorbell, WRITE | the doorbell, WRITE |
@@ -126,7 +126,7 @@ Three questions Unix conflates, separated here:
   the window-list page, so a holder of that page, and the kernel test, can witness a focus change
   rather than ask about it.
 
-Input reaches the focused client as `linedisc::proto::OP_BYTES` over a `CALL`: the terminal contract's
+Input reaches the focused client as `lineedit::proto::OP_BYTES` over a `CALL`: the terminal contract's
 driver half, verbatim (notes/terminal-contract.md). So a terminal is a client of this compositor
 without either contract changing, which is what rung three needs and the reason the framing was reused
 rather than reinvented.
@@ -305,7 +305,7 @@ The claim this rung proves is **client-to-client** isolation, and the boundary d
 rather than implied.
 
 **The compositor sees every client's pixels.** It has to: compositing is reading them. So a client's
-confidentiality is against *other clients*, not against the compositor, and `compd` is in every
+confidentiality is against *other clients*, not against the compositor, and `compositor` is in every
 client's trusted computing base for the contents of its window. That is true of every compositor,
 Wayland included, and it is the reason the interesting question was never "can the compositor be
 prevented from reading a surface" but "can a client be". What the kernel does buy here is that the
@@ -356,9 +356,9 @@ Stated plainly, because a demonstrator's honest limits are part of the deliverab
 | piece | file |
 |---|---|
 | the contract and the pixel arithmetic, host-tested | `crates/compose/src/lib.rs` |
-| the compositor | `user/src/compd.rs` |
+| the compositor | `user/src/compositor.rs` |
 | a client, with its roles and its attacks | `user/src/window.rs` |
 | the wiring (frames, endpoints, grants) | `kernel/src/user.rs` (`compositor_service`) |
 | the tests | `kernel/src/user.rs` (`compositor_tests`) |
 | the host-side scanout check and its negative control | `xtask/src/main.rs` |
-| the display driver it flushes to, unchanged | `user/src/gpud.rs` |
+| the display driver it flushes to, unchanged | `user/src/display.rs` |

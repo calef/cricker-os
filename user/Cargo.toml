@@ -33,7 +33,7 @@ test = false
 bench = false
 
 # The input driver (milestone 19f.4): the receive half of the terminal, lifted out of hello.
-# Since milestone 28 it is a raw byte forwarder; the editing lives in termd.
+# Since milestone 28 it is a raw byte forwarder; the editing lives in lineedit.
 [[bin]]
 name = "input"
 path = "src/input.rs"
@@ -42,10 +42,10 @@ bench = false
 
 # The line discipline (milestone 28): the tty layer as a swappable userspace component between
 # the input/console drivers and applications. Serves the terminal contract
-# (notes/terminal-contract.md); the editing engine is the host-tested `linedisc` crate.
+# (notes/terminal-contract.md); the editing engine is the host-tested `lineedit` crate.
 [[bin]]
-name = "termd"
-path = "src/termd.rs"
+name = "lineedit"
+path = "src/lineedit.rs"
 test = false
 bench = false
 
@@ -206,25 +206,25 @@ test = false
 bench = false
 
 # The net server (milestone 30, piece 3): smoltcp as a userspace TCP/IP stack driving the confined
-# NIC. Links `extern crate alloc` over user_rt's heap. `mkinitrd` packs it as "netd" for both ISAs.
+# NIC. Links `extern crate alloc` over user_rt's heap. `mkinitrd` packs it as "netstack" for both ISAs.
 [[bin]]
-name = "netd"
-path = "src/netd.rs"
+name = "netstack"
+path = "src/netstack.rs"
 test = false
 bench = false
 
 # The display driver (milestone 29, the display ladder's rung one): drives the virtio-gpu device
 # over the confined transport and serves the framebuffer contract to clients. `mkinitrd` packs it as
-# "gpud" for both ISAs.
+# "display" for both ISAs.
 [[bin]]
-name = "gpud"
-path = "src/gpud.rs"
+name = "display"
+path = "src/display.rs"
 test = false
 bench = false
 
 # The client that draws (milestone 29): paints a coordinate-derived pattern into a shared surface and
 # asks the driver to show it. Holds an endpoint and the pixels; no device, no DMA authority. The
-# separation is the increment's point, so it is its own binary rather than a role of gpud.
+# separation is the increment's point, so it is its own binary rather than a role of display.
 [[bin]]
 name = "painter"
 path = "src/painter.rs"
@@ -232,12 +232,12 @@ test = false
 bench = false
 
 # The compositor (milestone 33, rung two): multiplexes one screen among mutually distrusting clients.
-# It is rung one's client at the display seam (gpud cannot tell it from `painter`), and it holds one
+# It is rung one's client at the display seam (display cannot tell it from `painter`), and it holds one
 # doorbell endpoint for all its clients plus one input endpoint per focusable client. `mkinitrd` packs
-# it as "compd" for both ISAs.
+# it as "compositor" for both ISAs.
 [[bin]]
-name = "compd"
-path = "src/compd.rs"
+name = "compositor"
+path = "src/compositor.rs"
 test = false
 bench = false
 
@@ -319,7 +319,7 @@ crickerfs = { version = "0.1.0", path = "../crates/crickerfs" }
 elf = { version = "0.1.0", path = "../crates/elf" }
 fs_proto = { version = "0.1.0", path = "../crates/fs_proto" }
 gfx_proto = { version = "0.1.0", path = "../crates/gfx_proto" }
-linedisc = { version = "0.1.0", path = "../crates/linedisc" }
+lineedit = { version = "0.1.0", path = "../crates/lineedit" }
 user_rt = { version = "0.1.0", path = "../crates/user_rt" }
 vt = { version = "0.1.0", path = "../crates/vt" }
 

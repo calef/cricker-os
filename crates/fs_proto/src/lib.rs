@@ -4,7 +4,7 @@
 //! FS server, the client, and the kernel-side tests, share one definition and cannot drift. The
 //! kernel routes these words the way it routes any IPC (§10, §12): it never reads an opcode. Adding
 //! one is a change to this crate and the note, not to the syscall surface. This is the same split
-//! `linedisc::proto` makes for the terminal contract.
+//! `lineedit::proto` makes for the terminal contract.
 //!
 //! # The two protocols
 //!
@@ -44,7 +44,7 @@
 pub const PAGE: usize = 4096;
 
 /// Where a request packs its opcode: bits 63:56 of the first `CALL` word, the same position
-/// `linedisc::proto` uses, so the two contracts read alike.
+/// `lineedit::proto` uses, so the two contracts read alike.
 pub const OP_SHIFT: u32 = 56;
 
 /// Build a request's first word from just an opcode (the block protocol's shape: the operand, a
