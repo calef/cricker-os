@@ -407,7 +407,11 @@ fn dir_attacker(run: u64) -> ! {
     let own = dir_open(fs::ROOT, tree::INNER);
     if own >= 0 {
         v |= esc::OPENED_ITS_OWN;
-        let (n, _) = call(FILE, fs::req(fs::READ, own as u64, tree::INNER_BODY.len() as u64), 0);
+        let (n, _) = call(
+            FILE,
+            fs::req(fs::READ, own as u64, tree::INNER_BODY.len() as u64),
+            0,
+        );
         get_page(n as usize, &mut buf);
         if (n as i64) < 0
             || n as usize != tree::INNER_BODY.len()
@@ -427,7 +431,12 @@ fn dir_attacker(run: u64) -> ! {
         let n = (n as usize).min(buf.len());
         get_page(n, &mut buf);
         for (name, _) in fs_proto::dirent::iter(&buf[..n]) {
-            for stranger in [fixture::MOTD_NAME, fixture::SCRATCH_NAME, tree::OTHER, tree::SECRET] {
+            for stranger in [
+                fixture::MOTD_NAME,
+                fixture::SCRATCH_NAME,
+                tree::OTHER,
+                tree::SECRET,
+            ] {
                 if name == stranger.as_bytes() {
                     v |= esc::ENUMERATED_A_STRANGER;
                 }
@@ -458,7 +467,8 @@ fn dir_attacker(run: u64) -> ! {
                 0,
             );
             get_page(tree::MADE_BODY.len(), &mut buf);
-            if rb as usize != tree::MADE_BODY.len() || &buf[..tree::MADE_BODY.len()] != tree::MADE_BODY
+            if rb as usize != tree::MADE_BODY.len()
+                || &buf[..tree::MADE_BODY.len()] != tree::MADE_BODY
             {
                 v |= esc::GRANTED_ACCESS_FAILED;
             }
@@ -503,13 +513,7 @@ fn dir_attacker(run: u64) -> ! {
     //     capability with no `REMOVE` gets the same refusal whether or not the source is there,
     //     and this program is not told which case it is in.
     let moved = run_name(tree::MOVED, run);
-    if dir_rename(
-        fs::ROOT,
-        made_str(&made),
-        fs::ROOT,
-        made_str(&moved),
-    ) >= 0
-    {
+    if dir_rename(fs::ROOT, made_str(&made), fs::ROOT, made_str(&moved)) >= 0 {
         v |= esc::RENAMED;
     }
 

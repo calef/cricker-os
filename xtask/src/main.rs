@@ -1808,11 +1808,8 @@ fn redoxfs_subtree_was_confined() -> bool {
         return false;
     }
     let count = |prefix: &str| sub.iter().filter(|n| n.starts_with(prefix)).count();
-    let (made_files, made_dirs, moved) = (
-        count(tree::MADE),
-        count(tree::MADE_DIR),
-        count(tree::MOVED),
-    );
+    let (made_files, made_dirs, moved) =
+        (count(tree::MADE), count(tree::MADE_DIR), count(tree::MOVED));
     if made_files == 0 || made_dirs == 0 {
         eprintln!(
             "milestone-47 confinement check: `{}` holds {sub:?}, with {made_files} created files \
@@ -1836,7 +1833,8 @@ fn redoxfs_subtree_was_confined() -> bool {
     }
     let sibling = format!("{}/{}", tree::OTHER, tree::SECRET);
     let granted = format!("{}/{}", tree::SUB, tree::INNER);
-    redoxfs_reads_back(&sibling, tree::SECRET_BODY) && redoxfs_reads_back(&granted, tree::INNER_BODY)
+    redoxfs_reads_back(&sibling, tree::SECRET_BODY)
+        && redoxfs_reads_back(&granted, tree::INNER_BODY)
 }
 
 /// The names in one directory of the post-run image, sorted, via the host tool's `ls`. Its output is
