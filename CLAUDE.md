@@ -82,14 +82,6 @@ These come from `DECISIONS.md`. They are cheap to follow and expensive to retrof
 
 3. **The syscall surface stays narrow and explicit.** It is a boundary, not a habit.
 
-   And **taking a dependency is a decision, not a convenience** (§46). The tree's shape is thin
-   architectural primitives (`aarch64-cpu`, `spin`) or whole subsystems we would never write
-   (`smoltcp`, vendored RedoxFS), with **nothing in between**: thirty crates have no external
-   dependencies at all. Write it if it is on the verification path, because you cannot restructure
-   someone else's crate to make a model checker tractable. Vendor it if correctness is won by
-   exposure rather than by reading the spec, which is why §46 says write the calendar and vendor the
-   crypto.
-
 5. **Architectural parity is a gate, not an aspiration** (DECISIONS §19). The targets are
    aarch64, riscv64, and x86_64 (declared, not yet started). A kernel capability ships on every
    supported architecture, proven by the same suite, or a scope note records the gap and the
@@ -102,6 +94,14 @@ the requirements are known.
 4. **Assume weak memory ordering.** We're on ARM, which is the weak one, and that's a gift:
    we cannot develop hidden strong-ordering assumptions the way an x86-first project would.
    Don't squander it.
+
+6. **Taking a dependency is a decision, not a convenience** (DECISIONS §46). The tree's shape is
+   thin architectural primitives (`aarch64-cpu`, `spin`, `tock-registers`) or whole subsystems we
+   would never write (`smoltcp`, vendored RedoxFS), with **nothing in between**: thirty crates have
+   no external dependencies at all. Write it if it is on the verification path, because you cannot
+   restructure someone else's crate to make a model checker tractable. Vendor it if correctness is
+   won by *exposure* rather than by reading the spec, which is why §46 says write the calendar and
+   vendor the crypto.
 
 ## The syscall surface is a boundary, not a habit
 
