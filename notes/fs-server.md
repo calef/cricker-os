@@ -359,21 +359,42 @@ diff all pointed confidently at the transport, and the transport was innocent. W
 caution: an investigation that rules out everything it can reach concludes the fault is in what it
 cannot reach, which is an argument from the shape of the tooling rather than from evidence.
 
-**One finding survives, is unrelated to the write loop, and is still open:**
+**One finding survived the salvage, was recorded as open, and was already closed. Retracted below.**
 
-**The block server cannot use interrupt-driven completion, and nobody knows why.** Switching
-completion from polling the used ring to waiting on the interrupt **hangs on the first read**: the
-completion interrupt never reaches the block server, even though the shadow avail ring leaves
-interrupts enabled. So the driver polls, and that is a workaround for an unexplained fault rather
-than a choice. Nothing else in this note records it, and it was only ever written down on that
-branch.
+The salvaged text said: *the block server cannot use interrupt-driven completion, and nobody knows
+why. Switching completion from polling the used ring to waiting on the interrupt hangs on the first
+read; the completion interrupt never reaches the block server, even though the shadow avail ring
+leaves interrupts enabled. So the driver polls, and that is a workaround for an unexplained fault
+rather than a choice.*
 
-It matters more than it did when it was found. Polling a used ring costs CPU that a board with a real
-power budget will notice, and milestone 53 puts a real storage driver on real silicon where the
-interrupt path is the normal one. Whoever picks that up should expect this to be waiting, and should
-know it was seen on virtio-blk under QEMU first, so it is not a property of the hardware.
+**None of that is true of this tree, and it stopped being true two days before the salvage.**
+`fix/irq-delivery` (2026-07-29, commit `dd8f186`, "block server: wait on the completion interrupt,
+do not poll the used ring") replaced the poll with a `WAIT` on the `Irq` endpoint, and that is what
+`user/src/virtio.rs::complete_blk` does on `main` today. The correction is written up **higher in
+this same file**, under "The block server, and how it completes a request", point 2. The salvage
+folded in a branch that predated the fix and did not reconcile it against the note it was being
+folded into, so one file ended up asserting both a defect and its repair, seventy lines apart. That
+is a hazard of salvaging: a branch's findings carry the date they were found, not the date they were
+filed, and the tree may have moved.
 
-**Also ruled out, and worth not repeating:** a **bounce buffer** — the device DMAs only into a private
+**Milestone 19's RISC-V interrupt-delivery tests were pointed at this as a diagnostic, and they put
+the fault below the kernel rather than in it.** The question posed was: if IRQ-to-message delivery
+does not work on RISC-V, then polling had been masking something serious on the ISA whose hardware
+arrives in three weeks. It works.
+`kernel::sched::tests::an_interrupt_becomes_a_message` and
+`an_interrupt_that_arrives_before_the_wait_is_not_lost` now run on RISC-V (see notes/interrupts.md),
+proving the PLIC claim / route / mask / notify / complete path and the pending-signal count that
+closes the lost-wakeup window, both directly and with no device driver in the way. Each was proved
+capable of failing: dropping `irq_notify` from `riscv_trap_dispatch`'s external-interrupt arm turns
+the first red, and dropping the `pending` increment from `Endpoint::signal` turns the second red
+while leaving the first green. Above them, the whole riscv `riscv_virtio_tests` module runs a real
+userspace driver whose completions are interrupts, on both the mmio and PCIe transports.
+
+So there is no open kernel-side interrupt-delivery defect to inherit. Milestone 53 should expect the
+interrupt path to work; if a real storage driver on real silicon hangs waiting for a completion, the
+place to look is the device's own interrupt configuration, not the kernel's routing.
+
+**Also ruled out by the write-loop investigation, and worth not repeating:** a **bounce buffer** — the device DMAs only into a private
 buffer and the block server copies to and from the shared page after completion, so the device never
 touches the shared page and the arrangement is correct by construction for any aliasing — **still
 looped**. Given what the next round found, that is exactly what it should have done, since there was
