@@ -112,6 +112,13 @@ Finding these is the point; each gets pushed under `arch/`.
   **CLINT** (or the newer Sstc extension). Both sit under `drivers/`, like the GIC does today.
 - **Timer:** the `time` CSR + `stimecmp` (Sstc extension) or CLINT `mtimecmp`, or SBI TIME. Replaces
   the ARM generic virtual timer (`CNTV_*`).
+
+  **BUGS (fixed at milestone 19, and worth knowing before choosing SBI TIME on the next board):**
+  SBI `set_timer` takes an absolute deadline but is **write-only**, unlike `CNTV_CVAL_EL0`, which can
+  be read back. So the fixed deadline grid that keeps the tick rate honest has to be kept in
+  software. It was not, from milestone 20 until milestone 19's test lane: the handler re-armed from
+  `now()`, so the clock ran at **80 Hz against a configured 100 Hz** and nothing said so. See
+  notes/riscv-arch-tests.md.
 - **UART:** QEMU virt's console is an **NS16550** at `0x1000_0000`, not a PL011. A new
   `drivers/ns16550.rs` (the PL011 driver stays; this is a sibling, like a second board's UART).
 - **Paging:** **Sv39** (three-level, 39-bit VA) to start, `satp` holding the root PPN + mode. The
