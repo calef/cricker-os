@@ -86,12 +86,13 @@ pointer path at all. Corrected, and the historical `abi::console` methods are ma
   reads a descriptor the driver can mutate after the check. The driver's ABI is unchanged, the
   end-to-end disk read still works through the copy, and a test points a descriptor at the kernel
   after validation and confirms the shadow is untouched. See notes/dma.md.
-- **Per-process resource limits: partially closed.** The spawn-exhaustion vector is now bounded
-  by a per-spawner **quota** (at most N children alive at once, the slot returned when a child is
-  reaped — see notes/quotas.md). A spawn flood or a pile of blocked-forever children is capped at
-  N threads/stacks/address spaces instead of unbounded. What remains unbounded is any *other*
-  kernel object a future syscall might create; the complete answer is the untyped-kernel-objects
-  model (a process's whole kernel footprint drawn from its own untyped), still ahead.
+- **Per-process resource limits: closed, but not by the mechanism this note used to name.** The
+  spawn-exhaustion vector is bounded because a process spawns out of **its own untyped budget**
+  (§10, §16): the budget is the limit, and retyping enforces it. The per-spawner **quota** in
+  notes/quotas.md still exists in the kernel but has had no caller since §28 retired the kernel-wired
+  shell, which milestone 41 found and recorded there. Read that note as a description of the
+  mechanism, not of what is running. What remains unbounded is any kernel object a future syscall
+  might create outside the untyped model.
 - **No IPC timeouts and no revocation.** A thread blocked on an endpoint that never gets a peer is
   never reclaimed. This is the accumulation primitive above, and it is the seL4 depth (capability
   derivation tree, revocation) deliberately parked.
