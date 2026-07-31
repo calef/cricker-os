@@ -391,27 +391,9 @@ impl Nav {
         })
     }
 
-    /// **`rm`**: unlink. The name goes out of the directory; anyone already holding the file keeps
-    /// reading it, and the object dies when the last name and the last handle are both gone.
-    ///
-    /// **This is not revocation**, and the shell does not offer one. Revoking a file would mean
-    /// invalidating handles the FS server minted for clients it cannot enumerate, which the contract
-    /// cannot do today; a verb that removed a name and called itself revocation would be exactly the
-    /// silent degradation §42 forbids. `rm` of a *directory* is refused (`EISDIR`) for a related
-    /// reason: one word must not be able to take a subtree away.
-    fn rm(&mut self, token: &[u8]) -> Say {
-        self.act(token, |nav, handle, name| {
-            let r = nav.name_call(fs::UNLINK, handle, name, 0);
-            if r < 0 {
-                Say::Failed(-r as i32)
-            } else {
-                Say::Nothing
-            }
-        })
-    }
-
-    /// The shape `mkdir` and `rm` share: resolve everything but the last component, act on that
-    /// component in the directory it named, and give back whatever the resolution opened.
+    /// The shape `mkdir` has, and the witness's removals share: resolve everything but the last
+    /// component, act on that component in the directory it named, and give back whatever the
+    /// resolution opened.
     fn act(&mut self, token: &[u8], f: impl Fn(&mut Nav, u64, &[u8]) -> Say) -> Say {
         if self.dir.is_none() {
             return Say::NoDirectory;
@@ -565,7 +547,6 @@ fn builtin(nav: &mut Nav, cmd: &[u8], each: &mut dyn FnMut(&[u8], bool)) -> Opti
         Command::Cd(path) => Some(nav.cd(path)),
         Command::Ls(path) => Some(nav.ls(path, each)),
         Command::Mkdir(path) => Some(nav.mkdir(path)),
-        Command::Rm(path) => Some(nav.rm(path)),
         _ => None,
     }
 }
@@ -595,7 +576,7 @@ fn dispatch(nav: &mut Nav, cmd: &[u8]) {
         Command::Pwd => print_pwd(nav),
         Command::Run(spec) => run(nav, spec),
         // Handled above, by the one implementation the witness also runs.
-        Command::Cd(_) | Command::Ls(_) | Command::Mkdir(_) | Command::Rm(_) => {}
+        Command::Cd(_) | Command::Ls(_) | Command::Mkdir(_) => {}
     }
 }
 
@@ -644,7 +625,7 @@ fn help() {
     print(b"  pwd                     where you are, relative to YOUR root\n");
     print(b"  ls [path]               list a directory you can reach\n");
     print(b"  mkdir <path>            make a directory\n");
-    print(b"  rm <path>               unlink a name (holders keep reading; this is not revoke)\n");
+    print(b"  rm [-rfv] <path>        a PROGRAM, granted the directory holding what you name\n");
     print(b"  worker <n>              spawn a process that returns n*n\n");
     print(b"  budgeter --mem N        grant a process N pages from this shell's budget\n");
     print(b"  date                    print the wall-clock time\n");
@@ -700,6 +681,16 @@ fn spawn(e: Endowment) {
         print(
             b"  a file grant needs init to build the warden; this shell cannot deliver one yet\n",
         );
+        return;
+    }
+    // The same rule one rung up, and `rm` is the first shipped program it applies to. A directory
+    // grant is delivered by a `dwarden` built from a directory this shell holds, and the boot that
+    // starts this shell wires no FS service, so `plan` has already refused with "you hold no such
+    // capability" and this line is what stops a future wiring from spawning `rm` with no capability
+    // at all. A silently ungranted `rm` would be the worst possible failure of this model: a program
+    // told to destroy something, holding nothing, saying nothing.
+    if e.dir.is_some() {
+        print(b"  a directory grant needs init to build the warden; this shell cannot yet\n");
         return;
     }
     // A memory grant is carved from the shell's own untyped. If our budget is spent, say so plainly
@@ -812,8 +803,11 @@ fn outcome(e: Endowment, answer: u64) {
             print(b"-page budget you granted (the rest paid for its page tables)\n");
         }
         // Supervised jobs report through the job frame and the interruptible path, not here; `date`
-        // answers in text and is drained by `report_text` before this is reached.
-        Prog::Heeder | Prog::Spinner | Prog::Date => {}
+        // answers in text and is drained by `report_text` before this is reached. `rm` is
+        // unreachable from this prompt at all (a directory grant needs a warden this shell cannot
+        // build, and `spawn` says so), and when it is reachable it will report the way `date` does:
+        // diagnostics as text, then an exit status.
+        Prog::Heeder | Prog::Spinner | Prog::Date | Prog::Rm => {}
     }
 }
 
@@ -874,6 +868,25 @@ fn preview(e: Endowment) {
         } else {
             b"  (read-only, and nothing else on the disk)\n".as_slice()
         });
+    }
+    // **A directory endowment is the subtree at risk, printed before anything happens**, which is
+    // the argument for `rm` being a program rather than a builtin: a builtin would have run with
+    // this shell's entire endowment and there would have been nothing to print. The `-r` line is
+    // the load-bearing half, because typing that option is what widens the capability from "may
+    // take a name out of this directory" to "may walk everything under it".
+    if let Some(g) = e.dir {
+        print(b"    cap 2  endpoint  dir      ");
+        let mut buf = [0u8; nav::RENDER_MAX];
+        let n = g.dir.render(&mut buf);
+        print(&buf[..n]);
+        print(b"  (the directory holding ");
+        print(g.name);
+        print(b")\n");
+        if g.subtree {
+            print(b"           ...and everything under it: -r grants the walk\n");
+        } else {
+            print(b"           ...and nothing under it: no -r, so it cannot even look\n");
+        }
     }
     // `date`'s authority is a read-only mapping of the clock page, and it is **init's to endow, not
     // this shell's**: it is not designated on the line and no token could designate it. Saying so
@@ -1233,12 +1246,15 @@ fn navigate(spec: u64) -> ! {
         v |= nb::NAVIGATION_FAILED;
     }
 
-    // 9. **`rm` while still holding the file.** The name goes; the object does not. This is the
+    // 9. **`UNLINK` while still holding the file.** The name goes; the object does not. This is the
     //    unlink/revoke split as a measurement rather than a claim.
-    if matches!(
-        run_line(&mut nav, line(&mut cmd, b"rm ", &doomed)),
-        Some(Say::Nothing)
-    ) {
+    //
+    //    Sent through the contract rather than typed as a command line, because **`rm` is a program
+    //    now** (milestone 47's rmdir lane) and this witness holds no spawn channel: it is confined
+    //    to a subtree by a `dwarden` and nothing in its cspace names an init. So what is under test
+    //    here is the verb `rm` sends, at the far end of the same warden chain the program runs
+    //    behind, and `user/src/rm.rs`'s own guest test is what covers the program.
+    if removed(&nav, fs::UNLINK, name_of(&doomed)) {
         v |= nb::UNLINKED;
         let mut buf = [0u8; 64];
         let n = call(DIR, fs::req(fs::READ, h, tree::NAV_BODY.len() as u64), 0).0 as i64;
@@ -1248,25 +1264,63 @@ fn navigate(spec: u64) -> ! {
                 v |= nb::HOLDER_KEPT_READING;
             }
         }
-        // And the name really is gone, or the bit above is equally true of an `rm` that did nothing.
+        // And the name really is gone, or the bit above is equally true of an unlink that did
+        // nothing at all.
         if opened(&nav, name_of(&doomed)).is_none() {
             v |= nb::NAME_GONE_AFTER_UNLINK;
         }
     }
     nav.close(h);
 
-    // 10. `rm` of a **directory** is refused. One word must not be able to take a subtree away, and
-    //     this contract has no verb that removes one.
+    // 10. `UNLINK` of a **directory** is refused, and so is `RMDIR` of a directory with a name in
+    //     it. Together they are the safety property this lane rests on: **no single call on this
+    //     contract takes a subtree away.** Emptying one is a deliberate second step.
+    if !removed(&nav, fs::UNLINK, name_of(&dirname)) {
+        v |= nb::UNLINK_REFUSED_A_DIRECTORY;
+    }
+    let empty = run_name(tree::NAV_EMPTY, run);
     if matches!(
-        run_line(&mut nav, line(&mut cmd, b"rm ", &dirname)),
-        Some(Say::Failed(_))
+        run_line(&mut nav, line(&mut cmd, b"mkdir ", &empty)),
+        Some(Say::Nothing)
     ) {
-        v |= nb::RM_REFUSED_A_DIRECTORY;
+        // A directory with exactly one name in it: enough to make `RMDIR` refuse, and cheap to
+        // take back out so the same call can be shown to work.
+        let inside = nav.name_call(
+            fs::CREATE,
+            open_dir(&nav, name_of(&empty)).unwrap_or(fs::ROOT),
+            tree::NAV_INSIDE.as_bytes(),
+            0,
+        );
+        if let Some(d) = open_dir(&nav, name_of(&empty)) {
+            if inside >= 0 {
+                nav.close(inside as u64);
+                if !removed(&nav, fs::RMDIR, name_of(&empty)) {
+                    v |= nb::RMDIR_REFUSED_NON_EMPTY;
+                }
+                // Empty it by hand, exactly as `rm -r` does: bottom-up, one safe step at a time.
+                let gone = nav.name_call(fs::UNLINK, d, tree::NAV_INSIDE.as_bytes(), 0) == 0;
+                nav.close(d);
+                if gone && removed(&nav, fs::RMDIR, name_of(&empty)) {
+                    v |= nb::RMDIR_REMOVED_EMPTY;
+                }
+            } else {
+                nav.close(d);
+            }
+        }
     }
 
-    // 11. And `rm` cannot reach out of the root, for the reason `cd` cannot: the lead is resolved
-    //     against a stack that has nothing above the root in it, so nothing is ever sent.
-    if matches!(run_line(&mut nav, b"rm ../motd"), Some(Say::Nothing)) {
+    // 11. And neither removal can reach out of the root, for the reason `cd` cannot: `..` is a pop
+    //     of a stack that has nothing above the root in it, so nothing is ever sent. The name is
+    //     refused where it is parsed, which is why this goes through the path resolver rather than
+    //     through `removed`.
+    let reached_out = nav.act(b"../motd", |nav, handle, name| {
+        if nav.name_call(fs::UNLINK, handle, name, 0) < 0 {
+            Say::Failed(0)
+        } else {
+            Say::Nothing
+        }
+    });
+    if matches!(reached_out, Say::Nothing) {
         v |= nb::WALKED_UP;
     }
 
@@ -1298,11 +1352,29 @@ fn opened(nav: &Nav, name: &[u8]) -> Option<u64> {
 }
 
 /// `CREATE` a name where we stand. There is no `touch` builtin, so this is the one thing the
-/// witness does that the prompt cannot: the milestone's five builtins do not include a way to make
-/// a file, and inventing a sixth to test the fifth would be the wrong trade.
+/// witness does that the prompt cannot: the milestone's builtins do not include a way to make a
+/// file, and inventing one to test the others would be the wrong trade.
 fn created(nav: &Nav, name: &[u8]) -> Option<u64> {
     let r = nav.name_call(fs::CREATE, nav.here(), name, 0);
     if r < 0 { None } else { Some(r as u64) }
+}
+
+/// `OPENDIR` a name where we stand, asking for exactly the rights this shell holds; the handle, or
+/// `None`. Used to reach *into* a directory the witness made, which is one step of the walk
+/// `user/src/rm.rs` does for a living.
+fn open_dir(nav: &Nav, name: &[u8]) -> Option<u64> {
+    let r = nav.name_call(fs::OPENDIR, nav.here(), name, nav.rights);
+    if r < 0 { None } else { Some(r as u64) }
+}
+
+/// Send one removal (`UNLINK` or `RMDIR`) for a name where we stand, and say whether it worked.
+///
+/// The two verbs are one helper because the property they hold up is one property: `UNLINK` refuses
+/// a directory, `RMDIR` refuses a non-empty one, and a witness that used a different path for each
+/// could not compare them. What is *not* here is a loop: the recursion is the `rm` program's, in its
+/// own address space, holding its own attenuated grant.
+fn removed(nav: &Nav, verb: u64, name: &[u8]) -> bool {
+    nav.name_call(verb, nav.here(), name, 0) == 0
 }
 
 /// A fixture name with the run index appended, so runs sharing one image do not collide on `EEXIST`

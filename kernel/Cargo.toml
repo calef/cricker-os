@@ -22,6 +22,11 @@ bitfont = { version = "0.1.0", path = "../crates/bitfont" }
 # predicts from the shared definition rather than keeping a second copy of it.
 calendar = { version = "0.1.0", path = "../crates/calendar" }
 caps = { version = "0.1.0", path = "../crates/caps" }
+# The shell's grant-expression logic (milestone 47's `rm -r`). The kernel plans nothing; its `rm`
+# test **starts the program the way the shell would**, so the option bits it packs come from the
+# manifest the prompt checks against rather than from a second copy of an ordering. Same rule as
+# `lineedit`, `bitfont` and `calendar` below: no party has its own copy of a shared definition.
+capsh = { version = "0.1.0", path = "../crates/capsh" }
 # The wall-clock contract (milestone 51, DECISIONS §43). The kernel discovers the RTC by
 # `compatible` and names the binding with these constants, and its clock tests read the shared page
 # through the same seqlock the service publishes with, so no party has its own copy of the layout.

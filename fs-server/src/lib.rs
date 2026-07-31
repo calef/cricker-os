@@ -462,6 +462,50 @@ impl<D: Disk> Server<D> {
             .map(|_| ())
     }
 
+    /// **Remove an empty directory `name` from the directory `handle` names: `rmdir(2)`, and
+    /// empty-only is the entire safety property** (milestone 47's `rm -r`).
+    ///
+    /// Needs [`dir::REMOVE`] on the parent, refused with [`dir::EROFS`], checked **before the name
+    /// is resolved** for [`Server::unlink`]'s reason. `ENOTEMPTY` if anything is still in it,
+    /// `ENOTDIR` for a file (POSIX's own answer, and the mirror of `unlink`'s `EISDIR`), `EINVAL`
+    /// for anything that is not a single component, `ENOENT` if there is no such name.
+    ///
+    /// # Why this verb is safe to offer and a recursive one is not
+    ///
+    /// `mkdir` shipped in the commands lane with nothing that removed what it made, and the
+    /// objection recorded there was that "a verb that removes whatever it finds is how one word
+    /// takes a subtree away". That is right about a *recursive* verb and is not right about Unix's,
+    /// which is the point: **no single call on this contract can take a subtree away.** The
+    /// recursion lives in userspace (`user/src/rm.rs`) as a loop of individually safe steps, each of
+    /// which needs the rights for it at its own level, so a walk stops exactly where the
+    /// capabilities stop rather than where a check in here remembered to look.
+    ///
+    /// # It is not revocation, and here is what that costs
+    ///
+    /// [`Server::unlink`] pairs with the engine's usage table so an unlinked file survives for
+    /// whoever holds a handle. **Directory handles are not registered that way**, so a client
+    /// holding a handle to the directory this call removes is left naming a node the engine has
+    /// freed, and its next request through that handle fails (`ENOENT`) rather than reaching
+    /// something else. Removing a name is still not revoking a capability: the handle table is per
+    /// *server* and this server cannot enumerate the clients holding handles, so it could not
+    /// invalidate them if it wanted to. Recorded rather than fixed, because registering directory
+    /// handles is the same change as per-client handle ownership, which is what revocation needs.
+    pub fn rmdir(&mut self, handle: u32, name: &str) -> Result<()> {
+        check_component(name)?;
+        let (parent, rights) = self.dir_at(handle)?;
+        if !rights.allows(dir::REMOVE) {
+            return Err(Error::new(EROFS));
+        }
+        // `remove_node` compares the node's kind against the mode it is given, so `ENOTDIR` for a
+        // file is the engine's own answer, and it refuses a non-empty directory with `ENOTEMPTY`
+        // from inside the same transaction that would have removed it. Both are POSIX's words for
+        // `rmdir`, which is why neither is checked again out here: a second opinion that could
+        // disagree with the engine is worse than one that cannot.
+        self.fs
+            .tx(|tx| tx.remove_node(parent, name, Node::MODE_DIR))
+            .map(|_| ())
+    }
+
     /// Take the disk back out of the server, **dropping the mount without unmounting**, which is
     /// exactly how a dying process leaves it: no flush, no clean shutdown, whatever is on the platter
     /// is the whole story. Milestone 37's harness uses it to get the recorded write log back after a
@@ -1182,8 +1226,145 @@ mod tests {
         srv.close(h).unwrap();
     }
 
+    /// **`RMDIR` takes an empty directory and refuses a non-empty one**, which is the whole safety
+    /// property: `mkdir` now has an inverse, and no single call on this contract can take a subtree
+    /// away.
+    ///
+    /// The pair is what makes it mean anything. A `rmdir` that refused everything would satisfy
+    /// "non-empty is refused" perfectly, so the same directory is emptied by hand and removed
+    /// through the same call, and the name really is gone from the listing afterwards.
+    #[test]
+    fn rmdir_removes_an_empty_directory_and_refuses_one_with_a_name_in_it() {
+        let mut srv = server_with_tree();
+        let sub = srv
+            .open_dir(fs_proto::fs::ROOT as u32, "sub", dir::ALL)
+            .unwrap();
+
+        // `deeper` holds `leaf`, so this is exactly the subtree-in-one-word case.
+        assert_eq!(
+            srv.rmdir(sub, "deeper").err().map(|e| e.errno),
+            Some(syscall::error::ENOTEMPTY),
+            "a `rmdir` that emptied what it found would put a whole subtree behind one call",
+        );
+        let names: Vec<String> = list(&mut srv, sub, 256)
+            .unwrap()
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        assert!(
+            names.contains(&"deeper".to_string()),
+            "the refused directory is still there: {names:?}",
+        );
+
+        // Empty it the way `rm -r` does: from the bottom, one safe step at a time.
+        let deeper = srv.open_dir(sub, "deeper", dir::ALL).unwrap();
+        srv.unlink(deeper, "leaf").expect("unlink the leaf");
+        srv.close(deeper).expect("close before removing the name");
+        srv.rmdir(sub, "deeper").expect("an empty directory goes");
+
+        let names: Vec<String> = list(&mut srv, sub, 256)
+            .unwrap()
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        assert!(!names.contains(&"deeper".to_string()), "listing: {names:?}");
+        assert_eq!(
+            srv.open_dir(sub, "deeper", dir::ALL).err().map(|e| e.errno),
+            Some(syscall::error::ENOENT),
+            "the name must be gone from the parent, not merely absent from a listing",
+        );
+    }
+
+    /// `RMDIR`'s refusals, each of which is a fact about the thing or about the capability.
+    ///
+    /// A **file** is `ENOTDIR`, the mirror of `unlink`'s `EISDIR`: neither verb removes the kind the
+    /// other one is for, so there is no spelling of "remove this name whatever it is". And the right
+    /// is checked before the name is resolved, so a capability that may not remove cannot use this
+    /// verb as an existence oracle either.
+    #[test]
+    fn rmdir_refuses_a_file_a_missing_name_a_path_and_a_capability_without_remove() {
+        let mut srv = server_with_tree();
+        let sub = srv
+            .open_dir(fs_proto::fs::ROOT as u32, "sub", dir::ALL)
+            .unwrap();
+
+        assert_eq!(
+            srv.rmdir(sub, "inner").err().map(|e| e.errno),
+            Some(ENOTDIR),
+            "`rmdir` of a file must be refused: `unlink` is the verb for one",
+        );
+        assert_eq!(
+            srv.rmdir(sub, "never-existed").err().map(|e| e.errno),
+            Some(syscall::error::ENOENT),
+        );
+        for path in ["..", "a/b", "."] {
+            assert_eq!(
+                srv.rmdir(sub, path).err().map(|e| e.errno),
+                Some(EINVAL),
+                "`{path}` is not a component, so it cannot name a directory to remove",
+            );
+        }
+
+        let ro = srv
+            .open_dir(fs_proto::fs::ROOT as u32, "sub", dir::ALL & !dir::REMOVE)
+            .unwrap();
+        assert_eq!(srv.rmdir(ro, "deeper").err().map(|e| e.errno), Some(EROFS));
+        assert_eq!(
+            srv.rmdir(ro, "never-existed").err().map(|e| e.errno),
+            Some(EROFS),
+            "a name that is there and one that is not must answer the same word",
+        );
+    }
+
+    /// **The whole of `rm -r`, driven against the core**: walk, unlink the files, remove the empty
+    /// directories bottom-up. It is here because that is the shape `user/src/rm.rs` implements over
+    /// IPC, and proving the *order* is safe belongs next to the verbs rather than only in a guest
+    /// test that takes an emulator to run.
+    ///
+    /// The load-bearing assertion is the second one: **the bottom-up order is forced.** Removing
+    /// `deeper` before its `leaf` is `ENOTEMPTY`, so a walk that got the order wrong cannot pass by
+    /// accident, and there is no call that would have let it.
+    #[test]
+    fn a_recursive_removal_is_a_loop_of_individually_safe_steps() {
+        let mut srv = server_with_tree();
+        let root = fs_proto::fs::ROOT as u32;
+
+        assert_eq!(
+            srv.rmdir(root, "sub").err().map(|e| e.errno),
+            Some(syscall::error::ENOTEMPTY),
+            "top-down is refused at the first step, which is what makes the walk necessary",
+        );
+
+        // Depth first, exactly as the program does it.
+        let sub = srv.open_dir(root, "sub", dir::ALL).unwrap();
+        let deeper = srv.open_dir(sub, "deeper", dir::ALL).unwrap();
+        for (name, is_dir) in list(&mut srv, deeper, 256).unwrap() {
+            assert!(!is_dir, "the fixture's bottom level holds only files");
+            srv.unlink(deeper, &name).expect("unlink at the bottom");
+        }
+        srv.close(deeper).unwrap();
+        srv.rmdir(sub, "deeper").expect("now it is empty");
+        for (name, is_dir) in list(&mut srv, sub, 256).unwrap() {
+            assert!(!is_dir, "`deeper` was the only directory in `sub`");
+            srv.unlink(sub, &name).expect("unlink one level up");
+        }
+        srv.close(sub).unwrap();
+        srv.rmdir(root, "sub").expect("and the top goes last");
+
+        let names: Vec<String> = list(&mut srv, root, 256)
+            .unwrap()
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        assert!(!names.contains(&"sub".to_string()), "root holds {names:?}");
+        // And nothing outside the walk moved. The walk removes what it enumerated and nothing else,
+        // which is the property the guest test then makes about a *capability* rather than a loop.
+        assert!(names.contains(&"other".to_string()));
+        assert!(names.contains(&"motd".to_string()));
+    }
+
     /// The refusals, which are what stop `rm` from meaning more than it says. A directory is
-    /// `EISDIR` (there is no `RMDIR` on this contract, so `rm` must not take a subtree away), a
+    /// `EISDIR` ([`Server::rmdir`] is the verb for one, and it takes only an empty one), a
     /// missing name is `ENOENT`, and a path is `EINVAL` exactly as it is everywhere else here.
     #[test]
     fn unlink_refuses_a_directory_a_missing_name_and_a_path() {
