@@ -388,6 +388,15 @@ in the code or the conversation doesn't make sense, it belongs here.
   device that lies about persistence, plus the controls that prove the injector bites (with the header
   ring's history removed, 92 of 93 fault points stop mounting) and the honest limit (a lying device is
   never survivable and never silent).
+- [Reading the backup from a MacBook or a Linux host](host-recovery.md) — milestone 57's answer to
+  "the board is dead, can I get my data?": `redoxfs-host ls`/`cat`/`extract`, no FUSE, no kernel
+  extension, no root, identical on macOS and Linux. Why none of upstream's five binaries already did
+  this (`redoxfs-ar` only writes), why the read paths must not write to the image (`cleanup` tidies,
+  and `read_node`'s atime update fires only on files last read over an hour ago, so it passes every
+  test on a fresh image and dirties the first real backup), and the operational rule: we are pinned
+  at format version 8, a reader must match, so the tool or its exact source pin is stored **with**
+  the backup. A backup readable only by software you no longer have is not a backup. Also: no
+  filesystem-level encryption on this volume, so no key handling anywhere in the recovery path.
 - [Prior art and reuse](prior-art.md) — where to look before building (Redox, rCore, Tock,
   Hubris, seL4, Fuchsia) and the rule that decides build-vs-reuse: the reuse boundary is the
   TCB boundary. Inside it, always build; userspace components, actively prefer porting,

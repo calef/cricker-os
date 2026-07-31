@@ -120,7 +120,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 54 | NOT-STARTED | A network file service a Mac can actually mount | the first real workload with a real user, and the security claim backup servers deserve |
 | 55 | NOT-STARTED | Time Machine: SMB3 with Apple's extensions, and mDNS | **likely the largest single piece of work in the project**, and the one that must be scoped before it is started |
 | 56 | NOT-STARTED | Secrets, credentials, and the entropy to make them safe | **our RNG is explicitly not cryptographic**, and a secret is a bearer token where a capability is an unforgeable reference |
-| 57 | NOT-STARTED | Partitioning and formatting a real drive, and extended attributes | you cannot find a partition without reading the table, and **we have no partition-table code at all**; all of it is testable in QEMU before the board lands |
+| 57 | PARTIAL | Partitioning and formatting a real drive, and extended attributes | you cannot find a partition without reading the table, and **we have no partition-table code at all**; all of it is testable in QEMU before the board lands. The host recovery tool (`ls`/`cat`/`extract`) is built; GPT, on-target `mkfs` and xattrs are not |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -2931,15 +2931,39 @@ enforce it. **Here the warning is structural**: the tool was handed one disk.
 That also makes it a natural place for milestone 47's `enumerate` right to earn itself: listing
 attached devices and holding one of them are different authorities.
 
-#### Reading the drive from a MacBook or a Linux host, which upstream already solved
+#### Reading the drive from a MacBook or a Linux host: BUILT 2026-07-30
 
 **The question that makes a backup credible rather than merely functional: the board is dead, can I
 get my data?** Chris asked it, and the answer turns out to be that we disabled the feature.
+
+**Correction to this section's original heading, which said "which upstream already solved".** It
+half did. Upstream solved *mounting* (FUSE), and that is the path we deliberately do not take.
+Nothing upstream ships extracts: `redoxfs-ar` is an archiver that only writes (and creates the
+filesystem as it goes, so it cannot even be pointed at an existing image), `redoxfs-clone` copies an
+image to another image, `redoxfs-mkfs` and `redoxfs-resize` are what their names say. The
+extraction verbs did not exist and are now ours. See notes/host-recovery.md.
 
 `vendor/redoxfs` already ships `src/mount/fuse.rs`, a `redoxfs` mount binary, and `redoxfs-ar`,
 `redoxfs-clone`, `redoxfs-resize`. Upstream's default features are `["std", "log", "fuse"]`. Our host
 tool depends on it with `default-features = false, features = ["std"]`, so **`fuse` is excluded by our
 own choice** and re-enabling it is a feature flag plus the `fuser` dependency.
+
+**What shipped**: `redoxfs-host ls IMAGE [PATH]`, `cat IMAGE PATH`, `extract IMAGE PATH DEST`, plus
+`import IMAGE HOST_DIR` on the write side (upstream's own `redoxfs::archive`, which is what makes
+the round-trip test read something our writer did not produce). Paths resolve from the image root and
+`..` is refused, the same rule the FS server enforces on the wire. `fuse` is still off and `fuser` is
+still not a dependency.
+
+**Two things the build found that the plan did not predict.** First, the recovery reads must not
+write to the image, and the engine makes that easy to get wrong twice: `FileSystem::open`'s
+`cleanup` pass tidies allocations, and `Transaction::read_node` updates atime **only when the last
+read was more than an hour ago**, which passes every test on a freshly made image and then dirties
+the first real backup you touch. Read-only opens plus `read_node_inner` fix both, and the test hashes
+the whole image across a read. Second, the operational rule can enforce itself: `Header::valid`
+checks the format version first, so a mismatched reader sees no valid header anywhere and the engine
+says ENOENT, which reads as "no such file or directory" about a disk you are holding. The tool now
+reads the signature and version straight off the disk when an open fails and names the mismatch,
+with a test that forges it.
 
 Three paths, and they are not equally good:
 
@@ -2954,8 +2978,11 @@ genuinely bought that RedoxFS appeared not to; it turns out RedoxFS buys it too,
 of a kernel driver.
 
 **The operational rule that follows: keep the recovery tool, or its exact source pin, with the
-backup.** We are pinned at 0.9.1 and a reader must match the on-disk format version. A backup readable
-only by software you no longer have is not a backup.
+backup.** We are pinned at 0.9.1 (on-disk format version 8) and a reader must match the on-disk
+format version. A backup readable only by software you no longer have is not a backup. Written up
+with what the off-site copy has to carry in notes/host-recovery.md, which also draws the consequence
+for future pin bumps: a bump to a different on-disk format strands every image already written, so it
+is a migration, not an upgrade.
 
 The same-engine objection is weaker than it looks and is recorded so nobody relitigates it: yes, the
 reader shares any bug the writer has, but that is true of every filesystem (`e2fsprogs` shares lineage
@@ -2981,9 +3008,9 @@ the "can I get my data" risk rather than removing it, so the password belongs wh
 other credentials live rather than only in one Keychain.
 
 **Sequencing.** The GPT crate and the transaction check are independent of everything and can start
-now. The host extraction tool is likewise independent and is the cheapest credibility win on this
-milestone. `mkfs` on the target wants the block-device path settled. Real drives arrive with milestone
-53. **Effort: not estimated**, though the GPT crate alone looks like one lane on the history-calibrated
+now. The host extraction tool was likewise independent and was the cheapest credibility win on this
+milestone; **it is done** (2026-07-30), which is why the milestone's row now reads PARTIAL. `mkfs` on
+the target wants the block-device path settled. Real drives arrive with milestone 53. **Effort: not estimated**, though the GPT crate alone looks like one lane on the history-calibrated
 scale.
 
 
