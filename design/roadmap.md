@@ -116,6 +116,9 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 50 | NOT-STARTED | Pipes and redirection: one sink protocol, and `\|` turns out to be an endpoint | the mechanism already exists (**stdout is a capability in slot 1**); the work is unifying four byte-sink protocols, not adding a parser rule |
 | 51 | NOT-STARTED | Wall-clock time, the `date` command, and an NTP service | the machine currently believes it is January 1970; **reading the clock is harmless and setting it is an authority**, which is the whole design |
 | 52 | RECORDED | Subshells without `fork`, and what copying an endowment means | `( ... )` is fork, we deliberately have no fork, and **capability duplication is not a total function** |
+| 53 | NOT-STARTED | The board's own peripherals: network and storage on real silicon | 16a boots the board; this is what makes it able to *do* anything, and it is where virtio stops carrying us |
+| 54 | NOT-STARTED | A network file service a Mac can actually mount | the first real workload with a real user, and the security claim backup servers deserve |
+| 55 | NOT-STARTED | Time Machine: SMB3 with Apple's extensions, and mDNS | **likely the largest single piece of work in the project**, and the one that must be scoped before it is started |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -2533,6 +2536,111 @@ means something materially different.
 **Sequencing.** After milestone 50 (pipes and redirection), because 50 removes most of the
 requirement and changes what is left. **Effort: not estimated**, because the design is not chosen and
 the options differ by more than an order of magnitude.
+
+### The backup-server ladder (53 to 55), and why it is the right deliverable
+
+Chris's goal, 2026-07-30: **the board should replace the drive hanging off his router as the Time
+Machine target.** These three milestones are that goal decomposed honestly, and they are worth doing
+for a reason beyond utility.
+
+**It is a real workload with a real user.** Every other thing this project measures is a benchmark or
+a test. This one has someone's actual backups in it, which changes what "works" means.
+
+**It makes crash consistency stop being academic.** A backup you cannot restore is worth nothing, so
+§34's RedoxFS conditions get exercised against real power loss on real hardware rather than against a
+QEMU crash image.
+
+**And it is the best security claim the thesis can make, because backup servers hold everything.** On
+a Linux box, Samba runs with broad authority over the machine. Here the file-serving component would
+hold **one directory capability and one network endpoint and nothing else**, so a compromise reaches
+the backup share and stops: not by policy, not by a hardening guide, but because no capability naming
+anything else was ever given to it. That is worth more on a backup server than on almost any other
+workload.
+
+### 53. The board's own peripherals: network and storage on real silicon
+
+**In brief.** Milestone 16a boots a VisionFive 2 (firmware contract, NS16550, PLIC, Sv39). It does not
+give the board a network or a disk. Everything above needs both, and **this is where virtio stops
+carrying us**: every driver we have talks to QEMU's paravirtual devices, and real silicon has none.
+
+**What it needs.**
+
+- **Ethernet.** The JH7110 uses a Synopsys DesignWare GMAC (`dwmac`). Our netstack (smoltcp) is
+  device-agnostic above the driver, so this is a driver, not a stack rewrite. Rule 2 applies: it takes
+  a base address and knows nothing else.
+- **Storage**, and there is a real choice here. The SD/eMMC controller is the simplest path; **NVMe
+  over PCIe** is the better one, because §18's PCIe transport already exists and NVMe would give the
+  backup target actual throughput. Deciding which comes first is a fork, and it should be decided on
+  measurement of what the backup workload needs rather than on what is easiest.
+- **Persistence proven the hard way.** RedoxFS on the real device, with crash consistency tested by
+  **actually cutting power**, which is a test QEMU cannot run.
+
+**The parity note this milestone must carry.** These drivers are board-specific and aarch64 has no
+equivalent board yet, so rule 5's "a scope note records the gap and the plan" applies rather than its
+"ships on every architecture". Say so explicitly; do not let it look like an oversight.
+
+**Effort: not estimated.** Two device drivers against real hardware with no emulator to iterate
+against is a different activity from everything done so far, and estimates calibrated on QEMU work do
+not transfer.
+
+### 54. A network file service a Mac can actually mount
+
+**In brief.** The board serves files over a protocol macOS speaks natively, so it is useful before
+Time Machine specifically is solved.
+
+**The protocol choice is the whole decision, and it is not obvious.**
+
+| Option | macOS support | Size | Note |
+|---|---|---|---|
+| **9P** | **None** | Small | Plan 9's protocol, closest to our model, and Chris cannot mount it. A demonstrator win with no user |
+| **NFSv3** | Built in (`mount_nfs`) | Medium | RPC/XDR, mount protocol, portmapper. Usable immediately for general storage. **Not** a supported Time Machine target |
+| **SMB3** | Built in | **Large** | The only path to Time Machine (milestone 55) |
+| WebDAV | Built in | Small | HTTP-based, and not a Time Machine target |
+
+**The tension worth deciding deliberately:** 9P is the protocol that fits this system's design and
+would be the honest "lightweight file serving" answer, but it does nothing for the person who asked.
+NFSv3 is materially larger and immediately useful. If milestone 55 is going to happen anyway, some of
+NFSv3's work is thrown away.
+
+**The capability shape, whichever protocol wins.** The service holds the share's directory capability
+and a network endpoint. It cannot enumerate outside the share because no capability reaches there;
+milestone 47's `enumerate`/`open`/`create`/`remove` split is what expresses "this client may write
+backups but not delete them", which is a genuinely useful thing to be able to say to a backup client.
+
+**Effort: not estimated**, and it depends entirely on the protocol chosen.
+
+### 55. Time Machine: SMB3 with Apple's extensions, and mDNS
+
+**In brief.** The actual goal, and **probably the largest single piece of work in the project**. It is
+recorded at full size deliberately, because the failure mode here is starting it while imagining it is
+"a file server".
+
+**What Time Machine over a network actually requires** (each item **needs verifying against current
+macOS before any of this is scheduled**; this is from knowledge, not measurement):
+
+- **SMB3, not AFP.** Apple deprecated and removed AFP serving; SMB is the supported path.
+- **Apple's SMB extensions**, the `AAPL` create context, which is what Samba implements as
+  `vfs_fruit`. Without it macOS will mount the share but not accept it as a backup destination.
+- **mDNS/Bonjour advertisement**, `_smb._tcp` plus `_adisk._tcp` carrying the Time Machine flags, or
+  the share is not offered in the Time Machine UI. That is a second protocol (mDNS) on top of the
+  first.
+- **Durability semantics macOS trusts.** Time Machine writes a sparse bundle and depends on the server
+  honouring flushes. This is the same clause §42 makes central, arriving as a compatibility
+  requirement: a server that lies about durability produces backups that cannot be restored.
+
+**Considered and rejected: porting Samba over the §31 C seam.** It is superficially the right move,
+since we already confine a component we did not write (RedoxFS) and the seam exists for exactly this.
+It does not survive contact: Samba assumes `fork`, threads, and an enormous POSIX surface, and
+milestone 52 records that we have no `fork` and that getting one is not cheap. Worth stating, because
+it is an honest limit of the C-seam story rather than a gap nobody noticed.
+
+**The scoping decision to make first**, before any code: whether to implement the subset of SMB3 that
+Time Machine needs, or a more general SMB3 server. The subset is much smaller and much less useful for
+anything else; the general one is a project in its own right.
+
+**Effort: not estimated, and deliberately so.** Anyone picking this up should re-scope it from scratch
+against a verified requirement list rather than trusting this block.
+
 
 ## The display ladder (recorded 2026-07-28, Chris's direction)
 
