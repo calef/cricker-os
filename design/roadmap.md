@@ -2958,7 +2958,10 @@ the requirement adds a gap to fill rather than a comparison to redo. ext4 works 
 importing it means importing C, which §34 chose RedoxFS specifically to avoid, and there is no
 `no_std` Rust ext4.
 
-Verified: **RedoxFS has no xattr support.** Two mechanisms, and **the fork is open**.
+Verified: **RedoxFS has no xattr support.** **The fork is closed as of 2026-07-31: the layer**
+(§34's amendment). Reversibility decides it — `fs_proto` hides which implementation was chosen, so
+the format extension stays available later without any client changing. Attributes key on
+`TreePtr<Node>`, so **rename is free and correct**, which sidecars get wrong.
 Before designing the attribute layer, read `design/haiku-bfs-and-packages.md`: BFS made attributes
 typed and indexed with live queries over them, and the point of knowing that is to avoid designing
 something that **forecloses** indexing later, even though SMB only needs opaque blobs now.

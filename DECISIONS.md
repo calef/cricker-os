@@ -2857,6 +2857,54 @@ access goes through `fs_proto`. That is a capability-system property doing real 
 `rename_node_no_replace` already exist in RedoxFS. `fruit:posix_rename` and §42's rename work are
 blocked on `fs_proto` lacking the verb, **not** on the engine.
 
+### Amendment (2026-07-31): the xattr fork is closed — the layer, and it is reversible
+
+The amendment above left the mechanism open. **Decided: extended attributes are implemented as a
+layer in the FS server, not as an extension to RedoxFS's on-disk format.**
+
+**The argument that decides it is reversibility, and it outranks the others.** `fs_proto` is the
+contract; whether an attribute lives in a node's on-disk structure or in a store the server manages is
+**invisible above that boundary**. So choosing the layer does not foreclose the format extension — if
+attributes later prove central enough to justify diverging from a pinned upstream, or if the change is
+accepted upstream, the implementation moves and no client changes. That makes this a low-regret
+decision rather than a bet, which is the right shape for a mechanism nobody has exercised yet.
+
+The supporting reasons, in order:
+
+1. **It is crash-atomic, and that was measured rather than assumed.** `fs.tx(|tx| …)` groups arbitrary
+   mutations into one commit, so a file write and its attribute write land together, and a delete
+   removes both or neither. This was the check that had to pass before the layer was viable at all.
+2. **Attributes key on `TreePtr<Node>`, not on a path**, because that is what the FS server already
+   works in (`handles: Vec<Option<TreePtr<Node>>>`). **Rename is therefore free and correct**: a
+   rename changes a directory entry, not the node, so attributes follow the file without any code
+   knowing that a rename happened. AppleDouble sidecars get exactly this wrong, and so would any
+   path-keyed store. This correctness property is **only available inside the FS server**, which is an
+   argument for the layer rather than merely a consolation for not forking the format.
+3. **It decouples the requirement from the filesystem choice.** A layer works over any backing
+   filesystem, so if RedoxFS is ever replaced the attributes come along.
+4. **It preserves §34's upstream reason.** The pin stays at 0.9.1 with a two-import divergence patch
+   rather than a format fork every future bump would pay for.
+5. **Nothing can bypass it**, because all access goes through `fs_proto`. On Linux this style of layer
+   is worthless — anything can open the file directly — and here it is authoritative. A capability
+   property doing real work.
+
+**Three things to get right when building it**, recorded now because each is a way to get it subtly
+wrong:
+
+- **The attribute store must be invisible to enumeration.** A directory listing must not show it, or
+  it becomes part of the namespace clients can name.
+- **Deletion must be in the same transaction as the file's**, or a deleted file leaks its attributes
+  and a later node reusing that pointer inherits them. That is a correctness bug wearing a
+  housekeeping costume.
+- **Recovery sees it.** `redoxfs-host extract` and upstream's FUSE mount will show the store as
+  ordinary data. That is acceptable and arguably good — the attributes come out with the backup — but
+  it must be a decision rather than a surprise, and `notes/host-recovery.md` should say so.
+
+**What was rejected: extending the on-disk format.** Correct, and atomic by construction, and it costs
+two of §34's four reasons: RedoxFS would stop being the filesystem Redox actually runs, and every pin
+bump would pay for the divergence. Reversibility makes that cost avoidable rather than merely
+deferred. Chris's objection to "patching it in" was right, and the answer is not to patch it in.
+
 ### Amendment (2026-07-30): ZFS and XFS, and why RedoxFS is better-shaped than its size suggests
 
 Chris asked whether OpenZFS is best in class. **For a backup server, yes** — end-to-end checksums with
