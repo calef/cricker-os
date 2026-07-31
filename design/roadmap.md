@@ -113,6 +113,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 47 | NOT-STARTED | Navigation and naming: cd, pwd, ls, mkdir, rm, paths, and environment | **divergence from Unix must be earned, never stylistic.** Keep the commands; change only what the capability model actually forces, and get one missing primitive right |
 | 48 | NOT-STARTED | Job control: jobs, wait, kill, fg, bg, and a stopped state | **most of it needs no new kernel surface**, and the tty's most tangled feature turns out to be a capability transfer |
 | 49 | NOT-STARTED | Users, login, and attribution: what identity is for once it stops being authority | three of Unix's four uses for a uid are already answered structurally; the fourth, **attribution, has no mechanism at all** |
+| 50 | NOT-STARTED | Pipes and redirection: one sink protocol, and `\|` turns out to be an endpoint | the mechanism already exists (**stdout is a capability in slot 1**); the work is unifying four byte-sink protocols, not adding a parser rule |
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
 comparison), with the multikernel work (17) as
@@ -2037,6 +2038,101 @@ defines). The documentation and the group/caretaker write-up are cheap; the logi
 component; attribution is a design fork first and a build second. **Effort: 2 lanes estimated**,
 noting estimates for unbuilt work are guesses on a history-calibrated scale, and the attribution half
 could be one lane or three depending on which fork wins.
+
+### 50. Pipes and redirection: one sink protocol, and `|` turns out to be an endpoint
+
+**In brief.** The shell has no `|`, `>`, or `<`, and a shell without them is not a shell. The
+surprise on investigating is that **the mechanism is already built** and the missing piece is
+somewhere else entirely: the work is unifying the four byte-sink protocols we already have, after
+which the pipeline operators are parser changes and wiring.
+
+**Why it matters.** Pipelines are Unix's composition primitive and the reason the shell is worth
+having. They are also the place where the capability model gets to show a result that is *better*
+rather than merely equivalent, which is what a demonstrator exists to produce.
+
+#### The finding: stdout is already a capability in a slot
+
+`patches/std-cricker/.../pal/cricker/rt.rs` fixes `STDOUT_SLOT = 1`, and `sys/stdio/cricker.rs`
+implements `println!` as a SEND on that slot. So **a program's output destination is a capability the
+spawner chose**, and redirection is putting a different capability in that slot. No kernel change, no
+new object, no `dup2`. The existing doc comment even anticipates the case: a failed SEND is swallowed
+so "a program without a console still runs, it just prints into the void".
+
+The same is true at the other end of the design. `linedisc::proto::OP_BYTES` already documents
+`the rendezvous is the flow control`, which is exactly a pipe's back-pressure story.
+
+#### A pipe is an endpoint, not an object
+
+For `a | b`, the shell creates an endpoint, grants SEND to `a` as its output slot and RECV to `b` as
+its input slot, and spawns both. **Nothing is added to the kernel.** Unix needs a pipe object with a
+64 KB buffer because fds are anonymous and the kernel has to decouple two parties who cannot name
+each other; here the shell names both, so the rendezvous is the pipe.
+
+The cost is honest and should be measured rather than argued: this is **full lockstep**, where Unix's
+buffer lets a producer run ahead. The reply is that IPC speed is the thing this project has spent
+itself on, so measure `a | b` throughput and only then decide. If buffering earns its place it
+arrives as **a component that speaks the sink protocol on both sides** and is inserted into the
+chain, not as a redesign. An optimization that is a process is the shape a microkernel wants.
+
+#### SIGPIPE becomes a return code, the same way `SIGTTIN` disappeared in 48
+
+`yes | head`: `head` exits, its endpoint dies, and the producer's next SEND fails. Unix needs a signal
+because there is no other way to tell a writer that an anonymous fd is gone; §16 revocation already
+destroys the capability and the failure arrives as an error return. **A third signal disappears**, on
+the same grounds milestone 48 retired `SIGTTIN` and `SIGTSTP`: the question the signal answered is
+already answered by who holds what.
+
+This forces one concrete change. Today's swallow ("print into the void") is right for a program with
+no console and **wrong for a pipeline**, where a dead reader must end the writer. So the sink protocol
+needs a distinguishable "gone" versus "never had one", and std's `Stdout::write` must stop discarding
+the result.
+
+#### The actual work: four sink protocols, one needed
+
+| Sink | Protocol today |
+|---|---|
+| std `println!` | SEND, register-only, 16 bytes/msg, w0 = len, w1\|w2 = bytes |
+| `linedisc` (`termd`) | CALL, shared page, `OP_WRITE`, r0 = bytes consumed |
+| `fs_proto` | CALL, handle + offset + shared page, `WRITE` |
+| console server | shared page, SEND length, ACK on a separate reply endpoint |
+
+Four shapes for "write these bytes there". A child cannot be indifferent to what is in its output slot
+until they are one, and **that unification is the milestone**. The precedent is `fwarden`, which is a
+caretaker precisely because it "serves the same `fs_proto` protocol its own client speaks": narrowing
+preserves the protocol, so a pipe, a file, and a terminal become substitutable.
+
+#### The result that is better than Unix, and worth stating plainly
+
+`>` and `file:PATH` must stay **different mechanisms**, and the difference is the payoff. `file:report.txt`
+grants the *program* a file its §31 manifest declared it wanted. `> report.txt` substitutes the
+*stream the shell owns*, and the program never holds a file capability at all: it cannot seek, cannot
+truncate, cannot re-read, cannot stat. It can append bytes to a sink. **Unix hands the same program fd
+1 with full file semantics**, so our redirection grants strictly less than Unix's while doing the same
+job.
+
+Keeping them distinct is also what keeps the manifest meaningful: `run worker 5 > out.txt` must not
+become a way to route around `FileSpec::Forbidden`, and it does not, because the sink is not a file
+grant.
+
+The demo that shows it: **`caps` can print where your output goes** ("output: terminal" versus
+"output: file report.txt, append-only"), because the destination is a capability rather than an
+integer with a convention attached.
+
+#### What is genuinely missing
+
+- **stdin.** `sys/stdio/cricker.rs` returns honest EOF because "nothing grants a std program input
+  yet". Both `< file` and a pipe's read end need an input-slot convention that does not exist.
+- **`>>`.** Append is expressible with `FSTAT`/`SIZE` then write-at-offset, but that is racy if the
+  file is shared. Decide whether append is a mode on open or a sink property; do not over-solve it.
+- **Multi-stage pipelines.** `a | b | c` is two endpoints, not one, and the shell's spawn path builds
+  one child at a time today.
+
+**Sequencing.** The protocol unification is independent of 47 and 48 and could start now; the parser
+work wants 47's tokenizer changes, and the "who holds the terminal" story is shared with 48, so the
+natural order is unify the protocol, then `>` and `<`, then `|`, then revisit 48's `fg` with pipelines
+in hand. **Effort: 3 lanes estimated** (protocol, redirection, pipelines), noting estimates for
+unbuilt work are guesses on a history-calibrated scale, and that the unification is the one most
+likely to surprise.
 
 ## The display ladder (recorded 2026-07-28, Chris's direction)
 
