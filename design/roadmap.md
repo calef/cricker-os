@@ -120,7 +120,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 54 | NOT-STARTED | A network file service a Mac can actually mount | the first real workload with a real user, and the security claim backup servers deserve |
 | 55 | NOT-STARTED | Time Machine: SMB3 with Apple's extensions, and mDNS | **likely the largest single piece of work in the project**, and the one that must be scoped before it is started |
 | 56 | NOT-STARTED | Secrets, credentials, and the entropy to make them safe | **our RNG is explicitly not cryptographic**, and a secret is a bearer token where a capability is an unforgeable reference |
-| 57 | NOT-STARTED | Partitioning and formatting a real drive, and extended attributes | you cannot find a partition without reading the table, and **we have no partition-table code at all**; all of it is testable in QEMU before the board lands |
+| 57 | PARTIAL | Partitioning and formatting a real drive, and extended attributes | you cannot find a partition without reading the table, and **we have no partition-table code at all**; all of it is testable in QEMU before the board lands |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -2909,6 +2909,18 @@ either way.**
 **GPT is a good crate to write.** Pure computation, well specified, so it is host-tested with tests in
 milliseconds, and it has real Kani targets: CRC round-trip, primary and backup headers agreeing,
 entry-array bounds, and refusing a table whose entries overlap.
+
+**Built 2026-07-30: `crates/gpt`**, the parsing and writing halves both. Parse, validate (four CRC-32s,
+the geometry, overlapping partitions, the protective MBR, the backup against the primary) and create,
+with no I/O at all: the caller supplies blocks and receives blocks, so the whole thing is host-tested.
+Seven Kani harnesses in `script/verify`. The claim that makes it credible is that it is tested against
+**two real tables this project did not write**, from `sgdisk` and from macOS `diskutil`, committed as
+fixtures; re-emitting `sgdisk`'s table reproduces its bytes exactly, and so does rebuilding it from
+scratch. Two findings landed in notes/gpt.md: **macOS writes no GPT partition names at all**, so
+nothing may identify a partition by its label, and the two tools disagree about the protective MBR's
+CHS fields, which is why those are not validated. The cricker-os partition type GUID is DECISIONS §44.
+What remains on this milestone is unchanged: the transaction check for xattrs, `mkfs` on the target,
+block-device enumeration, and the host extraction tool.
 
 #### The capability shape is the demonstration
 
