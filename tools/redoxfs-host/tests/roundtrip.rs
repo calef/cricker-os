@@ -27,13 +27,17 @@ fn an_image_round_trips_a_file_through_the_real_engine() {
 
     redoxfs_host::put(&img, "motd", &payload).expect("put failed");
 
-    let listing = redoxfs_host::ls(&img).expect("ls failed");
+    let listing = redoxfs_host::ls(&img, "/").expect("ls failed");
     let entry = listing
         .iter()
         .find(|e| e.name == "motd")
         .expect("put file missing from the root listing");
     assert_eq!(entry.size, payload.len() as u64, "listed size is wrong");
-    assert!(!entry.is_dir, "a file came back as a directory");
+    assert_eq!(
+        entry.kind,
+        redoxfs_host::Kind::File,
+        "a file came back as something else"
+    );
 
     let back = redoxfs_host::cat(&img, "motd").expect("cat failed");
     assert_eq!(
