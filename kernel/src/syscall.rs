@@ -567,9 +567,27 @@ pub(crate) fn invoke(
             _ => Err(Error::BadMethod),
         },
 
-        // A device's MMIO page is passive: it is not invoked, only handed to MAP_INTO as the
-        // page to map (19d.2). Invoking it directly is a caller error.
-        Object::DeviceFrame(_) => Err(Error::BadMethod),
+        // A device's MMIO page is almost passive: it is handed to MAP_INTO as the page to map
+        // (19d.2), and since milestone 23 it answers exactly one invocation, `REVOKE`.
+        Object::DeviceFrame(phys) => match method {
+            // **Take the registers back from everyone else** (DECISIONS §39). The step live
+            // replacement needs between tearing one driver down and endowing the next, so that a
+            // device never has two owners. Needs `GRANT`, the same rule `Frame::REVOKE` uses: you
+            // were trusted to lend the device on, so you may take it back.
+            //
+            // Unlike a frame revoke this **spares the invoker's own** capability and mapping, and
+            // it must: only the kernel mints a `DeviceFrame`, and it does so once at boot, so a
+            // symmetric revoke would make the device unreachable for the rest of the machine's
+            // life. `revoke::revoke_device_from_others` carries the full argument.
+            abi::frame::REVOKE => {
+                if !cap.rights.allows(Rights::GRANT) {
+                    return Err(Error::NotPermitted);
+                }
+                crate::revoke::revoke_device_from_others(phys);
+                Ok(0)
+            }
+            _ => Err(Error::BadMethod),
+        },
 
         Object::Virtio(id) => {
             if !cap.rights.allows(Rights::WRITE) {

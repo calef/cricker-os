@@ -161,9 +161,17 @@ pub fn record_mapping(phys: u64, root: u64, va: u64) -> bool {
 /// nowhere to lift them to, and the honest accounting is: revocation is rare, the lock is
 /// contended only by `record_mapping` (a syscall path that can afford to wait), and a `tlbi`
 /// completes in hardware regardless of who spins on what.
-fn unmap_everywhere(phys: u64) {
+///
+/// `spare` is an address-space root to leave alone (0 spares none). Only the device take-back
+/// below passes one: reclamation must unmap everywhere or the page is not safe to reuse, but
+/// transferring a device wants the invoker to keep what it is about to hand on. See
+/// [`revoke_device_from_others`].
+fn unmap_everywhere(phys: u64, spare: u64) {
     let spaces = SPACES.lock();
     for space in spaces.iter().flatten() {
+        if space.root == spare {
+            continue;
+        }
         let mut page_phys = space.head;
         while page_phys != 0 {
             // SAFETY: chain pages under the held SPACES lock.
@@ -187,7 +195,31 @@ fn unmap_everywhere(phys: u64) {
 /// names; a full mapping-database lock is seL4's answer and this milestone's deferral.)
 pub fn revoke_frame(phys: u64) {
     crate::sched::delete_frame_caps(phys);
-    unmap_everywhere(phys);
+    unmap_everywhere(phys, 0);
+}
+
+/// **Take a device's registers back from everyone else** (milestone 23, DECISIONS §39). Delete
+/// every `DeviceFrame` capability naming `phys` except the invoking thread's own, then unmap `phys`
+/// from every address space except the invoker's. Afterwards exactly one process can reach the
+/// device: the one that asked.
+///
+/// The asymmetry with [`revoke_frame`] is the point, not an oversight. Revoking a *frame* exists to
+/// make reclamation safe, so the revoker's own capability and mapping must go too: the page is about
+/// to be returned to the allocator and reused. A device page is never reclaimed; revoking it exists
+/// to make ownership **exclusive**, which is what live replacement needs between tearing one driver
+/// down and endowing the next. A take-back that also deleted the invoker's capability would leave
+/// the registers unreachable forever, because only the kernel mints a `DeviceFrame` and it does so
+/// once, at boot.
+///
+/// This is one level of the capability-derivation tree §13 deferred, and only one: the invoker is
+/// the root by construction (it holds `GRANT` and it is the one asking), and every other holder is
+/// treated as a derivative. Revoking one *named* holder while sparing another still wants the real
+/// tree, and still is not built.
+pub fn revoke_device_from_others(phys: u64) {
+    crate::sched::delete_device_frame_caps_from_others(phys);
+    // The invoker is the current thread, so its address space is the one installed in TTBR0 (satp
+    // on RISC-V) right now: no lookup, and no way for the spare to name someone else's space.
+    unmap_everywhere(phys, mmu::current_user_root());
 }
 
 /// Revoke every mapped page in `[base, base + size)`. `untyped::destroy` calls this before

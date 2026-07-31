@@ -368,6 +368,13 @@ pub mod frame {
     /// take it back; a read-only consumer handed it without `GRANT` cannot revoke the owner). It does
     /// **not** reclaim the page: the untyped is spend-only, and `untyped::destroy` reclaims a whole
     /// region. See DECISIONS §13 and notes/capability-lifecycle.md.
+    ///
+    /// **On a device capability the same method means take-back, not un-share** (milestone 23,
+    /// DECISIONS §39). It deletes every `DeviceFrame` capability to the page and unmaps it
+    /// everywhere **except the caller's own**, so exactly one process can still reach the
+    /// registers: the one that asked. That is what live replacement needs between tearing a driver
+    /// down and endowing its replacement, and the asymmetry is forced: the kernel mints a device
+    /// capability once, at boot, so a symmetric revoke would strand the device forever.
     pub const REVOKE: u64 = 1;
 }
 

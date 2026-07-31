@@ -21,10 +21,14 @@ fn main() {
     compile_c_component(Path::new(&dir));
 }
 
-/// The C source the `cshim` binary links (milestone 36). One translation unit, one object, no
-/// archive: `rustc-link-arg-bin` puts the object straight on the linker's command line for that
-/// binary, so no `ar` is involved and nothing else in the package sees it.
-const C_SOURCE: &str = "c/cseam.c";
+/// The C sources, and the one binary each is linked into (`(source, binary)`). One translation unit
+/// per object, no archive: `rustc-link-arg-bin` puts the object straight on the linker's command
+/// line for that binary, so no `ar` is involved and nothing else in the package sees it.
+///
+/// - `c/cseam.c` -> `cshim`: milestone 36's throwaway component, the seam itself.
+/// - `c/conxsvc.c` -> `cconx`: milestone 23's replacement component. The reason the hot-swap claim
+///   is about a *component* and not about a recompile.
+const C_SOURCES: &[(&str, &str)] = &[("c/cseam.c", "cshim"), ("c/conxsvc.c", "cconx")];
 
 /// **Compile the foreign component and give it to `cshim`'s linker, or fail with instructions.**
 ///
@@ -33,7 +37,9 @@ const C_SOURCE: &str = "c/cseam.c";
 /// already priced this in for Zig at milestone 29; paying it here, with a throwaway component, is
 /// the whole point of doing the seam first.
 fn compile_c_component(manifest_dir: &Path) {
-    println!("cargo::rerun-if-changed={C_SOURCE}");
+    for (source, _) in C_SOURCES {
+        println!("cargo::rerun-if-changed={source}");
+    }
     println!("cargo::rerun-if-env-changed=CRICKER_CC");
 
     let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
@@ -57,7 +63,7 @@ fn compile_c_component(manifest_dir: &Path) {
         other => {
             println!(
                 "cargo::warning=user/build.rs: no C component for target arch '{other}'; the \
-                 cshim binary will not link. Build for aarch64 or riscv64."
+                 cshim and cconx binaries will not link. Build for aarch64 or riscv64."
             );
             return;
         }
@@ -73,11 +79,19 @@ fn compile_c_component(manifest_dir: &Path) {
         }
     };
 
-    let out = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("cseam.o");
-    let src = manifest_dir.join(C_SOURCE);
+    for (source, bin) in C_SOURCES {
+        compile_one(manifest_dir, &clang, &flags, source, bin);
+    }
+}
 
-    let mut cmd = Command::new(&clang);
-    cmd.args(&flags)
+/// Compile one translation unit and put its object on one binary's linker command line.
+fn compile_one(manifest_dir: &Path, clang: &Path, flags: &[&str], source: &str, bin: &str) {
+    let stem = Path::new(source).file_stem().unwrap().to_string_lossy();
+    let out = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join(format!("{stem}.o"));
+    let src = manifest_dir.join(source);
+
+    let mut cmd = Command::new(clang);
+    cmd.args(flags)
         // Freestanding: no hosted libc is present or implied. clang still supplies its own
         // `stddef.h` / `stdint.h` out of its resource directory, which is all the component uses.
         .arg("-ffreestanding")
@@ -111,8 +125,8 @@ fn compile_c_component(manifest_dir: &Path) {
     }
 
     // Scoped to the one binary. Every other program in this package links exactly as before, which
-    // is what keeps the foreign component from becoming everyone's problem.
-    println!("cargo::rustc-link-arg-bin=cshim={}", out.display());
+    // is what keeps a foreign component from becoming everyone's problem.
+    println!("cargo::rustc-link-arg-bin={bin}={}", out.display());
 }
 
 /// **Find a clang that can target both of this project's bare ISAs.**
