@@ -44,6 +44,20 @@ A detail block may narrate its state in prose (that is where the evidence and th
 column is what answers "where do we stand". If the two disagree, the column is wrong and the block is
 right, because the block is where the work was written down; fix the column.
 
+**Effort, calibrated from git history (2026-07-30), not guessed.** Blocks below give effort in
+**lanes**: one lane is one agent session end to end. Measured across the fourteen milestone branches
+merged so far, a lane is **31 to 57 minutes of wall clock, 1 to 9 commits, 7 to 30 files, and 694 to
+4,351 inserted lines** — a much narrower band than the work's apparent ambition suggests, since
+proving the DMA boundary, building a compositor, and confining a C component all cost about the same.
+Milestones that took more than one lane took them as *phases that landed separately* (27 and 30 took
+three each, 22, 29, 31 and 35 two each), not as one long push.
+
+This replaces an S/M/L scale that was written before any of it was built and was systematically
+pessimistic where it can now be checked: **27, 29, 30 and 32 were each labelled "Effort L"**, and each
+came in at roughly a lane per phase. Anything still labelled by feel rather than by history says so.
+Re-derive with `git log --first-parent` over the merge commits rather than trusting these numbers as
+they age.
+
 **Why this is a markdown table and not GitHub Issues (decided 2026-07-30, Chris).** Issues would buy PR
 linkage, a home for discussion, and a board view. They would cost the things this table is actually for:
 the roadmap stops being version-controlled alongside the code, so a status change is no longer a diff in
@@ -812,7 +826,8 @@ target-spec JSON; there is no crate to adopt, because the deliverable IS the pal
 avoid: an errno-shaped `sys` layer that makes `std` work by pretending the OS is Unix.
 
 **Sequencing.** After 19 (the ABI, done) and object revocation (done); independent of 16 and 22;
-feeds 23 directly. Effort L. Off the thesis path, like 20 was: a reach the demonstrator earns.
+feeds 23 directly. **Effort: unpriced** (it depends on another project's toolchain and API, which
+the history here cannot bound). Off the thesis path, like 20 was: a reach the demonstrator earns.
 
 ### 28. A solid terminal: the line discipline as a component
 
@@ -840,7 +855,7 @@ terminal that has semantics. Pure userspace on machinery that all exists; could 
 `noline` (a no_std readline) and `embedded-cli` are live candidates for the editing core; the
 component contract and the interrupt routing are ours. Read the Unix tty layer as the
 mistake-catalog (its tangle is famous) and Plan 9 (editing pushed to the client) as the
-counter-design. Effort M.
+counter-design. **Effort: 1 lane** (measured: it took one).
 
 ### 29. A display terminal: framebuffer, virtio-gpu, and a foreign component
 
@@ -902,7 +917,7 @@ complete (no scrollback or reflow).
 
 **Sequencing.** Needs the PCIe transport (done) and wants 28's contract first so the display
 terminal implements a contract rather than inventing one. Optional and well off the thesis path;
-a reach in the 24 spirit. Effort L.
+a reach in the 24 spirit. **Effort: 2 lanes** (measured: first pixels, then glyphs/VT/input).
 
 ### 30. The network stack as a confined component
 
@@ -937,7 +952,8 @@ cousin), and Plan 9's /net as the counter-design (per-connection filesystem, eve
 file). Testing is cheap: QEMU's user-mode networking NATs the guest with zero host setup.
 
 **Sequencing.** After the PCIe transport (done); the multi-queue confinement is the
-prerequisite piece and worth building first as its own tested step. Feeds 23 and 27. Effort L.
+prerequisite piece and worth building first as its own tested step. Feeds 23 and 27.
+**Effort: 3 lanes** (measured: multi-queue confinement, the driver and netd, then the socket contract).
 
 ### 31. A capability shell: designation is authorization
 
@@ -1018,7 +1034,9 @@ BECAUSE this milestone will point at them.
 contracts for scripts, on Capsicum) is the academic anchor; Mark Miller's object-capability
 line (E, CapDesk, Polaris) supplies the organizing principle; Plash is the Linux attempt worth
 reading as the mistake catalog. Feeds 23 and 22 (shrinking ambient authority, met at the human
-layer); sits behind 28's terminal contract. Effort M.
+layer); sits behind 28's terminal contract. **Effort: 2 lanes built** (the grant expression, then
+CREATE/TRUNCATE and per-file grants), **1 more estimated** for phase 3, which is one item: gating the
+interactive boot so an FS service can be wired into it.
 
 ### 32. A real filesystem: RedoxFS behind a capability FS server
 
@@ -1087,7 +1105,8 @@ carry patches, and record divergence, the same discipline as any vendored engine
 **Prior art and reuse.** RedoxFS is the reuse. Alternatives on the record: FAT (host interop
 and simplicity, no integrity story), littlefs (proven, C, wrong-language FFI for less gain
 than ghostty-vt would buy). Feeds 31 (per-file grants), 23 (a component with real state to
-hand off across a live swap, the hardest handoff case yet named), 27 (`std::fs`). Effort L.
+hand off across a live swap, the hardest handoff case yet named), 27 (`std::fs`).
+**Effort: 3 lanes** (measured: the write-capable block path, the FS server, then integration).
 
 ### 36. A foreign-language component, seam first (spike; feeds 29 and 23)
 
@@ -1182,7 +1201,7 @@ and its real value is host interoperability (write an SD card on a Mac, read it 
 board), which is a 16a story to do in Rust when first silicon makes it concrete.
 
 **Sequencing.** After 29's rung one, so the framebuffer seam exists as a real consumer to point the
-component at, and before committing to libghostty-vt. Effort S to M. The whole value is that it is
+component at, and before committing to libghostty-vt. **Effort: 1 lane** (measured). The whole value is that it is
 cheap and it fails early: if the toolchain, the shim, or the confinement story has a problem, we
 find it with a throwaway component rather than half way into a port.
 
@@ -1256,7 +1275,7 @@ about: **a suppression with a reason is a decision, and one without is a leak.**
 
 **Sequencing.** Independent of everything else, and a good candidate for a low-priority background lane
 precisely because it touches many files shallowly and conflicts with any lane editing the same files. Do
-it when no other lane is open, or accept the rebases. Effort M, mostly reading.
+it when no other lane is open, or accept the rebases. **Effort: 1 lane estimated**, mostly reading.
 
 ### 40. Documentation as a system service: searchable, rendered, and installed by packages
 
@@ -1336,7 +1355,7 @@ need a browser engine, which is a mountain with no thesis behind it.
 
 **Sequencing.** Phase 1 wants milestone 31 phase 2 finished (per-file grants make `doc <file>` the
 demonstration it should be) and nothing else; it can precede the packaging work and be wired into it
-later. Effort S to M for phase 1, M for phases 2 and 3 together.
+later. **Effort: 1 lane estimated per phase**, three phases, and they can land separately.
 
 ### 39. Repository structure for a loosely-coupled OS, and the road to a distribution
 
