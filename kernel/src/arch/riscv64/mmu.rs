@@ -179,6 +179,11 @@ pub fn init() {
     unsafe { install(root) };
 
     KERNEL_ROOT.store(root, Ordering::Relaxed);
+
+    // Probe after `install`, so the ASID tag is exercised against the real kernel root rather than
+    // the coarse boot table. See `probe_asid_bits`: this validates the assumption `crates/asid`
+    // is already built on, and it is the gate on ever removing the flush in `write_satp`.
+    ASID_BITS.store(probe_asid_bits(), Ordering::Relaxed);
 }
 
 /// Switch `satp` to the Sv39 tables rooted at physical `root`, and flush the TLB.
@@ -199,6 +204,70 @@ unsafe fn install(root: u64) {
             options(nostack),
         );
     }
+}
+
+/// How many `satp.ASID` bits this hardware actually implements, discovered at boot.
+///
+/// `usize::MAX` until [`probe_asid_bits`] runs, so a read before the probe is loud rather than a
+/// plausible zero.
+static ASID_BITS: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(usize::MAX);
+
+/// The widest ASID the architecture allows in Sv39: `satp` bits 59:44.
+const SATP_ASID_WIDTH: u32 = 16;
+
+/// **Discover how many `satp.ASID` bits exist, because `crates/asid` assumes at least eight.**
+///
+/// `satp.ASID` is **WARL**: an implementation may hardwire any number of those bits to zero,
+/// *including all of them*. That is not a hypothetical corner of the spec; it is the cheap option
+/// for a small core, and the VisionFive 2's U74 has not been checked.
+///
+/// It matters because [`crates/asid`](asid) is built on an assumption it states out loud: 255 usable
+/// numbers, "below even the smallest hardware ASID space (8-bit, 256)". That holds on aarch64, where
+/// the architecture *mandates* at least 8 bits. RISC-V mandates none. On a machine with zero
+/// implemented bits, every one of the 160 address spaces would carry ASID 0 in hardware and their
+/// TLB entries would **alias** — one process reading another's memory, with nothing to signal it.
+///
+/// The reason that has not bitten us is an accident: `write_satp` follows every `csrw satp` with an
+/// unconditional `sfence.vma`, throwing the whole TLB away on each switch, so no entry ever survives
+/// long enough to alias. **The flush is currently load-bearing for correctness, not just slow.**
+/// Whoever removes it (see notes/riscv-arch-tests.md) must gate that on this probe.
+///
+/// The probe writes ones into the ASID field of the *current* `satp`, leaving MODE and PPN alone, and
+/// reads back which bits stuck. The address space is unchanged throughout — only the tag moves — so
+/// the worst case is TLB misses that re-walk the same page table and find the same mappings.
+fn probe_asid_bits() -> usize {
+    let original = read_satp();
+    let all_ones = original | (((1u64 << SATP_ASID_WIDTH) - 1) << SATP_ASID_SHIFT);
+    // SAFETY: MODE and PPN are carried over from the live `satp`, so this installs the same root
+    // page table under a different ASID tag and then restores it. Both writes are bracketed by
+    // `sfence.vma` so no entry tagged with the probe value outlives the probe.
+    let readback = unsafe {
+        let got: u64;
+        asm!(
+            "csrw satp, {probe}",
+            "sfence.vma",
+            "csrr {got}, satp",
+            "csrw satp, {orig}",
+            "sfence.vma",
+            probe = in(reg) all_ones,
+            got = out(reg) got,
+            orig = in(reg) original,
+            options(nostack),
+        );
+        got
+    };
+    let implemented = (readback >> SATP_ASID_SHIFT) & ((1 << SATP_ASID_WIDTH) - 1);
+    // WARL bits need not be contiguous in principle; count what is set rather than assuming a
+    // low-bit mask, so a strange implementation is reported honestly instead of rounded.
+    implemented.count_ones() as usize
+}
+
+/// How many `satp.ASID` bits this hardware implements. Panics if read before [`init`] probed.
+pub fn asid_bits() -> usize {
+    let n = ASID_BITS.load(core::sync::atomic::Ordering::Relaxed);
+    assert_ne!(n, usize::MAX, "asid_bits() read before mmu::init probed it");
+    n
 }
 
 /// Adopt the kernel's fine-grained Sv39 map on a secondary hart (SMP). `secondary_boot` brought this
@@ -633,6 +702,35 @@ mod tests {
     //!
     //! `translate` walks the live kernel root, so these inspect the tables the hardware is
     //! **actually walking**, not a copy of what we intended.
+
+    /// **The hardware must implement at least 8 `satp.ASID` bits, because `crates/asid` assumes it.****
+    ///
+    /// Not a curiosity test. `asid::ASIDS` is 256 and its header justifies that as "below even the
+    /// smallest hardware ASID space (8-bit, 256)" — true of aarch64, which mandates 8 bits, and
+    /// **not guaranteed by RISC-V at all**, which permits zero. With zero implemented bits every
+    /// address space carries ASID 0 in hardware and their TLB entries alias, which is one process
+    /// reading another's memory.
+    ///
+    /// This passes on QEMU. It exists for the board: if a real core implements fewer than 8 bits
+    /// this fails loudly at boot, rather than the ASID allocator quietly handing out numbers the
+    /// hardware cannot tell apart. Today the unconditional `sfence.vma` in `write_satp` masks the
+    /// whole problem by discarding the TLB on every switch — which is exactly why removing that
+    /// flush has to be gated on this number.
+    #[test_case]
+    fn the_hardware_has_at_least_the_asid_bits_the_allocator_assumes() {
+        let bits = super::asid_bits();
+        assert!(
+            bits <= super::SATP_ASID_WIDTH as usize,
+            "satp.ASID reported {bits} implemented bits, wider than the architectural 16",
+        );
+        assert!(
+            bits >= 8,
+            "satp.ASID implements {bits} bits; asid::ASIDS is {} and needs 8. \
+             Address spaces would alias in the TLB. The flush in write_satp is what is saving us.",
+            asid::ASIDS,
+        );
+    }
+
 
     /// Paging is on, and we are alive to say so.
     ///
