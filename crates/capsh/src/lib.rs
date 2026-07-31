@@ -53,6 +53,7 @@
 #![no_std]
 
 pub mod jobframe;
+pub mod nav;
 pub mod spawnproto;
 
 /// A program the shell can spawn. The set is small and closed in phase 1; each variant carries a
@@ -285,6 +286,28 @@ pub enum Command<'a> {
     /// you would have typed, unprefixed, which is the whole point of the spelling: what you inspect
     /// and what you run cannot drift apart.
     Caps(&'a [u8]),
+    /// `cd [path]`: rebind the shell's position inside the directory capability it already holds.
+    /// **A builtin, in the same category as `caps`**: it spawns nothing, grants nothing, and confers
+    /// no new authority, because a working directory *is* a capability the shell holds used as the
+    /// default base for resolving names (see [`nav`]).
+    ///
+    /// An empty operand means **your root**. There is no `HOME` here, and the root of your namespace
+    /// is the one distinguished place you have: it is exactly what you were granted.
+    Cd(&'a [u8]),
+    /// `pwd`: print where you are, **relative to your root** ([`nav::Cwd::render`]). Naming anything
+    /// above it would imply a namespace that does not exist.
+    Pwd,
+    /// `ls [path]`: enumerate a directory you can reach, the cwd by default. A builtin rather than a
+    /// program, which retires the worry that a listing program would be over-granted: it would have
+    /// to hold the power to read everything it lists.
+    Ls(&'a [u8]),
+    /// `mkdir <path>`: make a directory and, in the same verb, obtain a capability to it
+    /// (`fs_proto::fs::MKDIR` is descend-with-creation). Needs `CREATE` **and** `DESCEND`.
+    Mkdir(&'a [u8]),
+    /// `rm <path>`: **unlink**. The name goes away and anyone already holding the file keeps
+    /// reading it. It is not revocation, and this shell does not offer one, because saying "delete"
+    /// and meaning either is the conflation milestone 47 exists to undo.
+    Rm(&'a [u8]),
     /// A program invocation: `<prog> [--mem N] [token ...]`. Named `Run` for the act of running a
     /// program, not for a verb on the line; milestone 47 deleted the verb. A first word that is not
     /// a builtin lands here even when no such program exists, and [`plan`] answers
@@ -352,11 +375,28 @@ pub struct Endowment<'a> {
     pub interruptible: bool,
 }
 
-/// One resolved per-file grant: the name the command designated and the direction the program's
-/// manifest declared. The pair is the whole authority: `fs_proto::grant` packs exactly this into the
-/// file warden's three start arguments.
+/// One resolved per-file grant: the directory it was resolved against, the name the command
+/// designated, and the direction the program's manifest declared. Those three are the whole
+/// authority; `fs_proto::grant` packs the name and the direction into the file warden's start
+/// arguments, and the directory is which capability the warden is handed to narrow.
+///
+/// # The cwd stops at the process boundary, and this value is where that is true
+///
+/// `wc report.txt` resolves the name against the shell's position **at the moment the grant is
+/// made**, and this is that moment: [`plan_against`] walks any leading path once, here, and records
+/// where it landed. The child receives a capability to that one file. It has no cwd, inherits
+/// nothing, and cannot re-resolve anything, which is the point: a child that could re-resolve a name
+/// later would have ambient authority smuggled in through a string.
+///
+/// That [`dir`](FileGrant::dir) is a **value** rather than a reference to the shell's position is
+/// what makes it structural instead of a promise. A `cd` after this grant is planned cannot change
+/// what the grant means, because there is nothing here that points at the shell any more.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct FileGrant<'a> {
+    /// The directory the name was resolved in, relative to the shell's root, fixed at plan time.
+    pub dir: nav::Cwd,
+    /// The final component. Always a single component: a path was resolved into `dir`, not passed
+    /// on, because the FS contract takes one component per request and no server here walks a path.
     pub name: &'a [u8],
     pub writable: bool,
 }
@@ -372,6 +412,11 @@ pub struct FileGrant<'a> {
 pub struct Holdings {
     /// The shell holds a directory capability it can narrow into a per-file grant.
     pub dir: bool,
+    /// **Where in that capability it currently is**, which is the other half of what it holds: a
+    /// working directory is a directory capability used as the default base for resolving names, so
+    /// it belongs here beside the fact that there is one. Defaults to the root, which is also the
+    /// only position a shell holding no directory can be in.
+    pub cwd: nav::Cwd,
 }
 
 /// Why an invocation was refused, decided at the prompt before any spawn. Each variant maps to one
@@ -395,10 +440,15 @@ pub enum Refusal {
     /// The program is endowed a file and the command named none. Naming it on the line is the only
     /// way it can get one, so this is caught at the prompt rather than as an empty slot at runtime.
     FileRequired,
-    /// The named file is not something this shell can express: empty, a path rather than a single
-    /// component, or longer than the two argument words a grant's name rides in
-    /// (`fs_proto::grant::MAX_NAME`).
+    /// The named file is not something this shell can express: empty, a component longer than the
+    /// two argument words a grant's name rides in (`fs_proto::grant::MAX_NAME`), deeper than the
+    /// shell tracks, or a path that designates a directory rather than a file.
     FileNotNameable,
+    /// **The name began with `/`.** Its own refusal rather than a shape complaint, because the
+    /// reason is the milestone's: there is no namespace here to root an absolute path in, so the
+    /// name cannot be *expressed*. Nothing checked a permission, which is why the `std` PAL answers
+    /// `InvalidFilename` and not `PermissionDenied` for the same token.
+    NoAbsolutePath,
     /// The program takes no memory grant, but `--mem` was given.
     MemForbidden,
     /// The program requires a memory grant, but none was given.
@@ -443,8 +493,9 @@ impl Refusal {
             Refusal::FileForbidden => "takes no file; drop the name",
             Refusal::FileRequired => "is granted one file; name it on the line",
             Refusal::FileNotNameable => {
-                "that is not a name this shell can grant: one component, at most 16 bytes"
+                "that is not a name this shell can grant: at most 16 bytes a component, 8 deep"
             }
+            Refusal::NoAbsolutePath => nav::Refused::Absolute.message(),
             Refusal::MemForbidden => "takes no memory grant; drop the --mem",
             Refusal::MemRequired => "needs a memory grant; add --mem <pages>",
             Refusal::MemOutOfRange { .. } => "memory grant is out of the range it declares",
@@ -500,6 +551,14 @@ pub fn parse(line: &[u8]) -> Command<'_> {
         b"help" => Command::Help,
         b"echo" => Command::Echo(rest),
         b"caps" => Command::Caps(rest),
+        // The navigation builtins (milestone 47). They take a path operand rather than tokens,
+        // because a path is one designation however many slashes it has, and `trim` is all the
+        // classification they need.
+        b"cd" => Command::Cd(trim(rest)),
+        b"pwd" => Command::Pwd,
+        b"ls" => Command::Ls(trim(rest)),
+        b"mkdir" => Command::Mkdir(trim(rest)),
+        b"rm" => Command::Rm(trim(rest)),
         // Not a builtin, so it is a program invocation, and the whole line (name included) is the
         // grant expression. Whether the program exists is `plan`'s question, not the parser's.
         _ => Command::Run(parse_run(trimmed)),
@@ -623,7 +682,7 @@ pub fn plan_against<'a>(
     let file = match m.file {
         FileSpec::Forbidden => None,
         FileSpec::Required { writable } => {
-            let (name, rest) = pos.split_first().ok_or(Refusal::FileRequired)?;
+            let (token, rest) = pos.split_first().ok_or(Refusal::FileRequired)?;
             pos = rest;
             // What the shell holds decides whether the designation can be backed at all, and it
             // wins over the name's shape: "there is nothing I hold that could grant this" is a
@@ -631,10 +690,21 @@ pub fn plan_against<'a>(
             if !holds.dir {
                 return Err(Refusal::NoSuchCapability(CapKind::File));
             }
-            if !file_name_fits(name) {
-                return Err(Refusal::FileNotNameable);
-            }
-            Some(FileGrant { name, writable })
+            // **Resolve at grant time.** The leading path is walked here, once, against where the
+            // shell is standing now, and the result is recorded in the grant as a value. Nothing
+            // downstream re-resolves anything: the child gets a capability to one file, and a `cd`
+            // after this line cannot change what that grant means. See [`FileGrant`].
+            let parsed = nav::path(token).map_err(nav_refusal)?;
+            let (lead, name) = parsed
+                .split_last_component()
+                .ok_or(Refusal::FileNotNameable)?;
+            let mut dir = holds.cwd;
+            dir.apply(lead).map_err(nav_refusal)?;
+            Some(FileGrant {
+                dir,
+                name,
+                writable,
+            })
         }
     };
 
@@ -665,6 +735,16 @@ pub fn plan_against<'a>(
         reports: m.reports,
         interruptible: m.interruptible,
     })
+}
+
+/// A navigation refusal, in the vocabulary the prompt prints for a *grant*. Only the absolute path
+/// keeps its own line, because that one is a statement about the whole model rather than about the
+/// token's shape.
+fn nav_refusal(r: nav::Refused) -> Refusal {
+    match r {
+        nav::Refused::Absolute => Refusal::NoAbsolutePath,
+        _ => Refusal::FileNotNameable,
+    }
 }
 
 /// Which refusal to print for a token no declared slot can hold.
@@ -860,6 +940,33 @@ mod tests {
             panic!("a bare word must be a program invocation")
         };
         assert_eq!(r.prog, b"frobnicate");
+
+        // Milestone 47's navigation builtins. They parse to themselves, and, because builtins win
+        // over programs, **the program namespace must never learn one of these names**: it would be
+        // unreachable, and the reader would have no way to tell why.
+        assert_eq!(parse(b"pwd"), Command::Pwd);
+        assert_eq!(parse(b"cd deeper"), Command::Cd(b"deeper"));
+        assert_eq!(parse(b"cd"), Command::Cd(b""), "bare `cd` is your root");
+        assert_eq!(parse(b"ls"), Command::Ls(b""));
+        assert_eq!(parse(b"ls  sub "), Command::Ls(b"sub"));
+        assert_eq!(parse(b"mkdir logs"), Command::Mkdir(b"logs"));
+        assert_eq!(parse(b"rm old.txt"), Command::Rm(b"old.txt"));
+        for reserved in [
+            &b"help"[..],
+            b"echo",
+            b"caps",
+            b"cd",
+            b"pwd",
+            b"ls",
+            b"mkdir",
+            b"rm",
+        ] {
+            assert!(
+                Prog::from_name(reserved).is_none(),
+                "`{}` is a builtin, so a program of that name could never be run",
+                core::str::from_utf8(reserved).unwrap(),
+            );
+        }
     }
 
     #[test]
@@ -1058,8 +1165,11 @@ mod tests {
         interruptible: false,
     };
 
-    /// A shell that WAS granted a directory to narrow.
-    const WITH_DIR: Holdings = Holdings { dir: true };
+    /// A shell that WAS granted a directory to narrow, standing at its root.
+    const WITH_DIR: Holdings = Holdings {
+        dir: true,
+        cwd: nav::Cwd::root(),
+    };
 
     #[test]
     fn a_bare_name_is_the_grant_and_the_manifest_is_the_direction() {
@@ -1140,15 +1250,11 @@ mod tests {
 
     #[test]
     fn a_name_that_cannot_travel_as_a_grant_is_refused_at_the_prompt() {
-        // A grant's name rides in two argument words and is a single component, the same rule the FS
-        // server enforces. A path is not something this shell can express: there is no namespace
-        // here to walk, so it is refused where it was typed rather than turning into an ENOENT from
-        // a server that was asked something meaningless.
-        for line in [
-            &b"wc this-name-is-far-too-long.txt"[..],
-            b"wc sub/report.txt",
-            b"wc ..",
-        ] {
+        // A grant's name rides in two argument words, so a component that does not fit them cannot
+        // travel; `..` designates a directory rather than a file, so it is not a thing to grant.
+        // Both are refused where they were typed rather than turning into an ENOENT from a server
+        // that was asked something meaningless.
+        for line in [&b"wc this-name-is-far-too-long.txt"[..], b"wc .."] {
             let Command::Run(r) = parse(line) else {
                 panic!()
             };
@@ -1159,6 +1265,65 @@ mod tests {
                 core::str::from_utf8(line).unwrap(),
             );
         }
+        // An absolute path gets its own refusal, because the reason is different in kind: the name
+        // cannot be expressed here at all. It must not read as a permission.
+        let Command::Run(r) = parse(b"wc /etc/passwd") else {
+            panic!()
+        };
+        let refused = plan_against(&r, Prog::Worker, READS_A_FILE, WITH_DIR);
+        assert_eq!(refused, Err(Refusal::NoAbsolutePath));
+        assert!(!refused.unwrap_err().message().contains("denied"));
+    }
+
+    /// **The cwd stops at the process boundary**, which is the rule most likely to be got wrong.
+    /// `wc report.txt` resolves the name against the shell's position *at the moment the grant is
+    /// made*, and the grant records where that was. A path operand is walked here, once, so the
+    /// child never sees one.
+    #[test]
+    fn a_name_is_resolved_against_the_shells_position_at_grant_time() {
+        let mut holds = WITH_DIR;
+        assert!(holds.cwd.apply(nav::path(b"logs").unwrap().steps()).is_ok());
+
+        let Command::Run(r) = parse(b"wc report.txt") else {
+            panic!()
+        };
+        let here = plan_against(&r, Prog::Worker, READS_A_FILE, holds)
+            .unwrap()
+            .file
+            .unwrap();
+        assert_eq!(here.name, b"report.txt");
+        assert_eq!(here.dir.depth(), 1, "resolved where the shell was standing");
+
+        // A path operand is resolved to a directory plus one component, so the FS contract still
+        // only ever sees a single name relative to a capability presented to it (§27 intact).
+        let Command::Run(r) = parse(b"wc 2026/report.txt") else {
+            panic!()
+        };
+        let deeper = plan_against(&r, Prog::Worker, READS_A_FILE, holds)
+            .unwrap()
+            .file
+            .unwrap();
+        assert_eq!(deeper.name, b"report.txt");
+        assert_eq!(deeper.dir.depth(), 2);
+        assert_eq!(deeper.dir.component(1), b"2026");
+
+        // **And the grant does not follow the shell.** Moving afterwards cannot change what an
+        // already-planned grant means, because the grant carries a value and not a pointer to
+        // wherever the shell happens to be next. This is the whole of "the child cannot re-resolve".
+        holds.cwd.ascend();
+        assert_eq!(here.dir.depth(), 1, "the grant moved when the shell did");
+
+        // `..` in a grant's path is resolved at the prompt too, and clamps at the root exactly as
+        // `cd` does: there is nothing above the root to name, so the grant cannot be for a file up
+        // there whatever the token says.
+        let Command::Run(r) = parse(b"wc ../../secret") else {
+            panic!()
+        };
+        assert_eq!(
+            plan_against(&r, Prog::Worker, READS_A_FILE, WITH_DIR),
+            Err(Refusal::FileNotNameable),
+            "a grant cannot name its way out of the shell's root",
+        );
     }
 
     #[test]
