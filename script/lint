@@ -250,3 +250,53 @@ case "$branch" in
         ;;
 esac
 echo "naming: no -d names, no daemons, contract crates spelled one way, branch prefix recognised"
+
+echo "==> markdown links and the notes index"
+# Two checks, and deliberately NOT a markdown linter. A survey of all 95 markdown files found zero
+# broken relative links and exactly one unindexed note, so generic style rules (heading case, line
+# length, list markers) would fire constantly on prose that is deliberate and catch nothing. These
+# two are the parts that rot silently:
+#
+# 1. Relative links must resolve. Currently clean, so this is a REGRESSION GUARD: milestone 46 moved
+#    five things and could easily have broken a link, and the next rename might.
+# 2. Every notes/*.md must appear in notes/README.md, which CLAUDE.md requires and which had already
+#    drifted (notes/session-handoff.md).
+#
+# Backticked repo paths are deliberately NOT checked. The same survey found 8 that do not resolve and
+# all 8 are correct: `crates/linedisc` is preserved on purpose in DECISIONS §39 and the milestone 46
+# block, and `crates/heap`/`crates/slab`/`kernel/src/heap.rs` are accurate prose about what milestone
+# 14 removed. A checker there is 100% false positives, and history we deliberately keep is not rot.
+python3 - <<'PY'
+import glob, os, re, sys
+
+md = [f for f in glob.glob('**/*.md', recursive=True)
+      if not f.startswith(('vendor/', 'target/', '.claude/', 'patches/'))]
+
+bad = []
+for f in md:
+    base = os.path.dirname(f)
+    for m in re.finditer(r'\[[^\]]*\]\(([^)]+)\)', open(f, errors='replace').read()):
+        target = m.group(1).split('#')[0].strip()
+        if not target or target.startswith(('http://', 'https://', 'mailto:')):
+            continue
+        if not os.path.exists(os.path.normpath(os.path.join(base, target))):
+            bad.append(f'{f} -> {target}')
+
+index = open('notes/README.md', errors='replace').read()
+missing = [n for n in sorted(glob.glob('notes/*.md'))
+           if os.path.basename(n) != 'README.md' and os.path.basename(n) not in index]
+
+if bad:
+    print('lint: broken relative markdown links:', file=sys.stderr)
+    for b in bad:
+        print(f'  {b}', file=sys.stderr)
+if missing:
+    print('lint: notes/ files missing from notes/README.md:', file=sys.stderr)
+    for m in missing:
+        print(f'  {m}', file=sys.stderr)
+    print('Every note is indexed there (CLAUDE.md); an unindexed note is one nobody finds.',
+          file=sys.stderr)
+if bad or missing:
+    sys.exit(1)
+print(f'markdown: {len(md)} files, every relative link resolves, every note indexed')
+PY
