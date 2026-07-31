@@ -349,6 +349,16 @@ in the code or the conversation doesn't make sense, it belongs here.
   and truncating division reports 1970 for the last day of 1969, why the range stops at year 9999,
   why leap seconds are a named error rather than a clamp, and the scope note that a fixed UTC offset
   is in and the IANA database is out (it is a data-distribution problem, not a calendar one).
+- [The glob matcher](glob.md) — milestone 47's pure-computation lane: `*`, `?`, `[a-z]`, `[!a]` and
+  escaping over bytes, with no filesystem in it. Why the matcher is separate from the granting (the
+  interesting question is what a match *grants*, and "the expansion you see is the grant" only holds
+  if there is one matcher), why **`**` is out permanently** (it is a traversal feature, and descending
+  needs a capability, so putting it in a string matcher hides an authority question in a pure
+  function), and why zsh's qualifiers are out (they need a read right beyond enumerate). Then the
+  single-backtrack-point algorithm and the reason a hostile pattern cannot be made to hang, with the
+  bound computable before the match starts. Also the second place a model checker was the wrong tool:
+  equivalence with exhaustive search was settled by enumerating 2.7 million pattern/name pairs
+  completely, and the blowup test runs at 100,000 bytes.
 - [Generational names](generational-names.md) — milestone 14 phase A: the thread table becomes a
   fixed generational slot table (`crates/slots`). A Tid is `(generation, slot)`; a dead thread's
   name can never resolve again, even after slot reuse. Bounded like an array, safe like a
