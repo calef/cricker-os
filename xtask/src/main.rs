@@ -361,6 +361,14 @@ fn std_generate_modules() -> bool {
             root.join("crates/fs_proto/src/lib.rs"),
             farm_std_src().join("sys/pal/cricker/fsproto.rs"),
         ),
+        // The wall-clock contract (DECISIONS §43), so the time PAL reads the clock page with the
+        // same seqlock and the same layout the clock service publishes it with. Same discipline as
+        // the four above; this one matters more than most, because a drift here would be a torn
+        // read of a timestamp rather than a compile error.
+        (
+            root.join("crates/clock_proto/src/lib.rs"),
+            farm_std_src().join("sys/pal/cricker/clockproto.rs"),
+        ),
     ];
     for (src, dst) in jobs {
         let Ok(text) = std::fs::read_to_string(&src) else {
@@ -1056,6 +1064,8 @@ fn initrd_riscv() -> bool {
             "chatty",
             "--bin",
             "broker",
+            "--bin",
+            "clock",
             "--target",
             RISCV_TARGET,
         ],
@@ -1125,6 +1135,9 @@ fn initrd_riscv() -> bool {
         ("cconx", "cconx"),
         ("chatty", "chatty"),
         ("broker", "broker"),
+        // The clock service (milestone 51). Portable, so both archives carry it: it holds both RTC
+        // drivers and the kernel tells it which one the machine has.
+        ("clock", "clock"),
     ];
     let mut blobs: Vec<(&str, Vec<u8>)> = Vec::new();
     for &(archive_name, bin_name) in entries {
@@ -1325,6 +1338,7 @@ fn mkinitrd() -> bool {
         "cconx",
         "chatty",
         "broker",
+        "clock",
     ] {
         match read_stripped(&bin_elf(name)) {
             Ok(bytes) => tree.push((name, bytes)),
@@ -1729,6 +1743,8 @@ fn test() -> bool {
         "abi",
         "-p",
         "caps",
+        "-p",
+        "clock_proto",
         "-p",
         "crickerfs",
         "-p",

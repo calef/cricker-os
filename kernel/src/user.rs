@@ -3863,6 +3863,320 @@ pub mod keyboard_service {
     }
 }
 
+/// **The clock service** (milestone 51 lane A, DECISIONS §43): the RTC's registers, the wall
+/// clock's offset, and the propose endpoint, in one confined userspace process.
+///
+/// The kernel's whole part in wall-clock time is here and it is small: find the RTC in the device
+/// tree (by `compatible`, `memory::rtc_region`), allocate one frame for the clock page, and hand
+/// the service the registers, the page read/write, and an endpoint. It does not read the clock, does
+/// not know what time it is, and has no notion of an offset. Everything after the spawn is
+/// userspace agreeing with userspace over `clock_proto`.
+///
+/// Arch-neutral, like the display and compositor wiring: the component is one portable binary
+/// carrying both RTC drivers, and the *machine* says which one it has, so **both ISAs run literally
+/// the same test** (DECISIONS §19).
+#[cfg_attr(not(test), allow(dead_code))] // the tests are its only caller today
+pub mod clock_service {
+    use super::*;
+    use crate::cap::{Rights, endpoint_cap};
+    use crate::sched::EpId;
+
+    /// Where the service expects its two mappings. Must match user/src/clock.rs.
+    const CLOCK_VA: u64 = 0x00c0_0000;
+    const RTC_VA: u64 = 0x00d0_0000;
+
+    /// What the clock service was wired with, so a test (or a real init) can play its clients.
+    pub struct Wiring {
+        /// The service's startup report.
+        pub report: EpId,
+        /// The propose endpoint. A holder of `WRITE` here may ask; it may not tell.
+        pub propose: EpId,
+        /// The clock page's **physical** frame, so a reader can be given a read-only mapping of it
+        /// (and so the kernel's own tests can read it through the direct map).
+        pub page_phys: u64,
+        /// Which RTC the machine turned out to have, one of `clock_proto::rtc`.
+        pub kind: u64,
+    }
+
+    /// Wire and spawn the clock service.
+    pub fn start(image: &'static [u8]) -> Wiring {
+        let page_phys = crate::memory::alloc()
+            .expect("no frame for the clock page")
+            .addr();
+        // Zeroed, which is also the honest starting state: a page nobody has published to reads as
+        // `state::UNKNOWN` rather than as 1970 (clock_proto's `a_zeroed_page_reads_as_unknown`).
+        // SAFETY: freshly allocated, reachable through the direct map, owned by nobody yet.
+        unsafe {
+            core::ptr::write_bytes(
+                mmu::phys_to_virt(page_phys) as *mut u8,
+                0,
+                FRAME_SIZE as usize,
+            )
+        };
+
+        let report = crate::sched::create_endpoint();
+        let propose = crate::sched::create_endpoint();
+
+        let rtc = crate::memory::rtc_region();
+        let kind = rtc.map_or(clock_proto::rtc::NONE, |(_, _, k)| k);
+
+        // Two mappings, or one on a machine with no RTC. The device page is mapped and no
+        // `DeviceFrame` capability is granted, exactly as the console server's UART is: the service
+        // drives the registers and never delegates them onward, and §41's take-back revocation
+        // reaches an address-space mapping whether or not a cspace slot names it too.
+        let mut maps = [
+            Mapping {
+                va: CLOCK_VA,
+                phys: page_phys,
+                flags: Flags::user_data(), // read/WRITE: the service is a setter
+            },
+            Mapping {
+                va: RTC_VA,
+                phys: 0,
+                flags: Flags::user_device(),
+            },
+        ];
+        let n_maps = match rtc {
+            Some((phys, _, _)) => {
+                maps[1].phys = phys;
+                2
+            }
+            None => 1,
+        };
+
+        crate::sched::spawn(move || {
+            run(
+                image,
+                Spawn {
+                    arg0: kind, // which register layout the MACHINE has, not which ISA we are
+                    arg1: 0,
+                    arg2: 0,
+                    grants: &[
+                        endpoint_cap(propose, Rights::READ), // slot 0: serve proposals
+                        endpoint_cap(report, Rights::WRITE), // slot 1: the startup verdict
+                    ],
+                    maps: &maps[..n_maps],
+                },
+            )
+        })
+        .expect("could not spawn the clock service");
+
+        Wiring {
+            report,
+            propose,
+            page_phys,
+            kind,
+        }
+    }
+
+    impl Wiring {
+        /// The clock page as the kernel sees it, through the direct map. A reader process would
+        /// hold a read-only mapping instead; the seqlock and the layout are the same either way,
+        /// because they come from the one contract crate.
+        pub fn page(&self) -> clock_proto::ClockPage {
+            // SAFETY: a frame this module allocated and still owns, named through the direct map.
+            unsafe { clock_proto::ClockPage::new(mmu::phys_to_virt(self.page_phys)) }
+        }
+
+        /// Wall-clock nanoseconds as a reader would compute them: the page's offset plus the
+        /// ambient monotonic counter. 0 when the machine does not know.
+        pub fn wall_nanos(&self) -> u64 {
+            let r = self.page().read();
+            if clock_proto::state::known(r.state) {
+                clock_proto::wall_nanos(r.offset_nanos, monotonic_nanos())
+            } else {
+                0
+            }
+        }
+
+        /// Play a proposer: `CALL` the propose endpoint. Returns `(status, wall_nanos_after)`.
+        pub fn propose_nanos(&self, unix_nanos: u64) -> (u64, u64) {
+            let r = crate::sched::ipc_call(
+                self.propose,
+                [
+                    clock_proto::propose::req(clock_proto::propose::PROPOSE),
+                    unix_nanos,
+                ],
+            );
+            (r[0], r[1])
+        }
+    }
+
+    /// Monotonic nanoseconds since boot, the kernel's copy of the reader's arithmetic. Split into
+    /// seconds and a remainder for the same reason the service's version is: the naive
+    /// `ticks * 1_000_000_000` overflows a `u64` a few minutes into a boot.
+    pub fn monotonic_nanos() -> u64 {
+        let freq = crate::arch::timer::frequency();
+        let ticks = crate::arch::timer::now();
+        let secs = ticks / freq;
+        let rem = ticks % freq;
+        secs * clock_proto::NANOS_PER_SEC + rem * clock_proto::NANOS_PER_SEC / freq
+    }
+}
+
+/// **Wall-clock time** (milestone 51 lane A, DECISIONS §43).
+///
+/// Arch-neutral on purpose: one portable binary carrying both RTC drivers, one host-tested
+/// contract, and the machine's own device tree choosing between them, so **both ISAs run literally
+/// these tests** rather than two copies that can drift (DECISIONS §19, parity is a gate).
+#[cfg(test)]
+mod clock_tests {
+    use super::*;
+    use clock_proto::{policy, propose, state, status};
+
+    /// Start the service and take its startup report. `[RPT_READY, state, wall_nanos]`.
+    fn start() -> (clock_service::Wiring, [u64; 5]) {
+        let image = program("clock").expect("no clock program in the initrd archive");
+        let w = clock_service::start(image);
+        let report = crate::sched::ipc_recv(w.report);
+        (w, report)
+    }
+
+    /// **The machine finds out what time it is, from its own device tree.**
+    ///
+    /// Two ISAs, two entirely different RTCs (a PL031 counting seconds at `0x9010000`, a Goldfish
+    /// counting nanoseconds at `0x101000`), one binary, and the choice between them made from the
+    /// `compatible` string rather than from `target_arch`. What the assertion actually catches:
+    /// a wrong base address, a wrong register offset, the Goldfish halves swapped, and the
+    /// seconds/nanoseconds unit confusion, all of which land outside a 74-year window.
+    ///
+    /// It is a **plausibility** check, not an accuracy one, and deliberately so. Nothing in the
+    /// guest knows the host's clock to compare against, so the honest claim is "this is a time a
+    /// machine running this code could be at", which is exactly what `policy::plausible` is for and
+    /// exactly what the previous behaviour (1970 plus uptime) fails.
+    #[test_case]
+    fn the_clock_service_reads_a_plausible_wall_clock_from_the_rtc() {
+        let (w, report) = start();
+
+        assert_ne!(
+            w.kind,
+            clock_proto::rtc::NONE,
+            "both QEMU virt boards have an RTC; finding none means the compatible match broke",
+        );
+        assert_eq!(
+            report[1],
+            state::RTC,
+            "the clock should be set from the RTC"
+        );
+        assert!(
+            policy::plausible(report[2]),
+            "the RTC read back {} ns, which is outside the sanity window",
+            report[2],
+        );
+
+        // And the page a reader would hold says the same thing, computed independently: the kernel
+        // adds its own counter to the offset the service published, through the same seqlock.
+        let r = w.page().read();
+        assert_eq!(r.state, state::RTC);
+        assert_eq!(r.generation, 1, "one publish: the RTC reading");
+        let by_hand = clock_proto::wall_nanos(r.offset_nanos, clock_service::monotonic_nanos());
+        assert!(
+            by_hand >= report[2] && by_hand - report[2] < 10 * clock_proto::NANOS_PER_SEC,
+            "a reader's own arithmetic ({by_hand}) should agree with the service's ({})",
+            report[2],
+        );
+    }
+
+    /// **A proposer can ask and cannot tell.**
+    ///
+    /// The kernel plays the network time client here: it holds nothing but the propose endpoint,
+    /// and every attempt to move the clock somewhere the policy forbids comes back refused with the
+    /// page's generation unchanged. The generation is the load-bearing half of the assertion; a
+    /// refusal that had nevertheless written the offset would return the same status word.
+    ///
+    /// This is the milestone's demonstrable claim, and it is one Unix cannot make: `ntpd` runs as
+    /// root and may set the clock to anything.
+    #[test_case]
+    fn a_proposer_can_ask_and_cannot_tell() {
+        let (w, _) = start();
+        let before = w.page().read();
+        assert!(state::known(before.state), "needs a running clock to step");
+
+        let now = w.wall_nanos();
+        for (proposed, want, what) in [
+            (0, status::REFUSED_IMPLAUSIBLE, "1970, the old lie itself"),
+            (
+                policy::NOT_AFTER_NANOS,
+                status::REFUSED_IMPLAUSIBLE,
+                "the far future, past every certificate expiry",
+            ),
+            (
+                now + 2 * policy::MAX_STEP_FORWARD_NANOS,
+                status::REFUSED_TOO_FAR_FORWARD,
+                "plausible in the absolute, too big a step",
+            ),
+            (
+                now - 2 * policy::MAX_STEP_BACKWARD_NANOS,
+                status::REFUSED_TOO_FAR_BACKWARD,
+                "backwards, where instants would happen twice",
+            ),
+        ] {
+            let (got, _) = w.propose_nanos(proposed);
+            assert_eq!(got, want, "proposing {what}");
+            assert_eq!(
+                w.page().read().generation,
+                before.generation,
+                "a refused proposal must not have written the page ({what})",
+            );
+        }
+
+        // And the bounded case it exists to allow: a small correction is accepted, and the
+        // provenance says it came from a proposal rather than from a human.
+        let (got, after) = w.propose_nanos(now + clock_proto::NANOS_PER_SEC / 2);
+        assert_eq!(got, status::ACCEPTED);
+        assert!(after >= now);
+        let r = w.page().read();
+        assert_eq!(r.state, state::SYNCED, "an accepted proposal is not a SET");
+        assert_eq!(r.generation, before.generation + 1);
+    }
+
+    /// **Adjusting the wall clock cannot perturb monotonic time, by construction.**
+    ///
+    /// The property the counter-plus-offset design buys, and the reason `Instant` was left alone.
+    /// Unix reaches for `adjtime` slewing partly because stepping the clock backwards breaks things
+    /// that assumed it only moved forward; here the step is an offset write and the counter never
+    /// sees it, so there is nothing to slew *for correctness*. The assertion is deliberately blunt:
+    /// step the wall clock by half a second and require the monotonic counter to have advanced by
+    /// far less than that, which no implementation that fed the offset into the counter could pass.
+    #[test_case]
+    fn adjusting_the_wall_clock_leaves_the_monotonic_counter_alone() {
+        let (w, _) = start();
+        let step = clock_proto::NANOS_PER_SEC / 2;
+
+        let mono_before = clock_service::monotonic_nanos();
+        let wall_before = w.wall_nanos();
+        let (got, wall_after) = w.propose_nanos(wall_before + step);
+        assert_eq!(got, status::ACCEPTED);
+        let mono_after = clock_service::monotonic_nanos();
+
+        assert!(
+            wall_after >= wall_before + step / 2,
+            "the wall clock should have moved: {wall_before} -> {wall_after}",
+        );
+        let mono_moved = mono_after - mono_before;
+        assert!(
+            mono_moved < step / 4,
+            "the monotonic counter moved {mono_moved} ns across a {step} ns wall-clock step; \
+             it should have moved only by the cost of the round trip",
+        );
+    }
+
+    /// **A malformed request is refused, and the service survives it.**
+    ///
+    /// The serve loop's other exit. It matters because the propose endpoint is the one thing a
+    /// hostile component holds, so "an opcode nobody defined" has to be a reply rather than a fault
+    /// or a wedge: the second, well-formed call proves the service is still there.
+    #[test_case]
+    fn an_unknown_opcode_is_answered_rather_than_fatal() {
+        let (w, _) = start();
+        let r = crate::sched::ipc_call(w.propose, [propose::req(0xff), 0]);
+        assert_eq!(r[0], status::BAD_REQUEST);
+
+        let r = crate::sched::ipc_call(w.propose, [propose::req(propose::STATE), 0]);
+        assert_eq!(r[0], state::RTC, "still serving, and still knows the time");
+    }
+}
+
 /// Milestone 11: hand a process an untyped budget and let it spend it.
 #[cfg_attr(not(all(test, target_arch = "aarch64")), allow(dead_code))] // the tour and the aarch64 tests
 pub mod untyped_service {
@@ -5230,11 +5544,21 @@ mod display_tests {
 /// (slot 1, which `println!` SENDs to). Its stdout is a fixed, deterministic transcript the test
 /// reassembles from the endpoint and checks byte for byte. Portable: the aarch64 ELF runs on
 /// aarch64 and the riscv64 ELF on riscv, out of each arch's own initrd.
+///
+/// **Since milestone 51 it is also granted a wall clock**: a clock service is started first, and
+/// the program gets that service's page as a `Frame` capability with `READ` in slot 5 plus a
+/// read-only mapping of it. That is the whole of a std program's wall-clock authority, and it is
+/// what turns `SystemTime::now()` from "1970 plus uptime" into a real answer (DECISIONS §43).
 #[cfg(test)]
 pub mod std_service {
     use super::*;
-    use crate::cap::{Rights, endpoint_cap, untyped_cap};
+    use crate::cap::{Rights, endpoint_cap, frame_cap, untyped_cap};
     use crate::sched::EpId;
+
+    /// Where the loader maps the clock page for a std program. Must match the std PAL's
+    /// `rt::CLOCK_PAGE`, and the slot must match its `rt::CLOCK_SLOT`.
+    const CLOCK_PAGE_STD: u64 = 0x1200_0000;
+    const CLOCK_SLOT: u64 = 5;
 
     /// The heap high-water for the demo's Vec/String/HashMap workout plus std's own runtime
     /// allocations and the heap's page tables is well under 1 MiB; 256 pages is comfortable, and
@@ -5246,16 +5570,29 @@ pub mod std_service {
     /// total), generous so a stack-depth surprise is not what a first std bring-up debugs.
     const EXTRA_STACK_PAGES: u64 = 32;
 
-    pub fn start(image: &'static [u8]) -> EpId {
+    pub fn start(image: &'static [u8], clock_image: &'static [u8]) -> EpId {
         let budget = crate::untyped::create(BUDGET_PAGES).expect("no untyped for hellostd");
         let report = crate::sched::create_endpoint();
 
-        let mut stack = [Mapping {
+        // The clock first, and its startup report taken before the program starts, so the offset is
+        // published by the time std reads the page. Waiting is not a synchronisation trick, it is
+        // the honest order: a std program that started first would see `state::UNKNOWN` and be
+        // correct to say so.
+        let clock = clock_service::start(clock_image);
+        let _ = crate::sched::ipc_recv(clock.report);
+
+        // The clock page read-only, then the deep stack std needs.
+        let mut maps = [Mapping {
             va: 0,
             phys: 0,
             flags: Flags::user_data(),
-        }; EXTRA_STACK_PAGES as usize];
-        for (k, m) in stack.iter_mut().enumerate() {
+        }; 1 + EXTRA_STACK_PAGES as usize];
+        maps[0] = Mapping {
+            va: CLOCK_PAGE_STD,
+            phys: clock.page_phys,
+            flags: Flags::user_rodata(), // a READER, and the mapping is what says so
+        };
+        for (k, m) in maps[1..].iter_mut().enumerate() {
             let phys = crate::memory::alloc()
                 .expect("no frame for hellostd stack")
                 .addr();
@@ -5268,6 +5605,11 @@ pub mod std_service {
         }
 
         crate::sched::spawn(move || {
+            // The clock capability goes in at its named slot BEFORE `run` grants in order, so
+            // `run`'s two grants land at 0 and 1 and slots 2 to 4 stay empty. `READ` only: the
+            // whole point is that a reader cannot write the offset. See `grant_at`.
+            crate::sched::grant_at(CLOCK_SLOT, frame_cap(clock.page_phys, Rights::READ))
+                .expect("the std clock slot was already occupied");
             run(
                 image,
                 Spawn {
@@ -5278,7 +5620,7 @@ pub mod std_service {
                         untyped_cap(budget),                 // slot 0: the heap's budget
                         endpoint_cap(report, Rights::WRITE), // slot 1: stdout/stderr
                     ],
-                    maps: &stack,
+                    maps: &maps,
                 },
             )
         })
@@ -5470,17 +5812,24 @@ mod std_tests {
         map lookup 1369\n\
         fs honestly unsupported\n\
         net honestly unsupported\n\
-        instant monotonic ok\n";
+        instant monotonic ok\n\
+        wall clock ok\n";
 
     /// A whole Rust `std` program runs on the native ABI and its output is exactly right.
     ///
-    /// Granted only a heap and a stdout endpoint, so both `fs` and `net` refuse: the two
+    /// Granted a heap, a stdout endpoint, and a clock, so both `fs` and `net` refuse: the two
     /// `unsupported` lines in the transcript are "no ambient filesystem" and "no ambient network"
     /// felt from inside std, on a binary that also runs both for real when it is granted them.
+    ///
+    /// The `wall clock ok` line is milestone 51's half: `SystemTime::now()` reached a real time,
+    /// through a read-only page and the ambient counter, and the program asserted it was inside the
+    /// same sanity window the clock service applies. Before that milestone the same call returned
+    /// 1970 plus uptime and would have passed any test that only checked it did not crash.
     #[test_case]
     fn a_whole_std_program_runs_on_the_native_abi() {
         let image = program("hellostd").expect("no hellostd program in the initrd archive");
-        let report = std_service::start(image);
+        let clock = program("clock").expect("no clock program in the initrd archive");
+        let report = std_service::start(image, clock);
         assert_std_transcript(report, EXPECTED, "hellostd");
     }
 }
