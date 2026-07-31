@@ -85,8 +85,11 @@ jobs:
       # bare-metal clang (milestone 36, DECISIONS §30). The test job gets this from script/bootstrap;
       # this job does not run bootstrap (it would install QEMU it never uses), so install clang here.
       # Ubuntu's clang carries every LLVM backend, including RISC-V.
-      - name: Install clang (the C component's compiler)
-        run: sudo apt-get update && sudo apt-get install -y clang
+      # shellcheck too: script/lint gates the 23 `#!/bin/sh` scripts on it. Installed explicitly
+      # rather than relying on the runner image shipping it, so the gate cannot quietly vanish when
+      # that image changes.
+      - name: Install clang (the C component's compiler) and shellcheck
+        run: sudo apt-get update && sudo apt-get install -y clang shellcheck
       - uses: Swatinem/rust-cache@v2
       - run: script/lint
 
