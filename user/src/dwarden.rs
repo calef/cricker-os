@@ -179,7 +179,14 @@ fn serve(dir: u64) -> ! {
             // The verbs that operate on a handle. `w1` passes through untouched: it is an offset for
             // READ/WRITE, a size for TRUNCATE and a cursor for READDIR, and none of them means
             // anything to this process.
-            fs::READ | fs::WRITE => forward(fs::req(verb, server_handle, len), w1),
+            //
+            // `UNLINK` is here rather than with the handle-minting verbs above because it hands
+            // nothing back: a name goes away and no capability appears, so there is nothing to
+            // install in the table. It needs no check here for the same reason nothing else does,
+            // and the reason is worth stating for the verb that *destroys* something: the FS server
+            // resolves the name under the handle this process substituted, and that handle carries
+            // whatever `REMOVE` the grant carried.
+            fs::READ | fs::WRITE | fs::UNLINK => forward(fs::req(verb, server_handle, len), w1),
             fs::TRUNCATE | fs::READDIR => forward(fs::req(verb, server_handle, 0), w1),
             fs::FSTAT => forward(fs::req(fs::FSTAT, server_handle, 0), 0),
             // Closing the granted directory is refused for the same reason the FS server refuses to
