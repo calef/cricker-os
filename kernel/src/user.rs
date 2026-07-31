@@ -12023,9 +12023,12 @@ mod rm_program_tests {
             },
         )?;
 
-        let mut printed = 0;
-        for _ in 0..MAX_MESSAGES {
-            let [w0, w1, w2] = sched::ipc_recv(report);
+        // `printed` is the enumeration index rather than a counter, and the two coincide exactly:
+        // the verdict arm returns *before* the increment, so on the iteration that sees it, the
+        // index is the number of text frames that arrived first. That is the quantity being
+        // reported, so this is not merely appeasing the lint.
+        for (printed, _) in (0..MAX_MESSAGES).enumerate() {
+            let [w0, w1, w2, _, _] = sched::ipc_recv(report);
             if w0 == VERDICT {
                 return Some(Outcome {
                     status: w1,
@@ -12036,7 +12039,6 @@ mod rm_program_tests {
             // A text frame: its first word is a byte count, which cannot collide with the verdict
             // word. That is what makes "it printed nothing" an assertion rather than a hope.
             assert!(w0 <= 16, "neither a verdict nor a text frame: {w0:#x}");
-            printed += 1;
         }
         panic!("rm sent {MAX_MESSAGES} messages and never a verdict");
     }

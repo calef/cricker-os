@@ -1837,7 +1837,9 @@ mod tests {
     /// program in the static table declared a grant the interactive shell cannot back.
     #[test]
     fn rm_needs_an_operand_and_something_to_narrow() {
-        let Command::Run(r) = parse(b"rm") else { panic!() };
+        let Command::Run(r) = parse(b"rm") else {
+            panic!()
+        };
         assert_eq!(plan(&r, WITH_DIR), Err(Refusal::PathRequired));
         let Command::Run(r) = parse(b"rm -rf") else {
             panic!()
@@ -1867,7 +1869,10 @@ mod tests {
             (&b"rm /etc/passwd"[..], Refusal::NoAbsolutePath),
             (b"rm ..", Refusal::FileNotNameable),
             (b"rm ../motd", Refusal::FileNotNameable),
-            (b"rm this-name-is-far-too-long.txt", Refusal::FileNotNameable),
+            (
+                b"rm this-name-is-far-too-long.txt",
+                Refusal::FileNotNameable,
+            ),
         ] {
             let Command::Run(r) = parse(line) else {
                 panic!()

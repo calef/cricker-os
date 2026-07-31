@@ -1049,10 +1049,10 @@ pub mod fixture {
     /// - **A line of text**, framed exactly as every std program's stdout is (`w0` = the byte count,
     ///   at most 16, and the bytes little-endian in `w1`|`w2`). Diagnostics always go out this way;
     ///   `-v` adds one line per name removed.
-    /// - **The verdict**, once, last: `w0` = [`super::VERDICT`], `w1` = the exit status, `w2` = how
+    /// - **The verdict**, once, last: `w0` = [`crate::fixture::VERDICT`], `w1` = the exit status, `w2` = how
     ///   many names were removed.
     ///
-    /// A byte count is at most 16 and [`super::VERDICT`] is far larger, so the two never collide. A
+    /// A byte count is at most 16 and [`crate::fixture::VERDICT`] is far larger, so the two never collide. A
     /// receiver that takes the verdict as its **first** message therefore knows the run printed
     /// nothing, which is `rm(1)`'s default behaviour asserted rather than assumed: a `SEND` blocks
     /// until somebody receives it, so a line that was emitted cannot be missed by looking later.
@@ -1554,31 +1554,11 @@ mod tests {
     fn the_subtree_fixture_is_grantable_and_unambiguous() {
         use fixture::tree::*;
         for name in [
-            SUB,
-            INNER,
-            DEEPER,
-            LEAF,
-            OTHER,
-            SECRET,
-            MADE,
-            MADE_DIR,
-            MOVED,
-            NAV_KEPT,
-            NAV_GONE,
-            NAV_DIR,
-            NAV_EMPTY,
-            NAV_INSIDE,
+            SUB, INNER, DEEPER, LEAF, OTHER, SECRET, MADE, MADE_DIR, MOVED, NAV_KEPT, NAV_GONE,
+            NAV_DIR, NAV_EMPTY, NAV_INSIDE,
             // The `rm -r` subtree. Its names ride in a grant too: the program is *started* with the
             // one name it is to remove, packed the way every other grant is.
-            RMTREE,
-            RM_KEEP,
-            RM_DOOMED,
-            RM_ONE,
-            RM_TWO,
-            RM_NESTED,
-            RM_LEAF,
-            RM_SOLO,
-            RM_MISSING,
+            RMTREE, RM_KEEP, RM_DOOMED, RM_ONE, RM_TWO, RM_NESTED, RM_LEAF, RM_SOLO, RM_MISSING,
         ] {
             assert!(
                 grant::fits(name.as_bytes()),
@@ -1588,7 +1568,9 @@ mod tests {
         // The post-run host check identifies the attacker's creations by PREFIX, because a run
         // index is appended to each. A fixture name that started with one of those prefixes would
         // be read as an escape, or would hide one.
-        let probes = [MADE, MADE_DIR, MOVED, NAV_KEPT, NAV_GONE, NAV_DIR, NAV_EMPTY];
+        let probes = [
+            MADE, MADE_DIR, MOVED, NAV_KEPT, NAV_GONE, NAV_DIR, NAV_EMPTY,
+        ];
         for fixture in ROOT_ENTRIES
             .iter()
             .chain(&[INNER, DEEPER, LEAF, SECRET, RM_KEEP, RM_DOOMED])
@@ -1614,7 +1596,9 @@ mod tests {
         // The `rm -r` fixture's own shape. `RM_MISSING` is the load-bearing one: the whole of `-f`
         // is that a name which is not there is not an error, so a fixture that accidentally shipped
         // it would make the `-f` run and the plain run indistinguishable.
-        for staged in [RM_KEEP, RM_DOOMED, RM_ONE, RM_TWO, RM_NESTED, RM_LEAF, RM_SOLO] {
+        for staged in [
+            RM_KEEP, RM_DOOMED, RM_ONE, RM_TWO, RM_NESTED, RM_LEAF, RM_SOLO,
+        ] {
             assert_ne!(
                 staged, RM_MISSING,
                 "the name `rm -f` is pointed at must not be one the fixture stages",
@@ -1629,7 +1613,10 @@ mod tests {
     #[test]
     fn a_text_frame_and_a_verdict_are_told_apart_by_the_first_word() {
         // A frame's first word is a byte count into the two payload words, so 16 is its ceiling.
-        assert!(
+        // Checked at COMPILE time rather than here: both sides are constants, so a change that broke
+        // it should fail the build rather than wait for someone to run the suite. Same discipline as
+        // the clock service's step-bound assertion (§43).
+        const _: () = assert!(
             fixture::VERDICT > 16,
             "a verdict word that could be a byte count would make a diagnostic read as a verdict",
         );
@@ -1637,6 +1624,10 @@ mod tests {
         // only that something did.
         assert_eq!(fixture::rm::status(dir::EROFS), dir::EROFS as u64);
         assert_ne!(fixture::rm::status(dir::EROFS), fixture::rm::OK);
-        assert_eq!(fixture::rm::OK, 0, "success is zero, as every shell expects");
+        assert_eq!(
+            fixture::rm::OK,
+            0,
+            "success is zero, as every shell expects"
+        );
     }
 }
