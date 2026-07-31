@@ -18,7 +18,7 @@ named program's manifest **at spawn**, before a child exists, so a mismatch is a
 the line you typed:
 
 ```text
-$ run budgeter
+$ budgeter
   budgeter: needs a memory grant; add --mem <pages>
 ```
 
@@ -41,8 +41,8 @@ struct Manifest {
 ### The file endowment declares a direction, not a name
 
 `FileSpec::Required { writable }` is the phase-2 addition, and the interesting part is the split it
-makes: **the manifest declares the direction, the command line designates the file.** So `run wc
-report.txt` reads and `run tee report.txt` writes, and the human never types a mode.
+makes: **the manifest declares the direction, the command line designates the file.** So `wc
+report.txt` reads and `tee report.txt` writes, and the human never types a mode.
 
 That is SHILL's shape and it is the right one on both halves. Whether a program writes is a property
 of what the program does; it is fixed, publishable, and not the caller's to guess. Which file it
@@ -53,12 +53,20 @@ read it: `caps run wc file:report.txt` prints "read-only, and nothing else on th
 One file, not a list. A program that needs two needs a manifest that says so, and that is a later
 widening rather than something to leave ambiguous now.
 
-The two phase-1 programs:
+The programs a `Manifest` is written for (the two interrupt demonstrators, `heeder` and `spinner`,
+declare nothing but `interruptible`):
 
 | program    | arg        | mem                  | file      | reports |
 |------------|------------|----------------------|-----------|---------|
 | `worker`   | Required   | Forbidden            | Forbidden | yes     |
 | `budgeter` | Forbidden  | Required 1..=64 pages | Forbidden | yes     |
+| `date`     | Forbidden  | Forbidden            | Forbidden | yes     |
+
+**`date`'s row is all `Forbidden`, and that is the interesting one.** Its authority is a read-only
+mapping of the clock page, which init endows and the command line cannot name: there is nothing to
+type, so there is nothing to get wrong. What the manifest still does is refuse everything else, so a
+memory grant or a file aimed at a clock reader stops at the prompt rather than being handed over and
+ignored. A manifest is as much about what a program will *not* accept as what it needs.
 
 No shipped program declares a file yet, because the shell it would be spawned from holds no directory
 to narrow (notes/grant-expression.md says why, and why that refusal is true rather than pending). The
@@ -73,12 +81,20 @@ refusal), with an upper bound the shell's own budget can actually back.
 
 ## The check, and its order
 
-`capsh::plan` resolves a parsed `run` against the manifest and yields either an `Endowment` (exactly
-what to grant) or a typed `Refusal`. The checks run in a deliberate order: a designated resource the
-shell **cannot back at all** (a `file:PATH`, until milestone 32) is reported before any manifest
-quibble, because "you named something I hold no capability for" is the milestone's headline and
-should win over "and also your --mem is out of range." After that come the un-placeable extra
-argument, the program name, then the argument and memory rules.
+`capsh::plan` resolves a parsed invocation against the manifest and yields either an `Endowment`
+(exactly what to grant) or a typed `Refusal`. The order is: the program name (a name that resolves
+to nothing is a fact about the system, and everything after it is a fact about a program that
+exists), then a flag nothing knows, then **the positional tokens placed into the slots the manifest
+declares** (the integer argument, then the file), then the memory rules.
+
+Placing the tokens is what milestone 47 moved out of the parser. The parser knows a token's shape;
+only the manifest knows what a token *is*, which is why `wc 2026` designates a file named `2026`
+rather than an argument nobody declared. Two refusals fall out of the same rule:
+
+- a token past the last declared slot cannot be placed, so `worker 5 extra` is refused. That is the
+  safety property the `file:` prefix used to be credited with, and it was always the manifest's.
+- inside a file slot, what the *shell holds* decides whether the designation can be backed at all:
+  "you hold no such capability" beats "and that name is too long", because it is the bigger fact.
 
 Each refusal carries a fixed message (`Refusal::message`), host-tested so the wording cannot drift,
 and the shell prefixes the program name. The strings are part of the deliverable: a refusal must
@@ -102,5 +118,11 @@ checked by whoever wires it up, so a bad wiring is caught at composition, not at
   *ships with*, so the shell (or any composer) checks a program it did not write against the
   program's own declaration. The shape is the same; the manifest just travels with the binary.
 - **milestone 32** adds file and directory grants to the endowment vocabulary, so a manifest can
-  declare "one readable file" and the checker can match a `file:PATH` designator against it. The
+  declare "one readable file" and the checker can match a designated name against it. The
   `ArgSpec`/`MemSpec` pattern extends directly to a `FileSpec`.
+- **milestone 47** will have to grow `ArgSpec` into something with **position and arity** the first
+  time a program wants both an argument and a file (`grep pattern file.txt`), or wants two of
+  either. Today's rule (the argument takes the first positional, the file the next) is unambiguous
+  only because at most one bare token can be a file. `date` is already pressing on this: it reads
+  three registers (format, UTC offset, provenance) and declares `ArgSpec::Forbidden`, so the shell
+  spawns it with the defaults and its selectors are unreachable from the prompt.
