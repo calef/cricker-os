@@ -30,6 +30,23 @@ machine contradicting the plan. Otherwise proceed and report what you did.
 Every design decision goes in `DECISIONS.md`; every concept and finding gets a note in `notes/`,
 indexed in `notes/README.md`. Record the *why* and the honest caveats.
 
+**The standard to aim at is FreeBSD's** (Chris, 2026-07-30): the Handbook and the man pages, which
+are the best documentation in the field and are the reason a FreeBSD admin can answer a question
+without leaving the system. Four things make them that, and all four are things we can do:
+
+- **Task-oriented.** "How do I do X", in order, with the actual commands, rather than a reference
+  dump the reader has to reassemble.
+- **In-tree and versioned with the code**, so the docs cannot describe a system that no longer
+  exists. Already true here; keep it true.
+- **Real `EXAMPLES`.** A page without a worked example has not finished explaining itself.
+- **An honest `BUGS` section.** FreeBSD man pages document known limitations *in the manual*, next to
+  the feature, rather than only in a tracker. This is the one worth copying hardest, because it is
+  the convention this project already reaches for by instinct: the map "tie", the spawn caveat, the
+  scope notes on parity gaps. **Name the limitation where the reader meets the feature.**
+
+The point is not the format, which is theirs. It is the posture: documentation written for someone
+who has to *use* the thing, and honest enough that they trust it when it says something works.
+
 **Benchmarks and cross-OS comparisons are first-class.** Measure, do not argue. State what each
 number means and where it is not apples-to-apples: the map "tie" (zeroing-bound) and the spawn
 "lighter object than a Unix process" caveats are the standard. An honest tie or loss recorded
