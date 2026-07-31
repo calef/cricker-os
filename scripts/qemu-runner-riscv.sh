@@ -73,7 +73,15 @@ if [ -n "$CRICKER_DISK" ]; then
     if [ -f "$REDOXFS_DISK" ]; then
         REDOXFS_MMIO="-drive file=$REDOXFS_DISK,if=none,format=raw,id=hd2 -device virtio-blk-device,drive=hd2"
     fi
-    DISK="-global virtio-mmio.force-legacy=false $REDOXFS_MMIO -drive file=$CRICKER_DISK,if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 -drive file=$PCI_DISK,if=none,format=raw,id=hd1 -device virtio-blk-pci,drive=hd1,disable-legacy=on,iommu_platform=on"
+    # The crash test's own RedoxFS image (milestone 37), the third mmio block device, at slot 2, and
+    # FIRST on the command line because slots are assigned in reverse of it. The twin of the aarch64
+    # runner's block; see it for why the crash test gets a disk of its own.
+    CRASH_DISK="${CRICKER_DISK%.img}-redoxfs-crash.img"
+    CRASH_MMIO=""
+    if [ -f "$CRASH_DISK" ]; then
+        CRASH_MMIO="-drive file=$CRASH_DISK,if=none,format=raw,id=hd3 -device virtio-blk-device,drive=hd3"
+    fi
+    DISK="-global virtio-mmio.force-legacy=false $CRASH_MMIO $REDOXFS_MMIO -drive file=$CRICKER_DISK,if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 -drive file=$PCI_DISK,if=none,format=raw,id=hd1 -device virtio-blk-pci,drive=hd1,disable-legacy=on,iommu_platform=on"
 fi
 
 # A virtio-net NIC on QEMU user-mode (slirp) networking when CRICKER_NET is set (milestone 30), the

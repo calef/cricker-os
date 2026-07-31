@@ -9,7 +9,7 @@
 //!
 //! # The seam, and why it is here rather than in QEMU
 //!
-//! The FS server reaches its disk through the [`BlockIo`](crate::BlockIo) trait: read one 4096-byte
+//! The FS server reaches its disk through the [`BlockIo`] trait: read one 4096-byte
 //! filesystem block, write one, ask the size. On device that is `IpcDisk` calling the block server;
 //! on the host it is a `Vec`. **That trait is the seam a device failure enters through**, and it is
 //! the same seam on both, which is what makes the property host-testable in milliseconds. The

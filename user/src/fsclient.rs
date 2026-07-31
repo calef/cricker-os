@@ -140,15 +140,82 @@ const BENCH_WARMUP: u64 = 64;
 const ROLE_PROOF: u64 = 0;
 const ROLE_BENCH: u64 = 1;
 const ROLE_ATTACKER: u64 = 2;
+/// Milestone 37: drive the writes the FS server is killed in the middle of.
+const ROLE_CRASH_DRIVER: u64 = 3;
+/// Milestone 37: read the file back through the FS server that mounted the crashed disk.
+const ROLE_CRASH_VERIFY: u64 = 4;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(role: u64, a1: u64, _a2: u64) -> ! {
     match role {
         ROLE_BENCH => bench(),
         ROLE_ATTACKER => attacker(a1 != 0),
+        ROLE_CRASH_DRIVER => crash_driver(),
+        ROLE_CRASH_VERIFY => crash_verify(),
         ROLE_PROOF => proof(),
         _ => proof(),
     }
+}
+
+/// **The crash driver** (milestone 37): write one payload and get an acknowledgement, then write the
+/// next one into a server that has been told to die partway through it.
+///
+/// It reports after the acknowledged write, because that report is the thing the property depends
+/// on: "payload A was acknowledged" is what makes losing it a failure rather than a permitted
+/// outcome. Then it issues the second write and **never returns from it**, because the server dies
+/// inside the request and blocking IPC has no "your server is gone" reply.
+///
+/// That permanent block is not an oversight, it is the open item DECISIONS §27 and notes/fs-server.md
+/// already record: a client of a dead server waits forever, and §26's fault endpoint wired into a
+/// supervision tree (milestone 23) is the mechanism that would turn it into a message. This test
+/// exhibits it rather than working around it; the thread is `Blocked`, so it costs no CPU, and the
+/// kernel test does not wait on this client for anything after the first report.
+fn crash_driver() -> ! {
+    use fixture::crash;
+    let h = open(crash::NAME);
+
+    // Write A and read it straight back. "The server accepted my write" and "my write landed" are
+    // different claims, and the second is the one that has to be true before the kill means anything.
+    write(h, 0, crash::A);
+    let mut buf = [0u8; 128];
+    let n = read(h, 0, crash::A.len());
+    check(n == crash::A.len());
+    get_page(n, &mut buf);
+    check(&buf[..n] == crash::A);
+    send(REPORT, fixture::SUCCESS, crash::SAW_A, 0);
+
+    // And now the one the server dies inside. This call never returns.
+    write(h, 0, crash::B);
+    // Unreachable in the test's configuration; if the injector failed to fire, say so rather than
+    // exiting quietly and leaving the kernel test to time out with no explanation.
+    send(REPORT, fixture::SUCCESS, crash::SAW_B, 0);
+    exit();
+}
+
+/// **The crash verifier** (milestone 37): a fresh client of a fresh FS server that mounted the disk
+/// the killed one left behind. It reports which of the two payloads the file holds.
+///
+/// It classifies rather than asserts, for the reason milestone 31's attacker reports a bitmap: the
+/// interesting failure is not "it did not read back", it is "it read back something that was never
+/// written", and a client that panicked on a mismatch would tell the kernel test nothing about
+/// which.
+fn crash_verify() -> ! {
+    use fixture::crash;
+    let h = open(crash::NAME);
+    let mut buf = [0u8; 256];
+    let n = read(h, 0, crash::A.len().max(crash::B.len()) + 8);
+    get_page(n, &mut buf);
+    let saw = if n == crash::A.len() && &buf[..n] == crash::A {
+        crash::SAW_A
+    } else if n == crash::B.len() && &buf[..n] == crash::B {
+        crash::SAW_B
+    } else {
+        crash::SAW_NEITHER
+    };
+    // The length rides home in the first word: a partial write shows up as a number rather than as
+    // a bare verdict, which is the difference between "this failed" and "this is what it did".
+    send(REPORT, n as u64, saw, 0);
+    exit();
 }
 
 /// **The attacker against a per-file grant** (milestone 31 phase 2). Spawned holding a *narrowed*
