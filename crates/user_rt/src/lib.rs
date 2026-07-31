@@ -354,8 +354,10 @@ pub fn now() -> u64 {
 }
 
 /// The monotonic tick count (RISC-V): `rdtime`, which reads the `time` CSR. Readable from U-mode
-/// only because the kernel sets `scounteren.TM`; without that bit `rdtime` traps as illegal, the
-/// same shape as aarch64 needing `CNTKCTL_EL1.EL0VCTEN`. Pair with [`cntfrq`] to get seconds.
+/// only because the kernel sets `scounteren.TM` in its per-hart timer init, the same shape as
+/// aarch64 needing `CNTKCTL_EL1.EL0VCTEN`. That claim was aspirational until 2026-07-30: the bit was
+/// never set and this worked only because QEMU's OpenSBI leaves it permitted. Pair with [`cntfrq`]
+/// to get seconds.
 #[cfg(target_arch = "riscv64")]
 pub fn now() -> u64 {
     let t: u64;

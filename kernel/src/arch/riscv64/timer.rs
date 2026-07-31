@@ -72,6 +72,28 @@ pub fn init() {
     sbi_set_timer(now() + interval());
     // SAFETY: setting sie.STIE only unmasks the timer source; it takes effect once SIE is on.
     unsafe { asm!("csrs sie, {}", in(reg) STIE, options(nomem, nostack, preserves_flags)) };
+
+    // Let U-mode read the `time` CSR (`rdtime`), the RISC-V twin of aarch64 opening
+    // `CNTKCTL_EL1.EL0VCTEN` in the arch/aarch64 timer. `crates/user_rt`'s `now()` needs it, and
+    // through it so do std's `Instant`, `thread::sleep` and the random seed.
+    //
+    // **This was a latent board bug, not a new feature.** `user_rt` documented U-mode `rdtime` as
+    // working "because the kernel sets scounteren.TM"; the kernel never set it. It worked anyway
+    // because QEMU's OpenSBI leaves the bit permitted, so the whole riscv std stack (smoltcp's
+    // timestamps in std_net, for one) has been riding firmware default rather than anything we
+    // chose. On a platform whose firmware clears it, every std program would take an illegal
+    // instruction trap the first time it read a clock, which is a miserable thing to debug during
+    // board bring-up. Setting it here makes the documented claim true and removes the dependency.
+    //
+    // Per-hart, so it belongs in this per-hart init: `scounteren` is not shared between harts, and a
+    // secondary that skipped it would fault only on the threads that happened to land there.
+    //
+    // SAFETY: setting scounteren.TM only *permits* a read U-mode could already attempt; it grants no
+    // authority to affect anything. The same eyes-open exception to §10 that aarch64 records, with
+    // the same reason: the cross-OS primitive suite needs userspace self-timing to be comparable to
+    // lmbench. CY (cycle) and IR (instret) stay closed.
+    const TM: u64 = 1 << 1;
+    unsafe { asm!("csrs scounteren, {}", in(reg) TM, options(nomem, nostack, preserves_flags)) };
 }
 
 /// Handle a timer interrupt: count the tick and arm the next deadline (which also clears the pending
