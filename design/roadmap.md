@@ -1824,9 +1824,19 @@ arrival, or a checker that is red on arrival.
 
 **In brief.** A navigation model for a system with no global namespace. Keep the Unix command names
 and behaviour wherever they can work honestly; diverge only where the capability model forces it, and
-say why each divergence is earned. **Nothing here exists yet**: no `cd`, `pwd`, `ls`, `mkdir` or `rm`,
-no enumeration verb, and `mkdir`/`unlink`/`rename`/`rmdir` are all `Unsupported` in the `std` PAL,
-backed by no verb.
+say why each divergence is earned. **The keystone is built** (the directory capability and its
+six-rung rights ladder, DECISIONS §47, notes/dir-capability.md), and so are **the five commands, on
+both ISAs**: `cd`, `pwd`, `ls`, `mkdir` and `rm` as shell builtins, `..` clamped at your root by
+popping the stack of capabilities the shell descended through, `pwd` relative to that root, and a
+name on a command line resolved against the shell's position **at the moment the grant is made**, so
+a child holds a capability to one file and cannot re-resolve anything. `rm` is `UNLINK`, added to
+`fs_proto` here and separated from revocation in the contract's own words; revocation is not offered,
+because the FS server's handle table is per *server* and it cannot enumerate the clients holding
+handles. The headline is proven with the real shell binary: two shells rooted in two subtrees, each
+told nothing about which it holds, and neither can name the other's files (notes/shell-navigation.md).
+**Still to do**: attaching the built `crates/glob` to an attenuated name-set warden, completion,
+environment, and `PATH`. The `std` PAL still answers `Unsupported` for `rename`, `unlink` and
+`rmdir`, which is now a binding gap rather than a missing verb for the first two.
 
 **Why it matters.** Chris's framing, and it is the governing constraint: *"I hate Windows/DOS
 specifically because they went differently than virtually every other OS I've used."* Gratuitous
