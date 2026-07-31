@@ -124,6 +124,18 @@ if [ -n "$CRICKER_KBD" ]; then
     KBD="-device virtio-keyboard-pci,disable-legacy=on,iommu_platform=on"
 fi
 
+# Two virtio-rng devices when CRICKER_RNG is set (milestone 56), the twin of the aarch64 runner's
+# block and for the same reasons: both transports because the entropy service is one binary on
+# either bus (DECISIONS §18), the mmio one on a slot the block scan skips (it matches DeviceID, and
+# an RNG reports 4), and the PCI one behind the RISC-V IOMMU because the buffer this device writes
+# is where the machine's key material comes from. QEMU backs virtio-rng with the host's
+# /dev/urandom, which is what makes these bytes real; see notes/entropy.md for what that does and
+# does not promise on hardware.
+RNG=""
+if [ -n "$CRICKER_RNG" ]; then
+    RNG="-device virtio-rng-device -device virtio-rng-pci,disable-legacy=on,iommu_platform=on"
+fi
+
 # A QEMU monitor on a unix socket when CRICKER_GPU_MON names one (milestone 29), the twin of the
 # aarch64 runner's block: `screendump` over it writes a PPM of the scanout even with -display none,
 # which is how the scanout gets proven rather than only the framebuffer. The path must stay under the
@@ -155,5 +167,6 @@ exec qemu-system-riscv64 \
     $NET \
     $GPU \
     $KBD \
+    $RNG \
     $MON \
     "$@"

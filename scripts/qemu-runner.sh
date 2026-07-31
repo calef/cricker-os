@@ -182,6 +182,30 @@ if [ -n "$CRICKER_KBD" ]; then
     KBD="-device virtio-keyboard-pci,disable-legacy=on,iommu_platform=on"
 fi
 
+# Attach two virtio-rng devices when CRICKER_RNG is set (milestone 56, the entropy half).
+#
+# BOTH transports, because the entropy service must be the same binary on either bus (DECISIONS §18)
+# and a random source that works on one is not a random source. The mmio one goes on the mmio bus
+# alongside the disks; it is a slot the block-device scan skips, since that scan matches on DeviceID
+# and an RNG reports 4, so the crickerfs=0 / redoxfs=1 / crash=2 ordering above is unaffected.
+#
+# The PCI one is behind the SMMU (iommu_platform=on) on the same terms as the GPU and the keyboard:
+# the buffer this device writes into is where the system's key material comes from, so it is the last
+# device you would want writing wherever it liked.
+#
+# QEMU backs virtio-rng with the host's /dev/urandom by default (`rng-random`, filename
+# /dev/urandom), which is what makes these bytes real and not an emulated counter. That is a fact
+# about the emulator, recorded rather than assumed: on hardware the source is the board's TRNG and
+# notes/entropy.md carries the caveat.
+#
+# There is no image file to fail loud on, as with the NIC and the GPU. The manufactured-fact hazard
+# (CRICKER_RNG set but no device enumerated) is caught in the kernel test, which ASSERTS a device is
+# present on each bus rather than skipping.
+RNG=""
+if [ -n "$CRICKER_RNG" ]; then
+    RNG="-device virtio-rng-device -device virtio-rng-pci,disable-legacy=on,iommu_platform=on"
+fi
+
 # A QEMU monitor on a unix socket, when CRICKER_GPU_MON names one (milestone 29). This is how the
 # **scanout** gets proven rather than only the framebuffer: `screendump` writes a PPM of the scanout
 # and it works with -display none (verified against QEMU 11.0.2), so the host can see the pixels the
@@ -195,7 +219,7 @@ if [ -n "$CRICKER_GPU_MON" ]; then
     MON="-monitor unix:$CRICKER_GPU_MON,server,nowait"
 fi
 
-# shellcheck disable=SC2086  # $INITRD, $DISK, $NET, $GPU and $KBD are deliberately word-split or empty
+# shellcheck disable=SC2086  # $INITRD, $DISK, $NET, $GPU, $KBD and $RNG are deliberately word-split or empty
 # CPU and accelerator.
 #
 # By default we run under TCG (QEMU translates every aarch64 instruction), with an emulated
@@ -242,5 +266,6 @@ exec qemu-system-aarch64 \
     $NET \
     $GPU \
     $KBD \
+    $RNG \
     $MON \
     "$@"

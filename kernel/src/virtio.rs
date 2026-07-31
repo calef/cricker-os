@@ -22,9 +22,10 @@ const SLOTS: u64 = VIRTIO_SLOTS;
 /// "virt", little-endian, at offset 0x000 of every slot.
 const MAGIC: u32 = 0x7472_6976;
 /// DeviceID at offset 0x008. 0 means "empty slot"; the virtio device-type numbers we route: 1 is a
-/// network card, 2 is a block device.
+/// network card, 2 is a block device, 4 is an entropy source.
 const DEVICE_ID_NET: u32 = 1;
 const DEVICE_ID_BLOCK: u32 = 2;
+const DEVICE_ID_ENTROPY: u32 = 4;
 
 // Register offsets we read here. The driver knows many more; the kernel knows exactly three.
 const REG_MAGIC: u64 = 0x000;
@@ -84,6 +85,16 @@ pub fn find_block_device() -> Option<VirtioMmioDevice> {
 /// Scan the bus for the first virtio network device. `None` if there is no NIC attached.
 pub fn find_net_device() -> Option<VirtioMmioDevice> {
     find_by_device_id(DEVICE_ID_NET)
+}
+
+/// Scan the bus for the first virtio entropy source (milestone 56). `None` if there is no RNG
+/// attached. The PCIe twin is [`crate::pci::find_rng_device`]; the entropy service is wired over
+/// whichever one its caller names, and the milestone-56 tests run it over each in turn, because a
+/// driver that works on one transport and silently not the other is the bug DECISIONS §18 exists
+/// to prevent.
+#[cfg_attr(not(test), allow(dead_code))] // entropy_service is the caller, and the m56 tests drive it
+pub fn find_entropy_device() -> Option<VirtioMmioDevice> {
+    find_by_device_id(DEVICE_ID_ENTROPY)
 }
 
 /// Scan the bus for the `n`-th (0-based) virtio block device, `None` if there is no such disk. The
@@ -440,7 +451,12 @@ struct Device {
 /// deliberately leaving a filesystem half-written cannot touch the image every other FS test reads.
 /// One more transport for the boot, and the same standing suggestion: this is the fourth bump, and
 /// each one is a receipt for the missing unregister.
-const MAX_DEVICES: usize = 27;
+///
+/// **29 for milestone 56's entropy service**, one transport per bus. This bump is the cheapest of
+/// the five and the most annoying, because the entropy service is wired **once per device per boot**
+/// (`entropy_service::ensure`) precisely so that a second one cannot reset the device under the
+/// first, and it still costs two slots that are never released. The fifth receipt.
+const MAX_DEVICES: usize = 29;
 
 /// The device table, fixed. `get`/`get_mut` mirror the slice API the call sites already used.
 struct Devices {

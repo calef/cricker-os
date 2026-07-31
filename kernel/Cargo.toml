@@ -29,6 +29,10 @@ crickerfs = { version = "0.1.0", path = "../crates/crickerfs" }
 dma_validate = { version = "0.1.0", path = "../crates/dma_validate" }
 fs_proto = { version = "0.1.0", path = "../crates/fs_proto" }
 gfx_proto = { version = "0.1.0", path = "../crates/gfx_proto" }
+# The entropy contract (milestone 56, DECISIONS §44). The kernel wires the entropy service and its
+# tests are its clients, speaking the same request/reply the std PAL does, so no party has its own
+# copy of the wire format.
+entropy_proto = { version = "0.1.0", path = "../crates/entropy_proto" }
 dtb = { version = "0.1.0", path = "../crates/dtb" }
 pci = { version = "0.1.0", path = "../crates/pci" }
 elf = { version = "0.1.0", path = "../crates/elf" }

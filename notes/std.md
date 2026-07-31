@@ -34,6 +34,12 @@ Three more slots exist, and a program holds each only if it was *given* the thin
 - **slot 3: an untyped budget** the net PAL mints each socket's shared frame from.
 - **slot 4: an FS-service endpoint with WRITE**, which *is* a directory capability, plus the page it
   shares with the FS server mapped at `0x1100_0000`. `std::fs` speaks the §27 file contract over it.
+- **slot 5: a `Frame` capability naming the clock page**, with `READ`, plus a read-only mapping of it
+  at `0x1200_0000`. `SystemTime::now()` is the offset it finds there plus the ambient counter
+  (milestone 51, §43).
+- **slot 6: the entropy service's request endpoint**, with WRITE (milestone 56, §44). It means "you
+  may obtain randomness" and names no device; there is no mapping alongside it, because randomness is
+  obtained by asking rather than by reading. `std::random::SystemRng` is a `CALL` on it.
 
 A program that never allocates, prints, opens a socket, or opens a file never touches the slots it
 does not use. The absence of slots 2 and 3 is exactly what "no ambient network" feels like from
@@ -56,7 +62,8 @@ std by `cargo xtask std-src`. Each file binds one std concept to the ABI:
 | `thread::spawn` | `Unsupported` in phase one; `sleep`/`yield` are real |
 | `net` (`TcpStream`, outbound `UdpSocket`) | netstack's socket contract on slots 2/3 (`sys/net/connection/cricker.rs`), or `Unsupported` when not granted |
 | `fs` (`File`, `metadata`, `read`/`write`) | the FS service's file contract on slot 4 (`sys/fs/cricker.rs`), or `Unsupported` when no directory was granted |
-| `HashMap` seed | splitmix64 from the counter (`sys/random/cricker.rs`), **not** cryptographic |
+| `std::random::SystemRng` | the entropy service's endpoint on slot 6 (`sys/random/cricker.rs`), or a **panic** when not granted |
+| `HashMap` seed | the same service when granted; splitmix64 from the counter when not, and labelled |
 | `std::env::consts::OS` | `"cricker"` (patched into `env_consts.rs`) |
 
 The syscall glue (`sys/pal/cricker/rt.rs`) is a deliberate twin of `crates/user_rt`: the same
@@ -312,9 +319,19 @@ completes, not why the poll path did not.
   needs to check first reads `clock_proto::state` off the page directly, which is what a `no_std`
   component does. The alternative considered and rejected was returning a frozen `UNIX_EPOCH`, which
   is still reporting 1970 and is exactly the confusion §42 forbids.
-- **`std::random` is not cryptographic.** splitmix64 seeded from the virtual counter: fine for
-  `HashMap`'s seeds and `sort_unstable`'s pivots, predictable to anyone who can guess boot-relative
-  time. Never for keys or tokens. A real entropy story (a virtio-rng service) would replace the file.
+- **`std::random` is a granted capability, and refuses loudly without it** (milestone 56, §44). It
+  used to be splitmix64 seeded from the virtual counter, predictable to anyone who could guess
+  boot-relative time; that file has been replaced rather than patched. `SystemRng` is now a `CALL` on
+  **slot 6**, answered by a userspace entropy service that is the only thing that can read the
+  virtio-rng device. A program granted no entropy capability gets a **panic**, for exactly the reason
+  `SystemTime::now()` does: `fill_bytes` has no error channel, and quietly substituting a predictable
+  stream is the lie the milestone exists to remove.
+
+  **`HashMap`'s seed is the one caller that still degrades**, to the same splitmix64 stream, and that
+  is deliberate: its promise is DoS resistance for a hash table rather than cryptographic strength,
+  std's own `unsupported` backend degrades that same function, and a `HashMap` in a program nobody
+  granted entropy must still work. Nothing in the file lets the weak path reach `SystemRng`. See
+  notes/entropy.md for what the bytes are and, under QEMU, are not.
 - **stdout and stderr share one endpoint**, so they interleave by 16-byte chunk. One endpoint is what
   the contract grants today; milestone 28's terminal contract owns fixing it.
 - **The `std-src` patches are string-anchored to the pinned nightly's std internals.** A rustc bump
