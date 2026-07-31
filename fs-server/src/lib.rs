@@ -28,6 +28,12 @@
 
 extern crate alloc;
 
+// Crash injection (milestone 37). Host-only: it exists to damage an in-memory image the way a dying
+// machine damages a platter, and the EL0 binary has no business carrying it. Gated on `hosttest`
+// rather than `test` so an integration test in `tests/` can reach it.
+#[cfg(feature = "hosttest")]
+pub mod crash;
+
 use alloc::vec::Vec;
 
 use redoxfs::{Disk, FileSystem, Node, TreePtr};
@@ -53,10 +59,21 @@ pub struct Server<D: Disk> {
 impl<D: Disk> Server<D> {
     /// Open an existing RedoxFS image and bind the service to its root directory.
     ///
-    /// `cleanup: true` matches the mount path: it replays the header ring to the newest *consistent*
-    /// generation and tidies allocations. That is exactly the recovery that makes a kill-mid-write
-    /// safe, so the server always opens this way, and never with the creation APIs (those are
-    /// std-gated and stay host-side: the server opens, it never makes).
+    /// **What recovers a crashed image, precisely** (a correction, milestone 37). This used to say
+    /// that `cleanup: true` "replays the header ring to the newest consistent generation". It does
+    /// not, and the distinction matters because it names the wrong mechanism. `FileSystem::open`
+    /// scans all 256 header-ring slots **unconditionally**, keeps the newest one whose seahash still
+    /// checks out, and ignores the rest; that scan is the crash recovery, and it happens whatever
+    /// `cleanup` is. What `cleanup: true` adds is a tidy-up on top: release the nodes nothing points
+    /// at any more, and commit. The server passes it because a mount should not leak, not because
+    /// the recovery depends on it.
+    ///
+    /// The recovery is measured rather than described: `tests/crash_consistency.rs` cuts the device
+    /// at every point in a workload, tears the write it was in the middle of, and mounts the result
+    /// through this function. See [`crate::crash`] and DECISIONS §34.
+    ///
+    /// The server never opens with the creation APIs: those are std-gated and stay host-side (the
+    /// server opens, it never makes).
     pub fn open(disk: D) -> Result<Self> {
         let fs = FileSystem::open(disk, None, None, true)?;
         Ok(Self {
@@ -148,6 +165,14 @@ impl<D: Disk> Server<D> {
         self.clock += 1;
         let now = self.clock;
         self.fs.tx(|tx| tx.truncate_node(ptr, size, now, 0))
+    }
+
+    /// Take the disk back out of the server, **dropping the mount without unmounting**, which is
+    /// exactly how a dying process leaves it: no flush, no clean shutdown, whatever is on the platter
+    /// is the whole story. Milestone 37's harness uses it to get the recorded write log back after a
+    /// workload; the crash tests then reconstruct the platter from that log alone.
+    pub fn into_disk(self) -> D {
+        self.fs.disk
     }
 
     /// Release a handle. `EBADF` if it was not open.
