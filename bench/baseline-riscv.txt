@@ -1,18 +1,20 @@
 # bench/baseline.txt: deterministic icount tick counts (cargo xtask bench --save).
 # Recorded against the QEMU pinned in .qemu-version. icount counts guest instructions, so the
-# emulator version is part of what these numbers mean (script/qemu-check warns on a mismatch).
+# emulator version is part of what these numbers mean: script/qemu-check warns when the QEMU on
+# PATH is not the pinned one, precisely because that is when a baseline comparison stops being
+# apples to apples.
              # Updating this file is a statement that a performance change is intended and
              # understood; do it in the commit that causes the change. Checked by --check, a coarse
              # 10% tripwire (icount counts drift across builds; see notes/benchmarks.md).
-yield_switch 180111 2000
-ipc_rtt 158522 1000
-relay_rtt 327879 1000
-call_reply 169102 1000
-spawn_reap 29136 64
-map_new 2364 64
-coremark 3654389 256
-null_syscall 65627 20000
-ctx_switch 474627 5000
-ipc_rtt_el0 1740422 5000
-map_el0 66021 500
-spawn_el0 302224 100
+yield_switch 179081 2000
+ipc_rtt 158903 1000
+relay_rtt 328529 1000
+call_reply 169282 1000
+spawn_reap 29212 64
+map_new 2363 64
+coremark 3654391 256
+null_syscall 65626 20000
+ctx_switch 471827 5000
+ipc_rtt_el0 1754943 5000
+map_el0 66037 500
+spawn_el0 302117 100
