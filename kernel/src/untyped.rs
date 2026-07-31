@@ -212,7 +212,7 @@ pub fn retype_object_page(region: u64) -> Option<u64> {
 }
 
 /// How many pages the region has retyped, and its size. For the demo and tests.
-#[allow(dead_code)] // used by the property test
+#[cfg_attr(not(test), allow(dead_code))] // the untyped property test is the only caller
 pub fn usage(region: u64) -> Option<(u64, u64)> {
     let regions = REGIONS.lock();
     regions.get(region).map(|r| (r.watermark, r.pages))

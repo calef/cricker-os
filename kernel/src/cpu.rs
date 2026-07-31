@@ -240,7 +240,6 @@ pub fn current() -> &'static PerCpu {
 }
 
 /// This core's logical id: its index into `PERCPU`.
-#[allow(dead_code)] // used by the tests now, and by the scheduler in step 3
 pub fn id() -> usize {
     let base = PERCPU.as_ptr() as usize;
     (crate::arch::percpu() - base) / core::mem::size_of::<PerCpu>()

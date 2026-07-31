@@ -132,7 +132,6 @@ pub fn endpoint_cap(ep: crate::sched::EpId, rights: Rights) -> Cap {
 }
 
 /// A capability naming a hardware interrupt. `READ` lets the holder `WAIT` and `ACK` it.
-#[allow(dead_code)] // first used by the virtio driver setup in 9b
 pub fn irq_cap(intid: u32) -> Cap {
     Cap {
         object: Object::Irq(intid),

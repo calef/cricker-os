@@ -58,9 +58,9 @@ pub fn restore(was_enabled: bool) {
 
 /// Unconditionally unmask IRQs.
 ///
-/// Only for the one place that legitimately turns interrupts on for the first time
-/// (milestone 5's init) and for tests. Everywhere else wants [`disable`] + [`restore`].
-#[allow(dead_code)] // milestone 5's first non-test caller
+/// Only for the places that legitimately turn interrupts on for the first time (the boot, a
+/// secondary coming online, a thread's trampoline) and for tests. Everywhere else wants [`disable`]
+/// + [`restore`].
 pub fn enable() {
     // SAFETY: unmasking IRQs is sound; whether it is *wise* is the caller's problem.
     unsafe { asm!("msr daifclr, #2", options(nomem, nostack)) };

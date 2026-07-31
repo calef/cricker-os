@@ -508,10 +508,10 @@ pub struct Spawn<'a> {
 }
 
 /// Load the initrd program and become it, with nothing but a fresh stack. Never returns.
-#[allow(dead_code)] // the bare-client path, exercised by tests
 ///
 /// The bare case: no capabilities, no extra mappings, no argument. It can run its own code and
 /// touch its own memory, and it can name nothing else in the system.
+#[cfg_attr(not(all(test, target_arch = "aarch64")), allow(dead_code))] // the aarch64 tests
 pub fn exec_elf(image: &[u8]) -> ! {
     run(
         image,
@@ -898,12 +898,13 @@ USER_OUTLAW_END:
 #[cfg(target_arch = "aarch64")]
 macro_rules! user_program {
     ($name:ident, $start:ident, $end:ident) => {
-        /// `allow(dead_code)` because 7c handed the demo over to the real ELF from the initrd,
-        /// and these hand-written programs are now exercised only by the tests. They stay
-        /// because they test things the real binary cannot: `outlaw` deliberately commits a
-        /// privilege violation, and `spin` is a program with no `.data`, no stack use, and
-        /// nothing but a loop, which is the purest form of DECISIONS §5's hostile binary.
-        #[allow(dead_code)]
+        /// Milestone 7c handed the demo over to the real ELF from the initrd, so these
+        /// hand-written programs are now exercised only by the tests, which is what the
+        /// `not(test)` says. They stay because they test things the real binary cannot:
+        /// `outlaw` deliberately commits a privilege violation, and `spin` is a program with no
+        /// `.data`, no stack use, and nothing but a loop, which is the purest form of
+        /// DECISIONS §5's hostile binary.
+        #[cfg_attr(not(test), allow(dead_code))]
         pub fn $name() -> &'static [u8] {
             unsafe extern "C" {
                 static $start: u8;
@@ -1359,7 +1360,13 @@ pub fn riscv_shell_boot(archive: &'static [u8], uart_irq: u32) -> Result<(), Loa
 /// shared page), spawns the console *server* as a user process that owns the UART, and returns
 /// what a client needs to reach it. The server binary and the client binary are the *same ELF*,
 /// told apart by the argument in `x0`.
-#[allow(dead_code)] // the demo payload: exercised by the boot demo, mechanism unit-tested
+// The milestone tour is the only consumer, so this is dead in exactly the configurations that
+// have no tour: a test build, and the three alternate boot modes. The allow sits on the module
+// because the module is one wiring, not a bag of independent items.
+#[cfg_attr(
+    any(test, feature = "shell", feature = "bench", feature = "initboot"),
+    allow(dead_code)
+)]
 pub mod console_service {
     use super::*;
     use crate::cap::{Rights, endpoint_cap};
@@ -1481,7 +1488,7 @@ pub mod console_service {
 /// block device, then hands a userspace driver everything it needs and nothing it does not: the
 /// device's registers, a DMA page, an interrupt, and an endpoint to report what it read. The
 /// kernel does not touch the device.
-#[allow(dead_code)] // the demo payload; the mechanism is unit-tested
+#[cfg_attr(not(test), allow(dead_code))] // the tour spawns it; the tests drive it
 pub mod virtio_service {
     use super::*;
     use crate::cap::{Rights, endpoint_cap, irq_cap, virtio_cap};
@@ -2042,7 +2049,7 @@ pub mod virtio_service {
 ///
 /// The service drives the **second** mmio block disk (the RedoxFS image); the first is the crickerfs
 /// disk the phase-1 driver tests use. `None` if there is no such disk attached to this run.
-#[allow(dead_code)] // spawned only by the phase-2 test, like every other service module here
+#[cfg_attr(not(test), allow(dead_code))] // spawned only by the phase-2 test
 pub mod fs_service {
     use super::*;
     use crate::cap::{Rights, endpoint_cap, irq_cap, untyped_cap, virtio_cap};
@@ -2592,7 +2599,7 @@ pub mod fs_service {
 /// terminal contract does not know which one it is in: an `OP_WRITE` is an `OP_WRITE`. Returns when
 /// the reply arrives, which the contract says means the bytes are on the console's side, so a test
 /// needs no polling and no sleep between writes.
-#[allow(dead_code)] // used by the milestone-29 tests, like every other service helper here
+#[cfg_attr(not(test), allow(dead_code))] // the milestone-29 tests are the callers
 fn term_print(out: u64, ep: crate::sched::EpId, text: &[u8]) {
     assert!(
         text.len() <= FRAME_SIZE as usize,
@@ -2639,7 +2646,7 @@ fn term_print(out: u64, ep: crate::sched::EpId, text: &[u8]) {
 /// The client maps only the surface frames. It never sees page 0, so it cannot touch a descriptor
 /// ring, and it holds no `Virtio` capability, no interrupt, and no physical address. See
 /// notes/framebuffer-contract.md.
-#[allow(dead_code)] // spawned only by the milestone-29 test, like every other service module here
+#[cfg_attr(not(test), allow(dead_code))] // spawned only by the milestone-29 test
 pub mod display_service {
     use super::*;
     use crate::cap::{Rights, endpoint_cap, irq_cap, virtio_cap};
@@ -2999,7 +3006,7 @@ pub mod display_service {
 /// - the screen and the window list are mapped **read-only** and **only** into a client granted them.
 ///   That mapping is the screenshot capability and the enumeration capability; there is no verb for
 ///   either, and a client without the mapping has nothing to ask and nowhere to look.
-#[allow(dead_code)] // spawned only by the milestone-33 tests, like every other service module here
+#[cfg_attr(not(test), allow(dead_code))] // spawned only by the milestone-33 tests
 pub mod compositor_service {
     use super::*;
     use crate::cap::{Rights, endpoint_cap};
@@ -3355,6 +3362,9 @@ pub mod compositor_service {
         }
 
         /// Ring the doorbell without typing anything: "look at the surfaces". Returns the reply's `r0`.
+        ///
+        /// The milestone tour uses it; the compositor tests all type something first.
+        #[cfg_attr(test, allow(dead_code))]
         pub fn ring_doorbell(&self, op: u64) -> u64 {
             crate::sched::ipc_call(self.doorbell, [compose::proto::req(op, 0), 0])[0]
         }
@@ -3514,7 +3524,7 @@ pub mod compositor_service {
 /// In the test below the **kernel** plays the compositor, which is the same substitution three of the
 /// four rung-two tests make: it holds the doorbell and the ring, so the bytes a real keyboard
 /// produced are a value it can read and compare rather than a picture it has to infer.
-#[allow(dead_code)] // spawned only by the milestone-29 test, like every other service module here
+#[cfg_attr(not(test), allow(dead_code))] // spawned only by the milestone-29 test
 pub mod keyboard_service {
     use super::*;
     use crate::cap::{Rights, endpoint_cap, irq_cap, virtio_cap};
@@ -3663,178 +3673,8 @@ pub mod keyboard_service {
     }
 }
 
-/// Console **input** in userspace: the receive half of the terminal.
-#[allow(dead_code)]
-pub mod input_service {
-    use super::*;
-    use crate::cap::{Rights, endpoint_cap, irq_cap};
-    use crate::sched::EpId;
-
-    const UART_VA: u64 = 0x0000_0000_00a0_0000;
-    const LINE_VA: u64 = 0x0000_0000_00b0_0000;
-    const PL011_PHYS: u64 = 0x0900_0000;
-    /// The PL011 on QEMU `virt` is SPI 1, which is INTID 33 (SPIs start at 32).
-    const UART_INTID: u32 = 33;
-
-    /// Spawn the input driver, wired to the UART and its receive interrupt. Returns (line endpoint,
-    /// line-buffer physical address). The driver is its own binary now (19f.4), loaded by name.
-    pub fn spawn_wired() -> (EpId, u64) {
-        let image = program("input").expect("no input program in the initrd");
-        let line = crate::sched::create_endpoint();
-
-        let irq_ep = crate::sched::create_endpoint();
-        crate::sched::bind_irq(UART_INTID, irq_ep);
-        crate::arch::irq::enable(UART_INTID);
-
-        // The line buffer the driver assembles into. Shared with the reader (the shell) later; a
-        // scratch page for the standalone validator.
-        let line_phys = crate::memory::alloc().expect("no line-buffer frame").addr();
-        // SAFETY: fresh frame, direct-mapped, owned by nobody yet.
-        unsafe {
-            core::ptr::write_bytes(
-                mmu::phys_to_virt(line_phys) as *mut u8,
-                0,
-                FRAME_SIZE as usize,
-            );
-        }
-
-        crate::sched::spawn(move || {
-            run(
-                image,
-                Spawn {
-                    arg0: 0, // no role selector: input is its own binary
-                    arg1: 0,
-                    arg2: 0,
-                    grants: &[
-                        endpoint_cap(line, Rights::WRITE), // slot 0: SEND completed lines
-                        irq_cap(UART_INTID),               // slot 1: WAIT / ACK the RX interrupt
-                    ],
-                    maps: &[
-                        Mapping {
-                            va: UART_VA,
-                            phys: PL011_PHYS,
-                            flags: Flags::user_device(),
-                        },
-                        Mapping {
-                            va: LINE_VA,
-                            phys: line_phys,
-                            flags: Flags::user_data(),
-                        },
-                    ],
-                },
-            )
-        })
-        .expect("could not spawn the input driver");
-
-        (line, line_phys)
-    }
-}
-
-/// The shell, and everything it talks to. **Milestone 10: proof the whole stack works.**
-///
-/// Wires up four processes and the channels between them: the console server (output), the input
-/// driver (a line of text at a time), the shell itself, and a kernel-side spawn service that
-/// starts worker processes on the shell's request. When it returns, an interactive shell is
-/// running at EL0, and everything the user types is a conversation between processes.
-#[allow(dead_code)]
-pub mod shell_service {
-    use super::*;
-    use crate::cap::{Rights, endpoint_cap};
-
-    const OUT_VA: u64 = 0x0000_0000_0060_0000; // shell <-> console server
-    const LINE_VA: u64 = 0x0000_0000_00b0_0000; // shell <-> input driver
-
-    /// **How many children the shell may have alive at once.** The bound that stops a spawn flood
-    /// (or workers that block forever without exiting) from exhausting kernel memory: each live
-    /// child costs a `Thread`, a 16 KiB kernel stack, and an address space, and there can be at
-    /// most this many. A child returns its slot when it is reaped. See notes/quotas.md.
-    static SPAWN_QUOTA: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(8);
-
-    pub fn start() {
-        // Every program the shell stack needs is its own binary now (19f.2-5), loaded by name.
-        let worker = program("worker").expect("no worker program in the initrd");
-        let shell = program("shell").expect("no shell program in the initrd");
-
-        // Output: the console server (milestone 8), and the shell as its client.
-        let console = console_service::start();
-
-        // Input: the receive driver (milestone 10), delivering lines on `line`.
-        let (line, line_phys) = input_service::spawn_wired();
-
-        // The shell asks for spawns here; it receives worker results here.
-        let spawn_ep = crate::sched::create_endpoint();
-        let result_ep = crate::sched::create_endpoint();
-
-        // The spawn service: a kernel thread that starts a worker process for each request. This
-        // is the kernel acting as the "process server"; a full capability system would compose
-        // spawn from Untyped/Tcb capabilities in userspace (milestone 11), but the shell does not
-        // care where the service lives, only that it can name it.
-        crate::sched::spawn(move || {
-            loop {
-                let n = crate::sched::ipc_recv(spawn_ep)[0];
-                let spawned = crate::sched::spawn_with_quota(&SPAWN_QUOTA, move || {
-                    run(
-                        worker,
-                        Spawn {
-                            arg0: 0, // no role selector: worker is its own binary
-                            arg1: n, // the worker's input, in x1
-                            arg2: 0,
-                            grants: &[endpoint_cap(result_ep, Rights::WRITE)],
-                            maps: &[],
-                        },
-                    )
-                });
-                // **Do not panic on out-of-memory.** A spawn flood must degrade, not kill the
-                // machine: if the kernel is out of memory we cannot make the worker, so we tell
-                // the shell its request failed (a sentinel result) and carry on serving. The
-                // security audit flagged the old `.expect(...)` here as a userspace-triggerable
-                // kernel panic. (Per-process spawn quotas are the real fix, and they now exist as
-                // `QuotaToken` in thread.rs, so this path is bounded as well as panic-free. See
-                // notes/quotas.md. Not panicking remains the cheap, honest floor beneath the quota.)
-                if spawned.is_none() {
-                    // u64::MAX is the "could not spawn" sentinel the shell recognises.
-                    crate::sched::ipc_send(result_ep, [u64::MAX, 0, 0]);
-                }
-            }
-        })
-        .expect("could not spawn the process service"); // once, at boot, not attacker-reachable
-
-        // The shell itself, its own binary now (19f.5).
-        crate::sched::spawn(move || {
-            run(
-                shell,
-                Spawn {
-                    arg0: 0, // no role selector: shell is its own binary
-                    arg1: 0,
-                    arg2: 0,
-                    grants: &[
-                        endpoint_cap(console.request, Rights::WRITE), // 0: print
-                        endpoint_cap(console.reply, Rights::READ),    // 1: console ack
-                        endpoint_cap(line, Rights::READ),             // 2: read a line
-                        endpoint_cap(spawn_ep, Rights::WRITE),        // 3: request a spawn
-                        endpoint_cap(result_ep, Rights::READ),        // 4: worker result
-                    ],
-                    maps: &[
-                        Mapping {
-                            va: OUT_VA,
-                            phys: console.shared_phys,
-                            flags: Flags::user_data(),
-                        },
-                        Mapping {
-                            va: LINE_VA,
-                            phys: line_phys,
-                            flags: Flags::user_rodata(),
-                        },
-                    ],
-                },
-            )
-        })
-        .expect("could not spawn the shell");
-    }
-}
-
 /// Milestone 11: hand a process an untyped budget and let it spend it.
-#[allow(dead_code)]
+#[cfg_attr(not(all(test, target_arch = "aarch64")), allow(dead_code))] // the tour and the aarch64 tests
 pub mod untyped_service {
     use super::*;
     use crate::cap::{Rights, endpoint_cap, untyped_cap};
