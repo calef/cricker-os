@@ -406,6 +406,14 @@ in the code or the conversation doesn't make sense, it belongs here.
   at format version 8, a reader must match, so the tool or its exact source pin is stored **with**
   the backup. A backup readable only by software you no longer have is not a backup. Also: no
   filesystem-level encryption on this volume, so no key handling anywhere in the recovery path.
+- [The GUID Partition Table](gpt.md) — milestone 57 lane one (`crates/gpt`). The map that says where
+  a filesystem starts: the protective MBR, the header, the entry array, the backup, and the four
+  CRC-32s that make a GPT **a format that can tell you it is broken**. Why the crate does no I/O, the
+  mixed-endian GUID trap, and why `last_lba` being inclusive is the off-by-one a casual test misses.
+  Also what two independent real disks (`sgdisk` and macOS `diskutil`) taught us, including that
+  **macOS writes no partition names at all**, and the clearest case yet of the enumerate-versus-prove
+  rule: four exhaustive corruption sweeps, one of them 4.2 million cases, beside seven Kani harnesses
+  for the claims that cannot be counted.
 - [Prior art and reuse](prior-art.md) — where to look before building (Redox, rCore, Tock,
   Hubris, seL4, Fuchsia) and the rule that decides build-vs-reuse: the reuse boundary is the
   TCB boundary. Inside it, always build; userspace components, actively prefer porting,
