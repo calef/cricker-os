@@ -8,14 +8,30 @@
 //!
 //! # The contract, capability-shaped from birth
 //!
-//! A [`Server`] is opened **bound to one directory** ([`Server::open`] binds the RedoxFS root; a
-//! future per-directory grant binds a subtree). Every name a client presents is resolved *under that
-//! bound directory* ([`Server::open_file`]): there is no absolute path, no `..` escape, no global
-//! namespace. In the running system the client reaches this server only by holding an endpoint the
-//! server reads on, and that endpoint IS the directory capability; a client without it can open
-//! nothing. A successful open returns a **handle**, a small integer this server minted and will
-//! validate against its own table, which is itself a capability: forging one is meaningless because
-//! the server honors only the handles it issued. See notes/fs-server.md.
+//! A [`Server`] is opened **bound to one directory** ([`Server::open`] binds the RedoxFS root).
+//! Every name a client presents is resolved *under a directory handle*: there is no absolute path,
+//! no `..` escape, no global namespace. In the running system the client reaches this server only by
+//! holding an endpoint the server reads on, and that endpoint IS the directory capability; a client
+//! without it can open nothing. A successful open returns a **handle**, a small integer this server
+//! minted and will validate against its own table, which is itself a capability: forging one is
+//! meaningless because the server honors only the handles it issued. See notes/fs-server.md.
+//!
+//! # The directory capability (milestone 47)
+//!
+//! The bound directory is [`fs_proto::fs::ROOT`], handle 0, an ordinary entry in the same table, so
+//! every name-taking verb names a directory rather than resolving against a hidden field. A
+//! directory handle carries a [`fs_proto::dir::Rights`] set, [`Server::open_dir`] hands back a
+//! handle to a child, and a child's rights are the parent's intersected with what was asked for.
+//! **That intersection is the only constructor for a non-root rights set**, so no descendant can
+//! carry a right its ancestor lacked, at any depth, without a check anyone could forget. A file
+//! handle inherits its directory's read and write bits, so what may be done to a file was decided
+//! when the directory was granted. See notes/dir-capability.md.
+//!
+//! **What this table is not.** It is per *server*, not per client, so two clients sharing one
+//! endpoint share these handles and a rights-carrying handle attenuates only its holder. The handle
+//! is the authority; the **endpoint** is the boundary. Confining a program to a subtree is therefore
+//! still a caretaker process holding the wider endpoint (`user/src/dwarden.rs`), for exactly the
+//! reason `fwarden` is one.
 //!
 //! # The error boundary
 //!
@@ -36,20 +52,38 @@ pub mod crash;
 
 use alloc::vec::Vec;
 
+use fs_proto::dir::{self, Rights};
 use redoxfs::{Disk, FileSystem, Node, TreePtr};
-use syscall::error::{EBADF, EEXIST, EINVAL, Error, Result};
+use syscall::error::{EBADF, EEXIST, EINVAL, EISDIR, ENOTDIR, EPERM, EROFS, Error, Result};
+
+/// What one handle names, and what may be done through it.
+///
+/// The rights ride on the handle rather than on the session because that is what makes descending
+/// mean anything: a child directory handle is a *different* authority from its parent, held at the
+/// same time by the same client, and a file opened under it inherits its direction. A session-wide
+/// rights field could not express any of that.
+#[derive(Clone, Copy)]
+enum Entry {
+    /// A directory. Its rights are the full ladder.
+    Dir(TreePtr<Node>, Rights),
+    /// A file, carrying the [`dir::READ`]/[`dir::WRITE`] bits of the directory it was opened under.
+    /// The other rungs are meaningless on a file and are simply never asked about.
+    File(TreePtr<Node>, Rights),
+}
 
 /// A file service over one RedoxFS image on one [`Disk`]. Generic over the disk so the host tests
 /// drive a `DiskMemory`/`DiskFile` and the EL0 binary drives the block-IPC client, with identical
 /// filesystem code between them.
 pub struct Server<D: Disk> {
     fs: FileSystem<D>,
-    /// The directory every name resolves under. The root for phase 2; the seam where milestone 31's
-    /// per-directory grant will bind a subtree instead.
-    dir: TreePtr<Node>,
-    /// The open-handle table. `handles[h]` is the node a handle names, or `None` for a freed slot;
-    /// the index is the handle. A capability the server issues and checks, never trusts.
-    handles: Vec<Option<TreePtr<Node>>>,
+    /// The open-handle table. `handles[h]` is what a handle names, or `None` for a freed slot; the
+    /// index is the handle. A capability the server issues and checks, never trusts.
+    ///
+    /// **Slot 0 is the bound directory** ([`fs_proto::fs::ROOT`]), installed by [`Server::open`]
+    /// before anything is served and never closeable. It exists so the directory an endpoint
+    /// designates is an ordinary handle: every name resolves under a handle, and there is no
+    /// separate "the current directory" field for a verb to forget to consult.
+    handles: Vec<Option<Entry>>,
     /// A monotonically increasing stand-in for wall-clock seconds, so a write advances the node's
     /// mtime deterministically. The server has no RTC; the value only needs to move forward, and the
     /// host tests assert on file *contents*, not timestamps.
@@ -78,43 +112,172 @@ impl<D: Disk> Server<D> {
         let fs = FileSystem::open(disk, None, None, true)?;
         Ok(Self {
             fs,
-            dir: TreePtr::root(),
-            handles: Vec::new(),
+            // Handle 0 is the bound directory, and it carries every right: this server IS the whole
+            // filesystem's authority, and narrowing happens at the endpoint above it, never here.
+            // `Rights::root` is the only constructor that invents a rights set, and this is its
+            // only caller.
+            handles: alloc::vec![Some(Entry::Dir(TreePtr::root(), Rights::root(dir::ALL)))],
             clock: 1,
         })
     }
 
-    /// Resolve `name` under the bound directory and return a handle for it. `ENOENT` if there is no
-    /// such entry. The name is a single component resolved in the bound directory; it is not a path,
-    /// which is the whole point (no walk, no escape).
+    /// Resolve `name` under the **bound directory** and return a handle for it: the shorthand for
+    /// [`Server::open_file_at`] with [`fs_proto::fs::ROOT`], which is what every caller that predates
+    /// directory handles means.
     pub fn open_file(&mut self, name: &str) -> Result<u32> {
+        self.open_file_at(fs_proto::fs::ROOT as u32, name)
+    }
+
+    /// Resolve `name` under the directory `handle` names and return a file handle for it.
+    ///
+    /// The name is a single component resolved in that directory; it is not a path, which is the
+    /// whole point (no walk, no escape). `EINVAL` for anything that is not one component,
+    /// [`dir::EISDIR`] if the name is a directory ([`Server::open_dir`] is the verb for that), and
+    /// `ENOENT` if there is no such entry **or** if the directory carries neither [`dir::READ`] nor
+    /// [`dir::WRITE`]: a holder that may not reach a name must not learn that the name is there.
+    ///
+    /// The file handle **inherits** the directory's read and write bits, which is what makes
+    /// milestone 47's "a program handed a directory to write logs into" mean something: the
+    /// direction was decided when the directory was granted, and the file cannot widen it.
+    pub fn open_file_at(&mut self, handle: u32, name: &str) -> Result<u32> {
         check_component(name)?;
-        let dir = self.dir;
-        let node = self.fs.tx(|tx| tx.find_node(dir, name))?;
-        let ptr = node.ptr();
-        Ok(self.install(ptr))
+        let (parent, rights) = self.dir_at(handle)?;
+        if rights.denies_all(dir::READ | dir::WRITE) {
+            return Err(Error::new(syscall::error::ENOENT));
+        }
+        let node = self.fs.tx(|tx| tx.find_node(parent, name))?;
+        if node.data().is_dir() {
+            return Err(Error::new(EISDIR));
+        }
+        Ok(self.install(Entry::File(
+            node.ptr(),
+            rights.attenuate(dir::READ | dir::WRITE),
+        )))
+    }
+
+    /// **Descend: resolve `name` under the directory `handle` names and hand back a handle to the
+    /// child directory, carrying `requested` rights** (milestone 47's keystone).
+    ///
+    /// The child's rights are `parent & requested`, and [`Rights::attenuate`] is the only way this
+    /// crate makes a rights set that is not a root's, so **a child can never carry a right its
+    /// parent lacked** and no descendant of it can either. The `EPERM` below is not what enforces
+    /// that: delete it and the intersection still holds. What it does is refuse to hand back
+    /// *less* than was asked for without saying so, which is DECISIONS §42's rule against silent
+    /// degradation.
+    ///
+    /// Needs [`dir::DESCEND`] on the parent, and its absence answers `ENOENT` rather than a
+    /// refusal, so a holder that may not walk in cannot map what is there.
+    pub fn open_dir(&mut self, handle: u32, name: &str, requested: u64) -> Result<u32> {
+        let (ptr, rights) = self.resolve_child_dir(handle, name, dir::DESCEND)?;
+        let granted = rights.attenuate(requested);
+        if granted != Rights::root(requested) {
+            return Err(Error::new(EPERM));
+        }
+        Ok(self.install(Entry::Dir(ptr, granted)))
+    }
+
+    /// **Make a child directory and hand back a capability to it**: `mkdir` as descend-with-creation,
+    /// which is why it lives beside [`Server::open_dir`] and shares its rights arithmetic exactly.
+    ///
+    /// Needs [`dir::CREATE`] *and* [`dir::DESCEND`] on the parent: making a directory you could not
+    /// have walked into would be a way to mint a capability out of a right that was withheld.
+    /// `EEXIST` if the name is already there, and nothing is modified, for the reason
+    /// [`Server::create_file`] gives.
+    pub fn make_dir(&mut self, handle: u32, name: &str, requested: u64) -> Result<u32> {
+        check_component(name)?;
+        let (parent, rights) = self.dir_at(handle)?;
+        if !rights.allows(dir::CREATE) {
+            return Err(Error::new(EROFS));
+        }
+        if !rights.allows(dir::DESCEND) {
+            return Err(Error::new(EPERM));
+        }
+        let granted = rights.attenuate(requested);
+        if granted != Rights::root(requested) {
+            return Err(Error::new(EPERM));
+        }
+        self.clock += 1;
+        let now = self.clock;
+        let node = self.fs.tx(|tx| {
+            if tx.find_node(parent, name).is_ok() {
+                return Err(Error::new(EEXIST));
+            }
+            tx.create_node(parent, name, Node::MODE_DIR | 0o755, now, 0)
+        })?;
+        Ok(self.install(Entry::Dir(node.ptr(), granted)))
+    }
+
+    /// **Enumerate the directory `handle` names**, filling `out` with [`fs_proto::dirent`] records
+    /// and returning how many bytes were used. `cursor` is the index of the first entry to return;
+    /// 0 bytes back means the cursor is past the end.
+    ///
+    /// Needs [`dir::ENUMERATE`], and its absence is [`dir::EPERM`] rather than an empty listing.
+    /// An empty listing would be a statement about the *directory*, which would be false; the true
+    /// statement is about the capability, and DECISIONS §42 says a verb that is not offered fails
+    /// loudly instead of degrading into a plausible lie.
+    ///
+    /// Entries are sorted by name so the cursor means the same thing across calls. **The honest
+    /// caveat**: the directory is re-read per call, so a name added or removed between two calls of
+    /// one walk can be seen twice or missed. That is readdir's usual caveat and it is recorded
+    /// rather than fixed, because fixing it means holding a snapshot per client and this table is
+    /// not per client.
+    pub fn read_dir(&mut self, handle: u32, cursor: u32, out: &mut [u8]) -> Result<usize> {
+        let (ptr, rights) = self.dir_at(handle)?;
+        if !rights.allows(dir::ENUMERATE) {
+            return Err(Error::new(EPERM));
+        }
+        self.fs.tx(|tx| {
+            let mut children = Vec::new();
+            tx.child_nodes(ptr, &mut children)?;
+            children.sort_unstable_by(|a, b| a.name().unwrap_or("").cmp(b.name().unwrap_or("")));
+            let mut used = 0;
+            for entry in children.iter().skip(cursor as usize) {
+                let Some(name) = entry.name() else { continue };
+                let child: redoxfs::TreeData<Node> = tx.read_tree(entry.node_ptr())?;
+                match fs_proto::dirent::encode(
+                    &mut out[used..],
+                    name.as_bytes(),
+                    child.data().is_dir(),
+                ) {
+                    Some(n) => used += n,
+                    // A record is never split: stop before one that will not fit and let the
+                    // caller's next cursor start here. That is what makes "the buffer filled" and
+                    // "the directory ended" distinguishable rather than a guess.
+                    None => break,
+                }
+            }
+            Ok(used)
+        })
     }
 
     /// Read up to `buf.len()` bytes from `handle` at `offset`, returning the count (0 at EOF). Passes
     /// atime 0 so a read never advances the node's access time (never *newer* than what is stored),
     /// which keeps reads from triggering a copy-on-write of the node on every call.
+    ///
+    /// `EBADF` if the handle was not opened for reading, which is POSIX's own answer for reading a
+    /// write-only descriptor and is a fact about the handle rather than a policy about the file.
     pub fn read(&mut self, handle: u32, offset: u64, buf: &mut [u8]) -> Result<usize> {
-        let ptr = self.node(handle)?;
+        let ptr = self.file_at(handle, dir::READ, EBADF)?;
         self.fs.tx(|tx| tx.read_node(ptr, offset, buf, 0, 0))
     }
 
     /// Write `data` to `handle` at `offset`, returning the count. Advances the internal clock so the
     /// node's mtime moves forward; the data persists regardless of the timestamp.
+    ///
+    /// [`dir::EROFS`] without [`dir::WRITE`], the same word and the same argument `fwarden` uses:
+    /// through this capability the file is read-only, and there is no policy that could have said
+    /// yes.
     pub fn write(&mut self, handle: u32, offset: u64, data: &[u8]) -> Result<usize> {
-        let ptr = self.node(handle)?;
+        let ptr = self.file_at(handle, dir::WRITE, EROFS)?;
         self.clock += 1;
         let now = self.clock;
         self.fs.tx(|tx| tx.write_node(ptr, offset, data, now, 0))
     }
 
-    /// The current size, in bytes, of the file a handle names.
+    /// The current size, in bytes, of the file a handle names. Allowed through any file handle: a
+    /// holder that may write but not read still has to be able to find the end.
     pub fn fstat(&mut self, handle: u32) -> Result<u64> {
-        let ptr = self.node(handle)?;
+        let ptr = self.file_at(handle, 0, EBADF)?;
         self.fs.tx(|tx| Ok(tx.read_tree(ptr)?.data().size()))
     }
 
@@ -129,20 +292,32 @@ impl<D: Disk> Server<D> {
     /// Resolved under the bound directory like every other name, so this cannot create outside the
     /// granted subtree, and [`check_component`] rejects a path rather than walking one.
     pub fn create_file(&mut self, name: &str) -> Result<u32> {
+        self.create_file_at(fs_proto::fs::ROOT as u32, name)
+    }
+
+    /// [`Server::create_file`], under the directory `handle` names. Needs [`dir::CREATE`] on it;
+    /// without it the answer is [`dir::EROFS`], because through this capability that directory takes
+    /// no new names.
+    pub fn create_file_at(&mut self, handle: u32, name: &str) -> Result<u32> {
         check_component(name)?;
-        let dir = self.dir;
+        let (parent, rights) = self.dir_at(handle)?;
+        if !rights.allows(dir::CREATE) {
+            return Err(Error::new(EROFS));
+        }
         // Existence is checked inside the same transaction as the create, so two clients racing on
         // one name cannot both be told they created it.
         self.clock += 1;
         let now = self.clock;
         let node = self.fs.tx(|tx| {
-            if tx.find_node(dir, name).is_ok() {
+            if tx.find_node(parent, name).is_ok() {
                 return Err(Error::new(EEXIST));
             }
-            tx.create_node(dir, name, Node::MODE_FILE | 0o644, now, 0)
+            tx.create_node(parent, name, Node::MODE_FILE | 0o644, now, 0)
         })?;
-        let ptr = node.ptr();
-        Ok(self.install(ptr))
+        Ok(self.install(Entry::File(
+            node.ptr(),
+            rights.attenuate(dir::READ | dir::WRITE),
+        )))
     }
 
     /// Set the size of the file a handle names to exactly `size` bytes (milestone 31 phase 2).
@@ -161,7 +336,9 @@ impl<D: Disk> Server<D> {
     /// create are the first verbs that change a file's *shape* rather than its bytes, which makes them
     /// the most interesting cases for milestone 37 to attack.
     pub fn truncate(&mut self, handle: u32, size: u64) -> Result<()> {
-        let ptr = self.node(handle)?;
+        // A truncate carries no bytes, so a guard that only covered `write` would leave a way to
+        // destroy a file just as thoroughly. It takes the same right and answers the same word.
+        let ptr = self.file_at(handle, dir::WRITE, EROFS)?;
         self.clock += 1;
         let now = self.clock;
         self.fs.tx(|tx| tx.truncate_node(ptr, size, now, 0))
@@ -176,7 +353,14 @@ impl<D: Disk> Server<D> {
     }
 
     /// Release a handle. `EBADF` if it was not open.
+    ///
+    /// **The bound directory cannot be closed**, and the refusal is `EINVAL` rather than `EBADF`:
+    /// handle 0 is not something the client opened, it is the root of its namespace, and a client
+    /// that could close it could make every later request in the session fail.
     pub fn close(&mut self, handle: u32) -> Result<()> {
+        if handle as u64 == fs_proto::fs::ROOT {
+            return Err(Error::new(EINVAL));
+        }
         let slot = self
             .handles
             .get_mut(handle as usize)
@@ -186,25 +370,70 @@ impl<D: Disk> Server<D> {
         Ok(())
     }
 
-    /// Install a node in the handle table, reusing a freed slot before growing. Returns the handle.
-    fn install(&mut self, ptr: TreePtr<Node>) -> u32 {
+    /// Install an entry in the handle table, reusing a freed slot before growing. Returns the
+    /// handle. Slot 0 is never free, so a minted handle is never 0 and never shadows the root.
+    fn install(&mut self, entry: Entry) -> u32 {
         if let Some(i) = self.handles.iter().position(|s| s.is_none()) {
-            self.handles[i] = Some(ptr);
+            self.handles[i] = Some(entry);
             i as u32
         } else {
-            self.handles.push(Some(ptr));
+            self.handles.push(Some(entry));
             (self.handles.len() - 1) as u32
         }
     }
 
-    /// The node a handle names, or `EBADF`. Every operation goes through here, so a forged or stale
-    /// handle is refused in exactly one place.
-    fn node(&self, handle: u32) -> Result<TreePtr<Node>> {
+    /// What a handle names, or `EBADF`. Every operation reaches the table through here or through
+    /// one of the two typed wrappers below, so a forged or stale handle is refused in one place.
+    fn entry(&self, handle: u32) -> Result<Entry> {
         self.handles
             .get(handle as usize)
             .copied()
             .flatten()
             .ok_or(Error::new(EBADF))
+    }
+
+    /// The directory a handle names and the rights it carries. [`dir::ENOTDIR`] for a file handle,
+    /// which is a fact about the handle rather than a refusal of the request.
+    fn dir_at(&self, handle: u32) -> Result<(TreePtr<Node>, Rights)> {
+        match self.entry(handle)? {
+            Entry::Dir(ptr, rights) => Ok((ptr, rights)),
+            Entry::File(..) => Err(Error::new(ENOTDIR)),
+        }
+    }
+
+    /// The file a handle names, once its rights carry `needed`. `refusal` is the errno to answer
+    /// when they do not, which differs by direction on purpose: a read through a write-only handle
+    /// is `EBADF` (POSIX's answer, a fact about the handle) and a write through a read-only one is
+    /// [`dir::EROFS`] (`fwarden`'s answer, a fact about the capability).
+    fn file_at(&self, handle: u32, needed: u64, refusal: i32) -> Result<TreePtr<Node>> {
+        match self.entry(handle)? {
+            Entry::File(ptr, rights) if rights.allows(needed) => Ok(ptr),
+            Entry::File(..) => Err(Error::new(refusal)),
+            Entry::Dir(..) => Err(Error::new(EISDIR)),
+        }
+    }
+
+    /// Resolve `name` under the directory `handle` names, requiring `needed` on the parent, and
+    /// return the child **directory** with the parent's rights for the caller to attenuate.
+    ///
+    /// The missing-right answer is `ENOENT`, not a refusal: this is the naming rung of the ladder,
+    /// and a holder that may not descend must not be able to learn what is below.
+    fn resolve_child_dir(
+        &mut self,
+        handle: u32,
+        name: &str,
+        needed: u64,
+    ) -> Result<(TreePtr<Node>, Rights)> {
+        check_component(name)?;
+        let (parent, rights) = self.dir_at(handle)?;
+        if !rights.allows(needed) {
+            return Err(Error::new(syscall::error::ENOENT));
+        }
+        let node = self.fs.tx(|tx| tx.find_node(parent, name))?;
+        if !node.data().is_dir() {
+            return Err(Error::new(ENOTDIR));
+        }
+        Ok((node.ptr(), rights))
     }
 }
 
@@ -589,9 +818,386 @@ mod tests {
     fn handles_are_reused_after_close() {
         let mut srv = server_with(&[("a", b"1"), ("b", b"2")]);
         let h0 = srv.open_file("a").unwrap();
+        assert_ne!(h0, 0, "slot 0 is the bound directory and is never handed out");
         srv.close(h0).unwrap();
         let h1 = srv.open_file("b").unwrap();
         assert_eq!(h0, h1, "a freed slot is reused before growing the table");
+    }
+
+    // --- The directory capability (milestone 47) ---
+
+    /// Build an image with a subtree: files in the root, then `sub/` holding `inner` and `deeper/`,
+    /// and a sibling `other/` holding `secret`. The same shape `fs_proto::fixture::tree` describes
+    /// and the device fixture carries, so the host tests and the guest tests attack one geometry.
+    fn image_with_tree() -> DiskMemory {
+        let disk = DiskMemory::new(16 * 1024 * 1024);
+        let mut fs = FileSystem::create(disk, None, 0, 0).expect("create");
+        fs.tx(|tx| {
+            let file = |tx: &mut redoxfs::Transaction<DiskMemory>,
+                        parent: TreePtr<Node>,
+                        name: &str,
+                        body: &[u8]| {
+                let ptr = tx
+                    .create_node(parent, name, Node::MODE_FILE | 0o644, 0, 0)?
+                    .ptr();
+                tx.write_node(ptr, 0, body, 0, 0)?;
+                Ok::<(), Error>(())
+            };
+            file(tx, TreePtr::root(), "motd", b"root motd")?;
+            let sub = tx
+                .create_node(TreePtr::root(), "sub", Node::MODE_DIR | 0o755, 0, 0)?
+                .ptr();
+            file(tx, sub, "inner", b"inside the grant")?;
+            let deeper = tx.create_node(sub, "deeper", Node::MODE_DIR | 0o755, 0, 0)?.ptr();
+            file(tx, deeper, "leaf", b"two levels down")?;
+            let other = tx
+                .create_node(TreePtr::root(), "other", Node::MODE_DIR | 0o755, 0, 0)?
+                .ptr();
+            file(tx, other, "secret", b"in the sibling")?;
+            Ok(())
+        })
+        .expect("populate the tree");
+        fs.disk
+    }
+
+    fn server_with_tree() -> Server<DiskMemory> {
+        Server::open(image_with_tree()).expect("open")
+    }
+
+    /// Collect a whole directory listing through `read_dir`, driving the cursor the way a client
+    /// does, so the cursor and the "a record is never split" rule are exercised rather than assumed.
+    fn list(srv: &mut Server<DiskMemory>, handle: u32, buf_len: usize) -> Result<Vec<(String, bool)>> {
+        let mut out = Vec::new();
+        let mut buf = vec![0u8; buf_len];
+        let mut cursor = 0u32;
+        // Bounded so a cursor that fails to advance fails the test instead of hanging it.
+        for _ in 0..64 {
+            let n = srv.read_dir(handle, cursor, &mut buf)?;
+            if n == 0 {
+                return Ok(out);
+            }
+            for (name, is_dir) in fs_proto::dirent::iter(&buf[..n]) {
+                out.push((String::from_utf8(name.to_vec()).unwrap(), is_dir));
+                cursor += 1;
+            }
+        }
+        panic!("read_dir never reported the end of the directory");
+    }
+
+    /// **The keystone: descending hands back a capability, and it is a capability to that directory
+    /// and nothing else.** A handle to `sub` opens `inner` and does not open `motd`, which is in the
+    /// parent, or `secret`, which is in a sibling. Neither is a permission failure: under `sub`
+    /// there is no such name.
+    #[test]
+    fn a_child_directory_handle_names_only_what_is_in_it() {
+        let mut srv = server_with_tree();
+        let sub = srv.open_dir(fs_proto::fs::ROOT as u32, "sub", dir::ALL).unwrap();
+
+        let inner = srv.open_file_at(sub, "inner").expect("its own file opens");
+        let mut buf = [0u8; 64];
+        let n = srv.read(inner, 0, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"inside the grant");
+
+        for absent in ["motd", "other", "secret"] {
+            assert_eq!(
+                srv.open_file_at(sub, absent).err().map(|e| e.errno),
+                Some(syscall::error::ENOENT),
+                "{absent} is not under `sub`, so naming it must find nothing",
+            );
+        }
+        // And the same for descending: the sibling directory is real and is not reachable from here.
+        assert_eq!(
+            srv.open_dir(sub, "other", dir::ALL).err().map(|e| e.errno),
+            Some(syscall::error::ENOENT),
+        );
+        // `..` never resolves, at any rights, because it is not a component this contract accepts.
+        assert_eq!(
+            srv.open_dir(sub, "..", dir::ALL).err().map(|e| e.errno),
+            Some(EINVAL),
+        );
+    }
+
+    /// **A child's rights can never exceed its parent's**, and asking for more is refused rather
+    /// than quietly granted less. Both halves matter: the refusal is the truthfulness, and the
+    /// attenuation underneath it is the safety.
+    #[test]
+    fn a_child_directory_cannot_carry_a_right_the_parent_lacked() {
+        let mut srv = server_with_tree();
+        // A parent that may descend and read, and may not create, write or remove.
+        let narrow = dir::DESCEND | dir::READ | dir::ENUMERATE;
+        let sub = srv
+            .open_dir(fs_proto::fs::ROOT as u32, "sub", narrow)
+            .unwrap();
+
+        assert_eq!(
+            srv.open_dir(sub, "deeper", narrow | dir::CREATE)
+                .err()
+                .map(|e| e.errno),
+            Some(EPERM),
+            "asking for a right the parent lacks must be refused, not silently narrowed",
+        );
+        // Asking for what the parent has, or less, works, and the child is bounded either way.
+        let deeper = srv.open_dir(sub, "deeper", narrow).unwrap();
+        assert_eq!(
+            srv.create_file_at(deeper, "smuggled").err().map(|e| e.errno),
+            Some(EROFS),
+            "a grandchild must not have gained the create right the root grant withheld",
+        );
+        // And the parent itself still cannot create, so the child did not come from a wider parent.
+        assert_eq!(
+            srv.create_file_at(sub, "smuggled").err().map(|e| e.errno),
+            Some(EROFS),
+        );
+    }
+
+    /// The five rungs are separable, each gating exactly its own verb. Written as a sweep rather
+    /// than five tests because the interesting failure is a verb that answers to the *wrong* right,
+    /// and that only shows up when every combination is tried against every verb.
+    #[test]
+    fn each_rung_of_the_ladder_gates_exactly_its_own_verb() {
+        // `withheld` is what the failing capability lacks and `needed` is what the passing one has.
+        // They differ for `open`, which takes READ **or** WRITE, so withholding only READ would
+        // leave it reachable and the sweep would be asserting the wrong thing (it did, first time).
+        for &(withheld, needed, ok, refusal) in &[
+            (dir::ENUMERATE, dir::ENUMERATE, "enumerate", EPERM),
+            (
+                dir::READ | dir::WRITE,
+                dir::READ,
+                "open",
+                syscall::error::ENOENT,
+            ),
+            (dir::CREATE, dir::CREATE, "create", EROFS),
+            (dir::DESCEND, dir::DESCEND, "descend", syscall::error::ENOENT),
+        ] {
+            let mut srv = server_with_tree();
+            // Everything except the rung under test, so a verb that consults the wrong bit passes
+            // when it should fail.
+            let without = srv
+                .open_dir(fs_proto::fs::ROOT as u32, "sub", dir::ALL & !withheld)
+                .unwrap();
+            let with = srv
+                .open_dir(fs_proto::fs::ROOT as u32, "sub", needed | dir::READ)
+                .unwrap();
+
+            let attempt = |srv: &mut Server<DiskMemory>, h: u32| -> Result<()> {
+                match ok {
+                    "enumerate" => srv.read_dir(h, 0, &mut [0u8; 256]).map(|_| ()),
+                    "open" => srv.open_file_at(h, "inner").map(|_| ()),
+                    "create" => srv.create_file_at(h, "made-by-the-sweep").map(|_| ()),
+                    _ => srv.open_dir(h, "deeper", 0).map(|_| ()),
+                }
+            };
+            assert_eq!(
+                attempt(&mut srv, without).err().map(|e| e.errno),
+                Some(refusal),
+                "{ok} was allowed by a capability that lacked its own right",
+            );
+            assert!(
+                attempt(&mut srv, with).is_ok(),
+                "{ok} was refused by a capability that carried its right, so the refusal above \
+                 proves nothing",
+            );
+        }
+    }
+
+    /// **A file handle inherits its directory's direction**, which is the "open (read versus write)"
+    /// rung. A directory granted for writing yields a file that writes and, deliberately, does not
+    /// read; the reverse yields one that reads and refuses to write or truncate.
+    #[test]
+    fn a_file_handle_carries_the_direction_of_the_directory_it_came_from() {
+        let mut srv = server_with_tree();
+
+        let ro = srv
+            .open_dir(fs_proto::fs::ROOT as u32, "sub", dir::DESCEND | dir::READ)
+            .unwrap();
+        let h = srv.open_file_at(ro, "inner").unwrap();
+        let mut buf = [0u8; 32];
+        assert!(srv.read(h, 0, &mut buf).is_ok());
+        assert_eq!(
+            srv.write(h, 0, b"x").err().map(|e| e.errno),
+            Some(EROFS),
+            "a file opened under a read-only directory must not write",
+        );
+        assert_eq!(
+            srv.truncate(h, 0).err().map(|e| e.errno),
+            Some(EROFS),
+            "and must not truncate either: a truncate is a write that carries no bytes",
+        );
+
+        let wo = srv
+            .open_dir(fs_proto::fs::ROOT as u32, "sub", dir::DESCEND | dir::WRITE)
+            .unwrap();
+        let h = srv.open_file_at(wo, "inner").unwrap();
+        assert!(srv.write(h, 0, b"appended by a write-only grant").is_ok());
+        assert_eq!(
+            srv.read(h, 0, &mut buf).err().map(|e| e.errno),
+            Some(EBADF),
+            "a write-only handle is not a readable one, which is POSIX's own answer",
+        );
+        assert!(srv.fstat(h).is_ok(), "but it can still find the end");
+    }
+
+    /// A listing is a rendering of authority: it holds exactly the granted directory's names, never
+    /// the parent's or the sibling's, and it says which are directories so a reader need not open
+    /// every one to find out.
+    #[test]
+    fn a_listing_holds_exactly_the_directorys_own_names() {
+        let mut srv = server_with_tree();
+        let sub = srv.open_dir(fs_proto::fs::ROOT as u32, "sub", dir::ALL).unwrap();
+
+        let mut got = list(&mut srv, sub, 256).expect("enumerate");
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                ("deeper".to_string(), true),
+                ("inner".to_string(), false)
+            ],
+            "the listing must be the granted directory's names and their kinds",
+        );
+
+        // The root's own listing has the sibling in it, which is what makes the assertion above a
+        // statement about the capability rather than about an empty directory.
+        let mut root = list(&mut srv, fs_proto::fs::ROOT as u32, 256).expect("enumerate the root");
+        root.sort();
+        assert!(root.iter().any(|(n, d)| n == "other" && *d));
+    }
+
+    /// **A listing bigger than the buffer comes back across several calls, whole records only.**
+    /// The cursor is what makes that work, and a buffer sized to cut a record in half is exactly the
+    /// case that would otherwise hand a client half a name.
+    #[test]
+    fn a_listing_larger_than_the_buffer_is_paged_without_tearing_a_name() {
+        let mut srv = server_with_tree();
+        let root = fs_proto::fs::ROOT as u32;
+        for i in 0..12 {
+            srv.create_file_at(root, &format!("entry-{i:02}-with-a-longish-name"))
+                .unwrap();
+        }
+        let whole = list(&mut srv, root, 4096).expect("one big listing");
+        // Ten bytes fits one short record and no long one, so most calls return one entry and the
+        // walk only terminates if the cursor advances correctly.
+        let paged = list(&mut srv, root, 40).expect("paged listing");
+        assert_eq!(paged, whole, "paging changed the listing");
+        assert_eq!(whole.len(), 15, "3 fixture entries plus the 12 made here");
+    }
+
+    /// `mkdir` is descend-with-creation: it mints a directory node and hands back a capability to it,
+    /// attenuated exactly as a descent is, so making a directory is not a way to mint authority.
+    #[test]
+    fn mkdir_returns_a_capability_no_wider_than_the_one_that_made_it() {
+        let mut srv = server_with_tree();
+        // No REMOVE, so nothing made below may remove either.
+        let held = dir::DESCEND | dir::CREATE | dir::READ | dir::WRITE | dir::ENUMERATE;
+        let sub = srv.open_dir(fs_proto::fs::ROOT as u32, "sub", held).unwrap();
+
+        let made = srv.make_dir(sub, "logs", held).expect("mkdir");
+        assert_eq!(
+            srv.make_dir(sub, "logs", held).err().map(|e| e.errno),
+            Some(EEXIST),
+            "mkdir is create, not create-or-open",
+        );
+        // The capability it handed back really is a directory capability: it takes names.
+        let f = srv.create_file_at(made, "today").expect("create in it");
+        assert_eq!(srv.write(f, 0, b"a log line\n").unwrap(), 11);
+        assert_eq!(
+            srv.make_dir(sub, "wider", dir::ALL).err().map(|e| e.errno),
+            Some(EPERM),
+            "and it cannot be made wider than the directory it was made in",
+        );
+
+        // The new directory shows up in its parent's listing, as a directory.
+        let mut got = list(&mut srv, sub, 512).unwrap();
+        got.sort();
+        assert!(got.contains(&("logs".to_string(), true)));
+    }
+
+    /// A directory capability granted without `CREATE` is the milestone's motivating sentence: a
+    /// program may write into what is there and may not make or destroy anything.
+    #[test]
+    fn a_write_grant_without_create_can_write_and_cannot_make_a_name() {
+        let mut srv = server_with_tree();
+        let logs = srv
+            .open_dir(
+                fs_proto::fs::ROOT as u32,
+                "sub",
+                dir::DESCEND | dir::READ | dir::WRITE,
+            )
+            .unwrap();
+        let h = srv.open_file_at(logs, "inner").unwrap();
+        assert!(srv.write(h, 0, b"the program's own bytes").is_ok());
+        assert_eq!(
+            srv.create_file_at(logs, "new").err().map(|e| e.errno),
+            Some(EROFS),
+        );
+        assert_eq!(
+            srv.make_dir(logs, "new", 0).err().map(|e| e.errno),
+            Some(EROFS),
+        );
+    }
+
+    /// The two typed handles do not answer for each other, and the root cannot be closed. Each of
+    /// these is a way for a client to make the server confuse one kind of authority for another.
+    #[test]
+    fn a_directory_handle_and_a_file_handle_refuse_each_others_verbs() {
+        let mut srv = server_with_tree();
+        let root = fs_proto::fs::ROOT as u32;
+        let sub = srv.open_dir(root, "sub", dir::ALL).unwrap();
+        let file = srv.open_file_at(sub, "inner").unwrap();
+        let mut buf = [0u8; 32];
+
+        assert_eq!(srv.read(sub, 0, &mut buf).err().map(|e| e.errno), Some(EISDIR));
+        assert_eq!(srv.write(sub, 0, b"x").err().map(|e| e.errno), Some(EISDIR));
+        assert_eq!(srv.truncate(sub, 0).err().map(|e| e.errno), Some(EISDIR));
+        assert_eq!(
+            srv.open_file_at(file, "inner").err().map(|e| e.errno),
+            Some(ENOTDIR),
+        );
+        assert_eq!(
+            srv.read_dir(file, 0, &mut buf).err().map(|e| e.errno),
+            Some(ENOTDIR),
+        );
+        assert_eq!(
+            srv.open_dir(file, "deeper", 0).err().map(|e| e.errno),
+            Some(ENOTDIR),
+        );
+        // Opening a directory as a file is EISDIR, not a handle to bytes that mean nothing.
+        assert_eq!(
+            srv.open_file_at(root, "sub").err().map(|e| e.errno),
+            Some(EISDIR),
+        );
+        assert_eq!(
+            srv.close(root).err().map(|e| e.errno),
+            Some(EINVAL),
+            "the root of a namespace is not something the client opened",
+        );
+        // And a forged handle is still EBADF, from the same one check every verb goes through.
+        for h in [99u32, 1000] {
+            assert_eq!(srv.read_dir(h, 0, &mut buf).err().map(|e| e.errno), Some(EBADF));
+            assert_eq!(srv.open_dir(h, "sub", 0).err().map(|e| e.errno), Some(EBADF));
+        }
+    }
+
+    /// Everything a directory capability makes survives the mount, which is the half a cache cannot
+    /// fake: the descent, the created directory, and the file inside it are all on the platter.
+    #[test]
+    fn a_subtree_built_through_directory_handles_survives_a_reopen() {
+        let mut disk = image_with_tree();
+        {
+            let mut srv = Server::open(disk).expect("open");
+            let sub = srv.open_dir(fs_proto::fs::ROOT as u32, "sub", dir::ALL).unwrap();
+            let made = srv.make_dir(sub, "made", dir::ALL).unwrap();
+            let f = srv.create_file_at(made, "note").unwrap();
+            srv.write(f, 0, b"written two levels down").unwrap();
+            disk = srv.fs.disk; // no unmount, as a dying process leaves it
+        }
+        let mut srv = Server::open(disk).expect("reopen");
+        let sub = srv.open_dir(fs_proto::fs::ROOT as u32, "sub", dir::ALL).unwrap();
+        let made = srv.open_dir(sub, "made", dir::ALL).expect("the made directory");
+        let f = srv.open_file_at(made, "note").expect("the file in it");
+        let mut buf = [0u8; 64];
+        let n = srv.read(f, 0, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"written two levels down");
     }
     // --- CREATE and TRUNCATE (milestone 31 phase 2) ---
 
