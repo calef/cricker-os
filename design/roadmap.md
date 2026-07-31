@@ -1913,6 +1913,49 @@ capability reaches, structurally. A shell rooted at a subtree cannot recursively
 because no capability naming those files exists in it. Not a guard rail, not a confirmation prompt,
 not a check that could be wrong: there is nothing to name.
 
+#### `rmdir` and `rm -r`: Unix already made the safe choice (decided 2026-07-31)
+
+`mkdir` shipped in §48 with no way to remove what it makes: `rm` answers `EISDIR` and there is no
+`RMDIR`. The lane declined to add one, on the grounds that "a verb that removes whatever it finds is
+how one word takes a subtree away". That objection is right about a *recursive* verb and does not
+apply to Unix's, which is the point.
+
+**`rmdir(2)` removes only an empty directory**, and that is the whole safety property. The recursion
+in `rm -r` lives in **userspace**, as a loop of individually safe single-step operations: walk, unlink
+files, remove empty directories bottom-up. **No single call in the contract can take a subtree away.**
+
+So: `RMDIR` requiring `REMOVE` on the parent, refusing non-empty with `ENOTEMPTY`, and explicitly
+**not** revocation, for §48's reason — the handle table is per server, so handles cannot be
+invalidated for clients the server cannot enumerate.
+
+**The recursion is bounded by construction, which Unix cannot say.** `rm -r` needs `ENUMERATE` to see,
+`DESCEND` to recurse and `REMOVE` to delete, *at every level*, so the walk stops exactly where the
+capabilities stop. Unix bounds `rm -rf /` with a permission check per file, which is a check that can
+be wrong and famously has been. This milestone's existing note stands: not a guard rail, not a
+confirmation prompt, "there is nothing to name".
+
+**`rm` is a program, not a builtin, and that is Unix's shape rather than a divergence from it.**
+`cd`/`pwd`/`ls` are builtins here because the shell is rebinding what it already holds; `rm -r` is a
+destructive loop, not a rebinding. A builtin would run with the shell's **entire endowment**, while a
+program takes an explicit attenuated grant — so `caps rm -r logs/` prints the subtree at risk before
+anything happens, and a bug in the recursion can only reach what it was handed. Same shape as
+globbing below: attenuate, then hand over.
+
+**`-f` stays, with Unix's semantics** (Chris, 2026-07-31). An earlier draft of this section argued it
+should not exist, on the reasoning that with no prompting its only remaining meaning is suppressing
+errors, which §42 forbids. **That was wrong about what `-f` does.** It means *ignore nonexistent files
+and do not prompt* — a permission failure on a file that exists still reports. Its real value is
+**idempotency**: `rm -f maybe-there` succeeding is what makes a script re-runnable, and "absence is
+the desired state" is not a lie about failure. The divergence did not earn its keep.
+
+**Two things to settle when building it.** A `rm -r` interrupted halfway leaves a partial tree, and
+there is no transaction spanning requests — adding one would mean the server holding a transaction
+open across receives, which conflicts with the serve-loop-runs-one-request-to-completion property §47
+relies on for concurrency atomicity. Partial-and-reported is the answer, but it should be a decision
+rather than a discovery. And `rm` on a directory stays a **refusal** (`EISDIR`) rather than a silent
+escalation to recursive removal, which is Unix's behaviour and worth keeping for the same reason
+`rmdir` is empty-only.
+
 #### Globbing, which decides how every multi-file operation grants
 
 zsh's glob engine is the best thing in the shell (`**/*.rs`, and qualifiers: `*(.)` for regular
