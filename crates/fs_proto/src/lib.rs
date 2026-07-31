@@ -643,8 +643,9 @@ pub mod fixture {
         pub const SECRET: &str = "secret";
         pub const SECRET_BODY: &[u8] = b"CRK47-SECRET: in a sibling of the granted directory\n";
 
-        /// The name the writable attacker creates inside its grant. It stays on the image
-        /// afterwards, which is deliberate: the post-run host check asserts it is in [`SUB`] and
+        /// The name the writable attacker creates inside its grant, with a run index appended so
+        /// three runs sharing one image do not collide. It stays on the image afterwards, which is
+        /// deliberate: the post-run host check asserts a name with this **prefix** is in [`SUB`] and
         /// **not** in the root, which is the escape it is looking for.
         pub const MADE: &str = "made-by-atk";
         /// What the attacker writes into [`MADE`]; read straight back, because "the server accepted
@@ -654,10 +655,16 @@ pub mod fixture {
         /// capability and that the capability it mints is not wider than the one that made it.
         pub const MADE_DIR: &str = "dir-by-atk";
 
-        /// **Exactly the names the image root carries after a run.** The post-run host check
-        /// compares `ls /` against this, sorted, which is the assertion made from outside the
-        /// confined program: a name that leaked upward out of the grant appears here and nowhere
-        /// else, and no in-guest verdict could have reported it.
+        /// **The names the image root must still carry after a run**, checked by the post-run host
+        /// tool: this is the half of the assertion made from *outside* the confined program, and no
+        /// in-guest verdict could have reported it. A capability granted on [`SUB`] can remove
+        /// nothing above itself, so a name missing here escaped.
+        ///
+        /// **Containment, not equality**, and the reason is worth stating where the constant is:
+        /// the root is shared with every other test in the boot (the `std::fs` test creates
+        /// `made-by-std` in it), so an exact comparison would couple this milestone's gate to what
+        /// unrelated tests happen to write. The upward-escape half is checked against [`MADE`] and
+        /// [`MADE_DIR`] instead, which are names only the attacker writes.
         pub const ROOT_ENTRIES: [&str; 4] = [super::MOTD_NAME, OTHER, super::SCRATCH_NAME, SUB];
     }
 
@@ -695,6 +702,10 @@ pub mod fixture {
         pub const ENUMERATED_A_STRANGER: u64 = 1 << 9;
         /// It reached something with a handle it was never given. Never allowed.
         pub const FORGED_HANDLE: u64 = 1 << 10;
+        /// **It opened the file inside its own grant**, which it is supposed to be able to do. The
+        /// control bit: without it every refusal above is equally consistent with a warden that
+        /// answers no to everything, or a grant that reaches nothing at all.
+        pub const OPENED_ITS_OWN: u64 = 1 << 13;
         /// **The thing it should be able to do failed**, so nothing above was proven. A capability
         /// that reaches nothing is trivially unescapable.
         pub const GRANTED_ACCESS_FAILED: u64 = 1 << 11;
@@ -1059,6 +1070,7 @@ mod tests {
             MADE_A_DIR,
             ENUMERATED_A_STRANGER,
             FORGED_HANDLE,
+            OPENED_ITS_OWN,
             GRANTED_ACCESS_FAILED,
         ];
         let mut seen = 0u64;
@@ -1081,11 +1093,18 @@ mod tests {
                 "{name} cannot ride in a grant"
             );
         }
-        let mut sorted = ROOT_ENTRIES;
-        sorted.sort_unstable();
-        assert_eq!(
-            sorted, ROOT_ENTRIES,
-            "the post-run check compares against a sorted listing",
+        // The post-run host check identifies the attacker's creations by PREFIX, because a run
+        // index is appended to each. A fixture name that started with one of those prefixes would
+        // be read as an escape, or would hide one.
+        for fixture in ROOT_ENTRIES.iter().chain(&[INNER, DEEPER, LEAF, SECRET]) {
+            assert!(
+                !fixture.starts_with(MADE) && !fixture.starts_with(MADE_DIR),
+                "{fixture} collides with the prefix the confinement check searches for",
+            );
+        }
+        assert!(
+            !MADE.starts_with(MADE_DIR) && !MADE_DIR.starts_with(MADE),
+            "the created file and the created directory must be told apart by their prefixes",
         );
         assert_ne!(SUB, OTHER, "the sibling must be a different directory");
     }
