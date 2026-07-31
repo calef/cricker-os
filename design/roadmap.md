@@ -2703,13 +2703,31 @@ something Chris actually relies on, which makes it the best demonstration target
 
 It also means milestone 56's credential service holds **three identities**, not one, from the start.
 
-#### One scope question worth resolving early, because it may delete a protocol
+#### mDNS is required after all, measured 2026-07-30
 
-Chris's flow adds the share **manually** ("Add Backup Disk, select the matching share"), which
-suggests `_adisk._tcp` mDNS advertisement may be **convenience rather than requirement**: the SMB-side
-`fruit:time machine = yes` may be what actually makes the share acceptable. If manual addition
-suffices, **mDNS drops out of this milestone entirely**, and that is a whole second protocol not
-implemented. Verify before scheduling.
+I hoped this could be dropped, on the grounds that Chris adds the share manually and the SMB-side
+`fruit:time machine = yes` might be what makes it acceptable. **Measured, and no**: `dns-sd -B
+_adisk._tcp` on his network returns `GL-BE9300` in `local.`, so the router runs an mDNS responder and
+advertises itself as a Time Machine target. The reference implementation does it, and the only way to
+prove it *unnecessary* would be to disable it on a working family backup system, which is not a trade
+worth making. **Assume required.**
+
+So this milestone carries **two protocols**: SMB3 on TCP and mDNS/DNS-SD on UDP multicast (`5353`,
+`224.0.0.251` / `ff02::fb`), the latter reusing the DNS wire format plus DNS-SD's PTR/SRV/TXT
+convention and the probe-before-claim rules. **Check whether smoltcp gives us multicast group
+membership** before estimating it.
+
+**One structural detail from the measurement:** there is **one** `_adisk._tcp` instance for **three**
+shares. The advertisement is per *server*, with the disks enumerated inside its TXT record
+(`dk0=…`, `dk1=…`), not one announcement per share. Emitting three would be wrong.
+
+Three service types are in scope: `_smb._tcp` (the server), `_adisk._tcp` (the Time Machine flags,
+which is what populates the backup-disk list), and `_device-info._tcp` (the model string, where
+`fruit:model = TimeCapsule` surfaces and which sets the icon macOS shows).
+
+**Still to capture, and free:** `dns-sd -L GL-BE9300 _adisk._tcp local` prints the actual TXT keys and
+flag values. Those bytes *are* the specification for what we must emit, and having the working ones
+beats deriving them from the RFC.
 
 #### The remaining scope risk is still worth measuring directly
 
