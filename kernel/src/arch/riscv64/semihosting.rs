@@ -8,23 +8,33 @@
 //! on by the time any test runs; `mmu::map_everything` maps this page device-typed). See
 //! notes/riscv-port.md.
 
+// Everything below is reachable only from the test harness and the test-mode panic arm, both
+// `cfg(test)`, exactly as on aarch64. `not(test)` rather than a blanket allow, so the test build
+// still holds this file to the dead-code gate.
+
 use core::arch::asm;
 
 /// The `sifive_test` finisher's **physical** address on QEMU's `virt` machine. Reached through the
 /// direct map at run time, since paging is on (bare-mode identity is long gone).
+#[cfg_attr(not(test), allow(dead_code))]
 const SIFIVE_TEST_PHYS: u64 = 0x10_0000;
 /// Write this to exit QEMU with status 0.
+#[cfg_attr(not(test), allow(dead_code))]
 const FINISHER_PASS: u32 = 0x5555;
 /// Base value for a failing exit; the caller's code is packed into the high half.
+#[cfg_attr(not(test), allow(dead_code))]
 const FINISHER_FAIL: u32 = 0x3333;
 
 /// The harness's success code (a passing exit).
+#[cfg_attr(not(test), allow(dead_code))]
 pub const EXIT_SUCCESS: u32 = 0;
 /// The harness's failure code (any non-zero exit).
+#[cfg_attr(not(test), allow(dead_code))]
 pub const EXIT_FAILURE: u32 = 1;
 
 /// Terminate the QEMU guest with `code` (0 = success). Drives the `sifive_test` finisher: `PASS` for
 /// a clean exit, `FAIL` with the code in the high bits otherwise.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn exit(code: u32) -> ! {
     let word = if code == 0 {
         FINISHER_PASS

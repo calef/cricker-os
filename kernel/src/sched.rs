@@ -405,6 +405,10 @@ pub fn adopt_secondary_idle() {
 /// The reschedule / migration SGI. When one core hands another a thread (via its inbox), it fires
 /// this at the target; the target's handler drains its inbox and reschedules. INTID 0, distinct
 /// from the endpoint-bound test SGIs (1 and 2). SMP step 3c.
+///
+/// aarch64 only in practice: RISC-V's twin path (`arch/riscv64/exceptions.rs`) recognises the IPI
+/// from the SBI software-interrupt cause rather than from an interrupt id, so it needs no constant.
+#[cfg_attr(target_arch = "riscv64", allow(dead_code))]
 pub const RESCHED_SGI: u32 = 0;
 
 /// Drain this core's migration inbox into its run queue, and request a reschedule.

@@ -36,9 +36,16 @@ cargo clippy -p kernel -p user -p user_rt --target aarch64-unknown-none-softfloa
 # is invisible to the default run above. Lint each feature build on its own. (A missed initboot
 # dead-code warning is exactly why this loop exists.) Bin only: the boot code these features gate
 # lives in the binary, not the test target (the boot block is `cfg(not(test))`).
-for feat in shell bench initboot; do
-    echo "==> clippy: kernel --features $feat (aarch64)"
-    cargo clippy -p kernel --features "$feat" --target aarch64-unknown-none-softfloat -- -D warnings
+#
+# On BOTH ISAs since milestone 41. riscv64 was linted only under `watchdog_probe` before, so the
+# whole riscv `shell` boot path (`user::riscv_shell_boot` and the console it builds) was compiled
+# by `cargo xtask` and checked by nobody. Parity is a gate, not an aspiration (DECISIONS §19), and
+# that applies to the gate itself.
+for tgt in aarch64-unknown-none-softfloat riscv64imac-unknown-none-elf; do
+    for feat in shell bench initboot; do
+        echo "==> clippy: kernel --features $feat ($tgt)"
+        cargo clippy -p kernel --features "$feat" --target "$tgt" -- -D warnings
+    done
 done
 
 # watchdog_probe is the exception to "bin only" above: it gates a TEST (the livelock probe in
@@ -48,6 +55,47 @@ for tgt in aarch64-unknown-none-softfloat riscv64imac-unknown-none-elf; do
     echo "==> clippy: kernel --features watchdog_probe ($tgt)"
     cargo clippy -p kernel --features watchdog_probe --target "$tgt" --all-targets -- -D warnings
 done
+
+# No module-wide dead-code suppression, anywhere (milestone 41, DECISIONS §38).
+#
+# This is a ratchet, and it is the whole reason milestone 41 is not a one-off tidy. Six files used
+# to carry `#![allow(dead_code)]` over 5,831 lines, including sched.rs (3,166) and the aarch64 MMU
+# (1,275), and main.rs carried a crate-wide one for riscv64 that blindfolded the ENTIRE kernel on
+# that ISA. So `-D warnings` reported success over a third of the kernel while nothing was looking,
+# which is the same failure as the conflict markers that survived a full gate run below.
+#
+# An inner attribute (`#![...]`) applies to the whole enclosing module or crate, so one of these can
+# never be a decision about a particular item: it is a blanket. A per-item `#[allow(dead_code)]` with
+# a stated reason is fine and there are plenty; that is the distinction §38 draws. Bracket-matched
+# rather than line-matched because `rustfmt` splits a long `cfg_attr` across lines, and the crate-wide
+# riscv one would have been split the moment it grew a second condition.
+echo "==> module-wide dead-code suppression"
+found=""
+for f in $(git ls-files '*.rs' | grep -v '^vendor/' | grep -v '^patches/'); do
+    hit=$(awk '
+        /^[[:space:]]*#!\[/ { collecting = 1; buf = ""; ln = FNR; opens = 0; closes = 0 }
+        collecting {
+            buf = buf " " $0
+            opens += gsub(/\(/, "(")
+            closes += gsub(/\)/, ")")
+            if (opens <= closes) {
+                if (buf ~ /dead_code|unused/) { gsub(/^[[:space:]]+/, "", buf); print ln ": " buf }
+                collecting = 0
+            }
+        }
+    ' "$f")
+    [ -n "$hit" ] && found="$found
+$f:$hit"
+done
+if [ -n "$found" ]; then
+    echo "lint: module-wide dead-code suppression (an inner attribute blindfolds the whole module):" >&2
+    echo "$found" >&2
+    echo "" >&2
+    echo "Put the allow on the ITEM, with a comment saying which configuration has no caller." >&2
+    echo "See DECISIONS.md §38." >&2
+    exit 1
+fi
+echo "module-wide suppression: none"
 
 # No merge conflict markers, anywhere. This is not a style rule, it is a scar: a compositor merge
 # resolved only the conflicts visible in a truncated `git merge` summary, and `git add -A` then
