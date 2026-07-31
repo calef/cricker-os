@@ -126,6 +126,15 @@ is the contract, and it is **per program**, published in that program's own sour
   absolute path, any `..`) is refused as `InvalidFilename` rather than served, and an empty slot 4
   makes every `std::fs` call `Unsupported`: no ambient filesystem, the same shape as the network.
 
+- a std program *given a wall clock* (milestone 51) gets a `Frame` capability naming the clock page
+  at **slot 5**, with `READ`, plus a read-only mapping of that page at `0x1200_0000` (DECISIONS §43).
+- a std program *given entropy* (milestone 56) gets the entropy service's request endpoint at
+  **slot 6**, with WRITE, and **no mapping alongside it** (DECISIONS §44). The contrast with slot 5
+  is the interesting part: reading the clock is a page because reading is near-harmless and wants to
+  cost two loads, while obtaining randomness is a message because the service must be the only thing
+  that can reach the device, and a page would be a place the bytes persist. An empty slot 6 makes
+  `std::random::SystemRng` panic rather than return something predictable.
+
   **A slot can be held without the ones below it, and the gap is load-bearing.** A program granted a
   directory but no network holds 0, 1, and 4, with 2 and 3 empty, because empty 2 and 3 are exactly
   how `std::net` knows it has no network. `Spawn.grants` fills slots from zero in order and cannot

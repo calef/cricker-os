@@ -161,7 +161,7 @@ const STD_TARGETS: [&str; 2] = ["aarch64-unknown-cricker", "riscv64-unknown-cric
 const CRICKER_TOOLCHAIN: &str = "cricker-dev";
 
 /// Bump to force every farm to rebuild after a change to the patch logic itself (not the inputs).
-const STD_SRC_PATCH_VERSION: u32 = 4;
+const STD_SRC_PATCH_VERSION: u32 = 5;
 
 fn farm_dir() -> PathBuf {
     workspace_root().join("target/cricker-farm")
@@ -212,6 +212,11 @@ fn std_inputs_stamp() -> u64 {
         // Likewise the FS-service contract: `std::fs` is a client of it (milestone 27 phase two),
         // and its wire constants are generated verbatim into the PAL.
         root.join("crates/fs_proto/src/lib.rs"),
+        // The wall-clock and entropy contracts, for the same reason: `sys/time` reads the clock
+        // page's layout out of one and `sys/random` packs its requests with the other, so a change
+        // to either must rebuild the farm or the PAL silently drifts from the service.
+        root.join("crates/clock_proto/src/lib.rs"),
+        root.join("crates/entropy_proto/src/lib.rs"),
         root.join("targets/aarch64-unknown-cricker.json"),
         root.join("targets/riscv64-unknown-cricker.json"),
     ];
@@ -369,6 +374,13 @@ fn std_generate_modules() -> bool {
             root.join("crates/clock_proto/src/lib.rs"),
             farm_std_src().join("sys/pal/cricker/clockproto.rs"),
         ),
+        // The entropy contract (DECISIONS §44), so the random PAL packs its requests and reads its
+        // replies exactly the way the entropy service serves them. Same discipline as the five
+        // above; a drift here would be a program reading the wrong bytes as a key.
+        (
+            root.join("crates/entropy_proto/src/lib.rs"),
+            farm_std_src().join("sys/pal/cricker/entropyproto.rs"),
+        ),
     ];
     for (src, dst) in jobs {
         let Ok(text) = std::fs::read_to_string(&src) else {
@@ -442,9 +454,19 @@ fn std_patch_dispatch() -> bool {
         "cfg_select! {",
         "    target_os = \"cricker\" => {\n        mod cricker;\n        pub use cricker::*;\n    }",
     ) && patch_after(
+        // random: `fill_bytes` AND `hashmap_random_keys`, because milestone 56 splits them. The
+        // first promises cryptographic strength and panics without the entropy capability; the
+        // second is a hash seed and degrades to the old counter-seeded stream. Exporting both means
+        // std's blanket `hashmap_random_keys` (the `#[cfg(not(any(...)))]` fallback at the bottom of
+        // the same file) must exclude cricker, or the two definitions collide; that is the next
+        // patch, and it is anchored on the wasi line because "xous" appears twice in the file.
         &sys.join("random/mod.rs"),
         "cfg_select! {",
-        "    target_os = \"cricker\" => {\n        mod cricker;\n        pub use cricker::fill_bytes;\n    }",
+        "    target_os = \"cricker\" => {\n        mod cricker;\n        pub use cricker::{fill_bytes, hashmap_random_keys};\n    }",
+    ) && patch_after(
+        &sys.join("random/mod.rs"),
+        "    all(target_os = \"wasi\", not(target_env = \"p1\")),",
+        "    target_os = \"cricker\",",
     ) && patch_after(
         &sys.join("thread/mod.rs"),
         "cfg_select! {",
@@ -1066,6 +1088,8 @@ fn initrd_riscv() -> bool {
             "broker",
             "--bin",
             "clock",
+            "--bin",
+            "entropy",
             "--target",
             RISCV_TARGET,
         ],
@@ -1138,6 +1162,9 @@ fn initrd_riscv() -> bool {
         // The clock service (milestone 51). Portable, so both archives carry it: it holds both RTC
         // drivers and the kernel tells it which one the machine has.
         ("clock", "clock"),
+        // The entropy service (milestone 56). Portable, so both archives carry it: it holds the
+        // virtio-rng driver, and the wiring tells it which bus the device came off.
+        ("entropy", "entropy"),
     ];
     let mut blobs: Vec<(&str, Vec<u8>)> = Vec::new();
     for &(archive_name, bin_name) in entries {
@@ -1339,6 +1366,7 @@ fn mkinitrd() -> bool {
         "chatty",
         "broker",
         "clock",
+        "entropy",
     ] {
         match read_stripped(&bin_elf(name)) {
             Ok(bytes) => tree.push((name, bytes)),
@@ -1832,6 +1860,11 @@ fn test() -> bool {
     // test-leg device only, on both ISA legs, and the keyboard test ASSERTS one is present rather
     // than skipping, so a leg that lost this line fails loudly instead of quietly proving nothing.
     unsafe { std::env::set_var("CRICKER_KBD", "1") };
+    // And two virtio-rng devices, one per transport (milestone 56, the entropy half), on the same
+    // terms again: a test-leg device only, both ISA legs, and the entropy tests ASSERT a device on
+    // each bus rather than skipping. Out of the benchmark boot for the same reason as the GPU: it
+    // shares the runner, and a device the instrument did not measure last time is drift.
+    unsafe { std::env::set_var("CRICKER_RNG", "1") };
     // `cargo()` only exports the env the runner needs; the test itself runs under the scanout check,
     // which drives QEMU's monitor beside the suite and proves the pixels reached the device's scanout
     // rather than only the driver's frames.

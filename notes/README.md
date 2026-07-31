@@ -232,6 +232,15 @@ in the code or the conversation doesn't make sense, it belongs here.
   orders of magnitude tighter than the forward one, the two RTC drivers found by `compatible`
   because no node-name prefix matches both boards, and the "I do not know what time it is" state
   that is the default rather than an afterthought.
+- [Entropy](entropy.md) — milestone 56's first half: `std::random` stops being splitmix64 seeded
+  from boot-relative time. One process holds a virtio-rng device; everything else holds an endpoint
+  that means "you may obtain randomness" and names no device, which is the fourth appearance of
+  attenuation by operation rather than by object. The service passes the device's bytes through and
+  computes nothing, because whitening without a one-way function is a reversible permutation that
+  obscures the claim rather than strengthening it. Also why the bytes ride in the reply instead of a
+  shared page, the fork on `std::random` (transparent, split on std's own seam, so the caller that
+  promises cryptographic strength panics rather than degrading), and the INTx-sharing finding that
+  made this driver look at the used ring before it blocks.
 - [The framebuffer contract](framebuffer-contract.md) — milestone 29, the display ladder's first
   rung: the confined virtio-gpu driver, the client that draws, and the shared-surface contract
   between them, written down so milestone 33's compositor implements against a contract. Also the

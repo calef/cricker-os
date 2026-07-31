@@ -15,6 +15,7 @@ members = [
     "crates/dma_validate",
     "crates/dtb",
     "crates/elf",
+    "crates/entropy_proto",
     "crates/frames",
     "crates/fs_proto",
     "crates/gfx_proto",
