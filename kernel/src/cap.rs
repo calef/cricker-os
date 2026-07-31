@@ -66,6 +66,11 @@ pub enum Object {
     /// at spawn" into "device access is a capability", so a userspace init can bring up drivers.
     /// Distinct from `Frame` precisely because a `Frame` maps *normal cacheable* memory, which for
     /// MMIO would let the CPU cache and reorder register accesses: catastrophic for a device.
+    ///
+    /// Constructed by the aarch64 boot (`spawn_init`, and its tests) and by riscv's
+    /// `riscv_shell_boot`, so a riscv build without `--features shell` never mints one. The
+    /// syscall path still *matches* on it in both, and a match is not a construction.
+    #[cfg_attr(all(target_arch = "riscv64", not(feature = "shell")), allow(dead_code))]
     DeviceFrame(u64),
 
     /// **A one-shot reply channel to a blocked caller** (milestone 12), named by the caller's
@@ -127,7 +132,6 @@ pub fn endpoint_cap(ep: crate::sched::EpId, rights: Rights) -> Cap {
 }
 
 /// A capability naming a hardware interrupt. `READ` lets the holder `WAIT` and `ACK` it.
-#[allow(dead_code)] // first used by the virtio driver setup in 9b
 pub fn irq_cap(intid: u32) -> Cap {
     Cap {
         object: Object::Irq(intid),
@@ -223,7 +227,9 @@ pub fn reply_cap(tid: crate::thread::Tid) -> Cap {
 /// map it read/write, `GRANT` lets it pass the page on. A freshly retyped frame gets all three;
 /// delegation narrows them (a read-only, non-lendable view is `READ` alone).
 /// A capability naming a device's MMIO page (milestone 19d.2). `WRITE` lets the holder map it
-/// (device access is read/write by nature); minted by the kernel for a known device.
+/// (device access is read/write by nature); minted by the kernel for a known device. Same
+/// disposition as [`Object::DeviceFrame`]: riscv mints one only in the `shell` boot mode.
+#[cfg_attr(all(target_arch = "riscv64", not(feature = "shell")), allow(dead_code))]
 pub fn device_frame_cap(phys: u64, rights: Rights) -> Cap {
     Cap {
         object: Object::DeviceFrame(phys),

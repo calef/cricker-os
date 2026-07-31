@@ -33,10 +33,6 @@
 //!    and without it the first thread you spawn can never be preempted — which would be a
 //!    cooperative scheduler with extra steps.
 
-// current(), voluntary_switches() and friends have no non-test caller yet. They are the API a
-// scheduler is expected to have, and milestone 7 (processes) is the first real consumer.
-#![allow(dead_code)]
-
 use crate::cpu;
 use crate::sync::{IrqSafeMutex, rank};
 use crate::thread::{Context, QuotaToken, State, Thread, Tid, switch_to};
@@ -45,7 +41,6 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 /// How many times we have actually taken the CPU away from a thread. The number that says
 /// preemption is real.
 static PREEMPTIONS: AtomicU64 = AtomicU64::new(0);
-static VOLUNTARY_SWITCHES: AtomicU64 = AtomicU64::new(0);
 
 /// The thread running on **this core** right now.
 ///
@@ -57,16 +52,6 @@ fn current_tid() -> Tid {
 
 fn set_current_tid(tid: Tid) {
     cpu::current().current.store(tid, Ordering::Relaxed);
-}
-
-/// This core's idle thread: **what runs when nothing else can.**
-///
-/// Before it existed, a moment where every thread was blocked waiting for I/O was a kernel panic.
-/// The idle thread parks the CPU in `wfi` until an interrupt makes something runnable. It is never
-/// in the ready queue: the scheduler runs it only as a last resort, so it never competes with real
-/// work. Per-CPU as of §11 step 3b, so an idle core parks in its own `wfi`.
-fn idle_tid() -> Tid {
-    cpu::current().idle.load(Ordering::Relaxed)
 }
 
 /// A synchronous IPC rendezvous point: the two wait queues and the pending-signal count.
@@ -420,6 +405,10 @@ pub fn adopt_secondary_idle() {
 /// The reschedule / migration SGI. When one core hands another a thread (via its inbox), it fires
 /// this at the target; the target's handler drains its inbox and reschedules. INTID 0, distinct
 /// from the endpoint-bound test SGIs (1 and 2). SMP step 3c.
+///
+/// aarch64 only in practice: RISC-V's twin path (`arch/riscv64/exceptions.rs`) recognises the IPI
+/// from the SBI software-interrupt cause rather than from an interrupt id, so it needs no constant.
+#[cfg_attr(target_arch = "riscv64", allow(dead_code))]
 pub const RESCHED_SGI: u32 = 0;
 
 /// Drain this core's migration inbox into its run queue, and request a reschedule.
@@ -616,29 +605,16 @@ fn try_initiate_steal() {
 /// an interrupt (the stolen thread's SGI, a spawn's SGI, or the tick), then yield so the scheduler
 /// runs whatever arrived. Never returns; it is the fallback the scheduler picks only when this
 /// core's run queue is empty.
+///
+/// Before an idle thread existed, a moment where every thread was blocked waiting for I/O was a
+/// kernel panic. It is never in the ready queue, so it never competes with real work, and it is
+/// per-CPU as of §11 step 3b, so an idle core parks in its own `wfi`.
 pub fn run_idle() -> ! {
     loop {
         try_initiate_steal();
         crate::arch::wait_for_interrupt();
         yield_now();
     }
-}
-
-/// Round-robin cursor for load-balanced spawning across the online cores (SMP).
-static NEXT_CORE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
-
-/// **Round-robin spawn** (SMP): place `f` on the next online core in strict rotation, so a batch of
-/// independent work hits *every* core, not just most of them. Delegates to [`spawn_on`].
-///
-/// Since DECISIONS §28, [`spawn`] itself spreads load (the power of two choices), so the ordinary
-/// path no longer piles onto the caller and this is not the only way to balance. What round-robin
-/// still buys over the random default is a **deterministic, every-core** distribution, which is why
-/// the SMP balance test uses it: power of two choices is near-optimal on average but does not
-/// guarantee a given core is hit in a fixed number of spawns, and the test asserts exactly that.
-pub fn spawn_balanced<F: FnOnce() + Send + 'static>(f: F) -> Option<Tid> {
-    let n = crate::smp::online_count();
-    let core = NEXT_CORE.fetch_add(1, core::sync::atomic::Ordering::Relaxed) % n;
-    spawn_on(core, f)
 }
 
 /// Spawn a thread against a **quota**: at most `budget` of these may be alive at once.
@@ -649,6 +625,20 @@ pub fn spawn_balanced<F: FnOnce() + Send + 'static>(f: F) -> Option<Tid> {
 /// tell the two apart, and does not need to: either way it could not spawn, and it must degrade
 /// rather than panic. This is the bound that stops a spawn flood or a leaked-thread pile-up from
 /// exhausting kernel memory. See notes/quotas.md and notes/security.md.
+///
+/// # It has no caller today, and that is worth saying plainly
+///
+/// Its one caller was the kernel-wired `shell_service`'s spawn service, which DECISIONS §28 retired
+/// and milestone 41 deleted. Nothing in the kernel spawns against a quota now, because **the bound
+/// moved**: a userspace process spawns out of its own untyped budget (§10, §16), so the budget *is*
+/// the quota and it is enforced by retyping rather than by a counter. This function is the bound for
+/// *kernel* threads, and no kernel thread is currently spawned in a loop by anything untrusted.
+///
+/// Kept rather than deleted because removing a documented safety mechanism is a design decision, not
+/// dead-code triage, and notes/quotas.md and notes/security.md both describe it. Allowed
+/// unconditionally and on purpose (DECISIONS §38, disposition 3): there is no configuration in which
+/// something calls it, and pretending otherwise with a `cfg` predicate would be the dishonest option.
+#[allow(dead_code)]
 pub fn spawn_with_quota<F: FnOnce() + Send + 'static>(
     budget: &'static AtomicU32,
     f: F,
@@ -699,7 +689,6 @@ pub fn spawn_with_quota<F: FnOnce() + Send + 'static>(
 
 /// Give up the CPU voluntarily.
 pub fn yield_now() {
-    VOLUNTARY_SWITCHES.fetch_add(1, Ordering::Relaxed);
     schedule();
 }
 
@@ -1671,18 +1660,6 @@ pub fn grant_at(slot: u64, cap: crate::cap::Cap) -> Result<u64, crate::cap::Erro
         .insert_at(slot, cap)
 }
 
-/// Hand a **specific** thread a capability. Used to wire up a scenario before the thread runs.
-pub fn grant_to(tid: Tid, cap: crate::cap::Cap) -> Result<u64, crate::cap::Error> {
-    let mut guard = SCHED.lock();
-    let sched = guard.as_mut().ok_or(crate::cap::Error::NoFreeSlot)?;
-    sched
-        .threads
-        .get_mut(tid)
-        .ok_or(crate::cap::Error::NoFreeSlot)?
-        .cspace
-        .insert(cap)
-}
-
 /// **Retype a TCB out of `region`** (milestone 19c.3): an embryo thread, page-resident in a
 /// page of the creator's own untyped, in the thread table but in no queue and not runnable.
 /// Returns its Tid (what an `Object::Tcb` capability carries) or `None` if the region is out of
@@ -2195,16 +2172,23 @@ pub fn endpoint_waiting_senders(ep: EpId) -> usize {
     }
 }
 
+/// **The number that says preemption is real**, read by the preemption tests and printed by the
+/// milestone tour.
+///
+/// The alternate boot modes (`shell`, `bench`, `initboot`) each compile the tour out and run no
+/// tests, so in those three configurations this genuinely has no caller. That is a property of the
+/// boot mode, not evidence the counter is dead, which is why the allow is conditioned on exactly
+/// those features rather than written unconditionally.
+#[cfg_attr(
+    any(feature = "shell", feature = "bench", feature = "initboot"),
+    allow(dead_code)
+)]
 pub fn preemptions() -> u64 {
     PREEMPTIONS.load(Ordering::Relaxed)
 }
 
 pub fn count_preemption() {
     PREEMPTIONS.fetch_add(1, Ordering::Relaxed);
-}
-
-pub fn voluntary_switches() -> u64 {
-    VOLUNTARY_SWITCHES.load(Ordering::Relaxed)
 }
 
 pub fn is_running() -> bool {

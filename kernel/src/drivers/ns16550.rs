@@ -31,8 +31,6 @@ const FCR_ENABLE_CLEAR: u8 = 0b0000_0111;
 
 // Line Status bit: Transmit Holding Register Empty (room for another byte).
 const LSR_THRE: u8 = 0b0010_0000;
-// Line Status bit: Data Ready (a received byte is waiting in the RX buffer).
-const LSR_DR: u8 = 0b0000_0001;
 // Interrupt Enable bit: Enable Received Data Available Interrupt (fires while the RX FIFO is nonempty).
 const IER_ERBFI: u8 = 0b0000_0001;
 
@@ -90,21 +88,12 @@ impl Ns16550 {
 
     /// Turn on the receive-data-available interrupt. After this, the UART raises its interrupt line
     /// (into the PLIC) whenever a byte sits unread in the RX buffer. It is **level-triggered**: the
-    /// line stays asserted until the byte is read, so the handler must [`read_byte`](Self::read_byte)
-    /// to quiet it before completing the interrupt, or it re-fires immediately. The console still
-    /// polls for transmit; this only adds the receive interrupt.
+    /// line stays asserted until the byte is read, so *something* must read the byte to quiet it
+    /// before completing the interrupt, or it re-fires immediately. That something is the userspace
+    /// input driver, which holds this device's registers as a capability; the kernel arms the
+    /// interrupt and reads nothing. The console still polls for transmit.
     pub fn enable_rx_interrupt(&self) {
         self.write(IER, IER_ERBFI);
-    }
-
-    /// Read a received byte if one is waiting, else `None`. Reading the buffer clears Data Ready and
-    /// so quiets the receive interrupt. Non-blocking: it never spins.
-    pub fn read_byte(&self) -> Option<u8> {
-        if self.read(LSR) & LSR_DR != 0 {
-            Some(self.read(THR)) // THR offset (0) reads as the Receive Buffer Register
-        } else {
-            None
-        }
     }
 }
 

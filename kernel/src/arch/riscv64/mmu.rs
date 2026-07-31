@@ -413,11 +413,18 @@ pub fn deactivate_user() {
 
 /// Whether U-mode may read `va` in the installed address space. RISC-V has no address-translation
 /// instruction like aarch64's `AT S1E0R`, so we walk the current tables and check the U bit.
+///
+/// No syscall in the ABI dereferences a user pointer, so this has no caller in the running kernel;
+/// see the aarch64 twin for the full disposition. It is proved rather than merely allowed, by
+/// `the_page_tables_say_u_mode_cannot_read_the_kernels_memory` (milestone 41, which is when this
+/// ISA got the confused-deputy test aarch64 had had all along).
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn user_can_read(va: u64) -> bool {
     translate_user(va).is_some_and(|(_, f)| f.is_user_accessible())
 }
 
-/// Whether U-mode may write `va`: user-accessible and writable.
+/// Whether U-mode may write `va`: user-accessible and writable. Same disposition, same test.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn user_can_write(va: u64) -> bool {
     translate_user(va).is_some_and(|(_, f)| f.is_user_accessible() && f.is_writable())
 }
@@ -596,6 +603,10 @@ pub fn share_kernel_half(root: u64) {
 }
 
 /// Print a human summary of the kernel's mapping (the boot tour). The MMU step.
+///
+/// The RISC-V boot tour is its only caller. A test build compiles the tour out, and so does the
+/// `bench` boot mode, which diverges into `bench::run` before it.
+#[cfg_attr(any(test, feature = "bench"), allow(dead_code))]
 pub fn print_summary() {
     unimplemented!("riscv mapping summary: the MMU step")
 }

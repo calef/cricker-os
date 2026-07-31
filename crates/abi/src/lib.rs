@@ -65,7 +65,6 @@ pub const CSPACE_SLOTS: u64 = 16;
 /// Milestone 8 removed the kernel-served `Console` object (the console became a userspace server
 /// reached by an `Endpoint`). This constant is kept so the ABI's history is legible, but nothing
 /// in the kernel dispatches it any more.
-#[allow(dead_code)]
 pub mod console {
     /// `invoke(cap, WRITE, ptr, len, _)` -> bytes written.
     ///
