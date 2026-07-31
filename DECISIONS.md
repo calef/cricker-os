@@ -2825,6 +2825,79 @@ filesystem are different jobs, and the initrd wants exactly what crickerfs is. I
   Interesting and not recommended: file-data performance would be poor and the novelty would need
   defending for no thesis benefit. Recorded because the crash-consistency argument for it is real.
 
+### Amendment (2026-07-30): the xattr requirement, measured rather than argued
+
+Milestone 55 surfaced a requirement §34 never considered: Time Machine over SMB wants **extended
+attributes** (Samba's `streams_xattr`), and RedoxFS has none. Chris's read was that this suggested the
+choice was wrong rather than something to patch around, and **the strongest half of that is correct**:
+extending RedoxFS's on-disk format would destroy two of the four reasons for choosing it, since it
+would no longer be the filesystem Redox actually runs and every pin bump would pay for the divergence.
+"We will patch xattrs in" is doubling down and should not have been offered as a co-equal option.
+
+**What the requirement is not, stated precisely:** the application is not blocked. Samba's
+`fruit:metadata = netatalk` keeps the identical Apple metadata in AppleDouble sidecar files and needs
+no xattrs at all. So Time Machine runs on RedoxFS today; what is unavailable is the clean way to do
+it. The preference for xattrs is right (we will want them anyway) but there is no time pressure, and
+that distinction is what let this be decided by measurement.
+
+**The check that decided it, and its result.** The question was whether a layer *above* the filesystem
+could be crash-atomic, since a rename must move a file and its metadata together or a crash leaves
+them inconsistent (§42's territory). **RedoxFS groups arbitrary mutations into one transaction**:
+`fs.tx(|tx| …)` exposes `create_node`, `write_node`, `rename_node`, `truncate_node` and `remove_node`
+on one `Transaction`, committed together, and `fs-server` already relies on it ("existence is checked
+inside the same transaction as the create"). So **the layer is safe, the format stays unforked, and
+§34 stands.**
+
+The layer is also the *anti*-lock-in option rather than the sunk-cost one: xattrs implemented in the
+FS server work over **any** backing filesystem, so they decouple the requirement from this decision.
+Normally such a layer is bypassable and therefore worthless; here nothing can bypass it, because all
+access goes through `fs_proto`. That is a capability-system property doing real work.
+
+**Also found, and it corrects a claim made in milestone 55:** `rename_node` and
+`rename_node_no_replace` already exist in RedoxFS. `fruit:posix_rename` and §42's rename work are
+blocked on `fs_proto` lacking the verb, **not** on the engine.
+
+### Amendment (2026-07-30): ZFS and XFS, and why RedoxFS is better-shaped than its size suggests
+
+Chris asked whether OpenZFS is best in class. **For a backup server, yes** — end-to-end checksums with
+*repair*, snapshots, `send`/`recv`, scrub, no RAID write hole. And it is unavailable to us, for a
+reason worth distinguishing from "too big": at roughly 400k lines of C it would *be* the project, but
+more decisively **it is not a component you confine, it is a subsystem you host.** OpenZFS needs a
+Solaris Porting Layer (kmem, mutexes, condvars, taskqs, VFS integration, page cache); §31's seam
+confines a narrow interface, and ZFS's interface to its host kernel is enormous. Its ARC also expects
+gigabytes where the VisionFive 2 has 4 to 8, and CDDL is worth checking against our licence posture
+before publication.
+
+**XFS: excellent, aimed at another problem, and weakest exactly where this application cares.** XFS v5
+checksums **metadata only**; file data is unprotected, so bit rot in a backup is invisible until
+restore. Its strengths (allocation groups for parallel metadata, extents, large-file throughput) target
+a workload we do not have. It is journaling rather than copy-on-write, has no snapshots, cannot shrink,
+and is ~100k lines of C more entangled with Linux VFS than ext4.
+
+**The finding that reframes the comparison.** RedoxFS is architecturally ZFS-shaped where it counts:
+copy-on-write, transactions, and **checksums stored in the parent `BlockPtr` and verified on every
+`read_block`** (seahash recomputed, `EIO` on mismatch). The hash living in the *pointer* rather than
+the block makes it a Merkle tree, which is ZFS's design and is strictly stronger than a header
+checksum, because a header checksum cannot catch a misdirected write. It also encrypts. **So RedoxFS
+beats XFS on data integrity and matches ZFS's integrity architecture, at a fraction of the size.**
+
+What it genuinely lacks: **snapshots**, self-healing, scrub, compression, RAID-Z.
+
+**And on a single disk, ZFS's headline advantage largely evaporates**, which is the observation that
+should settle the anxiety. Self-healing requires redundancy; with one drive ZFS also only *detects*
+corruption. Chris's topology is a single USB drive, so the real gap is snapshots, scrub and
+compression rather than integrity. Scrub is buildable on what exists today: read every block, let the
+checksums verify themselves, report failures. That is a small program, not a filesystem feature.
+
+**So the direction is snapshots, not migration.** Copy-on-write makes them tractable, and it is the one
+missing property that matters for backups. If ZFS-class *redundancy* is ever wanted, that is a
+multi-disk story and nothing within reach provides it.
+
+**The pattern across the whole survey**, now covering ext2, ext4, XFS, btrfs, ZFS, F2FS, FAT and
+littlefs: every mature filesystem with the properties we want is a large C codebase entangled with a
+Unix kernel. That is not a coincidence to route around; it is why the choice was a small Rust
+filesystem with the right architecture rather than a large one with more features.
+
 ### The alternative that could supersede this, and is not a filesystem choice
 
 **A read-only measured root plus a writable layer.** §22 already gives us measured boot, so hashing a
