@@ -16,6 +16,11 @@ asid = { version = "0.1.0", path = "../crates/asid" }
 # terminal was sent and compare the framebuffer pixel for pixel, so no process grades its own
 # homework and the picture is a value rather than a screenshot somebody eyeballed once.
 bitfont = { version = "0.1.0", path = "../crates/bitfont" }
+# The calendar (milestone 51). The kernel does no date arithmetic of its own; its `date` tests
+# *parse back* what the command printed and compare the instant it names against the wall clock the
+# kernel computes straight from the clock page. Same discipline as bitfont/vt above: the test
+# predicts from the shared definition rather than keeping a second copy of it.
+calendar = { version = "0.1.0", path = "../crates/calendar" }
 caps = { version = "0.1.0", path = "../crates/caps" }
 # The wall-clock contract (milestone 51, DECISIONS §43). The kernel discovers the RTC by
 # `compatible` and names the binding with these constants, and its clock tests read the shared page
