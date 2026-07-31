@@ -201,6 +201,14 @@ in the code or the conversation doesn't make sense, it belongs here.
   Phase 2 adds **per-file grants**: a caretaker process narrowing a directory capability to one file
   in one direction, proven by a read-only and a writable attacker, and why the second one is what
   makes the first mean anything.
+- [Live component replacement](live-replacement.md) — milestone 23, the flagship: a running
+  component swapped under a client that is talking to it. Why there is **no broker in the fast path**
+  (the endpoint is the stable name, so the swap costs nothing and the kernel's own sender queue
+  buffers the down window), why revoking a *device* means taking it back rather than destroying it,
+  the drain that is just a message travelling in band, and the two witnesses in two address spaces
+  that say the client's stream was unbroken. The replacement is written in C. Also the latency
+  ladder's two built rungs with the number that makes "opt-in, never the default" a rule, and an
+  honest list of what state handoff, manifests and hung components still need.
 - [The program manifest](program-manifest.md) — milestone 31: a program's declared endowment,
   checked against the command at the prompt so a mismatch is a legible refusal, not a mystery hang.
   SHILL's contract shrunk to phase 1, and milestone 23's component contract in embryo.

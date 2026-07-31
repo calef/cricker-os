@@ -97,7 +97,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 34 | NOT-STARTED | GPU acceleration via virtio-gpu 3D (the display ladder's rung four) | how every VM gets a GPU without a hardware driver |
 | 25 | PARTIAL | Cross-OS performance comparison (extends 21) | turns perf claims into cross-OS numbers |
 | 22 | PARTIAL | Trusted init: verify it, and shrink what a broken one can do | closes the thesis's own soft spot: init is the privileged *unverified* component |
-| 23 | NOT-STARTED | A capability-routed component OS with live replacement | the flagship payoff, and a product ambition |
+| 23 | PARTIAL | A capability-routed component OS with live replacement | the flagship payoff, and a product ambition |
 | 35 | BUILT | Prove the DMA-confinement boundary (extends 18) | closes the one isolation boundary we test instead of prove |
 | 36 | BUILT | A foreign-language component, seam first (spike; feeds 29 and 23) | the thesis in one assertion: unverified foreign code, confined and restarted |
 | 37 | NOT-STARTED | Prove RedoxFS's crash consistency (DECISIONS §34, condition 1) | decides whether §34's "primary filesystem" label is earned |
@@ -417,6 +417,30 @@ that restart policy wants to be a rich userspace thing, not a kernel reflex).
 **In brief.** Every userspace component (driver, server, app) is a swappable, vendor-shippable unit behind a stable contract; operators replace them live, no reboot. The console hot-swap is instance one; a durable queue-broker decouples component lifecycles (opt-in per channel, for latency)
 
 **Why it matters.** **the flagship payoff and a product ambition:** competing vendor components, confined by the kernel and swapped live; the verified core is the one fixed thing
+
+**Status (2026-07-30): the mechanism is built and proven on both ISAs; the generalisations below are
+not.** DECISIONS §39, notes/live-replacement.md. What landed: the four steps, an unprivileged
+operator (`swapd`) that runs them, a client (`chatty`) that talks across the swap and is its own
+witness, an attacker holding the client's exact capabilities that cannot become the server, a control
+that must fail (the outgoing instance reads a UART register after the revoke and faults, at the
+device's own page, with the kernel as the witness), and a replacement written in **C** over §31's
+seam, so what held across the swap is the contract rather than a recompile. Both rungs of the ladder
+that this milestone specified are built (`brokerd` is the opt-in one), and priced: `broker_rtt`.
+
+**Three things the build settled, all in §39.** The block imagined a forwarding *process* as the
+broker; it does not need one, because §12's endpoint-only naming already makes the endpoint object
+the stable name, so the swap costs **zero** in steady state and the kernel's sender queue buffers the
+down window. The block's step order (start the new server, then revoke) does not survive contact:
+revocation is by physical page, so the endowment has to move to the far side of the revoke, though
+the *build* does stay first. And revoking a **device** had to mean take-back rather than destroy,
+which is the "deferred CDT finally earns its keep" this block predicted, at one level of the tree.
+
+**What remains, and it is the part the block itself calls the real engineering:** state handoff
+(the component here is near-stateless, which is what makes kill-and-replace sufficient), a component
+manifest (endowments are literals in the operator's source), dependency-aware orchestration, and the
+hung-component case (§32's watchdog). Also the console proper: the component swapped owns the real
+UART and is shaped like a console server, but `termd`/`vterm`/`compd` are not themselves swapped,
+because the interactive stack is not running under the test harness.
 
 **The destination the design points at, and a product ambition.** A client names an *endpoint*,
 never a peer (the milestone 7-8 decision), so a component's identity is invisible to the code that
