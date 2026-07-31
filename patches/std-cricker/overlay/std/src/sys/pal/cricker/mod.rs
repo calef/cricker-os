@@ -34,6 +34,11 @@ pub(crate) mod fsproto;
 // publish half and the propose half belong to the other parties; hence the allow.
 #[allow(dead_code)]
 pub(crate) mod clockproto;
+// The entropy contract (DECISIONS §44): the request packing and the reply's byte count, generated
+// verbatim from `crates/entropy_proto/src/lib.rs` by the same xtask step. The random PAL
+// (`sys/random`) is a client of it; `READY` belongs to the service and its spawner, hence the allow.
+#[allow(dead_code)]
+pub(crate) mod entropyproto;
 pub(crate) mod rt;
 
 use crate::io;

@@ -87,12 +87,21 @@ pub const VIRTIO_GPU_MODERN: u16 = 0x1050;
 /// space to tell them apart. We attach only a keyboard.
 pub const VIRTIO_INPUT_MODERN: u16 = 0x1052;
 
+/// The modern virtio-rng device id (0x1040 + device type 4), milestone 56's entropy source, and its
+/// transitional twin. Unlike the GPU and the keyboard this one **does** have a legacy id: virtio-rng
+/// is device type 4, early enough to have been allocated a slot in the 0x1000..0x103f space. We
+/// drive modern only, so the legacy id is here for the same reason blk's and net's are, to let
+/// enumeration say "found an RNG, but it is transitional" rather than "no RNG".
+pub const VIRTIO_RNG_MODERN: u16 = 0x1044;
+pub const VIRTIO_RNG_TRANSITIONAL: u16 = 0x1005;
+
 /// The virtio **device type** numbers, as the virtio-mmio `DeviceID` register reports them and as
 /// the PCI ids above encode them (`0x1040 + type`). The kernel carries the type through the PCI
 /// transport so a driver's `DeviceID` read answers truthfully on either bus; see
 /// `kernel/src/virtio.rs`.
 pub const VIRTIO_TYPE_NET: u32 = 1;
 pub const VIRTIO_TYPE_BLOCK: u32 = 2;
+pub const VIRTIO_TYPE_ENTROPY: u32 = 4;
 pub const VIRTIO_TYPE_GPU: u32 = 16;
 pub const VIRTIO_TYPE_INPUT: u32 = 18;
 
@@ -647,12 +656,13 @@ mod tests {
 
     /// **A modern virtio PCI device id is `0x1040 + the virtio device type`**, which is what lets
     /// the kernel hand a driver a truthful `DeviceID` over the PCI transport instead of a
-    /// hardcoded one. The three ids we drive are pinned against that derivation, so a typo in one
+    /// hardcoded one. Every id we drive is pinned against that derivation, so a typo in one
     /// of them is a build-time-cheap test failure rather than a device we quietly never find.
     #[test]
     fn a_modern_virtio_pci_id_is_0x1040_plus_the_device_type() {
         assert_eq!(VIRTIO_NET_MODERN as u32, 0x1040 + VIRTIO_TYPE_NET);
         assert_eq!(VIRTIO_BLK_MODERN as u32, 0x1040 + VIRTIO_TYPE_BLOCK);
+        assert_eq!(VIRTIO_RNG_MODERN as u32, 0x1040 + VIRTIO_TYPE_ENTROPY);
         assert_eq!(VIRTIO_GPU_MODERN as u32, 0x1040 + VIRTIO_TYPE_GPU);
         assert_eq!(VIRTIO_INPUT_MODERN as u32, 0x1040 + VIRTIO_TYPE_INPUT);
     }

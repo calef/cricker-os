@@ -4177,6 +4177,370 @@ mod clock_tests {
     }
 }
 
+/// **The entropy service** (milestone 56, DECISIONS §44): a virtio-rng device, its DMA page, its
+/// interrupt, and the request endpoint clients hold, in one confined userspace process.
+///
+/// The kernel's whole part in randomness is here and it is smaller than the clock's: find an RNG on
+/// whichever bus the caller named, confine it to one DMA page, and hand the service the transport,
+/// the interrupt, and two endpoints. **The kernel never reads the device and holds no entropy of
+/// its own.** Everything after the spawn is userspace agreeing with userspace over
+/// `entropy_proto`.
+///
+/// The authority split is the point, and it is one sentence: the service holds the device; a client
+/// holds an endpoint that means *"you may obtain randomness"*. Those are different powers, and only
+/// the second one is safe to hand around. A client cannot program the queue, cannot map the page
+/// the device writes into, and cannot ask for anything the service did not ask on its behalf.
+///
+/// Arch-neutral: one portable binary, both transports, both ISAs (DECISIONS §19).
+#[cfg_attr(not(test), allow(dead_code))] // the tests and std_service are its callers
+pub mod entropy_service {
+    use super::*;
+    use crate::cap::{Rights, endpoint_cap, irq_cap, virtio_cap};
+    use crate::sched::EpId;
+
+    /// Where the service maps its DMA page. Must match user/src/entropy.rs.
+    const DMA_VA: u64 = 0x0000_0000_0090_0000;
+
+    /// One page, and no more. The rings take 0x16e of it and the buffer 0x100; a device whose whole
+    /// job is to write 256 bytes at a time has no business holding a larger grant, and "a device
+    /// gets the grant it needs and no more" is the standing rule in both directions.
+    const DMA_FRAMES: u64 = 1;
+
+    /// Which bus to take the RNG from. Both `virt` machines offer both, and the milestone-56 test
+    /// runs the same binary over each in turn, because a driver that works on one transport and
+    /// silently not the other is exactly what DECISIONS §18's seam exists to prevent.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum Bus {
+        Mmio,
+        Pci,
+    }
+
+    pub struct Wiring {
+        /// The service's readiness endpoint, and **only on the call that did the wiring**: the
+        /// report is sent once and whoever asked first has taken it.
+        pub ready: Option<EpId>,
+        /// The request endpoint. **This is the capability a client is given**, with WRITE; the
+        /// service holds READ. Nothing about it names the device.
+        pub request: EpId,
+        /// Which bus this instance took its device from, so a failure names it.
+        pub bus: Bus,
+        /// True when the device sat behind an IOMMU, which on this machine means the PCIe wiring.
+        pub confined_by_iommu: bool,
+    }
+
+    /// **One entropy service per device per boot**, for the same reason the FS service is wired
+    /// once: a second service on the same device would reset it and reprogram its queue out from
+    /// under the first, and the first would then wait forever for a completion the device was
+    /// never told to make. Whoever asks first pays for the wiring and receives the readiness
+    /// endpoint; later callers get the same request endpoint and `None` for it.
+    ///
+    /// Plain atomics rather than a lock: the only writer is the boot/test thread that calls this.
+    static WIRED: [core::sync::atomic::AtomicBool; 2] = [
+        core::sync::atomic::AtomicBool::new(false),
+        core::sync::atomic::AtomicBool::new(false),
+    ];
+    static REQUEST: [core::sync::atomic::AtomicU64; 2] = [
+        core::sync::atomic::AtomicU64::new(0),
+        core::sync::atomic::AtomicU64::new(0),
+    ];
+    static CONFINED: [core::sync::atomic::AtomicBool; 2] = [
+        core::sync::atomic::AtomicBool::new(false),
+        core::sync::atomic::AtomicBool::new(false),
+    ];
+
+    impl Bus {
+        const fn index(self) -> usize {
+            match self {
+                Bus::Mmio => 0,
+                Bus::Pci => 1,
+            }
+        }
+    }
+
+    /// Wire the entropy service on `bus` if this boot has not already, else hand back what is
+    /// already running. `None` means there is no virtio-rng function on that bus.
+    pub fn ensure(image: &'static [u8], bus: Bus) -> Option<Wiring> {
+        use core::sync::atomic::Ordering;
+
+        let i = bus.index();
+        if WIRED[i].load(Ordering::Acquire) {
+            return Some(Wiring {
+                ready: None,
+                request: REQUEST[i].load(Ordering::Relaxed),
+                bus,
+                confined_by_iommu: CONFINED[i].load(Ordering::Relaxed),
+            });
+        }
+        let w = start(image, bus)?;
+        REQUEST[i].store(w.request, Ordering::Relaxed);
+        CONFINED[i].store(w.confined_by_iommu, Ordering::Relaxed);
+        WIRED[i].store(true, Ordering::Release);
+        Some(w)
+    }
+
+    /// **Wire and spawn the entropy service.** `None` if `bus` has no virtio-rng function on it.
+    fn start(image: &'static [u8], bus: Bus) -> Option<Wiring> {
+        // The two buses differ in exactly two things: where the registers are, and whether there is
+        // a requester id for the IOMMU to confine. Everything below is shared, which is the §18
+        // seam doing its job.
+        let (transport, intid, rid) = match bus {
+            Bus::Mmio => {
+                let d = crate::virtio::find_entropy_device()?;
+                (
+                    crate::virtio::Transport::Mmio {
+                        mmio_phys: d.mmio_phys,
+                    },
+                    d.intid,
+                    None,
+                )
+            }
+            Bus::Pci => {
+                let d = crate::pci::find_rng_device()?;
+                (crate::virtio::Transport::pci(&d), d.intid, Some(d.rid))
+            }
+        };
+
+        let dma = crate::memory::alloc_contiguous(DMA_FRAMES as usize)
+            .expect("no DMA region for the entropy service")
+            .addr();
+        // SAFETY: a fresh frame, direct-mapped, owned by nobody else. Zeroed so no stale descriptor
+        // is visible to the device, and so a buffer the service has not filled yet reads as zeros
+        // rather than as somebody's old page contents pretending to be entropy.
+        unsafe {
+            core::ptr::write_bytes(
+                mmu::phys_to_virt(dma) as *mut u8,
+                0,
+                (DMA_FRAMES * FRAME_SIZE) as usize,
+            );
+        }
+
+        let irq_ep = crate::sched::create_endpoint();
+        crate::sched::bind_irq(intid, irq_ep);
+        crate::arch::irq::enable(intid);
+
+        let confined_by_iommu = rid.is_some() && crate::iommu::active();
+        let vid = crate::virtio::register(transport, dma, DMA_FRAMES * FRAME_SIZE, rid);
+
+        let ready = crate::sched::create_endpoint();
+        let request = crate::sched::create_endpoint();
+
+        let maps = [Mapping {
+            va: DMA_VA,
+            phys: dma,
+            flags: Flags::user_data(),
+        }];
+        crate::sched::spawn(move || {
+            run(
+                image,
+                Spawn {
+                    arg0: 0,
+                    arg1: dma, // the DMA region's PHYSICAL base: descriptors speak physical
+                    arg2: 0,
+                    grants: &[
+                        endpoint_cap(request, Rights::READ), // slot 0: RECV client requests
+                        irq_cap(intid),                      // slot 1: the completion interrupt
+                        virtio_cap(vid),                     // slot 2: the confined transport
+                        endpoint_cap(ready, Rights::WRITE),  // slot 3: signal readiness once
+                    ],
+                    maps: &maps,
+                },
+            )
+        })
+        .expect("could not spawn the entropy service");
+
+        Some(Wiring {
+            ready: Some(ready),
+            request,
+            bus,
+            confined_by_iommu,
+        })
+    }
+
+    impl Wiring {
+        /// Take the startup report: `[READY, first_refill_ok, bytes_in_hand]`, or a `0xDEAD_..`
+        /// word whose low byte names the bring-up step that failed. `None` when this caller was not
+        /// the one that wired the service, since the report is sent once.
+        pub fn await_ready(&self) -> Option<[u64; 5]> {
+            self.ready.map(crate::sched::ipc_recv)
+        }
+
+        /// **Play a client**: ask for `n` random bytes over the request endpoint and copy out what
+        /// arrives. Returns how many landed in `out`. This is the whole of a client's power, and
+        /// the kernel deliberately exercises it through the same endpoint a userspace client would
+        /// hold rather than reaching into the service.
+        pub fn get(&self, n: u64, out: &mut [u8]) -> usize {
+            let r = crate::sched::ipc_call(
+                self.request,
+                [entropy_proto::req(entropy_proto::GET, n), 0],
+            );
+            match entropy_proto::delivered(r[0]) {
+                Some(count) => entropy_proto::take(count, r[1], out),
+                None => 0,
+            }
+        }
+    }
+}
+
+/// **Randomness that an adversary cannot predict** (milestone 56, DECISIONS §44).
+///
+/// Not arch-gated and not transport-gated: the same binary, the same contract, the same assertions,
+/// over virtio-mmio and over PCIe on both ISAs, because a random source that works on one bus is
+/// not a random source (§18, §19).
+///
+/// What these prove that nothing else would: that bytes from a *device* reach a userspace client
+/// through a capability that names no device, that consecutive draws are not the same bytes (a
+/// stuck source, a re-served buffer, or a driver reading a stale ring all present as repeats), and
+/// that the count in a reply is honoured so a caller cannot be handed zeros it mistakes for entropy.
+#[cfg(test)]
+mod entropy_tests {
+    use super::*;
+    use entropy_service::Bus;
+
+    /// Reach the service on `bus`, wiring it if this is the first test to ask, and check its
+    /// startup report when this call is the one that wired it.
+    fn start(bus: Bus) -> entropy_service::Wiring {
+        let image = program("entropy").expect("no entropy program in the initrd archive");
+        let w = entropy_service::ensure(image, bus).unwrap_or_else(|| {
+            panic!(
+                "no virtio-rng device on the {bus:?} bus: is CRICKER_RNG missing from the test leg, \
+                 or the -device virtio-rng line from the runner?"
+            )
+        });
+        if let Some(report) = w.await_ready() {
+            assert_eq!(
+                report[0],
+                entropy_proto::READY,
+                "the entropy service did not come up on {bus:?} (it reported {:#x}; a 0xDEAD_.. \
+                 word's low byte names the step, see user/src/entropy.rs)",
+                report[0],
+            );
+            assert_eq!(
+                report[1], 1,
+                "the entropy service came up on {bus:?} but the device gave it no bytes at all",
+            );
+        }
+        w
+    }
+
+    /// Draw `WORDS` eight-byte words through the request endpoint, asserting every draw is full.
+    /// Deliberately more than one bufferful (the service fetches 256 bytes per device request), so
+    /// this crosses the refill boundary and a cursor that wrapped instead of refilling shows up as
+    /// a repeat below.
+    const WORDS: usize = 64;
+
+    fn draw(w: &entropy_service::Wiring) -> [u64; WORDS] {
+        let mut words = [0u64; WORDS];
+        for (i, slot) in words.iter_mut().enumerate() {
+            let mut buf = [0u8; 8];
+            let n = w.get(8, &mut buf);
+            assert_eq!(
+                n, 8,
+                "draw {i} of {WORDS} on {:?} returned {n} bytes, not 8: the device ran dry, or the \
+                 service failed to refill",
+                w.bus,
+            );
+            *slot = u64::from_le_bytes(buf);
+        }
+        words
+    }
+
+    /// Every word distinct, and none of them zero. With a real source a collision among 64 draws is
+    /// a 2^-58 event, so a failure here is a bug rather than bad luck: a stuck device, a buffer
+    /// served twice, or a used ring the driver never re-read all present exactly this way.
+    fn assert_unpredictable(words: &[u64; WORDS], what: &str) {
+        for (i, &a) in words.iter().enumerate() {
+            assert_ne!(
+                a, 0,
+                "{what}: draw {i} is all zeros, which is the DMA page unwritten"
+            );
+            for (j, &b) in words.iter().enumerate().skip(i + 1) {
+                assert_ne!(a, b, "{what}: draws {i} and {j} are identical ({a:#018x})");
+            }
+        }
+    }
+
+    /// **The headline, over virtio-mmio.** A client that holds one endpoint and no device gets
+    /// bytes off a real random-number generator, 512 of them, across a refill, all different.
+    #[test_case]
+    fn a_client_obtains_unpredictable_bytes_from_a_virtio_rng_over_mmio() {
+        let w = start(Bus::Mmio);
+        let words = draw(&w);
+        assert_unpredictable(&words, "mmio");
+    }
+
+    /// **The same service, the same binary, over PCIe** (DECISIONS §18), and behind the IOMMU while
+    /// it is there. An entropy source's buffer is the one page in memory whose contents must not be
+    /// guessable, so an unconfined device writing it is worth asserting against rather than hoping.
+    #[test_case]
+    fn a_client_obtains_unpredictable_bytes_from_a_virtio_rng_over_pcie() {
+        let w = start(Bus::Pci);
+        assert!(
+            w.confined_by_iommu,
+            "the PCIe RNG is present but not behind the IOMMU: the buffer the device writes the \
+             system's key material into is unconfined (is iommu_platform=on missing from the \
+             runner's virtio-rng-pci line?)",
+        );
+        let words = draw(&w);
+        assert_unpredictable(&words, "pcie");
+    }
+
+    /// **Two independent sources do not agree**, which is what says the bytes came from the devices
+    /// rather than from anything shared underneath them (a fixed seed, a counter, the DMA page's
+    /// previous contents). Also the cheapest proof that two services can hold two devices at once.
+    #[test_case]
+    fn two_entropy_services_on_two_devices_do_not_produce_the_same_bytes() {
+        let mmio = start(Bus::Mmio);
+        let pci = start(Bus::Pci);
+        let a = draw(&mmio);
+        let b = draw(&pci);
+        for (i, (&x, &y)) in a.iter().zip(b.iter()).enumerate() {
+            assert_ne!(
+                x, y,
+                "draw {i} is identical on both devices ({x:#018x}): these are not two sources",
+            );
+        }
+    }
+
+    /// **The count in a reply is the truth about the reply.** A short request gets exactly that
+    /// many bytes and leaves the rest of the caller's buffer alone, so a caller cannot be handed
+    /// padding it mistakes for entropy; an oversized one is clamped and answered rather than
+    /// refused; and an opcode the service does not implement is answered with nothing rather than
+    /// killing the service, which the draw afterwards proves.
+    #[test_case]
+    fn a_reply_never_delivers_more_bytes_than_it_says() {
+        let w = start(Bus::Mmio);
+
+        let mut buf = [0xAAu8; 8];
+        assert_eq!(w.get(3, &mut buf), 3, "asked for three bytes");
+        assert_eq!(
+            &buf[3..],
+            &[0xAA; 5],
+            "the service wrote past the count it reported",
+        );
+
+        let mut big = [0u8; 8];
+        assert_eq!(
+            w.get(200, &mut big),
+            entropy_proto::MAX_BYTES as usize,
+            "an oversized request should be clamped and answered, not refused",
+        );
+
+        let r = crate::sched::ipc_call(w.request, [entropy_proto::req(0xff, 8), 0]);
+        assert_eq!(
+            r[0],
+            entropy_proto::NO_ENTROPY,
+            "an unknown opcode should be answered with no bytes",
+        );
+
+        let mut after = [0u8; 8];
+        assert_eq!(
+            w.get(8, &mut after),
+            8,
+            "the service stopped serving after an unknown opcode",
+        );
+    }
+}
+
 /// Milestone 11: hand a process an untyped budget and let it spend it.
 #[cfg_attr(not(all(test, target_arch = "aarch64")), allow(dead_code))] // the tour and the aarch64 tests
 pub mod untyped_service {
@@ -5560,6 +5924,12 @@ pub mod std_service {
     const CLOCK_PAGE_STD: u64 = 0x1200_0000;
     const CLOCK_SLOT: u64 = 5;
 
+    /// The entropy service's request endpoint (milestone 56). Must match the std PAL's
+    /// `rt::ENTROPY_SLOT`. **An endpoint, and no mapping**: unlike the clock, whose read authority
+    /// IS a page, randomness is obtained by asking, so the whole grant is one endpoint that names
+    /// no device.
+    const ENTROPY_SLOT: u64 = 6;
+
     /// The heap high-water for the demo's Vec/String/HashMap workout plus std's own runtime
     /// allocations and the heap's page tables is well under 1 MiB; 256 pages is comfortable, and
     /// the initial region only needs to be contiguous at spawn, when memory is unfragmented.
@@ -5570,9 +5940,28 @@ pub mod std_service {
     /// total), generous so a stack-depth surprise is not what a first std bring-up debugs.
     const EXTRA_STACK_PAGES: u64 = 32;
 
-    pub fn start(image: &'static [u8], clock_image: &'static [u8]) -> EpId {
+    pub fn start(
+        image: &'static [u8],
+        clock_image: &'static [u8],
+        entropy_image: &'static [u8],
+    ) -> EpId {
         let budget = crate::untyped::create(BUDGET_PAGES).expect("no untyped for hellostd");
         let report = crate::sched::create_endpoint();
+
+        // The entropy service, wired once per boot and shared with the milestone-56 tests. Its
+        // request endpoint is the whole of a std program's randomness authority: `SystemRng` is a
+        // `CALL` on it, and nothing about it reaches the device (DECISIONS §44).
+        let entropy = entropy_service::ensure(entropy_image, entropy_service::Bus::Mmio)
+            .expect("no virtio-rng device for the std program (is CRICKER_RNG set on this leg?)");
+        if let Some(ready) = entropy.ready {
+            let report = crate::sched::ipc_recv(ready);
+            assert_eq!(
+                report[0],
+                entropy_proto::READY,
+                "the entropy service did not come up for the std program (it reported {:#x})",
+                report[0],
+            );
+        }
 
         // The clock first, and its startup report taken before the program starts, so the offset is
         // published by the time std reads the page. Waiting is not a synchronisation trick, it is
@@ -5605,11 +5994,14 @@ pub mod std_service {
         }
 
         crate::sched::spawn(move || {
-            // The clock capability goes in at its named slot BEFORE `run` grants in order, so
-            // `run`'s two grants land at 0 and 1 and slots 2 to 4 stay empty. `READ` only: the
-            // whole point is that a reader cannot write the offset. See `grant_at`.
+            // The clock and entropy capabilities go in at their named slots BEFORE `run` grants in
+            // order, so `run`'s two grants land at 0 and 1 and slots 2 to 4 stay empty. The clock
+            // is `READ` only: the whole point is that a reader cannot write the offset. See
+            // `grant_at`.
             crate::sched::grant_at(CLOCK_SLOT, frame_cap(clock.page_phys, Rights::READ))
                 .expect("the std clock slot was already occupied");
+            crate::sched::grant_at(ENTROPY_SLOT, endpoint_cap(entropy.request, Rights::WRITE))
+                .expect("the std entropy slot was already occupied");
             run(
                 image,
                 Spawn {
@@ -5813,7 +6205,8 @@ mod std_tests {
         fs honestly unsupported\n\
         net honestly unsupported\n\
         instant monotonic ok\n\
-        wall clock ok\n";
+        wall clock ok\n\
+        entropy ok\n";
 
     /// A whole Rust `std` program runs on the native ABI and its output is exactly right.
     ///
@@ -5825,11 +6218,18 @@ mod std_tests {
     /// through a read-only page and the ambient counter, and the program asserted it was inside the
     /// same sanity window the clock service applies. Before that milestone the same call returned
     /// 1970 plus uptime and would have passed any test that only checked it did not crash.
+    ///
+    /// The `entropy ok` line is milestone 56's half, and it is the same shape of correction:
+    /// `std::random` reached a virtio-rng device, through one endpoint that names no device, and
+    /// the program asserted two draws differ. Before that milestone the same call returned
+    /// splitmix64 seeded from boot-relative time, which would also have passed any test that only
+    /// checked it did not crash.
     #[test_case]
     fn a_whole_std_program_runs_on_the_native_abi() {
         let image = program("hellostd").expect("no hellostd program in the initrd archive");
         let clock = program("clock").expect("no clock program in the initrd archive");
-        let report = std_service::start(image, clock);
+        let entropy = program("entropy").expect("no entropy program in the initrd archive");
+        let report = std_service::start(image, clock, entropy);
         assert_std_transcript(report, EXPECTED, "hellostd");
     }
 }

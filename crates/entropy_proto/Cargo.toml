@@ -1,0 +1,13 @@
+[package]
+name = "entropy_proto"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+# The entropy contract of milestone 56 (notes/entropy.md, DECISIONS §44): the tiny request/reply
+# shape a client uses to obtain random bytes from the entropy service, and the rule for reading a
+# reply that is not one. Pure logic, host-tested, no_std, dependency-free, so the service, its
+# clients, the std PAL and the kernel-side tests share ONE definition and cannot drift. The same
+# split `fs_proto` makes for the filesystem contract and `clock_proto` for the wall clock.
+
+[dependencies]

@@ -124,6 +124,10 @@ name = "elf"
 version = "0.1.0"
 
 [[package]]
+name = "entropy_proto"
+version = "0.1.0"
+
+[[package]]
 name = "frames"
 version = "0.1.0"
 
@@ -181,6 +185,7 @@ dependencies = [
  "dma_validate",
  "dtb",
  "elf",
+ "entropy_proto",
  "frames",
  "fs_proto",
  "gfx_proto",
@@ -348,6 +353,7 @@ dependencies = [
  "coremark",
  "crickerfs",
  "elf",
+ "entropy_proto",
  "fs_proto",
  "gfx_proto",
  "lineedit",
