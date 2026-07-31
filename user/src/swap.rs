@@ -1,4 +1,4 @@
-//! **Live component replacement: the shared half** (milestone 23, DECISIONS §39).
+//! **Live component replacement: the shared half** (milestone 23, DECISIONS §41).
 //!
 //! Four programs make up the hot-swap system (`swapper` the operator, `conx` and `cconx` the two
 //! instances of the swappable component, `chatty` the client and the attacker), and this is what
@@ -24,7 +24,7 @@
 //!
 //! The UART's registers. Two processes writing one device's registers is the interleaving hazard
 //! the roadmap's step 2 exists for, so the operator takes the registers back with
-//! `Frame::REVOKE` on the device capability (DECISIONS §39) between quiescing the old instance and
+//! `Frame::REVOKE` on the device capability (DECISIONS §41) between quiescing the old instance and
 //! endowing the new one. The old instance is asked to touch them one more time afterwards, and the
 //! kernel's fault message is the receipt.
 

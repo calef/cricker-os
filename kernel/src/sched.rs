@@ -1597,7 +1597,7 @@ pub fn delete_frame_caps(phys: u64) {
 }
 
 /// Delete every `DeviceFrame` capability naming `phys` from every cspace **except the calling
-/// thread's** (milestone 23, DECISIONS §39). The caller keeps its own, which is the difference
+/// thread's** (milestone 23, DECISIONS §41). The caller keeps its own, which is the difference
 /// between reclaiming a page and taking a device back to hand on; [`crate::revoke::
 /// revoke_device_from_others`] has the reasoning.
 pub fn delete_device_frame_caps_from_others(phys: u64) {

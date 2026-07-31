@@ -1,4 +1,4 @@
-//! **The client that does not notice, and the attacker that cannot** (milestone 23, DECISIONS §39).
+//! **The client that does not notice, and the attacker that cannot** (milestone 23, DECISIONS §41).
 //!
 //! One binary, two roles, because an attacker that holds the honest client's own capabilities is a
 //! fair test of the boundary rather than a different program failing for its own reasons.

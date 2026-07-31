@@ -234,7 +234,7 @@ fn call_reply() {
     sched::ipc_send(ep, [u64::MAX, 0, 0]);
 }
 
-/// **What a queue broker costs when both ends are up** (milestone 23, DECISIONS §39).
+/// **What a queue broker costs when both ends are up** (milestone 23, DECISIONS §41).
 ///
 /// Milestone 23's latency ladder has two rungs built, and the rule that governs where each is used
 /// is *opt-in per channel, never the default*. This benchmark is why that rule is a rule.

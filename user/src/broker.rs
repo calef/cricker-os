@@ -1,4 +1,4 @@
-//! **The queue broker: the latency ladder's middle rung** (milestone 23, DECISIONS §39).
+//! **The queue broker: the latency ladder's middle rung** (milestone 23, DECISIONS §41).
 //!
 //! The default rung has no process in it at all: a client CALLs a stable endpoint, whoever is
 //! parked in `RECV_CAP` on it answers, and a swap changes who that is. That costs nothing, and it

@@ -1,10 +1,10 @@
 //! **The operator: replace a running component under a talking client** (milestone 23,
-//! DECISIONS §39).
+//! DECISIONS §41).
 //!
 //! This is the milestone's flagship, and it is an unprivileged process. The kernel does not know a
 //! swap is happening, has no notion of a component, and gained no method for one. What it supplies
 //! is what it already supplied: endpoints that name no peer (§12), a death message (§26), a reap
-//! that needs no construction authority (§32), and revocation (§13, §16, and §39's device
+//! that needs no construction authority (§32), and revocation (§13, §16, and §41's device
 //! take-back). Everything else is code here.
 //!
 //! # Two roles, two rungs of the latency ladder
@@ -226,7 +226,7 @@ fn direct(fs: &crickerfs::Fs, w: &Wiring) -> ! {
 
     // ------------------------------------------------------------------------------------------
     // Step 3: take the registers back. Every other holder loses the capability and the mapping; we
-    // keep ours, which is what makes this a transfer rather than a demolition (DECISIONS §39).
+    // keep ours, which is what makes this a transfer rather than a demolition (DECISIONS §41).
     // ------------------------------------------------------------------------------------------
 
     // SAFETY: plain syscall on the device capability the kernel granted us at spawn.

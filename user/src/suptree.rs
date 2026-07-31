@@ -112,7 +112,7 @@ pub fn build_child(own_ut: u64, build_ut: u64, elf: &elf::Elf, endow: &Endow) ->
 /// it names, map a stack, copy the blobs in, map `maps`, retype a TCB, insert the endowment.
 /// Returns `(tcb, aspace)`, both still held by us.
 ///
-/// Split out for milestone 23's live replacement (DECISIONS §39), which needs to do one more thing
+/// Split out for milestone 23's live replacement (DECISIONS §41), which needs to do one more thing
 /// to the child's address space *between* building it and configuring it: map in a device the
 /// operator could not hand over any earlier, because revoking it from the outgoing owner would have
 /// taken the incoming owner's copy too. `CONFIGURE` consumes the aspace capability, so once it has
