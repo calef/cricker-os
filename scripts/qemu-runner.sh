@@ -100,7 +100,19 @@ if [ -n "$CRICKER_DISK" ]; then
     if [ -f "$REDOXFS_DISK" ]; then
         REDOXFS_MMIO="-drive file=$REDOXFS_DISK,if=none,format=raw,id=hd2 -device virtio-blk-device,drive=hd2"
     fi
-    DISK="-global virtio-mmio.force-legacy=false $REDOXFS_MMIO -drive file=$CRICKER_DISK,if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 -drive file=$PCI_DISK,if=none,format=raw,id=hd1 -device virtio-blk-pci,drive=hd1,disable-legacy=on,iommu_platform=on"
+    # The crash test's OWN RedoxFS image (milestone 37), the THIRD mmio block device, at slot 2. It
+    # goes FIRST on the command line because the slot assignment is reverse of the command-line
+    # order, so the three land at crickerfs=0, redoxfs=1, crash=2, which is what
+    # `find_block_device_n` counts. A dedicated disk is the point: the crash test deliberately leaves
+    # a filesystem half-written, and doing that to the shared image would couple every other FS
+    # test's result to whether this one ran first (DECISIONS §27's order-coupled gate). Soft, like
+    # the others: present only when the test flow built it.
+    CRASH_DISK="${CRICKER_DISK%.img}-redoxfs-crash.img"
+    CRASH_MMIO=""
+    if [ -f "$CRASH_DISK" ]; then
+        CRASH_MMIO="-drive file=$CRASH_DISK,if=none,format=raw,id=hd3 -device virtio-blk-device,drive=hd3"
+    fi
+    DISK="-global virtio-mmio.force-legacy=false $CRASH_MMIO $REDOXFS_MMIO -drive file=$CRICKER_DISK,if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 -drive file=$PCI_DISK,if=none,format=raw,id=hd1 -device virtio-blk-pci,drive=hd1,disable-legacy=on,iommu_platform=on"
 fi
 
 # Attach a virtio-net NIC on QEMU user-mode (slirp) networking when CRICKER_NET is set (milestone

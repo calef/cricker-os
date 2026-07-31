@@ -2115,9 +2115,18 @@ pub mod fs_service {
         p
     }
 
+    /// How many FS servers one boot can start, and therefore how many banks of poisoned stack pages
+    /// [`FS_STACK_PHYS`] holds: the ordinary one, and milestone 37's two (the server that is killed
+    /// mid-transaction, and the one that mounts the disk it left behind).
+    ///
+    /// They cannot share stack frames. The killed server is still executing its trap when the
+    /// recovery server starts, so reusing its pages would have one process writing another's stack,
+    /// and the bug would present as the recovery mount failing for no reason.
+    const FS_SERVERS: usize = 3;
+
     /// A fresh frame filled with [`STACK_POISON`], for one of the FS server's stack pages, and
     /// remembered in [`FS_STACK_PHYS`] so the depth actually reached can be read back afterwards.
-    fn poisoned_stack_frame(index: usize) -> u64 {
+    fn poisoned_stack_frame(server: usize, index: usize) -> u64 {
         let p = crate::memory::alloc()
             .expect("no frame for the fs server's stack")
             .addr();
@@ -2129,15 +2138,17 @@ pub mod fs_service {
             )
         };
         words.fill(STACK_POISON);
-        FS_STACK_PHYS[index].store(p, core::sync::atomic::Ordering::Relaxed);
+        FS_STACK_PHYS[server][index].store(p, core::sync::atomic::Ordering::Relaxed);
         p
     }
 
-    /// The physical frames behind the FS server's extra stack pages, index 0 being the page directly
-    /// below [`USER_STACK_VA`]. Written once at wiring, read by [`fs_stack_used`]. Zero means "this
-    /// boot never wired an FS service".
-    static FS_STACK_PHYS: [core::sync::atomic::AtomicU64; FS_STACK_PAGES as usize] =
-        [const { core::sync::atomic::AtomicU64::new(0) }; FS_STACK_PAGES as usize];
+    /// The physical frames behind every FS server's extra stack pages: one bank per server, index 0
+    /// being the page directly below [`USER_STACK_VA`]. Written once at wiring, read by
+    /// [`fs_stack_used`]. Zero means "this boot never started that server".
+    #[allow(clippy::declare_interior_mutable_const)] // an atomic array is exactly what this is for
+    static FS_STACK_PHYS: [[core::sync::atomic::AtomicU64; FS_STACK_PAGES as usize]; FS_SERVERS] =
+        [const { [const { core::sync::atomic::AtomicU64::new(0) }; FS_STACK_PAGES as usize] };
+            FS_SERVERS];
 
     /// **How deep the FS server's stack actually went**, in bytes below [`USER_STACK_TOP`], and how
     /// much it was given. `None` if this boot wired no FS service.
@@ -2150,30 +2161,38 @@ pub mod fs_service {
     ///
     /// The point of it is that a stack size is otherwise a number nobody can defend. The one before
     /// this was 528 bytes too small, and the way we found out was a mystery hang.
+    ///
+    /// The high-water is a **maximum over every FS server this boot started**, which is why
+    /// milestone 37's recovery mount is covered by it too. A mount that has to walk back a
+    /// generation is the case most likely to recurse further than a clean one, so it is exactly the
+    /// case this instrument should be watching.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn fs_stack_used() -> Option<(u64, u64)> {
         use core::sync::atomic::Ordering;
         let total = (FS_STACK_PAGES + 1) * FRAME_SIZE;
         let mut deepest = FRAME_SIZE; // the base page, always used
         let mut wired = false;
-        for (i, slot) in FS_STACK_PHYS.iter().enumerate() {
-            let phys = slot.load(Ordering::Relaxed);
-            if phys == 0 {
-                continue;
-            }
-            wired = true;
-            // SAFETY: a frame this module allocated and still owns, via the direct map.
-            let words = unsafe {
-                core::slice::from_raw_parts(
-                    mmu::phys_to_virt(phys) as *const u64,
-                    FRAME_SIZE as usize / 8,
-                )
-            };
-            // Page `i` spans [USER_STACK_VA - (i+1)*FRAME, USER_STACK_VA - i*FRAME). Word `w` in it
-            // sits that far above the page's base, so a touched word means at least this much depth.
-            if let Some(w) = words.iter().position(|&x| x != STACK_POISON) {
-                let depth = (i as u64 + 2) * FRAME_SIZE - w as u64 * 8;
-                deepest = deepest.max(depth);
+        for bank in FS_STACK_PHYS.iter() {
+            for (i, slot) in bank.iter().enumerate() {
+                let phys = slot.load(Ordering::Relaxed);
+                if phys == 0 {
+                    continue;
+                }
+                wired = true;
+                // SAFETY: a frame this module allocated and still owns, via the direct map.
+                let words = unsafe {
+                    core::slice::from_raw_parts(
+                        mmu::phys_to_virt(phys) as *const u64,
+                        FRAME_SIZE as usize / 8,
+                    )
+                };
+                // Page `i` spans [USER_STACK_VA - (i+1)*FRAME, USER_STACK_VA - i*FRAME). Word `w` in
+                // it sits that far above the page's base, so a touched word means at least this much
+                // depth.
+                if let Some(w) = words.iter().position(|&x| x != STACK_POISON) {
+                    let depth = (i as u64 + 2) * FRAME_SIZE - w as u64 * 8;
+                    deepest = deepest.max(depth);
+                }
             }
         }
         wired.then_some((deepest, total))
@@ -2222,13 +2241,40 @@ pub mod fs_service {
         blk_image: &'static [u8],
         fsserver_image: &'static [u8],
     ) -> Option<(EpId, EpId, EpId, u64)> {
-        let dev = crate::virtio::find_block_device_n(1)?;
+        let (blk_ep, blk_ready, blk_shared) =
+            spawn_block_server(blk_image, crate::virtio::find_block_device_n(1)?);
+        let file_shared = frame();
+        let file_ep = crate::sched::create_endpoint(); // client WRITE (CALL) -> FS server READ
+        let ready = crate::sched::create_endpoint(); // FS server WRITE -> the kernel test RECVs
+        spawn_fs_server(
+            fsserver_image,
+            FsServer {
+                slot: 0,
+                blk_ep,
+                blk_shared,
+                file_ep,
+                file_shared,
+                ready,
+                budget_pages: FS_BUDGET_PAGES,
+                crash: (0, 0, 0),
+            },
+        );
+        Some((blk_ready, ready, file_ep, file_shared))
+    }
 
-        // The block server's DMA region is TWO contiguous pages: page 0 for the rings, request
-        // header and status (block-server-private), page 1 for the 4096-byte data buffer. Page 1 is
-        // ALSO the block page shared with the FS server, so the device DMAs a whole filesystem block
-        // straight into the FS server's page, one request per block, no copy. The other shared page
-        // (client <-> FS server, names and file bytes) is a single frame.
+    /// **Spawn a block server on one virtio block device.** Extracted from [`wire_servers`] because
+    /// milestone 37's crash test needs a second one, on its own disk, so that a test which
+    /// deliberately leaves a filesystem half-written cannot touch the image every other FS test
+    /// depends on. Returns `(blk_ep, blk_ready, blk_shared)`.
+    ///
+    /// The DMA region is TWO contiguous pages: page 0 for the rings, request header and status
+    /// (block-server-private), page 1 for the 4096-byte data buffer. Page 1 is ALSO the block page
+    /// shared with the FS server, so the device DMAs a whole filesystem block straight into the FS
+    /// server's page, one request per block, no copy.
+    fn spawn_block_server(
+        blk_image: &'static [u8],
+        dev: crate::virtio::VirtioMmioDevice,
+    ) -> (EpId, EpId, u64) {
         let dma = crate::memory::alloc_contiguous(2)
             .expect("no 2-page DMA region for the block server")
             .addr();
@@ -2242,16 +2288,10 @@ pub mod fs_service {
             )
         };
         let blk_shared = dma + FRAME_SIZE; // page 1 of the region is the shared block page
-        let file_shared = frame();
 
-        // The endpoints. Rights split each into a request side and an answer side.
         let blk_ep = crate::sched::create_endpoint(); // FS server WRITE (CALL) -> block server READ
-        let file_ep = crate::sched::create_endpoint(); // client WRITE (CALL) -> FS server READ
-        let ready = crate::sched::create_endpoint(); // FS server WRITE -> the kernel test RECVs
         let blk_ready = crate::sched::create_endpoint(); // block server WRITE -> the kernel test RECVs
 
-        // --- the block server: its 2-page DMA region, the device's interrupt, the confined
-        // transport, the blk request endpoint. Same confinement as any driver, just a bigger region.
         let irq_ep = crate::sched::create_endpoint();
         crate::sched::bind_irq(dev.intid, irq_ep);
         crate::arch::irq::enable(dev.intid);
@@ -2295,19 +2335,50 @@ pub mod fs_service {
         })
         .expect("could not spawn the block server");
 
-        // --- the FS server: a heap budget, the block-service endpoint (client side), the
-        // file-service endpoint (server side), and both shared pages. No device, no DMA. ---
-        //
-        // It also gets a DEEP stack. `run` maps one stack page (enough for the shallow programs),
-        // but RedoxFS recurses through its tree and htree and commits transactions on the stack, and
-        // one 4 KiB page overflows immediately (the first `open` faults ~4.2 KiB down). So map extra
-        // stack pages below USER_STACK_VA out of fresh frames. These are shared-style mappings (not
-        // freed on death), a one-time cost paid once per boot for the single FS server the test runs.
+        (blk_ep, blk_ready, blk_shared)
+    }
+
+    /// Everything one FS-server process is, as a value, because eight positional arguments of which
+    /// four are bare `u64` endpoint ids is a call nobody can read and a caller can silently get the
+    /// wrong way round.
+    struct FsServer {
+        /// Which bank of [`FS_STACK_PHYS`] this process's poisoned stack is recorded in. One per
+        /// FS server a boot can start, so the high-water instrument covers all of them.
+        slot: usize,
+        blk_ep: EpId,
+        blk_shared: u64,
+        file_ep: EpId,
+        file_shared: u64,
+        ready: EpId,
+        /// The untyped budget this server's heap draws from, in frames. The ordinary server gets
+        /// [`FS_BUDGET_PAGES`]; milestone 37's two get a fraction of it, because an untyped is
+        /// **reserved** rather than merely capped and three 8 MiB reservations do not fit in this
+        /// machine's 128 MiB (the first symptom was init failing to get its own budget, several
+        /// tests later, which is a long way from the cause). The measured high-water of a real mount
+        /// under this allocator is 352 KiB (DECISIONS §27), so [`CRASH_BUDGET_PAGES`] is still five
+        /// times the number rather than a guess trimmed until it fit.
+        budget_pages: u64,
+        /// Milestone 37's crash injection, straight into the process's START arguments:
+        /// `(which WRITE request to die in, block writes to allow first, bytes of the last one that
+        /// reach the platter)`. All zero disables it, which is every FS server but the crash test's
+        /// first one. See `fs-server/src/bin/fsserver.rs`.
+        crash: (u64, u64, u64),
+    }
+
+    /// Spawn one FS server: a heap budget, the block-service endpoint (client side), the
+    /// file-service endpoint (server side), and both shared pages. No device, no DMA.
+    ///
+    /// It also gets a DEEP stack. `run` maps one stack page (enough for the shallow programs), but
+    /// RedoxFS recurses through its tree and htree and commits transactions on the stack, and one
+    /// 4 KiB page overflows immediately (the first `open` faults ~4.2 KiB down). So map extra stack
+    /// pages below USER_STACK_VA out of fresh frames. These are shared-style mappings (not freed on
+    /// death), a one-time cost per FS server a boot starts.
+    fn spawn_fs_server(fsserver_image: &'static [u8], cfg: FsServer) {
         let budget =
-            crate::untyped::create(FS_BUDGET_PAGES).expect("no heap budget for the FS server");
+            crate::untyped::create(cfg.budget_pages).expect("no heap budget for the FS server");
         let mut stack = [0u64; FS_STACK_PAGES as usize];
         for (i, f) in stack.iter_mut().enumerate() {
-            *f = poisoned_stack_frame(i);
+            *f = poisoned_stack_frame(cfg.slot, i);
         }
         crate::sched::spawn(move || {
             // Build the mapping list: the two shared pages, then the extra stack pages.
@@ -2318,12 +2389,12 @@ pub mod fs_service {
             }; 2 + FS_STACK_PAGES as usize];
             maps[0] = Mapping {
                 va: BLK_PAGE_FS,
-                phys: blk_shared,
+                phys: cfg.blk_shared,
                 flags: Flags::user_data(),
             };
             maps[1] = Mapping {
                 va: FILE_PAGE_FS,
-                phys: file_shared,
+                phys: cfg.file_shared,
                 flags: Flags::user_data(),
             };
             for (i, &phys) in stack.iter().enumerate() {
@@ -2336,22 +2407,173 @@ pub mod fs_service {
             run(
                 fsserver_image,
                 Spawn {
-                    arg0: 0,
-                    arg1: 0,
-                    arg2: 0,
+                    arg0: cfg.crash.0,
+                    arg1: cfg.crash.1,
+                    arg2: cfg.crash.2,
                     grants: &[
-                        untyped_cap(budget),                 // slot 0: the heap's untyped budget
-                        endpoint_cap(blk_ep, Rights::WRITE), // slot 1: CALL the block server
-                        endpoint_cap(file_ep, Rights::READ), // slot 2: RECV file requests
-                        endpoint_cap(ready, Rights::WRITE),  // slot 3: signal readiness once
+                        untyped_cap(budget),                     // slot 0: the heap's untyped budget
+                        endpoint_cap(cfg.blk_ep, Rights::WRITE), // slot 1: CALL the block server
+                        endpoint_cap(cfg.file_ep, Rights::READ), // slot 2: RECV file requests
+                        endpoint_cap(cfg.ready, Rights::WRITE),  // slot 3: signal readiness once
                     ],
                     maps: &maps,
                 },
             )
         })
         .expect("could not spawn the FS server");
+    }
 
-        Some((blk_ready, ready, file_ep, file_shared))
+    // =======================================================================================
+    // Milestone 37: the crash test's own service, on its own disk (DECISIONS §34 condition 1)
+    // =======================================================================================
+
+    /// What [`start_crash`] hands back: the two readiness endpoints, and the endpoint the driver
+    /// reports its acknowledged write on.
+    ///
+    /// `fs_ready` carries **two** messages in sequence, and that is the design rather than an
+    /// accident: the FS server's ordinary readiness sentinel when the mount is up, and then
+    /// `fixture::crash::CUT` from inside the injector, immediately before it traps. The second one
+    /// is what tells the test the kill was the injector's doing and not something else going wrong,
+    /// and it is what gives the recovery mount a defined moment to start at instead of a guess.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub struct CrashRun {
+        pub blk_ready: EpId,
+        pub fs_ready: EpId,
+        pub driver_report: EpId,
+    }
+
+    /// The heap budget each of milestone 37's two FS servers draws from. Smaller than
+    /// [`FS_BUDGET_PAGES`] on purpose: an untyped is a reservation, and three 8 MiB ones do not fit
+    /// beside everything else this boot builds in 128 MiB. 2 MiB is five times the 352 KiB
+    /// high-water a real mount under this allocator actually reaches (DECISIONS §27's measurement),
+    /// and the crash workload is one open and two 66-byte writes.
+    const CRASH_BUDGET_PAGES: u64 = 512;
+
+    /// The crash disk's block-service endpoint and shared block page, remembered between the two
+    /// halves of the test: the recovery server is a **different process** on the **same** block
+    /// server, which is endpoint-only naming doing its job. The block server never learns that its
+    /// client died and was replaced, because it never knew who its client was.
+    static CRASH_BLK_EP: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+    static CRASH_BLK_SHARED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+    /// **Phase one: wire a filesystem on its own disk and kill it mid-transaction** (milestone 37).
+    ///
+    /// Three processes on virtio block device 2, which nothing else in the boot touches. The disk is
+    /// dedicated on purpose: this test deliberately leaves a filesystem half-written, and pointing it
+    /// at the shared fixture would couple every later test to whether this one ran first. DECISIONS
+    /// §27 records what an order-coupled gate costs (three investigations, three incompatible root
+    /// causes, none of them real), so the fixture is regenerated per run and owned by one test.
+    ///
+    /// The FS server is spawned **armed**: die one block write into the second `WRITE` request, with
+    /// that block torn in half. One is the count that cannot miss, because a write transaction always
+    /// issues at least one block write and a larger count is a server that never dies and a test that
+    /// hangs.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn start_crash(
+        blk_image: &'static [u8],
+        fsserver_image: &'static [u8],
+        client_image: &'static [u8],
+    ) -> Option<CrashRun> {
+        use core::sync::atomic::Ordering;
+        let (blk_ep, blk_ready, blk_shared) =
+            spawn_block_server(blk_image, crate::virtio::find_block_device_n(2)?);
+        CRASH_BLK_EP.store(blk_ep, Ordering::Relaxed);
+        CRASH_BLK_SHARED.store(blk_shared, Ordering::Relaxed);
+
+        let file_shared = frame();
+        let file_ep = crate::sched::create_endpoint();
+        let fs_ready = crate::sched::create_endpoint();
+        spawn_fs_server(
+            fsserver_image,
+            FsServer {
+                slot: 1,
+                blk_ep,
+                blk_shared,
+                file_ep,
+                file_shared,
+                ready: fs_ready,
+                budget_pages: CRASH_BUDGET_PAGES,
+                // Die one block write into the SECOND write request, tearing that block at 2048
+                // bytes. The first write is acknowledged and must survive; the second is the one the
+                // property is about.
+                crash: (2, 1, 2048),
+            },
+        );
+
+        let driver_report = spawn_fs_client(client_image, file_ep, file_shared, 3, 0);
+        Some(CrashRun {
+            blk_ready,
+            fs_ready,
+            driver_report,
+        })
+    }
+
+    /// **Phase two: mount the disk the dead server left behind** (milestone 37).
+    ///
+    /// A fresh FS-server process, on the same block server and the same block page, with its own file
+    /// endpoint, its own file page and its own stack. It carries nothing over from the process that
+    /// died: what it recovers, it recovers from the platter, through the ordinary `Server::open` every
+    /// FS server in this system mounts with. Its readiness sentinel arriving at all is the first half
+    /// of the result, because that open fails outright on an image it cannot make sense of.
+    ///
+    /// Returns `(ready, report)`.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn recover_crash(
+        fsserver_image: &'static [u8],
+        client_image: &'static [u8],
+    ) -> (EpId, EpId) {
+        use core::sync::atomic::Ordering;
+        let file_shared = frame();
+        let file_ep = crate::sched::create_endpoint();
+        let ready = crate::sched::create_endpoint();
+        spawn_fs_server(
+            fsserver_image,
+            FsServer {
+                slot: 2,
+                blk_ep: CRASH_BLK_EP.load(Ordering::Relaxed),
+                blk_shared: CRASH_BLK_SHARED.load(Ordering::Relaxed),
+                file_ep,
+                file_shared,
+                ready,
+                budget_pages: CRASH_BUDGET_PAGES,
+                crash: (0, 0, 0), // this one is not armed: it is the one that has to survive
+            },
+        );
+        let report = spawn_fs_client(client_image, file_ep, file_shared, 4, 0);
+        (ready, report)
+    }
+
+    /// Spawn one `fsclient` role holding exactly a file-service endpoint, a report endpoint and its
+    /// view of the shared page. Returns the report endpoint.
+    fn spawn_fs_client(
+        client_image: &'static [u8],
+        file_ep: EpId,
+        file_shared: u64,
+        role: u64,
+        arg: u64,
+    ) -> EpId {
+        let report = crate::sched::create_endpoint();
+        crate::sched::spawn(move || {
+            run(
+                client_image,
+                Spawn {
+                    arg0: role,
+                    arg1: arg,
+                    arg2: 0,
+                    grants: &[
+                        endpoint_cap(file_ep, Rights::WRITE), // slot 0: CALL the FS server
+                        endpoint_cap(report, Rights::WRITE),  // slot 1: report to the kernel
+                    ],
+                    maps: &[Mapping {
+                        va: FILE_VA_CLIENT,
+                        phys: file_shared,
+                        flags: Flags::user_data(),
+                    }],
+                },
+            )
+        })
+        .expect("could not spawn the FS client");
+        report
     }
 
     /// Wire the service (or reuse this boot's) and spawn the hand-written client
@@ -2367,29 +2589,8 @@ pub mod fs_service {
         client_role: u64,
     ) -> Option<(Option<(EpId, EpId)>, EpId)> {
         let (file_ep, file_shared, readiness) = ensure(blk_image, fsserver_image)?;
-        let report = crate::sched::create_endpoint();
-
-        crate::sched::spawn(move || {
-            run(
-                client_image,
-                Spawn {
-                    arg0: client_role, // 0 = the end-to-end proof; 1 = the fs_read benchmark loop
-                    arg1: 0,
-                    arg2: 0,
-                    grants: &[
-                        endpoint_cap(file_ep, Rights::WRITE), // slot 0: CALL the FS server
-                        endpoint_cap(report, Rights::WRITE),  // slot 1: report to the kernel
-                    ],
-                    maps: &[Mapping {
-                        va: FILE_VA_CLIENT,
-                        phys: file_shared,
-                        flags: Flags::user_data(),
-                    }],
-                },
-            )
-        })
-        .expect("could not spawn the FS client");
-
+        // 0 = the end-to-end proof; 1 = the fs_read benchmark loop.
+        let report = spawn_fs_client(client_image, file_ep, file_shared, client_role, 0);
         Some((readiness, report))
     }
 
@@ -2458,7 +2659,6 @@ pub mod fs_service {
         let (file_ep, file_shared, readiness) = ensure(blk_image, fsserver_image)?;
         let narrow_ep = crate::sched::create_endpoint();
         let warden_ready = crate::sched::create_endpoint();
-        let report = crate::sched::create_endpoint();
 
         let (lo, hi) = fs_proto::grant::pack_name(name.as_bytes());
         let spec = fs_proto::grant::spec(name.len(), rights);
@@ -2490,26 +2690,13 @@ pub mod fs_service {
 
         // The confined program. Its slot 0 looks exactly like a directory capability from inside, and
         // is not one: same protocol, same page, a namespace of one name.
-        crate::sched::spawn(move || {
-            run(
-                client_image,
-                Spawn {
-                    arg0: client_role,
-                    arg1: client_arg,
-                    arg2: 0,
-                    grants: &[
-                        endpoint_cap(narrow_ep, Rights::WRITE), // slot 0: CALL the warden
-                        endpoint_cap(report, Rights::WRITE),    // slot 1: report to the kernel
-                    ],
-                    maps: &[Mapping {
-                        va: FILE_VA_CLIENT,
-                        phys: file_shared,
-                        flags: Flags::user_data(),
-                    }],
-                },
-            )
-        })
-        .expect("could not spawn the confined program");
+        let report = spawn_fs_client(
+            client_image,
+            narrow_ep,
+            file_shared,
+            client_role,
+            client_arg,
+        );
 
         Some(Granted {
             readiness,
@@ -5142,6 +5329,83 @@ mod std_tests {
     /// test and the `std::fs` test share it, and only the first of them to run gets the sentinels.
     /// Asserting on them where they exist is what separates a hang in the mount from one in the
     /// serve path.
+    /// **Kill the filesystem mid-transaction on a real device, then mount what is left of it**
+    /// (milestone 37, DECISIONS §34 condition 1). Shared by both ISA test modules, so the property
+    /// and its wording are asserted identically on each (rule 5, §19).
+    ///
+    /// Six steps, each of which has to happen for the next one to mean anything:
+    ///
+    /// 1. a block server brings up the crash test's own disk (nothing else in the boot touches it);
+    /// 2. an FS server mounts it, so the image was sound before this test damaged it;
+    /// 3. the driver writes payload A, reads it straight back, and reports: **acknowledged**;
+    /// 4. the driver's second write walks into the injector, which tears a block at 2048 bytes and
+    ///    traps with the transaction's commit unwritten. The `CUT` word is how we know the kill was
+    ///    the injector's rather than something else having gone wrong;
+    /// 5. a **different FS-server process** mounts the same disk through the same block server. Its
+    ///    readiness sentinel is the consistency result: `Server::open` refuses an image it cannot
+    ///    make sense of, so arriving at all means the filesystem is intact;
+    /// 6. a fresh client reads the file and says which payload is in it.
+    ///
+    /// **The assertion is the property, not an outcome.** Either payload is a pass; what fails is a
+    /// mixture, a length nobody wrote, or the pre-boot contents (which would mean an acknowledged
+    /// write had vanished). Pinning the answer to "A" would be pinning a detail of when RedoxFS
+    /// happens to write its commit, and the claim is not about that.
+    pub(super) fn assert_a_kill_mid_transaction_recovers(
+        blk_image: &'static [u8],
+        fsserver_image: &'static [u8],
+        client_image: &'static [u8],
+    ) {
+        use fs_proto::fixture::{READY, SUCCESS, crash};
+        let Some(run) = fs_service::start_crash(blk_image, fsserver_image, client_image) else {
+            crate::println!("    (no crash disk attached; skipping)");
+            return;
+        };
+        assert_eq!(
+            crate::sched::ipc_recv(run.blk_ready)[0],
+            READY,
+            "the block server did not bring the crash-test disk up",
+        );
+        assert_eq!(
+            crate::sched::ipc_recv(run.fs_ready)[0],
+            READY,
+            "the FS server did not open the crash-test image, so there was nothing to crash",
+        );
+
+        let [w0, w1, ..] = crate::sched::ipc_recv(run.driver_report);
+        assert_eq!(
+            (w0, w1),
+            (SUCCESS, crash::SAW_A),
+            "the driver's first write was not acknowledged and read back, so nothing that follows \
+             is a statement about an acknowledged write",
+        );
+
+        assert_eq!(
+            crate::sched::ipc_recv(run.fs_ready)[0],
+            crash::CUT,
+            "the FS server did not die inside the injector: whatever killed it, it was not this \
+             test, and the recovery below would be measuring the wrong thing",
+        );
+
+        let (ready, report) = fs_service::recover_crash(fsserver_image, client_image);
+        assert_eq!(
+            crate::sched::ipc_recv(ready)[0],
+            READY,
+            "the recovery mount FAILED: a fresh FS server could not open the image the killed one \
+             left behind, so a torn write mid-transaction cost the whole filesystem",
+        );
+
+        let [len, saw, ..] = crate::sched::ipc_recv(report);
+        assert!(
+            saw == crash::SAW_A || saw == crash::SAW_B,
+            "after a kill mid-transaction the file held {len} bytes that were neither payload \
+             whole: a write is either wholly present or wholly absent, and this was neither",
+        );
+        crate::println!(
+            "    (crash recovery: the file holds payload {}, {len} bytes, whole)",
+            if saw == crash::SAW_A { "A" } else { "B" },
+        );
+    }
+
     pub(super) fn assert_fs_service_ready(
         readiness: Option<(crate::sched::EpId, crate::sched::EpId)>,
     ) {
@@ -5569,7 +5833,10 @@ mod tests {
     use crate::sched;
     // The std-transcript and FS-readiness assertions live with the std tests so both ISAs share one
     // copy; see `std_tests`.
-    use super::std_tests::{assert_fs_service_ready, assert_std_transcript, std_fs_expected};
+    use super::std_tests::{
+        assert_a_kill_mid_transaction_recovers, assert_fs_service_ready, assert_std_transcript,
+        std_fs_expected,
+    };
     use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
     /// The `init` program's ELF bytes, pulled out of the initrd archive by name (milestone 19f). A
@@ -6368,6 +6635,20 @@ mod tests {
     /// the no-progress heartbeat saw a healthy system. The only instrument that fired was the
     /// per-test wall-clock ceiling, so a 368-byte overflow presented as "std_fs takes 914 seconds".
     /// A number nobody can defend is a number that will be wrong again; this one now has a witness.
+    /// **A kill mid-transaction, on the real device** (milestone 37, DECISIONS §34 condition 1).
+    /// The host sweep proves the property over every fault point against a reconstructed platter;
+    /// this proves it once through the whole stack, with a real virtio write torn in half, a real
+    /// FS-server process killed inside its own transaction, and a real second process recovering the
+    /// disk it left behind. See `std_tests::assert_a_kill_mid_transaction_recovers`.
+    #[test_case]
+    fn a_kill_mid_transaction_leaves_the_filesystem_consistent() {
+        assert_a_kill_mid_transaction_recovers(
+            init_image(),
+            program("fsserver").expect("no fsserver program in the initrd archive"),
+            program("fsclient").expect("no fsclient program in the initrd archive"),
+        );
+    }
+
     #[test_case]
     fn the_fs_servers_stack_still_has_headroom() {
         let Some((used, total)) = fs_service::fs_stack_used() else {
@@ -8968,7 +9249,10 @@ mod reap_tests {
 mod riscv_virtio_tests {
     use super::*;
     // Shared with the aarch64 module so both ISAs assert a std transcript the same way.
-    use super::std_tests::{assert_fs_service_ready, assert_std_transcript, std_fs_expected};
+    use super::std_tests::{
+        assert_a_kill_mid_transaction_recovers, assert_fs_service_ready, assert_std_transcript,
+        std_fs_expected,
+    };
     use crate::sched;
     use core::sync::atomic::Ordering;
 
@@ -9268,6 +9552,17 @@ mod riscv_virtio_tests {
     /// carries the reasoning; the number is worth having on both because the two ISAs do not use the
     /// same amount of stack for the same recursion, and a size proven on one proves nothing on the
     /// other.
+    /// **A kill mid-transaction, on the real device, on the second ISA** (milestone 37, the §19
+    /// parity twin of the aarch64 test). Same six steps, same property, same words.
+    #[test_case]
+    fn a_kill_mid_transaction_leaves_the_filesystem_consistent() {
+        assert_a_kill_mid_transaction_recovers(
+            blk_image(),
+            program("fsserver").expect("no fsserver program in the initrd archive"),
+            program("fsclient").expect("no fsclient program in the initrd archive"),
+        );
+    }
+
     #[test_case]
     fn the_fs_servers_stack_still_has_headroom() {
         let Some((used, total)) = fs_service::fs_stack_used() else {
