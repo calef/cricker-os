@@ -2271,6 +2271,90 @@ mod tests {
         cond()
     }
 
+    // --- Raising an interrupt on purpose, on each ISA ---------------------------------------
+    //
+    // The two delivery tests below (`an_interrupt_becomes_a_message` and
+    // `an_interrupt_that_arrives_before_the_wait_is_not_lost`) are portable: the property they check
+    // is that the kernel turns an interrupt into a message and does not lose one that arrives early,
+    // and neither of those is architectural. Only the *trigger* is, and it is genuinely asymmetric,
+    // so it lives here in three small functions rather than in a comment claiming parity.
+    //
+    // aarch64 has a software-generated interrupt (an SGI), so it needs no device whatsoever.
+    //
+    // RISC-V has nothing of the kind. `sip.SEIP` is read-only to S-mode (only the PLIC, driven by a
+    // real wire, sets it), the PLIC's pending block is read-only by specification, and the one
+    // interrupt S-mode can raise on itself is the SBI's IPI, which arrives as a *software* interrupt
+    // (`scause` = 1) down a different arm of `riscv_trap_dispatch` than a device's, touching neither
+    // `irq_route` nor `irq_notify`. Using it would have looked like parity and proved nothing.
+    //
+    // So RISC-V uses the smallest real interrupt line it can assert by hand: the console UART's own
+    // transmit-empty interrupt, which a 16550 raises the instant it is enabled, because the
+    // transmitter of a polling console is always empty. No transfer, no external stimulus, nothing
+    // to read back, and it is 16550 architecture rather than a QEMU behaviour, so it should carry to
+    // a real part. See `console::raise_uart_interrupt` and notes/interrupts.md.
+
+    /// The interrupt `an_interrupt_becomes_a_message` raises.
+    #[cfg(target_arch = "aarch64")]
+    const DELIVERY_IRQ: u32 = 1; // an SGI: software-triggerable, no hardware behind it
+    /// The interrupt `an_interrupt_that_arrives_before_the_wait_is_not_lost` raises. A different SGI
+    /// from `DELIVERY_IRQ` so the two tests cannot see each other's routes.
+    #[cfg(target_arch = "aarch64")]
+    const PENDING_IRQ: u32 = 2;
+
+    /// The NS16550's PLIC source on QEMU `virt`. A board constant, hardcoded identically on
+    /// main.rs's boot-tour and shell paths; another board would give its UART a different number,
+    /// and this is one of the places that would have to learn it from the device tree.
+    #[cfg(target_arch = "riscv64")]
+    const DELIVERY_IRQ: u32 = 10;
+    /// **The same source, deliberately.** RISC-V has exactly one line these tests can assert by
+    /// hand, so unlike aarch64's two SGIs the two tests share it. They do not collide: each rebinds
+    /// the route to its own endpoint before raising, and each quiets the line before it returns.
+    #[cfg(target_arch = "riscv64")]
+    const PENDING_IRQ: u32 = 10;
+
+    /// Enable the test interrupt at the controller. Nothing is raised yet.
+    #[cfg(target_arch = "aarch64")]
+    fn arm_test_irq(intid: u32) {
+        crate::drivers::gic::enable(intid, 0); // SGI: per-core, target ignored
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    fn arm_test_irq(intid: u32) {
+        // The affinity policy picks (and remembers) which hart's PLIC context this source lands on,
+        // exactly as it does for a real driver's line. The handler masks the source when it fires,
+        // so this also re-enables it for the second of the two tests.
+        crate::arch::irq::enable(intid);
+    }
+
+    /// Raise it.
+    #[cfg(target_arch = "aarch64")]
+    fn raise_test_irq(intid: u32) {
+        crate::drivers::gic::send_sgi(intid, 0); // self (core 0) in the test
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    fn raise_test_irq(intid: u32) {
+        // The console UART's line is the only one this ISA can assert by hand, so a caller naming
+        // any other source would silently raise the wrong interrupt and then wait for one that
+        // never came, which reads as a kernel bug rather than a test bug.
+        debug_assert_eq!(
+            intid, DELIVERY_IRQ,
+            "riscv can only raise the console UART's own line by hand"
+        );
+        crate::console::raise_uart_interrupt();
+    }
+
+    /// Lower it again, so the next test starts from a quiet line.
+    #[cfg(target_arch = "aarch64")]
+    fn quiet_test_irq() {
+        // An SGI is edge-triggered and one-shot: there is no line to lower.
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    fn quiet_test_irq() {
+        crate::console::quiet_uart_interrupt();
+    }
+
     /// A spawned thread actually runs, and its closure's captured state comes with it.
     #[test_case]
     fn a_spawned_thread_runs() {
@@ -3042,23 +3126,25 @@ mod tests {
     /// **An interrupt becomes a message.** DECISIONS §10 and notes/interrupts.md, executed.
     ///
     /// A thread blocks waiting on an interrupt it can only name through an endpoint. We raise the
-    /// interrupt from software (an SGI, so the test needs no device), the kernel's handler turns
-    /// it into a notification, and the blocked thread wakes. This is the exact path a userspace
-    /// driver will take when a real device interrupts, minus the device.
+    /// interrupt from software, the kernel's handler turns it into a notification, and the blocked
+    /// thread wakes. This is the exact path a userspace driver takes when a real device interrupts.
     ///
-    /// aarch64-only: it triggers via an SGI, a GIC concept. The same IRQ-to-message path is proven
-    /// on RISC-V by the boot tour's userspace UART driver (a real device interrupt through the PLIC).
-    #[cfg(target_arch = "aarch64")]
+    /// **The two ISAs raise it differently, and they are not twins in what they cost to raise.** See
+    /// [`raise_test_irq`]: aarch64 sends itself a GIC SGI, which needs no device at all; RISC-V has
+    /// no SGI, so it makes the console UART assert its own line into the PLIC with one register
+    /// write. The kernel path under test is the same on both (the handler routes the interrupt to an
+    /// endpoint and signals it), and RISC-V's leg additionally covers the PLIC claim/mask/complete
+    /// handshake that an SGI on aarch64 does not reach. What RISC-V gives up is aarch64's "minus the
+    /// device" property. The alternative there was the SBI's IPI, which arrives as a *software*
+    /// interrupt down a different arm of the trap dispatcher and would not have touched
+    /// `irq_route`/`irq_notify` at all, so it would have proved less while looking like more.
     #[test_case]
     fn an_interrupt_becomes_a_message() {
-        // An SGI: a software-triggerable interrupt with no hardware behind it.
-        const SGI: u32 = 1;
-
         static WOKE: AtomicBool = AtomicBool::new(false);
 
         let ep = super::create_endpoint();
-        super::bind_irq(SGI, ep);
-        crate::drivers::gic::enable(SGI, 0); // SGI: per-core, target ignored
+        super::bind_irq(DELIVERY_IRQ, ep);
+        arm_test_irq(DELIVERY_IRQ);
 
         super::spawn(move || {
             super::ipc_recv(ep); // blocks until the interrupt fires
@@ -3075,11 +3161,13 @@ mod tests {
             "the thread woke before the interrupt fired",
         );
 
-        // Fire it. The GIC delivers the SGI, handle_irq routes it to `ep`, the waiter wakes.
-        crate::drivers::gic::send_sgi(SGI, 0); // self (core 0) in the test
+        // Fire it. The controller delivers it, the handler routes it to `ep`, the waiter wakes.
+        raise_test_irq(DELIVERY_IRQ);
 
+        let woke = spin_until(|| WOKE.load(Ordering::SeqCst));
+        quiet_test_irq();
         assert!(
-            spin_until(|| WOKE.load(Ordering::SeqCst)),
+            woke,
             "a hardware interrupt fired and the thread waiting on it never woke",
         );
     }
@@ -3148,22 +3236,29 @@ mod tests {
     /// not a rendezvous: if it fires a hair before the driver calls `WAIT`, the driver must still
     /// see it. The `pending` count is what closes that window.
     ///
-    /// aarch64-only: triggers via an SGI (see `an_interrupt_becomes_a_message`).
-    #[cfg(target_arch = "aarch64")]
+    /// Raised the same two ways as `an_interrupt_becomes_a_message`, with the same caveat about
+    /// what each ISA's raise does and does not cost (see [`raise_test_irq`]).
     #[test_case]
     fn an_interrupt_that_arrives_before_the_wait_is_not_lost() {
-        const SGI: u32 = 2;
+        use crate::arch::exceptions::ROUTED_IRQS;
 
         let ep = super::create_endpoint();
-        super::bind_irq(SGI, ep);
-        crate::drivers::gic::enable(SGI, 0); // SGI: per-core, target ignored
+        super::bind_irq(PENDING_IRQ, ep);
+        arm_test_irq(PENDING_IRQ);
 
         // Fire it with NOBODY waiting. The signal must be counted.
-        crate::drivers::gic::send_sgi(SGI, 0); // self (core 0) in the test
-        // Give the interrupt time to be delivered and handled.
-        for _ in 0..20 {
-            super::yield_now();
-        }
+        let routed = ROUTED_IRQS.load(Ordering::Relaxed);
+        raise_test_irq(PENDING_IRQ);
+        // Wait for the handler to have actually run, rather than for a fixed number of yields: a
+        // yield elapses in no real time on an idle core (DECISIONS §28), and under SMP the interrupt
+        // may be taken on another core entirely, so counting yields here would be counting nothing.
+        let delivered = spin_until(|| ROUTED_IRQS.load(Ordering::Relaxed) > routed);
+        quiet_test_irq();
+        assert!(
+            delivered,
+            "the interrupt was raised but the handler never routed it, so this test could not \
+             reach the question it exists to ask",
+        );
 
         static SAW: AtomicBool = AtomicBool::new(false);
         super::spawn(move || {
@@ -3172,14 +3267,8 @@ mod tests {
         })
         .expect("spawn failed");
 
-        for _ in 0..50 {
-            if SAW.load(Ordering::SeqCst) {
-                break;
-            }
-            super::yield_now();
-        }
         assert!(
-            SAW.load(Ordering::SeqCst),
+            spin_until(|| SAW.load(Ordering::SeqCst)),
             "an interrupt that fired before the WAIT was lost",
         );
     }
