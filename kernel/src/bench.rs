@@ -62,6 +62,7 @@ pub fn run() -> ! {
     ipc_rtt();
     relay_rtt();
     call_reply();
+    broker_rtt();
     spawn_reap();
     map_new();
     coremark_compute();
@@ -231,6 +232,79 @@ fn call_reply() {
     // Release the server: it is parked in RECV_CAP, and a plain SEND rendezvouses with it all
     // the same (the cap and plain paths share the wait queues), delivering the sentinel.
     sched::ipc_send(ep, [u64::MAX, 0, 0]);
+}
+
+/// **What a queue broker costs when both ends are up** (milestone 23, DECISIONS §41).
+///
+/// Milestone 23's latency ladder has two rungs built, and the rule that governs where each is used
+/// is *opt-in per channel, never the default*. This benchmark is why that rule is a rule.
+///
+/// - **The default rung has no benchmark of its own, because it has no cost of its own.** A client
+///   holds a capability to a stable endpoint and whoever is parked in `RECV_CAP` on it answers; a
+///   swap changes who that is. No process stands in the data path, so the steady state *is*
+///   [`call_reply`] above, instruction for instruction, and the swap adds nothing to it. That is
+///   the number to quote for milestone 23's flagship.
+/// - **This is the opt-in rung**: `broker` interposed, so a producer never blocks on an absent
+///   consumer. Read it against `call_reply`, which is deliberately the same client and the same
+///   backend with nothing in between: the **difference** is the whole tax, and it is paid on every
+///   request in the steady state, not only during a swap.
+///
+/// The topology is the CALL/reply idiom rather than `relay_rtt`'s SEND/RECV pairs, because that is
+/// what the broker actually speaks: the broker serves its front endpoint with `RECV_CAP`, holds the
+/// client's one-shot Reply capability while it CALLs the backend, and answers through it.
+fn broker_rtt() {
+    let front = sched::create_endpoint(); // client -> broker
+    let back = sched::create_endpoint(); // broker -> backend
+
+    // The backend: the leaf service, answering through the Reply capability exactly as the direct
+    // server in `call_reply` does.
+    sched::spawn(move || {
+        loop {
+            let m = sched::ipc_recv_cap(back);
+            if m[0] == u64::MAX {
+                break;
+            }
+            reply_to(m[1], m[0]);
+        }
+    })
+    .expect("bench: no broker backend");
+
+    // The broker: pass-through. Both ends are up, so it buffers nothing; it forwards the request and
+    // hands the backend's answer straight back.
+    sched::spawn(move || {
+        loop {
+            let m = sched::ipc_recv_cap(front);
+            if m[0] == u64::MAX {
+                sched::ipc_send(back, [u64::MAX, 0, 0]);
+                break;
+            }
+            let r = sched::ipc_call(back, [m[0], 0]);
+            reply_to(m[1], r[0]);
+        }
+    })
+    .expect("bench: no broker");
+
+    for _ in 0..WARMUP {
+        sched::ipc_call(front, [1, 0]);
+    }
+    timed("broker_rtt", CALL_ITERS, || {
+        for _ in 0..CALL_ITERS {
+            sched::ipc_call(front, [1, 0]);
+        }
+    });
+    sched::ipc_send(front, [u64::MAX, 0, 0]); // releases the broker, which releases the backend
+}
+
+/// Answer through the one-shot Reply capability `RECV_CAP` delivered, and consume it.
+fn reply_to(slot: u64, word: u64) {
+    let crate::cap::Object::Reply(caller) = sched::current_cap(slot)
+        .expect("bench: no reply cap")
+        .object
+    else {
+        panic!("bench: RECV_CAP of a CALL did not deliver a Reply capability");
+    };
+    sched::ipc_reply(caller, [word, 0]);
+    let _ = sched::delete_current_cap(slot);
 }
 
 /// **Thread lifecycle, spawn to reap.** Each iteration creates a thread that exits immediately,
