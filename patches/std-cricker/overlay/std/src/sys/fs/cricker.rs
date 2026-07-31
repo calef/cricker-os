@@ -711,6 +711,16 @@ pub fn set_perm(_p: &Path, _perm: FilePermissions) -> io::Result<()> {
     unsupported()
 }
 
+/// The `nofollow` twin of [`set_perm`], added upstream in the 2026-07-31 nightly.
+///
+/// Cannot be re-exported from `unsupported_fs` the way `rename` and friends are: that version takes
+/// `unsupported_fs::FilePermissions`, and this module defines its own, so the signature does not
+/// match. It refuses for the same reason `set_perm` does — permissions are not a thing this contract
+/// has (§27), so there is nothing to set and nothing to follow or not follow.
+pub fn set_perm_nofollow(_p: &Path, _perm: FilePermissions) -> io::Result<()> {
+    unsupported()
+}
+
 pub fn set_times(_p: &Path, _times: FileTimes) -> io::Result<()> {
     unsupported()
 }
