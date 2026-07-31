@@ -1047,7 +1047,7 @@ fn initrd_riscv() -> bool {
             "--bin",
             "kbd",
             "--bin",
-            "swapd",
+            "swapper",
             "--bin",
             "conx",
             "--bin",
@@ -1055,7 +1055,7 @@ fn initrd_riscv() -> bool {
             "--bin",
             "chatty",
             "--bin",
-            "brokerd",
+            "broker",
             "--target",
             RISCV_TARGET,
         ],
@@ -1120,11 +1120,11 @@ fn initrd_riscv() -> bool {
         // swappable component (the second computes its answers in C), the client that talks across
         // the swap, and the queue broker for the opt-in rung. Portable, so both archives carry all
         // five and both ISAs run literally the same swap.
-        ("swapd", "swapd"),
+        ("swapper", "swapper"),
         ("conx", "conx"),
         ("cconx", "cconx"),
         ("chatty", "chatty"),
-        ("brokerd", "brokerd"),
+        ("broker", "broker"),
     ];
     let mut blobs: Vec<(&str, Vec<u8>)> = Vec::new();
     for &(archive_name, bin_name) in entries {
@@ -1305,7 +1305,7 @@ fn mkinitrd() -> bool {
     let mut tree: Vec<(&str, Vec<u8>)> = Vec::new();
     for name in [
         "rootsup", "spawner", "subsup", "flaky", "gpud", "painter", "cwarden", "cshim", "compd",
-        "window", "vterm", "kbd", "swapd", "conx", "cconx", "chatty", "brokerd",
+        "window", "vterm", "kbd", "swapper", "conx", "cconx", "chatty", "broker",
     ] {
         match std::fs::read(bin_elf(name)) {
             Ok(bytes) => tree.push((name, bytes)),
@@ -1533,6 +1533,83 @@ fn mkredoxfs() -> bool {
         && redoxfs_host(&["put", &img, fs_proto::fixture::SCRATCH_NAME, &scratch])
 }
 
+/// Where the **crash test's** RedoxFS image is written (milestone 37). The runners derive exactly
+/// this name from `CRICKER_DISK`, the way they derive the shared one.
+fn crash_disk_path() -> String {
+    workspace_root()
+        .join("target/crickerfs-redoxfs-crash.img")
+        .display()
+        .to_string()
+}
+
+/// Build the crash test's image: an empty filesystem with one file, `cut`, holding a known value.
+///
+/// **Its own disk, and regenerated every run, both deliberately** (milestone 37, DECISIONS §34
+/// condition 1). The crash test kills an FS server mid-transaction and leaves the filesystem
+/// half-written on purpose. Pointing it at the shared fixture would make every other FS test's
+/// result depend on whether this one had run first, and keeping the image across runs would make
+/// each run's starting state a function of the last one's damage. Both are the order-coupled fixture
+/// DECISIONS §27 spent a day on, so `CRICKER_KEEP_REDOXFS` deliberately does **not** apply here: the
+/// cross-boot case is interesting for the shared disk and is nothing but noise for this one.
+fn mkredoxfs_crash() -> bool {
+    let img = crash_disk_path();
+    let initial = workspace_root().join("target/redoxfs-crash-initial.tmp");
+    if std::fs::write(&initial, fs_proto::fixture::crash::INITIAL).is_err() {
+        eprintln!("mkredoxfs_crash: cannot stage the fixture file");
+        return false;
+    }
+    let initial = initial.display().to_string();
+    redoxfs_host(&["mkfs", &img, "16"])
+        && redoxfs_host(&["put", &img, fs_proto::fixture::crash::NAME, &initial])
+}
+
+/// After a test run, reopen the **crash** image with the host tool and confirm the property holds
+/// from outside the guest: `cut` reads back as exactly one of the two payloads, whole.
+///
+/// This is the half a cache cannot fake. The guest's verifier read the file back through an FS
+/// server that had just mounted the damaged disk; this is a different process, on the host, with the
+/// pinned engine, opening the image the run left behind. It also proves the image is still a
+/// consistent RedoxFS at all, because `cat` cannot succeed on one that is not.
+fn redoxfs_crash_check_after_run() -> bool {
+    let out = capture(
+        "cargo",
+        &[
+            "run",
+            "--quiet",
+            "--manifest-path",
+            "tools/redoxfs-host/Cargo.toml",
+            "--",
+            "cat",
+            &crash_disk_path(),
+            fs_proto::fixture::crash::NAME,
+        ],
+    );
+    let want_a = fs_proto::fixture::crash::A;
+    let want_b = fs_proto::fixture::crash::B;
+    match out.as_deref() {
+        Some(s) if s.as_bytes() == want_a => {
+            eprintln!(
+                "crash image: `cut` holds payload A, whole (the interrupted write is absent)"
+            );
+            true
+        }
+        Some(s) if s.as_bytes() == want_b => {
+            eprintln!(
+                "crash image: `cut` holds payload B, whole (the interrupted write completed)"
+            );
+            true
+        }
+        other => {
+            eprintln!(
+                "CRASH CONSISTENCY FAILED: after a kill mid-transaction the image's `cut` is \
+                 neither payload whole (got {:?}). A write must be wholly present or wholly absent.",
+                other.unwrap_or("<host tool error: the image did not even open>"),
+            );
+            false
+        }
+    }
+}
+
 /// After a test run, reopen the image with the host tool and confirm it still parses, that the file
 /// the FS server served reads back byte for byte, and that the write the `std::fs` test performed
 /// **reached the disk**. `cat` succeeding at all proves the image is still a consistent RedoxFS
@@ -1725,7 +1802,7 @@ fn test() -> bool {
     if !fs_server_build(TARGET) {
         return false;
     }
-    if !user() || !mkdisk() || !mkredoxfs() {
+    if !user() || !mkdisk() || !mkredoxfs() || !mkredoxfs_crash() {
         return false;
     }
     // Attach a virtio-gpu for the display test (milestone 29). Set here, in `test`, rather than in
@@ -1772,7 +1849,7 @@ fn test() -> bool {
     // fixture instead. This is test determinism, not a workaround: the cross-boot write failure it
     // separates out is real, and notes/fs-server.md carries it as a tracked open item with the exact
     // recipe to reproduce it (run one leg, then the other, without regenerating in between).
-    if !mkredoxfs() {
+    if !mkredoxfs() || !mkredoxfs_crash() {
         return false;
     }
     unsafe { std::env::set_var("CRICKER_INITRD", riscv_initrd_path()) };
@@ -1790,7 +1867,9 @@ fn test() -> bool {
     // checks the riscv leg's image (the leg that ran last, on its own fresh fixture).
     eprintln!();
     eprintln!("--- redoxfs image consistency after the run (host tool) ---");
-    redoxfs_check_after_run()
+    // Both images: the shared fixture (the write persisted, the filesystem still parses) and the
+    // crash test's own disk (milestone 37: after a kill mid-transaction, `cut` is one payload whole).
+    redoxfs_check_after_run() && redoxfs_crash_check_after_run()
 }
 
 /// The microbenchmarks (milestone 21; design/roadmap.md §21).

@@ -10,7 +10,7 @@ under a client that is talking to it, and the client's stream is unbroken.*
    chatty ──CALL──►│                       SVC                              │◄─RECV_CAP── conx  (v1, Rust)
   (a client)       └────────────────────────────────────────────────────────┘◄─RECV_CAP── cconx (v2, C)
                                             ▲
-                                            │ swapd, an unprivileged operator, changes
+                                            │ swapper, an unprivileged operator, changes
                                             │ WHICH of the two is parked in RECV_CAP
 ```
 
@@ -19,11 +19,11 @@ shares `suptree.rs`:
 
 | program | what it is | what it holds |
 |---|---|---|
-| `swapd` | the operator: builder, supervisor and verifier | a budget, one device capability, four endpoints |
+| `swapper` | the operator: builder, supervisor and verifier | a budget, one device capability, four endpoints |
 | `conx` | the component, version 1 (Rust) | the service endpoint (READ), a report endpoint, a coordination channel, the device, a shared page |
 | `cconx` | the component, version 2, whose answers are computed in **C** | identical |
 | `chatty` | the client, the producer, and the attacker (three roles, one binary) | the service endpoint (**WRITE**, not READ) |
-| `brokerd` | the queue broker, the ladder's opt-in rung | a front endpoint (READ), a back endpoint (WRITE) |
+| `broker` | the queue broker, the ladder's opt-in rung | a front endpoint (READ), a back endpoint (WRITE) |
 
 ## Why there is no broker in the fast path
 
@@ -115,7 +115,7 @@ That last one is worth stating precisely. The client *can* tell a swap happened,
 carries a version word put there for exactly that purpose. The claim is that its **stream was
 unbroken**, not that a swap is undetectable by a client that goes looking.
 
-**Witness two, the operator, in a different address space.** A page `swapd` owns and maps read/write
+**Witness two, the operator, in a different address space.** A page `swapper` owns and maps read/write
 into each instance; each stamps its own version at the index of every request it serves. Read after
 every writer is dead, it says two things the client cannot: that no sequence number went unserved
 (nothing was lost in the down window) and that the version **never goes backwards**, which is the
@@ -147,10 +147,10 @@ number.
 | rung | what it is | steady-state cost | what it decouples |
 |---|---|---|---|
 | 0 (default) | the shared endpoint; no process in the path | **zero** (`call_reply`) | lifecycle, at the price of blocking the caller during the window |
-| 1 (opt-in) | `brokerd`, a queue-server process | **1.99x** a direct call, ~1.2 us under HVF | lifecycle, with the producer never blocking |
+| 1 (opt-in) | `broker`, a queue-server process | **1.99x** a direct call, ~1.2 us under HVF | lifecycle, with the producer never blocking |
 | 2 | a durable broker that writes the backlog to storage | — | its own crash. **Not built.** |
 
-`brokerd` is pass-through when both ends are up: it forwards the two words and hands the backend's
+`broker` is pass-through when both ends are up: it forwards the two words and hands the backend's
 answer straight back, holding the client's `Reply` capability across the hop. When the operator tells
 it the backend is away it answers `ACCEPTED` immediately and holds the item in its own `.bss` (which
 lives in the region it was built in, so the bound is a bound on *its* memory and the kernel's

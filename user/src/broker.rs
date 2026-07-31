@@ -2,7 +2,7 @@
 //!
 //! The default rung has no process in it at all: a client CALLs a stable endpoint, whoever is
 //! parked in `RECV_CAP` on it answers, and a swap changes who that is. That costs nothing, and it
-//! is what `swapd`'s direct system uses. It has one property a producer may not be able to live
+//! is what `swapper`'s direct system uses. It has one property a producer may not be able to live
 //! with: while nobody is receiving, a caller **blocks**. Its request is safe (it parks on the
 //! endpoint's own sender queue and the next server drains it), but the caller is stopped until then.
 //!
@@ -44,7 +44,7 @@ use user_rt::{call, recv_cap, reply, send};
 #[allow(dead_code)]
 mod swap;
 
-/// What `swapd` endowed us with, in order. No budget, no device, no way to build anything: a
+/// What `swapper` endowed us with, in order. No budget, no device, no way to build anything: a
 /// compromised broker can reorder or drop the one channel it was placed on, and nothing else.
 const FRONT: u64 = 0; // READ: producers CALL here, and so does the operator (in band)
 const BACK: u64 = 1; // WRITE: the backend's stable endpoint

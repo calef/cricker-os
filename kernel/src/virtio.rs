@@ -435,7 +435,12 @@ struct Device {
 /// number's history keeps earning: the honest fix is releasing a transport when its driver dies,
 /// which is its own piece of work because nothing here unregisters. The same suggestion DECISIONS
 /// §33 made about `KERNEL_EP_PAGES`, for the same reason.
-const MAX_DEVICES: usize = 26;
+///
+/// **27 for milestone 37**, whose crash test brings up a block server on a disk of its own so that
+/// deliberately leaving a filesystem half-written cannot touch the image every other FS test reads.
+/// One more transport for the boot, and the same standing suggestion: this is the fourth bump, and
+/// each one is a receipt for the missing unregister.
+const MAX_DEVICES: usize = 27;
 
 /// The device table, fixed. `get`/`get_mut` mirror the slice API the call sites already used.
 struct Devices {

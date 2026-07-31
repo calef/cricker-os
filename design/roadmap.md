@@ -100,7 +100,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 23 | PARTIAL | A capability-routed component OS with live replacement | the flagship payoff, and a product ambition |
 | 35 | BUILT | Prove the DMA-confinement boundary (extends 18) | closes the one isolation boundary we test instead of prove |
 | 36 | BUILT | A foreign-language component, seam first (spike; feeds 29 and 23) | the thesis in one assertion: unverified foreign code, confined and restarted |
-| 37 | NOT-STARTED | Prove RedoxFS's crash consistency (DECISIONS §34, condition 1) | decides whether §34's "primary filesystem" label is earned |
+| 37 | BUILT | Prove RedoxFS's crash consistency (DECISIONS §34, condition 1) | decides whether §34's "primary filesystem" label is earned |
 | 38 | NOT-STARTED | Filesystem throughput, and the comparison (DECISIONS §34, condition 2; extends 21/25) | "primary filesystem" invites a comparison we cannot currently make |
 | 39 | RECORDED | Repository structure for a loosely-coupled OS, and the road to a distribution | the structure has to serve the thesis, and one constraint dominates |
 | 40 | NOT-STARTED | Documentation as a system service: searchable, rendered, and installed by packages | the OS explains itself, on itself |
@@ -109,6 +109,8 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 43 | NOT-STARTED | A second security audit, with a different lens | the attack surface roughly doubled after the first audit was written |
 | 44 | PARTIAL | GitHub repository hardening: policy, private reporting, code scanning, pull requests | a repository with a security thesis should be able to receive a report privately |
 | 45 | BUILT | Triage the CodeQL code-scanning alerts, and decide what the tool is for | the alerts land on this project's most-used unsafe abstraction |
+| 46 | NOT-STARTED | Rename the components for what they are, and write down the naming rules | a name is a claim, and `-d` claims something we rejected; conventions that matter get a checker, not a paragraph |
+| 47 | NOT-STARTED | Navigation and naming: cd, pwd, ls, mkdir, rm, paths, and environment | **divergence from Unix must be earned, never stylistic.** Keep the commands; change only what the capability model actually forces, and get one missing primitive right |
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
 comparison), with the multikernel work (17) as
@@ -420,12 +422,12 @@ that restart policy wants to be a rich userspace thing, not a kernel reflex).
 
 **Status (2026-07-30): the mechanism is built and proven on both ISAs; the generalisations below are
 not.** DECISIONS §39, notes/live-replacement.md. What landed: the four steps, an unprivileged
-operator (`swapd`) that runs them, a client (`chatty`) that talks across the swap and is its own
+operator (`swapper`) that runs them, a client (`chatty`) that talks across the swap and is its own
 witness, an attacker holding the client's exact capabilities that cannot become the server, a control
 that must fail (the outgoing instance reads a UART register after the revoke and faults, at the
 device's own page, with the kernel as the witness), and a replacement written in **C** over §31's
 seam, so what held across the swap is the contract rather than a recompile. Both rungs of the ladder
-that this milestone specified are built (`brokerd` is the opt-in one), and priced: `broker_rtt`.
+that this milestone specified are built (`broker` is the opt-in one), and priced: `broker_rtt`.
 
 **Three things the build settled, all in §39.** The block imagined a forwarding *process* as the
 broker; it does not need one, because §12's endpoint-only naming already makes the endpoint object
@@ -1565,6 +1567,28 @@ must not be folded into feature work.
 
 ### 37. Prove RedoxFS's crash consistency (DECISIONS §34, condition 1)
 
+**Built 2026-07-30, both ISAs. §34's condition 1 is met, and the claim it earns is narrower and
+sharper than the one it replaces** (DECISIONS §34's amendment carries the full statement).
+
+What is measured, on the host, exhaustively: 93 fault points across a seven-operation workload, each
+one a power cut with the process gone and the recovery a fresh mount. Every one recovers a state that
+**really existed**, the prefix never goes backwards as the cut advances, and at the last cut point
+nothing is lost. The same sweep with the interrupted write **torn** at four offsets: 372 points, same
+result. A separate sweep models a device that *lies* (acknowledges a write it never persists, then
+carries on): 186 damages, 112 recovered, 74 refused at the mount or the read, and **zero silently
+wrong**, which is the honest limit and the honest guarantee in one number.
+
+The controls, which is what makes the rest mean anything: with the header ring's older generations
+removed, **92 of the 93 fault points do not mount at all**; a commit torn at 2048 bytes fails
+`Header::valid()` while the previous generation's slot stays valid and older. And the injector caught
+a bug in the *harness* first, which is the best evidence it bites: nine fault points looked like
+filesystems that never existed until it turned out `snapshot` was reading `EIO` as "the name is
+absent".
+
+On device, on its own disk on both ISAs: the FS server is killed one block write into its second
+transaction, with that block torn in half by a real virtio write, and a **different FS-server
+process** mounts what it left behind through the same block server and reads the file back whole.
+
 **In brief.** Inject the failure a copy-on-write filesystem exists to survive, and measure whether it does: torn writes (a block partially written), dropped writes (a write the device acknowledged and did not persist), and a kill mid-transaction, then reopen with the same `cleanup: true` header-ring replay the FS server always mounts with, and assert the filesystem is consistent and every acknowledged write is either wholly present or wholly absent. The seam is `IpcDisk` and the block server, which sit between the engine and the device and can drop or truncate a write deliberately; the sans-IO core already runs on the host against a real image, so most of this is host-testable in milliseconds and only the device-level kill needs QEMU. Includes the negative control that makes the rest mean anything: the injector must be shown to actually corrupt something when the replay is disabled
 
 **Why it matters.** **the condition that decides whether §34's label is earned.** Crash consistency is RedoxFS's central selling point and the reason it beat ext2, and we currently assert it on the strength of the upstream design description rather than any measurement. That is a claim of exactly the kind this project's rules forbid, and it is the first thing a skeptic asks a filesystem. Until it passes, the docs say "designed for crash consistency" and never "crash consistent". Note this is a gap in **our harness, not in RedoxFS**: no candidate engine's crash consistency is tested here, so switching engines would not address it
@@ -1658,6 +1682,240 @@ code did. The real comparison is `/language:rust`: 2 results on `refs/heads/main
 **In brief.** Nine alerts on first run. Seven (`actions/missing-workflow-permissions`) were fixed immediately by giving every workflow an explicit least-privilege `permissions: contents: read`, which is the right call for this repo specifically: a project whose thesis is that a component holds the authority its job needs and nothing more has no business letting its CI token default to write access it never uses. **The two that remain are high severity and need judgement, not configuration**: `rust/access-invalid-pointer` at `crates/intrusive/src/lib.rs:93` and `:109`, the raw-pointer dereferences in the intrusive wait-queue's `push_back` and `pop_front`. Both already carry `SAFETY` comments citing the queue's caller contract, and `intrusive` is one of the 13 Kani-proved crates, so the question is precisely what CodeQL sees that Kani does not: Kani proves the pure logic under chosen bounds, while the pointer validity here rests on a *caller* contract enforced by convention rather than by the type system. Decide per alert whether it is a true positive worth restructuring for, or a false positive to dismiss **with a written reason**; then set the standing policy for how alerts get triaged, since an alert list nobody dispositions decays into wallpaper
 
 **Why it matters.** **the alerts land exactly where this project's most-used unsafe abstraction lives**, so the answer is worth having either way: either the wait queue's contract can be made structural rather than documented, which is a real improvement to the code every blocked thread passes through, or we write down why it cannot be and what upholds it instead. Also forces the meta-decision milestone 44 left open, now that scanning is actually running: a scanner whose findings are never dispositioned is worse than none, because it manufactures the appearance of review
+
+### 46. Rename the components for what they are, and write down the naming rules
+
+**In brief.** Five renames in one mechanical commit: `netd` → `netstack`, `compd` → `compositor`,
+`gpud` → `display`, `termd` → `lineedit`, and the crate `crates/linedisc` → `crates/lineedit`.
+Measured scope: **398 whole-word token replacements across 4 file moves and 1 directory move**
+(`netd` 152, `linedisc` 79, `termd` 70, `gpud` 65, `compd` 32).
+
+**Why it matters.** The rule and its argument are DECISIONS §39. The short version: a `-d` suffix
+tells every reader "this is a daemon" before they see a line of code, and a Unix daemon is defined by
+the ambient authority this OS deliberately lacks. `netd` holds five explicit capabilities, cannot name
+its own callers, is supervised, and can be reaped by something that lacks the authority to build it.
+The name is a false claim, which is the same defect as a stale comment except that every reader is
+guaranteed to read it. `linedisc` failed the second half of the same test: it is the correct Unix term
+of art, and the person who built this system did not recognise it.
+
+**Execution discipline, because this is the change milestone 39 warns about.** One commit, nothing
+else in it. **Whole-word tokens only** — `display` and `compositor` already appear as ordinary English
+throughout the notes, so this replaces identifiers, not vocabulary. Count the `--bin` name/token
+pairing before and after: this is the same `xtask` code where a union merge dropped a `--bin` flag on
+2026-07-29 and where git silently duplicated a loop header. Then zero surviving references to any old
+name, and the full gates on both ISAs. `script/lint`'s script-documentation check plus the roadmap and
+decisions checkers catch prose stragglers.
+
+**Sequencing (the reason this is a milestone and not an afternoon).** It must land *after* milestones
+23 and 37, because 23's instance one is the console hot-swap and it is editing `termd` — the file this
+renames away — plus `kernel/src/user.rs`, which both lanes share. Landing 398 token replacements
+underneath an active branch turns a mechanical commit into a merge fight, which is precisely what it
+must never become.
+
+#### Second half: the conventions, and checks for the ones a machine can check
+
+Looking for the tree's naming conventions on 2026-07-30 turned up three real inconsistencies, none of
+them anybody's decision:
+
+- **Word separation in crate names is split down the middle.** `fs_proto`, `gfx_proto`,
+  `dma_validate`, `user_rt` use underscores; `capsh`, `crickerfs`, `bitfont`, `linedisc`, `coremark`
+  run the words together. Two habits, no rule.
+- **The wire contract is spelled four ways**: `fs_proto` and `gfx_proto` (crates, underscore),
+  `netproto` (a module, no underscore), and `linedisc::proto` (a submodule). One concept.
+- **Branch prefixes contain a literal duplicate**: eight in use, including both `feature/` and `feat/`.
+
+Write the *principle* in prose, because it needs judgement and no checker can evaluate it: name a
+component for what it is, and prefer a word that parses without prior Unix exposure. DECISIONS §39
+already carries the reasoning; the note should point at it rather than restate it.
+
+Then **check the mechanical ones in `script/lint`**, because this project's own pattern is that a
+convention which matters gets a checker rather than a paragraph — the roadmap status vocabulary,
+DECISIONS numbering, script documentation, conflict markers and module-wide suppressions all became
+checks today, and a rule with no enforcement decays (which is the entire argument the dead-code
+ratchet was built on):
+
+- **No `-d` suffix on a binary.** §39 made this a rule; without a check it lasts until the first
+  inconvenient moment.
+- **One spelling for contract crates.** Pick `*_proto` or `*proto` and fail the odd one out.
+- **Branch prefixes from a fixed set**, which retires `feat/` versus `feature/`.
+
+The note lands in `notes/` and is indexed in `notes/README.md`; `script/lint` already enforces that
+every script has an entry in `notes/scripts.md`, so the precedent for gating documentation exists.
+
+**Why both halves are one lane.** They share a landing point: the note must describe `netstack`,
+`compositor`, `display` and `lineedit` rather than names that are about to change, and the `-d` check
+would fail until the rename lands. Splitting them would mean writing documentation that is stale on
+arrival, or a checker that is red on arrival.
+
+**Effort: 1 lane estimated**, almost entirely verification rather than editing.
+
+### 47. Navigation and naming: `cd`, `pwd`, `ls`, `mkdir`, `rm`, paths, and environment
+
+**In brief.** A navigation model for a system with no global namespace. Keep the Unix command names
+and behaviour wherever they can work honestly; diverge only where the capability model forces it, and
+say why each divergence is earned. **Nothing here exists yet**: no `cd`, `pwd`, `ls`, `mkdir` or `rm`,
+no enumeration verb, and `mkdir`/`unlink`/`rename`/`rmdir` are all `Unsupported` in the `std` PAL,
+backed by no verb.
+
+**Why it matters.** Chris's framing, and it is the governing constraint: *"I hate Windows/DOS
+specifically because they went differently than virtually every other OS I've used."* Gratuitous
+divergence taxes every user forever. So the bar is not "is this more capability-pure", it is **"does
+the model actually force this."** Three divergences clear that bar; the rest of Unix's surface should
+survive unchanged.
+
+#### The reframe: `cd` was never the problem
+
+A working directory, in capability terms, is *a directory capability the shell holds, used as the
+default base for resolving names*. Held by the shell that is entirely legitimate, the same as its
+untyped budget. The badness in Unix is three specific things, none of which is `cd` itself:
+
+1. **Children inherit it silently**, so every process gets a starting point nobody granted it.
+2. **Relative paths resolve implicitly**, so a program's reach depends on invisible state.
+3. **`..` walks out**, so the cwd bounds nothing.
+
+Fix those three and the command is fine.
+
+#### `cd`, `pwd`, `ls` are shell builtins, not programs
+
+The same category as `caps`, which already prints the shell's whole endowment: they spawn nothing,
+need no grant, and confer no new authority, because the shell is reading and rebinding what it already
+holds. This also retires a worry raised while designing `ls` — that a listing program would be
+over-granted, holding the power to read everything it lists. It is not a program.
+
+**The cwd stops at the process boundary.** `run wc file:report.txt` resolves the name against the
+shell's current directory *at the moment the grant is made*, and the child receives a capability to
+that one file. The child has no cwd, inherits nothing, and cannot re-resolve anything. The convenience
+is the shell's; the authority is explicit.
+
+#### The three earned divergences
+
+- **No global absolute paths.** There is no namespace to root them in. Already true and already
+  correct in the `std` PAL, which answers `InvalidFilename` rather than `PermissionDenied`: nothing
+  checked a permission, the name simply cannot be expressed.
+- **`..` stops at your root.** You descend from what you hold and never ascend past it. This is
+  chroot's shape arrived at from the other direction.
+- **`pwd` is relative to your root**, because naming anything above it implies a namespace that does
+  not exist.
+
+What that buys, and Unix cannot: **every shell has its own root.** Two shells can hold different
+subtrees and neither can name the other's files, not by policy but because no capability reaching them
+exists.
+
+#### `mkdir` and `rm`
+
+**`mkdir` is the same verb family as descending**: it mints a directory node and hands back a
+capability to it, exactly as `CREATE` already returns a file handle. `mkdir` is descend-with-creation,
+and the two should be designed together rather than separately.
+
+**`rm` is where Unix conflated two operations.** `rm` unlinks a name; the data survives while anyone
+holds a descriptor, and the blocks survive after that, so it cannot promise what people mean when they
+delete something sensitive (and `shred` only pretends to on a copy-on-write filesystem like ours).
+Separate them:
+
+- **Unlink**: remove a name from a directory; existing capability holders keep reading. Unix's
+  semantics, and genuinely useful (atomic replace and the temp-file idiom both depend on it).
+- **Revoke**: the object dies and *every* capability to it goes stale.
+
+The second is not exotic here: §13 revokes frames, §16 revokes objects, and generational names
+(`crates/slots`) make a stale capability fail safely rather than point somewhere wrong. **One
+implementation caveat to design rather than gloss:** the FS server validates handles against its own
+table, so invalidating them is mechanically easy, but that table is per-session and the server does
+not track all outstanding sessions today.
+
+**The rights ladder becomes explicit**: a directory capability needs separable **enumerate**, **open**
+(read versus write), **create** and **remove**. A program handed a directory to write logs into should
+not thereby be able to delete what is there. `FileSpec` already makes this split for files, where the
+manifest declares direction and the human designates the file without typing a mode.
+
+**And one safety property falls out free.** `rm -rf /` is bounded here by what your directory
+capability reaches, structurally. A shell rooted at a subtree cannot recursively delete the system,
+because no capability naming those files exists in it. Not a guard rail, not a confirmation prompt,
+not a check that could be wrong: there is nothing to name.
+
+#### Absolute paths: Plan 9's answer, not DOS's
+
+Distinguish a path as *authority* (`open()` resolving against a namespace nobody granted you: out
+permanently) from a path as a *name* (a string, and a name is not a capability). The syntax can
+survive even though the semantics cannot.
+
+**Plan 9 kept absolute paths and made `/` the root of *your* namespace**, assembled from what you were
+given, so two processes can both open `/lib/foo` and get different files. That is the counter-example
+to gratuitous divergence: the system that took namespaces furthest did not abolish paths, it made them
+personal. It also lines up with "every shell has its own root" above, which is not a coincidence.
+
+**The real decision is where the resolver lives**, and it changes the security story:
+
+- *In the FS server*: it accepts multi-component paths and walks them. Workable, but it puts
+  path-walking back into a server, against §27's discipline that open-by-path exists only inside the
+  server relative to one bound directory.
+- *In the client's runtime* (`user_rt`): a small table of prefix to directory capability, granted at
+  spawn, resolved locally and privately. The server still only ever sees a **single-component name
+  relative to a capability presented to it**, leaving §27 intact.
+
+**Recommendation: the client's runtime.** It yields absolute-looking paths with no server learning a
+name it did not already own, and the namespace becomes another endowment, inspectable in `caps` —
+which Unix cannot do, since you cannot enumerate what your paths could reach. The honest cost is that
+two processes seeing different files at one path is powerful and confusing, and Plan 9 users will
+attest to both halves.
+
+#### Environment variables, which are the same question wearing a string costume
+
+**Clean slate**: there is no `argv` and no `envp` today. `notes/abi.md` is explicit — "no libc, no
+`argv`/`envp` array, no dynamic loader, no `main` wrapper" — so a program gets argument words in
+registers and a populated cspace. Nothing has to be undone, and §15 already carries the natural seam
+as a deferred item: a **BootInfo** page, "a structured block the loader hands the program".
+
+Unix puts three different things in one string-to-string map, which is why environment variables are
+both indispensable and a security disaster:
+
+- **Inert configuration** (`LANG`, `TZ`, `TERM`). Genuinely just data, no authority in it.
+- **Names for finding things** (`PATH`, `HOME`). This is namespace, and therefore *this milestone's*
+  question: `HOME` is a directory capability wearing a string costume, and `PATH` is "the set of
+  directories I may spawn programs from", which is a set of capabilities.
+- **Secrets** (`AWS_SECRET_KEY` and friends). These are **authority badly encoded as a bearer
+  string**. In a capability system a credential is a capability to a service, not a value you can
+  print, log, or leak into a crash dump.
+
+So the three go three different places: data stays data, names become capabilities (the work above),
+and secrets become endpoints.
+
+**The property worth designing for is not secrecy, it is that environment is an *open channel*.** In
+Unix anyone can set any variable and hope the program reads it, which makes every process carry an
+unbounded implicit input. `LD_PRELOAD`, `IFS`, `PATH` and a long tail of library-specific variables
+are attacks that work because a program can be influenced by something it never asked for and does not
+know exists.
+
+Invert it: **a program declares the configuration it reads, and undeclared variables cannot reach
+it.** That is not a new mechanism, it is exactly what the SHILL-style manifest already does for
+capabilities — a program declares its expected endowment, the manifest is checked at spawn, and a
+mismatch is a refusal at the prompt rather than a mystery later. Configuration is the same shape, and
+declaring it closes the entire `LD_PRELOAD` class by construction rather than by blocklist.
+
+**And no inheritance.** Unix's environment is inherited by default, which is exactly why a secret in a
+shell leaks into every child including those with no business seeing it. Here it is granted like
+everything else: at spawn, explicitly, visible in `caps`. The honest tension is the governing
+constraint above — environment variables are convenient *because* they are inherited, and full
+explicitness is verbose. Proposed middle ground: **inheritance with visibility.** The shell holds a
+default config set and passes it, but the passing is explicit and inspectable, so `caps run prog`
+shows exactly what that program will see before it runs. Convenient in the common case, never
+invisible.
+
+**One thing to decide deliberately rather than drift into.** If configuration is declared in the
+manifest, the manifest grows from "what capabilities do I need" into "what do I need at all". That is
+a larger claim than it makes today, and it is the sort of scope creep that is easier to accept early
+than to reverse later.
+
+#### The finding that should drive the build order
+
+`cd`, `mkdir`, and per-process namespaces each converge on the same missing primitive: **a verb that
+returns a directory capability rather than bytes.** It would be the first place this contract hands
+back authority instead of data, and it deserves the care `Endpoint::REAP` got (§32): what rights does
+the child directory carry, can they ever exceed the parent's, and who may call it. Build that first;
+the commands are the easy part once it exists.
+
+**Sequencing.** After milestone 37, which owns the FS server's block path. **Effort: 2 lanes
+estimated** — one for the descend/create verb and the builtins, one for namespaces — noting that
+estimates for unbuilt work are guesses on a scale calibrated from history, not measurements.
 
 ## The display ladder (recorded 2026-07-28, Chris's direction)
 

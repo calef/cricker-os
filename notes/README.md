@@ -356,7 +356,11 @@ in the code or the conversation doesn't make sense, it belongs here.
   commit" open item was stale and the note records the correction. Milestone 31 phase 2 completed the
   write path (`CREATE`, `TRUNCATE`), added the name check that was previously true only by the absence
   of a path walker, and sized the FS server's stack by measurement after a 528-byte overflow presented
-  as a mystery 900-second test.
+  as a mystery 900-second test. Milestone 37 turned crash consistency from a claim into a measurement:
+  a power cut at every one of 93 write points, the interrupted write torn at four offsets, and a
+  device that lies about persistence, plus the controls that prove the injector bites (with the header
+  ring's history removed, 92 of 93 fault points stop mounting) and the honest limit (a lying device is
+  never survivable and never silent).
 - [Prior art and reuse](prior-art.md) — where to look before building (Redox, rCore, Tock,
   Hubris, seL4, Fuchsia) and the rule that decides build-vs-reuse: the reuse boundary is the
   TCB boundary. Inside it, always build; userspace components, actively prefer porting,

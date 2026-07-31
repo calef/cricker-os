@@ -6,7 +6,7 @@
 //! talking to it.
 //!
 //! Its whole authority is four capabilities and two pages, and every one of them was placed by
-//! `swapd` before this program ran: the stable service endpoint (READ), a report endpoint (WRITE),
+//! `swapper` before this program ran: the stable service endpoint (READ), a report endpoint (WRITE),
 //! the operator's coordination channel (WRITE), the operator's post-revoke poke (READ), the shared
 //! log page (read/write), and the device's registers. No initrd, no budget, no way to build
 //! anything. A compromised instance is a bad console and nothing else.

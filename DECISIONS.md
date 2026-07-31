@@ -2092,7 +2092,11 @@ is now measured rather than chosen: the kernel poisons every FS-server stack pag
 `fs_service::fs_stack_used` reports the deepest word that is no longer poison (135,696 bytes on
 aarch64, 135,824 on riscv64, of a 397,312-byte grant), with a test on both ISAs that prints it every
 run and fails under a quarter left. notes/fs-server.md carries the incident, including the two
-instruments it blinded and why a ceiling failure reports the ceiling and not the cost.
+instruments it blinded and why a ceiling failure reports the ceiling and not the cost. *Milestone 37
+measures 127,408 and 127,536 for the same grant, 8 KiB lower, and does not attribute the drop; both
+numbers and the reasoning are in the note. It also widened the instrument to a maximum over every FS
+server a boot starts, so the mount that recovers a crashed disk is measured too, which is the case
+most likely to recurse further than a clean one.*
 
 **The remaining honest gap: a client of a dead server blocks forever.** §26's fault endpoint is the
 mechanism that would turn that into a message a supervisor can act on, and wiring the FS service into
@@ -2772,11 +2776,11 @@ nobody wrote down is a decision nobody can revisit.
 
 ### The three conditions
 
-1. **Crash consistency must be tested, not asserted (milestone 37).** It is RedoxFS's central selling
-   point and we have never injected a torn write or a power cut. Today the claim rests on the upstream
-   design description. For a project whose rule is measure rather than argue, this gap is worse than
-   the missing verbs were, and it is the first thing a skeptic should ask about. Until it is tested,
-   the docs say "designed for crash consistency", never "crash consistent".
+1. **Crash consistency must be tested, not asserted (milestone 37). MET, 2026-07-30**; the
+   measurement and the exact claim it earns are in the amendment below. It is RedoxFS's central
+   selling point and we had never injected a torn write or a power cut. The claim rested on the
+   upstream design description. For a project whose rule is measure rather than argue, that gap was
+   worse than the missing verbs were, and it is the first thing a skeptic should ask about.
 2. **Throughput must be measured (milestone 38).** `fs_read` reports the whole-path cost of a real
    read (~204 us under HVF, device-dominated, with `relay_rtt` putting the isolation tax three orders
    of magnitude below it), and it is deliberately ungated because the path is interrupt-driven. What
@@ -2833,7 +2837,90 @@ on architecture rather than on engine quality, which is why choosing RedoxFS now
 
 Note that switching engines would not address condition 1 at all: **no candidate's crash consistency
 is tested here.** That is a gap in our harness, not in RedoxFS, and it is why the conditions matter
-more than the choice.
+more than the choice. *That sentence was true when it was written and is now the thing milestone 37
+fixed; the harness exists, and it would measure any engine put behind the same trait.*
+
+### Amendment (milestone 37, 2026-07-30): condition 1 is met, and the claim is narrower than the words it replaces
+
+**RedoxFS is crash consistent, in a sense that is now measured rather than described.** The docs may
+stop saying "designed for crash consistency". They should not start saying it without the scope
+below, because the scope is where the interesting part is.
+
+**What is proven.** Take a workload of operations, each acknowledged only after the engine commits
+it, and call the filesystem after the first `p` of them `S(p)`. Then:
+
+> **For every point at which the device could stop, a fresh mount recovers exactly `S(p)` for some
+> `p`.** Never a blend of two states, never a half-applied operation, never a length nobody wrote,
+> never a mount that fails.
+
+That is **prefix consistency**, and it is deliberately stated as a stronger property than the one the
+milestone asked for. "Every acknowledged write is either wholly present or wholly absent" falls out
+of it, and so does the thing that phrasing leaves open: a state where a later operation survived and
+an earlier one did not. Two further assertions make it a measurement rather than a shape. `p` must be
+**non-decreasing** as the cut point advances, so a later crash can never lose more than an earlier
+one; and at the last cut point `p` must be the whole workload, so a filesystem that recovered the
+initial state every time (perfectly prefix-consistent, perfectly useless) fails.
+
+**The numbers, host side, exhaustive** (`fs-server/tests/crash_consistency.rs`, 0.6 s):
+
+| injection | fault points | result |
+|---|---|---|
+| power cut, every write | 93 | all prefix-consistent, `p` monotonic, `p` = 7 with nothing lost |
+| power cut with the last write **torn**, 4 offsets | 372 | all prefix-consistent |
+| a device that **lies** (drop or tear one write, keep persisting after) | 186 | 112 recovered, 1 refused at the mount, 73 refused at a read, **0 silently wrong** |
+
+**The limit, stated as plainly as the guarantee, because it is real.** RedoxFS's `Disk` trait has no
+flush and no barrier, so write *ordering* is the device's job. A device that acknowledges a write it
+has not persisted and then persists later ones can leave a valid commit pointing at a block that
+never landed, and no filesystem promises otherwise. What RedoxFS does promise, and what the third row
+measures, is that this is **never silent**: every `BlockPtr` carries a seahash of the block it names,
+checked on every read, so a lost or torn block is an error rather than a wrong answer. Our block
+server issues no `VIRTIO_BLK_T_FLUSH`, so on real hardware with a volatile write cache the durability
+of the *last* acknowledged write is the device's word rather than ours; that is a gap in our driver,
+not in the engine, and it is recorded here rather than in a footnote.
+
+**The controls, which are the reason the rest counts.** Three, of increasing directness. The
+lying-device sweep needs no tampering at all and still produces 74 images the filesystem refuses, so
+the injector is demonstrably destructive. Removing the header ring's older generations leaves **92 of
+93 fault points unmountable**, which isolates the fallback as the mechanism rather than a guess. And
+a commit torn at 2048 bytes fails `Header::valid()` outright while the previous generation's slot
+stays valid and stays older, which is the whole recovery argument in three assertions and no mount.
+
+**A fourth control arrived unbidden and is worth more than the other three.** The first version of
+the harness read *any* failed lookup as "the name is absent", so a dropped write to a directory's
+tree block produced what looked like a filesystem that never existed, empty root and all. Nine fault
+points reported a filesystem bug that was a test bug: `ENOENT` is the only error that means absence,
+and the engine refusing to guess at a block whose checksum did not match is the property working.
+An instrument that can produce a false positive and did is an instrument that is connected to
+something.
+
+**Two mechanisms we had named wrong, corrected here.** `cleanup: true` is **not** the header-ring
+replay; `FileSystem::open` scans all 256 slots and keeps the newest valid one unconditionally, and
+`cleanup` only releases unused nodes and commits on top. And the recovery is not "the newest
+consistent generation" in any sense the engine computes: it is the newest generation whose *header*
+still hashes, which is enough only because a commit's blocks are all written before it.
+
+**On device, both ISAs, on a disk of its own.** The FS server is killed one block write into its
+second transaction, with that block torn in half by a real virtio write, announcing the cut on its
+readiness endpoint so the kill is provably the injector's. A **different FS-server process** then
+mounts the same disk through the same block server, which is endpoint-only naming doing its job: the
+block server never learns its client died and was replaced, because it never knew who its client was.
+Its readiness sentinel is the consistency result, since `Server::open` refuses an image it cannot
+make sense of. Both legs recover the acknowledged payload, whole, and the host tool re-reads the image
+afterwards with the pinned engine and agrees.
+
+**The crash test owns its disk, and that is §27's lesson applied before the fact rather than after.**
+This test deliberately leaves a filesystem half-written. On the shared fixture, every other FS test's
+result would have depended on whether this one ran first, which is precisely the order-coupled gate
+that manufactured three incompatible root causes from three honest investigations. The fixture is
+regenerated every run, `CRICKER_KEEP_REDOXFS` deliberately does not apply to it, and on the host every
+fault point starts from a byte-identical clone of one image built in-process.
+
+**What is still a design claim.** Ordering and durability at the device, above. Repair and recovery
+tooling for an image the checksums *do* reject, which "What would reverse this" already names as
+unchecked, and which this milestone sharpens rather than answers: we can now produce such an image
+deliberately, and there is still nothing to hand a user who has one. Condition 2 (throughput,
+milestone 38) is untouched.
 
 ## 35. What a scanner is for here, and how its findings get dispositioned
 
@@ -3191,7 +3278,58 @@ cleanup: the value was never in the deletions, it was in learning that the claim
   item in the crate. The whole point is that scope, not accuracy, is what makes an inner attribute
   the wrong tool.
 
-## 39. The endpoint is the broker, and a device is revoked by taking it back (milestone 23)
+## 39. A component is named for what it is, and nothing is named for a daemon
+
+**Decided 2026-07-30 (Chris).** Userspace components take names that describe what they do.
+Specifically: **no `-d` suffix**, and no term of art that requires archaeology to parse.
+
+### The argument, which is Chris's
+
+Milestone 39's naming section had already argued that "daemon" is the wrong word here, on technical
+rather than aesthetic grounds: a Unix daemon is defined by what it detaches from (no controlling
+terminal, inherited ambient authority, a pid file, started by a privileged init), and every one of
+those is something this OS deliberately does not have. `netd` holds five explicit capabilities, cannot
+name its own callers, is supervised, and can be reaped by something that lacks the authority to build
+it. It is about as far from a daemon as a long-running process gets.
+
+I then argued to keep the `-d` names anyway, weighing churn against benefit. Chris's response is the
+better argument and settles it: **if we are not going to use "daemon", we should not name things `d`
+for daemon.** A name is a claim, made before a reader sees a line of code, and this one is false. It
+is the same defect as a stale comment, which this project spends real effort correcting; a name is
+just a comment that every reader is guaranteed to read.
+
+### The second half: jargon is the same failure
+
+`termd` was to become `linedisc`, the correct Unix term of art. Chris did not recognise the phrase and
+asked what a line discipline is — **and he built this system.** That is decisive evidence about the
+name, not about him: `linedisc` imports vocabulary from exactly the system whose model we rejected,
+which is the `-d` failure wearing a different hat. It became `lineedit`, which someone who has never
+read a tty manual understands immediately and which is accurate about the visible behaviour.
+
+The crate `crates/linedisc` renames too, rather than being kept as the implementer's term of art. If
+the phrase is jargon to the system's author, it is jargon in the crate as well.
+
+### The rule going forward
+
+- Name a component for **what it is** (`netstack`, `compositor`, `display`, `lineedit`), not for what
+  Unix would have called it.
+- **Never `-d`.** Not `netd`, not a future `logd` or `authd`.
+- Prefer a word a reader can parse without prior Unix exposure. `blk`, `spawner`, `console`, `input`,
+  `shell`, `painter`, `window` were already right, and were always the majority of the tree; the four
+  `-d` names were the outliers, not the convention.
+- Milestone 39's vocabulary is now the tree's: a **component** is the shippable unit, a **service** is
+  what it offers, a **contract** is the wire protocol. "Server" stays a fine role word inside a
+  component. "Daemon" appears nowhere.
+
+The rename itself is milestone 46, deliberately its own mechanical commit, which also carries the
+naming conventions and the checks for the ones a machine can check. That pairing is on purpose: this
+rule and the three inconsistencies found alongside it (crate-name word separation, four spellings of
+"the wire contract", and a `feature/`-versus-`feat/` branch-prefix duplicate) are each the kind that
+decays without enforcement, and the checker is what makes a convention survive the first inconvenient
+moment. The part that cannot be checked, "name it for what it is", stays prose because it needs
+judgement.
+
+## 40. The endpoint is the broker, and a device is revoked by taking it back (milestone 23)
 
 **Built 2026-07-30.** Milestone 23 is the flagship the roadmap points at: every userspace component
 is a swappable unit behind a stable contract, and an operator replaces one live, with a client that
@@ -3280,7 +3418,7 @@ The block's rule is *opt-in per channel, never the default*, and the reason is a
 
 - **Rung 0, the default: the shared endpoint.** No process in the path, cost zero, buffering by the
   kernel's sender queue, decoupling limited to "the caller blocks until the replacement arrives".
-- **Rung 1, opt-in: `brokerd`, a queue-server process.** A producer that cannot afford to block gets
+- **Rung 1, opt-in: `broker`, a queue-server process.** A producer that cannot afford to block gets
   an immediate `ACCEPTED` while the backend is away; the broker holds the backlog in its own `.bss`
   (bounded, inside its own region, so a runaway producer hits `QUEUE_FULL` and never kernel memory)
   and drains it in order when a backend returns. Its control messages travel in band on its own
