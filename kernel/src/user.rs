@@ -2631,14 +2631,61 @@ pub mod fs_service {
         pub arg: u64,
     }
 
-    /// What a wired grant hands back: the FS service's readiness endpoints if this call is the one
-    /// that wired it, the warden's own readiness endpoint, and the endpoint the confined program
-    /// reports on.
+    /// **Drain the FS service's two readiness sentinels**, which is a sequencing act and not only an
+    /// assertion.
+    ///
+    /// Both servers announce with a blocking `SEND`, so each is parked inside its own announcement
+    /// until somebody receives it. Nothing they serve can be answered before that. Every caller that
+    /// needs the service to be *running* rather than merely spawned has to come through here first,
+    /// and [`await_warden`] documents what that ordering is load-bearing for.
+    ///
+    /// `None` means an earlier caller in this boot already wired the service and drained these.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub struct Granted {
-        pub readiness: Option<(EpId, EpId)>,
-        pub warden_ready: EpId,
-        pub report: EpId,
+    pub fn await_service(readiness: Option<(EpId, EpId)>) {
+        let Some((blk_ready, fs_ready)) = readiness else {
+            return;
+        };
+        assert_eq!(
+            crate::sched::ipc_recv(blk_ready)[0],
+            fs_proto::fixture::READY,
+            "the block server did not bring the RedoxFS device up",
+        );
+        assert_eq!(
+            crate::sched::ipc_recv(fs_ready)[0],
+            fs_proto::fixture::READY,
+            "the FS server did not open the RedoxFS image",
+        );
+    }
+
+    /// **Wait for a warden's startup request to have been answered, before the program it confines
+    /// exists at all.**
+    ///
+    /// This is a correction, and the bug it fixes is worth stating where it was made rather than
+    /// only in the note. All three processes share **one frame** (the module comment above argues
+    /// that is sound because every request on both hops is a blocking `CALL`, so the client is
+    /// parked inside its own call for the whole time the warden is using the page). That argument
+    /// holds once the warden is serving. It does not hold at **startup**, where the warden stages
+    /// the granted name in the page and then blocks in a `CALL` to the FS server: a confined
+    /// program that already exists writes its own first name over that page, and the FS server
+    /// resolves whatever it finds there.
+    ///
+    /// It is not even a race in the common case. When this call is the one that wires the service,
+    /// the FS server is parked inside its readiness `SEND`, so the warden's descent cannot be
+    /// answered until [`await_service`] drains it, and the client has that whole window to clobber
+    /// the page. The warden then dies (it will not serve a hole) and its client blocks forever on a
+    /// call nobody will answer, which is how this presented: a userspace `ebreak` followed by the
+    /// 60 s lost-wakeup watchdog. It passed on aarch64 and failed on riscv, which is the shape of a
+    /// timing bug and was one.
+    ///
+    /// The fix is ordering, not a second page: drain the service, wait for the warden's own
+    /// sentinel, and only then spawn the confined program.
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn await_warden(warden_ready: EpId) {
+        assert_eq!(
+            crate::sched::ipc_recv(warden_ready)[0],
+            fs_proto::fixture::READY,
+            "the warden could not open what it was granted, so there is nothing to attenuate",
+        );
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -2648,7 +2695,7 @@ pub mod fs_service {
         warden_image: &'static [u8],
         client_image: &'static [u8],
         grant: Grant,
-    ) -> Option<Granted> {
+    ) -> Option<EpId> {
         let Grant {
             name,
             rights,
@@ -2691,21 +2738,118 @@ pub mod fs_service {
         })
         .expect("could not spawn the file warden");
 
+        // Both handshakes before the client exists, in this order and for [`await_warden`]'s reason:
+        // the servers are parked inside their announcements until they are drained, and the warden's
+        // own request is staged in the page all three share.
+        await_service(readiness);
+        await_warden(warden_ready);
+
         // The confined program. Its slot 0 looks exactly like a directory capability from inside, and
         // is not one: same protocol, same page, a namespace of one name.
-        let report = spawn_fs_client(
+        Some(spawn_fs_client(
             client_image,
             narrow_ep,
             file_shared,
             client_role,
             client_arg,
-        );
+        ))
+    }
 
-        Some(Granted {
-            readiness,
-            warden_ready,
-            report,
+    /// **Wire a per-directory grant and the program confined to it** (milestone 47,
+    /// notes/dir-capability.md). The same three-process shape [`start_granted`] wires, one rung up:
+    ///
+    /// ```text
+    ///   FS server ──file IPC──► dwarden ──narrowed file IPC──► the confined program
+    ///            (the image root)         (one subtree, one rights set)
+    /// ```
+    ///
+    /// The warden holds the root directory capability and the confined program holds an endpoint to
+    /// the warden and **nothing that names the FS server**, which is what makes "it cannot reach the
+    /// parent directory or a sibling" a statement about its cspace rather than about a branch. That
+    /// argument is `fwarden`'s, and it is load-bearing here for an extra reason: the FS server's
+    /// handle table is per *server*, so a rights-carrying handle on its own would not confine a
+    /// program that could still name [`fs_proto::fs::ROOT`].
+    ///
+    /// `rights` is a [`fs_proto::dir`] mask. It is what the warden *asks* for; the FS server
+    /// intersects it with the root's and refuses if the answer is smaller, so a wiring that asked
+    /// for more than exists fails at the warden's first request rather than silently serving less.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub struct DirGrant {
+        /// The directory the warden descends into, one component under the image root. Must fit
+        /// [`fs_proto::grant::MAX_NAME`].
+        pub name: &'static str,
+        /// The [`fs_proto::dir`] rights the subtree capability is to carry.
+        pub rights: u64,
+        /// The confined program's `arg0` (its role) and `arg1`.
+        pub role: u64,
+        pub arg: u64,
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn start_granted_dir(
+        blk_image: &'static [u8],
+        fsserver_image: &'static [u8],
+        warden_image: &'static [u8],
+        client_image: &'static [u8],
+        grant: DirGrant,
+    ) -> Option<EpId> {
+        let DirGrant {
+            name,
+            rights,
+            role: client_role,
+            arg: client_arg,
+        } = grant;
+        assert!(
+            fs_proto::grant::fits(name.as_bytes()),
+            "a granted name rides in two argument words; this one does not fit",
+        );
+        let (file_ep, file_shared, readiness) = ensure(blk_image, fsserver_image)?;
+        let narrow_ep = crate::sched::create_endpoint();
+        let warden_ready = crate::sched::create_endpoint();
+
+        // The grant rides in the START arguments exactly as a per-file grant does: the name in two
+        // words and the rights in the spec word, whose rights field has no fixed width. So a subtree
+        // grant costs no frame either.
+        let (lo, hi) = fs_proto::grant::pack_name(name.as_bytes());
+        let spec = fs_proto::grant::spec(name.len(), rights);
+
+        crate::sched::spawn(move || {
+            run(
+                warden_image,
+                Spawn {
+                    arg0: lo,
+                    arg1: hi,
+                    arg2: spec,
+                    grants: &[
+                        endpoint_cap(file_ep, Rights::WRITE), // slot 0: CALL the FS server
+                        endpoint_cap(narrow_ep, Rights::READ), // slot 1: serve the narrowed capability
+                        endpoint_cap(warden_ready, Rights::WRITE), // slot 2: readiness, once
+                    ],
+                    maps: &[Mapping {
+                        va: FILE_VA_CLIENT,
+                        phys: file_shared,
+                        flags: Flags::user_data(),
+                    }],
+                },
+            )
         })
+        .expect("could not spawn the directory warden");
+
+        // Both handshakes before the client exists. See [`await_warden`]: this is the call that
+        // found the bug, because a warden whose descent is answered only after the service is
+        // drained gives its client an unbounded window to write over the staged name.
+        await_service(readiness);
+        await_warden(warden_ready);
+
+        // The confined program. Its slot 0 looks exactly like a directory capability from inside,
+        // and is one: the same protocol, the same page, a namespace of one subtree.
+        Some(spawn_fs_client(
+            client_image,
+            narrow_ep,
+            file_shared,
+            client_role,
+            client_arg,
+        ))
     }
 
     /// The `std::fs` client's heap budget and extra stack. Same magnitudes as the networked std
@@ -7071,19 +7215,10 @@ mod std_tests {
     pub(super) fn assert_fs_service_ready(
         readiness: Option<(crate::sched::EpId, crate::sched::EpId)>,
     ) {
-        let Some((blk_ready, ready)) = readiness else {
-            return;
-        };
-        assert_eq!(
-            crate::sched::ipc_recv(blk_ready)[0],
-            fs_proto::fixture::READY,
-            "the block server did not bring the RedoxFS device up",
-        );
-        assert_eq!(
-            crate::sched::ipc_recv(ready)[0],
-            fs_proto::fixture::READY,
-            "the FS server did not open the RedoxFS image",
-        );
+        // One copy, in `fs_service`, because draining these is **sequencing** and not only an
+        // assertion: each server is parked inside its own blocking announcement until somebody
+        // receives it, so nothing it serves can be answered first. The wardens depend on that.
+        fs_service::await_service(readiness);
     }
 
     /// Build the exact bytes `hellostd` prints when it is granted a directory capability, into
@@ -8239,7 +8374,7 @@ mod tests {
     /// Wire a per-file grant of the given direction, run the attacker against it, and return its
     /// verdict bitmap. `None` when no RedoxFS disk is attached (nothing to test; do not fail).
     fn attack_a_grant(rights: u64, writable: bool) -> Option<u64> {
-        let granted = match fs_service::start_granted(
+        let report = match fs_service::start_granted(
             init_image(),
             program("fsserver").expect("no fsserver program in the initrd archive"),
             program("fwarden").expect("no fwarden program in the initrd archive"),
@@ -8263,13 +8398,9 @@ mod tests {
                 return None;
             }
         };
-        assert_fs_service_ready(granted.readiness);
-        assert_eq!(
-            sched::ipc_recv(granted.warden_ready)[0],
-            fs_proto::fixture::READY,
-            "the warden could not open the granted name, so there was nothing to attack",
-        );
-        let [tag, verdict, ..] = sched::ipc_recv(granted.report);
+        // The two handshakes happened inside `start_granted`, before this attacker existed: they
+        // are what makes the warden's own staged request safe on a page all three share.
+        let [tag, verdict, ..] = sched::ipc_recv(report);
         assert_eq!(
             tag,
             fs_proto::fixture::VERDICT,
@@ -11415,6 +11546,196 @@ mod reap_tests {
     }
 }
 
+/// **The directory capability, attacked** (milestone 47, notes/dir-capability.md).
+///
+/// One module for both ISAs rather than an aarch64 test with a riscv twin, which the FS tests above
+/// have. Nothing here is architecture-specific: it wires three portable programs and asserts on a
+/// bitmap, so the only difference between the legs is which binary carries the block-server role,
+/// and that is one `cfg` in [`blk_server_image`] rather than a second copy of every assertion. The
+/// parity gate (DECISIONS §19) is met by literally the same test running twice.
+#[cfg(test)]
+mod dir_capability_tests {
+    use super::*;
+    use crate::sched;
+    use fs_proto::dir;
+    use fs_proto::fixture::dirscape as esc;
+
+    /// The binary carrying the block server's role, which is the one thing the two ISAs disagree
+    /// about: on aarch64 it is a role of the `init`/hello binary, on riscv the dedicated `blk` one.
+    fn blk_server_image() -> &'static [u8] {
+        #[cfg(target_arch = "aarch64")]
+        return program("init").expect("no init program in the initrd archive");
+        #[cfg(target_arch = "riscv64")]
+        return program("blk").expect("no blk program in the initrd archive");
+    }
+
+    /// Wire a `dwarden` holding a capability to the fixture's `sub` with exactly `rights`, run the
+    /// directory attacker against it, and return its verdict bitmap. `run` keeps the names the
+    /// attacker creates distinct, because all three runs share one image within a boot and an
+    /// `EEXIST` would otherwise read as a refusal.
+    ///
+    /// `None` when no RedoxFS disk is attached (nothing to test; do not fail).
+    fn attack_a_subtree(rights: u64, run: u64) -> Option<u64> {
+        let report = match fs_service::start_granted_dir(
+            blk_server_image(),
+            program("fsserver").expect("no fsserver program in the initrd archive"),
+            program("dwarden").expect("no dwarden program in the initrd archive"),
+            program("fsclient").expect("no fsclient program in the initrd archive"),
+            fs_service::DirGrant {
+                name: fs_proto::fixture::tree::SUB,
+                rights,
+                role: 5, // ROLE_DIR_ATTACKER
+                arg: run,
+            },
+        ) {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no RedoxFS disk attached; skipping)");
+                return None;
+            }
+        };
+        // Both handshakes happened inside `start_granted_dir`, before this attacker existed. That
+        // ordering is the fix for the startup clobber `fs_service::await_warden` records.
+        let [tag, verdict, ..] = sched::ipc_recv(report);
+        assert_eq!(
+            tag,
+            fs_proto::fixture::VERDICT,
+            "the attacker's report is not a verdict word",
+        );
+        Some(verdict)
+    }
+
+    /// Compare a verdict against the exact set the configuration is specified to produce, and say
+    /// what the difference means in words rather than in hex.
+    ///
+    /// Both directions are failures and they are different failures, which is why this is not one
+    /// equality assertion: a bit set that should not be is an escape, and a bit clear that should be
+    /// set means the capability did not work, so every refusal it reported proves nothing.
+    fn assert_verdict(got: u64, want: u64, what: &str) {
+        let leaked = got & !want;
+        let missing = want & !got;
+        assert_eq!(
+            leaked,
+            0,
+            "the {what} directory capability leaked: {}",
+            describe_dirscape(leaked),
+        );
+        assert_eq!(
+            missing, 0,
+            "the {what} directory capability could not do what it was granted ({missing:#x}), so \
+             its refusals prove nothing: a capability that reaches nothing is trivially confined",
+        );
+    }
+
+    /// Name the bits a verdict set, so a failure reads as a sentence instead of a bitmap.
+    fn describe_dirscape(v: u64) -> &'static str {
+        if v & esc::REACHED_PARENT != 0 {
+            "it opened a file that is in the granted directory's PARENT"
+        } else if v & esc::REACHED_SIBLING != 0 {
+            "it reached the granted directory's SIBLING"
+        } else if v & esc::WALKED_UP != 0 {
+            "`..` resolved to something"
+        } else if v & esc::WIDENED != 0 {
+            "a child carried a right its parent did not have"
+        } else if v & esc::ENUMERATED_A_STRANGER != 0 {
+            "a listing held a name from outside the grant"
+        } else if v & esc::FORGED_HANDLE != 0 {
+            "it reached something with a handle it was never given"
+        } else if v & esc::CREATED != 0 {
+            "it created a name through a capability with no create right"
+        } else if v & esc::MADE_A_DIR != 0 {
+            "it made a directory through a capability that could not"
+        } else if v & esc::RENAMED != 0 {
+            "it renamed a name through a capability with no remove right"
+        } else if v & esc::WROTE != 0 {
+            "it wrote through a capability with no write right"
+        } else if v & esc::DESCENDED != 0 {
+            "it descended through a capability with no descend right"
+        } else if v & esc::ENUMERATED != 0 {
+            "it enumerated through a capability with no enumerate right"
+        } else if v & esc::GRANTED_ACCESS_FAILED != 0 {
+            "the granted access itself failed, so nothing was actually proven"
+        } else {
+            "nothing (an empty verdict should not have failed an assertion)"
+        }
+    }
+
+    /// **A read-only explorer: it may descend, read and list, and it reaches nothing above itself.**
+    ///
+    /// This is milestone 47's keystone under attack. The attacker holds a capability to `sub` and
+    /// spends its life trying to name `motd` (which is in the parent), `other` and `other/secret`
+    /// (which are in a sibling), and `..`. All three exist on the image and the warden one hop up
+    /// can reach every one of them on any request it likes, so each refusal is a fact about the
+    /// capability rather than about the filesystem.
+    ///
+    /// It also proves both halves of "a child can never exceed its parent": a child asked for no
+    /// rights can do nothing at all, and a child asked for a right this grant does not carry is
+    /// refused rather than quietly given something smaller.
+    #[test_case]
+    fn a_read_only_directory_capability_reaches_its_subtree_and_nothing_above_it() {
+        let Some(v) = attack_a_subtree(dir::DESCEND | dir::READ | dir::ENUMERATE, 1) else {
+            return;
+        };
+        assert_verdict(
+            v,
+            esc::OPENED_ITS_OWN | esc::ENUMERATED | esc::DESCENDED,
+            "read-only",
+        );
+    }
+
+    /// **The same attacker against a capability carrying every right**, which is what makes the run
+    /// above mean anything.
+    ///
+    /// Without it, a `dwarden` that answered no to everything would pass the read-only test
+    /// perfectly, and so would a grant that reached nothing at all. Here the same requests through
+    /// the same code succeed: it writes, it creates, it makes a directory. And it *still* reaches
+    /// nothing above itself, which is the point: the widening is exactly the axes that were widened.
+    #[test_case]
+    fn a_full_directory_capability_does_everything_inside_and_nothing_outside() {
+        let Some(v) = attack_a_subtree(dir::ALL, 2) else {
+            return;
+        };
+        assert_verdict(
+            v,
+            esc::OPENED_ITS_OWN
+                | esc::ENUMERATED
+                | esc::DESCENDED
+                | esc::CREATED
+                | esc::WROTE
+                | esc::RENAMED
+                | esc::MADE_A_DIR,
+            "full",
+        );
+    }
+
+    /// **Milestone 47's motivating sentence, made a test**: a program handed a directory to write
+    /// into can add to it and write to what it added, and it cannot walk into a subdirectory or find
+    /// out what else is in there.
+    ///
+    /// Three rungs withheld at once (`DESCEND`, `ENUMERATE`, `REMOVE`), and two of them are the
+    /// interesting cases:
+    ///
+    /// - `DESCEND` withheld while `CREATE` is held: `mkdir` needs both, so this capability can make
+    ///   a file and cannot make a directory. A directory it could not have walked into would be a
+    ///   way to mint a capability out of a right that was withheld.
+    /// - `REMOVE` withheld while `CREATE` is held is **"add to this, destroy nothing"** exactly, and
+    ///   it is what `RENAME` exists to make falsifiable: this attacker creates a name and then tries
+    ///   to move it, through the same code the full run below moves it with, and cannot. Before that
+    ///   verb existed nothing on the wire consulted `REMOVE` at all, so the rung was a claim rather
+    ///   than a rule.
+    #[test_case]
+    fn an_append_only_directory_capability_adds_and_cannot_walk_or_list() {
+        let Some(v) = attack_a_subtree(dir::READ | dir::WRITE | dir::CREATE, 3) else {
+            return;
+        };
+        assert_verdict(
+            v,
+            esc::OPENED_ITS_OWN | esc::CREATED | esc::WROTE,
+            "append-only",
+        );
+    }
+}
+
 /// Parity C: the virtio-blk driver, its two attackers, and the DMA confinement, on RISC-V.
 ///
 /// These are the riscv twins of the three disk tests in the aarch64 module above, separate
@@ -11690,7 +12011,7 @@ mod riscv_virtio_tests {
     /// The riscv half of the aarch64 twin's helper; the only difference is the block-server binary
     /// (the portable `blk` here, the PL011-tied `hello` there).
     fn attack_a_grant(rights: u64, writable: bool) -> Option<u64> {
-        let granted = match fs_service::start_granted(
+        let report = match fs_service::start_granted(
             blk_image(),
             program("fsserver").expect("no fsserver program in the initrd archive"),
             program("fwarden").expect("no fwarden program in the initrd archive"),
@@ -11712,13 +12033,9 @@ mod riscv_virtio_tests {
                 return None;
             }
         };
-        assert_fs_service_ready(granted.readiness);
-        assert_eq!(
-            sched::ipc_recv(granted.warden_ready)[0],
-            fs_proto::fixture::READY,
-            "the warden could not open the granted name, so there was nothing to attack",
-        );
-        let [tag, verdict, ..] = sched::ipc_recv(granted.report);
+        // The two handshakes happened inside `start_granted`, before this attacker existed: they
+        // are what makes the warden's own staged request safe on a page all three share.
+        let [tag, verdict, ..] = sched::ipc_recv(report);
         assert_eq!(
             tag,
             fs_proto::fixture::VERDICT,
