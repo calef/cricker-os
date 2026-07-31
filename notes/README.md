@@ -441,6 +441,13 @@ in the code or the conversation doesn't make sense, it belongs here.
   atomicities stated apart (§42), the crash-atomic half measured at every fault point rather than
   asserted, and the startup ordering bug that one shared frame hides until a warden stages a request
   in it.
+- [Removal needs a directory](rm.md) — why `rm` is the first program granted a **directory** rather
+  than a file (no per-file capability can express "take this name away", because a name lives in the
+  directory that holds it), and why `-r` **widens the grant** rather than setting a flag: a program run
+  without it holds no way to descend, so **its recursion is not disabled by a branch anybody has to get
+  right**. Also `RMDIR` being empty-only, Unix's reporting checked against `rm(1)` rather than
+  remembered, and why we need no special case for `/` where Unix ships one.
+
 - [Navigating with no global namespace](shell-navigation.md) — milestone 47's commands: `cd`, `pwd`,
   `ls`, `mkdir`, `rm` as **builtins** (which retires the worry that a listing *program* would hold the
   power to read everything it lists). The three earned divergences and why each is forced rather than
