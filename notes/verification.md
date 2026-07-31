@@ -505,10 +505,12 @@ script/verify
 ```
 
 Self-installs Kani on first run (its own nightly toolchain and a CBMC backend, a minute of
-download), then runs `cargo kani` over every crate carrying harnesses: **67 harnesses across 13
-crates** as of milestone 35, in a few minutes. Not in `script/bootstrap`, because the kernel build does
-not need it; same self-install pattern as `script/coverage`. A new proof crate goes in that script's
-list, and a new harness in an existing crate is picked up with no change.
+download), then runs `cargo kani` over every crate carrying harnesses: **76 harnesses across 14
+crates** as of milestone 51, in a few minutes. (This line said 67 for a while after it was 69; the
+count is now taken by grepping `#[kani::proof]` rather than by memory.) Not in `script/bootstrap`,
+because the kernel build does not need it; same self-install pattern as `script/coverage`. A new
+proof crate goes in that script's list, and a new harness in an existing crate is picked up with no
+change.
 
 ## The rules that keep proofs cheap and honest
 

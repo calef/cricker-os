@@ -296,6 +296,13 @@ in the code or the conversation doesn't make sense, it belongs here.
   prior art (seL4 dataports, Fuchsia Netstack3, Plan 9 /net as the counter-design), the socket
   contract proposal and its open fork, the smoltcp 0.13.1 pin, and the driver/server work that
   follows.
+- [NTP, the wire format](ntp.md) — milestone 51 lane C (`crates/ntp_proto`). The 48-byte NTPv4
+  packet, the 1900-epoch fixed-point timestamp and the **fixed era pivot** chosen for the 2036
+  rollover (and why picking the era nearest to "now" is worse), the offset and delay arithmetic, and
+  the seven response checks that are the entire spoofing resistance of unauthenticated NTP. Scope is
+  recorded plainly: no NTS, and why that is a separate decision rather than a stretch goal. Also the
+  place where a model checker turned out to be the wrong tool and exhausting a 10^9 domain was the
+  right one.
 - [Hardening the repository itself](repo-hardening.md) — milestone 44's other half: the GitHub
   settings that cannot be committed. Private vulnerability reporting, and the exact ruleset for
   `main` with the seven required checks, written to be followed rather than interpreted. Includes the

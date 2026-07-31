@@ -212,6 +212,10 @@ name = "measure"
 version = "0.1.0"
 
 [[package]]
+name = "ntp_proto"
+version = "0.1.0"
+
+[[package]]
 name = "paging"
 version = "0.1.0"
 
