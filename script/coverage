@@ -46,6 +46,12 @@ awk -F: -v floor="$floor" '
     /^SF:/ { file = $2 }
     /^LF:/ { found = $2 }
     /^LH:/ {
+        # Skip a file that no longer exists. `cargo llvm-cov report` reads accumulated profile
+        # data from target/, so a retired crate lingers there and fails the floor at 0% long
+        # after it was deleted (crates/heap did exactly this on 2026-07-31, and it costs whoever
+        # hits it a confused half hour because the path looks real). CI starts clean and never
+        # sees it; a working tree does. system() returns the exit status, so 0 means present.
+        if (system("test -f " file) != 0) { next }
         if (found > 0 && $2 * 100 < found * floor) {
             printf "coverage: %s: %.1f%% line coverage is under the %d%% floor\n",
                 file, $2 * 100 / found, floor
