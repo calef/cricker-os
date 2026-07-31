@@ -47,6 +47,23 @@ without leaving the system. Four things make them that, and all four are things 
 The point is not the format, which is theirs. It is the posture: documentation written for someone
 who has to *use* the thing, and honest enough that they trust it when it says something works.
 
+**Anything global to the tree is assigned by the integrator at merge, never claimed by a lane.**
+Concurrent lanes cannot see each other, so a lane that reaches for a shared resource is guessing.
+Two kinds bit us on 2026-07-30:
+
+- **`DECISIONS.md` section numbers**, three collisions in one day. Preferred: a lane **does not touch
+  `DECISIONS.md` at all**, puts the reasoning in `notes/` and in its report, and the integrator mints
+  the section at merge. (Milestone 51's calendar lane did exactly this, unprompted, and it was the
+  only one of four that caused no conflict.) If a lane must write the section to make its own gates
+  pass, the number is **provisional**: say so in the report, and expect renumbering.
+- **Counts that span the tree.** The Kani harness count was written as 76 on one branch and 80 on
+  another; the merged tree had 95. Both were counted honestly. Take such a number at merge, from the
+  merged tree.
+
+**After any renumber, check citations by content, not by running the gate.** `script/decisions
+--check` verifies that a cited `§N` resolves to *some* section, never that it resolves to the right
+one, so a well-formed wrong citation is invisible to it. This has already produced two of them.
+
 **Benchmarks and cross-OS comparisons are first-class.** Measure, do not argue. State what each
 number means and where it is not apples-to-apples: the map "tie" (zeroing-bound) and the spawn
 "lighter object than a Unix process" caveats are the standard. An honest tie or loss recorded
