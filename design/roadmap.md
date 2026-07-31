@@ -114,7 +114,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 48 | NOT-STARTED | Job control: jobs, wait, kill, fg, bg, and a stopped state | **most of it needs no new kernel surface**, and the tty's most tangled feature turns out to be a capability transfer |
 | 49 | NOT-STARTED | Users, login, and attribution: what identity is for once it stops being authority | three of Unix's four uses for a uid are already answered structurally; the fourth, **attribution, has no mechanism at all** |
 | 50 | NOT-STARTED | Pipes and redirection: one sink protocol, and `\|` turns out to be an endpoint | the mechanism already exists (**stdout is a capability in slot 1**); the work is unifying four byte-sink protocols, not adding a parser rule |
-| 51 | NOT-STARTED | Wall-clock time, the `date` command, and an NTP service | the machine currently believes it is January 1970; **reading the clock is harmless and setting it is an authority**, which is the whole design |
+| 51 | IN-PROGRESS | Wall-clock time, the `date` command, and an NTP service | the machine currently believes it is January 1970; **reading the clock is harmless and setting it is an authority**, which is the whole design |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -2365,6 +2365,16 @@ Buildable today: `netstack` runs smoltcp, and NTP is UDP on port 123. Two honest
 2. **The RTC may be wrong or absent**, so the service needs a defined state for "I do not know what
    time it is" rather than confidently reporting 1970. That state should be visible to readers, not
    papered over, which is the same rule §42 sets for filesystems: no silent degradation.
+
+**The wire format is built** (`crates/ntp_proto`, notes/ntp.md): the 48-byte NTPv4 packet, the
+1900-epoch fixed-point timestamp with a fixed era pivot for the 2036 rollover, the offset and delay
+arithmetic in modular form so an exchange across that rollover comes out right, and the seven
+response checks that are the whole of plain NTP's spoofing resistance. Host-tested and Kani-proved
+(the era pivot over all 4.2 billion seconds from 1970 to 2104; parse/serialise and the origin-nonce
+check over all 2^384 packets). Problem 1 above is **recorded, not solved**: the crate is
+unauthenticated NTPv4 and says so in its own documentation, NTS stays a separate decision, and the
+crate does not implement half of it. What remains in this lane is the client that carries the bytes,
+which wants a socket and therefore the service lane's proposal capability.
 
 #### The fork this exposes, which is bigger than the milestone
 

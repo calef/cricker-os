@@ -24,6 +24,7 @@ members = [
     "crates/intrusive",
     "crates/lineedit",
     "crates/measure",
+    "crates/ntp_proto",
     "crates/slots",
     "crates/uheap",
     "crates/user_rt",
@@ -57,6 +58,14 @@ license = "MIT OR Apache-2.0"
 # arithmetic with nothing a debugger would want to step through. Its correctness is pinned by host
 # tests against the published FIPS vectors, so the optimized build is not less trustworthy.
 [profile.dev.package.measure]
+opt-level = 2
+
+# Same reason, different arithmetic (milestone 51 lane C). `ntp_proto`'s nanosecond round trip is
+# verified by running it on every one of the 10^9 values in its domain, which is a complete proof and
+# takes 0.6 s optimised. Unoptimised it is a minute of nothing, for a crate that is pure fixed-point
+# arithmetic with nothing a debugger would want to step through. See the test's own comment for why
+# exhaustion beats a bounded solver run here.
+[profile.dev.package.ntp_proto]
 opt-level = 2
 
 # Note: we deliberately do NOT set `panic = "abort"` here. The bare-metal target
