@@ -177,10 +177,21 @@ wants to check first, and a `no_std` component simply reads the page.
   harmless, *blocking* on time is a scheduler interaction, and that is the part that wants a
   capability.
 - **No calendar, no `date`, no NTP.** Sibling lanes. The propose endpoint is the seam NTP arrives
-  at, and the sanity floor above is the anchor its NTS bootstrap needs.
+  at, and the sanity floor above is the anchor its NTS bootstrap needs. (`crates/calendar` and
+  `date` have since landed; see notes/calendar.md and notes/date.md.)
 - **No alarm interrupt.** Both RTCs have one; nothing here uses it. The service reads the clock once
   at startup and lets the monotonic counter carry the time, because re-reading would import the
   RTC's drift and coarse resolution into a clock that already has better.
 - **The unknown-clock path is not proven in the guest.** Both QEMU boards always have a working RTC,
   so the service's refusal to publish an implausible reading is host-tested and the std panic is
   proven by construction rather than by a booted test.
+
+  **Half of that is no longer true, and the reasoning was the part that was wrong.** It is about the
+  *machine*, and what a reader tests against is the *page*: a frame nobody has published to reads as
+  `UNKNOWN`, which is exactly what a reader on a machine with no believable RTC holds. So the
+  `date` lane proves the **reader's** unknown-clock path in the guest, on both ISAs, by allocating a
+  blank frame and granting it (notes/date.md,
+  `kernel::user::date_tests::an_unknown_clock_is_said_plainly_rather_than_printed_as_1970`). What
+  remains proven only by construction is the **service's** side: its refusal to publish an
+  implausible RTC reading is still host-tested, because that genuinely does need a machine whose RTC
+  lies, and neither QEMU board has one.
