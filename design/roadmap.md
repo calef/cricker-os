@@ -109,6 +109,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 43 | NOT-STARTED | A second security audit, with a different lens | the attack surface roughly doubled after the first audit was written |
 | 44 | PARTIAL | GitHub repository hardening: policy, private reporting, code scanning, pull requests | a repository with a security thesis should be able to receive a report privately |
 | 45 | BUILT | Triage the CodeQL code-scanning alerts, and decide what the tool is for | the alerts land on this project's most-used unsafe abstraction |
+| 46 | NOT-STARTED | Rename the components for what they are, not for daemons | one mechanical commit; a name is a claim, and `-d` claims something we rejected |
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
 comparison), with the multikernel work (17) as
@@ -1634,6 +1635,37 @@ code did. The real comparison is `/language:rust`: 2 results on `refs/heads/main
 **In brief.** Nine alerts on first run. Seven (`actions/missing-workflow-permissions`) were fixed immediately by giving every workflow an explicit least-privilege `permissions: contents: read`, which is the right call for this repo specifically: a project whose thesis is that a component holds the authority its job needs and nothing more has no business letting its CI token default to write access it never uses. **The two that remain are high severity and need judgement, not configuration**: `rust/access-invalid-pointer` at `crates/intrusive/src/lib.rs:93` and `:109`, the raw-pointer dereferences in the intrusive wait-queue's `push_back` and `pop_front`. Both already carry `SAFETY` comments citing the queue's caller contract, and `intrusive` is one of the 13 Kani-proved crates, so the question is precisely what CodeQL sees that Kani does not: Kani proves the pure logic under chosen bounds, while the pointer validity here rests on a *caller* contract enforced by convention rather than by the type system. Decide per alert whether it is a true positive worth restructuring for, or a false positive to dismiss **with a written reason**; then set the standing policy for how alerts get triaged, since an alert list nobody dispositions decays into wallpaper
 
 **Why it matters.** **the alerts land exactly where this project's most-used unsafe abstraction lives**, so the answer is worth having either way: either the wait queue's contract can be made structural rather than documented, which is a real improvement to the code every blocked thread passes through, or we write down why it cannot be and what upholds it instead. Also forces the meta-decision milestone 44 left open, now that scanning is actually running: a scanner whose findings are never dispositioned is worse than none, because it manufactures the appearance of review
+
+### 46. Rename the components for what they are, not for daemons
+
+**In brief.** Five renames in one mechanical commit: `netd` → `netstack`, `compd` → `compositor`,
+`gpud` → `display`, `termd` → `lineedit`, and the crate `crates/linedisc` → `crates/lineedit`.
+Measured scope: **398 whole-word token replacements across 4 file moves and 1 directory move**
+(`netd` 152, `linedisc` 79, `termd` 70, `gpud` 65, `compd` 32).
+
+**Why it matters.** The rule and its argument are DECISIONS §39. The short version: a `-d` suffix
+tells every reader "this is a daemon" before they see a line of code, and a Unix daemon is defined by
+the ambient authority this OS deliberately lacks. `netd` holds five explicit capabilities, cannot name
+its own callers, is supervised, and can be reaped by something that lacks the authority to build it.
+The name is a false claim, which is the same defect as a stale comment except that every reader is
+guaranteed to read it. `linedisc` failed the second half of the same test: it is the correct Unix term
+of art, and the person who built this system did not recognise it.
+
+**Execution discipline, because this is the change milestone 39 warns about.** One commit, nothing
+else in it. **Whole-word tokens only** — `display` and `compositor` already appear as ordinary English
+throughout the notes, so this replaces identifiers, not vocabulary. Count the `--bin` name/token
+pairing before and after: this is the same `xtask` code where a union merge dropped a `--bin` flag on
+2026-07-29 and where git silently duplicated a loop header. Then zero surviving references to any old
+name, and the full gates on both ISAs. `script/lint`'s script-documentation check plus the roadmap and
+decisions checkers catch prose stragglers.
+
+**Sequencing (the reason this is a milestone and not an afternoon).** It must land *after* milestones
+23 and 37, because 23's instance one is the console hot-swap and it is editing `termd` — the file this
+renames away — plus `kernel/src/user.rs`, which both lanes share. Landing 398 token replacements
+underneath an active branch turns a mechanical commit into a merge fight, which is precisely what it
+must never become.
+
+**Effort: 1 lane estimated**, almost entirely verification rather than editing.
 
 ## The display ladder (recorded 2026-07-28, Chris's direction)
 
