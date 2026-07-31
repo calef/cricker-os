@@ -312,7 +312,7 @@ pub mod status {
     /// what the clock already believes.
     pub const REFUSED_TOO_FAR_FORWARD: u64 = 2;
     /// Plausible in the absolute, but more than [`super::policy::MAX_STEP_BACKWARD_NANOS`] behind
-    /// what the clock already believes. The asymmetry with forward is deliberate; see [`policy`].
+    /// what the clock already believes. The asymmetry with forward is deliberate; see [`policy`](super::policy).
     pub const REFUSED_TOO_FAR_BACKWARD: u64 = 3;
     /// The request was not one this contract defines.
     pub const BAD_REQUEST: u64 = 4;
@@ -363,6 +363,14 @@ pub mod policy {
     /// `Instant` is never affected by any of it.
     pub const MAX_STEP_BACKWARD_NANOS: u64 = super::NANOS_PER_SEC;
 
+    // The asymmetry is a decision, not an accident, so it is a build-time fact rather than
+    // something a reader has to notice: anyone "tidying" the two constants into one fails to
+    // compile rather than quietly making backwards steps as free as forwards ones.
+    const _: () = assert!(
+        MAX_STEP_BACKWARD_NANOS < MAX_STEP_FORWARD_NANOS,
+        "moving the clock backwards must stay far tighter than moving it forwards",
+    );
+
     /// Whether an absolute instant is one a machine running this code could be at. The sanity
     /// window, applied to an RTC reading as well as to a proposal: an RTC that fails this is an RTC
     /// the service refuses to believe, and the clock stays [`state::UNKNOWN`] rather than becoming
@@ -372,7 +380,7 @@ pub mod policy {
     }
 
     /// **The decision.** `current_state` and `current_nanos` are what the clock believes now;
-    /// `proposed_nanos` is what the proposer asked for. The answer is one of [`status`]'s codes.
+    /// `proposed_nanos` is what the proposer asked for. The answer is one of [`status`](super::status)'s codes.
     ///
     /// The bootstrap case is the interesting one: when the clock is [`state::UNKNOWN`] there is
     /// nothing to step *from*, so a plausible proposal is accepted outright. That is not a hole,
@@ -491,7 +499,6 @@ mod tests {
     /// "tidies" the two constants into one.
     #[test]
     fn backwards_is_held_far_tighter_than_forwards() {
-        assert!(policy::MAX_STEP_BACKWARD_NANOS < policy::MAX_STEP_FORWARD_NANOS);
         let known = state::SYNCED;
         let ten_minutes = 600 * NANOS_PER_SEC;
         assert_eq!(
