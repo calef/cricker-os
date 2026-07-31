@@ -1962,6 +1962,54 @@ manifest, the manifest grows from "what capabilities do I need" into "what do I 
 a larger claim than it makes today, and it is the sort of scope creep that is easier to accept early
 than to reverse later.
 
+#### `PATH`: there is no search, because there is no ambient namespace to search
+
+The absolute-paths section above takes Plan 9's answer for paths in general; `PATH` is that same
+question narrowed to programs, and Plan 9 answers it the same way. **Plan 9 has no `PATH` variable
+at all.** `/bin` is bound per-process, union-mounted from whatever that process's namespace assembled,
+so what you can run is what is bound. Taking the same answer here is consistency, not a new idea.
+
+**`PATH` is two bad things at once.** It is a *search*, over a namespace you have *ambient access to*.
+The search makes the order of a string into a security boundary: a writable directory ahead of a
+system one, or `.` anywhere in it, and someone plants an `ls` that you then run. The ambient access is
+why the order matters at all, since `PATH` never controlled *access* (permissions did), only which of
+your already-reachable options wins. The tell is that `which` exists as a whole command whose job is
+answering "which one did I actually get?".
+
+**So the program namespace is the endowment**, and a name binds to exactly one thing in it. The
+property that follows is the same class as `rm -rf /` above: **`PATH` injection is structurally
+impossible rather than mitigated.** No search order to manipulate, no `.` to include by accident, no
+writable directory that can precede a system one, because there is no search.
+
+**The distinction that makes it work.** A shell may extend its program namespace **only with
+capabilities it already holds**, so extending is a naming convenience and never an authority increase.
+Unix nominally has this property too and loses it in practice: ambient authority means everyone can
+read `/usr/bin`, so `PATH` order becomes the de facto security boundary. Here it cannot be, because
+naming and access are separate things.
+
+**Four open questions, none decided:**
+
+- **Unions and shadowing.** A namespace unioned from several sources brings first-match-wins back,
+  which is the ambiguity just removed. Plan 9 chose ordered union with explicit before/after on
+  `bind`; the alternative is to **refuse ambiguity** (an error when two sources offer `ls`), which is
+  more honest and probably more irritating.
+- **Enumeration.** "What can I run?" is enumeration of the namespace, the same insight as globbing and
+  completion above and bounded the same way: completion cannot offer a program no capability reaches.
+- **Compile-time set to runtime lookup.** `Prog` is a closed enum with `from_name` today, and init
+  already loads from the initrd by name, so half the mechanism exists. What is missing is enumeration
+  and not being a fixed set.
+- **Does `$PATH` survive as a string?** If the namespace is a capability, `echo $PATH` has no
+  referent, and that is a divergence on one of the most-referenced variables in shell scripting. It
+  looks earned (the variable's two real uses, inspect and modify, become `caps` and a grant) but the
+  cost is real and should be named rather than glossed.
+
+**Two milestones this reaches into.** Milestone 49 (users, login, and attribution) is what *hands* a
+session its program namespace, so "who gets which capabilities at startup" includes which programs.
+And milestone 39 (repository structure and the road to a distribution) inherits the sharper
+consequence: **installing a program becomes granting it into a namespace**, which is a materially
+different packaging story and is worth being on the record before anyone designs a package manager
+around the assumption that installation means writing into a globally readable directory.
+
 #### `file:` and `run` are not earned, and come out (decided 2026-07-30)
 
 Chris asked to be convinced they were worth the typing. They are not, and the case against each is
