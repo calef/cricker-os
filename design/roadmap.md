@@ -114,7 +114,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 48 | NOT-STARTED | Job control: jobs, wait, kill, fg, bg, and a stopped state | **most of it needs no new kernel surface**, and the tty's most tangled feature turns out to be a capability transfer |
 | 49 | NOT-STARTED | Users, login, and attribution: what identity is for once it stops being authority | three of Unix's four uses for a uid are already answered structurally; the fourth, **attribution, has no mechanism at all** |
 | 50 | NOT-STARTED | Pipes and redirection: one sink protocol, and `\|` turns out to be an endpoint | the mechanism already exists (**stdout is a capability in slot 1**); the work is unifying four byte-sink protocols, not adding a parser rule |
-| 51 | PARTIAL | Wall-clock time, the `date` command, and an NTP service | lanes A and C built (two RTC drivers, the clock service with DECISIONS §43, and the NTPv4 wire format): the machine knows what time it is, and **reading the clock is a read-only page while setting it is a writable one**. `date` and the NTP client remain |
+| 51 | PARTIAL | Wall-clock time, the `date` command, and an NTP service | lanes A and C built (two RTC drivers, the clock service with DECISIONS §43, and the NTPv4 wire format): the machine knows what time it is, and **reading the clock is a read-only page while setting it is a writable one**. `date` is built too, reads-only by its wiring, and says plainly when the machine does not know the time. The NTP client remains |
 | 52 | RECORDED | Subshells without `fork`, and what copying an endowment means | `( ... )` is fork, we deliberately have no fork, and **capability duplication is not a total function** |
 | 53 | NOT-STARTED | The board's own peripherals: network and storage on real silicon | 16a boots the board; this is what makes it able to *do* anything, and it is where virtio stops carrying us |
 | 54 | NOT-STARTED | A network file service a Mac can actually mount | the first real workload with a real user, and the security claim backup servers deserve |
@@ -2473,6 +2473,25 @@ NTP client here can lie *within the service's bounds* and can do nothing else. I
 to 2038, and it holds no authority over anything but the network socket it was given.
 
 #### `date`, the deliverable
+
+**Built 2026-07-31** (notes/date.md; `user/src/date.rs`, `kernel::user::date_tests`). A hundred
+lines, most of them comments, because the design had settled everything interesting first: read the
+page, add the counter, hand the number to `calendar`. Five formats, a fixed UTC offset in minutes,
+and an optional second line naming the clock's **provenance**, which renders `clock_proto`'s four
+states for a person and is a distinction no Unix `date` can print. Three things the build is worth
+recording for:
+
+- **The absence of `date -s` is a fact about the wiring, not a missing flag.** It holds a read-only
+  mapping, so there is no argument it could take and no method it could call. That is the claim
+  below made concrete rather than asserted.
+- **The unknown clock is a sentence**, with the two causes told apart (`the machine has no clock it
+  believes` / `this process holds no clock capability`), because `date` has an error channel where
+  `SystemTime::now()` has only a panic. Falsified before it was believed: removing the state check
+  makes it print `Thu 1970-01-01 00:00:04 UTC`, and the test catches exactly that string.
+- **It closes DECISIONS §43's own scope note** that "the unknown-clock path is not proven in the
+  guest". That reasoning was about the machine (both QEMU boards have a working RTC) and the thing
+  under test is the page: a frame nobody has published to *is* that machine, as far as any reader
+  can tell, so the test allocates one and grants it.
 
 Reads the wall clock and formats it. Timezone and calendar conversion are pure computation and belong
 in a host-tested library crate, not in the service (§14's rule about what compiles for the host).

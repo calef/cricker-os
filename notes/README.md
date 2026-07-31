@@ -232,6 +232,14 @@ in the code or the conversation doesn't make sense, it belongs here.
   orders of magnitude tighter than the forward one, the two RTC drivers found by `compatible`
   because no node-name prefix matches both boards, and the "I do not know what time it is" state
   that is the default rather than an afterthought.
+- [`date`](date.md) — milestone 51's deliverable: the command that makes the wall clock visible, and
+  the first thing to put the clock service and the calendar crate in one process. It reads and
+  cannot set, which is a fact about its wiring (a read-only mapping) rather than a missing flag, so
+  there is no `date -s` and its absence is not a `TODO`. Also the provenance line, which renders
+  `clock_proto`'s four states for a person and is a distinction no Unix `date` can print; why the
+  unknown clock is a sentence rather than a panic or a 1970; why the "have I got a clock" probe must
+  not touch the page; and the guest test that closes DECISIONS §43's "the unknown-clock path is not
+  proven in the guest", because a frame nobody published to *is* that machine.
 - [Entropy](entropy.md) — milestone 56's first half: `std::random` stops being splitmix64 seeded
   from boot-relative time. One process holds a virtio-rng device; everything else holds an endpoint
   that means "you may obtain randomness" and names no device, which is the fourth appearance of
