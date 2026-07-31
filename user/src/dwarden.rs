@@ -165,6 +165,17 @@ fn serve(dir: u64) -> ! {
                     }
                 }
             }
+            // **The one verb whose second word is not opaque**, because it names a second directory.
+            // Both handles are the client's, so both are translated, and this is still translation
+            // and not a check: the FS server decides whether the rights on those two handles allow
+            // the move, and this process does not know or ask what they are.
+            fs::RENAME => match table.get(fs::dst_handle(w1)) {
+                Some(dst) => forward(
+                    fs::req(verb, server_handle, len),
+                    fs::rename_dst(dst, fs::dst_len(w1).min(PAGE) as u64),
+                ),
+                None => reply_err(EBADF),
+            },
             // The verbs that operate on a handle. `w1` passes through untouched: it is an offset for
             // READ/WRITE, a size for TRUNCATE and a cursor for READDIR, and none of them means
             // anything to this process.
