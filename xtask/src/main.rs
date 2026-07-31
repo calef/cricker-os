@@ -1841,6 +1841,58 @@ fn redoxfs_subtree_was_confined() -> bool {
     let granted = format!("{}/{}", tree::SUB, tree::INNER);
     redoxfs_reads_back(&sibling, tree::SECRET_BODY)
         && redoxfs_reads_back(&granted, tree::INNER_BODY)
+        && shell_navigation_landed(&root, &sub)
+        && match redoxfs_ls(&img, tree::OTHER) {
+            // The **second** shell's leavings, in the sibling it was rooted at. Checking only `sub`
+            // would leave the headline property half-witnessed from out here: two shells with two
+            // roots each wrote into their own and neither into the other's.
+            Some(other) => shell_navigation_landed(&root, &other),
+            None => false,
+        }
+}
+
+/// **`rm` witnessed from outside the guest** (milestone 47's commands).
+///
+/// The navigating shell reports that its `rm` worked and that the handle it still held kept reading
+/// the bytes. Both are statements by the thing under test. This is the other kind of evidence: the
+/// host, with the pinned engine, reading the image the run left behind, where the name it removed
+/// must not be, the name it kept must be, and neither may have appeared in the root.
+///
+/// The pair is what makes it non-vacuous. A shell that created nothing satisfies "the removed name
+/// is absent" perfectly, so the kept name has to be there beside it.
+fn shell_navigation_landed(root: &[String], home: &[String]) -> bool {
+    use fs_proto::fixture::tree;
+    let count = |dir: &[String], prefix: &str| dir.iter().filter(|n| n.starts_with(prefix)).count();
+
+    if count(home, tree::NAV_KEPT) == 0 || count(home, tree::NAV_DIR) == 0 {
+        eprintln!(
+            "milestone-47 navigation check: a shell's root holds {home:?}, with nothing a \
+             navigating shell made in it. \"what it removed is gone\" is true of a shell that \
+             created nothing, so this proves nothing without it.",
+        );
+        return false;
+    }
+    if count(home, tree::NAV_GONE) != 0 {
+        eprintln!(
+            "MILESTONE-47 NAVIGATION FAILED: a shell's root still holds a `{}` name, so its `rm` \
+             reported success and never reached the platter: {home:?}",
+            tree::NAV_GONE,
+        );
+        return false;
+    }
+    let leaked = |n: &&String| {
+        n.starts_with(tree::NAV_KEPT)
+            || n.starts_with(tree::NAV_GONE)
+            || n.starts_with(tree::NAV_DIR)
+    };
+    if let Some(name) = root.iter().find(leaked) {
+        eprintln!(
+            "MILESTONE-47 NAVIGATION FAILED: `{name}` is in the image ROOT. A shell rooted at a \
+             subtree made a name in its parent.",
+        );
+        return false;
+    }
+    true
 }
 
 /// The names in one directory of the post-run image, sorted, via the host tool's `ls`. Its output is
