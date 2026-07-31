@@ -1,0 +1,13 @@
+[package]
+name = "clock_proto"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+# The wall-clock contract of milestone 51 (notes/clock.md, DECISIONS §43): the layout of the shared
+# clock page that IS the read authority, the small propose protocol the clock service serves, and
+# the policy it applies to a proposal. Pure logic, host-tested, no_std, dependency-free, so the
+# service, its readers, the std PAL and the kernel-side tests share ONE definition and cannot drift.
+# The same split `fs_proto` makes for the filesystem contract and `gfx_proto` for the framebuffer.
+
+[dependencies]
