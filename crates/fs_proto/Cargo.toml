@@ -19,3 +19,10 @@ license.workspace = true
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
 
 [dependencies]
+
+# `glob` is a DEV dependency only, and deliberately: the filesystem contract knows nothing about
+# patterns, and a name set on the wire is just a set of names. It is here so one host test can pin
+# the glob fixture against the matcher, which is what makes the set the kernel test states literally
+# provably the expansion of the pattern rather than a second opinion about it.
+[dev-dependencies]
+glob = { path = "../glob" }

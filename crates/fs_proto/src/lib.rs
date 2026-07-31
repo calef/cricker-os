@@ -742,6 +742,137 @@ pub mod grant {
     pub const fn writable(w: u64) -> bool {
         spec_rights(w) & WRITE != 0
     }
+
+    /// **A grant whose operand is the holder's whole namespace**, spelled as a name of zero length.
+    ///
+    /// A per-file or per-directory grant names one thing, and [`fits`] refuses an empty name, so a
+    /// length of zero cannot mean a name and is free to mean something else. It means the grant
+    /// carries a **set** ([`super::nameset`]), which does not fit in two argument words, so the
+    /// program is told "act on everything you can see" and reads the set by enumerating the
+    /// capability it was handed. That is not a loophole: the namespace of a set capability *is* the
+    /// set, so enumerating it reveals exactly what the command line already showed.
+    pub const WHOLE_NAMESPACE: usize = 0;
+}
+
+/// **A directory capability attenuated to a set of names** (milestone 47's globbing lane).
+///
+/// [`grant`] narrows a directory down to one name, which is what `wc report.txt` and `rm old.txt`
+/// designate. `rm *.txt` designates more than one and fewer than all, and the roadmap's decided
+/// answer is a directory capability attenuated to **the names that matched**. `fwarden` already
+/// serves a namespace of exactly one name; this is the same shape with a wider namespace, served by
+/// `user/src/swarden.rs`.
+///
+/// # Why the set rides in a frame and the single name does not
+///
+/// One name fits in two `START` argument words, which is why a per-file grant costs no page. A set
+/// does not fit in any number of registers, so it is written into a frame the wiring maps
+/// **read-only** into the warden. That is the honest place for `ARG_MAX` to reappear: it is not a
+/// buffer limit any more, it is the size of a capability, and [`MAX_NAMES`] is where the ceiling is
+/// declared.
+///
+/// # The encoding, and why each name carries its type
+///
+/// A record is one header byte then the name: bit 7 of the header is [`IS_DIR`] and the low seven
+/// are the length (a name is at most [`grant::MAX_NAME`] bytes, so seven bits is room to spare). A
+/// zero header terminates the set, which is why a name may not be empty.
+///
+/// The type bit is carried because the warden **answers `READDIR` from the set itself** rather than
+/// filtering the server's listing: the set is the namespace, so listing it needs no round trip and
+/// no cursor translation. The type is what the directory said at the moment the grant was planned,
+/// which is the same "resolved at grant time" rule every other part of a grant follows: a `cd` after
+/// the fact cannot change what an already-planned grant means, and neither can a `mkdir`.
+pub mod nameset {
+    use super::grant;
+
+    /// **The most names one set grant carries**, and the point where `ARG_MAX` becomes a capability
+    /// limit rather than a buffer limit.
+    ///
+    /// The number is set by what the two ends can hold **by value** with no allocator: the shell
+    /// carries the expansion through planning on the stack it has, and the warden keeps the whole
+    /// encoded set in a local so it never re-reads a page a client could be writing. Sixteen names
+    /// of sixteen bytes is 256 bytes at each end.
+    ///
+    /// There is a second reason, and it is the one that decides the *shape* of the failure: `caps rm
+    /// *.txt` prints the set before anything runs, and a grant nobody can read is a grant nobody
+    /// checked. Exceeding this is a **refusal at the prompt** (`capsh::Refusal::TooManyNames`), never
+    /// a truncation, because a glob that quietly granted a prefix of what it matched would be the
+    /// worst outcome this lane could produce.
+    pub const MAX_NAMES: usize = 16;
+
+    /// Bytes an encoded set occupies at most: a header and a name each, plus the terminator.
+    pub const BYTES: usize = MAX_NAMES * (1 + grant::MAX_NAME) + 1;
+
+    /// Bit 7 of a record's header: this name was a directory when the grant was planned.
+    pub const IS_DIR: u8 = 1 << 7;
+
+    /// The low bits of a record's header: the name's length. Zero terminates the set.
+    const LEN: u8 = 0x7f;
+
+    /// Write `names` into `out`, returning the bytes used, or `None` if the set does not fit, a name
+    /// is empty or too long, or there are more than [`MAX_NAMES`] of them.
+    ///
+    /// **`None` rather than a short write**, for [`MAX_NAMES`]'s reason: the caller is building a
+    /// capability, and a truncated capability is a different capability.
+    pub fn encode(names: &[(&[u8], bool)], out: &mut [u8]) -> Option<usize> {
+        if names.len() > MAX_NAMES {
+            return None;
+        }
+        let mut n = 0;
+        for &(name, is_dir) in names {
+            if name.is_empty() || name.len() > grant::MAX_NAME {
+                return None;
+            }
+            let end = n + 1 + name.len();
+            if end + 1 > out.len() {
+                return None;
+            }
+            out[n] = name.len() as u8 | if is_dir { IS_DIR } else { 0 };
+            out[n + 1..end].copy_from_slice(name);
+            n = end;
+        }
+        *out.get_mut(n)? = 0;
+        Some(n + 1)
+    }
+
+    /// Walk an encoded set: `(name, is_dir)` per record. Stops at the terminator, and at the first
+    /// record that runs off the end, which is what a truncated buffer looks like and must not be
+    /// read as a name.
+    pub fn iter(buf: &[u8]) -> Names<'_> {
+        Names { buf, at: 0 }
+    }
+
+    /// Whether `name` is in the set. **This is the whole of the attenuation**: the warden asks it
+    /// once per name-taking request against its granted directory, and a name that is not in the set
+    /// is `ENOENT`, because in that scope there is no such name.
+    pub fn contains(buf: &[u8], name: &[u8]) -> bool {
+        iter(buf).any(|(n, _)| n == name)
+    }
+
+    /// How many names the set holds.
+    pub fn count(buf: &[u8]) -> usize {
+        iter(buf).count()
+    }
+
+    /// The iterator [`iter`] returns.
+    pub struct Names<'a> {
+        buf: &'a [u8],
+        at: usize,
+    }
+
+    impl<'a> Iterator for Names<'a> {
+        type Item = (&'a [u8], bool);
+
+        fn next(&mut self) -> Option<Self::Item> {
+            let head = *self.buf.get(self.at)?;
+            let len = (head & LEN) as usize;
+            if len == 0 {
+                return None;
+            }
+            let name = self.buf.get(self.at + 1..self.at + 1 + len)?;
+            self.at += 1 + len;
+            Some((name, head & IS_DIR != 0))
+        }
+    }
 }
 
 /// The phase-2 end-to-end test fixture, in one place so the three programs that touch it agree: the
@@ -911,6 +1042,37 @@ pub mod fixture {
         /// `rm -f` of it is silence and a zero one, which is the whole of what `-f` means.
         pub const RM_MISSING: &str = "rm-nothing";
 
+        /// **The directory the globbing lane's set grant is planned in**, a sibling of [`RMTREE`]
+        /// so a capability to one is provably not a capability to the other.
+        ///
+        /// ```text
+        ///   /globset            gl-one.txt  gl-two.txt  gl-three.log  gl-dir/
+        ///   /globset/gl-dir     gl-inner
+        /// ```
+        ///
+        /// [`GLOB_PATTERN`] matches exactly [`GLOB_ONE`] and [`GLOB_TWO`]. The other two are the
+        /// controls, and they are two different controls: [`GLOB_MISS`] is a **file that exists,
+        /// sits one directory entry away, and is not in the set**, which is what a set-attenuated
+        /// capability must not be able to name; [`GLOB_DIR`] is a directory, so the type bit
+        /// [`super::super::nameset::IS_DIR`] carries has something to be wrong about.
+        pub const GLOBSET: &str = "globset";
+        /// The pattern the shell expands, and the whole of what `rm *.txt` designates here. Pinned
+        /// against the matcher by a host test, so the set the kernel test states literally is
+        /// provably the expansion rather than a second opinion about it.
+        pub const GLOB_PATTERN: &[u8] = b"gl-*.txt";
+        pub const GLOB_ONE: &str = "gl-one.txt";
+        pub const GLOB_TWO: &str = "gl-two.txt";
+        /// A file in the same directory that the pattern does **not** match. It is the escape the
+        /// set warden is attacked with: it exists, and the warden one hop up could remove it.
+        pub const GLOB_MISS: &str = "gl-three.log";
+        /// A directory in the same directory, not matched either. It is why a set record carries a
+        /// type bit at all.
+        pub const GLOB_DIR: &str = "gl-dir";
+        /// A file inside [`GLOB_DIR`], so the unmatched directory is not empty and a run that
+        /// removed it would have had to walk it.
+        pub const GLOB_INNER: &str = "gl-inner";
+        pub const GLOB_BODY: &[u8] = b"CRK47-GLOB: a name a pattern either matched or did not\n";
+
         /// **The names the image root must still carry after a run**, checked by the post-run host
         /// tool: this is the half of the assertion made from *outside* the confined program, and no
         /// in-guest verdict could have reported it. A capability granted on [`SUB`] can remove
@@ -921,8 +1083,14 @@ pub mod fixture {
         /// `made-by-std` in it), so an exact comparison would couple this milestone's gate to what
         /// unrelated tests happen to write. The upward-escape half is checked against [`MADE`] and
         /// [`MADE_DIR`] instead, which are names only the attacker writes.
-        pub const ROOT_ENTRIES: [&str; 5] =
-            [super::MOTD_NAME, OTHER, RMTREE, super::SCRATCH_NAME, SUB];
+        pub const ROOT_ENTRIES: [&str; 6] = [
+            GLOBSET,
+            super::MOTD_NAME,
+            OTHER,
+            RMTREE,
+            super::SCRATCH_NAME,
+            SUB,
+        ];
     }
 
     /// **The directory attacker's report** (milestone 47), a bitmap for the same reason the per-file
@@ -1629,5 +1797,83 @@ mod tests {
             0,
             "success is zero, as every shell expects"
         );
+    }
+
+    /// **The set the globbing lane grants is exactly what the pattern matches**, checked against the
+    /// matcher rather than asserted twice.
+    ///
+    /// The kernel test states its set literally (a `[(&[u8], bool); 2]` it hands to
+    /// [`nameset::encode`]), which is the only way to build a grant without an enumeration. That
+    /// literal is only trustworthy if it *is* the expansion, so this pins it: the pattern matches the
+    /// two names in the set and neither of the two controls, over the fixture as staged.
+    #[test]
+    fn the_glob_fixture_is_matched_by_the_pattern_it_is_staged_for() {
+        use fixture::tree;
+        let p = tree::GLOB_PATTERN;
+        for name in [tree::GLOB_ONE, tree::GLOB_TWO] {
+            assert!(
+                glob::matches(p, name.as_bytes()),
+                "{name} is in the granted set and the pattern does not match it",
+            );
+        }
+        for name in [tree::GLOB_MISS, tree::GLOB_DIR, tree::GLOB_INNER] {
+            assert!(
+                !glob::matches(p, name.as_bytes()),
+                "{name} is a control and the pattern matches it, so it proves nothing",
+            );
+        }
+        // Every name in the set has to be able to travel in one, or the grant cannot be built.
+        for name in [tree::GLOB_ONE, tree::GLOB_TWO, tree::GLOB_MISS, tree::GLOB_DIR] {
+            assert!(grant::fits(name.as_bytes()), "{name} does not fit a grant");
+        }
+    }
+
+    /// The set encoding round-trips, carries the type bit, and **refuses rather than truncates**.
+    ///
+    /// The refusals are the half worth testing: `encode` is building a capability, and a capability
+    /// that quietly held fewer names than the command matched is the exact failure this lane is
+    /// supposed to make impossible.
+    #[test]
+    fn a_name_set_round_trips_and_refuses_rather_than_truncating() {
+        let mut buf = [0u8; nameset::BYTES];
+        let names: [(&[u8], bool); 3] = [(b"one.txt", false), (b"logs", true), (b"z", false)];
+        let n = nameset::encode(&names, &mut buf).expect("three short names must fit");
+        assert_eq!(nameset::count(&buf[..n]), 3);
+        let want: [(&[u8], bool); 3] = [(b"one.txt", false), (b"logs", true), (b"z", false)];
+        for (got, want) in nameset::iter(&buf[..n]).zip(want) {
+            assert_eq!(got, want, "the set did not come back as it went in");
+        }
+        assert!(nameset::contains(&buf[..n], b"logs"));
+        assert!(
+            !nameset::contains(&buf[..n], b"log"),
+            "a prefix is a different name; the warden's whole check is this comparison",
+        );
+
+        // A full set fits exactly, and one more name does not: BYTES is a bound that is met, not a
+        // guess with slack in it.
+        let full: [(&[u8], bool); nameset::MAX_NAMES] =
+            [(b"sixteen-bytes!!!", false); nameset::MAX_NAMES];
+        assert_eq!(
+            nameset::encode(&full, &mut buf),
+            Some(nameset::BYTES),
+            "the widest set this contract carries must fit its own buffer exactly",
+        );
+        let over: [(&[u8], bool); nameset::MAX_NAMES + 1] =
+            [(b"a", false); nameset::MAX_NAMES + 1];
+        assert_eq!(nameset::encode(&over, &mut buf), None, "one name too many");
+        assert_eq!(
+            nameset::encode(&[(b"seventeen-bytes!!", false)], &mut buf),
+            None,
+            "a name that cannot travel in a grant cannot travel in a set either",
+        );
+        assert_eq!(
+            nameset::encode(&[(b"", false)], &mut buf),
+            None,
+            "an empty name is the terminator, so it cannot also be a name",
+        );
+        // And a buffer one byte short refuses rather than dropping the terminator, which would make
+        // the reader run off the end of the set and into whatever followed it.
+        let mut tight = [0u8; 8];
+        assert_eq!(nameset::encode(&[(b"one.txt", false)], &mut tight), None);
     }
 }

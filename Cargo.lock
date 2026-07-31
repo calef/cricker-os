@@ -138,6 +138,9 @@ version = "0.1.0"
 [[package]]
 name = "fs_proto"
 version = "0.1.0"
+dependencies = [
+ "glob",
+]
 
 [[package]]
 name = "gfx_proto"
