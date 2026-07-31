@@ -1763,7 +1763,9 @@ fn redoxfs_check_after_run() -> bool {
 ///    a name of its making at this level got out.
 /// 3. **Its creations ARE in `sub`**, which is what stops claim 2 from being vacuous: an attacker
 ///    that created nothing would satisfy it perfectly, and so would a warden that refused
-///    everything.
+///    everything. And `sub` holds both a **renamed** name and an **un**renamed one, which is the
+///    `REMOVE` rung witnessed from outside the guest: one capability moved a name and another,
+///    running the same code against the same directory, could not.
 /// 4. **The two files nothing was granted the authority to change read back byte for byte.**
 ///    `other/secret` is one directory entry away from the grant and the FS server can reach it on
 ///    any request it likes; `sub/inner` is *inside* the grant, and the attacker writes only to what
@@ -1794,7 +1796,9 @@ fn redoxfs_subtree_was_confined() -> bool {
     }
     // A run index is appended to each name so three attacker runs sharing one image do not collide,
     // so the prefix is what identifies a creation rather than the whole name.
-    let attackers_own = |n: &String| n.starts_with(tree::MADE) || n.starts_with(tree::MADE_DIR);
+    let attackers_own = |n: &String| {
+        n.starts_with(tree::MADE) || n.starts_with(tree::MADE_DIR) || n.starts_with(tree::MOVED)
+    };
     if let Some(leaked) = root.iter().find(|n| attackers_own(n)) {
         eprintln!(
             "MILESTONE-47 CONFINEMENT FAILED: `{leaked}` is in the image ROOT. A program granted a \
@@ -1803,13 +1807,29 @@ fn redoxfs_subtree_was_confined() -> bool {
         );
         return false;
     }
-    let made_files = sub.iter().filter(|n| n.starts_with(tree::MADE)).count();
-    let made_dirs = sub.iter().filter(|n| n.starts_with(tree::MADE_DIR)).count();
+    let count = |prefix: &str| sub.iter().filter(|n| n.starts_with(prefix)).count();
+    let (made_files, made_dirs, moved) = (
+        count(tree::MADE),
+        count(tree::MADE_DIR),
+        count(tree::MOVED),
+    );
     if made_files == 0 || made_dirs == 0 {
         eprintln!(
             "milestone-47 confinement check: `{}` holds {sub:?}, with {made_files} created files \
              and {made_dirs} created directories. The attacker created nothing, so \"nothing it \
              made escaped to the root\" is true of a capability that reaches nothing at all.",
+            tree::SUB,
+        );
+        return false;
+    }
+    // `made_files` counts the names that were created and NOT renamed, so requiring both counts to
+    // be non-zero is the `REMOVE` rung asserted from out here: a capability carrying it moved a
+    // name, and one without it left its own name exactly where it made it.
+    if moved == 0 {
+        eprintln!(
+            "MILESTONE-47 CONFINEMENT FAILED: `{}` holds {sub:?} and nothing was renamed. A \
+             capability carrying REMOVE and CREATE must be able to move a name it made, or the \
+             refusals the other runs report are refusals of a verb that never works.",
             tree::SUB,
         );
         return false;

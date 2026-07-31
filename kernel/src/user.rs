@@ -10995,6 +10995,8 @@ mod dir_capability_tests {
             "it created a name through a capability with no create right"
         } else if v & esc::MADE_A_DIR != 0 {
             "it made a directory through a capability that could not"
+        } else if v & esc::RENAMED != 0 {
+            "it renamed a name through a capability with no remove right"
         } else if v & esc::WROTE != 0 {
             "it wrote through a capability with no write right"
         } else if v & esc::DESCENDED != 0 {
@@ -11050,6 +11052,7 @@ mod dir_capability_tests {
                 | esc::DESCENDED
                 | esc::CREATED
                 | esc::WROTE
+                | esc::RENAMED
                 | esc::MADE_A_DIR,
             "full",
         );
@@ -11059,10 +11062,17 @@ mod dir_capability_tests {
     /// into can add to it and write to what it added, and it cannot walk into a subdirectory or find
     /// out what else is in there.
     ///
-    /// Three rungs withheld at once (`DESCEND`, `ENUMERATE`, `REMOVE`), and the interesting one is
-    /// `DESCEND` withheld while `CREATE` is held: `mkdir` needs both, so this capability can make a
-    /// file and cannot make a directory. A directory it could not have walked into would be a way to
-    /// mint a capability out of a right that was withheld.
+    /// Three rungs withheld at once (`DESCEND`, `ENUMERATE`, `REMOVE`), and two of them are the
+    /// interesting cases:
+    ///
+    /// - `DESCEND` withheld while `CREATE` is held: `mkdir` needs both, so this capability can make
+    ///   a file and cannot make a directory. A directory it could not have walked into would be a
+    ///   way to mint a capability out of a right that was withheld.
+    /// - `REMOVE` withheld while `CREATE` is held is **"add to this, destroy nothing"** exactly, and
+    ///   it is what `RENAME` exists to make falsifiable: this attacker creates a name and then tries
+    ///   to move it, through the same code the full run below moves it with, and cannot. Before that
+    ///   verb existed nothing on the wire consulted `REMOVE` at all, so the rung was a claim rather
+    ///   than a rule.
     #[test_case]
     fn an_append_only_directory_capability_adds_and_cannot_walk_or_list() {
         let Some(v) = attack_a_subtree(dir::READ | dir::WRITE | dir::CREATE, 3) else {

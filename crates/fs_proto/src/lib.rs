@@ -207,6 +207,59 @@ pub mod fs {
     /// The new directory's rights are attenuated from the parent's exactly as [`OPENDIR`]'s are, so
     /// a program cannot mint itself more authority by *making* a directory than by finding one.
     pub const MKDIR: u64 = 10;
+    /// **Move a name from one directory to another, or to a different name in the same one.**
+    ///
+    /// The only verb in this contract that names **two** directories, so it is the only one whose
+    /// second word is not a scalar: the source is [`req_handle`]/[`req_len`] of the request word as
+    /// usual, and the destination rides in the second word packed by [`rename_dst`], which uses the
+    /// same two fields. Both names are in the shared page, the **source first**, back to back, so
+    /// the source occupies `[0, req_len)` and the destination `[req_len, req_len + dst_len)`.
+    /// Reply `r0` = 0, or an error.
+    ///
+    /// # The two atomicities, stated apart (DECISIONS §42)
+    ///
+    /// - **Concurrency-atomic: yes.** No observer sees the intermediate state where the name exists
+    ///   in both places or neither. The FS server runs one request to completion before it receives
+    ///   the next, so inside the server there is no concurrent observer to see anything.
+    /// - **Crash-atomic: yes.** The whole rename runs in one RedoxFS transaction and reaches the
+    ///   platter through one commit in the header ring, so a fresh mount finds the old name or the
+    ///   new one and never both or neither. This is measured, not argued: it is the last operation
+    ///   of `fs-server/tests/crash_consistency.rs`'s workload, so the sweep that cuts the device at
+    ///   every write in that workload cuts inside this one too.
+    ///
+    /// The temp-file-then-rename idiom needs both, which is why §42 states them separately: saying
+    /// "atomic" and letting the reader assume the stronger one is the mistake POSIX made.
+    ///
+    /// # Rights, and what is deliberately not offered
+    ///
+    /// Needs [`super::dir::REMOVE`] on the **source** directory (its name goes away) and
+    /// [`super::dir::CREATE`] on the **destination** (a name appears). Both are mutating rights, so
+    /// a capability lacking either answers [`super::dir::EROFS`]: through this capability that
+    /// directory does not give names up, or does not take new ones. Within one directory a rename
+    /// needs both on that one directory. This is the rung that made `REMOVE` real: until this verb
+    /// existed nothing on the wire consulted it, and a right nothing enforces is a right the
+    /// contract is lying about.
+    ///
+    /// - **`renameat2`'s `EXCHANGE` and `NOREPLACE` are not offered** (§42). They work on ext4,
+    ///   btrfs, XFS, f2fs and tmpfs and nowhere else, and emulating `NOREPLACE` with link-then-
+    ///   unlink is racy, so offering them would make behaviour backend-specific.
+    /// - **Cross-filesystem move is not this verb** (§42). It is copy-then-unlink, a different
+    ///   object with a different identity, non-atomic by nature. It cannot be reached here anyway:
+    ///   both handles are minted by one server bound to one image.
+    /// - **A directory can be renamed in place but not moved into another directory**, and the
+    ///   answer is `EINVAL`. POSIX's guard against making a directory its own descendant is a
+    ///   path-prefix test, and this contract has no paths to take a prefix of; the equivalent is an
+    ///   ancestry walk in the server, which is real recursion in a process whose stack is measured
+    ///   at three quarters used. Renaming within one directory cannot create a cycle, because the
+    ///   node's parent does not change, and that is the boundary the refusal is drawn at. §42's rule
+    ///   is that a verb which is not offered fails loudly rather than degrading, and this does.
+    ///
+    /// If the destination name exists it is **replaced**, provided it is the same kind as the
+    /// source: a file over a directory is `EISDIR` and a directory over a file is `ENOTDIR`, POSIX's
+    /// own answers, and a non-empty destination directory is `ENOTEMPTY`. The kinds are checked here
+    /// rather than left to the backend, because §42's whole point is that an offered verb means one
+    /// thing everywhere. Renaming a name onto itself is a successful no-op.
+    pub const RENAME: u64 = 11;
 
     /// The largest length or offset that fits the packing below (40 bits). Far above [`super::PAGE`],
     /// so a single request never carries more than one page of payload regardless; the bound only
@@ -229,6 +282,21 @@ pub mod fs {
     /// The length/count of a file request word.
     pub const fn req_len(w0: u64) -> usize {
         (w0 & MAX_LEN) as usize
+    }
+
+    /// Pack [`RENAME`]'s **destination** half into the second word: the same handle and length
+    /// fields [`req`] uses, minus the opcode, because a rename names two directories and one word
+    /// cannot carry both. Read back with [`dst_handle`] and [`dst_len`].
+    pub const fn rename_dst(handle: u64, len: u64) -> u64 {
+        ((handle & MAX_HANDLE) << 40) | (len & MAX_LEN)
+    }
+    /// The destination directory handle of a [`RENAME`]'s second word.
+    pub const fn dst_handle(w1: u64) -> u64 {
+        (w1 >> 40) & MAX_HANDLE
+    }
+    /// The destination name's length, in bytes, of a [`RENAME`]'s second word.
+    pub const fn dst_len(w1: u64) -> usize {
+        (w1 & MAX_LEN) as usize
     }
 }
 
@@ -274,8 +342,8 @@ pub mod dir {
     pub const CREATE: u64 = 1 << 3;
     /// Take a name out of it. This is the right the log-writing case exists to withhold: [`WRITE`]
     /// and [`CREATE`] without [`REMOVE`] is "add to this, destroy nothing", which is milestone 47's
-    /// motivating sentence. The verbs it gates are `RENAME` (whose source name goes away) and the
-    /// `UNLINK` that belongs with `rm` in the commands lane.
+    /// motivating sentence. The verb it gates is [`super::fs::RENAME`], whose source name goes away;
+    /// the `UNLINK` that belongs with `rm` in the commands lane will take it too.
     pub const REMOVE: u64 = 1 << 4;
     /// Walk into a child directory ([`super::fs::OPENDIR`]).
     ///
@@ -303,6 +371,11 @@ pub mod dir {
     /// `ENOTDIR`: [`super::fs::OPENDIR`] of a name that is a file, or a directory verb aimed at a
     /// file handle. Same number and same argument as [`super::grant::ENOTDIR`].
     pub const ENOTDIR: i32 = 20;
+    /// `EINVAL`: a name that is not a single component, and [`super::fs::RENAME`]'s refusal to move
+    /// a **directory** between two directories (the verb's own doc gives the cycle argument).
+    pub const EINVAL: i32 = 22;
+    /// `ENOTEMPTY`: [`super::fs::RENAME`] over a destination directory that still has entries in it.
+    pub const ENOTEMPTY: i32 = 39;
 
     /// **A rights set on one directory or file handle.** Opaque on purpose: the only ways to make
     /// one are [`Rights::root`], which the mount calls once for the directory the endpoint is bound
@@ -654,6 +727,11 @@ pub mod fixture {
         /// The directory the writable attacker makes inside its grant, to prove `MKDIR` mints a
         /// capability and that the capability it mints is not wider than the one that made it.
         pub const MADE_DIR: &str = "dir-by-atk";
+        /// What the attacker renames [`MADE`] to, if its capability carries
+        /// [`super::super::dir::REMOVE`]. The post-run host check looks for a name with this prefix
+        /// in [`SUB`] **and** a [`MADE`] one that was not renamed, which is `REMOVE` being enforced
+        /// witnessed from outside the guest: one capability moved a name and another could not.
+        pub const MOVED: &str = "moved-by-atk";
 
         /// **The names the image root must still carry after a run**, checked by the post-run host
         /// tool: this is the half of the assertion made from *outside* the confined program, and no
@@ -696,6 +774,10 @@ pub mod fixture {
         /// Its write to a file inside the grant was accepted **and read back**. Expected only with
         /// [`super::super::dir::WRITE`].
         pub const WROTE: u64 = 1 << 7;
+        /// **It renamed a name inside its grant.** Expected only with
+        /// [`super::super::dir::REMOVE`] and [`super::super::dir::CREATE`] together, which is what
+        /// makes this the bit that gives the `REMOVE` rung something to fail.
+        pub const RENAMED: u64 = 1 << 8;
         /// An enumeration it was allowed to make returned a name that is not in the granted
         /// directory. Never allowed: a listing is a rendering of authority, so a name from outside
         /// the grant appearing in it is an escape even though nothing was opened.
@@ -995,6 +1077,7 @@ mod tests {
             ("OPENDIR", fs::OPENDIR),
             ("READDIR", fs::READDIR),
             ("MKDIR", fs::MKDIR),
+            ("RENAME", fs::RENAME),
         ];
         for (i, (na, a)) in ops.iter().enumerate() {
             assert!(*a <= 0xff, "{na} does not fit the 8-bit opcode field");
@@ -1004,6 +1087,32 @@ mod tests {
             }
         }
         assert_eq!(fs::ROOT, 0, "every existing client sends 0 and means this");
+    }
+
+    /// **A rename names two directories, so its second word is a packed pair rather than a scalar**,
+    /// and the two halves must not bleed into each other or a rename lands somewhere nobody asked
+    /// for. The destination fields use the same bit positions as the request word's, which is the
+    /// point of reusing them, so this also pins that they stay in step.
+    #[test]
+    fn a_rename_carries_two_directories_and_two_lengths_without_them_bleeding() {
+        for &(sh, sl, dh, dl) in &[
+            (fs::ROOT, 3u64, fs::ROOT, 4u64),
+            (1, 16, 2, 1),
+            (fs::MAX_HANDLE, fs::MAX_LEN, fs::MAX_HANDLE, fs::MAX_LEN),
+            (fs::MAX_HANDLE, 1, 0, fs::MAX_LEN),
+        ] {
+            let w0 = fs::req(fs::RENAME, sh, sl);
+            let w1 = fs::rename_dst(dh, dl);
+            assert_eq!(op(w0), fs::RENAME);
+            assert_eq!(fs::req_handle(w0), sh, "source handle");
+            assert_eq!(fs::req_len(w0) as u64, sl, "source name length");
+            assert_eq!(fs::dst_handle(w1), dh, "destination handle");
+            assert_eq!(fs::dst_len(w1) as u64, dl, "destination name length");
+        }
+        // A destination in the same directory is the ordinary rename, and it must not be confusable
+        // with "no destination given": handle 0 IS a directory (the bound one), so a zero second
+        // word means "rename inside your root", which is exactly what a plain `mv a b` wants.
+        assert_eq!(fs::dst_handle(0), fs::ROOT);
     }
 
     /// A listing round-trips: every name comes back byte for byte, with its kind, in order.
@@ -1067,6 +1176,7 @@ mod tests {
             DESCENDED,
             CREATED,
             WROTE,
+            RENAMED,
             MADE_A_DIR,
             ENUMERATED_A_STRANGER,
             FORGED_HANDLE,
@@ -1087,7 +1197,7 @@ mod tests {
     #[test]
     fn the_subtree_fixture_is_grantable_and_unambiguous() {
         use fixture::tree::*;
-        for name in [SUB, INNER, DEEPER, LEAF, OTHER, SECRET, MADE, MADE_DIR] {
+        for name in [SUB, INNER, DEEPER, LEAF, OTHER, SECRET, MADE, MADE_DIR, MOVED] {
             assert!(
                 grant::fits(name.as_bytes()),
                 "{name} cannot ride in a grant"
@@ -1096,16 +1206,25 @@ mod tests {
         // The post-run host check identifies the attacker's creations by PREFIX, because a run
         // index is appended to each. A fixture name that started with one of those prefixes would
         // be read as an escape, or would hide one.
+        let probes = [MADE, MADE_DIR, MOVED];
         for fixture in ROOT_ENTRIES.iter().chain(&[INNER, DEEPER, LEAF, SECRET]) {
-            assert!(
-                !fixture.starts_with(MADE) && !fixture.starts_with(MADE_DIR),
-                "{fixture} collides with the prefix the confinement check searches for",
-            );
+            for probe in probes {
+                assert!(
+                    !fixture.starts_with(probe),
+                    "{fixture} collides with the prefix `{probe}` the confinement check searches for",
+                );
+            }
         }
-        assert!(
-            !MADE.starts_with(MADE_DIR) && !MADE_DIR.starts_with(MADE),
-            "the created file and the created directory must be told apart by their prefixes",
-        );
+        // And the three probes must not shadow each other, because the check counts them apart: a
+        // rename that looked like a creation would make "REMOVE was enforced" unfalsifiable.
+        for (i, a) in probes.iter().enumerate() {
+            for b in &probes[i + 1..] {
+                assert!(
+                    !a.starts_with(b) && !b.starts_with(a),
+                    "`{a}` and `{b}` cannot be told apart by prefix",
+                );
+            }
+        }
         assert_ne!(SUB, OTHER, "the sibling must be a different directory");
     }
 }

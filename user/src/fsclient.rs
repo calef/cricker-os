@@ -43,6 +43,15 @@ fn put_page(bytes: &[u8]) {
     }
 }
 
+/// Copy `bytes` into the shared page at `off`, for the one request that carries two payloads: a
+/// rename's source and destination names sit back to back.
+fn put_page_at(off: usize, bytes: &[u8]) {
+    for (i, &b) in bytes.iter().enumerate() {
+        // SAFETY: FILE_VA is a mapped, writable 4096-byte page; two names are far shorter.
+        unsafe { core::ptr::write_volatile((FILE_VA + (off + i) as u64) as *mut u8, b) };
+    }
+}
+
 /// Read `n` bytes out of the shared page (a completed read landed there).
 fn get_page(n: usize, out: &mut [u8]) {
     for (i, b) in out.iter_mut().take(n).enumerate() {
@@ -487,7 +496,24 @@ fn dir_attacker(run: u64) -> ! {
         v |= esc::WIDENED;
     }
 
-    // 11. Handle guessing, past anything the warden could have minted for it. The warden numbers its
+    // 11. **Renaming, which is the only verb on this wire that consults `REMOVE`.** It moves the
+    //     name it made itself, never `inner`, so a run that is allowed to do this damages only its
+    //     own leavings and the post-run host check can still pin the fixture. The attempt is made
+    //     whatever the grant is: the server checks the rights before it resolves anything, so a
+    //     capability with no `REMOVE` gets the same refusal whether or not the source is there,
+    //     and this program is not told which case it is in.
+    let moved = run_name(tree::MOVED, run);
+    if dir_rename(
+        fs::ROOT,
+        made_str(&made),
+        fs::ROOT,
+        made_str(&moved),
+    ) >= 0
+    {
+        v |= esc::RENAMED;
+    }
+
+    // 12. Handle guessing, past anything the warden could have minted for it. The warden numbers its
     //     client's handles in its own space, so a number it never issued is refused by one check.
     let mut guess = 9u64;
     while guess < 16 {
@@ -552,6 +578,19 @@ fn dir_descend(parent: u64, name: &str, rights: u64) -> i64 {
 fn dir_mkdir(parent: u64, name: &str, rights: u64) -> i64 {
     put_page(name.as_bytes());
     call(FILE, fs::req(fs::MKDIR, parent, name.len() as u64), rights).0 as i64
+}
+
+/// `RENAME`: two directories and two names, so both names go into the page back to back (source
+/// first) and the destination's handle and length ride in the second word.
+fn dir_rename(src_dir: u64, src: &str, dst_dir: u64, dst: &str) -> i64 {
+    put_page(src.as_bytes());
+    put_page_at(src.len(), dst.as_bytes());
+    call(
+        FILE,
+        fs::req(fs::RENAME, src_dir, src.len() as u64),
+        fs::rename_dst(dst_dir, dst.len() as u64),
+    )
+    .0 as i64
 }
 
 /// How many bytes the attacker's write probe carries. A fixed length rather than the file's, because

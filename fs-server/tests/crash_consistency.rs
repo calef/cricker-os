@@ -56,7 +56,7 @@ const IMAGE_MIB: usize = 8;
 
 /// The names the workload touches. A snapshot reads all of them, so a file that should not exist
 /// yet is part of the state rather than something the test forgets to look at.
-const NAMES: [&str; 3] = ["motd", "scratch", "made"];
+const NAMES: [&str; 4] = ["motd", "scratch", "made", "renamed"];
 
 /// The state of the filesystem: every name, and its contents, or `None` if it does not exist.
 type State = Vec<(&'static str, Option<Vec<u8>>)>;
@@ -174,7 +174,12 @@ struct Recorded {
 /// 5. a **160 KiB single write**, larger than RedoxFS's 128 KiB record, so one acknowledged
 ///    operation is forty block writes and "wholly present or wholly absent" has something to mean;
 /// 6. a shrink of that file by 60 KiB, which frees records;
-/// 7. a final overwrite, so the last operation is not the one under the most suspicion.
+/// 7. a plain overwrite, so the biggest operation is not the last thing that happened;
+/// 8. a **`RENAME`**, which is the only operation here that changes two directory entries at once
+///    and the one whose whole value is its atomicity (DECISIONS §42). A cut inside it must leave
+///    the old name or the new one, and a snapshot reads both, so "neither" and "both" are states
+///    that never existed and fail the sweep. This is what makes the verb's crash-atomicity claim a
+///    measurement instead of a reading of the engine's design.
 fn record_workload() -> Recorded {
     // The fixture, built the way the running system's is: the host tool creates the filesystem and
     // puts the files in, and the server only ever opens it.
@@ -228,9 +233,15 @@ fn record_workload() -> Recorded {
     srv.write(h, 0, &tagged(b'7', 200)).expect("op 7");
     mark(&mut srv, &mut states, 7);
 
+    // The rename: `made` becomes `renamed`, both of which `snapshot` reads, so a recovery that
+    // found the file under both names or under neither is a state that never existed.
+    let root = fs_proto::fs::ROOT as u32;
+    srv.rename(root, "made", root, "renamed").expect("op 8");
+    mark(&mut srv, &mut states, 8);
+
     // Sanity on the workload itself, so a test that silently stopped exercising anything fails here
     // rather than passing everywhere below.
-    assert_eq!(states.len(), 8, "seven operations plus the initial state");
+    assert_eq!(states.len(), 9, "eight operations plus the initial state");
     for w in states.windows(2) {
         assert_ne!(
             w[0], w[1],

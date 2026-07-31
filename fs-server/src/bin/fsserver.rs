@@ -305,6 +305,26 @@ fn serve(server: &mut Server<IpcDisk>) -> ! {
                 let buf = unsafe { file_page(BLOCK) };
                 server.read_dir(handle, offset as u32, buf).map(|n| n as i64)
             }
+            // **The only verb that names two directories**, so the second word is a packed pair
+            // (handle, length) rather than a scalar and both names ride in the shared page, source
+            // first. The page is the bound: a pair of names longer than it is EINVAL here rather
+            // than a clamp, because clamping a name is renaming something else.
+            fs::RENAME => {
+                let dst_len = fs::dst_len(offset);
+                if len + dst_len > BLOCK {
+                    Err(Error::new(EINVAL))
+                } else {
+                    // SAFETY: both names are the client's bytes at the start of FILE_PAGE, and the
+                    // sum is checked against the page above.
+                    let (src, dst) = unsafe { file_page(len + dst_len) }.split_at(len);
+                    match (core::str::from_utf8(src), core::str::from_utf8(dst)) {
+                        (Ok(src), Ok(dst)) => server
+                            .rename(handle, src, fs::dst_handle(offset) as u32, dst)
+                            .map(|()| 0),
+                        _ => Err(Error::new(EINVAL)),
+                    }
+                }
+            }
             // The new size rides in the second word, NOT in the length field, because it is an
             // offset-shaped quantity: `len` is clamped to one page above, which would silently cap a
             // truncate at 4096 bytes. Reading it from `offset` is what lets a file be truncated to

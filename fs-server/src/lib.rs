@@ -344,6 +344,73 @@ impl<D: Disk> Server<D> {
         self.fs.tx(|tx| tx.truncate_node(ptr, size, now, 0))
     }
 
+    /// **Move `src` under the directory `src_dir` names to `dst` under the directory `dst_dir`
+    /// names** (milestone 47). The verb `mv` is, and the rung that gave [`dir::REMOVE`] something to
+    /// enforce.
+    ///
+    /// # The two atomicities, which POSIX taught everyone to conflate (DECISIONS §42)
+    ///
+    /// - **Concurrency-atomic.** Nothing observes the state where the name is in both places or
+    ///   neither, and the reason is structural rather than a lock: the serve loop runs one request
+    ///   to completion before it receives the next, so inside this server there is no concurrent
+    ///   observer at all.
+    /// - **Crash-atomic.** Everything below happens inside one `fs.tx`, which reaches the platter
+    ///   through one commit in RedoxFS's header ring, so a fresh mount finds the old name or the new
+    ///   one. Measured rather than asserted: this is the last operation of the workload in
+    ///   `tests/crash_consistency.rs`, whose sweep cuts the device at every write the workload
+    ///   makes, so the cut lands inside this transaction too.
+    ///
+    /// # Rights
+    ///
+    /// [`dir::REMOVE`] on the source (its name goes away) and [`dir::CREATE`] on the destination (a
+    /// name appears), each refused with [`dir::EROFS`]. Within one directory a rename needs both on
+    /// that one. **Checked before anything is resolved**, so a capability that may not move a name
+    /// cannot use this verb to find out whether one is there.
+    ///
+    /// # What it refuses, and why each refusal is the contract's rather than the backend's
+    ///
+    /// - A **directory** may be renamed in place but not moved between directories: `EINVAL`. See
+    ///   [`fs_proto::fs::RENAME`] for the cycle argument. Keeping the parent unchanged is what makes
+    ///   the in-place case provably safe without an ancestry walk.
+    /// - Replacing a destination of a **different kind** is `EISDIR` (file over directory) or
+    ///   `ENOTDIR` (directory over file). RedoxFS's own `rename_node` allows both, because it passes
+    ///   the *destination's* type to `remove_node` and so never compares the two; these two lines
+    ///   are ours, at our boundary, for §42's reason that an offered verb must mean one thing on
+    ///   every backend.
+    /// - A non-empty destination directory is `ENOTEMPTY`, from the engine.
+    /// - Either name that is not a single component is `EINVAL`, so `..` means nothing here either.
+    pub fn rename(&mut self, src_dir: u32, src: &str, dst_dir: u32, dst: &str) -> Result<()> {
+        check_component(src)?;
+        check_component(dst)?;
+        let (src_parent, src_rights) = self.dir_at(src_dir)?;
+        let (dst_parent, dst_rights) = self.dir_at(dst_dir)?;
+        if !src_rights.allows(dir::REMOVE) || !dst_rights.allows(dir::CREATE) {
+            return Err(Error::new(EROFS));
+        }
+        let same_dir = src_parent.id() == dst_parent.id();
+        self.fs.tx(|tx| {
+            let node = tx.find_node(src_parent, src)?;
+            if node.data().is_dir() && !same_dir {
+                return Err(Error::new(EINVAL));
+            }
+            if let Ok(existing) = tx.find_node(dst_parent, dst) {
+                // A no-op rename is a success, not a self-replacement: `remove_node` would take the
+                // only link and `link_node` would then have nothing to point at.
+                if existing.id() == node.id() {
+                    return Ok(());
+                }
+                if existing.data().is_dir() != node.data().is_dir() {
+                    return Err(Error::new(if existing.data().is_dir() {
+                        EISDIR
+                    } else {
+                        ENOTDIR
+                    }));
+                }
+            }
+            tx.rename_node(src_parent, src, dst_parent, dst)
+        })
+    }
+
     /// Take the disk back out of the server, **dropping the mount without unmounting**, which is
     /// exactly how a dying process leaves it: no flush, no clean shutdown, whatever is on the platter
     /// is the whole story. Milestone 37's harness uses it to get the recorded write log back after a
@@ -1176,6 +1243,269 @@ mod tests {
             assert_eq!(srv.read_dir(h, 0, &mut buf).err().map(|e| e.errno), Some(EBADF));
             assert_eq!(srv.open_dir(h, "sub", 0).err().map(|e| e.errno), Some(EBADF));
         }
+    }
+
+    // --- RENAME (milestone 47, DECISIONS §42's verb) ---
+
+    /// **A rename moves the name and the bytes follow it**, within a directory and across two of
+    /// them. The cross-directory case is the one POSIX mandates and the one an application's
+    /// temp-file-then-rename idiom needs, so it is not enough for the same-directory case to work.
+    #[test]
+    fn a_rename_moves_a_name_within_a_directory_and_between_two() {
+        let mut srv = server_with_tree();
+        let root = fs_proto::fs::ROOT as u32;
+        let sub = srv.open_dir(root, "sub", dir::ALL).unwrap();
+        let deeper = srv.open_dir(sub, "deeper", dir::ALL).unwrap();
+
+        // Within one directory: `sub/inner` becomes `sub/renamed`, contents intact.
+        srv.rename(sub, "inner", sub, "renamed").expect("rename");
+        assert_eq!(
+            srv.open_file_at(sub, "inner").err().map(|e| e.errno),
+            Some(syscall::error::ENOENT),
+            "the old name must be gone, not merely shadowed",
+        );
+        let h = srv.open_file_at(sub, "renamed").expect("the new name");
+        let mut buf = [0u8; 64];
+        let n = srv.read(h, 0, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"inside the grant");
+
+        // Across two directories, which is the same-filesystem move POSIX mandates be atomic.
+        srv.rename(sub, "renamed", deeper, "moved").expect("move");
+        assert_eq!(
+            srv.open_file_at(sub, "renamed").err().map(|e| e.errno),
+            Some(syscall::error::ENOENT),
+        );
+        let h = srv.open_file_at(deeper, "moved").expect("the moved name");
+        let n = srv.read(h, 0, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"inside the grant", "the bytes followed the name");
+    }
+
+    /// **The `REMOVE` rung, which had no verb until this one.** A capability that may create and
+    /// write and not remove cannot move a name out; one that may remove and not create cannot move a
+    /// name in. Both answer `EROFS`, and the pair is the point: a rename is two authorities and
+    /// either one missing is enough.
+    #[test]
+    fn a_rename_needs_remove_where_it_takes_from_and_create_where_it_puts() {
+        let mut srv = server_with_tree();
+        let root = fs_proto::fs::ROOT as u32;
+        // Everything but REMOVE: milestone 47's motivating sentence, "add to this, destroy nothing".
+        let append = srv
+            .open_dir(root, "sub", dir::ALL & !dir::REMOVE)
+            .unwrap();
+        assert_eq!(
+            srv.rename(append, "inner", append, "elsewhere")
+                .err()
+                .map(|e| e.errno),
+            Some(EROFS),
+            "a capability that cannot remove cannot rename away from itself either",
+        );
+        // And the refusal is about the capability, not about the name: it is the same answer for a
+        // name that is not there, so this verb cannot be used to probe for one.
+        assert_eq!(
+            srv.rename(append, "absent", append, "x")
+                .err()
+                .map(|e| e.errno),
+            Some(EROFS),
+        );
+
+        // Everything but CREATE: it may give a name up and has nowhere to put one.
+        let mut srv = server_with_tree();
+        let taker = srv.open_dir(root, "sub", dir::ALL & !dir::CREATE).unwrap();
+        assert_eq!(
+            srv.rename(taker, "inner", taker, "elsewhere")
+                .err()
+                .map(|e| e.errno),
+            Some(EROFS),
+        );
+
+        // With both, the same request through the same code succeeds, so the refusals above are
+        // statements about the rights rather than about a verb that never works.
+        let mut srv = server_with_tree();
+        let full = srv.open_dir(root, "sub", dir::ALL).unwrap();
+        srv.rename(full, "inner", full, "elsewhere")
+            .expect("REMOVE and CREATE together must be enough");
+    }
+
+    /// **Cross-directory rights are checked per directory, not once**, which is the case a
+    /// single-capability check would get wrong: taking a name out of a directory you may remove
+    /// from and putting it into one you may not create in is two different refusals.
+    #[test]
+    fn a_cross_directory_rename_consults_both_directories_rights() {
+        let mut srv = server_with_tree();
+        let root = fs_proto::fs::ROOT as u32;
+        let src = srv.open_dir(root, "sub", dir::ALL).unwrap();
+        // A destination with no CREATE. Reached by descending twice so it is a genuinely different
+        // capability rather than the same handle spelled differently.
+        let dst = srv
+            .open_dir(src, "deeper", dir::ALL & !dir::CREATE)
+            .unwrap();
+        assert_eq!(
+            srv.rename(src, "inner", dst, "landed")
+                .err()
+                .map(|e| e.errno),
+            Some(EROFS),
+            "the destination's missing CREATE must refuse, even though the source may remove",
+        );
+        // The source is untouched by the refusal: a half-done rename is the failure this verb exists
+        // to make impossible.
+        assert!(srv.open_file_at(src, "inner").is_ok());
+
+        let wide = srv.open_dir(src, "deeper", dir::ALL).unwrap();
+        srv.rename(src, "inner", wide, "landed").expect("rename");
+        assert!(srv.open_file_at(wide, "landed").is_ok());
+    }
+
+    /// A rename **replaces** an existing destination of the same kind, which is what the temp-file
+    /// idiom depends on, and refuses one of a different kind with POSIX's own two answers.
+    #[test]
+    fn a_rename_replaces_a_file_and_refuses_to_cross_kinds() {
+        let mut srv = server_with_tree();
+        let root = fs_proto::fs::ROOT as u32;
+        let sub = srv.open_dir(root, "sub", dir::ALL).unwrap();
+        let tmp = srv.create_file_at(sub, "tmp").unwrap();
+        srv.write(tmp, 0, b"the new contents").unwrap();
+
+        srv.rename(sub, "tmp", sub, "inner").expect("replace");
+        let h = srv.open_file_at(sub, "inner").unwrap();
+        let mut buf = [0u8; 64];
+        let n = srv.read(h, 0, &mut buf).unwrap();
+        assert_eq!(
+            &buf[..n],
+            b"the new contents",
+            "the destination must hold the source's bytes, whole",
+        );
+        assert_eq!(
+            srv.open_file_at(sub, "tmp").err().map(|e| e.errno),
+            Some(syscall::error::ENOENT),
+        );
+
+        // A file over a directory, and a directory over a file. RedoxFS's rename_node allows both
+        // (it passes the destination's own type to remove_node, so it never compares the two);
+        // these are our checks, so the verb means one thing regardless of backend.
+        assert_eq!(
+            srv.rename(sub, "inner", sub, "deeper")
+                .err()
+                .map(|e| e.errno),
+            Some(EISDIR),
+        );
+        assert_eq!(
+            srv.rename(sub, "deeper", sub, "inner")
+                .err()
+                .map(|e| e.errno),
+            Some(ENOTDIR),
+        );
+        // And a non-empty destination directory survives, which is the engine's ENOTEMPTY.
+        let d = srv.make_dir(sub, "empty-dir", dir::ALL).unwrap();
+        let _ = d;
+        assert_eq!(
+            srv.rename(sub, "empty-dir", sub, "deeper")
+                .err()
+                .map(|e| e.errno),
+            Some(syscall::error::ENOTEMPTY),
+        );
+    }
+
+    /// **A directory renames in place and does not move between directories**, and the refusal is
+    /// the contract's rather than an accident: moving a directory into one of its own descendants is
+    /// how a tree becomes a detached cycle, POSIX guards it with a path-prefix test, and this
+    /// contract has no paths to take a prefix of. Renaming inside one directory cannot create a
+    /// cycle because the parent does not change, which is exactly where the line is drawn.
+    #[test]
+    fn a_directory_renames_in_place_and_refuses_to_move_between_directories() {
+        let mut srv = server_with_tree();
+        let root = fs_proto::fs::ROOT as u32;
+        let sub = srv.open_dir(root, "sub", dir::ALL).unwrap();
+
+        srv.rename(sub, "deeper", sub, "renamed-dir")
+            .expect("a directory renames in place");
+        let d = srv
+            .open_dir(sub, "renamed-dir", dir::ALL)
+            .expect("and it is still a directory, with its contents");
+        assert!(srv.open_file_at(d, "leaf").is_ok());
+
+        // The cycle this refusal prevents, spelled out: `sub` moved into something inside `sub`.
+        assert_eq!(
+            srv.rename(root, "sub", d, "sub").err().map(|e| e.errno),
+            Some(EINVAL),
+            "moving a directory between directories is not offered, and says so",
+        );
+        // Even a harmless-looking move (out of the grant's reach entirely) takes the same answer,
+        // because the rule is about the verb and not about which pair happens to be safe.
+        assert_eq!(
+            srv.rename(sub, "renamed-dir", root, "promoted")
+                .err()
+                .map(|e| e.errno),
+            Some(EINVAL),
+        );
+    }
+
+    /// A name is a single component on both halves, a self-rename is a no-op success, and a rename
+    /// through a file handle is `ENOTDIR`. Each of these is a way to make the server treat one kind
+    /// of thing as another.
+    #[test]
+    fn a_rename_refuses_what_every_other_name_taking_verb_refuses() {
+        let mut srv = server_with_tree();
+        let root = fs_proto::fs::ROOT as u32;
+        let sub = srv.open_dir(root, "sub", dir::ALL).unwrap();
+
+        for bad in ["..", ".", "", "a/b", "/abs", "with:colon"] {
+            assert_eq!(
+                srv.rename(sub, bad, sub, "x").err().map(|e| e.errno),
+                Some(EINVAL),
+                "a source named {bad:?} must be refused as EINVAL",
+            );
+            assert_eq!(
+                srv.rename(sub, "inner", sub, bad).err().map(|e| e.errno),
+                Some(EINVAL),
+                "a destination named {bad:?} must be refused as EINVAL",
+            );
+        }
+        // Renaming a name onto itself changes nothing and succeeds, which is POSIX's answer and the
+        // one that matters: the alternative unlinks the only link and then has nothing to relink.
+        srv.rename(sub, "inner", sub, "inner").expect("a no-op");
+        assert!(srv.open_file_at(sub, "inner").is_ok());
+
+        let f = srv.open_file_at(sub, "inner").unwrap();
+        assert_eq!(
+            srv.rename(f, "inner", sub, "x").err().map(|e| e.errno),
+            Some(ENOTDIR),
+        );
+        assert_eq!(
+            srv.rename(sub, "inner", f, "x").err().map(|e| e.errno),
+            Some(ENOTDIR),
+        );
+        assert_eq!(
+            srv.rename(999, "inner", sub, "x").err().map(|e| e.errno),
+            Some(EBADF),
+        );
+    }
+
+    /// A rename is on the platter, not only in the handle table: drop the mount the way a dying
+    /// process does and reopen. Persistence is the half a cache cannot fake, and it is what the
+    /// crash sweep in `tests/crash_consistency.rs` then cuts into.
+    #[test]
+    fn a_rename_survives_a_reopen() {
+        let mut disk = image_with_tree();
+        {
+            let mut srv = Server::open(disk).expect("open");
+            let sub = srv
+                .open_dir(fs_proto::fs::ROOT as u32, "sub", dir::ALL)
+                .unwrap();
+            srv.rename(sub, "inner", sub, "survivor").unwrap();
+            disk = srv.fs.disk;
+        }
+        let mut srv = Server::open(disk).expect("reopen");
+        let sub = srv
+            .open_dir(fs_proto::fs::ROOT as u32, "sub", dir::ALL)
+            .unwrap();
+        assert_eq!(
+            srv.open_file_at(sub, "inner").err().map(|e| e.errno),
+            Some(syscall::error::ENOENT),
+        );
+        let h = srv.open_file_at(sub, "survivor").expect("the new name");
+        let mut buf = [0u8; 64];
+        let n = srv.read(h, 0, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"inside the grant");
     }
 
     /// Everything a directory capability makes survives the mount, which is the half a cache cannot
