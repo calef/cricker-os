@@ -343,6 +343,43 @@ what the previous boot's client happened to leave behind, and that changed as th
 with those exact byte counts, so the sharp edge is now a test rather than a trap. If it ever fails, the
 contract grew a verb and that is a deliberate decision.
 
+### Salvaged from `fix/redoxfs-write-loop`, including the part that was wrong (2026-07-31)
+
+That branch was the *second* of the three investigations above and outlived them on a shelf, so its
+contents are folded in here and the branch deleted. A branch is not a place to keep findings; nobody
+reads branches.
+
+**Its conclusion was wrong, and saying so is the point of recording it.** It ended at "every
+in-process component is correct; the divergence is the **real device I/O path** (blk IPC + the shared
+page + QEMU's virtio-blk)", with a leading hypothesis of an async-completion race. The round after it
+disproved that: `IpcDisk`'s `VERIFY_WRITES` reads every written block straight back and **never
+fired**, so the transport carries what it is given, and the actual mechanism was the missing TRUNCATE
+verb plus a whole-file comparison across boots. Four host eliminations and a block-access-sequence
+diff all pointed confidently at the transport, and the transport was innocent. Worth keeping as a
+caution: an investigation that rules out everything it can reach concludes the fault is in what it
+cannot reach, which is an argument from the shape of the tooling rather than from evidence.
+
+**One finding survives, is unrelated to the write loop, and is still open:**
+
+**The block server cannot use interrupt-driven completion, and nobody knows why.** Switching
+completion from polling the used ring to waiting on the interrupt **hangs on the first read**: the
+completion interrupt never reaches the block server, even though the shadow avail ring leaves
+interrupts enabled. So the driver polls, and that is a workaround for an unexplained fault rather
+than a choice. Nothing else in this note records it, and it was only ever written down on that
+branch.
+
+It matters more than it did when it was found. Polling a used ring costs CPU that a board with a real
+power budget will notice, and milestone 53 puts a real storage driver on real silicon where the
+interrupt path is the normal one. Whoever picks that up should expect this to be waiting, and should
+know it was seen on virtio-blk under QEMU first, so it is not a property of the hardware.
+
+**Also ruled out, and worth not repeating:** a **bounce buffer** — the device DMAs only into a private
+buffer and the block server copies to and from the shared page after completion, so the device never
+touches the shared page and the arrangement is correct by construction for any aliasing — **still
+looped**. Given what the next round found, that is exactly what it should have done, since there was
+no aliasing bug to fix.
+
+
 **Two hypotheses died on the way, and both are worth recording as dead.** Neither was the cause, and a
 disproved guess left standing sends the next reader down a road already walked.
 
