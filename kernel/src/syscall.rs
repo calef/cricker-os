@@ -570,7 +570,7 @@ pub(crate) fn invoke(
         // A device's MMIO page is almost passive: it is handed to MAP_INTO as the page to map
         // (19d.2), and since milestone 23 it answers exactly one invocation, `REVOKE`.
         Object::DeviceFrame(phys) => match method {
-            // **Take the registers back from everyone else** (DECISIONS §39). The step live
+            // **Take the registers back from everyone else** (DECISIONS §41). The step live
             // replacement needs between tearing one driver down and endowing the next, so that a
             // device never has two owners. Needs `GRANT`, the same rule `Frame::REVOKE` uses: you
             // were trusted to lend the device on, so you may take it back.

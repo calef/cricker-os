@@ -1,4 +1,4 @@
-//! **The swappable component, version 1: the incumbent** (milestone 23, DECISIONS §39).
+//! **The swappable component, version 1: the incumbent** (milestone 23, DECISIONS §41).
 //!
 //! A console-shaped server. It owns a device (the UART's registers), it serves one stable endpoint,
 //! and it holds nothing else it could reach the rest of the system with. What makes it interesting

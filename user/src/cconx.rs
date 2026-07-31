@@ -1,5 +1,5 @@
 //! **The swappable component, version 2: the replacement, and it is written in C** (milestone 23,
-//! DECISIONS §39, over the seam DECISIONS §31 built).
+//! DECISIONS §41, over the seam DECISIONS §31 built).
 //!
 //! Identical to [`conx`](../conx/index.html) in every respect a client could observe: same
 //! capability layout, same wire protocol, same serving loop (both compile `swap.rs`). The one

@@ -8524,14 +8524,14 @@ mod c_seam_tests {
     }
 }
 
-/// **A running component replaced under a talking client** (milestone 23, DECISIONS §39).
+/// **A running component replaced under a talking client** (milestone 23, DECISIONS §41).
 ///
 /// The flagship the roadmap points at, and the thing to notice about it is what the kernel does not
 /// contain. There is no component object, no swap syscall, no naming service, and no
 /// livecycle-aware anything: `swapper` is an unprivileged process with a budget, one device
 /// capability and four endpoints, and the swap is the composition of mechanisms that already
 /// existed for their own reasons. What milestone 23 needed the kernel to grow is exactly one thing:
-/// `Frame::REVOKE` now answers on a `DeviceFrame`, with take-back semantics (§39).
+/// `Frame::REVOKE` now answers on a `DeviceFrame`, with take-back semantics (§41).
 ///
 /// **The claim is not that a swap completes. It is that a client does not notice.** So the shape is
 /// the one milestones 29, 33 and 36 used: two witnesses in two address spaces, an attacker with

@@ -612,7 +612,7 @@ its commit. Adding `relay_rtt` shifted the other kernel-side IPC benches a few p
 +6%) through whole-crate codegen, all sub-tripwire, the churn this note documents above; the baseline
 was re-saved to absorb it in the commit that added the bench.
 
-**`broker_rtt`: what the queue broker costs when both ends are up** (milestone 23, DECISIONS §39).
+**`broker_rtt`: what the queue broker costs when both ends are up** (milestone 23, DECISIONS §41).
 The same question one rung up. Milestone 23's latency ladder has two rungs built, and this is the
 number that makes "opt-in per channel, never the default" a rule rather than a preference.
 

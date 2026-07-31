@@ -198,7 +198,7 @@ pub fn revoke_frame(phys: u64) {
     unmap_everywhere(phys, 0);
 }
 
-/// **Take a device's registers back from everyone else** (milestone 23, DECISIONS §39). Delete
+/// **Take a device's registers back from everyone else** (milestone 23, DECISIONS §41). Delete
 /// every `DeviceFrame` capability naming `phys` except the invoking thread's own, then unmap `phys`
 /// from every address space except the invoker's. Afterwards exactly one process can reach the
 /// device: the one that asked.

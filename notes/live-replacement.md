@@ -1,6 +1,6 @@
 # Live component replacement
 
-*Milestone 23, DECISIONS §39. The flagship the roadmap points at: a running component is replaced
+*Milestone 23, DECISIONS §41. The flagship the roadmap points at: a running component is replaced
 under a client that is talking to it, and the client's stream is unbroken.*
 
 ## The shape
@@ -192,7 +192,7 @@ usual signature of a leak.
 
 ## See also
 
-- DECISIONS §39 (this milestone's decisions), §12 (endpoint-only naming), §13 and §16 (revocation),
+- DECISIONS §41 (this milestone's decisions), §12 (endpoint-only naming), §13 and §16 (revocation),
   §26 (the fault endpoint), §31 (the C seam), §32 (`Endpoint::REAP`)
 - notes/ipc-naming.md, notes/supervision.md, notes/object-revocation.md, notes/c-seam.md
 - notes/benchmarks.md for `broker_rtt` and what the default rung costs
