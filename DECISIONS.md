@@ -2077,7 +2077,9 @@ Read/write, same shape: the two write bits **set** and everything else clear. A 
 every request passes the first test and fails the second. Each accepted write is read straight back,
 because "the server accepted my write" and "my write landed" are different claims.
 
-**The interactive shell still refuses `file:`, and that refusal is true rather than pending.** The
+**The interactive shell still refuses a named file, and that refusal is true rather than pending.**
+(It was spelled `file:NAME` when this was written; milestone 47 removed the designator, and a bare
+token in a file position designates the file now. The mechanism is unchanged.) The
 boot that starts the shell wires no FS service, so the shell holds no directory to narrow, and `caps`
 says so in those words. `capsh` carries the whole vocabulary (a `FileSpec` in the manifest, a
 `FileGrant` in the endowment, refusals both ways) and the decision is a function of what the shell

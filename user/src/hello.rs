@@ -534,19 +534,23 @@ fn init_boot(_x1: u64) -> ! {
         cap_delete(c);
     }
 
-    // The programs the shell can spawn (milestone 31), parsed once from the archive; every `run`
-    // builds a fresh child. A missing or unparseable entry stays None and the service answers
-    // "could not spawn" for it.
+    // The programs the shell can spawn (milestone 31), parsed once from the archive; every spawn
+    // request builds a fresh child. A missing or unparseable entry stays None and the service
+    // answers "could not spawn" for it.
     let worker = program(initrd_len, "worker").and_then(|bytes| elf::Elf::parse(bytes).ok());
     let budgeter = program(initrd_len, "budgeter").and_then(|bytes| elf::Elf::parse(bytes).ok());
     let heeder = program(initrd_len, "heeder").and_then(|bytes| elf::Elf::parse(bytes).ok());
     let spinner = program(initrd_len, "spinner").and_then(|bytes| elf::Elf::parse(bytes).ok());
-    // Indexed by Prog::id(): worker=0, budgeter=1, heeder=2, spinner=3.
-    let progs = [
+    let date = program(initrd_len, "date").and_then(|bytes| elf::Elf::parse(bytes).ok());
+    // Indexed by Prog::id(): worker=0, budgeter=1, heeder=2, spinner=3, date=4. The array is
+    // `Prog::PROG_COUNT` long because the service indexes it with an id the shell chose; a variant
+    // added to `capsh` without a slot here would be an out-of-bounds read in init.
+    let progs: [Option<&elf::Elf>; capsh::PROG_COUNT] = [
         worker.as_ref(),
         budgeter.as_ref(),
         heeder.as_ref(),
         spinner.as_ref(),
+        date.as_ref(),
     ];
 
     // The spawn service (milestone 31's grant expression + milestone 24's supervised jobs;

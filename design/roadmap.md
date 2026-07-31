@@ -110,7 +110,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 44 | PARTIAL | GitHub repository hardening: policy, private reporting, code scanning, pull requests | a repository with a security thesis should be able to receive a report privately |
 | 45 | BUILT | Triage the CodeQL code-scanning alerts, and decide what the tool is for | the alerts land on this project's most-used unsafe abstraction |
 | 46 | BUILT | Rename the components for what they are, and write down the naming rules | a name is a claim, and `-d` claims something we rejected; conventions that matter get a checker, not a paragraph |
-| 47 | NOT-STARTED | Navigation and naming: cd, pwd, ls, mkdir, rm, paths, and environment | **divergence from Unix must be earned, never stylistic.** Keep the commands; change only what the capability model actually forces, and get one missing primitive right |
+| 47 | IN-PROGRESS | Navigation and naming: cd, pwd, ls, mkdir, rm, paths, and environment | **divergence from Unix must be earned, never stylistic.** Keep the commands; change only what the capability model actually forces, and get one missing primitive right |
 | 48 | NOT-STARTED | Job control: jobs, wait, kill, fg, bg, and a stopped state | **most of it needs no new kernel surface**, and the tty's most tangled feature turns out to be a capability transfer |
 | 49 | NOT-STARTED | Users, login, and attribution: what identity is for once it stops being authority | three of Unix's four uses for a uid are already answered structurally; the fourth, **attribution, has no mechanism at all** |
 | 50 | NOT-STARTED | Pipes and redirection: one sink protocol, and `\|` turns out to be an endpoint | the mechanism already exists (**stdout is a capability in slot 1**); the work is unifying four byte-sink protocols, not adding a parser rule |
@@ -995,17 +995,18 @@ prerequisite piece and worth building first as its own tested step. Feeds 23 and
 
 ### 31. A capability shell: designation is authorization
 
-**In brief.** The command line becomes a **grant expression**: naming a resource in a command IS the capability grant (`run wc file:report.txt` passes one readable file cap; `run wc` alone can read nothing, and the refusal is "no such capability", not EPERM); untyped budgets as first-class grants; a SHILL-style manifest per program checked at spawn; a `caps` command printing a process's whole endowment. **Phase 1 built, both ISAs**: `capsh` (host-tested parse + manifest + spawn protocol), the shell over the existing surface, `run --mem N` made real by the `budgeter` program, manifest refusals, `caps`/`caps run ...` introspection; one kernel fix, `Untyped::SPLIT` now grants the child `GRANT` (DECISIONS §16 amendment). **Phase 2 built, both ISAs**: the FS contract's `CREATE`/`TRUNCATE` (so `std::fs::write` works), and per-file grants as a **caretaker process** (`fwarden`) that narrows a directory capability to one file in one direction, proven by a read-only and a writable attacker. One scope note: the interactive shell still refuses `file:` because its boot wires no FS service, so it holds no directory to narrow. Notes: grant-expression.md, program-manifest.md, fs-server.md
+**In brief.** The command line becomes a **grant expression**: naming a resource in a command IS the capability grant (`wc report.txt` passes one readable file cap; `wc` alone can read nothing, and the refusal is "no such capability", not EPERM); untyped budgets as first-class grants; a SHILL-style manifest per program checked at spawn; a `caps` command printing a process's whole endowment. **Phase 1 built, both ISAs**: `capsh` (host-tested parse + manifest + spawn protocol), the shell over the existing surface, `--mem N` made real by the `budgeter` program, manifest refusals, `caps`/`caps <command>` introspection; one kernel fix, `Untyped::SPLIT` now grants the child `GRANT` (DECISIONS §16 amendment). **Phase 2 built, both ISAs**: the FS contract's `CREATE`/`TRUNCATE` (so `std::fs::write` works), and per-file grants as a **caretaker process** (`fwarden`) that narrows a directory capability to one file in one direction, proven by a read-only and a writable attacker. One scope note: the interactive shell still refuses a named file because its boot wires no FS service, so it holds no directory to narrow. **The grammar shown here is milestone 47's**, which deleted the `run` verb and the `file:` designator this milestone shipped with; the mechanism did not change, only the spelling. Notes: grant-expression.md, program-manifest.md, fs-server.md
 
 **Why it matters.** **no-ambient-authority made user-visible**: the inversion of Unix's model at the one interface a human touches. Milestone 23's component contract in embryo, met first at the shell
 
 **Phase 1 built (both ISAs).** The command line is a grant expression: `capsh` (a host-tested crate)
 parses it and checks it against a per-program manifest; the shell holds its own untyped budget and
-delegates from it. `run --mem N budgeter` splits N pages off the shell's budget and delegates the
+delegates from it. `budgeter --mem N` splits N pages off the shell's budget and delegates the
 untyped to init, which endows the child; the budgeter maps them and reports the count (15 of 16, the
 rest paid for page tables), proving the grant is real, not parsed-and-ignored. Manifest mismatches
-and a `file:PATH` designator ("you hold no such capability") are refused at the prompt; `caps` and
-`caps run ...` print a process's whole endowment. One kernel change: `Untyped::SPLIT` grants the
+and a named file a program declares but this shell cannot back ("you hold no such capability") are
+refused at the prompt; `caps` and `caps <command>` print a process's whole endowment. (The spelling
+is milestone 47's: it shipped as `run --mem N budgeter` and `file:PATH`.) One kernel change: `Untyped::SPLIT` grants the
 child `GRANT` so an untyped is delegable (DECISIONS §16 amendment), which the headline feature
 required and no other object type lacked. Notes: grant-expression.md, program-manifest.md.
 
@@ -1035,7 +1036,7 @@ mystery 900-second test.
 
 **Why the status is PARTIAL and not BUILT, stated plainly.** The mechanism is complete and gated on
 both ISAs, but this milestone's headline is about *the one interface a human touches*, and at that
-interface `run wc file:report.txt` is still a refusal. The interactive shell holds no directory to
+interface `wc report.txt` is still a refusal. The interactive shell holds no directory to
 narrow, because the boot that starts it wires no FS service; the refusal it prints ("you hold no such
 capability: this shell was granted no directory to narrow") is **true** rather than a placeholder,
 and `caps` says the same. `capsh` carries the whole vocabulary (`FileSpec` in the manifest, a
@@ -1852,7 +1853,7 @@ need no grant, and confer no new authority, because the shell is reading and reb
 holds. This also retires a worry raised while designing `ls` — that a listing program would be
 over-granted, holding the power to read everything it lists. It is not a program.
 
-**The cwd stops at the process boundary.** `run wc file:report.txt` resolves the name against the
+**The cwd stops at the process boundary.** `wc report.txt` resolves the name against the
 shell's current directory *at the moment the grant is made*, and the child receives a capability to
 that one file. The child has no cwd, inherits nothing, and cannot re-resolve anything. The convenience
 is the shell's; the authority is explicit.
@@ -2068,6 +2069,41 @@ different packaging story and is worth being on the record before anyone designs
 around the assumption that installation means writing into a globally readable directory.
 
 #### `file:` and `run` are not earned, and come out (decided 2026-07-30)
+
+##### Built 2026-07-31: the grammar change, ahead of the commands.
+
+`run` and `file:` are gone from `capsh` and the shell. A bare program name spawns it (`worker 9`,
+`budgeter --mem 16`, `date`); a bare token in a file position designates the file, and the manifest
+still declares the direction. `--mem N` stays, and is now accepted on either side of the program
+name because with the verb gone a leading flag reads wrong.
+
+**The change the analysis above did not anticipate: the parser stopped classifying tokens at all.**
+`RunSpec` keeps the positionals in the order typed and `plan_against` places them into the slots the
+manifest declares, which is what makes "the manifest says what it is" true in the code rather than
+only in the prose. A shape-based rule (a number is the argument, anything else is the file) would
+have read `wc 2026` as a missing file.
+
+`caps <command>` is the preview's new spelling: the tail is the command you would have typed, so
+what you inspect and what you run cannot drift apart, and it is the Unix prefix-word idiom (`time`,
+`nice`, `env`) rather than new grammar. The refusals moved from "drop the `file:` designator" to
+positional wording, and one refusal **order** changed on purpose: a program's own declaration is
+checked before what the shell holds, so `worker report.txt` answers "takes no file; drop the name"
+(true whatever this shell holds) rather than "you hold no such capability" (an accident of this
+boot). The consequence, recorded rather than glossed: no shipped program declares
+`FileSpec::Required`, so the headline "no such capability" refusal is no longer reachable from the
+prompt, only through `plan_against` in the host tests.
+
+**`date` came along with it**, because with `run` gone `date` is exactly what a person types, and
+the shell had never heard of it (`Prog` knew four programs). It has a `Prog` entry and an all-
+`Forbidden` manifest; the shell spawns it with the register defaults, since `ArgSpec` has no
+position or arity yet. **It is the first program whose whole authority the command line cannot
+name**: a read-only mapping of the clock page, which init endows. This boot starts no clock service,
+so it prints "the time is unknown: this process holds no clock capability", and `caps date` says so
+before you run it. What a shell that could delegate a clock would need is assessed in
+notes/grant-expression.md and is its own lane: kernel boot wiring on both ISAs, a spawn-protocol
+position, both inits, and nothing in the suite boots the interactive shell to prove any of it.
+
+Tests: `crates/capsh` host suite, 34 cases. Notes: grant-expression.md, program-manifest.md, date.md.
 
 Chris asked to be convinced they were worth the typing. They are not, and the case against each is
 stronger than the case that put them there.
