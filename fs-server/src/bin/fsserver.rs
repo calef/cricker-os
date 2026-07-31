@@ -325,6 +325,17 @@ fn serve(server: &mut Server<IpcDisk>) -> ! {
                     }
                 }
             }
+            // `rm`'s verb. OPEN's shape again (a name at the start of the shared page, resolved
+            // under the handle), and the reply is 0 rather than a handle: it hands nothing back,
+            // which is the whole difference between removing a name and destroying an object.
+            fs::UNLINK => {
+                // SAFETY: the name is `len` bytes the client wrote at the start of FILE_PAGE.
+                let name_bytes = unsafe { file_page(len) };
+                match core::str::from_utf8(name_bytes) {
+                    Ok(name) => server.unlink(handle, name).map(|()| 0),
+                    Err(_) => Err(Error::new(EINVAL)),
+                }
+            }
             // The new size rides in the second word, NOT in the length field, because it is an
             // offset-shaped quantity: `len` is clamped to one page above, which would silently cap a
             // truncate at 4096 bytes. Reading it from `offset` is what lets a file be truncated to

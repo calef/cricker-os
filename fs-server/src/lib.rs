@@ -145,12 +145,19 @@ impl<D: Disk> Server<D> {
         if rights.denies_all(dir::READ | dir::WRITE) {
             return Err(Error::new(syscall::error::ENOENT));
         }
-        let node = self.fs.tx(|tx| tx.find_node(parent, name))?;
-        if node.data().is_dir() {
-            return Err(Error::new(EISDIR));
-        }
+        let ptr = self.fs.tx(|tx| {
+            let node = tx.find_node(parent, name)?;
+            if node.data().is_dir() {
+                return Err(Error::new(EISDIR));
+            }
+            // Register the node as open with the engine's usage table. This is what makes
+            // `unlink` an unlink: without it, removing the last name frees the node immediately and
+            // this handle would then read a deallocated one. See `Server::unlink`.
+            tx.on_open_node(node.ptr())?;
+            Ok(node.ptr())
+        })?;
         Ok(self.install(Entry::File(
-            node.ptr(),
+            ptr,
             rights.attenuate(dir::READ | dir::WRITE),
         )))
     }
@@ -308,14 +315,18 @@ impl<D: Disk> Server<D> {
         // one name cannot both be told they created it.
         self.clock += 1;
         let now = self.clock;
-        let node = self.fs.tx(|tx| {
+        let ptr = self.fs.tx(|tx| {
             if tx.find_node(parent, name).is_ok() {
                 return Err(Error::new(EEXIST));
             }
-            tx.create_node(parent, name, Node::MODE_FILE | 0o644, now, 0)
+            let node = tx.create_node(parent, name, Node::MODE_FILE | 0o644, now, 0)?;
+            // Registered as open exactly as `open_file_at` registers, and for its reason: a file
+            // created and then unlinked with its handle still open is the temp-file idiom.
+            tx.on_open_node(node.ptr())?;
+            Ok(node.ptr())
         })?;
         Ok(self.install(Entry::File(
-            node.ptr(),
+            ptr,
             rights.attenuate(dir::READ | dir::WRITE),
         )))
     }
@@ -411,6 +422,46 @@ impl<D: Disk> Server<D> {
         })
     }
 
+    /// **Remove `name` from the directory `handle` names: `rm`'s verb, and it is `unlink` rather
+    /// than revocation** (milestone 47's commands).
+    ///
+    /// Needs [`dir::REMOVE`], refused with [`dir::EROFS`], and the right is checked **before the
+    /// name is resolved**, so a capability that may not remove cannot use this verb to discover
+    /// whether a name is there. `ENOENT` if there is no such entry, `EINVAL` if it is not a single
+    /// component, and [`dir::EISDIR`] for a directory: `rm` takes a name of a file away, and this
+    /// contract has no `RMDIR`, which is stated where a caller meets it
+    /// ([`fs_proto::fs::UNLINK`]) rather than approximated by removing whatever is found.
+    ///
+    /// # What "unlink, not revoke" costs, and where it is paid
+    ///
+    /// The name goes and the object stays while anyone still holds a handle on it, which is POSIX's
+    /// promise and the thing atomic-replace depends on. It is not free and it is not automatic:
+    /// RedoxFS frees a node the moment its last link goes **unless the node is registered as open**
+    /// in its usage table, in which case `remove_node` queues it on the release list and
+    /// `on_close_node` collects it later. So [`Server::open_file_at`] and [`Server::create_file_at`]
+    /// register, [`Server::close`] deregisters, and *that* pairing is what makes this verb an
+    /// unlink. Without it the read that follows an unlink reads a deallocated node, and `rm` would
+    /// be a revoke wearing an unlink's name, which is exactly the conflation §42 forbids.
+    ///
+    /// **BUGS.** A handle that is never closed pins the node for the life of the server, exactly as
+    /// a leaked fd does on Unix, and this handle table is per *server* and outlives its clients: a
+    /// confined program that dies mid-session leaves its files on the release list forever. The fix
+    /// is per-client handle ownership, which the note records as the same missing thing that makes
+    /// revocation unavailable.
+    pub fn unlink(&mut self, handle: u32, name: &str) -> Result<()> {
+        check_component(name)?;
+        let (parent, rights) = self.dir_at(handle)?;
+        if !rights.allows(dir::REMOVE) {
+            return Err(Error::new(EROFS));
+        }
+        // `remove_node` compares the node's kind against the mode it is given, so `EISDIR` for a
+        // directory is the engine's own answer here and matches POSIX. Contrast `rename`, where the
+        // kind check had to be ours because the engine never compares the two.
+        self.fs
+            .tx(|tx| tx.remove_node(parent, name, Node::MODE_FILE))
+            .map(|_| ())
+    }
+
     /// Take the disk back out of the server, **dropping the mount without unmounting**, which is
     /// exactly how a dying process leaves it: no flush, no clean shutdown, whatever is on the platter
     /// is the whole story. Milestone 37's harness uses it to get the recorded write log back after a
@@ -424,16 +475,19 @@ impl<D: Disk> Server<D> {
     /// **The bound directory cannot be closed**, and the refusal is `EINVAL` rather than `EBADF`:
     /// handle 0 is not something the client opened, it is the root of its namespace, and a client
     /// that could close it could make every later request in the session fail.
+    ///
+    /// Closing a **file** handle is also what finally frees a node whose last name was unlinked
+    /// while this handle was open (see [`Server::unlink`]). Nothing else collects it, so a close is
+    /// not merely bookkeeping in a table this server owns.
     pub fn close(&mut self, handle: u32) -> Result<()> {
         if handle as u64 == fs_proto::fs::ROOT {
             return Err(Error::new(EINVAL));
         }
-        let slot = self
-            .handles
-            .get_mut(handle as usize)
-            .filter(|s| s.is_some())
-            .ok_or(Error::new(EBADF))?;
-        *slot = None;
+        let entry = self.entry(handle)?;
+        self.handles[handle as usize] = None;
+        if let Entry::File(ptr, _) = entry {
+            self.fs.tx(|tx| tx.on_close_node(ptr))?;
+        }
         Ok(())
     }
 
@@ -1035,6 +1089,9 @@ mod tests {
             ),
             (dir::CREATE, dir::CREATE, "create", EROFS),
             (dir::DESCEND, dir::DESCEND, "descend", syscall::error::ENOENT),
+            // `rm`'s rung. Until `unlink` existed only `rename` consulted REMOVE, and a rename
+            // needs CREATE as well, so this is the first probe that isolates this one.
+            (dir::REMOVE, dir::REMOVE, "unlink", EROFS),
         ] {
             let mut srv = server_with_tree();
             // Everything except the rung under test, so a verb that consults the wrong bit passes
@@ -1051,6 +1108,7 @@ mod tests {
                     "enumerate" => srv.read_dir(h, 0, &mut [0u8; 256]).map(|_| ()),
                     "open" => srv.open_file_at(h, "inner").map(|_| ()),
                     "create" => srv.create_file_at(h, "made-by-the-sweep").map(|_| ()),
+                    "unlink" => srv.unlink(h, "inner"),
                     _ => srv.open_dir(h, "deeper", 0).map(|_| ()),
                 }
             };
@@ -1065,6 +1123,105 @@ mod tests {
                  proves nothing",
             );
         }
+    }
+
+    /// **`unlink` removes a name and not an object**, which is the half of `rm` Unix conflated and
+    /// milestone 47 insists on separating. Three claims in one test because they are one property:
+    /// the name goes, the holder keeps reading, and the bytes it reads are still the right ones.
+    ///
+    /// This is the test that decided the implementation. RedoxFS frees a node the instant its last
+    /// link goes, so the first version of this verb was a *revoke*: the read below returned garbage.
+    /// Registering an open node with the engine's usage table is what turns it into an unlink, and
+    /// deleting that one line turns this test red.
+    #[test]
+    fn unlink_takes_the_name_and_leaves_the_object_for_whoever_holds_it() {
+        let mut srv = server_with_tree();
+        let sub = srv
+            .open_dir(fs_proto::fs::ROOT as u32, "sub", dir::ALL)
+            .unwrap();
+
+        let h = srv.create_file_at(sub, "doomed").unwrap();
+        let body = b"the bytes outlive the name";
+        assert_eq!(srv.write(h, 0, body).unwrap(), body.len());
+
+        srv.unlink(sub, "doomed").expect("unlink");
+
+        // The name is gone: from an open, and from a listing.
+        assert_eq!(
+            srv.open_file_at(sub, "doomed").err().map(|e| e.errno),
+            Some(syscall::error::ENOENT),
+            "the name must be gone the moment it is unlinked",
+        );
+        let names: Vec<String> = list(&mut srv, sub, 256)
+            .unwrap()
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        assert!(!names.contains(&"doomed".to_string()), "listing: {names:?}");
+
+        // And the object is not: the handle opened before the unlink still reads its bytes.
+        let mut buf = [0u8; 64];
+        let n = srv.read(h, 0, &mut buf).expect("a holder keeps reading");
+        assert_eq!(
+            &buf[..n],
+            body,
+            "unlink removed the object, not just the name: this verb is a revoke wearing an \
+             unlink's name",
+        );
+
+        // The close is what finally collects it, and it must not fail on a node whose name is gone.
+        srv.close(h).expect("close after unlink");
+
+        // The same property through the OTHER door. `create` and `open` register the node
+        // separately, so a test that only creates would leave half the verb unproven; deleting the
+        // registration in `open_file_at` alone left this test green the first time it was run.
+        let h = srv.open_file_at(sub, "inner").expect("open an existing file");
+        srv.unlink(sub, "inner").expect("unlink what was opened");
+        let n = srv.read(h, 0, &mut buf).expect("an opener keeps reading too");
+        assert_eq!(&buf[..n], b"inside the grant");
+        srv.close(h).unwrap();
+    }
+
+    /// The refusals, which are what stop `rm` from meaning more than it says. A directory is
+    /// `EISDIR` (there is no `RMDIR` on this contract, so `rm` must not take a subtree away), a
+    /// missing name is `ENOENT`, and a path is `EINVAL` exactly as it is everywhere else here.
+    #[test]
+    fn unlink_refuses_a_directory_a_missing_name_and_a_path() {
+        let mut srv = server_with_tree();
+        let sub = srv
+            .open_dir(fs_proto::fs::ROOT as u32, "sub", dir::ALL)
+            .unwrap();
+
+        assert_eq!(
+            srv.unlink(sub, "deeper").err().map(|e| e.errno),
+            Some(EISDIR),
+            "`rm` of a directory must be refused, not silently recursive",
+        );
+        assert_eq!(
+            srv.unlink(sub, "never-existed").err().map(|e| e.errno),
+            Some(syscall::error::ENOENT),
+        );
+        for path in ["..", "a/b", "."] {
+            assert_eq!(
+                srv.unlink(sub, path).err().map(|e| e.errno),
+                Some(EINVAL),
+                "`{path}` is not a component, so it cannot name anything to remove",
+            );
+        }
+        // The right is checked BEFORE the name is resolved, so a capability that may not remove
+        // cannot use this verb as an existence oracle: a name that is there and one that is not
+        // must answer the same word.
+        let ro = srv
+            .open_dir(fs_proto::fs::ROOT as u32, "sub", dir::ALL & !dir::REMOVE)
+            .unwrap();
+        assert_eq!(
+            srv.unlink(ro, "inner").err().map(|e| e.errno),
+            Some(EROFS),
+        );
+        assert_eq!(
+            srv.unlink(ro, "never-existed").err().map(|e| e.errno),
+            Some(EROFS),
+        );
     }
 
     /// **A file handle inherits its directory's direction**, which is the "open (read versus write)"

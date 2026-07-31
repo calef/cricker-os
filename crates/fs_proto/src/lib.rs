@@ -260,6 +260,43 @@ pub mod fs {
     /// rather than left to the backend, because §42's whole point is that an offered verb means one
     /// thing everywhere. Renaming a name onto itself is a successful no-op.
     pub const RENAME: u64 = 11;
+    /// **Remove a name from a directory. This is `unlink`, and it is not revocation.**
+    ///
+    /// The name in the shared page (length is [`req_len`]) is taken out of the directory in
+    /// [`req_handle`]. Second word 0. Reply `r0` = 0, or an error.
+    ///
+    /// # The two operations Unix conflated, and which one this is
+    ///
+    /// Milestone 47's instruction is that `rm` stop meaning both at once, so this verb means exactly
+    /// one of them and says which:
+    ///
+    /// - **Unlink (this verb).** The *name* goes away. A handle already open on that file **keeps
+    ///   reading**, and the bytes are still there, exactly as POSIX promises; the object dies when
+    ///   the last name and the last handle are both gone. Atomic replace and the temp-file idiom
+    ///   both depend on this, which is why it is worth having rather than an accident to be tidied
+    ///   up. The FS server makes it true by registering an open node with the engine's usage table,
+    ///   so removing the last link **queues** the node rather than freeing it (`release_node`).
+    /// - **Revoke.** The object dies and every capability to it goes stale. Not offered here, and
+    ///   the absence is deliberate rather than an oversight: it would mean invalidating handles the
+    ///   server minted for clients it cannot enumerate (the handle table is per *server*, and the
+    ///   server does not track which client holds which handle). §13 revokes frames and §16 revokes
+    ///   objects because the kernel owns those tables; nothing owns this one that way yet. A verb
+    ///   that removed a name and *called itself* revocation would be the silent degradation §42
+    ///   forbids, so `rm` unlinks and says so.
+    ///
+    /// # Rights, and the kind check
+    ///
+    /// Needs [`super::dir::REMOVE`] on the directory, refused with [`super::dir::EROFS`]: through
+    /// this capability that directory does not give names up. The right is checked **before the name
+    /// is resolved**, so a capability that may not remove cannot use this verb to find out whether a
+    /// name is there.
+    ///
+    /// **A directory is refused with [`super::dir::EISDIR`]**, POSIX's own answer, and there is no
+    /// `RMDIR` on this contract yet: `mkdir` can therefore make a directory that no verb here can
+    /// take away. That asymmetry is declared rather than papered over with a verb that removes
+    /// whatever it finds, because "remove this name whatever it is" is how `rm` takes a subtree away
+    /// from someone who typed one word.
+    pub const UNLINK: u64 = 12;
 
     /// The largest length or offset that fits the packing below (40 bits). Far above [`super::PAGE`],
     /// so a single request never carries more than one page of payload regardless; the bound only
@@ -343,8 +380,8 @@ pub mod dir {
     pub const CREATE: u64 = 1 << 3;
     /// Take a name out of it. This is the right the log-writing case exists to withhold: [`WRITE`]
     /// and [`CREATE`] without [`REMOVE`] is "add to this, destroy nothing", which is milestone 47's
-    /// motivating sentence. The verb it gates is [`super::fs::RENAME`], whose source name goes away;
-    /// the `UNLINK` that belongs with `rm` in the commands lane will take it too.
+    /// motivating sentence. Two verbs consult it: [`super::fs::RENAME`], whose source name goes
+    /// away, and [`super::fs::UNLINK`], which is `rm`'s.
     pub const REMOVE: u64 = 1 << 4;
     /// Walk into a child directory ([`super::fs::OPENDIR`]).
     ///
@@ -377,6 +414,36 @@ pub mod dir {
     pub const EINVAL: i32 = 22;
     /// `ENOTEMPTY`: [`super::fs::RENAME`] over a destination directory that still has entries in it.
     pub const ENOTEMPTY: i32 = 39;
+
+    /// **What a refusal from this contract means, in one sentence a shell can print.**
+    ///
+    /// The errno a verb answers is part of this module's design rather than an implementation
+    /// detail, because it decides what the holder *learns* (see this module's header). So the
+    /// sentence that renders it belongs here too, next to the decision, instead of in each program
+    /// that has to explain itself to a human. Every line is a statement about **the capability or
+    /// the thing**, never about a policy: there is no policy here to have said yes.
+    ///
+    /// `EACCES` is deliberately absent: nothing in this contract answers it (DECISIONS §27, §47).
+    pub const fn explain(errno: i32) -> &'static str {
+        match errno {
+            // ENOENT. Two very different situations, one sentence, and that is the point: a holder
+            // that may not reach a name must not be able to tell "it is not there" from "you may
+            // not name it". The sentence is true either way.
+            2 => "no such name in this directory",
+            EPERM => "this capability does not carry that right",
+            EROFS => "through this capability that directory is read-only",
+            EISDIR => "that is a directory",
+            ENOTDIR => "that is not a directory",
+            // EEXIST. Create is create, not create-or-open, so this is a fact about the directory.
+            17 => "that name is already there",
+            ENOTEMPTY => "that directory is not empty",
+            // EBADF, EMFILE: facts about a handle rather than about a capability.
+            9 => "no such handle",
+            24 => "too many handles open at once",
+            EINVAL => "that is not a name this contract can resolve",
+            _ => "the filesystem refused",
+        }
+    }
 
     /// **A rights set on one directory or file handle.** Opaque on purpose: the only ways to make
     /// one are [`Rights::root`], which the mount calls once for the directory the endpoint is bound
@@ -734,6 +801,23 @@ pub mod fixture {
         /// witnessed from outside the guest: one capability moved a name and another could not.
         pub const MOVED: &str = "moved-by-atk";
 
+        /// The file a navigating shell creates and **leaves** in its root, so that [`NAV_GONE`]'s
+        /// absence afterwards is a fact about `unlink` rather than about a shell that created
+        /// nothing. Run-indexed like the names above, for the same reason.
+        pub const NAV_KEPT: &str = "nav-kept";
+        /// The file a navigating shell creates, opens, writes, and then **unlinks while its own
+        /// handle is still open**. Two claims ride on it: in-guest, the read through that handle
+        /// still returns [`NAV_BODY`] (unlink removes a name, not an object); on the host, this name
+        /// is not in the directory afterwards (the removal reached the platter).
+        pub const NAV_GONE: &str = "nav-gone";
+        /// What goes into [`NAV_GONE`] before it is unlinked, and what must still be readable
+        /// through the open handle after.
+        pub const NAV_BODY: &[u8] = b"CRK47-NAV: a name can go while the bytes stay\n";
+        /// The directory a navigating shell makes with `mkdir` and leaves behind. It cannot remove
+        /// it: `rm` is `unlink`, which refuses a directory, and this contract has no `RMDIR`. The
+        /// asymmetry is declared in [`super::super::fs::UNLINK`] rather than hidden.
+        pub const NAV_DIR: &str = "nav-dir";
+
         /// **The names the image root must still carry after a run**, checked by the post-run host
         /// tool: this is the half of the assertion made from *outside* the confined program, and no
         /// in-guest verdict could have reported it. A capability granted on [`SUB`] can remove
@@ -792,6 +876,66 @@ pub mod fixture {
         /// **The thing it should be able to do failed**, so nothing above was proven. A capability
         /// that reaches nothing is trivially unescapable.
         pub const GRANTED_ACCESS_FAILED: u64 = 1 << 11;
+    }
+
+    /// **What a navigating shell reports** (milestone 47's commands: `cd`, `pwd`, `ls`, `mkdir`,
+    /// `rm`).
+    ///
+    /// A bitmap for the same reason the two attackers' are: the kernel test asserts an *exact* set,
+    /// so a shell that could do nothing and a shell that could do everything both fail, and the two
+    /// shells the headline test runs are each other's control. The shell running this script is told
+    /// **nothing about which subtree it was rooted in** beyond a run index; it tries to name one file
+    /// from each of two different roots and reports which it reached, so "two shells cannot name each
+    /// other's files" is read off the *pair* of reports rather than claimed by either.
+    pub mod navscape {
+        /// `pwd` rendered `/` before anything moved. The root of your namespace is the root of the
+        /// only namespace you have, which is the whole of "pwd is relative to your root".
+        pub const PWD_IS_ROOT: u64 = 1 << 0;
+        /// `cd ..` at the root was refused **and nothing moved**. This is `..` clamping: the shell
+        /// descends from what it holds and has nothing above it to pop.
+        pub const CLAMPED_AT_ROOT: u64 = 1 << 1;
+        /// `cd ..` at the root moved it somewhere. Never allowed, at any rights.
+        pub const WALKED_UP: u64 = 1 << 2;
+        /// An absolute path was refused as unnameable, with no request made. The refusal is that the
+        /// name **cannot be expressed** (there is no namespace to root it in), not that a permission
+        /// was checked, which is why the `std` PAL answers `InvalidFilename` and not
+        /// `PermissionDenied`.
+        pub const ABSOLUTE_REFUSED: u64 = 1 << 3;
+        /// It opened [`super::tree::INNER`], which exists only in [`super::tree::SUB`].
+        pub const REACHED_INNER: u64 = 1 << 4;
+        /// It opened [`super::tree::SECRET`], which exists only in [`super::tree::OTHER`].
+        pub const REACHED_SECRET: u64 = 1 << 5;
+        /// `ls` of its own root returned a listing.
+        pub const LISTED: u64 = 1 << 6;
+        /// That listing named [`super::tree::INNER`].
+        pub const SAW_INNER: u64 = 1 << 7;
+        /// That listing named [`super::tree::SECRET`]. A listing is a rendering of authority, so the
+        /// pair of these two bits is the property stated in what the two shells can *see* as well as
+        /// in what they can open.
+        pub const SAW_SECRET: u64 = 1 << 8;
+        /// `cd` into a child directory worked **and `pwd` then rendered the child's path**, which is
+        /// the half that proves the shell's own position tracked the capability it moved to.
+        pub const DESCENDED: u64 = 1 << 9;
+        /// `cd ..` from there came back, and `pwd` rendered `/` again.
+        pub const RETURNED: u64 = 1 << 10;
+        /// It created both of its files with the shell's `create` path.
+        pub const CREATED: u64 = 1 << 11;
+        /// `mkdir` made a directory in its root.
+        pub const MADE_DIR: u64 = 1 << 12;
+        /// `rm` removed the name it had made.
+        pub const UNLINKED: u64 = 1 << 13;
+        /// **After that `rm`, a read through the handle it still held returned the bytes.** The
+        /// unlink/revoke split, made a measurement: the name went and the object did not.
+        pub const HOLDER_KEPT_READING: u64 = 1 << 14;
+        /// And the name it removed no longer opens. Without this, the bit above is equally
+        /// consistent with an `rm` that did nothing at all.
+        pub const NAME_GONE_AFTER_UNLINK: u64 = 1 << 15;
+        /// `rm` of a **directory** was refused. `rm` unlinks a name of a file; a verb that removed
+        /// whatever it found is how one word takes a subtree away.
+        pub const RM_REFUSED_A_DIRECTORY: u64 = 1 << 16;
+        /// **Something that should have worked did not**, so the refusals above prove nothing. The
+        /// control bit, in the shape both attackers already use.
+        pub const NAVIGATION_FAILED: u64 = 1 << 17;
     }
 
     /// **The on-device crash test's vocabulary** (milestone 37, DECISIONS §34 condition 1).
@@ -930,6 +1074,41 @@ mod tests {
             fs::OPEN,
             "the two protocols are deliberately independent"
         );
+    }
+
+    /// **A refusal explains itself as a fact, never as a policy.** The sentences are part of §47's
+    /// design (the errno decides what the holder learns), so they are pinned here rather than left
+    /// to drift in whichever program prints them. The negative half is the load-bearing one: not one
+    /// of these lines may read like Unix's "permission denied", because there is no policy in this
+    /// contract that could have said yes.
+    #[test]
+    fn every_refusal_explains_itself_without_implying_a_policy() {
+        for errno in [
+            2,
+            dir::EPERM,
+            dir::EROFS,
+            dir::EISDIR,
+            dir::ENOTDIR,
+            17,
+            dir::ENOTEMPTY,
+            9,
+            24,
+            dir::EINVAL,
+            // An errno this contract does not name still has to render as something a human can
+            // read, rather than as an empty line or a panic.
+            5,
+        ] {
+            let s = dir::explain(errno);
+            assert!(!s.is_empty(), "errno {errno} renders as nothing");
+            assert!(
+                !s.contains("denied") && !s.contains("permission"),
+                "errno {errno} explains itself as a policy: {s:?}",
+            );
+        }
+        // The two rungs whose whole design is that they answer different words must not collapse
+        // into one sentence, or the distinction is invisible where a human meets it.
+        assert_ne!(dir::explain(dir::EROFS), dir::explain(dir::EPERM));
+        assert_ne!(dir::explain(2), dir::explain(dir::EPERM));
     }
 
     #[test]
@@ -1079,6 +1258,7 @@ mod tests {
             ("READDIR", fs::READDIR),
             ("MKDIR", fs::MKDIR),
             ("RENAME", fs::RENAME),
+            ("UNLINK", fs::UNLINK),
         ];
         for (i, (na, a)) in ops.iter().enumerate() {
             assert!(*a <= 0xff, "{na} does not fit the 8-bit opcode field");
@@ -1192,6 +1372,43 @@ mod tests {
         }
     }
 
+    /// The navigating shell's bits, for the reason above, and one more that is specific to them:
+    /// the headline test reads a property off **two** reports, so a bit that meant two things would
+    /// let one shell's success stand in for the other's failure.
+    #[test]
+    fn the_navigation_bits_are_distinct() {
+        use fixture::navscape::*;
+        let bits = [
+            PWD_IS_ROOT,
+            CLAMPED_AT_ROOT,
+            WALKED_UP,
+            ABSOLUTE_REFUSED,
+            REACHED_INNER,
+            REACHED_SECRET,
+            LISTED,
+            SAW_INNER,
+            SAW_SECRET,
+            DESCENDED,
+            RETURNED,
+            CREATED,
+            MADE_DIR,
+            UNLINKED,
+            HOLDER_KEPT_READING,
+            NAME_GONE_AFTER_UNLINK,
+            RM_REFUSED_A_DIRECTORY,
+            NAVIGATION_FAILED,
+        ];
+        let mut seen = 0u64;
+        for b in bits {
+            assert_ne!(
+                b, 0,
+                "zero is the empty report; it cannot also be an outcome"
+            );
+            assert_eq!(seen & b, 0, "two navigation outcomes share a bit");
+            seen |= b;
+        }
+    }
+
     /// The fixture's names must all fit a grant's two argument words, and must be distinct: a
     /// sibling that happened to be spelled like the granted directory would make the confinement
     /// test pass for the wrong reason.
@@ -1199,7 +1416,8 @@ mod tests {
     fn the_subtree_fixture_is_grantable_and_unambiguous() {
         use fixture::tree::*;
         for name in [
-            SUB, INNER, DEEPER, LEAF, OTHER, SECRET, MADE, MADE_DIR, MOVED,
+            SUB, INNER, DEEPER, LEAF, OTHER, SECRET, MADE, MADE_DIR, MOVED, NAV_KEPT, NAV_GONE,
+            NAV_DIR,
         ] {
             assert!(
                 grant::fits(name.as_bytes()),
@@ -1209,7 +1427,7 @@ mod tests {
         // The post-run host check identifies the attacker's creations by PREFIX, because a run
         // index is appended to each. A fixture name that started with one of those prefixes would
         // be read as an escape, or would hide one.
-        let probes = [MADE, MADE_DIR, MOVED];
+        let probes = [MADE, MADE_DIR, MOVED, NAV_KEPT, NAV_GONE, NAV_DIR];
         for fixture in ROOT_ENTRIES.iter().chain(&[INNER, DEEPER, LEAF, SECRET]) {
             for probe in probes {
                 assert!(
