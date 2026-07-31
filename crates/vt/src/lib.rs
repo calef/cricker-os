@@ -1130,7 +1130,10 @@ mod tests {
         let (ra, rb) = (rows(&a), rows(&b));
         assert_eq!(ra[0].trim_end(), "term0");
         assert_eq!(rb[0].trim_end(), "term1");
-        assert_ne!(ra, rb, "two windows rendering identically would pass a mixed-up test");
+        assert_ne!(
+            ra, rb,
+            "two windows rendering identically would pass a mixed-up test"
+        );
         assert!(
             ra.iter().any(|r| r.contains('A')) && rb.iter().any(|r| r.contains('B')),
             "each window must show what was typed at it, not at its neighbour",
