@@ -184,6 +184,12 @@ pub fn init() {
     // the coarse boot table. See `probe_asid_bits`: this validates the assumption `crates/asid`
     // is already built on, and it is the gate on ever removing the flush in `write_satp`.
     ASID_BITS.store(probe_asid_bits(), Ordering::Relaxed);
+    // Read back through the accessor rather than the local, so the store/load path is exercised on
+    // every boot and `asid_bits`'s "was it probed" assertion fires here if the ordering ever moves,
+    // instead of at some later caller. Reported rather than only asserted in a test, because this is
+    // a number whoever brings up a real board wants without running the suite: it says whether the
+    // ASID allocator's numbers are distinguishable by this hardware at all. The test enforces >= 8.
+    crate::println!("satp.ASID: {} bits implemented", asid_bits());
 }
 
 /// Switch `satp` to the Sv39 tables rooted at physical `root`, and flush the TLB.
@@ -730,7 +736,6 @@ mod tests {
             asid::ASIDS,
         );
     }
-
 
     /// Paging is on, and we are alive to say so.
     ///
