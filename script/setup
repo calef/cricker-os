@@ -9,14 +9,17 @@ cd "$(dirname "$0")/.."
 
 script/bootstrap
 
-# Advance nightly to the latest. rust-toolchain.toml pins `channel = "nightly"`, which rustup treats
-# as sticky: it installs one nightly and never moves it again on its own. We deliberately do NOT pin a
-# dated nightly (we want to ride the toolchain and meet each rustfmt/clippy change as it lands), so the
-# job of staying current falls here. CI installs a fresh nightly every run, so it is always the leading
-# edge; this keeps a dev machine from silently trailing it. It lives in setup, not bootstrap, to keep
-# it off CI's path (CI needs no update; it starts fresh). See notes/scripts.md.
-echo "==> Advancing nightly to the latest (we ride nightly on purpose; this matches CI)"
-rustup update nightly
+# There is deliberately no `rustup update` here. rust-toolchain.toml pins a DATED nightly
+# (`nightly-2026-07-26` as of writing), and script/bootstrap above installs exactly that channel with
+# its components, so there is nothing for setup to advance. Bumping the pin is a deliberate act with
+# its own tool, `script/toolchain-bump`, which raises the date, rebuilds the std farm clean, runs the
+# gates and restores the old pin if they fail.
+#
+# This block used to run `rustup update nightly`, with a comment claiming the project rode the
+# floating channel on purpose. That stopped being true on 2026-07-30, when the pin was dated to fix a
+# CI break, and the stale version was worse than merely wrong: it downloaded and advanced a toolchain
+# the build never uses, so its cost was real and its effect was nil. See notes/scripts.md and the
+# rationale at the top of rust-toolchain.toml.
 
 echo "==> Building the kernel, the user program, and the disk image"
 cargo xtask build
