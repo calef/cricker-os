@@ -4070,12 +4070,36 @@ The Gregorian calendar is **fully specified**: every rule is written down, and a
 3,652,425 days in range settles it. Nothing about being widely used tells you more than the quantifier
 does.
 
-Cryptography is the opposite, and milestone 56 already records the opposite call: **vendor it, do not
-write it.** Correctness there includes resistance to attacks not yet published and side-channel
+Cryptography is the opposite: **take it, do not write it.** Correctness there includes resistance to attacks not yet published and side-channel
 behaviour no specification states, and that is bought by years of exposure and review. A proof that
 our AES matches the spec would not make it safe to use.
 
 So the distinguishing question is not size. It is **whether the spec is the whole of correctness.**
+
+### Amendment (2026-07-31): taking is not vendoring, and crypto is a *dependency*
+
+An earlier wording of rule 4 said crypto should be **vendored**, which conflated two decisions. Rule 4
+is about **write versus take**. Whether a taken thing is *vendored* or *depended on* is separate, and
+does not follow from it.
+
+**The tree's actual trigger for vendoring is "we must patch it."** RedoxFS is vendored because it
+needed a divergence patch to build `no_std`, and `script/vendor-verify` exists to prove exactly that:
+"upstream **plus our recorded patches**". **smoltcp is a whole subsystem and an ordinary
+dependency**, because nothing needed changing. So "subsystem, therefore vendor" is not what this tree
+does, and never was.
+
+RustCrypto's crates are already `no_std`, so no patch is needed and the trigger never fires. With no
+divergence, `vendor-verify` has nothing to prove that `Cargo.lock` does not already.
+
+**And for crypto in particular, vendoring is actively worse.** Advisories are the whole point in that
+category, and `cargo-deny` / `cargo-audit` work against registry versions; a vendored copy is
+invisible to an advisory until a human notices. Milestone 42 named that gap in general terms — "we
+confine code we did not write; an advisory against it is invisible today" — and crypto is where it
+bites hardest. Vendoring it would take on the maintenance burden **and** give up the pipeline that
+makes the burden survivable.
+
+So: **crypto is an ordinary dependency**, pinned in `Cargo.lock`, gated by `deny.toml` and
+`script/supply-chain`. Vendor only what must be patched.
 
 ### The honest costs of writing, recorded so they are not rediscovered as complaints
 
