@@ -95,6 +95,27 @@ pub fn init(dtb_ptr: usize) {
         }
     }
 
+    // The real-time clock (milestone 51), matched on `compatible` rather than on a node name.
+    // This is the device where the name shortcut runs out: aarch64 `virt` calls it
+    // `pl031@9010000` and riscv64 `virt` calls it `rtc@101000`, so no prefix finds both, while
+    // `arm,pl031` and `google,goldfish-rtc` name exactly the register layouts a driver knows.
+    // Both boots probe for both, and a machine with neither leaves this None, which the clock
+    // service reports as "I do not know what time it is" (DECISIONS §42, §43).
+    {
+        let mut rtc = [Region { start: 0, size: 0 }; 1];
+        for (compat, kind) in [
+            (&b"arm,pl031"[..], clock_proto::rtc::PL031),
+            (&b"google,goldfish-rtc"[..], clock_proto::rtc::GOLDFISH),
+        ] {
+            if let Ok(n) = dtb.node_reg_compatible(compat, &mut rtc)
+                && n >= 1
+            {
+                *RTC_REGION.lock() = Some((rtc[0].start, rtc[0].size, kind));
+                break;
+            }
+        }
+    }
+
     // The whole span we have to be able to describe. Note this is the *span*, not the
     // *sum*: if a board has RAM at 0x4000_0000 and again at 0x8_0000_0000, we track
     // every frame between them and simply never free the hole. A bit of wasted bitmap
@@ -316,6 +337,23 @@ pub fn smmu_region() -> Option<(u64, u64)> {
     *SMMU_REGION.lock()
 }
 
+/// The real-time clock's register block and which binding it is: `(start, size, kind)`, the
+/// address **physical** and the kind one of `clock_proto::rtc`. `None` on a machine whose device
+/// tree describes no RTC we can drive, which is a state the clock service has an answer for rather
+/// than a case it papers over.
+///
+/// The kind travels with the address on purpose. The clock service picks its register layout from
+/// what the machine said, not from `target_arch`, because the VisionFive 2 is riscv64 and has
+/// neither of these devices; an ISA-keyed driver would compile clean and read garbage on the first
+/// real board (DECISIONS §43).
+#[cfg_attr(
+    not(any(test, feature = "shell", feature = "initboot")),
+    allow(dead_code)
+)]
+pub fn rtc_region() -> Option<(u64, u64, u64)> {
+    *RTC_REGION.lock()
+}
+
 /// The RAM regions the device tree told us about.
 ///
 /// The MMU needs these: with paging on, a physical address the kernel cannot *name* is a
@@ -385,6 +423,10 @@ static PLIC_REGION: IrqSafeMutex<Option<(u64, u64)>> = IrqSafeMutex::new(rank::R
 /// started with `-machine virt,iommu=smmuv3` (and always on riscv, whose IOMMU is a PCI function
 /// found by enumeration, not a platform device with a node).
 static SMMU_REGION: IrqSafeMutex<Option<(u64, u64)>> = IrqSafeMutex::new(rank::RAM, None);
+
+/// The RTC's register block and binding kind (milestone 51). `None` until `init` has run, and on a
+/// machine whose device tree describes neither RTC we can drive.
+static RTC_REGION: IrqSafeMutex<Option<(u64, u64, u64)>> = IrqSafeMutex::new(rank::RAM, None);
 
 static BITMAP_START: AtomicUsize = AtomicUsize::new(0);
 static BITMAP_BYTES: AtomicUsize = AtomicUsize::new(0);

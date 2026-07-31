@@ -1,7 +1,8 @@
 //! The std proof (milestone 27): an ordinary Rust program, no `no_std`, no attributes, running on
 //! the native capability ABI. Every line exercises a PAL surface: `println!` SENDs on the stdout
 //! endpoint (slot 1), collections draw from the untyped budget (slot 0), `Instant` reads the
-//! virtual counter, and `fs` returns honestly `Unsupported`.
+//! virtual counter, `SystemTime` reads the clock page slot 5 grants (milestone 51), and `fs`
+//! returns honestly `Unsupported`.
 //!
 //! **One binary, three behaviours, chosen by the authority it was granted.** A std program reaches
 //! the network only if it holds the network, and the filesystem only if it holds a directory (no
@@ -24,7 +25,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, UdpSocket};
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 fn main() {
     // Probe for a directory capability first: an `Unsupported` open means no FS-service endpoint in
@@ -92,7 +93,31 @@ fn offline_demo() {
         "no time passed across real work"
     );
     println!("instant monotonic ok");
+
+    // **Wall-clock time** (milestone 51). This process was granted a clock: a `Frame` capability
+    // naming the clock service's page in slot 5 and a read-only mapping of it, which is all
+    // `SystemTime::now()` needs (the offset from the page, the monotonic counter from the ambient
+    // register). Asserted rather than printed, because a real date is not a deterministic
+    // transcript; what is checked is that it is inside the same sanity window the clock service
+    // applies, which 1970-plus-uptime is not.
+    let wall = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("the wall clock is before the Unix epoch");
+    assert!(
+        wall >= NOT_BEFORE && wall < NOT_AFTER,
+        "the wall clock reads {wall:?}, outside the plausible window",
+    );
+    // And the property the counter-plus-offset design buys: `SystemTime` and `Instant` are read
+    // from the same counter, so the wall clock advancing does not mean the monotonic one jumped.
+    let t2 = Instant::now();
+    assert!(t2 >= t1, "the monotonic counter went backwards");
+    println!("wall clock ok");
 }
+
+/// The same sanity window `clock_proto::policy` applies, restated here because a std program links
+/// std and not the contract crate. 2026-01-01 and 2100-01-01.
+const NOT_BEFORE: Duration = Duration::from_secs(1_767_225_600);
+const NOT_AFTER: Duration = Duration::from_secs(4_102_444_800);
 
 /// **The `std::fs` transcript** (milestone 27 phase two, the FS half): ordinary `File`, `Read`,
 /// `read_to_string`, and `metadata`, all served by the RedoxFS FS server over the §27 contract, and

@@ -17,6 +17,10 @@ asid = { version = "0.1.0", path = "../crates/asid" }
 # homework and the picture is a value rather than a screenshot somebody eyeballed once.
 bitfont = { version = "0.1.0", path = "../crates/bitfont" }
 caps = { version = "0.1.0", path = "../crates/caps" }
+# The wall-clock contract (milestone 51, DECISIONS §43). The kernel discovers the RTC by
+# `compatible` and names the binding with these constants, and its clock tests read the shared page
+# through the same seqlock the service publishes with, so no party has its own copy of the layout.
+clock_proto = { version = "0.1.0", path = "../crates/clock_proto" }
 # The compositor contract (milestone 33): the kernel wires the scene and its tests predict the
 # composed screen from the same definition the compositor and its clients paint from.
 compose = { version = "0.1.0", path = "../crates/compose" }
