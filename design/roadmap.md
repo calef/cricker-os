@@ -109,7 +109,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 43 | NOT-STARTED | A second security audit, with a different lens | the attack surface roughly doubled after the first audit was written |
 | 44 | PARTIAL | GitHub repository hardening: policy, private reporting, code scanning, pull requests | a repository with a security thesis should be able to receive a report privately |
 | 45 | BUILT | Triage the CodeQL code-scanning alerts, and decide what the tool is for | the alerts land on this project's most-used unsafe abstraction |
-| 46 | NOT-STARTED | Rename the components for what they are, not for daemons | one mechanical commit; a name is a claim, and `-d` claims something we rejected |
+| 46 | NOT-STARTED | Rename the components for what they are, and write down the naming rules | a name is a claim, and `-d` claims something we rejected; conventions that matter get a checker, not a paragraph |
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
 comparison), with the multikernel work (17) as
@@ -1636,7 +1636,7 @@ code did. The real comparison is `/language:rust`: 2 results on `refs/heads/main
 
 **Why it matters.** **the alerts land exactly where this project's most-used unsafe abstraction lives**, so the answer is worth having either way: either the wait queue's contract can be made structural rather than documented, which is a real improvement to the code every blocked thread passes through, or we write down why it cannot be and what upholds it instead. Also forces the meta-decision milestone 44 left open, now that scanning is actually running: a scanner whose findings are never dispositioned is worse than none, because it manufactures the appearance of review
 
-### 46. Rename the components for what they are, not for daemons
+### 46. Rename the components for what they are, and write down the naming rules
 
 **In brief.** Five renames in one mechanical commit: `netd` → `netstack`, `compd` → `compositor`,
 `gpud` → `display`, `termd` → `lineedit`, and the crate `crates/linedisc` → `crates/lineedit`.
@@ -1664,6 +1664,41 @@ decisions checkers catch prose stragglers.
 renames away — plus `kernel/src/user.rs`, which both lanes share. Landing 398 token replacements
 underneath an active branch turns a mechanical commit into a merge fight, which is precisely what it
 must never become.
+
+#### Second half: the conventions, and checks for the ones a machine can check
+
+Looking for the tree's naming conventions on 2026-07-30 turned up three real inconsistencies, none of
+them anybody's decision:
+
+- **Word separation in crate names is split down the middle.** `fs_proto`, `gfx_proto`,
+  `dma_validate`, `user_rt` use underscores; `capsh`, `crickerfs`, `bitfont`, `linedisc`, `coremark`
+  run the words together. Two habits, no rule.
+- **The wire contract is spelled four ways**: `fs_proto` and `gfx_proto` (crates, underscore),
+  `netproto` (a module, no underscore), and `linedisc::proto` (a submodule). One concept.
+- **Branch prefixes contain a literal duplicate**: eight in use, including both `feature/` and `feat/`.
+
+Write the *principle* in prose, because it needs judgement and no checker can evaluate it: name a
+component for what it is, and prefer a word that parses without prior Unix exposure. DECISIONS §39
+already carries the reasoning; the note should point at it rather than restate it.
+
+Then **check the mechanical ones in `script/lint`**, because this project's own pattern is that a
+convention which matters gets a checker rather than a paragraph — the roadmap status vocabulary,
+DECISIONS numbering, script documentation, conflict markers and module-wide suppressions all became
+checks today, and a rule with no enforcement decays (which is the entire argument the dead-code
+ratchet was built on):
+
+- **No `-d` suffix on a binary.** §39 made this a rule; without a check it lasts until the first
+  inconvenient moment.
+- **One spelling for contract crates.** Pick `*_proto` or `*proto` and fail the odd one out.
+- **Branch prefixes from a fixed set**, which retires `feat/` versus `feature/`.
+
+The note lands in `notes/` and is indexed in `notes/README.md`; `script/lint` already enforces that
+every script has an entry in `notes/scripts.md`, so the precedent for gating documentation exists.
+
+**Why both halves are one lane.** They share a landing point: the note must describe `netstack`,
+`compositor`, `display` and `lineedit` rather than names that are about to change, and the `-d` check
+would fail until the rename lands. Splitting them would mean writing documentation that is stale on
+arrival, or a checker that is red on arrival.
 
 **Effort: 1 lane estimated**, almost entirely verification rather than editing.
 
