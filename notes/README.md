@@ -22,6 +22,12 @@ in the code or the conversation doesn't make sense, it belongs here.
   `setup`, `test`, `server`, `console`, and friends, thin wrappers over `cargo xtask` so every
   repo has the same first command. Also: why `script/` and `scripts/` both exist.
 
+- [Naming things](naming.md) — components, crates, scripts, branches, and which document goes
+  where. Why nothing here is named `-d` any more (DECISIONS §39), why `§N` and "milestone N" are
+  different numbers over the same integers (it has already produced a wrong citation), and
+  which four of these conventions `script/lint` checks. The jargon half cannot be checked:
+  `linedisc` would have passed every rule.
+
 ## Devices
 
 - [The device tree](device-tree.md) — the machine describing itself. Everything in it is

@@ -167,3 +167,86 @@ for name in $(grep -oE "script/[a-z-]+" "$(dirname "$0")/../README.md" | sort -u
     [ -e "$(dirname "$0")/$name" ] || { echo "lint: README names script/$name, which does not exist" >&2; exit 1; }
 done
 echo "script docs: every script documented, every README reference resolves"
+
+# The naming conventions, for the ones a machine can check (milestone 46, DECISIONS §39). The rest of
+# them -- "name a component for what it is", "prefer a word a reader can parse without prior Unix
+# exposure" -- need judgement and stay prose, in notes/naming.md. These four do not.
+#
+# Every check below is a ratchet, and the argument is §39's: a name is a claim, made before a reader
+# sees a line of code. `netd`, `compd`, `gpud` and `termd` each claimed a Unix daemon model this OS
+# does not have, and the claim survived four milestones because nothing was looking. Cheap greps,
+# because lint runs constantly.
+echo "==> naming conventions"
+
+# 1. No `-d` suffix on a component or a crate. §39 made this a rule; without a check it lasts until
+#    the first inconvenient moment. Three characters or fewer is not a daemon name, it is an
+#    abbreviation (`kbd` is the keyboard driver), so the rule starts at four. Names that genuinely
+#    end in `d` go in the allow-list WITH a reason, the same shape as a per-item `#[allow]`.
+#
+#    Allowed: `asid` is Address Space IDentifier, the aarch64/RISC-V hardware term (notes/asids.md).
+naming_allow=" asid "
+named_for_a_daemon=""
+for name in \
+    $(ls "$(dirname "$0")/../user/src" | sed 's/\.rs$//') \
+    $(grep -A1 '^\[\[bin\]\]' "$(dirname "$0")/../user/Cargo.toml" | sed -n 's/^name = "\(.*\)"$/\1/p') \
+    $(ls "$(dirname "$0")/../crates")
+do
+    case "$name" in
+        ???*d)
+            case "$naming_allow" in
+                *" $name "*) ;;
+                *) named_for_a_daemon="$named_for_a_daemon $name" ;;
+            esac
+            ;;
+    esac
+done
+if [ -n "$named_for_a_daemon" ]; then
+    echo "lint: names ending in -d, which claims a daemon this OS does not have:$named_for_a_daemon" >&2
+    echo "Name it for what it is (DECISIONS §39, notes/naming.md). If the word simply ends in d," >&2
+    echo "add it to naming_allow in this script with the reason." >&2
+    exit 1
+fi
+
+# 2. "Daemon" appears nowhere. §39's vocabulary is component / service / contract, and the word is
+#    excluded from code, comments and notes. Three files are exempt because they are where the
+#    ARGUMENT about the word lives: DECISIONS.md, design/, and notes/naming.md. A rule's rationale
+#    has to be able to name the thing it rejects, and this script does too.
+if git -C "$(dirname "$0")/.." grep -Iilnw daemon -- \
+    ':!vendor' ':!DECISIONS.md' ':!design' ':!notes/naming.md' ':!script/lint' \
+    > /tmp/cricker-daemon.txt 2>/dev/null; then
+    echo "lint: \"daemon\" outside the three places the argument about the word lives:" >&2
+    cat /tmp/cricker-daemon.txt >&2
+    echo "The vocabulary is component / service / contract (DECISIONS §39)." >&2
+    exit 1
+fi
+
+# 3. One spelling for contract crates. The tree had four spellings of "the wire contract" when this
+#    was written (`fs_proto`, `gfx_proto`, `netproto`, `lineedit::proto`); `*_proto` wins for CRATES
+#    because it is what both of them already were, and a second habit is how the first one rots.
+for dir in "$(dirname "$0")"/../crates/*proto; do
+    name="$(basename "$dir")"
+    case "$name" in
+        *_proto) ;;
+        *) echo "lint: contract crate $name should be spelled *_proto (notes/naming.md)" >&2; exit 1 ;;
+    esac
+done
+
+# 4. Branch prefixes from a fixed set, which is what retires the `feat/` versus `feature/` duplicate
+#    the survey found. Current branch only, because that is the one a developer can still rename; a
+#    detached HEAD (every CI pull_request run, since actions/checkout builds the merge commit) has no
+#    branch to judge and is skipped rather than guessed at.
+branch="$(git -C "$(dirname "$0")/.." symbolic-ref --quiet --short HEAD || true)"
+case "$branch" in
+    # No branch (detached HEAD), or the trunk.
+    ""|main) ;;
+    # The tooling's own worktree branches, which no person types.
+    worktree-agent-*) ;;
+    milestone/*|fix/*|bench/*|audit/*|integration/*|finalize/*|feature/*) ;;
+    *)
+        echo "lint: branch '$branch' has no recognised prefix." >&2
+        echo "Use milestone/, fix/, bench/, audit/, integration/, finalize/ or feature/." >&2
+        echo "Not feat/: one spelling, and feature/ is the older one (notes/naming.md)." >&2
+        exit 1
+        ;;
+esac
+echo "naming: no -d names, no daemons, contract crates spelled one way, branch prefix recognised"
