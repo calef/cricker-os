@@ -114,6 +114,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 48 | NOT-STARTED | Job control: jobs, wait, kill, fg, bg, and a stopped state | **most of it needs no new kernel surface**, and the tty's most tangled feature turns out to be a capability transfer |
 | 49 | NOT-STARTED | Users, login, and attribution: what identity is for once it stops being authority | three of Unix's four uses for a uid are already answered structurally; the fourth, **attribution, has no mechanism at all** |
 | 50 | NOT-STARTED | Pipes and redirection: one sink protocol, and `\|` turns out to be an endpoint | the mechanism already exists (**stdout is a capability in slot 1**); the work is unifying four byte-sink protocols, not adding a parser rule |
+| 51 | NOT-STARTED | Wall-clock time, the `date` command, and an NTP service | the machine currently believes it is January 1970; **reading the clock is harmless and setting it is an authority**, which is the whole design |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -2286,6 +2287,110 @@ natural order is unify the protocol, then `>` and `<`, then `|`, then revisit 48
 in hand. **Effort: 3 lanes estimated** (protocol, redirection, pipelines), noting estimates for
 unbuilt work are guesses on a history-calibrated scale, and that the unification is the one most
 likely to surprise.
+
+### 51. Wall-clock time, the `date` command, and an NTP service
+
+**In brief.** The machine does not know what time it is, and says so in a way that is easy to miss:
+`SystemTime` is the monotonic counter offset from `UNIX_EPOCH`, so **it reports January 1970 plus
+uptime**. Give it a real clock, a `date` command, and a network time client, and take the chance to
+put the authority in the right place.
+
+**Why it matters.** Time is where a capability system gets to make a distinction Unix cannot afford
+to. **Reading the clock is near-harmless; setting it is a genuine authority** over certificate
+validation, log ordering, filesystem timestamps and build reproducibility. In Unix `ntpd` runs as
+root and may set the clock to anything. Here the network client should not be able to set it at all.
+
+#### The starting position, which is honest but wrong
+
+`notes/std.md` already records the caveat: "`SystemTime` is monotonic-since-boot, not wall-clock. No
+RTC, no NTP, so 'system time' honestly measures 'since this machine came up'." Differencing two
+`SystemTime`s gives a correct duration; any absolute reading is a fiction. It is also why file times
+are `Unsupported` in the `std` PAL, per that file: "there is no wall clock to interpret it against
+anyway". Milestone 47's `mkdir`/`create` work will want them, so this unblocks that.
+
+#### The time source, and it is two drivers because parity is a gate
+
+Verified from the DTB fixtures in `crates/dtb/tests/fixtures/`, not assumed:
+
+| Platform | Device | Address |
+|---|---|---|
+| QEMU `virt`, aarch64 | `arm,pl031` | `0x9010000` |
+| QEMU `virt`, riscv64 | `google,goldfish-rtc` | `0x101000` |
+| VisionFive 2 | its own RTC (board bring-up, milestone 16a) | via DTB |
+
+Two small drivers, both discovered through `crates/dtb` rather than hardcoded, both following rule 2
+(a driver takes a base address and knows nothing else). Neither is large; the point is that shipping
+one and not the other is the bug rule 5 exists to catch.
+
+#### The design: an offset, which makes NTP safe for free
+
+Keep the split the code already has. `Instant` stays the **raw monotonic counter**, ambient and
+one instruction (see the §10 exception recorded in `arch/aarch64/timer.rs` and its riscv twin).
+Wall-clock time becomes **counter + offset**, and the clock service owns the offset.
+
+The payoff is that adjusting the wall clock cannot perturb monotonic time, **by construction rather
+than by discipline**. Unix needs `adjtime` slewing partly because stepping the clock backwards breaks
+things that assumed it only moves forward; here `Instant` never sees the adjustment, so a step is
+just an offset write. Whether to *also* slew for the benefit of wall-clock readers is then a policy
+choice the service can make, not a correctness requirement.
+
+#### Where the authority sits
+
+- **The clock service** holds the RTC device capability and the offset. It is the only thing that can
+  set the time.
+- **Readers** hold a read capability. Nearly everything.
+- **The NTP client** holds a network capability and a capability to **propose** a time, which is
+  deliberately not the same as setting one. The service applies policy: sanity bounds, a maximum
+  step, and a refusal to move backwards past a threshold.
+
+That attenuation is the milestone's demonstrable claim, and it is one Unix cannot make: a compromised
+NTP client here can lie *within the service's bounds* and can do nothing else. It cannot set the clock
+to 2038, and it holds no authority over anything but the network socket it was given.
+
+#### `date`, the deliverable
+
+Reads the wall clock and formats it. Timezone and calendar conversion are pure computation and belong
+in a host-tested library crate, not in the service (§14's rule about what compiles for the host).
+Setting the time is a separate verb with a separate capability, and `date -s` in one binary that does
+both is exactly the conflation this design refuses.
+
+#### NTP, and the chicken-and-egg worth recording before it is discovered
+
+Buildable today: `netstack` runs smoltcp, and NTP is UDP on port 123. Two honest problems:
+
+1. **Plain NTP is unauthenticated and trivially spoofable.** NTS (RFC 8915) is the answer, and it
+   needs TLS, which needs certificate validation, which needs **a roughly correct clock**. The
+   standard escape is a build-time "not before" timestamp plus the RTC's rough value, and it should
+   be chosen deliberately rather than discovered halfway through.
+2. **The RTC may be wrong or absent**, so the service needs a defined state for "I do not know what
+   time it is" rather than confidently reporting 1970. That state should be visible to readers, not
+   papered over, which is the same rule §42 sets for filesystems: no silent degradation.
+
+#### The fork this exposes, which is bigger than the milestone
+
+There is **no timed wait anywhere in the kernel**. The syscall surface is `EXIT`, `YIELD`, `INVOKE`,
+`CAP_DELETE`, and `sched.rs` twice calls out its own "no-timeout limitation". So `thread::sleep` is a
+yield-spin, which is the *correct* implementation given what exists (it does not monopolise a core),
+but it keeps a thread runnable for the whole sleep and costs scheduler work proportional to duration.
+
+Three candidate shapes, and this is a design fork to settle before building:
+
+- **A new `SYS_SLEEP` syscall.** Simplest, ambient, and not capability-shaped, which is a strike.
+- **A timer object with a `WAIT` method.** Capability-shaped and consistent with the model; the most
+  machinery.
+- **A deadline on `Endpoint::RECV`/`CALL`.** One primitive that fixes sleep, the RECV no-timeout
+  limitation the kernel already complains about twice, and the shell's `^C` busy-poll that
+  `linedisc`'s `OP_INTRCOUNT` doc describes as waiting for "the blocking notification primitive".
+  **Three problems, one addition**, which is why it looks strongest.
+
+Worth separating clearly: *reading* time is ambient and harmless, *blocking* on time is a scheduler
+interaction and is the part that wants a capability.
+
+**Sequencing.** The RTC drivers and the clock service are independent of the shell milestones and
+could start any time; `date` follows the service; NTP follows `date` and wants the network stack
+settled. The timed-wait fork is separable and should be decided on its own, since it serves more than
+this milestone. **Effort: 3 lanes estimated** (drivers plus service, `date` plus the calendar crate,
+NTP), noting estimates for unbuilt work are guesses on a history-calibrated scale.
 
 ## The display ladder (recorded 2026-07-28, Chris's direction)
 
