@@ -302,7 +302,14 @@ in the code or the conversation doesn't make sense, it belongs here.
   page set) and added the two things that keep a proof honest: **the bounds with their justifications**,
   and a plain statement of **what the proof does not establish** (addresses carried in a device command
   payload rather than a descriptor). Also the record of a declined proof being reversed by aiming at a
-  smaller target, and of every new property being falsified before it was believed.
+  smaller target, and of every new property being falsified before it was believed. Milestone 51's
+  calendar added the finding that a 64-bit division and a symbolic-length slice cost far more than
+  the logic wrapped around them.
+- [The calendar crate](calendar.md) — milestone 51's pure-computation lane: Unix seconds to a civil
+  date and back, weekday, day of year, five formats, an RFC 3339 parser. Why 1900 is not a leap year
+  and truncating division reports 1970 for the last day of 1969, why the range stops at year 9999,
+  why leap seconds are a named error rather than a clamp, and the scope note that a fixed UTC offset
+  is in and the IANA database is out (it is a data-distribution problem, not a calendar one).
 - [Generational names](generational-names.md) — milestone 14 phase A: the thread table becomes a
   fixed generational slot table (`crates/slots`). A Tid is `(generation, slot)`; a dead thread's
   name can never resolve again, even after slot reuse. Bounded like an array, safe like a
