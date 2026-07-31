@@ -110,7 +110,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 44 | PARTIAL | GitHub repository hardening: policy, private reporting, code scanning, pull requests | a repository with a security thesis should be able to receive a report privately |
 | 45 | BUILT | Triage the CodeQL code-scanning alerts, and decide what the tool is for | the alerts land on this project's most-used unsafe abstraction |
 | 46 | NOT-STARTED | Rename the components for what they are, and write down the naming rules | a name is a claim, and `-d` claims something we rejected; conventions that matter get a checker, not a paragraph |
-| 47 | NOT-STARTED | Filesystem navigation: cd, pwd, ls, mkdir, rm, and what a path means | **divergence from Unix must be earned, never stylistic.** Keep the commands; change only what the capability model actually forces, and get one missing primitive right |
+| 47 | NOT-STARTED | Navigation and naming: cd, pwd, ls, mkdir, rm, paths, and environment | **divergence from Unix must be earned, never stylistic.** Keep the commands; change only what the capability model actually forces, and get one missing primitive right |
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
 comparison), with the multikernel work (17) as
@@ -1703,7 +1703,7 @@ arrival, or a checker that is red on arrival.
 
 **Effort: 1 lane estimated**, almost entirely verification rather than editing.
 
-### 47. Filesystem navigation: `cd`, `pwd`, `ls`, `mkdir`, `rm`, and what a path means
+### 47. Navigation and naming: `cd`, `pwd`, `ls`, `mkdir`, `rm`, paths, and environment
 
 **In brief.** A navigation model for a system with no global namespace. Keep the Unix command names
 and behaviour wherever they can work honestly; diverge only where the capability model forces it, and
@@ -1811,6 +1811,53 @@ name it did not already own, and the namespace becomes another endowment, inspec
 which Unix cannot do, since you cannot enumerate what your paths could reach. The honest cost is that
 two processes seeing different files at one path is powerful and confusing, and Plan 9 users will
 attest to both halves.
+
+#### Environment variables, which are the same question wearing a string costume
+
+**Clean slate**: there is no `argv` and no `envp` today. `notes/abi.md` is explicit — "no libc, no
+`argv`/`envp` array, no dynamic loader, no `main` wrapper" — so a program gets argument words in
+registers and a populated cspace. Nothing has to be undone, and §15 already carries the natural seam
+as a deferred item: a **BootInfo** page, "a structured block the loader hands the program".
+
+Unix puts three different things in one string-to-string map, which is why environment variables are
+both indispensable and a security disaster:
+
+- **Inert configuration** (`LANG`, `TZ`, `TERM`). Genuinely just data, no authority in it.
+- **Names for finding things** (`PATH`, `HOME`). This is namespace, and therefore *this milestone's*
+  question: `HOME` is a directory capability wearing a string costume, and `PATH` is "the set of
+  directories I may spawn programs from", which is a set of capabilities.
+- **Secrets** (`AWS_SECRET_KEY` and friends). These are **authority badly encoded as a bearer
+  string**. In a capability system a credential is a capability to a service, not a value you can
+  print, log, or leak into a crash dump.
+
+So the three go three different places: data stays data, names become capabilities (the work above),
+and secrets become endpoints.
+
+**The property worth designing for is not secrecy, it is that environment is an *open channel*.** In
+Unix anyone can set any variable and hope the program reads it, which makes every process carry an
+unbounded implicit input. `LD_PRELOAD`, `IFS`, `PATH` and a long tail of library-specific variables
+are attacks that work because a program can be influenced by something it never asked for and does not
+know exists.
+
+Invert it: **a program declares the configuration it reads, and undeclared variables cannot reach
+it.** That is not a new mechanism, it is exactly what the SHILL-style manifest already does for
+capabilities — a program declares its expected endowment, the manifest is checked at spawn, and a
+mismatch is a refusal at the prompt rather than a mystery later. Configuration is the same shape, and
+declaring it closes the entire `LD_PRELOAD` class by construction rather than by blocklist.
+
+**And no inheritance.** Unix's environment is inherited by default, which is exactly why a secret in a
+shell leaks into every child including those with no business seeing it. Here it is granted like
+everything else: at spawn, explicitly, visible in `caps`. The honest tension is the governing
+constraint above — environment variables are convenient *because* they are inherited, and full
+explicitness is verbose. Proposed middle ground: **inheritance with visibility.** The shell holds a
+default config set and passes it, but the passing is explicit and inspectable, so `caps run prog`
+shows exactly what that program will see before it runs. Convenient in the common case, never
+invisible.
+
+**One thing to decide deliberately rather than drift into.** If configuration is declared in the
+manifest, the manifest grows from "what capabilities do I need" into "what do I need at all". That is
+a larger claim than it makes today, and it is the sort of scope creep that is easier to accept early
+than to reverse later.
 
 #### The finding that should drive the build order
 
