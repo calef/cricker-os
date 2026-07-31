@@ -2204,6 +2204,34 @@ mod tests {
 
     use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+    /// Wait for `cond`, bounded by the CLOCK rather than by a yield count.
+    ///
+    /// These tests used to spin a fixed number of yields and then assert. A yield count is not a
+    /// duration: on a loaded host, or once §28's placement scattered work across cores, this core can
+    /// burn two hundred cheap yields long before the threads it is waiting on have been scheduled at
+    /// all. That is not a hang, it is an impatient observer, and it fails an assertion that describes
+    /// the system rather than the test.
+    ///
+    /// It has now bitten three times in one day, in three different files: the reap waits in
+    /// `user.rs`, three spin counts in `smp.rs`, and here. The third time was a gate run failing with
+    /// "finished threads were never reaped, left: 11, right: 5" while a leaked QEMU held 199% of the
+    /// host — which is exactly the condition a yield count cannot survive and a clock can.
+    ///
+    /// Two seconds is far beyond any honest completion here (these are milliseconds when the machine
+    /// is quiet) and well inside the harness's 90 s per-test ceiling, which remains the backstop for a
+    /// genuine hang. Still a leak trap rather than a masked failure: work that never completes times
+    /// out, and the caller's assertion then reports what was actually wrong.
+    fn wait_for(mut cond: impl FnMut() -> bool) -> bool {
+        let deadline = crate::arch::timer::now() + 2 * crate::arch::timer::frequency();
+        while crate::arch::timer::now() < deadline {
+            if cond() {
+                return true;
+            }
+            crate::sched::yield_now();
+        }
+        cond()
+    }
+
     /// Spin the scheduler until `cond`, bounded by wall-clock, returning whether it happened. Since
     /// DECISIONS §28, work a test spawns runs on *other* cores, so this core is often idle and a
     /// yield returns at once: a fixed count of yields elapses in almost no real time and times out
@@ -2582,13 +2610,14 @@ mod tests {
         let threads_before = crate::sched::thread_count();
 
         fn batch_of_eight() {
+            let before = crate::sched::thread_count();
             for _ in 0..8 {
                 crate::sched::spawn(|| {}).expect("spawn failed");
             }
-            // Let them all run and exit, and let the reaper catch up.
-            for _ in 0..200 {
-                crate::sched::yield_now();
-            }
+            // Let them all run and exit, and let the reaper catch up. Clock-bounded, not yield-bounded:
+            // §28 can place these on other cores, and a Finished thread is only removed when its own
+            // core switches away from it, so no number of yields *here* can make that happen.
+            wait_for(|| crate::sched::thread_count() <= before);
         }
 
         // The FIRST batch legitimately costs a couple of frames: the stack area is a fresh
