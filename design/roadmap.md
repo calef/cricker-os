@@ -2656,10 +2656,11 @@ Four things came out of it that were not in the plan below.
 
 **Still open here, and named honestly in notes/pipes.md's BUGS**: `>` and `<` parse, plan, preview
 and refuse correctly but **cannot run at the interactive prompt**, because no boot yet gives one
-shell both a filesystem and a spawn channel; the mechanism behind `>` is proven against a real
-RedoxFS image in `sink_tests`, so what is missing is wiring in `sysinit` rather than design. Also
-still open: buffering (a pipeline is full lockstep and has not been benchmarked against a Unix
-pipe), `>>`, `2>`, and the terminal's own sink adapter.
+shell both a filesystem and a spawn channel. Both mechanisms are proven against a real RedoxFS image
+in `sink_tests` (a program writing into a file sink, and the same `wc` reading a pipe and a file and
+answering identically), so what is missing is wiring in `sysinit` rather than design. Also still
+open: buffering (a pipeline is full lockstep and has not been benchmarked against a Unix pipe),
+`>>`, `2>`, and the terminal's own sink adapter.
 
 The paragraphs below are the design as it stood before either lane; where they differ from the two
 notes, the notes are what was built.

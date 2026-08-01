@@ -218,15 +218,39 @@ Same ELF, same argument, two destinations, and the second number has to be the f
 Comparing against the observed first arm rather than a literal is what makes it hold whether or not
 the boot has a clock and whatever `date` decides to say.
 
+### And the same claim on the input side
+
+`kernel::user::sink_tests::one_reader_two_sources_and_the_same_answer` is the mirror, and it is what
+says the source convention is real rather than merely chosen. One `wc` ELF, spawned twice with
+identical grants except for what is behind slot 1:
+
+- **a pipe**: the kernel sends the transcript on an endpoint itself, sixteen bytes at a time, then
+  `OP_EOF`. That is exactly what a program on the left of a `|` does.
+- **a file**: the same transcript is written into a real file on the real RedoxFS image by `sink`'s
+  file role, then read back out by its source role, which streams it over the same contract. That is
+  `wc < report.txt` minus the shell that would name the file.
+
+The second arm crosses two userspace processes, an FS server, a block server and a virtio disk; the
+first does not leave the kernel's address space. The answers must be equal, **and** must equal what
+the transcript actually is, because two arms broken the same way would satisfy equality on their
+own.
+
 ## BUGS, named where the reader meets them
 
 - **`>` and `<` cannot be run from the interactive prompt.** They parse, plan, preview and refuse
   correctly, but the boot that starts the interactive shell wires no filesystem service, so the
   shell holds no directory to resolve a redirection against and the answer is the same "you hold no
-  such capability" a named file gets. The mechanism behind `>` is proven against a real RedoxFS
-  image in `kernel::user::sink_tests`; what is missing is a **boot in which one shell holds both a
-  filesystem and a spawn channel**, which is a wiring job in `sysinit` and not a design question.
-  Until then the honest statement is that `|` runs and `>` does not.
+  such capability" a named file gets. **Both mechanisms are proven** against a real RedoxFS image in
+  `kernel::user::sink_tests` (a program writing into a file sink, and a program reading out of a
+  file source), so what is missing is a **boot in which one shell holds both a filesystem and a
+  spawn channel**. That is a wiring job in `sysinit`, not a design question. Until then the honest
+  statement is: `|` runs at the prompt, `>` and `<` do not, and the parts they would be built from
+  each work.
+- **A `<` adapter cannot yet be told which file to open.** `user/src/sink.rs`'s source role opens
+  the one name in `sink_proto::fixture`, because a name rides in two `START` argument words and the
+  three-word ABI has no room left once the role selector and the spec are in. The shell would need
+  to hand it the name the way `fwarden` is handed one, through a grant spec rather than through
+  `START`. Nothing about that is hard; it was simply not needed while the prompt cannot reach it.
 - **The guest test's init is the kernel, not `sysinit`.** It serves the same protocol, and the shell
   cannot tell the difference, but it is not the same code: a change to `user/src/sysinit.rs` that
   broke the spawn path would not fail `pipeline_tests`. The `--features shell` boot is what

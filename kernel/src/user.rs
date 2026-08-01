@@ -13969,6 +13969,156 @@ mod sink_tests {
         report
     }
 
+    /// Spawn `wc` with `source` in its input slot, and return the endpoint its answer arrives on.
+    ///
+    /// Two capabilities and nothing else, which is what makes the test below mean something: `wc`
+    /// holds no file, no directory, no page and nothing that names the FS server. Whatever is
+    /// behind its input slot, it is handed the bytes.
+    fn spawn_wc(source: EpId) -> EpId {
+        let image = program("wc").expect("no wc program in the initrd archive");
+        let out = crate::sched::create_endpoint();
+        crate::sched::spawn(move || {
+            run(
+                image,
+                Spawn {
+                    arg0: 0,
+                    arg1: 0,
+                    arg2: 0,
+                    grants: &[
+                        endpoint_cap(out, Rights::WRITE),   // slot 0: where its answer goes
+                        endpoint_cap(source, Rights::READ), // slot 1: where its bytes come from
+                    ],
+                    maps: &[],
+                },
+            )
+        })
+        .expect("could not spawn wc");
+        out
+    }
+
+    /// Drain `wc`'s answer and parse the three numbers out of it.
+    fn wc_counts(out: EpId, what: &str) -> (u64, u64, u64) {
+        let mut buf = [0u8; 64];
+        let n = super::std_tests::drain_sink(out, &mut buf, what);
+        let text = core::str::from_utf8(&buf[..n]).expect("wc printed non-UTF-8");
+        let mut it = text.split_ascii_whitespace().map(|w| {
+            w.parse::<u64>()
+                .unwrap_or_else(|_| panic!("{what}: wc printed {text:?}"))
+        });
+        (
+            it.next().expect("no line count"),
+            it.next().expect("no word count"),
+            it.next().expect("no byte count"),
+        )
+    }
+
+    /// **`<` proven the way `>` is: the same `wc`, two sources, the same answer.**
+    ///
+    /// This is the indifference claim on the **input** side, which milestone 50's protocol lane
+    /// explicitly left open ("both `< file` and a pipe's read end need an input-slot convention
+    /// that does not exist"). The convention chosen is the smallest one available: a source is the
+    /// sink contract *received* rather than sent. So this test is what says that choice was real.
+    ///
+    /// One `wc` ELF, spawned twice with identical grants except for what is behind slot 1:
+    ///
+    /// - **a pipe**: this test sends the transcript on an endpoint itself, sixteen bytes at a time,
+    ///   then `OP_EOF`. That is exactly what a program on the left of a `|` does.
+    /// - **a file**: the transcript is written into a real file on the real RedoxFS image by
+    ///   `sink`'s file role, and read back out by its source role, which streams it over the same
+    ///   contract. That is `wc < report.txt`, minus the shell that would name the file.
+    ///
+    /// The two arms share nothing but the framing. The second crosses two userspace processes, an
+    /// FS server, a block server and a virtio disk; the first does not leave this address space.
+    /// `wc` was not told which and holds nothing that could tell it.
+    ///
+    /// The answers must be equal **and** must equal what the transcript actually is, because two
+    /// arms broken the same way would satisfy equality on its own.
+    #[test_case]
+    fn one_reader_two_sources_and_the_same_answer() {
+        let sink_image = program("sink").expect("no sink program in the initrd archive");
+        let blk = program("init").expect("no init program in the initrd archive");
+        let Some(fsserver) = program("fsserver") else {
+            crate::println!("    (no FS server in this archive; skipping)");
+            return;
+        };
+
+        // Arm one: a pipe. The kernel is the producer, which is the same position the shell is in
+        // when a builtin leads a pipeline (`kernel::user::pipeline_tests`).
+        let pipe = crate::sched::create_endpoint();
+        let out = spawn_wc(pipe);
+        let mut off = 0usize;
+        while off < fixture::TRANSCRIPT.len() {
+            let (w0, w1, w2, n) = sink_proto::pack(&fixture::TRANSCRIPT[off..]);
+            crate::sched::ipc_send(pipe, [w0, w1, w2]);
+            off += n;
+        }
+        crate::sched::ipc_send(pipe, [sink_proto::eof(), 0, 0]);
+        let piped = wc_counts(out, "wc reading a pipe");
+
+        // The transcript's own numbers, so the pipe arm is anchored to something rather than only
+        // to the file arm.
+        let text = core::str::from_utf8(fixture::TRANSCRIPT).expect("the fixture is not UTF-8");
+        assert_eq!(
+            piped,
+            (
+                text.lines().count() as u64,
+                text.split_ascii_whitespace().count() as u64,
+                fixture::TRANSCRIPT.len() as u64,
+            ),
+            "wc miscounted the transcript it was handed down a pipe",
+        );
+
+        // Arm two: the same bytes, through a real filesystem. Write them first.
+        let Some(file_sink) = fs_service::start_file_sink(blk, fsserver, sink_image) else {
+            crate::println!("    (no RedoxFS disk attached; the pipe arm stands alone)");
+            return;
+        };
+        fs_service::await_service(file_sink.readiness);
+        assert_eq!(
+            crate::sched::ipc_recv(file_sink.report)[0],
+            fixture::READY,
+            "the file sink could not open its file",
+        );
+        let wrote = spawn_writer(sink_image, Some(file_sink.sink), 1);
+        let [code, total, ..] = crate::sched::ipc_recv(wrote);
+        assert_eq!(
+            code,
+            fixture::code(sink_proto::Sent::Ok),
+            "the writer did not deliver the transcript to the file sink",
+        );
+        let [done, wrote_total, ..] = crate::sched::ipc_recv(file_sink.report);
+        assert_eq!(done, fixture::DONE, "the file sink did not finish cleanly");
+        assert_eq!(
+            wrote_total, total,
+            "the file sink recorded a different byte count from the one the writer sent",
+        );
+
+        // Then read them back into `wc`, which is `<`.
+        let Some((source, verify_report)) =
+            fs_service::start_sink_verify(blk, fsserver, sink_image)
+        else {
+            panic!("the FS service vanished between the file sink and its source");
+        };
+        let out = spawn_wc(source);
+        let filed = wc_counts(out, "wc reading a file");
+        let [vdone, size, ..] = crate::sched::ipc_recv(verify_report);
+        assert_eq!(
+            vdone,
+            fixture::DONE,
+            "the source adapter could not read the file back ({vdone:#x})",
+        );
+        assert_eq!(
+            size, total,
+            "the file is not the size that was written into it"
+        );
+
+        assert_eq!(
+            piped, filed,
+            "the same wc answered differently for a pipe and for a file, so its input slot is not \
+             opaque after all",
+        );
+    }
+
     /// **The same program, two destinations, the same bytes.**
     ///
     /// `hellostd` is spawned twice with **identical grants except for what is behind slot 1**: once
