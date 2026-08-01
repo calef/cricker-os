@@ -485,6 +485,19 @@ in the code or the conversation doesn't make sense, it belongs here.
   reading. Revocation is not offered, and the reason is the per-server handle table. The headline, with
   the real shell binary on both ISAs: two shells rooted in two subtrees, each told nothing about which
   it holds, and neither can name the other's files.
+- [Extended attributes](xattr.md) — milestone 57's attribute layer, on the critical path to
+  milestone 55's backup target because Samba stores Apple's Time Machine metadata as opaque byte
+  strings and RedoxFS has none. Four verbs, three limits with a reason each (255-byte names are
+  Linux's, and sixteen attributes per node is exactly what makes a listing fit one page, which is why
+  `LISTXATTR` has no cursor). Why a **layer** above the engine rather than a fork of its on-disk
+  format: reversibility, and the fact that a layer nothing can bypass is as authoritative as the
+  filesystem, which is true here and false on Linux. The property only reachable inside the FS
+  server: attributes key on the node, so **a rename carries them and nothing in the rename path
+  knows they exist**, which AppleDouble sidecars get wrong. The three ways to leak a blob and what
+  each costs, the `u32` type code nothing reads (carried so BFS-style indexing is not foreclosed),
+  and a BUGS section naming the reserved name, the caretakers answering `EOPNOTSUPP`, and the
+  crash-atomicity claim that is inherited from the transaction boundary rather than separately
+  measured.
 - [Reading the backup from a MacBook or a Linux host](host-recovery.md) — milestone 57's answer to
   "the board is dead, can I get my data?": `redoxfs-host ls`/`cat`/`extract`, no FUSE, no kernel
   extension, no root, identical on macOS and Linux. Why none of upstream's five binaries already did

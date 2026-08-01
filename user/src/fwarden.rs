@@ -151,6 +151,18 @@ fn serve(handle: u64, name: &[u8], writable: bool) -> ! {
             // fail. Re-opening the granted name is always allowed, so this is a no-op with a truthful
             // success rather than a lie.
             fs::CLOSE if asked == grant::HANDLE => 0,
+            // **Extended attributes are not forwarded, and the refusal says exactly that**
+            // (milestone 57, DECISIONS §42). This warden does not pass attribute requests through,
+            // so the honest statement is "this capability does not carry them", not `EBADF` ("no
+            // such handle") and not `EINVAL` ("you sent nonsense"). A verb that is not offered fails
+            // loudly and the caller decides; what it must never receive is a wrong answer wearing a
+            // right answer's shape. The refusal is uniform across all three wardens on purpose: a
+            // layer that worked through one narrowing and not another would make behaviour depend on
+            // which caretaker happened to be in the chain, which is the variation §42 exists to
+            // forbid.
+            fs::GETXATTR | fs::SETXATTR | fs::LISTXATTR | fs::REMOVEXATTR => {
+                reply_err(fs_proto::xattr::ENOTSUP)
+            }
             // Every other handle number, and every verb this contract does not carry. One refusal
             // site, so a forged handle is refused by the same check as a stale one.
             _ => reply_err(9), // EBADF
