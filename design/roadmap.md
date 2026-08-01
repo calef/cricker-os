@@ -3274,9 +3274,9 @@ the file:
 
 | Current | Proposed | A reader should predict |
 |---|---|---|
-| `fwarden` | `file_caretaker` | a file; cannot list or create |
-| `dwarden` | `subtree_caretaker` | a directory and everything under it |
-| `swarden` | `nameset_caretaker` | exactly these names, in one directory |
+| `fwarden` | `fs_file_caretaker` | a file; cannot list or create |
+| `dwarden` | `fs_subtree_caretaker` | a directory and everything under it |
+| `swarden` | `fs_nameset_caretaker` | exactly these names, in one directory |
 | `cwarden` | `c_confiner` | **not a caretaker**: holds a region and confines foreign code |
 
 `dwarden` is the one that buys correctness rather than clarity: it is named for what it **holds**,
@@ -3301,33 +3301,46 @@ current name distinguishes nothing.
 - **`cwarden` becomes `c_confiner`**, out of the caretaker family entirely: it holds a **region** and
   confines foreign code rather than attenuating a directory capability to a narrower one.
 
-#### The qualifiers, settled 2026-08-01
+#### The names, settled 2026-08-01
 
-`file_caretaker`, `subtree_caretaker`, `nameset_caretaker`. Each says what the holder ends up able
-to do, so a reader can predict the surface without opening the file: a file and no way to list, a
-directory and everything beneath it, exactly these names in one directory.
+| Current | Settled | A reader should predict |
+|---|---|---|
+| `fwarden` | **`fs_file_caretaker`** | a file; cannot list or create |
+| `dwarden` | **`fs_subtree_caretaker`** | a directory and everything beneath it |
+| `swarden` | **`fs_nameset_caretaker`** | exactly these names, in one directory |
+| `cwarden` | **`c_confiner`** | not a caretaker: holds a region, confines foreign code |
 
-`file_` rather than `one_file_`, because the cardinality is not the interesting property. **You
-cannot enumerate at all**, so "one versus few" never comes up; `file_` implies the whole thing while
-`one_file_` emphasises the least surprising part.
+**The `fs_` prefix is the resolution of a real objection rather than decoration.** Chris raised that
+"subtree" means three things around here: `supervision_proto` *is* the supervision tree, `CLAUDE.md`
+uses "the tree" throughout to mean this repository, and git has its own `subtree`. The first answer
+was to put the disambiguation in the doc comment. Carrying it in the name is strictly better, and
+`fs_subtree` cannot be misread as either of the others.
 
-`nameset_` rather than `glob_`, because §52 records that a BFS-style query result and a glob result
-are **the same object**, granted by the same attenuation. The name is about a designated set of
-names; globbing is merely its only caller today.
+`fs_` and not `file_`, because `file` is already one of the qualifiers and `file_file_caretaker` is
+the reductio. It is also **not a new convention**: `fs_proto`, `fs-server` and `fs_service` already
+use `fs` as this project's filesystem marker, so this applies an existing one where it was missing.
 
-**`subtree_` carries a known reservation, noted by Chris and recorded rather than argued away: "tree"
-means three things around here.** `supervision_proto` is *the supervision tree*; `CLAUDE.md` uses
-"the tree" throughout to mean the repository; and git has its own `subtree`. It was taken anyway
-because the alternatives are worse. `directory_` renames it for what it **holds**, which is the exact
-defect this rename exists to fix, since all three hold a directory capability. `region_` collides
-with `crates/regions` and untyped memory. `path_` is loaded by §48 and §50. And the word has to carry
-*extent* rather than *level*, because the holder gets the whole cone: `OPENDIR`, `READDIR` and `ROOT`
-with handles renumbered, so descent is free. **The doc comment is where the overload gets
-disambiguated**, in one sentence, at the top of the file.
+An earlier draft of this block settled on bare `file_` / `subtree_` / `nameset_`, on the objection
+that a domain prefix breaks parallelism. Chris's answer removed the objection rather than ignoring
+it: apply the prefix to **all three**. That also leaves the four programs on one scheme (domain,
+then what it serves, then what it is) instead of two unrelated ones, and it groups them in `ls`,
+which matters in a `user/src/` holding 48 programs and no subdirectories.
 
-The source is currently inconsistent about this and the rename resolves it: `dwarden.rs`'s header
-says "attenuated to one **subtree**" while its second paragraph says "narrows it to one
-**directory**".
+**Why these qualifiers.** `file_` rather than `one_file_`, because cardinality is not the
+interesting property: you cannot enumerate at all, so "one versus few" never arises. `nameset_`
+rather than `glob_`, because §52 records that a BFS-style query result and a glob result are the
+**same object** granted by the same attenuation, so the name is about a designated set of names and
+globbing is merely its only caller today. `subtree_` rather than `directory_`, because all three
+**hold** a directory capability, so naming one of them for what it holds distinguishes nothing, which
+is the exact defect `dwarden` has and this rename exists to fix.
+
+**Two costs, recorded rather than discovered later.** `fs_subtree_caretaker` and
+`fs_nameset_caretaker` are 20 bytes against `crickerfs`'s 24-byte archive limit (`NAME_LEN`), so
+four bytes of headroom and a four-part name would not fit; that constraint is now load-bearing.
+And `fs_file_caretaker` says filesystem twice, which is the price of the scheme being uniform.
+
+The rename also resolves an inconsistency already in the source: `dwarden.rs`'s header says
+"attenuated to one **subtree**" while its second paragraph says "narrows it to one **directory**".
 
 #### Still open, and Chris's
 
