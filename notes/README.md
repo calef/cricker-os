@@ -213,6 +213,17 @@ in the code or the conversation doesn't make sense, it belongs here.
   `NoSuchSlot`, so the only available behaviour was the wrong one for a pipeline. `abi::Error::Gone`
   is the fix, `SIGPIPE` arrives through std's own `is_ebadf` seam, and the indifference test runs one
   ELF against two destinations that share nothing but sixteen bytes of message.
+- [Pipes and redirection](pipes.md) — milestone 50's operators lane: `>`, `<` and `|` at the prompt,
+  which turn out to be one substitution rather than three features. The grammar and its three
+  non-Unix refusals; the input slot's shape, decided as *the sink contract received rather than
+  sent*; the two manifest declarations that came out of the build (`OutputSpec`, because not every
+  program's slot 0 carries bytes, and `InputSpec`, which produces a refusal Unix cannot: `wc` with
+  nothing feeding it is caught at the prompt instead of hanging). A pipe is an endpoint retyped out
+  of a region the shell splits off its own budget, and destroying that region is what turns a dead
+  reader into `Gone` for a live writer. A builtin can lead a pipeline because the shell can be a
+  writer. Honest gap named where the reader meets it: `>` and `<` parse, plan, preview and refuse
+  correctly but cannot run at the interactive prompt, because no boot yet gives one shell both a
+  filesystem and a spawn channel.
 - [The command line as a grant expression](grant-expression.md) — milestone 31: naming a resource
   in a command is how you grant it (Miller's "designation is authorization"), the inversion of
   Unix's ambient authority at the one interface a human touches. The shell's own budget, the
