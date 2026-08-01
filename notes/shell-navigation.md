@@ -1,10 +1,10 @@
 # Navigating a system with no global namespace (milestone 47's commands)
 
 `cd`, `pwd`, `ls`, `mkdir`, `rm`, on a machine where there is no `/` to root anything in and no
-ambient authority to reach with. The keystone that made these possible is
-[the directory capability](dir-capability.md), which you should read first: the six-rung rights
-ladder, `OPENDIR` handing back authority rather than bytes, and `dwarden` as the subtree caretaker.
-That note calls this part "the easy part once this exists", which was true of four of the five verbs.
+ambient authority to reach with. The keystone that made these possible is [the directory
+capability](dir-capability.md), which you should read first: the six-rung rights ladder, `OPENDIR`
+handing back authority rather than bytes, and `fs_subtree_caretaker` as the subtree caretaker. That
+note calls this part "the easy part once this exists", which was true of four of the five verbs.
 
 The governing constraint is Chris's, and it is not a technical one: *"I hate Windows/DOS specifically
 because they went differently than virtually every other OS I've used."* Gratuitous divergence taxes
@@ -125,9 +125,9 @@ thing, with `rm -r` behind it, and both belong to whoever picks up recursive rem
 ## Two shells, two roots, and neither can name the other's files
 
 The headline, and it is proven with the **real shell binary**: `user/src/shell.rs` grew a role that
-reads a script instead of a keyboard, holding a `dwarden`'s narrowed endpoint where the interactive
-one holds a terminal. So what the guest test exercises is what the prompt exercises, not a
-reimplementation of it, and the thing being confined is a shell.
+reads a script instead of a keyboard, holding a `fs_subtree_caretaker`'s narrowed endpoint where the
+interactive one holds a terminal. So what the guest test exercises is what the prompt exercises, not
+a reimplementation of it, and the thing being confined is a shell.
 
 ```text
   /            motd  scratch  sub/  other/
@@ -141,18 +141,18 @@ Shell A reaches `inner` and not `secret`; shell B the reverse; and the same cros
 their listings contain, because a listing is a rendering of authority and a stranger in one is an
 escape even though nothing was opened.
 
-Not by policy. The FS server can reach both directories on any request it likes, and each warden one
-hop up holds the whole image root. What stops each shell is that **no capability reaching the other
-subtree exists in its cspace.**
+Not by policy. The FS server can reach both directories on any request it likes, and each caretaker
+one hop up holds the whole image root. What stops each shell is that **no capability reaching the
+other subtree exists in its cspace.**
 
 The falsification is cheap and was run: point the second shell at `sub` as well, and
 `two_shells_with_different_roots_cannot_name_each_others_files` fails with "it opened a file that
 exists only in the OTHER shell's root".
 
 The two runs are **sequential**, and that is a fact about the harness rather than about the model:
-all three processes in a warden chain share one page with the FS server, so two live clients would
-scribble over each other's requests. Being alive at the same instant would prove no more than this
-does; they are separate processes with separate roots either way.
+all three processes in a caretaker chain share one page with the FS server, so two live clients
+would scribble over each other's requests. Being alive at the same instant would prove no more than
+this does; they are separate processes with separate roots either way.
 
 ### And from outside the guest
 
@@ -169,12 +169,12 @@ curiosity: `OPENDIR` refuses with `EPERM` when the intersection is smaller than 
 (deliberately, per §42's rule against silent degradation), so a shell that asked for `dir::ALL` from
 a narrower capability could not `cd` at all. It has to ask for exactly what it holds.
 
-So the shell is **told** its rights at spawn, in the same `fs_proto::grant::spec` word the warden's
-own grant rides in. That works and it is a gap: a program handed a directory capability by someone
-else has no way to ask what it can do with it, and its options are to be told out of band or to probe
-by attempting things. Reported rather than fixed, because widening the contract to suit a builtin is
-the wrong direction, and because "what does this capability carry" is a question `caps` should be
-able to answer for every capability rather than a flag on one verb.
+So the shell is **told** its rights at spawn, in the same `fs_proto::grant::spec` word the
+caretaker's own grant rides in. That works and it is a gap: a program handed a directory capability
+by someone else has no way to ask what it can do with it, and its options are to be told out of band
+or to probe by attempting things. Reported rather than fixed, because widening the contract to suit
+a builtin is the wrong direction, and because "what does this capability carry" is a question `caps`
+should be able to answer for every capability rather than a flag on one verb.
 
 ## BUGS
 

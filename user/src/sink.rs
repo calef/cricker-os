@@ -5,12 +5,12 @@
 //!
 //! # `ROLE_FILE`: a file behind a sink
 //!
-//! The `fwarden` shape, one contract further out. `fwarden` is a caretaker because it "serves the
-//! same `fs_proto` protocol its own client speaks"; this one serves a *different* and much smaller
-//! protocol than it speaks, and that asymmetry is the point. It holds an FS-service endpoint, which
-//! is a directory capability: it can open names, read them, write at arbitrary offsets, truncate,
-//! and stat. Its client holds an endpoint to this process, over which the only expressible request
-//! is *here are up to sixteen bytes, append them*.
+//! The `fs_file_caretaker` shape, one contract further out. `fs_file_caretaker` is a caretaker
+//! because it "serves the same `fs_proto` protocol its own client speaks"; this one serves a
+//! *different* and much smaller protocol than it speaks, and that asymmetry is the point. It holds
+//! an FS-service endpoint, which is a directory capability: it can open names, read them, write at
+//! arbitrary offsets, truncate, and stat. Its client holds an endpoint to this process, over which
+//! the only expressible request is *here are up to sixteen bytes, append them*.
 //!
 //! So `> report.txt` grants strictly less than Unix's fd 1 does, and it is structural rather than
 //! policy: the confined program cannot seek, cannot truncate, cannot re-read and cannot stat,

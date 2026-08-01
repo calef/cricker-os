@@ -2515,25 +2515,26 @@ pub mod fs_service {
     /// Three processes, and the shape is the point:
     ///
     /// ```text
-    ///   FS server ──file IPC──► fwarden ──narrowed file IPC──► the confined program
+    ///   FS server ──file IPC──► fs_file_caretaker ──narrowed file IPC──► the confined program
     ///                (a directory)          (one file, one direction)
     /// ```
     ///
-    /// The warden holds the directory capability. The program holds an endpoint to the warden and
-    /// **nothing that names the FS server**, so "it cannot reach a second file" is a statement about
-    /// its cspace, not about a check it is trusted to pass. The narrowing is an address space, which
-    /// is why the attacker test below is a witness rather than an assertion.
+    /// The caretaker holds the directory capability. The program holds an endpoint to the caretaker
+    /// and **nothing that names the FS server**, so "it cannot reach a second file" is a statement
+    /// about its cspace, not about a check it is trusted to pass. The narrowing is an address
+    /// space, which is why the attacker test below is a witness rather than an assertion.
     ///
     /// One frame is shared by all three. Every request on both hops is a blocking `CALL`, so the
-    /// client is parked inside its own call for the whole time the warden is using the page; a second
-    /// frame would buy a copy and no isolation, since the client is entitled to the bytes either way.
+    /// client is parked inside its own call for the whole time the caretaker is using the page; a
+    /// second frame would buy a copy and no isolation, since the client is entitled to the bytes
+    /// either way.
     ///
     /// The grant, as one value, because its four fields are one decision: which file, in which
     /// direction, handed to which program started how. Splitting them across a long argument list
     /// invites a caller to get `rights` and `role` the wrong way round, and both are bare integers.
     #[cfg_attr(not(test), allow(dead_code))]
     pub struct Grant {
-        /// The one name the warden will answer for. Must fit [`fs_proto::grant::MAX_NAME`].
+        /// The one name the caretaker will answer for. Must fit [`fs_proto::grant::MAX_NAME`].
         pub name: &'static str,
         /// `grant::READ`, or `READ | WRITE`.
         pub rights: u64,
@@ -2548,11 +2549,11 @@ pub mod fs_service {
     /// Both servers announce with a blocking `SEND`, so each is parked inside its own announcement
     /// until somebody receives it. Nothing they serve can be answered before that. Every caller that
     /// needs the service to be *running* rather than merely spawned has to come through here first,
-    /// and [`await_warden`] documents what that ordering is load-bearing for.
+    /// and [`wait_for_caretaker`] documents what that ordering is load-bearing for.
     ///
     /// `None` means an earlier caller in this boot already wired the service and drained these.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub fn await_service(readiness: Option<(EpId, EpId)>) {
+    pub fn wait_for_service(readiness: Option<(EpId, EpId)>) {
         let Some((blk_ready, fs_ready)) = readiness else {
             return;
         };
@@ -2568,34 +2569,34 @@ pub mod fs_service {
         );
     }
 
-    /// **Wait for a warden's startup request to have been answered, before the program it confines
-    /// exists at all.**
+    /// **Wait for a caretaker's startup request to have been answered, before the program it
+    /// confines exists at all.**
     ///
     /// This is a correction, and the bug it fixes is worth stating where it was made rather than
     /// only in the note. All three processes share **one frame** (the module comment above argues
     /// that is sound because every request on both hops is a blocking `CALL`, so the client is
-    /// parked inside its own call for the whole time the warden is using the page). That argument
-    /// holds once the warden is serving. It does not hold at **startup**, where the warden stages
-    /// the granted name in the page and then blocks in a `CALL` to the FS server: a confined
-    /// program that already exists writes its own first name over that page, and the FS server
-    /// resolves whatever it finds there.
+    /// parked inside its own call for the whole time the caretaker is using the page). That
+    /// argument holds once the caretaker is serving. It does not hold at **startup**, where the
+    /// caretaker stages the granted name in the page and then blocks in a `CALL` to the FS server:
+    /// a confined program that already exists writes its own first name over that page, and the FS
+    /// server resolves whatever it finds there.
     ///
     /// It is not even a race in the common case. When this call is the one that wires the service,
-    /// the FS server is parked inside its readiness `SEND`, so the warden's descent cannot be
-    /// answered until [`await_service`] drains it, and the client has that whole window to clobber
-    /// the page. The warden then dies (it will not serve a hole) and its client blocks forever on a
-    /// call nobody will answer, which is how this presented: a userspace `ebreak` followed by the
-    /// 60 s lost-wakeup watchdog. It passed on aarch64 and failed on riscv, which is the shape of a
-    /// timing bug and was one.
+    /// the FS server is parked inside its readiness `SEND`, so the caretaker's descent cannot be
+    /// answered until [`wait_for_service`] drains it, and the client has that whole window to
+    /// clobber the page. The caretaker then dies (it will not serve a hole) and its client blocks
+    /// forever on a call nobody will answer, which is how this presented: a userspace `ebreak`
+    /// followed by the 60 s lost-wakeup watchdog. It passed on aarch64 and failed on riscv, which
+    /// is the shape of a timing bug and was one.
     ///
-    /// The fix is ordering, not a second page: drain the service, wait for the warden's own
+    /// The fix is ordering, not a second page: drain the service, wait for the caretaker's own
     /// sentinel, and only then spawn the confined program.
     #[cfg_attr(not(test), allow(dead_code))]
-    fn await_warden(warden_ready: EpId) {
+    fn wait_for_caretaker(caretaker_ready: EpId) {
         assert_eq!(
-            crate::sched::ipc_recv(warden_ready)[0],
+            crate::sched::ipc_recv(caretaker_ready)[0],
             fs_proto::fixture::READY,
-            "the warden could not open what it was granted, so there is nothing to attenuate",
+            "the caretaker could not open what it was granted, so there is nothing to attenuate",
         );
     }
 
@@ -2603,7 +2604,7 @@ pub mod fs_service {
     pub fn start_granted(
         blk_image: &'static [u8],
         fs_server_image: &'static [u8],
-        warden_image: &'static [u8],
+        caretaker_image: &'static [u8],
         client_image: &'static [u8],
         grant: Grant,
     ) -> Option<EpId> {
@@ -2619,17 +2620,17 @@ pub mod fs_service {
         );
         let (file_ep, file_shared, readiness) = ensure(blk_image, fs_server_image)?;
         let narrow_ep = crate::sched::create_endpoint();
-        let warden_ready = crate::sched::create_endpoint();
+        let caretaker_ready = crate::sched::create_endpoint();
 
         let (lo, hi) = fs_proto::grant::pack_name(name.as_bytes());
         let spec = fs_proto::grant::spec(name.len(), rights);
 
-        // The warden: the directory capability, the narrowed endpoint it serves, and the shared page.
-        // The grant itself (the name and the direction) rides in its START arguments, so a per-file
-        // grant costs no frame at all.
+        // The caretaker: the directory capability, the narrowed endpoint it serves, and the shared
+        // page. The grant itself (the name and the direction) rides in its START arguments, so a
+        // per-file grant costs no frame at all.
         crate::sched::spawn(move || {
             run(
-                warden_image,
+                caretaker_image,
                 Spawn {
                     arg0: lo,
                     arg1: hi,
@@ -2637,7 +2638,7 @@ pub mod fs_service {
                     grants: &[
                         endpoint_cap(file_ep, Rights::WRITE), // slot 0: CALL the FS server
                         endpoint_cap(narrow_ep, Rights::READ), // slot 1: serve the narrowed capability
-                        endpoint_cap(warden_ready, Rights::WRITE), // slot 2: readiness, once
+                        endpoint_cap(caretaker_ready, Rights::WRITE), // slot 2: readiness, once
                     ],
                     maps: &[Mapping {
                         va: FILE_VA_CLIENT,
@@ -2647,13 +2648,13 @@ pub mod fs_service {
                 },
             )
         })
-        .expect("could not spawn the file warden");
+        .expect("could not spawn the file caretaker");
 
-        // Both handshakes before the client exists, in this order and for [`await_warden`]'s reason:
-        // the servers are parked inside their announcements until they are drained, and the warden's
-        // own request is staged in the page all three share.
-        await_service(readiness);
-        await_warden(warden_ready);
+        // Both handshakes before the client exists, in this order and for [`wait_for_caretaker`]'s
+        // reason: the servers are parked inside their announcements until they are drained, and the
+        // caretaker's own request is staged in the page all three share.
+        wait_for_service(readiness);
+        wait_for_caretaker(caretaker_ready);
 
         // The confined program. Its slot 0 looks exactly like a directory capability from inside, and
         // is not one: same protocol, same page, a namespace of one name.
@@ -2672,23 +2673,24 @@ pub mod fs_service {
     /// notes/dir-capability.md). The same three-process shape [`start_granted`] wires, one rung up:
     ///
     /// ```text
-    ///   FS server ──file IPC──► dwarden ──narrowed file IPC──► the confined program
+    ///   FS server ──file IPC──► fs_subtree_caretaker ──narrowed file IPC──► the confined program
     ///            (the image root)         (one subtree, one rights set)
     /// ```
     ///
-    /// The warden holds the root directory capability and the confined program holds an endpoint to
-    /// the warden and **nothing that names the FS server**, which is what makes "it cannot reach the
-    /// parent directory or a sibling" a statement about its cspace rather than about a branch. That
-    /// argument is `fwarden`'s, and it is load-bearing here for an extra reason: the FS server's
-    /// handle table is per *server*, so a rights-carrying handle on its own would not confine a
-    /// program that could still name [`fs_proto::fs::ROOT`].
+    /// The caretaker holds the root directory capability and the confined program holds an endpoint
+    /// to the caretaker and **nothing that names the FS server**, which is what makes "it cannot
+    /// reach the parent directory or a sibling" a statement about its cspace rather than about a
+    /// branch. That argument is `fs_file_caretaker`'s, and it is load-bearing here for an extra
+    /// reason: the FS server's handle table is per *server*, so a rights-carrying handle on its own
+    /// would not confine a program that could still name [`fs_proto::fs::ROOT`].
     ///
-    /// `rights` is a [`fs_proto::dir`] mask. It is what the warden *asks* for; the FS server
+    /// `rights` is a [`fs_proto::dir`] mask. It is what the caretaker *asks* for; the FS server
     /// intersects it with the root's and refuses if the answer is smaller, so a wiring that asked
-    /// for more than exists fails at the warden's first request rather than silently serving less.
+    /// for more than exists fails at the caretaker's first request rather than silently serving
+    /// less.
     #[cfg_attr(not(test), allow(dead_code))]
     pub struct DirGrant {
-        /// The directory the warden descends into, one component under the image root. Must fit
+        /// The directory the caretaker descends into, one component under the image root. Must fit
         /// [`fs_proto::grant::MAX_NAME`].
         pub name: &'static str,
         /// The [`fs_proto::dir`] rights the subtree capability is to carry.
@@ -2738,25 +2740,26 @@ pub mod fs_service {
         fs_server_image: &'static [u8],
     ) -> Option<(EpId, u64)> {
         let (file_ep, file_shared, readiness) = ensure(blk_image, fs_server_image)?;
-        await_service(readiness);
+        wait_for_service(readiness);
         Some((file_ep, file_shared))
     }
 
-    /// **Wire a directory warden and hand back the narrowed capability**, without spawning whatever
-    /// is going to hold it.
+    /// **Wire a subtree caretaker and hand back the narrowed capability**, without spawning
+    /// whatever is going to hold it.
     ///
-    /// [`start_granted_dir`]'s first half, split out because milestone 50's redirection witness is a
-    /// shell that holds a directory **and** a terminal, a spawn channel and a budget, so its client
-    /// half is nothing like [`spawn_fs_client`]'s. What it shares with every other confined program
-    /// is exactly what is here: a warden between it and the FS server, and the page they both map.
+    /// [`start_granted_dir`]'s first half, split out because milestone 50's redirection witness is
+    /// a shell that holds a directory **and** a terminal, a spawn channel and a budget, so its
+    /// client half is nothing like [`spawn_fs_client`]'s. What it shares with every other confined
+    /// program is exactly what is here: a caretaker between it and the FS server, and the page they
+    /// both map.
     ///
     /// Returns `(narrow_ep, file_shared)`, with both handshakes already drained for
-    /// [`await_warden`]'s reason, so a caller may spawn its client the moment this returns.
+    /// [`wait_for_caretaker`]'s reason, so a caller may spawn its client the moment this returns.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn narrow_dir(
         blk_image: &'static [u8],
         fs_server_image: &'static [u8],
-        warden_image: &'static [u8],
+        caretaker_image: &'static [u8],
         name: &'static str,
         rights: u64,
     ) -> Option<(EpId, u64)> {
@@ -2766,14 +2769,14 @@ pub mod fs_service {
         );
         let (file_ep, file_shared, readiness) = ensure(blk_image, fs_server_image)?;
         let narrow_ep = crate::sched::create_endpoint();
-        let warden_ready = crate::sched::create_endpoint();
+        let caretaker_ready = crate::sched::create_endpoint();
 
         let (lo, hi) = fs_proto::grant::pack_name(name.as_bytes());
         let spec = fs_proto::grant::spec(name.len(), rights);
 
         crate::sched::spawn(move || {
             run(
-                warden_image,
+                caretaker_image,
                 Spawn {
                     arg0: lo,
                     arg1: hi,
@@ -2781,7 +2784,7 @@ pub mod fs_service {
                     grants: &[
                         endpoint_cap(file_ep, Rights::WRITE), // slot 0: CALL the FS server
                         endpoint_cap(narrow_ep, Rights::READ), // slot 1: serve the narrowed capability
-                        endpoint_cap(warden_ready, Rights::WRITE), // slot 2: readiness, once
+                        endpoint_cap(caretaker_ready, Rights::WRITE), // slot 2: readiness, once
                     ],
                     maps: &[Mapping {
                         va: FILE_VA_CLIENT,
@@ -2791,13 +2794,13 @@ pub mod fs_service {
                 },
             )
         })
-        .expect("could not spawn the directory warden");
+        .expect("could not spawn the subtree caretaker");
 
-        // Both handshakes before the client exists. See [`await_warden`]: this is the call that
-        // found the bug, because a warden whose descent is answered only after the service is
-        // drained gives its client an unbounded window to write over the staged name.
-        await_service(readiness);
-        await_warden(warden_ready);
+        // Both handshakes before the client exists. See [`wait_for_caretaker`]: this is the call
+        // that found the bug, because a caretaker whose descent is answered only after the service
+        // is drained gives its client an unbounded window to write over the staged name.
+        wait_for_service(readiness);
+        wait_for_caretaker(caretaker_ready);
         Some((narrow_ep, file_shared))
     }
 
@@ -2805,7 +2808,7 @@ pub mod fs_service {
     pub fn start_granted_dir(
         blk_image: &'static [u8],
         fs_server_image: &'static [u8],
-        warden_image: &'static [u8],
+        caretaker_image: &'static [u8],
         client_image: &'static [u8],
         grant: DirGrant,
     ) -> Option<EpId> {
@@ -2818,7 +2821,7 @@ pub mod fs_service {
             stack_pages,
         } = grant;
         let (narrow_ep, file_shared) =
-            narrow_dir(blk_image, fs_server_image, warden_image, name, rights)?;
+            narrow_dir(blk_image, fs_server_image, caretaker_image, name, rights)?;
 
         // The confined program. Its slot 0 looks exactly like a directory capability from inside,
         // and is one: the same protocol, the same page, a namespace of one subtree.
@@ -2833,30 +2836,31 @@ pub mod fs_service {
         ))
     }
 
-    /// Where the set warden expects its read-only name-set page (`user/src/swarden.rs`'s `SET_VA`).
-    const SET_VA_WARDEN: u64 = 0x0000_0000_0070_0000;
+    /// Where the nameset caretaker expects its read-only name-set page
+    /// (`user/src/fs_nameset_caretaker.rs`'s `SET_VA`).
+    const SET_VA_CARETAKER: u64 = 0x0000_0000_0070_0000;
 
     /// **Wire a set grant and the program confined to it** (milestone 47's globbing lane,
     /// notes/glob-grant.md). [`start_granted_dir`]'s shape with a narrower namespace:
     ///
     /// ```text
-    ///   FS server ──file IPC──► swarden ──narrowed file IPC──► the confined program
+    ///   FS server ──file IPC──► fs_nameset_caretaker ──narrowed file IPC──► the confined program
     ///            (the image root)         (one directory, and only the names in the set)
     /// ```
     ///
     /// The interesting difference from every other grant here is **where the grant lives**. A name
     /// rides in two `START` argument words; a set does not fit in any number of registers, so it is
-    /// encoded into a **frame of its own and mapped read-only** into the warden, which copies it
+    /// encoded into a **frame of its own and mapped read-only** into the caretaker, which copies it
     /// into a local before it does anything else. That is the honest place for `ARG_MAX` to
     /// reappear: it is the size of a capability now, not the size of a buffer, and it is bounded by
     /// `fs_proto::nameset::MAX_NAMES` at both ends.
     ///
-    /// The set is written **before the warden is spawned**, into a frame nothing else has ever been
-    /// handed, which is why it needs none of [`await_warden`]'s ordering care: unlike the shared
-    /// page, no client can reach it at all.
+    /// The set is written **before the caretaker is spawned**, into a frame nothing else has ever
+    /// been handed, which is why it needs none of [`wait_for_caretaker`]'s ordering care: unlike
+    /// the shared page, no client can reach it at all.
     #[cfg_attr(not(test), allow(dead_code))]
     pub struct SetGrant<'a> {
-        /// The directory the warden descends into, one component under the image root. The set's
+        /// The directory the caretaker descends into, one component under the image root. The set's
         /// names are the names *in* it that the grant designates.
         pub dir: &'static str,
         /// The set, as `(name, is_dir)`: what the shell's expansion produced. At most
@@ -2864,7 +2868,7 @@ pub mod fs_service {
         /// shell refuses it at the prompt (`capsh::Refusal::TooManyNames`), so one arriving means
         /// the wiring built a grant no command line could have expressed.
         pub names: &'a [(&'a [u8], bool)],
-        /// The [`fs_proto::dir`] rights the warden asks for on its descent.
+        /// The [`fs_proto::dir`] rights the caretaker asks for on its descent.
         pub rights: u64,
         /// The confined program's three `START` words. `rm` is started with a grant's spec and two
         /// name words rather than a role and a number; see [`DirGrant`].
@@ -2879,7 +2883,7 @@ pub mod fs_service {
     pub fn start_granted_set(
         blk_image: &'static [u8],
         fs_server_image: &'static [u8],
-        warden_image: &'static [u8],
+        caretaker_image: &'static [u8],
         client_image: &'static [u8],
         grant: SetGrant<'_>,
     ) -> Option<EpId> {
@@ -2898,7 +2902,7 @@ pub mod fs_service {
         );
         let (file_ep, file_shared, readiness) = ensure(blk_image, fs_server_image)?;
         let narrow_ep = crate::sched::create_endpoint();
-        let warden_ready = crate::sched::create_endpoint();
+        let caretaker_ready = crate::sched::create_endpoint();
 
         // The set, encoded into its own frame before anything can see it. `encode` refuses rather
         // than truncating, and a truncated set would be a capability nobody planned.
@@ -2921,7 +2925,7 @@ pub mod fs_service {
 
         crate::sched::spawn(move || {
             run(
-                warden_image,
+                caretaker_image,
                 Spawn {
                     arg0: lo,
                     arg1: hi,
@@ -2929,7 +2933,7 @@ pub mod fs_service {
                     grants: &[
                         endpoint_cap(file_ep, Rights::WRITE), // slot 0: CALL the FS server
                         endpoint_cap(narrow_ep, Rights::READ), // slot 1: serve the narrowed capability
-                        endpoint_cap(warden_ready, Rights::WRITE), // slot 2: readiness, once
+                        endpoint_cap(caretaker_ready, Rights::WRITE), // slot 2: readiness, once
                     ],
                     maps: &[
                         Mapping {
@@ -2941,7 +2945,7 @@ pub mod fs_service {
                         // process serves; a writable mapping would let the one program that must not
                         // be able to widen its own grant do exactly that.
                         Mapping {
-                            va: SET_VA_WARDEN,
+                            va: SET_VA_CARETAKER,
                             phys: set_phys,
                             flags: Flags::user_rodata(),
                         },
@@ -2949,10 +2953,10 @@ pub mod fs_service {
                 },
             )
         })
-        .expect("could not spawn the set warden");
+        .expect("could not spawn the nameset caretaker");
 
-        await_service(readiness);
-        await_warden(warden_ready);
+        wait_for_service(readiness);
+        wait_for_caretaker(caretaker_ready);
 
         Some(spawn_fs_client(
             client_image,
@@ -3024,8 +3028,8 @@ pub mod fs_service {
     /// **Read back what the file sink wrote**, in a different process with a different FS session.
     ///
     /// Spawned only after the sink has reported that it closed the file, because the two share the
-    /// FS server's one file page (the [`await_warden`] lesson: one page is sound between parties
-    /// that are never using it at once, and sequencing is what makes that true).
+    /// FS server's one file page (the [`wait_for_caretaker`] lesson: one page is sound between
+    /// parties that are never using it at once, and sequencing is what makes that true).
     ///
     /// It streams the file's contents out **over the sink contract**, so the bytes that reach the
     /// test arrive in the same sixteen-byte framing a `println!` does. Returns `(out, report)`.
@@ -4999,7 +5003,7 @@ pub mod entropy_service {
         /// Take the startup report: `[READY, first_refill_ok, bytes_in_hand]`, or a `0xDEAD_..`
         /// word whose low byte names the bring-up step that failed. `None` when this caller was not
         /// the one that wired the service, since the report is sent once.
-        pub fn await_ready(&self) -> Option<[u64; 5]> {
+        pub fn wait_for_ready(&self) -> Option<[u64; 5]> {
             self.ready.map(crate::sched::ipc_recv)
         }
 
@@ -5045,7 +5049,7 @@ mod entropy_tests {
                  or the -device virtio-rng line from the runner?"
             )
         });
-        if let Some(report) = w.await_ready() {
+        if let Some(report) = w.wait_for_ready() {
             assert_eq!(
                 report[0],
                 entropy_proto::READY,
@@ -5490,7 +5494,7 @@ mod credential_tests {
             let rng = program("entropy").expect("no entropy program in the initrd archive");
             let e = entropy_service::ensure(rng, entropy_service::Bus::Mmio)
                 .expect("no virtio-rng device on the mmio bus");
-            if let Some(r) = e.await_ready() {
+            if let Some(r) = e.wait_for_ready() {
                 assert_eq!(
                     r[0],
                     entropy_proto::READY,
@@ -5992,7 +5996,7 @@ mod ntp_tests {
         let w = entropy_service::ensure(image, entropy_service::Bus::Mmio).expect(
             "no virtio-rng device on the mmio bus: is CRICKER_RNG missing from the test leg?",
         );
-        if let Some(report) = w.await_ready() {
+        if let Some(report) = w.wait_for_ready() {
             assert_eq!(
                 report[0],
                 entropy_proto::READY,
@@ -6607,7 +6611,7 @@ mod compositor_tests {
     }
 
     /// Wait for the compositor's one status message, and check it.
-    fn await_compositor(w: &Wiring) {
+    fn wait_for_compositor(w: &Wiring) {
         let [tag, windows, focus, ..] = sched::ipc_recv(w.report);
         assert_eq!(
             tag,
@@ -6720,7 +6724,7 @@ mod compositor_tests {
 
         let (display, screen) = kernel_display();
         let w = compositor_service::start(3, 0, display, screen);
-        await_compositor(&w);
+        wait_for_compositor(&w);
 
         // The victim paints and then parks in a CALL, so we can hold it there while it is attacked.
         w.spawn_client(VICTIM, ROLE_VICTIM);
@@ -6855,7 +6859,7 @@ mod compositor_tests {
 
         let (display, screen) = kernel_display();
         let w = compositor_service::start(2, 0, display, screen);
-        await_compositor(&w);
+        wait_for_compositor(&w);
 
         assert_eq!(
             FLUSH_COUNT.load(Ordering::SeqCst),
@@ -6957,7 +6961,7 @@ mod compositor_tests {
     fn input_reaches_only_the_focused_client_and_focus_is_the_compositors_call() {
         let (display, screen) = kernel_display();
         let mut w = compositor_service::start(2, 2, display, screen);
-        await_compositor(&w);
+        wait_for_compositor(&w);
 
         w.spawn_client(0, ROLE_INPUT);
         w.spawn_client(1, ROLE_INPUT);
@@ -7037,7 +7041,7 @@ mod compositor_tests {
     fn focus_routes_a_keystroke_to_one_terminals_grid_and_not_its_neighbours() {
         let (display, screen) = kernel_display();
         let mut w = compositor_service::start(2, 2, display, screen);
-        await_compositor(&w);
+        wait_for_compositor(&w);
 
         // Both terminals up. Each negotiated its geometry out of the control page the compositor
         // published, so a window whose size the client did not choose is the *normal* case here.
@@ -7165,7 +7169,7 @@ mod compositor_tests {
         );
 
         let w = compositor_service::start(3, 0, display, screen);
-        await_compositor(&w);
+        wait_for_compositor(&w);
 
         // The driver's own account of the compositor's first frame. Taken here and not later because
         // this is a rendezvous SEND: the driver is parked in it, and a test that spawned clients first
@@ -8058,8 +8062,8 @@ mod std_tests {
     ) {
         // One copy, in `fs_service`, because draining these is **sequencing** and not only an
         // assertion: each server is parked inside its own blocking announcement until somebody
-        // receives it, so nothing it serves can be answered first. The wardens depend on that.
-        fs_service::await_service(readiness);
+        // receives it, so nothing it serves can be answered first. The caretakers depend on that.
+        fs_service::wait_for_service(readiness);
     }
 
     /// Build the exact bytes `hellostd` prints when it is granted a directory capability, into
@@ -9307,18 +9311,18 @@ mod tests {
 
     /// **A read-only per-file grant, attacked** (milestone 31 phase 2, notes/grant-expression.md).
     ///
-    /// `run wc report.txt` must hand over one file, not the directory it lives in. This wires exactly
-    /// that: an `fwarden` holding the directory capability, a confined program holding only the
-    /// warden's endpoint, and a grant of `motd`, read-only. The program is the attacker role of
-    /// `fsclient`, and it spends its life trying to make that sentence false.
+    /// `run wc report.txt` must hand over one file, not the directory it lives in. This wires
+    /// exactly that: an `fs_file_caretaker` holding the directory capability, a confined program
+    /// holding only the caretaker's endpoint, and a grant of `motd`, read-only. The program is the
+    /// attacker role of `fsclient`, and it spends its life trying to make that sentence false.
     ///
     /// **What makes it a witness and not a formality.** Every attempt is against something that
-    /// really exists and that the process one hop up the chain can really reach: `scratch` is on the
-    /// image, one directory entry away, and the warden could open it on any request. Milestone 33's
-    /// attacker was handed a real neighbour's address rather than a fictional one for the same
-    /// reason. And this test alone would still be weak, because a warden that refused *everything*
-    /// would pass it; that is what the writable twin below is for, and why the verdict is a bitmap
-    /// rather than a boolean.
+    /// really exists and that the process one hop up the chain can really reach: `scratch` is on
+    /// the image, one directory entry away, and the caretaker could open it on any request.
+    /// Milestone 33's attacker was handed a real neighbour's address rather than a fictional one
+    /// for the same reason. And this test alone would still be weak, because a caretaker that
+    /// refused *everything* would pass it; that is what the writable twin below is for, and why the
+    /// verdict is a bitmap rather than a boolean.
     // RISC-V twin: `riscv_virtio_tests::a_read_only_per_file_grant_survives_an_attacker`. Gated here rather than run twice: that
     // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
     // second copy through hello's roles would double the suite's slowest tests to prove
@@ -9337,17 +9341,49 @@ mod tests {
         );
     }
 
+    /// **A read-only per-file grant carries its file's attributes, and cannot write them**
+    /// (milestone 61).
+    ///
+    /// It is the same run as the test above, read a second way, which is why it costs nothing: a
+    /// clean verdict of zero already says both halves. `GRANTED_ATTRS_FAILED` clear means the
+    /// listing and the get went **through** the caretaker to the store, which they could not do
+    /// before this milestone (all four attribute verbs answered `EOPNOTSUPP`); `WROTE_ATTR` clear
+    /// means the set did not, because a read-only grant must not forward one.
+    ///
+    /// Stated as its own assertion rather than left inside the zero, because "the verdict was zero"
+    /// does not tell a reader which properties were in it, and the whole point of a bitmap is that
+    /// each bit is a sentence. The writable twin below is what stops this passing vacuously.
+    #[cfg(target_arch = "aarch64")]
+    #[test_case]
+    fn a_read_only_per_file_grant_reads_its_files_attributes_and_writes_none() {
+        use fs_proto::fixture::escape;
+        let Some(verdict) = attack_a_grant(fs_proto::grant::READ, false) else {
+            return;
+        };
+        assert_eq!(
+            verdict & escape::GRANTED_ATTRS_FAILED,
+            0,
+            "the caretaker did not forward the attribute reads, so a program behind a per-file \
+             grant still cannot reach its own file's attributes",
+        );
+        assert_eq!(
+            verdict & escape::WROTE_ATTR,
+            0,
+            "a read-only grant forwarded SETXATTR: an attribute is a way to change a file",
+        );
+    }
+
     /// **A writable per-file grant, attacked** (the second witness, and the first one's control).
     ///
-    /// Same warden, same attacker, same neighbouring file; only the granted direction changes. Two
-    /// things fall out of it, and the second is why it exists:
+    /// Same caretaker, same attacker, same neighbouring file; only the granted direction changes.
+    /// Two things fall out of it, and the second is why it exists:
     ///
     /// - A writable file capability really does write, and still reaches **only** its one file. The
     ///   widening is exactly one axis wide.
     /// - The read-only test above is now meaningful. Its refusals are a narrowed capability rather
-    ///   than a warden that says no to everything, because here the same requests, through the same
-    ///   code, succeed. A confinement test with no witness that the thing being confined *works* is
-    ///   a test that passes when the feature is missing entirely.
+    ///   than a caretaker that says no to everything, because here the same requests, through the
+    ///   same code, succeed. A confinement test with no witness that the thing being confined
+    ///   *works* is a test that passes when the feature is missing entirely.
     // RISC-V twin: `riscv_virtio_tests::a_writable_per_file_grant_writes_that_file_and_still_only_that_file`. Gated here rather than run twice: that
     // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
     // second copy through hello's roles would double the suite's slowest tests to prove
@@ -9360,11 +9396,16 @@ mod tests {
         else {
             return;
         };
+        // `WROTE_ATTR` joined the expected set in milestone 61, and it is the third way to change a
+        // file: bytes, length, and what is attached to it. A direction check that covered only the
+        // first two would have left one open.
+        let expected = escape::WROTE | escape::TRUNCATED | escape::WROTE_ATTR;
         assert_eq!(
             verdict,
-            escape::WROTE | escape::TRUNCATED,
-            "a writable grant must write and truncate its own file and do nothing else: {}",
-            describe_escape(verdict & !(escape::WROTE | escape::TRUNCATED)),
+            expected,
+            "a writable grant must write, truncate and set an attribute on its own file and do \
+             nothing else: {}",
+            describe_escape(verdict & !expected),
         );
     }
 
@@ -9375,7 +9416,8 @@ mod tests {
         let report = match fs_service::start_granted(
             init_image(),
             program("fs_server").expect("no fs_server program in the initrd archive"),
-            program("fwarden").expect("no fwarden program in the initrd archive"),
+            program("fs_file_caretaker")
+                .expect("no fs_file_caretaker program in the initrd archive"),
             program("fsclient").expect("no fsclient program in the initrd archive"),
             fs_service::Grant {
                 // The writable run damages what it is granted, so it is granted the file the fixture
@@ -9397,7 +9439,7 @@ mod tests {
             }
         };
         // The two handshakes happened inside `start_granted`, before this attacker existed: they
-        // are what makes the warden's own staged request safe on a page all three share.
+        // are what makes the caretaker's own staged request safe on a page all three share.
         let [tag, verdict, ..] = sched::ipc_recv(report);
         assert_eq!(
             tag,
@@ -9423,6 +9465,10 @@ mod tests {
             "it reached a file with a handle it was never given"
         } else if v & escape::GRANTED_READ_FAILED != 0 {
             "the granted read itself failed, so nothing above was actually proven"
+        } else if v & escape::WROTE_ATTR != 0 {
+            "it set an extended attribute through a read-only grant"
+        } else if v & escape::GRANTED_ATTRS_FAILED != 0 {
+            "it could not reach its own file's attributes, which milestone 61 says it carries"
         } else {
             "nothing (an empty verdict should not have failed an assertion)"
         }
@@ -11145,19 +11191,19 @@ mod authority_tests {
 /// the C can hold none, and five libc symbols shimmed rather than a libc ported.
 ///
 /// **The four claims, and how each is proven rather than assumed.** All four are asserted from
-/// outside the faulting address space, by `cwarden`, after the component is dead:
+/// outside the faulting address space, by `c_confiner`, after the component is dead:
 ///
 /// 1. *It faults*, rather than silently corrupting and continuing. Proven by the death message
 ///    existing at all, with `EVENT_FAULT` and a non-zero kernel-stamped tid.
 /// 2. *The fault is the bug we planted.* The kernel's reported fault address equals the address the C
 ///    code computed, so the crash is not something unrelated on the way there, which would make the
 ///    rest of the assertions vacuous.
-/// 3. *Nothing outside the grant changed.* Two witness pages, both position-derived patterns checked
-///    byte by byte through the warden's own mappings. `WITNESS_RO` is the **same physical frame** the
-///    component holds read-only, so an unchanged page is not "the store landed elsewhere"; the page
-///    was reachable and the store did not happen. `WITNESS_FAR` is a **different frame at the same
-///    virtual address**, which is the statement that a virtual address means nothing outside the
-///    address space that owns it.
+/// 3. *Nothing outside the grant changed.* Two witness pages, both position-derived patterns
+///    checked byte by byte through the confiner's own mappings. `WITNESS_RO` is the **same physical
+///    frame** the component holds read-only, so an unchanged page is not "the store landed
+///    elsewhere"; the page was reachable and the store did not happen. `WITNESS_FAR` is a
+///    **different frame at the same virtual address**, which is the statement that a virtual
+///    address means nothing outside the address space that owns it.
 /// 4. *The supervisor restarts it and the restart works.* Not "an instance ran": the replacement's
 ///    output is read out of the shared grant and checked against an independent Rust computation of
 ///    the same checksum, so a restart that produced a process which merely reported for duty fails.
@@ -11201,22 +11247,23 @@ mod c_seam_tests {
     const ATTEMPTS: usize = 3;
     const ATTEMPT_HONEST: u64 = 2;
 
-    /// The warden's budget. It builds three instances of the shim, one at a time, reaping each before
-    /// the next, so this covers one instance region plus its own scratch mappings rather than three.
-    const WARDEN_BUDGET_PAGES: u64 = 512;
+    /// The confiner's budget. It builds three instances of the shim, one at a time, reaping each
+    /// before the next, so this covers one instance region plus its own scratch mappings rather
+    /// than three.
+    const CONFINER_BUDGET_PAGES: u64 = 512;
 
     /// Four reports per attempt (ran, death, site, verdict).
     const EXPECTED_REPORTS: usize = 4 * ATTEMPTS;
 
-    /// **Spawn the warden the way the kernel spawns init**, and return the report endpoint every
+    /// **Spawn the confiner the way the kernel spawns init**, and return the report endpoint every
     /// process in the run holds a WRITE view of. Deliberately the same endowment `spawn_init` gives
     /// (the archive read-only at `INITRD_VA`, an untyped in slot 0, a report endpoint in slot 1), so
     /// what is under test is the seam rather than a privileged shortcut.
-    fn spawn_warden() -> sched::EpId {
+    fn spawn_confiner() -> sched::EpId {
         let (initrd_start, initrd_len) = memory::initrd_region().expect("no initrd region");
         let initrd_pages = initrd_len.div_ceil(FRAME_SIZE);
-        let bytes = program("cwarden").expect("no cwarden program in the initrd archive");
-        let elf = Elf::parse(bytes).expect("cwarden is not loadable");
+        let bytes = program("c_confiner").expect("no c_confiner program in the initrd archive");
+        let elf = Elf::parse(bytes).expect("c_confiner is not loadable");
 
         let content: u64 = elf
             .segments()
@@ -11229,12 +11276,12 @@ mod c_seam_tests {
             + initrd_pages / 512
             + INIT_STACK_PAGES
             + 8;
-        let mut space = AddressSpace::new(content).expect("no memory for cwarden");
-        map_segments(&mut space, &elf).expect("could not lay out cwarden");
+        let mut space = AddressSpace::new(content).expect("no memory for c_confiner");
+        map_segments(&mut space, &elf).expect("could not lay out c_confiner");
         for k in 0..INIT_STACK_PAGES {
             space
                 .map_new(USER_STACK_VA - k * FRAME_SIZE, Flags::user_data())
-                .expect("could not map cwarden's stack");
+                .expect("could not map c_confiner's stack");
         }
         for i in 0..initrd_pages {
             space
@@ -11245,15 +11292,16 @@ mod c_seam_tests {
                 )
                 .expect("could not map the initrd");
         }
-        let aspace = readopt_user_aspace(space).expect("register the cwarden aspace");
+        let aspace = readopt_user_aspace(space).expect("register the c_confiner aspace");
 
         let report = sched::create_endpoint();
-        let budget = crate::untyped::create(WARDEN_BUDGET_PAGES).expect("no budget for cwarden");
+        let budget =
+            crate::untyped::create(CONFINER_BUDGET_PAGES).expect("no budget for c_confiner");
         let tcb_region = crate::untyped::create(2).expect("no tcb region");
         let tid = sched::create_tcb(tcb_region).expect("no tcb");
         let s0 = sched::tcb_insert_cap(tid, crate::cap::untyped_root_cap(budget), None)
             .expect("insert budget");
-        assert_eq!(s0, 0, "cwarden's budget must land in slot 0");
+        assert_eq!(s0, 0, "c_confiner's budget must land in slot 0");
         let s1 = sched::tcb_insert_cap(
             tid,
             crate::cap::endpoint_cap(
@@ -11263,26 +11311,26 @@ mod c_seam_tests {
             None,
         )
         .expect("insert report");
-        assert_eq!(s1, 1, "cwarden's report endpoint must land in slot 1");
+        assert_eq!(s1, 1, "c_confiner's report endpoint must land in slot 1");
         sched::configure_tcb(tid, elf.entry(), USER_STACK_TOP, aspace).expect("configure");
         sched::start_tcb(tid, [0, initrd_len, 0]).expect("start");
         report
     }
 
-    /// **Run one warden from spawn to quiescence**, returning every report it made.
+    /// **Run one confiner from spawn to quiescence**, returning every report it made.
     ///
     /// Run to the end rather than stopping at the first interesting message, for the reason
     /// `authority_tests::run_tree` records: a half-run harness keeps building processes in the
     /// background, and a test that leaves work running is a test that fails somebody else.
     fn run_seam() -> [[u64; 5]; EXPECTED_REPORTS] {
-        let report = spawn_warden();
+        let report = spawn_confiner();
         let mut msgs = [[0u64; 5]; EXPECTED_REPORTS];
         for slot in msgs.iter_mut() {
             let msg = sched::ipc_recv(report);
             assert_ne!(
                 msg[0], RPT_FAILED,
                 "the C seam harness could not be built: stage {}. Stages 1-2 are the archive and \
-                 the cshim ELF, 3-6 the shared pages, 7 the supervision endpoint, 10-13 building, \
+                 the c_shim ELF, 3-6 the shared pages, 7 the supervision endpoint, 10-13 building, \
                  starting, and reaping an instance.",
                 msg[1],
             );
@@ -11313,10 +11361,10 @@ mod c_seam_tests {
     /// milestone's one load-bearing test.
     ///
     /// Two bugs, two fault paths, two witnesses. The off-by-one store lands on a page mapped
-    /// read-only into the component and read/write into the warden: same physical memory, present in
-    /// the offender's page tables, and provably unchanged, which is the strongest form the claim can
-    /// take. The wild store a page further out lands on a virtual address the component has no
-    /// mapping for and the warden does: a different frame, the same number, and unchanged.
+    /// read-only into the component and read/write into the confiner: same physical memory, present
+    /// in the offender's page tables, and provably unchanged, which is the strongest form the claim
+    /// can take. The wild store a page further out lands on a virtual address the component has no
+    /// mapping for and the confiner does: a different frame, the same number, and unchanged.
     ///
     /// The verdict bitmap is asserted for **equality**, not for containing the interesting bits,
     /// because a missing bit is exactly what a broken confinement looks like and a superset would
@@ -11365,8 +11413,8 @@ mod c_seam_tests {
         }
 
         // And the fault sites are real addresses in real code, not zeroed placeholders. The
-        // *equality* to the intended address is checked inside the warden (which knows the layout);
-        // this is the sanity check that the kernel filled both words at all.
+        // *equality* to the intended address is checked inside the confiner (which knows the
+        // layout); this is the sanity check that the kernel filled both words at all.
         let mut sites = of_kind(&msgs, RPT_SITE);
         for attempt in 0..2u64 {
             let s = sites
@@ -11387,10 +11435,11 @@ mod c_seam_tests {
     /// work.**
     ///
     /// The restart half of §26, with a foreign component on the end of it. Three instances run in
-    /// sequence: two crash, and the third computes a checksum and a transform in C, writes them into
-    /// the shared grant, and exits cleanly. The warden checks that output against an independent Rust
-    /// implementation of the same definition, which is why `OUTPUT_CORRECT` is worth a bit of its own:
-    /// "an instance ran" is cheap, "the C produced the right answer after two crashes" is the claim.
+    /// sequence: two crash, and the third computes a checksum and a transform in C, writes them
+    /// into the shared grant, and exits cleanly. The confiner checks that output against an
+    /// independent Rust implementation of the same definition, which is why `OUTPUT_CORRECT` is
+    /// worth a bit of its own: "an instance ran" is cheap, "the C produced the right answer after
+    /// two crashes" is the claim.
     ///
     /// The clean exit must arrive as `EVENT_EXIT` and must **not** be restarted, which is the other
     /// half of "both events flow" (§26.3) and is what ends the run.
@@ -11478,8 +11527,8 @@ mod c_seam_tests {
 ///    and not `READ`, so endpoint-only naming does not mean "whoever holds the endpoint is the
 ///    server".
 ///
-/// **The replacement is written in C** (`user/c/conxsvc.c`, over the seam DECISIONS §31 built), and
-/// that is the strongest form of the claim: what held across the swap was the contract, not a
+/// **The replacement is written in C** (`user/c/c_swappable.c`, over the seam DECISIONS §31 built),
+/// and that is the strongest form of the claim: what held across the swap was the contract, not a
 /// recompile of the same source.
 ///
 /// The second test covers the latency ladder's opt-in rung, `broker`. Both ISAs, because a swap
@@ -12677,17 +12726,18 @@ mod dir_capability_tests {
         fs_service::blk_server_image()
     }
 
-    /// Wire a `dwarden` holding a capability to the fixture's `sub` with exactly `rights`, run the
-    /// directory attacker against it, and return its verdict bitmap. `run` keeps the names the
-    /// attacker creates distinct, because all three runs share one image within a boot and an
-    /// `EEXIST` would otherwise read as a refusal.
+    /// Wire a `fs_subtree_caretaker` holding a capability to the fixture's `sub` with exactly
+    /// `rights`, run the directory attacker against it, and return its verdict bitmap. `run` keeps
+    /// the names the attacker creates distinct, because all three runs share one image within a
+    /// boot and an `EEXIST` would otherwise read as a refusal.
     ///
     /// `None` when no RedoxFS disk is attached (nothing to test; do not fail).
     fn attack_a_subtree(rights: u64, run: u64) -> Option<u64> {
         let report = match fs_service::start_granted_dir(
             blk_server_image(),
             program("fs_server").expect("no fs_server program in the initrd archive"),
-            program("dwarden").expect("no dwarden program in the initrd archive"),
+            program("fs_subtree_caretaker")
+                .expect("no fs_subtree_caretaker program in the initrd archive"),
             program("fsclient").expect("no fsclient program in the initrd archive"),
             fs_service::DirGrant {
                 name: fs_proto::fixture::tree::SUB,
@@ -12705,7 +12755,7 @@ mod dir_capability_tests {
             }
         };
         // Both handshakes happened inside `start_granted_dir`, before this attacker existed. That
-        // ordering is the fix for the startup clobber `fs_service::await_warden` records.
+        // ordering is the fix for the startup clobber `fs_service::wait_for_caretaker` records.
         let [tag, verdict, ..] = sched::ipc_recv(report);
         assert_eq!(
             tag,
@@ -12763,6 +12813,12 @@ mod dir_capability_tests {
             "it descended through a capability with no descend right"
         } else if v & esc::ENUMERATED != 0 {
             "it enumerated through a capability with no enumerate right"
+        } else if v & esc::REACHED_AN_UNMATCHED_NAME != 0 {
+            "it reached a name in the granted directory that the grant's set does not carry"
+        } else if v & esc::SET_AN_ATTR != 0 {
+            "it set an extended attribute through a capability with no write right"
+        } else if v & esc::READ_ATTRS != 0 {
+            "it read extended attributes through a capability that could not open the file"
         } else if v & esc::GRANTED_ACCESS_FAILED != 0 {
             "the granted access itself failed, so nothing was actually proven"
         } else {
@@ -12774,8 +12830,8 @@ mod dir_capability_tests {
     ///
     /// This is milestone 47's keystone under attack. The attacker holds a capability to `sub` and
     /// spends its life trying to name `motd` (which is in the parent), `other` and `other/secret`
-    /// (which are in a sibling), and `..`. All three exist on the image and the warden one hop up
-    /// can reach every one of them on any request it likes, so each refusal is a fact about the
+    /// (which are in a sibling), and `..`. All three exist on the image and the caretaker one hop
+    /// up can reach every one of them on any request it likes, so each refusal is a fact about the
     /// capability rather than about the filesystem.
     ///
     /// It also proves both halves of "a child can never exceed its parent": a child asked for no
@@ -12788,7 +12844,7 @@ mod dir_capability_tests {
         };
         assert_verdict(
             v,
-            esc::OPENED_ITS_OWN | esc::ENUMERATED | esc::DESCENDED,
+            esc::OPENED_ITS_OWN | esc::ENUMERATED | esc::DESCENDED | esc::READ_ATTRS,
             "read-only",
         );
     }
@@ -12796,10 +12852,11 @@ mod dir_capability_tests {
     /// **The same attacker against a capability carrying every right**, which is what makes the run
     /// above mean anything.
     ///
-    /// Without it, a `dwarden` that answered no to everything would pass the read-only test
-    /// perfectly, and so would a grant that reached nothing at all. Here the same requests through
-    /// the same code succeed: it writes, it creates, it makes a directory. And it *still* reaches
-    /// nothing above itself, which is the point: the widening is exactly the axes that were widened.
+    /// Without it, a `fs_subtree_caretaker` that answered no to everything would pass the read-only
+    /// test perfectly, and so would a grant that reached nothing at all. Here the same requests
+    /// through the same code succeed: it writes, it creates, it makes a directory. And it *still*
+    /// reaches nothing above itself, which is the point: the widening is exactly the axes that were
+    /// widened.
     #[test_case]
     fn a_full_directory_capability_does_everything_inside_and_nothing_outside() {
         let Some(v) = attack_a_subtree(dir::ALL, 2) else {
@@ -12813,7 +12870,9 @@ mod dir_capability_tests {
                 | esc::CREATED
                 | esc::WROTE
                 | esc::RENAMED
-                | esc::MADE_A_DIR,
+                | esc::MADE_A_DIR
+                | esc::READ_ATTRS
+                | esc::SET_AN_ATTR,
             "full",
         );
     }
@@ -12840,8 +12899,62 @@ mod dir_capability_tests {
         };
         assert_verdict(
             v,
-            esc::OPENED_ITS_OWN | esc::CREATED | esc::WROTE,
+            esc::OPENED_ITS_OWN | esc::CREATED | esc::WROTE | esc::READ_ATTRS | esc::SET_AN_ATTR,
             "append-only",
+        );
+    }
+
+    /// **A name-set capability carries its files' attributes and still designates only its names**
+    /// (milestone 61, the third caretaker).
+    ///
+    /// The other two caretakers are covered by the runs above and by the per-file attacker.
+    /// `fs_nameset_caretaker` is the one that inspects a name on **every** request, so teaching it
+    /// four verbs whose operand is an *attribute* name rather than a directory name is where this
+    /// milestone could most easily have gone wrong, in either direction:
+    ///
+    /// - Filter the attribute name against the set, and a program behind `rm *.txt` cannot read what
+    ///   is attached to a file the pattern did match. `READ_ATTRS` and `SET_AN_ATTR` catch that.
+    /// - Stop filtering the directory names, and the set stops being a set. `REACHED_AN_UNMATCHED`
+    ///   `_NAME` catches that, and the witness holds `dir::READ`, which `rm`'s own witness does not,
+    ///   so the naming question is asked here through the verbs `rm` never sends.
+    ///
+    /// The set is one name inside the `sub` fixture, so `deeper` is one directory entry away and the
+    /// caretaker one hop up holds a capability that could open it.
+    #[test_case]
+    fn a_name_set_capability_reads_its_attributes_and_still_names_only_its_set() {
+        let report = match fs_service::start_granted_set(
+            blk_server_image(),
+            program("fs_server").expect("no fs_server program in the initrd archive"),
+            program("fs_nameset_caretaker")
+                .expect("no fs_nameset_caretaker program in the initrd archive"),
+            program("fsclient").expect("no fsclient program in the initrd archive"),
+            fs_service::SetGrant {
+                dir: fs_proto::fixture::tree::SUB,
+                // Exactly one name, and `deeper` deliberately left out of it.
+                names: &[(fs_proto::fixture::tree::INNER.as_bytes(), false)],
+                rights: dir::READ | dir::WRITE | dir::DESCEND,
+                role: 6, // ROLE_SET_ATTRS
+                arg: 0,
+                arg2: 0,
+                stack_pages: 0,
+            },
+        ) {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no RedoxFS disk attached; skipping)");
+                return;
+            }
+        };
+        let [tag, v, ..] = sched::ipc_recv(report);
+        assert_eq!(
+            tag,
+            fs_proto::fixture::VERDICT,
+            "the name-set witness's report is not a verdict word",
+        );
+        assert_verdict(
+            v,
+            esc::OPENED_ITS_OWN | esc::READ_ATTRS | esc::SET_AN_ATTR,
+            "name-set",
         );
     }
 }
@@ -12853,9 +12966,9 @@ mod dir_capability_tests {
 /// architecture-specific, so the parity gate (DECISIONS §19) is met by the same test running twice.
 ///
 /// What is wired is the **real shell binary**, in a role that reads a script instead of a keyboard,
-/// holding a `dwarden`'s narrowed endpoint where the interactive one holds a terminal. So the
-/// builtins under test are the builtins at the prompt rather than a reimplementation of them, and
-/// the thing being confined is a shell.
+/// holding a `fs_subtree_caretaker`'s narrowed endpoint where the interactive one holds a terminal.
+/// So the builtins under test are the builtins at the prompt rather than a reimplementation of
+/// them, and the thing being confined is a shell.
 #[cfg(test)]
 mod shell_navigation_tests {
     use super::*;
@@ -12884,11 +12997,11 @@ mod shell_navigation_tests {
         | nb::RMDIR_REFUSED_NON_EMPTY
         | nb::RMDIR_REMOVED_EMPTY;
 
-    /// Wire a `dwarden` holding a capability to `root` and run the shell's navigation script inside
-    /// it. `run` keeps the names it creates distinct across runs sharing one image.
+    /// Wire a `fs_subtree_caretaker` holding a capability to `root` and run the shell's navigation
+    /// script inside it. `run` keeps the names it creates distinct across runs sharing one image.
     ///
     /// The run index and the rights ride in one word packed by `fs_proto::grant::spec`, the same
-    /// packing the warden's own grant uses: the shell is **told** what its capability carries
+    /// packing the caretaker's own grant uses: the shell is **told** what its capability carries
     /// because nothing on this wire reports what a handle holds, and `OPENDIR` refuses a request
     /// wider than the parent rather than narrowing it (notes/shell-navigation.md).
     ///
@@ -12897,7 +13010,8 @@ mod shell_navigation_tests {
         let report = fs_service::start_granted_dir(
             dir_capability_tests::blk_server_image(),
             program("fs_server").expect("no fs_server program in the initrd archive"),
-            program("dwarden").expect("no dwarden program in the initrd archive"),
+            program("fs_subtree_caretaker")
+                .expect("no fs_subtree_caretaker program in the initrd archive"),
             program("shell").expect("no shell program in the initrd archive"),
             fs_service::DirGrant {
                 name: root,
@@ -12986,11 +13100,11 @@ mod shell_navigation_tests {
     /// the other shell's root appearing in one would be an escape even though nothing was opened.
     ///
     /// Not by policy. The FS server can reach both directories on any request it likes, and the
-    /// wardens one hop up hold the whole image root. What stops each shell is that **no capability
-    /// reaching the other subtree exists in its cspace**, which is why the two runs are sequential
-    /// and it costs nothing: they are separate processes with separate roots, and being alive at the
-    /// same instant would prove no more than this does (they share one page with the FS server, so
-    /// the harness runs them in turn).
+    /// caretakers one hop up hold the whole image root. What stops each shell is that **no
+    /// capability reaching the other subtree exists in its cspace**, which is why the two runs are
+    /// sequential and it costs nothing: they are separate processes with separate roots, and being
+    /// alive at the same instant would prove no more than this does (they share one page with the
+    /// FS server, so the harness runs them in turn).
     #[test_case]
     fn two_shells_with_different_roots_cannot_name_each_others_files() {
         let Some(a) = navigate(tree::SUB, 5) else {
@@ -13027,10 +13141,11 @@ mod shell_navigation_tests {
 /// One module for both ISAs, for [`dir_capability_tests`]'s reason: nothing here is
 /// architecture-specific, so the parity gate (DECISIONS §19) is met by the same test running twice.
 ///
-/// What is wired is the **real `rm` binary** (`user/src/rm.rs`) behind a real `dwarden`, started the
-/// way the shell would start it: the name in a grant's two argument words and the options in the
-/// spec word, in `capsh::rmopt`'s bit order, so the numbers here come from the manifest the prompt
-/// checks against rather than from a second copy of an ordering.
+/// What is wired is the **real `rm` binary** (`user/src/rm.rs`) behind a real
+/// `fs_subtree_caretaker`, started the way the shell would start it: the name in a grant's two
+/// argument words and the options in the spec word, in `capsh::rmopt`'s bit order, so the numbers
+/// here come from the manifest the prompt checks against rather than from a second copy of an
+/// ordering.
 ///
 /// The thing being demonstrated is not that a loop can delete a tree. It is that **the walk stops
 /// exactly where the capabilities stop**: the same command line against the same tree does the
@@ -13060,8 +13175,8 @@ mod rm_program_tests {
         printed: usize,
     }
 
-    /// Run `rm` once inside a `dwarden` holding [`tree::RMTREE`] with exactly `rights`, told to
-    /// remove `name` with `flags`.
+    /// Run `rm` once inside a `fs_subtree_caretaker` holding [`tree::RMTREE`] with exactly
+    /// `rights`, told to remove `name` with `flags`.
     ///
     /// `None` when no RedoxFS disk is attached (nothing to test; do not fail).
     fn run_rm(rights: u64, name: &str, flags: u64) -> Option<Outcome> {
@@ -13073,13 +13188,14 @@ mod rm_program_tests {
         let report = fs_service::start_granted_dir(
             dir_capability_tests::blk_server_image(),
             program("fs_server").expect("no fs_server program in the initrd archive"),
-            program("dwarden").expect("no dwarden program in the initrd archive"),
+            program("fs_subtree_caretaker")
+                .expect("no fs_subtree_caretaker program in the initrd archive"),
             program("rm").expect("no rm program in the initrd archive"),
             fs_service::DirGrant {
                 name: tree::RMTREE,
                 rights,
                 // `rm` is started with a **grant's** three words rather than a role and a number:
-                // the spec (the operand's length, and the options where a warden's rights ride),
+                // the spec (the operand's length, and the options where a caretaker's rights ride),
                 // then the two words of name.
                 role: fs_proto::grant::spec(name.len(), flags),
                 arg: lo,
@@ -13225,9 +13341,9 @@ mod rm_program_tests {
 /// architecture-specific, so the parity gate (DECISIONS §19) is met by the same test running twice.
 ///
 /// What is wired is the **real shell binary** (expanding one pattern two ways over a real
-/// `READDIR`) and then the **real `rm` binary** behind a real `swarden`. The argument the two halves
-/// make together is the one Unix cannot make: the names a command displays are literally the
-/// authority it would transfer, and nothing else in the directory moves.
+/// `READDIR`) and then the **real `rm` binary** behind a real `fs_nameset_caretaker`. The argument
+/// the two halves make together is the one Unix cannot make: the names a command displays are
+/// literally the authority it would transfer, and nothing else in the directory moves.
 #[cfg(test)]
 mod glob_grant_tests {
     use super::*;
@@ -13279,7 +13395,8 @@ mod glob_grant_tests {
         let report = fs_service::start_granted_dir(
             dir_capability_tests::blk_server_image(),
             program("fs_server").expect("no fs_server program in the initrd archive"),
-            program("dwarden").expect("no dwarden program in the initrd archive"),
+            program("fs_subtree_caretaker")
+                .expect("no fs_subtree_caretaker program in the initrd archive"),
             program("shell").expect("no shell program in the initrd archive"),
             fs_service::DirGrant {
                 name: tree::GLOBSET,
@@ -13326,7 +13443,7 @@ mod glob_grant_tests {
         );
     }
 
-    /// Run `rm` once behind a `swarden` holding [`MATCHED`] inside `globset`.
+    /// Run `rm` once behind a `fs_nameset_caretaker` holding [`MATCHED`] inside `globset`.
     ///
     /// `name` empty means [`fs_proto::grant::WHOLE_NAMESPACE`]: the operand is the set, and `rm`
     /// learns it by enumerating the capability it was handed.
@@ -13335,14 +13452,15 @@ mod glob_grant_tests {
         let report = fs_service::start_granted_set(
             dir_capability_tests::blk_server_image(),
             program("fs_server").expect("no fs_server program in the initrd archive"),
-            program("swarden").expect("no swarden program in the initrd archive"),
+            program("fs_nameset_caretaker")
+                .expect("no fs_nameset_caretaker program in the initrd archive"),
             program("rm").expect("no rm program in the initrd archive"),
             fs_service::SetGrant {
                 dir: tree::GLOBSET,
                 names: &MATCHED,
                 // **`REMOVE` and nothing else.** `rm *.txt` takes names out of one directory; it may
                 // not read them, write them, create beside them or walk under them. Listing the set
-                // is not on this ladder at all, because the warden answers that from the grant.
+                // is not on this ladder at all, because the caretaker answers that from the grant.
                 rights: dir::REMOVE,
                 role: fs_proto::grant::spec(name.len(), flags),
                 arg: lo,
@@ -13363,8 +13481,8 @@ mod glob_grant_tests {
     }
 
     /// **The attacker, and it is `rm` itself.** Told to remove a name that exists, sits one
-    /// directory entry away from the two it was granted, and that the warden one hop up could remove
-    /// on any request it liked.
+    /// directory entry away from the two it was granted, and that the caretaker one hop up could
+    /// remove on any request it liked.
     ///
     /// It gets `ENOENT`: in this scope there is no such name. Nothing consulted a permission, and
     /// nothing in `rm` decided not to try, which is what makes this a fact about the capability.
@@ -13642,7 +13760,12 @@ mod riscv_virtio_tests {
     }
 
     /// **A read-only per-file grant, attacked, on the second ISA** (the parity gate). The aarch64
-    /// twin carries the reasoning: same warden, same attacker, same verdict.
+    /// twin carries the reasoning: same caretaker, same attacker, same verdict.
+    ///
+    /// Milestone 61's attribute forwarding is inside this zero, in both directions: the attribute
+    /// reads reached the store (`GRANTED_ATTRS_FAILED` clear) and the attribute write did not
+    /// (`WROTE_ATTR` clear). Spelled out in the aarch64 twin's second assertion; here the exact
+    /// verdict carries it, which is what the parity gate wants (§19: the same suite, both ISAs).
     #[test_case]
     fn a_read_only_per_file_grant_survives_an_attacker() {
         let Some(verdict) = attack_a_grant(fs_proto::grant::READ, false) else {
@@ -13665,8 +13788,9 @@ mod riscv_virtio_tests {
         };
         assert_eq!(
             verdict,
-            escape::WROTE | escape::TRUNCATED,
-            "a writable grant must write and truncate its own file and do nothing else",
+            escape::WROTE | escape::TRUNCATED | escape::WROTE_ATTR,
+            "a writable grant must write, truncate and set an attribute on its own file and do \
+             nothing else",
         );
     }
 
@@ -13676,7 +13800,8 @@ mod riscv_virtio_tests {
         let report = match fs_service::start_granted(
             blk_image(),
             program("fs_server").expect("no fs_server program in the initrd archive"),
-            program("fwarden").expect("no fwarden program in the initrd archive"),
+            program("fs_file_caretaker")
+                .expect("no fs_file_caretaker program in the initrd archive"),
             program("fsclient").expect("no fsclient program in the initrd archive"),
             fs_service::Grant {
                 name: if writable {
@@ -13696,7 +13821,7 @@ mod riscv_virtio_tests {
             }
         };
         // The two handshakes happened inside `start_granted`, before this attacker existed: they
-        // are what makes the warden's own staged request safe on a page all three share.
+        // are what makes the caretaker's own staged request safe on a page all three share.
         let [tag, verdict, ..] = sched::ipc_recv(report);
         assert_eq!(
             tag,
@@ -14687,8 +14812,8 @@ mod pipeline_tests {
 /// **`>` and `<` at a prompt that holds a filesystem** (milestone 50, notes/pipes.md).
 ///
 /// [`pipeline_tests`]'s shell with one more capability: a directory at slot 4, narrowed by a
-/// `dwarden` to one subtree of the real RedoxFS image. Everything else is identical, which is the
-/// point of running both. The refusal in
+/// `fs_subtree_caretaker` to one subtree of the real RedoxFS image. Everything else is identical,
+/// which is the point of running both. The refusal in
 /// `pipeline_tests::a_redirection_a_shell_cannot_back_is_refused_rather_than_dropped` and the file
 /// written here are the same binary, and the only difference between them is one cspace slot.
 ///
@@ -14721,7 +14846,8 @@ mod redirection_tests {
             let dir = fs_service::narrow_dir(
                 dir_capability_tests::blk_server_image(),
                 program("fs_server")?,
-                program("dwarden").expect("no dwarden program in the initrd archive"),
+                program("fs_subtree_caretaker")
+                    .expect("no fs_subtree_caretaker program in the initrd archive"),
                 fs_proto::fixture::tree::REDIR,
                 dir::ALL,
             )?;
@@ -15056,7 +15182,7 @@ mod sink_tests {
             crate::println!("    (no RedoxFS disk attached; the pipe arm stands alone)");
             return;
         };
-        fs_service::await_service(file_sink.readiness);
+        fs_service::wait_for_service(file_sink.readiness);
         assert_eq!(
             crate::sched::ipc_recv(file_sink.report)[0],
             fixture::READY,
@@ -15146,15 +15272,15 @@ mod sink_tests {
         );
 
         // Arm two: a file sink. It opens its file before the writer exists, for the reason
-        // `fs_service::await_warden` records: it stages a name in the page it shares with the FS
-        // server, and a client that already existed could write over it.
+        // `fs_service::wait_for_caretaker` records: it stages a name in the page it shares with the
+        // FS server, and a client that already existed could write over it.
         let blk = program("init").expect("no init program in the initrd archive");
         let Some(file_sink) = fs_service::start_file_sink(blk, fs_server, sink_image) else {
             crate::println!("    (no RedoxFS disk attached; skipping)");
             return;
         };
         let (sink_ep, sink_report) = (file_sink.sink, file_sink.report);
-        fs_service::await_service(file_sink.readiness);
+        fs_service::wait_for_service(file_sink.readiness);
         assert_eq!(
             crate::sched::ipc_recv(sink_report)[0],
             fixture::READY,

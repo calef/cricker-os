@@ -487,18 +487,56 @@ note rather than in [xattr.md](xattr.md), because they are facts about *this* se
 ## A per-file grant: the caretaker between the directory and the program
 
 Milestone 31's `run wc report.txt` grants one file, and the unit of authority here is a *directory*.
-`user/src/fwarden.rs` is the difference: a caretaker process that holds the directory capability,
-opens the granted name once, and serves this same contract on its own endpoint with a namespace of
-exactly one name and a direction it cannot widen. The design, the three refusals, and the two
-attacker witnesses that prove it are written up in [grant-expression.md](grant-expression.md); the
-part that belongs here is why it is a process:
+`user/src/fs_file_caretaker.rs` is the difference: a caretaker process that holds the directory
+capability, opens the granted name once, and serves this same contract on its own endpoint with a
+namespace of exactly one name and a direction it cannot widen. The design, the three refusals, and
+the two attacker witnesses that prove it are written up in
+[grant-expression.md](grant-expression.md); the part that belongs here is why it is a process:
 
 **This server receives on one endpoint.** Serving a second, narrower one would need a receive over a
 *set* of endpoints, which the kernel does not offer, and the way to add it is to badge endpoint
 capabilities (seL4's answer). That is a design fork, recorded rather than taken. The caretaker needs
 nothing new: it is an ordinary client of this contract above, and an ordinary server of it below. The
 "bound directory" seam this note has always advertised for milestone 31 turned out to be used from
-the *other* side: the warden binds nothing new here, it just never asks for more than one name.
+the *other* side: the caretaker binds nothing new here, it just never asks for more than one name.
+
+## The verb table: adding a verb reaches the proxies, or it fails the build (milestone 61)
+
+Three caretakers proxy this contract over three different narrowings (`fs_file_caretaker`,
+`fs_subtree_caretaker`, `fs_nameset_caretaker`), and each used to be a hand-written `match` over the
+opcode. **Nothing made a `match` and this contract agree**, so the failure mode was silent: a verb
+added here was simply absent from a caretaker, and the capability quietly was not there.
+
+That happened. Milestone 57 added the four extended-attribute verbs; none of the three was taught
+them; nothing failed. It took a reader asking why there were three of these to find it.
+
+`fs_proto::verb::TABLE` is one row per opcode:
+
+| field | what it answers |
+|---|---|
+| `operand` | what the request word's length field counts: nothing, a **directory name**, a **payload**, or a rename's two of each |
+| `carries_w1` | whether the second word means something the server reads |
+| `mints_handle` | whether a success is a new handle a renumbering proxy must install |
+| `needs_all` / `needs_any` | the `dir` rights this server will demand. Kept apart because `Rights::allows` is "all of", and `OPEN`'s "read **or** write" folded into it would refuse capabilities this server accepts |
+
+`verb::of(op)` is the whole of a caretaker's dispatch, and the completeness check is a `const
+assert!`, so **adding an opcode to `fs` without a row here is a compile error**. That is the
+deliverable: forgetting now fails the build rather than producing a capability that is quietly
+missing.
+
+**What it shares is the dispatch, never the attenuation.** The three caretakers narrow by different
+means and stay three programs: `fs_subtree_caretaker` performs no checks at all,
+`fs_nameset_caretaker` filters a name on every verb whose operand is one, and `fs_file_caretaker`
+translates between two protocols and has a per-verb policy of its own
+(`verb::file_grant::POLICY`). A table lookup that picks a length or a zero cannot refuse anything,
+which is why it can be shared by a program whose whole property is that it has no branch to get
+wrong.
+
+The `Operand::Name` versus `Operand::Payload` split is the row that carries a security property. An
+**attribute** name is a payload, so the four attribute verbs pass `fs_nameset_caretaker`'s filter
+without being compared against the set, while a directory name never does. Both directions of
+getting that wrong are real: filter the attribute name and a program cannot read its own file's
+attributes; stop filtering a directory name and a set capability escapes its set.
 
 ## For later milestones
 

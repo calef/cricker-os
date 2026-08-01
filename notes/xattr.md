@@ -166,13 +166,50 @@ destination. A store of untyped blobs cannot become an indexed one later without
 word, paid once, buys the option.
 
 The structural link worth carrying: a BFS query returns **a set of files**, and milestone 47 already
-decided that a set of files is granted by an `swarden` attenuated to a name set. So if attributes
-ever become queryable here, the granting story is already designed.
+decided that a set of files is granted by an `fs_nameset_caretaker` attenuated to a name set. So if
+attributes ever become queryable here, the granting story is already designed.
 
 **BUGS.** The kind is 31 bits, not 32, because it rides in the sign-protected half of a reply word
 (the protocol's error convention is that a negative reply is a negated errno). BFS-style
 four-character codes are ASCII and fit. A code with its top bit set is refused with `EINVAL` rather
 than truncated into a type nobody wrote.
+
+## The caretakers forward them (milestone 61)
+
+The three filesystem caretakers proxy this same contract over a narrowed namespace, and until
+milestone 61 all three answered `EOPNOTSUPP` to all four verbs. So a program handed one file by a
+command line could read the file and could not read what was attached to it. Closed, and **the
+rights model above is what makes closing it safe**: there is no attribute right, so a capability
+that may read a file may read its attributes and a capability that may not write it may not change
+them, with no new rung and no new decision.
+
+Where the refusal comes from differs per caretaker, and the difference is each one's design showing
+through rather than an inconsistency:
+
+| caretaker | who refuses a write through a read-only grant |
+|---|---|
+| `fs_file_caretaker` | **the caretaker.** It holds one handle opened with the *directory's* rights, so the grant's direction lives only in this process. `SETXATTR` and `REMOVEXATTR` are refused with `EROFS`, by the same rule that refuses `WRITE` and `TRUNCATE`, derived from `fs_proto::verb`'s `mutates()` rather than from a list |
+| `fs_subtree_caretaker` | **the FS server.** The caretaker performs no checks at all; a file handle inherits `READ`/`WRITE` from the directory it was opened through, so a read-only subtree grant is refused on the handle the server minted |
+| `fs_nameset_caretaker` | **the FS server**, as above. The caretaker filters *directory names*, and an attribute name is not one, so it passes the filter without being compared against the set |
+
+That last row is the one worth staring at. `fs_nameset_caretaker` asks "is this name in the set" on
+every verb whose operand is a name in the granted directory, and the four attribute verbs carry a
+name in the shared page that is **not** such a name. Filtering it would have refused a program its
+own file's attributes on the grounds that `user.com.apple.metadata` is not a name the pattern
+matched. The distinction is a variant of `fs_proto::verb::Operand` (`Name` versus `Payload`) rather
+than a comment, so it is checked by a host test instead of remembered.
+
+**How it is proven**, both ISAs, three witnesses, each with a control that must fail:
+
+- A **read-only per-file grant** lists and gets (so the verbs reach the store) and its `SETXATTR` is
+  refused. A **writable** grant of the same shape sets, reads back with the type code, and removes.
+  Without the second run the first is equally consistent with a caretaker that refuses everything.
+- A **read-only subtree** grant reads attributes and cannot set one; the **full** and
+  **append-only** runs (both carrying `dir::WRITE`) can. Same three configurations milestone 47's
+  rights ladder already used, one bit wider.
+- A **name-set** grant of exactly one name reads and writes that file's attributes and still cannot
+  open the entry beside it, which is the naming property asked with `READ` rather than with `rm`'s
+  `REMOVE`.
 
 ## EXAMPLES
 
@@ -230,12 +267,11 @@ Named here because a reader who meets the feature deserves to meet its edges at 
   The refusal is `EINVAL`, the same one `..` gets, because the name is not expressible here rather
   than not permitted. Reserving it in every directory instead of only in the root is a deliberate
   trade: the rule a client has to remember is one sentence.
-- **The caretakers do not forward attribute requests.** `fwarden`, `dwarden` and `swarden` answer
-  `EOPNOTSUPP` to all four verbs. That is §42-honest (a verb that is not offered fails loudly, and
-  `EINVAL` would have read as "you sent nonsense") and it is uniform across all three on purpose, so
-  behaviour does not depend on which caretaker happens to be in the chain. It is also a real gap: a
-  program behind a per-file grant cannot read its file's attributes. Pass-through is buildable and
-  is not built.
+- ~~**The caretakers do not forward attribute requests.**~~ **Closed by milestone 61.** All three
+  used to answer `EOPNOTSUPP`, which was §42-honest and was still a real gap: a program behind a
+  per-file grant could not read its own file's attributes. They forward now, and the rights model on
+  this page is what makes that safe rather than a widening. See [the caretakers'
+  section](#the-caretakers-forward-them-milestone-61) below.
 - **An unlinked-but-open file loses its attributes immediately.** POSIX would let `fgetxattr` keep
   working through the open handle until the last one closed; here the purge is in the unlink's
   transaction, because that is the only place it can be crash-atomic with the removal. Deferring it

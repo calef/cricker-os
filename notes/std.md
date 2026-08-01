@@ -244,8 +244,8 @@ refusal was the right call at the time for a reason worth remembering: without `
 
 **A per-file grant needs no std API at all**, which is the payoff of having bound the PAL to a
 capability contract rather than to a namespace. A program handed a narrowed file capability (§27's
-caretaker, `user/src/fwarden.rs`) is an ordinary `std::fs` client: the one granted name opens, every
-other name is an ordinary `NotFound`, and a write through a read-only grant surfaces as
+caretaker, `user/src/fs_file_caretaker.rs`) is an ordinary `std::fs` client: the one granted name
+opens, every other name is an ordinary `NotFound`, and a write through a read-only grant surfaces as
 `ErrorKind::ReadOnlyFilesystem`. Nothing in the PAL knows whether slot 4 leads to a directory or to
 one file, and it does not need to.
 

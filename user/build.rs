@@ -3,7 +3,7 @@
 //! `cargo:rustc-link-arg` is per-package, which is the whole reason this is a separate crate
 //! rather than another binary in `kernel/`.
 //!
-//! Since milestone 36 this also compiles the **C** half of the `cshim` program (`c/c_seam.c`) with
+//! Since milestone 36 this also compiles the **C** half of the `c_shim` program (`c/c_seam.c`) with
 //! a bare-metal clang and hands the object to the linker for that one binary only. See
 //! [`compile_c_component`] and notes/c-seam.md.
 
@@ -25,12 +25,12 @@ fn main() {
 /// per object, no archive: `rustc-link-arg-bin` puts the object straight on the linker's command
 /// line for that binary, so no `ar` is involved and nothing else in the package sees it.
 ///
-/// - `c/c_seam.c` -> `cshim`: milestone 36's throwaway component, the seam itself.
-/// - `c/conxsvc.c` -> `cconx`: milestone 23's replacement component. The reason the hot-swap claim
-///   is about a *component* and not about a recompile.
-const C_SOURCES: &[(&str, &str)] = &[("c/c_seam.c", "cshim"), ("c/conxsvc.c", "cconx")];
+/// - `c/c_seam.c` -> `c_shim`: milestone 36's throwaway component, the seam itself.
+/// - `c/c_swappable.c` -> `c_swappable`: milestone 23's replacement component. The reason the
+///   hot-swap claim is about a *component* and not about a recompile.
+const C_SOURCES: &[(&str, &str)] = &[("c/c_seam.c", "c_shim"), ("c/c_swappable.c", "c_swappable")];
 
-/// **Compile the foreign component and give it to `cshim`'s linker, or fail with instructions.**
+/// **Compile the foreign component and give it to `c_shim`'s linker, or fail with instructions.**
 ///
 /// Cost accepted deliberately: from milestone 36 on, building `user` needs a C compiler, so a fresh
 /// clone runs `script/bootstrap` (which installs one) before `cargo build` works. The roadmap
@@ -63,7 +63,7 @@ fn compile_c_component(manifest_dir: &Path) {
         other => {
             println!(
                 "cargo::warning=user/build.rs: no C component for target arch '{other}'; the \
-                 cshim and cconx binaries will not link. Build for aarch64 or riscv64."
+                 c_shim and c_swappable binaries will not link. Build for aarch64 or riscv64."
             );
             return;
         }
@@ -72,8 +72,8 @@ fn compile_c_component(manifest_dir: &Path) {
     let clang = match resolve_clang() {
         Some(c) => c,
         None => {
-            // A hard error, not a warning. A silently missing C component would produce a `cshim`
-            // that fails to link with a bare "undefined symbol: cseam_transform", which tells a
+            // A hard error, not a warning. A silently missing C component would produce a `c_shim`
+            // that fails to link with a bare "undefined symbol: c_seam_transform", which tells a
             // reader nothing about what to install.
             panic!("{}", CLANG_HELP);
         }
@@ -189,7 +189,7 @@ fn has_both_backends(clang: &Path) -> bool {
 const CLANG_HELP: &str = "\
 user/build.rs: no clang found that can target both aarch64 and riscv64.
 
-cricker-os links a C component into the `cshim` program (milestone 36, DECISIONS \u{a7}30), so the
+cricker-os links a C component into the `c_shim` program (milestone 36, DECISIONS \u{a7}30), so the
 build needs a bare-metal clang with BOTH the AArch64 and RISC-V backends. Apple's clang, in the
 Xcode command line tools, has no RISC-V backend and is deliberately rejected: two different
 compilers for the two architectures would break the parity gate (DECISIONS \u{a7}19).

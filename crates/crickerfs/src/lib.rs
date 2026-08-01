@@ -53,7 +53,7 @@ const ENTRY_LEN: usize = 32;
 /// the kernel's old endpoint carve: every parallel branch fits on its own, and the union of their
 /// binaries is what crosses the line, so the cost is invisible to each branch that causes it and
 /// lands on whoever merges. It went 2 blocks (31 files) to 4 (63) on 2026-07-30, when three lanes
-/// landing together added `fwarden`, `vterm` and `kbd` and made 32.
+/// landing together added `fs_file_caretaker`, `vterm` and `kbd` and made 32.
 ///
 /// **Doubled rather than quadrupled, deliberately.** [`Fs`] holds `entries` as a fixed array and is a
 /// stack local in the kernel's boot and spawn paths, so this constant is kernel stack: 63 entries is

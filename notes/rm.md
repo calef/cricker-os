@@ -77,9 +77,10 @@ nothing, and `fs_proto` has a host test asserting it is never staged.
 
 Milestone 47's globbing lane, [glob-grant.md](glob-grant.md). `rm old.txt` grants the directory
 holding one name; `rm *.txt` grants that directory **attenuated to the names the pattern matched**,
-served by `user/src/swarden.rs`. The over-grant this note used to declare (the capability could
-remove anything else in that directory) is closed for a pattern operand and remains for a literal
-one, which is the honest state: a single name still travels through `dwarden`.
+served by `user/src/fs_nameset_caretaker.rs`. The over-grant this note used to declare (the
+capability could remove anything else in that directory) is closed for a pattern operand and remains
+for a literal one, which is the honest state: a single name still travels through
+`fs_subtree_caretaker`.
 
 A set does not fit in the two argument words a name rides in, so `rm` is started with a grant whose
 name is **zero bytes long** (`fs_proto::grant::WHOLE_NAMESPACE`). It means "the operand is your
@@ -102,11 +103,16 @@ the names this run has already taken away.
 - **Recursion depth is real stack**, since the program has no allocator and each level holds a listing
   buffer by value. `rm` asks for 4 stack pages. A deep enough tree will exhaust it, and the failure
   will be a data abort rather than a diagnostic.
+- **`rm` removes nothing this contract has since grown**, and that is now checked rather than
+  assumed. Milestone 61 made the caretakers dispatch off `fs_proto::verb`, so a verb added to the
+  contract is forwarded by them from the day its row exists; `rm` still holds `REMOVE` and nothing
+  else, so what it can *send* is unchanged. The two facts are independent and it is worth saying so:
+  the caretaker got wider, the grant did not.
 
 ## See also
 
 - DECISIONS §47 (the directory-capability keystone and its six rights), §48 (navigation, and why `rm`
   was a builtin before this), §42 (a filesystem declares what it offers and must be truthful).
 - Milestone 47's "`rmdir` and `rm -r`: Unix already made the safe choice" in `design/roadmap.md`.
-- `notes/dir-capability.md` for the rights ladder and `dwarden`, and `notes/glob-grant.md` for the
-  set warden a pattern operand is served by.
+- `notes/dir-capability.md` for the rights ladder and `fs_subtree_caretaker`, and
+  `notes/glob-grant.md` for the nameset caretaker a pattern operand is served by.

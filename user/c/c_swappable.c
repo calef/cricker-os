@@ -1,7 +1,8 @@
 /*
  * The swappable component's arithmetic, in C (milestone 23, DECISIONS §39 and §31).
  *
- * This is the whole of what `cconx` does differently from `conx`: one function, computing one
+ * This is the whole of what `c_swappable` does differently from `rust_swappable`: one function,
+   computing one
  * digest, in a language with no bounds checks and no borrow checker. It holds no capability and
  * makes no syscall, because it has never seen one -- the Rust shell around it holds every
  * capability and does every `svc`/`ecall` (DECISIONS §31, notes/c-seam.md).

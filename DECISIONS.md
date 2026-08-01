@@ -2043,10 +2043,10 @@ whatever they like.
 
 **A per-file grant is a separate process, and that is the decision.** Milestone 31's `run wc
 report.txt` must hand over one file; the unit of authority here is a directory. The narrowing is
-`user/src/fwarden.rs`, a **caretaker** (Mark Miller's term): it holds the directory capability, opens
-the granted name once at startup, and serves the same `fs_proto::fs` contract on its own endpoint
-with a namespace of exactly one name. Three rules, each phrased as a fact about what the holder has
-rather than as a permission refusal, because there is no policy here to consult:
+`user/src/fs_file_caretaker.rs`, a **caretaker** (Mark Miller's term): it holds the directory
+capability, opens the granted name once at startup, and serves the same `fs_proto::fs` contract on
+its own endpoint with a namespace of exactly one name. Three rules, each phrased as a fact about
+what the holder has rather than as a permission refusal, because there is no policy here to consult:
 
 - `OPEN` of any other name is `ENOENT`. In this scope there is no such name. The holder cannot
   enumerate and cannot learn what else the directory holds.
@@ -2060,22 +2060,22 @@ a second, narrower one would need a receive over a *set* of endpoints, which thi
 offer; adding it means giving endpoint capabilities a **badge** (seL4's answer), which is a design
 fork and is recorded here as the alternative rather than taken. The caretaker needs nothing new: it
 is an ordinary FS client above and an ordinary FS server below. And it is the stronger form of the
-claim. The confined program holds an endpoint to the warden and nothing that names the FS server, so
-"it cannot reach a second file" is a property of its cspace rather than of a branch it is trusted to
-take. The boundary is an address space, which is the same reason §31's checker lives outside the
+claim. The confined program holds an endpoint to the caretaker and nothing that names the FS server,
+so "it cannot reach a second file" is a property of its cspace rather than of a branch it is trusted
+to take. The boundary is an address space, which is the same reason §31's checker lives outside the
 component it checks.
 
-The grant costs no memory: the name and direction ride in the warden's three `START` argument words
-(`fs_proto::grant`, 16 bytes of name), and the one frame is shared by all three processes, which is
-sound because every request on both hops is a blocking `CALL`, so the client is parked inside its own
-call for the whole time the warden is using the page.
+The grant costs no memory: the name and direction ride in the caretaker's three `START` argument
+words (`fs_proto::grant`, 16 bytes of name), and the one frame is shared by all three processes,
+which is sound because every request on both hops is a blocking `CALL`, so the client is parked
+inside its own call for the whole time the caretaker is using the page.
 
 **Proven on both ISAs by an attacker, twice, and the second run is what makes the first mean
 anything.** The attacker reports a bitmap of what got through rather than a pass. Read-only: every
-bit clear, against a neighbouring file that really exists and that the warden really could open.
-Read/write, same shape: the two write bits **set** and everything else clear. A warden that refused
-every request passes the first test and fails the second. Each accepted write is read straight back,
-because "the server accepted my write" and "my write landed" are different claims.
+bit clear, against a neighbouring file that really exists and that the caretaker really could open.
+Read/write, same shape: the two write bits **set** and everything else clear. A caretaker that
+refused every request passes the first test and fails the second. Each accepted write is read
+straight back, because "the server accepted my write" and "my write landed" are different claims.
 
 **The interactive shell still refuses a named file, and that refusal is true rather than pending.**
 (It was spelled `file:NAME` when this was written; milestone 47 removed the designator, and a bare
@@ -2442,12 +2442,13 @@ capabilities, the DMA validator, the IOMMU.
 
 ### The seam's rules, which are the decision
 
-1. **The C makes no syscalls and holds no capabilities.** A Rust `user_rt` shell (`user/src/cshim.rs`)
-   holds every capability and performs every IPC; the C is called over the C ABI and gets a pointer
-   and a length. This is not a request the C is trusted to honour, it is a property of what it can
-   name: a syscall needs a capability slot, and the C never sees one. So a foreign component **cannot
-   widen the kernel's syscall surface** (§4 rule 3), and the confinement claim is exactly as narrow
-   as it should be: the C can corrupt memory inside a grant the shell already had, and nothing else.
+1. **The C makes no syscalls and holds no capabilities.** A Rust `user_rt` shell
+   (`user/src/c_shim.rs`) holds every capability and performs every IPC; the C is called over the C
+   ABI and gets a pointer and a length. This is not a request the C is trusted to honour, it is a
+   property of what it can name: a syscall needs a capability slot, and the C never sees one. So a
+   foreign component **cannot widen the kernel's syscall surface** (§4 rule 3), and the confinement
+   claim is exactly as narrow as it should be: the C can corrupt memory inside a grant the shell
+   already had, and nothing else.
 2. **What crosses is scalars and buffers only.** `(u8*, usize) -> u32`. No structs, no callbacks into
    Rust, no ownership transfer, no error type. The layout of the shared page is agreed by a comment in
    both languages rather than generated bindings, which is the right trade for one page and would not
@@ -2476,35 +2477,36 @@ capabilities, the DMA validator, the IOMMU.
 
 ### What the confinement test proves, and how each claim is proven rather than assumed
 
-`kernel/src/user::c_seam_tests`, both ISAs. `cwarden` builds the shim, supervises it, and holds the
-witness pages; every assertion is made from **outside** the faulting address space after the component
-is dead, because a checker inside it could only report what that address space could see.
+`kernel/src/user::c_seam_tests`, both ISAs. `c_confiner` builds the shim, supervises it, and holds
+the witness pages; every assertion is made from **outside** the faulting address space after the
+component is dead, because a checker inside it could only report what that address space could see.
 
 - **It faults.** The death message exists at all, with `EVENT_FAULT` and a non-zero kernel-stamped tid.
 - **The fault is the planted bug.** The kernel's reported fault address equals the address the C code
   computed. Without this the witness checks would be vacuous: a crash on the way to the bug would look
   identical.
 - **Nothing outside the grant changed, proven twice because there are two different claims.**
-  `WITNESS_RO` is the **same physical frame** mapped read-only into the component and read/write into
-  the warden, so an unchanged page is not "the store landed elsewhere"; the page was reachable and the
-  store did not happen. `WITNESS_FAR` is a **different frame at the same virtual address**, which is
-  the statement that a virtual address means nothing outside the address space that owns it. Both
-  patterns are position-derived and checked byte by byte (milestone 29's two-witness discipline).
-- **The restart works.** Three instances run in sequence: two crash, the third computes a checksum and
-  a transform in C, writes them into the shared grant, and exits cleanly. The warden checks that output
-  against an independent Rust implementation of the same definition, so a restart producing a process
-  that merely reports for duty fails. The clean exit arrives as `EVENT_EXIT` and is **not** restarted,
-  which is the other half of §26.3.
+  `WITNESS_RO` is the **same physical frame** mapped read-only into the component and read/write
+  into the confiner, so an unchanged page is not "the store landed elsewhere"; the page was
+  reachable and the store did not happen. `WITNESS_FAR` is a **different frame at the same virtual
+  address**, which is the statement that a virtual address means nothing outside the address space
+  that owns it. Both patterns are position-derived and checked byte by byte (milestone 29's
+  two-witness discipline).
+- **The restart works.** Three instances run in sequence: two crash, the third computes a checksum
+  and a transform in C, writes them into the shared grant, and exits cleanly. The confiner checks
+  that output against an independent Rust implementation of the same definition, so a restart
+  producing a process that merely reports for duty fails. The clean exit arrives as `EVENT_EXIT` and
+  is **not** restarted, which is the other half of §26.3.
 - **The control that makes the rest mean anything.** Each misbehaving C function stores *inside* its
   grant first, and that store must be visible. A process whose stores never worked would satisfy every
   witness check while proving nothing.
 
 ### What authority the supervisor had to hold, and what it would have preferred
 
-The open fork this feeds. `cwarden` is builder, supervisor, and checker in one process, and the reason
-is authority, not convenience: **reaping a corpse needs `WRITE` on the region it lives in, which is the
-same right that builds one.** So a supervisor that restarts its child holds construction authority, or
-proxies the reap through something that does.
+The open fork this feeds. `c_confiner` is builder, supervisor, and checker in one process, and the
+reason is authority, not convenience: **reaping a corpse needs `WRITE` on the region it lives in,
+which is the same right that builds one.** So a supervisor that restarts its child holds
+construction authority, or proxies the reap through something that does.
 
 - **What it had to hold:** a full-rights untyped budget, for its whole life. From that it can
   `SPLIT` a region, `RETYPE` frames and kernel objects, build any address space and any thread, and
@@ -2569,7 +2571,7 @@ is also what builds a process out of that region. So a supervisor whose entire j
 spaces. That is a large right granted for a small purpose, and it is backwards for a capability
 system: a compromised supervisor should be able to restart what it supervises and nothing else.
 
-This was a prediction until milestone 36 made it a measurement. Its `cwarden` had to hold a
+This was a prediction until milestone 36 made it a measurement. Its `c_confiner` had to hold a
 full-rights untyped budget for its whole life (`SPLIT`, `RETYPE`, `RETYPE_OBJ`, `DESTROY`) because
 it needed the last one; everything else came attached. What it wanted was `DESTROY` on one region
 it did not create: not `RETYPE`, not `SPLIT`, not a budget. Recorded in §31.
@@ -2638,11 +2640,11 @@ against main at `ab2c2bb`, where §30 is the DMA proof, §31 the C seam, and §3
 concurrent lane has claimed 33 by merge time, renumber; the content does not depend on it.)
 
 **Rung one's seam held exactly as promised.** The compositor takes `painter`'s place at the display
-contract and `display` cannot tell the difference: `gfx_proto` and the driver needed **no change**, and the
-only kernel-side addition is a wiring entry point that starts the driver with no client
-(`display_service::start_driver`). Three of the four tests replace `display` with the kernel itself and the
-compositor does not notice that either, which is milestone 23's swappable-component claim falling out of
-a contract rather than being demonstrated on purpose.
+contract and `display` cannot tell the difference: `gfx_proto` and the driver needed **no change**,
+and the only kernel-side addition is a wiring entry point that starts the driver with no client
+(`display_service::start_driver`). Three of the four tests replace `display` with the kernel itself
+and the compositor does not notice that either, which is milestone 23's swappable-component claim
+falling out of a contract rather than being demonstrated on purpose.
 
 **The decision, and it is the one thing to read here: authority is a mapping, not a message.** Every
 client rings **one shared doorbell endpoint**, and both verbs on it (`HELLO`, `COMMIT`) are
@@ -4146,7 +4148,8 @@ was decided when the directory was granted.
 ### The refusal errno is part of the decision, because it decides what the holder learns
 
 - A **naming** right withheld (`READ`/`WRITE` for `OPEN`, `DESCEND` for `OPENDIR`) answers `ENOENT`:
-  *in this scope there is no such name*. `fwarden`'s sentence, for `fwarden`'s reason.
+  *in this scope there is no such name*. `fs_file_caretaker`'s sentence, for `fs_file_caretaker`'s
+  reason.
 - A **mutating** right withheld (`CREATE`, `REMOVE`, `WRITE`) answers `EROFS`, **not `EACCES`**, per
   §27: `EACCES` implies a policy that could have said yes, and there is no policy here.
 - `ENUMERATE` withheld answers `EPERM`, the one rung where neither works. "No such name" is nonsense
@@ -4164,28 +4167,29 @@ harnesses red.
 
 ### The structural finding: the handle is the authority, the endpoint is the boundary
 
-The FS server's handle table is per **server**, not per client. So a rights-carrying handle attenuates
-only its holder: **anyone holding the FS-service endpoint can name `fs::ROOT` and be back at the image
-root.** That is why `dwarden` exists, and it is the same wall `fwarden` hit (no badged endpoints, one
-receive per server).
+The FS server's handle table is per **server**, not per client. So a rights-carrying handle
+attenuates only its holder: **anyone holding the FS-service endpoint can name `fs::ROOT` and be back
+at the image root.** That is why `fs_subtree_caretaker` exists, and it is the same wall
+`fs_file_caretaker` hit (no badged endpoints, one receive per server).
 
-`dwarden` performs **no rights checks at all**: one `OPENDIR` at startup, then pure handle-namespace
-translation. The attenuation lives entirely in the handle the server minted. **A stronger story than
-`fwarden`'s**, which does inspect requests: there is no check to get wrong.
+`fs_subtree_caretaker` performs **no rights checks at all**: one `OPENDIR` at startup, then pure
+handle-namespace translation. The attenuation lives entirely in the handle the server minted. **A
+stronger story than `fs_file_caretaker`'s**, which does inspect requests: there is no check to get
+wrong.
 
 ### The bug this shipped with, and the general rule it produced
 
-`dwarden` panicked in its own `_start` on riscv64 and passed on aarch64. Three processes share one
-frame, justified by `fwarden`'s argument that every request on both hops is a blocking `CALL`, so a
-client is parked inside its own call while the warden uses the page. **That holds once the warden is
-serving and not at startup**, where the warden stages the granted name and then blocks, and a
-confined program that already exists overwrites it.
+`fs_subtree_caretaker` panicked in its own `_start` on riscv64 and passed on aarch64. Three
+processes share one frame, justified by `fs_file_caretaker`'s argument that every request on both
+hops is a blocking `CALL`, so a client is parked inside its own call while the caretaker uses the
+page. **That holds once the caretaker is serving and not at startup**, where the caretaker stages
+the granted name and then blocks, and a confined program that already exists overwrites it.
 
-In the failing case it is not even a race: when the wiring call also wires the FS service, the server
-is parked in its readiness `SEND`, so the warden's descent cannot be answered until someone drains it,
-and the client owns that entire window. **So draining a readiness sentinel is sequencing, not merely
-an assertion.** `fwarden` carried the same latent bug and took the same three lines. The fix is
-ordering, not a second page.
+In the failing case it is not even a race: when the wiring call also wires the FS service, the
+server is parked in its readiness `SEND`, so the caretaker's descent cannot be answered until
+someone drains it, and the client owns that entire window. **So draining a readiness sentinel is
+sequencing, not merely an assertion.** `fs_file_caretaker` carried the same latent bug and took the
+same three lines. The fix is ordering, not a second page.
 
 ### `RENAME`
 
@@ -4205,8 +4209,8 @@ engine's: RedoxFS's `rename_node` will rename a file over a directory.
 
 Three runs against three rights sets, each other's controls. The attacker is told nothing about its
 grant beyond a run index and reports a bitmap the test checks exactly; `OPENED_ITS_OWN` and
-`GRANTED_ACCESS_FAILED` stop a warden that refuses *everything* from passing. Then from outside the
-guest entirely, the host tool reads the image the run left and asserts the fixture intact, no
+`GRANTED_ACCESS_FAILED` stop a caretaker that refuses *everything* from passing. Then from outside
+the guest entirely, the host tool reads the image the run left and asserts the fixture intact, no
 attacker-made name at the root, its creations in `sub`, and `sub` holding **both a renamed and an
 unrenamed name**. **No in-guest verdict could report that.**
 
@@ -4282,8 +4286,8 @@ per *server* (§47).
   at spawn; a program handed a directory by someone else can only be told out of band or probe.
 - **The interactive prompt still holds no directory**, so at a keyboard all five say so truthfully.
   Wiring an FS service into the interactive boot is a wiring change, not a change here.
-- Two shells run **sequentially**: the three processes in a warden chain share one page with the FS
-  server, so two live clients would clobber each other's requests.
+- Two shells run **sequentially**: the three processes in a caretaker chain share one page with the
+  FS server, so two live clients would clobber each other's requests.
 
 ## 49. Removal is a directory operation, and `-r` widens the grant rather than setting a flag
 
@@ -4476,26 +4480,28 @@ protocol crate dependency-free per §46.
 ## 52. A set of names is a namespace, and that is how a glob is granted
 
 Milestone 47's globbing lane. `crates/fs_proto`'s `nameset` and `grant` modules,
-`user/src/swarden.rs`, `kernel::user::SetGrant`, `capsh`'s expander. See `notes/glob-grant.md`.
+`user/src/fs_nameset_caretaker.rs`, `kernel::user::SetGrant`, `capsh`'s expander. See
+`notes/glob-grant.md`.
 
 `rm old.txt` grants the directory holding one name. **`rm *.txt` grants that directory attenuated to
-the names the pattern matched**, served by a warden that refuses everything else.
+the names the pattern matched**, served by a caretaker that refuses everything else.
 
 ### The over-grant this closes, and the one it does not
 
 Without this, expanding a glob in the shell and passing the results as arguments hands the child
 authority over the whole directory, and the pattern is then only a filter the child could ignore.
 The attenuation makes the pattern *structural*: the confined program cannot name a file the pattern
-did not match, because the warden serving it has never heard of one.
+did not match, because the caretaker serving it has never heard of one.
 
-Stated honestly, because §42's habit applies to authority too: **this is closed for a pattern operand
-and remains open for a literal one.** A single name still travels through `dwarden`, which grants the
-directory. That is the current state, not a design position.
+Stated honestly, because §42's habit applies to authority too: **this is closed for a pattern
+operand and remains open for a literal one.** A single name still travels through
+`fs_subtree_caretaker`, which grants the directory. That is the current state, not a design
+position.
 
 ### A set does not fit in registers, so the grant becomes a frame
 
 A name rides in two `START` argument words. A set cannot, at any plausible size. So the set is
-encoded into **a frame of its own, mapped read-only** into the warden, which copies it to a local
+encoded into **a frame of its own, mapped read-only** into the caretaker, which copies it to a local
 before doing anything else.
 
 This is the honest place for `ARG_MAX` to reappear, and it reappears as a different thing.
@@ -4513,8 +4519,8 @@ operands by **enumerating the capability it holds**, which reveals exactly what 
 already printed and nothing more.
 
 The set frame needs none of the ordering care the shared page needs, and the reason is structural
-rather than careful coding: it is written **before the warden is spawned**, into a frame nothing else
-has ever held, so there is no reader to race.
+rather than careful coding: it is written **before the caretaker is spawned**, into a frame nothing
+else has ever held, so there is no reader to race.
 
 ### One consequence worth keeping
 
@@ -4528,7 +4534,7 @@ about the two namespaces, not an optimization in one of them.
 - **Eight names.** A glob matching a ninth is refused at the prompt rather than truncated, which is
   the right failure, but it is a low ceiling for a real directory. Raising it is a frame-size
   question, not a design question.
-- **A set is granted, never revoked.** Like every grant here, the warden holds it until it exits.
+- **A set is granted, never revoked.** Like every grant here, the caretaker holds it until it exits.
 
 ## 53. Parity is a matrix, not a pair
 
@@ -4678,8 +4684,8 @@ while the adapter writes. **It does not survive `ls > out.txt`**, which is exact
 shell must read the filesystem *while* the redirection is being written.
 
 There is no ordering fix, and that is the part worth stating precisely: **there is no moment when
-both parties are done.** `fs_service::await_warden` already records the startup half of this hazard;
-this is the steady-state half, and startup ordering cannot solve it.
+both parties are done.** `fs_service::wait_for_caretaker` already records the startup half of this
+hazard; this is the steady-state half, and startup ordering cannot solve it.
 
 ### The answer
 
@@ -4735,8 +4741,9 @@ each internally consistent, is stronger evidence than a pinned expectation could
 - **The interactive shell holds the image root unnarrowed.** Defensible for the machine's own
   prompt, and still a default nobody decided on the record.
 - **`rm` remains unreachable from the prompt.** The refusal is no longer "you hold no such
-  capability"; what is missing is the `dwarden` init would build per invocation, and init deletes its
-  FS endpoint copy after building the shell, so that is the line that changes first.
+  capability"; what is missing is the `fs_subtree_caretaker` init would build per invocation, and
+  init deletes its FS endpoint copy after building the shell, so that is the line that changes
+  first.
 - **Every byte crosses the shell's address space twice and nothing prices it.** No benchmark.
 
 ## Reading

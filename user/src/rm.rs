@@ -57,9 +57,9 @@ const ENOENT: i32 = 2;
 const ELOOP: i32 = 40;
 
 /// How deep the walk goes. This program has no allocator, so the recursion is real stack, and each
-/// level holds a listing buffer by value. Eight matches the shell's path stack (`capsh::nav`) and is
-/// well inside the sixteen handles a `dwarden` will mint. Deeper is refused rather than silently
-/// leaving a tree half-removed with a zero exit status.
+/// level holds a listing buffer by value. Eight matches the shell's path stack (`capsh::nav`) and
+/// is well inside the sixteen handles a `fs_subtree_caretaker` will mint. Deeper is refused rather
+/// than silently leaving a tree half-removed with a zero exit status.
 const MAX_DEPTH: usize = 8;
 
 /// One round of a directory listing, decoded out of the shared page. The page is sixteen times
@@ -236,10 +236,10 @@ fn empty(handle: u64, flags: u64, depth: usize, count: &mut u64) -> Result<(), i
 /// grant carrying no name at all ([`grant::WHOLE_NAMESPACE`]), and it learns the names by
 /// **enumerating its own capability**, which reveals exactly what the command line already printed.
 ///
-/// **One listing, no rounds**, and that is not a shortcut: a set namespace is *fixed*, so the warden
-/// answers `READDIR` with the set whether or not a name still exists. Re-reading (which is what
-/// [`empty`] must do, because removing a name shifts a real directory's entries) would hand this
-/// loop the names it has already taken away and turn a finished job into a page of `ENOENT`s.
+/// **One listing, no rounds**, and that is not a shortcut: a set namespace is *fixed*, so the
+/// caretaker answers `READDIR` with the set whether or not a name still exists. Re-reading (which
+/// is what [`empty`] must do, because removing a name shifts a real directory's entries) would hand
+/// this loop the names it has already taken away and turn a finished job into a page of `ENOENT`s.
 fn sweep(flags: u64, count: &mut u64) -> Result<(), i32> {
     let n = call(DIR, fs::req(fs::READDIR, fs::ROOT, 0), 0).0 as i64;
     if n < 0 {
@@ -331,7 +331,7 @@ fn text(bytes: &[u8]) {
 pub extern "C" fn _start(spec: u64, name_lo: u64, name_hi: u64) -> ! {
     let mut buf = [0u8; grant::MAX_NAME];
     let n = grant::unpack_name(name_lo, name_hi, grant::spec_len(spec), &mut buf);
-    // The options ride in the spec word's mask field, the same field a warden's rights ride in:
+    // The options ride in the spec word's mask field, the same field a caretaker's rights ride in:
     // both are "what this process was started with", and neither needs a frame. The bit order is
     // `capsh::rmopt`, which is the shell's own numbering, so the program and the prompt cannot
     // disagree about what `-r` means.
