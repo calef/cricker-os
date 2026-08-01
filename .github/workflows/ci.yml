@@ -25,8 +25,17 @@ permissions:
 # That is the bad kind of failure: it looks like a red badge (cosmetic, ignorable) and it is
 # actually the absence of the signal the badge exists to carry. Every commit that reaches `main`
 # gets a complete run, even if several queue up behind each other.
+# The mechanism is the GROUP, not the flag, and getting that wrong cost a second attempt.
+# `cancel-in-progress: false` protects only the run that is already executing; GitHub still cancels
+# any *pending* run in the group when a newer one queues. With ~40-minute runs and pushes every few
+# minutes, that left the in-progress run and the newest queued one alive and killed everything
+# between, which is most of them. Ten consecutive cancellations survived the first fix unchanged.
+#
+# So `main` commits are not grouped with each other at all: the SHA is in the group name, making each
+# one unique and therefore uncancellable. Branches and PRs keep the shared group, where superseding
+# is right because only the tip matters.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || 'tip' }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 # Each job's real work is a script from script/ (the "Scripts to Rule Them All" set), so CI runs
