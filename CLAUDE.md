@@ -261,6 +261,14 @@ section said "everywhere" and was wrong. Three domains, each keeping its own con
 | `script/` and `scripts/` entry points | `hyphens` | shell commands are hyphenated everywhere (`apt-get`, `pkg-config`, `docker-compose`); an underscore in a command name reads as a mistake |
 | Ordinary markdown (`notes/`, `design/`) | `hyphens` | filenames become URL slugs in every static site generator, and hyphens are word separators in a URL where underscores are joiners |
 | Repo-root markdown | `SCREAMING_SNAKE_CASE` | **GitHub behaviour, not style.** It recognises `README.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md` and links them in its UI; get the name wrong and the Security tab does not find your policy |
+| A directory holding a Rust package | named **exactly as the package**, so `snake_case` | the directory and the package are one thing with one name; thirteen under `crates/` already do this |
+| Any other directory | `hyphens` if it needs two words | a directory is a path element, and paths are hyphenated outside this repository |
+
+The directory rows are the same principle one level out, not a new tier: a package directory is a
+Rust name, and everything else is a path. Three directories violate them today (`fs-server/`,
+`tools/redoxfs-host/`, and `user-std/`, whose package is called `hellostd` and matches neither).
+That is milestone 63, deliberately **after** milestone 61, because two renames in flight would
+collide in `notes/`, `DECISIONS.md` and `kernel/src/user.rs`.
 
 **This is not the two-tier rule Chris rejected**, and the difference is the one he identified. That
 split was *within* one domain, keyed on an **unstable** property: `wc` moved from internal plumbing
