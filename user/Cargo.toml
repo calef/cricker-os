@@ -80,6 +80,15 @@ path = "src/spinner.rs"
 test = false
 bench = false
 
+# The outlaw (milestone 19, the user-test port): reads an address it is not allowed to touch, and
+# round-trips through user mode. The two programs kernel::user::tests used to hand-assemble as
+# aarch64 machine code; a real ELF here is what lets those tests run on both ISAs.
+[[bin]]
+name = "outlaw"
+path = "src/outlaw.rs"
+test = false
+bench = false
+
 # The CoreMark workload (milestone 19e): the first real compute workload, run against the native ABI.
 [[bin]]
 name = "coremark"

@@ -313,38 +313,45 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
             );
         }
 
-        // The capstone: run a real program at U-mode. `exec` builds an address space, maps the
-        // hand-written RISC-V program, and drops to U-mode via enter_user's sret. The program yields
+        // The capstone: run a real program at U-mode. The loader builds an address space from the
+        // `outlaw` ELF's segments and drops to U-mode via enter_user's sret. The program yields
         // (round-tripping U-mode -> trap -> dispatch -> yield -> sret -> U-mode) twice, then exits.
         // The syscall count proves the whole userspace path: enter_user, the sscratch U-mode trap
         // entry, the ecall dispatch through the ABI accessors, and the return to U-mode.
+        //
+        // This step used to run a hand-assembled RISC-V blob through a one-page raw loader. It runs
+        // a compiled ELF out of the initrd now (milestone 19's user-test port), so it needs one, and
+        // says so rather than quietly proving nothing when there is none.
         {
             use core::sync::atomic::Ordering;
-            let before = arch::exceptions::SVC_COUNT.load(Ordering::Relaxed);
-            sched::spawn(|| unsafe { user::exec(user::hello()) });
-            for _ in 0..4 {
-                sched::yield_now();
+            match user::program("outlaw") {
+                Some(image) => {
+                    let before = arch::exceptions::SVC_COUNT.load(Ordering::Relaxed);
+                    sched::spawn(move || {
+                        user::run(
+                            image,
+                            user::Spawn {
+                                arg0: user::OUTLAW_ROUND_TRIP,
+                                arg1: 0,
+                                arg2: 0,
+                                grants: &[],
+                                maps: &[],
+                            },
+                        )
+                    });
+                    for _ in 0..4 {
+                        sched::yield_now();
+                    }
+                    let served = arch::exceptions::SVC_COUNT.load(Ordering::Relaxed) - before;
+                    println!(
+                        "  userspace   : a program ran at U-mode and made {served} syscalls (yield/yield/exit via ecall)",
+                    );
+                }
+                None => println!("  userspace   : skipped (no 'outlaw' program in the initrd)"),
             }
-            let served = arch::exceptions::SVC_COUNT.load(Ordering::Relaxed) - before;
-            println!(
-                "  userspace   : a program ran at U-mode and made {served} syscalls (yield/yield/exit via ecall)",
-            );
         }
 
-        // The capability boundary: build a process from parts, grant it WRITE on an endpoint in slot
-        // 0, and run a program that SYS_INVOKEs that cap to SEND a word home. Receiving the exact word
-        // proves the whole capability path works from U-mode: the cap lookup, the rights check, and
-        // IPC, all on RISC-V.
-        {
-            let word = user::riscv_capability_demo();
-            println!(
-                "  capability  : a U-mode process invoked a cap and SENT {word:#x} (expected {:#x})",
-                user::RISCV_REPORT_WORD,
-            );
-        }
-
-        // Running a real compiled ELF at U-mode, two ways, depending on the initrd. Every user
-        // program above is a hand-written machine-code blob; these are actual Rust binaries.
+        // Running a real compiled ELF at U-mode, two ways, depending on the initrd.
         if let Some(initrd) = user::initrd() {
             // A crickerfs archive with an "init" entry means the richer path: the kernel loads only
             // "init" (the portable `builder`), maps the whole archive into it, grants it a budget and
@@ -716,18 +723,29 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
                 }
 
                 // The privilege boundary, still real: a program that reaches for a kernel address is
-                // killed, and the kernel is not. aarch64-only: the demo runs `user::outlaw()`, one of
-                // the hand-written aarch64 programs (notes/riscv-port.md, leak #3); RISC-V grows its
-                // own boundary demo through the ELF-load path.
-                #[cfg(target_arch = "aarch64")]
-                {
+                // killed, and the kernel is not. The address is the kernel's own fault counter, so
+                // it is certainly mapped and certainly not the process's; the demo hands it to the
+                // program rather than baking a constant in, which is what makes it the same demo on
+                // either ISA. It used to run `user::outlaw()`, a hand-written aarch64 blob.
+                if let Some(image) = user::program("outlaw") {
                     use crate::arch::exceptions::USER_FAULTS;
+                    let kernel_addr = &raw const USER_FAULTS as u64;
                     let faults0 = USER_FAULTS.load(Ordering::Relaxed);
-                    sched::spawn(|| unsafe { user::exec(user::outlaw()) });
+                    sched::spawn(move || {
+                        user::run(
+                            image,
+                            user::Spawn {
+                                arg0: user::OUTLAW_READ_KERNEL,
+                                arg1: kernel_addr,
+                                arg2: 0,
+                                grants: &[],
+                                maps: &[],
+                            },
+                        )
+                    });
                     timer::spin_for(timer::frequency() / 20);
                     println!(
-                        "    outlaw : reached {:#018x}, was killed, kernel survived ({} fault)",
-                        0xffff_0000_4008_0000u64,
+                        "    outlaw : reached {kernel_addr:#018x}, was killed, kernel survived ({} fault)",
                         USER_FAULTS.load(Ordering::Relaxed) - faults0,
                     );
                 }

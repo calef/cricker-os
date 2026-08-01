@@ -93,6 +93,77 @@ candidates are worse (the SBI IPI lands on the software-interrupt arm, which nev
 That leaves `kernel::sched::tests` fully portable, and the remaining aarch64-only tests are the ones
 that genuinely need aarch64 machine code or a GIC.
 
+**Follow-on (milestone 19, 2026-07-31): `kernel::user::tests` runs on both ISAs.** It was the last
+whole module gated to one architecture, and the reason turned out not to be the tests. The module
+comment said "every test drives a hand-written aarch64 program through `exec` and reads aarch64 fault
+registers", which was true and was the wrong thing to fix: the *scaffolding* was aarch64, and the
+tests came along unchanged once three things moved.
+
+1. **A portable last-fault record.** `arch::UserFault` (Permission / Translation / Other, each
+   carrying Read / Write / Fetch) plus the address, in place of two public `ESR`/`FAR` statics every
+   test decoded inline. This is what keeps the assertion "a **permission** fault at exactly this
+   address" rather than softening it to "a fault happened", which would have been a test converted
+   into something that passes for the wrong reason. **The two ISAs are not symmetric here and the
+   asymmetry is documented in the code:** aarch64 is *told* (`ESR_EL1`'s fault status code
+   distinguishes permission from translation in silicon, at the instant of the fault); RISC-V is not
+   (`scause` has one code per access kind and never says why the walk refused), so its classifier
+   walks the tables the hardware just walked. That walk happens after the fault, which is a real gap
+   and is written up as a `BUGS` note on `riscv64::exceptions::classify`. aarch64's answer is a
+   measurement; RISC-V's is an inference.
+
+2. **The hand-assembled programs became real ELFs.** Five `global_asm!` blobs (three aarch64, two
+   RISC-V) are gone, along with `exec`, the one-page raw-machine-code loader they needed. Their
+   behaviours are ordinary, so they are the `outlaw` binary (two roles: read a forbidden address,
+   round-trip through user mode) and the `spinner` that milestone 24 already built. Every program the
+   kernel runs now arrives as an ELF. The privilege-boundary test hands the forbidden *address* to
+   the program in a register rather than baking a constant into machine code, which is the trick that
+   makes one program serve two ISAs with different kernel address spaces.
+
+3. **`hello` builds for RISC-V, and always could have.** It carries the milestone 7-19 role catalogue
+   (the printing client, the untyped demo, the granter and receiver, the call server, the aspace
+   builder, the init roles), and xtask's comment claimed it was "aarch64-wired". Three quarters of
+   that claim was already false (console, input and shell were in the riscv build list directly
+   below it) and the last quarter was six syscalls hand-rolled in aarch64 `asm!` naming x0/x2/x3/x4/x8
+   — which on RISC-V are the zero register, sp, gp, tp and fp. `user_rt` had had portable versions of
+   all six since 19f.6 lifted the runtime out; the duplicates simply never got deleted. A stale
+   comment stood in for a real blocker for a year, which is this note's recurring lesson in a new
+   costume.
+
+**What stays aarch64-only, and why.** Each is written at the test, not in a blanket module comment,
+because a blanket comment is exactly how the old claim survived past being true.
+
+| Test | Reason |
+| --- | --- |
+| `el1_runs_on_sp_el1` | **No RISC-V analogue exists.** RISC-V does not bank `sp` by privilege level; there is one `sp`, swapped with `sscratch` on trap entry. The hazard (two names for one register, silently) cannot arise, so a twin would have nothing to assert. |
+| `asid_tagging_keeps_address_spaces_apart_without_flushes` | **The property is not true on RISC-V yet.** `write_satp` issues an unconditional `sfence.vma` on every root switch, so a twin would read the right byte because everything was just flushed, not because the tagging works, and would pass whatever happened to the ASIDs. See the open gap below. |
+| `the_hardware_says_el0_cannot_read_the_kernels_memory` | Twin exists: `riscv_virtio_tests::the_page_tables_say_u_mode_cannot_read_the_kernels_memory`. Kept separate on purpose, because the *mechanism* is the subject: aarch64 asks the silicon (`AT S1E0R`), RISC-V has no such instruction and walks in software. Merging them would assert only what both can say. |
+| `userspace_init_delegates_an_interrupt_to_a_child` | RISC-V has no second interrupt to raise. Its only hand-assertable line is the console UART's, which `spawn_init` is already routing for the input driver, so a twin would prove delivery through whichever route was bound last rather than through the delegated capability. The property is covered by `riscv_virtio_tests::a_userspace_driver_reads_a_file_from_a_virtio_disk` (which asserts `ROUTED_IRQS` rises while a userspace driver waits on its own Irq cap) and by `sched::tests::an_interrupt_becomes_a_message`. |
+| `userspace_init_builds_a_driver_that_reads_real_hardware` | The assertion is `0xB105F00D` in the PL011's PrimeCell identification registers, and RISC-V `virt` has no PL011. That constant is what makes the test exact rather than "the read did not fault"; substituting a virtio magic number would be a different test wearing this one's name. Device delegation to a userspace driver is proved on RISC-V by the virtio-blk driver test, which is a stronger version of the same claim. |
+| 24 device / filesystem / network tests | **Twins already exist** in `riscv_virtio_tests`, which drives the same properties through the dedicated `blk` and `netstack` binaries. Running both copies would double the suite's slowest tests (including the ~300 s `std_net`) to prove nothing new. This duplication is itself worth revisiting: see the open gap below. |
+
+### Open gap: RISC-V allocates ASIDs and then throws them away
+
+`riscv64::mmu` does the whole ASID dance. `asid_bits()` probes the implemented width at boot,
+`ttbr0_value` packs the ASID into `satp[59:44]`, `flush_asid` exists for teardown. And then
+`write_satp` ends with a bare `sfence.vma`, which invalidates **everything**, on every address-space
+switch. So the tagging costs what it costs and buys nothing: RISC-V is still swinging the
+sledgehammer aarch64 put down at milestone 15.
+
+Found while deciding whether `asid_tagging_keeps_address_spaces_apart_without_flushes` could be
+ported. It could not, honestly, and that is the finding. Fixing it is a kernel change with real
+consequences (the shootdown paths assume the flush), not a test-portability change, so it is recorded
+here rather than done under a test lane. The aarch64 test is the model for what the RISC-V twin
+should assert once it is.
+
+### Open gap: `tests` and `riscv_virtio_tests` overlap by 24 tests
+
+`riscv_virtio_tests` was written when `tests` was unreachable from RISC-V, so it re-derives the disk,
+FS and network properties with its own copies of `wait_for`, the net selectors, and the transcript
+plumbing. Now that `tests` runs on both, 24 of its tests are gated to aarch64 solely because the twin
+exists. The two are not textually identical (aarch64 drives the driver as a role of `hello`, RISC-V
+as the dedicated `blk` binary), so merging them means choosing one and deleting the other side's
+roles. Worth doing; out of scope for a test-portability lane.
+
 ### B (original scope). In-kernel test suite on RISC-V — M, low-medium risk. Highest value per effort.
 
 The 116 kernel tests boot under QEMU on aarch64 and signal pass/fail via semihosting exit. RISC-V has
