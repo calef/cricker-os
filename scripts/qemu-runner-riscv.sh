@@ -152,9 +152,24 @@ fi
 # so it fronts the bus the virtio-blk-pci device joins.
 IOMMU="-device riscv-iommu-pci"
 
+# The CPU model (milestone 59). `rv64` is QEMU's MAXIMALIST riscv64 model: it turns on essentially
+# every ratified extension QEMU implements, so a kernel that only ever ran here has never been told
+# no by the emulator. The VisionFive 2's JH7110 is a SiFive U74, which is RV64GC, a much smaller
+# machine than `rv64`, and every RISC-V result this project has was taken on the permissive one.
+#
+# Set CRICKER_CPU to any model `qemu-system-riscv64 -cpu help` lists to narrow it: `sifive-u54` is
+# the U74's family and the closest thing to the board, `rva22s64` and `rva23s64` are the RVA profile
+# models, and `thead-c906` is a real shipped chip with real divergences (a hostile case on purpose).
+#
+# The default stays `rv64` so nothing that existed before this flag changes its meaning. See
+# notes/cpu-models.md, which records what each model did with the suite and the one divergence we
+# found. **A narrower QEMU model is still QEMU**: it catches the ISA-and-CSR class of bug and says
+# nothing about the JH7110's caches, memory map, or errata.
+CPU="${CRICKER_CPU:-rv64}"
+
 exec qemu-system-riscv64 \
     -machine virt \
-    -cpu rv64 \
+    -cpu "$CPU" \
     -smp "$SMP" \
     -m 128M \
     -bios default \

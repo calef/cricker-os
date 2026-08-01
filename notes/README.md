@@ -567,6 +567,11 @@ in the code or the conversation doesn't make sense, it belongs here.
   the twins found the timer running at 80 Hz while reporting 100. What translated, what has no
   analogue (and why RISC-V needs no `running_at_el1`), how each test was proved able to fail, and
   which three cannot fail on a machine that booted.
+- [The CPU-model matrix](cpu-models.md): every RISC-V result this project had was taken on
+  `-cpu rv64`, QEMU's maximalist model, while the board arriving is an RV64GC U74. Running the same
+  suite against `sifive-u54`, the RVA profiles and `thead-c906` (211 tests, all five green), the
+  preflight that proves `-cpu` is enforced rather than merely advertised, what the narrow models
+  would have caught, and the one test written for the board that no CPU model can exercise.
 - [Scoping a PCIe transport](pcie-transport-scope.md): a PCI root complex (ECAM enumeration, BARs,
   virtio-pci capability parsing, INTx via the PLIC) so a virtio disk can be driven over PCIe, the
   transport QEMU's riscv `virt` and real hardware use. Portable (both boards are ECAM-generic); the

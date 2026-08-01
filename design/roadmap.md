@@ -122,9 +122,10 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 56 | PARTIAL | Secrets, credentials, and the entropy to make them safe | the entropy half is **built** (§44): a real random source, capability-granted. The crypto and credential halves remain, and a secret is still a bearer token where a capability is an unforgeable reference |
 | 57 | PARTIAL | Partitioning and formatting a real drive, and extended attributes | you cannot find a partition without reading the table, and **we have no partition-table code at all**; all of it is testable in QEMU before the board lands. The host recovery tool (`ls`/`cat`/`extract`), `crates/gpt` and the **extended-attribute layer** are built; on-target `mkfs` and block-device enumeration are not |
 | 58 | NOT-STARTED | RISC-V TLB shootdown, and the flush that makes ASIDs pointless | every riscv context switch discards the whole TLB; the fix needs a **software** shootdown protocol, because `sfence.vma` does not broadcast |
-| 59 | NOT-STARTED | The CPU-model matrix: stop testing against one generous emulator | `-cpu rv64` enables nearly every ratified extension; the board is an RV64GC U74. Run the suite across `-cpu` profiles so "works on the generic model" surfaces before the hardware does |
+| 59 | BUILT | The CPU-model matrix: stop testing against one generous emulator | `-cpu rv64` enables nearly every ratified extension; the board is an RV64GC U74. `script/cpu-matrix` runs the riscv64 suite across five models and all 211 tests pass on every one, so we are already portable to the board's ISA. The ASID test written *for* the board is the gap no model can exercise |
 | 60 | NOT-STARTED | ISA discovery: read the machine instead of assuming it | nothing reads `riscv,isa-extensions`; RISC-V has no `CPUID`, so the device tree plus targeted probes are the architected answer. One `Isa` record, built at boot, printed at boot |
 | 61 | NOT-STARTED | The caretakers: one verb table, and names that say what you get | all three answer `EOPNOTSUPP` to xattr because each is a hand-written match over verbs; 4 verbs x 3 wardens recurs on every contract addition. A verb table in `fs_proto` inverts the failure mode |
+| 62 | NOT-STARTED | Tests that assert on time: make a red run mean something | ~19 bounded spins (`for _ in 0..N { yield_now() }`) and wall-clock assertions flake under load. Four separate lanes and the integrator hit them on 2026-08-01; the CPU matrix multiplies the exposure fivefold |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -3101,7 +3102,16 @@ that deserves measurement before a number.
 
 ### 59. The CPU-model matrix: stop testing against one generous emulator
 
-**Status: NOT-STARTED.** Raised by Chris on 2026-08-01, asking whether we should modify QEMU to match
+**Status: BUILT (2026-08-01).** `script/cpu-matrix` runs the riscv64 suite against `rv64`,
+`sifive-u54`, `rva22s64`, `rva23s64` and `thead-c906`; **211 tests pass on every one**, so the cheap
+experiment below came out the reassuring way and "we are already portable to the board's ISA" is now
+measured rather than predicted. `script/test` grew `--arch` and `--cpu`, both defaulting to today's
+behaviour, and CI grew a `cpu-matrix` job of its own. The full result, the preflight that keeps the
+matrix from being theatre, and an honest BUGS list are in [notes/cpu-models.md](../notes/cpu-models.md).
+The one thing it did **not** de-risk is the ASID width: every model reports 16 implemented bits, so
+the test written for the board still has no machine that can fail it.
+
+Raised by Chris on 2026-08-01, asking whether we should modify QEMU to match
 the chip, detect features, or something else.
 
 **The answer to the first is no.** A forked emulator is a machine that exists nowhere: it proves
@@ -3205,6 +3215,15 @@ assumes Sv39 on an Sv48 machine is the same violation one layer down.
 
 **Effort: not estimated.** Parsing is small; how many call sites genuinely need to vary is the unknown,
 and milestone 59 is what answers it.
+
+**What 59 answered, 2026-08-01: zero, on the five CPU models QEMU offers.** The suite passes
+unchanged from `sifive-u54` (bare RV64GC) to `rva23s64` (vector, `zicond`, pointer masking), so
+nothing in the kernel currently needs to branch on a discovered fact. That does **not** retire this
+milestone, and the reason is the sharpest thing 59 found: **QEMU reports `satp.ASID: 16 bits
+implemented` on every model**, including `sifive-u54`. The one place we already know a real chip may
+differ is the one place no emulator can tell us about, so discovery's value is not the branching, it
+is being able to say what the machine is instead of assuming it. See
+[notes/cpu-models.md](../notes/cpu-models.md).
 
 ### 61. The caretakers: one verb table, and names that say what you get
 
@@ -3339,6 +3358,62 @@ and not the mechanism.
 
 **Effort: medium.** The table is small; teaching three wardens and proving each on both ISAs is the
 work.
+
+### 62. Tests that assert on time: make a red run mean something
+
+**Status: NOT-STARTED.** Raised 2026-08-01, from evidence rather than from taste.
+
+#### The problem
+
+A population of tests assert on **elapsed time or on a fixed number of yields**. `sched.rs` alone
+holds about nineteen `for _ in 0..N { yield_now() }` spins, and the shape is always the same: give
+the scheduler N chances, then assert something happened. `threads_round_robin` gives twenty yields
+and asserts every thread ran at least once. `ticks_arrive_at_the_configured_rate` and the riscv
+timer-drift assertion compare guest ticks against elapsed counter time.
+
+None of them is wrong about what it wants to prove. All of them fail when the host is busy, because
+a yield is not a guarantee and the guest's clock is the host's clock.
+
+#### Why this is worth a milestone rather than tolerance
+
+**It makes a real regression invisible.** On 2026-08-01 it cost the integrator three separate
+diagnosis cycles, and two of those ended in the wrong conclusion before being re-run. The credentials
+lane hit three flakes, the xattr lane two, the CPU-matrix lane two, and the integrator hit three more
+in different tests each time. A suite that fails for reasons unrelated to the change trains everyone
+to re-run rather than to read, which is the exact habit that lets a genuine failure through.
+
+**Milestone 59 multiplies it fivefold.** The CPU matrix runs the same suite five times, so every
+timing test now has five chances per run to be unlucky, on a shared CI runner nobody controls.
+
+**And the honest diagnostic we rely on is expensive.** The current rule is "a green run under load is
+conclusive, a red one is not, so re-run quiet." That works, and it costs a full suite run every time,
+and it depends on a human remembering to apply it.
+
+#### What the fix probably is, per class
+
+- **The bounded spins** are the easy majority. Waiting for a condition with a deadline is a different
+  thing from taking N turns: the test wants "eventually", not "within twenty yields". An
+  event-driven wait, or a bound expressed in **guest ticks** rather than host-scheduler turns, makes
+  them insensitive to what else the machine is doing.
+- **The genuinely temporal tests** cannot be made deterministic and should not pretend to be.
+  `ticks_arrive_at_the_configured_rate` is *about* the clock. These want an explicit, stated
+  tolerance and a recorded retry budget, so a flake is a documented cost rather than a surprise.
+- **A third class may want to move off the emulator entirely.** Scheduling policy is pure logic and
+  some of it could be host-tested against a simulated clock, which is where this project already puts
+  logic it wants to check in milliseconds.
+
+#### BUGS
+
+- **Fixing this cannot be verified by running the suite once.** A flake that fires one run in six is
+  indistinguishable from a fixed one until you have run it many times, so the acceptance evidence is
+  a repeat count, not a green run.
+- **Deleting the timing assertions would be worse than the flakes.** `ticks_arrive_at_the_configured
+  rate` is the test that catches re-arming the timer from `now()` inside the handler, which is a real
+  bug this project has a comment about. The goal is tests that fail only when something is wrong, not
+  fewer tests.
+
+**Effort: not estimated**, and deliberately: the count is known (~19 spins plus a handful of clock
+assertions) but how many are mechanical and how many need a rethink is not.
 
 ### The backup-server ladder (53 to 55), and why it is the right deliverable
 
@@ -3765,11 +3840,29 @@ node's last link went), the store's name is unnameable and unlistable in every d
 shrinking blob is truncated to length so the reader never walks records nobody wrote. The
 rename-replacement case is the one removal the engine cannot report, and the server notices it.
 
-**What is not done, and is named rather than implied:** the caretakers (`fwarden`, `dwarden`,
+**BUILT 2026-08-01: the recovery side, and two of the three named gaps closed.** `redoxfs-host
+extract` puts the attributes back on the extracted files (`setxattr` on macOS, `lsetxattr` on Linux,
+neither following a symlink), `ls` marks an entry that has them with `@`, and `xattr IMAGE PATH
+[NAME]` renders or dumps them without extracting. The type code cannot come along, because no host
+filesystem has a field for one, so each is named and counted and the raw store still comes out beside
+the tree as its only home. Nothing about attributes can fail an extraction: a damaged blob, a name
+Linux refuses for want of a `user.` prefix, a destination filesystem that holds none, each is
+reported and walked past. The counts print even when zero, because "0 attributes reattached" is what
+tells you the destination cannot hold them and a summary that hid the zero would read like a backup
+that never had any (§42). The fixture is written by `fs_server::Server` itself, for the same reason
+the tree fixture goes in through upstream's archiver.
+
+The store directory now goes with the last attribute on the filesystem, which closes a limitation
+recorded for a reason that was wrong: `remove_node` on a directory already refuses with `ENOTEMPTY`,
+so the emptiness check is the engine's and costs no walk. It matters because `extract` copies the
+store out, and a leftover empty `.cricker-attrs` would land in a recovered Documents folder. And
+crash atomicity is measured rather than inherited: milestone 37's sweep now carries each name's
+attributes in its state and four attribute operations in its workload, interleaved with a write to
+the same file, so "the file and its metadata land together" is decided rather than argued.
+
+**What is still not done, and is named rather than implied:** the caretakers (`fwarden`, `dwarden`,
 `swarden`) answer `EOPNOTSUPP` to all four verbs rather than forwarding, so a program behind a
-per-file grant cannot reach its file's attributes; the host recovery tool shows the store but does
-not render or reattach attributes on `extract`; and crash atomicity is inherited from the transaction
-boundary rather than measured with an attribute write in milestone 37's workload.
+per-file grant cannot reach its file's attributes (that is milestone 61's job).
 
 
 - **Extend the on-disk format.** Correct, and atomic by construction since the metadata rides
@@ -3795,6 +3888,36 @@ either way.**
 | GPT writing | None | The `mkpart` equivalent. Protective MBR, header, entry array, two CRC32s, backup header at the last LBA |
 | `mkfs` on the target | Host only | `redoxfs-host mkfs IMAGE SIZE_MIB` is a std host tool; the FS server is `no_std` |
 | Block device enumeration | None | "What drives are attached", which is enumeration again and bounded by capabilities exactly as milestone 47's globbing and completion are |
+
+#### Finding 2026-08-01: `mkfs` on the target is blocked on **entropy**, not on `std`
+
+Investigated and measured, because "the FS server is `no_std` and the creation APIs are std-gated"
+reads like a dead end and is not the real constraint.
+
+`FileSystem::create` and `create_reserved` carry `#[cfg(feature = "std")]`, and so do the imports
+they need and `Header::new`. Un-gating them is mechanical for all but **one** call:
+`Header::new` stamps a fresh v4 UUID into the header with `uuid::Uuid::new_v4()`, which is
+`getrandom`, which is the std path. The encryption branch wants randomness too (`Salt::new`,
+`Key::new`), and that one does not matter here because this volume is deliberately unencrypted.
+
+So the blocker is that **a filesystem needs a unique identifier and the engine has no source of
+randomness in a `no_std` build.** cricker-os does: milestone 55's entropy service. The shape of the
+fix is therefore small and upstreamable, and it is the shape upstream already uses one line away:
+`create` takes `ctime` and `ctime_nsec` as *parameters* precisely because a `no_std` engine has no
+clock. A `Header::new_with_uuid(size, uuid: [u8; 16])` does for randomness exactly what those
+parameters do for time, and the caller (which has an entropy capability) supplies it.
+
+**The same problem appears twice in this milestone, and has the same answer both times.**
+notes/gpt.md already records that `crates/gpt` will not invent a partition GUID, for the identical
+reason: "a GUID that is not random is not unique, this crate has no randomness, and inventing one
+from a counter would be worse than refusing." Partitioning and formatting on the target are both
+gated on plumbing the entropy service to the program that does them, and neither is gated on `std`.
+
+This is a **decision for Chris**, because the fix is a divergence from the pin (SUBMIT-REDOXFS-PATCH.md
+is the mitigation), and §46's rule is that taking one is a decision rather than a convenience. It is
+also worth weighing against the pragmatic alternative: `redoxfs-host` on a Mac can partition and
+format the drive today, which is what actually gets a disk ready for the board on 2026-08-21, and the
+target-side version is then a capability demonstration rather than a prerequisite.
 
 **GPT is a good crate to write.** Pure computation, well specified, so it is host-tested with tests in
 milliseconds, and it has real Kani targets: CRC round-trip, primary and backup headers agreeing,

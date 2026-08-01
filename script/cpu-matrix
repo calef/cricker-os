@@ -1,0 +1,151 @@
+#!/bin/sh
+# script/cpu-matrix: run the riscv64 kernel suite against every QEMU CPU model in the matrix
+# (milestone 59). The default suite runs against `-cpu rv64`, which is QEMU's MAXIMALIST model; the
+# VisionFive 2's JH7110 is a SiFive U74, which is RV64GC and much smaller. This runs the same suite
+# against the narrow models so "works on the generous emulator" surfaces here rather than on the
+# board. See notes/cpu-models.md.
+#
+# Usage:
+#   script/cpu-matrix                       # every model in the default list
+#   script/cpu-matrix sifive-u54            # just these
+#   CRICKER_CPU_MODELS="rv64 sifive-u54" script/cpu-matrix
+#
+# It does NOT stop at the first failure. A matrix that halts tells you one model broke; a matrix that
+# finishes tells you which ones did, which is the difference between "something is wrong" and a
+# diagnosis. The exit status is still non-zero if any model failed.
+
+set -e
+cd "$(dirname "$0")/.."
+
+if ! command -v qemu-system-riscv64 >/dev/null 2>&1; then
+    echo "cpu-matrix: qemu-system-riscv64 not found. Run script/setup first." >&2
+    exit 1
+fi
+
+# The default matrix, and why each model is in it:
+#
+#   rv64        the CONTROL. QEMU's maximalist model, what every other RISC-V result in this tree was
+#               taken on. If this one fails the tree is broken, not the narrowing.
+#   sifive-u54  the U74's family, and the closest model to the board we are about to plug in. Its
+#               device tree reads `rv64imafdc_zicntr_zicsr_zifencei_zihpm_sdtrig`, which is RV64GC
+#               and nothing else.
+#   rva22s64    the RVA22 S-mode profile: a real portability target, and the floor a lot of RISC-V
+#               software is starting to assume.
+#   rva23s64    RVA23, the newer profile, on the other side: it turns things ON that rv64 does not
+#               (vector, `zicond`, pointer masking), so it catches an assumption that an extension is
+#               absent as well as one that it is present.
+#   thead-c906  the HOSTILE case, on purpose. A real shipped chip with real divergences: no standard
+#               bitmanip, a set of vendor `xthead*` extensions instead, and its own memory-attribute
+#               scheme. If something in `arch/riscv64` quietly depends on the standard spelling of
+#               anything, this is the model most likely to say so.
+MODELS="${CRICKER_CPU_MODELS:-rv64 sifive-u54 rva22s64 rva23s64 thead-c906}"
+if [ $# -gt 0 ]; then
+    MODELS="$*"
+fi
+
+for m in $MODELS; do
+    qemu-system-riscv64 -cpu help | grep -qx "  $m" || {
+        echo "cpu-matrix: this QEMU has no CPU model '$m' (see qemu-system-riscv64 -cpu help)" >&2
+        exit 1
+    }
+done
+
+OUT="target/cpu-matrix"
+mkdir -p "$OUT"
+
+# ---------------------------------------------------------------------------------------------
+# Preflight: is `-cpu` ENFORCED, or only advertised?
+#
+# This is the check that keeps the rest of the script from becoming theatre. QEMU's `virt` machine
+# writes a `riscv,isa` string into the device tree per CPU model, and that string is a CLAIM. If a
+# future QEMU kept the claim but stopped trapping the instructions the model does not have, every
+# run below would still go green while proving nothing at all, and nothing else here would notice.
+# The project has been burned by exactly this shape before (the fmt `--check` that checked nothing,
+# the hand-maintained test list that quietly covered 82 fewer tests than it claimed).
+#
+# So: measure it. Two instructions at 0x8000_0000, entered in M-mode with `-bios none`:
+#
+#     sh1add a1, a0, a0     0x20a525b3    a Zba instruction
+#     wfi                   0x10500073    park, whichever way the first one went
+#
+# `mtvec` is pointed at the `wfi` first, so a trap and a clean execution both end parked and QEMU
+# stays at 0% host CPU either way (`wfi` is a real vCPU halt; see CLAUDE.md). `-d int` then logs the
+# exception, or does not.
+#
+# The assertion is TWO-SIDED on purpose: `sifive-u54` must trap and `rv64` must not. A one-sided
+# check would silently pass if the log format ever changed, which is the failure mode it exists to
+# catch.
+
+# Does `-cpu $1` refuse to execute the Zba instruction? Succeeds (exit 0) when it trapped.
+traps_zba() {
+    log="$OUT/preflight-$1.log"
+    rm -f "$log"
+    # scripts/qemu-bounded.sh, never `perl -e alarm`: QEMU installs its own SIGALRM handler and
+    # swallows the alarm, which is how this project leaked eleven emulators in a day (CLAUDE.md).
+    scripts/qemu-bounded.sh 3 \
+        qemu-system-riscv64 -machine virt -cpu "$1" -bios none -kernel "$OUT/zba.bin" \
+        -display none -serial none -D "$log" -d int >/dev/null 2>&1 || true
+    grep -q 'illegal_instruction' "$log" 2>/dev/null
+}
+
+echo "==> preflight: does -cpu actually narrow the machine?"
+python3 -c "
+import struct, sys
+# auipc t0, 0        t0 = 0x8000_0000
+# addi  t0, t0, 16   t0 = the wfi below
+# csrw  mtvec, t0
+# sh1add a1, a0, a0  the probe
+# wfi                the landing pad, for the trap and for the fall-through alike
+sys.stdout.buffer.write(struct.pack('<5I', 0x00000297, 0x01028293, 0x30529073, 0x20a525b3, 0x10500073))
+" > "$OUT/zba.bin"
+
+if traps_zba rv64; then
+    echo "cpu-matrix: PREFLIGHT FAILED. rv64 trapped a Zba instruction it is supposed to have." >&2
+    echo "Something is wrong with the probe or with this QEMU; the matrix below would be noise." >&2
+    exit 1
+fi
+if ! traps_zba sifive-u54; then
+    echo "cpu-matrix: PREFLIGHT FAILED. -cpu is not narrowing what the CPU will execute:" >&2
+    echo "sifive-u54 executed a Zba instruction that is not in RV64GC." >&2
+    echo "Without narrowing the matrix below runs five identical machines and proves nothing." >&2
+    exit 1
+fi
+echo "preflight: -cpu is enforced (rv64 executes sh1add, sifive-u54 traps it)"
+
+failed=""
+for m in $MODELS; do
+    echo
+    echo "==> $m"
+    log="$OUT/$m.log"
+    if cargo xtask test --arch riscv64 --cpu "$m" > "$log" 2>&1; then
+        echo "    PASS  ($log)"
+    else
+        echo "    FAIL  ($log)"
+        failed="$failed $m"
+    fi
+done
+
+echo
+echo "==> matrix"
+for m in $MODELS; do
+    case " $failed " in
+        *" $m "*) echo "  FAIL  $m" ;;
+        *) echo "  pass  $m" ;;
+    esac
+done
+
+if [ -n "$failed" ]; then
+    echo
+    echo "cpu-matrix: failed on:$failed" >&2
+    echo "The logs are in $OUT. Diagnose it; do not route around it by dropping the model." >&2
+    echo "" >&2
+    echo "FIRST, re-run the failing model on a QUIET machine. Several kernel tests assert against" >&2
+    echo "wall clock, and a busy host fails them on any model including rv64, so a red run under" >&2
+    echo "load proves nothing. Check top(1), not just the load average: a Time Machine backup shows" >&2
+    echo "up as load with the CPU idle and it has already produced one false failure here." >&2
+    echo "See the BUGS section of notes/cpu-models.md." >&2
+    exit 1
+fi
+echo
+echo "cpu-matrix: the suite passes on every model in the matrix."
+echo "A narrower QEMU model is still QEMU: see the BUGS section of notes/cpu-models.md."

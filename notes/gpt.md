@@ -226,6 +226,14 @@ Stated plainly, because a demonstrator's docs are part of the deliverable:
 - **No unique GUID generation.** `Entry::new` takes both GUIDs from the caller. A GUID that is not
   random is not unique, this crate has no randomness, and inventing one from a counter would be
   worse than refusing. Milestone 55's entropy work is where a caller gets one.
+
+  **This turns out to be the same wall `mkfs` on the target hits, and that is worth knowing**
+  (measured 2026-08-01, design/roadmap.md's milestone 57 block). RedoxFS stamps a v4 UUID into a
+  fresh header with `uuid::Uuid::new_v4()`, so `FileSystem::create` is `std`-gated for the same
+  reason this crate refuses to invent a GUID: an identifier that has to be unique needs randomness,
+  and neither a `no_std` engine nor a pure-computation crate has any. Partitioning a real drive from
+  cricker-os and formatting one are therefore blocked on the same thing, the entropy service reaching
+  the program that does them, and on nothing else.
 - **No alignment policy.** `Gpt::create` places partitions exactly where it is told. The 2048-block
   (1 MiB) convention that keeps a partition off an SSD erase-block boundary is policy, and a format
   crate that silently moved a partition would be doing policy behind its caller's back.
