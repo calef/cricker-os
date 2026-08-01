@@ -1,3 +1,4 @@
+#![no_std]
 //! **Live component replacement: the shared half** (milestone 23, DECISIONS §41).
 //!
 //! Four programs make up the hot-swap system (`swapper` the operator, `conx` and `cconx` the two

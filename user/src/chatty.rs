@@ -36,11 +36,8 @@ use user_rt::{call, send};
 
 // A source file shared by several binaries through `#[path]`, and each uses a different slice of it,
 // so the unused halves are expected (§38).
-#[path = "swap.rs"]
-#[allow(dead_code)]
-mod swap;
 
-use swap::client_checks as ck;
+use swap_proto::client_checks as ck;
 
 /// What `swapper` endowed us with, in order. The attacker gets the same three, deliberately.
 const SVC: u64 = 0; // WRITE: we may ask. We may not answer.
@@ -50,8 +47,8 @@ const NOTE: u64 = 2; // WRITE: the operator's coordination channel
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(role: u64, _a1: u64, _a2: u64) -> ! {
     match role {
-        swap::ROLE_USURPER => usurp(),
-        swap::ROLE_PRODUCER => produce(),
+        swap_proto::ROLE_USURPER => usurp(),
+        swap_proto::ROLE_PRODUCER => produce(),
         _ => converse(),
     }
 }
@@ -63,25 +60,25 @@ fn converse() -> ! {
     let mut transitions = 0u64;
     let mut changed_at = 0u64;
 
-    for seq in 0..swap::REQUESTS {
-        let (got, tag) = call(SVC, swap::OP_PUT, seq);
+    for seq in 0..swap_proto::REQUESTS {
+        let (got, tag) = call(SVC, swap_proto::OP_PUT, seq);
 
         // Did somebody answer at all, and was it an answer to *this* question? A reply carrying
         // another request's sequence number would mean the kernel's one-shot Reply capability had
         // misrouted, which is the guarantee DECISIONS §12 exists to make unrepresentable.
-        if got == swap::BAD_REQUEST {
+        if got == swap_proto::BAD_REQUEST {
             bits &= !ck::ALL_REPLIED;
         }
-        if swap::tag_seq(tag) != seq {
+        if swap_proto::tag_seq(tag) != seq {
             bits &= !ck::SEQ_ECHOED;
         }
         // The independent check: our own computation of the same definition, against whatever the
         // server on the other end happened to be at the time.
-        if got != swap::digest(seq) {
+        if got != swap_proto::digest(seq) {
             bits &= !ck::DIGEST_CORRECT;
         }
 
-        let version = swap::tag_version(tag);
+        let version = swap_proto::tag_version(tag);
         if version != last_version {
             if last_version != 0 {
                 transitions += 1;
@@ -99,14 +96,14 @@ fn converse() -> ! {
     if transitions == 1 {
         bits |= ck::ONE_TRANSITION;
     }
-    if changed_at > 0 && changed_at < swap::REQUESTS - 1 {
+    if changed_at > 0 && changed_at < swap_proto::REQUESTS - 1 {
         bits |= ck::SPANNED_SWAP;
     }
 
-    send(RPT, swap::RPT_CLIENT, bits, changed_at);
+    send(RPT, swap_proto::RPT_CLIENT, bits, changed_at);
     // Tell the operator the conversation is over, so it reads the witness page after the last
     // request rather than in the middle of one.
-    send(NOTE, swap::NOTE_CLIENT_DONE, changed_at, 0);
+    send(NOTE, swap_proto::NOTE_CLIENT_DONE, changed_at, 0);
     user_rt::exit()
 }
 
@@ -122,23 +119,23 @@ fn produce() -> ! {
     let mut bits = ck::ALL_REPLIED | ck::SEQ_ECHOED | ck::DIGEST_CORRECT | ck::NONE_REFUSED;
     let mut buffered = 0u64;
 
-    for seq in 0..swap::REQUESTS {
-        let (got, tag) = call(SVC, swap::OP_PUT, seq);
+    for seq in 0..swap_proto::REQUESTS {
+        let (got, tag) = call(SVC, swap_proto::OP_PUT, seq);
         match got {
-            swap::ACCEPTED => {
+            swap_proto::ACCEPTED => {
                 buffered += 1;
                 continue; // no answer to check: the item is in the broker's custody, not served yet
             }
-            swap::QUEUE_FULL | swap::BAD_REQUEST => {
+            swap_proto::QUEUE_FULL | swap_proto::BAD_REQUEST => {
                 bits &= !ck::NONE_REFUSED;
                 continue;
             }
             _ => {}
         }
-        if swap::tag_seq(tag) != seq {
+        if swap_proto::tag_seq(tag) != seq {
             bits &= !ck::SEQ_ECHOED;
         }
-        if got != swap::digest(seq) {
+        if got != swap_proto::digest(seq) {
             bits &= !ck::DIGEST_CORRECT;
         }
     }
@@ -146,25 +143,30 @@ fn produce() -> ! {
     if buffered > 0 {
         bits |= ck::WAS_BUFFERED;
     }
-    send(RPT, swap::RPT_CLIENT, bits, buffered);
-    send(NOTE, swap::NOTE_CLIENT_DONE, buffered, 0);
+    send(RPT, swap_proto::RPT_CLIENT, bits, buffered);
+    send(NOTE, swap_proto::NOTE_CLIENT_DONE, buffered, 0);
     user_rt::exit()
 }
 
 /// **The attacker.** It tries to become the server on the endpoint it is a client of.
 fn usurp() -> ! {
-    let r = swap::try_recv_cap(SVC);
+    let r = swap_proto::try_recv_cap(SVC);
     // A success here is the catastrophe: it means the attacker is now parked in the queue the real
     // component receives on, and the next client request goes to it. Report the code either way and
     // let the test decide; a program that judged its own attack would be judging itself.
-    send(RPT, swap::RPT_ATTACK, (-r) as u64, abi::endpoint::RECV_CAP);
+    send(
+        RPT,
+        swap_proto::RPT_ATTACK,
+        (-r) as u64,
+        abi::endpoint::RECV_CAP,
+    );
     // Also say so on the operator's channel, so the operator knows the attack has been made and the
     // run is not simply missing a report.
-    send(NOTE, swap::NOTE_ATTACK_DONE, 0, 0);
+    send(NOTE, swap_proto::NOTE_ATTACK_DONE, 0, 0);
     user_rt::exit()
 }
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
-    swap::fail()
+    swap_proto::fail()
 }

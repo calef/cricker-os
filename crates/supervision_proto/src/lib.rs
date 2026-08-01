@@ -1,3 +1,17 @@
+#![no_std]
+// `Result<_, ()>` is deliberate throughout the build path, and clippy's `result_unit_err` is asking
+// for an error type this layer has nothing to put in. Every failure here is a syscall that already
+// returned its own error to the caller through the ABI; a second, richer error would be inventing
+// detail the kernel did not provide. The unit is honest: it means "the syscall said no", and the
+// caller's recourse is the same regardless of which one.
+//
+// Per-crate rather than per-item because it is one decision about one calling convention, and
+// DECISIONS §38's rule is against blanket dead-code suppression hiding unreachable code, which this
+// is not: nothing here is hidden, and the lint is a style opinion about an error type.
+#![allow(clippy::result_unit_err)]
+// `Endow::new()` is an empty endowment, and a `Default` impl would give a second spelling for the
+// same thing in a crate whose whole job is that two binaries agree on one spelling.
+#![allow(clippy::new_without_default)]
 //! **The supervision tree: the shared half** (milestone 22 phase B.2).
 //!
 //! Three programs make up the tree that shrinks init's authority (`rootsup`, `spawner`, `subsup`,

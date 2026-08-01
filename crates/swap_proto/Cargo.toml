@@ -1,0 +1,9 @@
+[package]
+name = "swap_proto"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+abi = { version = "0.1.0", path = "../abi" }
+user_rt = { version = "0.1.0", path = "../user_rt" }

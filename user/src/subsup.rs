@@ -28,11 +28,10 @@ use user_rt::{recv, send};
 
 // Each binary in the tree compiles the shared module but uses a different slice of it (the sub-server
 // builds nothing, the supervisor holds no memory), so the unused halves are expected, not dead.
-#[path = "suptree.rs"]
-#[allow(dead_code)]
-mod suptree;
 
-use suptree::{REP_BUILT, REPORT_FAILED, REPORT_SUP_GAVE_UP, REPORT_SUP_SAW_DEATH, REQ_BUILD};
+use supervision_proto::{
+    REP_BUILT, REPORT_FAILED, REPORT_SUP_GAVE_UP, REPORT_SUP_SAW_DEATH, REQ_BUILD,
+};
 
 /// What rootsup endowed us with, in order. Notice what is missing: memory.
 const REQ: u64 = 0; // WRITE: ask the spawner to build or reap
@@ -52,7 +51,7 @@ pub extern "C" fn _start(_a0: u64, _a1: u64, _a2: u64) -> ! {
     let mut restarts = 0u64;
     if !build(attempt) {
         send(REPORT, REPORT_FAILED, 20, 0);
-        suptree::fail()
+        supervision_proto::fail()
     }
 
     loop {
@@ -64,7 +63,7 @@ pub extern "C" fn _start(_a0: u64, _a1: u64, _a2: u64) -> ! {
         // say so. Reaping a finished child matters as much as reaping a crashed one.
         if !reap(tid) {
             send(REPORT, REPORT_FAILED, 22, 0);
-            suptree::fail()
+            supervision_proto::fail()
         }
 
         if event != abi::fault::EVENT_FAULT {
@@ -117,5 +116,5 @@ fn reap(tid: u64) -> bool {
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
-    suptree::fail()
+    supervision_proto::fail()
 }

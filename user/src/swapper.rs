@@ -9,10 +9,10 @@
 //!
 //! # Two roles, two rungs of the latency ladder
 //!
-//! - [`ROLE_DIRECT`](swap::ROLE_DIRECT): the default rung. The stable name a client holds is the
+//! - [`ROLE_DIRECT`](swap_proto::ROLE_DIRECT): the default rung. The stable name a client holds is the
 //!   endpoint object itself, and the swap changes who is parked in `RECV_CAP` on it. **No process
 //!   sits in the data path**, so the steady state costs exactly what an unbrokered call costs.
-//! - [`ROLE_QUEUED`](swap::ROLE_QUEUED): the opt-in rung. A `broker` stands between producer and
+//! - [`ROLE_QUEUED`](swap_proto::ROLE_QUEUED): the opt-in rung. A `broker` stands between producer and
 //!   backend so the producer never blocks on an absent consumer. One extra hop, priced by the
 //!   `broker_rtt` benchmark, and chosen per channel rather than imposed on every IPC.
 //!
@@ -46,16 +46,9 @@ use user_rt::{cap_delete, invoke, recv, recv_fault, send};
 
 // Two shared modules: the swap system's protocol and the supervision tree's loader. Each binary
 // uses a different slice of both, so the unused halves are expected (§38).
-#[path = "swap.rs"]
-#[allow(dead_code)]
-mod swap;
 
-#[path = "suptree.rs"]
-#[allow(dead_code)]
-mod suptree;
-
-use suptree::Endow;
-use swap::log_checks as lc;
+use supervision_proto::Endow;
+use swap_proto::log_checks as lc;
 
 /// Where the kernel maps the initrd archive, read-only. Must match the kernel's spawn path.
 const INITRD_VA: u64 = 0x2000_0000;
@@ -105,16 +98,16 @@ pub extern "C" fn _start(role: u64, initrd_len: u64, _a2: u64) -> ! {
         logframe: frame(9),
     };
     // SAFETY: plain syscall; the kernel validates the frame, the va and the budget.
-    if unsafe { invoke(w.logframe, abi::frame::MAP, swap::LOG_VA, 1, ROOT_UT) } != 0 {
+    if unsafe { invoke(w.logframe, abi::frame::MAP, swap_proto::LOG_VA, 1, ROOT_UT) } != 0 {
         bail(10)
     }
-    for i in 0..swap::PAGE {
+    for i in 0..swap_proto::PAGE {
         // SAFETY: a page we just mapped read/write into our own address space.
-        unsafe { core::ptr::write_volatile((swap::LOG_VA as *mut u8).add(i as usize), 0) };
+        unsafe { core::ptr::write_volatile((swap_proto::LOG_VA as *mut u8).add(i as usize), 0) };
     }
 
     match role {
-        swap::ROLE_QUEUED => queued(&fs, &w),
+        swap_proto::ROLE_QUEUED => queued(&fs, &w),
         _ => direct(&fs, &w),
     }
 }
@@ -131,10 +124,10 @@ fn direct(fs: &crickerfs::Fs, w: &Wiring) -> ! {
     // The two endowments, whole, so a reader can see the complete authority of everything this
     // program starts. The capability order is the slot order each program expects.
     let instance_caps = [
-        (w.svc, abi::rights::READ),   // swap::SVC:  we may answer here
-        (REPORT, abi::rights::WRITE), // swap::RPT
-        (w.note, abi::rights::WRITE), // swap::NOTE
-        (w.poke, abi::rights::READ),  // swap::POKE
+        (w.svc, abi::rights::READ),   // swap_proto::SVC:  we may answer here
+        (REPORT, abi::rights::WRITE), // swap_proto::RPT
+        (w.note, abi::rights::WRITE), // swap_proto::NOTE
+        (w.poke, abi::rights::READ),  // swap_proto::POKE
     ];
     let client_caps = [
         (w.svc, abi::rights::WRITE), // we may ASK here, and only ask: no READ, so no answering
@@ -142,11 +135,11 @@ fn direct(fs: &crickerfs::Fs, w: &Wiring) -> ! {
         (w.note, abi::rights::WRITE),
     ];
     let with_device = [
-        (swap::LOG_VA, w.logframe, abi::aspace::MAP_RW),
+        (swap_proto::LOG_VA, w.logframe, abi::aspace::MAP_RW),
         // The mode is ignored for a device capability, which is always device-typed read/write.
-        (swap::DEV_VA, DEVICE, abi::aspace::MAP_RO),
+        (swap_proto::DEV_VA, DEVICE, abi::aspace::MAP_RO),
     ];
-    let without_device = [(swap::LOG_VA, w.logframe, abi::aspace::MAP_RW)];
+    let without_device = [(swap_proto::LOG_VA, w.logframe, abi::aspace::MAP_RW)];
 
     // ------------------------------------------------------------------------------------------
     // The incumbent.
@@ -175,10 +168,10 @@ fn direct(fs: &crickerfs::Fs, w: &Wiring) -> ! {
     // "however long a build takes".
     // ------------------------------------------------------------------------------------------
 
-    let Ok(b_region) = suptree::untyped_split(ROOT_UT, INSTANCE_PAGES) else {
+    let Ok(b_region) = supervision_proto::untyped_split(ROOT_UT, INSTANCE_PAGES) else {
         bail(20)
     };
-    let Ok((b_tcb, b_aspace)) = suptree::build_child_space(
+    let Ok((b_tcb, b_aspace)) = supervision_proto::build_child_space(
         ROOT_UT,
         b_region,
         &v2,
@@ -191,7 +184,12 @@ fn direct(fs: &crickerfs::Fs, w: &Wiring) -> ! {
     ) else {
         bail(21)
     };
-    send(REPORT, swap::RPT_STEP, swap::step::BUILT, swap::V2);
+    send(
+        REPORT,
+        swap_proto::RPT_STEP,
+        swap_proto::step::BUILT,
+        swap_proto::V2,
+    );
 
     // ------------------------------------------------------------------------------------------
     // The client that will talk across the swap, and the wait for its conversation to be well under
@@ -208,21 +206,26 @@ fn direct(fs: &crickerfs::Fs, w: &Wiring) -> ! {
             blobs: &[],
             fault: Some(w.faultep),
         },
-        [swap::ROLE_CLIENT, 0, 0],
+        [swap_proto::ROLE_CLIENT, 0, 0],
         14,
     );
-    expect_note(w.note, swap::NOTE_SWAP_NOW, 17);
+    expect_note(w.note, swap_proto::NOTE_SWAP_NOW, 17);
 
     // ------------------------------------------------------------------------------------------
     // Step 2: drain. The quiesce request travels on the endpoint being drained, so FIFO ordering
     // does the waiting for us.
     // ------------------------------------------------------------------------------------------
 
-    let (verdict, served) = user_rt::call(w.svc, swap::OP_QUIESCE, 0);
-    if verdict != swap::QUIESCED {
+    let (verdict, served) = user_rt::call(w.svc, swap_proto::OP_QUIESCE, 0);
+    if verdict != swap_proto::QUIESCED {
         bail(22)
     }
-    send(REPORT, swap::RPT_STEP, swap::step::DRAINED, served);
+    send(
+        REPORT,
+        swap_proto::RPT_STEP,
+        swap_proto::step::DRAINED,
+        served,
+    );
 
     // ------------------------------------------------------------------------------------------
     // Step 3: take the registers back. Every other holder loses the capability and the mapping; we
@@ -233,7 +236,7 @@ fn direct(fs: &crickerfs::Fs, w: &Wiring) -> ! {
     if unsafe { invoke(DEVICE, abi::frame::REVOKE, 0, 0, 0) } != 0 {
         bail(23)
     }
-    send(REPORT, swap::RPT_STEP, swap::step::REVOKED, 0);
+    send(REPORT, swap_proto::RPT_STEP, swap_proto::step::REVOKED, 0);
 
     // ------------------------------------------------------------------------------------------
     // Step 4: endow the replacement with the registers and start it. It drains whatever parked on
@@ -245,7 +248,7 @@ fn direct(fs: &crickerfs::Fs, w: &Wiring) -> ! {
         invoke(
             b_aspace,
             abi::aspace::MAP_INTO,
-            swap::DEV_VA,
+            swap_proto::DEV_VA,
             DEVICE,
             abi::aspace::MAP_RO,
         )
@@ -253,15 +256,20 @@ fn direct(fs: &crickerfs::Fs, w: &Wiring) -> ! {
     {
         bail(24)
     }
-    if suptree::configure_child(b_tcb, b_aspace, v2.entry()).is_err() {
+    if supervision_proto::configure_child(b_tcb, b_aspace, v2.entry()).is_err() {
         bail(25)
     }
-    if !suptree::tcb_start(b_tcb, 1, 0, 0) {
+    if !supervision_proto::tcb_start(b_tcb, 1, 0, 0) {
         bail(26)
     }
     cap_delete(b_tcb);
     cap_delete(b_region);
-    send(REPORT, swap::RPT_STEP, swap::step::STARTED, swap::V2);
+    send(
+        REPORT,
+        swap_proto::RPT_STEP,
+        swap_proto::step::STARTED,
+        swap_proto::V2,
+    );
 
     // ------------------------------------------------------------------------------------------
     // Step 5: the receipt for the revoke, and the teardown.
@@ -270,14 +278,14 @@ fn direct(fs: &crickerfs::Fs, w: &Wiring) -> ! {
     // it to read one register. If step 3 was real it faults, and the kernel tells us where.
     // ------------------------------------------------------------------------------------------
 
-    send(w.poke, swap::POKE_PROBE, 0, 0);
+    send(w.poke, swap_proto::POKE_PROBE, 0, 0);
     let mut corpses = 0u64;
-    let revoke_enforced = wait_for_fault(w.faultep, &mut corpses, swap::DEV_VA);
+    let revoke_enforced = wait_for_fault(w.faultep, &mut corpses, swap_proto::DEV_VA);
 
     // The conversation is still running: the client is somewhere in its sixties, being served by the
     // replacement. Wait for it to finish before reading the witness page, or the requests it has not
     // made yet would read as requests nobody served.
-    expect_note(w.note, swap::NOTE_CLIENT_DONE, 28);
+    expect_note(w.note, swap_proto::NOTE_CLIENT_DONE, 28);
     reap_to(w.faultep, &mut corpses, 2); // the incumbent and the client
 
     // ------------------------------------------------------------------------------------------
@@ -293,10 +301,10 @@ fn direct(fs: &crickerfs::Fs, w: &Wiring) -> ! {
             blobs: &[],
             fault: Some(w.faultep),
         },
-        [swap::ROLE_USURPER, 0, 0],
+        [swap_proto::ROLE_USURPER, 0, 0],
         30,
     );
-    expect_note(w.note, swap::NOTE_ATTACK_DONE, 33);
+    expect_note(w.note, swap_proto::NOTE_ATTACK_DONE, 33);
     reap_to(w.faultep, &mut corpses, 3); // and the attacker
 
     // Retire the replacement and collect it too, so the run ends with every region back in this
@@ -309,7 +317,7 @@ fn direct(fs: &crickerfs::Fs, w: &Wiring) -> ! {
     // space and reaches the test on its own.
     send(
         REPORT,
-        swap::RPT_LOG,
+        swap_proto::RPT_LOG,
         verdict_from_log(0, revoke_enforced),
         changed_at(0),
     );
@@ -348,8 +356,8 @@ fn queued(fs: &crickerfs::Fs, w: &Wiring) -> ! {
         (REPORT, abi::rights::WRITE),
         (w.note, abi::rights::WRITE),
     ];
-    let logmap = [(swap::LOG_VA, w.logframe, abi::aspace::MAP_RW)];
-    let base = swap::BROKER_LOG_BASE;
+    let logmap = [(swap_proto::LOG_VA, w.logframe, abi::aspace::MAP_RW)];
+    let base = swap_proto::BROKER_LOG_BASE;
 
     // No device on this channel: the backend behind a broker is a plain service, and mixing the
     // device story into the queue story would make it unclear which mechanism carried which claim.
@@ -383,26 +391,31 @@ fn queued(fs: &crickerfs::Fs, w: &Wiring) -> ! {
             blobs: &[],
             fault: Some(w.faultep),
         },
-        [swap::ROLE_PRODUCER, 0, 0],
+        [swap_proto::ROLE_PRODUCER, 0, 0],
         44,
     );
 
-    expect_note(w.note, swap::NOTE_SWAP_NOW, 45);
+    expect_note(w.note, swap_proto::NOTE_SWAP_NOW, 45);
 
     // Tell the broker to take custody. From here until BOP_UP there is no backend at all on this
     // channel, and the producer keeps running: that window is the whole reason this rung exists.
-    let (r, _) = user_rt::call(front, swap::BOP_DOWN, 0);
+    let (r, _) = user_rt::call(front, swap_proto::BOP_DOWN, 0);
     if r != 0 {
         bail(46)
     }
 
     // Quiesce the backend and let it die, exactly as on the direct channel, minus the device.
-    let (verdict, served) = user_rt::call(w.svc, swap::OP_QUIESCE, 0);
-    if verdict != swap::QUIESCED {
+    let (verdict, served) = user_rt::call(w.svc, swap_proto::OP_QUIESCE, 0);
+    if verdict != swap_proto::QUIESCED {
         bail(47)
     }
-    send(REPORT, swap::RPT_STEP, swap::step::DRAINED, served);
-    send(w.poke, swap::POKE_QUIT, 0, 0);
+    send(
+        REPORT,
+        swap_proto::RPT_STEP,
+        swap_proto::step::DRAINED,
+        served,
+    );
+    send(w.poke, swap_proto::POKE_QUIT, 0, 0);
     let mut corpses = 0u64;
     reap_to(w.faultep, &mut corpses, 1);
 
@@ -418,28 +431,33 @@ fn queued(fs: &crickerfs::Fs, w: &Wiring) -> ! {
         [0, base, 0],
         48,
     );
-    send(REPORT, swap::RPT_STEP, swap::step::STARTED, swap::V2);
+    send(
+        REPORT,
+        swap_proto::RPT_STEP,
+        swap_proto::step::STARTED,
+        swap_proto::V2,
+    );
 
     // Release the backlog. The broker drains in arrival order before it answers, so this call
     // returning means every buffered item has reached the new backend.
-    let (r, _drained) = user_rt::call(front, swap::BOP_UP, 0);
+    let (r, _drained) = user_rt::call(front, swap_proto::BOP_UP, 0);
     if r != 0 {
         bail(49)
     }
 
-    expect_note(w.note, swap::NOTE_CLIENT_DONE, 50);
+    expect_note(w.note, swap_proto::NOTE_CLIENT_DONE, 50);
     reap_to(w.faultep, &mut corpses, 2); // and the producer
 
     // Shut the channel down so the run leaves nothing running and nothing spent: the broker exits,
     // then the backend quiesces and exits, and both corpses are collected.
-    let _ = user_rt::call(front, swap::OP_QUIESCE, 0);
-    expect_note(w.note, swap::NOTE_BROKER_DONE, 51);
+    let _ = user_rt::call(front, swap_proto::OP_QUIESCE, 0);
+    expect_note(w.note, swap_proto::NOTE_BROKER_DONE, 51);
     reap_to(w.faultep, &mut corpses, 3); // and the broker
     retire(w, &mut corpses, 4, 52); // and the replacement backend
 
     send(
         REPORT,
-        swap::RPT_LOG,
+        swap_proto::RPT_LOG,
         verdict_from_log(base, false),
         changed_at(base),
     );
@@ -454,13 +472,13 @@ fn queued(fs: &crickerfs::Fs, w: &Wiring) -> ! {
 /// itself: a TCB capability is not the thread (dropping it leaves the thread running), and since
 /// DECISIONS §32 the region capability is not the reap either.
 fn start_child(elf: &elf::Elf, endow: &Endow, args: [u64; 3], stage: u64) {
-    let Ok(region) = suptree::untyped_split(ROOT_UT, INSTANCE_PAGES) else {
+    let Ok(region) = supervision_proto::untyped_split(ROOT_UT, INSTANCE_PAGES) else {
         bail(stage)
     };
-    let Ok(tcb) = suptree::build_child(ROOT_UT, region, elf, endow) else {
+    let Ok(tcb) = supervision_proto::build_child(ROOT_UT, region, elf, endow) else {
         bail(stage + 1)
     };
-    if !suptree::tcb_start(tcb, args[0], args[1], args[2]) {
+    if !supervision_proto::tcb_start(tcb, args[0], args[1], args[2]) {
         bail(stage + 2)
     }
     cap_delete(tcb);
@@ -475,7 +493,7 @@ fn start_child(elf: &elf::Elf, endow: &Endow, args: [u64; 3], stage: u64) {
 /// below; the rest are here so the test can assert that a swap system reclaims itself.
 fn collect_corpse(faultep: u64, collected: &mut u64) -> (u64, u64) {
     let (event, tid, _pc, addr, _) = recv_fault(faultep);
-    send(REPORT, swap::RPT_DEATH, tid, event);
+    send(REPORT, swap_proto::RPT_DEATH, tid, event);
     // We hold no capability to that region: we deleted it the moment the child was started, and the
     // authority for this is the supervision relationship, not the memory.
     if user_rt::reap(faultep, tid) != 0 {
@@ -511,9 +529,9 @@ fn wait_for_fault(faultep: u64, collected: &mut u64, expect_addr: u64) -> bool {
     loop {
         let (event, addr) = collect_corpse(faultep, collected);
         if event == abi::fault::EVENT_FAULT {
-            send(REPORT, swap::RPT_SITE, addr, expect_addr);
-            send(REPORT, swap::RPT_STEP, swap::step::REAPED, 0);
-            return addr & !(swap::PAGE - 1) == expect_addr;
+            send(REPORT, swap_proto::RPT_SITE, addr, expect_addr);
+            send(REPORT, swap_proto::RPT_STEP, swap_proto::step::REAPED, 0);
+            return addr & !(swap_proto::PAGE - 1) == expect_addr;
         }
     }
 }
@@ -521,11 +539,11 @@ fn wait_for_fault(faultep: u64, collected: &mut u64, expect_addr: u64) -> bool {
 /// Retire the last live instance on a channel: quiesce it, tell it to go, collect its corpse. The
 /// swap's own machinery, run once more with nothing to replace.
 fn retire(w: &Wiring, collected: &mut u64, target: u64, stage: u64) {
-    let (verdict, _) = user_rt::call(w.svc, swap::OP_QUIESCE, 0);
-    if verdict != swap::QUIESCED {
+    let (verdict, _) = user_rt::call(w.svc, swap_proto::OP_QUIESCE, 0);
+    if verdict != swap_proto::QUIESCED {
         bail(stage)
     }
-    send(w.poke, swap::POKE_QUIT, 0, 0);
+    send(w.poke, swap_proto::POKE_QUIT, 0, 0);
     reap_to(w.faultep, collected, target);
 }
 
@@ -544,14 +562,14 @@ fn image<'a>(fs: &crickerfs::Fs<'a>, name: &str, stage: u64) -> elf::Elf<'a> {
 }
 
 fn obj(objtype: u64, stage: u64) -> u64 {
-    match suptree::retype_obj_from(ROOT_UT, objtype) {
+    match supervision_proto::retype_obj_from(ROOT_UT, objtype) {
         Ok(s) => s,
         Err(()) => bail(stage),
     }
 }
 
 fn frame(stage: u64) -> u64 {
-    match suptree::retype_frame_from(ROOT_UT) {
+    match supervision_proto::retype_frame_from(ROOT_UT) {
         Ok(s) => s,
         Err(()) => bail(stage),
     }
@@ -563,18 +581,18 @@ fn verdict_from_log(base: u64, revoke_enforced: bool) -> u64 {
     let mut seen_v1 = false;
     let mut seen_v2 = false;
     let mut last = 0u64;
-    for seq in 0..swap::REQUESTS {
-        let v = swap::log_get(base + seq);
+    for seq in 0..swap_proto::REQUESTS {
+        let v = swap_proto::log_get(base + seq);
         if v == 0 {
             bits &= !lc::NO_GAP; // a request nobody served: lost in the down window
         }
         if v < last {
             bits &= !lc::MONOTONE; // the old instance answered after the new one: two owners
         }
-        if v == swap::V1 {
+        if v == swap_proto::V1 {
             seen_v1 = true;
         }
-        if v == swap::V2 {
+        if v == swap_proto::V2 {
             seen_v2 = true;
         }
         last = v;
@@ -592,8 +610,8 @@ fn verdict_from_log(base: u64, revoke_enforced: bool) -> u64 {
 /// conversation rather than at one of its ends.
 fn changed_at(base: u64) -> u64 {
     let mut last = 0u64;
-    for seq in 0..swap::REQUESTS {
-        let v = swap::log_get(base + seq);
+    for seq in 0..swap_proto::REQUESTS {
+        let v = swap_proto::log_get(base + seq);
         if last != 0 && v != last {
             return seq;
         }
@@ -605,11 +623,11 @@ fn changed_at(base: u64) -> u64 {
 /// Report which stage failed, then trap. A half-built system is not worth limping along, and the
 /// stage code turns "nothing happened" into a legible failure.
 fn bail(stage: u64) -> ! {
-    send(REPORT, swap::RPT_FAILED, stage, 0);
-    swap::fail()
+    send(REPORT, swap_proto::RPT_FAILED, stage, 0);
+    swap_proto::fail()
 }
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
-    swap::fail()
+    swap_proto::fail()
 }

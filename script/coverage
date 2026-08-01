@@ -23,7 +23,17 @@ fi
 # `user_rt` is excluded like kernel/user: it is aarch64-only inline asm (the EL0 syscall runtime), so
 # it does not build for the host at all, let alone run under host instrumentation. There is no host
 # logic to measure in it.
-cargo llvm-cov --workspace --exclude kernel --exclude user --exclude xtask --exclude user_rt --no-report
+# `supervision_proto` and `swap_proto` join that exclusion for the same reason, and only that
+# reason: both are thin wrappers over `user_rt`'s syscalls (build a child, quiesce a component),
+# so every line needs a kernel underneath and none can execute on the host. They were invisible
+# to this gate until 2026-08-01, when rule 7 made them crates; the exclusion is deliberate and
+# narrow, not a way to keep the number green.
+#
+# `c_seam` is NOT excluded, because it is pure: constants, offsets, and small functions. It now
+# carries the test the seam never had, asserting that `user/c/cseam.c` states the same values
+# this crate does. That test is the reason rule 7 is worth its churn.
+cargo llvm-cov --workspace --exclude kernel --exclude user --exclude xtask --exclude user_rt \
+    --exclude supervision_proto --exclude swap_proto --no-report
 cargo llvm-cov report --summary-only
 mkdir -p target/llvm-cov # the lcov --output-path parent must exist; --html creates its own
 cargo llvm-cov report --lcov --output-path target/llvm-cov/lcov.info
@@ -52,6 +62,18 @@ awk -F: -v floor="$floor" '
         # hits it a confused half hour because the path looks real). CI starts clean and never
         # sees it; a working tree does. system() returns the exit status, so 0 means present.
         if (system("test -f " file) != 0) { next }
+        # Crates that cannot execute a line on the host. `cargo llvm-cov report` has no --exclude,
+        # so the flags on the run above keep them out of the RUN but not out of this report; the
+        # exemption has to be stated here to have any effect.
+        #
+        # Both are thin wrappers over the user_rt syscalls (build a child, quiesce a component), so
+        # every line needs a kernel underneath. They became visible to this gate on 2026-08-01 when
+        # rule 7 turned them into crates, having been #[path] modules nothing could measure.
+        #
+        # **c_seam is deliberately NOT here.** It is pure, and it now carries the test asserting
+        # that user/c/cseam.c states the same constants it does. Keep this list to things that
+        # physically cannot run, never to things that are merely untested.
+        if (index(file, "/supervision_proto/src/") || index(file, "/swap_proto/src/")) { next }
         if (found > 0 && $2 * 100 < found * floor) {
             printf "coverage: %s: %.1f%% line coverage is under the %d%% floor\n",
                 file, $2 * 100 / found, floor

@@ -72,6 +72,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
+name = "c_seam"
+version = "0.1.0"
+
+[[package]]
 name = "calendar"
 version = "0.1.0"
 
@@ -412,6 +416,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
+name = "supervision_proto"
+version = "0.1.0"
+dependencies = [
+ "abi",
+ "elf",
+ "user_rt",
+]
+
+[[package]]
+name = "swap_proto"
+version = "0.1.0"
+dependencies = [
+ "abi",
+ "user_rt",
+]
+
+[[package]]
 name = "syn"
 version = "2.0.119"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -481,6 +502,7 @@ version = "0.1.0"
 dependencies = [
  "abi",
  "bitfont",
+ "c_seam",
  "calendar",
  "capsh",
  "clock_proto",
@@ -498,6 +520,8 @@ dependencies = [
  "ntp_proto",
  "sink_proto",
  "smoltcp",
+ "supervision_proto",
+ "swap_proto",
  "user_rt",
  "vt",
 ]

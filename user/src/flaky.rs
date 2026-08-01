@@ -13,11 +13,8 @@
 
 // Each binary in the tree compiles the shared module but uses a different slice of it (the sub-server
 // builds nothing, the supervisor holds no memory), so the unused halves are expected, not dead.
-#[path = "suptree.rs"]
-#[allow(dead_code)]
-mod suptree;
 
-use suptree::REPORT_SERVER_RAN;
+use supervision_proto::REPORT_SERVER_RAN;
 use user_rt::send;
 
 /// Our one capability.
@@ -44,5 +41,5 @@ pub extern "C" fn _start(_a0: u64, attempt: u64, _a2: u64) -> ! {
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
-    suptree::fail()
+    supervision_proto::fail()
 }

@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), no_std)]
 //! **The C seam's shared half** (milestone 36, DECISIONS §31).
 //!
 //! Two Rust programs sit either side of the foreign component: `cshim` is the shell that links the C
@@ -105,6 +106,15 @@ pub const ATTEMPT_HONEST: u64 = 2;
 /// How many attempts a full run makes.
 pub const ATTEMPTS: u64 = 3;
 
+/// **The attempt selectors are dense and start at zero, because the C indexes an array with them.**
+/// Asserted at compile time rather than in a test: every operand is a `const`, so a runtime check
+/// would only re-verify what the compiler already knows, and a build failure names the problem at
+/// the edit instead of at the next test run. Same idiom as `fs_proto`'s verdict/byte-count
+/// assertion (notes/rm.md).
+const _: () = assert!(ATTEMPT_OVERRUN == 0);
+const _: () = assert!(ATTEMPT_WILD < ATTEMPTS && ATTEMPT_HONEST < ATTEMPTS);
+const _: () = assert!(ATTEMPTS == 3);
+
 // ===========================================================================================
 // The report protocol. `cwarden` and `cshim` hold a WRITE view of one report endpoint; the kernel
 // test is the receiver. Same shape as suptree.rs's, and mirrored in kernel/src/user.rs.
@@ -142,4 +152,150 @@ pub mod checks {
     /// The honest attempt's output is in the grant and correct: the checksum the C returned matches
     /// an independent Rust computation, and the transformed string is byte-for-byte right.
     pub const OUTPUT_CORRECT: u64 = 1 << 4;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The C source, read at compile time from the other side of the seam.
+    ///
+    /// **This is the test the seam never had.** `user/c/cseam.c` and this crate state the same
+    /// constants twice, by hand, because a C compiler cannot see Rust and the shared page has to
+    /// mean the same thing to both. Nothing checked that until now: as a `#[path]` module inside a
+    /// `no_std` binary this file was unreachable by host tests, so a drift here surfaced as the C
+    /// component writing to the wrong offset, arbitrarily far from the edit that caused it.
+    ///
+    /// `include_str!` is what makes it cheap: the C is a build input to the test, so the two cannot
+    /// be edited apart without this failing.
+    const C_SOURCE: &str = include_str!("../../../user/c/cseam.c");
+
+    /// Pull `#define NAME <digits>` out of the C, in decimal or hex.
+    fn c_define(name: &str) -> u64 {
+        let needle = alloc_line(name);
+        let line = C_SOURCE
+            .lines()
+            .find(|l| l.trim_start().starts_with(&needle))
+            .unwrap_or_else(|| panic!("{name} is not defined in user/c/cseam.c"));
+        let rest = line[line.find(&needle).unwrap() + needle.len()..].trim();
+        let tok: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == 'x' || *c == 'X')
+            .collect();
+        let tok = tok.trim_end_matches(['u', 'U']);
+        if let Some(hex) = tok.strip_prefix("0x").or_else(|| tok.strip_prefix("0X")) {
+            u64::from_str_radix(hex, 16).expect("hex literal")
+        } else {
+            tok.parse().expect("decimal literal")
+        }
+    }
+
+    fn alloc_line(name: &str) -> String {
+        format!("#define {name} ")
+    }
+
+    /// **Both sides of the seam agree, constant for constant.**
+    #[test]
+    fn the_c_side_states_the_same_offsets() {
+        assert_eq!(c_define("CSEAM_IN_OFF"), IN_OFF as u64, "CSEAM_IN_OFF");
+        assert_eq!(c_define("CSEAM_OUT_OFF"), OUT_OFF as u64, "CSEAM_OUT_OFF");
+        assert_eq!(c_define("CSEAM_MARK"), MARK as u64, "CSEAM_MARK");
+    }
+
+    /// The wild-store skip has to land outside the two mapped pages, which is the whole of what
+    /// `WITNESS_FAR_VA` proves. A C-side edit that shrank it to 4095 would put the store back
+    /// inside `WITNESS_RO`, and the test that "a wild store changed nothing" would then be
+    /// measuring the wrong page while still passing.
+    #[test]
+    fn the_wild_store_skips_a_whole_page() {
+        assert_eq!(c_define("CSEAM_WILD_SKIP"), PAGE, "CSEAM_WILD_SKIP");
+        assert_eq!(WITNESS_FAR_VA - WITNESS_RO_VA, PAGE);
+    }
+
+    /// The two halves of the shared page do not overlap: `OUT_OFF` starts after `IN_OFF` plus
+    /// everything the input can occupy, and both fit in one frame.
+    #[test]
+    fn the_in_and_out_halves_do_not_overlap() {
+        assert!(
+            IN_OFF + INPUT.len() <= OUT_OFF,
+            "input runs into the output half"
+        );
+        assert!(OUT_OFF < PAGE as usize, "output half starts past the page");
+    }
+
+    /// **The two witness patterns are different sequences, but they are not different everywhere,
+    /// and the exact number matters.**
+    ///
+    /// `pattern_ro(i) = 31i + 7` and `pattern_far(i) = 17i + 3`, both mod 256. Setting them equal
+    /// gives `14i = -4 (mod 256)`, which reduces to `i = 18 (mod 128)`: they agree at exactly 32 of
+    /// a page's 4096 offsets, and nowhere else.
+    ///
+    /// This test exists because an earlier version of it asserted they never collide, which is
+    /// false, and the arithmetic corrected the assertion. Pinning the real number is worth more
+    /// than the wrong absolute: it says a page filled with the *other* pattern differs in 4064
+    /// places, so a checker comparing whole pages cannot miss a swap, while recording that a
+    /// single-byte comparison at a chosen offset could.
+    #[test]
+    fn the_witness_patterns_collide_exactly_32_times_in_a_page() {
+        let collisions = (0..PAGE as usize)
+            .filter(|&i| pattern_ro(i) == pattern_far(i))
+            .count();
+        assert_eq!(collisions, 32, "the pattern arithmetic changed");
+        assert!(
+            (0..PAGE as usize)
+                .filter(|&i| pattern_ro(i) == pattern_far(i))
+                .all(|i| i % 128 == 18),
+            "collisions are not where the arithmetic says they are",
+        );
+    }
+
+    /// Both patterns must actually vary. A constant one would be satisfied by any uniform scribble.
+    #[test]
+    fn the_witness_patterns_are_not_constant() {
+        let ro_first = pattern_ro(0);
+        let far_first = pattern_far(0);
+        assert!((1..256).any(|i| pattern_ro(i) != ro_first));
+        assert!((1..256).any(|i| pattern_far(i) != far_first));
+    }
+
+    /// The checksum folds case, which is what the C component is asked to demonstrate: it upcases
+    /// its input in place and the Rust side predicts the answer without running it.
+    #[test]
+    fn the_checksum_is_case_insensitive() {
+        assert_eq!(expected_checksum(b"cricker"), expected_checksum(b"CRICKER"));
+        assert_eq!(expected_checksum(b"CrIcKeR"), expected_checksum(b"cricker"));
+    }
+
+    /// ...and still distinguishes different bytes, or case-folding would have been achieved by
+    /// ignoring the input.
+    #[test]
+    fn the_checksum_separates_different_inputs() {
+        assert_ne!(expected_checksum(b"cricker"), expected_checksum(b"crickes"));
+        assert_ne!(expected_checksum(b""), expected_checksum(b"a"));
+    }
+
+    /// The real input the C is handed is NUL-terminated, because C reads it with string functions.
+    #[test]
+    fn the_input_is_nul_terminated() {
+        assert_eq!(
+            INPUT.last(),
+            Some(&0),
+            "the C side reads INPUT as a C string"
+        );
+        assert!(
+            INPUT.len() < OUT_OFF,
+            "input does not reach the output half"
+        );
+    }
+
+    /// Report codes are distinct. Two sharing a value would make a verdict unreadable.
+    #[test]
+    fn report_codes_are_distinct() {
+        let codes = [RPT_RAN, RPT_DEATH, RPT_SITE, RPT_VERDICT, RPT_FAILED];
+        for (i, a) in codes.iter().enumerate() {
+            for b in &codes[i + 1..] {
+                assert_ne!(a, b, "two report codes share a value");
+            }
+        }
+    }
 }

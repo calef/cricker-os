@@ -21,9 +21,6 @@
 
 // A source file shared by several binaries through `#[path]`, and each uses a different slice of it,
 // so the unused halves are expected (§38).
-#[path = "swap.rs"]
-#[allow(dead_code)]
-mod swap;
 
 // The foreign component. One function, one ABI: an integer in, an integer out. No structs, no
 // callbacks, no pointers, nothing that needs a header file to agree on.
@@ -43,10 +40,10 @@ fn digest_in_c(seq: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(device: u64, log_base: u64, _a2: u64) -> ! {
-    swap::serve(swap::V2, digest_in_c, log_base, device != 0)
+    swap_proto::serve(swap_proto::V2, digest_in_c, log_base, device != 0)
 }
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
-    swap::fail()
+    swap_proto::fail()
 }
