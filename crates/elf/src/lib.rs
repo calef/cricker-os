@@ -45,6 +45,13 @@ const EXPECTED_MACHINE: u16 = EM_RISCV;
 #[cfg(not(target_arch = "riscv64"))]
 const EXPECTED_MACHINE: u16 = EM_AARCH64;
 
+/// [`EXPECTED_MACHINE`], exported. A test that forges an ELF header has to write *some* machine
+/// number, and writing the native one is what lets the forgery get past the machine check and reach
+/// the property actually under test (a bad load address, a writable-executable segment). Naming it
+/// here rather than repeating 183/243 behind a `cfg` at each such test keeps one definition of
+/// "which machine is this build".
+pub const NATIVE_MACHINE: u16 = EXPECTED_MACHINE;
+
 /// `p_type`: a segment the loader must actually put in memory. The only one we care about.
 const PT_LOAD: u32 = 1;
 
