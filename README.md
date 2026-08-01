@@ -57,20 +57,6 @@ missing `Acquire`/`Release` passes on an x86_64 host and fails only on real ARM.
 toolchain and QEMU are pinned to exact versions, so "the tests passed" means the same thing on a
 laptop and on a runner.
 
-**Toolchain drift is checked daily and deliberately has no badge.** The
-[toolchain drift](.github/workflows/toolchain-drift.yml) workflow builds against the *newest* nightly
-rather than the pin, so that upstream drifting away from us is discovered early instead of presenting
-the whole bill on the day someone raises the date. It is expected to go red: that is the signal
-working, not a defect in whatever commit happened to trigger the run, and the fix is a bump commit at
-a time of our choosing. A badge for it would be worse than useless: **a badge that is designed to go
-red periodically teaches readers to discount badges**, which is the only thing a badge must not do.
-Its result lives in the Actions tab, where a notice belongs.
-
-The CI badge is held to the same standard, which took a fix to make true. Runs on `main` are never
-superseded by a later push, because a **cancelled** run also renders as a badge that is not green,
-and that is the failure worth avoiding hardest: it looks cosmetic and it is actually the signal going
-missing. See the concurrency comment in [ci.yml](.github/workflows/ci.yml).
-
 ## What it does
 
 This section is deliberately **not** status. Status lives in one place, with a gated status column and
