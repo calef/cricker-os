@@ -1844,7 +1844,15 @@ fn redoxfs_glob_grant_took_exactly_the_match() -> bool {
     }
     let inner = format!("{}/{}", tree::GLOBSET, tree::GLOB_DIR);
     match redoxfs_ls(&img, &inner) {
-        Some(names) if names.iter().any(|n| n == tree::GLOB_INNER) => true,
+        Some(names) if names.iter().any(|n| n == tree::GLOB_INNER) => {
+            eprintln!(
+                "glob grant: `{}` matched two names in `{}` and exactly those two are gone; \
+                 {globset:?} is what the pattern did not designate",
+                core::str::from_utf8(tree::GLOB_PATTERN).unwrap_or("?"),
+                tree::GLOBSET,
+            );
+            true
+        }
         other => {
             eprintln!(
                 "MILESTONE-47 GLOB FAILED: `{inner}` holds {other:?} and should still hold `{}`. \

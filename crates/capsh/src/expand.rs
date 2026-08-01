@@ -47,14 +47,19 @@ pub const MAX_NAME: usize = crate::MAX_FILE_NAME;
 /// Unix refuses "argument list too long" because a fixed-size buffer ran out, which is why `xargs`
 /// exists. Here the ceiling is that **you cannot hand a child a capability it can neither hold nor
 /// show**: the set travels in a frame the warden keeps whole in a local (it has no allocator), and
-/// the shell carries it through planning on the stack it has. Sixteen names of sixteen bytes is 256
-/// bytes at each end, and it matches `fs_proto::nameset::MAX_NAMES`, pinned by a host test.
+/// the shell carries it through planning on the stack it has.
+///
+/// **Eight, measured rather than chosen.** Sixteen was the first answer and the machine refused it:
+/// a set travels by value through the expander, the [`Expansion`], `designate`'s return and the
+/// [`crate::Endowment`], four frames a debug build does not collapse, and the shell ran off the
+/// bottom of its stack planning one grant. Eight names of sixteen bytes is 152 bytes a copy. It
+/// matches `fs_proto::nameset::MAX_NAMES`, pinned by a host test.
 ///
 /// The number matters less than the failure's shape: exceeding it is [`Refusal::TooManyNames`], a
 /// refusal **at the prompt with nothing spawned**, never a truncation. A glob that quietly granted a
 /// prefix of what it matched would be the worst thing this lane could produce, because the printed
 /// preview and the actual transfer would disagree and only the printed one is checkable.
-pub const MAX_NAMES: usize = 16;
+pub const MAX_NAMES: usize = 8;
 
 /// One name, owned. See the module note: a name a pattern produced is not a slice of the line.
 #[derive(Clone, Copy, PartialEq, Eq)]
