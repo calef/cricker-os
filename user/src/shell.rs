@@ -43,8 +43,11 @@
 #![no_main]
 
 use capsh::expand::{Expander, Expansion, NameSet};
+use capsh::line::{self, Line, Source};
 use capsh::nav::{self, Cwd, Refused, Step};
-use capsh::{Action, Command, Endowment, Escalation, Prog, Refusal, RunSpec, jobframe, spawnproto};
+use capsh::{
+    Action, Command, Endowment, Escalation, Prog, Refusal, RunSpec, Streams, jobframe, spawnproto,
+};
 use fs_proto::{dir, dirent, fs};
 use lineedit::proto;
 use user_rt::{call, cap_delete, exit, invoke, recv, send, yield_now};
@@ -633,20 +636,65 @@ const ROLE_NAVIGATE: u64 = 1;
 /// pointed at the fixture's `globset`, running `echo` and the grant planner over one pattern and
 /// reporting whether they agree. See [`globbing`].
 const ROLE_GLOB: u64 = 2;
+/// **The pipeline witness** (milestone 50): the interactive wiring minus the keyboard. It holds a
+/// terminal it writes to, a spawn channel, a result channel and a budget, and it types a fixed
+/// script of command lines through the same [`dispatch`] the prompt uses. See [`piping`].
+const ROLE_PIPELINE: u64 = 3;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(role: u64, arg: u64, _x2: u64) -> ! {
     match role {
         ROLE_NAVIGATE => navigate(arg),
         ROLE_GLOB => globbing(arg),
+        ROLE_PIPELINE => piping(),
         _ => interactive(),
     }
 }
 
+/// **A shell driven by a script instead of a keyboard, running real pipelines** (milestone 50).
+///
+/// Every line below goes through [`dispatch`], which is the function the prompt calls, so what is
+/// under test is the shell rather than a reimplementation of it. Everything it prints goes out over
+/// the terminal contract to whoever holds the other end, which in the guest test is the kernel; the
+/// transcript it produces is the assertion.
+///
+/// The lines are chosen so that the answers are checkable against each other rather than against
+/// magic numbers. `date` and `date | wc` are the same binary sent to two destinations, and the
+/// second one's byte count has to be the first one's length or the indifference claim is false.
+fn piping() -> ! {
+    let mut nav = Nav::empty();
+    for line in [
+        // The shell as the producer: a builtin's bytes into a pipe, counted by a real process.
+        &b"echo hello world | wc"[..],
+        // Three stages, so a middle stage is a real middle: `wc`'s own output is a byte stream, so
+        // it composes, which is what `OutputSpec::Bytes` on `wc` is for.
+        b"echo hello world | wc | wc",
+        // The same unmodified `date`, twice, to two different destinations.
+        b"date",
+        b"date | wc",
+        // And the refusals, at the prompt, with nothing spawned.
+        b"wc",
+        b"worker 9 | wc",
+        b"date | date",
+        b"date > report.txt",
+    ] {
+        print(b"$ ");
+        print(line);
+        print(b"\n");
+        dispatch(&mut nav, line);
+    }
+    print(PIPELINE_DONE);
+    exit();
+}
+
+/// The last thing [`piping`] prints, so a reader knows the transcript is complete rather than
+/// having to guess from a quiet endpoint. Must match `kernel::user::pipeline_tests`.
+const PIPELINE_DONE: &[u8] = b"== pipelines done\n";
+
 fn interactive() -> ! {
     print(b"\ncricker-os capability shell. naming a resource in a command IS granting it.\n");
-    print(b"commands: help, echo <text>, caps [command], cd, pwd, ls, mkdir, rm,\n");
-    print(b"          <prog> [--mem N] [arg]\n");
+    print(b"commands: help, echo <text>, caps [command], cd, pwd, ls, mkdir, rm, wc,\n");
+    print(b"          <prog> [--mem N] [arg]   and the operators  >  <  |\n");
 
     // This wiring grants no directory, so the navigation builtins have nothing to name and say so.
     // The day the interactive boot wires an FS service, this line is the one that changes.
@@ -688,9 +736,29 @@ fn builtin(nav: &mut Nav, cmd: &[u8], each: &mut dyn FnMut(&[u8], bool)) -> Opti
     }
 }
 
+/// **Read one line and act on it**, which since milestone 50 means asking first whether it has any
+/// operators on it.
+///
+/// A line with no `>`, `<` or `|` takes exactly the path it took before those existed, which is
+/// deliberate: the operators must not make an ordinary command more expensive or more complicated,
+/// because an ordinary command is nearly every command.
+fn dispatch(nav: &mut Nav, cmd: &[u8]) {
+    // **`caps` is asked before the line is split**, because its operand *is* a command line and it
+    // has to see the operators to preview what they do. `caps date | wc` must print two stages;
+    // splitting first would hand it the word `date` and lose the rest.
+    if let Command::Caps(tail) = capsh::parse(cmd) {
+        return caps(nav, tail);
+    }
+    match line::split(cmd) {
+        Ok(l) if l.is_plain() => dispatch_one(nav, l.stages()[0]),
+        Ok(l) => pipeline(nav, l),
+        Err(r) => say(Say::Cannot(r)),
+    }
+}
+
 /// Parse one line with `capsh` and act on it. All parsing and the manifest check are the host-tested
 /// crate; this function is only IO and capability moves.
-fn dispatch(nav: &mut Nav, cmd: &[u8]) {
+fn dispatch_one(nav: &mut Nav, cmd: &[u8]) {
     if let Some(said) = builtin(nav, cmd, &mut |name, is_dir| {
         print(b"  ");
         print(name);
@@ -774,7 +842,18 @@ fn help() {
     print(b"  worker <n>              spawn a process that returns n*n\n");
     print(b"  budgeter --mem N        grant a process N pages from this shell's budget\n");
     print(b"  date                    print the wall-clock time\n");
+    print(b"  wc                      count lines, words and bytes on its INPUT\n");
     print(b"  <prog> <name>           grant a process one file, and only that file\n");
+    print(b"\n  operators (milestone 50). > and | are the same mechanism: a different\n");
+    print(b"  capability in a program's output slot, which it cannot look behind.\n");
+    print(b"  a | b                   a's output becomes b's input; the pipe is an endpoint\n");
+    print(
+        b"  a > name                a's output becomes a file it can append to and nothing else\n",
+    );
+    print(b"  a < name                a file's bytes become a's input\n");
+    print(
+        b"  echo hello | wc         a builtin can lead a pipeline: this shell writes the bytes\n",
+    );
     print(b"\n  naming a resource grants it; a program that names nothing can touch nothing.\n");
 }
 
@@ -861,77 +940,76 @@ fn spawn(e: Endowment) {
         None
     };
 
-    // The request: program id, argument, page count, not interruptible (capsh::spawnproto).
-    let (w0, w1, w2) = spawnproto::request(e.prog.id(), e.arg, e.mem_pages, false);
+    // The request: program id, argument, page count, and the operators' answer (capsh::spawnproto).
+    let (w0, w1, w2) = spawnproto::request(
+        e.prog.id(),
+        e.arg,
+        e.mem_pages,
+        spawnproto::Wiring {
+            interruptible: false,
+            sink: false,
+            source: false,
+        },
+    );
     send(SPAWN, w0, w1, w2);
 
     // If a budget rode along, delegate it now, narrowed to WRITE|GRANT so init can re-insert it into
     // the child (init narrows it again to WRITE there: the child spends it, it does not lend it).
     if let Some(slot) = mem_slot {
-        // SAFETY: `svc`/`ecall`; the kernel checks WRITE on the endpoint and GRANT on the untyped.
-        unsafe {
-            invoke(
-                SPAWN,
-                abi::endpoint::SEND_CAP,
-                slot,
-                abi::rights::WRITE | abi::rights::GRANT,
-                spawnproto::CAP_TAG,
-            )
-        };
+        delegate(slot, abi::rights::WRITE | abi::rights::GRANT);
         cap_delete(slot); // our copy is delegated; free the slot
     }
 
-    // One reader, one word: a real program's answer, or init's spawn-failed sentinel. `date` is the
-    // exception: it answers in **text**, framed the way every std program's stdout is, so its
-    // messages are drained by a reader that knows that framing.
-    if matches!(e.prog, Prog::Date) {
-        report_text();
+    // One reader, one word: a real program's answer, or init's spawn-failed sentinel. A program
+    // whose manifest says it writes **bytes** is the exception: its answer is a stream, so it is
+    // drained by a reader that knows the sink contract's framing.
+    if matches!(e.prog.manifest().output, capsh::OutputSpec::Bytes) {
+        drain_text();
         return;
     }
     let answer = recv(RESULT).0;
     outcome(e, answer);
 }
 
-/// Drain one framed line of text from the result endpoint and print it.
+/// **Drain a byte stream off the result endpoint and print it**, which is what the shell does when
+/// a program's output slot is the shell's own (`Sink::Report`, the default).
 ///
-/// The framing is the std PAL's stdout framing (`w0` = the byte count, `w1`|`w2` = the bytes,
-/// little-endian), which `date` shares deliberately so there is one convention for "a program
-/// printed something". `SEND` blocks until a receiver takes it, so stopping at the newline consumes
-/// exactly the messages that line was made of and leaves the endpoint clean for the next command.
+/// This used to stop at the first newline, because the framing was a convention rather than a
+/// contract and there was nothing else to stop at. Milestone 50 gave it an end: it drains until
+/// `OP_EOF`, so a program that prints two lines prints two lines, and the endpoint is left clean for
+/// the next command instead of holding a message the next `recv` would mistake for an answer.
 ///
-/// It reads one line because the programs that answer this way print one, and the shell must not
-/// block the prompt forever waiting for a second that is not coming. A `date` spawned with the
-/// provenance selector prints two, which is why that selector is not reachable from here until the
-/// manifest can declare arity (capsh's `Prog::Date`).
-fn report_text() {
+/// That change is not optional. Before it, a `date` that announced end of stream would leave that
+/// message queued, and the next command's single read would take it.
+fn drain_text() {
     print(b"  ");
     for _ in 0..MAX_TEXT_CHUNKS {
-        let (n, w1, w2) = recv(RESULT);
-        if n == spawnproto::SPAWN_FAILED {
+        let (w0, w1, w2) = recv(RESULT);
+        // Checked before decoding: init's sentinel is `u64::MAX`, whose top byte is an opcode this
+        // contract does not define, so it would otherwise read as a malformed message rather than as
+        // the one thing it is.
+        if w0 == spawnproto::SPAWN_FAILED {
             print(b"could not spawn (init is out of memory)\n");
             return;
         }
-        let n = (n as usize).min(16);
-        let mut buf = [0u8; 16];
-        for (i, b) in buf[..n].iter_mut().enumerate() {
-            *b = if i < 8 {
-                (w1 >> (8 * i)) as u8
-            } else {
-                (w2 >> (8 * (i - 8))) as u8
-            };
-        }
-        print(&buf[..n]);
-        if buf[..n].contains(&b'\n') {
-            return;
+        let mut buf = [0u8; sink_proto::INLINE_MAX];
+        match sink_proto::unpack(w0, w1, w2, &mut buf) {
+            sink_proto::Msg::Bytes(n) => print(&buf[..n]),
+            sink_proto::Msg::Eof => return,
+            sink_proto::Msg::Malformed => {
+                print(b"\n  (that program sent something this shell cannot read as bytes)\n");
+                return;
+            }
         }
     }
-    print(b"\n");
+    print(b"\n  (output truncated: that program never said it was finished)\n");
 }
 
-/// The most 16-byte chunks one reported line may take before the shell stops reading. `date`'s
-/// longest line is 66 bytes (five chunks); the ceiling exists so a program that never sends its
-/// newline costs one truncated line instead of a hung prompt.
-const MAX_TEXT_CHUNKS: usize = 8;
+/// The most 16-byte chunks one program's output may take before the shell stops reading. Generous
+/// (512 bytes), because the ceiling is not a policy about output length: it is there so a program
+/// that never announces end of stream costs a truncated answer instead of a prompt that never
+/// returns.
+const MAX_TEXT_CHUNKS: usize = 32;
 
 /// Report what the spawned program did, in terms of the grant it was given.
 fn outcome(e: Endowment, answer: u64) {
@@ -961,7 +1039,7 @@ fn outcome(e: Endowment, answer: u64) {
         // unreachable from this prompt at all (a directory grant needs a warden this shell cannot
         // build, and `spawn` says so), and when it is reachable it will report the way `date` does:
         // diagnostics as text, then an exit status.
-        Prog::Heeder | Prog::Spinner | Prog::Date | Prog::Rm => {}
+        Prog::Heeder | Prog::Spinner | Prog::Date | Prog::Rm | Prog::Wc => {}
     }
 }
 
@@ -988,19 +1066,46 @@ fn caps(nav: &mut Nav, tail: &[u8]) {
         print(b"  it can name no devices and no other process. authority is what it holds.\n");
         return;
     }
-    // Only a program invocation carries a grant to preview; `caps help` has nothing to say.
-    let Command::Run(spec) = capsh::parse(tail) else {
-        print(b"  caps previews a command's grant; try: caps budgeter --mem 16\n");
-        return;
+    // **A whole line, operators included** (milestone 50), because what a pipeline grants is not the
+    // sum of what its stages grant read one at a time: which slot holds what depends on where the
+    // stage is. Previewing the line the user would run is the only preview worth having.
+    let l = match line::split(tail) {
+        Ok(l) => l,
+        Err(r) => return say(Say::Cannot(r)),
     };
-    let expanded = match expansion(nav, &spec) {
-        Ok(e) => e,
-        Err(Say::Cannot(r)) => return refuse(spec, r),
-        Err(said) => return say(said),
+    let out = match l.output {
+        Some(t) => match capsh::redirect_target(t, holdings(nav), true) {
+            Ok(g) => Some(g),
+            Err(r) => return say(Say::Cannot(r)),
+        },
+        None => None,
     };
-    match capsh::plan(&spec, holdings(nav), expanded) {
-        Err(refusal) => refuse(spec, refusal),
-        Ok(e) => preview(e),
+    let inp = match l.input {
+        Some(t) => match capsh::redirect_target(t, holdings(nav), false) {
+            Ok(g) => Some(g),
+            Err(r) => return say(Say::Cannot(r)),
+        },
+        None => None,
+    };
+    for (i, stage) in l.stages().iter().enumerate() {
+        // Only a program invocation carries a grant to preview; `caps help` has nothing to say.
+        let Command::Run(spec) = capsh::parse(stage) else {
+            print(b"  caps previews a command's grant; try: caps budgeter --mem 16\n");
+            return;
+        };
+        let expanded = match expansion(nav, &spec) {
+            Ok(e) => e,
+            Err(Say::Cannot(r)) => return refuse(spec, r),
+            Err(said) => return say(said),
+        };
+        let streams = Streams {
+            sink: l.sink_for(i, out),
+            source: l.source_for(i, inp),
+        };
+        match capsh::plan_stage(&spec, holdings(nav), expanded, streams) {
+            Err(refusal) => return refuse(spec, refusal),
+            Ok(e) => preview(e),
+        }
     }
 }
 
@@ -1060,6 +1165,35 @@ fn preview(e: Endowment) {
         print(b"    (clock: this shell holds none to delegate, so it will report the time\n");
         print(b"     as unknown. the clock is init's to endow; no token on the line can.)\n");
     }
+    // **Where its output goes**, which is the demonstration this milestone owes: the destination
+    // is a capability rather than an integer with a convention attached, so `caps` can name it. On
+    // Unix the same question has no answer at this point, because fd 1 is whatever the shell's fd 1
+    // happened to be and nothing records what that was.
+    match e.sink {
+        line::Sink::Report => print(
+            b"    output   this shell's result endpoint (it reads the bytes and prints them)\n",
+        ),
+        line::Sink::Pipe => {
+            print(
+                b"    output   an endpoint into the next stage. no file, no buffer, no object:\n",
+            );
+            print(b"             the rendezvous IS the pipe\n");
+        }
+        line::Sink::File(g) => {
+            print(b"    output   ");
+            print(g.name.as_bytes());
+            print(b"  (append-only: it cannot seek, truncate, re-read or stat)\n");
+        }
+    }
+    match e.source {
+        line::Source::None => {}
+        line::Source::Pipe => print(b"    input    the previous stage's output\n"),
+        line::Source::File(g) => {
+            print(b"    input    ");
+            print(g.name.as_bytes());
+            print(b"  (read as a stream; it holds no file capability)\n");
+        }
+    }
     print(b"    arg    ");
     if matches!(e.prog, Prog::Worker) {
         print_num(e.arg);
@@ -1080,6 +1214,338 @@ fn untyped_split(pages: u64) -> Option<u64> {
 }
 
 // ---- the two-tier interrupt path (milestone 24, DECISIONS §24) ----
+
+// ---- the operators: `>`, `<` and `|` (milestone 50, notes/pipes.md) ----
+
+/// Pages the untyped region behind one pipeline holds. The endpoints themselves are page-resident
+/// objects retyped out of it (one page each), and the region exists so the shell can **destroy** it
+/// when the pipeline is over.
+///
+/// That is not tidiness. Deleting every capability naming an endpoint does not destroy the endpoint,
+/// because the object lives in a page of this region; only reclaiming the region does. So a producer
+/// still blocked in a `SEND` after its reader has gone would stay blocked forever, and `yes | head`
+/// would hang instead of ending. Destroying the region is what turns that into `abi::Error::Gone`.
+const PIPE_REGION_PAGES: u64 = 8;
+
+/// **Run a line that has operators on it.**
+///
+/// The shape is: designate the redirection targets, plan every stage, and only then move anything.
+/// Nothing is spawned until the whole line is known to be runnable, which matters more here than for
+/// a single command: a pipeline that half-starts leaves a process blocked on a channel nobody will
+/// ever write to, and this shell has no way to reach it.
+fn pipeline(nav: &mut Nav, l: Line<'_>) {
+    // The names on the ends, resolved against where we stand now, exactly as an operand is.
+    let out = match l.output {
+        Some(t) => match capsh::redirect_target(t, holdings(nav), true) {
+            Ok(g) => Some(g),
+            Err(r) => return say(Say::Cannot(r)),
+        },
+        None => None,
+    };
+    let inp = match l.input {
+        Some(t) => match capsh::redirect_target(t, holdings(nav), false) {
+            Ok(g) => Some(g),
+            Err(r) => return say(Say::Cannot(r)),
+        },
+        None => None,
+    };
+
+    // Plan every stage. `head` is the one shape a stage may have that is not a program: a builtin
+    // that produces text, at the head of the pipeline, whose bytes **the shell writes into the pipe
+    // itself**. That costs no process and no new mechanism, and it is what makes `ls | wc` a thing a
+    // person can type in a shell that holds a directory.
+    let mut plans: [Option<Endowment>; line::MAX_STAGES] = [None; line::MAX_STAGES];
+    let mut head_builtin = false;
+    for (i, stage) in l.stages().iter().enumerate() {
+        match capsh::parse(stage) {
+            Command::Run(spec) => {
+                let expanded = match expansion(nav, &spec) {
+                    Ok(e) => e,
+                    Err(Say::Cannot(r)) => return refuse(spec, r),
+                    Err(said) => return say(said),
+                };
+                let streams = Streams {
+                    sink: l.sink_for(i, out),
+                    source: l.source_for(i, inp),
+                };
+                match capsh::plan_stage(&spec, holdings(nav), expanded, streams) {
+                    Ok(e) => plans[i] = Some(e),
+                    Err(r) => return refuse(spec, r),
+                }
+            }
+            // `echo`, `ls` and `pwd` render text and grant nothing, so the shell can be their sink's
+            // client. Only at the head, and only when nothing is feeding them: a builtin with an
+            // input is a builtin that reads, and none of them do.
+            Command::Echo(_) | Command::Ls(_) | Command::Pwd
+                if i == 0 && matches!(l.source_for(0, inp), Source::None) =>
+            {
+                head_builtin = true;
+            }
+            _ => {
+                print(b"  ");
+                print(Refusal::NotAPipelineStage.message().as_bytes());
+                print(b"\n");
+                return;
+            }
+        }
+    }
+
+    // A file on either end needs a sink or source process, and building one needs a filesystem this
+    // shell was granted nothing of. `plan_stage` has already refused when the shell holds no
+    // directory, so this is the guard for the day it holds one and the wiring is still missing: a
+    // line that quietly ran without its redirection would write its output to the terminal while the
+    // user believed it went to a file, and that is the worst outcome this mechanism has.
+    if out.is_some() || inp.is_some() {
+        print(b"  a file at either end needs init to build the sink process; this shell cannot\n");
+        print(
+            b"  deliver one yet (it holds nothing that names a filesystem). See notes/pipes.md.\n",
+        );
+        return;
+    }
+
+    run_pipeline(nav, l, &plans, head_builtin);
+}
+
+/// Mint the pipes, spawn the stages, feed the head if the shell is the producer, and print what
+/// comes out of the tail. Everything above this decided; this moves capabilities.
+fn run_pipeline(nav: &mut Nav, l: Line<'_>, plans: &[Option<Endowment>], head_builtin: bool) {
+    let n = l.len();
+    // One region for the whole pipeline, so a line costs one SPLIT and one DESTROY however many
+    // stages it has. Each joint's endpoint is a page retyped out of it.
+    let region = match untyped_split(PIPE_REGION_PAGES) {
+        Some(r) => r,
+        None => {
+            print(b"  this shell's memory budget is exhausted; nothing left to grant\n");
+            return;
+        }
+    };
+    let mut pipes = [0u64; line::MAX_STAGES];
+    let mut minted = 0usize;
+    while minted + 1 < n {
+        match retype_endpoint(region) {
+            Some(ep) => {
+                pipes[minted] = ep;
+                minted += 1;
+            }
+            None => {
+                print(b"  could not mint a pipe from this shell's budget\n");
+                release_pipeline(region, &pipes[..minted]);
+                return;
+            }
+        }
+    }
+
+    // Left to right, which is the order that cannot deadlock: a producer blocks in its first `SEND`
+    // until its reader exists, and its reader is the next thing this loop spawns.
+    for i in 0..n {
+        if i == 0 && head_builtin {
+            continue;
+        }
+        let Some(e) = plans[i] else { continue };
+        let sink = if i + 1 < n { Some(pipes[i]) } else { None };
+        let source = if i > 0 { Some(pipes[i - 1]) } else { None };
+        if !spawn_stage(e, sink, source) {
+            release_pipeline(region, &pipes[..minted]);
+            return;
+        }
+    }
+
+    // The shell as the producer. It runs after every reader exists, for the same reason the loop
+    // above goes left to right.
+    if head_builtin {
+        feed(nav, l.stages()[0], pipes[0]);
+    }
+
+    // And the tail's answer, which arrives on the shell's own result endpoint because the tail's
+    // sink is `Sink::Report`. This is the same drain a single command's output takes; a pipeline is
+    // not a special case of printing.
+    drain_text();
+    release_pipeline(region, &pipes[..minted]);
+}
+
+/// **Run a producing builtin with the pipe as its output**, one message at a time.
+///
+/// The builtins already write through a callback rather than through `print`, because the witness
+/// roles have no terminal. That was done for testability and it pays off here: the same `echo` and
+/// the same `ls` feed a pipe with no branch in either of them.
+fn feed(nav: &mut Nav, stage: &[u8], pipe: u64) {
+    let mut w = SinkWriter::new(pipe);
+    let said = match capsh::parse(stage) {
+        Command::Echo(text) => {
+            let said = echo(nav, text, &mut |b| w.push(b));
+            if matches!(said, Say::Nothing) {
+                w.push(b"\n");
+            }
+            said
+        }
+        Command::Ls(path) => nav.ls(path, &mut |name, is_dir| {
+            w.push(name);
+            if is_dir {
+                w.push(b"/");
+            }
+            w.push(b"\n");
+        }),
+        Command::Pwd => {
+            if nav.dir.is_none() {
+                Say::NoDirectory
+            } else {
+                let mut buf = [0u8; nav::RENDER_MAX];
+                let k = nav.cwd.render(&mut buf);
+                w.push(&buf[..k]);
+                w.push(b"\n");
+                Say::Nothing
+            }
+        }
+        _ => Say::Nothing,
+    };
+    // End of stream whatever happened, including a refusal: the reader downstream is a process that
+    // is blocked on a receive, and leaving it there because the shell had nothing to say would turn
+    // a refused line into a hung prompt.
+    w.finish();
+    if !matches!(said, Say::Nothing) {
+        say(said);
+    }
+}
+
+/// A byte-at-a-time writer onto a sink endpoint, buffering into the contract's sixteen-byte
+/// messages. The seam between a callback that hands over arbitrary slices and a wire that carries
+/// two words at a time; `user/src/sink.rs`'s verify role is the same loop from the other side.
+struct SinkWriter {
+    slot: u64,
+    buf: [u8; sink_proto::INLINE_MAX],
+    n: usize,
+    /// Set once a send has failed. Everything after is dropped rather than retried: `Gone` means the
+    /// reader stopped caring, and there is nothing to report it to.
+    stopped: bool,
+}
+
+impl SinkWriter {
+    fn new(slot: u64) -> Self {
+        SinkWriter {
+            slot,
+            buf: [0; sink_proto::INLINE_MAX],
+            n: 0,
+            stopped: false,
+        }
+    }
+
+    fn push(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            if self.stopped {
+                return;
+            }
+            self.buf[self.n] = b;
+            self.n += 1;
+            if self.n == self.buf.len() {
+                self.flush();
+            }
+        }
+    }
+
+    fn flush(&mut self) {
+        if self.n == 0 || self.stopped {
+            return;
+        }
+        let (w0, w1, w2, _) = sink_proto::pack(&self.buf[..self.n]);
+        self.n = 0;
+        if !matches!(
+            sink_proto::classify(send(self.slot, w0, w1, w2)),
+            sink_proto::Sent::Ok
+        ) {
+            self.stopped = true;
+        }
+    }
+
+    fn finish(&mut self) {
+        self.flush();
+        if !self.stopped {
+            send(self.slot, sink_proto::eof(), 0, 0);
+        }
+    }
+}
+
+/// **Direct init to build one stage**, delegating whatever the operators put in its slots.
+///
+/// The two delegations are the entire difference between a piped stage and an ordinary spawn, and
+/// they are why `>` and `|` are one mechanism: init receives an endpoint and puts it where the
+/// result endpoint would have gone. Nothing here knows or can find out what is on the other end.
+///
+/// Returns whether the stage started; a failure has already been printed.
+fn spawn_stage(e: Endowment, sink: Option<u64>, source: Option<u64>) -> bool {
+    let mem_slot = if e.mem_pages > 0 {
+        match untyped_split(e.mem_pages) {
+            Some(slot) => Some(slot),
+            None => {
+                print(b"  this shell's memory budget is exhausted; nothing left to grant\n");
+                return false;
+            }
+        }
+    } else {
+        None
+    };
+
+    let wiring = spawnproto::Wiring {
+        interruptible: false,
+        sink: sink.is_some(),
+        source: source.is_some(),
+    };
+    let (w0, w1, w2) = spawnproto::request(e.prog.id(), e.arg, e.mem_pages, wiring);
+    send(SPAWN, w0, w1, w2);
+    // In the protocol's order, which both sides read out of the same word. A `SEND_CAP` nobody
+    // expects and a `RECV_CAP` nobody answers both deadlock, so the order is the contract.
+    if let Some(slot) = sink {
+        delegate(slot, abi::rights::WRITE | abi::rights::GRANT);
+    }
+    if let Some(slot) = source {
+        delegate(slot, abi::rights::READ | abi::rights::GRANT);
+    }
+    if let Some(slot) = mem_slot {
+        delegate(slot, abi::rights::WRITE | abi::rights::GRANT);
+        cap_delete(slot);
+    }
+
+    // A stage whose output was substituted owes this shell no answer, so init acks instead. Without
+    // it a failed spawn would be invisible and the pipeline would wait on a producer that does not
+    // exist.
+    if wiring.sink && recv(RESULT).0 != spawnproto::SPAWN_OK {
+        print(b"  could not spawn (init is out of memory)\n");
+        return false;
+    }
+    true
+}
+
+/// Give the pipeline's memory back.
+///
+/// **The `DESTROY` is what makes a dead reader visible to a live writer.** An endpoint is an object
+/// in a page of this region, so deleting the capabilities that name it leaves it alive; reclaiming
+/// the region is what turns a producer's next `SEND` into `abi::Error::Gone`. A pipeline that ended
+/// with a stage still writing (the `yes | head` shape) ends here.
+fn release_pipeline(region: u64, pipes: &[u64]) {
+    for &p in pipes {
+        cap_delete(p);
+    }
+    // Retried for `reclaim`'s reason: a child finishing its last instruction still counts as a live
+    // thread, and DESTROY refuses while one is resident.
+    reclaim(region);
+    cap_delete(region);
+}
+
+/// RETYPE one page of `region` into an `Endpoint` we hold with full rights, which is what lets us
+/// delegate a narrowed view of it to each end of a pipe.
+fn retype_endpoint(region: u64) -> Option<u64> {
+    // SAFETY: `svc`/`ecall`; the kernel checks WRITE on the untyped and returns a negative error
+    // when the region cannot back another page.
+    let r = unsafe {
+        invoke(
+            region,
+            abi::untyped::RETYPE_OBJ,
+            abi::objtype::ENDPOINT,
+            0,
+            0,
+        )
+    };
+    if r < 0 { None } else { Some(r as u64) }
+}
 
 const PAGE: u64 = 4096;
 /// Pages the construction untyped for a supervised child holds: its aspace, code, stack, and TCB.
@@ -1138,7 +1604,16 @@ fn spawn_interruptible(e: Endowment) {
     // Direct init: an interruptible request, then the job untyped and the job frame, both delegated
     // WRITE|GRANT (init builds from the untyped and maps the frame). We keep our own copies: the
     // untyped to tear the job down, the frame to signal it and read it.
-    let (w0, w1, w2) = spawnproto::request(e.prog.id(), e.arg, e.mem_pages, true);
+    let (w0, w1, w2) = spawnproto::request(
+        e.prog.id(),
+        e.arg,
+        e.mem_pages,
+        spawnproto::Wiring {
+            interruptible: true,
+            sink: false,
+            source: false,
+        },
+    );
     send(SPAWN, w0, w1, w2);
     send_cap(job_ut);
     send_cap(job_fr);
@@ -1264,13 +1739,24 @@ fn map_frame(slot: u64, va: u64) -> bool {
 /// Delegate the capability in `slot` to init over the spawn endpoint, narrowed to WRITE|GRANT (init
 /// builds from an untyped or maps a frame, and narrows further from there). We keep our own copy.
 fn send_cap(slot: u64) {
+    delegate(slot, abi::rights::WRITE | abi::rights::GRANT);
+}
+
+/// **Delegate one capability to init, with exactly the rights it should travel with.**
+///
+/// `GRANT` has to be in `rights` for the send itself to be legal, so what varies is the other half,
+/// and that half is load-bearing for milestone 50: a pipe's write end goes over as `WRITE|GRANT` and
+/// its read end as `READ|GRANT`, so the child at the far end of a `|` **cannot write back up its own
+/// input**. A pipeline that granted both directions would be a two-way channel nobody asked for, and
+/// the narrowing is what stops it rather than a convention the programs are trusted to keep.
+fn delegate(slot: u64, rights: u64) {
     // SAFETY: `svc`/`ecall`; the kernel checks WRITE on the endpoint and GRANT on the delegated cap.
     unsafe {
         invoke(
             SPAWN,
             abi::endpoint::SEND_CAP,
             slot,
-            abi::rights::WRITE | abi::rights::GRANT,
+            rights,
             spawnproto::CAP_TAG,
         )
     };

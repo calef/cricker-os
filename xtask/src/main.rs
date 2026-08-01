@@ -1140,6 +1140,8 @@ fn initrd_riscv() -> bool {
             "hello",
             "--bin",
             "sink",
+            "--bin",
+            "wc",
             "--target",
             RISCV_TARGET,
         ],
@@ -1239,6 +1241,9 @@ fn initrd_riscv() -> bool {
         // is that a program cannot tell what its output slot holds, and that has to hold on either
         // instruction set or it is not a claim.
         ("sink", "sink"),
+        // The consumer (milestone 50). Both archives, for the sink's reason: `date | wc` has to
+        // compose on either instruction set or it is not a claim about the system.
+        ("wc", "wc"),
     ];
     let mut blobs: Vec<(&str, Vec<u8>)> = Vec::new();
     for &(archive_name, bin_name) in entries {
@@ -1463,6 +1468,9 @@ fn mkinitrd() -> bool {
         // read-back. Portable, so both archives carry it and both ISAs run the same indifference
         // test.
         "sink",
+        // `wc` (milestone 50): the right-hand side of a pipe, and the first program that reads a
+        // stream. Portable, so both archives carry it.
+        "wc",
     ] {
         match read_stripped(&bin_elf(name)) {
             Ok(bytes) => tree.push((name, bytes)),

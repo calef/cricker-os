@@ -17,7 +17,12 @@
 //! 1. **Request.** The shell `SEND`s three words on the spawn endpoint: the program id, the
 //!    integer argument, and the memory-grant page count. See [`request`] / [`prog_id`] /
 //!    [`arg`] / [`mem_pages`].
-//! 2. **Delegation.** If `mem_pages > 0`, the shell `SEND_CAP`s exactly one capability next: an
+//! 2. **Delegation.** The capabilities the request announced, in a fixed order: the supervised
+//!    job's pair (untyped, frame), then the **sink** (milestone 50), then the **source**, then the
+//!    `--mem` untyped. Order rather than tags, because both sides read the same [`Wiring`] out of
+//!    the same word and a promise nobody receives would deadlock both.
+//!
+//!    If `mem_pages > 0`, the shell `SEND_CAP`s exactly one capability there: an
 //!    untyped it split from *its own* budget, sized to `mem_pages`. This is the grant made real,
 //!    not parsed and dropped. Programs that grant no capability (worker) skip this step, and init
 //!    knows to skip the matching `RECV_CAP` from `mem_pages == 0`.
@@ -36,13 +41,53 @@
 /// 32 bits hold it and this bit rides above.
 const INTERRUPTIBLE_BIT: u64 = 1 << 32;
 
-/// Build the three request words from a resolved endowment's parts. `interruptible` tells init this
-/// is a foreground job the shell will supervise: two capabilities lead the delegation (a job untyped
-/// the child is built from so the shell can tear it down, then a shared job frame), before any
-/// `--mem` untyped.
-pub fn request(prog_id: u64, arg: u64, mem_pages: u64, interruptible: bool) -> (u64, u64, u64) {
-    let w2 = (mem_pages & 0xffff_ffff) | if interruptible { INTERRUPTIBLE_BIT } else { 0 };
+/// **A capability for the child's output slot follows** (milestone 50). Set by `>` and by every
+/// stage of a `|` but the last: the shell delegates an endpoint and init puts it where the result
+/// endpoint would have gone, so the child writes to a pipe or a file sink without knowing which.
+const SINK_BIT: u64 = 1 << 33;
+
+/// **A capability for the child's input slot follows** (milestone 50). Set by `<` and by every
+/// stage of a `|` but the first.
+const SOURCE_BIT: u64 = 1 << 34;
+
+/// **Where the shell's operators end up on the wire**, alongside the parts of the endowment that
+/// were always here. `sink` and `source` are booleans rather than capabilities because the
+/// capability travels separately, over `SEND_CAP`: this word only says whether to expect it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Wiring {
+    /// A foreground job the shell will supervise (milestone 24). Two capabilities lead the
+    /// delegation: a job untyped the child is built from so the shell can tear it down, then a
+    /// shared job frame.
+    pub interruptible: bool,
+    /// The child's output slot is substituted (`>` or the left of a `|`).
+    pub sink: bool,
+    /// The child's input slot is filled (`<` or the right of a `|`).
+    pub source: bool,
+}
+
+/// Build the three request words from a resolved endowment's parts.
+pub fn request(prog_id: u64, arg: u64, mem_pages: u64, w: Wiring) -> (u64, u64, u64) {
+    let mut w2 = mem_pages & 0xffff_ffff;
+    if w.interruptible {
+        w2 |= INTERRUPTIBLE_BIT;
+    }
+    if w.sink {
+        w2 |= SINK_BIT;
+    }
+    if w.source {
+        w2 |= SOURCE_BIT;
+    }
     (prog_id, arg, w2)
+}
+
+/// The whole wiring of a received request (word 2), so init reads it once rather than asking three
+/// separate questions of the same word.
+pub fn wiring(w2: u64) -> Wiring {
+    Wiring {
+        interruptible: interruptible(w2),
+        sink: w2 & SINK_BIT != 0,
+        source: w2 & SOURCE_BIT != 0,
+    }
 }
 
 /// The program id from a received request (word 0).
@@ -90,24 +135,54 @@ mod tests {
 
     #[test]
     fn request_round_trips() {
-        let (w0, w1, w2) = request(1, 9, 16, false);
+        let (w0, w1, w2) = request(1, 9, 16, Wiring::default());
         assert_eq!(prog_id(w0), 1);
         assert_eq!(arg(w1), 9);
         assert_eq!(mem_pages(w2), 16);
-        assert!(!interruptible(w2));
+        assert_eq!(wiring(w2), Wiring::default());
     }
 
     #[test]
     fn interruptible_bit_survives_a_zero_page_count() {
         // The interrupt demonstrators take no --mem, so the flag must ride independent of the count.
-        let (_, _, w2) = request(2, 0, 0, true);
+        let (_, _, w2) = request(
+            2,
+            0,
+            0,
+            Wiring {
+                interruptible: true,
+                ..Wiring::default()
+            },
+        );
         assert_eq!(mem_pages(w2), 0);
         assert!(interruptible(w2));
     }
 
     #[test]
     fn no_grant_is_zero_pages() {
-        let (_, _, w2) = request(0, 5, 0, false);
+        let (_, _, w2) = request(0, 5, 0, Wiring::default());
         assert_eq!(mem_pages(w2), 0);
+    }
+
+    /// **The three flags are independent of each other and of the page count** (milestone 50).
+    /// They share one word, and the delegation order init reads depends on all three, so a bit that
+    /// bled into another would make init receive the wrong capability into the wrong slot and hang
+    /// rather than fail.
+    #[test]
+    fn the_wiring_flags_do_not_collide() {
+        for &interruptible in &[false, true] {
+            for &sink in &[false, true] {
+                for &source in &[false, true] {
+                    let w = Wiring {
+                        interruptible,
+                        sink,
+                        source,
+                    };
+                    let (_, _, w2) = request(3, 0, 64, w);
+                    assert_eq!(wiring(w2), w, "{w:?}");
+                    assert_eq!(mem_pages(w2), 64, "{w:?}");
+                }
+            }
+        }
     }
 }

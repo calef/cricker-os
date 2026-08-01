@@ -174,6 +174,7 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, _x2: u64) -> ! {
     let heeder = fs.read("heeder").and_then(|b| elf::Elf::parse(b).ok());
     let spinner = fs.read("spinner").and_then(|b| elf::Elf::parse(b).ok());
     let date = fs.read("date").and_then(|b| elf::Elf::parse(b).ok());
+    let wc = fs.read("wc").and_then(|b| elf::Elf::parse(b).ok());
     spawn_service(
         spawn_ep,
         result_ep,
@@ -190,6 +191,10 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, _x2: u64) -> ! {
             // remove from would be the worst failure this model has, a program told to destroy
             // something, holding nothing, saying nothing.
             None,
+            // `wc` (milestone 50). It needs no filesystem: everything it does is decided by what is
+            // in its input slot, and the shell can fill that from a pipe out of its own budget.
+            // So unlike `rm`, this one is reachable from the interactive prompt.
+            wc.as_ref(),
         ],
     )
 }
@@ -225,14 +230,26 @@ fn spawn_service(
         let prog = Prog::from_id(spawnproto::prog_id(w0));
         let arg = spawnproto::arg(w1);
         let mem_pages = spawnproto::mem_pages(w2);
-        let interruptible = spawnproto::interruptible(w2);
+        let wiring = spawnproto::wiring(w2);
+        let interruptible = wiring.interruptible;
 
         // Receive the delegated caps in protocol order: the interrupt pair first (job untyped, job
-        // frame), then any --mem untyped. No promise, no receive, so both sides stay in lockstep.
+        // frame), then the sink, then the source, then any --mem untyped. No promise, no receive, so
+        // both sides stay in lockstep.
         let (job_ut, job_fr) = if interruptible {
             (opt_cap(recv_cap(spawn_ep).1), opt_cap(recv_cap(spawn_ep).1))
         } else {
             (None, None)
+        };
+        let sink = if wiring.sink {
+            opt_cap(recv_cap(spawn_ep).1)
+        } else {
+            None
+        };
+        let source = if wiring.source {
+            opt_cap(recv_cap(spawn_ep).1)
+        } else {
+            None
         };
         let budget = if mem_pages > 0 {
             opt_cap(recv_cap(spawn_ep).1)
@@ -272,34 +289,62 @@ fn spawn_service(
                 }
             }
         } else {
-            // The delegated budget goes in narrowed to WRITE: the child may spend it, not lend it.
-            let built = elf.and_then(|e| match budget {
-                Some(b) => build_child(
-                    UNTYPED,
-                    e,
-                    &[(result_ep, abi::rights::WRITE), (b, abi::rights::WRITE)],
-                    &[],
-                )
-                .ok(),
-                None => build_child(UNTYPED, e, &[(result_ep, abi::rights::WRITE)], &[]).ok(),
-            });
-            match built {
+            // **Slot 0 is the output**, and milestone 50 is the whole of what changed here: it is
+            // the shared result endpoint unless the shell delegated a sink, in which case the sink
+            // goes there instead and the child never learns that anything is different. `>` and the
+            // left of a `|` are this line.
+            //
+            // Slot 1 is the input source when there is one, and otherwise the `--mem` untyped, which
+            // is safe only because no manifest declares both today. `capsh` is where that stops
+            // being true, and the order here is the contract; see notes/pipes.md's BUGS.
+            let out = (sink.unwrap_or(result_ep), abi::rights::WRITE);
+            let mut caps = [out; 3];
+            let mut n = 1usize;
+            if let Some(src) = source {
+                // READ only. A pipe's reader must not be able to write back up its own input, which
+                // would make a pipeline a two-way channel nobody asked for.
+                caps[n] = (src, abi::rights::READ);
+                n += 1;
+            }
+            if let Some(b) = budget {
+                // Narrowed to WRITE: the child may spend it, not lend it.
+                caps[n] = (b, abi::rights::WRITE);
+                n += 1;
+            }
+            let built = elf.and_then(|e| build_child(UNTYPED, e, &caps[..n], &[]).ok());
+            let ok = match built {
                 Some(tcb) => {
-                    if tcb_start(tcb, 0, arg, 0) != 0 {
-                        send(result_ep, spawnproto::SPAWN_FAILED, 0, 0);
-                    }
+                    let started = tcb_start(tcb, 0, arg, 0) == 0;
                     cap_delete(tcb);
+                    started
                 }
-                None => {
-                    send(result_ep, spawnproto::SPAWN_FAILED, 0, 0);
-                }
+                None => false,
+            };
+            // **A redirected child owes the shell no answer**, because its answer is going
+            // somewhere else, so the shell has nothing to read and no way to find out that the
+            // spawn failed. One ack closes that hole. An unredirected child is unchanged: the
+            // child's own message is the shell's single read, and a failure is the sentinel.
+            if wiring.sink {
+                send(
+                    result_ep,
+                    if ok {
+                        spawnproto::SPAWN_OK
+                    } else {
+                        spawnproto::SPAWN_FAILED
+                    },
+                    0,
+                    0,
+                );
+            } else if !ok {
+                send(result_ep, spawnproto::SPAWN_FAILED, 0, 0);
             }
         }
 
         // Drop our copies of every delegated cap: the child holds what it needs (the job frame is
-        // mapped, the budget inserted), and the shell holds the originals it kept (the job untyped
-        // for teardown). This keeps init's 16-slot cspace from filling across a long session.
-        for s in [job_ut, job_fr, budget].into_iter().flatten() {
+        // mapped, the budget and the streams inserted), and the shell holds the originals it kept
+        // (the job untyped for teardown, the pipe it minted). This keeps init's 16-slot cspace from
+        // filling across a long session.
+        for s in [job_ut, job_fr, sink, source, budget].into_iter().flatten() {
             cap_delete(s);
         }
     }
