@@ -964,7 +964,7 @@ pub mod nameset {
 /// # The type code exists so indexing is not foreclosed
 ///
 /// Every attribute carries a `u32` **kind**, and this layer never interprets it: it is stored,
-/// returned, and otherwise ignored. [`RAW`] is what a POSIX-style client writes, and it is what
+/// returned, and otherwise ignored. [`xattr::RAW`] is what a POSIX-style client writes, and it is what
 /// Samba will write.
 ///
 /// The reason to carry a field nothing reads is `design/haiku-bfs-and-packages.md`. BFS made
@@ -975,7 +975,7 @@ pub mod nameset {
 /// packed word, paid now, once.
 ///
 /// **BUGS.** The kind is 31 bits, not 32, because it rides in the sign-protected half of a reply word
-/// (see [`reply`]). BFS-style four-character codes are ASCII and fit; a code with its top bit set does
+/// (see [`xattr::reply`]). BFS-style four-character codes are ASCII and fit; a code with its top bit set does
 /// not, and [`fs::SETXATTR`] answers `EINVAL` rather than truncating it.
 pub mod xattr {
     /// The longest attribute **name**, in bytes. 255, which is Linux's `XATTR_NAME_MAX`, chosen so
@@ -1175,14 +1175,14 @@ pub mod xattr {
     /// **The store's on-disk record format, and the whole of the layer's semantics as pure
     /// functions.**
     ///
-    /// One node's attributes are one blob: a sequence of records, each a [`RECORD_HEADER`]-byte
+    /// One node's attributes are one blob: a sequence of records, each a [`store::RECORD_HEADER`]-byte
     /// header (a name length, a `u32` kind, a `u16` value length, all little-endian) followed by the
     /// name and then the value. The FS server keeps one such blob per node in a file named for the
-    /// node's `TreePtr` id ([`file_name`]) inside [`STORE_DIR`].
+    /// node's `TreePtr` id ([`store::file_name`]) inside [`STORE_DIR`].
     ///
     /// **Why the format is published here rather than hidden in the server.** Two reasons, and the
     /// first is the honest one: every interesting rule of this feature (what replaces what, when a
-    /// limit is hit, what a truncated blob means) lives in [`set`], [`remove`] and [`get`], which are
+    /// limit is hit, what a truncated blob means) lives in [`store::set`], [`store::remove`] and [`store::get`], which are
     /// pure functions over a byte slice and therefore host-tested in milliseconds instead of under an
     /// emulator. The second is recovery: a person holding a damaged image and the `redoxfs-host`
     /// tool can read the store, because the format is written down next to the code that makes it.
@@ -1797,6 +1797,70 @@ pub mod fixture {
         pub const fn status(errno: i32) -> u64 {
             errno as u64
         }
+    }
+
+    /// **What the extended-attribute witness reports** (milestone 57), a bitmap for the reason every
+    /// other witness here reports one: the kernel test asserts an *exact* set, so a client that could
+    /// do nothing and a client that could do everything both fail, and a failure names itself.
+    ///
+    /// It rides the third word of the FS client's proof report, beside the `motd` head and the
+    /// success sentinel, because the attribute layer is served by the same FS server over the same
+    /// endpoint and a second boot of the whole three-process stack would prove nothing new.
+    pub mod attrs {
+        /// An attribute was set and read back with **its type code and its bytes**. The type code
+        /// half is what makes this more than a byte-string round trip: a layer that dropped the kind
+        /// would pass every other bit here.
+        pub const SET_AND_READ_BACK: u64 = 1 << 0;
+        /// The listing named it, and named nothing else. "Nothing else" is the half that catches a
+        /// store keyed on the wrong node, which would show up as somebody else's attributes.
+        pub const LISTED: u64 = 1 << 1;
+        /// **The attribute followed its file across a rename.** The headline property, and the one
+        /// an AppleDouble sidecar gets wrong. It works because the store keys on the node and a
+        /// rename changes a directory entry, so nothing in the rename path knows attributes exist.
+        pub const SURVIVED_RENAME: u64 = 1 << 2;
+        /// After a remove, reading it answers `ENODATA`. Without this, [`SET_AND_READ_BACK`] is
+        /// equally consistent with a store that never forgets anything.
+        pub const GONE_AFTER_REMOVE: u64 = 1 << 3;
+        /// **A file recreated at a name whose previous occupant had attributes has none.** The
+        /// on-device half of "deletion is in the same transaction as the file's": a leaked blob is
+        /// not wasted space, it is somebody else's metadata on a file that never asked for it.
+        pub const GONE_AFTER_UNLINK: u64 = 1 << 4;
+        /// A value past [`super::super::xattr::MAX_VALUE`] was refused with
+        /// [`super::super::xattr::E2BIG`], loudly, rather than stored short (DECISIONS §42).
+        pub const OVERSIZE_REFUSED: u64 = 1 << 5;
+        /// The store's directory could not be opened, created, or descended into. A client that
+        /// could name it could read any file's attributes as ordinary bytes.
+        pub const STORE_UNNAMEABLE: u64 = 1 << 6;
+        /// And a full enumeration of the root did not name it, which is the other half: what cannot
+        /// be named is also not listed. Reported only if the enumeration ran to the end and returned
+        /// something, so an empty listing cannot pass as a clean one.
+        pub const STORE_UNLISTED: u64 = 1 << 7;
+        /// **Something that should have worked did not**, so nothing above proves anything. The
+        /// control bit, in the shape every other witness here uses.
+        pub const ATTRS_FAILED: u64 = 1 << 8;
+
+        /// What a correct run reports, stated once so the two ISA legs' assertions cannot drift.
+        pub const EXPECTED: u64 = SET_AND_READ_BACK
+            | LISTED
+            | SURVIVED_RENAME
+            | GONE_AFTER_REMOVE
+            | GONE_AFTER_UNLINK
+            | OVERSIZE_REFUSED
+            | STORE_UNNAMEABLE
+            | STORE_UNLISTED;
+
+        /// The file the witness makes, sets an attribute on, and renames. Its own name, so nothing
+        /// it leaves behind can be confused with a fixture the post-run host check pins.
+        pub const PROBE: &str = "attr-probe";
+        /// What it renames [`PROBE`] to. The attribute has to be readable through this name.
+        pub const PROBE_MOVED: &str = "attr-moved";
+        /// The attribute the witness writes, spelled the way Samba spells one.
+        pub const NAME: &[u8] = b"user.com.apple.metadata";
+        /// Its value: opaque bytes, which is exactly what `streams_xattr` stores.
+        pub const VALUE: &[u8] = b"CRK57: an opaque byte string\n";
+        /// Its type code, `'CSTR'` in BFS's spelling. Non-zero on purpose: a layer that silently
+        /// wrote [`super::super::xattr::RAW`] would pass a test whose fixture used the default.
+        pub const KIND: u32 = 0x4353_5452;
     }
 
     /// **The on-device crash test's vocabulary** (milestone 37, DECISIONS §34 condition 1).
@@ -2747,6 +2811,53 @@ mod tests {
             assert_eq!(xattr::reply_kind(r), kind & xattr::MAX_KIND);
             assert_eq!(xattr::reply_value_len(r), len);
         }
+    }
+
+    /// The attribute witness's bits must not overlap, for the reason every other witness's must not:
+    /// the kernel test asserts an exact set, so two outcomes on one bit make a wrong verdict read as
+    /// a right one. `EXPECTED` is pinned against them here so the two ISA legs cannot assert
+    /// something the bits no longer spell.
+    #[test]
+    fn the_attribute_witness_bits_are_distinct_and_its_expectation_matches_them() {
+        use fixture::attrs::*;
+        let bits = [
+            SET_AND_READ_BACK,
+            LISTED,
+            SURVIVED_RENAME,
+            GONE_AFTER_REMOVE,
+            GONE_AFTER_UNLINK,
+            OVERSIZE_REFUSED,
+            STORE_UNNAMEABLE,
+            STORE_UNLISTED,
+            ATTRS_FAILED,
+        ];
+        let mut seen = 0u64;
+        for b in bits {
+            assert_ne!(
+                b, 0,
+                "zero is the empty report; it cannot also be an outcome"
+            );
+            assert_eq!(seen & b, 0, "two attribute outcomes share a bit");
+            seen |= b;
+        }
+        assert_eq!(
+            EXPECTED,
+            seen & !ATTRS_FAILED,
+            "a correct run reports every outcome and no failure",
+        );
+        // The witness's fixture has to be usable: two distinct names it can create and rename
+        // between, and a name and value the store will actually accept.
+        assert_ne!(PROBE, PROBE_MOVED);
+        assert!(grant::fits(PROBE.as_bytes()) && grant::fits(PROBE_MOVED.as_bytes()));
+        assert!(xattr::valid_name(NAME));
+        assert!(VALUE.len() <= xattr::MAX_VALUE);
+        // Checked at COMPILE time: both sides are constants, so a fixture that fell back to the
+        // default kind should fail the build rather than wait for the suite. The same discipline
+        // `a_text_frame_and_a_verdict_are_told_apart_by_the_first_word` uses.
+        const _: () = assert!(
+            fixture::attrs::KIND != xattr::RAW,
+            "a default kind would hide a layer that dropped it",
+        );
     }
 
     /// The store's file names are the node ids, and two nodes never share one. That equality is what
