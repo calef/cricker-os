@@ -279,6 +279,18 @@ Host tests (`cargo test -p cred -p cred_proto`, milliseconds, no emulator):
 - The lookup lands on the decoy for a miss and on the record for a hit, at every slot position.
 - A miss and a hit take comparable time.
 
+Proofs (`script/verify`, three Kani harnesses over `cred_proto`, 30 checks, 0.2 s). Both properties
+are about what an adversary can send or receive, and an adversary is not limited to the values a
+test author thought of:
+
+- **No request word makes the server's parse read outside the page.** For every one of the 2^64
+  first words a client can send, `read` either refuses it or returns two slices inside the page with
+  exactly the lengths the word claimed. This is what lets the serve loop have no arithmetic in it
+  that could go wrong.
+- **Nothing but `MATCH` authenticates**, for every one of the 2^64 words a caller can receive. The
+  host test sweeps a few dozen values around the boundary; this sweeps all of them.
+- A request word round-trips its opcode and both lengths, over every combination `place` can build.
+
 Guest tests (`kernel::user::credential_tests`, on aarch64 **and** riscv64, same assertions):
 
 - **Provisioning fills the store and the seal closes it.** Three identities in, the fourth refused

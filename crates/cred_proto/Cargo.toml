@@ -4,4 +4,12 @@ version = "0.1.0"
 edition = "2024"
 license.workspace = true
 
+# `kani` is set only by `cargo kani` (script/verify), never by an ordinary build. Declaring it here
+# keeps unexpected_cfgs from flagging the `#[cfg(kani)]` proof module under -D warnings. What it
+# proves is the pair of properties this contract's safety rests on and that a test can only sample:
+# that no `u64` a client can send makes the server's parse read outside the page, and that no `u64`
+# a caller can receive is mistaken for a successful authentication.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
 [dependencies]

@@ -375,3 +375,74 @@ mod tests {
         assert!(!authenticated(u64::MAX));
     }
 }
+
+/// **Proofs, for the two properties a test can only sample** (`script/verify`).
+///
+/// The tests above check the interesting cases. These check *every* case, which matters here more
+/// than it does for most of this tree, because both properties are about what an adversary can
+/// send or receive and an adversary is not limited to the values a test author thought of. There
+/// are 2^64 request words and 2^64 reply words; the tests cover a few dozen each.
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// **The server's parse is total.** For *any* first word a client can send, `read` either
+    /// refuses it or hands back two slices that lie inside the page and have exactly the lengths
+    /// the word claimed. Kani proves the memory safety (no index runs off the page for any input);
+    /// the assertions pin the meaning, so a future rewrite that stayed in bounds while returning
+    /// the wrong bytes would still fail.
+    ///
+    /// This is the property that lets the credential service's serve loop have no arithmetic in it
+    /// that could go wrong. It is also the one an attacker probes first.
+    #[kani::proof]
+    fn no_request_word_makes_the_parse_read_outside_the_page() {
+        let page = [0u8; SECRET_OFF + MAX_SECRET];
+        let w0: u64 = kani::any();
+        match read(&page, w0) {
+            None => {}
+            Some((identity, secret)) => {
+                assert!(identity.len() == id_len(w0));
+                assert!(secret.len() == secret_len(w0));
+                assert!(identity.len() >= 1 && identity.len() <= MAX_IDENTITY);
+                assert!(secret.len() >= 1 && secret.len() <= MAX_SECRET);
+                assert!(ID_OFF + identity.len() <= SECRET_OFF);
+                assert!(SECRET_OFF + secret.len() <= page.len());
+            }
+        }
+    }
+
+    /// **Nothing but `MATCH` authenticates, for every word in the space.** The failure this rules
+    /// out is the worst one this contract could permit: a caller holding no credential capability,
+    /// or talking to a service that died, reading the kernel's refusal as a successful login. The
+    /// host test sweeps a few dozen values around the boundary; this sweeps all of them.
+    #[kani::proof]
+    fn no_reply_word_but_match_ever_authenticates() {
+        let r0: u64 = kani::any();
+        assert!(authenticated(r0) == (r0 == MATCH));
+        // And the discrimination itself: a code is a code exactly when it is in range, so no
+        // arithmetic on a kernel error word can land inside the reply space.
+        match code(r0) {
+            Some(c) => assert!(c == r0 && c >= OK && c <= MAX_CODE),
+            None => assert!(r0 < OK || r0 > MAX_CODE),
+        }
+    }
+
+    /// **A request word round-trips its three fields** for every combination the builder accepts,
+    /// so the opcode a server dispatches on is the opcode the client chose and the lengths it
+    /// parses are the lengths the client meant. Bounded to the ranges `place` can produce, because
+    /// outside them the packing is deliberately lossy (the fields are masked) and there is nothing
+    /// to prove.
+    #[kani::proof]
+    fn a_request_word_round_trips_every_field() {
+        let op_in: u64 = kani::any();
+        let i: usize = kani::any();
+        let s: usize = kani::any();
+        kani::assume(op_in <= 0xff);
+        kani::assume(i <= MAX_IDENTITY);
+        kani::assume(s <= MAX_SECRET);
+        let w = req(op_in, i, s);
+        assert!(op(w) == op_in);
+        assert!(id_len(w) == i);
+        assert!(secret_len(w) == s);
+    }
+}
