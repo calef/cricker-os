@@ -2078,6 +2078,24 @@ pub fn corpse_fault_msg(tid: Tid) -> Option<[u64; 5]> {
     (t.state == State::Dead).then_some(t.fault_msg).flatten()
 }
 
+/// **Is `tid` still in the thread table?** (test support.)
+///
+/// The narrow question "was *this* thread reaped", which is what a test that spawned one actually
+/// wants to know. [`thread_count`] answers a wider one, and the width is a defect when it is used
+/// this way: the count is the size of the whole table, so an unrelated process finishing its
+/// teardown moves it, and a test waiting for the count to come back to a baseline is really waiting
+/// for the rest of the system to hold still. It need not.
+///
+/// The name is generational, so a reaped thread's `Tid` never resolves again even if its slot is
+/// reused: `false` here means gone, not "gone or replaced".
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn thread_present(tid: Tid) -> bool {
+    SCHED
+        .lock()
+        .as_ref()
+        .is_some_and(|s| s.threads.get(tid).is_some())
+}
+
 pub fn thread_count() -> usize {
     SCHED.lock().as_ref().map_or(0, |s| s.threads.len())
 }

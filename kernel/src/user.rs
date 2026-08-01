@@ -9533,7 +9533,6 @@ mod tests {
         // not count against the frame accounting.
         let report = crate::sched::create_endpoint();
         let frames_before = crate::memory::free_frames();
-        let threads_before = crate::sched::thread_count();
 
         // The child's whole address space in one region: root, tables, code, and stack.
         let as_region = crate::untyped::create(8).expect("no aspace region");
@@ -9580,11 +9579,19 @@ mod tests {
         // ANOTHER core, so yielding on THIS core cannot make that happen: a hundred cheap yields
         // complete long before the remote core's next timer tick. So wait on the clock, not on a
         // yield count. Still a leak trap rather than a masked failure: a child that is never reaped
-        // times out and fails; only cross-core reap lag is tolerated. This wait was a yield count
-        // until it failed about one full-suite run in four once §28 started scattering threads;
-        // clock-based, it survived four consecutive runs. Two sibling waits had the same defect.
+        // times out and fails; only cross-core reap lag is tolerated.
+        //
+        // **And wait on this child, not on a headcount.** This asked whether `thread_count()` had
+        // returned to a baseline sampled at the top of the test, which is the size of the WHOLE
+        // thread table: the previous test's processes are still tearing down at that instant, so the
+        // baseline was a number the system would move on its own, and the wait was really waiting
+        // for everything else to hold still. It failed exactly that way once on RISC-V, where the
+        // slower machine leaves more teardown in flight. `thread_present` asks the question the test
+        // means. The whole history here is a wait that keeps being written against something wider
+        // than the property: it was a yield count until §28's scattering broke it, then a
+        // clock-bounded headcount until this. A sibling wait below had the same defect.
         assert!(
-            wait_for(|| crate::sched::thread_count() == threads_before),
+            wait_for(|| !crate::sched::thread_present(tid)),
             "the exited child was never reaped",
         );
 
@@ -9619,8 +9626,6 @@ mod tests {
         let baseline = crate::memory::free_frames();
 
         for round in 0..6 {
-            let threads_before = crate::sched::thread_count();
-
             let as_region = crate::untyped::create(8).expect("aspace region");
             let aspace = user_aspace_create(as_region).expect("aspace");
             let code_phys = crate::untyped::retype_page(as_region).expect("code frame");
@@ -9652,11 +9657,13 @@ mod tests {
                 expect_word,
                 "round {round}: the child never reported"
             );
-            // On the clock, not on yields, for the reason spelled out in the test above: §28 can
-            // place the child on another core and only that core's switch reaps it. A lagging reap
-            // here would surface as the reclaim below refusing a region that still holds a thread.
+            // On the clock, not on yields, and on THIS child rather than on a headcount, both for
+            // the reasons spelled out in the test above: §28 can place the child on another core and
+            // only that core's switch reaps it, and `thread_count()` is the size of the whole table,
+            // so waiting for it to return to a baseline is waiting for the rest of the system.
+            // A lagging reap here would surface as the reclaim below refusing a live thread.
             assert!(
-                wait_for(|| crate::sched::thread_count() == threads_before),
+                wait_for(|| !crate::sched::thread_present(tid)),
                 "round {round}: the child was never reaped",
             );
             crate::sched::reclaim_region(tcb_region).expect("reclaim tcb region");
