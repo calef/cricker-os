@@ -2893,6 +2893,138 @@ pub mod fs_service {
         ))
     }
 
+    /// Where the set warden expects its read-only name-set page (`user/src/swarden.rs`'s `SET_VA`).
+    const SET_VA_WARDEN: u64 = 0x0000_0000_0070_0000;
+
+    /// **Wire a set grant and the program confined to it** (milestone 47's globbing lane,
+    /// notes/glob-grant.md). [`start_granted_dir`]'s shape with a narrower namespace:
+    ///
+    /// ```text
+    ///   FS server ──file IPC──► swarden ──narrowed file IPC──► the confined program
+    ///            (the image root)         (one directory, and only the names in the set)
+    /// ```
+    ///
+    /// The interesting difference from every other grant here is **where the grant lives**. A name
+    /// rides in two `START` argument words; a set does not fit in any number of registers, so it is
+    /// encoded into a **frame of its own and mapped read-only** into the warden, which copies it
+    /// into a local before it does anything else. That is the honest place for `ARG_MAX` to
+    /// reappear: it is the size of a capability now, not the size of a buffer, and it is bounded by
+    /// `fs_proto::nameset::MAX_NAMES` at both ends.
+    ///
+    /// The set is written **before the warden is spawned**, into a frame nothing else has ever been
+    /// handed, which is why it needs none of [`await_warden`]'s ordering care: unlike the shared
+    /// page, no client can reach it at all.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub struct SetGrant<'a> {
+        /// The directory the warden descends into, one component under the image root. The set's
+        /// names are the names *in* it that the grant designates.
+        pub dir: &'static str,
+        /// The set, as `(name, is_dir)`: what the shell's expansion produced. At most
+        /// `fs_proto::nameset::MAX_NAMES` of them, and an over-long set is a panic here because the
+        /// shell refuses it at the prompt (`capsh::Refusal::TooManyNames`), so one arriving means
+        /// the wiring built a grant no command line could have expressed.
+        pub names: &'a [(&'a [u8], bool)],
+        /// The [`fs_proto::dir`] rights the warden asks for on its descent.
+        pub rights: u64,
+        /// The confined program's three `START` words. `rm` is started with a grant's spec and two
+        /// name words rather than a role and a number; see [`DirGrant`].
+        pub role: u64,
+        pub arg: u64,
+        pub arg2: u64,
+        /// Stack pages beyond the one `run` maps.
+        pub stack_pages: usize,
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn start_granted_set(
+        blk_image: &'static [u8],
+        fsserver_image: &'static [u8],
+        warden_image: &'static [u8],
+        client_image: &'static [u8],
+        grant: SetGrant<'_>,
+    ) -> Option<EpId> {
+        let SetGrant {
+            dir,
+            names,
+            rights,
+            role: client_role,
+            arg: client_arg,
+            arg2: client_arg2,
+            stack_pages,
+        } = grant;
+        assert!(
+            fs_proto::grant::fits(dir.as_bytes()),
+            "a granted directory's name rides in two argument words; this one does not fit",
+        );
+        let (file_ep, file_shared, readiness) = ensure(blk_image, fsserver_image)?;
+        let narrow_ep = crate::sched::create_endpoint();
+        let warden_ready = crate::sched::create_endpoint();
+
+        // The set, encoded into its own frame before anything can see it. `encode` refuses rather
+        // than truncating, and a truncated set would be a capability nobody planned.
+        let set_phys = frame();
+        let mut encoded = [0u8; fs_proto::nameset::BYTES];
+        let n = fs_proto::nameset::encode(names, &mut encoded)
+            .expect("this set does not fit one grant, so no command line could have named it");
+        // SAFETY: a fresh frame of FRAME_SIZE bytes reachable through the direct map, and `n` is at
+        // most `nameset::BYTES`, which is far smaller.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                encoded.as_ptr(),
+                mmu::phys_to_virt(set_phys) as *mut u8,
+                n,
+            )
+        };
+
+        let (lo, hi) = fs_proto::grant::pack_name(dir.as_bytes());
+        let spec = fs_proto::grant::spec(dir.len(), rights);
+
+        crate::sched::spawn(move || {
+            run(
+                warden_image,
+                Spawn {
+                    arg0: lo,
+                    arg1: hi,
+                    arg2: spec,
+                    grants: &[
+                        endpoint_cap(file_ep, Rights::WRITE), // slot 0: CALL the FS server
+                        endpoint_cap(narrow_ep, Rights::READ), // slot 1: serve the narrowed capability
+                        endpoint_cap(warden_ready, Rights::WRITE), // slot 2: readiness, once
+                    ],
+                    maps: &[
+                        Mapping {
+                            va: FILE_VA_CLIENT,
+                            phys: file_shared,
+                            flags: Flags::user_data(),
+                        },
+                        // **Read-only, and that is not decoration.** The set is the namespace this
+                        // process serves; a writable mapping would let the one program that must not
+                        // be able to widen its own grant do exactly that.
+                        Mapping {
+                            va: SET_VA_WARDEN,
+                            phys: set_phys,
+                            flags: Flags::user_rodata(),
+                        },
+                    ],
+                },
+            )
+        })
+        .expect("could not spawn the set warden");
+
+        await_service(readiness);
+        await_warden(warden_ready);
+
+        Some(spawn_fs_client(
+            client_image,
+            narrow_ep,
+            file_shared,
+            client_role,
+            client_arg,
+            client_arg2,
+            stack_pages,
+        ))
+    }
+
     /// The `std::fs` client's heap budget and extra stack. Same magnitudes as the networked std
     /// program: it is a full std program (formatting, `Vec`, `String`, `read_to_string`), so it
     /// needs the generous heap and the deep stack std's machinery wants.
@@ -12147,6 +12279,170 @@ mod rm_program_tests {
         assert_eq!(
             did.printed, 0,
             "success prints nothing; `-v` is the option that changes that",
+        );
+    }
+}
+
+/// **Globbing: the expansion you see is the grant** (milestone 47's globbing lane;
+/// notes/glob-grant.md).
+///
+/// One module for both ISAs, for [`dir_capability_tests`]'s reason: nothing here is
+/// architecture-specific, so the parity gate (DECISIONS §19) is met by the same test running twice.
+///
+/// What is wired is the **real shell binary** (expanding one pattern two ways over a real
+/// `READDIR`) and then the **real `rm` binary** behind a real `swarden`. The argument the two halves
+/// make together is the one Unix cannot make: the names a command displays are literally the
+/// authority it would transfer, and nothing else in the directory moves.
+#[cfg(test)]
+mod glob_grant_tests {
+    use super::*;
+    use crate::sched;
+    use fs_proto::dir;
+    use fs_proto::fixture::{VERDICT, globscape as gb, rm as rr, tree};
+
+    /// The `shell` binary's globbing role (`user/src/shell.rs`).
+    const ROLE_GLOB: u64 = 2;
+
+    /// The most messages one `rm` run may send before the harness stops reading, as
+    /// [`rm_program_tests`] bounds it and for the same reason.
+    const MAX_MESSAGES: usize = 64;
+
+    /// The set `gl-*.txt` matches in the fixture, which `fs_proto`'s host test pins against the
+    /// matcher. Stated literally here because building a grant is the one thing the kernel can do
+    /// without an enumeration, and proved to *be* the expansion over there.
+    const MATCHED: [(&[u8], bool); 2] = [
+        (tree::GLOB_ONE.as_bytes(), false),
+        (tree::GLOB_TWO.as_bytes(), false),
+    ];
+
+    /// **The two phases are one test**, and the order is load-bearing rather than incidental: the
+    /// shell expands the pattern over the fixture as staged, and the second phase then removes what
+    /// it matched. Run the other way round, the expansion would find nothing and the agreement would
+    /// be an agreement about the empty set.
+    ///
+    /// Splitting them into two `#[test_case]`s would make that ordering a property of the harness,
+    /// which is exactly the order-coupled fixture DECISIONS §27 spent a day on.
+    #[test_case]
+    fn what_a_shell_shows_is_what_a_set_grant_takes_away() {
+        let Some(shown) = shell_expanded() else {
+            crate::println!("    (no RedoxFS disk attached; skipping)");
+            return;
+        };
+        assert_shell_agreed(shown);
+        a_set_capability_cannot_name_a_stranger();
+        the_set_grant_removes_exactly_the_match();
+    }
+
+    /// Phase one: a shell rooted in `globset` runs `echo gl-*.txt` and plans `rm gl-*.txt`, and
+    /// reports whether the two produced the same names.
+    ///
+    /// The rights it is granted are what expansion actually costs: `ENUMERATE` to list the
+    /// directory, `DESCEND` because the shell walks a path with `OPENDIR`, and `READ` so a listing
+    /// is not the only thing it could ever do. There is no `REMOVE` in it at all, which is the point
+    /// of `echo` being the half that demonstrates this: **showing the authority costs none of it.**
+    fn shell_expanded() -> Option<u64> {
+        let report = fs_service::start_granted_dir(
+            dir_capability_tests::blk_server_image(),
+            program("fsserver").expect("no fsserver program in the initrd archive"),
+            program("dwarden").expect("no dwarden program in the initrd archive"),
+            program("shell").expect("no shell program in the initrd archive"),
+            fs_service::DirGrant {
+                name: tree::GLOBSET,
+                rights: dir::ENUMERATE | dir::DESCEND | dir::READ,
+                role: ROLE_GLOB,
+                // The shell is told what its capability carries, for notes/shell-navigation.md's
+                // reason: nothing on this wire reports what a handle holds.
+                arg: fs_proto::grant::spec(0, dir::ENUMERATE | dir::DESCEND | dir::READ),
+                arg2: 0,
+                stack_pages: 2,
+            },
+        )?;
+        let [tag, verdict, ..] = sched::ipc_recv(report);
+        assert_eq!(tag, VERDICT, "the shell's report is not a verdict word");
+        Some(verdict)
+    }
+
+    fn assert_shell_agreed(v: u64) {
+        assert_eq!(
+            v & gb::GLOB_FAILED,
+            0,
+            "the shell could not plan the grant at all, so nothing it reported means anything",
+        );
+        let want = gb::EXPANDED
+            | gb::AGREED
+            | gb::EXCLUDED_A_STRANGER
+            | gb::NO_MATCH_REFUSED
+            | gb::PATTERN_IN_PATH_REFUSED
+            | gb::TEXT_UNTOUCHED;
+        assert_eq!(
+            v, want,
+            "the globbing witness reported {v:#x}, wanted {want:#x}",
+        );
+    }
+
+    /// Run `rm` once behind a `swarden` holding [`MATCHED`] inside `globset`.
+    ///
+    /// `name` empty means [`fs_proto::grant::WHOLE_NAMESPACE`]: the operand is the set, and `rm`
+    /// learns it by enumerating the capability it was handed.
+    fn run_rm(name: &str, flags: u64) -> (u64, u64) {
+        let (lo, hi) = fs_proto::grant::pack_name(name.as_bytes());
+        let report = fs_service::start_granted_set(
+            dir_capability_tests::blk_server_image(),
+            program("fsserver").expect("no fsserver program in the initrd archive"),
+            program("swarden").expect("no swarden program in the initrd archive"),
+            program("rm").expect("no rm program in the initrd archive"),
+            fs_service::SetGrant {
+                dir: tree::GLOBSET,
+                names: &MATCHED,
+                // **`REMOVE` and nothing else.** `rm *.txt` takes names out of one directory; it may
+                // not read them, write them, create beside them or walk under them. Listing the set
+                // is not on this ladder at all, because the warden answers that from the grant.
+                rights: dir::REMOVE,
+                role: fs_proto::grant::spec(name.len(), flags),
+                arg: lo,
+                arg2: hi,
+                stack_pages: 4,
+            },
+        )
+        .expect("the FS service was wired by the shell phase");
+
+        for _ in 0..MAX_MESSAGES {
+            let [w0, w1, w2, _, _] = sched::ipc_recv(report);
+            if w0 == VERDICT {
+                return (w1, w2);
+            }
+            assert!(w0 <= 16, "neither a verdict nor a text frame: {w0:#x}");
+        }
+        panic!("rm sent {MAX_MESSAGES} messages and never a verdict");
+    }
+
+    /// **The attacker, and it is `rm` itself.** Told to remove a name that exists, sits one
+    /// directory entry away from the two it was granted, and that the warden one hop up could remove
+    /// on any request it liked.
+    ///
+    /// It gets `ENOENT`: in this scope there is no such name. Nothing consulted a permission, and
+    /// nothing in `rm` decided not to try, which is what makes this a fact about the capability.
+    fn a_set_capability_cannot_name_a_stranger() {
+        let (status, removed) = run_rm(tree::GLOB_MISS, 0);
+        assert_eq!(
+            status,
+            rr::status(2), // ENOENT
+            "a name outside the set must not be nameable through a set capability",
+        );
+        assert_eq!(removed, 0);
+    }
+
+    /// **And the grant works**, which is what stops the refusal above being equally true of a
+    /// capability that reaches nothing. Two names in, two names removed, and the two the pattern did
+    /// not match are still on the disk, asserted from the host by
+    /// `xtask::redoxfs_glob_grant_took_exactly_the_match`.
+    fn the_set_grant_removes_exactly_the_match() {
+        let (status, removed) = run_rm("", 0);
+        assert_eq!(status, rr::OK, "the set grant reported a failure");
+        assert_eq!(
+            removed,
+            MATCHED.len() as u64,
+            "a set grant must remove every name in it, and only those",
         );
     }
 }
