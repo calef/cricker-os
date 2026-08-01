@@ -3765,11 +3765,29 @@ node's last link went), the store's name is unnameable and unlistable in every d
 shrinking blob is truncated to length so the reader never walks records nobody wrote. The
 rename-replacement case is the one removal the engine cannot report, and the server notices it.
 
-**What is not done, and is named rather than implied:** the caretakers (`fwarden`, `dwarden`,
+**BUILT 2026-08-01: the recovery side, and two of the three named gaps closed.** `redoxfs-host
+extract` puts the attributes back on the extracted files (`setxattr` on macOS, `lsetxattr` on Linux,
+neither following a symlink), `ls` marks an entry that has them with `@`, and `xattr IMAGE PATH
+[NAME]` renders or dumps them without extracting. The type code cannot come along, because no host
+filesystem has a field for one, so each is named and counted and the raw store still comes out beside
+the tree as its only home. Nothing about attributes can fail an extraction: a damaged blob, a name
+Linux refuses for want of a `user.` prefix, a destination filesystem that holds none, each is
+reported and walked past. The counts print even when zero, because "0 attributes reattached" is what
+tells you the destination cannot hold them and a summary that hid the zero would read like a backup
+that never had any (§42). The fixture is written by `fs_server::Server` itself, for the same reason
+the tree fixture goes in through upstream's archiver.
+
+The store directory now goes with the last attribute on the filesystem, which closes a limitation
+recorded for a reason that was wrong: `remove_node` on a directory already refuses with `ENOTEMPTY`,
+so the emptiness check is the engine's and costs no walk. It matters because `extract` copies the
+store out, and a leftover empty `.cricker-attrs` would land in a recovered Documents folder. And
+crash atomicity is measured rather than inherited: milestone 37's sweep now carries each name's
+attributes in its state and four attribute operations in its workload, interleaved with a write to
+the same file, so "the file and its metadata land together" is decided rather than argued.
+
+**What is still not done, and is named rather than implied:** the caretakers (`fwarden`, `dwarden`,
 `swarden`) answer `EOPNOTSUPP` to all four verbs rather than forwarding, so a program behind a
-per-file grant cannot reach its file's attributes; the host recovery tool shows the store but does
-not render or reattach attributes on `extract`; and crash atomicity is inherited from the transaction
-boundary rather than measured with an attribute write in milestone 37's workload.
+per-file grant cannot reach its file's attributes (that is milestone 61's job).
 
 
 - **Extend the on-disk format.** Correct, and atomic by construction since the metadata rides
@@ -3795,6 +3813,36 @@ either way.**
 | GPT writing | None | The `mkpart` equivalent. Protective MBR, header, entry array, two CRC32s, backup header at the last LBA |
 | `mkfs` on the target | Host only | `redoxfs-host mkfs IMAGE SIZE_MIB` is a std host tool; the FS server is `no_std` |
 | Block device enumeration | None | "What drives are attached", which is enumeration again and bounded by capabilities exactly as milestone 47's globbing and completion are |
+
+#### Finding 2026-08-01: `mkfs` on the target is blocked on **entropy**, not on `std`
+
+Investigated and measured, because "the FS server is `no_std` and the creation APIs are std-gated"
+reads like a dead end and is not the real constraint.
+
+`FileSystem::create` and `create_reserved` carry `#[cfg(feature = "std")]`, and so do the imports
+they need and `Header::new`. Un-gating them is mechanical for all but **one** call:
+`Header::new` stamps a fresh v4 UUID into the header with `uuid::Uuid::new_v4()`, which is
+`getrandom`, which is the std path. The encryption branch wants randomness too (`Salt::new`,
+`Key::new`), and that one does not matter here because this volume is deliberately unencrypted.
+
+So the blocker is that **a filesystem needs a unique identifier and the engine has no source of
+randomness in a `no_std` build.** cricker-os does: milestone 55's entropy service. The shape of the
+fix is therefore small and upstreamable, and it is the shape upstream already uses one line away:
+`create` takes `ctime` and `ctime_nsec` as *parameters* precisely because a `no_std` engine has no
+clock. A `Header::new_with_uuid(size, uuid: [u8; 16])` does for randomness exactly what those
+parameters do for time, and the caller (which has an entropy capability) supplies it.
+
+**The same problem appears twice in this milestone, and has the same answer both times.**
+notes/gpt.md already records that `crates/gpt` will not invent a partition GUID, for the identical
+reason: "a GUID that is not random is not unique, this crate has no randomness, and inventing one
+from a counter would be worse than refusing." Partitioning and formatting on the target are both
+gated on plumbing the entropy service to the program that does them, and neither is gated on `std`.
+
+This is a **decision for Chris**, because the fix is a divergence from the pin (SUBMIT-REDOXFS-PATCH.md
+is the mitigation), and §46's rule is that taking one is a decision rather than a convenience. It is
+also worth weighing against the pragmatic alternative: `redoxfs-host` on a Mac can partition and
+format the drive today, which is what actually gets a disk ready for the board on 2026-08-21, and the
+target-side version is then a capability demonstration rather than a prerequisite.
 
 **GPT is a good crate to write.** Pure computation, well specified, so it is host-tested with tests in
 milliseconds, and it has real Kani targets: CRC round-trip, primary and backup headers agreeing,
