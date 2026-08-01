@@ -124,7 +124,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 58 | NOT-STARTED | RISC-V TLB shootdown, and the flush that makes ASIDs pointless | every riscv context switch discards the whole TLB; the fix needs a **software** shootdown protocol, because `sfence.vma` does not broadcast |
 | 59 | NOT-STARTED | The CPU-model matrix: stop testing against one generous emulator | `-cpu rv64` enables nearly every ratified extension; the board is an RV64GC U74. Run the suite across `-cpu` profiles so "works on the generic model" surfaces before the hardware does |
 | 60 | NOT-STARTED | ISA discovery: read the machine instead of assuming it | nothing reads `riscv,isa-extensions`; RISC-V has no `CPUID`, so the device tree plus targeted probes are the architected answer. One `Isa` record, built at boot, printed at boot |
-| 61 | NOT-STARTED | The wardens should attenuate a contract, not enumerate its verbs | all three answer `EOPNOTSUPP` to xattr because each is a hand-written match over verbs; 4 verbs x 3 wardens recurs on every contract addition. A verb table in `fs_proto` inverts the failure mode |
+| 61 | NOT-STARTED | The caretakers: one verb table, and names that say what you get | all three answer `EOPNOTSUPP` to xattr because each is a hand-written match over verbs; 4 verbs x 3 wardens recurs on every contract addition. A verb table in `fs_proto` inverts the failure mode |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -3206,9 +3206,80 @@ assumes Sv39 on an Sv48 machine is the same violation one layer down.
 **Effort: not estimated.** Parsing is small; how many call sites genuinely need to vary is the unknown,
 and milestone 59 is what answers it.
 
-### 61. The wardens should attenuate a contract, not enumerate its verbs
+### 61. The caretakers: one verb table, and names that say what you get
 
-**Status: NOT-STARTED.** Chris asked on 2026-08-01 whether xattr support in the wardens deserved a
+**Renamed and rescoped 2026-08-01** after Chris asked why there are three of these and whether we
+expect more. Investigating that **refuted the collapse this milestone was first drafted around**, and
+the refutation is worth keeping because it is already argued in the tree.
+
+#### The collapse that does not work
+
+The three serve near-identical verb surfaces (`subtree` and `nameset` are identical at 18 verbs), so
+"one program parameterized by how the namespace is described" looks obviously right. It is wrong, and
+`swarden.rs`'s own header carries a section titled *"Why this is a third warden and not a mode on the
+second"* saying why:
+
+**`dwarden` performs no checks at all, and that is its design.** One `OPENDIR` at startup, with the
+server intersecting the granted rights and minting a restricted handle; everything after is reached
+through that handle, so the attenuation lives in what the server minted rather than in any branch. A
+name filter is a check, consulted on **every** name-taking verb. Adding a mode would trade that
+program's one strong property for a switch, and put a forget-a-verb surface in the program that most
+deliberately has none.
+
+So the two serve the same verbs **by opposite means**. They stay separate.
+
+`fwarden` is different again: it translates between two *protocols*, directory in and file out, which
+is why it must inspect. Its narrow 11-verb surface is deliberate, and the tell is the errno.
+`CREATE` answers `ENOTDIR`, not `EACCES`, because a file capability is not a directory: the request
+does not mean anything, rather than meaning something that was refused. **The verb surface is part of
+what the capability is**, not a filter over a wider one.
+
+#### What the milestone is
+
+1. **A verb table in `fs_proto`**, so a verb is taught once rather than three times. This survives
+   the refutation: the duplication is real even though the programs must stay distinct. Today a new
+   verb is simply absent from a caretaker and the capability silently is not there, which is exactly
+   how the xattr gap happened.
+2. **Extended-attribute forwarding**, the gap that raised this. All three answer `EOPNOTSUPP`, so a
+   program behind a per-file grant cannot read its own file's attributes.
+3. **The rename**, because these files are being touched anyway and doing it twice is worse.
+
+#### The rename
+
+`warden` is a synonym we invented for a pattern that has a name. `DECISIONS.md` §31 already cites the
+right one, **caretaker** (Mark Miller's term), while the code says warden; §50 settled that using the
+existing name claims "this is that", and inventing a synonym asserts novelty where there is none.
+
+Names say **what the holder ends up able to do**, so a reader can predict the surface without opening
+the file:
+
+| Current | Proposed | A reader should predict |
+|---|---|---|
+| `fwarden` | `file_caretaker` | a file; cannot list or create |
+| `dwarden` | `subtree_caretaker` | a directory and everything under it |
+| `swarden` | `nameset_caretaker` | exactly these names, in one directory |
+| `cwarden` | `c_confiner` | **not a caretaker**: holds a region and confines foreign code |
+
+`dwarden` is the one that buys correctness rather than clarity: it is named for what it **holds**,
+while both siblings are named for what they **serve**, and since all three hold a directory the
+current name distinguishes nothing.
+
+**Program names are Chris's call** (CLAUDE.md). The table above is a proposal.
+
+#### BUGS
+
+- **A table is a new place to be wrong, and a wrong row is wrong in three programs at once.** It is
+  pure data in a host-testable crate, so Kani and host tests can reach it, which a hand-written match
+  in a `no_std` binary cannot.
+- **It does not make the caretakers interchangeable**, and after the refutation above it must not try
+  to. Only the verb dispatch is shared; what each attenuates to stays hand-written.
+
+**Effort: medium.** The table is small; teaching three programs and proving each on both ISAs is the
+work, and the rename touches roughly 180 references.
+
+#### The draft this replaced
+
+The original framing, kept because the refutation above is only legible next to it. Chris asked on 2026-08-01 whether xattr support in the wardens deserved a
 milestone. It does, but the useful milestone is the general one, and the xattr gap is its proof.
 
 #### The immediate gap
