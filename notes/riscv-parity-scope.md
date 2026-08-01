@@ -129,7 +129,7 @@ tests came along unchanged once three things moved.
    comment stood in for a real blocker for a year, which is this note's recurring lesson in a new
    costume.
 
-**Two defects the port surfaced, both invisible until the tests ran on the second machine.**
+**Three defects the port surfaced, all invisible until the tests ran on the second machine.**
 
 - **init built the wrong program.** Several init roles in `hello` build a child out of *this
   binary's own* ELF and re-enter it at another role, and they found that ELF by reading the archive
@@ -148,6 +148,17 @@ tests came along unchanged once three things moved.
   something earlier in the suite had already faulted at the same address for the same reason. Fixed
   by storing the record first and making the counter's `fetch_add` the `Release`, with an `Acquire`
   fence in the accessor.
+
+- **A reap wait that was really waiting for the whole machine.**
+  `reclaim_frees_a_started_then_exited_childs_regions` waited for `thread_count()` to return to a
+  baseline it sampled at the top of the test. `thread_count()` is the size of the *entire* thread
+  table, and the top of the test is exactly when the previous tests' processes are still tearing
+  down, so the baseline was a number the system would move on its own. It failed that way once on
+  RISC-V, where the slower machine leaves more teardown in flight, and passed on a re-run, which is
+  the signature of a wait written against something wider than the property. `sched::thread_present`
+  asks whether *this* child was reaped. Third time for this shape: the wait was a yield count until
+  §28's cross-core placement broke it, then a clock-bounded headcount until this. **Widening the
+  timeout would have hidden it each time.**
 
 **The assertions were broken on purpose to check they still bite** (a ported test that has never
 failed is not evidence it still catches what the original caught). Four representative properties,
