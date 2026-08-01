@@ -3301,11 +3301,37 @@ current name distinguishes nothing.
 - **`cwarden` becomes `c_confiner`**, out of the caretaker family entirely: it holds a **region** and
   confines foreign code rather than attenuating a directory capability to a narrower one.
 
+#### The qualifiers, settled 2026-08-01
+
+`file_caretaker`, `subtree_caretaker`, `nameset_caretaker`. Each says what the holder ends up able
+to do, so a reader can predict the surface without opening the file: a file and no way to list, a
+directory and everything beneath it, exactly these names in one directory.
+
+`file_` rather than `one_file_`, because the cardinality is not the interesting property. **You
+cannot enumerate at all**, so "one versus few" never comes up; `file_` implies the whole thing while
+`one_file_` emphasises the least surprising part.
+
+`nameset_` rather than `glob_`, because §52 records that a BFS-style query result and a glob result
+are **the same object**, granted by the same attenuation. The name is about a designated set of
+names; globbing is merely its only caller today.
+
+**`subtree_` carries a known reservation, noted by Chris and recorded rather than argued away: "tree"
+means three things around here.** `supervision_proto` is *the supervision tree*; `CLAUDE.md` uses
+"the tree" throughout to mean the repository; and git has its own `subtree`. It was taken anyway
+because the alternatives are worse. `directory_` renames it for what it **holds**, which is the exact
+defect this rename exists to fix, since all three hold a directory capability. `region_` collides
+with `crates/regions` and untyped memory. `path_` is loaded by §48 and §50. And the word has to carry
+*extent* rather than *level*, because the holder gets the whole cone: `OPENDIR`, `READDIR` and `ROOT`
+with handles renumbered, so descent is free. **The doc comment is where the overload gets
+disambiguated**, in one sentence, at the top of the file.
+
+The source is currently inconsistent about this and the rename resolves it: `dwarden.rs`'s header
+says "attenuated to one **subtree**" while its second paragraph says "narrows it to one
+**directory**".
+
 #### Still open, and Chris's
 
-The **qualifiers** for the three: `file_` / `subtree_` / `nameset_` is the proposal, with
-`one_file_caretaker` and `name_caretaker` live alternatives for the first. And whether the C-seam
-siblings (`cshim`, `cseam`) convert in the same pass.
+Whether the C-seam siblings (`cshim`, `cseam`) convert in the same pass, and the `conx` pair.
 
 **Scope, which is the part to decide before starting.** There are **532 `warden` tokens** in the
 tree. This is not four filenames: it is helper functions, parameter names, struct fields, doc prose,
