@@ -13,8 +13,8 @@ Watson, Anderson, Laurie and Kennaway, *Capsicum: practical capabilities for UNI
 
 - **`cap_enter()`** puts a process into **capability mode**, which removes access to *global
   namespaces*: no `open()` by absolute path, no PID namespace, no sysctl by name, no `/dev`.
-- **File descriptors become capabilities.** `cap_rights_limit()` attenuates one — this fd may read
-  but not write, may not seek, may not `fstat` — with companions for ioctls and fcntls.
+- **File descriptors become capabilities.** `cap_rights_limit()` attenuates one: this fd may read
+  but not write, may not seek, may not `fstat`, with companions for ioctls and fcntls.
 - **`openat()` against a directory fd becomes the only way to reach a file**, which makes a directory
   fd a directory capability.
 
@@ -32,7 +32,7 @@ design needs defending.
 The second convergence is sharper. Capability mode broke `getaddrinfo()`, because DNS resolution
 needs `/etc/resolv.conf` and there is no path to open it with. FreeBSD's answer is **`libcasper`**: a
 helper process that retains the wider authority and serves a narrow interface to the sandboxed
-program. That is **exactly the warden pattern** — `fwarden` holding a directory capability and
+program. That is **exactly the warden pattern**: `fwarden` holding a directory capability and
 exporting one file, `cwarden` holding a region and confining a C component. Two projects, opposite
 directions, same answer.
 
@@ -43,7 +43,7 @@ new operating system, on a production OS, today, running real software.
 
 It is also **the best evidence for building it**, and the evidence is the Capsicum authors' own. Their
 experience reports document that converting applications is laborious, because Unix APIs assume
-ambient authority *everywhere* — `getaddrinfo` is the canonical case but far from the only one. Every
+ambient authority *everywhere*: `getaddrinfo` is the canonical case but far from the only one. Every
 converted program needs a helper service, an audit, and a reorganisation into "acquire authority, then
 drop it".
 
@@ -52,11 +52,11 @@ So the honest framing, and the one to use when asked:
 > Capsicum proves the model works on real software. It also proves that retrofitting it costs a
 > per-application conversion effort, forever, because the surrounding API assumes the thing the model
 > removes. The interesting question a fresh system answers is what the API looks like when ambient
-> authority was never available to assume — and that is what we are measuring.
+> authority was never available to assume, and that is what we are measuring.
 
 ## The cautionary data point: CloudABI
 
-Ed Schouten's CloudABI went further — a POSIX-*like* runtime with **no** ambient authority at all,
+Ed Schouten's CloudABI went further: a POSIX-*like* runtime with **no** ambient authority at all,
 where a process starts with exactly the descriptors it was given. Closest thing to our model that has
 ever shipped as a general runtime.
 
@@ -74,7 +74,7 @@ should not accidentally start making product claims for one.
 
 FreeBSD jails (2000, thirteen years before Docker) partition the namespace: a jailed process sees a
 subset of the filesystem, its own network stack, its own process table. But **within** a jail,
-authority is ambient — root in a jail is root over everything in the jail.
+authority is ambient: root in a jail is root over everything in the jail.
 
 That is isolation by **partitioning**, not by **designation**. It is genuinely useful and it is
 categorically not this. "FreeBSD already has containers" is a common way to misread the comparison,

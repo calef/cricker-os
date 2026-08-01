@@ -40,7 +40,7 @@ considered had to be JH7110-class or better (see [mmu.md](mmu.md)).
 | **AWS Graviton bare-metal EC2** (`c7g.metal`) | UEFI. Rent by the hour; no hardware to buy or brick | SBSA-standard server ARM | **Interesting for a specific reason.** See below. |
 | **Ampere Altra** workstations / dev kits | UEFI | Standards-compliant | Same category, but you'd own it |
 | **Android phones** with unlockable bootloaders (Pixel, Fairphone) | fastboot | Poor. Qualcomm peripherals are barely documented, and you fight TrustZone | Painful. Possible, rarely rewarding. |
-| **iPhone, iPad, Apple TV** | Locked, signed | — | No |
+| **iPhone, iPad, Apple TV** | Locked, signed |: | No |
 
 ## The wild one: an Apple Silicon Mac
 

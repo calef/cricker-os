@@ -236,7 +236,7 @@ fn std_inputs_stamp() -> u64 {
         // **Hash the path RELATIVE to the workspace root, never the absolute path.** An absolute path
         // makes the stamp a function of *where the checkout lives*, so two trees with byte-identical
         // inputs never match, `std_src` rebuilds the farm unconditionally, and `rustup toolchain link`
-        // repoints `cricker-dev` — which is global to the machine, not to the worktree. That is the
+        // repoints `cricker-dev`, which is global to the machine, not to the worktree. That is the
         // race behind three broken toolchains on 2026-07-31: an agent worktree ran `script/test`, took
         // the link, and deleting that worktree left `cricker-dev` dangling for everything else, failing
         // far from the cause as "override toolchain 'cricker-dev' is not installed".

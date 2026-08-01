@@ -17,7 +17,7 @@ cd redoxfs
 git checkout -b no-std-vec-import
 git am ~/projects/cricker-os/patches/redoxfs-no-std-vec-import.patch
 git push -u origin no-std-vec-import
-# GitLab prints a "create merge request" URL — open it
+# GitLab prints a "create merge request" URL: open it
 ```
 
 ## MR title

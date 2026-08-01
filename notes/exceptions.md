@@ -50,22 +50,22 @@ test for it.
 
 ### The four kinds
 
-- **Synchronous** — caused by the instruction being executed. Data abort, instruction abort,
+- **Synchronous**: caused by the instruction being executed. Data abort, instruction abort,
   illegal instruction, `svc`, `brk`, alignment fault. *Precise*: `ELR_EL1` points at (or just
   past) the offending instruction.
-- **IRQ** — a normal interrupt. Asynchronous; it has nothing to do with what you were running.
-- **FIQ** — "fast interrupt," a higher-priority class. Mostly used by the secure world these
+- **IRQ**: a normal interrupt. Asynchronous; it has nothing to do with what you were running.
+- **FIQ**: "fast interrupt," a higher-priority class. Mostly used by the secure world these
   days. We treat it as fatal.
-- **SError** — System Error. Asynchronous, and usually a bus error or ECC failure. Genuinely
+- **SError**: System Error. Asynchronous, and usually a bus error or ECC failure. Genuinely
   bad news; the machine is broken.
 
 ### The four sources
 
-- **Current EL, SP_EL0** — we're at EL1 but using `SP_EL0`. Kernels almost never do this.
-- **Current EL, SP_ELx** — we're at EL1 using `SP_EL1`. **This is where our own bugs land.**
-- **Lower EL, AArch64** — came from EL0. **This is where userspace lands**, and where milestone
+- **Current EL, SP_EL0**: we're at EL1 but using `SP_EL0`. Kernels almost never do this.
+- **Current EL, SP_ELx**: we're at EL1 using `SP_EL1`. **This is where our own bugs land.**
+- **Lower EL, AArch64**: came from EL0. **This is where userspace lands**, and where milestone
   7's syscalls will arrive.
-- **Lower EL, AArch32** — 32-bit userspace. We will never support it.
+- **Lower EL, AArch32**: 32-bit userspace. We will never support it.
 
 ## 128 bytes is 32 instructions
 
@@ -86,9 +86,9 @@ execution resumes with no way to detect the interruption ever happened.
 
 Two registers beyond the general-purpose file are essential:
 
-- **`ELR_EL1`** — Exception Link Register. *Where the interrupted code resumes.* `eret` reloads
+- **`ELR_EL1`**: Exception Link Register. *Where the interrupted code resumes.* `eret` reloads
   the program counter from it.
-- **`SPSR_EL1`** — Saved Program Status Register. The processor state (condition flags,
+- **`SPSR_EL1`**: Saved Program Status Register. The processor state (condition flags,
   exception level, interrupt masks) at the moment of the exception. `eret` restores it, and
   **that includes the exception level**, which is exactly how milestone 7 will enter userspace:
   set `SPSR_EL1` to say EL0, and `eret` drops privilege.
@@ -112,11 +112,11 @@ the single most useful field in the machine when something has gone wrong.
 
 | EC | Meaning |
 |---|---|
-| `0x15` | **SVC from AArch64** — a syscall. Milestone 7. |
-| `0x21` | Instruction abort, same EL — we jumped somewhere bad |
-| `0x24` | Data abort, **lower** EL — *userspace* touched bad memory. Milestone 7 makes this a segfault. |
-| `0x25` | Data abort, same EL — **the kernel** touched bad memory. Our bug. |
-| `0x26` | SP alignment fault — `sp` wasn't 16-byte aligned |
+| `0x15` | **SVC from AArch64**: a syscall. Milestone 7. |
+| `0x21` | Instruction abort, same EL: we jumped somewhere bad |
+| `0x24` | Data abort, **lower** EL: *userspace* touched bad memory. Milestone 7 makes this a segfault. |
+| `0x25` | Data abort, same EL: **the kernel** touched bad memory. Our bug. |
+| `0x26` | SP alignment fault: `sp` wasn't 16-byte aligned |
 | `0x3c` | `BRK` instruction |
 
 **`FAR_EL1`** (Fault Address Register) holds the address that faulted, but **only for aborts

@@ -155,7 +155,7 @@ Impossible. Look at [deadlock.md](deadlock.md): this destroys condition 4, circu
 outright.
 
 That makes it **prevention, not detection**. Linux's `lockdep` builds a dependency graph at
-runtime and hunts for cycles — powerful, and expensive. Ranking costs three instructions and
+runtime and hunts for cycles: powerful, and expensive. Ranking costs three instructions and
 *cannot be wrong*. FreeBSD (WITNESS) and Solaris use the same mechanism.
 
 Two locks at the **same** rank may never nest (`R < R` is false), which is exactly right: equal
@@ -165,7 +165,7 @@ random.
 ### A design it would have caught
 
 `memory::ram_regions()` used to return an iterator that **held the RAM lock while the caller
-iterated**. `mmu::map_everything` iterates it and *allocates frames inside the loop* — so it
+iterated**. `mmu::map_everything` iterates it and *allocates frames inside the loop*, so it
 would have held RAM (30) while taking FRAMES (30), and `30 < 30` is false. The ranking would
 have failed it on the spot. (We happened to fix it for other reasons first, which is not a
 system.)

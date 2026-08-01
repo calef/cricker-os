@@ -25,7 +25,7 @@
 # `set_perm_nofollow` exactly as forecast below, and adding it to the `pub use unsupported_fs::{...}`
 # list did NOT fix it: that version takes `unsupported_fs::FilePermissions` and the overlay defines
 # its own, so the signature does not match. It needed a local twin of `set_perm` instead. **The
-# re-export list is the common repair, not the only one** — when upstream's function touches a type
+# re-export list is the common repair, not the only one**, when upstream's function touches a type
 # the overlay replaces, the overlay has to implement it. A scheduled non-gating CI job against a newer nightly, so the
 # bump is a notice rather than a surprise, is still outstanding (roadmap milestone 42's neighbourhood).
 channel = "nightly-2026-07-31"

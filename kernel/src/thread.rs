@@ -197,7 +197,7 @@ impl Drop for KernelStack {
 
             // `unmap_page` discharges the TLB obligation with a real `tlbi`. It has to, and the
             // reason is right here: this virtual address is about to be handed to a **different
-            // thread's stack**. A stale translation would let the new thread read — and write —
+            // thread's stack**. A stale translation would let the new thread read (and write)
             // the dead thread's saved registers. See notes/page-tables.md.
             if mmu::unmap_page(va).is_ok() {
                 crate::kmem::recycle(phys); // home to the kernel budget, not the frame allocator
@@ -248,7 +248,7 @@ pub enum State {
 /// A process (the shell, say) that spawns children can be given a quota: at most N children alive
 /// at once. Reserving a slot is an atomic decrement; a `QuotaToken` holds that reservation, and
 /// its `Drop` gives it back. Because the token lives inside the `Thread`, the slot is returned at
-/// exactly the moment the reaper drops the thread — a well-behaved child that exits frees its slot,
+/// exactly the moment the reaper drops the thread: a well-behaved child that exits frees its slot,
 /// and a child that blocks forever keeps holding it, which is correct: it is still consuming a
 /// thread, a stack, and an address space. This is what bounds kernel memory against a spawn flood
 /// or a leaked-thread accumulation without any per-tick bookkeeping. See notes/quotas.md.
@@ -440,7 +440,7 @@ impl Thread {
     /// The thread we are already running on, at `sched::init`.
     ///
     /// It has no stack of its own (it uses the boot stack) and no saved context yet: the first
-    /// `switch_to` *away* from it is what fills that in. Which is the neat part — a thread's
+    /// `switch_to` *away* from it is what fills that in. Which is the neat part: a thread's
     /// context is written by the act of leaving it, so the boot thread needs no special case
     /// beyond a null placeholder.
     pub fn boot() -> Self {
@@ -661,7 +661,7 @@ extern "C" fn thread_entry(closure: *mut (), call: extern "C" fn(*mut ())) -> ! 
     // does after `switch_to`. A new thread does not pass through `schedule()`'s post-switch point,
     // so this is the only place that reap happens for it. See sched::finish_switch.
     //
-    // We arrive with IRQs masked (the trampoline no longer unmasks early — doing so before this
+    // We arrive with IRQs masked (the trampoline no longer unmasks early: doing so before this
     // call stranded the predecessor when a timer IRQ overwrote `switched_from`; see context.s).
     // `finish_switch` therefore runs masked, as it must. Only now, once it has completed, do we
     // unmask, so this kernel thread's closure is preemptible.

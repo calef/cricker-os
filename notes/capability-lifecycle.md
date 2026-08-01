@@ -89,7 +89,7 @@ server reading a buffer shared by an untrusted client:
 
 **The console server is the worked example, and it is safe *because* it follows this** (checked):
 the length rides the message (`recv(REQUEST)`), the shared page holds only bytes to print (a
-content TOCTOU just prints different bytes — benign), and an over-long length is a *read out of the
+content TOCTOU just prints different bytes: benign), and an over-long length is a *read out of the
 server's own mapping* that faults the server, i.e. a crashed driver, not a corrupted kernel
 (user/src/hello.rs). A future server that read a length or offset *from the page*, or indexed on
 page contents, would not be safe, and the read-only bit would not save it.

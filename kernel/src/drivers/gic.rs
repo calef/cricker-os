@@ -20,9 +20,9 @@
 //!
 //! | INTID | Kind | |
 //! |---|---|---|
-//! | 0-15 | **SGI** — Software Generated | one core kicking another. How SMP bringup and TLB shootdown work. |
-//! | 16-31 | **PPI** — Private Peripheral | *per-core*. The timer is one of these, and it has to be: every core needs its own. |
-//! | 32+ | **SPI** — Shared Peripheral | the UART, the disk. Any core may service them. |
+//! | 0-15 | **SGI**: Software Generated | one core kicking another. How SMP bringup and TLB shootdown work. |
+//! | 16-31 | **PPI**: Private Peripheral | *per-core*. The timer is one of these, and it has to be: every core needs its own. |
+//! | 32+ | **SPI**: Shared Peripheral | the UART, the disk. Any core may service them. |
 //!
 //! **The timer is a PPI (INTID 30) and that is not an accident.** A timer that fired on only
 //! one core could not preempt threads on the others. Each core has its own timer, its own
@@ -171,8 +171,8 @@ pub fn init_this_cpu() {
     // Let everything through, then turn it on.
     //
     // ORDER: the mask before the enable. The other way round leaves a window where the interface is
-    // live with whatever PMR the firmware left behind, which on a cold boot is often 0 — "deliver
-    // nothing" — and you spend an afternoon wondering why your timer is silent.
+    // live with whatever PMR the firmware left behind, which on a cold boot is often 0: "deliver
+    // nothing", and you spend an afternoon wondering why your timer is silent.
     gic.gicc().PMR.set(PRIORITY_MASK);
     gic.gicc().CTLR.write(GICC_CTLR::ENABLE::SET);
 }

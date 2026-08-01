@@ -125,7 +125,7 @@ one `.app` could run natively on both old and new machines. ELF has no equivalen
 > [design/fat-binaries.md](../design/fat-binaries.md).
 
 **PE** (Portable Executable, Windows NT 1993) extends **COFF**, AT&T's *previous* Unix
-object format from the early 1980s — the one ELF was designed to replace. NT development
+object format from the early 1980s: the one ELF was designed to replace. NT development
 started ~1988; the team took the well-understood format they had and extended it for DLLs
 and Windows' resource system. They had zero incentive to adopt a brand-new, unproven,
 competitor's-Unix standard.
@@ -263,7 +263,7 @@ about it**, and the test binary deliberately has a `.bss` variable it checks is 
 ## The loader honours permissions and does not widen them
 
 An ELF's `.rodata` segment is `PF_R` **alone**. The tempting shortcut is to map every
-non-executable segment as `user_data()` — which is **writable**, quietly granting the program
+non-executable segment as `user_data()`, which is **writable**, quietly granting the program
 authority its own file never asked for.
 
 `paging::Flags` grew a `user_rodata()` for exactly this. Three segment shapes, three
@@ -271,9 +271,9 @@ constructors, no widening:
 
 | ELF says | We map |
 |---|---|
-| `PF_R \| PF_X` | `user_code()` — readable and executable at EL0, **PXN** so the kernel can never execute it |
-| `PF_R` | `user_rodata()` — readable at EL0 and *nothing else* |
-| `PF_R \| PF_W` | `user_data()` — readable and writable, **UXN and PXN** |
+| `PF_R \| PF_X` | `user_code()`: readable and executable at EL0, **PXN** so the kernel can never execute it |
+| `PF_R` | `user_rodata()`: readable at EL0 and *nothing else* |
+| `PF_R \| PF_W` | `user_data()`: readable and writable, **UXN and PXN** |
 | `PF_W \| PF_X` | *refused* |
 
 ## The program has no syscalls, and says so in the only two words it has
@@ -283,8 +283,8 @@ against a capability table). So the test binary cannot **tell** the kernel anyth
 
 Instead it **checks its own image** and speaks with:
 
-- **`svc`** — everything I expected about my own memory is true.
-- **`brk`** — it is not. (Which the kernel treats as a fault, and kills it.)
+- **`svc`**: everything I expected about my own memory is true.
+- **`brk`**: it is not. (Which the kernel treats as a fault, and kills it.)
 
 **No data crosses the boundary.** The kernel counts `svc`s and faults and learns whether its
 loader is correct, without either side agreeing on the meaning of a single register. `svc` and no

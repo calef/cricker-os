@@ -28,7 +28,7 @@ end; they are the ancestor of a shipping mainstream feature.
 The design, as distinct from POSIX xattrs:
 
 - 64-bit, metadata-journaled, B+trees for directories and indexes.
-- **Attributes are typed** — string, int32, int64, float, double, raw — rather than opaque byte
+- **Attributes are typed** (string, int32, int64, float, double, raw) rather than opaque byte
   blobs.
 - **Attributes are indexed**, and the filesystem supports **live queries** over those indexes: a
   query is a first-class object that updates as files change, not a directory walk.
@@ -76,8 +76,8 @@ installers.**
 
 The PATH analysis in milestone 47 concluded that a program namespace *is* an endowment, and that
 therefore **installing a program becomes granting it into a namespace**. Haiku arrived somewhere
-structurally similar from an entirely different motive — atomic, rollback-able installs rather than
-authority — which is the useful kind of convergence: it suggests the shape is right for reasons
+structurally similar from an entirely different motive: atomic, rollback-able installs rather than
+authority, which is the useful kind of convergence: it suggests the shape is right for reasons
 beyond our thesis.
 
 **Two things we would do differently, both in our favour.** `packagefs` is a kernel filesystem; ours
@@ -88,9 +88,9 @@ for this user" is expressible without a special case.
 
 **The honest limit.** Haiku's model gives atomicity and rollback, not confinement: an activated
 package's binaries run with the user's full authority exactly as an installed one would. The
-composition is a *naming* mechanism there. Here it would be a naming mechanism too — milestone 47 is
+composition is a *naming* mechanism there. Here it would be a naming mechanism too: milestone 47 is
 explicit that extending a namespace requires already holding the capability, so it is not an authority
-increase — and the confinement comes from what a spawned program is granted, not from how it was
+increase, and the confinement comes from what a spawned program is granted, not from how it was
 installed. Do not let the resemblance suggest Haiku solved a security problem it did not address.
 
 ## See also

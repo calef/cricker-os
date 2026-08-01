@@ -2,11 +2,11 @@
 //!
 //! # Why the attributes at the top
 //!
-//! `no_std`  — there is no operating system beneath us, because we *are* the
+//! `no_std` : there is no operating system beneath us, because we *are* the
 //!             operating system. `std`'s `File::open` would make a syscall, and
 //!             there is nobody to answer it. We link only `core`.
 //!
-//! `no_main` — in a normal program `main` is not the first thing to run. The C
+//! `no_main`: in a normal program `main` is not the first thing to run. The C
 //!             runtime (`crt0`) sets up the stack, initializes libc, builds `argv`,
 //!             and *then* calls `main`. There is no libc here and nobody has set up
 //!             a stack, so there can be no `main`. Our entry point is `_start`, in
@@ -821,7 +821,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         // is kept only as dead code for reference.
         if let Some(image) = user::initrd() {
             println!();
-            println!("cricker-os — handing the system to userspace init.");
+            println!("cricker-os: handing the system to userspace init.");
             user::boot_via_init(image);
             // The boot thread's work is done; init and the services it builds run until halt.
         }

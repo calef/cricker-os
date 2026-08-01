@@ -113,8 +113,8 @@ Later milestones read more:
 
 | Milestone | Wants |
 |---|---|
-| 5 | `intc` — where the GIC is, and which interrupt the timer uses |
-| 8 | `virtio_mmio` — where the block device is |
+| 5 | `intc`, where the GIC is, and which interrupt the timer uses |
+| 8 | `virtio_mmio`, where the block device is |
 | Pi port | all of it, because none of the addresses will match |
 
 ---

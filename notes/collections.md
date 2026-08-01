@@ -2,7 +2,7 @@
 
 The four types the [heap](heap.md) gave back. Each solves a problem the stack cannot.
 
-They all live in the **`alloc` crate** — the middle layer from [no-std.md](no-std.md), between
+They all live in the **`alloc` crate**: the middle layer from [no-std.md](no-std.md), between
 `core` (needs nothing) and `std` (needs an OS). `extern crate alloc;` pulls it in, and it only
 works because we supplied a `#[global_allocator]`.
 
@@ -13,7 +13,7 @@ Vec ──────┼──▶ #[global_allocator] ──▶ our heap ──
 Box ──────┘                            (crates/heap)   (crates/frames)     (from the DTB)
 ```
 
-## `Box<T>` — "this lives on the heap, and I own it"
+## `Box<T>`: "this lives on the heap, and I own it"
 
 The simplest, and the foundation for the rest.
 
@@ -49,7 +49,7 @@ size, so it must be behind a pointer.
 **Large values you don't want on the stack.** `Box<[Option<Frame>; 1024]>` would have put the
 16 KiB array on the heap, and the [milestone 3 incident](stack.md) would never have happened.
 
-## `Vec<T>` — a growable array
+## `Vec<T>`: a growable array
 
 Three fields on the stack (24 bytes). The elements are on the heap.
 
@@ -77,7 +77,7 @@ wrote.
 and fail if it guessed low. `memory.rs` still returns `TooManyRegions` on a machine with more
 than 16 memory regions, purely because `Vec` didn't exist when it was written.
 
-## `String` — growable, owned text
+## `String`: growable, owned text
 
 Literally a `Vec<u8>` with one extra promise: **the bytes are valid UTF-8.** Same three fields,
 same doubling.
@@ -87,8 +87,8 @@ the first walls people hit in Rust:
 
 | | Owns the memory? | Can grow? | What it is |
 |---|---|---|---|
-| `String` | **yes** — heap buffer, freed on drop | yes | ptr + len + capacity |
-| `&str` | no — it is a **view** | no | ptr + len |
+| `String` | **yes**: heap buffer, freed on drop | yes | ptr + len + capacity |
+| `&str` | no: it is a **view** | no | ptr + len |
 
 A `&str` can point at a literal in `.rodata`, into the middle of a `String`'s heap buffer, or
 at bytes on the stack. It doesn't care and it doesn't own.
@@ -97,7 +97,7 @@ at bytes on the stack. It doesn't care and it doesn't own.
 
 `format!` builds a `String`, which is why it only started working at milestone 4.
 
-## `BTreeMap<K, V>` — an ordered map
+## `BTreeMap<K, V>`: an ordered map
 
 A **B-tree**: a balanced search tree where each node holds *many* keys, not one.
 
@@ -130,7 +130,7 @@ Milestone 7 wants one: a process table mapping PID → process.
 
 Every one is **"owns some heap memory, frees it when dropped."** That's `Drop`, and it is what
 makes the heap safe in Rust at all: the compiler proves the free happens exactly once, at the
-right time. See the table in [heap.md](heap.md) — use-after-free, double-free, and leaks are
+right time. See the table in [heap.md](heap.md): use-after-free, double-free, and leaks are
 *heap* problems, and ownership is the answer to all three.
 
 | Type | On the stack | On the heap |
@@ -190,7 +190,7 @@ that is still in use gets freed.
 An interrupt handler does it too, on **one** core: the interrupted code is halfway through the
 read-modify-write when the handler runs and does its own.
 
-Rust catches this — `Rc` is `!Send`, so the compiler refuses to move it across threads. But
+Rust catches this: `Rc` is `!Send`, so the compiler refuses to move it across threads. But
 knowing *why* matters, because the compiler's protection ends at the boundary of what it can
 see, and a kernel spends a great deal of time outside that boundary.
 

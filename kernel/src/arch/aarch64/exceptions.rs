@@ -457,7 +457,7 @@ fn handle_irq(_frame: &mut TrapFrame) {
         timer::TIMER_INTID => {
             timer::tick();
             // RECORD. Do not switch here: we still hold nothing, but we are mid-handler and
-            // the GIC has not been told we are done. DECISIONS.md §9 — handlers record and
+            // the GIC has not been told we are done. DECISIONS.md §9: handlers record and
             // defer. The deferral happens at the bottom of this function.
             crate::sched::on_tick();
         }
@@ -500,7 +500,7 @@ fn handle_irq(_frame: &mut TrapFrame) {
     //
     // When it does, this call does not return. It returns *in some other thread*, wherever
     // that thread last called `switch_to`. We come back here only when somebody schedules us
-    // again — and then `exception_restore` pops the TrapFrame and `eret` resumes the
+    // again, and then `exception_restore` pops the TrapFrame and `eret` resumes the
     // instruction we interrupted, which never knew any of this happened.
     //
     // **That is the whole of preemption**, and it is four lines, because milestone 2 already
@@ -600,7 +600,7 @@ mod tests {
     //!
     //! `registers_survive_an_exception` is the load-bearing one. The `TrapFrame` layout is a
     //! contract with assembly that the compiler cannot check, and a wrong offset would scramble a
-    //! register while still returning happily to the right address — corrupting a caller's state
+    //! register while still returning happily to the right address: corrupting a caller's state
     //! and blaming innocent code thousands of instructions later.
 
     /// Proves the vector table is installed, and that the hardware's alignment rule

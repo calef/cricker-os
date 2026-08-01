@@ -34,9 +34,9 @@ at `INITRD_VA` so it can read the ELF. Its length arrives in `x1`.
 `build_child` then does, entirely through the milestone-19 granular verbs, what the kernel's
 `map_segments` used to do privileged:
 
-1. `RETYPE_OBJ(ASPACE)` — a fresh address space out of init's budget.
+1. `RETYPE_OBJ(ASPACE)`: a fresh address space out of init's budget.
 2. For each ELF segment, page by page: `RETYPE` a frame, `frame::MAP` it read/write into init's
-   *own* scratch window to fill it (zero it — free `.bss` — then copy the segment's bytes), then
+   *own* scratch window to fill it (zero it, free `.bss`, then copy the segment's bytes), then
    `MAP_INTO` the child at the segment's own virtual address with the segment's permissions
    (executable code via the `MAP_CODE` mode 19d added). Then `cap_delete` the frame cap so the
    16-slot cspace recycles the slot: a loader retypes hundreds of frames, so slot recycling is
