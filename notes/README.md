@@ -273,6 +273,16 @@ in the code or the conversation doesn't make sense, it belongs here.
   promises cryptographic strength panics rather than degrading), and the INTx-sharing finding that
   made this driver look at the used ring before it blocks.
 - [The framebuffer contract](framebuffer-contract.md): milestone 29, the display ladder's first
+- [Credentials](credentials.md): milestone 56's second half: an identity and a secret you can check
+  and cannot read. The tension it answers is that a secret is a bearer token while a capability is
+  an unforgeable reference, so knowledge cannot be revoked and everything else here can; the answer
+  is to hand out the operation instead. Also why writing the store is a **phase** and not an
+  operation (this kernel has one wait point, so the provision endpoint is deleted at both ends
+  rather than guarded), why we depend on RustCrypto's `argon2` rather than write or vendor one and
+  run the RFC 9106 vectors to prove it, the debug-build overflow panic our exhaustive corruption
+  test found inside that dependency, and an honest list of what this does not protect against,
+  starting with the fact that it cannot serve NTLMv2 and why.
+- [The framebuffer contract](framebuffer-contract.md): milestone 29, the display ladder's first
   rung: the confined virtio-gpu driver, the client that draws, and the shared-surface contract
   between them, written down so milestone 33's compositor implements against a contract. Also the
   memory story (a framebuffer is a bigger grant, never an exemption), the confinement hazard a GPU

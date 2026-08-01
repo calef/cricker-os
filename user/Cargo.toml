@@ -378,6 +378,26 @@ path = "src/entropy.rs"
 test = false
 bench = false
 
+# The credential service (milestone 56, the credential half): holds the credential store and serves
+# one question over one endpoint. Its authority to *write* the store is a second endpoint that it
+# deletes at the seal, so a client cannot be refused permission to write it; there is no object left
+# for the request to travel through. `mkinitrd` packs it as "credential" for both ISAs.
+[[bin]]
+name = "credential"
+path = "src/credential.rs"
+test = false
+bench = false
+
+# The credential service's clients (milestone 56): the provisioner that fills the store, the honest
+# client that asks questions, and the attacker that holds the identical endowment and tries to write
+# it. One binary, three roles, because an attacker on the honest path is a fairer test of a boundary
+# than a different program failing for its own reasons. `mkinitrd` packs it as "credcli".
+[[bin]]
+name = "credcli"
+path = "src/credcli.rs"
+test = false
+bench = false
+
 # The NTP client (milestone 51): holds a network capability and the right to PROPOSE a time, and
 # deliberately not the right to set one. One binary, three roles (the client, the test server that
 # answers it, and the probe that proves the clock page is unreachable). `mkinitrd` packs it as "ntp"
@@ -412,6 +432,8 @@ bitfont = { version = "0.1.0", path = "../crates/bitfont" }
 calendar = { version = "0.1.0", path = "../crates/calendar" }
 capsh = { version = "0.1.0", path = "../crates/capsh" }
 clock_proto = { version = "0.1.0", path = "../crates/clock_proto" }
+cred = { version = "0.1.0", path = "../crates/cred" }
+cred_proto = { version = "0.1.0", path = "../crates/cred_proto" }
 compose = { version = "0.1.0", path = "../crates/compose" }
 coremark = { version = "0.1.0", path = "../crates/coremark" }
 crickerfs = { version = "0.1.0", path = "../crates/crickerfs" }

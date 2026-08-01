@@ -34,6 +34,10 @@ clock_proto = { version = "0.1.0", path = "../crates/clock_proto" }
 # The compositor contract (milestone 33): the kernel wires the scene and its tests predict the
 # composed screen from the same definition the compositor and its clients paint from.
 compose = { version = "0.1.0", path = "../crates/compose" }
+# The credential contract (milestone 56, the credential half). The kernel wires the credential
+# service and its provisioner, and its tests read the reply codes the userspace clients report, so
+# no party has its own copy of what a verdict means.
+cred_proto = { version = "0.1.0", path = "../crates/cred_proto" }
 coremark = { version = "0.1.0", path = "../crates/coremark" }
 crickerfs = { version = "0.1.0", path = "../crates/crickerfs" }
 dma_validate = { version = "0.1.0", path = "../crates/dma_validate" }
