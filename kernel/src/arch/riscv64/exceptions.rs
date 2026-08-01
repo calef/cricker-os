@@ -204,6 +204,9 @@ static LAST_USER_FAULT_ADDR: AtomicU64 = AtomicU64::new(0);
 /// for what "kind" costs here that it does not cost on aarch64.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn last_user_fault() -> Option<(UserFault, u64)> {
+    // Pairs with the `Release` on `USER_FAULTS` in [`user_fault`], so a caller that has seen the
+    // counter rise reads the record the faulting hart wrote rather than something older.
+    core::sync::atomic::fence(Ordering::Acquire);
     let kind = UserFault::decode(LAST_USER_FAULT.load(Ordering::Relaxed))?;
     Some((kind, LAST_USER_FAULT_ADDR.load(Ordering::Relaxed)))
 }
@@ -393,11 +396,19 @@ extern "C" fn riscv_trap_dispatch(frame: &mut TrapFrame) {
 /// exactly the "a TODO that outlives its decision becomes misinformation" failure notes/teardown.md
 /// documents.
 fn user_fault(frame: &TrapFrame, scause: u64, code: u64) -> ! {
-    USER_FAULTS.fetch_add(1, Ordering::Relaxed);
     // Classify BEFORE anything else: the walk reads the address space this thread is still
     // installed on, and `sched::fault` below is where that stops being true.
-    LAST_USER_FAULT.store(classify(frame, code).encode(), Ordering::Relaxed);
+    //
+    // **The record first, the counter last, and the counter's store is the release.** Every test
+    // that reads this record finds it by watching `USER_FAULTS` rise and then calling
+    // [`last_user_fault`], so the counter is the publication flag for the record and must be
+    // written after it. It was written first on both ISAs, which is a race a passing test cannot
+    // see: the reader gets either an earlier fault's record (an assertion satisfied by the wrong
+    // evidence) or, on the boot's first fault, a zero that reads as "nothing faulted". The aarch64
+    // twin carries the same fix.
     LAST_USER_FAULT_ADDR.store(frame.stval, Ordering::Relaxed);
+    LAST_USER_FAULT.store(classify(frame, code).encode(), Ordering::Relaxed);
+    USER_FAULTS.fetch_add(1, Ordering::Release);
 
     crate::println!();
     crate::println!(

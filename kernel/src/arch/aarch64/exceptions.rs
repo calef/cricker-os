@@ -341,6 +341,12 @@ static LAST_USER_FAULT_ADDR: AtomicU64 = AtomicU64::new(0);
 /// yet. The RISC-V twin is `arch::riscv64::exceptions::last_user_fault`.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn last_user_fault() -> Option<(UserFault, u64)> {
+    // Pairs with the `Release` on `USER_FAULTS` in [`user_fault`]. A caller that has already seen
+    // the counter rise (every one of them has; that is how they know to look) reads the record the
+    // faulting core wrote and not something older. We are on ARM, so this is not free ordering we
+    // can assume: the two relaxed stores below the counter's release are exactly the reordering the
+    // architecture permits.
+    core::sync::atomic::fence(Ordering::Acquire);
     let kind = UserFault::decode(LAST_USER_FAULT.load(Ordering::Relaxed))?;
     Some((kind, LAST_USER_FAULT_ADDR.load(Ordering::Relaxed)))
 }
@@ -396,9 +402,17 @@ fn user_fault(frame: &TrapFrame, esr: u64) -> ! {
     let class = (esr >> 26) & 0x3f;
     let far = FAR_EL1.get();
 
-    USER_FAULTS.fetch_add(1, Ordering::Relaxed);
-    LAST_USER_FAULT.store(classify(esr).encode(), Ordering::Relaxed);
+    // **The record first, the counter last, and the counter's store is the release.** Every test
+    // that reads this record finds it by watching `USER_FAULTS` rise and then calling
+    // [`last_user_fault`], so the counter is the publication flag for the record and must be
+    // written after it. It was written first, and that is a race a test cannot see when it passes:
+    // the reader either gets the record left by an *earlier* fault (an assertion satisfied by the
+    // wrong evidence) or, if it is the first fault of the boot, a zero that reads as "no user
+    // thread has faulted". Found by breaking `a_user_program_cannot_read_a_kernel_address` on
+    // purpose and running it alone, where "the first fault of the boot" is the only case there is.
     LAST_USER_FAULT_ADDR.store(far, Ordering::Relaxed);
+    LAST_USER_FAULT.store(classify(esr).encode(), Ordering::Relaxed);
+    USER_FAULTS.fetch_add(1, Ordering::Release);
 
     crate::println!();
     crate::println!(
