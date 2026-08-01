@@ -1,4 +1,4 @@
-//! **The file warden: a directory capability attenuated to one file** (milestone 31 phase 2,
+//! **The file caretaker: a directory capability attenuated to one file** (milestone 31 phase 2,
 //! DECISIONS §27, notes/grant-expression.md).
 //!
 //! Milestone 31's headline is that naming a resource in a command *is* granting it: `run wc
@@ -27,17 +27,17 @@
 //! # Capability contract (kernel/src/user.rs `fs_service::start_granted`)
 //!
 //! - **slot 0**: the FS-service endpoint, `WRITE`. The directory capability being attenuated. This
-//!   is the whole of what the warden holds that its client does not.
+//!   is the whole of what the caretaker holds that its client does not.
 //! - **slot 1**: the narrowed endpoint, `READ`. The confined program `CALL`s here; this endpoint IS
 //!   the per-file capability.
 //! - **slot 2**: a report endpoint, `WRITE`. Readiness, sent once the granted name is open.
 //! - **[`PAGE_VA`]**: the page shared with the FS server *and* with the client. One frame, three
 //!   parties, and that is sound because every request on both sides is a blocking `CALL`: the client
-//!   is parked inside its call for the whole time the warden is using the page, so the two uses
+//!   is parked inside its call for the whole time the caretaker is using the page, so the two uses
 //!   cannot interleave. A second page would buy nothing but a copy.
 //!
 //! The granted name and direction arrive in the three `START` argument words
-//! ([`fs_proto::grant`]), so a per-file grant costs no extra frame and the warden needs nothing
+//! ([`fs_proto::grant`]), so a per-file grant costs no extra frame and the caretaker needs nothing
 //! mapped before it runs.
 
 #![no_std]
@@ -75,8 +75,8 @@ fn get(out: &mut [u8]) {
     }
 }
 
-/// One request to the FS server, forwarded verbatim. The warden does not reinterpret a request it
-/// has decided to allow: it passes the words through, so the file behaves exactly as it would
+/// One request to the FS server, forwarded verbatim. The caretaker does not reinterpret a request
+/// it has decided to allow: it passes the words through, so the file behaves exactly as it would
 /// through the directory capability. Attenuation is about *which* requests pass, not about changing
 /// what they mean.
 fn forward(w0: u64, w1: u64) -> i64 {
@@ -146,20 +146,20 @@ fn serve(handle: u64, name: &[u8], writable: bool) -> ! {
                 }
             }
             fs::FSTAT if asked == grant::HANDLE => forward(fs::req(fs::FSTAT, handle, 0), 0),
-            // CLOSE is answered, not forwarded: the warden owns the underlying handle for its whole
-            // life, and a client closing "its" handle must not be able to make the *next* request
-            // fail. Re-opening the granted name is always allowed, so this is a no-op with a truthful
-            // success rather than a lie.
+            // CLOSE is answered, not forwarded: the caretaker owns the underlying handle for its
+            // whole life, and a client closing "its" handle must not be able to make the *next*
+            // request fail. Re-opening the granted name is always allowed, so this is a no-op with
+            // a truthful success rather than a lie.
             fs::CLOSE if asked == grant::HANDLE => 0,
             // **Extended attributes are not forwarded, and the refusal says exactly that**
-            // (milestone 57, DECISIONS §42). This warden does not pass attribute requests through,
-            // so the honest statement is "this capability does not carry them", not `EBADF` ("no
-            // such handle") and not `EINVAL` ("you sent nonsense"). A verb that is not offered fails
-            // loudly and the caller decides; what it must never receive is a wrong answer wearing a
-            // right answer's shape. The refusal is uniform across all three wardens on purpose: a
-            // layer that worked through one narrowing and not another would make behaviour depend on
-            // which caretaker happened to be in the chain, which is the variation §42 exists to
-            // forbid.
+            // (milestone 57, DECISIONS §42). This caretaker does not pass attribute requests
+            // through, so the honest statement is "this capability does not carry them", not
+            // `EBADF` ("no such handle") and not `EINVAL` ("you sent nonsense"). A verb that is not
+            // offered fails loudly and the caller decides; what it must never receive is a wrong
+            // answer wearing a right answer's shape. The refusal is uniform across all three
+            // caretakers on purpose: a layer that worked through one narrowing and not another
+            // would make behaviour depend on which caretaker happened to be in the chain, which is
+            // the variation §42 exists to forbid.
             fs::GETXATTR | fs::SETXATTR | fs::LISTXATTR | fs::REMOVEXATTR => {
                 reply_err(fs_proto::xattr::ENOTSUP)
             }
@@ -192,9 +192,9 @@ pub extern "C" fn _start(name_lo: u64, name_hi: u64, spec: u64) -> ! {
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
-    // A warden that cannot open its file is a warden with nothing to attenuate: trap, and the kernel
-    // reaps it legibly. Its client then blocks on a call nobody answers, which notes/fs-server.md
-    // records as the cost of a dead server on a blocking contract.
+    // A caretaker that cannot open its file is a caretaker with nothing to attenuate: trap, and the
+    // kernel reaps it legibly. Its client then blocks on a call nobody answers, which
+    // notes/fs-server.md records as the cost of a dead server on a blocking contract.
     #[cfg(target_arch = "aarch64")]
     unsafe {
         core::arch::asm!("brk #0", options(nostack, nomem))

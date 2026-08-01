@@ -4,7 +4,7 @@
 //! every capability, it makes every syscall, and it hands the C nothing but a pointer and a length.
 //!
 //! ```text
-//!   kernel  <--- svc/ecall --->  cshim (Rust)  <--- C ABI: (u8*, usize) --->  c_seam.c
+//!   kernel  <--- svc/ecall --->  c_shim (Rust)  <--- C ABI: (u8*, usize) --->  c_seam.c
 //!                                ^^^^^^^^^^^^
 //!                                every capability and every syscall stops here
 //! ```
@@ -22,7 +22,7 @@
 //! | 1 | this instance's untyped region, WRITE | pays for `malloc`; a `DESTROY` of it is the reap |
 //! | 15 | the supervision endpoint | consumed by the kernel at `START` (§26) |
 //!
-//! plus two mappings the warden made: the grant at [`c_seam::GRANT_VA`], read/write, and the
+//! plus two mappings the confiner made: the grant at [`c_seam::GRANT_VA`], read/write, and the
 //! read-only witness page immediately after it. The C is told about the first and not the second.
 //!
 //! # Where `malloc` comes from
@@ -43,7 +43,7 @@ use core::alloc::{GlobalAlloc, Layout};
 use user_rt::heap::UntypedHeap;
 use user_rt::send;
 
-/// What the warden endowed us with, in order.
+/// What the confiner endowed us with, in order.
 const REPORT: u64 = 0; // WRITE: say what happened
 const HEAP_UT: u64 = 1; // WRITE: the region we were built in, which also pays for malloc
 
@@ -59,9 +59,9 @@ static HEAP: UntypedHeap = UntypedHeap::new();
 // The C component. Three functions, one ABI: a pointer, a length, and an integer result. No
 // structs, no callbacks, no ownership transfer, nothing that needs a header file to agree on.
 unsafe extern "C" {
-    fn cseam_transform(grant: *mut u8, len: usize) -> u32;
-    fn cseam_overrun(grant: *mut u8, len: usize);
-    fn cseam_wild(grant: *mut u8, len: usize);
+    fn c_seam_transform(grant: *mut u8, len: usize) -> u32;
+    fn c_seam_overrun(grant: *mut u8, len: usize);
+    fn c_seam_wild(grant: *mut u8, len: usize);
 }
 
 #[unsafe(no_mangle)]
@@ -76,16 +76,16 @@ pub extern "C" fn _start(_a0: u64, attempt: u64, _a2: u64) -> ! {
     let len = c_seam::PAGE as usize;
 
     match attempt {
-        // SAFETY: none of this is safe, and that is the milestone. `grant` is a page the warden
+        // SAFETY: none of this is safe, and that is the milestone. `grant` is a page the confiner
         // mapped read/write for us, and `len` is its true length; the C is handed the truth and
         // misbehaves anyway. The kernel is what makes that survivable.
-        c_seam::ATTEMPT_OVERRUN => unsafe { cseam_overrun(grant, len) },
-        c_seam::ATTEMPT_WILD => unsafe { cseam_wild(grant, len) },
+        c_seam::ATTEMPT_OVERRUN => unsafe { c_seam_overrun(grant, len) },
+        c_seam::ATTEMPT_WILD => unsafe { c_seam_wild(grant, len) },
         // The honest path. The result also lands in the grant, so the checker reads it out of shared
         // memory rather than trusting a number we forwarded.
         _ => {
             // SAFETY: same grant, same length; this call is the well-behaved one.
-            unsafe { cseam_transform(grant, len) };
+            unsafe { c_seam_transform(grant, len) };
         }
     }
 
@@ -103,11 +103,11 @@ pub extern "C" fn _start(_a0: u64, attempt: u64, _a2: u64) -> ! {
 // discovered by letting the build fail and reading the error, which is the only honest way to learn
 // what a foreign object file actually demands.
 //
-// **What the object demands.** `llvm-nm --undefined-only` on the compiled `cseam.o`, identically on
-// both ISAs and at every optimization level: `malloc`, `free`, `memcpy`, `memset`, `strlen`. Nothing
-// else. No compiler-rt helper, no `memmove` conjured out of a struct copy, and no `__stack_chk_fail`
-// (this component has no stack arrays, but `-fno-stack-protector` in build.rs makes that a decision
-// rather than luck).
+// **What the object demands.** `llvm-nm --undefined-only` on the compiled `c_seam.o`, identically
+// on both ISAs and at every optimization level: `malloc`, `free`, `memcpy`, `memset`, `strlen`.
+// Nothing else. No compiler-rt helper, no `memmove` conjured out of a struct copy, and no
+// `__stack_chk_fail` (this component has no stack arrays, but `-fno-stack-protector` in build.rs
+// makes that a decision rather than luck).
 //
 // **What the linker demands, which is less.** Delete all five and `rust-lld` reports exactly two
 // undefined symbols: `malloc` and `free`. `memcpy`, `memset`, and `strlen` are already there, weakly,

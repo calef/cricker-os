@@ -418,9 +418,9 @@ pub enum FileSpec {
 /// filesystem contract can express: `UNLINK` resolves a name under a directory handle. So the
 /// program could remove any name in that directory, and it removes the one it was told. That is a
 /// real over-grant, it is declared rather than hidden, and it is the same gap globbing closes: the
-/// answer is a directory capability attenuated to a **name set** (the warden `fwarden` already is
-/// for one name), which is a later lane. Until then the honest statement is that `rm` is granted the
-/// directory, and `caps rm -r logs` prints exactly that before anything happens.
+/// answer is a directory capability attenuated to a **name set** (the caretaker `fs_file_caretaker`
+/// already is for one name), which is a later lane. Until then the honest statement is that `rm` is
+/// granted the directory, and `caps rm -r logs` prints exactly that before anything happens.
 ///
 /// # Why the rights are not a mask here
 ///
@@ -604,13 +604,13 @@ pub struct Endowment {
     /// Pages of untyped to split from the shell's own budget and grant (0 = none).
     pub mem_pages: u64,
     /// The one file to narrow a directory capability down to, and the direction, or `None`.
-    /// Delivered as an endpoint served by a file warden (`user/src/fwarden.rs`), so what the child
-    /// ends up holding designates this name and nothing else.
+    /// Delivered as an endpoint served by a file caretaker (`user/src/fs_file_caretaker.rs`), so
+    /// what the child ends up holding designates this name and nothing else.
     pub file: Option<FileGrant>,
     /// The one directory to narrow down to, and the **names** in it the program is to act on, or
-    /// `None`. Delivered as an endpoint served by a warden, so what the child ends up holding
-    /// reaches that directory and nothing above or beside it: `user/src/dwarden.rs` for a set of
-    /// one, `user/src/swarden.rs` for the set a pattern matched.
+    /// `None`. Delivered as an endpoint served by a caretaker, so what the child ends up holding
+    /// reaches that directory and nothing above or beside it: `user/src/fs_subtree_caretaker.rs`
+    /// for a set of one, `user/src/fs_nameset_caretaker.rs` for the set a pattern matched.
     pub dir: Option<DirGrant>,
     /// **The short options that were on the line**, as a bitmask: bit `i` is set when the manifest's
     /// `flags[i]` was typed. Numbered by position in the manifest rather than by letter, so nothing
@@ -633,8 +633,8 @@ pub struct Endowment {
 
 /// One resolved per-file grant: the directory it was resolved against, the name the command
 /// designated, and the direction the program's manifest declared. Those three are the whole
-/// authority; `fs_proto::grant` packs the name and the direction into the file warden's start
-/// arguments, and the directory is which capability the warden is handed to narrow.
+/// authority; `fs_proto::grant` packs the name and the direction into the file caretaker's start
+/// arguments, and the directory is which capability the caretaker is handed to narrow.
 ///
 /// # The cwd stops at the process boundary, and this value is where that is true
 ///
@@ -679,9 +679,10 @@ pub struct FileGrant {
 /// directory, which is the thing this model refuses); making `rm` a builtin dodges the question and
 /// costs `rm` as a program.
 ///
-/// So [`names`](DirGrant::names) is a set, a literal operand is the set of one, and the generalization
-/// is smaller than it looks: `fwarden` already serves a namespace of exactly one name, and
-/// `user/src/swarden.rs` serves the same protocol over a wider one. **Nothing new in the kernel.**
+/// So [`names`](DirGrant::names) is a set, a literal operand is the set of one, and the
+/// generalization is smaller than it looks: `fs_file_caretaker` already serves a namespace of
+/// exactly one name, and `user/src/fs_nameset_caretaker.rs` serves the same protocol over a wider
+/// one. **Nothing new in the kernel.**
 ///
 /// **These three together are the whole authority**, which is what makes `caps rm -r logs` worth
 /// typing: the names at risk are printed before anything happens, and a bug in the program's
@@ -2378,7 +2379,7 @@ mod tests {
     ///
     /// The grant is therefore **wider than the name typed**, which is stated here rather than
     /// hidden: the same capability could remove anything else in that directory. Narrowing it to
-    /// the names on the line is the name-set warden globbing needs, and it is the same shape.
+    /// the names on the line is the nameset caretaker globbing needs, and it is the same shape.
     #[test]
     fn naming_something_to_remove_grants_the_directory_that_holds_it() {
         let Command::Run(r) = parse(b"rm old.txt") else {
@@ -2646,9 +2647,9 @@ mod tests {
         );
     }
 
-    /// **A literal operand is the set of one**, which is the whole of "this generalizes `fwarden`
-    /// rather than replacing it": the same grant shape carries both, and a name that was typed
-    /// designates itself whatever anybody hands the planner alongside it.
+    /// **A literal operand is the set of one**, which is the whole of "this generalizes
+    /// `fs_file_caretaker` rather than replacing it": the same grant shape carries both, and a name
+    /// that was typed designates itself whatever anybody hands the planner alongside it.
     #[test]
     fn a_literal_operand_is_the_set_of_one_and_ignores_any_expansion() {
         let Command::Run(r) = parse(b"rm old.txt") else {

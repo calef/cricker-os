@@ -2,7 +2,7 @@
  * c_seam.c -- the foreign component (milestone 36, DECISIONS §31).
  *
  * Memory-unsafe C, compiled by bare-metal clang, linked into a Rust user_rt shell
- * (user/src/cshim.rs) and confined by the kernel like any other process. It is the
+ * (user/src/c_shim.rs) and confined by the kernel like any other process. It is the
  * smallest thing that can prove the seam: one honest function that does real work
  * over a granted buffer, and two functions that misbehave on purpose.
  *
@@ -20,7 +20,7 @@
  * kernel's syscall surface by so much as one method, because it cannot reach it.
  *
  * The five libc symbols below are this component's whole libc. Two of them are defined
- * in Rust in cshim.rs, and the other three the Rust bare-metal runtime already supplies;
+ * in Rust in c_shim.rs, and the other three the Rust bare-metal runtime already supplies;
  * there is no libc on this target, and nothing behind these needs POSIX semantics. See
  * notes/c-seam.md for how that list was discovered (by letting the build fail and reading
  * the error, not by guessing) and for why shimming `memcpy` in Rust is a trap.
@@ -46,18 +46,18 @@ void free(void *p);
  *   [2048     .. 2052)   output: the checksum, little-endian
  *   [2052     .. len)    output: the transformed string, NUL-terminated
  */
-#define CSEAM_IN_OFF 0u
-#define CSEAM_OUT_OFF 2048u
+#define C_SEAM_IN_OFF 0u
+#define C_SEAM_OUT_OFF 2048u
 
 /* The byte the misbehaving functions write. Chosen so it differs from the witness
  * patterns at every offset they target, so "the witness is unchanged" cannot be true
  * by coincidence. */
-#define CSEAM_MARK 0xC0
+#define C_SEAM_MARK 0xC0
 
-/* How far past the end of the grant `cseam_wild` reaches: one page, so it lands beyond
+/* How far past the end of the grant `c_seam_wild` reaches: one page, so it lands beyond
  * the read-only witness page that sits immediately after the grant and hits a virtual
  * address this process has no mapping for at all. */
-#define CSEAM_WILD_SKIP 4096u
+#define C_SEAM_WILD_SKIP 4096u
 
 /*
  * The honest work: uppercase the input string, checksum it, write both back.
@@ -73,16 +73,16 @@ void free(void *p);
  * functions below: C *can* be written correctly, and this one is. The confinement is
  * what makes it not matter whether it was.
  */
-uint32_t cseam_transform(unsigned char *grant, size_t len)
+uint32_t c_seam_transform(unsigned char *grant, size_t len)
 {
-    char *in = (char *)grant + CSEAM_IN_OFF;
-    unsigned char *out = grant + CSEAM_OUT_OFF;
+    char *in = (char *)grant + C_SEAM_IN_OFF;
+    unsigned char *out = grant + C_SEAM_OUT_OFF;
     size_t n = strlen(in);
     char *tmp;
     uint32_t h;
     size_t i;
 
-    if (len <= CSEAM_OUT_OFF || CSEAM_OUT_OFF + 4 + n + 1 > len) {
+    if (len <= C_SEAM_OUT_OFF || C_SEAM_OUT_OFF + 4 + n + 1 > len) {
         return 0;
     }
 
@@ -105,7 +105,7 @@ uint32_t cseam_transform(unsigned char *grant, size_t len)
         h *= 16777619u;
     }
 
-    memset(out, 0, len - CSEAM_OUT_OFF);
+    memset(out, 0, len - C_SEAM_OUT_OFF);
     out[0] = (unsigned char)(h & 0xff);
     out[1] = (unsigned char)((h >> 8) & 0xff);
     out[2] = (unsigned char)((h >> 16) & 0xff);
@@ -127,13 +127,13 @@ uint32_t cseam_transform(unsigned char *grant, size_t len)
  * `volatile` on the store so no optimizer can decide that undefined behaviour licenses
  * deleting it. The whole test depends on the store actually being attempted.
  */
-void cseam_overrun(unsigned char *grant, size_t len)
+void c_seam_overrun(unsigned char *grant, size_t len)
 {
     volatile unsigned char *p;
 
-    grant[0] = CSEAM_MARK;
+    grant[0] = C_SEAM_MARK;
     p = grant + len;
-    *p = CSEAM_MARK;
+    *p = C_SEAM_MARK;
 }
 
 /*
@@ -145,11 +145,11 @@ void cseam_overrun(unsigned char *grant, size_t len)
  * that same virtual address *in another process* is what proves a virtual address means
  * nothing outside the address space that owns it.
  */
-void cseam_wild(unsigned char *grant, size_t len)
+void c_seam_wild(unsigned char *grant, size_t len)
 {
     volatile unsigned char *p;
 
-    grant[0] = CSEAM_MARK;
-    p = grant + len + CSEAM_WILD_SKIP;
-    *p = CSEAM_MARK;
+    grant[0] = C_SEAM_MARK;
+    p = grant + len + C_SEAM_WILD_SKIP;
+    *p = C_SEAM_MARK;
 }

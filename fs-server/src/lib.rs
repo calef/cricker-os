@@ -29,9 +29,9 @@
 //!
 //! **What this table is not.** It is per *server*, not per client, so two clients sharing one
 //! endpoint share these handles and a rights-carrying handle attenuates only its holder. The handle
-//! is the authority; the **endpoint** is the boundary. Confining a program to a subtree is therefore
-//! still a caretaker process holding the wider endpoint (`user/src/dwarden.rs`), for exactly the
-//! reason `fwarden` is one.
+//! is the authority; the **endpoint** is the boundary. Confining a program to a subtree is
+//! therefore still a caretaker process holding the wider endpoint
+//! (`user/src/fs_subtree_caretaker.rs`), for exactly the reason `fs_file_caretaker` is one.
 //!
 //! # The error boundary
 //!
@@ -277,9 +277,9 @@ impl<D: Disk> Server<D> {
     /// Write `data` to `handle` at `offset`, returning the count. Advances the internal clock so the
     /// node's mtime moves forward; the data persists regardless of the timestamp.
     ///
-    /// [`dir::EROFS`] without [`dir::WRITE`], the same word and the same argument `fwarden` uses:
-    /// through this capability the file is read-only, and there is no policy that could have said
-    /// yes.
+    /// [`dir::EROFS`] without [`dir::WRITE`], the same word and the same argument
+    /// `fs_file_caretaker` uses: through this capability the file is read-only, and there is no
+    /// policy that could have said yes.
     pub fn write(&mut self, handle: u32, offset: u64, data: &[u8]) -> Result<usize> {
         let ptr = self.file_at(handle, dir::WRITE, EROFS)?;
         self.clock += 1;
@@ -705,7 +705,7 @@ impl<D: Disk> Server<D> {
     /// The file a handle names, once its rights carry `needed`. `refusal` is the errno to answer
     /// when they do not, which differs by direction on purpose: a read through a write-only handle
     /// is `EBADF` (POSIX's answer, a fact about the handle) and a write through a read-only one is
-    /// [`dir::EROFS`] (`fwarden`'s answer, a fact about the capability).
+    /// [`dir::EROFS`] (`fs_file_caretaker`'s answer, a fact about the capability).
     fn file_at(&self, handle: u32, needed: u64, refusal: i32) -> Result<TreePtr<Node>> {
         match self.entry(handle)? {
             Entry::File(ptr, rights) if rights.allows(needed) => Ok(ptr),

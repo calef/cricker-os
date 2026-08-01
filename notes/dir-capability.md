@@ -8,9 +8,10 @@ program being confined.
 
 The contract lives with its code in `crates/fs_proto` (the `dir` and `dirent` modules, and the
 `OPENDIR`/`READDIR`/`MKDIR`/`RENAME` verbs in `fs`). The engine-side implementation is
-`fs-server/src/lib.rs`; the caretaker is `user/src/dwarden.rs`; the wiring and the attacks are
-`kernel/src/user.rs` (`fs_service::start_granted_dir` and `dir_capability_tests`). This note is the
-argument around them. Read [fs-server.md](fs-server.md) first for the contract this extends.
+`fs-server/src/lib.rs`; the caretaker is `user/src/fs_subtree_caretaker.rs`; the wiring and the
+attacks are `kernel/src/user.rs` (`fs_service::start_granted_dir` and `dir_capability_tests`). This
+note is the argument around them. Read [fs-server.md](fs-server.md) first for the contract this
+extends.
 
 What milestone 47 goes on to build (`cd`, `pwd`, `ls`, `mkdir`, `rm`, globbing, completion) is the
 easy part once this exists, and it is deliberately not here. The five commands are built:
@@ -81,8 +82,8 @@ decision rather than a detail.
 
 - **A naming right withheld answers `ENOENT`.** `READ`/`WRITE` for `OPEN`, `DESCEND` for `OPENDIR`.
   *In this scope there is no such name.* Nothing consulted a permission, and a holder that may not
-  reach a name must not be able to learn that the name is there. This is the sentence `fwarden`
-  already says, for the same reason (DECISIONS §27).
+  reach a name must not be able to learn that the name is there. This is the sentence
+  `fs_file_caretaker` already says, for the same reason (DECISIONS §27).
 - **A mutating right withheld answers `EROFS`.** `CREATE`, `REMOVE`, and `WRITE` on a file handle.
   *Through this capability, that directory is read-only.* `EACCES` was rejected on purpose, and §27
   had already rejected it for files: it implies a policy that could have said yes, and there is no
@@ -131,56 +132,56 @@ Serving a second, narrower endpoint from the FS server itself would need a recei
 endpoints, which this kernel does not offer; adding it means giving endpoint capabilities a badge
 (seL4's answer), which is a design fork and is recorded as the alternative rather than taken.
 
-### `dwarden`, and why it checks nothing at all
+### `fs_subtree_caretaker`, and why it checks nothing at all
 
 ```text
-  FS server ──file IPC──► dwarden ──narrowed file IPC──► the confined program
+  FS server ──file IPC──► fs_subtree_caretaker ──narrowed file IPC──► the confined program
   (the image root)                  (one subtree, one rights set)
 ```
 
-`fwarden` has to inspect requests, because a file capability and a directory capability speak
-different protocols and it is translating between them. **`dwarden` performs no rights checks
-whatsoever**, and that is the design rather than an omission.
+`fs_file_caretaker` has to inspect requests, because a file capability and a directory capability
+speak different protocols and it is translating between them. **`fs_subtree_caretaker` performs no
+rights checks whatsoever**, and that is the design rather than an omission.
 
 At startup it sends exactly **one** `OPENDIR`, asking for the granted name with the granted rights.
 The FS server intersects those with its own and refuses if the intersection came up short, so a
-wiring that asked for more than exists dies at the warden's first request instead of coming up
+wiring that asked for more than exists dies at the caretaker's first request instead of coming up
 serving a capability nobody meant to hand out. Everything the client can reach afterwards, it
 reaches *through the handle that request minted*. The attenuation lives in the handle the server
-minted, and there is no branch in the warden that could be wrong about it.
+minted, and there is no branch in the caretaker that could be wrong about it.
 
 What the process actually does is **translate a namespace**. The client numbers its handles in its
-own space starting at `fs::ROOT`, which is the granted directory; the warden maps each to the FS
+own space starting at `fs::ROOT`, which is the granted directory; the caretaker maps each to the FS
 server's number and forwards the request otherwise unchanged. A client that guesses a handle is
-guessing in a table with a handful of inhabitants, none of which it chose, and a number the warden
-never minted is `EBADF` from one check.
+guessing in a table with a handful of inhabitants, none of which it chose, and a number the
+caretaker never minted is `EBADF` from one check.
 
 It costs no memory: the granted name and the rights mask ride in the three `START` argument words
 (`fs_proto::grant`), and one frame is shared by all three processes.
 
 ### One frame, and the startup ordering that argument does not cover
 
-The one-frame argument is `fwarden`'s: every request on both hops is a blocking `CALL`, so the
-client is parked inside its own call for the whole time the warden is using the page, and a second
-frame would buy a copy and no isolation.
+The one-frame argument is `fs_file_caretaker`'s: every request on both hops is a blocking `CALL`, so
+the client is parked inside its own call for the whole time the caretaker is using the page, and a
+second frame would buy a copy and no isolation.
 
-That holds once the warden is **serving**. It does not hold at **startup**, and this cost a debugging
-round. The warden stages the granted name in the shared page and then blocks in a `CALL` to the FS
-server; a confined program that already exists writes its own first name over that page, and the FS
-server resolves whatever it finds there.
+That holds once the caretaker is **serving**. It does not hold at **startup**, and this cost a
+debugging round. The caretaker stages the granted name in the shared page and then blocks in a
+`CALL` to the FS server; a confined program that already exists writes its own first name over that
+page, and the FS server resolves whatever it finds there.
 
 In the case that actually failed it is not even a race. When the wiring call is the one that wires
-the FS service, the FS server is parked inside its readiness `SEND`, so the warden's descent cannot
-be answered until somebody drains it, and the client has that entire window. The warden then died
-rather than serve a hole, and its client blocked forever on a call nobody would answer: a userspace
-`ebreak` followed by the 60 s lost-wakeup watchdog. It passed on aarch64 and failed on riscv, which
-is the shape of a timing bug and was one.
+the FS service, the FS server is parked inside its readiness `SEND`, so the caretaker's descent
+cannot be answered until somebody drains it, and the client has that entire window. The caretaker
+then died rather than serve a hole, and its client blocked forever on a call nobody would answer: a
+userspace `ebreak` followed by the 60 s lost-wakeup watchdog. It passed on aarch64 and failed on
+riscv, which is the shape of a timing bug and was one.
 
 The fix is ordering, not a second page. **Draining the readiness sentinels is sequencing, not only
 an assertion**: each server is parked inside its blocking announcement until somebody receives it,
 so nothing it serves can be answered first. `fs_service::start_granted_dir` now drains the service,
-waits for the warden's own sentinel, and only then spawns the confined program. `fwarden` had the
-same latent bug and took the same three lines.
+waits for the caretaker's own sentinel, and only then spawns the confined program.
+`fs_file_caretaker` had the same latent bug and took the same three lines.
 
 ## `RENAME`
 
@@ -251,8 +252,8 @@ Three `#[test_case]`s, one module for both ISAs rather than an aarch64 test with
 nothing in them is architecture-specific, so the parity gate (§19) is met by literally the same test
 running twice.
 
-Each wires a `dwarden` holding a capability to the fixture's `sub` with one rights set, and runs the
-`ROLE_DIR_ATTACKER` role of `fsclient` against it. The image carries:
+Each wires a `fs_subtree_caretaker` holding a capability to the fixture's `sub` with one rights set,
+and runs the `ROLE_DIR_ATTACKER` role of `fsclient` against it. The image carries:
 
 ```text
   /            motd  scratch  sub/  other/
@@ -265,8 +266,8 @@ Each wires a `dwarden` holding a capability to the fixture's `sub` with one righ
 it creates distinct across three runs that share one image. It attempts every verb and reports a
 **bitmap of what got through**; the kernel test asserts the *exact* expected set for that
 configuration. So the specification lives in the test rather than in the program under test, and the
-three runs are each other's controls: a warden that refused everything fails the wide run, and one
-that allowed everything fails the narrow ones.
+three runs are each other's controls: a caretaker that refused everything fails the wide run, and
+one that allowed everything fails the narrow ones.
 
 | Run | Rights | Expected |
 |---|---|---|
@@ -281,14 +282,14 @@ creates a name and then cannot move it, through the same code the full run moves
 
 What the attacker attempts, and what makes each attempt real: `motd` is in the granted directory's
 **parent**, `other/secret` is in its **sibling**, and both are on the image and one directory entry
-from the warden, which could open either on any request it liked. So each refusal is a fact about the
-capability rather than about the filesystem. It also tries `..` at every rights setting, asks for a
-right its capability does not carry (which must be refused, not quietly narrowed), descends asking
-for **nothing** and checks that the resulting capability can do nothing at all, and guesses handle
-numbers past anything the warden could have minted.
+from the caretaker, which could open either on any request it liked. So each refusal is a fact about
+the capability rather than about the filesystem. It also tries `..` at every rights setting, asks
+for a right its capability does not carry (which must be refused, not quietly narrowed), descends
+asking for **nothing** and checks that the resulting capability can do nothing at all, and guesses
+handle numbers past anything the caretaker could have minted.
 
 Two bits exist to stop the whole thing being vacuous. `OPENED_ITS_OWN` is the control: without it,
-every refusal above is equally consistent with a warden that answers no to everything or a grant
+every refusal above is equally consistent with a caretaker that answers no to everything or a grant
 that reaches nothing. `GRANTED_ACCESS_FAILED` fires when the thing it *should* be able to do did not
 work, so a capability that reaches nothing reports itself rather than passing as perfectly confined.
 `ENUMERATED_A_STRANGER` catches a listing that contains a name from outside the grant, because a
@@ -353,17 +354,18 @@ Known limitations, next to the feature rather than only in a tracker.
 - **`READDIR`'s cursor is an index, and the directory is re-read per call.** A name added or removed
   between two calls of one enumeration can be seen twice or missed. That is readdir's usual caveat.
   Fixing it means a snapshot per client, and this table is not per client.
-- **A client of a dead warden blocks forever**, exactly as a client of a dead FS server does (§27).
-  §26's fault endpoint is the mechanism that would turn that into a message a supervisor can act on,
-  and wiring the FS service into a supervision tree belongs to milestone 23.
-- **`dwarden` holds at most 16 handles per client** (`EMFILE` past that). It has no heap and runs on
-  the single stack page `run` maps, so a growable table would need an allocator and a 4 KiB local
-  would overflow the stack on the first request. Sixteen is well past what the attacker or any
-  `cd`/`ls` sequence needs.
+- **A client of a dead caretaker blocks forever**, exactly as a client of a dead FS server does
+  (§27). §26's fault endpoint is the mechanism that would turn that into a message a supervisor can
+  act on, and wiring the FS service into a supervision tree belongs to milestone 23.
+- **`fs_subtree_caretaker` holds at most 16 handles per client** (`EMFILE` past that). It has no
+  heap and runs on the single stack page `run` maps, so a growable table would need an allocator and
+  a 4 KiB local would overflow the stack on the first request. Sixteen is well past what the
+  attacker or any `cd`/`ls` sequence needs.
 - **A single-name grant is still the directory the name is in**, which is wider than the name. The
-  globbing lane closed that for a *pattern* operand (a set warden, `user/src/swarden.rs`, serves only
-  the names that matched: see [glob-grant.md](glob-grant.md)) and it is still open for a literal one,
-  because a set of exactly one has no wiring behind it today.
+  globbing lane closed that for a *pattern* operand (a nameset caretaker,
+  `user/src/fs_nameset_caretaker.rs`, serves only the names that matched: see
+  [glob-grant.md](glob-grant.md)) and it is still open for a literal one, because a set of exactly
+  one has no wiring behind it today.
 - **The rights are not printed by `caps` yet.** §42 says the rights *are* the discovery mechanism for
   what a mount offers, and they are introspectable in principle; nothing renders them at the shell
   today because the interactive boot wires no FS service (§27's amendment records that refusal).
@@ -377,7 +379,7 @@ Grant a subtree to a confined program, read-only, and attack it:
 let report = fs_service::start_granted_dir(
     blk_server_image(),
     program("fsserver").unwrap(),
-    program("dwarden").unwrap(),
+    program("fs_subtree_caretaker").unwrap(),
     program("fsclient").unwrap(),
     fs_service::DirGrant {
         name: fs_proto::fixture::tree::SUB,

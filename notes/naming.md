@@ -36,8 +36,15 @@ one entry in the initrd archive. A **service** is what a component offers. A **c
 protocol it offers it over. "Server" is a fine role word inside a component (`fsserver` serves the FS
 service). "Daemon" appears nowhere.
 
-- One lowercase word, no separators, no suffix. `netstack`, `compositor`, `display`, `lineedit`.
+- Lowercase, `snake_case`, no suffix. `netstack`, `compositor`, `display`, `lineedit`,
+  `fs_subtree_caretaker`. One word where one word will do, an underscore where the name is a
+  qualifier applied to a thing; the 2026-08-01 rule below retired the older "no separators" wording.
 - **Never `-d`.** Not `netd`, not a future `logd` or `authd`. Checked.
+- **`c_` means "written in C", and it spans two unrelated milestones.** `c_shim`, `c_seam` and
+  `c_confiner` are milestone 36's foreign-language seam (DECISIONS §31); `c_swappable` is milestone
+  23's replacement demo, the C half of the `rust_swappable` / `c_swappable` pair. The prefix means
+  the same thing in both places and the milestones have nothing to do with each other, so do not
+  read the four of them as one family.
 - Abbreviate only where the abbreviation is the ordinary name of the thing: `blk`, `kbd`, `pci`. If
   you have to expand it in the doc comment to make the file readable, it was not the ordinary name.
 - The binary name, the source file name and the archive entry name are the same string. `xtask`'s

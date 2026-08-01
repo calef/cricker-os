@@ -173,9 +173,10 @@ filesystem **while** the redirection is being written: `ls` reads a page of dire
 a name to the writer, and comes back for the next round. Interleave an adapter's `put` with that and
 the listing and the file are both corrupt, silently.
 
-The note that recorded this hazard first is `fs_service::await_warden`, which found the **startup**
-half (a client that already exists writes over the name a warden staged). This is the steady-state
-half, and it has no ordering fix, because there is no moment when both parties are done.
+The note that recorded this hazard first is `fs_service::wait_for_caretaker`, which found the
+**startup** half (a client that already exists writes over the name a caretaker staged). This is the
+steady-state half, and it has no ordering fix, because there is no moment when both parties are
+done.
 
 So the shell backs both ends itself. It already holds the directory capability; it is the one
 process that can write the file without opening a second session.
@@ -398,8 +399,8 @@ own.
 ### And the redirections, at a prompt that holds a filesystem
 
 `kernel::user::redirection_tests` is `pipeline_tests` with one more capability: the same shell ELF,
-the same four slots, plus a directory at slot 4 narrowed by a `dwarden` to one subtree of the real
-RedoxFS image. Three claims, and none of them is "it printed something":
+the same four slots, plus a directory at slot 4 narrowed by a `fs_subtree_caretaker` to one subtree
+of the real RedoxFS image. Three claims, and none of them is "it printed something":
 
 - **One builtin, two destinations.** `ls > out.txt` writes a listing into a file and prints nothing;
   the `ls` after it prints the same listing; `wc < out.txt` has to agree with what was printed, once
@@ -431,15 +432,16 @@ the shell.
   the right shape for an adapter whose client is not the shell, and `sink_tests` still proves them
   against a real image, but nothing at the prompt builds one. The source role also still opens the
   one name in `sink_proto::fixture` and cannot be told another; the shell would have had to hand it
-  a name the way `fwarden` is handed one, and it turned out not to need to.
-- **The interactive prompt holds the image root, unnarrowed.** A `dwarden` between it and the FS
-  server would cost one process and would make the prompt's own authority as legible as the
-  authority it hands out. It is the machine's own shell, so this is a defensible default rather
+  a name the way `fs_file_caretaker` is handed one, and it turned out not to need to.
+- **The interactive prompt holds the image root, unnarrowed.** A `fs_subtree_caretaker` between it
+  and the FS server would cost one process and would make the prompt's own authority as legible as
+  the authority it hands out. It is the machine's own shell, so this is a defensible default rather
   than an oversight, but it is a default and not a decision anybody made on the record.
-- **`rm` is still not reachable from the prompt.** The shell now holds a directory, so the refusal is
-  no longer "you hold no such capability"; what is missing is the `dwarden` init would have to build
-  per invocation, and `spawn` says so rather than spawning `rm` with nothing. init deletes its copy
-  of the FS endpoint after building the shell, so that is the line that changes first.
+- **`rm` is still not reachable from the prompt.** The shell now holds a directory, so the refusal
+  is no longer "you hold no such capability"; what is missing is the `fs_subtree_caretaker` init
+  would have to build per invocation, and `spawn` says so rather than spawning `rm` with nothing.
+  init deletes its copy of the FS endpoint after building the shell, so that is the line that
+  changes first.
 - **Slot 1 is the input source or the `--mem` untyped, whichever the request carries.** That is
   unambiguous only because no manifest declares both, and `capsh` is where that stops being true. A
   program endowed a budget *and* an input needs a numbered slot convention rather than an ordered

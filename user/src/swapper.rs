@@ -117,8 +117,8 @@ pub extern "C" fn _start(role: u64, initrd_len: u64, _a2: u64) -> ! {
 // ===============================================================================================
 
 fn direct(fs: &crickerfs::Fs, w: &Wiring) -> ! {
-    let v1 = image(fs, "conx", 2);
-    let v2 = image(fs, "cconx", 3);
+    let v1 = image(fs, "rust_swappable", 2);
+    let v2 = image(fs, "c_swappable", 3);
     let client_img = image(fs, "chatty", 4);
 
     // The two endowments, whole, so a reader can see the complete authority of everything this
@@ -330,8 +330,8 @@ fn direct(fs: &crickerfs::Fs, w: &Wiring) -> ! {
 // ===============================================================================================
 
 fn queued(fs: &crickerfs::Fs, w: &Wiring) -> ! {
-    let v1 = image(fs, "conx", 2);
-    let v2 = image(fs, "cconx", 3);
+    let v1 = image(fs, "rust_swappable", 2);
+    let v2 = image(fs, "c_swappable", 3);
     let client_img = image(fs, "chatty", 4);
     let broker_img = image(fs, "broker", 40);
 

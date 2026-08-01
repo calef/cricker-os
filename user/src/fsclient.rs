@@ -232,21 +232,21 @@ fn crash_verify() -> ! {
 }
 
 /// **The attacker against a per-file grant** (milestone 31 phase 2). Spawned holding a *narrowed*
-/// endpoint: not the directory capability, but the file warden's, which designates exactly one file
-/// read-only. Its job is to try everything that would make that sentence false, and to report which
-/// attempts got through as a bitmap (`fixture::escape`).
+/// endpoint: not the directory capability, but the file caretaker's, which designates exactly one
+/// file read-only. Its job is to try everything that would make that sentence false, and to report
+/// which attempts got through as a bitmap (`fixture::escape`).
 ///
-/// **It is its own negative control, which is why it reports a bitmap and not a pass.** Run against a
-/// read-only grant, every bit must be clear. Run against a read/write grant of the same shape,
+/// **It is its own negative control, which is why it reports a bitmap and not a pass.** Run against
+/// a read-only grant, every bit must be clear. Run against a read/write grant of the same shape,
 /// `WROTE` and `TRUNCATED` must be **set** and everything else clear. Without that second run the
-/// first proves very little: a warden that refused every request would pass it, and so would a grant
-/// that reached nothing at all.
+/// first proves very little: a caretaker that refused every request would pass it, and so would a
+/// grant that reached nothing at all.
 ///
 /// **What makes the attempts real.** Each one is against something that exists and that the process
-/// one hop up the chain can genuinely reach: the neighbour file is on the image, one directory entry
-/// away, and the warden could open it on any request it liked. Milestone 33's attacker was handed a
-/// real neighbouring client's address rather than a fictional one for exactly this reason, and
-/// milestone 36 used two witnesses for the reason the paragraph above gives.
+/// one hop up the chain can genuinely reach: the neighbour file is on the image, one directory
+/// entry away, and the caretaker could open it on any request it liked. Milestone 33's attacker was
+/// handed a real neighbouring client's address rather than a fictional one for exactly this reason,
+/// and milestone 36 used two witnesses for the reason the paragraph above gives.
 ///
 /// `writable` also selects *which* file is granted, and that is a fixture constraint rather than a
 /// design one: the writable run damages what it is given, so it is given `scratch` (whose contents
@@ -294,8 +294,8 @@ fn attacker(writable: bool) -> ! {
         }
     }
 
-    // 1. A second file, by name. It exists, it sits in the same directory, and the warden could open
-    //    it. This capability names one file, so this must find nothing.
+    // 1. A second file, by name. It exists, it sits in the same directory, and the caretaker could
+    //    open it. This capability names one file, so this must find nothing.
     put_page(neighbour.as_bytes());
     let (r, _) = call(FILE, fs::req(fs::OPEN, 0, neighbour.len() as u64), 0);
     if (r as i64) >= 0 {
@@ -333,9 +333,9 @@ fn attacker(writable: bool) -> ! {
         verdict |= escape::CREATED;
     }
 
-    // 5. Handle guessing. The warden minted one handle and the FS server's own handle for the file is
-    //    a different number this process never saw, so spraying numbers is probing a table it is not
-    //    addressing. Every miss must be refused by the same check.
+    // 5. Handle guessing. The caretaker minted one handle and the FS server's own handle for the
+    //    file is a different number this process never saw, so spraying numbers is probing a table
+    //    it is not addressing. Every miss must be refused by the same check.
     let mut guess = 1u64;
     while guess < 8 {
         let (g, _) = call(FILE, fs::req(fs::READ, guess, 8), 0);
@@ -366,18 +366,19 @@ fn attacker(writable: bool) -> ! {
 }
 
 /// **The attacker against a per-directory grant** (milestone 47). Spawned holding an endpoint to a
-/// `dwarden`, which is a capability to one subtree with one rights set. Its job is to make "it
-/// cannot reach its parent or a sibling, and it carries no right it was not given" false.
+/// `fs_subtree_caretaker`, which is a capability to one subtree with one rights set. Its job is to
+/// make "it cannot reach its parent or a sibling, and it carries no right it was not given" false.
 ///
 /// **It is told nothing about its own grant** beyond a run index (which only keeps the names it
 /// creates distinct across the runs that share one image). That is deliberate: it attempts every
 /// verb and reports a bitmap of what got through, and the kernel test asserts the *exact* expected
 /// set for each configuration. So the specification lives in the test rather than in the program
-/// being tested, and three runs of the same code are each other's controls: a warden that refused
-/// everything fails the wide run, and a warden that allowed everything fails the narrow one.
+/// being tested, and three runs of the same code are each other's controls: a caretaker that
+/// refused everything fails the wide run, and a caretaker that allowed everything fails the narrow
+/// one.
 ///
 /// **What makes the attempts real.** `motd` is in the parent and `other/secret` is in a sibling, and
-/// both are on the image, one directory entry from the warden, which could open either on any
+/// both are on the image, one directory entry from the caretaker, which could open either on any
 /// request it liked. Milestone 33's attacker was handed a real neighbour's address for exactly this
 /// reason.
 ///
@@ -517,8 +518,9 @@ fn dir_attacker(run: u64) -> ! {
         v |= esc::RENAMED;
     }
 
-    // 12. Handle guessing, past anything the warden could have minted for it. The warden numbers its
-    //     client's handles in its own space, so a number it never issued is refused by one check.
+    // 12. Handle guessing, past anything the caretaker could have minted for it. The caretaker
+    //     numbers its client's handles in its own space, so a number it never issued is refused by
+    //     one check.
     let mut guess = 9u64;
     while guess < 16 {
         if call(FILE, fs::req(fs::READ, guess, 8), 0).0 as i64 >= 0

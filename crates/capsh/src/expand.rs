@@ -8,7 +8,7 @@
 //! # The property the whole lane exists for
 //!
 //! **The expansion you see is the grant.** `echo *.txt` prints literally the authority that `rm
-//! *.txt` would transfer, because the matched set *is* the namespace the warden will serve. Unix
+//! *.txt` would transfer, because the matched set *is* the namespace the caretaker will serve. Unix
 //! cannot make that claim: `rm`'s authority never came from the command line at all, and the glob
 //! only told it which of its existing powers to use.
 //!
@@ -46,8 +46,8 @@ pub const MAX_NAME: usize = crate::MAX_FILE_NAME;
 ///
 /// Unix refuses "argument list too long" because a fixed-size buffer ran out, which is why `xargs`
 /// exists. Here the ceiling is that **you cannot hand a child a capability it can neither hold nor
-/// show**: the set travels in a frame the warden keeps whole in a local (it has no allocator), and
-/// the shell carries it through planning on the stack it has.
+/// show**: the set travels in a frame the caretaker keeps whole in a local (it has no allocator),
+/// and the shell carries it through planning on the stack it has.
 ///
 /// **Eight, measured rather than chosen.** Sixteen was the first answer and the machine refused it:
 /// a set travels by value through the expander, the [`Expansion`], `designate`'s return and the
@@ -104,12 +104,12 @@ impl Name {
 /// pattern.
 ///
 /// This is the type that makes the milestone's finding true in the code rather than only in the
-/// prose. `fwarden` serves "a namespace of exactly one name"; globbing generalizes it to a set, and
-/// a literal operand is simply the set of one. Same caretaker shape, same `fs_proto` protocol above
-/// and below, wider namespace, nothing new in the kernel.
+/// prose. `fs_file_caretaker` serves "a namespace of exactly one name"; globbing generalizes it to
+/// a set, and a literal operand is simply the set of one. Same caretaker shape, same `fs_proto`
+/// protocol above and below, wider namespace, nothing new in the kernel.
 ///
-/// Each name carries what the directory said it was, because the warden answers `READDIR` from the
-/// set itself (`fs_proto::nameset`), and because a listing is a rendering of authority.
+/// Each name carries what the directory said it was, because the caretaker answers `READDIR` from
+/// the set itself (`fs_proto::nameset`), and because a listing is a rendering of authority.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct NameSet {
     names: [Name; MAX_NAMES],
@@ -356,7 +356,7 @@ mod tests {
     ];
 
     /// The base case, and the one every claim below is a variation on: the set is what matched, in
-    /// listing order, and the entry type rides along because the warden serves the listing.
+    /// listing order, and the entry type rides along because the caretaker serves the listing.
     #[test]
     fn the_set_is_what_matched_and_nothing_else() {
         let set = expand(b"*.txt", &DIR).unwrap();

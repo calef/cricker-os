@@ -1,19 +1,19 @@
 #![no_std]
 //! **Live component replacement: the shared half** (milestone 23, DECISIONS §41).
 //!
-//! Four programs make up the hot-swap system (`swapper` the operator, `conx` and `cconx` the two
-//! instances of the swappable component, `chatty` the client and the attacker), and this is what
-//! they share: the wire protocol, the addresses of the pages they pass between them, the digest
-//! both language implementations of the component must compute, and the serving loop itself.
-//! Compiled into each binary with `#[path = "swap.rs"] mod swap;`, the same way the supervision
-//! tree shares `suptree.rs`.
+//! Four programs make up the hot-swap system (`swapper` the operator, `rust_swappable` and
+//! `c_swappable` the two instances of the swappable component, `chatty` the client and the
+//! attacker), and this is what they share: the wire protocol, the addresses of the pages they pass
+//! between them, the digest both language implementations of the component must compute, and the
+//! serving loop itself. Compiled into each binary with `#[path = "swap.rs"] mod swap;`, the same
+//! way the supervision tree shares `suptree.rs`.
 //!
 //! # The shape
 //!
 //! ```text
 //!                     ┌──── the stable name: one endpoint, forever ────┐
-//!    chatty ──CALL──► │                  SVC                           │ ◄──RECV_CAP── conx v1
-//!   (client)          └────────────────────────────────────────────────┘ ◄──RECV_CAP── cconx v2
+//!    chatty ──CALL──► │                  SVC                           │ ◄──RECV_CAP── rust_swappable v1
+//!   (client)          └────────────────────────────────────────────────┘ ◄──RECV_CAP── c_swappable v2
 //! ```
 //!
 //! There is no process in that data path. The client's capability never changes, the client's loop

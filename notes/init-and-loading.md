@@ -115,12 +115,13 @@ RAM boot and the eventual disk boot share one parser.
 every byte in the archive is a byte the running system does not have, for the whole boot. That was
 free until it was not.
 
-A debug build is almost entirely debug information. `conx` is 720 KB, of which **3 KB** is `.text`
-plus `.rodata` and the other 717 KB is `.debug_*`. Twenty-odd programs like that made a **26 MB**
-archive out of well under a megabyte of code, on a 128 MB machine. Milestone 23 added five programs,
-the archive went to 30.7 MB, and a *later, unrelated* test stopped being able to find a contiguous
-eight-megabyte run for init's building budget: `no building budget for init`, in a test that had
-nothing to do with the change, which is the usual signature of a resource the whole suite shares.
+A debug build is almost entirely debug information. `rust_swappable` is 720 KB, of which **3 KB** is
+`.text` plus `.rodata` and the other 717 KB is `.debug_*`. Twenty-odd programs like that made a **26
+MB** archive out of well under a megabyte of code, on a 128 MB machine. Milestone 23 added five
+programs, the archive went to 30.7 MB, and a *later, unrelated* test stopped being able to find a
+contiguous eight-megabyte run for init's building budget: `no building budget for init`, in a test
+that had nothing to do with the change, which is the usual signature of a resource the whole suite
+shares.
 
 So `mkinitrd` now strips each ELF (`llvm-objcopy --strip-debug`) before packing, and the archive is
 **4.3 MB**. Nothing lost anything: `crates/elf` parses **program headers only** and has no

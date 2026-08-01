@@ -1,9 +1,9 @@
-//! **The warden: the process that confines a C component and proves it** (milestone 36,
+//! **The confiner: the process that confines a C component and proves it** (milestone 36,
 //! DECISIONS §31).
 //!
 //! It is three roles in one program, and the fusion is deliberate rather than lazy:
 //!
-//! 1. **Builder.** It splits a region off its budget per instance and lays `cshim` out in it, so a
+//! 1. **Builder.** It splits a region off its budget per instance and lays `c_shim` out in it, so a
 //!    single `Untyped::DESTROY` reaps a whole instance (§16 object revocation).
 //! 2. **Supervisor.** It holds the C component's supervision endpoint (§26), so a fault becomes a
 //!    five-word message it receives rather than a silence it has to guess at, and it decides whether
@@ -22,7 +22,7 @@
 //!
 //! **What that did not remove, which is itself a finding about §32.** This program still holds a full
 //! construction budget, because it is *also* role 1, the builder: it splits a region per instance and
-//! lays `cshim` out in it, and §32 does not touch construction. What §32 removed is the reason a
+//! lays `c_shim` out in it, and §32 does not touch construction. What §32 removed is the reason a
 //! *supervisor* had to hold one. Read as a measurement: the bundling §31 recorded was two things, and
 //! only one of them was the reap. Split roles 1 and 2 into separate processes and the supervisor half
 //! would now hold nothing but endpoints, which is exactly what milestone 22's `subsup` does since
@@ -55,9 +55,9 @@ const INITRD_VA: u64 = 0x2000_0000;
 const ROOT_UT: u64 = 0; // the construction budget: what we build each instance out of
 const REPORT: u64 = 1; // WRITE|GRANT, so each instance gets its own narrowed view
 
-/// Pages per instance region. A debug-build `cshim` is a couple of dozen pages of segments plus its
-/// stack, its page tables, its TCB, its address space, and the eight-page heap `malloc` grows into.
-/// Each instance is reaped before the next is built, so this is a peak, not a total.
+/// Pages per instance region. A debug-build `c_shim` is a couple of dozen pages of segments plus
+/// its stack, its page tables, its TCB, its address space, and the eight-page heap `malloc` grows
+/// into. Each instance is reaped before the next is built, so this is a peak, not a total.
 const INSTANCE_PAGES: u64 = 96;
 
 #[unsafe(no_mangle)]
@@ -68,7 +68,7 @@ pub extern "C" fn _start(_a0: u64, initrd_len: u64, _a2: u64) -> ! {
     let Ok(fs) = crickerfs::Fs::parse(archive) else {
         bail(1)
     };
-    let Some(shim) = fs.read("cshim").and_then(|b| elf::Elf::parse(b).ok()) else {
+    let Some(shim) = fs.read("c_shim").and_then(|b| elf::Elf::parse(b).ok()) else {
         bail(2)
     };
 

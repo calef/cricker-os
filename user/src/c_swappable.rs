@@ -1,10 +1,10 @@
 //! **The swappable component, version 2: the replacement, and it is written in C** (milestone 23,
 //! DECISIONS §41, over the seam DECISIONS §31 built).
 //!
-//! Identical to [`conx`](../conx/index.html) in every respect a client could observe: same
-//! capability layout, same wire protocol, same serving loop (both compile `swap.rs`). The one
-//! difference is the function that computes a request's answer, which here is `cx_digest` in
-//! `user/c/conxsvc.c`, compiled by a bare-metal clang and linked into this binary alone.
+//! Identical to [`rust_swappable`](../rust_swappable/index.html) in every respect a client could
+//! observe: same capability layout, same wire protocol, same serving loop (both compile `swap.rs`).
+//! The one difference is the function that computes a request's answer, which here is `cx_digest`
+//! in `user/c/c_swappable.c`, compiled by a bare-metal clang and linked into this binary alone.
 //!
 //! **Why that difference is the point.** "A client did not notice the swap" is a much weaker claim
 //! if the replacement is a recompile of the same source. Here the replacement is a different
