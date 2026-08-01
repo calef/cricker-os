@@ -196,7 +196,7 @@ not yet built is the client-facing socket contract that lets *other* processes u
 
 The §25 contract, so a process other than netstack can open sockets. netstack, after DHCP, serves requests
 on a `Stack` endpoint; a client holds `WRITE` on it plus its own untyped budget. Files:
-`user/src/netproto.rs` (the wire format), the serve loop in `user/src/netstack.rs`, and the client in
+`crates/socket_proto/src/lib.rs` (the wire format), the serve loop in `user/src/netstack.rs`, and the client in
 `user/src/netcli.rs` (a module of the netstack binary, dispatched by the entry role, see the archive
 note below).
 

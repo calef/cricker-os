@@ -398,6 +398,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "socket_proto"
+version = "0.1.0"
+
+[[package]]
 name = "spin"
 version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -520,6 +524,7 @@ dependencies = [
  "ntp_proto",
  "sink_proto",
  "smoltcp",
+ "socket_proto",
  "supervision_proto",
  "swap_proto",
  "user_rt",

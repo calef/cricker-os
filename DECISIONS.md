@@ -1441,7 +1441,7 @@ and outbound `std::net::UdpSocket` now work, backed by netstack over the §25 so
 `net honestly unsupported` line of phase one is retired. The PAL (`sys/net/connection/cricker.rs`) is
 a **pure client** of the frozen contract, no new syscall and no new capability method: it holds a
 `Stack` endpoint (slot 2) and a frame untyped (slot 3), mints a shared frame per socket, and drives
-netstack with `netproto` `CALL`s. The wire constants are generated verbatim from `user/src/netproto.rs`
+netstack with `socket_proto` `CALL`s. The wire constants are generated verbatim from `crates/socket_proto/src/lib.rs`
 into the patched std, the same anti-drift discipline as the ABI and heap crates. A std program does
 networking only if it holds those two slots; without them `std::net` returns `Unsupported`, which is
 "no ambient network" (§10) made visible from inside a process. The same `hellostd` binary proves

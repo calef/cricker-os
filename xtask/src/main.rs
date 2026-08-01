@@ -218,7 +218,7 @@ fn std_inputs_stamp() -> u64 {
         root.join("crates/uheap/src/lib.rs"),
         // The net PAL generates its wire constants verbatim from the netstack contract; a change to it
         // must rebuild the farm just like a change to the ABI crate.
-        root.join("user/src/netproto.rs"),
+        root.join("crates/socket_proto/src/lib.rs"),
         // Likewise the FS-service contract: `std::fs` is a client of it (milestone 27 phase two),
         // and its wire constants are generated verbatim into the PAL.
         root.join("crates/fs_proto/src/lib.rs"),
@@ -379,7 +379,7 @@ fn std_generate_modules() -> bool {
         // The netstack socket-contract wire format, verbatim, so the net PAL cannot drift from the
         // server it talks to (same discipline as the ABI and heap crates above).
         (
-            root.join("user/src/netproto.rs"),
+            root.join("crates/socket_proto/src/lib.rs"),
             farm_std_src().join("sys/pal/cricker/netproto.rs"),
         ),
         // The FS-service wire protocol (DECISIONS §27), so `std::fs`'s PAL cannot drift from the

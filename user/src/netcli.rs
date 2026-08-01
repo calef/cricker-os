@@ -34,7 +34,7 @@
 use abi::{endpoint, frame as fr, rights, untyped as ut};
 use user_rt::{call, exit, invoke, send};
 
-use super::netproto::*;
+use socket_proto::*;
 
 const REPORT: u64 = 0;
 const STACK: u64 = 1;

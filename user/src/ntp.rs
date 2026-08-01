@@ -69,7 +69,7 @@
 //! # The test server, and what it does and does not prove
 //!
 //! [`ROLE_SERVER`] is **both an NTP server and the network**: it holds `READ` on an endpoint the
-//! client was given `WRITE` on, and it speaks the same socket contract (`user/src/netproto.rs`)
+//! client was given `WRITE` on, and it speaks the same socket contract (`crates/socket_proto/src/lib.rs`)
 //! `netstack` does. The client cannot tell, and that is the point rather than a convenience: the
 //! client's network path is one endpoint capability, so substituting the peer at that boundary runs
 //! the client's **real, unmodified code**. There is no test-only branch anywhere in the client.
@@ -101,9 +101,7 @@ use user_rt::{call, cap_delete, cntfrq, exit, invoke, now, recv_cap, reply, send
 // file is dead here. Allowed rather than trimmed: the value of compiling the *same file* netstack
 // does is that the two cannot drift, and a per-consumer subset would throw that away.
 #[allow(dead_code)]
-#[path = "netproto.rs"]
-mod netproto;
-use netproto::*;
+use socket_proto::*;
 
 // =================================================================================================
 // The roles, the slots, and the words this program reports.
