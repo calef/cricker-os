@@ -2050,8 +2050,17 @@ entry is a path that does not resolve"* is what happened, where *"that link is b
 something was once connected. The verb becomes writing a path into a directory rather than "linking",
 which retires the `ln -s` shape and its trailing-slash footgun with it.
 
-**That the naming is this hard is itself evidence.** Eight candidates, each failing for a *different*
-reason, and the one that passed every test failed on the word being occupied by its own inverse. The
+**A further seven produced no new failure modes** (`speculum`, `glass`, `scryer`, `mimic`, `imitate`,
+`parallel`, `echo`), which is what an exhausted search looks like. They re-derive the four already
+listed: `speculum` and `glass` and `scryer` are the mirror family with added baggage (a medical
+instrument, a *material* that only means mirror with "looking" in front, and a word naming **the
+person looking rather than the thing looked into**, plus divination); `mimic` and `imitate` reinstate
+**an original being imitated**, which is where `costume` and `disguise` died, and `imitate` is a verb
+besides; `echo` collides with a shell builtin **we already have**, exactly as `alias` collides with
+zsh's; and `parallel` means concurrency, in a system with four cores and per-CPU run queues.
+
+**That the naming is this hard is itself evidence.** Fifteen candidates, the first eight failing for a
+*different* reason each and the last seven finding no new ones, and the one that passed every test failed on the word being occupied by its own inverse. The
 construct is the only thing in this design whose meaning depends on who is looking, and the vocabulary
 has no slot for that. Plan 9 hit the same wall from the same premises and answered with a different
 mechanism rather than a better noun — which is why this fork is **mechanism first**.
