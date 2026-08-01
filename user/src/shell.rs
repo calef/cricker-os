@@ -53,7 +53,13 @@ use lineedit::proto;
 use user_rt::{call, cap_delete, exit, invoke, recv, send, yield_now};
 
 // Pages shared with the terminal (must match the wiring in init).
-const OUT_VA: u64 = 0x0000_0000_0060_0000; // we write; the terminal reads
+//
+// `OUT_VA` used to be 0x0060_0000, which is also [`FS_VA`]. That was sound while a shell wired to a
+// terminal could not also hold a filesystem, and milestone 50's `>` is exactly the wiring where it
+// holds both, so the terminal page moved rather than the FS one: `FS_VA` is `fs_service`'s
+// `FILE_VA_CLIENT`, which six other programs map, and this is the one address only the shell and its
+// init know.
+const OUT_VA: u64 = 0x0000_0000_00c0_0000; // we write; the terminal reads
 const LINE_VA: u64 = 0x0000_0000_00b0_0000; // the terminal writes; we read
 
 // Capability slots.
@@ -69,18 +75,14 @@ const SH_BUDGET_PAGES: u64 = 128;
 /// **What this shell holds, which is what decides whether a named file can be backed.**
 ///
 /// A per-file grant is a directory capability narrowed to one name (milestone 31 phase 2,
-/// `user/src/fwarden.rs`). Narrowing needs a directory to narrow, and this shell's endowment stops
-/// at slot 3: init grants it a terminal, a spawn channel, a result channel and a budget, and nothing
-/// that names a filesystem, because the boot that starts this shell wires no FS service. So the
-/// answer here is `false`, and a file named at a program that takes one gets the milestone's
-/// headline refusal, which is **true** rather than a placeholder: this shell really does hold no
-/// such capability. (No shipped program declares `FileSpec::Required` yet, so that refusal is
-/// reachable from `plan_against` and not from the prompt; see notes/grant-expression.md.)
+/// `user/src/fwarden.rs`), and a redirection is a file opened through one. Both need a directory to
+/// narrow, so both answer to this: a shell whose init granted it a directory capability (slot
+/// [`DIR_TERMINAL`]) can back `>` and `<`, and a shell whose init granted it none gets the
+/// milestone's headline refusal, which is **true** rather than a placeholder.
 ///
-/// It is a function rather than a constant so that the day the boot path wires an FS service and
-/// grants a directory at a slot, the one place that changes is here. The planning, the manifest
-/// vocabulary, and the `caps` preview are already written against it; see notes/grant-expression.md
-/// for what is left.
+/// The same binary is in both positions, which is the point: `date > report.txt` is refused in the
+/// wiring with no filesystem and runs in the wiring with one, and nothing in this file branches on
+/// which. See notes/pipes.md.
 fn holdings(nav: &Nav) -> capsh::Holdings {
     capsh::Holdings {
         dir: nav.dir.is_some(),
@@ -92,16 +94,19 @@ fn holdings(nav: &Nav) -> capsh::Holdings {
 
 /// Where the page this shell shares with the FS server is mapped, **in the wiring that has one**.
 ///
-/// The same address as [`OUT_VA`], and that is not a collision: a shell wired to a terminal has no
-/// filesystem and a shell wired to a filesystem has no terminal, so the two mappings never exist in
-/// one address space. Both are the first spare 4 KiB window in this program's layout, which is why
-/// they landed on the same number.
+/// It is `fs_service`'s `FILE_VA_CLIENT`, the address every FS client in this system maps its half
+/// of the contract at, which is why [`OUT_VA`] moved out of the way rather than this.
 const FS_VA: u64 = 0x0000_0000_0060_0000;
 
 /// The directory capability's slot in the navigating wiring (`fs_service::start_granted_dir` grants
-/// it at 0). The interactive wiring has no such slot at all, which is why [`Nav::dir`] is an
+/// it at 0). A shell that was granted none has no such slot at all, which is why [`Nav::dir`] is an
 /// `Option` rather than a constant: "this shell holds no directory" is a fact about a cspace.
 const DIR: u64 = 0;
+
+/// The directory capability's slot in the **terminal** wiring, where slots 0..3 are already the
+/// terminal, the spawn channel, the result channel and the budget. A shell wired this way holds a
+/// filesystem *and* a way to spawn, which is the whole of what `>` and `<` needed (notes/pipes.md).
+const DIR_TERMINAL: u64 = 4;
 
 /// **The shell's position inside the one directory capability it holds**, and the capabilities it
 /// walked through to get there.
@@ -176,8 +181,15 @@ impl Nav {
 
     /// A shell rooted at the directory capability in [`DIR`], carrying `rights`.
     fn rooted(rights: u64) -> Self {
+        Nav::rooted_at(DIR, rights)
+    }
+
+    /// A shell rooted at the directory capability in `slot`, carrying `rights`. The slot is a
+    /// parameter because the two wirings put the directory in different places: a witness holds
+    /// nothing else and gets slot 0, and a shell with a terminal already owes 0..3 to it.
+    fn rooted_at(slot: u64, rights: u64) -> Self {
         Nav {
-            dir: Some(DIR),
+            dir: Some(slot),
             rights,
             cwd: Cwd::root(),
             handles: [0; nav::MAX_DEPTH],
@@ -640,14 +652,27 @@ const ROLE_GLOB: u64 = 2;
 /// terminal it writes to, a spawn channel, a result channel and a budget, and it types a fixed
 /// script of command lines through the same [`dispatch`] the prompt uses. See [`piping`].
 const ROLE_PIPELINE: u64 = 3;
+/// **The redirection witness** (milestone 50): [`ROLE_PIPELINE`]'s wiring plus a directory
+/// capability at [`DIR_TERMINAL`], which is the endowment `>` and `<` need and the one the
+/// interactive boot grants. It types a fixed script through the same [`dispatch`] the prompt uses.
+/// See [`redirecting`].
+const ROLE_REDIRECT: u64 = 4;
 
+/// **What `arg1` carries into every role that holds a directory**: the `fs_proto::dir` rights that
+/// capability was granted, with 0 meaning "you were granted no directory at all".
+///
+/// The shell is **told** rather than asking, and that is a gap in `fs_proto` rather than a shortcut:
+/// nothing on that wire reports what a handle carries, and `OPENDIR` refuses a request wider than
+/// the parent instead of narrowing it, so a shell that guessed `dir::ALL` from a narrower capability
+/// could not `cd` at all. See notes/shell-navigation.md.
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(role: u64, arg: u64, _x2: u64) -> ! {
     match role {
         ROLE_NAVIGATE => navigate(arg),
         ROLE_GLOB => globbing(arg),
         ROLE_PIPELINE => piping(),
-        _ => interactive(),
+        ROLE_REDIRECT => redirecting(arg),
+        _ => interactive(arg),
     }
 }
 
@@ -691,14 +716,62 @@ fn piping() -> ! {
 /// having to guess from a quiet endpoint. Must match `kernel::user::pipeline_tests`.
 const PIPELINE_DONE: &[u8] = b"== pipelines done\n";
 
-fn interactive() -> ! {
+/// **A scripted shell that holds a filesystem as well as a spawn channel** (milestone 50).
+///
+/// The same wiring as [`piping`] plus one capability, and that one capability is the whole
+/// difference between a `>` that is refused and a `>` that writes a file. Every line goes through
+/// [`dispatch`], so what is under test is the prompt.
+///
+/// The lines are ordered so the answers check each other rather than constants, which is the shape
+/// [`piping`]'s script has and for the same reason:
+///
+/// - `ls > out.txt` writes a listing into a file; the `ls` after it prints **the same listing**
+///   (nothing between them changes the directory), and `wc < out.txt` has to agree with what was
+///   printed. One builtin, two destinations.
+/// - `date` and `date > date.txt` are one unmodified program sent two places, and `wc < date.txt`
+///   has to report the length of what `date` printed.
+fn redirecting(rights: u64) -> ! {
+    let mut nav = Nav::rooted_at(DIR_TERMINAL, rights);
+    for line in [
+        // The shell as producer *and* as sink: no process is spawned by this line at all.
+        &b"ls > out.txt"[..],
+        b"ls",
+        b"wc < out.txt",
+        // The same unmodified `date`, twice, to two destinations.
+        b"date",
+        b"date > date.txt",
+        b"wc < date.txt",
+        // And the refusals a directory does not rescue.
+        b"wc < nosuch.txt",
+        b"worker 9 > out.txt",
+    ] {
+        print(b"$ ");
+        print(line);
+        print(b"\n");
+        dispatch(&mut nav, line);
+    }
+    print(REDIRECT_DONE);
+    exit();
+}
+
+/// [`PIPELINE_DONE`]'s twin for [`redirecting`]. Must match `kernel::user::redirection_tests`.
+const REDIRECT_DONE: &[u8] = b"== redirections done\n";
+
+/// The interactive prompt. `rights` is the [`_start`] convention: the `fs_proto::dir` rights of the
+/// directory capability at [`DIR_TERMINAL`], or 0 for a boot that wired no filesystem.
+fn interactive(rights: u64) -> ! {
     print(b"\ncricker-os capability shell. naming a resource in a command IS granting it.\n");
     print(b"commands: help, echo <text>, caps [command], cd, pwd, ls, mkdir, rm, wc,\n");
     print(b"          <prog> [--mem N] [arg]   and the operators  >  <  |\n");
 
-    // This wiring grants no directory, so the navigation builtins have nothing to name and say so.
-    // The day the interactive boot wires an FS service, this line is the one that changes.
-    let mut nav = Nav::empty();
+    // Whether the navigation builtins and the redirection operators have anything to name is
+    // decided here, by one capability. A boot that wired no FS service starts this program with
+    // `rights = 0` and every one of them answers "this shell holds no directory capability".
+    let mut nav = if rights == 0 {
+        Nav::empty()
+    } else {
+        Nav::rooted_at(DIR_TERMINAL, rights)
+    };
     let mut line = [0u8; 128];
     loop {
         let (n, flags) = read_line(b"$ ", &mut line);
@@ -1183,10 +1256,15 @@ fn preview(e: Endowment) {
             );
             print(b"             the rendezvous IS the pipe\n");
         }
+        // The row names the file, and the parenthesis names what the program actually holds, which
+        // is not the file. Its slot 0 is this shell's result endpoint either way; `>` is where the
+        // shell puts the bytes, not something the child was handed. So a redirected program still
+        // cannot seek, truncate, re-read or stat, and this is where a reader can see why.
         line::Sink::File(g) => {
             print(b"    output   ");
             print(g.name.as_bytes());
-            print(b"  (append-only: it cannot seek, truncate, re-read or stat)\n");
+            print(b"  (this shell writes the bytes there; the program holds\n");
+            print(b"             an endpoint and cannot seek, truncate, re-read or stat)\n");
         }
     }
     match e.source {
@@ -1195,7 +1273,8 @@ fn preview(e: Endowment) {
         line::Source::File(g) => {
             print(b"    input    ");
             print(g.name.as_bytes());
-            print(b"  (read as a stream; it holds no file capability)\n");
+            print(b"  (this shell reads it and streams it in; the program\n");
+            print(b"             holds an endpoint, not a file)\n");
         }
     }
     print(b"    arg    ");
@@ -1294,26 +1373,65 @@ fn pipeline(nav: &mut Nav, l: Line<'_>) {
         }
     }
 
-    // A file on either end needs a sink or source process, and building one needs a filesystem this
-    // shell was granted nothing of. `plan_stage` has already refused when the shell holds no
-    // directory, so this is the guard for the day it holds one and the wiring is still missing: a
-    // line that quietly ran without its redirection would write its output to the terminal while the
-    // user believed it went to a file, and that is the worst outcome this mechanism has.
-    if out.is_some() || inp.is_some() {
-        print(b"  a file at either end needs init to build the sink process; this shell cannot\n");
-        print(
-            b"  deliver one yet (it holds nothing that names a filesystem). See notes/pipes.md.\n",
-        );
+    run_pipeline(nav, l, &plans, head_builtin, out, inp);
+}
+
+/// Mint the pipes, open the files, spawn the stages, feed the head if the shell is the producer, and
+/// deliver what comes out of the tail. Everything above this decided; this moves capabilities.
+///
+/// **The shell is the process behind a `>` and a `<`**, and that is milestone 50's one wiring
+/// decision that is not the obvious one. See notes/pipes.md: `fs_proto` shares a single page between
+/// the FS server and its client, so two client processes racing to stage bytes in it is not sound,
+/// and `ls > out.txt` is precisely a line where the shell must read the filesystem *while* the
+/// redirection is being written. The shell already holds the directory capability, so it is the one
+/// process that can back both ends without a second session.
+///
+/// What the child holds is unchanged by that, which is why it costs the milestone nothing: a
+/// redirected program holds an endpoint with `WRITE` and no way to ask what is behind it.
+fn run_pipeline(
+    nav: &mut Nav,
+    l: Line<'_>,
+    plans: &[Option<Endowment>],
+    head_builtin: bool,
+    out: Option<capsh::FileGrant>,
+    inp: Option<capsh::FileGrant>,
+) {
+    let n = l.stage_count();
+
+    // The files first, before any process exists. A line whose file cannot be opened must not
+    // half-run, and `>` truncates here, which is where a person expects it: `date > f` empties `f`
+    // even if `date` then says nothing.
+    let mut sink = match out {
+        Some(g) => match open_sink(nav, g) {
+            Ok(f) => Some(f),
+            Err(s) => return say(s),
+        },
+        None => None,
+    };
+    let mut source = match inp {
+        Some(g) => match open_source(nav, g) {
+            Ok(f) => Some(f),
+            Err(s) => {
+                if let Some(f) = &mut sink {
+                    f.finish();
+                }
+                return say(s);
+            }
+        },
+        None => None,
+    };
+
+    // **A builtin with a file on its output spawns nothing at all.** `ls > out.txt` is one process:
+    // the shell reads the directory and the shell writes the file. There is no pipe to mint, no
+    // stage to start, and no capability to move, because both ends are already this shell's.
+    if head_builtin && n == 1 {
+        if let Some(f) = &mut sink {
+            feed(nav, l.stages()[0], f);
+            f.report();
+        }
         return;
     }
 
-    run_pipeline(nav, l, &plans, head_builtin);
-}
-
-/// Mint the pipes, spawn the stages, feed the head if the shell is the producer, and print what
-/// comes out of the tail. Everything above this decided; this moves capabilities.
-fn run_pipeline(nav: &mut Nav, l: Line<'_>, plans: &[Option<Endowment>], head_builtin: bool) {
-    let n = l.stage_count();
     // One region for the whole pipeline, so a line costs one SPLIT and one DESTROY however many
     // stages it has. Each joint's endpoint is a page retyped out of it.
     let region = match untyped_split(PIPE_REGION_PAGES) {
@@ -1325,7 +1443,14 @@ fn run_pipeline(nav: &mut Nav, l: Line<'_>, plans: &[Option<Endowment>], head_bu
     };
     let mut pipes = [0u64; line::MAX_STAGES];
     let mut minted = 0usize;
-    while minted + 1 < n {
+    // A `<` needs one more endpoint than a bare pipeline does: the head stage reads a pipe like any
+    // other stage, and the shell is what writes into it. That is the input side of "the same
+    // contract, read from the other end" made concrete: nothing about the head stage knows.
+    let mut want = n - 1;
+    if source.is_some() {
+        want += 1;
+    }
+    while minted < want {
         match retype_endpoint(region) {
             Some(ep) => {
                 pipes[minted] = ep;
@@ -1338,6 +1463,7 @@ fn run_pipeline(nav: &mut Nav, l: Line<'_>, plans: &[Option<Endowment>], head_bu
             }
         }
     }
+    let feed_pipe = source.is_some().then(|| pipes[n - 1]);
 
     // Left to right, which is the order that cannot deadlock: a producer blocks in its first `SEND`
     // until its reader exists, and its reader is the next thing this loop spawns.
@@ -1346,34 +1472,54 @@ fn run_pipeline(nav: &mut Nav, l: Line<'_>, plans: &[Option<Endowment>], head_bu
             continue;
         }
         let Some(e) = plans[i] else { continue };
-        let sink = if i + 1 < n { Some(pipes[i]) } else { None };
-        let source = if i > 0 { Some(pipes[i - 1]) } else { None };
-        if !spawn_stage(e, sink, source) {
+        let stage_sink = if i + 1 < n { Some(pipes[i]) } else { None };
+        let stage_source = if i > 0 { Some(pipes[i - 1]) } else { feed_pipe };
+        if !spawn_stage(e, stage_sink, stage_source) {
             release_pipeline(region, &pipes[..minted]);
             return;
         }
     }
 
-    // The shell as the producer. It runs after every reader exists, for the same reason the loop
-    // above goes left to right.
+    // The shell as the producer, in either of its two shapes. Both run after every reader exists,
+    // for the same reason the loop above goes left to right.
     if head_builtin {
-        feed(nav, l.stages()[0], pipes[0]);
+        let mut w = SinkWriter::new(pipes[0]);
+        feed(nav, l.stages()[0], &mut w);
+    }
+    if let (Some(f), Some(p)) = (&mut source, feed_pipe) {
+        f.stream_into(p);
     }
 
-    // And the tail's answer, which arrives on the shell's own result endpoint because the tail's
-    // sink is `Sink::Report`. This is the same drain a single command's output takes; a pipeline is
-    // not a special case of printing.
-    drain_text();
+    // And the tail's answer, which arrives on the shell's own result endpoint whether or not the
+    // line named a file: `>` is the shell putting those bytes somewhere else, not the child being
+    // handed something different. A pipeline is not a special case of printing.
+    match &mut sink {
+        Some(f) => {
+            drain_into(f);
+            f.report();
+        }
+        None => drain_text(),
+    }
     release_pipeline(region, &pipes[..minted]);
 }
 
-/// **Run a producing builtin with the pipe as its output**, one message at a time.
+/// **Somewhere this shell puts bytes it produced itself.**
+///
+/// Two implementations, and the whole of what `>` cost: an endpoint (the next stage of a pipeline)
+/// and a file. A builtin cannot tell them apart, exactly as a spawned program cannot tell what is in
+/// its output slot, and for the same reason: it is handed a place to push bytes and nothing else.
+trait ByteOut {
+    fn push(&mut self, bytes: &[u8]);
+    /// Say the stream is over. On a pipe that is `OP_EOF`; on a file it is the last write.
+    fn finish(&mut self);
+}
+
+/// **Run a producing builtin with the given destination as its output**, one message at a time.
 ///
 /// The builtins already write through a callback rather than through `print`, because the witness
-/// roles have no terminal. That was done for testability and it pays off here: the same `echo` and
-/// the same `ls` feed a pipe with no branch in either of them.
-fn feed(nav: &mut Nav, stage: &[u8], pipe: u64) {
-    let mut w = SinkWriter::new(pipe);
+/// roles have no terminal. That was done for testability and it pays off twice here: the same `echo`
+/// and the same `ls` feed a pipe *and* a file with no branch in either of them.
+fn feed(nav: &mut Nav, stage: &[u8], w: &mut dyn ByteOut) {
     let said = match capsh::parse(stage) {
         Command::Echo(text) => {
             let said = echo(nav, text, &mut |b| w.push(b));
@@ -1433,19 +1579,6 @@ impl SinkWriter {
         }
     }
 
-    fn push(&mut self, bytes: &[u8]) {
-        for &b in bytes {
-            if self.stopped {
-                return;
-            }
-            self.buf[self.n] = b;
-            self.n += 1;
-            if self.n == self.buf.len() {
-                self.flush();
-            }
-        }
-    }
-
     fn flush(&mut self) {
         if self.n == 0 || self.stopped {
             return;
@@ -1459,6 +1592,21 @@ impl SinkWriter {
             self.stopped = true;
         }
     }
+}
+
+impl ByteOut for SinkWriter {
+    fn push(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            if self.stopped {
+                return;
+            }
+            self.buf[self.n] = b;
+            self.n += 1;
+            if self.n == self.buf.len() {
+                self.flush();
+            }
+        }
+    }
 
     fn finish(&mut self) {
         self.flush();
@@ -1467,6 +1615,253 @@ impl SinkWriter {
         }
     }
 }
+
+// ---- the file behind a `>` and a `<`, which this shell serves itself (milestone 50) ----
+
+/// How many bytes of a file this shell stages in the page it shares with the FS server before it
+/// makes a request. Small on purpose: the shell runs on the four stack pages init maps it, and the
+/// page itself is sixteen times this. A larger buffer would buy fewer FS round trips and cost the
+/// one resource this program is actually short of.
+const FILE_CHUNK: usize = 256;
+
+/// **Walk to the directory a resolved grant records**, from the root of what this shell holds.
+///
+/// The grant carries a position rather than a token (`capsh::designate` resolved the name once, at
+/// plan time), so this re-opens that position rather than re-reading the line. Nothing here consults
+/// where the shell is standing *now*, which is what makes a `cd` between planning and running unable
+/// to change what a redirection means.
+///
+/// Returns the handle plus the capabilities opened to reach it, which the caller closes.
+fn open_at(nav: &Nav, at: Cwd, tmp: &mut [u64; nav::MAX_DEPTH]) -> Result<(u64, usize), Say> {
+    let mut handle = fs::ROOT;
+    let mut n = 0usize;
+    for level in 0..at.depth() {
+        let r = nav.name_call(fs::OPENDIR, handle, at.component(level), nav.rights);
+        if r < 0 {
+            for h in tmp.iter().take(n) {
+                nav.close(*h);
+            }
+            return Err(Say::Failed(-r as i32));
+        }
+        tmp[n] = r as u64;
+        n += 1;
+        handle = r as u64;
+    }
+    Ok((handle, n))
+}
+
+/// **Open the file behind a `>`**, creating it if it is not there and emptying it if it is.
+///
+/// `CREATE` is create, not create-or-open (DECISIONS §27), so the fallback is explicit and is the
+/// same one `user/src/sink.rs` makes: on any refusal, open the existing name and truncate it. Stated
+/// rather than inferred, because a `>` that appended to whatever a previous run left behind would be
+/// `>>` wearing `>`'s spelling.
+fn open_sink(nav: &mut Nav, g: capsh::FileGrant) -> Result<FileOut, Say> {
+    let mut tmp = [0u64; nav::MAX_DEPTH];
+    let (dir_handle, opened) = open_at(nav, g.dir, &mut tmp)?;
+    let name = g.name.as_bytes();
+    let mut handle = nav.name_call(fs::CREATE, dir_handle, name, 0);
+    if handle < 0 {
+        handle = nav.name_call(fs::OPEN, dir_handle, name, 0);
+        if handle >= 0 {
+            let r = call(
+                nav.dir.unwrap_or(DIR),
+                fs::req(fs::TRUNCATE, handle as u64, 0),
+                0,
+            )
+            .0 as i64;
+            if r < 0 {
+                nav.close(handle as u64);
+                handle = r;
+            }
+        }
+    }
+    for h in tmp.iter().take(opened) {
+        nav.close(*h);
+    }
+    if handle < 0 {
+        return Err(Say::Failed(-handle as i32));
+    }
+    Ok(FileOut {
+        dir: nav.dir.unwrap_or(DIR),
+        handle: handle as u64,
+        off: 0,
+        buf: [0; FILE_CHUNK],
+        n: 0,
+        failed: 0,
+        short: false,
+    })
+}
+
+/// **Open the file behind a `<`.** No create and no truncate: reading a name that is not there is a
+/// refusal, not an empty stream, because a `wc < typo.txt` that reported zero would be a lie a
+/// person would believe.
+fn open_source(nav: &mut Nav, g: capsh::FileGrant) -> Result<FileIn, Say> {
+    let mut tmp = [0u64; nav::MAX_DEPTH];
+    let (dir_handle, opened) = open_at(nav, g.dir, &mut tmp)?;
+    let handle = nav.name_call(fs::OPEN, dir_handle, g.name.as_bytes(), 0);
+    for h in tmp.iter().take(opened) {
+        nav.close(*h);
+    }
+    if handle < 0 {
+        return Err(Say::Failed(-handle as i32));
+    }
+    Ok(FileIn {
+        dir: nav.dir.unwrap_or(DIR),
+        handle: handle as u64,
+    })
+}
+
+/// A file this shell is appending into, on behalf of a `>`.
+///
+/// It holds an open handle and a running offset, and buffers into [`FILE_CHUNK`] before each write,
+/// because the FS contract's unit is a page and the sink contract's is sixteen bytes: writing every
+/// message straight through would cost a filesystem round trip per sixteen bytes.
+struct FileOut {
+    /// The slot the directory capability lives in. A `u64` rather than a borrow of [`Nav`], so a
+    /// builtin that borrows the shell's navigator can still write through this.
+    dir: u64,
+    handle: u64,
+    off: u64,
+    buf: [u8; FILE_CHUNK],
+    n: usize,
+    /// The errno of the first refused write, or 0. Kept rather than printed at once: a producer
+    /// mid-listing has nothing to do with a failure, and reporting once at the end is what a person
+    /// can read.
+    failed: i32,
+    /// A write the server accepted and did not finish. Its own field rather than an errno, because
+    /// there is no errno for it: the request did not fail, it was answered with a smaller number
+    /// than it asked for, and saying `EIO` would be inventing a fact.
+    short: bool,
+}
+
+impl FileOut {
+    fn flush(&mut self) {
+        if self.n == 0 || self.failed != 0 || self.short {
+            self.n = 0;
+            return;
+        }
+        put_page(&self.buf[..self.n]);
+        let r = call(
+            self.dir,
+            fs::req(fs::WRITE, self.handle, self.n as u64),
+            self.off,
+        )
+        .0 as i64;
+        // A lost byte, either way, and a `>` that said nothing about it would be certifying a file
+        // it did not write.
+        if r < 0 {
+            self.failed = -r as i32;
+        } else if r != self.n as i64 {
+            self.short = true;
+        }
+        self.off += self.n as u64;
+        self.n = 0;
+    }
+
+    /// Say what happened, once, after the whole stream is through. Silence on success, because that
+    /// is what `>` says everywhere else and because the bytes went into a file rather than onto the
+    /// screen precisely so they would not be printed.
+    fn report(&self) {
+        if self.failed != 0 {
+            say(Say::Failed(self.failed));
+        } else if self.short {
+            print(b"  the filesystem took fewer bytes than were written; that file is short\n");
+        }
+    }
+}
+
+impl ByteOut for FileOut {
+    fn push(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.buf[self.n] = b;
+            self.n += 1;
+            if self.n == self.buf.len() {
+                self.flush();
+            }
+        }
+    }
+
+    fn finish(&mut self) {
+        self.flush();
+        call(self.dir, fs::req(fs::CLOSE, self.handle, 0), 0);
+    }
+}
+
+/// A file this shell is reading out, on behalf of a `<`.
+struct FileIn {
+    dir: u64,
+    handle: u64,
+}
+
+impl FileIn {
+    /// **Stream the file over the sink contract**, which is the whole of `<`: the head stage holds
+    /// the read end of an endpoint and receives `OP_BYTES` until `OP_EOF`, exactly as it would from
+    /// a program on the left of a `|`. Nothing about the file reaches it.
+    fn stream_into(&mut self, pipe: u64) {
+        let mut w = SinkWriter::new(pipe);
+        let mut off = 0u64;
+        let mut buf = [0u8; FILE_CHUNK];
+        loop {
+            let got = call(
+                self.dir,
+                fs::req(fs::READ, self.handle, FILE_CHUNK as u64),
+                off,
+            )
+            .0 as i64;
+            if got <= 0 {
+                if got < 0 {
+                    say(Say::Failed(-got as i32));
+                }
+                break;
+            }
+            let got = (got as usize).min(FILE_CHUNK);
+            get_page(got, &mut buf);
+            w.push(&buf[..got]);
+            off += got as u64;
+        }
+        // End of stream whatever happened, for `feed`'s reason: the reader is a process blocked in a
+        // receive, and a read error is not a reason to leave it there.
+        w.finish();
+        call(self.dir, fs::req(fs::CLOSE, self.handle, 0), 0);
+    }
+}
+
+/// **Drain a byte stream off the result endpoint into a file**, which is what `>` is.
+///
+/// [`drain_text`] with a different destination, and deliberately not a parameterised version of it:
+/// the printing one puts a two-space prefix on the answer and this one must put nothing at all in
+/// the file that the program did not write.
+fn drain_into(f: &mut FileOut) {
+    for _ in 0..MAX_FILE_CHUNKS {
+        let (w0, w1, w2) = recv(RESULT);
+        if w0 == spawnproto::SPAWN_FAILED {
+            print(b"  could not spawn (init is out of memory)\n");
+            return;
+        }
+        let mut buf = [0u8; sink_proto::INLINE_MAX];
+        match sink_proto::unpack(w0, w1, w2, &mut buf) {
+            sink_proto::Msg::Bytes(n) => f.push(&buf[..n]),
+            sink_proto::Msg::Eof => {
+                f.finish();
+                return;
+            }
+            sink_proto::Msg::Malformed => {
+                f.finish();
+                print(b"  (that program sent something this shell cannot read as bytes)\n");
+                return;
+            }
+        }
+    }
+    f.finish();
+    print(b"  (output truncated: that program never said it was finished)\n");
+}
+
+/// The ceiling on a redirected program's output, in sixteen-byte messages: 16 KiB. Larger than
+/// [`MAX_TEXT_CHUNKS`] because a file is where output goes when there is too much of it to read, and
+/// it is a ceiling for the same reason that one is: a program that never announces end of stream
+/// costs a truncated file rather than a prompt that never returns.
+const MAX_FILE_CHUNKS: usize = 1024;
 
 /// **Direct init to build one stage**, delegating whatever the operators put in its slots.
 ///

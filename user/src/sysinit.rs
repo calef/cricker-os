@@ -52,7 +52,7 @@ const CON_UART_VA: u64 = 0x0070_0000; // console's UART mapping
 const TERM_OUT_VA: u64 = 0x0080_0000; // lineedit reads the shell's text/prompts here
 const TERM_IN_VA: u64 = 0x0090_0000; // lineedit delivers completed lines here
 const IN_UART_VA: u64 = 0x00a0_0000; // input driver's UART mapping
-const SH_OUT_VA: u64 = 0x0060_0000; // the shell's view of the TERM_OUT frame
+const SH_OUT_VA: u64 = 0x00c0_0000; // the shell's view of the TERM_OUT frame (shell.rs OUT_VA)
 const LINE_VA: u64 = 0x00b0_0000; // the shell's view of the TERM_IN frame
 
 #[unsafe(no_mangle)]

@@ -2638,22 +2638,24 @@ pub mod fs_service {
         pub stack_pages: usize,
     }
 
+    /// **Wire a directory warden and hand back the narrowed capability**, without spawning whatever
+    /// is going to hold it.
+    ///
+    /// [`start_granted_dir`]'s first half, split out because milestone 50's redirection witness is a
+    /// shell that holds a directory **and** a terminal, a spawn channel and a budget, so its client
+    /// half is nothing like [`spawn_fs_client`]'s. What it shares with every other confined program
+    /// is exactly what is here: a warden between it and the FS server, and the page they both map.
+    ///
+    /// Returns `(narrow_ep, file_shared)`, with both handshakes already drained for
+    /// [`await_warden`]'s reason, so a caller may spawn its client the moment this returns.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub fn start_granted_dir(
+    pub fn narrow_dir(
         blk_image: &'static [u8],
         fsserver_image: &'static [u8],
         warden_image: &'static [u8],
-        client_image: &'static [u8],
-        grant: DirGrant,
-    ) -> Option<EpId> {
-        let DirGrant {
-            name,
-            rights,
-            role: client_role,
-            arg: client_arg,
-            arg2: client_arg2,
-            stack_pages,
-        } = grant;
+        name: &'static str,
+        rights: u64,
+    ) -> Option<(EpId, u64)> {
         assert!(
             fs_proto::grant::fits(name.as_bytes()),
             "a granted name rides in two argument words; this one does not fit",
@@ -2662,9 +2664,6 @@ pub mod fs_service {
         let narrow_ep = crate::sched::create_endpoint();
         let warden_ready = crate::sched::create_endpoint();
 
-        // The grant rides in the START arguments exactly as a per-file grant does: the name in two
-        // words and the rights in the spec word, whose rights field has no fixed width. So a subtree
-        // grant costs no frame either.
         let (lo, hi) = fs_proto::grant::pack_name(name.as_bytes());
         let spec = fs_proto::grant::spec(name.len(), rights);
 
@@ -2695,6 +2694,27 @@ pub mod fs_service {
         // drained gives its client an unbounded window to write over the staged name.
         await_service(readiness);
         await_warden(warden_ready);
+        Some((narrow_ep, file_shared))
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn start_granted_dir(
+        blk_image: &'static [u8],
+        fsserver_image: &'static [u8],
+        warden_image: &'static [u8],
+        client_image: &'static [u8],
+        grant: DirGrant,
+    ) -> Option<EpId> {
+        let DirGrant {
+            name,
+            rights,
+            role: client_role,
+            arg: client_arg,
+            arg2: client_arg2,
+            stack_pages,
+        } = grant;
+        let (narrow_ep, file_shared) =
+            narrow_dir(blk_image, fsserver_image, warden_image, name, rights)?;
 
         // The confined program. Its slot 0 looks exactly like a directory capability from inside,
         // and is one: the same protocol, the same page, a namespace of one subtree.
@@ -14016,7 +14036,7 @@ pub mod pipeline_service {
     const ROLE_PIPELINE: u64 = 3;
 
     /// The VAs the shell hardcodes for its terminal pages. Must match user/src/shell.rs.
-    const OUT_VA: u64 = 0x0000_0000_0060_0000;
+    const OUT_VA: u64 = 0x0000_0000_00c0_0000;
     const LINE_VA: u64 = 0x0000_0000_00b0_0000;
 
     /// The budget the shell mints its pipes out of. Each pipeline splits a region off this and
@@ -14047,6 +14067,31 @@ pub mod pipeline_service {
     /// The endowment is deliberately the interactive one, slot for slot, because a witness with a
     /// wider endowment would be proving something about a shell nobody runs.
     pub fn start() -> Option<Wiring> {
+        start_with(ROLE_PIPELINE, 0, None)
+    }
+
+    /// **The same shell, one capability wider**: a directory at slot 4 and the page it shares with
+    /// the FS server (milestone 50's `>` and `<`).
+    ///
+    /// This is what makes the pair of witnesses worth having. [`start`] and this call spawn the same
+    /// ELF from the same archive with the same four slots, and the only difference between a
+    /// `date > report.txt` that is refused and one that writes a file is whether slot 4 is
+    /// occupied. Neither behaviour is a branch in the program; both are facts about a cspace.
+    ///
+    /// `dir` is `(the narrowed directory endpoint, the physical frame it shares with the FS server)`,
+    /// which is what `fs_service::narrow_dir` hands back.
+    pub fn start_redirecting(dir: (EpId, u64), rights: u64) -> Option<Wiring> {
+        start_with(ROLE_REDIRECT, rights, Some(dir))
+    }
+
+    /// The shell's redirection role (`user/src/shell.rs`).
+    const ROLE_REDIRECT: u64 = 4;
+
+    /// Where an FS client maps the page it shares with the FS server (`fs_service`'s
+    /// `FILE_VA_CLIENT`, and `user/src/shell.rs`'s `FS_VA`).
+    const FS_VA: u64 = 0x0000_0000_0060_0000;
+
+    fn start_with(role: u64, arg: u64, dir: Option<(EpId, u64)>) -> Option<Wiring> {
         let image = program("shell")?;
         let term = crate::sched::create_endpoint();
         let spawn_ep = crate::sched::create_endpoint();
@@ -14081,34 +14126,67 @@ pub mod pipeline_service {
                 va: OUT_VA,
                 phys: out_phys,
                 flags: Flags::user_data(),
-            }; 2 + SHELL_EXTRA_STACK];
+            }; 3 + SHELL_EXTRA_STACK];
             maps[1] = Mapping {
                 va: LINE_VA,
                 phys: line_phys,
                 flags: Flags::user_rodata(),
             };
-            for (k, m) in maps[2..].iter_mut().enumerate() {
+            for (k, m) in maps[2..2 + SHELL_EXTRA_STACK].iter_mut().enumerate() {
                 m.va = USER_STACK_VA - (k as u64 + 1) * FRAME_SIZE;
                 m.phys = crate::memory::alloc()
                     .expect("no frame for the shell's stack")
                     .addr();
                 m.flags = Flags::user_data();
             }
-            run(
-                image,
-                Spawn {
-                    arg0: ROLE_PIPELINE,
-                    arg1: 0,
-                    arg2: 0,
-                    grants: &[
-                        endpoint_cap(term, Rights::WRITE),     // slot 0: the terminal
-                        endpoint_cap(spawn_ep, Rights::WRITE), // slot 1: direct init
-                        endpoint_cap(result, Rights::READ),    // slot 2: a child's answer
-                        untyped_cap(budget),                   // slot 3: what it mints pipes from
-                    ],
-                    maps: &maps,
-                },
-            )
+            // The FS page last, so a shell wired without a filesystem maps exactly what it did
+            // before and the count is the only difference between the two wirings.
+            let n = match dir {
+                Some((_, file_shared)) => {
+                    maps[2 + SHELL_EXTRA_STACK] = Mapping {
+                        va: FS_VA,
+                        phys: file_shared,
+                        flags: Flags::user_data(),
+                    };
+                    maps.len()
+                }
+                None => maps.len() - 1,
+            };
+            let grants: &[crate::cap::Cap] = &[
+                endpoint_cap(term, Rights::WRITE),     // slot 0: the terminal
+                endpoint_cap(spawn_ep, Rights::WRITE), // slot 1: direct init
+                endpoint_cap(result, Rights::READ),    // slot 2: a child's answer
+                untyped_cap(budget),                   // slot 3: what it mints pipes from
+            ];
+            match dir {
+                Some((dir_ep, _)) => run(
+                    image,
+                    Spawn {
+                        arg0: role,
+                        arg1: arg,
+                        arg2: 0,
+                        grants: &[
+                            grants[0],
+                            grants[1],
+                            grants[2],
+                            grants[3],
+                            // slot 4: the directory it resolves `>` and `<` against
+                            endpoint_cap(dir_ep, Rights::WRITE),
+                        ],
+                        maps: &maps[..n],
+                    },
+                ),
+                None => run(
+                    image,
+                    Spawn {
+                        arg0: role,
+                        arg1: arg,
+                        arg2: 0,
+                        grants,
+                        maps: &maps[..n],
+                    },
+                ),
+            }
         })?;
 
         Some(Wiring { term, out_phys })
@@ -14160,6 +14238,59 @@ pub mod pipeline_service {
                 return len;
             }
         }
+    }
+
+    /// **The text the shell printed in response to `line`**, up to but not including the next
+    /// prompt.
+    ///
+    /// The transcript is echoed prompts and answers, so slicing it this way is what lets an
+    /// assertion name the command it is about instead of counting lines. It lives here rather than
+    /// in one test module because both witnesses (the pipeline script and the redirection script)
+    /// read their transcripts the same way, and a second copy would be a second thing to keep true.
+    pub fn answer<'a>(t: &'a [u8], line: &[u8]) -> &'a [u8] {
+        let mut needle = [0u8; 64];
+        needle[0] = b'$';
+        needle[1] = b' ';
+        needle[2..2 + line.len()].copy_from_slice(line);
+        needle[2 + line.len()] = b'\n';
+        let needle = &needle[..3 + line.len()];
+        let start = t
+            .windows(needle.len())
+            .position(|w| w == needle)
+            .unwrap_or_else(|| {
+                panic!(
+                    "the shell never ran {:?}. transcript:\n{}",
+                    core::str::from_utf8(line).unwrap(),
+                    core::str::from_utf8(t).unwrap_or("<not utf-8>"),
+                )
+            })
+            + needle.len();
+        let rest = &t[start..];
+        let end = rest
+            .windows(2)
+            .position(|w| w == b"$ ")
+            .unwrap_or(rest.len());
+        &rest[..end]
+    }
+
+    /// Parse `wc`'s three numbers out of what the shell printed for it. `wc` prints
+    /// `lines words bytes` and a newline; the caller strips the shell's two-space prefix.
+    pub fn counts(said: &[u8]) -> (u64, u64, u64) {
+        let text = core::str::from_utf8(said).expect("wc printed non-UTF-8");
+        let mut it = text.split_ascii_whitespace().map(|w| {
+            w.parse::<u64>()
+                .unwrap_or_else(|_| panic!("wc printed {text:?}, which is not three numbers"))
+        });
+        let (l, w, b) = (
+            it.next().expect("no line count"),
+            it.next().expect("no word count"),
+            it.next().expect("no byte count"),
+        );
+        assert!(
+            it.next().is_none(),
+            "wc printed more than three numbers: {text:?}"
+        );
+        (l, w, b)
     }
 
     /// **init, as the shell sees it**: the spawn protocol, including milestone 50's two delegated
@@ -14303,55 +14434,7 @@ mod pipeline_tests {
         *n
     }
 
-    /// The text the shell printed in response to `line`, up to but not including the next prompt.
-    ///
-    /// The transcript is echoed prompts and answers, so slicing it this way is what lets each
-    /// assertion below name the command it is about instead of counting lines.
-    fn answer<'a>(t: &'a [u8], line: &[u8]) -> &'a [u8] {
-        let mut needle = [0u8; 64];
-        needle[0] = b'$';
-        needle[1] = b' ';
-        needle[2..2 + line.len()].copy_from_slice(line);
-        needle[2 + line.len()] = b'\n';
-        let needle = &needle[..3 + line.len()];
-        let start = t
-            .windows(needle.len())
-            .position(|w| w == needle)
-            .unwrap_or_else(|| {
-                panic!(
-                    "the shell never ran {:?}. transcript:\n{}",
-                    core::str::from_utf8(line).unwrap(),
-                    core::str::from_utf8(t).unwrap_or("<not utf-8>"),
-                )
-            })
-            + needle.len();
-        let rest = &t[start..];
-        let end = rest
-            .windows(2)
-            .position(|w| w == b"$ ")
-            .unwrap_or(rest.len());
-        &rest[..end]
-    }
-
-    /// Parse `wc`'s three numbers out of what the shell printed for it. The shell prefixes two
-    /// spaces; `wc` prints `lines words bytes` and a newline.
-    fn counts(said: &[u8]) -> (u64, u64, u64) {
-        let text = core::str::from_utf8(said).expect("wc printed non-UTF-8");
-        let mut it = text.split_ascii_whitespace().map(|w| {
-            w.parse::<u64>()
-                .unwrap_or_else(|_| panic!("wc printed {text:?}, which is not three numbers"))
-        });
-        let (l, w, b) = (
-            it.next().expect("no line count"),
-            it.next().expect("no word count"),
-            it.next().expect("no byte count"),
-        );
-        assert!(
-            it.next().is_none(),
-            "wc printed more than three numbers: {text:?}"
-        );
-        (l, w, b)
-    }
+    use pipeline_service::{answer, counts};
 
     /// **The headline: the same `date`, two destinations, the same bytes.**
     ///
@@ -14480,11 +14563,10 @@ mod pipeline_tests {
     /// **`>` needs a filesystem this shell was granted none of, and it says so** rather than
     /// running the command and printing the output to the terminal.
     ///
-    /// This is the honest half of milestone 50: the interactive boot wires no FS service, so the
-    /// shell holds no directory to resolve a redirection against, and `date > report.txt` is the
-    /// same "you hold no such capability" a named file gets. The mechanism behind `>` is proven in
-    /// [`sink_tests`] against a real RedoxFS image; what is missing is a boot that has both a
-    /// filesystem and a spawn channel in one shell. See notes/pipes.md.
+    /// This is the **negative control** for [`redirection_tests`], which runs the same ELF from the
+    /// same archive with one more capability in it and writes the file. Neither behaviour is a
+    /// branch in the shell: the refusal is a fact about a cspace with nothing in slot 4, and that is
+    /// the sentence milestone 31 wrote and this milestone had to keep true. See notes/pipes.md.
     #[test_case]
     fn a_redirection_a_shell_cannot_back_is_refused_rather_than_dropped() {
         let mut buf = [0u8; 3072];
@@ -14496,6 +14578,212 @@ mod pipeline_tests {
                 .unwrap_or("")
                 .contains("no such capability"),
             "a redirection this shell cannot back must be refused, not silently dropped: {:?}",
+            core::str::from_utf8(said).unwrap_or("<not utf-8>"),
+        );
+    }
+}
+
+/// **`>` and `<` at a prompt that holds a filesystem** (milestone 50, notes/pipes.md).
+///
+/// [`pipeline_tests`]'s shell with one more capability: a directory at slot 4, narrowed by a
+/// `dwarden` to one subtree of the real RedoxFS image. Everything else is identical, which is the
+/// point of running both. The refusal in
+/// `pipeline_tests::a_redirection_a_shell_cannot_back_is_refused_rather_than_dropped` and the file
+/// written here are the same binary, and the only difference between them is one cspace slot.
+///
+/// The assertions are all of the "same producer, two destinations, the same bytes" shape, because
+/// that is the only shape that can distinguish a redirection that worked from one that wrote
+/// something plausible: a `>` that dropped every second byte would still produce a file, and a `wc`
+/// that agreed with it would still print three numbers.
+///
+/// One module for both ISAs, for [`shell_navigation_tests`]'s reason: nothing here is
+/// architecture-specific, so the parity gate (DECISIONS §19) is met by the same test running twice.
+#[cfg(test)]
+mod redirection_tests {
+    use super::*;
+    use fs_proto::dir;
+    use pipeline_service::{answer, counts};
+
+    /// The last line `user/src/shell.rs`'s redirection role prints. Must match `REDIRECT_DONE`.
+    const DONE: &[u8] = b"== redirections done\n";
+
+    /// The script's transcript, run **once** and shared by every assertion below, for
+    /// [`pipeline_tests`]'s reason: the assertions are about one run of one script, and re-running
+    /// it per test would be the same measurement four times rather than four measurements.
+    static TRANSCRIPT: spin::Mutex<Option<([u8; 3072], usize)>> = spin::Mutex::new(None);
+
+    /// Run the script if nothing has yet, and hand back everything the shell printed. `None` when
+    /// this boot has no RedoxFS disk attached, which is the same skip every FS test takes.
+    fn transcript(out: &mut [u8; 3072]) -> Option<usize> {
+        let mut cache = TRANSCRIPT.lock();
+        if cache.is_none() {
+            let dir = fs_service::narrow_dir(
+                dir_capability_tests::blk_server_image(),
+                program("fsserver")?,
+                program("dwarden").expect("no dwarden program in the initrd archive"),
+                fs_proto::fixture::tree::REDIR,
+                dir::ALL,
+            )?;
+            let Some(w) = pipeline_service::start_redirecting(dir, dir::ALL) else {
+                panic!("no shell program in the initrd archive, or no memory to wire one");
+            };
+            let mut buf = [0u8; 3072];
+            let n = pipeline_service::transcript(&w, DONE, &mut buf);
+            *cache = Some((buf, n));
+        }
+        let (buf, n) = cache.as_ref().expect("just filled");
+        out.copy_from_slice(buf);
+        Some(*n)
+    }
+
+    /// What `wc` should report for a listing the shell **printed**, which is the same listing it
+    /// **wrote** with two bytes of indent removed from each line.
+    ///
+    /// The prompt renders an entry as `"  name\n"` and a producer feeding a byte stream renders it
+    /// as `"name\n"`, because the indent is the terminal's manners and not part of the listing. So
+    /// the expected counts are derived here rather than hardcoded, and the derivation is the whole
+    /// assertion: a file that does not match this is a file with different bytes in it.
+    fn listing_counts(printed: &[u8]) -> (u64, u64, u64) {
+        let mut lines = 0u64;
+        let mut words = 0u64;
+        let mut bytes = 0u64;
+        for line in printed.split(|&b| b == b'\n') {
+            if line.is_empty() {
+                continue;
+            }
+            let name = line.strip_prefix(b"  ").unwrap_or(line);
+            lines += 1;
+            words += core::str::from_utf8(name)
+                .expect("a listed name is not UTF-8")
+                .split_ascii_whitespace()
+                .count() as u64;
+            bytes += name.len() as u64 + 1; // the newline the producer writes
+        }
+        (lines, words, bytes)
+    }
+
+    /// **The headline: one builtin, two destinations, the same bytes.**
+    ///
+    /// `ls > out.txt` writes a listing into a file and prints nothing. The `ls` after it prints that
+    /// same listing (nothing between the two lines changes the directory: `>` created `out.txt`
+    /// *before* the first listing was read, so both see it). `wc < out.txt` then has to agree with
+    /// what was printed, byte for byte, once the prompt's two-space indent is taken off.
+    ///
+    /// **This line spawns no process at all**, which is the part worth noticing. The shell is the
+    /// producer and the shell is the thing behind the file, so `ls > out.txt` is one process doing
+    /// two things it already knew how to do. See notes/pipes.md for why the file end is the shell's
+    /// and not a sink process's.
+    #[test_case]
+    fn one_builtin_two_destinations_and_the_same_bytes() {
+        let mut buf = [0u8; 3072];
+        let Some(n) = transcript(&mut buf) else {
+            crate::println!("    (no RedoxFS disk attached; skipping)");
+            return;
+        };
+        let t = &buf[..n];
+
+        // `>` prints nothing. A redirection that quietly also printed would mean the bytes went two
+        // places, and the whole claim is that they went to exactly one.
+        let redirected = answer(t, b"ls > out.txt");
+        assert!(
+            redirected.iter().all(|b| b.is_ascii_whitespace()),
+            "`ls > out.txt` printed {:?} instead of writing it to the file",
+            core::str::from_utf8(redirected).unwrap_or("<not utf-8>"),
+        );
+
+        let printed = answer(t, b"ls");
+        assert!(
+            printed.windows(6).any(|w| w == b"alpha\n"),
+            "the listing does not hold the fixture's own files, so it proves nothing: {:?}",
+            core::str::from_utf8(printed).unwrap_or("<not utf-8>"),
+        );
+        assert!(
+            printed.windows(8).any(|w| w == b"out.txt\n"),
+            "`>` did not create the file it redirects into: {:?}",
+            core::str::from_utf8(printed).unwrap_or("<not utf-8>"),
+        );
+
+        assert_eq!(
+            counts(&answer(t, b"wc < out.txt")[2..]),
+            listing_counts(printed),
+            "the listing that went into the file is not the listing that went to the terminal",
+        );
+    }
+
+    /// **And the same claim for a program's output**, which is the half `>` shares with `|`.
+    ///
+    /// `date` is spawned twice from the same ELF. The first time the shell prints what arrives on
+    /// its result endpoint; the second time it writes it into a file. `date` is not told, and the
+    /// byte count `wc` reports for the file has to be the length of what was printed.
+    #[test_case]
+    fn one_program_two_destinations_and_the_same_bytes() {
+        let mut buf = [0u8; 3072];
+        let Some(n) = transcript(&mut buf) else {
+            crate::println!("    (no RedoxFS disk attached; skipping)");
+            return;
+        };
+        let t = &buf[..n];
+
+        let direct = answer(t, b"date");
+        assert!(
+            direct.starts_with(b"  ") && direct.ends_with(b"\n"),
+            "date printed {:?}, which is not one line through the shell",
+            core::str::from_utf8(direct).unwrap_or("<not utf-8>"),
+        );
+        let printed = &direct[2..];
+
+        let (lines, words, bytes) = counts(&answer(t, b"wc < date.txt")[2..]);
+        assert_eq!(
+            bytes as usize,
+            printed.len(),
+            "the same date wrote {} bytes to the terminal and {bytes} into a file: {:?}",
+            printed.len(),
+            core::str::from_utf8(printed).unwrap_or("<not utf-8>"),
+        );
+        assert_eq!(lines, 1, "date prints one line either way");
+        assert_eq!(
+            words as usize,
+            core::str::from_utf8(printed)
+                .expect("date printed non-UTF-8")
+                .split_ascii_whitespace()
+                .count(),
+            "the words differ between the two destinations",
+        );
+    }
+
+    /// **A redirection that cannot be opened refuses the line rather than running it.**
+    ///
+    /// `<` does not create, so `wc < nosuch.txt` is the filesystem's own sentence and nothing is
+    /// spawned. The alternative, an empty stream, would have `wc` truthfully report zero for a file
+    /// that does not exist, which is a number a person would believe.
+    ///
+    /// And the manifest still wins over the capability: `worker 9 > out.txt` is refused for having
+    /// no byte stream even in a shell that could open the file, because what a `>` needs is a
+    /// program with bytes and not a shell with a directory.
+    #[test_case]
+    fn a_redirection_that_cannot_be_backed_is_still_refused() {
+        let mut buf = [0u8; 3072];
+        let Some(n) = transcript(&mut buf) else {
+            crate::println!("    (no RedoxFS disk attached; skipping)");
+            return;
+        };
+        let t = &buf[..n];
+
+        let said = answer(t, b"wc < nosuch.txt");
+        assert!(
+            core::str::from_utf8(said)
+                .unwrap_or("")
+                .contains("no such name"),
+            "`wc < nosuch.txt` must be the filesystem's refusal, not an empty stream: {:?}",
+            core::str::from_utf8(said).unwrap_or("<not utf-8>"),
+        );
+
+        let said = answer(t, b"worker 9 > out.txt");
+        assert!(
+            core::str::from_utf8(said)
+                .unwrap_or("")
+                .contains("byte stream"),
+            "`worker 9 > out.txt` should be refused for having no bytes: {:?}",
             core::str::from_utf8(said).unwrap_or("<not utf-8>"),
         );
     }

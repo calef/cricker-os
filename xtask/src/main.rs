@@ -1758,10 +1758,16 @@ fn stage_subtree() -> Option<String> {
     // not, in one directory, so "the grant is what matched" is a claim about *which* names.
     let globset = root.join(tree::GLOBSET);
     let globdir = globset.join(tree::GLOB_DIR);
+    // Milestone 50's redirection tree, a sibling of all of them: the witness shell writes files into
+    // its root, and it needs somewhere those writes cannot be confused with another test's.
+    let redir = root.join(tree::REDIR);
     let ok = std::fs::create_dir_all(&deeper).is_ok()
         && std::fs::create_dir_all(&other).is_ok()
         && std::fs::create_dir_all(&nested).is_ok()
         && std::fs::create_dir_all(&globdir).is_ok()
+        && std::fs::create_dir_all(&redir).is_ok()
+        && std::fs::write(redir.join(tree::REDIR_ONE), tree::REDIR_BODY).is_ok()
+        && std::fs::write(redir.join(tree::REDIR_TWO), tree::REDIR_BODY).is_ok()
         && std::fs::write(globset.join(tree::GLOB_ONE), tree::GLOB_BODY).is_ok()
         && std::fs::write(globset.join(tree::GLOB_TWO), tree::GLOB_BODY).is_ok()
         && std::fs::write(globset.join(tree::GLOB_MISS), tree::GLOB_BODY).is_ok()
