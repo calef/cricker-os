@@ -2629,8 +2629,38 @@ Three things came out of it that were not in the plan below.
   `lineedit` and the console server is left with the shell work, because their clients are the
   shell and `sysinit`.
 
-Still open here: `>`, `<`, `|`, stdin, and buffering. The paragraphs below are the design as it
-stood before the lane; where they differ from the note, the note is what was built.
+**The operators lane built 2026-07-31** (`crates/capsh/src/line.rs`, `user/src/wc.rs`, the shell,
+`sysinit`, and two bits on `capsh::spawnproto`; concept note: notes/pipes.md). `date | wc` runs at a
+real prompt on both ISAs, with the shell minting the endpoint out of its own budget and init putting
+it in the child's output slot. The kernel did not change.
+
+Four things came out of it that were not in the plan below.
+
+- **The input slot's shape had to be decided and the smallest answer was the right one**: a source
+  is *the sink contract received rather than sent*. No new protocol, and `<` and the right end of a
+  `|` become one convention, exactly as `>` and the left end already were.
+- **The manifest had to learn that not every program's slot 0 carries bytes.** `worker` answers with
+  a `u64` in a register and the interrupt demonstrators hold no output capability at all, so
+  `worker 9 > out.txt` would have written an unreadable word into a file with no error anywhere.
+  `OutputSpec` makes it a refusal at the prompt. This is a wart the sink protocol inherited rather
+  than created: the register fastpath is older than the contract.
+- **`InputSpec` produces a refusal Unix cannot.** `wc` with nothing feeding it blocks on a receive
+  forever, and on Unix that is a shell that appears to hang, because fd 0 always exists there.
+  Here the manifest knows, so the prompt knows.
+- **A pipe needs its own untyped region, not just an endpoint.** Deleting every capability naming an
+  endpoint does not destroy it (the object lives in a page of a region), so a producer blocked in a
+  `SEND` after its reader finished would stay blocked forever. The shell splits a region per
+  pipeline and `DESTROY`s it, and that is what turns a dead reader into `Gone`.
+
+**Still open here, and named honestly in notes/pipes.md's BUGS**: `>` and `<` parse, plan, preview
+and refuse correctly but **cannot run at the interactive prompt**, because no boot yet gives one
+shell both a filesystem and a spawn channel; the mechanism behind `>` is proven against a real
+RedoxFS image in `sink_tests`, so what is missing is wiring in `sysinit` rather than design. Also
+still open: buffering (a pipeline is full lockstep and has not been benchmarked against a Unix
+pipe), `>>`, `2>`, and the terminal's own sink adapter.
+
+The paragraphs below are the design as it stood before either lane; where they differ from the two
+notes, the notes are what was built.
 
 **In brief.** The shell has no `|`, `>`, or `<`, and a shell without them is not a shell. The
 surprise on investigating is that **the mechanism is already built** and the missing piece is
