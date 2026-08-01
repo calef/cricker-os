@@ -127,6 +127,7 @@ fn main() -> ExitCode {
             eprintln!(
                 "       cargo xtask bench [--riscv] [--real] [--release] [--smp] [--check] [--save]"
             );
+            eprintln!("       cargo xtask test [--arch aarch64|riscv64] [--cpu <qemu-cpu-model>]");
             return ExitCode::FAILURE;
         }
     };
@@ -2180,12 +2181,85 @@ fn workspace_root() -> std::path::PathBuf {
         .to_path_buf()
 }
 
+/// The value of a `--name value` or `--name=value` flag on our own command line, if it is there.
+///
+/// Both spellings, because a caller who has typed `--cpu=sifive-u54` once should not have to learn
+/// that this particular tool only accepts one of them. Returns `None` when the flag is absent and
+/// when it is present with nothing after it, which the callers treat as "not given"; a flag whose
+/// value went missing is a typo, and defaulting is friendlier than a panic in a build tool.
+fn flag_value(name: &str) -> Option<String> {
+    let mut args = std::env::args();
+    let eq = format!("{name}=");
+    while let Some(a) = args.next() {
+        if a == name {
+            return args.next();
+        }
+        if let Some(v) = a.strip_prefix(&eq) {
+            return Some(v.to_string());
+        }
+    }
+    None
+}
+
+/// The architecture legs `test` should run: both by default, one when `--arch` names it.
+///
+/// **`--arch` did not exist before milestone 59**, and this is the correction worth stating: the
+/// milestone brief said to follow how it "already threads through", and nothing in the tree parsed
+/// it. `test` ran both ISA legs unconditionally, which is right for the parity gate (§19) and wrong
+/// for a CPU-model matrix that wants the riscv64 leg four times over with a different `-cpu` each
+/// time. So the flag is new here, and the default is unchanged: no `--arch` means both legs, and
+/// the parity gate cannot be weakened by forgetting to pass something.
+#[derive(Clone, Copy, PartialEq)]
+enum ArchLegs {
+    Both,
+    Aarch64,
+    Riscv64,
+}
+
+impl ArchLegs {
+    fn aarch64(self) -> bool {
+        self != ArchLegs::Riscv64
+    }
+    fn riscv64(self) -> bool {
+        self != ArchLegs::Aarch64
+    }
+}
+
 /// Host tests first, then the kernel under QEMU.
 ///
 /// The host crates (`dtb`, `frames`) hold the pure logic and run in *milliseconds* with no
 /// emulator, so they fail fast and cheap. Only once they pass is it worth spending twenty
 /// seconds booting QEMU. See DECISIONS.md §7.
+///
+/// Two flags narrow what runs, both added by milestone 59 and both defaulting to today's behaviour:
+///
+/// - `--arch aarch64|riscv64` runs one ISA leg instead of both.
+/// - `--cpu <model>` picks the emulated CPU model (`CRICKER_CPU`, read by both QEMU runners).
+///   Unset means `cortex-a72` on aarch64 and `rv64` on riscv64, exactly as before.
+///
+/// `script/cpu_matrix` is the caller that needs them; see notes/cpu-models.md.
 fn test() -> bool {
+    let legs = match flag_value("--arch").as_deref() {
+        None => ArchLegs::Both,
+        Some("aarch64") => ArchLegs::Aarch64,
+        Some("riscv64") => ArchLegs::Riscv64,
+        Some(other) => {
+            eprintln!("test: --arch {other} is not an architecture (aarch64 or riscv64)");
+            return false;
+        }
+    };
+    // The CPU model rides to the runners in the environment rather than on the QEMU command line,
+    // because cargo owns that command line: the runner is invoked by cargo, and the only channel we
+    // have to it is env. Unset it when no flag was given so a stale value from the caller's shell
+    // cannot silently change what a plain `script/test` means.
+    match flag_value("--cpu") {
+        Some(model) => {
+            eprintln!("--- CPU model: {model} (CRICKER_CPU) ---");
+            unsafe { std::env::set_var("CRICKER_CPU", model) };
+        }
+        None => unsafe { std::env::remove_var("CRICKER_CPU") },
+    }
+
     // Tests always run under TCG. They exit via semihosting, which QEMU only intercepts in the
     // TCG path; under HVF the `hlt #0xf000` traps to the guest and the harness hangs. TCG is also
     // the right place for reproducible tests: deterministic, and identical on any host.
@@ -2263,19 +2337,11 @@ fn test() -> bool {
         }
     }
 
-    eprintln!();
-    eprintln!("--- kernel tests, aarch64 (QEMU) ---");
     // Build the std demo (milestone 27) for both custom targets first, so both initrds carry it:
-    // mkinitrd (inside `user`) packs the aarch64 hellostd, initrd_riscv packs the riscv one.
-    if !user_std() {
-        return false;
-    }
-    // The FS server (milestone 32 phase 2), for the aarch64 bare target, before `user()` so mkinitrd
-    // packs it; then the RedoxFS test image the runner attaches as the second mmio disk.
-    if !fs_server_build(TARGET) {
-        return false;
-    }
-    if !user() || !mkdisk() || !mkredoxfs() || !mkredoxfs_crash() {
+    // mkinitrd (inside `user`) packs the aarch64 hellostd, initrd_riscv packs the riscv one. Outside
+    // the leg guards below because BOTH legs need it, and the crickerfs data disk with it: it is
+    // arch-neutral, and the riscv leg reads it whether or not the aarch64 leg ran.
+    if !user_std() || !mkdisk() {
         return false;
     }
     // Attach a virtio-gpu for the display test (milestone 29). Set here, in `test`, rather than in
@@ -2293,13 +2359,26 @@ fn test() -> bool {
     // each bus rather than skipping. Out of the benchmark boot for the same reason as the GPU: it
     // shares the runner, and a device the instrument did not measure last time is drift.
     unsafe { std::env::set_var("CRICKER_RNG", "1") };
-    // `cargo()` only exports the env the runner needs; the test itself runs under the scanout check,
-    // which drives QEMU's monitor beside the suite and proves the pixels reached the device's scanout
-    // rather than only the driver's frames.
-    if !cargo(&["build", "-p", "kernel", "--target", TARGET])
-        || !cargo_test_with_scanout_check("aarch64", &["test", "-p", "kernel", "--target", TARGET])
-    {
-        return false;
+
+    if legs.aarch64() {
+        eprintln!();
+        eprintln!("--- kernel tests, aarch64 (QEMU) ---");
+        // The FS server (milestone 32 phase 2), for the aarch64 bare target, before `user()` so
+        // mkinitrd packs it; then the RedoxFS test images the runner attaches as extra mmio disks.
+        if !fs_server_build(TARGET) || !user() || !mkredoxfs() || !mkredoxfs_crash() {
+            return false;
+        }
+        // `cargo()` only exports the env the runner needs; the test itself runs under the scanout
+        // check, which drives QEMU's monitor beside the suite and proves the pixels reached the
+        // device's scanout rather than only the driver's frames.
+        if !cargo(&["build", "-p", "kernel", "--target", TARGET])
+            || !cargo_test_with_scanout_check(
+                "aarch64",
+                &["test", "-p", "kernel", "--target", TARGET],
+            )
+        {
+            return false;
+        }
     }
 
     // The same booted kernel test suite on the second architecture (parity workstream B). The
@@ -2309,42 +2388,43 @@ fn test() -> bool {
     // because they trigger with a GIC SGI; milestone 19 made the trigger per-arch instead, so they
     // run here too. RISC-V exits via the sifive_test finisher, same harness. See
     // notes/riscv-parity-scope.md and notes/interrupts.md.
-    eprintln!();
-    eprintln!("--- kernel tests, riscv64 (QEMU) ---");
-    // The riscv userspace tests (parity C) load programs from the initrd and read the disk, so
-    // build the riscv archive and point the runner at IT, not at the aarch64 archive `cargo()`
-    // exports: the riscv ELF loader must never be handed aarch64 ELFs. The disk is arch-neutral
-    // (a crickerfs data image) and was built by mkdisk() above.
-    // The riscv FS server, before the riscv archive that packs it.
-    if !fs_server_build(RISCV_TARGET) {
-        return false;
-    }
-    if !initrd_riscv() {
-        return false;
-    }
-    // **A fresh RedoxFS image for this leg.** The two ISA legs share one image path, and the aarch64
-    // leg above WRITES it (the std::fs test and the FS client both do). Reusing it here would make
-    // the riscv leg's writes land on an image a previous boot mutated, so the legs would be
-    // order-coupled and neither would be reproducible on its own. Each leg gets the same known-good
-    // fixture instead. This is test determinism, not a workaround: the cross-boot write failure it
-    // separates out is real, and notes/fs-server.md carries it as a tracked open item with the exact
-    // recipe to reproduce it (run one leg, then the other, without regenerating in between).
-    if !mkredoxfs() || !mkredoxfs_crash() {
-        return false;
-    }
-    unsafe { std::env::set_var("CRICKER_INITRD", riscv_initrd_path()) };
-    unsafe { std::env::set_var("CRICKER_DISK", disk_path()) };
-    unsafe { std::env::set_var("CRICKER_NET", "1") }; // a virtio-net NIC for the net test (m30)
-    if !cargo_test_with_scanout_check(
-        "riscv64",
-        &["test", "-p", "kernel", "--target", RISCV_TARGET],
-    ) {
-        return false;
+    if legs.riscv64() {
+        eprintln!();
+        eprintln!("--- kernel tests, riscv64 (QEMU) ---");
+        // The riscv userspace tests (parity C) load programs from the initrd and read the disk, so
+        // build the riscv archive and point the runner at IT, not at the aarch64 archive `cargo()`
+        // exports: the riscv ELF loader must never be handed aarch64 ELFs. The disk is arch-neutral
+        // (a crickerfs data image) and was built by mkdisk() above.
+        // The riscv FS server, before the riscv archive that packs it.
+        if !fs_server_build(RISCV_TARGET) || !initrd_riscv() {
+            return false;
+        }
+        // **A fresh RedoxFS image for this leg.** The two ISA legs share one image path, and the
+        // aarch64 leg above WRITES it (the std::fs test and the FS client both do). Reusing it here
+        // would make the riscv leg's writes land on an image a previous boot mutated, so the legs
+        // would be order-coupled and neither would be reproducible on its own. Each leg gets the
+        // same known-good fixture instead. This is test determinism, not a workaround: the
+        // cross-boot write failure it separates out is real, and notes/fs-server.md carries it as a
+        // tracked open item with the exact recipe to reproduce it (run one leg, then the other,
+        // without regenerating in between).
+        if !mkredoxfs() || !mkredoxfs_crash() {
+            return false;
+        }
+        unsafe { std::env::set_var("CRICKER_INITRD", riscv_initrd_path()) };
+        unsafe { std::env::set_var("CRICKER_DISK", disk_path()) };
+        unsafe { std::env::set_var("CRICKER_NET", "1") }; // a virtio-net NIC for the net test (m30)
+        if !cargo_test_with_scanout_check(
+            "riscv64",
+            &["test", "-p", "kernel", "--target", RISCV_TARGET],
+        ) {
+            return false;
+        }
     }
 
     // FS-level consistency after the runs (milestone 32 phase 2): reopen the RedoxFS image with the
     // host tool and confirm the FS server's write persisted and the filesystem still parses. This
-    // checks the riscv leg's image (the leg that ran last, on its own fresh fixture).
+    // checks the image of whichever leg ran LAST (riscv64 unless `--arch aarch64` narrowed the run),
+    // on its own fresh fixture.
     eprintln!();
     eprintln!("--- redoxfs image consistency after the run (host tool) ---");
     // Both images: the shared fixture (the write persisted, the filesystem still parses) and the
