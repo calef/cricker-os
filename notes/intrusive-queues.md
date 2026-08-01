@@ -100,8 +100,8 @@ Rust's strictest aliasing models (Stacked Borrows, the experimental semantics Mi
 complain about this design: while a TCB pointer sits in a queue, other code occasionally creates
 `&mut Thread` to the same TCB through the table (a mailbox write, the revocation sweep's
 `iter_mut`), and under those models a new `&mut` invalidates previously-derived raw pointers.
-At the machine level the discipline is sound — every access is serialized by `SCHED` or a queue's
-own synchronization, and no two accesses overlap in time — but the language-level story for
+At the machine level the discipline is sound: every access is serialized by `SCHED` or a queue's
+own synchronization, and no two accesses overlap in time, but the language-level story for
 intrusive, self-referential kernel structures is still being worked out (Rust-for-Linux lives
 with the same tension). Recorded rather than hidden: if rustc ever starts optimizing on the
 stricter model, the fix is `UnsafeCell`-based link access, and this paragraph is the pointer to

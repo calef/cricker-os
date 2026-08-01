@@ -16,7 +16,7 @@ grew `DirSpec` alongside `FileSpec`. The child receives a capability to the dire
 ## `-r` widens the grant, and that is the whole safety property
 
 `DirSpec::Required { subtree_flag: Some(b'r') }`. Without the flag, the capability carries the
-authority to take names out of one directory **and nothing else** — it cannot list what is under a
+authority to take names out of one directory **and nothing else**: it cannot list what is under a
 subdirectory and cannot descend into one. With the flag, it widens to walking and listing underneath,
 which is what a recursive removal needs at every level.
 
@@ -27,7 +27,7 @@ The consequence is worth stating precisely, because it is the difference between
 > anybody has to get right.**
 
 Unix's `rm` decides not to recurse. This one *cannot*. And because the widening happens at the
-prompt, `caps rm -r logs/` shows strictly more authority than `caps rm logs/` — **typing `-r` is
+prompt, `caps rm -r logs/` shows strictly more authority than `caps rm logs/`: **typing `-r` is
 visibly handing over more**, rather than setting a flag whose consequences are elsewhere.
 
 ## `RMDIR` is empty-only, which is Unix's choice and the reason the rest is safe
@@ -46,8 +46,8 @@ object.
 `rm -r` needs `ENUMERATE` to see, `DESCEND` to recurse, and `REMOVE` to delete, **at every level**. So
 the bound is structural rather than a check.
 
-`rm(1)` ships a literal special case — "it is an error to attempt to remove the files `/`, `.` or
-`..`" — because Unix needs one. **We have no such case and need none**: a shell holding a subtree
+`rm(1)` ships a literal special case: "it is an error to attempt to remove the files `/`, `.` or
+`..`", because Unix needs one. **We have no such case and need none**: a shell holding a subtree
 cannot name the root, so there is nothing to special-case. If a future change makes such a guard feel
 necessary, that is a signal something else broke, not a licence to add it.
 
@@ -63,7 +63,7 @@ necessary, that is a signal something else broke, not a licence to add it.
 - **`rm` on a directory without `-r` is a refusal** (`EISDIR`), never a silent escalation.
 - **An interrupted `rm -r` leaves a partial tree**, reports what failed, and exits non-zero. There is
   no transaction spanning requests, and adding one would mean the server holding a transaction open
-  across receives — which breaks the serve-loop-runs-one-request-to-completion property §47 relies on
+  across receives, which breaks the serve-loop-runs-one-request-to-completion property §47 relies on
   for concurrency atomicity.
 
 ## The fixture detail that makes `-f` testable

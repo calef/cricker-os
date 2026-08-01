@@ -186,7 +186,7 @@ pub fn missed_ticks() -> u64 {
 /// the machine drowns in its own timer.
 ///
 /// This is the whole handler, and it is deliberately tiny: bump a counter, reload the
-/// countdown, return. DECISIONS.md §9 — **interrupt handlers record and defer; they do not do
+/// countdown, return. DECISIONS.md §9: **interrupt handlers record and defer; they do not do
 /// work.** At milestone 6 this will also set a "reschedule wanted" flag, and the *scheduler*
 /// will act on it in normal context.
 pub fn tick() {
@@ -205,7 +205,7 @@ pub fn ticks() -> u64 {
 }
 
 /// The raw counter. Monotonic, never wraps in any timescale that matters, and **keeps counting
-/// while interrupts are masked** — which is precisely what makes it the only honest way to
+/// while interrupts are masked**, which is precisely what makes it the only honest way to
 /// measure how long a critical section held the CPU.
 pub fn now() -> u64 {
     CNTVCT_EL0.get()
@@ -217,8 +217,8 @@ pub fn frequency() -> u64 {
 
 /// Milliseconds since boot, from the counter rather than from the tick count.
 ///
-/// **Deliberately not `ticks() * 10`.** If an interrupt is ever missed — a long critical
-/// section, a slow handler — the tick count undercounts and time appears to slow down. The
+/// **Deliberately not `ticks() * 10`.** If an interrupt is ever missed: a long critical
+/// section, a slow handler: the tick count undercounts and time appears to slow down. The
 /// hardware counter cannot lie. This is `Instant`, and it is the thing `core` could never give
 /// us because nothing in `core` knows what time it is.
 #[cfg_attr(not(test), allow(dead_code))] // this file's tests are the callers
@@ -329,7 +329,7 @@ mod tests {
     ///
     /// `IrqSafeMutex` prevents the deadlock by masking interrupts for as long as the lock is
     /// held. That is not free, and this is the bill: hold a lock across a tick deadline and the
-    /// tick is *late*. Hold it across more than one and a tick is **lost outright** — the
+    /// tick is *late*. Hold it across more than one and a tick is **lost outright**: the
     /// deadline passes, we re-arm to a deadline already in the past, and the only sane thing to
     /// do is give up on it and re-anchor.
     ///

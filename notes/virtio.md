@@ -23,8 +23,8 @@ whose register interface gives separate physical addresses for the descriptor ta
 ## Who does what: the kernel enumerates, the driver operates
 
 The kernel reads three standardized registers of each slot (magic, device-id, version) to find the
-block device and route it to a driver. **That is bus enumeration** — the same thing firmware does
-walking a PCI bus — and it is the smallest amount of virtio knowledge that lets the kernel say
+block device and route it to a driver. **That is bus enumeration**: the same thing firmware does
+walking a PCI bus, and it is the smallest amount of virtio knowledge that lets the kernel say
 "the block device is in slot 31, its interrupt is INTID 79." It does not set up a queue, negotiate
 a feature, or move a byte. Everything else is the driver's, at EL0.
 
@@ -116,8 +116,8 @@ machine keeps running. That is fault isolation, and it was true from milestone 9
 is a second bus master doing DMA against raw physical addresses, with no MMU in front of it, so
 page-table permissions do not apply to it. A hostile driver that could program the queue and ring
 the device itself could point a descriptor at the kernel image or another process's frames and the
-device would read or write it. So the kernel keeps the two DMA-critical powers — programming the
-ring addresses and the "go" signal — and **validates that every descriptor stays within the
+device would read or write it. So the kernel keeps the two DMA-critical powers: programming the
+ring addresses and the "go" signal, and **validates that every descriptor stays within the
 driver's own DMA region** before the device sees it. The driver operates the device through a
 `Virtio` capability (status, features, submit) but cannot aim it outside its region. A malicious
 descriptor pointing at kernel memory is refused, end to end, and the device is never told to go.

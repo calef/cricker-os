@@ -20,7 +20,7 @@ Four processes, and the channels between them:
   assembles a line character by character and hands each completed line to the shell.
 - **The shell** (new) reads a line and runs a command: `help`, `echo`, `run`.
 - **A worker** is spawned for each `run`. It computes, reports its answer to the shell, and
-  **exits** — a whole process lifecycle driven by a line the user typed.
+  **exits**: a whole process lifecycle driven by a line the user typed.
 
 Every one of those is a program at EL0. None can reach the hardware except through a capability it
 was handed. The kernel routes messages and creates processes; it prints nothing on anyone's
@@ -51,7 +51,7 @@ again. The input driver:
 2. Blocks on it (its `Irq` capability's `WAIT`).
 3. When a character arrives, reads the receive FIFO, buffers it, and on a newline hands the line
    to the shell over an endpoint (the bytes travel in a page shared with the shell; the length
-   crosses the endpoint — control by message, data by shared memory, §10 again).
+   crosses the endpoint: control by message, data by shared memory, §10 again).
 4. Acknowledges the device and re-arms the interrupt.
 
 **Driving it from a pipe.** QEMU connects the guest UART to stdio, so a script of commands piped
@@ -92,12 +92,12 @@ not papered over.
 **The process service is a kernel thread.** The shell's `run` sends a spawn request to a service
 that starts the worker. That service lives in the kernel today, because true userspace process
 creation needs the kernel to hand out address-space and thread capabilities built from **Untyped**
-memory — §10's deferred third axis, milestone 11. The shell does not care where the service lives,
+memory: §10's deferred third axis, milestone 11. The shell does not care where the service lives,
 only that it can name it, which is the point: the interface is a capability either way, and moving
 the service to userspace later changes nothing the shell can observe.
 
 **And the worker is a role of one binary, not a separate file on disk.** A richer shell would read
-a named ELF from the crickerfs filesystem (milestone 9) and exec it. The pieces are all present —
-the disk driver reads files, the ELF loader runs arbitrary binaries — and wiring `run <file>` to
+a named ELF from the crickerfs filesystem (milestone 9) and exec it. The pieces are all present:
+the disk driver reads files, the ELF loader runs arbitrary binaries, and wiring `run <file>` to
 them is the natural next step. What milestone 10 proves is the harder half: a process, spawned on a
 typed command, running at EL0, reporting back, and exiting.

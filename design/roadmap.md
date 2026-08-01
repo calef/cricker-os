@@ -47,7 +47,7 @@ right, because the block is where the work was written down; fix the column.
 **Effort, calibrated from git history (2026-07-30), not guessed.** Blocks below give effort in
 **lanes**: one lane is one agent session end to end. Measured across the fourteen milestone branches
 merged so far, a lane is **31 to 57 minutes of wall clock, 1 to 9 commits, 7 to 30 files, and 694 to
-4,351 inserted lines** — a much narrower band than the work's apparent ambition suggests, since
+4,351 inserted lines**: a much narrower band than the work's apparent ambition suggests, since
 proving the DMA boundary, building a compositor, and confining a C component all cost about the same.
 Milestones that took more than one lane took them as *phases that landed separately* (27 and 30 took
 three each, 22, 29, 31 and 35 two each), not as one long push.
@@ -122,6 +122,8 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 56 | PARTIAL | Secrets, credentials, and the entropy to make them safe | the entropy half is **built** (§44): a real random source, capability-granted. The crypto and credential halves remain, and a secret is still a bearer token where a capability is an unforgeable reference |
 | 57 | PARTIAL | Partitioning and formatting a real drive, and extended attributes | you cannot find a partition without reading the table, and **we have no partition-table code at all**; all of it is testable in QEMU before the board lands. The host recovery tool (`ls`/`cat`/`extract`) is built; GPT, on-target `mkfs` and xattrs are not |
 | 58 | NOT-STARTED | RISC-V TLB shootdown, and the flush that makes ASIDs pointless | every riscv context switch discards the whole TLB; the fix needs a **software** shootdown protocol, because `sfence.vma` does not broadcast |
+| 59 | NOT-STARTED | The CPU-model matrix: stop testing against one generous emulator | `-cpu rv64` enables nearly every ratified extension; the board is an RV64GC U74. Run the suite across `-cpu` profiles so "works on the generic model" surfaces before the hardware does |
+| 60 | NOT-STARTED | ISA discovery: read the machine instead of assuming it | nothing reads `riscv,isa-extensions`; RISC-V has no `CPUID`, so the device tree plus targeted probes are the architected answer. One `Isa` record, built at boot, printed at boot |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -395,7 +397,7 @@ unchecked, and its *authority* is broad, so within that authority a corrupted in
      core, and it crash-loops on a deterministic fault (init panics on a bad ELF; relaunch hits
      the same bug). Restart is policy, and policy does not belong in the kernel.
    - **The mechanism/policy split, as everywhere else.** Add one small *mechanism* to the kernel:
-     a **fault/death notification** — when a thread faults or exits, the kernel delivers a message
+     a **fault/death notification**, when a thread faults or exits, the kernel delivers a message
      to an endpoint held by whoever holds the capability to supervise it. Capability-gated (you
      can supervise a thread only if you were granted its fault endpoint), mechanism-only. This is
      seL4's fault endpoint.
@@ -406,7 +408,7 @@ unchecked, and its *authority* is broad, so within that authority a corrupted in
      and restartable; only the death of the irreducible root supervisor halts, which is the
      fail-closed floor, pushed as high and as small as possible.
    - **This also dissolves the SPOF.** init-during-boot stays a single point of failure (if it
-     cannot build the system, halt is correct — nothing to recover to). init-*after*-boot stops
+     cannot build the system, halt is correct: nothing to recover to). init-*after*-boot stops
      being one: it is either a trivial root or gone, and failures below it are supervised.
 
    The one kernel primitive this adds (the fault endpoint) is worth its own numbered decision when
@@ -1333,11 +1335,11 @@ should. Either way the comment is false today, and false comments are expensive 
 because this codebase is commented far more heavily than production code on purpose. A suppression
 citing a milestone that landed weeks ago actively misleads a reader who is trusting the prose.
 
-- `kernel/src/cpu.rs:243` — "used by the tests now, and by the scheduler in step 3". Step 3 shipped as §28.
-- `kernel/src/smp.rs:64` — "used by the SMP tests now, and by spawn's placement policy when it...". Also §28.
-- `kernel/src/cap.rs:130` — "first used by the virtio driver setup in 9b".
-- `kernel/src/arch/aarch64/interrupts.rs:63` — "milestone 5's first non-test caller".
-- `kernel/src/arch/aarch64/mmu.rs:647` and `:660` — both point at milestone 8's *in-kernel* console, which §21 moved into userspace and retired.
+- `kernel/src/cpu.rs:243`: "used by the tests now, and by the scheduler in step 3". Step 3 shipped as §28.
+- `kernel/src/smp.rs:64`: "used by the SMP tests now, and by spawn's placement policy when it...". Also §28.
+- `kernel/src/cap.rs:130`: "first used by the virtio driver setup in 9b".
+- `kernel/src/arch/aarch64/interrupts.rs:63`: "milestone 5's first non-test caller".
+- `kernel/src/arch/aarch64/mmu.rs:647` and `:660`: both point at milestone 8's *in-kernel* console, which §21 moved into userspace and retired.
 
 **Third class: superseded demo payloads** in `user.rs`, which admit it in place ("`allow(dead_code)`
 because 7c handed the demo over to the real ELF").
@@ -1575,7 +1577,7 @@ by people with no stake in agreeing with us.
 `date` does not exist yet; `gpt` has no caller at all. **An API that has never had a consumer is not
 ready to publish**, because the first real caller always finds the shape wrong, and after publication
 that costs a semver break rather than an edit. So `date` exercises `calendar`, `mkfs`/partitioning
-exercises `gpt`, the NTP client exercises `ntp_proto` — publish after, not before.
+exercises `gpt`, the NTP client exercises `ntp_proto`: publish after, not before.
 
 **Two frictions to know now.** The crates.io names `gpt` and `calendar` are almost certainly taken
 (worth checking rather than assuming), so they would need prefixing, which quietly weakens the
@@ -1770,7 +1772,7 @@ guaranteed to read it. `linedisc` failed the second half of the same test: it is
 of art, and the person who built this system did not recognise it.
 
 **Execution discipline, because this is the change milestone 39 warns about.** One commit, nothing
-else in it. **Whole-word tokens only** — `display` and `compositor` already appear as ordinary English
+else in it. **Whole-word tokens only**: `display` and `compositor` already appear as ordinary English
 throughout the notes, so this replaces identifiers, not vocabulary. Count the `--bin` name/token
 pairing before and after: this is the same `xtask` code where a union merge dropped a `--bin` flag on
 2026-07-29 and where git silently duplicated a loop header. Then zero surviving references to any old
@@ -1778,8 +1780,8 @@ name, and the full gates on both ISAs. `script/lint`'s script-documentation chec
 decisions checkers catch prose stragglers.
 
 **Sequencing (the reason this is a milestone and not an afternoon).** It must land *after* milestones
-23 and 37, because 23's instance one is the console hot-swap and it is editing `termd` — the file this
-renames away — plus `kernel/src/user.rs`, which both lanes share. Landing 398 token replacements
+23 and 37, because 23's instance one is the console hot-swap and it is editing `termd`: the file this
+renames away, plus `kernel/src/user.rs`, which both lanes share. Landing 398 token replacements
 underneath an active branch turns a mechanical commit into a merge fight, which is precisely what it
 must never become.
 
@@ -1800,7 +1802,7 @@ component for what it is, and prefer a word that parses without prior Unix expos
 already carries the reasoning; the note should point at it rather than restate it.
 
 Then **check the mechanical ones in `script/lint`**, because this project's own pattern is that a
-convention which matters gets a checker rather than a paragraph — the roadmap status vocabulary,
+convention which matters gets a checker rather than a paragraph: the roadmap status vocabulary,
 DECISIONS numbering, script documentation, conflict markers and module-wide suppressions all became
 checks today, and a rule with no enforcement decays (which is the entire argument the dead-code
 ratchet was built on):
@@ -1860,7 +1862,7 @@ Fix those three and the command is fine.
 
 The same category as `caps`, which already prints the shell's whole endowment: they spawn nothing,
 need no grant, and confer no new authority, because the shell is reading and rebinding what it already
-holds. This also retires a worry raised while designing `ls` — that a listing program would be
+holds. This also retires a worry raised while designing `ls`: that a listing program would be
 over-granted, holding the power to read everything it lists. It is not a program.
 
 **The cwd stops at the process boundary.** `wc report.txt` resolves the name against the
@@ -1925,7 +1927,7 @@ in `rm -r` lives in **userspace**, as a loop of individually safe single-step op
 files, remove empty directories bottom-up. **No single call in the contract can take a subtree away.**
 
 So: `RMDIR` requiring `REMOVE` on the parent, refusing non-empty with `ENOTEMPTY`, and explicitly
-**not** revocation, for §48's reason — the handle table is per server, so handles cannot be
+**not** revocation, for §48's reason: the handle table is per server, so handles cannot be
 invalidated for clients the server cannot enumerate.
 
 **The recursion is bounded by construction, which Unix cannot say.** `rm -r` needs `ENUMERATE` to see,
@@ -1937,19 +1939,19 @@ confirmation prompt, "there is nothing to name".
 **`rm` is a program, not a builtin, and that is Unix's shape rather than a divergence from it.**
 `cd`/`pwd`/`ls` are builtins here because the shell is rebinding what it already holds; `rm -r` is a
 destructive loop, not a rebinding. A builtin would run with the shell's **entire endowment**, while a
-program takes an explicit attenuated grant — so `caps rm -r logs/` prints the subtree at risk before
+program takes an explicit attenuated grant, so `caps rm -r logs/` prints the subtree at risk before
 anything happens, and a bug in the recursion can only reach what it was handed. Same shape as
 globbing below: attenuate, then hand over.
 
 **`-f` stays, with Unix's semantics** (Chris, 2026-07-31). An earlier draft of this section argued it
 should not exist, on the reasoning that with no prompting its only remaining meaning is suppressing
 errors, which §42 forbids. **That was wrong about what `-f` does.** It means *ignore nonexistent files
-and do not prompt* — a permission failure on a file that exists still reports. Its real value is
+and do not prompt*: a permission failure on a file that exists still reports. Its real value is
 **idempotency**: `rm -f maybe-there` succeeding is what makes a script re-runnable, and "absence is
 the desired state" is not a lie about failure. The divergence did not earn its keep.
 
 **Reporting is Unix's, and it is quieter than an earlier draft of this section claimed.** Checked
-against `rm(1)` rather than remembered: **silence on success** — `-v` exists precisely because the
+against `rm(1)` rather than remembered: **silence on success**, `-v` exists precisely because the
 default prints nothing ("be verbose when deleting files, showing them as they are removed"). Failure
 is a diagnostic plus exit status: "exits 0 if all of the named files or file hierarchies were
 removed… If an error occurs, rm exits with a value >0." So a partial `rm -r` says what it could not
@@ -1962,13 +1964,13 @@ diagnostic message **or modify the exit status**." So it suppresses the missing-
 its effect on the exit status. The claim that a permission failure still reports under `-f` was wrong.
 
 **One thing to settle when building it.** A `rm -r` interrupted halfway leaves a partial tree, and
-there is no transaction spanning requests — adding one would mean the server holding a transaction
+there is no transaction spanning requests: adding one would mean the server holding a transaction
 open across receives, which conflicts with the serve-loop-runs-one-request-to-completion property §47
 relies on for concurrency atomicity. Partial, with failures reported and a non-zero exit, is the
 answer, and it happens to be exactly what Unix already does.
 
 **Worth noticing while copying Unix here:** `rm(1)` says "it is an error to attempt to remove the
-files `/`, `.` or `..`". That is a **literal special-case guard for `/`**, shipped in the utility —
+files `/`, `.` or `..`". That is a **literal special-case guard for `/`**, shipped in the utility,
 precisely the "guard rail, a check that could be wrong" this milestone contrasts itself against. We
 need no such case: a shell holding a subtree cannot name the root, so there is nothing to special-case. And `rm` on a directory stays a **refusal** (`EISDIR`) rather than a silent
 escalation to recursive removal, which is Unix's behaviour and worth keeping for the same reason
@@ -1979,26 +1981,26 @@ escalation to recursive removal, which is Unix's behaviour and worth keeping for
 Two verbs with very different stories. Neither is built.
 
 **Hard links are mechanically easy.** RedoxFS keeps link counts, and **§48's deferred-delete fix
-already depends on them** — "the last link goes" is exactly what made `rm` an unlink rather than a
+already depends on them**: "the last link goes" is exactly what made `rm` an unlink rather than a
 revoke. A second name for one node is a short step from there.
 
 **The problem is structural, and it is ours rather than Unix's.** §47 justified `DESCEND` as a
 separate right because otherwise "the shape of the tree would decide how much authority a grant
 carried". **Hard links make it not a tree.** A file reachable from two directories sits in two
 subtrees, so "this subtree" stops having a clean boundary: you granted a name, and the node is also
-reachable through one you did not mention. That is not automatically wrong — the grant was the name —
+reachable through one you did not mention. That is not automatically wrong (the grant was the name),
 but every piece of subtree reasoning written so far quietly assumes a DAG cannot happen, and that
 assumption should be made explicit before it is falsified. Unix forbids hard links to *directories* to
 prevent cycles; the argument is stronger here, where a cycle also defeats `rm -r`'s bottom-up
 termination.
 
 **Symlinks are the interesting one, and the answer is a real result.** A symlink stores a **path**,
-resolved at open time — and this milestone already decided paths resolve **in the client, against the
+resolved at open time, and this milestone already decided paths resolve **in the client, against the
 holder's own position**, with `..` clamped at the root (§48). So: resolved against *whose* namespace?
 
 Resolve against **the holder's**, and it follows that **a symlink cannot escalate**. It can only name
-what the resolver could already reach. Unix's symlink attacks — the `/tmp` races, the confused-deputy
-TOCTOU classics — work because resolution happens against a *global* namespace carrying the
+what the resolver could already reach. Unix's symlink attacks: the `/tmp` races, the confused-deputy
+TOCTOU classics: work because resolution happens against a *global* namespace carrying the
 *victim's* authority. There is no global namespace here and no borrowed authority, so a symlink can
 **misdirect but cannot grant**. Same shape as the `PATH` result above: the escalation vector closes
 because there is nothing ambient to point into.
@@ -2010,7 +2012,7 @@ a novel one.
 **What to settle before building either:** whether hard links are offered at all given the DAG
 consequence (declining is defensible, and `mv` plus `RENAME` already covers the common
 atomic-replace idiom that hard links are usually reached for); and, for symlinks, what a stored path
-containing `..` means when the holder's root is shallower than the creator's — §48 clamps, so it
+containing `..` means when the holder's root is shallower than the creator's: §48 clamps, so it
 should clamp here too rather than erroring, but that is a decision.
 
 ##### ~~Open fork~~ **SETTLED 2026-07-31: `bind`, not stored paths** (DECISIONS §50)
@@ -2018,14 +2020,14 @@ should clamp here too rather than erroring, but that is a decision.
 **Chris chose namespace composition.** The analysis below is kept because the naming search is the
 evidence for the decision rather than a digression: twenty-eight-plus candidates, terminating without
 a winner, which is what a construct that does not fit any familiar relationship looks like. `bind`
-needed no search — Plan 9 and `mount --bind` already named it. See §50 for the decision, what it
+needed no search: Plan 9 and `mount --bind` already named it. See §50 for the decision, what it
 costs, and the inert-stored-path escape hatch if milestone 55 turns out to need on-disk fidelity.
 
 ###### The analysis that settled it: was the mechanism right, and if so what is it called? (raised 2026-07-31)
 
 **Not decided.** Two questions, in this order, because the second keeps answering the first.
 
-**Mechanism first. Plan 9 has no symlinks — it has `bind`.** Per-process namespaces made them
+**Mechanism first. Plan 9 has no symlinks: it has `bind`.** Per-process namespaces made them
 unnecessary: you do not need a stored path that resolves oddly per holder when you can compose the
 holder's namespace directly. This milestone already took Plan 9's answer for absolute paths and for
 `PATH`; taking Unix's here, renamed, would be the inconsistent choice. **Settle whether we want
@@ -2033,11 +2035,11 @@ namespace composition instead** before settling a noun.
 
 **Then the name, because "symbolic link" fails §39 on both halves.** "Symbolic" is defined *against*
 "hard", so if hard links are declined the adjective contrasts with something that does not exist.
-"Link" is worse: **it links nothing.** The by-name-ness is the entire content — there is no object
+"Link" is worse: **it links nothing.** The by-name-ness is the entire content: there is no object
 identity, and two holders may resolve the same entry to different files or to nothing.
 
 The criterion, which rules out most candidates at once. A name here must **not imply object
-identity**, must **not imply a connection**, and must **not collide with "reference"** — in a
+identity**, must **not imply a connection**, and must **not collide with "reference"**: in a
 capability system a reference is unforgeable and holder-independent, the exact inverse of this. That
 disposes of `link`, `reference`, `shortcut` and `pointer`.
 
@@ -2045,14 +2047,14 @@ Worked, and rejected with reasons rather than by taste:
 
 | Candidate | Why not |
 |---|---|
-| `alias` | Semantically closer than `link` — a shell alias is stored text, expanded at use, meaning what the current environment makes it mean, with no identity claim. But **taken twice**: zsh's `alias` (which this milestone tracks, so we would collide with ourselves), and macOS "aliases", which store a file ID and **survive the target moving** — they track the object, the inverse of ours. Borrowing a Mac term for its opposite is a poor trade on a project whose first real user is a Mac |
+| `alias` | Semantically closer than `link`: a shell alias is stored text, expanded at use, meaning what the current environment makes it mean, with no identity claim. But **taken twice**: zsh's `alias` (which this milestone tracks, so we would collide with ourselves), and macOS "aliases", which store a file ID and **survive the target moving**: they track the object, the inverse of ours. Borrowing a Mac term for its opposite is a poor trade on a project whose first real user is a Mac |
 | `costume`, `disguise` | Both imply **an underlying thing being dressed or concealed**, reinstating exactly the object identity the word must avoid. `disguise` also claims intent to mislead, naming into existence a danger this design removes: a stored name here cannot escalate, because it resolves only within what the holder already reaches |
 | `projection`, `shadow` | Honest about viewpoint-dependence without implying concealment, and still **metaphors**. This project names descriptively (`netstack`, `compositor`, `lineedit`), which is §39's doing; `link` got away with a false claim partly *because* it was a metaphor |
-| `mirror` family (`erised`, `matsuyama`) | **The best framing anyone found, and the only family to pass all three tests**: a mirror shows something viewer-dependent, implies no object identity, implies no connection, and does not collide with "reference". It fails on the word rather than the idea. In computing a **mirror is an identical replica at another location** — "same content, elsewhere", which is the identity claim we are trying to avoid. The literary instances add their own wrong axis: Erised shows what you **desire** (ours shows what your namespace resolves to, often nothing), and the Matsuyama tale is about a **mistake** (the deception axis where `disguise` failed). Both also need a decoder ring, and `notes/naming.md` sets the bar at names that parse without prior exposure |
-| `fsalias` | Fixes the zsh collision, and prefixes are in-style here (`fwarden`, `dwarden`, `cwarden`). But **"filesystem alias" is exactly what Finder calls a macOS alias** — the object-tracking one — so the prefix picks the *wrong* one of the word's two meanings. And prefixing to fix a collision is a smell: it answers *which* alias, where the objection was that **alias claims another name for the same thing** |
+| `mirror` family (`erised`, `matsuyama`) | **The best framing anyone found, and the only family to pass all three tests**: a mirror shows something viewer-dependent, implies no object identity, implies no connection, and does not collide with "reference". It fails on the word rather than the idea. In computing a **mirror is an identical replica at another location**: "same content, elsewhere", which is the identity claim we are trying to avoid. The literary instances add their own wrong axis: Erised shows what you **desire** (ours shows what your namespace resolves to, often nothing), and the Matsuyama tale is about a **mistake** (the deception axis where `disguise` failed). Both also need a decoder ring, and `notes/naming.md` sets the bar at names that parse without prior exposure |
+| `fsalias` | Fixes the zsh collision, and prefixes are in-style here (`fwarden`, `dwarden`, `cwarden`). But **"filesystem alias" is exactly what Finder calls a macOS alias** (the object-tracking one), so the prefix picks the *wrong* one of the word's two meanings. And prefixing to fix a collision is a smell: it answers *which* alias, where the objection was that **alias claims another name for the same thing** |
 
 **The descriptive candidate, if the mechanism survives:** a third **entry kind** beside file and
-directory — a **`path`**. A directory entry names a file, a directory, or a path; it stores a path and
+directory: a **`path`**. A directory entry names a file, a directory, or a path; it stores a path and
 the holder resolves it, which is the whole description. It also reads correctly when it fails: *"that
 entry is a path that does not resolve"* is what happened, where *"that link is broken"* implies
 something was once connected. The verb becomes writing a path into a directory rather than "linking",
@@ -2067,14 +2069,14 @@ person looking rather than the thing looked into**, plus divination); `mimic` an
 besides; `echo` collides with a shell builtin **we already have**, exactly as `alias` collides with
 zsh's; and `parallel` means concurrency, in a system with four cores and per-CPU run queues.
 
-**Two later candidates are worth their own line.** `harmonic` clears all three tests — the stored path
-as fundamental, the holder as resonator — and fails on **the direction of causation**, a failure mode
+**Two later candidates are worth their own line.** `harmonic` clears all three tests: the stored path
+as fundamental, the holder as resonator, and fails on **the direction of causation**, a failure mode
 none of the others had: a harmonic is *determined by* its fundamental, whereas our resolution is
 determined by the **namespace**, not by the stored name. The metaphor points the causal arrow
 backwards. (`harmony` is simply the wrong axis: it means concord, where ours may resolve to nothing.)
 
 `reflection` is **the best of the mirror family**, better than `mirror` itself, because a reflection is
-explicitly *not the thing* where a computing mirror implies an identical replica — and its causation is
+explicitly *not the thing* where a computing mirror implies an identical replica, and its causation is
 right, since what you see depends on the mirror *and* where you stand. It fails on a harder collision:
 in programming, **reflection is runtime introspection of types**, which is precise, universal, and in
 our own domain.
@@ -2089,17 +2091,17 @@ non-metaphorical name is the likely answer if the mechanism survives at all.
 *different* reason each and the rest finding almost none, and the one that passed every test failed on the word being occupied by its own inverse. The
 construct is the only thing in this design whose meaning depends on who is looking, and the vocabulary
 has no slot for that. Plan 9 hit the same wall from the same premises and answered with a different
-mechanism rather than a better noun — which is why this fork is **mechanism first**.
+mechanism rather than a better noun, which is why this fork is **mechanism first**.
 
 ##### Where `rm` meets them, which is where the sharp edges are
 
-**`rm` on a symlink removes the link, never the target.** `rm(1)` says so outright — "the rm utility
-removes symbolic links, not the files referenced by the links" — and it is right for the reason §48
+**`rm` on a symlink removes the link, never the target.** `rm(1)` says so outright: "the rm utility
+removes symbolic links, not the files referenced by the links", and it is right for the reason §48
 already established: `rm` operates on a **name in a directory**, and a symlink is a name.
 
 **`rm -r` must not descend through a symlink**, and our reason differs from Unix's in a way worth
 recording. Unix declines because following would **escape**: a symlink to `/` inside a directory
-would turn `rm -r` into `rm -rf /`. Here it could not escape — a symlink resolves in the holder's
+would turn `rm -r` into `rm -rf /`. Here it could not escape: a symlink resolves in the holder's
 namespace, and `rm`'s namespace is the granted subtree with `..` clamped at its root (§48), so a
 symlink cannot name anything outside the grant. **We keep the behaviour and lose the reason.** The
 behaviour still earns its place: following would delete a different set of names than the grant
@@ -2111,13 +2113,13 @@ deferred delete (`on_open_node` / `on_close_node` and the release list) is what 
 not the first, the one that frees.
 
 **The sharp one: `rm -r subtree/` where a file inside is also linked from outside.** The subtree goes
-away and the data does not, because the outside name still holds it. That is correct — you removed the
-names you were granted, and you were never granted the other one — but it means **"I deleted the
+away and the data does not, because the outside name still holds it. That is correct: you removed the
+names you were granted, and you were never granted the other one, but it means **"I deleted the
 subtree" and "that content is gone" stop being the same statement.** For a backup target (milestone
 55) that distinction is worth stating rather than discovering.
 
 **And the cycle, which is a termination argument rather than a taste one.** `rm -r` works bottom-up,
-so a hard link making a directory its own descendant does not merely confuse it — it **does not
+so a hard link making a directory its own descendant does not merely confuse it: it **does not
 terminate**. Unix forbids hard-linked directories for this reason among others; here the same
 prohibition is load-bearing for a verb we have already shipped the recursion for.
 
@@ -2134,13 +2136,13 @@ reason is narrow: the `std` PAL records that "the server keeps an mtime **but th
 carry one**". RedoxFS tracks it; `fs_proto` does not expose it.
 
 **The justification for that has gone stale.** `notes/std.md` refused file times partly because "there
-is no wall clock to interpret it against anyway" — true when written, and false since milestone 51
+is no wall clock to interpret it against anyway": true when written, and false since milestone 51
 landed the clock (§43, RTC drivers on both ISAs, `date`). Same shape as §43's own untestability note,
 which milestone 47's `date` work disproved: **a scope note outlives the condition that justified it.**
 
 **The authority question, which should be decided rather than defaulted into.** `touch` does two
 different things to a timestamp: set it to *now*, and `touch -t` set it to *whatever you say*. The
-second is the ability to **lie about history**, which matters for anything reasoning from mtime —
+second is the ability to **lie about history**, which matters for anything reasoning from mtime,
 backups included, and milestone 55 is a Time Machine target. That is §43's asymmetry again (reading
 harmless, setting an authority), one level down: is "set to now" the same right as "set to an
 arbitrary value", and does the file's write right already cover both? Neither answer is obvious.
@@ -2239,15 +2241,15 @@ personal. It also lines up with "every shell has its own root" above, which is n
   relative to a capability presented to it**, leaving §27 intact.
 
 **Recommendation: the client's runtime.** It yields absolute-looking paths with no server learning a
-name it did not already own, and the namespace becomes another endowment, inspectable in `caps` —
+name it did not already own, and the namespace becomes another endowment, inspectable in `caps`,
 which Unix cannot do, since you cannot enumerate what your paths could reach. The honest cost is that
 two processes seeing different files at one path is powerful and confusing, and Plan 9 users will
 attest to both halves.
 
 #### Environment variables, which are the same question wearing a string costume
 
-**Clean slate**: there is no `argv` and no `envp` today. `notes/abi.md` is explicit — "no libc, no
-`argv`/`envp` array, no dynamic loader, no `main` wrapper" — so a program gets argument words in
+**Clean slate**: there is no `argv` and no `envp` today. `notes/abi.md` is explicit: "no libc, no
+`argv`/`envp` array, no dynamic loader, no `main` wrapper", so a program gets argument words in
 registers and a populated cspace. Nothing has to be undone, and §15 already carries the natural seam
 as a deferred item: a **BootInfo** page, "a structured block the loader hands the program".
 
@@ -2273,14 +2275,14 @@ know exists.
 
 Invert it: **a program declares the configuration it reads, and undeclared variables cannot reach
 it.** That is not a new mechanism, it is exactly what the SHILL-style manifest already does for
-capabilities — a program declares its expected endowment, the manifest is checked at spawn, and a
+capabilities: a program declares its expected endowment, the manifest is checked at spawn, and a
 mismatch is a refusal at the prompt rather than a mystery later. Configuration is the same shape, and
 declaring it closes the entire `LD_PRELOAD` class by construction rather than by blocklist.
 
 **And no inheritance.** Unix's environment is inherited by default, which is exactly why a secret in a
 shell leaks into every child including those with no business seeing it. Here it is granted like
 everything else: at spawn, explicitly, visible in `caps`. The honest tension is the governing
-constraint above — environment variables are convenient *because* they are inherited, and full
+constraint above: environment variables are convenient *because* they are inherited, and full
 explicitness is verbose. Proposed middle ground: **inheritance with visibility.** The shell holds a
 default config set and passes it, but the passing is explicit and inspectable, so `caps run prog`
 shows exactly what that program will see before it runs. Convenient in the common case, never
@@ -2459,7 +2461,7 @@ the child directory carry, can they ever exceed the parent's, and who may call i
 the commands are the easy part once it exists.
 
 **Sequencing.** After milestone 37, which owns the FS server's block path. **Effort: 2 lanes
-estimated** — one for the descend/create verb and the builtins, one for namespaces — noting that
+estimated** (one for the descend/create verb and the builtins, one for namespaces), noting that
 estimates for unbuilt work are guesses on a scale calibrated from history, not measurements.
 
 ### 48. Job control: `jobs`, `wait`, `kill`, `fg`, `bg`, and a stopped state
@@ -2471,7 +2473,7 @@ own trigger list names "real job control (`fg`/`bg`, a stopped-process state) in
 
 **Why it matters.** Unix job control is one of the most intricate things in a kernel: sessions, a
 controlling terminal, process groups, `tcsetpgrp`, and `SIGTSTP`/`SIGCONT`/`SIGTTIN`/`SIGTTOU`. Most
-of that machinery exists to answer one question — *who may read the keyboard* — and here that question
+of that machinery exists to answer one question (*who may read the keyboard*), and here that question
 answers itself.
 
 #### A job is what the shell holds capabilities for
@@ -2482,19 +2484,19 @@ group is a *number* with inherited, mutable membership; "what I hold" cannot dri
 
 #### Phase one: no new kernel surface
 
-- **`jobs`** — the shell listing its own holdings, the same category as `caps`, `pwd` and `ls`.
-- **`wait`** — §26 already delivers exit as a message with a kernel-stamped tid, so this is a receive
+- **`jobs`**: the shell listing its own holdings, the same category as `caps`, `pwd` and `ls`.
+- **`wait`**: §26 already delivers exit as a message with a kernel-stamped tid, so this is a receive
   on the supervision endpoint.
-- **`kill`** — §24 already built this under another name: the cooperative tier is the shared-flag
+- **`kill`**: §24 already built this under another name: the cooperative tier is the shared-flag
   interrupt, and `kill -9` is the forcible tier (`Untyped::DESTROY`). Job control needs no signal
   model because the two-tier one exists.
-- **`&`** — running in the background is simply *not granting the terminal*.
-- **`fg` on a running background job** — a capability transfer, below.
+- **`&`**: running in the background is simply *not granting the terminal*.
+- **`fg` on a running background job**: a capability transfer, below.
 
 **Foreground versus background is: who holds the terminal input capability.** `fg %1` is the shell
 revoking that capability from whoever held it and granting it to job 1; revocation (§13, §16) is
 already built and is exactly the primitive this needs. A background job that reads the terminal does
-not get `SIGTTIN` and does not get stopped — **it has no capability to read with**, and the refusal is
+not get `SIGTTIN` and does not get stopped: **it has no capability to read with**, and the refusal is
 "you hold no such capability". Sessions, controlling terminals, `tcsetpgrp` and two of the four signals
 disappear, not by reimplementation but because the question they answer is already answered by who
 holds what.
@@ -2515,7 +2517,7 @@ corpse persists. Unix reparents orphans to init and lets init reap them; here re
 **transferring the supervision endpoint**, which is an explicit act rather than a rule nobody thinks
 about. **Decided as DECISIONS §40**: a supervisor's death is its subtree's death, because a child's
 resources come from its supervisor's region and §16's revocation reclaims the whole subtree in one act.
-So `disown` means **transfer supervision upward**, not "abandon" — and §40 records the hole that makes
+So `disown` means **transfer supervision upward**, not "abandon", and §40 records the hole that makes
 the cascade close to the only coherent answer, namely that §32 authorizes reaping by matching the
 child's recorded `fault_ep`, which nobody can satisfy once the supervisor's endpoint is gone.
 
@@ -2845,7 +2847,7 @@ command"). The binary is in the initrd and tested on both ISAs, but `capsh::Prog
 "milestone 31's manifest machinery", which is a defensible scope call that nonetheless leaves the
 *command* half of "the `date` command" undone. **A program a user cannot invoke is not a command**,
 and the status said otherwise until he checked. Being folded into the milestone 47 grammar lane, which
-owns `capsh` and is removing `run` — after which `date` at the prompt is exactly what he typed. A hundred
+owns `capsh` and is removing `run`: after which `date` at the prompt is exactly what he typed. A hundred
 lines, most of them comments, because the design had settled everything interesting first: read the
 page, add the counter, hand the number to `calendar`. Five formats, a fixed UTC offset in minutes,
 and an optional second line naming the clock's **provenance**, which renders `clock_proto`'s four
@@ -3087,13 +3089,120 @@ cross-process memory disclosure.
 The **win** is a full TLB flush removed from every RISC-V context switch; `ctx_switch` is paying for
 it now and would show the improvement. The **risk is asymmetric**, and should drive the sequencing:
 the upside is a benchmark number, the downside is silent memory disclosure. So the shootdown gets
-**proven, not argued** — and it is why milestone 19's test lane correctly left this alone rather than
+**proven, not argued**, and it is why milestone 19's test lane correctly left this alone rather than
 taking it as a side effect of writing tests.
 
 **Sequencing.** The probe is done (2026-07-31). Next is the per-ASID flush, then the IPI shootdown
 with its acknowledgement, then removing the flush behind the probe's gate, then re-baselining
 `ctx_switch`. **Effort: not estimated**; the shootdown is the unknown, and it is the kind of unknown
 that deserves measurement before a number.
+
+### 59. The CPU-model matrix: stop testing against one generous emulator
+
+**Status: NOT-STARTED.** Raised by Chris on 2026-08-01, asking whether we should modify QEMU to match
+the chip, detect features, or something else.
+
+**The answer to the first is no.** A forked emulator is a machine that exists nowhere: it proves
+nothing about the real chip and nothing about the standard emulator, which is the worst of both. We
+also pin QEMU for benchmark determinism (`.qemu-version`, and CI builds it from source), so a fork
+multiplies that maintenance. QEMU already lets us **narrow** rather than patch, and narrowing is the
+whole milestone.
+
+#### What we actually run against today
+
+`qemu-system-riscv64 -machine virt -cpu rv64 -bios default`. **`rv64` is QEMU's maximalist model**: it
+enables essentially every ratified extension QEMU implements. The VisionFive 2's JH7110 is a SiFive
+U74, which is **RV64GC**. So the emulator will accept things the board will not, and every RISC-V
+result we have was taken on the permissive one.
+
+#### The reassuring part, stated before the worrying part
+
+We build for **`riscv64imac`**: no `F`, no `D`. RV64GC is IMAFDC. **We are already a strict subset of
+the board's ISA**, so the compiler cannot emit an instruction the U74 lacks. That is a real result
+and it narrows this milestone considerably.
+
+What it does **not** cover is the part that is hand-written: `asm!` in `arch/riscv64/`, CSR reads and
+writes that QEMU may implement more permissively than SiFive, and implementation-defined widths. That
+is the exposure, and it is exactly the class a narrower `-cpu` catches.
+
+#### The work
+
+Run the existing suite against more than one CPU model. QEMU ships **`sifive-u54`** (the U74's
+family) and the profile models **`rva22s64`** and **`rva23s64`**; `thead-c906` is a useful hostile
+case because it is a real chip with real divergences.
+
+**This reframes what parity means.** Today parity is two ISAs (DECISIONS §19). With hardware arriving
+it should be *the same suite across CPU profiles*, because "aarch64 and riscv64 both pass" stops being
+the strongest available claim once we know riscv64 was only ever tested on the friendliest model.
+
+#### Why this comes BEFORE discovery (milestone 60)
+
+Because it needs no discovery to run, and **what it breaks tells us what is worth discovering.**
+Building an `Isa` record first means guessing which facts matter; running the matrix first means the
+machine names them. That is the same posture as the ASID probe and the device-tree-pointer correction:
+measure, then write down what the measurement said.
+
+The cheap experiment is one command and it may well pass, in which case the result is "we are already
+portable to the board's ISA", recorded with the evidence.
+
+#### BUGS
+
+- **`sifive-u54` in QEMU is still QEMU.** It will not reproduce the JH7110's cache behaviour, its real
+  memory map, or its errata. This catches the ISA-and-CSR class and is not a substitute for the board.
+- **A green matrix is not a portable kernel.** It is the absence of one specific class of failure.
+
+**Effort: small**, and it is the highest ratio of de-risking to work of anything before the board
+lands (~2026-08-21).
+
+### 60. ISA discovery: read the machine instead of assuming it
+
+**Status: NOT-STARTED.** The gap found while answering milestone 59's question: **nothing in the tree
+reads the ISA.** No `riscv,isa`, no `riscv,isa-extensions`, no `mmu-type`. We run on what the target
+triple implies plus exactly one runtime probe.
+
+#### Why the device tree, and why there is no shortcut
+
+**RISC-V deliberately has no `CPUID`.** `misa` exists but is coarse, is permitted to read as zero, and
+says nothing about post-2015 extensions. The architected answer is the device tree
+(`riscv,isa-extensions`, `mmu-type` for Sv39 versus Sv48) plus SBI for firmware-provided facilities.
+We already parse DTB (`crates/dtb`), so this is parsing plus somewhere to put the answer.
+
+#### The shape, and the trap
+
+**One `Isa` record, populated once at boot, printed at boot.** The trap is `if isa.has_x()` sprouting
+across the kernel, which turns a fact into a hundred branches. The places that genuinely vary are few
+and nameable: TLB flush strategy, ASID width, Sv39 versus Sv48, IOMMU presence. Keep it to those.
+
+**Do not build a chip-abstraction framework on one board.** CLAUDE.md's rule against speculatively
+trait-ifying applies with force here: the second real board should tell us what the abstraction is.
+One record and four call sites is not a framework, and that is the point.
+
+#### Discovery has three tiers and we should be explicit about which is which
+
+1. **The device tree** declares what firmware claims.
+2. **A targeted probe** measures what the silicon does. `probe_asid_bits()` (built 2026-07-31) is the
+   pattern: write ones, read back what stuck.
+3. **Trap-and-detect** executes an instruction and catches the illegal-instruction fault. Last resort,
+   needs the exception path, and we should not need it.
+
+**Keep the probes even once the tree is parsed.** The tree is a claim and the probe is a measurement,
+and when they disagree the machine wins. That is not a hypothetical here: this project has already
+been wrong about a QEMU boot register it believed the documentation about.
+
+#### Truthfulness (§42's habit, applied to hardware)
+
+If something required is absent, **say so and stop**, rather than running degraded and reporting
+success. §42 makes a filesystem declare what it offers and be honest about it; a kernel that silently
+assumes Sv39 on an Sv48 machine is the same violation one layer down.
+
+#### BUGS
+
+- **Discovery does not make us portable**, it makes us honest. Knowing an extension is missing and
+  doing something useful about it are different milestones.
+- **The device tree can lie**, or firmware can describe a machine it is not. Tier 2 exists for that.
+
+**Effort: not estimated.** Parsing is small; how many call sites genuinely need to vary is the unknown,
+and milestone 59 is what answers it.
 
 ### The backup-server ladder (53 to 55), and why it is the right deliverable
 
@@ -3356,7 +3465,7 @@ needs AES-CMAC; encryption needs AES-CCM or GCM; SMB 3.1.1 preauth integrity nee
 Milestone 49 records that identity is not authority here. SMB requires an identity, and the two
 reconcile without compromise: **the adapter authenticates the client because the protocol demands it,
 then uses the directory capability it already holds.** Identity never becomes ambient authority
-inside the system, which is 49's login model exactly — authentication produces or permits the use of
+inside the system, which is 49's login model exactly: authentication produces or permits the use of
 capabilities rather than setting a field.
 
 The consequence is worth stating plainly because it is the security claim: compromise the SMB adapter
@@ -3427,7 +3536,7 @@ importing it means importing C, which §34 chose RedoxFS specifically to avoid, 
 `no_std` Rust ext4.
 
 Verified: **RedoxFS has no xattr support.** **The fork is closed as of 2026-07-31: the layer**
-(§34's amendment). Reversibility decides it — `fs_proto` hides which implementation was chosen, so
+(§34's amendment). Reversibility decides it: `fs_proto` hides which implementation was chosen, so
 the format extension stays available later without any client changing. Attributes key on
 `TreePtr<Node>`, so **rename is free and correct**, which sidecars get wrong.
 Before designing the attribute layer, read `design/haiku-bfs-and-packages.md`: BFS made attributes

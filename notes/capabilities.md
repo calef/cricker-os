@@ -408,8 +408,8 @@ let runnable = state == Some(State::Running);
 // ...only requeue `current` if runnable...
 ```
 
-`schedule()` can be called from the timer IRQ *while a thread is halfway through blocking itself*
-— it has marked itself `Blocked` and joined an endpoint queue but has not yet reached its own
+`schedule()` can be called from the timer IRQ *while a thread is halfway through blocking itself*:
+it has marked itself `Blocked` and joined an endpoint queue but has not yet reached its own
 `schedule()` call. The timer must not helpfully requeue it. One equality check is the whole
 defense, and a test (`a_receiver_blocks_until_a_sender_arrives`) fails loudly without it: with the
 check relaxed to "anything not Finished is runnable", the blocked receiver gets rescheduled and
@@ -431,8 +431,8 @@ register and a message is three. Writing the trap frame is writing the user's re
 
 ## Single core is a gift here
 
-Every worry that makes IPC hard on a real machine — a sender and receiver racing on the queue, a
-message half-delivered — cannot arise, because **only one thread runs at a time**. Between a
+Every worry that makes IPC hard on a real machine: a sender and receiver racing on the queue, a
+message half-delivered: cannot arise, because **only one thread runs at a time**. Between a
 thread releasing the scheduler lock and calling `schedule()` to block, the *only* thing that can
 run is the timer IRQ, and the one-line `runnable` check already handles that. When SMP arrives
 (DECISIONS §6) this all gets harder, and the notes here will be the record of what was true before
@@ -457,5 +457,5 @@ thread blocked on the other end:
 The thing on the other end of that endpoint is a kernel thread. That is the last piece of
 scaffolding. **Milestone 8 makes it a userspace process**: the console driver leaves the kernel,
 `Object::Console` becomes an `Endpoint` to a console *server*, and `write` becomes an ordinary
-`SEND` to it. Everything 7e built — endpoints, blocking, the rendezvous, message-in-registers — is
+`SEND` to it. Everything 7e built (endpoints, blocking, the rendezvous, message-in-registers) is
 exactly the machinery that move needs, which is why it came first.

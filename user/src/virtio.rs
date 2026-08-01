@@ -90,7 +90,7 @@ fn mr(off: u64) -> u32 {
     unsafe { invoke(VIRTIO, abi::virtio::READ_REG, off, 0, 0) as u32 }
 }
 /// Write a DMA-*safe* device register (status, features, interrupt-ack) through the kernel. The
-/// queue-address and notify registers are NOT writable this way — the kernel owns them.
+/// queue-address and notify registers are NOT writable this way: the kernel owns them.
 fn mw(off: u64, v: u32) {
     // SAFETY: `svc`.
     unsafe { invoke(VIRTIO, abi::virtio::WRITE_REG, off, v as u64, 0) };
@@ -125,7 +125,7 @@ fn dma_read<T: Copy>(off: u64) -> T {
 /// Read block 0 of the disk into the DMA data buffer, then verify the crickerfs magic.
 /// The virtio handshake and queue setup, shared by the real driver and the attack test. The queue
 /// is set up THROUGH THE KERNEL, which places the rings at fixed offsets in our DMA region and
-/// programs the device with those addresses — we never choose them.
+/// programs the device with those addresses: we never choose them.
 fn init() {
     init_with_features(0);
 }

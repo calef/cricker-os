@@ -36,7 +36,7 @@ const SECONDARY_STACK_SIZE: usize = 64 * 1024;
 ///
 /// **The `UnsafeCell` is load-bearing, and not for interior mutability the usual way.** An
 /// immutable `static` of plain arrays lands in **`.rodata`**, which the fine kernel map makes
-/// **read-only** (W^X) — and a stack you cannot write is not a stack. That bug is invisible on the
+/// **read-only** (W^X), and a stack you cannot write is not a stack. That bug is invisible on the
 /// coarse boot map (where `.rodata` is writable) and fires the instant a secondary adopts the fine
 /// map. The `UnsafeCell` forces the stacks into writable `.bss` instead. See DECISIONS.md §11.
 #[repr(C, align(16))]

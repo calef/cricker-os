@@ -67,7 +67,7 @@ pointer path at all. Corrected, and the historical `abi::console` methods are ma
 
 ## What is deferred, on purpose, and named honestly
 
-- **DMA confinement — now closed by kernel-mediated validation.** This was the single most severe
+- **DMA confinement: now closed by kernel-mediated validation.** This was the single most severe
   item: the virtio device is a second bus master doing DMA against raw physical addresses with no
   MMU in front of it, so a hostile driver could point a descriptor at the kernel and the device
   would DMA over it. QEMU `virt` has no IOMMU that covers virtio-mmio, so the fix is software: the
