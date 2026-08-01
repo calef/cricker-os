@@ -78,9 +78,22 @@ jobs:
       # Then the ordinary build and the host-logic tests. The QEMU suite is deliberately skipped: this
       # job answers "does it still compile and do the pure logic still hold", and a toolchain bump has
       # never yet broken emulation without first breaking one of those.
+      # `--exclude xtask` is load-bearing. xtask is a HOST tool (it drives cargo and QEMU and freely
+      # uses `std`), so building the whole workspace for a bare-metal target tries to compile it
+      # without a standard library and fails with `can't find crate for std`.
+      #
+      # This line shipped without the exclusion, which meant **this workflow was red on every run it
+      # ever had** and its result carried no information about upstream at all. It was camouflaged by
+      # this job's own design: the header says a red result here is expected and blocks nothing, so a
+      # permanent red looked like the mechanism working. An alarm that is always on cannot report
+      # anything, and the excuse for tolerating red is exactly what hid it.
+      #
+      # It also broke the rule the rest of CI follows (notes/scripts.md): every job's real work is a
+      # script from script/, so CI runs what a developer runs. These two lines are hand-rolled cargo
+      # invocations that no developer runs, so nothing local could have caught them being wrong.
       - name: Build and host tests
         run: |
-          cargo build --workspace --target aarch64-unknown-none-softfloat
+          cargo build --workspace --exclude xtask --target aarch64-unknown-none-softfloat
           cargo test --workspace --exclude kernel --exclude user
 
       - name: What to do if this went red
