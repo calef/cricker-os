@@ -23,3 +23,34 @@ publish = false
 # creation and inspection need no mounted filesystem, so no macFUSE requirement rides along.
 [dependencies]
 redoxfs = { path = "../../vendor/redoxfs", default-features = false, features = ["std"] }
+
+# The attribute store's on-disk format, from the crate that defines it (milestone 57). The FS server
+# writes these blobs and this tool reads them, so what the two must agree on is a crate rather than a
+# second copy of the record layout in a comment (CLAUDE.md rule 7). A change to the record header is
+# then a compile error here instead of a recovery that quietly reads garbage. `fs_proto` is `no_std`
+# with no dependencies of its own, so it costs this build nothing; `fs-server` already takes the same
+# path dependency across the same workspace boundary, which is what shows cargo permits it.
+fs_proto = { version = "0.1.0", path = "../../crates/fs_proto" }
+
+# The same redox_syscall (lib name `syscall`) the engine uses, so an error out of `find_node` can be
+# read by its errno. Recovery needs exactly one of those. **`ENOENT` is the only error that may be
+# read as "this image has no attribute store"**; treating any other one that way is the false
+# negative that reports a file's attributes as absent when the lookup actually failed, which is the
+# same discipline the FS server's own `find_store` keeps (notes/fs-server.md).
+redox_syscall = { version = "0.9.0", default-features = false, features = ["std"] }
+
+# The host's extended-attribute calls, which `std` does not wrap: `setxattr` on macOS, `lsetxattr` on
+# Linux, with different argument lists. `libc` is already in this tool's graph (the engine's disk
+# layer uses it), so depending on it directly adds no supply-chain surface, and the alternative is
+# hand-writing platform-conditional `extern "C"` signatures. Thin architectural primitive, which is
+# the shape DECISIONS §46 accepts.
+libc = "0.2"
+
+# Test-only: the FS server's own sans-IO core, which is what **writes** the attribute store on the
+# board. The recovery test drives it to build the fixture, so the blobs this tool reads back were
+# produced by the implementation that will produce them in the field, not by a second writer in this
+# crate that could share a misunderstanding with the reader. Same argument as `import`, which uses
+# upstream's archiver rather than our own `put`, and it is the whole reason the round trip means
+# anything. Not a runtime dependency: recovery never needs the server.
+[dev-dependencies]
+fs-server = { path = "../../fs-server" }

@@ -56,7 +56,7 @@ use fs_proto::dir::{self, Rights};
 use fs_proto::xattr;
 use redoxfs::{Disk, FileSystem, Node, Transaction, TreePtr};
 use syscall::error::{
-    EBADF, EEXIST, EINVAL, EIO, EISDIR, ENOENT, ENOTDIR, EPERM, EROFS, Error, Result,
+    EBADF, EEXIST, EINVAL, EIO, EISDIR, ENOENT, ENOTDIR, ENOTEMPTY, EPERM, EROFS, Error, Result,
 };
 
 /// What one handle names, and what may be done through it.
@@ -902,8 +902,35 @@ fn purge_attrs<D: Disk>(tx: &mut Transaction<D>, node_id: u32) -> Result<()> {
     let (bytes, n) = store_file(node_id)?;
     let name = core::str::from_utf8(&bytes[..n]).map_err(|_| Error::new(EIO))?;
     match tx.remove_node(dir_ptr, name, Node::MODE_FILE) {
-        Ok(_) => Ok(()),
+        // Only when a blob really went, so the cost falls on attribute removals rather than on
+        // every unlink on the filesystem.
+        Ok(_) => drop_store_if_empty(tx),
         Err(e) if e.errno == ENOENT => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+/// **Take the store directory away with the last blob in it**, so a filesystem that holds no
+/// attributes is indistinguishable from one that never held any.
+///
+/// This used to be a recorded limitation (notes/xattr.md), on the grounds that noticing an empty
+/// directory costs a walk. It does not: `remove_node` with `MODE_DIR` **already** refuses a
+/// directory that still has entries, with `ENOTEMPTY`, so the engine's own check is the emptiness
+/// test and there is nothing to enumerate. Asking it and accepting the refusal costs one lookup on
+/// the removals that emptied a blob, inside the transaction that emptied it.
+///
+/// The reason to bother is the recovery side rather than the byte. `redoxfs-host extract` copies the
+/// store out with the tree, so a leftover empty `.cricker-attrs` would land in somebody's recovered
+/// Documents folder as a directory nothing explains. A store that disappears when the last attribute
+/// does never gets there.
+///
+/// `ENOENT` is tolerated for the same reason it is everywhere else here (another transaction in the
+/// same commit may have taken it), and every other error is propagated, because a store that failed
+/// to be removed for an unknown reason is not a store known to be gone.
+fn drop_store_if_empty<D: Disk>(tx: &mut Transaction<D>) -> Result<()> {
+    match tx.remove_node(TreePtr::root(), xattr::STORE_DIR, Node::MODE_DIR) {
+        Ok(_) => Ok(()),
+        Err(e) if e.errno == ENOTEMPTY || e.errno == ENOENT => Ok(()),
         Err(e) => Err(e),
     }
 }
@@ -2739,6 +2766,63 @@ mod tests {
         assert!(
             !store_holds(&mut srv, id),
             "an empty directory left its attributes behind"
+        );
+    }
+
+    /// **The last attribute takes the store directory with it**, so a filesystem holding no
+    /// attributes is byte-for-byte a filesystem that never held any.
+    ///
+    /// This closes a recorded limitation rather than adding a feature, and the reason it was worth
+    /// closing is on the recovery side: `redoxfs-host extract` copies the store out with the tree,
+    /// so a leftover empty `.cricker-attrs` would appear in somebody's recovered files as a
+    /// directory nothing explains.
+    ///
+    /// Both ways of emptying it are exercised, because they reach the same place by different paths:
+    /// `remove_xattr` writes an empty blob and `unlink` purges one, and only one of them goes
+    /// through `write_attrs`. The middle assertion is the one that keeps this honest: while a second
+    /// node still has attributes, the directory must **stay**, or the test would pass just as well
+    /// against an implementation that removed the store every time.
+    #[test]
+    fn the_last_attribute_takes_the_store_with_it() {
+        /// Whether the store directory exists at all. Reaches past the contract on purpose: no
+        /// client can name it, so nothing inside the contract can tell "gone" from "hidden".
+        fn store_exists(srv: &mut Server<DiskMemory>) -> bool {
+            srv.fs.tx(|tx| Ok(find_store(tx)?.is_some())).unwrap()
+        }
+
+        let mut srv = server_with_tree();
+        assert!(
+            !store_exists(&mut srv),
+            "a fresh image must not carry a store before anything sets an attribute",
+        );
+
+        let motd = srv.open_file("motd").unwrap();
+        let second = srv.create_file("second").unwrap();
+        srv.set_xattr(motd, b"user.a", xattr::RAW, b"1").unwrap();
+        srv.set_xattr(second, b"user.b", xattr::RAW, b"2").unwrap();
+        assert!(store_exists(&mut srv), "setting one must create the store");
+
+        srv.remove_xattr(motd, b"user.a").unwrap();
+        assert!(
+            store_exists(&mut srv),
+            "the store must stay while another node still has attributes",
+        );
+
+        srv.remove_xattr(second, b"user.b").unwrap();
+        assert!(
+            !store_exists(&mut srv),
+            "the last attribute must take the store directory with it",
+        );
+
+        // And again by the other route: `unlink` purges a blob without going through `write_attrs`,
+        // so the two paths need separate evidence.
+        srv.set_xattr(motd, b"user.c", xattr::RAW, b"3").unwrap();
+        assert!(store_exists(&mut srv));
+        srv.unlink(fs_proto::fs::ROOT as u32, "motd").unwrap();
+        srv.close(motd).unwrap();
+        assert!(
+            !store_exists(&mut srv),
+            "unlinking the last node with attributes must take the store too",
         );
     }
 

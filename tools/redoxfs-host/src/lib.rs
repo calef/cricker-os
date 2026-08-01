@@ -31,7 +31,12 @@
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use fs_proto::xattr;
 use redoxfs::{Disk, DiskFile, FileSystem, Node, Transaction, TreeData, TreePtr};
+
+/// Public so the recovery test can read an attribute back off the host file the extract wrote. The
+/// round trip is the claim this feature makes, and closing it needs both halves in one place.
+pub mod host_xattr;
 
 /// What an entry is. `Other` covers the modes RedoxFS can hold and a host directory cannot
 /// meaningfully receive (sockets, and anything a later format version adds).
@@ -72,6 +77,18 @@ pub struct LsEntry {
     pub name: String,
     pub size: u64,
     pub kind: Kind,
+    /// How many extended attributes this entry carries. Rendered as `@`, which is the marker macOS
+    /// `ls -l` uses for the same fact, so a listing says that there is metadata here **before** the
+    /// reader has to know that `.cricker-attrs` exists.
+    pub attrs: usize,
+}
+
+/// One extended attribute, as recovery sees it: the name and value as bytes, plus the type code
+/// [`fs_proto::xattr`] carries and no host filesystem can hold.
+pub struct Attr {
+    pub name: Vec<u8>,
+    pub kind: u32,
+    pub value: Vec<u8>,
 }
 
 /// What an `extract` moved, for the one-line summary the tool prints.
@@ -83,6 +100,18 @@ pub struct ExtractStats {
     pub bytes: u64,
     /// Entries the host directory cannot receive; named on stderr as they are met.
     pub skipped: u64,
+    /// Extended attributes put back onto the extracted files.
+    pub attrs: u64,
+    /// Attributes the host would not take. **Counted and named on stderr, never dropped quietly**
+    /// (DECISIONS §42): the usual causes are a destination filesystem with no attribute support, a
+    /// Linux host refusing a name without a `user.` prefix, and a Linux host refusing any attribute
+    /// on a symlink. Each is something a person can act on, and each has a different answer.
+    pub attrs_skipped: u64,
+    /// Attributes whose bytes were reattached but whose **type code** could not be, because no host
+    /// filesystem has a per-attribute type word. The codes stay readable in the extracted
+    /// `.cricker-attrs` blobs. Only counted for a code that is not [`xattr::RAW`], since dropping a
+    /// zero loses nothing.
+    pub kinds_dropped: u64,
 }
 
 /// Seconds and nanoseconds since the epoch, the timestamp shape the engine wants.
@@ -218,6 +247,119 @@ fn read_all<D: Disk>(tx: &mut Transaction<D>, node: &TreeData<Node>) -> Result<V
     Ok(buf)
 }
 
+// --- The attribute store, from the recovery side (milestone 57) --------------------------------
+//
+// A cricker-os image carries `.cricker-attrs` in its root: one file per node that has extended
+// attributes, named for that node's `TreePtr` id in hex, holding the records `fs_proto::xattr::store`
+// defines. The FS server writes it; nothing else does. This tool reads it, and the reading is why
+// `fs_proto` is a dependency rather than a comment describing the layout (CLAUDE.md rule 7).
+//
+// **Nothing here is allowed to fail an extraction.** A recovery that abandoned a hundred thousand
+// files because one attribute blob was damaged would be worse than useless, so every function below
+// reports a problem to the caller as a *skip* and the caller keeps walking. The files come out even
+// when the metadata does not, and the summary says how much did not.
+
+/// The attribute store's directory, or `None` if this image has never held an attribute.
+///
+/// **`ENOENT` is the only error read as absence.** Any other one is propagated, because a dropped
+/// read of the root's tree block answers `EIO`, and treating that as "there are no attributes" would
+/// quietly recover a backup without its metadata and report success. That is the same false negative
+/// the FS server's own `find_store` refuses to make (notes/fs-server.md).
+fn find_store<D: Disk>(tx: &mut Transaction<D>) -> Result<Option<TreePtr<Node>>, String> {
+    match tx.find_node(TreePtr::root(), xattr::STORE_DIR) {
+        Ok(node) => Ok(Some(node.ptr())),
+        Err(e) if e.errno == syscall::error::ENOENT => Ok(None),
+        Err(e) => Err(format!(
+            "cannot read the attribute store {}: {e}",
+            xattr::STORE_DIR
+        )),
+    }
+}
+
+/// One node's raw attribute blob, empty if it has none.
+///
+/// A blob longer than [`xattr::store::MAX_BYTES`] is refused rather than clipped: the layer cannot
+/// have written it, so reading its first 53 KB would be reading a file this format does not describe.
+fn attr_blob<D: Disk>(
+    tx: &mut Transaction<D>,
+    store: Option<TreePtr<Node>>,
+    node_id: u32,
+) -> Result<Vec<u8>, String> {
+    let Some(dir_ptr) = store else {
+        return Ok(Vec::new());
+    };
+    let file = xattr::store::file_name(node_id);
+    // ASCII by construction (`file_name` emits hex digits), so this cannot fail; the arm exists so a
+    // future change there cannot silently alias two nodes onto one blob.
+    let name = std::str::from_utf8(&file)
+        .map_err(|_| format!("node {node_id:#010x}: its store file name is not UTF-8"))?;
+    let node = match tx.find_node(dir_ptr, name) {
+        Ok(node) => node,
+        Err(e) if e.errno == syscall::error::ENOENT => return Ok(Vec::new()),
+        Err(e) => return Err(format!("{}/{name}: {e}", xattr::STORE_DIR)),
+    };
+    let size = node.data().size() as usize;
+    if size > xattr::store::MAX_BYTES {
+        return Err(format!(
+            "{}/{name}: {size} bytes, more than the {} an attribute blob can be; not read",
+            xattr::STORE_DIR,
+            xattr::store::MAX_BYTES,
+        ));
+    }
+    read_all(tx, &node)
+}
+
+/// Decode a blob into attributes, plus the number of **trailing bytes that are not a record**.
+///
+/// `store::iter` stops at the first record that runs off the end, which is what a torn write leaves
+/// and is the behaviour that keeps a truncated blob reading short rather than wrong. That is right
+/// for the FS server and not enough for a recovery tool, which should say that something was there
+/// and could not be read. Trailing zeroes do not count: an empty blob is removed rather than
+/// zero-filled, so a zero tail means a shorter record list and nothing lost.
+fn decode_attrs(blob: &[u8]) -> (Vec<Attr>, usize) {
+    let mut out = Vec::new();
+    let mut used = 0;
+    for (name, kind, value) in xattr::store::iter(blob) {
+        used += xattr::store::record_len(name.len(), value.len());
+        out.push(Attr {
+            name: name.to_vec(),
+            kind,
+            value: value.to_vec(),
+        });
+    }
+    let tail = &blob[used.min(blob.len())..];
+    let unread = if tail.iter().all(|b| *b == 0) {
+        0
+    } else {
+        tail.len()
+    };
+    (out, unread)
+}
+
+/// Every extended attribute on `path` inside the image, in the order the store holds them (which is
+/// the order they were set, since a replacement keeps its place).
+pub fn attrs(image: &Path, path: &str) -> Result<Vec<Attr>, String> {
+    let comps = components(path)?;
+    let mut fs = open_ro(image)?;
+    fs.tx(|tx| Ok(attrs_tx(tx, &comps)))
+        .map_err(|e| format!("reading the attributes of {path} failed: {e}"))?
+}
+
+fn attrs_tx<D: Disk>(tx: &mut Transaction<D>, comps: &[&str]) -> Result<Vec<Attr>, String> {
+    let node = resolve(tx, comps)?;
+    let store = find_store(tx)?;
+    let blob = attr_blob(tx, store, node.ptr().id())?;
+    let (attrs, unread) = decode_attrs(&blob);
+    if unread > 0 {
+        eprintln!(
+            "redoxfs-host: /{}: {unread} trailing bytes in its attribute blob are not a record \
+             and were not read",
+            comps.join("/"),
+        );
+    }
+    Ok(attrs)
+}
+
 /// Create a fresh, empty RedoxFS image of `size` bytes at `image`. Unencrypted, no reserved
 /// bootloader area. Fails if the size cannot hold the header ring plus a minimal tree.
 ///
@@ -253,16 +395,32 @@ fn ls_tx<D: Disk>(tx: &mut Transaction<D>, comps: &[&str]) -> Result<Vec<LsEntry
     let mut children = Vec::new();
     tx.child_nodes(node.ptr(), &mut children)
         .map_err(|e| format!("/{}: listing failed: {e}", comps.join("/")))?;
+    let store = find_store(tx)?;
+    // Names and pointers first, so the store lookup below can borrow `tx` mutably (a `DirEntry`
+    // would keep it borrowed for the whole loop). Same shape as `extract_node`'s.
+    let entries: Vec<(String, TreePtr<Node>)> = children
+        .iter()
+        .filter_map(|e| e.name().map(|n| (n.to_string(), e.node_ptr())))
+        .collect();
     let mut out = Vec::new();
-    for entry in children {
-        let Some(name) = entry.name() else { continue };
+    for (name, ptr) in entries {
         let child = tx
-            .read_tree(entry.node_ptr())
+            .read_tree(ptr)
             .map_err(|e| format!("{name}: cannot read its node: {e}"))?;
+        // A store that cannot be read is a listing that says nothing about attributes, not a listing
+        // that fails: `ls` is the first thing a person runs on a damaged image.
+        let attrs = match attr_blob(tx, store, ptr.id()) {
+            Ok(blob) => xattr::store::count(&blob),
+            Err(msg) => {
+                eprintln!("redoxfs-host: {name}: {msg}");
+                0
+            }
+        };
         out.push(LsEntry {
-            name: name.to_string(),
+            name,
             size: child.data().size(),
             kind: kind_of(child.data()),
+            attrs,
         });
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -289,6 +447,11 @@ fn cat_tx<D: Disk>(tx: &mut Transaction<D>, comps: &[&str]) -> Result<Vec<u8>, S
 /// directory in the image lands as a directory at `dest`, a file lands as the file `dest`. That is
 /// `cp -R SRC DEST` with a `DEST` that does not exist yet, and it is unambiguous in a way "copy
 /// into" is not.
+///
+/// **Extended attributes come back with the files** where the host will take them (milestone 57).
+/// Anything it refuses is counted and named on stderr rather than dropped, and the raw store is
+/// copied out beside the tree either way, so a refusal costs presentation and not data. See
+/// notes/host-recovery.md.
 pub fn extract(image: &Path, path: &str, dest: &Path) -> Result<ExtractStats, String> {
     let comps = components(path)?;
     let mut fs = open_ro(image)?;
@@ -302,9 +465,79 @@ fn extract_tx<D: Disk>(
     dest: &Path,
 ) -> Result<ExtractStats, String> {
     let node = resolve(tx, comps)?;
+    // Found once, from the image root, and carried down the walk. The store's location does not
+    // depend on which subtree is being extracted, which is why extracting `nested/deep` still
+    // recovers the attributes of what is in it.
+    let store = find_store(tx)?;
     let mut stats = ExtractStats::default();
-    extract_node(tx, &node, dest, &mut stats)?;
+    extract_node(tx, &node, dest, store, &mut stats)?;
     Ok(stats)
+}
+
+/// Put one node's extended attributes back onto the host file just written for it.
+///
+/// Every failure here is reported and counted, and none of them stops the extraction. The three that
+/// actually happen are worth naming where a reader meets them: a destination filesystem that holds
+/// no attributes (`ENOTSUP`), a Linux host refusing a name with no `user.` prefix (`EPERM`), and a
+/// Linux host refusing any attribute on a symlink (`EPERM` again, which is why the message carries
+/// the errno rather than an interpretation of it).
+fn reattach<D: Disk>(
+    tx: &mut Transaction<D>,
+    node: &TreeData<Node>,
+    dest: &Path,
+    store: Option<TreePtr<Node>>,
+    stats: &mut ExtractStats,
+) {
+    let blob = match attr_blob(tx, store, node.ptr().id()) {
+        Ok(blob) => blob,
+        Err(msg) => {
+            eprintln!("redoxfs-host: {}: {msg}", dest.display());
+            stats.attrs_skipped += 1;
+            return;
+        }
+    };
+    if blob.is_empty() {
+        return;
+    }
+    let (attrs, unread) = decode_attrs(&blob);
+    if unread > 0 {
+        eprintln!(
+            "redoxfs-host: {}: {unread} trailing bytes in its attribute blob are not a record \
+             and were not reattached",
+            dest.display(),
+        );
+        stats.attrs_skipped += 1;
+    }
+    for attr in attrs {
+        let shown = String::from_utf8_lossy(&attr.name).into_owned();
+        match host_xattr::set(dest, &attr.name, &attr.value) {
+            Ok(()) => {
+                stats.attrs += 1;
+                if attr.kind != xattr::RAW {
+                    // Named per attribute rather than summarised, because the code is the one part
+                    // of this record the host cannot carry and a reader who wants it needs to know
+                    // which file to go back to `.cricker-attrs` for.
+                    eprintln!(
+                        "redoxfs-host: {}: attribute {shown} kept its {} bytes but not its type \
+                         code {:#010x}; host filesystems have no field for it (see \
+                         .cricker-attrs in the extracted tree)",
+                        dest.display(),
+                        attr.value.len(),
+                        attr.kind,
+                    );
+                    stats.kinds_dropped += 1;
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "redoxfs-host: {}: cannot reattach attribute {shown} ({} bytes): {e}",
+                    dest.display(),
+                    attr.value.len(),
+                );
+                stats.attrs_skipped += 1;
+            }
+        }
+    }
 }
 
 /// Reject a name that would not stay inside the destination directory.
@@ -335,6 +568,7 @@ fn extract_node<D: Disk>(
     tx: &mut Transaction<D>,
     node: &TreeData<Node>,
     dest: &Path,
+    store: Option<TreePtr<Node>>,
     stats: &mut ExtractStats,
 ) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
@@ -357,8 +591,13 @@ fn extract_node<D: Disk>(
                 let child = tx
                     .read_tree(ptr)
                     .map_err(|e| format!("{name}: cannot read its node: {e}"))?;
-                extract_node(tx, &child, &dest.join(&name), stats)?;
+                extract_node(tx, &child, &dest.join(&name), store, stats)?;
             }
+            // Attributes before the permissions, for the same reason the permissions come last: a
+            // directory already made read-only can still refuse a `setxattr` on some filesystems,
+            // and a directory whose own attributes failed for that reason would be a self-inflicted
+            // skip.
+            reattach(tx, node, dest, store, stats);
             // Permissions last: a directory extracted read-only would otherwise refuse its own
             // children.
             std::fs::set_permissions(dest, PermissionsExt::from_mode(host_mode(node.data())))
@@ -369,6 +608,7 @@ fn extract_node<D: Disk>(
             let data = read_all(tx, node)?;
             std::fs::write(dest, &data)
                 .map_err(|e| format!("cannot write {}: {e}", dest.display()))?;
+            reattach(tx, node, dest, store, stats);
             std::fs::set_permissions(dest, PermissionsExt::from_mode(host_mode(node.data())))
                 .map_err(|e| format!("cannot set the mode of {}: {e}", dest.display()))?;
             stats.files += 1;
@@ -384,6 +624,9 @@ fn extract_node<D: Disk>(
             let _ = std::fs::remove_file(dest);
             std::os::unix::fs::symlink(&target, dest)
                 .map_err(|e| format!("cannot link {} -> {target}: {e}", dest.display()))?;
+            // The attributes of the **link**, not of what it points at. macOS takes them; Linux
+            // refuses `user.*` on a symlink and the refusal is counted rather than hidden.
+            reattach(tx, node, dest, store, stats);
             stats.symlinks += 1;
         }
         Kind::Other => {
