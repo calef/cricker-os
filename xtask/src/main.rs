@@ -1142,6 +1142,16 @@ fn initrd_riscv() -> bool {
             "sink",
             "--bin",
             "wc",
+            // The credential pair (milestone 56). These were listed in the riscv initrd tables below
+            // but never added HERE, so a clean tree could not build them and `mkinitrd` failed on a
+            // file the build was never asked to produce. The lane's own riscv leg went green on a
+            // stale binary left in its target directory by an earlier build, which is exactly the
+            // failure a dirty target dir hides: parity was asserted against an artifact no
+            // invocation creates.
+            "--bin",
+            "credential",
+            "--bin",
+            "credcli",
             "--target",
             RISCV_TARGET,
         ],
@@ -1223,6 +1233,12 @@ fn initrd_riscv() -> bool {
         // The entropy service (milestone 56). Portable, so both archives carry it: it holds the
         // virtio-rng driver, and the wiring tells it which bus the device came off.
         ("entropy", "entropy"),
+        // The credential service and its clients (milestone 56, the credential half). Portable, so
+        // both archives carry both: the claim is that holding the verify endpoint does not let you
+        // read or write the store, and that has to hold on either instruction set or it is not a
+        // claim.
+        ("credential", "credential"),
+        ("credcli", "credcli"),
         // The NTP client (milestone 51), with its test server and its clock-page probe as roles of
         // the same binary. Portable, so both archives carry it and both ISAs run the same tests.
         ("ntp", "ntp"),
@@ -1460,6 +1476,10 @@ fn mkinitrd() -> bool {
         // names a pattern matched. Portable, so both archives carry it.
         "swarden",
         "entropy",
+        // The credential service and its clients (milestone 56, the credential half). Portable, so
+        // both archives carry both.
+        "credential",
+        "credcli",
         "ntp",
         // The outlaw (milestone 19's user-test port): the privilege-boundary programs
         // kernel::user::tests used to hand-assemble. Portable, so both archives carry it.

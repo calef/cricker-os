@@ -11,6 +11,8 @@ members = [
     "crates/caps",
     "crates/compose",
     "crates/capsh",
+    "crates/cred",
+    "crates/cred_proto",
     "crates/clock_proto",
     "crates/crickerfs",
     "crates/dma_validate",
@@ -80,6 +82,25 @@ opt-level = 2
 # and unoptimised it is a minute of nothing for a crate that is byte shuffling and one polynomial.
 # See the tests' own comments for why exhaustion beats a bounded solver run on these two properties.
 [profile.dev.package.gpt]
+opt-level = 2
+
+# The credential KDF, compiled optimized even in a debug build (milestone 56, the credential half).
+# Exactly the reasoning `measure` records above, one order of magnitude louder: Argon2id at the
+# wired cost (4 MiB, three passes) is **5 ms optimised and 67 ms not**, per derivation, on this
+# machine, and every one of those milliseconds is multiplied by TCG when the credential service runs
+# under QEMU. Argon2 is memory-hard on purpose, so an unoptimised build does not make an attacker's
+# job harder, only ours; and the honest cost parameter to publish is one measured against a build
+# that is not throwing away an order of magnitude for no reason. Correctness is pinned by
+# `crates/cred`'s known-answer tests against RFC 9106 and the reference implementation's vectors, so
+# the optimised build is not the less trustworthy one. `blake2` and `digest` are argon2's own
+# arithmetic and carry the same argument.
+[profile.dev.package.cred]
+opt-level = 2
+[profile.dev.package.argon2]
+opt-level = 2
+[profile.dev.package.blake2]
+opt-level = 2
+[profile.dev.package.digest]
 opt-level = 2
 
 # Note: we deliberately do NOT set `panic = "abort"` here. The bare-metal target
