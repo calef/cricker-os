@@ -567,15 +567,16 @@ pub const INIT_ROLES_ENTRY: &str = "hello";
 #[cfg_attr(not(test), allow(dead_code))]
 const INIT_STACK_PAGES: u64 = 8;
 
-// The aarch64 test module is the only caller: 19d.2 shipped, and the shape that actually became
-// the boot path is `init_boot` below. RISC-V boots the same system through `riscv_shell_boot`.
-#[cfg_attr(not(test), allow(dead_code))]
 /// The role at which `hello` **is** the boot path: it builds the console, the line discipline, the
 /// input driver and the shell, then stays alive as the spawn service. It is named at module level
 /// because [`spawn_init`] has to know which role gets a filesystem, and "the one that runs the
 /// prompt" is the answer.
+#[cfg_attr(not(test), allow(dead_code))]
 pub const INIT_BOOT_ROLE: u64 = 27;
 
+// The aarch64 test module is the only caller: 19d.2 shipped, and the shape that actually became
+// the boot path is `init_boot` below. RISC-V boots the same system through `riscv_shell_boot`.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
     let (initrd_start, initrd_len) = memory::initrd_region().expect("no initrd to hand init");
     let initrd_pages = initrd_len.div_ceil(FRAME_SIZE);
