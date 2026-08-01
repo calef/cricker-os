@@ -45,15 +45,11 @@ use elf::Elf;
 use frames::{FRAME_SIZE, Frame};
 use paging::{Flags, Half, MapError, Mapper};
 
-/// Where a user program's code goes. Low half, so the hardware walks `TTBR0`.
-// Used by `exec` and the tour; the shell, initboot, and bench boots run neither.
-#[cfg_attr(
-    any(feature = "shell", feature = "bench", feature = "initboot"),
-    allow(dead_code)
-)]
-pub const USER_CODE_VA: u64 = 0x0000_0000_0040_0000;
-
-/// Where its stack goes. One page, and `sp` starts at the top of it: stacks grow down.
+/// Where a user program's stack goes. One page, and `sp` starts at the top of it: stacks grow down.
+///
+/// There is no matching `USER_CODE_VA` any more: it existed for `exec`, the one-page raw
+/// machine-code loader the hand-assembled programs needed, and every program the kernel runs now
+/// names its own load address in its ELF header.
 pub const USER_STACK_VA: u64 = 0x0000_0000_0050_0000;
 pub const USER_STACK_TOP: u64 = USER_STACK_VA + FRAME_SIZE;
 
@@ -373,8 +369,8 @@ pub enum LoadError {
 
 /// Parse an ELF, build an address space, and put it in memory. Do **not** run it.
 ///
-/// Split out from [`exec_elf`] on purpose: this is the part that can fail, so it is the part a
-/// test can call without dying.
+/// Split out from [`run`] on purpose: this is the part that can fail, so it is the part a test can
+/// call without dying (`run` diverges into the new process, or into `exit`).
 pub fn load(image: &[u8]) -> Result<(AddressSpace, u64), LoadError> {
     let elf = Elf::parse(image).map_err(LoadError::NotLoadable)?;
 
@@ -507,24 +503,6 @@ pub struct Spawn<'a> {
     pub maps: &'a [Mapping],
 }
 
-/// Load the initrd program and become it, with nothing but a fresh stack. Never returns.
-///
-/// The bare case: no capabilities, no extra mappings, no argument. It can run its own code and
-/// touch its own memory, and it can name nothing else in the system.
-#[cfg_attr(not(all(test, target_arch = "aarch64")), allow(dead_code))] // the aarch64 tests
-pub fn exec_elf(image: &[u8]) -> ! {
-    run(
-        image,
-        Spawn {
-            arg0: 0,
-            arg1: 0,
-            arg2: 0,
-            grants: &[],
-            maps: &[],
-        },
-    )
-}
-
 /// Where the kernel maps the initrd read-only into init's address space (milestone 19d): init
 /// reads the ELF to parse it here. High enough not to collide with init's own segments (0x40_0000)
 /// or its stack (0x50_0000).
@@ -536,15 +514,53 @@ pub const INITRD_VA: u64 = 0x2000_0000;
 /// budget (an untyped, slot 0) plus `report` (slot 1, `WRITE|GRANT` so init can endow a child).
 /// init enters with `x0` = `role` and `x1` = the initrd length. This is the one program the kernel
 /// still loads; init loads the rest (design/init-and-granular-spawn.md).
-/// The software-generated interrupt the kernel routes to init for the IRQ-delegation test
-/// (19d.2b): SGI 3, distinct from the scheduler's RESCHED (0) and the older endpoint SGIs (1, 2).
-#[cfg_attr(not(all(test, target_arch = "aarch64")), allow(dead_code))]
+/// The interrupt the kernel routes to init for the IRQ-delegation test (19d.2b).
+///
+/// aarch64: SGI 3, distinct from the scheduler's RESCHED (0) and the older endpoint SGIs (1, 2).
+/// RISC-V has no software-generated interrupt a test can raise on itself at all (the SBI IPI
+/// arrives down the *software*-interrupt arm, never touching `irq_route`), so it names the console
+/// UART's own line, which is the one interrupt this ISA can assert by hand. That makes it the same
+/// number as [`UART_RX_INTID`] there, deliberately; [`spawn_init`] binds the route once and grants
+/// two capabilities naming it. See `sched::tests`' DELIVERY_IRQ, which reached the same conclusion.
+#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(target_arch = "aarch64")]
 pub const INIT_TEST_SGI: u32 = 3;
+#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(target_arch = "riscv64")]
+pub const INIT_TEST_SGI: u32 = 10;
 
-/// The PL011 receive interrupt on QEMU `virt`: SPI 1 = INTID 33. init routes and delegates it so
-/// the input driver it builds (19d.2c) can wait on keystrokes.
-#[cfg_attr(not(all(test, target_arch = "aarch64")), allow(dead_code))]
+/// The console UART's receive interrupt on QEMU `virt`. init routes and delegates it so the input
+/// driver it builds (19d.2c) can wait on keystrokes. aarch64's PL011 is SPI 1 = INTID 33; RISC-V's
+/// NS16550 is PLIC source 10.
+#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(target_arch = "aarch64")]
 pub const UART_RX_INTID: u32 = 33;
+#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(target_arch = "riscv64")]
+pub const UART_RX_INTID: u32 = 10;
+
+/// The console UART's registers, physically. aarch64 `virt` puts a PL011 at `0x0900_0000`; RISC-V
+/// `virt` puts an NS16550 at `0x1000_0000`. init holds a device capability for it and delegates it
+/// to the console and input drivers it builds. Matches `console::UART_PHYS`.
+#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(target_arch = "aarch64")]
+pub const UART_PHYS: u64 = 0x0900_0000;
+#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(target_arch = "riscv64")]
+pub const UART_PHYS: u64 = 0x1000_0000;
+
+/// The archive entry holding the milestone 7-19 **role catalogue**: the one binary the kernel
+/// re-enters at a chosen role to play a client, a server, or init itself.
+///
+/// It is `hello` in both cases; only the name it is packed under differs. aarch64 packs it as
+/// `init`, because there it *is* the boot program. RISC-V's `init` is the portable `builder` demo,
+/// so hello goes in under its own name. Reading the wrong one gets a program with no such roles.
+#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(target_arch = "aarch64")]
+pub const INIT_ROLES_ENTRY: &str = "init";
+#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(target_arch = "riscv64")]
+pub const INIT_ROLES_ENTRY: &str = "hello";
 
 /// Init's stack, in pages (19d.2c): init loads whole ELFs with deep call chains, so its stack is
 /// larger than an ordinary process's one page. 8 pages (32 KiB) is generous.
@@ -553,7 +569,7 @@ const INIT_STACK_PAGES: u64 = 8;
 
 // The aarch64 test module is the only caller: 19d.2 shipped, and the shape that actually became
 // the boot path is `init_boot` below. RISC-V boots the same system through `riscv_shell_boot`.
-#[cfg_attr(not(all(test, target_arch = "aarch64")), allow(dead_code))]
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
     let (initrd_start, initrd_len) = memory::initrd_region().expect("no initrd to hand init");
     let initrd_pages = initrd_len.div_ceil(FRAME_SIZE);
@@ -565,9 +581,13 @@ pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
     crate::sched::bind_irq(INIT_TEST_SGI, crate::sched::create_endpoint());
     crate::arch::irq::enable(INIT_TEST_SGI);
     // And the UART receive interrupt (19d.2c): the input driver init builds waits on it. Route and
-    // enable it here, so init can delegate the Irq cap to that driver.
-    crate::sched::bind_irq(UART_RX_INTID, crate::sched::create_endpoint());
-    crate::arch::irq::enable(UART_RX_INTID);
+    // enable it here, so init can delegate the Irq cap to that driver. On RISC-V these are the SAME
+    // source (see INIT_TEST_SGI), and binding it twice would leave the first endpoint routed to
+    // nothing while the test waits on it, so bind once and grant twice.
+    if UART_RX_INTID != INIT_TEST_SGI {
+        crate::sched::bind_irq(UART_RX_INTID, crate::sched::create_endpoint());
+        crate::arch::irq::enable(UART_RX_INTID);
+    }
 
     // The initrd is a crickerfs archive (milestone 19f), not a bare ELF: it carries init plus the
     // programs init will load. The kernel reads only the one entry it must, "init". This is the same
@@ -580,10 +600,10 @@ pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
     // something the new thread does to itself. `trust::require` halts on a mismatch, so past this
     // line the bytes are the ones this kernel image was built against.
     let init_bytes = match crickerfs::Fs::parse(image) {
-        Ok(fs) => match fs.read("init") {
+        Ok(fs) => match fs.read(INIT_ROLES_ENTRY) {
             Some(bytes) => bytes,
             None => {
-                crate::println!("  boot archive has no 'init' program");
+                crate::println!("  boot archive has no '{INIT_ROLES_ENTRY}' program");
                 crate::arch::halt();
             }
         },
@@ -592,7 +612,7 @@ pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
             crate::arch::halt();
         }
     };
-    crate::trust::require("init", init_bytes);
+    crate::trust::require(INIT_ROLES_ENTRY, init_bytes);
 
     crate::sched::spawn(move || {
         let elf = match Elf::parse(init_bytes) {
@@ -653,7 +673,7 @@ pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
         // A device capability for the UART (slot 2), so init can build a driver and hand it the
         // registers (19d.2). WRITE (device access) | GRANT (init delegates it to the driver).
         crate::sched::grant(crate::cap::device_frame_cap(
-            0x0900_0000,
+            UART_PHYS,
             crate::cap::Rights::WRITE.union(crate::cap::Rights::GRANT),
         ))
         .expect("grant uart device");
@@ -721,48 +741,6 @@ pub fn run(image: &[u8], spawn: Spawn) -> ! {
     }
 
     enter_at(entry, spawn.arg0, spawn.arg1, spawn.arg2)
-}
-
-/// Load a program, and become it. Never returns.
-///
-/// # Safety
-/// `program` must be position-independent aarch64 machine code that begins at its first byte.
-// The hand-written demos live in the tour; the shell, initboot, and bench boots skip it.
-#[cfg_attr(
-    any(feature = "shell", feature = "bench", feature = "initboot"),
-    allow(dead_code)
-)]
-pub unsafe fn exec(program: &[u8]) -> ! {
-    assert!(
-        program.len() as u64 <= FRAME_SIZE,
-        "the 7a loader is one page. An ELF loader is 7c."
-    );
-
-    let mut space = AddressSpace::new(2).expect("no memory for a user address space");
-
-    let code = space
-        .map_new(USER_CODE_VA, Flags::user_code())
-        .expect("could not map the user's code");
-    code[..program.len()].copy_from_slice(program);
-
-    space
-        .map_new(USER_STACK_VA, Flags::user_data())
-        .expect("could not map the user's stack");
-
-    // The code page is `user_code()`: readable and executable by EL0, and **PXN**, so the
-    // kernel cannot execute it even by accident. A bug that jumped EL1 into a user page would
-    // otherwise run user-controlled instructions at EL1, which is a total compromise. That is
-    // one bit in a page descriptor, set by a decision made at milestone 4.
-    //
-    // The instructions we just wrote went out through the DATA path. The instruction fetcher
-    // has its own cache and has never heard of them. On aarch64 the I-cache is not coherent
-    // with the D-cache, so without this the CPU can fetch whatever was in that frame *before*
-    // we wrote the program into it.
-    sync_icache(code.as_ptr() as u64, program.len());
-
-    crate::sched::adopt_address_space(space);
-
-    enter_at(USER_CODE_VA, 0, 0, 0)
 }
 
 /// Drop to EL0 at `entry`, on a fresh stack, with `arg0` in `x0`. Never returns.
@@ -836,218 +814,50 @@ fn enter_frame(entry: u64, user_sp: u64, arg0: u64, arg1: u64, arg2: u64) -> ! {
     }
 }
 
-// --- the programs ---
+// --- the test programs the kernel loads by name ---
 //
-// Hand-written aarch64, assembled into `.rodata` and copied into a user page at load time.
-// There is no ELF loader yet (that is 7c) and no filesystem to load from (that is milestone 9),
-// so the "binary" rides along inside the kernel image. Honest scaffolding, and it goes away.
+// **There used to be five hand-assembled programs here**, three aarch64 and two RISC-V, written as
+// `global_asm!` machine code in `.rodata` and copied into a user page by a one-page loader. They
+// were honest milestone-7a scaffolding: there was no ELF loader and no filesystem to load from, so
+// the "binary" rode inside the kernel image.
 //
-// aarch64-only: these are literal aarch64 machine code, and using `global_asm!` here is a standing
-// exception to rule 1 (it predates the RISC-V port). They are exercised only by aarch64 EL0 tests
-// and the boot tour, both of which are themselves aarch64-gated. RISC-V reaches EL0 through the ELF
-// loader, not these. See notes/riscv-port.md, leak #3.
-
-#[cfg(target_arch = "aarch64")]
-core::arch::global_asm!(
-    r#"
-.section .rodata.user_programs, "a"
-.balign 4
-
-// Go to EL0, come back, go again. Proves the round trip, not just the departure.
-.global USER_HELLO_START
-USER_HELLO_START:
-    mov     x8,  #1             // SYS_YIELD. Until 7d a bare `svc` meant nothing; now the
-    svc     #0                  // syscall number is in x8, and 0 would mean SYS_EXIT.
-    mov     x8,  #1
-    svc     #0                  // if we reach here, `eret` PUT US BACK at EL0
-1:  b       1b                  // and now spin, so the timer can preempt us
-.global USER_HELLO_END
-USER_HELLO_END:
-
-// A hostile program. It yields nothing, calls nothing, and asks for nothing.
+// They are gone (milestone 19's user-test port). The behaviours are ordinary (yield twice, read a
+// forbidden address, spin forever), the toolchain builds them for both targets, and the initrd
+// already delivers thirty other programs, so the scaffolding had outlived its reason twice over:
+// once when 7c shipped the ELF loader, and again when the second ISA turned "one hand-written
+// program" into "two hand-written programs, forever". Keeping them would have meant hand-assembling
+// every one of them a second time to run the same tests on RISC-V.
 //
-// This is DECISIONS §5's arbitrary ELF binary, in the flesh: "it has its own stack, it never
-// yields, and it will loop forever because we will write a bug." The ONLY thing in the universe
-// that can take the CPU back is a timer interrupt landing between these two instructions.
-.global USER_SPIN_START
-USER_SPIN_START:
-1:  add     x0,  x0,  #1
-    b       1b
-.global USER_SPIN_END
-USER_SPIN_END:
-
-// An outlaw. It reaches for a KERNEL address.
+// What replaced each:
 //
-// 0xffff_0000_4008_0000 is in the direct map, and it IS mapped, and it IS readable. Just not by
-// EL0: `Flags::kernel_data()` sets AP such that EL1 may read and write and EL0 may do neither.
+//   - aarch64 `hello`, riscv `USER_HELLO` (yield, yield)  -> `outlaw`, role `OUTLAW_ROUND_TRIP`
+//   - aarch64 `outlaw`  (read a kernel address)           -> `outlaw`, role `OUTLAW_READ_KERNEL`
+//   - aarch64 `spin`    (loop, no syscall, no stack)      -> the `spinner` binary (milestone 24)
+//   - riscv `USER_REPORTER` (invoke a cap, SEND a word)   -> `riscv_worker_demo`, which builds a
+//     process from the same parts and runs a real ELF through them
 //
-// So this is not a translation fault (there is a translation), it is a PERMISSION fault, and
-// that distinction is the entire privilege boundary. The hardware picks TTBR1 from bits 63:48,
-// walks the kernel's own tables, finds the page, reads the AP bits, and says no.
-.global USER_OUTLAW_START
-USER_OUTLAW_START:
-    movz    x0,  #0x4008, lsl #16
-    movk    x0,  #0xffff, lsl #48       // x0 = 0xffff_0000_4008_0000
-    ldr     x1,  [x0]                   // <- data abort, EC 0x24, from a lower EL
-1:  b       1b                          // never reached
-.global USER_OUTLAW_END
-USER_OUTLAW_END:
-"#
-);
+// This also removed `exec`, the one-page raw-machine-code loader they needed. Every program the
+// kernel runs now arrives as an ELF.
 
-#[cfg(target_arch = "aarch64")]
-macro_rules! user_program {
-    ($name:ident, $start:ident, $end:ident) => {
-        /// Milestone 7c handed the demo over to the real ELF from the initrd, so these
-        /// hand-written programs are now exercised only by the tests, which is what the
-        /// `not(test)` says. They stay because they test things the real binary cannot:
-        /// `outlaw` deliberately commits a privilege violation, and `spin` is a program with no
-        /// `.data`, no stack use, and nothing but a loop, which is the purest form of
-        /// DECISIONS §5's hostile binary.
-        #[cfg_attr(not(test), allow(dead_code))]
-        pub fn $name() -> &'static [u8] {
-            unsafe extern "C" {
-                static $start: u8;
-                static $end: u8;
-            }
-            let start = (&raw const $start) as usize;
-            let end = (&raw const $end) as usize;
+/// The `outlaw` program's roles (user/src/outlaw.rs), passed in the first argument register.
+///
+/// `ROUND_TRIP` yields twice and exits: two syscalls from user mode, where the second can only
+/// happen if the return from the first genuinely put the thread back at EL0/U-mode.
+// The tests use it on both ISAs; of the two boot tours only RISC-V's has a syscall-count step.
+#[cfg_attr(not(test), allow(dead_code))]
+pub const OUTLAW_ROUND_TRIP: u64 = 0;
 
-            // SAFETY: both symbols are in .rodata, in this image, and the assembler emitted
-            // them in this order.
-            unsafe { core::slice::from_raw_parts(start as *const u8, end - start) }
-        }
-    };
-}
-
-#[cfg(target_arch = "aarch64")]
-user_program!(hello, USER_HELLO_START, USER_HELLO_END);
-#[cfg(target_arch = "aarch64")]
-user_program!(spin, USER_SPIN_START, USER_SPIN_END);
-#[cfg(target_arch = "aarch64")]
-user_program!(outlaw, USER_OUTLAW_START, USER_OUTLAW_END);
-
-// The RISC-V hand-written demo program (the aarch64 ones above are aarch64 machine code). Same shape
-// as USER_HELLO: yield, come back, yield again (proving the round trip through U-mode), then exit.
-// Syscall ABI: number in a7, `ecall`. See DECISIONS §10/§17.
-#[cfg(target_arch = "riscv64")]
-core::arch::global_asm!(
-    r#"
-.section .rodata.user_programs, "a"
-.balign 4
-.global USER_HELLO_START
-USER_HELLO_START:
-    li      a7, 1           // SYS_YIELD
-    ecall
-    li      a7, 1           // SYS_YIELD again: if we get here, sret PUT US BACK at U-mode
-    ecall
-    li      a7, 0           // SYS_EXIT
-    ecall
-1:  j       1b              // never reached
-.global USER_HELLO_END
-USER_HELLO_END:
-"#
-);
-
-/// The RISC-V demo program's bytes (the `hello` counterpart on riscv64; the aarch64 build gets its
-/// own `hello` from the `user_program!` macro above).
-#[cfg(target_arch = "riscv64")]
-pub fn hello() -> &'static [u8] {
-    unsafe extern "C" {
-        static USER_HELLO_START: u8;
-        static USER_HELLO_END: u8;
-    }
-    let start = (&raw const USER_HELLO_START) as usize;
-    let end = (&raw const USER_HELLO_END) as usize;
-    // SAFETY: both symbols are in .rodata, in this image, emitted in this order.
-    unsafe { core::slice::from_raw_parts(start as *const u8, end - start) }
-}
-
-/// The word the RISC-V reporter program SENDs home (matches the program below).
-#[cfg(target_arch = "riscv64")]
-pub const RISCV_REPORT_WORD: u64 = 0xC4;
-
-// A RISC-V reporter program: invoke the endpoint capability granted in slot 0 to SEND one word, then
-// exit. The syscall ABI (DECISIONS §17): a7 = number, a0.. = args; SYS_INVOKE takes (slot, method,
-// w0, w1, w2) in a0..a4. This exercises the capability boundary from U-mode, not just yield/exit.
-#[cfg(target_arch = "riscv64")]
-core::arch::global_asm!(
-    r#"
-.section .rodata.user_programs, "a"
-.balign 4
-.global USER_REPORTER_START
-USER_REPORTER_START:
-    li      a0, 0           // slot 0: the granted report capability
-    li      a1, 0           // endpoint::SEND
-    li      a2, 0xC4        // the word to send (RISCV_REPORT_WORD)
-    li      a3, 0
-    li      a4, 0
-    li      a7, 2           // SYS_INVOKE
-    ecall
-    li      a7, 0           // SYS_EXIT
-    ecall
-1:  j       1b              // never reached
-.global USER_REPORTER_END
-USER_REPORTER_END:
-"#
-);
-
-/// Build a user process from parts, grant it WRITE on a fresh endpoint in slot 0, run the RISC-V
-/// reporter program, and receive the word it SENDs. Returns the word (`RISCV_REPORT_WORD` on
-/// success). This is the RISC-V counterpart of the aarch64 build-start-run-a-child test: it proves
-/// the capability invocation path (`SYS_INVOKE` -> endpoint SEND) works from U-mode.
-#[cfg(target_arch = "riscv64")]
-pub fn riscv_capability_demo() -> u64 {
-    unsafe extern "C" {
-        static USER_REPORTER_START: u8;
-        static USER_REPORTER_END: u8;
-    }
-    let code = {
-        let start = (&raw const USER_REPORTER_START) as usize;
-        let end = (&raw const USER_REPORTER_END) as usize;
-        // SAFETY: both symbols are in .rodata, in this image, emitted in this order.
-        unsafe { core::slice::from_raw_parts(start as *const u8, end - start) }
-    };
-
-    // The child's address space and the frames for its code and stack.
-    let as_region = crate::untyped::create(8).expect("no aspace region");
-    let aspace = user_aspace_create(as_region).expect("no aspace");
-    let frames_region = crate::untyped::create(2).expect("no frame region");
-
-    let code_phys = crate::untyped::retype_page(frames_region).expect("no code frame");
-    // SAFETY: a fresh frame we own, direct-mapped; copy the program in and make it fetchable.
-    unsafe {
-        core::ptr::copy_nonoverlapping(
-            code.as_ptr(),
-            mmu::phys_to_virt(code_phys) as *mut u8,
-            code.len(),
-        );
-    }
-    crate::arch::sync_icache(mmu::phys_to_virt(code_phys), code.len());
-    user_aspace_map(aspace, USER_CODE_VA, code_phys, Flags::user_code()).expect("map code");
-
-    let stack_phys = crate::untyped::retype_page(frames_region).expect("no stack frame");
-    user_aspace_map(aspace, USER_STACK_VA, stack_phys, Flags::user_data()).expect("map stack");
-
-    // The child's one authority: WRITE on a report endpoint (it may SEND, not receive).
-    let report = crate::sched::create_endpoint();
-    let report_cap = crate::cap::endpoint_cap(report, crate::cap::Rights::WRITE);
-
-    // Build the thread from parts: a TCB, the cap in slot 0, then configure and start.
-    let tcb_region = crate::untyped::create(2).expect("no tcb region");
-    let tid = crate::sched::create_tcb(tcb_region).expect("no tcb");
-    let slot = crate::sched::tcb_insert_cap(tid, report_cap, None).expect("cap insert");
-    assert_eq!(slot, 0, "the reporter's cap must land in slot 0");
-    crate::sched::configure_tcb(tid, USER_CODE_VA, USER_STACK_TOP, aspace).expect("configure");
-    crate::sched::start_tcb(tid, [0; 3]).expect("start");
-
-    crate::sched::ipc_recv(report)[0]
-}
+/// `READ_KERNEL` reads the address handed to it in the second argument register, which is what makes
+/// the program portable: the kernel's own memory lives at a different virtual address on each ISA,
+/// and the caller knows which. See `tests::a_user_program_cannot_read_a_kernel_address`.
+// The tour uses it, and the shell/initboot/bench boots skip the tour.
+#[cfg_attr(not(test), allow(dead_code))]
+pub const OUTLAW_READ_KERNEL: u64 = 1;
 
 /// **Load and run a real compiled ELF at U-mode on RISC-V** (milestone 20, the user-ELF step).
 ///
-/// Unlike [`riscv_capability_demo`], which copies a hand-written machine-code blob, this takes the
-/// bytes of the `worker` program (a Rust binary compiled to a riscv64 ELF, delivered as the initrd)
+/// This takes the bytes of the `worker` program (a Rust binary compiled to a riscv64 ELF, delivered
+/// as the initrd)
 /// and runs them through the kernel's *real* ELF loader. [`load`] parses the file, builds an address
 /// space with each `PT_LOAD` segment mapped W^X at the VA it names, and maps a stack; nothing here is
 /// riscv-specific except that the loader was just taught to accept `EM_RISCV`. The worker is granted
@@ -5669,13 +5479,14 @@ mod ntp_tests {
             wait_for(|| USER_FAULTS.load(Ordering::Relaxed) > faults),
             "an NTP client wrote the clock page at {va:#x} and was NOT stopped",
         );
-        // aarch64 records the faulting address for tests (FAR_EL1); RISC-V's handler counts faults
-        // but keeps no last-address register of its own (notes/riscv-parity-scope.md), so the
-        // exact-address half is aarch64-only while the fault itself is proved on both.
-        #[cfg(target_arch = "aarch64")]
+        // The exact address, on both ISAs. This half used to be aarch64-only, because aarch64 had a
+        // last-fault record (`FAR_EL1`, stashed for tests) and RISC-V had only a fault *count*.
+        // Milestone 19's portable record keeps it on both. The *kind* is deliberately not asserted:
+        // the probe holds no mapping of the clock page at all, so the fault is a translation fault,
+        // and the claim being made here is about the address the client aimed at.
         assert_eq!(
-            crate::arch::exceptions::LAST_USER_FAULT_FAR.load(Ordering::Relaxed),
-            va,
+            crate::arch::exceptions::last_user_fault().map(|(_, addr)| addr),
+            Some(va),
             "something faulted, but not at the clock page's address",
         );
         assert_eq!(
@@ -5784,7 +5595,7 @@ mod ntp_tests {
 }
 
 /// Milestone 11: hand a process an untyped budget and let it spend it.
-#[cfg_attr(not(all(test, target_arch = "aarch64")), allow(dead_code))] // the tour and the aarch64 tests
+#[cfg_attr(not(test), allow(dead_code))] // the tour and the userspace tests
 pub mod untyped_service {
     use super::*;
     use crate::cap::{Rights, endpoint_cap, untyped_cap};
@@ -6193,13 +6004,13 @@ mod compositor_tests {
             wait_for(|| USER_FAULTS.load(Ordering::Relaxed) > faults),
             "a client wrote at {probe_va:#x}, its neighbour's pixels, and was NOT stopped",
         );
-        // aarch64 records the faulting address for tests (FAR_EL1); RISC-V's handler counts faults but
-        // keeps no last-address register of its own (notes/riscv-parity-scope.md), so the exact-address
-        // half of this assertion is aarch64-only while the fault itself is proved on both.
-        #[cfg(target_arch = "aarch64")]
+        // The exact address, on both ISAs. This half used to be aarch64-only, because aarch64 had a
+        // last-fault record (`FAR_EL1`, stashed for tests) and RISC-V had only a fault *count*: it
+        // knew `stval` at the instant of the fault and threw it away. Milestone 19's portable
+        // record keeps it on both, so "something faulted" is no longer all this ISA can say.
         assert_eq!(
-            crate::arch::exceptions::LAST_USER_FAULT_FAR.load(Ordering::Relaxed),
-            probe_va,
+            crate::arch::exceptions::last_user_fault().map(|(_, addr)| addr),
+            Some(probe_va),
             "something faulted, but not at the neighbour's address",
         );
         assert_eq!(
@@ -6235,10 +6046,10 @@ mod compositor_tests {
             "a window client read the composed screen at {screen_va:#x} and was NOT stopped: the \
              display is ambient",
         );
-        #[cfg(target_arch = "aarch64")]
         assert_eq!(
-            crate::arch::exceptions::LAST_USER_FAULT_FAR.load(Ordering::Relaxed),
-            screen_va,
+            crate::arch::exceptions::last_user_fault().map(|(_, addr)| addr),
+            Some(screen_va),
+            "something faulted, but not at the composed screen's address",
         );
         assert_eq!(
             sched::endpoint_waiting_senders(w.client_report[PEEPER]),
@@ -7484,9 +7295,10 @@ mod std_tests {
 /// copies nothing and pre-arranges nothing: the two processes compose the sharing themselves, and
 /// the read-only narrowing means the consumer can look but not write. See user/src/hello.rs
 /// frame_producer()/frame_consumer().
-// The consumers are the `tests` module below, which is aarch64-gated, so on riscv64 this
-// module and everything in it had no caller at all. Compiled out rather than allowed dead.
-#[cfg(all(test, target_arch = "aarch64"))]
+// Test scaffolding: the `tests` module below is the only caller, and it runs on both ISAs now
+// (milestone 19's user-test port). This wiring was already portable; it was compiled out on riscv64
+// only because its consumer was.
+#[cfg(test)]
 pub mod frame_service {
     use super::*;
     use crate::cap::{Rights, endpoint_cap, untyped_cap};
@@ -7543,9 +7355,10 @@ pub mod frame_service {
     }
 }
 
-// The consumers are the `tests` module below, which is aarch64-gated, so on riscv64 this
-// module and everything in it had no caller at all. Compiled out rather than allowed dead.
-#[cfg(all(test, target_arch = "aarch64"))]
+// Test scaffolding: the `tests` module below is the only caller, and it runs on both ISAs now
+// (milestone 19's user-test port). This wiring was already portable; it was compiled out on riscv64
+// only because its consumer was.
+#[cfg(test)]
 pub mod delegation_service {
     use super::*;
     use crate::cap::{Rights, endpoint_cap};
@@ -7611,9 +7424,10 @@ pub mod delegation_service {
 /// an untyped budget and a channel; the peer holds the channel and a report line. Everything
 /// else, the endpoint itself included, is created at runtime by the maker out of its own pages
 /// and delegated. See user/src/hello.rs ep_maker()/ep_user().
-// The consumers are the `tests` module below, which is aarch64-gated, so on riscv64 this
-// module and everything in it had no caller at all. Compiled out rather than allowed dead.
-#[cfg(all(test, target_arch = "aarch64"))]
+// Test scaffolding: the `tests` module below is the only caller, and it runs on both ISAs now
+// (milestone 19's user-test port). This wiring was already portable; it was compiled out on riscv64
+// only because its consumer was.
+#[cfg(test)]
 pub mod retype_ep_service {
     use super::*;
     use crate::cap::{Rights, endpoint_cap, untyped_cap};
@@ -7669,9 +7483,10 @@ pub mod retype_ep_service {
 
 /// **Milestone 19b: a process builds an address space, at EL0.** One role: an untyped budget
 /// and a report line; everything else it constructs. See user/src/hello.rs aspace_builder().
-// The consumers are the `tests` module below, which is aarch64-gated, so on riscv64 this
-// module and everything in it had no caller at all. Compiled out rather than allowed dead.
-#[cfg(all(test, target_arch = "aarch64"))]
+// Test scaffolding: the `tests` module below is the only caller, and it runs on both ISAs now
+// (milestone 19's user-test port). This wiring was already portable; it was compiled out on riscv64
+// only because its consumer was.
+#[cfg(test)]
 pub mod aspace_service {
     use super::*;
     use crate::cap::{Rights, endpoint_cap, untyped_cap};
@@ -7708,9 +7523,10 @@ pub mod aspace_service {
 /// **Milestone 12: Call/Reply, at EL0.** One request endpoint, a server that answers a caller it was
 /// never wired to, and the one-shot reply capability proven across the boundary. See
 /// user/src/hello.rs call_server()/call_client().
-// The consumers are the `tests` module below, which is aarch64-gated, so on riscv64 this
-// module and everything in it had no caller at all. Compiled out rather than allowed dead.
-#[cfg(all(test, target_arch = "aarch64"))]
+// Test scaffolding: the `tests` module below is the only caller, and it runs on both ISAs now
+// (milestone 19's user-test port). This wiring was already portable; it was compiled out on riscv64
+// only because its consumer was.
+#[cfg(test)]
 pub mod call_service {
     use super::*;
     use crate::cap::{Rights, endpoint_cap};
@@ -7768,9 +7584,10 @@ pub mod call_service {
 /// **Milestone 13: revoke a frame, at EL0.** One process with an untyped budget retypes a frame,
 /// maps it, revokes it, and reports whether the revoke deleted its own capability. See
 /// user/src/hello.rs revoke_demo().
-// The consumers are the `tests` module below, which is aarch64-gated, so on riscv64 this
-// module and everything in it had no caller at all. Compiled out rather than allowed dead.
-#[cfg(all(test, target_arch = "aarch64"))]
+// Test scaffolding: the `tests` module below is the only caller, and it runs on both ISAs now
+// (milestone 19's user-test port). This wiring was already portable; it was compiled out on riscv64
+// only because its consumer was.
+#[cfg(test)]
 pub mod revoke_service {
     use super::*;
     use crate::cap::{Rights, endpoint_cap, untyped_cap};
@@ -7802,34 +7619,100 @@ pub mod revoke_service {
     }
 }
 
-// The in-kernel userspace test suite is aarch64-specific: every test drives a hand-written aarch64
-// program (`outlaw`, `spin`, `forged_elf`) through `exec`, and reads aarch64 fault registers
-// (`ESR`/`FAR`). RISC-V's userspace path is exercised by the boot tour instead (the `worker`,
-// `builder`, and `driver` programs; see the riscv block in main.rs and notes/riscv-parity-scope.md).
-// Porting these to riscv would mean hand-writing 37 programs' worth of riscv machine code for no new
-// coverage of portable logic, so they stay aarch64.
-#[cfg(all(test, target_arch = "aarch64"))]
+/// **The in-kernel userspace suite, on both instruction sets** (milestone 19's user-test port).
+///
+/// It was aarch64-only for most of this project's life, and the module comment used to say the
+/// reason was the tests: "every test drives a hand-written aarch64 program through `exec` and reads
+/// aarch64 fault registers". That was true, and it was the wrong thing to fix. The tests were fine;
+/// their *scaffolding* was aarch64. Three things moved and the tests came along unchanged:
+///
+/// 1. The hand-assembled programs became real ELFs the toolchain builds for both targets (the
+///    `outlaw` binary and the `spinner` that already existed). See the note above `OUTLAW_ROUND_TRIP`.
+/// 2. `ESR`/`FAR` became `arch::UserFault`, the same fact in words RISC-V can say, which is what
+///    keeps "a PERMISSION fault at exactly this address" assertable rather than softened to "a fault
+///    happened".
+/// 3. `hello`, which carries the milestone 7-19 role catalogue, was found to build for RISC-V once
+///    six syscalls it had hand-rolled in aarch64 `asm!` were routed through `user_rt`, which already
+///    had portable versions of all six.
+///
+/// **What is still gated, and why, is written at each test rather than here**, because a blanket
+/// module comment is how the old claim survived past the point of being true. Two kinds of gate
+/// appear below: a property that has no RISC-V analogue at all (`el1_runs_on_sp_el1`), and a
+/// property whose RISC-V twin lives in `riscv_virtio_tests` and would be duplicated rather than
+/// gained. See notes/riscv-parity-scope.md.
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arch::exceptions::{
-        LAST_USER_FAULT_ESR, LAST_USER_FAULT_FAR, SVC_COUNT, USER_FAULTS,
-    };
+    use crate::arch::exceptions::{SVC_COUNT, USER_FAULTS, last_user_fault};
     use crate::arch::timer;
+    use crate::arch::{UserFault, UserFaultAccess};
     use crate::sched;
     // The std-transcript and FS-readiness assertions live with the std tests so both ISAs share one
-    // copy; see `std_tests`.
+    // copy; see `std_tests`. Most of them are used only by the device/FS tests below, which have
+    // RISC-V twins in `riscv_virtio_tests` and are gated to aarch64 here.
+    #[cfg(target_arch = "aarch64")]
     use super::std_tests::{
         assert_a_kill_mid_transaction_recovers, assert_fs_service_ready, assert_std_transcript,
         std_fs_expected,
     };
     use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-    /// The `init` program's ELF bytes, pulled out of the initrd archive by name (milestone 19f). A
-    /// test that loads a real user program wants the program's bytes, not the whole crickerfs
-    /// archive; only the `spawn_init` tests pass the archive, because init parses it itself. Named
-    /// to avoid the module's `hello` (a tiny hand-written 7a program, `user_program!` at the top).
+    /// **The `hello` binary's ELF bytes**, pulled out of the initrd archive by name (milestone 19f).
+    /// This is the binary carrying the milestone 7-19 role catalogue: the printing client, the
+    /// untyped demo, the granter and receiver, the call server, the aspace builder, the init roles.
+    /// A test that loads a real user program wants the program's bytes, not the whole crickerfs
+    /// archive; only the `spawn_init` tests pass the archive, because init parses it itself.
+    ///
+    /// The archive name differs by ISA and that is the one place it shows. aarch64 packs hello as
+    /// **`init`**, because on that ISA hello *is* the boot program. RISC-V's `init` is the portable
+    /// `builder` demo, so hello is packed under its own name there. Both point at the same source
+    /// file compiled for the local target.
+    #[cfg(target_arch = "aarch64")]
+    const HELLO_ENTRY: &str = "init";
+    #[cfg(target_arch = "riscv64")]
+    const HELLO_ENTRY: &str = "hello";
+
     fn init_image() -> &'static [u8] {
-        program("init").expect("no init program in the initrd archive")
+        program(HELLO_ENTRY).expect("no hello program in the initrd archive")
+    }
+
+    /// The `outlaw` program's ELF bytes: the two privilege-boundary behaviours that used to be
+    /// hand-assembled aarch64 machine code in this file. See [`OUTLAW_ROUND_TRIP`].
+    fn outlaw_image() -> &'static [u8] {
+        program("outlaw").expect("no outlaw program in the initrd archive")
+    }
+
+    /// The `spinner` program's ELF bytes: a `_start` that is nothing but a loop. Milestone 24 built
+    /// it for the shell's forcible-interrupt tier, and it is exactly the hostile binary DECISIONS §5
+    /// describes, so the preemption test uses it rather than a second copy of the same idea.
+    fn spinner_image() -> &'static [u8] {
+        program("spinner").expect("no spinner program in the initrd archive")
+    }
+
+    /// **An address in the kernel's own memory: mapped, readable by the kernel, forbidden to
+    /// userspace.** The address of a kernel static, rather than a per-ISA constant for the kernel's
+    /// text base, because taking the address of something the kernel is demonstrably using is true
+    /// on any ISA and any link layout, and needs no table of magic numbers to keep current.
+    fn a_kernel_address() -> u64 {
+        static SENTINEL: u64 = 0x00C0_FFEE_D00D;
+        &raw const SENTINEL as u64
+    }
+
+    /// Run `image` at user mode with `arg0`/`arg1` and no authority at all: no capabilities, no
+    /// extra mappings. It can run its own code and touch its own memory and name nothing else.
+    fn spawn_bare(image: &'static [u8], arg0: u64, arg1: u64) -> Option<crate::thread::Tid> {
+        sched::spawn(move || {
+            run(
+                image,
+                Spawn {
+                    arg0,
+                    arg1,
+                    arg2: 0,
+                    grants: &[],
+                    maps: &[],
+                },
+            )
+        })
     }
 
     /// The `worker` program's ELF bytes (milestone 19f.2), a distinct binary in the archive, not a
@@ -7840,20 +7723,28 @@ mod tests {
     }
 
     /// The `netstack` program's ELF bytes (milestone 30, piece 3): the smoltcp net server, a distinct
-    /// binary loaded by name.
+    /// binary loaded by name. Used only by the net tests, whose RISC-V twins live in
+    /// `riscv_virtio_tests`.
+    #[cfg(target_arch = "aarch64")]
     fn netstack_image() -> &'static [u8] {
         program("netstack").expect("no netstack program in the initrd archive")
     }
 
     /// The net client's test selectors and its success word, matching user/src/netcli.rs. The
     /// client is a nonzero entry role of the `netstack` binary, so it needs no image of its own.
+    #[cfg(target_arch = "aarch64")]
     const NET_TEST_UDP_DNS: u64 = 1;
+    #[cfg(target_arch = "aarch64")]
     const NET_TEST_TCP_ECHO: u64 = 2;
+    #[cfg(target_arch = "aarch64")]
     const NET_TEST_TCP_REOPEN: u64 = 3;
+    #[cfg(target_arch = "aarch64")]
     const NET_TEST_UDP_TFTP: u64 = 4;
+    #[cfg(target_arch = "aarch64")]
     const NET_CLIENT_OK: u64 = 1;
     /// The client could not complete for an ENVIRONMENTAL reason (the host resolver never answered),
     /// not because of a defect here. Only the non-gating real-DNS check can report it.
+    #[cfg(target_arch = "aarch64")]
     const NET_CLIENT_NO_ANSWER: u64 = 2;
 
     /// Spin the scheduler until `done()`, or give up after a wall-clock deadline. Returns whether it
@@ -7882,6 +7773,13 @@ mod tests {
     ///
     /// This has been true since boot.s and we never checked it. A test that can only fail if
     /// the world is upside down is still worth having when the failure is silent.
+    ///
+    /// **aarch64-only, and there is no RISC-V analogue to write.** RISC-V does not bank the stack
+    /// pointer by privilege level at all: there is one `sp`, and the kernel swaps it with `sscratch`
+    /// on the way into a trap. The hazard this test guards (two names for one register, silently)
+    /// cannot exist there, so a RISC-V twin would have nothing to assert. See
+    /// notes/riscv-parity-scope.md.
+    #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn el1_runs_on_sp_el1() {
         let spsel: u64;
@@ -7896,68 +7794,78 @@ mod tests {
         );
     }
 
-    /// EL0. The boundary.
+    /// User mode. The boundary.
     ///
-    /// Two `svc`s, not one, and that is the point: the second can only happen if the `eret`
-    /// **put us back at EL0** after the first. One `svc` proves we left. Two prove we came back.
+    /// Two syscalls, not one, and that is the point: the second can only happen if the return from
+    /// the first **put us back at EL0/U-mode**. One proves we left. Two prove we came back.
     #[test_case]
     fn a_user_program_reaches_el0_and_returns_twice() {
         let before = SVC_COUNT.load(Ordering::Relaxed);
 
-        sched::spawn(|| unsafe { exec(hello()) }).expect("spawn failed");
+        spawn_bare(outlaw_image(), OUTLAW_ROUND_TRIP, 0).expect("spawn failed");
 
         assert!(
             wait_for(|| SVC_COUNT.load(Ordering::Relaxed) >= before + 2),
-            "saw {} svc from EL0, wanted 2",
+            "saw {} syscalls from user mode, wanted 2",
             SVC_COUNT.load(Ordering::Relaxed) - before,
         );
     }
 
     /// **The privilege boundary is real, and it is a PERMISSION fault, not a missing page.**
     ///
-    /// The address the user reaches for is mapped, and readable, and the kernel reads it all
-    /// day. The hardware picks `TTBR1` from bits 63:48, walks the kernel's own tables, finds
-    /// the page, reads the `AP` bits, and says no.
+    /// The address the user reaches for is mapped, and readable, and the kernel reads it all day.
+    /// The precondition assertions below say exactly that before the program is even started,
+    /// because without them the test is vacuous: "userspace cannot read this" proves nothing about
+    /// a page nobody mapped.
     ///
-    /// So `DFSC = 0b001111` (permission fault) rather than a translation fault is the whole
-    /// assertion. A translation fault would mean we had merely failed to map something, which
-    /// would pass a sloppier test and prove nothing at all.
+    /// So a **permission** fault rather than a translation fault is the whole assertion. A
+    /// translation fault would mean we had merely failed to map something, which would pass a
+    /// sloppier test and prove nothing at all. Both ISAs assert it; only aarch64 is *told* it (see
+    /// `arch::UserFault`, and the BUGS note on the RISC-V classifier).
     #[test_case]
     fn a_user_program_cannot_read_a_kernel_address() {
-        const KERNEL_ADDR: u64 = 0xffff_0000_4008_0000;
+        let kernel_addr = a_kernel_address();
+
+        // The precondition, and it is what gives the assertion below its teeth.
+        assert!(
+            mmu::translate(kernel_addr).is_some(),
+            "the kernel's own static is not mapped, so this test proves nothing",
+        );
 
         let before = USER_FAULTS.load(Ordering::Relaxed);
 
-        sched::spawn(|| unsafe { exec(outlaw()) }).expect("spawn failed");
+        spawn_bare(outlaw_image(), OUTLAW_READ_KERNEL, kernel_addr).expect("spawn failed");
 
         assert!(
             wait_for(|| USER_FAULTS.load(Ordering::Relaxed) > before),
             "the user program read a kernel address and was NOT stopped",
         );
 
-        let esr = LAST_USER_FAULT_ESR.load(Ordering::Relaxed);
-        let far = LAST_USER_FAULT_FAR.load(Ordering::Relaxed);
+        let (kind, addr) = last_user_fault().expect("the kernel recorded no user fault");
 
-        assert_eq!((esr >> 26) & 0x3f, 0x24, "not a data abort from a lower EL");
-        assert_eq!(esr & 0x3f, 0x0f, "not a PERMISSION fault: esr {esr:#x}");
-        assert_eq!(esr & (1 << 6), 0, "not a read");
-        assert_eq!(far, KERNEL_ADDR, "faulted on the wrong address");
+        assert_eq!(
+            kind,
+            UserFault::Permission(UserFaultAccess::Read),
+            "not a PERMISSION fault on a read: a translation fault would mean we had merely \
+             failed to map something, which proves nothing about the privilege boundary",
+        );
+        assert_eq!(addr, kernel_addr, "faulted on the wrong address");
 
         // And the kernel is executing this line, which is the other half of the claim.
     }
 
-    /// DECISIONS §5's arbitrary ELF binary, at EL0, in the flesh.
+    /// DECISIONS §5's arbitrary binary, at user mode, in the flesh.
     ///
-    /// A program with no yield, no syscall, and not even a function call. The **only** thing in
-    /// the universe that can take the CPU back from it is a timer interrupt landing between two
-    /// of its instructions. Milestone 6 proved this for a kernel thread we compiled. This is the
-    /// case that actually mattered.
+    /// A program with no yield, no syscall, and not even a function call: `spinner`'s whole `_start`
+    /// is a loop. The **only** thing in the universe that can take the CPU back from it is a timer
+    /// interrupt landing between two of its instructions. Milestone 6 proved this for a kernel
+    /// thread we compiled. This is the case that actually mattered.
     #[test_case]
     fn a_user_program_that_never_yields_is_preempted_anyway() {
         let preemptions = sched::preemptions();
         let faults = USER_FAULTS.load(Ordering::Relaxed);
 
-        sched::spawn(|| unsafe { exec(spin()) }).expect("spawn failed");
+        spawn_bare(spinner_image(), 0, 0).expect("spawn failed");
 
         // Give it the CPU and then take it back, without asking.
         timer::spin_for(timer::frequency() / 10);
@@ -7992,7 +7900,9 @@ mod tests {
         out[5] = 1; // little-endian
         out[6] = 1; // EV_CURRENT
         out[16..18].copy_from_slice(&2u16.to_le_bytes()); // ET_EXEC
-        out[18..20].copy_from_slice(&183u16.to_le_bytes()); // EM_AARCH64
+        // This build's own machine, so the forgery gets past the machine check and reaches the
+        // property under test rather than being refused for being foreign.
+        out[18..20].copy_from_slice(&elf::NATIVE_MACHINE.to_le_bytes());
         out[24..32].copy_from_slice(&vaddr.to_le_bytes()); // e_entry
         out[32..40].copy_from_slice(&(EHDR as u64).to_le_bytes()); // e_phoff
         out[54..56].copy_from_slice(&(PHDR as u16).to_le_bytes());
@@ -8010,16 +7920,20 @@ mod tests {
 
     /// **A binary that asks to be loaded over the kernel.**
     ///
-    /// This is the attack. An ELF names its own load address, so a hostile one simply names
-    /// `0xffff_0000_4008_0000` and waits to see whether the loader is credulous.
+    /// This is the attack. An ELF names its own load address, so a hostile one simply names the
+    /// base of the kernel's half and waits to see whether the loader is credulous.
     ///
     /// It is refused **by construction, not by a check we remembered to write**: the user
     /// `Mapper` is built with `Half::Low`, and a high address is not a thing it can express. The
     /// same `WrongHalf` guard has been in `paging` since milestone 4, put there because a *host*
     /// test discovered that bits 63:48 are not translated. It has been waiting for this file.
+    ///
+    /// The address is `KERNEL_VA_BASE` rather than a constant, which is what makes this the same
+    /// attack on both ISAs: aarch64's kernel half starts at `0xffff_0000_0000_0000` and RISC-V's
+    /// Sv39 kernel half at `0xffff_ffc0_0000_0000`, and the loader must refuse either.
     #[test_case]
     fn an_elf_that_asks_to_be_loaded_over_the_kernel_is_refused() {
-        let image = forged_elf(0xffff_0000_4008_0000, elf::PF_R | elf::PF_X);
+        let image = forged_elf(mmu::KERNEL_VA_BASE, elf::PF_R | elf::PF_X);
 
         assert_eq!(
             load(&image).err(),
@@ -8051,11 +7965,12 @@ mod tests {
         // And we are still executing, which is the assertion.
     }
 
-    /// The initrd is there, and it is the program we built.
+    /// The initrd is there, and it is the program we built, for **this** machine: `Elf::parse`
+    /// refuses a foreign `e_machine`, so parsing at all is half the assertion.
     #[test_case]
-    fn the_initrd_holds_an_aarch64_executable() {
+    fn the_initrd_holds_a_native_executable() {
         let image = init_image();
-        let e = elf::Elf::parse(image).expect("the initrd is not a loadable aarch64 ELF");
+        let e = elf::Elf::parse(image).expect("the initrd is not a loadable native ELF");
 
         assert_eq!(e.entry(), 0x40_0000, "linked somewhere unexpected");
 
@@ -8076,25 +7991,27 @@ mod tests {
         );
     }
 
-    /// **The whole of 7c.** A separately compiled binary, arriving in the initrd, running at EL0.
+    /// **The whole of 7c.** A separately compiled binary, arriving in the initrd, running at user
+    /// mode.
     ///
-    /// The program checks its own image and speaks with the only two words it has: `svc` if
-    /// every expectation about its own memory holds, `brk` if not. **No data crosses the
-    /// boundary**, because there is no ABI yet and we are not going to invent one by accident.
+    /// The program checks its own image and speaks with the only two words it has: a syscall if
+    /// every expectation about its own memory holds, a trap instruction if not. **No data crosses
+    /// the boundary**, because there is no ABI yet and we are not going to invent one by accident.
     ///
-    /// So `svc` and no fault means: `.text` executed, `.rodata` was readable, `.data` was copied
+    /// So a syscall and no fault means: `.text` executed, `.rodata` was readable, `.data` was copied
     /// from the file, `.bss` was zeroed (the file does not contain those bytes), and the stack
-    /// worked well enough to recurse eight frames.
+    /// worked well enough to recurse eight frames. That is hello's `SELF_CHECK` role, which is the
+    /// same source compiled for whichever machine this build is.
     #[test_case]
     fn a_real_elf_from_the_initrd_runs_at_el0_and_verifies_itself() {
         let svc = SVC_COUNT.load(Ordering::Relaxed);
         let faults = USER_FAULTS.load(Ordering::Relaxed);
 
-        sched::spawn(|| exec_elf(init_image())).expect("spawn failed");
+        spawn_bare(init_image(), 0, 0).expect("spawn failed");
 
         assert!(
             wait_for(|| SVC_COUNT.load(Ordering::Relaxed) > svc),
-            "the program never reached its `svc`",
+            "the program never reached its syscall",
         );
         assert_eq!(
             USER_FAULTS.load(Ordering::Relaxed),
@@ -8112,6 +8029,17 @@ mod tests {
     /// again. If user mappings were still global, or the ASID did not ride TTBR0, or two
     /// spaces shared a tag, B's read would hit A's still-cached entry and see A's byte: one
     /// process reading another's memory, the exact bug the sledgehammer flush used to prevent.
+    ///
+    /// **aarch64-only, and deliberately NOT ported, because the property is not true on RISC-V
+    /// yet.** `riscv64::mmu::write_satp` issues an unconditional `sfence.vma` on every root switch,
+    /// so that ISA still swings the sledgehammer: a twin of this test would read B's byte because
+    /// everything was just flushed, not because the tagging works, and it would pass forever
+    /// whatever happened to the ASIDs. That is a test converted into something that passes for the
+    /// wrong reason, which is worse than no test. RISC-V does allocate and tag ASIDs (`asid_bits`
+    /// probes the width, `ttbr0_value` packs it into `satp[59:44]`), so the flush is what makes them
+    /// pointless there; dropping it is a kernel change with its own shootdown consequences, not a
+    /// test-portability change. Recorded in notes/riscv-parity-scope.md as an open gap.
+    #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn asid_tagging_keeps_address_spaces_apart_without_flushes() {
         let mut a = AddressSpace::new(2).expect("no space A");
@@ -8188,6 +8116,15 @@ mod tests {
     ///
     /// Note the precondition assertion. Without it the test is vacuous: "EL0 cannot read the
     /// kernel's text" proves nothing if the kernel's text is not mapped in the first place.
+    ///
+    /// **aarch64-only because it already has a RISC-V twin, not because RISC-V cannot ask.**
+    /// `riscv_virtio_tests::the_page_tables_say_u_mode_cannot_read_the_kernels_memory` asserts the
+    /// same three things there. They are deliberately separate tests rather than one portable one,
+    /// because the *mechanism* is what each is about: this one asks the silicon a question
+    /// (`AT S1E0R`), and RISC-V has no such instruction, so its twin walks the tables in software
+    /// and reads the `U` bit. Merging them would mean asserting only what both can say, which is
+    /// less than either says now.
+    #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn the_hardware_says_el0_cannot_read_the_kernels_memory() {
         const KERNEL_TEXT: u64 = 0xffff_0000_4008_0000;
@@ -8328,7 +8265,10 @@ mod tests {
     fn map_physical_maps_a_shared_frame_and_a_device_page() {
         const DATA_VA: u64 = 0x0000_0000_0060_0000;
         const DEV_VA: u64 = 0x0000_0000_0070_0000;
-        const PL011_PHYS: u64 = 0x0900_0000;
+        // A real device's MMIO on this machine, whichever machine it is: the virtio-mmio bus base.
+        // It was the PL011's `0x0900_0000`, which is an aarch64 `virt` fact; the point of the test
+        // is that a device-typed mapping lands where it was asked to, and either address serves it.
+        let device_phys = mmu::VIRTIO_MMIO_BASE;
 
         let mut space = AddressSpace::new(2).expect("no address space");
         let frame = crate::memory::alloc().expect("no frame").addr();
@@ -8337,7 +8277,7 @@ mod tests {
             .map_physical(DATA_VA, frame, Flags::user_data())
             .expect("shared map failed");
         space
-            .map_physical(DEV_VA, PL011_PHYS, Flags::user_device())
+            .map_physical(DEV_VA, device_phys, Flags::user_device())
             .expect("device map failed");
 
         // SAFETY: nothing is at EL0; we are a kernel thread mid-test.
@@ -8350,7 +8290,7 @@ mod tests {
 
         let (dev_pa, dev_f) = mmu::translate_user(DEV_VA).expect("device page not mapped");
         assert_eq!(
-            dev_pa, PL011_PHYS,
+            dev_pa, device_phys,
             "device page maps the wrong physical address"
         );
         assert!(dev_f.is_user_accessible() && dev_f.is_writable());
@@ -8386,6 +8326,11 @@ mod tests {
     /// interrupts turned into messages, and it must rise. And it proves the idle thread works: the
     /// driver blocks waiting for that interrupt with nothing else to run, and the scheduler idles
     /// rather than declaring a deadlock.
+    // RISC-V twin: `riscv_virtio_tests::a_userspace_driver_reads_a_file_from_a_virtio_disk`. Gated here rather than run twice: that
+    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // second copy through hello's roles would double the suite's slowest tests to prove
+    // nothing new. See this module's comment on the two kinds of gate.
+    #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn a_userspace_driver_reads_a_file_from_a_virtio_disk() {
         use crate::arch::exceptions::ROUTED_IRQS;
@@ -8429,6 +8374,11 @@ mod tests {
     /// global namespace to resolve against, and the mapping to a granted directory holds from inside
     /// std, including the refusal of `..`, of an absolute path, and of a nested path. And the same
     /// binary run without slot 4 gets `Unsupported`, which the offline std test asserts.
+    // RISC-V twin: `riscv_virtio_tests::std_fs_reads_a_file_through_a_granted_directory_capability`. Gated here rather than run twice: that
+    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // second copy through hello's roles would double the suite's slowest tests to prove
+    // nothing new. See this module's comment on the two kinds of gate.
+    #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn std_fs_reads_a_file_through_a_granted_directory_capability() {
         let (readiness, report) = match fs_service::start_std(
@@ -8456,6 +8406,11 @@ mod tests {
     /// and reads it back, then reports. The client names nothing but its directory endpoint, so a
     /// success here is the whole capability contract holding: designation is authorization, the
     /// handle is a server-minted token, and a real CoW filesystem we did not write runs confined.
+    // RISC-V twin: `riscv_virtio_tests::the_fs_server_serves_redoxfs_over_a_capability_contract`. Gated here rather than run twice: that
+    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // second copy through hello's roles would double the suite's slowest tests to prove
+    // nothing new. See this module's comment on the two kinds of gate.
+    #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn the_fs_server_serves_redoxfs_over_a_capability_contract() {
         let (readiness, report) = match fs_service::start(
@@ -8505,6 +8460,11 @@ mod tests {
     /// reason. And this test alone would still be weak, because a warden that refused *everything*
     /// would pass it; that is what the writable twin below is for, and why the verdict is a bitmap
     /// rather than a boolean.
+    // RISC-V twin: `riscv_virtio_tests::a_read_only_per_file_grant_survives_an_attacker`. Gated here rather than run twice: that
+    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // second copy through hello's roles would double the suite's slowest tests to prove
+    // nothing new. See this module's comment on the two kinds of gate.
+    #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn a_read_only_per_file_grant_survives_an_attacker() {
         let Some(verdict) = attack_a_grant(fs_proto::grant::READ, false) else {
@@ -8529,6 +8489,11 @@ mod tests {
     ///   than a warden that says no to everything, because here the same requests, through the same
     ///   code, succeed. A confinement test with no witness that the thing being confined *works* is
     ///   a test that passes when the feature is missing entirely.
+    // RISC-V twin: `riscv_virtio_tests::a_writable_per_file_grant_writes_that_file_and_still_only_that_file`. Gated here rather than run twice: that
+    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // second copy through hello's roles would double the suite's slowest tests to prove
+    // nothing new. See this module's comment on the two kinds of gate.
+    #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn a_writable_per_file_grant_writes_that_file_and_still_only_that_file() {
         use fs_proto::fixture::escape;
@@ -8546,6 +8511,7 @@ mod tests {
 
     /// Wire a per-file grant of the given direction, run the attacker against it, and return its
     /// verdict bitmap. `None` when no RedoxFS disk is attached (nothing to test; do not fail).
+    #[cfg(target_arch = "aarch64")]
     fn attack_a_grant(rights: u64, writable: bool) -> Option<u64> {
         let report = match fs_service::start_granted(
             init_image(),
@@ -8583,6 +8549,7 @@ mod tests {
     }
 
     /// Name the bits an escape verdict set, so a failure reads as a sentence instead of a bitmap.
+    #[cfg(target_arch = "aarch64")]
     fn describe_escape(v: u64) -> &'static str {
         use fs_proto::fixture::escape;
         if v & escape::SECOND_FILE != 0 {
@@ -8621,6 +8588,11 @@ mod tests {
     /// this proves it once through the whole stack, with a real virtio write torn in half, a real
     /// FS-server process killed inside its own transaction, and a real second process recovering the
     /// disk it left behind. See `std_tests::assert_a_kill_mid_transaction_recovers`.
+    // RISC-V twin: `riscv_virtio_tests::a_kill_mid_transaction_leaves_the_filesystem_consistent`. Gated here rather than run twice: that
+    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // second copy through hello's roles would double the suite's slowest tests to prove
+    // nothing new. See this module's comment on the two kinds of gate.
+    #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn a_kill_mid_transaction_leaves_the_filesystem_consistent() {
         assert_a_kill_mid_transaction_recovers(
@@ -8630,6 +8602,11 @@ mod tests {
         );
     }
 
+    // RISC-V twin: `riscv_virtio_tests::the_fs_servers_stack_still_has_headroom`. Gated here rather than run twice: that
+    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // second copy through hello's roles would double the suite's slowest tests to prove
+    // nothing new. See this module's comment on the two kinds of gate.
+    #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn the_fs_servers_stack_still_has_headroom() {
         let Some((used, total)) = fs_service::fs_stack_used() else {
@@ -8655,6 +8632,11 @@ mod tests {
     /// Because a valid OFFER for our transaction is the only path to that report, a match proves the
     /// DISCOVER left (TX) and the OFFER returned (RX), across both queues and both directions of the
     /// confinement, with no TCP/IP stack in the loop.
+    // RISC-V twin: `riscv_virtio_tests::a_userspace_driver_completes_a_dhcp_round_trip_over_virtio_net`. Gated here rather than run twice: that
+    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // second copy through hello's roles would double the suite's slowest tests to prove
+    // nothing new. See this module's comment on the two kinds of gate.
+    #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn a_userspace_driver_completes_a_dhcp_round_trip_over_virtio_net() {
         let report = match virtio_service::start_net(init_image()) {
@@ -8687,6 +8669,11 @@ mod tests {
     /// NIC is confined in hardware to its DMA region, and the driver binary is byte-identical to the
     /// mmio one. Proves the multi-queue confinement and the net driver work over the bus real
     /// hardware uses.
+    // RISC-V twin: `riscv_virtio_tests::a_userspace_driver_completes_a_dhcp_round_trip_over_virtio_net_pci`. Gated here rather than run twice: that
+    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // second copy through hello's roles would double the suite's slowest tests to prove
+    // nothing new. See this module's comment on the two kinds of gate.
+    #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn a_userspace_driver_completes_a_dhcp_round_trip_over_virtio_net_pci() {
         let report = match virtio_service::start_net_pci(init_image()) {
@@ -8712,6 +8699,11 @@ mod tests {
     /// knows nothing about DHCP; it owns only the DMA confinement. The server reports the acquired
     /// address, which must land in slirp's 10.0.2.0/24, so only a real DHCP round trip driven by
     /// smoltcp over the confined NIC can produce it.
+    // RISC-V twin: `riscv_virtio_tests::the_net_server_acquires_a_dhcp_lease_over_smoltcp`. Gated here rather than run twice: that
+    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // second copy through hello's roles would double the suite's slowest tests to prove
+    // nothing new. See this module's comment on the two kinds of gate.
+    #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn the_net_server_acquires_a_dhcp_lease_over_smoltcp() {
         let report = match virtio_service::start_net_server(netstack_image()) {
@@ -8731,6 +8723,11 @@ mod tests {
 
     /// The net server over the PCIe transport, behind the IOMMU (milestone 30, §20): smoltcp drives
     /// a NIC confined in hardware and still gets its lease.
+    // RISC-V twin: `riscv_virtio_tests::the_net_server_acquires_a_dhcp_lease_over_smoltcp_pci`. Gated here rather than run twice: that
+    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // second copy through hello's roles would double the suite's slowest tests to prove
+    // nothing new. See this module's comment on the two kinds of gate.
+    #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn the_net_server_acquires_a_dhcp_lease_over_smoltcp_pci() {
         let report = match virtio_service::start_net_server_pci(netstack_image()) {
@@ -8760,6 +8757,11 @@ mod tests {
     /// reads like a local resolver but is not one: libslirp NATs that address to the *host's*
     /// nameserver, so the gate depended on the developer's DNS answering at that instant and flaked
     /// (~2.5% per query, measured). The real-resolution case still runs, non-gating, below.
+    // RISC-V twin: `riscv_virtio_tests::a_client_completes_a_udp_round_trip_through_the_socket_contract`. Gated here rather than run twice: that
+    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // second copy through hello's roles would double the suite's slowest tests to prove
+    // nothing new. See this module's comment on the two kinds of gate.
+    #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn a_client_completes_a_udp_round_trip_through_the_socket_contract() {
         let report =
@@ -8778,6 +8780,11 @@ mod tests {
     }
 
     /// The same UDP round trip over the PCIe transport, behind the IOMMU.
+    // RISC-V twin: `riscv_virtio_tests::a_client_completes_a_udp_round_trip_through_the_socket_contract_pci`. Gated here rather than run twice: that
+    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // second copy through hello's roles would double the suite's slowest tests to prove
+    // nothing new. See this module's comment on the two kinds of gate.
+    #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn a_client_completes_a_udp_round_trip_through_the_socket_contract_pci() {
         let report =
@@ -8802,6 +8809,11 @@ mod tests {
     /// committed gate must not depend on somebody's router. What still fails loudly is a response
     /// that arrives and is *wrong* (not our transaction id, or not a response), because that would be
     /// our defect. The deterministic UDP coverage is the TFTP pair above. See notes/net.md.
+    // RISC-V twin: `riscv_virtio_tests::a_client_resolves_a_real_dns_name_when_the_host_resolver_answers`. Gated here rather than run twice: that
+    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // second copy through hello's roles would double the suite's slowest tests to prove
+    // nothing new. See this module's comment on the two kinds of gate.
+    #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn a_client_resolves_a_real_dns_name_when_the_host_resolver_answers() {
         let report =
@@ -8831,6 +8843,11 @@ mod tests {
     /// sends a payload, receives the echo, and closes. The full round trip, handshake through
     /// bidirectional data to teardown, deterministic and zero-host-setup (nothing outlives QEMU),
     /// through the client, netstack, smoltcp, and the confined NIC.
+    // RISC-V twin: `riscv_virtio_tests::a_client_echoes_over_tcp_through_the_socket_contract`. Gated here rather than run twice: that
+    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // second copy through hello's roles would double the suite's slowest tests to prove
+    // nothing new. See this module's comment on the two kinds of gate.
+    #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn a_client_echoes_over_tcp_through_the_socket_contract() {
         let report =
@@ -8849,6 +8866,11 @@ mod tests {
     }
 
     /// The same TCP echo round trip over the PCIe transport, behind the IOMMU.
+    // RISC-V twin: `riscv_virtio_tests::a_client_echoes_over_tcp_through_the_socket_contract_pci`. Gated here rather than run twice: that
+    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // second copy through hello's roles would double the suite's slowest tests to prove
+    // nothing new. See this module's comment on the two kinds of gate.
+    #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn a_client_echoes_over_tcp_through_the_socket_contract_pci() {
         let report =
@@ -8871,6 +8893,11 @@ mod tests {
     /// again. netstack derived the local port from the socket id, so the reopen reused the exact port and
     /// the second connect stalled on a slirp flow that had not cleared; the rotating allocator hands
     /// the reopen a fresh port, so both connects complete. The client reports OK only if they do.
+    // RISC-V twin: `riscv_virtio_tests::a_reopened_socket_id_connects_again_over_tcp`. Gated here rather than run twice: that
+    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // second copy through hello's roles would double the suite's slowest tests to prove
+    // nothing new. See this module's comment on the two kinds of gate.
+    #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn a_reopened_socket_id_connects_again_over_tcp() {
         let report =
@@ -8891,12 +8918,14 @@ mod tests {
 
     /// The `hellostd` std program's ELF bytes. The same binary the offline std test spawns; given
     /// the network here, its `UdpSocket::bind` probe succeeds and it runs the net transcript.
+    #[cfg(target_arch = "aarch64")]
     fn hellostd_image() -> &'static [u8] {
         program("hellostd").expect("no hellostd program in the initrd archive")
     }
 
     /// The exact transcript `hellostd` prints when it is granted the network. Pinned so a drift in
     /// the net PAL, the contract, or the demo is a loud diff rather than a mystery.
+    #[cfg(target_arch = "aarch64")]
     const STD_NET_EXPECTED: &[u8] = b"std net on cricker-os\nudp ok\ntcp echo ok\n";
 
     /// **`std::net` end to end over the socket contract** (milestone 27 phase two): the `hellostd`
@@ -8906,6 +8935,11 @@ mod tests {
     /// `net honestly unsupported` gap from phase one: std's networking runs on the native ABI,
     /// reaching the same path the hand-written client does through std's blocking API. Its stdout
     /// is reassembled off the endpoint and compared byte for byte, the `hellostd` discipline.
+    // RISC-V twin: `riscv_virtio_tests::std_net_runs_over_the_socket_contract`. Gated here rather than run twice: that
+    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // second copy through hello's roles would double the suite's slowest tests to prove
+    // nothing new. See this module's comment on the two kinds of gate.
+    #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn std_net_runs_over_the_socket_contract() {
         let report = match virtio_service::start_net_std(netstack_image(), hellostd_image()) {
@@ -9010,6 +9044,11 @@ mod tests {
     /// driver could ring it directly. The kernel validates every descriptor on submit and refuses
     /// this one, so the device is never told to go and never touches the kernel. The driver
     /// reports `1` when it was refused.
+    // RISC-V twin: `riscv_virtio_tests::the_kernel_refuses_a_dma_descriptor_that_escapes_the_drivers_region`. Gated here rather than run twice: that
+    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // second copy through hello's roles would double the suite's slowest tests to prove
+    // nothing new. See this module's comment on the two kinds of gate.
+    #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn the_kernel_refuses_a_dma_descriptor_that_escapes_the_drivers_region() {
         let report = match virtio_service::start_attacker(init_image()) {
@@ -9033,6 +9072,11 @@ mod tests {
     /// kernel. A validator that walked only the flat chain would pass the outer descriptor and let
     /// the device follow the table out. The kernel strips the feature and refuses the flag, so the
     /// device is never rung. The driver reports `1` when it was refused.
+    // RISC-V twin: `riscv_virtio_tests::the_kernel_refuses_an_indirect_descriptor_escape`. Gated here rather than run twice: that
+    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // second copy through hello's roles would double the suite's slowest tests to prove
+    // nothing new. See this module's comment on the two kinds of gate.
+    #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn the_kernel_refuses_an_indirect_descriptor_escape() {
         let report = match virtio_service::start_attacker_indirect(init_image()) {
@@ -9056,6 +9100,11 @@ mod tests {
     /// the GIC (SPI 3 + swizzle). The riscv twin proved the seam on the PLIC board; this proves
     /// the same subsystem, from the same portable crate and seam, on the second bus of the
     /// second interrupt controller.
+    // RISC-V twin: `riscv_virtio_tests::a_userspace_driver_reads_a_file_over_the_pcie_transport`. Gated here rather than run twice: that
+    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // second copy through hello's roles would double the suite's slowest tests to prove
+    // nothing new. See this module's comment on the two kinds of gate.
+    #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn a_userspace_driver_reads_a_file_over_the_pcie_transport() {
         use crate::arch::exceptions::ROUTED_IRQS;
@@ -9088,6 +9137,11 @@ mod tests {
     /// every byte in-process, re-checks the superblock and directory around it, and reports the
     /// read-back head. A matching report therefore certifies the round trip AND that the write
     /// landed only on its own block.
+    // RISC-V twin: `riscv_virtio_tests::a_userspace_driver_writes_a_block_and_reads_it_back`. Gated here rather than run twice: that
+    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // second copy through hello's roles would double the suite's slowest tests to prove
+    // nothing new. See this module's comment on the two kinds of gate.
+    #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn a_userspace_driver_writes_a_block_and_reads_it_back() {
         let report = match virtio_service::start_writer(init_image()) {
@@ -9108,6 +9162,11 @@ mod tests {
     /// The same write round trip over the PCIe transport (DECISIONS §18): the write verb must
     /// hold on both buses, exactly as the read path does, or the transport seam has a
     /// direction-shaped hole.
+    // RISC-V twin: `riscv_virtio_tests::a_userspace_driver_writes_a_block_over_the_pcie_transport`. Gated here rather than run twice: that
+    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // second copy through hello's roles would double the suite's slowest tests to prove
+    // nothing new. See this module's comment on the two kinds of gate.
+    #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn a_userspace_driver_writes_a_block_over_the_pcie_transport() {
         let report = match virtio_service::start_writer_pci(init_image()) {
@@ -9135,6 +9194,11 @@ mod tests {
     /// Then the full writer runs against the SAME device, resets it, and must complete its own
     /// round trip, which proves the abandoned request wedged nothing: not the device, not the
     /// validator's per-registration state, not the disk.
+    // RISC-V twin: `riscv_virtio_tests::a_driver_killed_mid_write_leaves_the_device_and_transport_sane`. Gated here rather than run twice: that
+    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // second copy through hello's roles would double the suite's slowest tests to prove
+    // nothing new. See this module's comment on the two kinds of gate.
+    #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn a_driver_killed_mid_write_leaves_the_device_and_transport_sane() {
         let faults = USER_FAULTS.load(Ordering::Relaxed);
@@ -9209,7 +9273,22 @@ mod tests {
         // free happen synchronously under the test's own yields, so `used()` is exact again. This
         // tests the reaper, not placement, so pinning costs nothing.
         let here = crate::cpu::id();
-        let outlaw_here = || sched::spawn_on(here, || unsafe { exec(outlaw()) });
+        let image = outlaw_image();
+        let kernel_addr = a_kernel_address();
+        let outlaw_here = move || {
+            sched::spawn_on(here, move || {
+                run(
+                    image,
+                    Spawn {
+                        arg0: OUTLAW_READ_KERNEL,
+                        arg1: kernel_addr,
+                        arg2: 0,
+                        grants: &[],
+                        maps: &[],
+                    },
+                )
+            })
+        };
 
         let f0 = USER_FAULTS.load(Ordering::Relaxed);
         outlaw_here().expect("spawn failed");
@@ -9323,6 +9402,19 @@ mod tests {
     /// reports. A hang would mean the interrupt never reached the init-built child, so a passing
     /// test is the proof. Completes the "init delegates every authority kind" story the
     /// interrupt-driven drivers (input, virtio) rest on.
+    ///
+    /// **aarch64-only, because RISC-V has no second interrupt to raise.** It has no
+    /// software-generated interrupt a test can assert on itself at all (the SBI IPI arrives down the
+    /// software-interrupt arm and never reaches `irq_route`), so the only line it can raise by hand
+    /// is the console UART's own, which `spawn_init` is already routing for the input driver init
+    /// builds. A twin would have to share that one source between init's UART capability and the
+    /// test's delegated one, and would then prove delivery through whichever route was bound last
+    /// rather than through the delegated capability, which is the entire claim. The *property*
+    /// (an interrupt arriving as a message through a delegated Irq cap) is proved on RISC-V by
+    /// `riscv_virtio_tests::a_userspace_driver_reads_a_file_from_a_virtio_disk`, which asserts
+    /// `ROUTED_IRQS` rises while a userspace driver waits on its own Irq cap, and by
+    /// `sched::tests::an_interrupt_becomes_a_message`. See notes/interrupts.md.
+    #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn userspace_init_delegates_an_interrupt_to_a_child() {
         const IRQ_WORD: u64 = 0x1590;
@@ -9374,6 +9466,15 @@ mod tests {
     /// returns. Receiving that constant proves the whole chain: device access is a capability the
     /// kernel minted and init delegated, `MAP_INTO` mapped it device-typed (not cached normal
     /// memory, which would corrupt MMIO), and a userspace-init-built driver drove real hardware.
+    ///
+    /// **aarch64-only, because the assertion is a PL011 register and RISC-V `virt` has no PL011.**
+    /// `0xB105F00D` in the PrimeCell identification registers is what makes this test exact rather
+    /// than "the read did not fault"; the NS16550 on the other machine has no equivalent constant to
+    /// name, and swapping in a virtio magic number would be a different test wearing this one's
+    /// name. Device delegation to a userspace driver *is* proved on RISC-V, by
+    /// `riscv_virtio_tests::a_userspace_driver_reads_a_file_from_a_virtio_disk`, which is a stronger
+    /// version of the same claim (device MMIO, a DMA region, and an interrupt, all delegated).
+    #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn userspace_init_builds_a_driver_that_reads_real_hardware() {
         const PL011_PRIMECELL_ID: u64 = 0xB105_F00D;
@@ -9476,21 +9577,13 @@ mod tests {
     fn a_process_can_build_start_and_run_a_child_thread() {
         const CODE_VA: u64 = 0x40_0000;
         const STACK_VA: u64 = 0x50_0000;
-        const REPORT_WORD: u64 = 0x42;
-
-        // The child's program, hand-assembled: SEND(slot 0, endpoint::SEND=0, REPORT_WORD),
-        // then EXIT. Nine instructions; the child's first granted cap lands in slot 0.
-        let code: [u32; 9] = [
-            0xD280_0000,                                       // movz x0, #0        (report cap slot)
-            0xD280_0001, // movz x1, #0        (endpoint::SEND)
-            0xD280_0000 | ((REPORT_WORD as u32) << 5) | 2, // movz x2, #REPORT_WORD
-            0xD280_0003, // movz x3, #0
-            0xD280_0004, // movz x4, #0
-            0xD280_0000 | ((abi::SYS_INVOKE as u32) << 5) | 8, // movz x8, #SYS_INVOKE
-            0xD400_0001, // svc #0             (the SEND)
-            0xD280_0008, // movz x8, #0        (SYS_EXIT)
-            0xD400_0001, // svc #0             (exit; never returns)
-        ];
+        // The child's program: SEND(slot 0, endpoint::SEND, REPORT_WORD) then EXIT, nine
+        // instructions, with the child's first granted cap in slot 0. This file used to carry three
+        // separate aarch64 copies of it; `supervision_tests` already keeps one pair (aarch64 and
+        // RISC-V) for its own children, so all three now share that pair. Same shape, one definition,
+        // and the tests below run on either machine.
+        let code = super::supervision_tests::REPORT_STUB;
+        let expect_word = super::supervision_tests::REPORT_WORD;
 
         // The child's address space, and a region to carve its code and stack frames from.
         let as_region = crate::untyped::create(8).expect("no aspace region");
@@ -9506,7 +9599,7 @@ mod tests {
                 dst.add(i).write(insn);
             }
         }
-        sync_icache(mmu::phys_to_virt(code_phys), size_of_val(&code));
+        sync_icache(mmu::phys_to_virt(code_phys), size_of_val(code));
         user_aspace_map(aspace, CODE_VA, code_phys, Flags::user_code()).expect("map code");
 
         let stack_phys = crate::untyped::retype_page(frames_region).expect("no stack frame");
@@ -9546,7 +9639,7 @@ mod tests {
 
         let got = crate::sched::ipc_recv(report)[0];
         assert_eq!(
-            got, REPORT_WORD,
+            got, expect_word,
             "the child never reported: a built-from-parts thread did not reach EL0 and run",
         );
     }
@@ -9563,27 +9656,15 @@ mod tests {
     fn reclaim_frees_a_started_then_exited_childs_regions() {
         const CODE_VA: u64 = 0x40_0000;
         const STACK_VA: u64 = 0x50_0000;
-        const REPORT_WORD: u64 = 0x43;
-
-        // SEND(slot 0, endpoint::SEND, REPORT_WORD) then EXIT, the same stub as the test above.
-        let code: [u32; 9] = [
-            0xD280_0000,
-            0xD280_0001,
-            0xD280_0000 | ((REPORT_WORD as u32) << 5) | 2,
-            0xD280_0003,
-            0xD280_0004,
-            0xD280_0000 | ((abi::SYS_INVOKE as u32) << 5) | 8,
-            0xD400_0001,
-            0xD280_0008,
-            0xD400_0001,
-        ];
+        // SEND(slot 0, endpoint::SEND, REPORT_WORD) then EXIT, the shared stub (see the test above).
+        let code = super::supervision_tests::REPORT_STUB;
+        let expect_word = super::supervision_tests::REPORT_WORD;
 
         // The report endpoint is created before the baseline: it lives in the kernel's own pinned
         // endpoint region (never reclaimed here; endpoint revocation is a later piece), so it must
         // not count against the frame accounting.
         let report = crate::sched::create_endpoint();
         let frames_before = crate::memory::free_frames();
-        let threads_before = crate::sched::thread_count();
 
         // The child's whole address space in one region: root, tables, code, and stack.
         let as_region = crate::untyped::create(8).expect("no aspace region");
@@ -9597,7 +9678,7 @@ mod tests {
                 dst.add(i).write(insn);
             }
         }
-        sync_icache(mmu::phys_to_virt(code_phys), size_of_val(&code));
+        sync_icache(mmu::phys_to_virt(code_phys), size_of_val(code));
         user_aspace_map(aspace, CODE_VA, code_phys, Flags::user_code()).expect("map code");
 
         let stack_phys = crate::untyped::retype_page(as_region).expect("no stack frame");
@@ -9623,18 +9704,26 @@ mod tests {
 
         // Let it run: it SENDs the word and exits. Receiving proves it reached EL0.
         let got = crate::sched::ipc_recv(report)[0];
-        assert_eq!(got, REPORT_WORD, "the child never reported");
+        assert_eq!(got, expect_word, "the child never reported");
 
         // Let the reaper collect the now-Finished child. A Finished thread is removed when its own
         // core switches away from it, and DECISIONS §28's placement can have put this child on
         // ANOTHER core, so yielding on THIS core cannot make that happen: a hundred cheap yields
         // complete long before the remote core's next timer tick. So wait on the clock, not on a
         // yield count. Still a leak trap rather than a masked failure: a child that is never reaped
-        // times out and fails; only cross-core reap lag is tolerated. This wait was a yield count
-        // until it failed about one full-suite run in four once §28 started scattering threads;
-        // clock-based, it survived four consecutive runs. Two sibling waits had the same defect.
+        // times out and fails; only cross-core reap lag is tolerated.
+        //
+        // **And wait on this child, not on a headcount.** This asked whether `thread_count()` had
+        // returned to a baseline sampled at the top of the test, which is the size of the WHOLE
+        // thread table: the previous test's processes are still tearing down at that instant, so the
+        // baseline was a number the system would move on its own, and the wait was really waiting
+        // for everything else to hold still. It failed exactly that way once on RISC-V, where the
+        // slower machine leaves more teardown in flight. `thread_present` asks the question the test
+        // means. The whole history here is a wait that keeps being written against something wider
+        // than the property: it was a yield count until §28's scattering broke it, then a
+        // clock-bounded headcount until this. A sibling wait below had the same defect.
         assert!(
-            wait_for(|| crate::sched::thread_count() == threads_before),
+            wait_for(|| !crate::sched::thread_present(tid)),
             "the exited child was never reaped",
         );
 
@@ -9662,25 +9751,13 @@ mod tests {
     fn spawn_to_reap_repeats_without_leaking() {
         const CODE_VA: u64 = 0x40_0000;
         const STACK_VA: u64 = 0x50_0000;
-        const REPORT_WORD: u64 = 0x44;
-        let code: [u32; 9] = [
-            0xD280_0000,
-            0xD280_0001,
-            0xD280_0000 | ((REPORT_WORD as u32) << 5) | 2,
-            0xD280_0003,
-            0xD280_0004,
-            0xD280_0000 | ((abi::SYS_INVOKE as u32) << 5) | 8,
-            0xD400_0001,
-            0xD280_0008,
-            0xD400_0001,
-        ];
+        let code = super::supervision_tests::REPORT_STUB;
+        let expect_word = super::supervision_tests::REPORT_WORD;
 
         let report = crate::sched::create_endpoint();
         let baseline = crate::memory::free_frames();
 
         for round in 0..6 {
-            let threads_before = crate::sched::thread_count();
-
             let as_region = crate::untyped::create(8).expect("aspace region");
             let aspace = user_aspace_create(as_region).expect("aspace");
             let code_phys = crate::untyped::retype_page(as_region).expect("code frame");
@@ -9691,7 +9768,7 @@ mod tests {
                     dst.add(i).write(insn);
                 }
             }
-            sync_icache(mmu::phys_to_virt(code_phys), size_of_val(&code));
+            sync_icache(mmu::phys_to_virt(code_phys), size_of_val(code));
             user_aspace_map(aspace, CODE_VA, code_phys, Flags::user_code()).expect("map code");
             let stack_phys = crate::untyped::retype_page(as_region).expect("stack frame");
             user_aspace_map(aspace, STACK_VA, stack_phys, Flags::user_data()).expect("map stack");
@@ -9709,14 +9786,16 @@ mod tests {
 
             assert_eq!(
                 crate::sched::ipc_recv(report)[0],
-                REPORT_WORD,
+                expect_word,
                 "round {round}: the child never reported"
             );
-            // On the clock, not on yields, for the reason spelled out in the test above: §28 can
-            // place the child on another core and only that core's switch reaps it. A lagging reap
-            // here would surface as the reclaim below refusing a region that still holds a thread.
+            // On the clock, not on yields, and on THIS child rather than on a headcount, both for
+            // the reasons spelled out in the test above: §28 can place the child on another core and
+            // only that core's switch reaps it, and `thread_count()` is the size of the whole table,
+            // so waiting for it to return to a baseline is waiting for the rest of the system.
+            // A lagging reap here would surface as the reclaim below refusing a live thread.
             assert!(
-                wait_for(|| crate::sched::thread_count() == threads_before),
+                wait_for(|| !crate::sched::thread_present(tid)),
                 "round {round}: the child was never reaped",
             );
             crate::sched::reclaim_region(tcb_region).expect("reclaim tcb region");
@@ -12501,9 +12580,10 @@ mod riscv_virtio_tests {
     /// not because of a defect here. Only the non-gating real-DNS check can report it.
     const NET_CLIENT_NO_ANSWER: u64 = 2;
 
-    /// Spin the scheduler until `done()`, or give up after a wall-clock deadline. The aarch64
-    /// module's helper, re-declared because that module is aarch64-gated; time-based for the same
-    /// reason (DECISIONS §28: a fixed yield count elapses in no real time on an idle core).
+    /// Spin the scheduler until `done()`, or give up after a wall-clock deadline. A second copy of
+    /// the `tests` module's helper, one of the small duplications this module carries; time-based
+    /// for the same reason (DECISIONS §28: a fixed yield count elapses in no real time on an idle
+    /// core).
     fn wait_for(mut done: impl FnMut() -> bool) -> bool {
         let deadline = crate::arch::timer::now() + 2 * crate::arch::timer::frequency();
         while crate::arch::timer::now() < deadline {

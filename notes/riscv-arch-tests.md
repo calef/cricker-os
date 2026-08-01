@@ -218,25 +218,33 @@ Twenty-two rather than twenty-one: the twelve MMU, six timer and three exception
 `the_satp_carries_the_address_spaces_asid`, which is the salvageable half of an aarch64 test that
 lives in `kernel::user::tests`.
 
-## What is still aarch64-only, and what porting it would take
+## What was still aarch64-only, and what porting it took (DONE, milestone 19, 2026-07-31)
 
-`kernel::user::tests` is ~30 tests and does not run on RISC-V. Its module comment is accurate about
-why: every test drives a **hand-written aarch64 program** through `exec`, and several read aarch64
-fault registers (`ESR`, `FAR`) directly.
+The plan below was written when `kernel::user::tests` was ~30 tests that did not run on RISC-V. It
+has been executed, and it held up, so it is kept as written with the outcome noted at each step.
+The full record of what changed and what is still gated is in notes/riscv-parity-scope.md.
 
-That is two separable problems, and only the first is large.
+The module comment blamed the tests: every one drove a **hand-written aarch64 program** through
+`exec`, and several read aarch64 fault registers (`ESR`, `FAR`) directly. That was two separable
+problems, and only the first was large.
 
-1. **The programs.** The `user_program!` macro assembles aarch64 machine code inline (`hello`,
+1. **The programs.** The `user_program!` macro assembled aarch64 machine code inline (`hello`,
    `outlaw`, `spin`, `forged_elf`, and friends, from milestone 7a). Each would need a RISC-V
-   twin. This is not a translation of 37 instructions; it is 37 *programs*, each a few instructions,
-   each hand-assembled.
+   twin: not a translation of 37 instructions, but 37 *programs*, each hand-assembled.
 
-   **But it should not be done that way.** `riscv_virtio_tests` already shows the alternative: load
+   **But it should not be done that way.** `riscv_virtio_tests` already showed the alternative: load
    a real ELF from the initrd and drive that. The programs are tiny and their behaviours are
    ordinary (return, syscall twice, read a forbidden address, spin forever, die on purpose), so they
    are `user/` binaries or entry roles of one binary, built by the existing toolchain for both
    targets. That turns "hand-write riscv machine code" into "add roles to a test binary", and it
    deletes the aarch64 hand-assembly on the way rather than duplicating it.
+
+   **Outcome:** exactly this, and cheaper than sized. All five hand-assembled programs (three
+   aarch64, two RISC-V) are gone, along with `exec`, the one-page raw-machine-code loader they
+   needed, plus three duplicate copies of a nine-instruction stub the supervision tests already kept
+   a portable pair of. The replacements are one new binary (`user/src/outlaw.rs`, two roles) and the
+   `spinner` milestone 24 had already built. The trick that made one program serve two ISAs was
+   passing the forbidden **address** in a register instead of baking it into the code.
 
 2. **The fault-register assertions.** Roughly a third of the tests assert on `ESR`/`FAR` (that a
    fault was a *permission* fault and not a translation fault, that `FAR` named the exact address).
@@ -246,16 +254,25 @@ That is two separable problems, and only the first is large.
    already records the same facts (`USER_FAULTS`, and `user_fault` prints `sepc` and `stval`); it
    just has no readable last-fault record for a test to inspect.
 
-Sizing it against this project's own units (notes/riscv-parity-scope.md's S/M/L): **M**, one to two
-sessions, and it splits cleanly into two commits that are each independently useful. The prerequisite
-piece is the fault-record accessor, which is small and would also give the RISC-V side the
-permission-versus-translation distinction it currently cannot assert at all. The bulk is rewriting
-the 7a programs as ELF-loaded binaries, which is mechanical, testable one program at a time against
-the aarch64 suite before RISC-V is switched on, and pays for itself by retiring a pile of
-hand-assembled machine code.
+   **Outcome:** `arch::UserFault`, and one correction to the sizing above. RISC-V records the
+   *address* but genuinely cannot report the *kind*: `scause` has one code per access kind and no
+   field says why the walk refused, so permission-versus-translation is not a fact this ISA hands
+   over at all. The classifier walks the page tables the hardware just walked to derive it, which is
+   an inference rather than a measurement, and the code says so in a `BUGS` note. Two compositor
+   assertions that had been gated off RISC-V for want of a last-fault address came along for free.
 
-Worth saying plainly: the *portable* coverage in that module is already green on both ISAs. What
-RISC-V is missing is the userspace-boundary assertions, not the capability model.
+**The third thing, which the plan did not anticipate.** The module was blocked on a stale comment as
+much as on machine code. `hello` carries the milestone 7-19 role catalogue and xtask called it
+"aarch64-wired"; three quarters of that sentence had been false for some time, and the last quarter
+was six syscalls hand-rolled in aarch64 `asm!` that `user_rt` had had portable versions of since
+19f.6. Deleting the duplicates was the whole port for roughly twenty of the tests. Sizing a job from
+what the comments say it needs is how an afternoon's work stays undone for a year.
+
+Sizing it against this project's own units (notes/riscv-parity-scope.md's S/M/L): **M**, one to two
+sessions, split into commits that are each independently useful. That was right.
+
+Worth saying plainly, and it was true then: the *portable* coverage in that module was already green
+on both ISAs. What RISC-V was missing was the userspace-boundary assertions, not the capability model.
 
 ## See also
 

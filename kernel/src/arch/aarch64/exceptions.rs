@@ -13,6 +13,7 @@
 //! See notes/exceptions.md.
 
 use super::timer;
+use crate::arch::{UserFault, UserFaultAccess};
 use crate::drivers::gic;
 use crate::println;
 use aarch64_cpu::asm::barrier;
@@ -326,11 +327,61 @@ pub static USER_FAULTS: AtomicUsize = AtomicUsize::new(0);
 /// How many device/SGI interrupts were routed to a userspace endpoint. Bring-up diagnostic.
 pub static ROUTED_IRQS: AtomicUsize = AtomicUsize::new(0);
 
-/// The `ESR_EL1` of the most recent user fault. Test support.
-pub static LAST_USER_FAULT_ESR: AtomicU64 = AtomicU64::new(0);
+/// The most recent user fault, [`UserFault::encode`]d, and the address it named. Two relaxed
+/// stores on a path that is already killing a thread; read back through [`last_user_fault`].
+///
+/// **Private on purpose.** They used to be a public `LAST_USER_FAULT_ESR`/`FAR` pair, which meant
+/// every test that wanted to say "that was a permission fault at exactly this address" had to
+/// decode `ESR_EL1` inline, and that is aarch64 spelling sitting in a test we want to run on two
+/// ISAs. The accessor below is the same fact in words RISC-V can also say. See [`UserFault`].
+static LAST_USER_FAULT: AtomicU64 = AtomicU64::new(0);
+static LAST_USER_FAULT_ADDR: AtomicU64 = AtomicU64::new(0);
 
-/// The `FAR_EL1` of the most recent user fault. Test support.
-pub static LAST_USER_FAULT_FAR: AtomicU64 = AtomicU64::new(0);
+/// The last user fault's kind and the address it named, or `None` if no user thread has faulted
+/// yet. The RISC-V twin is `arch::riscv64::exceptions::last_user_fault`.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn last_user_fault() -> Option<(UserFault, u64)> {
+    // Pairs with the `Release` on `USER_FAULTS` in [`user_fault`]. A caller that has already seen
+    // the counter rise (every one of them has; that is how they know to look) reads the record the
+    // faulting core wrote and not something older. We are on ARM, so this is not free ordering we
+    // can assume: the two relaxed stores below the counter's release are exactly the reordering the
+    // architecture permits.
+    core::sync::atomic::fence(Ordering::Acquire);
+    let kind = UserFault::decode(LAST_USER_FAULT.load(Ordering::Relaxed))?;
+    Some((kind, LAST_USER_FAULT_ADDR.load(Ordering::Relaxed)))
+}
+
+/// Read `ESR_EL1` as a [`UserFault`].
+///
+/// **aarch64 is told the answer.** The fault status code in `ESR_EL1[5:0]` distinguishes a
+/// permission fault (`0b0011LL`) from a translation fault (`0b0001LL`) in silicon, at the instant
+/// of the fault, with the walk level in the low two bits. Nothing here is inferred; contrast the
+/// RISC-V twin, which must derive the same distinction because `scause` does not carry it.
+fn classify(esr: u64) -> UserFault {
+    /// EC for an instruction abort taken from a lower EL: a failed *fetch*.
+    const EC_INSTRUCTION_ABORT_LOWER: u64 = 0x20;
+    /// EC for a data abort taken from a lower EL: a failed load or store.
+    const EC_DATA_ABORT_LOWER: u64 = 0x24;
+    /// ISS bit 6 of a data abort: set for a write, clear for a read.
+    const WNR: u64 = 1 << 6;
+
+    let access = match (esr >> 26) & 0x3f {
+        EC_INSTRUCTION_ABORT_LOWER => UserFaultAccess::Fetch,
+        EC_DATA_ABORT_LOWER if esr & WNR != 0 => UserFaultAccess::Write,
+        EC_DATA_ABORT_LOWER => UserFaultAccess::Read,
+        // An illegal instruction, a `brk`, a stack-alignment fault: not a memory access, so
+        // neither "permission" nor "translation" is a true thing to say about it.
+        _ => return UserFault::Other,
+    };
+
+    // (I|D)FSC[5:2] is the fault type; [1:0] is the walk level, which nothing above this cares
+    // about. 0b0001 = translation, 0b0011 = permission.
+    match (esr >> 2) & 0xf {
+        0b0001 => UserFault::Translation(access),
+        0b0011 => UserFault::Permission(access),
+        _ => UserFault::Other,
+    }
+}
 
 /// A user thread did something it is not allowed to do. Kill it.
 ///
@@ -351,9 +402,17 @@ fn user_fault(frame: &TrapFrame, esr: u64) -> ! {
     let class = (esr >> 26) & 0x3f;
     let far = FAR_EL1.get();
 
-    USER_FAULTS.fetch_add(1, Ordering::Relaxed);
-    LAST_USER_FAULT_ESR.store(esr, Ordering::Relaxed);
-    LAST_USER_FAULT_FAR.store(far, Ordering::Relaxed);
+    // **The record first, the counter last, and the counter's store is the release.** Every test
+    // that reads this record finds it by watching `USER_FAULTS` rise and then calling
+    // [`last_user_fault`], so the counter is the publication flag for the record and must be
+    // written after it. It was written first, and that is a race a test cannot see when it passes:
+    // the reader either gets the record left by an *earlier* fault (an assertion satisfied by the
+    // wrong evidence) or, if it is the first fault of the boot, a zero that reads as "no user
+    // thread has faulted". Found by breaking `a_user_program_cannot_read_a_kernel_address` on
+    // purpose and running it alone, where "the first fault of the boot" is the only case there is.
+    LAST_USER_FAULT_ADDR.store(far, Ordering::Relaxed);
+    LAST_USER_FAULT.store(classify(esr).encode(), Ordering::Relaxed);
+    USER_FAULTS.fetch_add(1, Ordering::Release);
 
     crate::println!();
     crate::println!(

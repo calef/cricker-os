@@ -667,6 +667,25 @@ pub fn translate_user(va: u64) -> Option<(u64, Flags)> {
     translate_at(current_root_pa(), va)
 }
 
+/// Does `va` have a translation at all in the address space installed on this hart, in **either**
+/// half?
+///
+/// This exists for the fault classifier, and it is the one question RISC-V's `scause` refuses to
+/// answer: it says "load page fault" whether the leaf was absent or present-and-forbidden, so the
+/// only way to tell a permission refusal from a missing mapping is to walk the tables the hardware
+/// just walked. See `exceptions::user_fault` for the caveat that carries.
+///
+/// Both halves, because a user thread reaching for the *kernel's* memory names a high-half address,
+/// and the process root carries the kernel half ([`share_kernel_half`]). [`translate_user`] alone
+/// would say "not mapped" for it and turn the most interesting case into the wrong answer.
+pub fn is_mapped_in_current_space(va: u64) -> bool {
+    let root = current_root_pa();
+    // SAFETY: `root` is the live installed root; the direct map makes `phys_to_ptr` valid; a
+    // translate allocates nothing, so the `|| None` allocator is never called.
+    let half = |h| unsafe { Mapper::<_, _, Sv39>::new(root, h, || None, phys_to_ptr) };
+    half(Half::Low).translate(va).is_some() || half(Half::High).translate(va).is_some()
+}
+
 /// Populate a fresh process root's **high half** with the kernel's, so a single `satp` pointing at
 /// it sees both the process's user pages (low half) and the whole kernel (high half).
 ///

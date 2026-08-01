@@ -26,7 +26,7 @@ mod virtio;
 
 use abi::{Error, endpoint};
 use capsh::{Prog, spawnproto};
-use user_rt::{exit, invoke, recv, send};
+use user_rt::{call, cap_delete, exit, invoke, recv, recv_cap as rt_recv_cap, send, yield_now};
 
 /// Roles, as passed in `x0` by the kernel.
 ///
@@ -152,12 +152,13 @@ fn self_check_client() -> ! {
 
     // Make one syscall that needs no capability at all, to prove we reached EL0 and can trap
     // back in. Yield is authority over ourselves; nobody has to grant it.
-    // SAFETY: `svc` traps to EL1; SYS_YIELD takes no arguments and cannot fail.
-    unsafe { core::arch::asm!("svc #0", in("x8") abi::SYS_YIELD, options(nostack, nomem)) };
+    yield_now();
 
-    loop {
-        core::hint::spin_loop();
-    }
+    // Then exit rather than spin. This is a one-shot role with nothing left to do, and a user
+    // thread that never exits sits on a core for the rest of the boot: `no_leaked_threads` says so
+    // in as many words, and it was three such leaks that starved a later test off a four-hart
+    // machine entirely.
+    exit();
 }
 
 /// A program that checks its own image and then prints, through the console server, using the
@@ -170,10 +171,10 @@ fn printing_client() -> ! {
     check(print(b"      hello from EL0, printed by a driver that also runs at EL0.\n").is_ok());
     check(print(b"      the kernel never saw these bytes.\n").is_ok());
 
-    // Done. Spin, so the timer can prove it still preempts us. No syscall, no yield, no call.
-    loop {
-        core::hint::spin_loop();
-    }
+    // Done, so exit. This used to spin ("so the timer can prove it still preempts us"), which the
+    // dedicated `spinner` binary proves better and without leaving a CPU-bound thread behind for
+    // the rest of the run. See `self_check_client`.
+    exit();
 }
 
 /// Print `bytes` by handing them to the console server through shared memory.
@@ -205,65 +206,11 @@ fn print(bytes: &[u8]) -> Result<(), Error> {
 
 /// Receive a data word and, if the sender delegated one, a capability. Returns `(w0, slot)`, where
 /// `slot` is where the received capability landed in our cspace, or `endpoint::NO_CAP` if none came.
+///
+/// A thin shape over `user_rt::recv_cap`, which returns the third word this caller does not want.
 fn recv_cap(slot: u64) -> (u64, u64) {
-    let (mut w0, mut got): (u64, u64);
-    // SAFETY: `svc`. RECV_CAP returns the data word in x0 and the received slot (or NO_CAP) in x1.
-    unsafe {
-        core::arch::asm!(
-            "svc #0",
-            in("x8") abi::SYS_INVOKE,
-            inlateout("x0") slot => w0,
-            in("x1") endpoint::RECV_CAP,
-            lateout("x1") got,
-            in("x2") 0u64,
-            in("x3") 0u64,
-            in("x4") 0u64,
-            options(nostack),
-        );
-    }
+    let (w0, got, _) = rt_recv_cap(slot);
     (w0, got)
-}
-
-/// **Call: send two words and block until replied** (milestone 12). Returns `(r0, r1)`. The kernel
-/// mints a one-shot reply capability naming us into the server, which answers through it.
-fn call(slot: u64, w0: u64, w1: u64) -> (u64, u64) {
-    let (mut r0, mut r1): (u64, u64);
-    // SAFETY: `svc`. x0 = the endpoint slot, x1 = CALL; the reply comes back as r0 in x0, r1 in x1.
-    unsafe {
-        core::arch::asm!(
-            "svc #0",
-            in("x8") abi::SYS_INVOKE,
-            inlateout("x0") slot => r0,
-            inlateout("x1") endpoint::CALL => r1,
-            in("x2") w0,
-            in("x3") w1,
-            in("x4") 0u64,
-            options(nostack),
-        );
-    }
-    (r0, r1)
-}
-
-/// **Receive a call** (milestone 12): like [`recv_cap`], but also returns the second word (x2). The
-/// received slot holds a one-shot reply capability naming the caller; answer with
-/// `invoke(reply_slot, reply::REPLY, r0, r1, 0)`. Returns `(w0, reply_slot, w1)`.
-fn recv_call(slot: u64) -> (u64, u64, u64) {
-    let (mut w0, mut reply_slot, mut w1): (u64, u64, u64);
-    // SAFETY: `svc`. RECV_CAP returns w0 in x0, the delivered slot in x1, the second word in x2.
-    unsafe {
-        core::arch::asm!(
-            "svc #0",
-            in("x8") abi::SYS_INVOKE,
-            inlateout("x0") slot => w0,
-            in("x1") endpoint::RECV_CAP,
-            lateout("x1") reply_slot,
-            lateout("x2") w1,
-            in("x3") 0u64,
-            in("x4") 0u64,
-            options(nostack),
-        );
-    }
-    (w0, reply_slot, w1)
 }
 
 /// **The Call/Reply server, milestone 12.** Holds `RECV` on a request endpoint (slot 0) and a report
@@ -274,7 +221,7 @@ fn call_server() -> ! {
     const EP: u64 = 0;
     const REPORT: u64 = 1;
 
-    let (w0, reply_slot, w1) = recv_call(EP);
+    let (w0, reply_slot, w1) = rt_recv_cap(EP);
     // Answer the caller: w0 + w1. This consumes the one-shot reply capability.
     // SAFETY: `svc`; the kernel validates the reply capability in `reply_slot`.
     check(unsafe { invoke(reply_slot, abi::reply::REPLY, w0 + w1, 0, 0) } == 0);
@@ -344,6 +291,25 @@ fn program(initrd_len: u64, name: &str) -> Option<&'static [u8]> {
         unsafe { core::slice::from_raw_parts(INITRD_VA as *const u8, initrd_len as usize) };
     crickerfs::Fs::parse(archive).ok()?.read(name)
 }
+
+/// **The archive entry holding this binary**, which is not the same name on both machines.
+///
+/// Several init roles build a child out of *this* program's own ELF and re-enter it at a different
+/// role ([`CHILD`], [`DEV_CHILD`], [`IRQ_CHILD`]). To do that they have to find hello in the archive,
+/// and the name it is packed under differs: aarch64 packs hello as `init`, because there hello *is*
+/// the boot program; RISC-V's `init` is the portable `builder` demo, so hello goes in under its own
+/// name. The kernel side of the same fact is `kernel::user::INIT_ROLES_ENTRY`; the two must agree.
+///
+/// This was a hardcoded `"init"`, which is right on aarch64 and silently wrong on RISC-V: init
+/// happily built a child out of `builder`'s ELF and started it at a role `builder` does not have, so
+/// the child reached for an initrd mapping it did not own, faulted, was killed, and the test waiting
+/// on its report blocked until the watchdog fired. Nothing said "wrong program"; it just never
+/// answered.
+#[cfg(target_arch = "aarch64")]
+const ROLES_ENTRY: &str = "init";
+#[cfg(target_arch = "riscv64")]
+const ROLES_ENTRY: &str = "hello";
+
 /// The init role that builds a device-driver child (milestone 19d.2); matches kernel test wiring.
 const INIT_DEV: u64 = 23;
 /// The init role that brings up the real console server and prints through it (milestone 19d.2b).
@@ -656,19 +622,11 @@ fn init_boot(_x1: u64) -> ! {
 /// exit would tear nothing useful down. A `-> !` helper the `else` arms above can fall into.
 fn halt_forever() -> ! {
     loop {
-        yield_syscall();
+        yield_now();
     }
 }
 
-/// Yield the CPU (used by halt_forever).
-fn yield_syscall() {
-    // SAFETY: `svc`; SYS_YIELD gives up the CPU.
-    unsafe {
-        core::arch::asm!("svc #0", in("x8") abi::SYS_YIELD, options(nostack));
-    }
-}
-
-/// **init delegates an interrupt to a driver it builds, milestone 19d.2b.**/// **init delegates an interrupt to a driver it builds, milestone 19d.2b.** The third and last
+/// **init delegates an interrupt to a driver it builds, milestone 19d.2b.** The third and last
 /// delegatable device authority (after endpoints and device MMIO): an *interrupt capability*. init
 /// holds one for a test interrupt (slot 3, the kernel routed it); it builds a child and hands it
 /// that Irq cap, then starts the child. The child blocks in the interrupt's `WAIT` until the
@@ -679,7 +637,7 @@ fn init_irq(initrd_len: u64) -> ! {
     const REPORT: u64 = 1;
     const TEST_IRQ: u64 = 3; // the Irq cap the kernel granted init (spawn_init)
 
-    let Some(init_bytes) = program(initrd_len, "init") else {
+    let Some(init_bytes) = program(initrd_len, ROLES_ENTRY) else {
         fail_report(REPORT)
     };
     let Ok(elf) = elf::Elf::parse(init_bytes) else {
@@ -857,7 +815,7 @@ fn init_build(initrd_len: u64, device: bool) -> ! {
     const UART_DEV: u64 = 2; // the UART device cap the kernel granted init (spawn_init)
     const CHILD_UART_VA: u64 = 0x0070_0000;
 
-    let Some(init_bytes) = program(initrd_len, "init") else {
+    let Some(init_bytes) = program(initrd_len, ROLES_ENTRY) else {
         send(REPORT, 0, 0, 0);
         exit();
     };
@@ -1078,19 +1036,6 @@ fn untyped_split(untyped: u64, pages: u64) -> Result<u64, ()> {
 /// Returns the syscall result.
 fn tcb_start(tcb: u64, arg0: u64, arg1: u64, arg2: u64) -> i64 {
     unsafe { invoke(tcb, abi::tcb::START, arg0, arg1, arg2) }
-}
-
-/// Delete a capability from our own cspace, freeing the slot for reuse (milestone 19d).
-fn cap_delete(slot: u64) {
-    // SAFETY: `svc`; the kernel drops the slot from our table.
-    unsafe {
-        core::arch::asm!(
-            "svc #0",
-            in("x8") abi::SYS_CAP_DELETE,
-            in("x0") slot,
-            options(nostack),
-        );
-    }
 }
 
 /// **Building another address space, milestone 19b.** Holds an untyped budget (slot 0) and a
@@ -1322,7 +1267,18 @@ fn check(ok: bool) {
 }
 
 fn fail() -> ! {
-    unsafe { core::arch::asm!("brk #0", options(nostack, nomem)) };
+    // The one arch-specific line in the program: aarch64 `brk`, RISC-V `ebreak`. Both trap, and
+    // the kernel turns a trap from userspace into a kill.
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: `brk` raises a breakpoint the kernel turns into a fault. That is the point.
+    unsafe {
+        core::arch::asm!("brk #0", options(nostack, nomem))
+    };
+    #[cfg(target_arch = "riscv64")]
+    // SAFETY: `ebreak` raises a breakpoint the kernel turns into a fault. That is the point.
+    unsafe {
+        core::arch::asm!("ebreak", options(nostack, nomem))
+    };
     loop {
         core::hint::spin_loop();
     }
@@ -1374,6 +1330,10 @@ fn untyped_demo() -> ! {
     }
 
     send(REPORT, mapped, 0, 0);
+    // **This one must NOT exit**, unlike the other one-shot roles. The test reads the kernel's
+    // used-frame count the instant this report lands, and exiting here would tear this address
+    // space down in that same window, so the number it reads would be the teardown's rather than
+    // the measurement's. Spinning holds the state still until the assertion has looked at it.
     loop {
         core::hint::spin_loop();
     }
