@@ -74,6 +74,19 @@ during an unrelated build. Fix: `rustup toolchain link cricker-dev "$(pwd)/targe
 the main checkout. This is the same rule as the paragraph above, one level out: the integrator owns
 what is shared, and "shared" is wider than this repository.
 
+**And the instruction "do not run `xtask std-src`" is impossible for a lane that must gate**, which
+milestone 57's lane found on 2026-08-01 by reading the code rather than by failing. `script/test`
+calls `std_src()` transitively, and a fresh worktree always has a cold farm, so **any lane that runs
+the gate takes the account-wide link.** Two instructions this file gave together could not both be
+obeyed.
+
+Until `xtask test` grows a flag that skips the farm, the honest rule for the integrator is: **expect
+every lane to take `cricker-dev`, and relink from the main checkout at merge**, in the same breath as
+pruning the worktree. Do not tell a lane not to do the thing gating requires; tell it what to say in
+its report so the relink is not forgotten. That lane also demonstrated the workaround worth knowing:
+symlink the worktree's `target/cricker-farm` at the main checkout's farm after checking the stamps
+match (`cargo xtask std-stamp`), and `std_src()` early-returns instead of rebuilding.
+
 **Delete a lane's worktree too, and do it before the disk decides for you.** On 2026-07-31 the data
 volume hit **zero bytes free** with 42 agent worktrees holding **78 GB**. Two lanes died mid-work and
 could not even run `pgrep` to check whether they had leaked emulators, because every tool must create
