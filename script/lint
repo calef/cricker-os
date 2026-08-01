@@ -301,6 +301,25 @@ if bad or missing:
 print(f'markdown: {len(md)} files, every relative link resolves, every note indexed')
 PY
 
+echo "==> em-dashes"
+# Chris's standing style rule (CLAUDE.md): no em-dashes, use commas, periods, semicolons or
+# parentheses. It is a house style rather than a correctness property, and it is gated for the same
+# reason the roadmap's status vocabulary is: a rule nobody checks is a rule that decays. 419 of them
+# had accumulated across 75 files by 2026-08-01 despite being written down from the start, because
+# every individual one looked fine in the moment it was typed.
+#
+# Vendored trees are exempt: they are somebody else's prose and must stay byte-identical to the pin.
+# The character is built from its UTF-8 bytes rather than written literally, because a checker that
+# contains the thing it forbids flags itself. That is not a cute trick, it is the only way this gate
+# can be self-consistent without an exemption, and an exemption would be a hole someone later widens.
+emdash="$(printf '\342\200\224')"
+if git ls-files | grep -v '^vendor/' | grep -v '^patches/' | xargs grep -l "$emdash" 2>/dev/null | grep -q .; then
+    echo "lint: em-dashes found (CLAUDE.md: use commas, periods, semicolons or parentheses):" >&2
+    git ls-files | grep -v '^vendor/' | grep -v '^patches/' | xargs grep -n "$emdash" 2>/dev/null | sed 's/^/  /' >&2
+    exit 1
+fi
+echo "em-dashes: none outside vendored trees"
+
 echo "==> shellcheck"
 # The 23 `#!/bin/sh` scripts, gated at warning severity. Two reasons this earns a dependency here
 # rather than being generic hygiene:

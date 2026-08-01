@@ -9,14 +9,14 @@ ran on x86, MIPS, Alpha, PowerPC, Itanium, x64, and ARM.
 
 What's surprising is **how short the per-architecture list is**:
 
-1. **Boot and early init** — firmware to "Rust code with a stack." Wildly different everywhere.
-2. **Context switch** — save/restore the register file. Pure assembly, ~50 lines.
-3. **Exception entry/exit** — the vector table, plus the assembly that saves registers in and restores them out.
-4. **Page table format** — the bits in a PTE are completely different on x86 and ARM.
+1. **Boot and early init**: firmware to "Rust code with a stack." Wildly different everywhere.
+2. **Context switch**: save/restore the register file. Pure assembly, ~50 lines.
+3. **Exception entry/exit**: the vector table, plus the assembly that saves registers in and restores them out.
+4. **Page table format**: the bits in a PTE are completely different on x86 and ARM.
 5. **Atomics and memory barriers.**
-6. **Cache maintenance** — ARM often needs explicit flushes; x86 is coherent for free.
-7. **Syscall entry** — `syscall` on x86_64, `svc` on aarch64.
-8. **Device discovery** — ACPI vs. Device Tree.
+6. **Cache maintenance**: ARM often needs explicit flushes; x86 is coherent for free.
+7. **Syscall entry**: `syscall` on x86_64, `svc` on aarch64.
+8. **Device discovery**: ACPI vs. Device Tree.
 9. **Timers.**
 
 **Everything else is portable**, and everything else is the overwhelming bulk of the code:

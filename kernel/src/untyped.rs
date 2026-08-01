@@ -88,7 +88,7 @@ impl Regions {
 }
 
 /// Carve `pages` of physical memory out of the frame allocator, once, and make it an untyped
-/// region. **This is the kernel's one allocation for this memory** — the seL4 boundary, where all
+/// region. **This is the kernel's one allocation for this memory**: the seL4 boundary, where all
 /// free RAM becomes untyped handed to the first process. Everything the owner does afterward
 /// spends this, not the allocator.
 pub fn create(pages: u64) -> Option<u64> {

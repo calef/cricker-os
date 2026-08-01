@@ -13,7 +13,7 @@ level changed.
 
 What **stays** in the kernel is a *debug* UART: `println!`, for boot messages, panics, and the
 test harness. This is not a cheat and it is not a failure of the thesis. **seL4 does exactly
-this** — a debug `putchar`, compiled out of release builds, entirely separate from the console
+this**: a debug `putchar`, compiled out of release builds, entirely separate from the console
 anyone actually uses. A kernel cannot IPC to a userspace console *while it is panicking*, so it
 must be able to put a byte on a wire by itself. The honest claim is therefore narrow and true:
 
@@ -47,7 +47,7 @@ Milestone 8 **dissolves that bug** rather than defending against it. The data pa
 
 The bytes never enter the kernel. The client writes them into a page it *shares* with the server;
 only the **length** crosses the endpoint, in a register. The kernel copies nothing, validates no
-pointer, and **cannot be a confused deputy because it is not a deputy** — it does no I/O for
+pointer, and **cannot be a confused deputy because it is not a deputy**: it does no I/O for
 anyone. The thing that could be confused no longer exists.
 
 This is DECISIONS §10's rule, executed exactly: **IPC carries control, shared memory carries
@@ -55,8 +55,8 @@ data.** Put the bytes in the message and you copy twice and you are Mach; put a 
 them and the data moves once, by the client's own store and the server's own load.
 
 (`mmu::user_can_read` stays in the tree, marked `allow(dead_code)`. Its caller left with the
-console, but it is the tool the *next* syscall that takes a user pointer — a filesystem server's
-`read` — will need, and it is not speculative: the technique is load-bearing and documented.)
+console, but it is the tool the *next* syscall that takes a user pointer: a filesystem server's
+`read`: will need, and it is not speculative: the technique is load-bearing and documented.)
 
 ## One binary, several roles
 
@@ -76,7 +76,7 @@ authority over anything.
 
 `AddressSpace::map_physical(va, phys, flags)` maps an **existing** physical page into a user
 address space, without recording it as owned (so it is not freed when the process dies, because
-the process does not own it — it is shared, or it is a device). Two uses, both new:
+the process does not own it: it is shared, or it is a device). Two uses, both new:
 
 - The **UART's registers** at `phys 0x0900_0000`, into the server, with `Flags::user_device()`:
   device-typed (no caching, no reordering of register writes), EL0 read/write, never executable.
@@ -91,8 +91,8 @@ the process does not own it — it is shared, or it is a device). Two uses, both
 
 The kernel maps the PL011 in its direct map (device, EL1) for `println!`; the server maps the
 same registers in its own address space (device, EL0). Two mappings of one physical device. In
-QEMU that is fine, and since the kernel now prints only at boot and on a panic — never during a
-user program's run — they do not interleave in practice. On real hardware you would give the
+QEMU that is fine, and since the kernel now prints only at boot and on a panic, never during a
+user program's run: they do not interleave in practice. On real hardware you would give the
 server exclusive ownership (a device capability the kernel checks before mapping); we do not model
 that enforcement yet, and the note here is where that gap is recorded.
 

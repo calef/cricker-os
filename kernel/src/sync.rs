@@ -107,7 +107,7 @@ use core::sync::atomic::Ordering;
 /// ## A design this would have caught
 ///
 /// `memory::ram_regions()` used to be an iterator that held the RAM lock while the caller
-/// iterated. `mmu::map_everything` iterates it *and allocates frames inside the loop* — so it
+/// iterated. `mmu::map_everything` iterates it *and allocates frames inside the loop*, so it
 /// would have held RAM (30) while taking FRAMES (30), and `30 < 30` is false. The ranking
 /// would have failed it on the spot. (We happened to fix it for other reasons first.)
 pub mod rank {

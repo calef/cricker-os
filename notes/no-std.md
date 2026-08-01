@@ -24,20 +24,20 @@ what the `none` in `aarch64-unknown-none-softfloat` is telling the compiler.
 
 ## The four things you feel
 
-**`#![no_std]`** — no `Vec`, `String`, `Box`, `HashMap`, `println!`, `File`.
+**`#![no_std]`**: no `Vec`, `String`, `Box`, `HashMap`, `println!`, `File`.
 
-**`#![no_main]`** — In a normal program `main` is *not* the first thing to run. The C
+**`#![no_main]`**: In a normal program `main` is *not* the first thing to run. The C
 runtime (`crt0`) runs first: sets up the stack, initializes libc, builds `argc`/`argv`,
 *then* calls `main`. There is no libc here and nobody has set up a stack. So there can be
 no `main`. We write our own entry point, `_start`, in assembly, and it sets up the stack
 itself.
 
-**`#[panic_handler]`** — `std` provides one, so you've never had to think about it.
+**`#[panic_handler]`**: `std` provides one, so you've never had to think about it.
 Without `std` you must write it, and it forces a real question: what *should* happen when
 a kernel panics? There's no process to kill, no stderr, no shell to return to. It's your
 call. In cricker-os: print to the serial port, then halt the CPU forever.
 
-**No `println!`** — so we write our own. The good part: the hard bit of `println!` (the
+**No `println!`**, so we write our own. The good part: the hard bit of `println!` (the
 whole `{:?}` / `{:x}` / width-and-padding formatting engine) lives in **`core::fmt`**,
 which we still have. All `std` contributed was *where the bytes go*. Implement one trait,
 `core::fmt::Write`, with one method that pushes bytes at the UART, and the entire

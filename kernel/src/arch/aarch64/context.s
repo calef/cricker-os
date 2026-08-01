@@ -14,7 +14,7 @@
 //
 //   x19–x28   callee-saved general registers
 //   x29       frame pointer
-//   x30       link register — **where to return to**
+//   x30       link register: **where to return to**
 //   sp        the stack pointer
 //
 // Twelve registers and a stack pointer, instead of thirty-three. That is not an optimization
@@ -22,7 +22,7 @@
 // trap frame *and* a much cheaper voluntary switch.
 //
 // (No floating-point registers, because the kernel is built `softfloat`. See notes/aarch64.md
-// — that decision, made at milestone 1 for a completely different reason, means `d8`–`d15`
+// that decision, made at milestone 1 for a completely different reason, means `d8`–`d15`
 // simply do not appear here.)
 //
 // # The strange instruction is the last one
@@ -85,7 +85,7 @@ switch_to:
 // so the `ret` above lands on this instruction the first time the thread is scheduled.
 //
 // The thread's closure lives on its own stack, just above the faked frame; its address comes
-// in `x19` and the (monomorphized) function that knows how to call it comes in `x20` — both
+// in `x19` and the (monomorphized) function that knows how to call it comes in `x20`, and both
 // callee-saved registers, chosen precisely because `switch_to` restores them on the way in.
 // Two registers because the closure's concrete type was erased: the address alone says where,
 // the caller says how. See Thread::spawn (milestone 14 phase B.3).
@@ -93,7 +93,7 @@ switch_to:
 thread_trampoline:
     // We arrive here with IRQs masked (from the `schedule()` that switched to us, or the timer
     // IRQ it ran inside). A brand-new thread has no SPSR to restore its interrupt state from, so
-    // it must unmask by hand — but **`thread_entry` does that, AFTER `finish_switch`**, not here.
+    // it must unmask by hand, but **`thread_entry` does that, AFTER `finish_switch`**, not here.
     //
     // Enabling IRQs *here*, before `finish_switch`, was a real, intermittent hang. `finish_switch`
     // reaps the predecessor and completes any wake it deferred, reading this core's `switched_from`.
@@ -102,7 +102,7 @@ thread_trampoline:
     // clears, so every future wake for it is deferred forever. `finish_switch` must run masked.
     mov     x0,  x19            // the closure, on this thread's own stack
     mov     x1,  x20            // extern "C" fn(*mut ()): the closure's monomorphized caller
-    bl      thread_entry        // extern "C" fn(*mut (), fn(*mut ())) -> !  — never returns
+    bl      thread_entry        // extern "C" fn(*mut (), fn(*mut ())) -> !  (never returns)
 
     // thread_entry is `-> !`. If we somehow get here, stop rather than run off into whatever
     // happens to be next in memory.
@@ -126,6 +126,6 @@ user_entry_trampoline:
     mov     x2,  x21            // the child's initial x0 (19d)
     mov     x3,  x22            // ...x1 (19e)
     mov     x4,  x23            // ...x2
-    bl      user_thread_entry   // extern "C" fn(u64, u64, u64, u64, u64) -> !  — never returns
+    bl      user_thread_entry   // extern "C" fn(u64, u64, u64, u64, u64) -> !  (never returns)
 1:  wfi
     b       1b

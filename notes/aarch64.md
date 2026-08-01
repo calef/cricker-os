@@ -126,12 +126,12 @@ park CPU cores 1-3 in a spin loop while we stay single-core.
 
 That's our Rust **target triple**, and every piece is meaningful:
 
-- **`aarch64`** — the ISA.
-- **`unknown`** — the vendor. Nobody in particular.
-- **`none`** — **the operating system: there isn't one.** This is what "bare metal" means,
+- **`aarch64`**: the ISA.
+- **`unknown`**: the vendor. Nobody in particular.
+- **`none`**: **the operating system: there isn't one.** This is what "bare metal" means,
   spelled out in the target name. No syscalls, no libc, no `std`. It's why the kernel is
   `#![no_std]`.
-- **`softfloat`** — do not use the hardware floating-point / SIMD registers.
+- **`softfloat`**: do not use the hardware floating-point / SIMD registers.
 
 That last one is a real kernel design decision, not a technicality. aarch64 has 32
 FP/SIMD registers (`v0`–`v31`, 128 bits each). If kernel code used them, every interrupt

@@ -397,7 +397,7 @@ mod tests {
     }
 
     /// The rendezvous, both orderings: whoever arrives first waits, the second completes the pair
-    /// and gets the first — the very node, by identity, not a name to look up.
+    /// and gets the first: the very node, by identity, not a name to look up.
     #[test]
     fn sender_first_then_receiver_rendezvous() {
         let (mut s, mut r) = (node(), node());

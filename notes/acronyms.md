@@ -9,7 +9,7 @@ linked.
 |---|---|---|
 | **IRQ** | **Interrupt ReQuest** | The name is the wire. A device *requests* an interrupt by raising a signal line; the CPU notices between two instructions and diverts. One of the four exception kinds. |
 | **FIQ** | **Fast Interrupt ReQuest** | A second, higher-priority line. ARM gave it *banked* registers so the handler could start without saving as much. Now mostly the secure world's. We treat it as fatal. |
-| **GIC** | **Generic Interrupt Controller** | The CPU has **one** IRQ line; a machine has hundreds of sources. The GIC decides which is asserting, whether it's allowed through, which core gets it, and in what order. "Generic" because ARM standardized *one* controller for all ARM SoCs — before it, every board needed a different interrupt driver. See [interrupts.md](interrupts.md). |
+| **GIC** | **Generic Interrupt Controller** | The CPU has **one** IRQ line; a machine has hundreds of sources. The GIC decides which is asserting, whether it's allowed through, which core gets it, and in what order. "Generic" because ARM standardized *one* controller for all ARM SoCs: before it, every board needed a different interrupt driver. See [interrupts.md](interrupts.md). |
 | **GICD** | GIC **Distributor** | One per machine. Which core gets what, and what's enabled at all. |
 | **GICC** | GIC **CPU interface** | One per core, *banked* (every core sees its own at the same address). |
 | **PMR** | **Priority Mask Register** | A threshold: deliver only interrupts whose priority is **strictly less** than this. And lower value = higher priority, so `0xff` = everything, `0` = nothing. |
@@ -58,7 +58,7 @@ The naming is systematic once you see it: `<thing>_EL<level>`.
 |---|---|---|
 | **SCTLR** | **System Control Register** | The master switch. Bit 0 is "is the MMU on?" |
 | **VBAR** | **Vector Base Address Register** | Where the exception vector table lives. [exceptions.md](exceptions.md) |
-| **ESR** | **Exception Syndrome Register** | *What went wrong.* Bits 31:26 are the Exception Class. **Meaningless for an IRQ** — it describes a *synchronous* exception. |
+| **ESR** | **Exception Syndrome Register** | *What went wrong.* Bits 31:26 are the Exception Class. **Meaningless for an IRQ**: it describes a *synchronous* exception. |
 | **FAR** | **Fault Address Register** | *Which address* faulted. Only meaningful for aborts. |
 | **ELR** | **Exception Link Register** | Where the interrupted code resumes. `eret` reloads `PC` from it. |
 | **SPSR** | **Saved Program Status Register** | The processor state at the moment of the exception, **including the exception level**. Which is how `eret` drops to EL0. |
@@ -78,7 +78,7 @@ The naming is systematic once you see it: `<thing>_EL<level>`.
 | | Expands to | |
 |---|---|---|
 | **MMU** | **Memory Management Unit** | Translates virtual → physical, per page, in hardware. [mmu.md](mmu.md) |
-| **TLB** | **Translation Lookaside Buffer** | The CPU's cache of translations. **Change a mapping without invalidating it and the CPU keeps using the old one** — memory reads back as the previous owner's data. [page-tables.md](page-tables.md) |
+| **TLB** | **Translation Lookaside Buffer** | The CPU's cache of translations. **Change a mapping without invalidating it and the CPU keeps using the old one**: memory reads back as the previous owner's data. [page-tables.md](page-tables.md) |
 | **BBM** | **Break-Before-Make** | Valid → **invalid** → invalidate → valid. Changing a valid descriptor straight to a different valid one can raise a TLB conflict abort. |
 | **ASID** | **Address Space ID** | Tags TLB entries with which process they belong to, so a context switch needn't flush the whole TLB. Milestone 7. |
 | **AF** | **Access Flag** | Descriptor bit 10. **Forget it and the first access to the page faults.** The single most common aarch64 paging bug. |
@@ -86,7 +86,7 @@ The naming is systematic once you see it: `<thing>_EL<level>`.
 | **PXN / UXN** | **Privileged / Unprivileged eXecute Never** | Two separate bits. PXN on user pages is not paranoia: without it, a kernel bug that jumps into a user page runs **user-controlled instructions at EL1**. |
 | **SH** | **SHareability** | How far cache coherency must extend. |
 | **W^X** | **Write XOR eXecute** | No page is both writable and executable. It's how a buffer overflow becomes code execution. Enforced by construction: there is no `Flags::writable_and_executable()`. |
-| **MMIO** | **Memory-Mapped I/O** | Talking to a device by reading and writing magic addresses. **Must be mapped as device memory**, or the CPU may cache it, reorder it, merge writes, and *speculatively read it* — and reading a FIFO register **consumes the byte**. |
+| **MMIO** | **Memory-Mapped I/O** | Talking to a device by reading and writing magic addresses. **Must be mapped as device memory**, or the CPU may cache it, reorder it, merge writes, and *speculatively read it*, and reading a FIFO register **consumes the byte**. |
 | **DMA** | **Direct Memory Access** | A device reading and writing RAM without the CPU. It uses **physical** addresses, with no MMU to hide a scattered buffer, which is why we need `alloc_contiguous`. Milestone 8. |
 | **SLUB** | the Linux slab allocator | Objects of one size per cache, so a freed object is immediately reusable and **coalescing becomes unnecessary rather than fast**. [heap.md](heap.md) |
 

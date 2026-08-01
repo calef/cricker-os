@@ -59,7 +59,7 @@ implementation of this idea ever shipped, and they live at the registry, not in 
 | Raspberry Pi 4 | Cortex-A72 | ARMv8.0-A | No |
 | Raspberry Pi 5 | Cortex-A76 | ARMv8.2-A | Yes |
 | Graviton / Neoverse N1 | N1 | ARMv8.2-A | Yes |
-| Apple M-series | — | ARMv8.4+ | Yes |
+| Apple M-series |: | ARMv8.4+ | Yes |
 
 **LSE** (Large System Extensions) adds single-instruction atomics: `CAS`, `LDADD`, `SWP`.
 Without it, an atomic is a load-exclusive / store-exclusive retry loop (`LDXR` / `STXR`),
@@ -136,7 +136,7 @@ Follow Mach-O's actual design rather than FatELF's: **the fat part is a wrapper*
 change to ELF. A fat header lists N complete ELF files, each tagged with a required feature
 vector, plus offsets.
 
-Advantages: our ELF loader stays a plain ELF loader (good for milestone 7 — build the
+Advantages: our ELF loader stays a plain ELF loader (good for milestone 7: build the
 boring thing first), and the fat handling is a thin layer in front of it that picks a slice
 and hands one ordinary ELF downstream. Also means non-fat ELFs keep working with zero
 special-casing.

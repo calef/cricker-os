@@ -70,8 +70,8 @@ capabilities exist to avoid.
 An endpoint is a rendezvous, so the natural question is who receives. In our code (`Endpoint` in
 `sched.rs`), **both sides are FIFO queues on the endpoint itself**:
 
-- `receivers: VecDeque<Tid>` — threads blocked in `RECV` with no sender yet.
-- `senders: VecDeque<Tid>` — threads blocked in `SEND` with no receiver yet.
+- `receivers: VecDeque<Tid>`, threads blocked in `RECV` with no sender yet.
+- `senders: VecDeque<Tid>`, threads blocked in `SEND` with no receiver yet.
 
 At most one queue is ever non-empty (whoever arrived first and had to wait). A `SEND` that finds a
 receiver does `receivers.pop_front()` and wakes exactly that one; a `RECV` that finds a sender does
@@ -83,7 +83,7 @@ receiver does `receivers.pop_front()` and wakes exactly that one; a `RECV` that 
 - **The endpoint is unbuffered.** There is no capacity and no "full" state: a `SEND` blocks *iff*
   no receiver is waiting, never because a buffer filled. This is seL4's rendezvous model, not a
   message queue, and it is fine because bulk data moves by a shared frame, not by copy
-  ([frames.md](frames.md)) — there is nothing to buffer.
+  ([frames.md](frames.md)): there is nothing to buffer.
 
 FIFO on both sides, on the endpoint, chosen deliberately and matching seL4.
 
@@ -102,11 +102,11 @@ idea who sent it**, so it cannot reply to that specific caller. seL4 solves this
 and hands it to the server, which `ReplyRecv`s to exactly that caller and then waits for the next.
 It buys three things:
 
-1. **Reply to an anonymous caller without pre-wiring** — a server can serve clients it was never
+1. **Reply to an anonymous caller without pre-wiring**: a server can serve clients it was never
    individually introduced to.
-2. **One-shot safety** — the cap is consumed on use, so the server cannot hoard it, reply twice,
+2. **One-shot safety**: the cap is consumed on use, so the server cannot hoard it, reply twice,
    or hold the caller hostage.
-3. **A kernel-tracked call chain** — which enables priority donation (the server runs on the
+3. **A kernel-tracked call chain**, which enables priority donation (the server runs on the
    caller's time) and makes `Call`+`ReplyRecv` the optimized RPC fast path.
 
 ### What we do instead
@@ -114,7 +114,7 @@ It buys three things:
 A second, explicit **reply endpoint**, wired at spawn. The console server (`user.rs`) is the
 pattern: a `request` endpoint (server `RECV`, client `SEND`) and a `reply` endpoint (server
 `SEND`, client `RECV`), both created up front and granted to each party with the right rights. It
-works because the client topology is **static** — one known client per reply endpoint.
+works because the client topology is **static**: one known client per reply endpoint.
 
 Its limits are exactly the three points above, inverted: it does not scale to a server with many
 *anonymous* clients (which client's `RECV` grabs a shared reply is ambiguous), there is no call
@@ -136,11 +136,11 @@ every server we have has a static client topology and the two-endpoint pattern s
 
 **Two triggers to build it.** *Functional:* the first server that must answer clients it was not
 individually wired to (a general RPC service). *Safety:* the first reply whose correctness depends
-on going to **this** caller, or on being consumed **exactly once** — because a pre-wired reply
+on going to **this** caller, or on being consumed **exactly once**, because a pre-wired reply
 endpoint is reusable and nameable, so nothing *structural* prevents a misrouted reply, a double
 reply, or a stale reply landing on a client that has moved on. A one-shot kernel-minted reply cap
 makes those kernel guarantees instead of server discipline. At that point the right shape is a
-`Reply` object capability and a `Call` method, one-shot, with the call chain — its own DECISIONS
+`Reply` object capability and a `Call` method, one-shot, with the call chain: its own DECISIONS
 entry when it lands, because it widens the boundary §4 guards.
 
 **Safe today, by convention not by guarantee (checked 2026-07-22).** The console server shares one

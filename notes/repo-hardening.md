@@ -59,8 +59,8 @@ maintainer is untrustworthy.
 
 ### Rules to enable
 
-- **Restrict deletions** — `main` should not be deletable by accident.
-- **Block force pushes** — a rewritten `main` is the one mistake with no local copy to recover from.
+- **Restrict deletions**: `main` should not be deletable by accident.
+- **Block force pushes**: a rewritten `main` is the one mistake with no local copy to recover from.
 - **Require a pull request before merging**
   - Required approvals: **0**. A solo repository that requires an approval is a repository that
     cannot merge. The gate here is the checks, not a second person.
@@ -69,7 +69,7 @@ maintainer is untrustworthy.
   - Require conversation resolution before merging: **on**. Cheap, and it catches the review comment
     everyone forgot.
   - Allowed merge methods: leave all three enabled.
-- **Require status checks to pass** — the list is below.
+- **Require status checks to pass**: the list is below.
   - **Require branches to be up to date before merging: OFF.** With several branches in flight at
     once this turns every merge into a race to update first, and the value it adds (catching a
     semantic conflict between two green branches) is largely already covered, because a
@@ -122,9 +122,9 @@ merging immediately. That last one is the whole point, so it is worth confirming
 that as blocked merges. Commit `91564e9` on `main` failed twice on 2026-07-30 in two *different*
 places, both timing-shaped and both green on a developer machine:
 
-- `kernel::smp::tests::every_secondary_runs_scheduled_work` — "secondary cores did not run scheduled
+- `kernel::smp::tests::every_secondary_runs_scheduled_work`: "secondary cores did not run scheduled
   work in time" (`kernel/src/smp.rs:239`).
-- `kernel::user::tests::the_hardware_says_el0_cannot_read_the_kernels_memory` — "EL0 cannot read its
+- `kernel::user::tests::the_hardware_says_el0_cannot_read_the_kernels_memory`: "EL0 cannot read its
   own .text, so the check refuses everything and proves nothing" (`kernel/src/user.rs:5056`).
 
 A four-vCPU shared runner emulating a four-core guest under TCG is a much slower and much noisier

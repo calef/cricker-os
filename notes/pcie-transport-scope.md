@@ -39,7 +39,7 @@ Effort is session-sized: **S** = part of a session, **M** = one to two, **L** = 
 
 ## Phases
 
-### P1. PCI config space + enumeration — M, low-medium risk.
+### P1. PCI config space + enumeration: M, low-medium risk.
 
 - Map the ECAM window device-typed (base and size from the DTB `pci-host-ecam-generic` `reg`). A
   config address is `ecam + (bus << 20) | (dev << 15) | (fn << 12) | offset` (ECAM's flat layout).
@@ -51,7 +51,7 @@ Effort is session-sized: **S** = part of a session, **M** = one to two, **L** = 
   block device 1af4:1042 at 00:01.0". This is the PCIe analog of `virtio::find_block_device`, and it
   belongs in the same place (bus enumeration is a bootstrap role the kernel already owns for mmio).
 
-### P2. BARs + virtio-pci capability parsing — M, medium risk.
+### P2. BARs + virtio-pci capability parsing: M, medium risk.
 
 - Read the device's **BARs** (config 0x10..0x24): each holds a memory region's base; size it the
   standard way (write all-ones, read the writable-bits mask back, restore). QEMU pre-assigns BARs in
@@ -68,7 +68,7 @@ Effort is session-sized: **S** = part of a session, **M** = one to two, **L** = 
 - **Proves:** the kernel locates the same registers virtio-mmio handed it directly, now through the
   PCI indirection. "virtio-pci: common-cfg at 0x4000_1000, notify at 0x4000_3000 (mult 4), isr at ..."
 
-### P3. Interrupt routing (INTx via the PLIC) — S-M, medium risk.
+### P3. Interrupt routing (INTx via the PLIC): S-M, medium risk.
 
 - Read the device's Interrupt Pin (config 0x3D: 1 = INTA). Resolve INTA for this device through the
   DTB `interrupt-map` / `interrupt-map-mask` (device number and pin select a PLIC irq in 32..35 on
@@ -81,7 +81,7 @@ Effort is session-sized: **S** = part of a session, **M** = one to two, **L** = 
 - **Proves:** a virtqueue completion on the PCIe device reaches a userspace driver as a message,
   through the same `Irq` capability mechanism as an mmio device.
 
-### P4. Wire virtio-pci to the driver and the DMA confinement — L, medium-high risk.
+### P4. Wire virtio-pci to the driver and the DMA confinement: L, medium-high risk.
 
 - The virtio-pci **common-config** register layout differs from the flat virtio-mmio block
   (`queue_select`, `queue_size`, `queue_desc/driver/device`, `queue_notify_data`, `device_status`,

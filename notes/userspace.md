@@ -49,7 +49,7 @@ svc #0
 Look at what the hardware does, unaided, the instant that executes:
 
 - switches to **EL1**
-- switches `sp` to **`SP_EL1`** — the kernel's stack, which userspace could not have corrupted,
+- switches `sp` to **`SP_EL1`**: the kernel's stack, which userspace could not have corrupted,
   because it is a *different register* userspace has no access to (see [stack.md](stack.md))
 - saves the return address in `ELR_EL1` and the processor state in `SPSR_EL1`
 - jumps to **`VBAR_EL1` + a fixed offset**, an address *the kernel* chose

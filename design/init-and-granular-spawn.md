@@ -3,7 +3,7 @@
 The working plan for milestone 19 (design/roadmap.md), and the record of its first decision,
 made 2026-07-24.
 
-## Decision 1: how init builds a process — granular, eyes open
+## Decision 1: how init builds a process, granular, eyes open
 
 Two shapes were on the table. **Composite spawn**: init names a budget and an image, and the
 kernel runs its one proven build recipe (B.4's `exec`) paid from init's untyped; two or three
@@ -78,7 +78,7 @@ names the space through the same registry revocation uses.
   its backing region, paying for tables and revocation records exactly as an exec-built space's
   does (B.4), so one budget model covers every space and §13 revocation works unmodified. The
   challenge ("isn't per-call seL4's way, and don't we borrow from seL4?") sharpened the
-  borrowing principle worth keeping: **we borrow seL4's guarantees, not its shapes** — seL4's
+  borrowing principle worth keeping: **we borrow seL4's guarantees, not its shapes**, seL4's
   mapper-pays flavor is a corollary of explicit page-table objects we deliberately never
   adopted, and a per-call override stays additive if a real customer ever appears. User-built
   spaces sit in a generational registry as full `AddressSpace` values (ASID-tagged, revocation-

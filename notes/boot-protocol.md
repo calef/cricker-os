@@ -22,9 +22,9 @@ From Linux's `Documentation/arch/arm64/booting.rst`. Ours is
 
 | offset | size | field | ours |
 |---|---|---|---|
-| `0x00` | 4 | `code0` | `b _boot` — the entry point *is* byte 0, so this jumps over the header |
+| `0x00` | 4 | `code0` | `b _boot`: the entry point *is* byte 0, so this jumps over the header |
 | `0x04` | 4 | `code1` | 0 |
-| `0x08` | 8 | `text_offset` | `0x80000` — load us this far into RAM |
+| `0x08` | 8 | `text_offset` | `0x80000`: load us this far into RAM |
 | `0x10` | 8 | `image_size` | how much **memory** we occupy, including `.bss` and stack |
 | `0x18` | 8 | `flags` | `2` = little-endian, 4 KiB pages |
 | `0x20`–`0x37` | 24 | reserved | 0 |

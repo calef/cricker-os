@@ -151,8 +151,8 @@ O(n) in the number of free blocks**. Before fixing that, we measured how large `
 | mixed 16-256 B, freed out of order | **3** |
 | uniform 64 B, **every other one freed** | **1001** |
 
-So the O(n) is a **non-issue for most workloads** — coalescing keeps the list at one to three
-blocks — and catastrophic for exactly one shape: **many isolated, same-sized holes.**
+So the O(n) is a **non-issue for most workloads**: coalescing keeps the list at one to three
+blocks, and catastrophic for exactly one shape: **many isolated, same-sized holes.**
 
 And that shape is what a kernel produces. Two thousand threads, half of them exit. A file
 descriptor table with gaps. Not hypothetical.
@@ -187,7 +187,7 @@ Each class owns a free list of objects of *exactly* that size. Allocation pops t
 pushes onto the head. Both are a couple of pointer writes: **no search, no walk, no merge.**
 
 When a class runs dry it takes one 4 KiB page from the frame allocator and carves it into
-objects. The list node lives **inside the free object** — the same trick as the heap's free
+objects. The list node lives **inside the free object**: the same trick as the heap's free
 blocks, and for the same reason: a free object is by definition space nobody is using.
 
 **Alignment falls out for free.** A page is 4096-aligned, and an object of size `16 << i` sits at
