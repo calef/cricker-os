@@ -127,9 +127,10 @@ impl<'a> Line<'a> {
         &self.stages[..self.nstages]
     }
 
-    /// How many stages the line has. Always at least one; an empty line is one empty stage, which
-    /// [`crate::parse`] reads as [`Command::Empty`](crate::Command::Empty).
-    pub fn len(&self) -> usize {
+    /// How many stages the line has. Always at least one, which is why this is not spelled `len`:
+    /// there is no empty line at this level, an empty line is one empty stage and
+    /// [`crate::parse`] reads it as [`Command::Empty`](crate::Command::Empty).
+    pub fn stage_count(&self) -> usize {
         self.nstages
     }
 
@@ -279,7 +280,12 @@ mod tests {
     fn a_line_with_no_operator_is_one_stage() {
         for line in [&b"worker 9"[..], b"echo hello  world", b"", b"   "] {
             let l = split(line).unwrap();
-            assert_eq!(l.len(), 1, "{}", core::str::from_utf8(line).unwrap());
+            assert_eq!(
+                l.stage_count(),
+                1,
+                "{}",
+                core::str::from_utf8(line).unwrap()
+            );
             assert!(l.is_plain());
             assert_eq!(l.stages()[0], crate::trim(line));
         }

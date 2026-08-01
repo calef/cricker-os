@@ -780,6 +780,10 @@ fn dispatch_one(nav: &mut Nav, cmd: &[u8]) {
             Say::Nothing => print(b"\n"),
             said => say(said),
         },
+        // Unreachable through [`dispatch`], which answers `caps` before it splits the line so the
+        // preview can see the operators. Kept so this function is complete on its own: it is the
+        // whole of "what one command means", and a reader should not have to know about the
+        // interception to find every arm.
         Command::Caps(tail) => caps(nav, tail),
         Command::Pwd => print_pwd(nav),
         Command::Run(spec) => run(nav, spec),
@@ -1309,7 +1313,7 @@ fn pipeline(nav: &mut Nav, l: Line<'_>) {
 /// Mint the pipes, spawn the stages, feed the head if the shell is the producer, and print what
 /// comes out of the tail. Everything above this decided; this moves capabilities.
 fn run_pipeline(nav: &mut Nav, l: Line<'_>, plans: &[Option<Endowment>], head_builtin: bool) {
-    let n = l.len();
+    let n = l.stage_count();
     // One region for the whole pipeline, so a line costs one SPLIT and one DESTROY however many
     // stages it has. Each joint's endpoint is a page retyped out of it.
     let region = match untyped_split(PIPE_REGION_PAGES) {
