@@ -381,6 +381,14 @@ fn std_generate_modules() -> bool {
             root.join("crates/entropy_proto/src/lib.rs"),
             farm_std_src().join("sys/pal/cricker/entropyproto.rs"),
         ),
+        // The byte-sink contract (milestone 50), so `println!`'s framing and the classification of
+        // a failed SEND are one definition shared with every sink and with the kernel-side tests.
+        // Same discipline as the six above, and the one that would hurt most to get wrong: a drift
+        // in `GONE` would be a program that keeps printing into a pipe whose reader has exited.
+        (
+            root.join("crates/sink_proto/src/lib.rs"),
+            farm_std_src().join("sys/pal/cricker/sinkproto.rs"),
+        ),
     ];
     for (src, dst) in jobs {
         let Ok(text) = std::fs::read_to_string(&src) else {
@@ -1098,6 +1106,8 @@ fn initrd_riscv() -> bool {
             "entropy",
             "--bin",
             "ntp",
+            "--bin",
+            "sink",
             "--target",
             RISCV_TARGET,
         ],
@@ -1181,6 +1191,10 @@ fn initrd_riscv() -> bool {
         // The NTP client (milestone 51), with its test server and its clock-page probe as roles of
         // the same binary. Portable, so both archives carry it and both ISAs run the same tests.
         ("ntp", "ntp"),
+        // The sink contract's ends (milestone 50). Portable, so both archives carry it: the claim
+        // is that a program cannot tell what its output slot holds, and that has to hold on either
+        // instruction set or it is not a claim.
+        ("sink", "sink"),
     ];
     let mut blobs: Vec<(&str, Vec<u8>)> = Vec::new();
     for &(archive_name, bin_name) in entries {
@@ -1395,6 +1409,10 @@ fn mkinitrd() -> bool {
         "rm",
         "entropy",
         "ntp",
+        // The sink contract's ends (milestone 50): the indifferent writer, the file sink, and the
+        // read-back. Portable, so both archives carry it and both ISAs run the same indifference
+        // test.
+        "sink",
     ] {
         match read_stripped(&bin_elf(name)) {
             Ok(bytes) => tree.push((name, bytes)),

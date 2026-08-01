@@ -381,6 +381,7 @@ dependencies = [
  "gfx_proto",
  "lineedit",
  "ntp_proto",
+ "sink_proto",
  "smoltcp",
  "user_rt",
  "vt",
