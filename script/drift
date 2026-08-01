@@ -1,0 +1,50 @@
+#!/bin/sh
+# script/drift [nightly-YYYY-MM-DD]: does a toolchain still build us?
+#
+# With no argument this checks the toolchain you already have (the pin), which makes it a fast
+# "is the tree healthy" smoke test. Given a nightly it checks that one instead, which is what the
+# daily `toolchain drift` workflow does with the newest nightly upstream has published.
+#
+# **This exists because the workflow used to hand-roll these commands, and one of them was wrong.**
+# `cargo build --workspace` was missing `--exclude xtask`, and xtask is a host tool that uses `std`,
+# so building the workspace for a bare-metal target could never succeed. The workflow was red on
+# every run it ever had, which meant it could not report anything about upstream; and because that
+# job is *designed* to tolerate red, the permanent failure looked like the mechanism working.
+#
+# No developer could have caught it, because no developer ran those lines. That is the whole reason
+# notes/scripts.md says a CI job's real work belongs in script/: not tidiness, but that a command
+# living only in YAML has no witness.
+#
+# The specific knowledge it protects is the exclusion lists. Which crates are host-only and which are
+# bare-metal is a fact about the workspace, and a copy of that fact in a workflow file drifts
+# silently as the workspace changes. Keep it here, where it is one fact in one place.
+
+set -e
+cd "$(dirname "$0")/.."
+
+target_toolchain="$1"
+
+if [ -n "$target_toolchain" ]; then
+    echo "==> Checking $target_toolchain (not the pin)"
+    rustup toolchain install "$target_toolchain" --profile minimal --component rust-src,llvm-tools
+    rustup target add --toolchain "$target_toolchain" \
+        aarch64-unknown-none-softfloat riscv64imac-unknown-none-elf
+    RUSTUP_TOOLCHAIN="$target_toolchain"
+    export RUSTUP_TOOLCHAIN
+else
+    echo "==> Checking the pinned toolchain ($(awk -F'"' '/^channel/ {print $2}' rust-toolchain.toml))"
+fi
+
+# The bare-metal build. `--exclude xtask` is load-bearing: xtask drives cargo and QEMU from the host
+# and uses `std` freely, so asking for it on a target without a standard library fails with
+# `can't find crate for std`. It is not part of what ships; it is what builds what ships.
+echo "==> Bare-metal build (aarch64)"
+cargo build --workspace --exclude xtask --target aarch64-unknown-none-softfloat
+
+# The host-logic crates. kernel and user are excluded because they are `no_std` binaries that only
+# run under QEMU; everything else (paging, elf, frames, slab, capsh, the protocol crates) is pure
+# logic that compiles and tests on the host in milliseconds. See CLAUDE.md on why that split exists.
+echo "==> Host tests"
+cargo test --workspace --exclude kernel --exclude user
+
+echo "==> drift: clean"

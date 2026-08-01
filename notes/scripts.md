@@ -21,6 +21,7 @@ uses `cargo xtask` and that one uses `make` and the next uses `npm`.
 | `script/initboot` | Boot straight into userspace init, skipping the milestone tour. |
 | `script/qemu-check` | Is the QEMU on PATH the one `.qemu-version` pins, and does it carry the devices the suite needs? **Fails** on a missing device (that would gut a test silently), **warns** on a version mismatch (Homebrew cannot install an arbitrary older QEMU, and an unfollowable rule is worse than none). Called by `bootstrap` and by `ci-qemu`. |
 | `script/ci-qemu` | CI only, Linux only: build the pinned QEMU into a cacheable prefix, because Ubuntu 24.04's 8.2 has no `riscv-iommu-pci` and apt cannot go newer. |
+| `script/drift [nightly-YYYY-MM-DD]` | Does a toolchain still build us? Bare-metal build plus the host-logic tests. With no argument it checks the pin, which makes it a fast health check; given a nightly it checks that one, which is what the daily `toolchain drift` workflow does with the newest. |
 | `script/toolchain-bump [YYYY-MM-DD]` | Raise the pinned nightly, with evidence: install, rebuild the std farm from scratch, run every gate. Restores the old pin if anything fails, because a half-applied toolchain bump is worse than none. Run it when the daily `toolchain drift` workflow goes red. |
 | `script/test` | Run the suite — the host-logic crates in milliseconds, then the kernel under QEMU. The fast inner loop; assumes `setup` has run. |
 | `script/cibuild` | What CI runs: `bootstrap` (a CI runner starts bare), then the tests. |

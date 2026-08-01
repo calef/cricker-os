@@ -327,4 +327,8 @@ if ! command -v shellcheck >/dev/null 2>&1; then
 fi
 cd "$(dirname "$0")/.."
 shellcheck --severity=warning script/* scripts/*.sh
-echo "shellcheck: 23 sh scripts, no errors or warnings"
+# Counted, not remembered. This line read "23 sh scripts" as a literal, so it kept saying 23 after a
+# 24th was added -- harmless here because the glob above is what actually checks them, but it is the
+# same defect as script/fmt's: a gate reporting a number it did not measure. Anything that looks like
+# evidence has to be derived from the thing it describes.
+echo "shellcheck: $(ls script/* scripts/*.sh | wc -l | tr -d ' ') sh scripts, no errors or warnings"
