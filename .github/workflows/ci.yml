@@ -106,8 +106,8 @@ jobs:
   verify:
     name: verify (Kani proofs)
     runs-on: ubuntu-24.04-arm
-    # Kani pulls its own toolchain and a CBMC backend, so this is the slowest job. 95 harnesses
-    # across 16 crates as of 2026-07-31. Its own job on its own runner, so its wall clock delays
+    # Kani pulls its own toolchain and a CBMC backend, so this is the slowest job. 106 harnesses
+    # across 19 crates as of 2026-07-31, counted from the merged tree rather than from a lane. Its own job on its own runner, so its wall clock delays
     # nothing else; the 60-minute budget is the number that matters, not the minutes it adds.
     timeout-minutes: 60
     steps:

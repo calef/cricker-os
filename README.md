@@ -35,7 +35,7 @@ entry there and that nothing named here has since been renamed away. Two documen
 and one curated, is fine; two documents both claiming to be complete is not, which is the mistake the
 Status section above made twice.
 
-At the `$` prompt: `help`, `echo hello`, `run 7` (spawns a process that computes 49). Quit with
+At the `$` prompt: `help`, `echo hello`, `worker 7` (spawns a process that returns 49). Quit with
 Ctrl-C, or `pkill qemu-system-aarch64` from another terminal.
 
 ## What the badge means
@@ -46,7 +46,7 @@ than a formality:
 | Gate | What it proves |
 |---|---|
 | `script/test` | The host-logic crates, then the kernel under QEMU on **both ISAs**, aarch64 and riscv64. Architectural parity is a gate, not an aspiration (DECISIONS §19). |
-| `script/verify` | 101 Kani harnesses across 17 crates: the capability model, IPC, MMU isolation, the DMA validator, the IOMMU domain, the NTP era pivot. |
+| `script/verify` | 106 Kani harnesses across 19 crates: the capability model, IPC, MMU isolation, the DMA validator, the IOMMU domain, the NTP era pivot. |
 | `script/bench --check` | icount instruction counts against a committed baseline, on both ISAs, so a performance regression surfaces next to the change that caused it. |
 | `script/lint` | clippy at `-D warnings`, plus broken intra-doc links, stray conflict markers, the roadmap's status vocabulary, DECISIONS numbering and citations, and that every script is documented. |
 | `script/supply-chain` | cargo-deny (advisories, licences, bans, sources) over every workspace, and proof that each vendored tree is the published tarball plus exactly its recorded patches. |
