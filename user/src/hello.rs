@@ -367,7 +367,7 @@ fn init_boot(_x1: u64) -> ! {
     const TERM_OUT_VA: u64 = 0x0080_0000; // lineedit reads the shell's text/prompts here
     const TERM_IN_VA: u64 = 0x0090_0000; // lineedit delivers completed lines here
     const IN_UART_VA: u64 = 0x00a0_0000; // input driver's UART mapping
-    const SH_OUT_VA: u64 = 0x0060_0000; // the shell's view of the TERM_OUT frame
+    const SH_OUT_VA: u64 = 0x00c0_0000; // the shell's view of the TERM_OUT frame (shell.rs OUT_VA)
     const LINE_VA: u64 = 0x00b0_0000; // the shell's view of the TERM_IN frame
     const DEV: u64 = abi::aspace::MAP_RO; // mode arg ignored for a DeviceFrame cap
 
