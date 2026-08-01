@@ -2040,6 +2040,8 @@ Worked, and rejected with reasons rather than by taste:
 | `alias` | Semantically closer than `link` — a shell alias is stored text, expanded at use, meaning what the current environment makes it mean, with no identity claim. But **taken twice**: zsh's `alias` (which this milestone tracks, so we would collide with ourselves), and macOS "aliases", which store a file ID and **survive the target moving** — they track the object, the inverse of ours. Borrowing a Mac term for its opposite is a poor trade on a project whose first real user is a Mac |
 | `costume`, `disguise` | Both imply **an underlying thing being dressed or concealed**, reinstating exactly the object identity the word must avoid. `disguise` also claims intent to mislead, naming into existence a danger this design removes: a stored name here cannot escalate, because it resolves only within what the holder already reaches |
 | `projection`, `shadow` | Honest about viewpoint-dependence without implying concealment, and still **metaphors**. This project names descriptively (`netstack`, `compositor`, `lineedit`), which is §39's doing; `link` got away with a false claim partly *because* it was a metaphor |
+| `mirror` family (`erised`, `matsuyama`) | **The best framing anyone found, and the only family to pass all three tests**: a mirror shows something viewer-dependent, implies no object identity, implies no connection, and does not collide with "reference". It fails on the word rather than the idea. In computing a **mirror is an identical replica at another location** — "same content, elsewhere", which is the identity claim we are trying to avoid. The literary instances add their own wrong axis: Erised shows what you **desire** (ours shows what your namespace resolves to, often nothing), and the Matsuyama tale is about a **mistake** (the deception axis where `disguise` failed). Both also need a decoder ring, and `notes/naming.md` sets the bar at names that parse without prior exposure |
+| `fsalias` | Fixes the zsh collision, and prefixes are in-style here (`fwarden`, `dwarden`, `cwarden`). But **"filesystem alias" is exactly what Finder calls a macOS alias** — the object-tracking one — so the prefix picks the *wrong* one of the word's two meanings. And prefixing to fix a collision is a smell: it answers *which* alias, where the objection was that **alias claims another name for the same thing** |
 
 **The descriptive candidate, if the mechanism survives:** a third **entry kind** beside file and
 directory — a **`path`**. A directory entry names a file, a directory, or a path; it stores a path and
@@ -2048,10 +2050,11 @@ entry is a path that does not resolve"* is what happened, where *"that link is b
 something was once connected. The verb becomes writing a path into a directory rather than "linking",
 which retires the `ln -s` shape and its trailing-slash footgun with it.
 
-**That the naming is this hard is itself evidence.** Every candidate fails because the construct is a
-poor fit for the model — it is the one thing in the design whose meaning depends on who is looking.
-Plan 9 hit the same wall from the same premises and answered with a different mechanism rather than a
-better noun.
+**That the naming is this hard is itself evidence.** Eight candidates, each failing for a *different*
+reason, and the one that passed every test failed on the word being occupied by its own inverse. The
+construct is the only thing in this design whose meaning depends on who is looking, and the vocabulary
+has no slot for that. Plan 9 hit the same wall from the same premises and answered with a different
+mechanism rather than a better noun — which is why this fork is **mechanism first**.
 
 ##### Where `rm` meets them, which is where the sharp edges are
 
