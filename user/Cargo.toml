@@ -388,6 +388,15 @@ path = "src/ntp.rs"
 test = false
 bench = false
 
+# The sink contract's ends (milestone 50): a program that writes to whatever is in its output slot,
+# a caretaker that puts a file behind that slot, and the read-back that proves the bytes went
+# through a real filesystem. One binary, three roles. `mkinitrd` packs it as "sink" for both ISAs.
+[[bin]]
+name = "sink"
+path = "src/sink.rs"
+test = false
+bench = false
+
 [dependencies]
 abi = { version = "0.1.0", path = "../crates/abi" }
 bitfont = { version = "0.1.0", path = "../crates/bitfont" }
@@ -407,6 +416,7 @@ gfx_proto = { version = "0.1.0", path = "../crates/gfx_proto" }
 glob = { version = "0.1.0", path = "../crates/glob" }
 lineedit = { version = "0.1.0", path = "../crates/lineedit" }
 ntp_proto = { version = "0.1.0", path = "../crates/ntp_proto" }
+sink_proto = { version = "0.1.0", path = "../crates/sink_proto" }
 user_rt = { version = "0.1.0", path = "../crates/user_rt" }
 vt = { version = "0.1.0", path = "../crates/vt" }
 

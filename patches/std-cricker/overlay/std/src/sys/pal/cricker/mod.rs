@@ -39,6 +39,12 @@ pub(crate) mod clockproto;
 // (`sys/random`) is a client of it; `READY` belongs to the service and its spawner, hence the allow.
 #[allow(dead_code)]
 pub(crate) mod entropyproto;
+// The byte-sink contract (milestone 50, notes/sink-protocol.md): the one framing every "write
+// these bytes there" destination speaks, generated verbatim from `crates/sink_proto/src/lib.rs` by
+// the same xtask step. `sys/stdio` is a *writer* of it, so the receiving half (`unpack`, `Msg`)
+// belongs to the sinks; hence the allow.
+#[allow(dead_code)]
+pub(crate) mod sinkproto;
 pub(crate) mod rt;
 
 use crate::io;
@@ -71,7 +77,18 @@ pub unsafe fn init(_argc: isize, _argv: *const *const u8, _sigpipe: u8) {
 
 // SAFETY: must be called only once during runtime cleanup.
 // NOTE: this is not guaranteed to run, for example when the program aborts.
-pub unsafe fn cleanup() {}
+//
+// **Close the output stream** (milestone 50). std's `rt::cleanup` flushes stdout and then calls
+// this, so an end-of-stream message here is the last thing on the wire, after every byte the
+// program printed. A sink acts on it: a file sink closes its handle, and the reader of a pipe stops
+// reading instead of blocking forever on a writer that has exited. See notes/sink-protocol.md.
+//
+// It does not run when the program aborts, which is correct rather than a gap: a process the kernel
+// killed did not finish its output, and saying so would be a lie. The reader learns that death the
+// other way, from the supervisor that holds its fault endpoint (DECISIONS §26).
+pub unsafe fn cleanup() {
+    crate::sys::stdio::end_of_stream();
+}
 
 pub fn unsupported<T>() -> io::Result<T> {
     Err(unsupported_err())
