@@ -92,7 +92,7 @@ fi
 script/qemu-check
 
 # --- A bare-metal C compiler ----------------------------------------------------------------
-# Milestone 36 links a C component into the `cshim` userspace program (user/c/cseam.c, DECISIONS
+# Milestone 36 links a C component into the `cshim` userspace program (user/c/c_seam.c, DECISIONS
 # §30), so building `user` now needs a clang with BOTH the AArch64 and RISC-V backends. One
 # compiler for both ISAs, not two, because architectural parity is a gate (DECISIONS §19) and two
 # clangs would mean "works on aarch64" stopped predicting anything about riscv64.

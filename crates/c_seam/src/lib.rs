@@ -4,10 +4,11 @@
 //! Two Rust programs sit either side of the foreign component: `cshim` is the shell that links the C
 //! and calls it, and `cwarden` is the process that builds `cshim`, supervises it, and holds the
 //! witness pages that prove what the C could not reach. This is what they agree on: the address-space
-//! layout, the report protocol, and the constants that are also written down in `user/c/cseam.c`.
+//! layout, the report protocol, and the constants that are also written down in `user/c/c_seam.c`.
 //!
-//! Compiled into both binaries with `#[path = "cseam.rs"] mod cseam;`, the same way the supervision
-//! tree shares `suptree.rs`.
+//! A crate rather than a `#[path]` module since 2026-08-01 (CLAUDE.md rule 7): what two binaries
+//! must agree on is a crate, so that the agreement is reachable by host tests and by Kani. The test
+//! at the bottom of this file is what that bought.
 //!
 //! # The layout, and why these numbers
 //!
@@ -53,7 +54,7 @@ pub const WITNESS_RO_VA: u64 = GRANT_VA + PAGE;
 pub const WITNESS_FAR_VA: u64 = GRANT_VA + 2 * PAGE;
 
 // ===========================================================================================
-// The grant's contents. Mirrors the `CSEAM_*` defines in user/c/cseam.c; a C ABI has no way to
+// The grant's contents. Mirrors the `CSEAM_*` defines in user/c/c_seam.c; a C ABI has no way to
 // share a struct definition without one language generating the other's bindings, and for one page
 // of bytes the comment in both files is the honest cheaper answer.
 // ===========================================================================================
@@ -160,7 +161,7 @@ mod tests {
 
     /// The C source, read at compile time from the other side of the seam.
     ///
-    /// **This is the test the seam never had.** `user/c/cseam.c` and this crate state the same
+    /// **This is the test the seam never had.** `user/c/c_seam.c` and this crate state the same
     /// constants twice, by hand, because a C compiler cannot see Rust and the shared page has to
     /// mean the same thing to both. Nothing checked that until now: as a `#[path]` module inside a
     /// `no_std` binary this file was unreachable by host tests, so a drift here surfaced as the C
@@ -168,7 +169,7 @@ mod tests {
     ///
     /// `include_str!` is what makes it cheap: the C is a build input to the test, so the two cannot
     /// be edited apart without this failing.
-    const C_SOURCE: &str = include_str!("../../../user/c/cseam.c");
+    const C_SOURCE: &str = include_str!("../../../user/c/c_seam.c");
 
     /// Pull `#define NAME <digits>` out of the C, in decimal or hex.
     fn c_define(name: &str) -> u64 {
@@ -176,7 +177,7 @@ mod tests {
         let line = C_SOURCE
             .lines()
             .find(|l| l.trim_start().starts_with(&needle))
-            .unwrap_or_else(|| panic!("{name} is not defined in user/c/cseam.c"));
+            .unwrap_or_else(|| panic!("{name} is not defined in user/c/c_seam.c"));
         let rest = line[line.find(&needle).unwrap() + needle.len()..].trim();
         let tok: String = rest
             .chars()

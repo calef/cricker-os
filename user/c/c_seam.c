@@ -1,5 +1,5 @@
 /*
- * cseam.c -- the foreign component (milestone 36, DECISIONS §31).
+ * c_seam.c -- the foreign component (milestone 36, DECISIONS §31).
  *
  * Memory-unsafe C, compiled by bare-metal clang, linked into a Rust user_rt shell
  * (user/src/cshim.rs) and confined by the kernel like any other process. It is the
@@ -36,7 +36,7 @@ void *malloc(size_t n);
 void free(void *p);
 
 /*
- * The grant's layout. Mirrored in user/src/cseam.rs, the module both Rust programs
+ * The grant's layout. Mirrored in crates/c_seam, the module both Rust programs
  * on the other side of this seam compile; the two sides agree by convention, because a C ABI cannot express a shared struct without
  * one of the two languages generating it, and generating bindings for one page of
  * bytes would be more machinery than the agreement is worth. The comment is the

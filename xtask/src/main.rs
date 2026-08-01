@@ -1208,7 +1208,7 @@ fn initrd_riscv() -> bool {
         // into the surface it serves. Portable, so both archives carry both.
         ("display", "display"),
         ("painter", "painter"),
-        // The C seam (milestone 36): the warden and the Rust shell that links user/c/cseam.c. The C
+        // The C seam (milestone 36): the warden and the Rust shell that links user/c/c_seam.c. The C
         // is compiled for this ISA by user/build.rs, so the riscv shell carries riscv C.
         ("cwarden", "cwarden"),
         ("cshim", "cshim"),

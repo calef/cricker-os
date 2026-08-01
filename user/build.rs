@@ -3,7 +3,7 @@
 //! `cargo:rustc-link-arg` is per-package, which is the whole reason this is a separate crate
 //! rather than another binary in `kernel/`.
 //!
-//! Since milestone 36 this also compiles the **C** half of the `cshim` program (`c/cseam.c`) with
+//! Since milestone 36 this also compiles the **C** half of the `cshim` program (`c/c_seam.c`) with
 //! a bare-metal clang and hands the object to the linker for that one binary only. See
 //! [`compile_c_component`] and notes/c-seam.md.
 
@@ -25,10 +25,10 @@ fn main() {
 /// per object, no archive: `rustc-link-arg-bin` puts the object straight on the linker's command
 /// line for that binary, so no `ar` is involved and nothing else in the package sees it.
 ///
-/// - `c/cseam.c` -> `cshim`: milestone 36's throwaway component, the seam itself.
+/// - `c/c_seam.c` -> `cshim`: milestone 36's throwaway component, the seam itself.
 /// - `c/conxsvc.c` -> `cconx`: milestone 23's replacement component. The reason the hot-swap claim
 ///   is about a *component* and not about a recompile.
-const C_SOURCES: &[(&str, &str)] = &[("c/cseam.c", "cshim"), ("c/conxsvc.c", "cconx")];
+const C_SOURCES: &[(&str, &str)] = &[("c/c_seam.c", "cshim"), ("c/conxsvc.c", "cconx")];
 
 /// **Compile the foreign component and give it to `cshim`'s linker, or fail with instructions.**
 ///

@@ -256,7 +256,7 @@ esac
 #    Anything two binaries must agree on is a crate; a `#[path]` module is not one, and the cost is
 #    not tidiness. Such a module is unreachable by host tests AND by Kani, so the constants two
 #    programs share are checked by nothing. `cseam` was the proof: it stated the shared-memory
-#    layout twice, once in Rust and once in `user/c/cseam.c`, with no test that they agreed, and a
+#    layout twice, once in Rust and once in `user/c/c_seam.c`, with no test that they agreed, and a
 #    drift would have surfaced as a C component writing to the wrong offset.
 #
 #    A module with exactly ONE consumer is fine and stays fine: that is an ordinary submodule, and
