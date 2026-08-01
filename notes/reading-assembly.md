@@ -86,8 +86,8 @@ Worth knowing: when you disassemble, you won't see `ldr x0, =__stack_top`. You'l
 The privileged register namespace (see [aarch64](aarch64.md)) is not addressable by normal
 instructions. Two special ones:
 
-- `mrs x0, mpidr_el1` — **read** a system register into a general register
-- `msr vbar_el1, x0` — **write** a general register into a system register
+- `mrs x0, mpidr_el1`: **read** a system register into a general register
+- `msr vbar_el1, x0`: **write** a general register into a system register
 
 Mnemonic: the general-purpose register is always the one nearer the `r` in the mnemonic.
 (`mrs` = *move register from system*, `msr` = *move system from register*.)

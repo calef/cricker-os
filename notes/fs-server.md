@@ -394,9 +394,9 @@ So there is no open kernel-side interrupt-delivery defect to inherit. Milestone 
 interrupt path to work; if a real storage driver on real silicon hangs waiting for a completion, the
 place to look is the device's own interrupt configuration, not the kernel's routing.
 
-**Also ruled out by the write-loop investigation, and worth not repeating:** a **bounce buffer** — the device DMAs only into a private
+**Also ruled out by the write-loop investigation, and worth not repeating:** a **bounce buffer**: the device DMAs only into a private
 buffer and the block server copies to and from the shared page after completion, so the device never
-touches the shared page and the arrangement is correct by construction for any aliasing — **still
+touches the shared page and the arrangement is correct by construction for any aliasing: **still
 looped**. Given what the next round found, that is exactly what it should have done, since there was
 no aliasing bug to fix.
 

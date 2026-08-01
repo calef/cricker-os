@@ -306,10 +306,10 @@ cargo test -p fs_proto       # the set encoding, and the fixture pinned against 
 
 ## See also
 
-- [glob.md](glob.md) — the matcher, and the four scope decisions this lane inherits.
-- [dir-capability.md](dir-capability.md) — the rights ladder, `dwarden`, and why the endpoint is the
+- [glob.md](glob.md): the matcher, and the four scope decisions this lane inherits.
+- [dir-capability.md](dir-capability.md): the rights ladder, `dwarden`, and why the endpoint is the
   boundary.
-- [rm.md](rm.md) — `rm` as a program, and why `-r` widens the grant.
-- [grant-expression.md](grant-expression.md) — the command line as a grant expression, and `fwarden`.
+- [rm.md](rm.md): `rm` as a program, and why `-r` widens the grant.
+- [grant-expression.md](grant-expression.md): the command line as a grant expression, and `fwarden`.
 - Milestone 47's "Globbing, which decides how every multi-file operation grants" in
   `design/roadmap.md`.

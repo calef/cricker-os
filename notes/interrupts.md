@@ -8,8 +8,8 @@ Which means every piece of the locking discipline we wrote in
 
 ## The GIC: the multiplexer in front of the CPU
 
-The CPU has **one** IRQ input line. That's all. Everything a kernel wants from interrupts —
-priorities, masking individual sources, routing to a particular core — lives in the interrupt
+The CPU has **one** IRQ input line. That's all. Everything a kernel wants from interrupts,
+priorities, masking individual sources, routing to a particular core, lives in the interrupt
 controller, not in the CPU.
 
 Two halves, and the split *is* the design:
@@ -19,7 +19,7 @@ Two halves, and the split *is* the design:
 | **Distributor** (GICD) | `0x0800_0000` | **one per machine** | which core gets an interrupt, and whether a source is enabled at all |
 | **CPU interface** (GICC) | `0x0801_0000` | **one per core** (banked) | this core's own view: acknowledge, priority mask, end-of-interrupt |
 
-N cores see their *own* CPU interface at the *same address* — the hardware banks the registers
+N cores see their *own* CPU interface at the *same address*: the hardware banks the registers
 per core. That's what makes "deliver this to core 3" something the hardware can do without the
 software knowing.
 
@@ -30,9 +30,9 @@ constant.
 
 | INTID | Kind | |
 |---|---|---|
-| 0–15 | **SGI** — Software Generated | one core kicking another. This is how SMP bringup and TLB shootdown work. |
-| 16–31 | **PPI** — Private Peripheral | **per-core**. The timer is one. |
-| 32+ | **SPI** — Shared Peripheral | the UART, the disk. Any core may service them. |
+| 0–15 | **SGI**: Software Generated | one core kicking another. This is how SMP bringup and TLB shootdown work. |
+| 16–31 | **PPI**: Private Peripheral | **per-core**. The timer is one. |
+| 32+ | **SPI**: Shared Peripheral | the UART, the disk. Any core may service them. |
 
 **The timer is a PPI (INTID 30), and it has to be.** A timer that fired on only one core could
 not preempt threads running on the others. Every core has its own timer, its own countdown, and
@@ -67,7 +67,7 @@ priority. **Forget it and the timer fires exactly once and then never again**, w
 nothing like "you forgot to write a register."
 
 **INTID 1023 is spurious**: the GIC raised the line and then changed its mind (another core took
-it, or it got masked). Do nothing, and in particular do **not** write EOIR — signalling
+it, or it got masked). Do nothing, and in particular do **not** write EOIR: signalling
 completion for an interrupt you never took corrupts the GIC's priority stack.
 
 ## IRQs dispatch by vector slot, not by ESR
@@ -123,14 +123,14 @@ would fire immediately, and again, and we'd spin in the handler forever paying d
 cannot pay.
 
 So: give up on the missed ticks and re-anchor the grid to now. Every kernel does this and every
-kernel calls it the same thing — **dropping ticks** — and it is worth counting, because a
+kernel calls it the same thing (**dropping ticks**), and it is worth counting, because a
 nonzero count means the handler is taking longer than a whole tick period.
 
 ## Uptime comes from the counter, not the tick count
 
 `uptime_ms()` reads `CNTPCT_EL0` and divides. **Deliberately not `ticks * 10`.**
 
-If a tick is ever missed — a long critical section, a slow handler — the tick count undercounts
+If a tick is ever missed (a long critical section, a slow handler), the tick count undercounts
 and *time appears to slow down*. The hardware counter cannot lie.
 
 **This is `Instant`.** It is the thing `core` could never give us, and the reason is exact:
@@ -181,7 +181,7 @@ DECISIONS §10 promised this and notes/capabilities.md sketched it. Here it is.
 
 A driver at EL0 (milestone 8 put one there) cannot install an interrupt handler: handlers run at
 EL1, in the kernel's vector table, at a privilege the driver does not have. And the kernel cannot
-handle a device interrupt itself, because **it does not know what the device is** — that was the
+handle a device interrupt itself, because **it does not know what the device is**: that was the
 whole point of moving the driver out.
 
 So the interrupt has to reach the driver as something the driver *can* receive. It becomes a
@@ -210,7 +210,7 @@ block device* is lives in userspace.
 Device interrupts are usually **level-triggered**: the device holds its interrupt line asserted
 until the driver does something to quiet it (for virtio, reads `InterruptStatus` and writes
 `InterruptACK`). If the kernel left the line enabled and just EOI'd, the GIC would see the line
-still asserted and **re-deliver immediately, forever** — an interrupt storm the machine never
+still asserted and **re-deliver immediately, forever**: an interrupt storm the machine never
 climbs out of, because the only code that can quiet the device is the driver, which never gets to
 run.
 
@@ -235,9 +235,9 @@ drains it instead of blocking. An interrupt that fires one instruction before th
 
 `Object::Irq(intid)`. Its holder can:
 
-- `WAIT` — block until the interrupt fires (internally, `RECV` on the endpoint the kernel routed
+- `WAIT`: block until the interrupt fires (internally, `RECV` on the endpoint the kernel routed
   the interrupt to).
-- `ACK` — re-enable the interrupt at the GIC, after quieting the device.
+- `ACK`: re-enable the interrupt at the GIC, after quieting the device.
 
 A driver that holds this capability can receive one specific interrupt and nothing else. It cannot
 mask other interrupts, cannot touch the GIC directly, cannot see any other device's line. The

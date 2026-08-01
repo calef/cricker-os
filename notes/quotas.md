@@ -28,7 +28,7 @@ finished thread, the token drops with it and the slot returns. So:
   touches the limit: the shell ran ten `run` commands back to back under a budget of eight, with
   zero refusals, because each worker exited and returned its slot before the next was asked for.
 - A child that **blocks forever** (on an endpoint nobody drains, an interrupt that never fires)
-  keeps holding its slot, which is exactly right — it is still consuming a thread, a stack, and an
+  keeps holding its slot, which is exactly right: it is still consuming a thread, a stack, and an
   address space. The budget counts *live* children, and a leaked child is a live child.
 
 This is the same ownership-does-the-work pattern the `KernelStack` and `AddressSpace` already use
@@ -38,7 +38,7 @@ lifetime.
 ## What it bounds
 
 `sched::spawn_with_quota(&BUDGET, closure)` returns `None` when the budget is spent **or** the
-kernel is out of memory — the caller cannot tell the two apart and does not need to. The shell's
+kernel is out of memory: the caller cannot tell the two apart and does not need to. The shell's
 process service used a budget of eight (`shell_service::SPAWN_QUOTA`) and, on `None`, reported "could
 not spawn a process" to the shell rather than panicking (the audit's other spawn finding). So a
 spawn flood, or a pile of workers that block and never exit, was capped at eight live children:

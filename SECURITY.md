@@ -120,10 +120,10 @@ backport to. If a fix matters to you, it is a commit on `main`.
 
 Two adversarial reviews are on the record, and reading them first will save you time:
 
-- **notes/security.md** — a four-part review after milestone 11, with the threat model, what held
+- **notes/security.md**: a four-part review after milestone 11, with the threat model, what held
   up, and four real bugs (a crafted ELF that could panic the kernel, a spawn flood that could, a
   wasted-budget path, and documentation describing defences that had been deleted).
-- **notes/arch-audit.md** — a pass over the assembly and architecture layer that found three:
+- **notes/arch-audit.md**: a pass over the assembly and architecture layer that found three:
   an `eret`/`sret` privilege-escalation staging race, a stale `tp` corrupting cross-hart per-CPU
   data on RISC-V, and a lock-free read-modify-write in the PLIC driver.
 

@@ -69,7 +69,7 @@ if mode == "--check":
     sys.exit(0)
 
 width = max(len(t) for _, t in sections)
-print(f"DECISIONS.md — {len(sections)} decisions, {len(text.splitlines())} lines\n")
+print(f"DECISIONS.md: {len(sections)} decisions, {len(text.splitlines())} lines\n")
 for num, title in sections:
     print(f"  §{num:<3} {title[:width]}")
 for p in problems:

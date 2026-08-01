@@ -554,7 +554,7 @@ pub fn share_kernel_half(_root: u64) {}
 /// This used to end in `tlbi vmalle1is`: every EL1 translation, every core, the kernel's
 /// included, on every context switch. It had to, because every address space ran as ASID 0 and
 /// the TLB could not tell one process's `0x40_0000` from another's; a stale entry would hand a
-/// new process the previous one's memory — the privilege boundary, not a performance bug.
+/// new process the previous one's memory: the privilege boundary, not a performance bug.
 ///
 /// Now every user mapping is `nG` (tagged with the ASID that created it; see paging), each
 /// address space owns one ASID for life (`crates/asid`), and the tag rides in here with the
@@ -629,7 +629,7 @@ pub fn deactivate_user() {
 ///
 /// The kernel can read that address. It reads it all day. So if it simply dereferences the
 /// pointer, it will happily print its own memory **on the user's behalf, using its own
-/// authority** — and the user, who could not read one byte of it, gets all of it.
+/// authority**, and the user, who could not read one byte of it, gets all of it.
 ///
 /// That is the compiler service overwriting the billing log (notes/capabilities.md). The deputy
 /// was confused about *whose authority it was acting under*, and no capability check catches it,
@@ -640,7 +640,7 @@ pub fn deactivate_user() {
 ///
 /// `AT S1E0R` means: *do the stage-1 translation of this address **as EL0 would**, for a read.*
 /// One instruction. The MMU picks `TTBR1` for a high address, walks the kernel's own tables,
-/// reads the `AP` bits, and reports a permission fault into `PAR_EL1` — the same "no" the
+/// reads the `AP` bits, and reports a permission fault into `PAR_EL1`: the same "no" the
 /// hardware would have given the user program itself.
 ///
 /// So we do not re-implement the permission model in software and hope it agrees with the
@@ -873,7 +873,7 @@ pub fn unmap_page(va: u64) -> Result<u64, MapError> {
 /// This is what discharges a `paging::TlbFlush`. The `paging` crate is pure logic and emits no
 /// instructions; the architecture supplies this.
 ///
-///   `tlbi vaae1is`  — invalidate by **VA**, **A**ll ASIDs, **E1**, **I**nner **S**hareable.
+///   `tlbi vaae1is` : invalidate by **VA**, **A**ll ASIDs, **E1**, **I**nner **S**hareable.
 ///
 /// The operand is the address shifted right by 12: the TLB is indexed by page, not by byte.
 ///
@@ -1200,7 +1200,7 @@ mod tests {
     /// This is the test for the landmine. Change a mapping without a `tlbi` and the CPU keeps
     /// using the *cached* translation: memory reads back as the previous owner's data. It is a
     /// security hole, and it is close to undebuggable, because the page tables **in memory are
-    /// correct** — the lie lives in a CPU cache you cannot inspect.
+    /// correct**: the lie lives in a CPU cache you cannot inspect.
     ///
     /// So we make it observable:
     ///

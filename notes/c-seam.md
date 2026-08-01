@@ -386,10 +386,10 @@ much about the expensive thing.
 
 ## See also
 
-- [Rust `std` on the native ABI](std.md) — where the three libc tiers are recorded, and the heap this
+- [Rust `std` on the native ABI](std.md), where the three libc tiers are recorded, and the heap this
   `malloc` is built on.
-- [Supervision](supervision.md) — the fault endpoint this leans on, and the five-word message.
-- [Trusted init](trusted-init.md) — milestone 22 phase B.2's proxy shape, the alternative to the
+- [Supervision](supervision.md): the fault endpoint this leans on, and the five-word message.
+- [Trusted init](trusted-init.md): milestone 22 phase B.2's proxy shape, the alternative to the
   authority this warden holds directly.
-- [The native ABI](abi.md) — the capability contract the shell speaks and the C cannot.
-- [The framebuffer contract](framebuffer-contract.md) — the two-witness discipline this test borrows.
+- [The native ABI](abi.md): the capability contract the shell speaks and the C cannot.
+- [The framebuffer contract](framebuffer-contract.md): the two-witness discipline this test borrows.

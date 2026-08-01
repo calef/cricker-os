@@ -12,7 +12,7 @@
 //! and the CPU is **taken away** from a thread that never asked to give it up.
 //!
 //! There is a test named `a_thread_that_never_yields_is_preempted_anyway`. It spawns a thread
-//! whose entire body is `loop { count += 1 }` — no yields, no syscalls, not even a function
+//! whose entire body is `loop { count += 1 }`: no yields, no syscalls, not even a function
 //! call. Under any cooperative scheduler that is a hung machine. Here it is a Tuesday.
 //!
 //! # Three rules, and each of them is a bug if you get it wrong
@@ -30,7 +30,7 @@
 //! **3. A brand-new thread must unmask interrupts itself.** Every *resumed* thread gets its
 //!    interrupt state back from `eret` restoring `SPSR_EL1`. A thread that has never run has no
 //!    `SPSR` to restore. `thread_trampoline` does `msr daifclr, #2` for exactly this reason,
-//!    and without it the first thread you spawn can never be preempted — which would be a
+//!    and without it the first thread you spawn can never be preempted, which would be a
 //!    cooperative scheduler with extra steps.
 
 use crate::cpu;
@@ -346,8 +346,8 @@ pub fn init() {
     set_current_tid(boot_tid);
 
     // (The run queue and inbox used to have capacity reserved here, so a push from the timer IRQ
-    // could never allocate. The queues are intrusive now — a push is two pointer writes and
-    // *cannot* allocate — so there is nothing to reserve. §9's rule became structural.)
+    // could never allocate. The queues are intrusive now: a push is two pointer writes and
+    // *cannot* allocate, so there is nothing to reserve. §9's rule became structural.)
 
     // The idle thread. Its entire body is "wait for an interrupt, then let the scheduler look for
     // work." It is deliberately kept OUT of the ready queue (see cpu::PerCpu::idle): the scheduler picks it
@@ -621,7 +621,7 @@ pub fn run_idle() -> ! {
 ///
 /// Reserving a slot is an atomic decrement; the slot lives inside the spawned `Thread` as a
 /// [`QuotaToken`] and comes back when the thread is reaped. Returns `None` if the budget is
-/// exhausted (too many children already alive) OR the kernel is out of memory — the caller cannot
+/// exhausted (too many children already alive) OR the kernel is out of memory: the caller cannot
 /// tell the two apart, and does not need to: either way it could not spawn, and it must degrade
 /// rather than panic. This is the bound that stops a spawn flood or a leaked-thread pile-up from
 /// exhausting kernel memory. See notes/quotas.md and notes/security.md.
@@ -806,13 +806,13 @@ pub fn schedule() {
     //
     // The saved state is a local, on **this thread's stack**, which is exactly what makes it
     // correct: when someone eventually switches back to us, `switch_to` returns here, and this
-    // frame — with the right `was_enabled` in it — is still sitting where we left it.
+    // frame (with the right `was_enabled` in it) is still sitting where we left it.
     let was_enabled = crate::arch::interrupts::disable();
 
     // A labeled block, so every exit path leaves through the SAME point: the guard drops at the
     // block's end and interrupts are restored ONCE, AFTER it. The earlier version called
     // `interrupts::restore(was_enabled)` and `return` from *inside* this block, which re-enabled
-    // interrupts while still holding the scheduler lock — a one-instruction window in which a
+    // interrupts while still holding the scheduler lock: a one-instruction window in which a
     // timer could fire, re-enter `schedule()`, and try to take a lock we already held. It was
     // intermittent and it was real; see the lock-rank violation it produced.
     let switch = 'decide: {
@@ -875,7 +875,7 @@ pub fn schedule() {
             }
         };
 
-        // Requeue the outgoing thread if it can still run — but never the idle thread, which lives
+        // Requeue the outgoing thread if it can still run, but never the idle thread, which lives
         // outside the ready queue. A killed thread is already `Finished` (handled at the top), so it
         // is not runnable here and is reaped by `finish_switch` after the switch, no queue surgery.
         if runnable && current != idle_tid {
@@ -927,7 +927,7 @@ pub fn schedule() {
         // Install the incoming thread's address space FIRST. `TTBR0_EL1` is one register, shared
         // by everybody, and a thread that resumes at EL0 in the previous thread's low half is
         // running a stranger's code. (No-ops, including no TLB flush, when the root is already
-        // right — which is every switch between two kernel threads.)
+        // right, which is every switch between two kernel threads.)
         crate::arch::mmu::switch_user_root(next_root);
 
         // SAFETY: both pointers name live `Context`s owned by boxed `Thread`s in the map, and
@@ -2256,7 +2256,7 @@ mod tests {
     /// It has now bitten three times in one day, in three different files: the reap waits in
     /// `user.rs`, three spin counts in `smp.rs`, and here. The third time was a gate run failing with
     /// "finished threads were never reaped, left: 11, right: 5" while a leaked QEMU held 199% of the
-    /// host — which is exactly the condition a yield count cannot survive and a clock can.
+    /// host, which is exactly the condition a yield count cannot survive and a clock can.
     ///
     /// Two seconds is far beyond any honest completion here (these are milliseconds when the machine
     /// is quiet) and well inside the harness's 90 s per-test ceiling, which remains the backstop for a
@@ -2654,7 +2654,7 @@ mod tests {
     /// > scheduling, one bad user program hangs the machine permanently.
     ///
     /// So: a thread whose entire body is a tight loop. **No `yield_now`. No syscall. Not even a
-    /// function call** — nothing a cooperative scheduler could possibly hook.
+    /// function call**: nothing a cooperative scheduler could possibly hook.
     ///
     /// Under async/await, or Go before 1.14, or any cooperative runtime, this thread takes the
     /// CPU and never gives it back, and the machine is gone. The only thing that can take it
@@ -2727,7 +2727,7 @@ mod tests {
 
     /// A finished thread's stack is unmapped and its frames returned.
     ///
-    /// The reaping cannot happen in `exit()` — a thread cannot unmap the stack it is standing
+    /// The reaping cannot happen in `exit()`: a thread cannot unmap the stack it is standing
     /// on. It happens in `schedule()`, from the *next* thread, once we are safely off it. Every
     /// kernel has something called a reaper, and this is why.
     #[test_case]
@@ -2747,7 +2747,7 @@ mod tests {
 
         // The FIRST batch legitimately costs a couple of frames: the stack area is a fresh
         // region of virtual address space, so `map_page` has to build an L2 and an L3 page
-        // table for it. Those are a one-time cost, not a leak — `unmap_page` frees the leaf
+        // table for it. Those are a one-time cost, not a leak: `unmap_page` frees the leaf
         // mapping but leaves the intermediate tables standing (see the TODO on `paging::unmap`).
         batch_of_eight();
 
@@ -2778,7 +2778,7 @@ mod tests {
 
     /// Every thread stack has a guard page.
     ///
-    /// A thread stack is 16 KiB — an eighth of the boot stack's — and threads are where deep
+    /// A thread stack is 16 KiB (an eighth of the boot stack's), and threads are where deep
     /// recursion actually happens. Milestone 3's stack overflow hung the machine for 150
     /// seconds; a guard page turns the same bug into an instant fault naming the exact byte.
     #[test_case]
@@ -2808,7 +2808,7 @@ mod tests {
     }
 
     /// **The rendezvous, receiver-first.** A thread blocks on an empty endpoint, and stays
-    /// blocked, and a *later* sender is what frees it — carrying the message.
+    /// blocked, and a *later* sender is what frees it: carrying the message.
     #[test_case]
     fn a_receiver_blocks_until_a_sender_arrives() {
         static GOT: AtomicU64 = AtomicU64::new(0);
@@ -3100,8 +3100,8 @@ mod tests {
 
     /// A blocked thread is genuinely off the CPU: other threads keep running while it waits.
     ///
-    /// If `Blocked` were not respected in `schedule()` — if a blocked thread were helpfully
-    /// requeued — this would still pass, so it is not the whole story (the two rendezvous tests
+    /// If `Blocked` were not respected in `schedule()`, if a blocked thread were helpfully
+    /// requeued: this would still pass, so it is not the whole story (the two rendezvous tests
     /// above are). But it is the cheap, direct statement of what blocking is *for*: a waiting
     /// thread must not burn the CPU.
     #[test_case]

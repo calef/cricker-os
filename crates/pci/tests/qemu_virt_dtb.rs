@@ -32,7 +32,7 @@ fn the_ecam_window_matches_the_machine() {
 ///
 /// The map is the authoritative routing table: entries of six 32-bit cells here
 /// (child-addr:3, whose high cell carries the device number at bits 11+; pin:1; the PLIC
-/// phandle:1; the PLIC input:1 — widths fixed by the pci node's `#address-cells = 3`,
+/// phandle:1; the PLIC input:1: widths fixed by the pci node's `#address-cells = 3`,
 /// `#interrupt-cells = 1`, and the PLIC's `#interrupt-cells = 1`). QEMU's riscv virt maps four
 /// devices x four pins; the formula must agree on all sixteen, not just the one device we
 /// happen to attach.

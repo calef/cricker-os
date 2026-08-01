@@ -16,10 +16,10 @@ catch.
 
 ## Three things it gets confused with
 
-**Livelock** — everybody is *doing* something, nobody progresses. Two people in a corridor,
+**Livelock**: everybody is *doing* something, nobody progresses. Two people in a corridor,
 each stepping aside for the other, forever. CPU is busy. Nothing happens.
 
-**Starvation** — a task *could* proceed but never gets the chance; the lock keeps going to
+**Starvation**: a task *could* proceed but never gets the chance; the lock keeps going to
 someone else. The system progresses. Just not for you.
 
 **A busy-wait hang** looks like livelock and **is** a deadlock. Our spinlock case burns 100%
@@ -30,10 +30,10 @@ whether you happen to be burning cycles while you wait.
 
 Deadlock requires **all four** at once:
 
-1. **Mutual exclusion** — at least one resource is held exclusively.
-2. **Hold and wait** — a party holds one resource while waiting for another.
-3. **No preemption** — a resource cannot be taken by force; only the holder releases it.
-4. **Circular wait** — there is a cycle in the "waiting for" graph.
+1. **Mutual exclusion**: at least one resource is held exclusively.
+2. **Hold and wait**: a party holds one resource while waiting for another.
+3. **No preemption**: a resource cannot be taken by force; only the holder releases it.
+4. **Circular wait**: there is a cycle in the "waiting for" graph.
 
 **Break any single one and deadlock becomes impossible.** Not unlikely. *Impossible.*
 
@@ -80,17 +80,17 @@ special case and becomes an ordinary circular wait. See [locking.md](locking.md)
 Three strategies. Which you can afford depends entirely on what you're allowed to do when it
 happens.
 
-**Prevention** — structurally make a condition impossible. Lock ordering. Interrupt masking.
+**Prevention**: structurally make a condition impossible. Lock ordering. Interrupt masking.
 **This is what kernels do, and they have no choice**, because:
 
-**Detection and recovery** — let it happen, notice the cycle, and **kill somebody**.
+**Detection and recovery**: let it happen, notice the cycle, and **kill somebody**.
 Databases genuinely do this: Postgres maintains a wait-for graph, finds cycles, and aborts a
 transaction with a deadlock error. A fine answer *when you have someone you're allowed to
 kill and a transaction you can roll back*.
 
 A kernel has neither. Who do you kill? The memory allocator?
 
-**The ostrich algorithm** — ignore it and hope. Named for the myth about heads and sand.
+**The ostrich algorithm**: ignore it and hope. Named for the myth about heads and sand.
 Unix used it deliberately for certain resources, on the grounds that the cost of prevention
 exceeded the cost of the occasional reboot.
 

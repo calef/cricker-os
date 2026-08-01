@@ -8214,7 +8214,7 @@ mod tests {
     /// The loader honours the file's permissions, and does not widen them.
     ///
     /// An ELF's `.rodata` segment is `PF_R` alone. The tempting shortcut is to map every
-    /// non-executable segment as `user_data()`, which is **writable** — quietly granting the
+    /// non-executable segment as `user_data()`, which is **writable**: quietly granting the
     /// program authority its own file never asked for.
     #[test_case]
     fn a_read_only_segment_is_mapped_read_only() {
@@ -9096,7 +9096,7 @@ mod tests {
     ///
     /// A worker process is started at EL0 with an argument, computes `n*n`, reports the result on
     /// an endpoint it was handed, and exits. The whole lifecycle a shell drives when you type
-    /// `run n` — minus the interactive loop, which is exercised by the piped demo instead.
+    /// `run n`, minus the interactive loop, which is exercised by the piped demo instead.
     #[test_case]
     fn a_spawned_worker_process_computes_and_reports() {
         let result = sched::create_endpoint();

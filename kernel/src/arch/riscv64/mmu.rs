@@ -232,7 +232,7 @@ const SATP_ASID_WIDTH: u32 = 16;
 /// numbers, "below even the smallest hardware ASID space (8-bit, 256)". That holds on aarch64, where
 /// the architecture *mandates* at least 8 bits. RISC-V mandates none. On a machine with zero
 /// implemented bits, every one of the 160 address spaces would carry ASID 0 in hardware and their
-/// TLB entries would **alias** — one process reading another's memory, with nothing to signal it.
+/// TLB entries would **alias**: one process reading another's memory, with nothing to signal it.
 ///
 /// The reason that has not bitten us is an accident: `write_satp` follows every `csrw satp` with an
 /// unconditional `sfence.vma`, throwing the whole TLB away on each switch, so no entry ever survives
@@ -240,7 +240,7 @@ const SATP_ASID_WIDTH: u32 = 16;
 /// Whoever removes it (see notes/riscv-arch-tests.md) must gate that on this probe.
 ///
 /// The probe writes ones into the ASID field of the *current* `satp`, leaving MODE and PPN alone, and
-/// reads back which bits stuck. The address space is unchanged throughout — only the tag moves — so
+/// reads back which bits stuck. The address space is unchanged throughout (only the tag moves), so
 /// the worst case is TLB misses that re-walk the same page table and find the same mappings.
 fn probe_asid_bits() -> usize {
     let original = read_satp();
@@ -731,7 +731,7 @@ mod tests {
     /// **The hardware must implement at least 8 `satp.ASID` bits, because `crates/asid` assumes it.****
     ///
     /// Not a curiosity test. `asid::ASIDS` is 256 and its header justifies that as "below even the
-    /// smallest hardware ASID space (8-bit, 256)" — true of aarch64, which mandates 8 bits, and
+    /// smallest hardware ASID space (8-bit, 256)": true of aarch64, which mandates 8 bits, and
     /// **not guaranteed by RISC-V at all**, which permits zero. With zero implemented bits every
     /// address space carries ASID 0 in hardware and their TLB entries alias, which is one process
     /// reading another's memory.
@@ -739,7 +739,7 @@ mod tests {
     /// This passes on QEMU. It exists for the board: if a real core implements fewer than 8 bits
     /// this fails loudly at boot, rather than the ASID allocator quietly handing out numbers the
     /// hardware cannot tell apart. Today the unconditional `sfence.vma` in `write_satp` masks the
-    /// whole problem by discarding the TLB on every switch — which is exactly why removing that
+    /// whole problem by discarding the TLB on every switch, which is exactly why removing that
     /// flush has to be gated on this number.
     #[test_case]
     fn the_hardware_has_at_least_the_asid_bits_the_allocator_assumes() {

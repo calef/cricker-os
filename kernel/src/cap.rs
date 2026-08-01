@@ -60,7 +60,7 @@ pub enum Object {
 
     /// **A device's MMIO page**, by physical address (milestone 19d.2): a delegatable authority
     /// to map a *specific* device's registers, **device-typed** (nGnRnE, uncacheable, unreordered
-    /// — the only attributes MMIO tolerates). The kernel mints one per known device (it alone
+    ///: the only attributes MMIO tolerates). The kernel mints one per known device (it alone
     /// knows device physical addresses) and hands it to init; init delegates it to the driver it
     /// builds and maps it into that driver's space. This is what turns "the kernel maps the UART
     /// at spawn" into "device access is a capability", so a userspace init can bring up drivers.
@@ -99,7 +99,7 @@ pub enum Object {
     /// A virtio device's **transport**, by id (into the kernel's virtio device table).
     ///
     /// The DMA-confinement capability. The device has no IOMMU, so the kernel keeps the two
-    /// DMA-critical powers — programming the queue's ring addresses and ringing the device — and
+    /// DMA-critical powers (programming the queue's ring addresses and ringing the device) and
     /// validates that every descriptor stays within the driver's own DMA region before the device
     /// sees it. The holder drives the device (status, features, submit) through this, but cannot
     /// point it outside its region. See kernel/src/virtio.rs.

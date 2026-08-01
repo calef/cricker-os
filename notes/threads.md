@@ -20,8 +20,8 @@ pub struct Thread {
 }
 ```
 
-**A suspended thread's whole CPU state is one stack pointer.** Everything else — the registers,
-the return address, the frame pointer — is sitting on the stack it points at, pushed there by
+**A suspended thread's whole CPU state is one stack pointer.** Everything else: the registers,
+the return address, the frame pointer: is sitting on the stack it points at, pushed there by
 `switch_to`. Eight bytes.
 
 ## The context switch is fifteen instructions
@@ -59,14 +59,14 @@ A context switch is a function call that returns somewhere else.
 arbitrary instructions and the interrupted code has no idea.
 
 `switch_to` is an ordinary **function call**. AAPCS64 already says the caller must assume
-`x0`–`x18` are destroyed by any call it makes — the compiler has already spilled anything it
+`x0`–`x18` are destroyed by any call it makes: the compiler has already spilled anything it
 cared about. So we save only what the convention promises a callee will preserve: `x19`–`x28`,
 `x29` (frame pointer), `x30` (link register), and `sp`.
 
 That isn't an optimization we invented. It falls out of the calling convention, and it is why
 real kernels have both a trap frame *and* a much cheaper voluntary switch.
 
-(And no floating-point registers, because the kernel is `softfloat` — a decision made at
+(And no floating-point registers, because the kernel is `softfloat`: a decision made at
 milestone 1 for a completely unrelated reason. `d8`–`d15` simply do not appear.)
 
 ## Starting a thread that has never run
@@ -77,7 +77,7 @@ fresh stack with `x30` pointing at `thread_trampoline`.
 Which means the very same `ret` that *resumes* an existing thread also *starts* a new one.
 **There is no separate first-run path.** The trampoline just happens to be what `x30` points at.
 
-The closure travels in `x19` — a callee-saved register, chosen precisely because `switch_to`
+The closure travels in `x19`: a callee-saved register, chosen precisely because `switch_to`
 restores it on the way in.
 
 > `Box<dyn FnOnce()>` is a **fat** pointer (data + vtable), two words, and we have one register.
@@ -87,7 +87,7 @@ restores it on the way in.
 
 A brand-new thread must unmask interrupts by hand: we arrive from inside the timer IRQ handler (or
 a `schedule()` that ran there), IRQs masked, and unlike a *resumed* thread there is no `SPSR_EL1`
-to restore the interrupt state from — the thread was never interrupted, it has never run at all.
+to restore the interrupt state from: the thread was never interrupted, it has never run at all.
 Without unmasking, the first thread you spawn runs with interrupts masked forever, never preempted:
 a cooperative scheduler with extra steps.
 
@@ -96,7 +96,7 @@ notes/deadlock.md): the trampoline first called `thread_entry`, whose first act 
 and it unmasked interrupts **before** that call. `finish_switch` reaps the predecessor and completes
 any wake it deferred, by reading this core's `switched_from`. If a timer IRQ lands between an early
 unmask and `finish_switch`, it runs `schedule()`, which **overwrites `switched_from` with the fresh
-thread** — the predecessor is stranded. Its `on_cpu` never clears, so every future wake for it is
+thread**: the predecessor is stranded. Its `on_cpu` never clears, so every future wake for it is
 deferred forever (`wake_pending` set, never completed). It blocks on some later IPC and never wakes.
 
 So the ordering is load-bearing:
@@ -134,10 +134,10 @@ if sched::take_need_resched() {
 ```
 
 We're still on the interrupted thread's kernel stack, with its **full TrapFrame sitting below
-us** — `vectors.s` saved it before Rust ever ran.
+us**: `vectors.s` saved it before Rust ever ran.
 
 `schedule()` may switch to another thread entirely. When it does, that call **does not return
-here**. It returns *in some other thread*. We come back only when somebody schedules us again —
+here**. It returns *in some other thread*. We come back only when somebody schedules us again,
 and then `exception_restore` pops the TrapFrame and `eret` resumes the instruction we
 interrupted, **which never knew any of this happened.**
 
@@ -156,7 +156,7 @@ thread that can only be scheduled by taking the lock. A deadlock that would take
 **2. Interrupts stay masked across the switch.** Between "I decided to switch" and "I switched"
 there must be no window for the timer to decide *again*.
 
-And the saved interrupt state is a **local, on this thread's stack** — which is exactly what
+And the saved interrupt state is a **local, on this thread's stack**, which is exactly what
 makes it work. When somebody eventually switches back to us, `switch_to` returns into
 `schedule()`, and that frame, with the right `was_enabled` in it, is still sitting where we left
 it.
@@ -167,7 +167,7 @@ something called a reaper, and this is why.
 
 ## The address-space leak that hid behind a two-frame test failure
 
-The reaper test failed with **two frames leaked** — not thirty-two. So the stacks *were* being
+The reaper test failed with **two frames leaked**, not thirty-two. So the stacks *were* being
 freed.
 
 The two were **page tables**. The stack area is a fresh region of virtual address space, so the

@@ -125,15 +125,15 @@ pub fn find_block_device_n(n: usize) -> Option<VirtioMmioDevice> {
 // The device does DMA against raw physical addresses with no IOMMU in front of it, so page-table
 // permissions do not apply to it. If a userspace driver could program the queue and ring the
 // device itself, it could point the device at any physical address (the kernel, another process)
-// and the device would read or write it. So the kernel keeps the two DMA-critical powers — the
-// queue's ring addresses and the "go" signal — and **validates that every address the device
+// and the device would read or write it. So the kernel keeps the two DMA-critical powers: the
+// queue's ring addresses and the "go" signal, and **validates that every address the device
 // will touch lies within the driver's own DMA region** before letting it proceed. The driver
 // still builds its own requests in its own region and reads its own results; it simply cannot
 // aim the device anywhere else.
 //
 // This is the software stand-in for an IOMMU. It is not generic (it understands the virtqueue
 // *transport*: the descriptor table and the available ring), but it knows nothing about block
-// devices — the request format, sectors, and results stay in the userspace driver.
+// devices: the request format, sectors, and results stay in the userspace driver.
 // ---------------------------------------------------------------------------------------------
 
 use crate::sync::{IrqSafeMutex, rank};

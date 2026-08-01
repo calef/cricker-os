@@ -57,7 +57,7 @@ virtualization, and the machine overruled us.
 
 ### 2. Semihosting is emulation, not hardware (so tests stay on TCG)
 
-Under HVF, the test build trapped again, at `hlt #0xf000` — the **semihosting** instruction. QEMU
+Under HVF, the test build trapped again, at `hlt #0xf000`: the **semihosting** instruction. QEMU
 implements semihosting in its TCG translator: it recognizes the instruction while translating and
 handles the call itself. Under HVF the guest runs natively, so `hlt #0xf000` executes on the real
 core and traps to the *guest's own* EL1 handler; QEMU never sees it. Semihosting is a property of

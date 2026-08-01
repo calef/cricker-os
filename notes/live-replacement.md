@@ -148,7 +148,7 @@ number.
 |---|---|---|---|
 | 0 (default) | the shared endpoint; no process in the path | **zero** (`call_reply`) | lifecycle, at the price of blocking the caller during the window |
 | 1 (opt-in) | `broker`, a queue-server process | **1.99x** a direct call, ~1.2 us under HVF | lifecycle, with the producer never blocking |
-| 2 | a durable broker that writes the backlog to storage | — | its own crash. **Not built.** |
+| 2 | a durable broker that writes the backlog to storage |: | its own crash. **Not built.** |
 
 `broker` is pass-through when both ends are up: it forwards the two words and hands the backend's
 answer straight back, holding the client's `Reply` capability across the hop. When the operator tells

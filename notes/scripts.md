@@ -10,7 +10,7 @@ uses `cargo xtask` and that one uses `make` and the next uses `npm`.
 
 | script | what it does |
 |---|---|
-| `script/bootstrap` | Install every dependency: the pinned Rust toolchain (via rustup, from `rust-toolchain.toml`) and QEMU. Idempotent — it checks first and installs only what is missing. |
+| `script/bootstrap` | Install every dependency: the pinned Rust toolchain (via rustup, from `rust-toolchain.toml`) and QEMU. Idempotent: it checks first and installs only what is missing. |
 | `script/setup` | First run after a clone: `bootstrap`, then build. |
 | `script/update` | After pulling new code: `bootstrap` (the pinned toolchain can change), then rebuild. |
 | `script/decisions` | Index DECISIONS.md; `--check` enforces unique section numbers and that every `§N` cited anywhere in the tree resolves. Gated in `script/lint`. |
@@ -23,7 +23,7 @@ uses `cargo xtask` and that one uses `make` and the next uses `npm`.
 | `script/ci-qemu` | CI only, Linux only: build the pinned QEMU into a cacheable prefix, because Ubuntu 24.04's 8.2 has no `riscv-iommu-pci` and apt cannot go newer. |
 | `script/drift [nightly-YYYY-MM-DD]` | Does a toolchain still build us? Bare-metal build plus the host-logic tests. With no argument it checks the pin, which makes it a fast health check; given a nightly it checks that one, which is what the daily `toolchain drift` workflow does with the newest. |
 | `script/toolchain-bump [YYYY-MM-DD]` | Raise the pinned nightly, with evidence: install, rebuild the std farm from scratch, run every gate. Restores the old pin if anything fails, because a half-applied toolchain bump is worse than none. Run it when the daily `toolchain drift` workflow goes red. |
-| `script/test` | Run the suite — the host-logic crates in milliseconds, then the kernel under QEMU. The fast inner loop; assumes `setup` has run. |
+| `script/test` | Run the suite: the host-logic crates in milliseconds, then the kernel under QEMU. The fast inner loop; assumes `setup` has run. |
 | `script/cibuild` | What CI runs: `bootstrap` (a CI runner starts bare), then the tests. |
 | `script/server` | Boot the OS in QEMU (the milestone tour, then the shell). An OS is the thing you *start*, so it is `server`. |
 | `script/console` | Boot straight to the interactive shell at EL0. For this project the console is literally a shell running as an unprivileged process. |
@@ -59,8 +59,8 @@ runner where cargo already expects it (`.cargo/config.toml` points at `scripts/q
 was cheaper than moving it.
 
 **`bootstrap` installs system packages.** Running `script/bootstrap` will `brew install qemu` on
-macOS or `apt-get install` on Linux if QEMU is missing. That is the pattern's intent — a fresh
-clone should be one command from working — but it is also why `script/test` does *not* call
+macOS or `apt-get install` on Linux if QEMU is missing. That is the pattern's intent: a fresh
+clone should be one command from working, but it is also why `script/test` does *not* call
 `bootstrap` every time: re-checking a package manager on every inner-loop test run is a poor
 trade. `setup`/`update` do the heavy dependency work; `test` stays fast; `cibuild` provisions
 because CI has nothing to start with.

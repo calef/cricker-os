@@ -173,7 +173,7 @@ is the elf lesson reused: prove (and here, harden) the loopless leaves; the walk
 
 Six in `crates/ipc/src/lib.rs`, the synchronous-rendezvous state machine (the decision core of
 `sched.rs`'s `Endpoint`, extracted as pure logic; **restated over the intrusive queues** at
-milestone 14 phase A.3, so the rewire did not demote proved code back to argued code — the same
+milestone 14 phase A.3, so the rewire did not demote proved code back to argued code: the same
 six properties, now over real `intrusive::Fifo`s with TCB-shaped nodes, composing with the
 `Fifo`'s own FIFO proof below):
 
@@ -201,16 +201,16 @@ the way into the running kernel rather than staying in a host crate.
 (DECISIONS §12) decomposes into three legs, and it is worth recording which kind of evidence each
 one rests on:
 
-1. **The endpoint forgets a collected caller** — `a_collected_sender_is_forgotten` in `crates/ipc`.
+1. **The endpoint forgets a collected caller**: `a_collected_sender_is_forgotten` in `crates/ipc`.
    A `CALL`er queues as a sender and blocks; the server's receive pops it destructively, so from
    that moment the kernel-minted Reply capability is the *only* name for the blocked caller
    anywhere in the system. (The caller is never in the receiver queue: `ipc_call` does not `recv`,
    and a blocked thread cannot run to enqueue itself again.)
-2. **Consume-on-use is final** — `a_deleted_capability_stays_deleted` and
+2. **Consume-on-use is final**: `a_deleted_capability_stays_deleted` and
    `delete_touches_only_its_slot` in `crates/caps`. The syscall layer deletes the Reply capability
    the instant it is invoked; the proofs say no table state exists in which the consumed slot can
    be invoked again, and consuming one caller's Reply cannot disturb another's.
-3. **The capability cannot be duplicated or delegated** — structural, not a harness. There is no
+3. **The capability cannot be duplicated or delegated**: structural, not a harness. There is no
    syscall that copies a capability within a cspace (`CSpace::derive` is kernel-internal), and the
    only cap-moving syscall, `SEND_CAP`, requires `GRANT`, which `reply_cap` deliberately never
    mints. This leg lives in the shape of the syscall surface (§4: narrow and explicit), so it is

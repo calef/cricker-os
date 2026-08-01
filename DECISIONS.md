@@ -86,7 +86,7 @@ precise claim is narrower and stronger:
 
 Go's goroutines were originally **cooperative**. They yielded at function calls, via the
 stack-growth check in every function prologue. And Go owns its compiler, owns its runtime, and
-compiles **every line that executes** — every assumption async needs, satisfied.
+compiles **every line that executes**: every assumption async needs, satisfied.
 
 It still didn't work. A goroutine in a **tight loop with no function calls** never yields. The
 garbage collector's stop-the-world could never stop it. The program hangs.
@@ -105,7 +105,7 @@ kernel running arbitrary ELF binaries certainly cannot.
 | Direction | Cost |
 |---|---|
 | threads → async | **additive.** Run an executor on top. Nothing is thrown away. |
-| async → threads | **a rewrite.** You need per-task stacks and a context switch — exactly what the executor existed to avoid. The executor goes in the bin. |
+| async → threads | **a rewrite.** You need per-task stacks and a context switch: exactly what the executor existed to avoid. The executor goes in the bin. |
 
 When one direction is cheap and the other is a rewrite, take the one that keeps the option
 open. That generalizes well beyond this decision.
@@ -239,8 +239,8 @@ equal rank means we declared no order between them, so nesting would be picking 
 
 The nestings this permits are the ones that actually happen:
 
-- **SLAB (50) → FRAMES (30)** — a size class runs dry and takes a page while holding its lock.
-- **anything → CONSOLE (10)** — a panic prints while holding a lock. Which is *why* the console
+- **SLAB (50) → FRAMES (30)**: a size class runs dry and takes a page while holding its lock.
+- **anything → CONSOLE (10)**: a panic prints while holding a lock. Which is *why* the console
   must be the leaf.
 
 The panic path calls `sync::force_reset_ranks()` alongside `console::force_unlock()`. Panicking
@@ -642,10 +642,10 @@ the reply handle. That is fine under §10's rule that IPC carries control and bu
 
 ### What it buys, as kernel guarantees rather than server discipline
 
-1. **Reply to an anonymous caller, no pre-wiring** — the kernel mints the cap; the server never knew
+1. **Reply to an anonymous caller, no pre-wiring**: the kernel mints the cap; the server never knew
    the caller.
-2. **One-shot** — consumed on use, so a second reply is `NoSuchSlot`. No double reply, no hoarding.
-3. **This caller, not another** — `Reply(Tid)` names the exact blocked caller; misrouting is
+2. **One-shot**: consumed on use, so a second reply is `NoSuchSlot`. No double reply, no hoarding.
+3. **This caller, not another**: `Reply(Tid)` names the exact blocked caller; misrouting is
    unrepresentable.
 
 Three tests hold the line: `a_call_gets_a_reply` (round trip, one endpoint), `a_reply_reaches_the_
@@ -829,14 +829,14 @@ endgame, and POSIX posture). The entries here remain the detailed source for eac
   device interrupts specifically (least-loaded, ties to the current core) while keeping IPC rendezvous
   wakes local. See §28 and notes/scheduler.md. Kept for the record of the reasoning that led there.
 
-- [Microarchitecture-variant binaries](design/fat-binaries.md) — our targets straddle the
+- [Microarchitecture-variant binaries](design/fat-binaries.md): our targets straddle the
   ARMv8.0 / ARMv8.2 line (no LSE atomics on Cortex-A72, LSE on everything newer), and with
   no libc we can't lean on LLVM's `outline-atomics` to paper over it. Milestone 6 forces
   the kernel-atomics question; milestone 7 is where a fat userspace format would be
   decided. Feature detection via the `ID_AA64ISAR*_EL1` registers is worth building at
   milestone 2 regardless.
 
-- [Driver domains, and the DMA-confinement design space](design/driver-domains.md) — the
+- [Driver domains, and the DMA-confinement design space](design/driver-domains.md): the
   principled version of the DMA hole we closed in software (notes/dma.md): run each driver in its
   own VM with cricker-os as the hypervisor at EL2, and confine its DMA with the SMMU's stage-2. The
   strongest driver isolation there is, and the opposite of a shortcut: it needs EL2, an SMMU
@@ -881,8 +881,8 @@ endgame, and POSIX posture). The entries here remain the detailed source for eac
 
   A granted
   capability cannot be retracted: no capability-derivation tree, no refcount, no `revoke`
-  (untyped.rs). This is **not a memory-safety hole** — frames come from spend-only untyped and
-  teardown never frees a shared leaf, so a surviving peer maps valid, non-reused memory — but it
+  (untyped.rs). This is **not a memory-safety hole**: frames come from spend-only untyped and
+  teardown never frees a shared leaf, so a surviving peer maps valid, non-reused memory, but it
   means you cannot *un-share* a frame from a live peer (only destroy the peer) and never *reclaim*
   the page. seL4's mechanism is a capability-derivation tree plus a recursive `revoke` that unmaps
   the object from every holder; expensive and kernel-tracked, which is why it is a first-class
@@ -891,8 +891,8 @@ endgame, and POSIX posture). The entries here remain the detailed source for eac
 
   **BLOCKING PRECONDITION on any reclamation work.** The "not a memory-safety hole" conclusion
   rests entirely on one invariant: **retyped frames are spend-only and never returned to a reusable
-  pool.** So *any* future reclamation — wiring up `untyped::destroy`, a frame free-list, an
-  allocator that recycles, or the reclaim-on-process-death above — is **blocked on revocation
+  pool.** So *any* future reclamation: wiring up `untyped::destroy`, a frame free-list, an
+  allocator that recycles, or the reclaim-on-process-death above: is **blocked on revocation
   landing first.** The instant a shared frame can be reused while a peer still maps it, every
   dangling mapping this entry calls "harmless" becomes a use-after-free. This is the classic seam:
   two individually-correct changes, months apart, whose *interaction* is the hole. `untyped::destroy`
@@ -2859,14 +2859,14 @@ access goes through `fs_proto`. That is a capability-system property doing real 
 `rename_node_no_replace` already exist in RedoxFS. `fruit:posix_rename` and §42's rename work are
 blocked on `fs_proto` lacking the verb, **not** on the engine.
 
-### Amendment (2026-07-31): the xattr fork is closed — the layer, and it is reversible
+### Amendment (2026-07-31): the xattr fork is closed, the layer, and it is reversible
 
 The amendment above left the mechanism open. **Decided: extended attributes are implemented as a
 layer in the FS server, not as an extension to RedoxFS's on-disk format.**
 
 **The argument that decides it is reversibility, and it outranks the others.** `fs_proto` is the
 contract; whether an attribute lives in a node's on-disk structure or in a store the server manages is
-**invisible above that boundary**. So choosing the layer does not foreclose the format extension — if
+**invisible above that boundary**. So choosing the layer does not foreclose the format extension, if
 attributes later prove central enough to justify diverging from a pinned upstream, or if the change is
 accepted upstream, the implementation moves and no client changes. That makes this a low-regret
 decision rather than a bet, which is the right shape for a mechanism nobody has exercised yet.
@@ -2887,7 +2887,7 @@ The supporting reasons, in order:
 4. **It preserves §34's upstream reason.** The pin stays at 0.9.1 with a two-import divergence patch
    rather than a format fork every future bump would pay for.
 5. **Nothing can bypass it**, because all access goes through `fs_proto`. On Linux this style of layer
-   is worthless — anything can open the file directly — and here it is authoritative. A capability
+   is worthless (anything can open the file directly), and here it is authoritative. A capability
    property doing real work.
 
 **Three things to get right when building it**, recorded now because each is a way to get it subtly
@@ -2899,7 +2899,7 @@ wrong:
   and a later node reusing that pointer inherits them. That is a correctness bug wearing a
   housekeeping costume.
 - **Recovery sees it.** `redoxfs-host extract` and upstream's FUSE mount will show the store as
-  ordinary data. That is acceptable and arguably good — the attributes come out with the backup — but
+  ordinary data. That is acceptable and arguably good (the attributes come out with the backup), but
   it must be a decision rather than a surprise, and `notes/host-recovery.md` should say so.
 
 **What was rejected: extending the on-disk format.** Correct, and atomic by construction, and it costs
@@ -2909,7 +2909,7 @@ deferred. Chris's objection to "patching it in" was right, and the answer is not
 
 ### Amendment (2026-07-30): ZFS and XFS, and why RedoxFS is better-shaped than its size suggests
 
-Chris asked whether OpenZFS is best in class. **For a backup server, yes** — end-to-end checksums with
+Chris asked whether OpenZFS is best in class. **For a backup server, yes**: end-to-end checksums with
 *repair*, snapshots, `send`/`recv`, scrub, no RAID write hole. And it is unavailable to us, for a
 reason worth distinguishing from "too big": at roughly 400k lines of C it would *be* the project, but
 more decisively **it is not a component you confine, it is a subsystem you host.** OpenZFS needs a
@@ -3424,7 +3424,7 @@ just a comment that every reader is guaranteed to read.
 ### The second half: jargon is the same failure
 
 `termd` was to become `linedisc`, the correct Unix term of art. Chris did not recognise the phrase and
-asked what a line discipline is — **and he built this system.** That is decisive evidence about the
+asked what a line discipline is, **and he built this system.** That is decisive evidence about the
 name, not about him: `linedisc` imports vocabulary from exactly the system whose model we rejected,
 which is the `-d` failure wearing a different hat. It became `lineedit`, which someone who has never
 read a tty manual understands immediately and which is accurate about the visible behaviour.
@@ -3853,7 +3853,7 @@ ISA-keyed driver would compile clean and read garbage on the first real board.
   anchor its NTS bootstrap needs.
 - ~~**The unknown-clock path is not proven in the guest.**~~ **Closed 2026-07-31 by `date`**, and the
   way it was closed corrects the reasoning above rather than merely satisfying it. This entry argued
-  the path was untestable because "both QEMU boards always have a working RTC" — but that is a claim
+  the path was untestable because "both QEMU boards always have a working RTC", but that is a claim
   about the *machine*, and what a reader actually tests against is the *page*. **A frame nobody has
   published to is exactly that machine as far as any reader can tell.** So the test allocates one,
   zeroes it, grants it read-only, and requires `date` to say the time is unknown. No absent RTC
@@ -3862,7 +3862,7 @@ ISA-keyed driver would compile clean and read garbage on the first real board.
 
   `date` distinguishes the two causes, because they call for different fixes: *the machine has no
   clock it believes* versus *this process holds no clock capability*. The second is probed **without
-  touching the page** — a process granted no clock has nothing mapped at `CLOCK_VA`, so reading to
+  touching the page**: a process granted no clock has nothing mapped at `CLOCK_VA`, so reading to
   find out would fault instead of answering; it invokes the slot with a method no object defines,
   the same shape as the std PAL's `granted()`.
 
@@ -4049,7 +4049,7 @@ never write. Nothing in between.** Everything in between is written here.
 
 1. **Is it on the verification path?** Then write it. This is the load-bearing reason and it is not
    about pride: **you cannot restructure someone else's crate to make a model checker tractable.**
-   `crates/calendar` is the worked example — the parser gained a byte-level entry point because
+   `crates/calendar` is the worked example: the parser gained a byte-level entry point because
    `from_utf8` made CBMC branch on length every step (ten minutes to seventeen seconds, and a better
    API); monotonicity was rephrased as its induction step over adjacent days (228s to 40s, same
    theorem); `div_euclid` on a symbolic timestamp had to be kept out of the harness entirely. Three
@@ -4093,8 +4093,8 @@ divergence, `vendor-verify` has nothing to prove that `Cargo.lock` does not alre
 
 **And for crypto in particular, vendoring is actively worse.** Advisories are the whole point in that
 category, and `cargo-deny` / `cargo-audit` work against registry versions; a vendored copy is
-invisible to an advisory until a human notices. Milestone 42 named that gap in general terms — "we
-confine code we did not write; an advisory against it is invisible today" — and crypto is where it
+invisible to an advisory until a human notices. Milestone 42 named that gap in general terms: "we
+confine code we did not write; an advisory against it is invisible today", and crypto is where it
 bites hardest. Vendoring it would take on the maintenance burden **and** give up the pipeline that
 makes the burden survivable.
 
@@ -4108,7 +4108,7 @@ So: **crypto is an ordinary dependency**, pinned in `Cargo.lock`, gated by `deny
   skip, and a skipped gate is worse than none, which is the same lesson `script/fmt` taught on
   2026-07-30 from the other direction.
 - Battle-tested libraries have already found the subtle bugs. Our harnesses were validated by
-  falsification (reducing the leap rule to `% 4 == 0` fails in 8s) — that proves they would catch an
+  falsification (reducing the leap rule to `% 4 == 0` fails in 8s): that proves they would catch an
   error, **not that they caught one we had written**. The gain is a quantifier and a better API, not
   bugs found.
 
@@ -4139,7 +4139,7 @@ care rather than being added as another opcode.
 `ENUMERATE`, `READ`, `WRITE`, `CREATE`, `REMOVE`, `DESCEND`. Milestone 47 named five; **`DESCEND` is
 the one it did not, and it earns its rung**. If descending came bundled with reading, granting a
 directory would transitively grant its entire subtree, and **the shape of the tree would decide how
-much authority a grant carried** — ambient authority reintroduced by recursion. A file handle inherits
+much authority a grant carried**: ambient authority reintroduced by recursion. A file handle inherits
 its directory's `READ`/`WRITE`, so "open, read versus write" is structural: what may be done to a file
 was decided when the directory was granted.
 
@@ -4151,15 +4151,15 @@ was decided when the directory was granted.
   §27: `EACCES` implies a policy that could have said yes, and there is no policy here.
 - `ENUMERATE` withheld answers `EPERM`, the one rung where neither works. "No such name" is nonsense
   when you hold the directory, and an empty listing would be **a lie about the directory rather than a
-  fact about the capability** — §42's silent degradation exactly.
+  fact about the capability**: §42's silent degradation exactly.
 
 ### Attenuation is by construction, not by check
 
 `Rights::attenuate` is `parent & requested` and is **the only constructor** for a non-root rights set
 (`Rights::root` is called once, by the mount). There is no widening path to forget. The server also
 refuses when the intersection is smaller than the request, but that is *truthfulness, not safety*:
-delete it and the property still holds. Proven three ways — Kani at one and two levels, host tests,
-and a guest probe — and falsified first: returning `Rights(requested)` turns 3 host tests and 2
+delete it and the property still holds. Proven three ways: Kani at one and two levels, host tests,
+and a guest probe, and falsified first: returning `Rights(requested)` turns 3 host tests and 2
 harnesses red.
 
 ### The structural finding: the handle is the authority, the endpoint is the boundary
@@ -4169,7 +4169,7 @@ only its holder: **anyone holding the FS-service endpoint can name `fs::ROOT` an
 root.** That is why `dwarden` exists, and it is the same wall `fwarden` hit (no badged endpoints, one
 receive per server).
 
-`dwarden` performs **no rights checks at all** — one `OPENDIR` at startup, then pure handle-namespace
+`dwarden` performs **no rights checks at all**: one `OPENDIR` at startup, then pure handle-namespace
 translation. The attenuation lives entirely in the handle the server minted. **A stronger story than
 `fwarden`'s**, which does inspect requests: there is no check to get wrong.
 
@@ -4178,7 +4178,7 @@ translation. The attenuation lives entirely in the handle the server minted. **A
 `dwarden` panicked in its own `_start` on riscv64 and passed on aarch64. Three processes share one
 frame, justified by `fwarden`'s argument that every request on both hops is a blocking `CALL`, so a
 client is parked inside its own call while the warden uses the page. **That holds once the warden is
-serving and not at startup**, where the warden stages the granted name and then blocks — and a
+serving and not at startup**, where the warden stages the granted name and then blocks, and a
 confined program that already exists overwrites it.
 
 In the failing case it is not even a race: when the wiring call also wires the FS service, the server
@@ -4197,7 +4197,7 @@ cuts inside it, with both names in `NAMES` so "both" and "neither" fail. Milesto
 (`fruit:posix_rename`).
 
 Not offered, each refused loudly rather than silently: `renameat2`'s `EXCHANGE`/`NOREPLACE` (§42),
-cross-filesystem move, and moving a **directory** between directories (`EINVAL` — POSIX's cycle guard
+cross-filesystem move, and moving a **directory** between directories (`EINVAL`: POSIX's cycle guard
 is a path-prefix test and this contract has no paths). Two kind checks are ours rather than the
 engine's: RedoxFS's `rename_node` will rename a file over a directory.
 
@@ -4215,14 +4215,14 @@ unrenamed name**. **No in-guest verdict could report that.**
 **Built 2026-07-31** (milestone 47). Concept note: notes/shell-navigation.md. Rests on §47's
 directory-capability keystone.
 
-`cd`, `pwd`, `ls`, `mkdir` and `rm` are **shell builtins, not programs** — the same category as
+`cd`, `pwd`, `ls`, `mkdir` and `rm` are **shell builtins, not programs**: the same category as
 `caps`. They spawn nothing, need no grant, and confer no authority, because the shell is reading and
 rebinding what it already holds. That also retires a worry raised while designing `ls`: a listing
 *program* would be over-granted, holding the power to read everything it lists. It is not a program.
 
 ### The headline, and it is demonstrated rather than argued
 
-**Two shells holding different subtrees cannot name each other's files** — not by policy, but because
+**Two shells holding different subtrees cannot name each other's files**, not by policy, but because
 no capability reaching them exists. `two_shells_with_different_roots_cannot_name_each_others_files`
 runs the **real shell binary** in a scripted role on both ISAs. Neither shell is told which subtree it
 holds; each tries `sub/inner` and `other/secret` and reports what it reached, so the property is read
@@ -4234,7 +4234,7 @@ post-run image for both subtrees from outside the guest entirely.
 
 The shell holds a **stack of the directory capabilities it descended through**, one per level. `..`
 pops one; at the root there is nothing to pop, so **no request is made at all**. The FS server would
-also refuse `..` as a component, so the two mechanisms agree without either depending on the other —
+also refuse `..` as a component, so the two mechanisms agree without either depending on the other,
 and the clamp is not a string check that could be spelled around. A path is validated against a copy
 of the position before anything is sent, so `cd ../../..` from one level down is refused whole and
 moves nothing.
@@ -4260,7 +4260,7 @@ capability goes stale.
 
 The first implementation was a revoke, and the machine said so: RedoxFS frees a node the instant its
 last link goes, so a read after unlink got `ENOENT` from a deallocated node. **The engine already had
-Unix's deferred delete — `on_open_node`/`on_close_node` and a release list — and nothing was using
+Unix's deferred delete (`on_open_node`/`on_close_node` and a release list), and nothing was using
 it.** Registering on open and deregistering on close is what makes the verb an unlink; deleting either
 half turns the test red.
 
@@ -4306,7 +4306,7 @@ explicit attenuated grant.
 ### The result worth the whole milestone
 
 `DirSpec::Required { subtree_flag: Some(b'r') }`. Without the flag the capability carries authority to
-take names out of one directory **and nothing else** — it cannot list beneath a subdirectory and
+take names out of one directory **and nothing else**: it cannot list beneath a subdirectory and
 cannot descend into one. Typing `-r` widens it to walking what is underneath.
 
 > **A program run without `-r` holds no way to descend, so its recursion is not disabled by a branch
@@ -4325,7 +4325,7 @@ Not revocation, for §48's reason: the handle table is per *server*, so handles 
 for clients the server cannot enumerate.
 
 `rm -r` needs `ENUMERATE`, `DESCEND` and `REMOVE` **at every level**, so the walk stops exactly where
-the capabilities stop — structurally, not by a check.
+the capabilities stop: structurally, not by a check.
 
 **`rm(1)` ships a literal special case** ("it is an error to attempt to remove the files `/`, `.` or
 `..`") because Unix needs one. We need none: a shell holding a subtree cannot name the root, so there
@@ -4349,7 +4349,7 @@ thing actually does, not against what its name suggests.
 ### The fixture detail that makes `-f` testable at all
 
 `RM_MISSING` is a name the fixture **never stages**, asserted by a host test. Without that, the `-f`
-run and the plain run are indistinguishable — the whole of `-f` is that a name which is not there is
+run and the plain run are indistinguishable: the whole of `-f` is that a name which is not there is
 not an error, so a fixture that accidentally staged it would make the test pass while proving nothing.
 
 ## 50. Namespace composition (`bind`), not stored paths
@@ -4358,7 +4358,7 @@ not an error, so a fixture that accidentally staged it would make the test pass 
 and `ln` were worked through; this settles the mechanism and the name together, because choosing the
 mechanism is what made the name available.
 
-**We do not get symbolic links. We get `bind`** — a process composes its own namespace, and thereafter
+**We do not get symbolic links. We get `bind`**: a process composes its own namespace, and thereafter
 a name resolves where it attached it. Plan 9's answer, and Plan 9 reached it from the premises this
 project already adopted: per-process namespaces, no global root, resolution against what you hold.
 
@@ -4366,7 +4366,7 @@ project already adopted: per-process namespaces, no global root, resolution agai
 
 **A stored path is somebody else's decision embedded in your lookups.** Whoever created the entry
 decided that this name redirects, and every later reader inherits that decision. It cannot *escalate*
-— §48's resolution rules bound it to what the holder already reaches — but it is still another
+(§48's resolution rules bound it to what the holder already reaches), but it is still another
 party's data steering your resolution. **With `bind`, the composition is yours**, and nobody can plant
 anything in a view you assembled. For a system whose whole claim is that authority comes from what you
 were handed, that is not a small difference.
@@ -4374,19 +4374,19 @@ were handed, that is not a small difference.
 ### The naming search is evidence, not an anecdote
 
 Twenty-eight-plus candidates were worked before this decision, and **the search terminated without a
-winner** — the last dozen produced no new failure modes at all. The families sorted cleanly:
+winner**: the last dozen produced no new failure modes at all. The families sorted cleanly:
 
-- **Mirror** (`mirror`, `reflection`, `erised`, `matsuyama`, `speculum`, `glass`, `scryer`) — the
+- **Mirror** (`mirror`, `reflection`, `erised`, `matsuyama`, `speculum`, `glass`, `scryer`): the
   *right* property, viewer-dependence, and every word already spent by computing: `mirror` is a
   replica, `reflection` is runtime introspection, `echo` is a shell builtin we ship, `parallel` is
   concurrency. **Physical-optics vocabulary has been comprehensively borrowed**, so the one metaphor
   that fits has no available word.
-- **Window** (`aperture`, `pane`, `casement`, `oculus`, `fenestra`) — available words, *wrong*
+- **Window** (`aperture`, `pane`, `casement`, `oculus`, `fenestra`): available words, *wrong*
   property: an opening shows the same thing to everyone who looks through it.
 - **Concealment** (`costume`, `disguise`, `veneer`, `front`, `mask`, `curtain`, `screen`, `patina`,
-  `whitewash`) — wrong property *and* they imply an underlying thing being covered, when there is
+  `whitewash`): wrong property *and* they imply an underlying thing being covered, when there is
   nothing underneath.
-- **Road** (`route`, `alley`, `way`, `parkway`, `tread`) — a road leads somewhere fixed regardless of
+- **Road** (`route`, `alley`, `way`, `parkway`, `tread`): a road leads somewhere fixed regardless of
   who walks it.
 - **`alias`** was semantically closest and collides twice, once with zsh and once with macOS's
   object-tracking Finder alias, which is its inverse. **`harmonic`** cleared every test and failed on
@@ -4398,7 +4398,7 @@ winner** — the last dozen produced no new failure modes at all. The families s
 **The asymmetry decided it.** The construct resisted naming for fifty years because it is a poor fit
 for any familiar relationship. `bind` needed no search at all: the mechanism already has a name, in
 Plan 9 and in Linux's `mount --bind`, and using it *claims* "this is that", which is true. Inventing a
-synonym would have failed §39 in a novel way — asserting novelty where there is none. **One of these
+synonym would have failed §39 in a novel way: asserting novelty where there is none. **One of these
 is a well-trodden idea; the other is a thing nobody has managed to name.**
 
 ### What this costs, and the escape hatch if it bites
@@ -4407,7 +4407,7 @@ A bind lives in a namespace and dies with it. **A stored path is on the disk**, 
 exactly one case: faithfully representing *someone else's* filesystem.
 
 **Whether milestone 55 needs that is unverified and should be checked before it decides anything.**
-Time Machine writes a **sparse bundle** — a set of band files — so a Mac's own symlinks live *inside*
+Time Machine writes a **sparse bundle** (a set of band files), so a Mac's own symlinks live *inside*
 that image and the server sees opaque blocks. If that holds, the fidelity argument never arises.
 
 If interop does demand it, the answer is **an inert stored path: store the bytes, return the bytes,
@@ -4533,7 +4533,7 @@ about the two namespaces, not an optimization in one of them.
 ## Reading
 
 - **The seL4 manual**, and Klein et al., *seL4: Formal Verification of an OS Kernel* (SOSP'09)
-- **Liedtke**, *On µ-Kernel Construction* (SOSP'95) — why Mach was slow and why that was not a law
+- **Liedtke**, *On µ-Kernel Construction* (SOSP'95): why Mach was slow and why that was not a law
 - **xv6 book** (MIT, ~100pp) for how a real Unix-shaped kernel is structured. Read it as the
   road not taken (§10), not as a template.
 - `rust-raspberrypi-OS-tutorials` for the aarch64-specific mechanics
