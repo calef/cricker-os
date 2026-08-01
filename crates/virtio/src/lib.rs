@@ -1,3 +1,4 @@
+#![no_std]
 //! A virtio-blk driver. **At EL0.**
 //!
 //! This is milestone 9's headline: a real block device, driven by an unprivileged process. The
@@ -15,10 +16,10 @@
 //! descriptor table and the two rings, negotiated through the registers below. See the virtio
 //! 1.x spec, sections 4.2 (MMIO) and 5.2 (block).
 
-use crate::{check, invoke, send};
 use abi::irq;
 use fs_proto::blk;
 use user_rt::exit;
+use user_rt::{invoke, send};
 
 // The kernel maps the DMA page at this fixed VA (must match kernel/src/user.rs virtio_service).
 // The device REGISTERS are NOT mapped: we drive the device through a `Virtio` capability (slot 2),
@@ -134,7 +135,7 @@ fn init() {
 /// passes 0; the indirect attacker passes `F_INDIRECT_DESC_LO` to try to negotiate indirect
 /// descriptors (the kernel strips it, proving negotiation is filtered).
 fn init_with_features(driver_features_lo: u32) {
-    check(mr(MAGIC) == 0x7472_6976); // "virt": we really are talking to a virtio device
+    assert!(mr(MAGIC) == 0x7472_6976); // "virt": we really are talking to a virtio device
 
     mw(STATUS, 0);
     mw(STATUS, S_ACKNOWLEDGE);
@@ -160,10 +161,10 @@ fn init_with_features(driver_features_lo: u32) {
     mw(DRIVER_FEATURES, ack_hi);
 
     mw(STATUS, S_ACKNOWLEDGE | S_DRIVER | S_FEATURES_OK);
-    check(mr(STATUS) & S_FEATURES_OK != 0);
+    assert!(mr(STATUS) & S_FEATURES_OK != 0);
 
     // SAFETY: `svc`; the layout constants (OFF_DESC/AVAIL/USED) are the contract the kernel uses.
-    check(unsafe { invoke(VIRTIO, abi::virtio::SETUP_QUEUE, QSIZE as u64, 0, 0) } == 0);
+    assert!(unsafe { invoke(VIRTIO, abi::virtio::SETUP_QUEUE, QSIZE as u64, 0, 0) } == 0);
 
     mw(
         STATUS,
@@ -182,7 +183,7 @@ pub fn run(dma_phys: u64) -> ! {
     for (i, b) in magic.iter_mut().enumerate() {
         *b = dma_read::<u8>(OFF_DATA + i as u64);
     }
-    check(&magic == b"CRKR0001");
+    assert!(&magic == b"CRKR0001");
 
     // Walk the directory (still in the block-0 buffer) to find the file named "motd", then read
     // its first data block. This is a **read from a read-only filesystem, off a real disk, by a
@@ -231,7 +232,7 @@ pub fn run_write(dma_phys: u64) -> ! {
     for (i, b) in magic.iter_mut().enumerate() {
         *b = dma_read::<u8>(OFF_DATA + i as u64);
     }
-    check(&magic == b"CRKR0001");
+    assert!(&magic == b"CRKR0001");
     let scratch = find_file(b"scratch").unwrap_or_else(|| report_code(0xE6)) as u64;
 
     // Write the pattern...
@@ -246,7 +247,7 @@ pub fn run_write(dma_phys: u64) -> ! {
     }
     read_block(dma_phys, scratch);
     for i in 0..BLOCK {
-        check(dma_read::<u8>(OFF_DATA + i as u64) == pattern_byte(i));
+        assert!(dma_read::<u8>(OFF_DATA + i as u64) == pattern_byte(i));
     }
     let mut head = [0u8; 8];
     for (i, b) in head.iter_mut().enumerate() {
@@ -259,8 +260,8 @@ pub fn run_write(dma_phys: u64) -> ! {
     for (i, b) in magic.iter_mut().enumerate() {
         *b = dma_read::<u8>(OFF_DATA + i as u64);
     }
-    check(&magic == b"CRKR0001");
-    check(find_file(b"motd").is_some());
+    assert!(&magic == b"CRKR0001");
+    assert!(find_file(b"motd").is_some());
 
     send(REPORT, u64::from_le_bytes(head), 0, 0);
 
@@ -286,7 +287,7 @@ pub fn run_write_abandon(dma_phys: u64) -> ! {
     for (i, b) in magic.iter_mut().enumerate() {
         *b = dma_read::<u8>(OFF_DATA + i as u64);
     }
-    check(&magic == b"CRKR0001");
+    assert!(&magic == b"CRKR0001");
     let scratch = find_file(b"scratch").unwrap_or_else(|| report_code(0xE6)) as u64;
 
     for i in 0..BLOCK {
@@ -599,7 +600,7 @@ fn ip_checksum(off: u64, len: u64) -> u16 {
 /// The virtio-net handshake and both-queue setup. Unlike the disk's `init`, this sets up receive AND
 /// transmit, through the kernel, which places each queue's rings at its own block.
 fn init_net() {
-    check(mr(MAGIC) == 0x7472_6976); // "virt"
+    assert!(mr(MAGIC) == 0x7472_6976); // "virt"
 
     mw(STATUS, 0);
     mw(STATUS, S_ACKNOWLEDGE);
@@ -622,12 +623,12 @@ fn init_net() {
     mw(DRIVER_FEATURES, ack_hi);
 
     mw(STATUS, S_ACKNOWLEDGE | S_DRIVER | S_FEATURES_OK);
-    check(mr(STATUS) & S_FEATURES_OK != 0);
+    assert!(mr(STATUS) & S_FEATURES_OK != 0);
 
     // Both queues, through the kernel: it programs each queue's ring addresses to that queue's block
     // in our DMA region, so we never choose them. SAFETY: `svc`.
-    check(unsafe { invoke(VIRTIO, abi::virtio::SETUP_QUEUE, QSIZE as u64, NET_RX_Q, 0) } == 0);
-    check(unsafe { invoke(VIRTIO, abi::virtio::SETUP_QUEUE, QSIZE as u64, NET_TX_Q, 0) } == 0);
+    assert!(unsafe { invoke(VIRTIO, abi::virtio::SETUP_QUEUE, QSIZE as u64, NET_RX_Q, 0) } == 0);
+    assert!(unsafe { invoke(VIRTIO, abi::virtio::SETUP_QUEUE, QSIZE as u64, NET_TX_Q, 0) } == 0);
 
     mw(
         STATUS,

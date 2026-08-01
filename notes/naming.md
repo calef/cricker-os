@@ -204,11 +204,12 @@ constantly:
 5. **No `#[path]` module is shared by two or more binaries** (CLAUDE.md rule 7). This is the newest
    and the one with teeth: it counts consumers per include target and fires at two. A module with a
    single consumer is an ordinary submodule and is fine, because the rule is about *agreement between
-   binaries*, not file layout. `virtio` is allow-listed **with its reason**, and that entry is a debt
-   rather than an exception: it cannot be a crate as it stands because it reaches back into whichever
-   binary includes it (`use crate::{check, invoke, send}`, where `check` is defined differently by
-   each), which makes it a shared *implementation with a per-binary hook* rather than a shared
-   contract.
+   binaries*, not file layout. The allow-list is **empty**, which is the intended steady state.
+   `virtio` was its one entry for about an hour: it could not be a crate while it reached back into
+   whichever binary included it for `check`, and the resolution was to **delete `check`** rather than
+   pass it in. Rust already has the per-binary "how this program dies" hook, `#[panic_handler]`, and
+   both binaries already had one executing the same instruction by two different routes. An entry
+   here needs a reason of that calibre.
 
 Everything else here is prose because it needs judgement and no checker can supply it. In particular
 **a checker cannot catch the jargon half of §39**: `linedisc` would have passed all four rules above.

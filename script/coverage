@@ -66,14 +66,19 @@ awk -F: -v floor="$floor" '
         # so the flags on the run above keep them out of the RUN but not out of this report; the
         # exemption has to be stated here to have any effect.
         #
-        # Both are thin wrappers over the user_rt syscalls (build a child, quiesce a component), so
+        # All three need a kernel underneath. Two are thin wrappers over the user_rt syscalls (build a
+        # child, quiesce a component); virtio is a driver whose seven entry points each orchestrate a
+        # live device. Its security-critical part is already elsewhere and already tested: the
+        # descriptor-ring validation is crates/dma_validate (milestone 35), which is why this file is
+        # thin on pure logic, with two volatile ops in a thousand lines. So
         # every line needs a kernel underneath. They became visible to this gate on 2026-08-01 when
         # rule 7 turned them into crates, having been #[path] modules nothing could measure.
         #
         # **c_seam is deliberately NOT here.** It is pure, and it now carries the test asserting
         # that user/c/cseam.c states the same constants it does. Keep this list to things that
         # physically cannot run, never to things that are merely untested.
-        if (index(file, "/supervision_proto/src/") || index(file, "/swap_proto/src/")) { next }
+        if (index(file, "/supervision_proto/src/") || index(file, "/swap_proto/src/") ||
+            index(file, "/virtio/src/")) { next }
         if (found > 0 && $2 * 100 < found * floor) {
             printf "coverage: %s: %.1f%% line coverage is under the %d%% floor\n",
                 file, $2 * 100 / found, floor
