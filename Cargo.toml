@@ -26,6 +26,7 @@ members = [
     "crates/paging",
     "crates/pci",
     "crates/regions",
+    "crates/sink_proto",
     "crates/intrusive",
     "crates/lineedit",
     "crates/measure",
