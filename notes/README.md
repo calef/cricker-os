@@ -473,7 +473,11 @@ in the code or the conversation doesn't make sense, it belongs here.
   a power cut at every one of 93 write points, the interrupted write torn at four offsets, and a
   device that lies about persistence, plus the controls that prove the injector bites (with the header
   ring's history removed, 92 of 93 fault points stop mounting) and the honest limit (a lying device is
-  never survivable and never silent).
+  never survivable and never silent). Milestone 61 added the **verb table**: one row per opcode in
+  `fs_proto::verb`, saying what a request's words mean and which rights the server demands, so the
+  three caretakers that proxy this contract dispatch off the contract instead of off three
+  hand-written matches, and a verb with no row is a compile error rather than a capability that is
+  quietly missing.
 - [The directory capability](dir-capability.md): milestone 47's keystone: a directory stops being
   one authority and becomes a **six-rung rights ladder**, with `OPENDIR` handing back a directory
   capability rather than bytes. Why `DESCEND` earns its own rung (bundle it with reading and the
@@ -486,7 +490,9 @@ in the code or the conversation doesn't make sense, it belongs here.
   `fs_subtree_caretaker` exists and why, unlike `fs_file_caretaker`, it performs no rights checks at
   all. `RENAME`'s two atomicities stated apart (§42), the crash-atomic half measured at every fault
   point rather than asserted, and the startup ordering bug that one shared frame hides until a
-  caretaker stages a request in it.
+  caretaker stages a request in it. Milestone 61's section on the verb table records how the three
+  caretakers came to share a dispatch without sharing an attenuation, which is what keeps "this one
+  checks nothing" true of the one that says so.
 - [Removal needs a directory](rm.md): why `rm` is the first program granted a **directory** rather
   than a file (no per-file capability can express "take this name away", because a name lives in the
   directory that holds it), and why `-r` **widens the grant** rather than setting a flag: a program run
@@ -519,9 +525,10 @@ in the code or the conversation doesn't make sense, it belongs here.
   server: attributes key on the node, so **a rename carries them and nothing in the rename path
   knows they exist**, which AppleDouble sidecars get wrong. The three ways to leak a blob and what
   each costs, the `u32` type code nothing reads (carried so BFS-style indexing is not foreclosed),
-  and a BUGS section naming the reserved name, the caretakers answering `EOPNOTSUPP`, and the
-  crash-atomicity claim that is inherited from the transaction boundary rather than separately
-  measured.
+  and a BUGS section naming the reserved name and the crash-atomicity claim that is inherited from
+  the transaction boundary rather than separately measured. Milestone 61 added the section on the
+  three caretakers forwarding these verbs, and on which of them refuses a write through a read-only
+  grant (one does it itself; two leave it to the server, which is their design showing through).
 - [Reading the backup from a MacBook or a Linux host](host-recovery.md): milestone 57's answer to
   "the board is dead, can I get my data?": `redoxfs-host ls`/`cat`/`extract`, no FUSE, no kernel
   extension, no root, identical on macOS and Linux. Why none of upstream's five binaries already did

@@ -53,6 +53,10 @@ const CLIENT: u64 = 1;
 /// Where readiness goes, once.
 const REPORT: u64 = 2;
 
+/// `EBADF`: a handle this capability never minted, or a verb this contract does not carry. One
+/// number and one refusal site, so a forged handle and a forged opcode are refused alike.
+const EBADF: i32 = fs_proto::verb::file_grant::EBADF;
+
 /// The one page, shared with the FS server above and the client below. See the module note on why
 /// one frame is enough.
 const PAGE_VA: u64 = 0x0000_0000_0060_0000;
@@ -95,13 +99,42 @@ fn reply(slot: u64, r0: i64) {
 /// [`grant::HANDLE`] and this substitutes. That indirection is not decoration. It means a client
 /// that guesses handle numbers is guessing in a space with exactly one inhabitant, and every guess
 /// that misses gets `EBADF` from the same check.
+///
+/// # It is table-driven, and the table is where the policy is written down (milestone 61)
+///
+/// Every verb's answer comes from [`fs_proto::verb::file_grant::POLICY`], one row per opcode, in a
+/// host-testable crate. It used to be a hand-written `match` here, which is how the
+/// extended-attribute gap happened: milestone 57 added four verbs to the contract, this program was
+/// not taught them, and nothing failed. A verb with no row is now a **compile error** in `fs_proto`,
+/// so the failure mode is inverted.
+///
+/// Two things the table deliberately does not flatten:
+///
+/// - **The direction check is derived, not listed.** [`fs_proto::verb::Verb::mutates`] answers "does this verb
+///   change the file", so a read-only grant refuses `WRITE`, `TRUNCATE`, `SETXATTR` and
+///   `REMOVEXATTR` with [`grant::EROFS`] by one rule rather than four arms, and a mutating verb
+///   added to the contract is refused from the day its row exists.
+/// - **Which "no" a refusal is stays visible.** `CREATE` answers [`grant::ENOTDIR`], because a file
+///   capability is not a directory and the request does not *mean* anything here, which is a
+///   different statement from `EACCES`'s "you were denied" (there is no policy to have said yes).
 fn serve(handle: u64, name: &[u8], writable: bool) -> ! {
+    use fs_proto::verb::{self, file_grant::Policy};
+
     loop {
         let (w0, reply_slot, w1) = recv_cap(CLIENT);
         let len = fs::req_len(w0).min(PAGE);
         let asked = fs::req_handle(w0);
+        let code = op(w0);
 
-        let r: i64 = match op(w0) {
+        // One lookup, and one refusal site for an opcode this contract does not carry. `EBADF` is
+        // also what a forged handle gets, exactly as before: a client guessing numbers is guessing
+        // in a space with one inhabitant either way.
+        let (Some(v), Some(policy)) = (verb::of(code), verb::file_grant::of(code)) else {
+            reply(reply_slot, reply_err(EBADF));
+            continue;
+        };
+
+        let r: i64 = match policy {
             // The one name this capability designates. Anything else is ENOENT: in *this* scope
             // there is no such name, and nothing consulted a permission. A holder cannot enumerate
             // and cannot learn what else the directory holds, which is the difference between a
@@ -111,7 +144,7 @@ fn serve(handle: u64, name: &[u8], writable: bool) -> ! {
             // [`grant::MAX_NAME`] bytes, not a page, because this process runs on the single stack
             // page `run` maps and a 4 KiB local would overflow it on the first request. A length
             // mismatch is refused before any copy, which is both the cheap check and the safe one.
-            fs::OPEN => {
+            Policy::Local if code == fs::OPEN => {
                 let mut asked_name = [0u8; grant::MAX_NAME];
                 if len == name.len() {
                     get(&mut asked_name[..len]);
@@ -122,50 +155,35 @@ fn serve(handle: u64, name: &[u8], writable: bool) -> ! {
                     reply_err(2) // ENOENT
                 }
             }
-            // A file capability is not a directory, so "make a name in it" is not a request that
-            // means anything here. ENOTDIR says that; EACCES would imply a policy that could have
-            // said yes.
-            fs::CREATE => reply_err(grant::ENOTDIR),
-            fs::READ if asked == grant::HANDLE => {
-                forward(fs::req(fs::READ, handle, len as u64), w1)
-            }
-            // Write and truncate are the direction the grant either carries or does not. There is
-            // nothing to consult and no way to widen it from in here.
-            fs::WRITE if asked == grant::HANDLE => {
-                if writable {
-                    forward(fs::req(fs::WRITE, handle, len as u64), w1)
-                } else {
-                    reply_err(grant::EROFS)
-                }
-            }
-            fs::TRUNCATE if asked == grant::HANDLE => {
-                if writable {
-                    forward(fs::req(fs::TRUNCATE, handle, 0), w1)
-                } else {
-                    reply_err(grant::EROFS)
-                }
-            }
-            fs::FSTAT if asked == grant::HANDLE => forward(fs::req(fs::FSTAT, handle, 0), 0),
             // CLOSE is answered, not forwarded: the caretaker owns the underlying handle for its
             // whole life, and a client closing "its" handle must not be able to make the *next*
             // request fail. Re-opening the granted name is always allowed, so this is a no-op with
             // a truthful success rather than a lie.
-            fs::CLOSE if asked == grant::HANDLE => 0,
-            // **Extended attributes are not forwarded, and the refusal says exactly that**
-            // (milestone 57, DECISIONS §42). This caretaker does not pass attribute requests
-            // through, so the honest statement is "this capability does not carry them", not
-            // `EBADF` ("no such handle") and not `EINVAL` ("you sent nonsense"). A verb that is not
-            // offered fails loudly and the caller decides; what it must never receive is a wrong
-            // answer wearing a right answer's shape. The refusal is uniform across all three
-            // caretakers on purpose: a layer that worked through one narrowing and not another
-            // would make behaviour depend on which caretaker happened to be in the chain, which is
-            // the variation §42 exists to forbid.
-            fs::GETXATTR | fs::SETXATTR | fs::LISTXATTR | fs::REMOVEXATTR => {
-                reply_err(fs_proto::xattr::ENOTSUP)
+            Policy::Local if asked == grant::HANDLE => 0,
+            // A CLOSE of a handle this capability never minted.
+            Policy::Local => reply_err(EBADF),
+            // The verbs this file capability carries. The client's handle is checked and then
+            // *replaced* by the caretaker's, so a request that gets through names the granted file
+            // and nothing else, whatever the client believed it was addressing.
+            //
+            // **Extended attributes ride this path since milestone 61.** They used to answer
+            // `EOPNOTSUPP` from an arm of their own, which was honest about a capability that did
+            // not carry them and was still a capability the confined program should have had: an
+            // attribute is part of what a file *is* (`fs_proto::xattr`), so a capability that may
+            // read the file may read what is attached to it, and one that may not write it may not
+            // change them. The second half is `mutates()` below, not a separate list.
+            Policy::Forward if asked != grant::HANDLE => reply_err(EBADF),
+            Policy::Forward if v.mutates() && !writable => reply_err(grant::EROFS),
+            Policy::Forward => {
+                let n = if v.carries_len() { len as u64 } else { 0 };
+                let second = if v.carries_w1 { w1 } else { 0 };
+                forward(fs::req(code, handle, n), second)
             }
-            // Every other handle number, and every verb this contract does not carry. One refusal
-            // site, so a forged handle is refused by the same check as a stale one.
-            _ => reply_err(9), // EBADF
+            // Not offered, and the errno says which kind of "no" this is. See
+            // `verb::file_grant::POLICY` for the row and for the honest note that the directory
+            // verbs other than CREATE answer EBADF rather than ENOTDIR, which is inherited from the
+            // catch-all this table replaced rather than argued for.
+            Policy::Refused(errno) => reply_err(errno),
         };
         reply(reply_slot, r);
     }

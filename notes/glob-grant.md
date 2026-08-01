@@ -116,6 +116,20 @@ There were three candidate shapes, and this was a real fork rather than a formal
 The honest cost is about thirty lines of handle table duplicated from `fs_subtree_caretaker`. That
 is the price of keeping "this caretaker checks nothing" true of the one that says so.
 
+Milestone 61 removed the *other* duplication, which was the dangerous one. Which verbs got asked
+"is this name in the set" used to be a list of match arms in this program, so a name-taking verb
+added to the contract would have arrived **unfiltered** and a set capability would quietly have
+reached a name the pattern never matched. It is now `fs_proto::verb`'s `takes_name()`, one row per
+verb, in a host-testable crate: the filter covers a new verb from the moment its row exists. What is
+*not* shared is the attenuation. `fs_subtree_caretaker` consults no policy at all and still does
+not, which is exactly the property a mode would have destroyed.
+
+The distinction that milestone made load-bearing is `Operand::Name` versus `Operand::Payload`. The
+four extended-attribute verbs carry a name in the shared page and it is **not** a name in the
+directory, so they pass the filter without being compared against the set. Filtering them would
+have refused a program its own file's attributes because `user.com.apple.metadata` is not one of
+the names the pattern matched, which is a category error the table now forecloses.
+
 ### One rule, and having only one is the design
 
 > **A name that is not in the set does not exist here.**
@@ -251,6 +265,10 @@ Known limitations, next to the feature rather than only in a tracker.
   shell cannot yet", so the set grants that exist are wired by the kernel test. The mechanism is
   proven on both ISAs; the delegation chain is the same one notes/grant-expression.md assesses for
   the clock.
+- **The set is not consulted below the granted directory, including for attributes.** A handle
+  minted by descending into a matched directory is unfiltered, which is argued above for the naming
+  verbs and is the same answer for the four attribute verbs milestone 61 forwarded: what is under a
+  directory the pattern matched was never a question the pattern asked.
 
 ## EXAMPLES
 

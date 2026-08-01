@@ -124,7 +124,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 58 | NOT-STARTED | RISC-V TLB shootdown, and the flush that makes ASIDs pointless | every riscv context switch discards the whole TLB; the fix needs a **software** shootdown protocol, because `sfence.vma` does not broadcast |
 | 59 | BUILT | The CPU-model matrix: stop testing against one generous emulator | `-cpu rv64` enables nearly every ratified extension; the board is an RV64GC U74. `script/cpu-matrix` runs the riscv64 suite across five models and all 211 tests pass on every one, so we are already portable to the board's ISA. The ASID test written *for* the board is the gap no model can exercise |
 | 60 | NOT-STARTED | ISA discovery: read the machine instead of assuming it | nothing reads `riscv,isa-extensions`; RISC-V has no `CPUID`, so the device tree plus targeted probes are the architected answer. One `Isa` record, built at boot, printed at boot |
-| 61 | NOT-STARTED | The caretakers: one verb table, and names that say what you get | all three answer `EOPNOTSUPP` to xattr because each is a hand-written match over verbs; 4 verbs x 3 caretakers recurs on every contract addition. A verb table in `fs_proto` inverts the failure mode |
+| 61 | BUILT | The caretakers: one verb table, and names that say what you get | **built, both ISAs.** The rename landed first (532 tokens, not four filenames); `fs_proto::verb` is one row per opcode and a verb with no row is a compile error; all three caretakers forward the four extended-attribute verbs, proven by three witnesses each with a control that must fail |
 | 62 | NOT-STARTED | Tests that assert on time: make a red run mean something | ~19 bounded spins (`for _ in 0..N { yield_now() }`) and wall-clock assertions flake under load. Four separate lanes and the integrator hit them on 2026-08-01; the CPU matrix multiplies the exposure fivefold |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
@@ -3231,6 +3231,32 @@ is being able to say what the machine is instead of assuming it. See
 
 ### 61. The caretakers: one verb table, and names that say what you get
 
+**Status: BUILT, both ISAs.** Three pieces, three commits, in the order below.
+
+**In brief.** The **rename** first, because these files were being touched anyway: `fwarden` ->
+`fs_file_caretaker`, `dwarden` -> `fs_subtree_caretaker`, `swarden` -> `fs_nameset_caretaker`,
+`cwarden` -> `c_confiner`, `cshim` -> `c_shim`, `conx`/`cconx` -> `rust_swappable`/`c_swappable`,
+`await_*` -> `wait_for_*`, and the C symbols to `c_seam_*`. That is 532 tokens rather than four
+filenames, and `c_confiner` deliberately did not take the caretaker noun in its prose. Then
+**`fs_proto::verb`**: one row per opcode saying what a request's words mean and which rights the
+server demands, with `const assert!`s that make a verb without a row a **compile error**; the three
+caretakers dispatch off it and stop being three hand-written matches. Then **extended-attribute
+forwarding**, the gap that raised the milestone, with three witnesses: a per-file grant that reads
+its file's attributes and cannot write them (and a writable twin that can, as its control), the
+three subtree rights configurations one bit wider, and a name-set grant that reads its file's
+attributes and still cannot name the entry beside it. Notes: fs-server.md, dir-capability.md,
+glob-grant.md, xattr.md, grant-expression.md, naming.md.
+
+**What the table does not share is the attenuation**, which is what let the three programs stay three
+programs after the refutation below. A lookup that picks a length or a zero cannot refuse anything,
+so `fs_subtree_caretaker` still performs no checks at all.
+
+**One thing found rather than built, recorded in `verb::file_grant::POLICY`'s BUGS and in
+notes/grant-expression.md:** writing the per-verb rows down exposed that `fs_file_caretaker` answers
+`EBADF` to every directory verb except `CREATE`, because they all fell through one `_ =>` arm shared
+with "you named a handle I never minted". `ENOTDIR` is very likely right for all seven by exactly the
+argument `CREATE` already makes. Behaviour was preserved, because changing it changes the wire.
+
 **Renamed and rescoped 2026-08-01** after Chris asked why there are three of these and whether we
 expect more. Investigating that **refuted the collapse this milestone was first drafted around**, and
 the refutation is worth keeping because it is already argued in the tree.
@@ -3975,10 +4001,11 @@ crash atomicity is measured rather than inherited: milestone 37's sweep now carr
 attributes in its state and four attribute operations in its workload, interleaved with a write to
 the same file, so "the file and its metadata land together" is decided rather than argued.
 
-**What is still not done, and is named rather than implied:** the caretakers (`fs_file_caretaker`,
-`fs_subtree_caretaker`, `fs_nameset_caretaker`) answer `EOPNOTSUPP` to all four verbs rather than
-forwarding, so a program behind a per-file grant cannot reach its file's attributes (that is
-milestone 61's job).
+**What was still not done here, and is now:** the caretakers (`fs_file_caretaker`,
+`fs_subtree_caretaker`, `fs_nameset_caretaker`) answered `EOPNOTSUPP` to all four verbs rather than
+forwarding, so a program behind a per-file grant could not reach its file's attributes. **Milestone
+61 closed it**, and found the general defect underneath: nothing made a caretaker and the contract
+agree, so a whole contract addition reached none of them and nothing failed.
 
 
 - **Extend the on-disk format.** Correct, and atomic by construction since the metadata rides

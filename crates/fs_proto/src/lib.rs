@@ -637,6 +637,407 @@ pub mod dir {
     }
 }
 
+/// **The verb table: what each request word means, declared once instead of three times**
+/// (milestone 61).
+///
+/// Three caretakers (`user/src/fs_file_caretaker.rs`, `fs_subtree_caretaker.rs`,
+/// `fs_nameset_caretaker.rs`) proxy this same contract over a narrowed namespace, and each one used
+/// to be a hand-written `match` over the opcode. Nothing made a `match` and the contract agree, so
+/// the way that failed is that **a new verb was simply absent from a caretaker and the capability
+/// silently was not there**. That is not a hypothetical: milestone 57 added the four
+/// extended-attribute verbs, none of the three was taught them, and nothing failed. The programs
+/// behind a per-file grant just could not read their own file's attributes.
+///
+/// This table inverts the failure mode. A verb declares its **argument shape** (does the word's
+/// length field count a name, a payload, or nothing?) and the **rights the server will demand**, and
+/// the caretakers dispatch off that instead of off a match arm somebody has to remember to add.
+/// Adding a verb to [`fs`] without a row here is a **compile error** (see [`verb::TABLE`]'s const
+/// assertions), which is the whole deliverable: forgetting now fails the build rather than producing
+/// a capability that is quietly missing.
+///
+/// # What it shares, and the thing it must never share
+///
+/// **It shares the dispatch and never the attenuation.** The three caretakers narrow by three
+/// different means and stay three programs, which is a refutation the roadmap records rather than a
+/// coincidence:
+///
+/// - `fs_subtree_caretaker` performs **no checks at all**. One [`fs::OPENDIR`] at startup, the
+///   server intersects the rights and mints a restricted handle, and everything afterwards is
+///   reached through that handle. This table gives it its shape lookup and nothing else; it consults
+///   no policy and no filter, because a branch here is a branch that can be wrong.
+/// - `fs_nameset_caretaker` filters names, on **every** verb whose operand is a directory name, and
+///   [`verb::Operand::Name`] is what tells it which those are. Before this table that was a
+///   hand-listed set of arms, so a new name-taking verb would have arrived **unfiltered**, which is
+///   the same failure one class more dangerous.
+/// - `fs_file_caretaker` translates between two *protocols*, directory in and file out, so it needs
+///   a per-verb answer and has one in [`verb::file_grant::POLICY`]. Its refusals keep their distinct
+///   errnos deliberately: [`grant::ENOTDIR`] means the request does not mean anything through a file
+///   capability, which is a different statement from a refusal, and flattening the two into
+///   "allowed / not allowed" would destroy it.
+///
+/// # BUGS
+///
+/// - **A wrong row is wrong in three programs at once.** The mitigation is that it is pure data in a
+///   host-testable crate, reachable by the tests below and by Kani, which a hand-written match in a
+///   `no_std` binary is not.
+/// - **It does not make the caretakers interchangeable**, and must not try to. Only the dispatch is
+///   shared; what each attenuates to stays hand-written and stays in three separate address spaces.
+pub mod verb {
+    use super::{dir, fs};
+
+    /// **What the length field of a request word counts**, which is the only thing about a request
+    /// a proxy has to understand in order to forward it faithfully.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum Operand {
+        /// Nothing. The request names a handle and the length field is unused, so a caretaker
+        /// forwards a length of **zero** rather than whatever the client happened to send. That is
+        /// not tidiness: it means a client cannot smuggle a length into a verb that has none and
+        /// have some later server give it a meaning.
+        None,
+        /// A **directory name**, `req_len` bytes at the start of the shared page, resolved under the
+        /// request's handle. This is the operand a name filter applies to, and the only one:
+        /// `fs_nameset_caretaker` asks its question exactly when this is the shape.
+        Name,
+        /// `req_len` bytes of **payload** that are not a directory name: file data
+        /// ([`fs::READ`]/[`fs::WRITE`]), or an attribute name and value. Forwarded verbatim, and
+        /// **never filtered**, because an attribute name is not a name in the namespace the
+        /// capability narrows.
+        Payload,
+        /// Two directories and two names, [`fs::RENAME`] alone: the source is the request word's
+        /// handle and length, the destination rides in the second word ([`fs::rename_dst`]), and
+        /// both names sit back to back in the page. The only shape a proxy must rewrite rather than
+        /// forward, because both handles are the client's.
+        Rename,
+    }
+
+    /// One row: everything a proxy needs to know about one verb.
+    #[derive(Clone, Copy, Debug)]
+    pub struct Verb {
+        /// The opcode. Rows are stored in opcode order and the ordering is asserted at compile time.
+        pub op: u64,
+        /// Its name, for a diagnostic and for a test's failure message. Costs nothing at runtime in
+        /// the caretakers, which never read it.
+        pub name: &'static str,
+        /// What the length field counts.
+        pub operand: Operand,
+        /// Whether the **second word** carries something the server reads (an offset, a size, a
+        /// cursor, a rights mask, an attribute spec). When it does not, a caretaker forwards zero,
+        /// for [`Operand::None`]'s reason.
+        pub carries_w1: bool,
+        /// Whether a successful reply is a **new handle**, which a proxy that renumbers handles must
+        /// install in its own table before handing back.
+        pub mints_handle: bool,
+        /// The [`dir`] rights the server demands, **all of them**. Zero where the verb needs none
+        /// ([`fs::CLOSE`], [`fs::FSTAT`]) or where the requirement is "any of" rather than "all of"
+        /// (see [`Verb::needs_any`]).
+        pub needs_all: u64,
+        /// The rights where **any one** of them will do: only [`fs::OPEN`], which takes
+        /// [`dir::READ`] or [`dir::WRITE`]. Kept apart from [`Verb::needs_all`] because
+        /// `Rights::allows` is deliberately "all of", and folding an any-of requirement into it
+        /// would be a hole rather than a simplification.
+        pub needs_any: u64,
+    }
+
+    impl Verb {
+        /// Whether the length field means anything, so a caretaker knows to forward it.
+        pub const fn carries_len(&self) -> bool {
+            !matches!(self.operand, Operand::None)
+        }
+
+        /// Whether the operand is a name in the namespace a caretaker narrows. **This is what a
+        /// name filter keys off**, and the reason it is a table field rather than a list inside
+        /// `fs_nameset_caretaker`: a name-taking verb added to the contract is filtered from the
+        /// moment its row exists, instead of from the moment somebody remembers.
+        pub const fn takes_name(&self) -> bool {
+            matches!(self.operand, Operand::Name | Operand::Rename)
+        }
+
+        /// Whether the verb **mutates**, which is the one question a direction-carrying grant asks.
+        /// A read-only per-file grant refuses exactly these with [`super::grant::EROFS`], so a
+        /// mutating verb added to the contract is refused by a read-only grant from its first day
+        /// rather than forwarded because nobody updated a list.
+        pub const fn mutates(&self) -> bool {
+            self.needs_all & (dir::WRITE | dir::CREATE | dir::REMOVE) != 0
+        }
+    }
+
+    /// A row, spelled once so the table below reads as data.
+    const fn row(
+        op: u64,
+        name: &'static str,
+        operand: Operand,
+        carries_w1: bool,
+        mints_handle: bool,
+        needs_all: u64,
+    ) -> Verb {
+        Verb {
+            op,
+            name,
+            operand,
+            carries_w1,
+            mints_handle,
+            needs_all,
+            needs_any: 0,
+        }
+    }
+
+    /// The lowest opcode in the contract, and the first row's.
+    pub const FIRST: u64 = fs::OPEN;
+    /// The highest opcode in the contract, and the last row's. Raising it without adding a row is a
+    /// compile error.
+    pub const LAST: u64 = fs::REMOVEXATTR;
+
+    /// **Every verb the file-service contract carries, in opcode order.**
+    ///
+    /// The rights column is the server's, copied from the doc comment on each opcode in [`fs`] and
+    /// checked against the server's behaviour by `fs-server`'s own tests. It is here because a proxy
+    /// that knows a verb mutates can refuse it without having to know what mutating means.
+    pub const TABLE: [Verb; (LAST - FIRST + 1) as usize] = [
+        // OPEN's requirement is "READ or WRITE", the one any-of in the contract, so it is the one
+        // row built by hand rather than by `row`.
+        Verb {
+            op: fs::OPEN,
+            name: "OPEN",
+            operand: Operand::Name,
+            carries_w1: false,
+            mints_handle: true,
+            needs_all: 0,
+            needs_any: dir::READ | dir::WRITE,
+        },
+        // The second word is an offset for both, which is why they carry it and TRUNCATE's size
+        // rides there too: an offset-shaped quantity is not a payload length.
+        row(fs::READ, "READ", Operand::Payload, true, false, dir::READ),
+        row(
+            fs::WRITE,
+            "WRITE",
+            Operand::Payload,
+            true,
+            false,
+            dir::WRITE,
+        ),
+        row(fs::CLOSE, "CLOSE", Operand::None, false, false, 0),
+        row(fs::FSTAT, "FSTAT", Operand::None, false, false, 0),
+        row(
+            fs::CREATE,
+            "CREATE",
+            Operand::Name,
+            false,
+            true,
+            dir::CREATE,
+        ),
+        row(
+            fs::TRUNCATE,
+            "TRUNCATE",
+            Operand::None,
+            true,
+            false,
+            dir::WRITE,
+        ),
+        // OPENDIR and MKDIR carry the requested rights mask in the second word, which is what makes
+        // them the two verbs that hand back *authority* rather than data.
+        row(
+            fs::OPENDIR,
+            "OPENDIR",
+            Operand::Name,
+            true,
+            true,
+            dir::DESCEND,
+        ),
+        row(
+            fs::READDIR,
+            "READDIR",
+            Operand::None,
+            true,
+            false,
+            dir::ENUMERATE,
+        ),
+        row(
+            fs::MKDIR,
+            "MKDIR",
+            Operand::Name,
+            true,
+            true,
+            dir::CREATE | dir::DESCEND,
+        ),
+        // RENAME needs REMOVE on the source directory and CREATE on the destination. Both are in
+        // `needs_all` because a proxy asks only "does this mutate", and it does, twice over.
+        row(
+            fs::RENAME,
+            "RENAME",
+            Operand::Rename,
+            true,
+            false,
+            dir::REMOVE | dir::CREATE,
+        ),
+        row(
+            fs::UNLINK,
+            "UNLINK",
+            Operand::Name,
+            false,
+            false,
+            dir::REMOVE,
+        ),
+        row(fs::RMDIR, "RMDIR", Operand::Name, false, false, dir::REMOVE),
+        // The extended-attribute verbs (milestone 57). Their operand is a **payload**, not a name:
+        // an attribute name is not a name in the directory, so a name-set capability must not filter
+        // it and a per-file capability must not compare it against the granted name. Getting that
+        // wrong would have been the natural mistake here, which is why the distinction is a variant
+        // of `Operand` rather than a comment.
+        row(
+            fs::GETXATTR,
+            "GETXATTR",
+            Operand::Payload,
+            false,
+            false,
+            dir::READ,
+        ),
+        // The only attribute verb with a second word: the value's length and type code.
+        row(
+            fs::SETXATTR,
+            "SETXATTR",
+            Operand::Payload,
+            true,
+            false,
+            dir::WRITE,
+        ),
+        row(
+            fs::LISTXATTR,
+            "LISTXATTR",
+            Operand::None,
+            false,
+            false,
+            dir::READ,
+        ),
+        row(
+            fs::REMOVEXATTR,
+            "REMOVEXATTR",
+            Operand::Payload,
+            false,
+            false,
+            dir::WRITE,
+        ),
+    ];
+
+    /// **The row for an opcode, or `None` if the contract does not carry it.**
+    ///
+    /// A caretaker's whole dispatch is this lookup plus the fields it returns, so an opcode a client
+    /// invents is refused at one site rather than falling through a match's catch-all.
+    pub const fn of(op: u64) -> Option<&'static Verb> {
+        if op < FIRST || op > LAST {
+            return None;
+        }
+        Some(&TABLE[(op - FIRST) as usize])
+    }
+
+    // **The compile-time half of the deliverable.** Adding an opcode to `fs` and forgetting a row
+    // here fails the build instead of producing a caretaker that silently does not offer it. A
+    // runtime test cannot do this job: the three caretakers are `no_std` binaries and a test that
+    // has to boot them would find the gap long after the commit that made it.
+    const _: () = assert!(
+        TABLE.len() == (LAST - FIRST + 1) as usize,
+        "every opcode between verb::FIRST and verb::LAST needs a row in verb::TABLE"
+    );
+    const _: () = {
+        let mut i = 0;
+        while i < TABLE.len() {
+            assert!(
+                TABLE[i].op == FIRST + i as u64,
+                "verb::TABLE is stored in opcode order and indexed by it; a row is out of place"
+            );
+            i += 1;
+        }
+    };
+
+    /// **What a per-file grant answers for each verb** (`user/src/fs_file_caretaker.rs`).
+    ///
+    /// This one caretaker needs a policy and the other two do not, and the asymmetry is the design
+    /// rather than an accident. `fs_subtree_caretaker` and `fs_nameset_caretaker` serve the
+    /// *directory* protocol their client speaks, so every verb means what it always meant and the
+    /// attenuation lives elsewhere (in the handle the server minted, and in a name filter). A file
+    /// capability is a **different protocol**: it has no namespace to enumerate, nothing to create a
+    /// name in, and exactly one handle. So "which verbs exist" is part of what the capability *is*,
+    /// and that belongs in a table somebody wrote on purpose.
+    pub mod file_grant {
+        use super::super::grant;
+
+        /// What the caretaker does with one verb.
+        #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+        pub enum Policy {
+            /// **Answered here, from what this process holds.** [`super::fs::OPEN`] resolves the one
+            /// granted name; [`super::fs::CLOSE`] is a truthful no-op, because the caretaker owns
+            /// the underlying handle for its whole life and a client closing "its" handle must not
+            /// be able to make the next request fail.
+            Local,
+            /// **Forwarded on the handle the caretaker opened at startup**, with the caller's handle
+            /// substituted. A mutating verb ([`super::Verb::mutates`]) is refused with
+            /// [`grant::EROFS`] when the grant carries no write direction, and the refusal is
+            /// table-driven rather than listed, so a mutating verb added to the contract is refused
+            /// by a read-only grant from the day its row exists.
+            Forward,
+            /// **Not offered, and the errno says why.** [`grant::ENOTDIR`] where the request does
+            /// not *mean* anything through a file capability, which is a stronger and more useful
+            /// statement than a refusal: a refusal implies a policy that could have said yes, and
+            /// there is no policy here, only what the capability is.
+            Refused(i32),
+        }
+
+        /// The policy for each verb, indexed exactly as [`super::TABLE`] is.
+        ///
+        /// # BUGS
+        ///
+        /// **The directory verbs other than `CREATE` answer `EBADF`, not `ENOTDIR`, and that is
+        /// inherited rather than argued.** Before this table they fell through one `_ =>` arm shared
+        /// with "you named a handle I never minted", so the two statements were conflated. Writing
+        /// the rows down is what made the conflation visible. `ENOTDIR` is very likely the right
+        /// answer for all seven, by exactly the argument `CREATE` already makes, but changing it
+        /// changes what a client on the wire observes, and that is a contract decision rather than
+        /// a table's to take. Recorded here, next to the rows, instead of only in a report.
+        pub const POLICY: [Policy; super::TABLE.len()] = [
+            Policy::Local,                   // OPEN: the one granted name, anything else ENOENT.
+            Policy::Forward,                 // READ
+            Policy::Forward,                 // WRITE, EROFS without the direction
+            Policy::Local,                   // CLOSE
+            Policy::Forward,                 // FSTAT
+            Policy::Refused(grant::ENOTDIR), // CREATE: a file capability is not a directory.
+            Policy::Forward,                 // TRUNCATE, EROFS without the direction
+            Policy::Refused(EBADF),          // OPENDIR
+            Policy::Refused(EBADF),          // READDIR
+            Policy::Refused(EBADF),          // MKDIR
+            Policy::Refused(EBADF),          // RENAME
+            Policy::Refused(EBADF),          // UNLINK
+            Policy::Refused(EBADF),          // RMDIR
+            // **The milestone-61 change.** All four used to answer `super::super::xattr::ENOTSUP`
+            // here, so a
+            // program behind a per-file grant could not read its own file's attributes. They are
+            // forwarded now, and the two that mutate are refused with `EROFS` through a read-only
+            // grant by `Policy::Forward`'s own rule, which is the same rule `WRITE` and `TRUNCATE`
+            // already obeyed. An attribute is part of what a file *is* (see `xattr`'s header), so a
+            // capability that may read the file may read what is attached to it.
+            Policy::Forward, // GETXATTR
+            Policy::Forward, // SETXATTR, EROFS without the direction
+            Policy::Forward, // LISTXATTR
+            Policy::Forward, // REMOVEXATTR, EROFS without the direction
+        ];
+
+        /// `EBADF`: no such handle. Also, today, every directory verb (see [`POLICY`]'s BUGS).
+        pub const EBADF: i32 = 9;
+
+        /// The policy for an opcode, or `None` for an opcode the contract does not carry.
+        pub const fn of(op: u64) -> Option<Policy> {
+            if op < super::FIRST || op > super::LAST {
+                return None;
+            }
+            Some(POLICY[(op - super::FIRST) as usize])
+        }
+
+        // A policy per verb, checked where a missing one is cheapest to find.
+        const _: () = assert!(
+            POLICY.len() == super::TABLE.len(),
+            "every verb needs a per-file-grant policy; add the row next to the verb's"
+        );
+    }
+}
+
 /// **How [`fs::READDIR`] packs a directory listing into the shared page.**
 ///
 /// One record per entry: a flags byte, a length byte, then that many bytes of name. Length-prefixed
@@ -1449,6 +1850,17 @@ pub mod fixture {
         /// capability that reaches nothing is trivially unescapable, and a test that only checked
         /// the refusals would pass against one.
         pub const GRANTED_READ_FAILED: u64 = 1 << 5;
+        /// **Its extended-attribute write was accepted.** Expected only with `grant::WRITE`, and it
+        /// is `WROTE`'s twin for the same reason `TRUNCATED` is: an attribute is a way to change a
+        /// file that carries no file bytes, so a direction check that only covered `WRITE` and
+        /// `TRUNCATE` would leave one open. Added by milestone 61 with the forwarding it guards.
+        pub const WROTE_ATTR: u64 = 1 << 6;
+        /// **Reading its own file's attributes failed**, so the capability does not carry what
+        /// milestone 61 says it carries. A control bit in [`GRANTED_READ_FAILED`]'s shape rather
+        /// than an escape, and the one that catches a regression to the old behaviour: before
+        /// milestone 61 the caretaker answered `EOPNOTSUPP` to all four attribute verbs, so this
+        /// bit would be set in **both** runs.
+        pub const GRANTED_ATTRS_FAILED: u64 = 1 << 7;
     }
 
     /// The attacker's report leads with this so a silent client (a trapped one) cannot be mistaken
@@ -1685,6 +2097,31 @@ pub mod fixture {
         /// **The thing it should be able to do failed**, so nothing above was proven. A capability
         /// that reaches nothing is trivially unescapable.
         pub const GRANTED_ACCESS_FAILED: u64 = 1 << 11;
+        /// **It listed the extended attributes of the file inside its grant** (milestone 61).
+        /// Expected wherever [`super::super::dir::READ`] is held, which is every configuration that
+        /// can open the file at all: an attribute is part of what a file *is*, so a capability that
+        /// may read the file may read what is attached to it. Before milestone 61 the caretaker
+        /// answered `EOPNOTSUPP` and this bit was never set.
+        pub const READ_ATTRS: u64 = 1 << 14;
+        /// **It set an extended attribute on that file and read it back with its type code.**
+        /// Expected only with [`super::super::dir::WRITE`], which is [`WROTE`]'s rule applied to the
+        /// third way of changing a file.
+        ///
+        /// The interesting part is *who* enforces it: `fs_subtree_caretaker` performs no check, so
+        /// this bit is a statement about the handle the FS server minted from the caretaker's one
+        /// `OPENDIR`. A file handle inherits `READ`/`WRITE` from the directory it was opened
+        /// through, so a read-only subtree grant is refused by the server rather than by a branch in
+        /// the caretaker, which is exactly that program's design property holding under a verb it
+        /// was never taught.
+        pub const SET_AN_ATTR: u64 = 1 << 15;
+        /// **It reached a name in the granted directory that the grant's *set* does not carry**
+        /// (milestone 61's name-set witness). Never allowed.
+        ///
+        /// A set capability's whole property is that `rm *.txt` cannot reach `notes.md`. `rm` asks
+        /// that question with [`super::super::dir::REMOVE`] and nothing else; this asks it with
+        /// `READ`, because the milestone taught `fs_nameset_caretaker` four verbs that read and it
+        /// would be a poor trade to close an attribute gap by opening a naming one.
+        pub const REACHED_AN_UNMATCHED_NAME: u64 = 1 << 16;
     }
 
     /// **What a navigating shell reports** (milestone 47's commands: `cd`, `pwd`, `ls`, `mkdir`,
@@ -1932,6 +2369,186 @@ mod tests {
     extern crate std;
     use std::{format, vec, vec::Vec};
 
+    /// **Every verb in the contract has a row, and the row agrees with the opcode's own doc.**
+    ///
+    /// The compile-time assertions in [`verb`] already prove the table is complete and in order, so
+    /// this test proves the part a `const` cannot reach: that the rows say the *right* thing. It is
+    /// the mitigation for the table's own BUGS entry, which is that one wrong row is wrong in three
+    /// programs at once.
+    #[test]
+    fn every_verb_has_a_row_that_says_what_its_words_mean() {
+        for op in verb::FIRST..=verb::LAST {
+            let v = verb::of(op).unwrap_or_else(|| panic!("opcode {op} has no row"));
+            assert_eq!(v.op, op, "{} is filed under the wrong opcode", v.name);
+            assert!(!v.name.is_empty(), "opcode {op} has no name");
+            // A verb cannot state its rights two ways at once: `Rights::allows` is "all of", so an
+            // any-of requirement folded into `needs_all` would demand both and refuse a capability
+            // the server would have accepted.
+            assert!(
+                v.needs_all == 0 || v.needs_any == 0,
+                "{} states its rights twice",
+                v.name
+            );
+            assert_eq!(
+                v.needs_all & !dir::ALL,
+                0,
+                "{} names a right this contract does not define",
+                v.name
+            );
+            assert_eq!(
+                v.needs_any & !dir::ALL,
+                0,
+                "{} names a right this contract does not define",
+                v.name
+            );
+        }
+        // The one any-of in the contract, pinned so that folding it into `needs_all` fails here.
+        let open = verb::of(fs::OPEN).unwrap();
+        assert_eq!(open.needs_any, dir::READ | dir::WRITE);
+        assert_eq!(open.needs_all, 0);
+
+        // The four verbs that hand back authority, which is what a renumbering proxy must install.
+        let mints: Vec<&str> = (verb::FIRST..=verb::LAST)
+            .filter_map(verb::of)
+            .filter(|v| v.mints_handle)
+            .map(|v| v.name)
+            .collect();
+        assert_eq!(mints, ["OPEN", "CREATE", "OPENDIR", "MKDIR"]);
+    }
+
+    /// **A name filter must see every verb that names a directory entry, and no others.**
+    ///
+    /// This is the row that decides a security property rather than a formatting one:
+    /// `fs_nameset_caretaker` asks "is this name in the set" exactly when `takes_name` is true, so a
+    /// name-taking verb whose row says otherwise walks straight past the filter. The list is spelled
+    /// out rather than derived, because deriving it from the field it is checking would assert
+    /// nothing.
+    #[test]
+    fn the_filter_sees_exactly_the_verbs_that_name_a_directory_entry() {
+        let filtered: Vec<&str> = (verb::FIRST..=verb::LAST)
+            .filter_map(verb::of)
+            .filter(|v| v.takes_name())
+            .map(|v| v.name)
+            .collect();
+        assert_eq!(
+            filtered,
+            [
+                "OPEN", "CREATE", "OPENDIR", "MKDIR", "RENAME", "UNLINK", "RMDIR"
+            ],
+            "a verb that resolves a name in the granted directory is missing from the filter, or a \
+             verb that does not resolve one is being filtered"
+        );
+        // The attribute verbs carry a name in the page and it is NOT a directory name, which is the
+        // distinction `Operand::Payload` exists to make. Filtering it would refuse a program its own
+        // file's attributes on the grounds that the attribute is not in the directory.
+        for op in [fs::GETXATTR, fs::SETXATTR, fs::LISTXATTR, fs::REMOVEXATTR] {
+            assert!(
+                !verb::of(op).unwrap().takes_name(),
+                "an attribute name is not a name in the namespace a capability narrows"
+            );
+        }
+    }
+
+    /// **Every mutating verb is refused by a read-only per-file grant**, which is what makes the
+    /// attribute forwarding safe: `SETXATTR` and `REMOVEXATTR` mutate, so a read grant must not pass
+    /// them on, and `fs_file_caretaker` decides that from `mutates()` rather than from a list of
+    /// verbs somebody maintains.
+    #[test]
+    fn a_read_only_file_grant_refuses_every_verb_that_mutates() {
+        use verb::file_grant::Policy;
+        let mutating: Vec<&str> = (verb::FIRST..=verb::LAST)
+            .filter_map(verb::of)
+            .filter(|v| v.mutates())
+            .map(|v| v.name)
+            .collect();
+        assert_eq!(
+            mutating,
+            [
+                "WRITE",
+                "CREATE",
+                "TRUNCATE",
+                "MKDIR",
+                "RENAME",
+                "UNLINK",
+                "RMDIR",
+                "SETXATTR",
+                "REMOVEXATTR",
+            ]
+        );
+        // Nothing that mutates may be answered locally: `Forward` is the only policy that consults
+        // the grant's direction, and `Refused` never reaches the server at all.
+        for op in verb::FIRST..=verb::LAST {
+            let v = verb::of(op).unwrap();
+            let p = verb::file_grant::of(op).unwrap();
+            if v.mutates() {
+                assert!(
+                    matches!(p, Policy::Forward | Policy::Refused(_)),
+                    "{} mutates and must be refused or direction-gated, never answered locally",
+                    v.name
+                );
+            }
+        }
+    }
+
+    /// **The four attribute verbs are forwarded through a per-file grant** (milestone 61's gap).
+    ///
+    /// Pinned as its own test because the old behaviour was uniform and defensible: all four
+    /// answered `EOPNOTSUPP`, which was honest about a capability that did not carry them. What
+    /// makes forwarding right is `xattr`'s own rule, that an attribute is part of what a file *is*,
+    /// so a capability that may read the file may read what is attached to it. A future edit that
+    /// quietly reverted this would pass every other test here.
+    #[test]
+    fn a_per_file_grant_carries_its_files_attributes() {
+        use verb::file_grant::Policy;
+        for op in [fs::GETXATTR, fs::SETXATTR, fs::LISTXATTR, fs::REMOVEXATTR] {
+            assert_eq!(
+                verb::file_grant::of(op),
+                Some(Policy::Forward),
+                "{} is not forwarded, so a program behind a per-file grant cannot reach its own \
+                 file's attributes",
+                verb::of(op).unwrap().name
+            );
+        }
+        // The read half must be reachable through a read-only grant, which is the case that
+        // motivated the milestone: `wc report.txt` should be able to ask what is attached to it.
+        assert!(!verb::of(fs::GETXATTR).unwrap().mutates());
+        assert!(!verb::of(fs::LISTXATTR).unwrap().mutates());
+    }
+
+    /// **A file capability is not a directory, and the refusals still say which kind of "no" it is.**
+    ///
+    /// The distinction the table was most at risk of flattening. `CREATE` answers `ENOTDIR` because
+    /// the request does not mean anything here, not `EACCES` and not a generic "denied"; the other
+    /// directory verbs answer `EBADF` today, which `POLICY`'s BUGS records as inherited rather than
+    /// argued. Both are pinned, so a change to either is a change somebody made on purpose.
+    #[test]
+    fn a_file_grants_refusals_keep_their_separate_meanings() {
+        use verb::file_grant::{EBADF, Policy};
+        assert_eq!(
+            verb::file_grant::of(fs::CREATE),
+            Some(Policy::Refused(grant::ENOTDIR)),
+            "CREATE must say `this is not a directory`, never `you were denied`"
+        );
+        for op in [
+            fs::OPENDIR,
+            fs::READDIR,
+            fs::MKDIR,
+            fs::RENAME,
+            fs::UNLINK,
+            fs::RMDIR,
+        ] {
+            assert_eq!(verb::file_grant::of(op), Some(Policy::Refused(EBADF)));
+        }
+        // The two the caretaker answers out of what it holds rather than by asking the server.
+        assert_eq!(verb::file_grant::of(fs::OPEN), Some(Policy::Local));
+        assert_eq!(verb::file_grant::of(fs::CLOSE), Some(Policy::Local));
+        // An opcode the contract does not carry has no row and no policy, in both tables at once, so
+        // a caretaker's one refusal site covers a forged opcode as well as a forged handle.
+        assert!(verb::of(verb::LAST + 1).is_none());
+        assert!(verb::file_grant::of(verb::LAST + 1).is_none());
+        assert!(verb::of(0).is_none(), "0 is not a verb");
+    }
+
     /// **The crash fixture's two payloads must be the same length**, and the millisecond test that
     /// says so is not pedantry: `WRITE` does not truncate, so the moment B is shorter than A the
     /// recovered file is A's tail with B's head on it, and "exactly A or exactly B" becomes a
@@ -2128,6 +2745,8 @@ mod tests {
             CREATED,
             FORGED_HANDLE,
             GRANTED_READ_FAILED,
+            WROTE_ATTR,
+            GRANTED_ATTRS_FAILED,
         ];
         let mut seen = 0u64;
         for b in bits {
@@ -2323,6 +2942,9 @@ mod tests {
             FORGED_HANDLE,
             OPENED_ITS_OWN,
             GRANTED_ACCESS_FAILED,
+            READ_ATTRS,
+            SET_AN_ATTR,
+            REACHED_AN_UNMATCHED_NAME,
         ];
         let mut seen = 0u64;
         for b in bits {
