@@ -120,7 +120,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 54 | NOT-STARTED | A network file service a Mac can actually mount | the first real workload with a real user, and the security claim backup servers deserve |
 | 55 | NOT-STARTED | Time Machine: SMB3 with Apple's extensions, and mDNS | **likely the largest single piece of work in the project**, and the one that must be scoped before it is started |
 | 56 | PARTIAL | Secrets, credentials, and the entropy to make them safe | the entropy half is **built** (§44): a real random source, capability-granted. The crypto and credential halves remain, and a secret is still a bearer token where a capability is an unforgeable reference |
-| 57 | PARTIAL | Partitioning and formatting a real drive, and extended attributes | you cannot find a partition without reading the table, and **we have no partition-table code at all**; all of it is testable in QEMU before the board lands. The host recovery tool (`ls`/`cat`/`extract`) is built; GPT, on-target `mkfs` and xattrs are not |
+| 57 | PARTIAL | Partitioning and formatting a real drive, and extended attributes | you cannot find a partition without reading the table, and **we have no partition-table code at all**; all of it is testable in QEMU before the board lands. The host recovery tool (`ls`/`cat`/`extract`), `crates/gpt` and the **extended-attribute layer** are built; on-target `mkfs` and block-device enumeration are not |
 | 58 | NOT-STARTED | RISC-V TLB shootdown, and the flush that makes ASIDs pointless | every riscv context switch discards the whole TLB; the fix needs a **software** shootdown protocol, because `sfence.vma` does not broadcast |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
@@ -3403,6 +3403,30 @@ the format extension stays available later without any client changing. Attribut
 Before designing the attribute layer, read `design/haiku-bfs-and-packages.md`: BFS made attributes
 typed and indexed with live queries over them, and the point of knowing that is to avoid designing
 something that **forecloses** indexing later, even though SMB only needs opaque blobs now.
+
+**BUILT 2026-07-31: the layer, on both ISAs** (notes/xattr.md). Four verbs in `fs_proto`
+(`GETXATTR`, `SETXATTR`, `LISTXATTR`, `REMOVEXATTR`) and a store the FS server keeps in a reserved
+directory of the image, one blob per node, keyed on the `TreePtr` id. No new rung on the rights
+ladder: reading an attribute takes what reading the file takes, changing one takes what writing
+takes. Three limits with a reason each, and the third is load-bearing rather than arbitrary: sixteen
+attributes of 255-byte names is **exactly one page**, which is why `LISTXATTR` needs no cursor and
+therefore cannot be observed half-changed. Every ceiling refuses with its own errno (§42).
+
+BFS is not foreclosed: every attribute carries a `u32` type code the layer stores, returns, and never
+interprets, so an indexed store later is a change of implementation rather than a format migration
+plus a wire break.
+
+The three ways to get it wrong, all of which §34's amendment named in advance: the purge rides the
+same transaction as the removal and asks the engine (`remove_node` answers `Some(id)` exactly when a
+node's last link went), the store's name is unnameable and unlistable in every directory, and a
+shrinking blob is truncated to length so the reader never walks records nobody wrote. The
+rename-replacement case is the one removal the engine cannot report, and the server notices it.
+
+**What is not done, and is named rather than implied:** the caretakers (`fwarden`, `dwarden`,
+`swarden`) answer `EOPNOTSUPP` to all four verbs rather than forwarding, so a program behind a
+per-file grant cannot reach its file's attributes; the host recovery tool shows the store but does
+not render or reattach attributes on `extract`; and crash atomicity is inherited from the transaction
+boundary rather than measured with an attribute write in milestone 37's workload.
 
 
 - **Extend the on-disk format.** Correct, and atomic by construction since the metadata rides
