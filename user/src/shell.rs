@@ -42,6 +42,7 @@
 #![no_std]
 #![no_main]
 
+use capsh::expand::{Expander, Expansion, NameSet};
 use capsh::nav::{self, Cwd, Refused, Step};
 use capsh::{Action, Command, Endowment, Escalation, Prog, Refusal, RunSpec, jobframe, spawnproto};
 use fs_proto::{dir, dirent, fs};
@@ -139,6 +140,11 @@ enum Say {
     NoDirectory,
     /// The verb needs an operand and got none.
     NeedsAName,
+    /// **A designation this shell cannot back**, in `capsh`'s vocabulary. It arrives here because
+    /// expansion happens *before* planning, so a pattern that matched nothing (or too much) is
+    /// refused before there is a program to attribute it to, and `echo` can reach the same refusals
+    /// with no program on the line at all.
+    Cannot(Refusal),
 }
 
 /// A resolved path lead: the directory handle it designates, plus the temporary capabilities opened
@@ -336,37 +342,7 @@ impl Nav {
             }
         };
 
-        let mut said = Say::Nothing;
-        let mut cursor = 0u64;
-        let mut buf = [0u8; LISTING];
-        // Bounded so a server whose cursor does not advance costs a short listing rather than a
-        // prompt that never comes back.
-        for _ in 0..ROUNDS {
-            let n = call(
-                self.dir.unwrap_or(DIR),
-                fs::req(fs::READDIR, handle, 0),
-                cursor,
-            )
-            .0 as i64;
-            if n < 0 {
-                said = Say::Failed(-n as i32);
-                break;
-            }
-            if n == 0 {
-                break;
-            }
-            let n = (n as usize).min(buf.len());
-            get_page(n, &mut buf);
-            let mut seen = 0u64;
-            for (name, is_dir) in dirent::iter(&buf[..n]) {
-                each(name, is_dir);
-                seen += 1;
-            }
-            if seen == 0 {
-                break;
-            }
-            cursor += seen;
-        }
+        let said = self.each_entry(handle, each);
         if let Some(w) = walked {
             self.unwind(&w);
         }
@@ -417,6 +393,162 @@ impl Nav {
         self.unwind(&w);
         said
     }
+}
+
+// ---- expansion: the one place a pattern becomes a set (milestone 47's globbing lane) ----
+
+impl Nav {
+    /// **Expand one pattern token against the directory its leading path names.**
+    ///
+    /// This is the only function in the shell that turns a pattern into names, and both callers go
+    /// through it: `echo` (which prints the set) and the grant planner (which grants it). That is
+    /// what makes "the expansion you see is the grant" a property of the code rather than a promise
+    /// two call sites are trusted to keep.
+    ///
+    /// It needs `ENUMERATE` on the directory and nothing more, which is the rung the ladder already
+    /// separates out (DECISIONS §47): expanding a pattern is listing a directory, so it costs the
+    /// authority to list a directory. A shell that may not enumerate gets the server's `EPERM` here
+    /// rather than a quietly empty set, which would be `§42`'s silent degradation exactly.
+    fn expand(&mut self, token: &[u8]) -> Result<NameSet, Say> {
+        if self.dir.is_none() {
+            return Err(Say::NoDirectory);
+        }
+        let (p, _) = self.plan_path(token)?;
+        let Some((lead, pattern)) = p.split_last_component() else {
+            return Err(Say::Refused(Refused::NotAName));
+        };
+        let w = self.walk(lead)?;
+
+        let mut e = Expander::new(pattern);
+        let said = self.each_entry(w.handle, &mut |name, is_dir| e.offer(name, is_dir));
+        self.unwind(&w);
+        match said {
+            Say::Nothing => e.finish().map_err(Say::Cannot),
+            other => Err(other),
+        }
+    }
+
+    /// Read a directory in rounds, calling `each` with every entry. The body `ls` had, lifted out so
+    /// the listing loop is written once: a listing is a rendering of authority whether it is being
+    /// printed or matched against.
+    fn each_entry(&mut self, handle: u64, each: &mut dyn FnMut(&[u8], bool)) -> Say {
+        let mut cursor = 0u64;
+        let mut buf = [0u8; LISTING];
+        // Bounded so a server whose cursor does not advance costs a short listing rather than a
+        // prompt that never comes back.
+        for _ in 0..ROUNDS {
+            let n = call(
+                self.dir.unwrap_or(DIR),
+                fs::req(fs::READDIR, handle, 0),
+                cursor,
+            )
+            .0 as i64;
+            if n < 0 {
+                return Say::Failed(-n as i32);
+            }
+            if n == 0 {
+                break;
+            }
+            let n = (n as usize).min(buf.len());
+            get_page(n, &mut buf);
+            let mut seen = 0u64;
+            for (name, is_dir) in dirent::iter(&buf[..n]) {
+                each(name, is_dir);
+                seen += 1;
+            }
+            if seen == 0 {
+                break;
+            }
+            cursor += seen;
+        }
+        Say::Nothing
+    }
+}
+
+/// **Whether this token is a designation to resolve rather than a word to print.**
+///
+/// `glob::has_magic` first, deliberately: an `echo` word is arbitrary text (`a:b` is not a path and
+/// must not be refused as one), so nothing asks whether a token is a *nameable* path until it is
+/// established that it is a pattern at all. Once it is, a pattern anywhere but the last component is
+/// refused, because selecting directories to walk is an authority question (notes/glob.md).
+fn is_pattern(token: &[u8]) -> Result<bool, Refusal> {
+    if !glob::has_magic(token) {
+        return Ok(false);
+    }
+    capsh::expand::magic_component(token)
+}
+
+/// **Expand the invocation's pattern operand, before anything is planned.**
+///
+/// The shell expands and then plans, which is what Unix does, so there is no divergence to earn.
+/// What is different is the consequence: the planner must see the **set** rather than the pattern,
+/// because the endowment is the set. Only the first pattern is expanded, and that is not a
+/// limitation being hidden: no manifest declares two name slots, so a second operand of any kind is
+/// already an unplaceable token and a refusal.
+fn expansion(nav: &mut Nav, spec: &RunSpec) -> Result<Expansion, Say> {
+    for (i, token) in spec.positionals().iter().enumerate() {
+        match is_pattern(token) {
+            Ok(false) => continue,
+            Ok(true) => return Ok(Expansion::at(i, nav.expand(token)?)),
+            Err(r) => return Err(Say::Cannot(r)),
+        }
+    }
+    Ok(Expansion::none())
+}
+
+/// Write a set as `echo` shows it and as `caps` previews it: the names, one space apart, in the
+/// order the directory yielded them. One renderer, so what is displayed in the two places cannot
+/// differ in a way that hides a difference in the authority.
+fn write_set(set: &NameSet, out: &mut dyn FnMut(&[u8])) {
+    for (i, (name, _)) in set.iter().enumerate() {
+        if i > 0 {
+            out(b" ");
+        }
+        out(name);
+    }
+}
+
+/// **`echo`, which expands.** The half of milestone 47's globbing demonstration that costs no
+/// authority: `echo *.txt` prints literally what `rm *.txt` would transfer.
+///
+/// Words with no magic in them are copied through **byte for byte, spacing included**, so `echo
+/// two  spaces` still prints its two spaces. Only a word that is a pattern is replaced by what it
+/// designates, which keeps `echo` a text command everywhere it was one before.
+///
+/// `out` is a callback for [`Nav::ls`]'s reason: the prompt prints, and the guest witness (which has
+/// no terminal) collects, and both run this exact function rather than a reimplementation of it.
+fn echo(nav: &mut Nav, text: &[u8], out: &mut dyn FnMut(&[u8])) -> Say {
+    let mut i = 0;
+    while i < text.len() {
+        let space = i;
+        while i < text.len() && text[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i > space {
+            out(&text[space..i]);
+        }
+        let word = i;
+        while i < text.len() && !text[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i == word {
+            continue;
+        }
+        let token = &text[word..i];
+        match is_pattern(token) {
+            Ok(false) => out(token),
+            Ok(true) => match nav.expand(token) {
+                Ok(set) => write_set(&set, out),
+                // A pattern that matched nothing stops the line rather than printing itself. That is
+                // the same answer `rm` gets, and it has to be: if `echo` printed the pattern where
+                // `rm` refuses, the two would disagree about what the line designates, which is the
+                // one thing this pairing exists to rule out.
+                Err(s) => return s,
+            },
+            Err(r) => return Say::Cannot(r),
+        }
+    }
+    Say::Nothing
 }
 
 /// The local buffer one `READDIR` round is decoded from. The shared page is sixteen times larger, so
@@ -497,11 +629,16 @@ fn read_line(prompt: &[u8], out: &mut [u8]) -> (usize, u64) {
 /// report endpoint at slot 1. It runs the same builtins this file's prompt runs and reports a
 /// bitmap; see [`navigate`].
 const ROLE_NAVIGATE: u64 = 1;
+/// **The globbing witness** (milestone 47's globbing lane): the same wiring as [`ROLE_NAVIGATE`],
+/// pointed at the fixture's `globset`, running `echo` and the grant planner over one pattern and
+/// reporting whether they agree. See [`globbing`].
+const ROLE_GLOB: u64 = 2;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(role: u64, arg: u64, _x2: u64) -> ! {
     match role {
         ROLE_NAVIGATE => navigate(arg),
+        ROLE_GLOB => globbing(arg),
         _ => interactive(),
     }
 }
@@ -568,10 +705,13 @@ fn dispatch(nav: &mut Nav, cmd: &[u8]) {
     match capsh::parse(cmd) {
         Command::Empty => {}
         Command::Help => help(),
-        Command::Echo(text) => {
-            print(text);
-            print(b"\n");
-        }
+        // `echo` expands, and that is half of the globbing demonstration: what it prints is
+        // literally the authority the same words would transfer to a program. The newline goes out
+        // only when the line itself did, so a refused expansion is one line and not two.
+        Command::Echo(text) => match echo(nav, text, &mut print) {
+            Say::Nothing => print(b"\n"),
+            said => say(said),
+        },
         Command::Caps(tail) => caps(nav, tail),
         Command::Pwd => print_pwd(nav),
         Command::Run(spec) => run(nav, spec),
@@ -613,6 +753,11 @@ fn say(s: Say) {
             print(b"  this shell holds no directory capability; there is nothing here to name\n");
         }
         Say::NeedsAName => print(b"  name what you mean: this verb takes one\n"),
+        Say::Cannot(r) => {
+            print(b"  ");
+            print(r.message().as_bytes());
+            print(b"\n");
+        }
     }
 }
 
@@ -635,8 +780,17 @@ fn help() {
 
 /// Resolve an invocation, then either refuse it at the prompt (a mismatch the manifest caught) or
 /// spawn it, granting exactly what the command named and nothing else.
-fn run(nav: &Nav, spec: RunSpec) {
-    match capsh::plan(&spec, holdings(nav)) {
+fn run(nav: &mut Nav, spec: RunSpec) {
+    // **Expand first.** A pattern designates the names it matched, so the planner has to see the
+    // set; and a pattern that matched nothing, or too much, is refused here with nothing spawned.
+    let expanded = match expansion(nav, &spec) {
+        Ok(e) => e,
+        // A grant refusal is attributed to the program when there is one, because "rm: no name here
+        // matches that pattern" reads better than the bare sentence and is just as true.
+        Err(Say::Cannot(r)) => return refuse(spec, r),
+        Err(said) => return say(said),
+    };
+    match capsh::plan(&spec, holdings(nav), expanded) {
         Err(refusal) => refuse(spec, refusal),
         // A supervised job runs under the two-tier ^C path (milestone 24); a fast job is simply
         // spawned and waited on.
@@ -813,7 +967,7 @@ fn outcome(e: Endowment, answer: u64) {
 
 /// Print the shell's whole endowment, or, with a tail, preview what that command would grant. This
 /// is the introspection that makes "reading one literal tells you a process's authority" real.
-fn caps(nav: &Nav, tail: &[u8]) {
+fn caps(nav: &mut Nav, tail: &[u8]) {
     let tail = capsh::trim(tail);
     if tail.is_empty() {
         print(b"  this shell holds, and nothing else:\n");
@@ -839,7 +993,12 @@ fn caps(nav: &Nav, tail: &[u8]) {
         print(b"  caps previews a command's grant; try: caps budgeter --mem 16\n");
         return;
     };
-    match capsh::plan(&spec, holdings(nav)) {
+    let expanded = match expansion(nav, &spec) {
+        Ok(e) => e,
+        Err(Say::Cannot(r)) => return refuse(spec, r),
+        Err(said) => return say(said),
+    };
+    match capsh::plan(&spec, holdings(nav), expanded) {
         Err(refusal) => refuse(spec, refusal),
         Ok(e) => preview(e),
     }
@@ -862,7 +1021,7 @@ fn preview(e: Endowment) {
     // it is worth printing: the line you typed plus this table is the child's complete authority.
     if let Some(g) = e.file {
         print(b"    cap 2  endpoint  file     ");
-        print(g.name);
+        print(g.name.as_bytes());
         print(if g.writable {
             b"  (read+write, and nothing else on the disk)\n".as_slice()
         } else {
@@ -880,7 +1039,11 @@ fn preview(e: Endowment) {
         let n = g.dir.render(&mut buf);
         print(&buf[..n]);
         print(b"  (the directory holding ");
-        print(g.name);
+        // **The names, all of them, and this is the point of previewing a set at all.** `caps rm
+        // *.txt` prints exactly what `echo *.txt` prints, because both render the same expansion:
+        // the authority about to move is on the screen before anything moves it, which is a claim
+        // Unix cannot make about its own `rm`.
+        write_set(&g.names, &mut print);
         print(b")\n");
         if g.subtree {
             print(b"           ...and everything under it: -r grants the walk\n");
@@ -1329,6 +1492,128 @@ fn navigate(spec: u64) -> ! {
     if v & (nb::REACHED_INNER | nb::REACHED_SECRET | nb::LISTED) == 0 {
         v |= nb::NAVIGATION_FAILED;
     }
+    send(REPORT, VERDICT, v, 0);
+    exit();
+}
+
+// ---- the globbing witness (milestone 47's globbing lane) ----
+
+/// A small collector: what `echo` printed, or what a grant rendered to. Fixed size because this
+/// program has no allocator, and generous enough that a truncation cannot make two renderings agree
+/// by both running out at the same place.
+struct Text {
+    buf: [u8; 96],
+    n: usize,
+}
+
+impl Text {
+    fn new() -> Self {
+        Text { buf: [0; 96], n: 0 }
+    }
+
+    fn push(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            if self.n < self.buf.len() {
+                self.buf[self.n] = b;
+                self.n += 1;
+            }
+        }
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        &self.buf[..self.n]
+    }
+
+    /// Whether a name appears in what was collected. Used only for the stranger check, where the
+    /// names are distinctive enough that a substring is the right question.
+    fn holds(&self, needle: &[u8]) -> bool {
+        self.as_bytes().windows(needle.len()).any(|w| w == needle)
+    }
+}
+
+/// **The demonstration: `echo *.txt` prints exactly the authority `rm *.txt` would transfer.**
+///
+/// Both halves run here, in a shell that holds a real directory capability behind a real `dwarden`,
+/// over a real `READDIR`. They share the expander (that is the point of there being one), and they
+/// do **not** share the plumbing: `echo` goes text → words → expand → print, and the grant goes
+/// parse → positionals → expand → `capsh::plan` → the grant's names → render. So a planner that
+/// narrowed, reordered or added to a set would show up here as a disagreement.
+///
+/// The three refusals after it are what stop the agreement from being vacuous in the other
+/// direction: a pattern that matched nothing, a pattern where one cannot mean anything, and a line
+/// with no pattern in it at all.
+fn globbing(spec: u64) -> ! {
+    use fs_proto::fixture::{VERDICT, globscape as gb, tree};
+    let mut nav = Nav::rooted(fs_proto::grant::spec_rights(spec));
+    let mut v = 0u64;
+
+    // 1. What `echo` shows.
+    let mut shown = Text::new();
+    let said = echo(&mut nav, tree::GLOB_PATTERN, &mut |b| shown.push(b));
+    if matches!(said, Say::Nothing) && !shown.as_bytes().is_empty() {
+        v |= gb::EXPANDED;
+    }
+    // And it is not simply everything in the directory. Both strangers are one entry away and the
+    // warden a hop up could name either.
+    if !shown.holds(tree::GLOB_MISS.as_bytes()) && !shown.holds(tree::GLOB_DIR.as_bytes()) {
+        v |= gb::EXCLUDED_A_STRANGER;
+    }
+
+    // 2. What the same pattern would transfer, planned as `rm <pattern>` from the same text.
+    let mut cmd = [0u8; 32];
+    cmd[..3].copy_from_slice(b"rm ");
+    cmd[3..3 + tree::GLOB_PATTERN.len()].copy_from_slice(tree::GLOB_PATTERN);
+    let line = &cmd[..3 + tree::GLOB_PATTERN.len()];
+    let mut granted = Text::new();
+    if let Command::Run(rspec) = capsh::parse(line) {
+        match expansion(&mut nav, &rspec) {
+            Ok(e) => match capsh::plan(&rspec, holdings(&nav), e) {
+                Ok(endow) => match endow.dir {
+                    Some(g) => write_set(&g.names, &mut |b| granted.push(b)),
+                    None => v |= gb::GLOB_FAILED,
+                },
+                Err(_) => v |= gb::GLOB_FAILED,
+            },
+            Err(_) => v |= gb::GLOB_FAILED,
+        }
+    } else {
+        v |= gb::GLOB_FAILED;
+    }
+    if !granted.as_bytes().is_empty() && granted.as_bytes() == shown.as_bytes() {
+        v |= gb::AGREED;
+    }
+
+    // 3. A pattern that matches nothing. Refused, not printed as itself: the expansion is the grant,
+    //    so an empty expansion is an empty grant.
+    let mut nothing = Text::new();
+    if matches!(
+        echo(&mut nav, tree::GLOB_NOMATCH, &mut |b| nothing.push(b)),
+        Say::Cannot(Refusal::NoMatch)
+    ) && nothing.as_bytes().is_empty()
+    {
+        v |= gb::NO_MATCH_REFUSED;
+    }
+
+    // 4. A pattern in a leading component, refused where it is read.
+    if let Command::Run(bad) = capsh::parse(b"rm */gone")
+        && matches!(
+            expansion(&mut nav, &bad),
+            Err(Say::Cannot(Refusal::PatternInPath))
+        )
+    {
+        v |= gb::PATTERN_IN_PATH_REFUSED;
+    }
+
+    // 5. And a line with no pattern in it is still text: byte for byte, spacing included.
+    let mut plain = Text::new();
+    if matches!(
+        echo(&mut nav, tree::GLOB_PLAIN, &mut |b| plain.push(b)),
+        Say::Nothing
+    ) && plain.as_bytes() == tree::GLOB_PLAIN
+    {
+        v |= gb::TEXT_UNTOUCHED;
+    }
+
     send(REPORT, VERDICT, v, 0);
     exit();
 }
