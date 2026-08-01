@@ -70,7 +70,14 @@ fn main() -> ExitCode {
             eprintln!(
                 "--- booting cricker-os to an interactive shell (type `help`, Ctrl-C to quit) ---"
             );
-            mkdisk()
+            // **The filesystem the prompt's `>` and `<` need** (milestone 50). The FS server first,
+            // because `user()` packs the initrd and the boot loads it out of there by name, and the
+            // RedoxFS image because the runner attaches it only when the file exists. Both are
+            // rebuilt per boot, so the prompt always meets a fresh fixture rather than whatever the
+            // last session wrote.
+            fs_server_build(TARGET)
+                && mkredoxfs()
+                && mkdisk()
                 && user()
                 && cargo(&[
                     "run",

@@ -570,6 +570,12 @@ const INIT_STACK_PAGES: u64 = 8;
 // The aarch64 test module is the only caller: 19d.2 shipped, and the shape that actually became
 // the boot path is `init_boot` below. RISC-V boots the same system through `riscv_shell_boot`.
 #[cfg_attr(not(test), allow(dead_code))]
+/// The role at which `hello` **is** the boot path: it builds the console, the line discipline, the
+/// input driver and the shell, then stays alive as the spawn service. It is named at module level
+/// because [`spawn_init`] has to know which role gets a filesystem, and "the one that runs the
+/// prompt" is the answer.
+pub const INIT_BOOT_ROLE: u64 = 27;
+
 pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
     let (initrd_start, initrd_len) = memory::initrd_region().expect("no initrd to hand init");
     let initrd_pages = initrd_len.div_ceil(FRAME_SIZE);
@@ -613,6 +619,20 @@ pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
         }
     };
     crate::trust::require(INIT_ROLES_ENTRY, init_bytes);
+
+    // **The filesystem, for the boot role only** (milestone 50). Bring up the block server and the
+    // FS server here, before init exists, and hand init the service endpoint and the page its
+    // clients map; init narrows both into the shell, which is what makes `>` and `<` reachable from
+    // a real prompt. `None` is the ordinary case for a run with no RedoxFS disk attached, and the
+    // whole chain from here to the prompt treats it as "this boot has no filesystem" rather than as
+    // a failure. The other roles are milestone 19d's tests, which wire their own worlds.
+    let fs = if role == INIT_BOOT_ROLE {
+        program("fsserver").and_then(|fsserver| {
+            fs_service::root_directory(fs_service::blk_server_image(), fsserver)
+        })
+    } else {
+        None
+    };
 
     crate::sched::spawn(move || {
         let elf = match Elf::parse(init_bytes) {
@@ -691,8 +711,28 @@ pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
             crate::cap::Rights::READ.union(crate::cap::Rights::GRANT),
         ))
         .expect("grant uart rx irq");
+        // The file service (slot 5) and the page its clients share with it (slot 6), when this boot
+        // has a filesystem. GRANT on both, because init's job with them is to delegate: it narrows
+        // the endpoint into the shell and maps the frame into its address space. `a2` carries the
+        // rights the endpoint holds, which is also how init is told there is one at all.
+        let fs_rights = match fs {
+            Some((file_ep, file_shared)) => {
+                crate::sched::grant(crate::cap::endpoint_cap(
+                    file_ep,
+                    crate::cap::Rights::WRITE.union(crate::cap::Rights::GRANT),
+                ))
+                .expect("grant the file service");
+                crate::sched::grant(crate::cap::frame_cap(
+                    file_shared,
+                    crate::cap::Rights::WRITE.union(crate::cap::Rights::GRANT),
+                ))
+                .expect("grant the shared file page");
+                fs_proto::dir::ALL
+            }
+            None => 0,
+        };
 
-        enter_frame(elf.entry(), USER_STACK_TOP, role, initrd_len, 0)
+        enter_frame(elf.entry(), USER_STACK_TOP, role, initrd_len, fs_rights)
     })
     .expect("could not spawn init");
 }
@@ -706,7 +746,6 @@ pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
 // shell`, and `--features initboot`), since milestone 28 retired the kernel-wired `shell_service`.
 #[cfg(not(any(test, feature = "bench")))]
 pub fn boot_via_init(image: &'static [u8]) {
-    const INIT_BOOT_ROLE: u64 = 27;
     let report = crate::sched::create_endpoint();
     spawn_init(image, INIT_BOOT_ROLE, report);
 }
@@ -1153,8 +1192,35 @@ pub fn riscv_shell_boot(archive: &'static [u8], uart_irq: u32) -> Result<(), Loa
     )
     .expect("insert uart irq");
     assert_eq!(s2, 2);
+    // The file service (slot 3) and the page its clients share with it (slot 4), when this boot has
+    // a filesystem (milestone 50). GRANT on both, because init's job with them is to delegate: it
+    // narrows the endpoint into the shell and maps the frame into its address space. `a2` carries
+    // the rights the endpoint holds, which is also how init is told there is one at all. `None` is
+    // the ordinary case for a run with no RedoxFS disk attached.
+    let fs_rights = match program("fsserver")
+        .and_then(|fsserver| fs_service::root_directory(fs_service::blk_server_image(), fsserver))
+    {
+        Some((file_ep, file_shared)) => {
+            let s3 = crate::sched::tcb_insert_cap(
+                tid,
+                crate::cap::endpoint_cap(file_ep, Rights::WRITE.union(Rights::GRANT)),
+                None,
+            )
+            .expect("insert the file service");
+            assert_eq!(s3, 3);
+            let s4 = crate::sched::tcb_insert_cap(
+                tid,
+                crate::cap::frame_cap(file_shared, Rights::WRITE.union(Rights::GRANT)),
+                None,
+            )
+            .expect("insert the shared file page");
+            assert_eq!(s4, 4);
+            fs_proto::dir::ALL
+        }
+        None => 0,
+    };
     crate::sched::configure_tcb(tid, elf.entry(), USER_STACK_TOP, aspace_name).expect("configure");
-    crate::sched::start_tcb(tid, [0, initrd_len, 0]).expect("start"); // a1 = the archive length
+    crate::sched::start_tcb(tid, [0, initrd_len, fs_rights]).expect("start"); // a1 = archive length
 
     // Arm the interrupt chain so the input driver's keystrokes flow: the source at the PLIC and
     // supervisor external interrupts in `sie`. The input driver arms the NS16550's own RX interrupt
@@ -2636,6 +2702,43 @@ pub mod fs_service {
         /// Stack pages beyond the one `run` maps, for a confined program that needs them. The
         /// hand-written attacker needs none; a shell does (see [`spawn_fs_client`]).
         pub stack_pages: usize,
+    }
+
+    /// **The binary carrying the block server's role**, which is the one thing the two ISAs
+    /// disagree about here: on aarch64 it is a role of the `init`/hello binary, on riscv the
+    /// dedicated `blk` one. Every caller goes through this so the disagreement is one `cfg` rather
+    /// than a second copy of every wiring.
+    ///
+    /// It panics rather than returning `None` because a boot archive without it is a build that did
+    /// not finish, not a machine without a disk; the disk's absence is [`root_directory`]'s `None`.
+    pub fn blk_server_image() -> &'static [u8] {
+        #[cfg(target_arch = "aarch64")]
+        return program("init").expect("no init program in the initrd archive");
+        #[cfg(target_arch = "riscv64")]
+        return program("blk").expect("no blk program in the initrd archive");
+    }
+
+    /// **Wire the filesystem and hand back the root directory capability**, for a boot rather than
+    /// for a test (milestone 50).
+    ///
+    /// This is the one entry point the interactive boot uses. It brings up the block server and the
+    /// FS server, drains both readiness sentinels (so the service is *running* and not merely
+    /// spawned by the time init exists), and returns `(the file-service endpoint, the physical frame
+    /// its clients map)`. `None` means no RedoxFS disk is attached to this run, which is the normal
+    /// case for a plain `cargo xtask run`, and every caller treats it as "this boot has no
+    /// filesystem" rather than as an error.
+    ///
+    /// The endpoint **is** the directory capability (DECISIONS §27), rooted at the image root. A
+    /// boot hands it to the shell unnarrowed on purpose: it is the machine's own prompt, and the
+    /// interesting confinement claims are about what the shell then hands to the programs it spawns.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn root_directory(
+        blk_image: &'static [u8],
+        fsserver_image: &'static [u8],
+    ) -> Option<(EpId, u64)> {
+        let (file_ep, file_shared, readiness) = ensure(blk_image, fsserver_image)?;
+        await_service(readiness);
+        Some((file_ep, file_shared))
     }
 
     /// **Wire a directory warden and hand back the narrowed capability**, without spawning whatever
@@ -12567,13 +12670,10 @@ mod dir_capability_tests {
     use fs_proto::dir;
     use fs_proto::fixture::dirscape as esc;
 
-    /// The binary carrying the block server's role, which is the one thing the two ISAs disagree
-    /// about: on aarch64 it is a role of the `init`/hello binary, on riscv the dedicated `blk` one.
+    /// The binary carrying the block server's role. One `cfg`, in `fs_service`, because the boot
+    /// path needs the same answer this module's tests do.
     pub(super) fn blk_server_image() -> &'static [u8] {
-        #[cfg(target_arch = "aarch64")]
-        return program("init").expect("no init program in the initrd archive");
-        #[cfg(target_arch = "riscv64")]
-        return program("blk").expect("no blk program in the initrd archive");
+        fs_service::blk_server_image()
     }
 
     /// Wire a `dwarden` holding a capability to the fixture's `sub` with exactly `rights`, run the
