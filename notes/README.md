@@ -222,9 +222,10 @@ in the code or the conversation doesn't make sense, it belongs here.
   of a region the shell splits off its own budget, and destroying that region is what turns a dead
   reader into `Gone` for a live writer. A builtin can lead a pipeline because the shell can be a
   writer. Both directions are proven the same way, one binary against two sources or two
-  destinations. Honest gap named where the reader meets it: `>` and `<` parse, plan, preview and
-  refuse correctly but cannot run at the interactive prompt, because no boot yet gives one shell
-  both a filesystem and a spawn channel.
+  destinations. And the finding that finished it: the file behind a `>` is **the shell's own
+  filesystem session**, not a sink process, because `fs_proto` shares one page between the FS server
+  and its clients and `ls > out.txt` is a line where the shell must read the filesystem while the
+  redirection is being written.
 - [The command line as a grant expression](grant-expression.md): milestone 31: naming a resource
   in a command is how you grant it (Miller's "designation is authorization"), the inversion of
   Unix's ambient authority at the one interface a human touches. The shell's own budget, the

@@ -31,10 +31,24 @@ const INITRD_VA: u64 = 0x2000_0000;
 const UNTYPED: u64 = 0; // the building budget
 const UART_DEV: u64 = 1; // the UART registers, a device cap to delegate into the drivers
 const UART_IRQ: u64 = 2; // the UART receive interrupt, an Irq cap to delegate into the input driver
+/// **The filesystem, when this boot has one** (milestone 50). The kernel wires the block server and
+/// the FS server before it starts us and grants the service endpoint plus the page its clients
+/// share with it. The rights that endpoint carries arrive in `a2`, and **0 means this boot attached
+/// no RedoxFS disk**, in which case these two slots hold nothing at all.
+const FS_EP: u64 = 3;
+const FS_PAGE: u64 = 4;
 
 const PAGE: u64 = 4096;
 const CHILD_STACK_VA: u64 = 0x0050_0000;
-const CHILD_STACK_PAGES: u64 = 4;
+/// Stack pages every child init builds gets, mapped down from [`CHILD_STACK_VA`].
+///
+/// **Eight rather than four since milestone 50**, and it is a measured number rather than a round
+/// one: the shell's redirection path carries a parsed line, an array of planned endowments, a
+/// listing buffer and a file buffer all by value, and four pages overflowed at the first
+/// `ls > out.txt` (a data abort one word below the lowest stack page). The kernel's own scripted
+/// wiring had already found the same floor and maps seven. The cost is 16 KiB per child, which is
+/// nothing next to a page table.
+const CHILD_STACK_PAGES: u64 = 8;
 
 /// Where a supervised (interruptible) child maps its shared job frame (milestone 24). Below the ELF
 /// load address (0x40_0000) and the stack; must match heeder.rs / spinner.rs's JOB_FRAME_VA.
@@ -52,11 +66,12 @@ const CON_UART_VA: u64 = 0x0070_0000; // console's UART mapping
 const TERM_OUT_VA: u64 = 0x0080_0000; // lineedit reads the shell's text/prompts here
 const TERM_IN_VA: u64 = 0x0090_0000; // lineedit delivers completed lines here
 const IN_UART_VA: u64 = 0x00a0_0000; // input driver's UART mapping
-const SH_OUT_VA: u64 = 0x0060_0000; // the shell's view of the TERM_OUT frame
+const SH_OUT_VA: u64 = 0x00c0_0000; // the shell's view of the TERM_OUT frame (shell.rs OUT_VA)
 const LINE_VA: u64 = 0x00b0_0000; // the shell's view of the TERM_IN frame
+const SH_FS_VA: u64 = 0x0060_0000; // the shell's half of the FS contract (shell.rs FS_VA)
 
 #[unsafe(no_mangle)]
-pub extern "C" fn _start(_x0: u64, initrd_len: u64, _x2: u64) -> ! {
+pub extern "C" fn _start(_x0: u64, initrd_len: u64, fs_rights: u64) -> ! {
     // The archive the kernel mapped read-only; its length arrived in a1.
     // SAFETY: the kernel mapped `initrd_len` bytes of reserved RAM, read-only, at INITRD_VA.
     let archive =
@@ -85,8 +100,6 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, _x2: u64) -> ! {
     let request = must(retype_obj(abi::objtype::ENDPOINT));
     let reply = must(retype_obj(abi::objtype::ENDPOINT));
     let term_ep = must(retype_obj(abi::objtype::ENDPOINT));
-    let spawn_ep = must(retype_obj(abi::objtype::ENDPOINT));
-    let result_ep = must(retype_obj(abi::objtype::ENDPOINT));
     let con_shared = must(retype_frame()); // lineedit -> console text
     let term_out = must(retype_frame()); // shell -> lineedit text and prompts
     let term_in = must(retype_frame()); // lineedit -> shell completed lines
@@ -133,34 +146,69 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, _x2: u64) -> ! {
     must0(tcb_start(input, 0, 0, 0));
     cap_delete(input);
 
+    // **The console's three capabilities go back now, before the shell is built**, and that is not
+    // tidiness: this cspace has sixteen slots, and milestone 50 added two more kernel grants (the
+    // file service and its page). With them held, the shell's `build_child` had no slot left to
+    // retype an address space into and failed silently, which presented as a boot that brought up
+    // the console and then printed nothing. Nothing below needs these: lineedit is the console's
+    // only client and it already holds its narrowed copies.
+    for c in [request, reply, con_shared] {
+        cap_delete(c);
+    }
+
+    // **The spawn channel is retyped here, not with the rest**, and the reason is the same sixteen
+    // slots: holding two more endpoints through the three builds above is what pushed this cspace
+    // over. They are the shell's and the service's, so this is also where they belong.
+    let spawn_ep = must(retype_obj(abi::objtype::ENDPOINT));
+    let result_ep = must(retype_obj(abi::objtype::ENDPOINT));
+
     // 4. The shell: prints and reads lines through the terminal, holds the spawn channel, and holds
     // its own untyped budget (slot 3) so `run --mem N` grants from memory that is genuinely the
     // shell's. WRITE lets it SPLIT the budget; GRANT lets it delegate the split to init. We carve
     // that budget from our own untyped and hand it over the same way we hand any capability.
+    //
+    // Slot 4 is the filesystem when this boot has one, which is the whole of what `>` and `<` need
+    // (milestone 50, notes/pipes.md): the shell resolves a redirection against it and writes the
+    // file itself. Narrowed to WRITE, which on an endpoint is the right to CALL, and without GRANT,
+    // so the shell can hand it to nobody.
     let sh_budget = must(untyped_split(SH_BUDGET_PAGES));
+    let with_fs = fs_rights != 0;
+    let sh_caps: [(u64, u64); 5] = [
+        (term_ep, abi::rights::WRITE),
+        (spawn_ep, abi::rights::WRITE),
+        (result_ep, abi::rights::READ),
+        (sh_budget, abi::rights::WRITE | abi::rights::GRANT),
+        (FS_EP, abi::rights::WRITE),
+    ];
+    let sh_maps: [(u64, u64, u64); 3] = [
+        (SH_OUT_VA, term_out, abi::aspace::MAP_RW), // shell writes text and prompts here
+        (LINE_VA, term_in, abi::aspace::MAP_RO),    // shell reads completed lines
+        (SH_FS_VA, FS_PAGE, abi::aspace::MAP_RW),   // and its half of the FS contract
+    ];
     let shell = must(build_child(
         UNTYPED,
         &sh_elf,
-        &[
-            (term_ep, abi::rights::WRITE),
-            (spawn_ep, abi::rights::WRITE),
-            (result_ep, abi::rights::READ),
-            (sh_budget, abi::rights::WRITE | abi::rights::GRANT),
-        ],
-        &[
-            (SH_OUT_VA, term_out, abi::aspace::MAP_RW), // shell writes text and prompts here
-            (LINE_VA, term_in, abi::aspace::MAP_RO),    // shell reads completed lines
-        ],
+        if with_fs { &sh_caps } else { &sh_caps[..4] },
+        if with_fs { &sh_maps } else { &sh_maps[..2] },
     ));
-    must0(tcb_start(shell, 0, 0, 0));
+    // Role 0 (the prompt), and `arg1` is the rights its directory capability carries. A shell told 0
+    // holds no directory and says so at every verb that would need one.
+    must0(tcb_start(shell, 0, fs_rights, 0));
     cap_delete(shell);
     cap_delete(sh_budget); // our copy; the shell holds its own now
 
     // Free every boot cap the spawn service does not need, so init's 16-slot cspace has room to
     // build a supervised child (which holds a job untyped and a job frame while build_child retypes
     // an aspace, frames, and a TCB). The drivers and the shell hold the narrowed copies that matter.
-    for c in [request, reply, term_ep, con_shared, term_out, term_in] {
+    for c in [term_ep, term_out, term_in] {
         cap_delete(c);
+    }
+    // The filesystem too. init is the ELF loader, not an FS client: the shell holds the narrowed
+    // copies and this process never speaks `fs_proto`. The day `rm` is reachable from the prompt,
+    // init keeps the endpoint instead, because building a `dwarden` is its job and not the shell's.
+    if with_fs {
+        cap_delete(FS_EP);
+        cap_delete(FS_PAGE);
     }
 
     // The spawn service (milestone 31's grant expression, wire half; capsh::spawnproto). The shell

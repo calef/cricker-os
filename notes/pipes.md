@@ -1,8 +1,14 @@
 # Pipes and redirection: `>`, `<` and `|` are one substitution
 
 *Milestone 50, the operators lane. `crates/capsh/src/line.rs`, `user/src/wc.rs`, `user/src/shell.rs`,
-`user/src/sysinit.rs`, `crates/capsh/src/spawnproto.rs`. The protocol half is
+`user/src/sysinit.rs`, `user/src/hello.rs`, `crates/capsh/src/spawnproto.rs`. The protocol half is
 notes/sink-protocol.md and you should read that first.*
+
+**All three operators run at a real prompt on both ISAs.** `|` landed first; `>` and `<` needed a
+boot in which one shell holds both a filesystem and a spawn channel, and building that turned up a
+reason the file end of a redirection cannot be a separate process. That finding is the section
+["The file behind a `>` is this shell"](#the-file-behind-a--is-this-shell-and-that-was-not-the-plan),
+and it is the most reusable thing in this note.
 
 ## What this lane had to add, which was less than it looks
 
@@ -145,8 +151,65 @@ output through a callback rather than through `print`, because the witness roles
 that was done for testability and it means `echo`, `ls` and `pwd` feed a pipe with no branch in any
 of them.
 
-`ls | wc` therefore works, in a shell that holds a directory. The interactive boot does not; see
-BUGS.
+`ls | wc` therefore works, in a shell that holds a directory, and since milestone 50's second half
+the interactive boot grants one.
+
+## The file behind a `>` is this shell, and that was not the plan
+
+The plan was the obvious one: `sink.rs`'s file role is an adapter that holds an FS session and
+serves the sink contract, `sink_tests` proves it against a real RedoxFS image, so the shell asks
+init to build one per redirection and hands the child the endpoint. **That does not work, and the
+reason is worth more than the feature.**
+
+`fs_proto` shares **one page** between the FS server and its clients (`fs_service`'s
+`FILE_VA_CLIENT`; the server maps the same frame at `FILE_PAGE`). A client stages bytes or a name in
+that page and *then* calls, so its use of the page straddles the call boundary. Two client
+**processes** doing that at once race, and nothing in the contract orders them: there is no lock, and
+a rendezvous on the FS endpoint cannot span a put-then-call pair.
+
+That is survivable for `date > out.txt`, where the shell touches no file while the adapter writes.
+It is not survivable for `ls > out.txt`, which is exactly a line where the shell must read the
+filesystem **while** the redirection is being written: `ls` reads a page of directory entries, hands
+a name to the writer, and comes back for the next round. Interleave an adapter's `put` with that and
+the listing and the file are both corrupt, silently.
+
+The note that recorded this hazard first is `fs_service::await_warden`, which found the **startup**
+half (a client that already exists writes over the name a warden staged). This is the steady-state
+half, and it has no ordering fix, because there is no moment when both parties are done.
+
+So the shell backs both ends itself. It already holds the directory capability; it is the one
+process that can write the file without opening a second session.
+
+```text
+  date > out.txt      date's slot 0 holds the shell's result endpoint, exactly as an
+                      unredirected `date`'s does. The shell drains it into a file
+                      instead of onto the terminal.
+
+  wc < out.txt        the shell mints an endpoint, gives `wc` READ on it, opens the
+                      file and streams it over the sink contract. Same code path a
+                      builtin producer already took.
+
+  ls > out.txt        no process is spawned at all. The shell is the producer and
+                      the shell is the sink.
+```
+
+**This costs the milestone nothing, and that is the test of whether it is the right shape.** What a
+redirected program holds is unchanged: one endpoint, `WRITE`, no way to ask what is behind it. There
+is no new message, no change to `capsh::spawnproto`, and no change in init. `Sink::File` and
+`Source::File` still exist in the plan, because the manifest check needs them (`worker 9 > out.txt`
+is still `NotAByteStream`), and the wiring simply does not need a capability for them.
+
+It is also the smaller claim, honestly stated. `> report.txt` still grants strictly less than Unix's
+fd 1, but the sentence is now "the program holds an endpoint and the shell holds the file", not "an
+adapter process holds the file". The adapter shape is still real and still proven; it is the right
+answer when the client is **not** the shell, which is what `sink_tests` measures.
+
+### What it costs, named where you meet it
+
+- The shell is single-threaded, so it is inside the drain for the whole of a redirected command.
+  That is what an unredirected command already did.
+- Every byte crosses the shell's address space twice. There is no benchmark for this.
+- A `>` cannot outlive the line, because the thing writing the file is the prompt.
 
 ## SIGPIPE, and why the pipeline gets its own region
 
@@ -159,9 +222,106 @@ it when the line is over. That is what turns a producer's next `SEND` into `abi:
 is `SIGPIPE` as a return value. The classification itself is asserted by value in
 `kernel::user::sink_tests`.
 
+## The boot that has a filesystem, which is what `>` was actually waiting for
+
+The kernel brings the block server and the FS server up **before init exists** and hands init the
+file-service endpoint plus the frame its clients map. init narrows both into the shell: slot 4, and
+the page at `FS_VA`. Nothing else in the system changed shape; the shell simply holds one more
+capability.
+
+```text
+  kernel  ── wires blk + fsserver, drains both readiness sentinels ──┐
+                                                                     v
+          ── spawns init, granting the FS endpoint and the page (GRANT on both)
+                                                                     |
+  init    ── builds console, lineedit, input ──────────────────────── |
+          ── builds the shell: slot 4 = the FS endpoint (WRITE, no GRANT)
+                                          + the page at 0x60_0000
+          ── starts it with arg1 = the dir rights that endpoint carries
+```
+
+`arg1` is `0` on a machine with no RedoxFS disk attached, and then the shell is exactly the shell it
+was: `Nav::empty()`, and every verb that would need a directory says so. **The same ELF is in both
+positions**, which is why `kernel::user::pipeline_tests` (no slot 4) and
+`kernel::user::redirection_tests` (slot 4) are each other's control.
+
+Three things had to move to make room, and each is a fact worth keeping:
+
+- **The shell's terminal page moved from `0x60_0000` to `0xc0_0000`.** `0x60_0000` is
+  `FILE_VA_CLIENT`, which six programs map; the terminal page is the one address only the shell and
+  its init know, so it is the one that moved.
+- **init's cspace is sixteen slots and two more kernel grants overflowed it.** The console's
+  `build_child` had no slot left to retype an address space into and returned an error, which
+  presented as a boot that brought the console up and then printed nothing at all. init now retypes
+  the spawn and result endpoints **after** the drivers are built, and gives the console's three
+  capabilities back before the shell, which is the same discipline the file already had one step
+  later.
+- **Every child init builds gets eight stack pages, not four.** The redirection path carries a
+  parsed line, an array of planned endowments, a listing buffer and a file buffer by value, and four
+  pages overflowed at the first `ls > out.txt` (a data abort one word below the lowest stack page).
+  The kernel's own scripted wiring had already found the same floor and maps seven.
+
 ## EXAMPLES
 
-At the prompt, in the interactive boot:
+At a real prompt, on the RedoxFS fixture. `script/console` is the aarch64 spelling and builds
+everything it needs (the FS server into the initrd, and the image, because the runner attaches the
+disk only when the file is there). RISC-V has no `xtask` verb for the interactive boot, so it is two
+commands:
+
+```sh
+script/console                                   # aarch64
+
+cargo xtask initrd-riscv                         # riscv64
+CRICKER_INITRD=target/initrd-riscv.img CRICKER_DISK=target/crickerfs.img \
+  cargo run -p kernel --features shell --target riscv64imac-unknown-none-elf
+```
+
+```text
+$ ls
+  globset/
+  motd
+  other/
+  redir/
+  rmtree/
+  scratch
+  sub/
+$ ls > out.txt
+$ wc < out.txt
+  8 8 57
+$ date > when.txt
+$ wc < when.txt
+  1 11 66
+$ ls
+  globset/
+  motd
+  other/
+  out.txt
+  redir/
+  rmtree/
+  scratch
+  sub/
+  when.txt
+```
+
+Read the numbers rather than the fact that it ran. `wc < out.txt` says **eight** lines where the
+listing above it had seven, because `>` creates and truncates its file **before** the command runs,
+so `ls` sees `out.txt` in the directory it is listing. That is Unix's order and it is worth seeing
+rather than being told. The 57 bytes are those eight names plus a newline each; the terminal's
+two-space indent is the terminal's manners and is not in the file.
+
+The riscv64 prompt is the same session with different numbers, because that leg's image had two more
+names on it from an earlier test run (`10 10 77` rather than `8 8 57`). The numbers being *different*
+and still internally consistent is the better demonstration: nothing here is a constant anybody
+pinned.
+
+And the same at a prompt with no filesystem, which is the same binary:
+
+```text
+$ ls > out.txt
+  you hold no such capability: this shell was granted no directory to narrow
+```
+
+The rest of the operators:
 
 ```text
 $ echo hello world | wc
@@ -235,26 +395,51 @@ first does not leave the kernel's address space. The answers must be equal, **an
 the transcript actually is, because two arms broken the same way would satisfy equality on their
 own.
 
+### And the redirections, at a prompt that holds a filesystem
+
+`kernel::user::redirection_tests` is `pipeline_tests` with one more capability: the same shell ELF,
+the same four slots, plus a directory at slot 4 narrowed by a `dwarden` to one subtree of the real
+RedoxFS image. Three claims, and none of them is "it printed something":
+
+- **One builtin, two destinations.** `ls > out.txt` writes a listing into a file and prints nothing;
+  the `ls` after it prints the same listing; `wc < out.txt` has to agree with what was printed, once
+  the prompt's two-space indent comes off. The expected counts are *derived from the transcript*, so
+  a `>` that dropped every second byte fails even though it would still produce a file.
+- **One program, two destinations.** `date` printed and `date > date.txt` counted, and the file's
+  byte count has to be the length of what was printed.
+- **The refusals a directory does not rescue.** `wc < nosuch.txt` is the filesystem's own sentence
+  (a `<` does not create, because a `wc` that truthfully reported zero for a file that is not there
+  is a number a person would believe), and `worker 9 > out.txt` is still `NotAByteStream`.
+
+The pair of witnesses is the capability argument made twice with one binary:
+`pipeline_tests::a_redirection_a_shell_cannot_back_is_refused_rather_than_dropped` refuses because
+slot 4 is empty, and this writes the file because slot 4 holds a directory. Neither is a branch in
+the shell.
+
 ## BUGS, named where the reader meets them
 
-- **`>` and `<` cannot be run from the interactive prompt.** They parse, plan, preview and refuse
-  correctly, but the boot that starts the interactive shell wires no filesystem service, so the
-  shell holds no directory to resolve a redirection against and the answer is the same "you hold no
-  such capability" a named file gets. **Both mechanisms are proven** against a real RedoxFS image in
-  `kernel::user::sink_tests` (a program writing into a file sink, and a program reading out of a
-  file source), so what is missing is a **boot in which one shell holds both a filesystem and a
-  spawn channel**. That is a wiring job in `sysinit`, not a design question. Until then the honest
-  statement is: `|` runs at the prompt, `>` and `<` do not, and the parts they would be built from
-  each work.
-- **A `<` adapter cannot yet be told which file to open.** `user/src/sink.rs`'s source role opens
-  the one name in `sink_proto::fixture`, because a name rides in two `START` argument words and the
-  three-word ABI has no room left once the role selector and the spec are in. The shell would need
-  to hand it the name the way `fwarden` is handed one, through a grant spec rather than through
-  `START`. Nothing about that is hard; it was simply not needed while the prompt cannot reach it.
-- **The guest test's init is the kernel, not `sysinit`.** It serves the same protocol, and the shell
+- **The guest tests' init is the kernel, not `sysinit`.** It serves the same protocol, and the shell
   cannot tell the difference, but it is not the same code: a change to `user/src/sysinit.rs` that
-  broke the spawn path would not fail `pipeline_tests`. The `--features shell` boot is what
-  exercises `sysinit`, and nothing gates it.
+  broke the spawn path would not fail `pipeline_tests` or `redirection_tests`. The `--features
+  shell` boot is what exercises `sysinit`, and **nothing gates it**. This bit during this
+  milestone's own second half, twice and expensively: the two extra kernel grants overflowed init's
+  sixteen-slot cspace, and the shell's four stack pages were one deep-call short, and **both
+  presented as a boot that printed nothing at all**. Each cost a manual bisect against a booted
+  prompt. A gate that boots `--features shell` and types one line would have caught both in
+  seconds, and it is the most valuable test this milestone did not write.
+- **`user/src/sink.rs`'s file and source roles are no longer on the shell's path.** They are still
+  the right shape for an adapter whose client is not the shell, and `sink_tests` still proves them
+  against a real image, but nothing at the prompt builds one. The source role also still opens the
+  one name in `sink_proto::fixture` and cannot be told another; the shell would have had to hand it
+  a name the way `fwarden` is handed one, and it turned out not to need to.
+- **The interactive prompt holds the image root, unnarrowed.** A `dwarden` between it and the FS
+  server would cost one process and would make the prompt's own authority as legible as the
+  authority it hands out. It is the machine's own shell, so this is a defensible default rather
+  than an oversight, but it is a default and not a decision anybody made on the record.
+- **`rm` is still not reachable from the prompt.** The shell now holds a directory, so the refusal is
+  no longer "you hold no such capability"; what is missing is the `dwarden` init would have to build
+  per invocation, and `spawn` says so rather than spawning `rm` with nothing. init deletes its copy
+  of the FS endpoint after building the shell, so that is the line that changes first.
 - **Slot 1 is the input source or the `--mem` untyped, whichever the request carries.** That is
   unambiguous only because no manifest declares both, and `capsh` is where that stops being true. A
   program endowed a budget *and* an input needs a numbered slot convention rather than an ordered
