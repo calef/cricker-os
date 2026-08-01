@@ -1,5 +1,5 @@
 #!/bin/sh
-# script/cibuild: the entry point CI uses to run the tests on a clean machine.
+# script/ci-build: the entry point CI uses to run the tests on a clean machine.
 #
 # Unlike script/test, it provisions dependencies first, because a CI runner starts bare. This is
 # what the workflow's test job runs, so CI exercises the same bootstrap a developer does. The

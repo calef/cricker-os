@@ -4022,8 +4022,8 @@ reason: "a GUID that is not random is not unique, this crate has no randomness, 
 from a counter would be worse than refusing." Partitioning and formatting on the target are both
 gated on plumbing the entropy service to the program that does them, and neither is gated on `std`.
 
-This is a **decision for Chris**, because the fix is a divergence from the pin (SUBMIT-REDOXFS-PATCH.md
-is the mitigation), and §46's rule is that taking one is a decision rather than a convenience. It is
+This is a **decision for Chris**, because the fix is a divergence from the pin (`patches/README.md` records the
+patch and how to submit it, which is the mitigation), and §46's rule is that taking one is a decision rather than a convenience. It is
 also worth weighing against the pragmatic alternative: `redoxfs-host` on a Mac can partition and
 format the drive today, which is what actually gets a disk ready for the board on 2026-08-21, and the
 target-side version is then a capability demonstration rather than a prerequisite.

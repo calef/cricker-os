@@ -3,7 +3,7 @@
 #
 # Part of the "Scripts to Rule Them All" set (see notes/scripts.md). Idempotent: it checks
 # for what is already present and installs only what is missing, so it is cheap to re-run and
-# safe to call from script/setup, script/update, and script/cibuild.
+# safe to call from script/setup, script/update, and script/ci-build.
 
 set -e
 cd "$(dirname "$0")/.."
