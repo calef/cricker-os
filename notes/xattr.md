@@ -125,6 +125,25 @@ The filter runs **before the cursor is applied**, not after. A filter after `ski
 make one real entry vanish at whichever offset the store happened to sort to, which is the sort of
 bug that shows up as "one file is missing from `ls` on Tuesdays".
 
+### The store directory goes with the last attribute, and the reason it was worth doing
+
+An earlier version of this note recorded "the store directory is never removed" as a limitation, on
+the grounds that noticing it had emptied would cost a walk. **That was wrong about the cost.**
+`remove_node` with `MODE_DIR` already refuses a directory that still has entries, with `ENOTEMPTY`,
+so the engine's own check *is* the emptiness test and there is nothing to enumerate. Attempting the
+removal and accepting the refusal costs one lookup, on the removals that emptied a blob.
+
+The reason to bother is on the recovery side rather than the byte. `redoxfs-host extract` copies the
+store out with the tree, so a leftover empty `.cricker-attrs` would land in somebody's recovered
+Documents folder as a directory nothing explains. A filesystem with no attributes on it is now
+indistinguishable from one that never had any.
+
+Both routes to empty are tested, because they are different code: `remove_xattr` writes an empty
+blob and goes through `write_attrs`, while `unlink` purges one and does not. The assertion in the
+middle is the one that keeps the test honest, and it says the store must **stay** while a second
+node still has attributes; without it the test would pass just as well against an implementation
+that removed the store on every removal.
+
 ### 3. A shrinking blob must be truncated, or the reader walks records nobody wrote
 
 A write does not truncate (DECISIONS §27, four times corrected). So `write_attrs` writes the blob
@@ -188,16 +207,20 @@ let (r0, _) = call(FILE, fs::req(fs::GETXATTR, handle, name.len() as u64), 0);
 let (kind, len) = (xattr::reply_kind(r0 as i64), xattr::reply_value_len(r0 as i64));
 ```
 
-Seeing the store from a recovery host, which is expected rather than a leak:
+Getting them back off a dead board, which is what the whole feature is for:
 
 ```console
-$ redoxfs-host ls backup.img /
-d           0  .cricker-attrs
--          70  motd
-d           0  sub
-$ redoxfs-host ls backup.img /.cricker-attrs
--          46  0000002a
+$ redoxfs-host xattr backup.img photo.jpg
+         6  kind 0x43535452 'CSTR'  user.com.apple.metadata:_kMDItemUserTags
+        32  kind 0x00000000  user.com.apple.FinderInfo
+$ redoxfs-host extract backup.img / recovered
+extracted / to recovered: 4 files, 3 directories, 0 symlinks, 165 bytes,
+  3 attributes reattached, 1 type codes dropped
 ```
+
+The attributes are on the recovered files, the raw store comes out beside them (which is where the
+type codes stay, since no host filesystem has a field for one), and anything the host refused is
+counted and named. See [notes/host-recovery.md](host-recovery.md).
 
 ## BUGS
 
@@ -218,10 +241,6 @@ Named here because a reader who meets the feature deserves to meet its edges at 
   transaction, because that is the only place it can be crash-atomic with the removal. Deferring it
   to the close would mean a server that died in between leaked the blob. The name goes and the bytes
   stay (that is `unlink`, and it is measured); the attributes go with the name.
-- **The store directory is never removed**, even when the last attribute on the filesystem goes.
-  Individual blob files are removed when they empty, so the store does not accumulate an entry per
-  node that ever held an attribute, but the directory itself stays. Checking whether it is empty
-  costs a walk on every removal to save one directory entry.
 - **All blobs live in one flat directory.** RedoxFS directories are H-trees, so lookup is hashed
   rather than linear, but a filesystem where most files carry attributes has a directory with an
   entry per file. That is fine for a backup target and is untested at a million entries.
@@ -229,11 +248,6 @@ Named here because a reader who meets the feature deserves to meet its edges at 
   emulable above a store only racily, and §42 forbids offering a verb whose guarantee we cannot
   meet. An attribute has no handle and no identity of its own, so "it already had a value" is not a
   fact a caller can act on differently.
-- **Crash atomicity is inherited, not separately measured.** Every mutation runs inside one
-  `fs.tx`, and milestone 37's sweep proves prefix consistency for whatever a transaction contains,
-  so the property holds by construction. What has *not* been done is a crash sweep whose workload
-  includes an attribute write, so "an attribute and its file survive a cut together" is an argument
-  from the transaction boundary rather than a measurement. It is the obvious next thing to measure.
 - **`MAX_VALUE` is 3 KiB, and Samba's `streams_xattr` can be asked to hold whole alternate data
   streams.** A resource fork larger than 3 KiB is refused with `E2BIG`, loudly. Lifting the limit
   means chunking the transfer across requests, which this contract does not do for anything today.
@@ -250,6 +264,21 @@ in `fs-server` drive the real engine against a `DiskMemory` image: persistence a
 attribute was not written in, the rename property, the purge with a provoked node-id reuse, the
 replaced-destination purge, the store's invisibility to seven verbs and to a listing, both rights
 directions, every ceiling, and the shrink-without-a-tail.
+
+**Crash-consistent, measured rather than argued** (milestone 57, closing what used to be a BUGS
+entry here). The old claim was sound and second-hand: every mutation runs inside one `fs.tx`, and
+milestone 37's sweep proves prefix consistency for whatever a transaction contains, so the property
+held by construction. It is now in the sweep. `fs-server/tests/crash_consistency.rs` reads each
+name's attributes as part of the filesystem's state, and the workload grew four attribute operations
+covering the three shapes the store has: **creating** it (two node creations in one commit),
+**growing** a blob, and **shrinking** one, which is the path that must truncate afterwards. They are
+interleaved with a write to the same file, so the claim being decided is the interesting one: an
+attribute lives in a *different file* from the data it describes, and a recovery holding the new
+bytes without the new attribute (or the reverse) is a state that never existed and fails the sweep.
+
+The workload's own sanity check does double duty here. An attribute operation changes nothing
+observable unless the snapshot reads attributes, so a harness that quietly stopped looking fails at
+the fixture rather than passing everywhere below it.
 
 **On device, both ISAs** (DECISIONS §19). `user/src/fsclient.rs`'s proof role carries a witness that
 reports a bitmap, and the kernel test asserts an **exact** set, so a client that could do nothing
