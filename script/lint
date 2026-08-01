@@ -292,8 +292,34 @@ if [ -n "$shared_modules" ]; then
     exit 1
 fi
 
+# 6. **`notes/` and `design/` markdown filenames are lowercase and hyphenated** (CLAUDE.md).
+#    They are URL slugs the moment any of this is published, and a hyphen is a word separator in a
+#    URL where an underscore is a joiner. It is also the convention every documentation tree uses
+#    (the Rust Book, Linux Documentation/, the Kubernetes site), which is the whole argument: a
+#    reader already knows the shape.
+#
+#    README.md is the exception and the only one: GitHub renders it as the directory index, which is
+#    behaviour rather than style, and the same reason repo-root files are SCREAMING_SNAKE_CASE.
+doc_name_bad=""
+for f in "$(dirname "$0")"/../notes/*.md "$(dirname "$0")"/../design/*.md; do
+    base="$(basename "$f")"
+    [ "$base" = "README.md" ] && continue
+    case "$base" in
+        # `[[:upper:]]`, not `[A-Z]`: in most locales a glob range interleaves cases, so
+        # `[A-Z]` matches lowercase too and this check flagged every file in the tree.
+        *_*|*[[:upper:]]*) doc_name_bad="$doc_name_bad $base" ;;
+    esac
+done
+if [ -n "$doc_name_bad" ]; then
+    echo "lint: notes/ and design/ filenames must be lowercase and hyphenated:$doc_name_bad" >&2
+    echo "" >&2
+    echo "These become URL slugs. A hyphen separates words in a URL; an underscore joins them." >&2
+    echo "README.md is the only exception, because GitHub renders it as the directory index." >&2
+    exit 1
+fi
+
 echo "naming: no -d names, no daemons, contract crates spelled one way, branch prefix recognised,"
-echo "        no #[path] module shared by two binaries"
+echo "        no #[path] module shared by two binaries, docs lowercase and hyphenated"
 
 echo "==> markdown links and the notes index"
 # Two checks, and deliberately NOT a markdown linter. A survey of all 95 markdown files found zero

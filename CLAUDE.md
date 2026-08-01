@@ -236,7 +236,7 @@ genuinely right** and should not be touched (`elf`, `pci`, `dtb`, `gpt`, `ipc`, 
 That last group matters: this rule is not a licence to rename everything, and a name a reader already
 knows from outside this project is the best name available.
 
-### The convention: `snake_case`, one rule, everywhere
+### The convention: one rule per domain, and each domain's own
 
 Crates already do this (`fs_proto`, `cred_proto`, `user_rt`). Programs did not: **0 of 57** used an
 underscore, so multiword names were squished (`fsclient`, `sysinit`, `credcli`).
@@ -251,6 +251,26 @@ contributor has to get right.
 
 So: one rule, no branch to get wrong. A short name for a typed command is then a *choice its author
 makes*, not a convention to apply, and nobody needs a rule to know `wc` beats `word_count`.
+
+**But `snake_case` is the rule for Rust things, not for everything**, and an earlier draft of this
+section said "everywhere" and was wrong. Three domains, each keeping its own convention:
+
+| Domain | Form | Because |
+|---|---|---|
+| Crates, programs, modules | `snake_case` | Rust's own convention, and what the tree already does |
+| `script/` and `scripts/` entry points | `hyphens` | shell commands are hyphenated everywhere (`apt-get`, `pkg-config`, `docker-compose`); an underscore in a command name reads as a mistake |
+| Ordinary markdown (`notes/`, `design/`) | `hyphens` | filenames become URL slugs in every static site generator, and hyphens are word separators in a URL where underscores are joiners |
+| Repo-root markdown | `SCREAMING_SNAKE_CASE` | **GitHub behaviour, not style.** It recognises `README.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md` and links them in its UI; get the name wrong and the Security tab does not find your policy |
+
+**This is not the two-tier rule Chris rejected**, and the difference is the one he identified. That
+split was *within* one domain, keyed on an **unstable** property: `wc` moved from internal plumbing
+to prompt-typed pipeline stage inside a day. These splits are *across* domains on a **stable**
+property. A file either is a Cargo target or is an executable in `script/`; `script/test` will never
+become a `[[bin]]`.
+
+It is also the same guard rail as "standard terms are already right", applied to **form** rather than
+vocabulary. We do not rename `elf`, and we should not respell `supply-chain` either: a name whose
+shape a reader already knows from outside costs them nothing.
 
 **One constraint to know:** `crickerfs` caps archive names at `NAME_LEN = 24` bytes. It can be raised,
 and there is no data migration because every image regenerates from that crate, but it costs

@@ -77,10 +77,10 @@ jobs:
       - name: Put it on PATH
         run: echo "$HOME/.cache/cricker-qemu/bin" >> "$GITHUB_PATH"
 
-      # script/cibuild bootstraps the toolchain and QEMU (the same script/bootstrap a developer
+      # script/ci-build bootstraps the toolchain and QEMU (the same script/bootstrap a developer
       # runs), then runs the host-logic crates and the kernel under QEMU (TCG), exiting through
       # semihosting.
-      - run: script/cibuild
+      - run: script/ci-build
 
   cpu-matrix:
     name: cpu matrix (riscv64 across QEMU CPU models)

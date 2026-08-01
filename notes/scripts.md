@@ -25,7 +25,7 @@ uses `cargo xtask` and that one uses `make` and the next uses `npm`.
 | `script/toolchain-bump [YYYY-MM-DD]` | Raise the pinned nightly, with evidence: install, rebuild the std farm from scratch, run every gate. Restores the old pin if anything fails, because a half-applied toolchain bump is worse than none. Run it when the daily `toolchain drift` workflow goes red. |
 | `script/test` | Run the suite: the host-logic crates in milliseconds, then the kernel under QEMU. The fast inner loop; assumes `setup` has run. `--arch aarch64\|riscv64` runs one ISA leg instead of both (the default is still both, so the parity gate cannot be weakened by forgetting it); `--cpu <model>` picks the emulated CPU (notes/cpu-models.md). |
 | `script/cpu-matrix` | Run the riscv64 suite against every QEMU CPU model in the matrix (`rv64`, `sifive-u54`, `rva22s64`, `rva23s64`, `thead-c906`), because the default `rv64` is QEMU's maximalist model and the board is an RV64GC U74. A CI gate. Preflights that `-cpu` is enforced rather than merely advertised, then runs every model without stopping at the first failure. See notes/cpu-models.md. |
-| `script/cibuild` | What CI runs: `bootstrap` (a CI runner starts bare), then the tests. |
+| `script/ci-build` | What CI runs: `bootstrap` (a CI runner starts bare), then the tests. |
 | `script/server` | Boot the OS in QEMU (the milestone tour, then the shell). An OS is the thing you *start*, so it is `server`. |
 | `script/console` | Boot straight to the interactive shell at EL0. For this project the console is literally a shell running as an unprivileged process. |
 | `script/fmt` | Format the tree with the pinned rustfmt; `--check` reports instead of writing (the CI gate). |
@@ -63,13 +63,13 @@ was cheaper than moving it.
 macOS or `apt-get install` on Linux if QEMU is missing. That is the pattern's intent: a fresh
 clone should be one command from working, but it is also why `script/test` does *not* call
 `bootstrap` every time: re-checking a package manager on every inner-loop test run is a poor
-trade. `setup`/`update` do the heavy dependency work; `test` stays fast; `cibuild` provisions
+trade. `setup`/`update` do the heavy dependency work; `test` stays fast; `ci-build` provisions
 because CI has nothing to start with.
 
 ## CI leverages them
 
 `.github/workflows/ci.yml` runs seven jobs whose actual work is a script: the test job runs
-`script/cibuild`, the format job runs `script/fmt --check`, the clippy job runs `script/lint`, the verify
+`script/ci-build`, the format job runs `script/fmt --check`, the clippy job runs `script/lint`, the verify
 job runs `script/verify`, the bench job runs `script/bench --check` on both ISAs, the coverage job
 runs `script/coverage`, and the supply-chain job runs `script/supply-chain`. So CI executes the same
 commands a developer does, and one place (these files) defines what "test", "lint", "verify", and
