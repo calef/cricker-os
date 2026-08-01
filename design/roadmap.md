@@ -1257,7 +1257,7 @@ find it with a throwaway component rather than half way into a port.
 
 **Re-measured on the branch point (`b9f4382`), because three lanes had landed since the sweep
 below:** **83** suppressions, not 79, in three shapes rather than two. Eight were module-wide
-`#![allow(...)]`, not six: `user/src/netproto.rs` had one the sweep missed, and **`main.rs` carried
+`#![allow(...)]`, not six: `crates/socket_proto/src/lib.rs` had one the sweep missed, and **`main.rs` carried
 `#![cfg_attr(target_arch = "riscv64", allow(dead_code))]`, which blindfolded the entire kernel crate
 on one of two supported architectures.** That is bigger than the 5,831 lines the sweep found, and it
 is the finding this milestone actually turned on.
@@ -1474,7 +1474,7 @@ a Linux-distribution-shaped layer will eventually sit on top of the OS component
 #### Where the current structure is straining, measured rather than felt
 
 - **`user/` is one crate doing two incompatible jobs.** 28 binaries, 34 files, 9,324 lines. It is
-  also a library: `virtio`, `vnet`, `netproto`, `suptree` and `cseam` are shared modules sitting
+  also a library: `virtio`, `vnet`, `socket_proto`, `suptree` and `cseam` are shared modules sitting
   beside the programs that consume them. So no component can express "I need the virtio driver bits
   but not the network stack", every component rebuilds when any shared module changes, and no
   component can take a dependency without handing it to all 28.
@@ -1593,7 +1593,7 @@ in-tree consumer, and treat publication as evidence rather than as a product lin
 #### The cheap first move, which commits to none of the four
 
 **Split `user/` three ways**: `components/` for the services, `fixtures/` for the test programs, and
-lift `virtio`, `vnet`, `netproto`, `suptree` into `runtime/` crates. That ends the
+lift `virtio`, `vnet`, `socket_proto`, `suptree` into `runtime/` crates. That ends the
 crate-is-both-a-program-collection-and-a-library problem, makes dependencies expressible, and leaves
 the gate untouched.
 
@@ -1795,7 +1795,7 @@ them anybody's decision:
   `dma_validate`, `user_rt` use underscores; `capsh`, `crickerfs`, `bitfont`, `lineedit`, `coremark`
   run the words together. Two habits, no rule.
 - **The wire contract is spelled four ways**: `fs_proto` and `gfx_proto` (crates, underscore),
-  `netproto` (a module, no underscore), and `lineedit::proto` (a submodule). One concept.
+  `socket_proto` (a module, no underscore), and `lineedit::proto` (a submodule). One concept.
 - **Branch prefixes contain a literal duplicate**: eight in use, including both `feature/` and `feat/`.
 
 Write the *principle* in prose, because it needs judgement and no checker can evaluate it: name a

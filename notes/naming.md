@@ -52,6 +52,42 @@ work is where that gets separated; the naming rule is the same either way.
 
 ## Crates
 
+### The one rule, and who applies it (2026-08-01)
+
+**`snake_case`, everywhere, with no second tier.** Crates already did this (`fs_proto`, `user_rt`);
+programs did not, and **0 of 57** carried an underscore, so multiword names were squished into
+`fsclient`, `sysinit`, `credcli`.
+
+An earlier draft had two tiers: short names for programs a user types, underscores for programs only
+the system spawns. It was rejected, and the reason generalises. **The category is not a stable
+property of a program.** `wc` was internal plumbing and became a prompt-typed pipeline stage inside a
+day, and a convention keyed to something that changes produces renames. It is also not how Unix got
+its names: the terseness of `ls` is emergent pressure on words people type constantly, not a rule
+anyone wrote down, and codifying an emergent property turns it into a classification chore every
+contributor has to get right.
+
+So one rule, no branch. A short name for a typed command is a *choice its author makes*, not a
+convention to apply; nobody needs a rule to know `wc` beats `word_count`.
+
+**Chris names the crates, the programs, and the shared modules.** Same shape as `DECISIONS.md`
+section numbers: global to the tree, so decided by the person who can see the whole tree. A lane
+ships a **provisional** name, says so in its report, and expects it to change. Nobody renames on
+their own initiative either, because a rename is a naming decision with extra steps. The reason is
+that names are what make this OS legible to humans and to LLMs, and in a capability system a name is
+often the only thing that says what a program can *do*.
+
+**Standard terms are already right and must not be touched.** `elf`, `pci`, `dtb`, `gpt`, `ipc`,
+`paging`, `glob`, `asid`, `socket_proto` are names a reader knows from outside this project, so they
+cost nothing to learn. This tenet is a naming authority, not a renaming mandate, and renaming `elf`
+would destroy the recognition the whole thing exists to buy.
+
+**One constraint:** `crickerfs` caps archive names at `NAME_LEN = 24` bytes, so a program's name is
+bounded. It can be raised (no data migration, every image regenerates), but it costs directory
+entries per block and kernel stack. Do not let it pick a name; do not spend a format change on bytes
+nothing needs. Crates are not in the archive and are unbounded.
+
+## Crates
+
 `crates/` holds three audiences under one directory: kernel proof crates (`caps`, `paging`, `frames`,
 `regions`, `slots`, `asid`, `intrusive`, `dtb`, `elf`, `dma_validate`, `measure`, `uheap`), wire
 contracts (`fs_proto`, `gfx_proto`, `lineedit`, `compose`, `abi`), and userspace runtime (`user_rt`,
@@ -70,8 +106,8 @@ What the names actually do:
 
 That is a description, not a law, and the boundary between the last two is judgement. The one place
 it became a real inconsistency is worth fixing and is checked: **the wire contract was spelled four
-ways** (`fs_proto`, `gfx_proto`, `netproto`, `lineedit::proto`) for one concept. `*_proto` wins for
-crates, because it is what both of the actual crates already were. `netproto` is a module inside the
+ways** (`fs_proto`, `gfx_proto`, `socket_proto`, `lineedit::proto`) for one concept. `*_proto` wins for
+crates, because it is what both of the actual crates already were. `socket_proto` is a module inside the
 `netstack` binary rather than a crate, so the check does not reach it; when it graduates to a crate
 it becomes `net_proto`.
 
@@ -165,6 +201,14 @@ constantly:
    argument about the word lives and therefore have to be able to name it.
 3. **Contract crates spelled `*_proto`.**
 4. **The current branch carries a recognised prefix.**
+5. **No `#[path]` module is shared by two or more binaries** (CLAUDE.md rule 7). This is the newest
+   and the one with teeth: it counts consumers per include target and fires at two. A module with a
+   single consumer is an ordinary submodule and is fine, because the rule is about *agreement between
+   binaries*, not file layout. `virtio` is allow-listed **with its reason**, and that entry is a debt
+   rather than an exception: it cannot be a crate as it stands because it reaches back into whichever
+   binary includes it (`use crate::{check, invoke, send}`, where `check` is defined differently by
+   each), which makes it a shared *implementation with a per-binary hook* rather than a shared
+   contract.
 
 Everything else here is prose because it needs judgement and no checker can supply it. In particular
 **a checker cannot catch the jargon half of §39**: `linedisc` would have passed all four rules above.

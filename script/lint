@@ -252,7 +252,50 @@ case "$branch" in
         exit 1
         ;;
 esac
-echo "naming: no -d names, no daemons, contract crates spelled one way, branch prefix recognised"
+# 5. **No `#[path]` module shared by two or more binaries** (CLAUDE.md rule 7, 2026-08-01).
+#    Anything two binaries must agree on is a crate; a `#[path]` module is not one, and the cost is
+#    not tidiness. Such a module is unreachable by host tests AND by Kani, so the constants two
+#    programs share are checked by nothing. `cseam` was the proof: it stated the shared-memory
+#    layout twice, once in Rust and once in `user/c/cseam.c`, with no test that they agreed, and a
+#    drift would have surfaced as a C component writing to the wrong offset.
+#
+#    A module with exactly ONE consumer is fine and stays fine: that is an ordinary submodule, and
+#    the rule is about agreement between binaries, not about file layout. `vnet` and `netcli` are
+#    that case today.
+#
+#    This check is the one that would have caught the whole class. It counts consumers per include
+#    target, so it fails the moment a second binary reaches for the same file.
+#    **`virtio` is allowed, and it is a debt rather than an exception.** It is shared by `blk` and
+#    `hello`, and it cannot become a crate as it stands because it reaches back into whichever
+#    binary includes it: `use crate::{check, invoke, send}`, where `check` is defined differently by
+#    each (`blk` panics, `hello` calls its own `fail`). So it is not a shared *contract* at all, it
+#    is a shared *implementation with a per-binary hook*, which is a different and worse thing than
+#    the rule was written for. 1035 lines and 13 call sites; the fix is to pass the hook in, and it
+#    wants its own change. Until then this entry keeps the check honest about what it is tolerating.
+path_module_allow=" virtio "
+shared_modules=""
+for target in $(grep -rhoE '#\[path = "[a-z_0-9]+\.rs"\]' "$(dirname "$0")/../user/src" 2>/dev/null |
+                sed 's/.*"\(.*\)\.rs".*/\1/' | sort -u); do
+    consumers=$(grep -rlE "^mod $target;" "$(dirname "$0")/../user/src" 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$consumers" -gt 1 ]; then
+        case "$path_module_allow" in
+            *" $target "*) ;;
+            *) shared_modules="$shared_modules $target($consumers)" ;;
+        esac
+    fi
+done
+if [ -n "$shared_modules" ]; then
+    echo "lint: #[path] modules shared by more than one binary:$shared_modules" >&2
+    echo "" >&2
+    echo "CLAUDE.md rule 7: anything two binaries must agree on is a crate, never a #[path]" >&2
+    echo "module. A shared module is invisible to host tests and to Kani, so what two programs" >&2
+    echo "agree on ends up checked by nothing. Move it to crates/ and depend on it." >&2
+    echo "A module with a single consumer is fine; this only fires at two or more." >&2
+    exit 1
+fi
+
+echo "naming: no -d names, no daemons, contract crates spelled one way, branch prefix recognised,"
+echo "        no #[path] module shared by two binaries"
 
 echo "==> markdown links and the notes index"
 # Two checks, and deliberately NOT a markdown linter. A survey of all 95 markdown files found zero

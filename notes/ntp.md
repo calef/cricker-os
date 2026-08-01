@@ -291,7 +291,7 @@ for a kiss.
 
 The client's whole network authority is one endpoint capability, so the tests **substitute the peer
 at that boundary**: a second role of the same binary holds `READ` on the endpoint the client holds
-`WRITE` on, and speaks the same socket contract (`user/src/netproto.rs`, the same file `netstack`
+`WRITE` on, and speaks the same socket contract (`crates/socket_proto/src/lib.rs`, the same file `netstack`
 compiles) while being an NTP server on the other side of it. The client cannot tell, and **there is
 no test-only branch anywhere in the client**. That is the shape a capability system makes available,
 and it is why this is the honest choice rather than a compromise.

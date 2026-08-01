@@ -7,7 +7,7 @@
 //!
 //! netstack brings the NIC up, runs DHCP to completion (reporting the lease), then serves a
 //! capability-shaped socket contract on a `Stack` endpoint (DECISIONS §25, notes/net.md,
-//! user/src/netproto.rs): a socket is a socket id, per-connection bytes cross in a shared frame the
+//! crates/socket_proto/src/lib.rs): a socket is a socket id, per-connection bytes cross in a shared frame the
 //! client delegates, and every operation is one message. Phase one is single-threaded and
 //! synchronous, one exchange per request; the server blocks on the `Stack` endpoint between
 //! requests and drives the network inside handling one.
@@ -33,15 +33,13 @@ use smoltcp::time::Instant;
 use smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr, IpEndpoint, Ipv4Address};
 use user_rt::{cap_delete, cntfrq, invoke, now, recv_cap, reply, send};
 
-#[path = "netproto.rs"]
-mod netproto;
 #[path = "vnet.rs"]
 mod vnet;
 // The socket-contract client rides in this same binary (dispatched by the entry role), because the
 // initrd directory holds at most 15 files; see user/src/netcli.rs.
 #[path = "netcli.rs"]
 mod netcli;
-use netproto::*;
+use socket_proto::*;
 
 const REPORT: u64 = 0;
 const IRQ: u64 = 1;

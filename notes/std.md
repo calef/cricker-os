@@ -70,7 +70,7 @@ The syscall glue (`sys/pal/cricker/rt.rs`) is a deliberate twin of `crates/user_
 `svc`/`ecall` wrappers, restated because std cannot depend on the crate. The ABI **constants** are
 not restated: `abi.rs` is generated verbatim from `crates/abi` by `std-src`, so the numbers cannot
 drift. Likewise `uheap.rs` from `crates/uheap` (the host-tested heap algorithm is the only heap
-algorithm), `netproto.rs` from `user/src/netproto.rs`, and `fsproto.rs` from `crates/fs_proto`: every
+algorithm), `netproto.rs` from `crates/socket_proto/src/lib.rs`, and `fsproto.rs` from `crates/fs_proto`: every
 wire format the PAL speaks has exactly one definition, and it lives with the server that answers it.
 
 ## The toolchain: build-std against a patched rust-src
@@ -122,14 +122,14 @@ the bare target.
 ## `std::net` over the socket contract (milestone 27 phase two)
 
 `sys/net/connection/cricker.rs` binds std's `TcpStream` and outbound `UdpSocket` to netstack's socket
-contract (DECISIONS §25, notes/net.md, `user/src/netproto.rs`). The PAL is a **client** of the
+contract (DECISIONS §25, notes/net.md, `crates/socket_proto/src/lib.rs`). The PAL is a **client** of the
 frozen contract, nothing more: it holds the `Stack` endpoint (slot 2) and a frame untyped (slot 3),
 and for each socket it mints a shared `Frame`, maps it, delegates it to netstack (`SEND_CAP`,
 `OP_ATTACH_FRAME`), and then drives the socket with `CALL`s carrying a socket id. Control words ride
 the message; bytes sit in the shared frame. This is the exact path the hand-written `netcli` client
 walks, reached through std's blocking API instead.
 
-The wire constants are not restated: `netproto.rs` is generated verbatim from `user/src/netproto.rs`
+The wire constants are not restated: `netproto.rs` is generated verbatim from `crates/socket_proto/src/lib.rs`
 into `sys/pal/cricker/netproto.rs` by `std-src`, the same anti-drift discipline as `abi.rs` and
 `uheap.rs`. If the contract changes, the PAL's numbers change with it, because there is one source.
 
