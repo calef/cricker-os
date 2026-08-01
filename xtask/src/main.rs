@@ -101,6 +101,16 @@ fn main() -> ExitCode {
         }
         "initrd-riscv" => initrd_riscv(),
         "std-src" => std_src(),
+        // Print the farm's input stamp and exit. Exists so that "the stamp does not depend on where
+        // the checkout lives" is a claim anyone can CHECK rather than one they have to believe:
+        //   cargo xtask std-stamp                        # in the main checkout
+        //   git worktree add /tmp/w HEAD && (cd /tmp/w && cargo xtask std-stamp)
+        // The two must print the same value. If they ever diverge, something location-dependent has
+        // crept back into `std_inputs_stamp`, and `cricker-dev` will start being stolen again.
+        "std-stamp" => {
+            println!("{:016x}", std_inputs_stamp());
+            true
+        }
         "user-std" => user_std(),
         "test" => test(),
         "bench" => bench(),
@@ -112,7 +122,7 @@ fn main() -> ExitCode {
                 eprintln!("unknown command: {other}\n");
             }
             eprintln!(
-                "usage: cargo xtask <build|run|shell|initboot|initrd-riscv|std-src|user-std|test|bench|gdb|objdump|image> [--hvf]"
+                "usage: cargo xtask <build|run|shell|initboot|initrd-riscv|std-src|std-stamp|user-std|test|bench|gdb|objdump|image> [--hvf]"
             );
             eprintln!(
                 "       cargo xtask bench [--riscv] [--real] [--release] [--smp] [--check] [--save]"
@@ -223,7 +233,19 @@ fn std_inputs_stamp() -> u64 {
     collect_files(&root.join("patches/std-cricker/overlay"), &mut files);
     files.sort();
     for f in files {
-        h = fnv(h, f.to_string_lossy().as_bytes());
+        // **Hash the path RELATIVE to the workspace root, never the absolute path.** An absolute path
+        // makes the stamp a function of *where the checkout lives*, so two trees with byte-identical
+        // inputs never match, `std_src` rebuilds the farm unconditionally, and `rustup toolchain link`
+        // repoints `cricker-dev` — which is global to the machine, not to the worktree. That is the
+        // race behind three broken toolchains on 2026-07-31: an agent worktree ran `script/test`, took
+        // the link, and deleting that worktree left `cricker-dev` dangling for everything else, failing
+        // far from the cause as "override toolchain 'cricker-dev' is not installed".
+        //
+        // The stamp is meant to answer "are the farm's *inputs* unchanged", and a checkout's location
+        // is not one of its inputs. `strip_prefix` cannot fail here (every path is built from `root` or
+        // collected beneath it), but fall back to the full path rather than panicking in a build tool.
+        let rel = f.strip_prefix(&root).unwrap_or(&f);
+        h = fnv(h, rel.to_string_lossy().as_bytes());
         if let Ok(bytes) = std::fs::read(&f) {
             h = fnv(h, &bytes);
         }
