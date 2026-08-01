@@ -86,6 +86,11 @@ pub mod endpoint {
     /// The three words travel in registers and never touch memory. That is the whole of the
     /// fastpath, and it is DECISIONS §10's rule made real: *IPC carries control.* Bulk data will
     /// move later by handing over a frame capability, not by copying bytes into a message.
+    ///
+    /// Two refusals a sender must tell apart, and the ABI does (milestone 50): [`crate::Error::NoSuchSlot`]
+    /// means the slot is empty, and [`crate::Error::Gone`] means the endpoint this capability names has
+    /// been destroyed, including while this thread was blocked inside the send. See
+    /// `crates/sink_proto`.
     pub const SEND: u64 = 0;
 
     /// `invoke(cap, RECV, _, _, _)` -> w0, with w1 in x1 and w2 in x2. **Blocks until a message
@@ -424,6 +429,25 @@ pub enum Error {
     /// deliberately: distinguishing "gone" from "not yours" would let a supervisor probe the tid
     /// space of children it has no relationship with.
     NotSupervised = -10,
+
+    /// **The capability names an object that no longer exists** (milestone 50). You held a real
+    /// capability, in a slot that is not empty, and the thing it named has been destroyed: an
+    /// endpoint whose region was reclaimed, or one revoked out from under a thread while it was
+    /// blocked inside an IPC on it. Nothing happened.
+    ///
+    /// **Distinct from [`Error::NoSuchSlot`] on purpose, and the distinction is the whole of
+    /// milestone 50's answer to `SIGPIPE`.** "There is nothing there" and "there was something
+    /// there and it is gone" are different facts, and a writer branches on them in opposite
+    /// directions: a program never granted a stdout keeps running and prints into the void, which
+    /// is what every OS does to a process whose stdout is closed, while a program whose reader has
+    /// exited must **end**. Both used to arrive as `NoSuchSlot`, so the only available behaviour
+    /// was the wrong one for a pipeline. See `crates/sink_proto` and notes/sink-protocol.md.
+    ///
+    /// It carries no probing risk, which is why it can be told apart here when
+    /// [`Error::NotSupervised`] deliberately cannot: the capability is one the caller already
+    /// holds, in its own cspace, so learning that its object died reveals nothing it was not
+    /// already entitled to know.
+    Gone = -11,
 }
 
 impl Error {
@@ -439,6 +463,7 @@ impl Error {
             -8 => Error::DeviceRefused,
             -9 => Error::StillAlive,
             -10 => Error::NotSupervised,
+            -11 => Error::Gone,
             _ => return None,
         })
     }
@@ -466,6 +491,7 @@ mod tests {
             Error::DeviceRefused,
             Error::StillAlive,
             Error::NotSupervised,
+            Error::Gone,
         ];
         for &e in ALL {
             assert_eq!(Error::from_ret(e as i64), Some(e));
@@ -479,7 +505,7 @@ mod tests {
     fn non_errors_decode_to_none() {
         assert_eq!(Error::from_ret(0), None);
         assert_eq!(Error::from_ret(1), None);
-        assert_eq!(Error::from_ret(-11), None);
+        assert_eq!(Error::from_ret(-12), None);
         assert_eq!(Error::from_ret(i64::MIN), None);
     }
 }

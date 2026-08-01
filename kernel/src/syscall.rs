@@ -114,8 +114,15 @@ pub(crate) fn invoke(
                 sched::ipc_send(ep, [a0, a1, a2]);
                 // If the endpoint was revoked (stale, or reclaimed while we blocked), the send never
                 // happened: report it rather than a silent success. Object revocation, notes/.
+                //
+                // `Gone`, not `NoSuchSlot`, since milestone 50. The slot is not empty; a real
+                // capability names an object that has been destroyed, and a writer branches on the
+                // difference in opposite directions (`abi::Error::Gone`, notes/sink-protocol.md).
+                // This one line is what turns a dead pipe reader into something the producer can
+                // act on, which is why the ABI grew a variant rather than the sink protocol growing
+                // a heartbeat.
                 if sched::take_ipc_aborted() {
-                    return Err(Error::NoSuchSlot);
+                    return Err(Error::Gone);
                 }
                 Ok(0)
             }
@@ -125,7 +132,7 @@ pub(crate) fn invoke(
                 }
                 let msg = sched::ipc_recv(ep);
                 if sched::take_ipc_aborted() {
-                    return Err(Error::NoSuchSlot); // endpoint revoked; the message is a placeholder
+                    return Err(Error::Gone); // endpoint revoked; the message is a placeholder
                 }
                 // Word 0 goes back the way every syscall result does, in x0 (dispatch writes it
                 // from our return value). Words 1..4 we place directly, because a syscall return is
@@ -163,7 +170,7 @@ pub(crate) fn invoke(
                     },
                 );
                 if sched::take_ipc_aborted() {
-                    return Err(Error::NoSuchSlot); // endpoint revoked; the delegation did not happen
+                    return Err(Error::Gone); // endpoint revoked; the delegation did not happen
                 }
                 Ok(0)
             }
@@ -173,7 +180,7 @@ pub(crate) fn invoke(
                 }
                 let msg = sched::ipc_recv_cap(ep);
                 if sched::take_ipc_aborted() {
-                    return Err(Error::NoSuchSlot); // endpoint revoked; the message is a placeholder
+                    return Err(Error::Gone); // endpoint revoked; the message is a placeholder
                 }
                 // x1 carries the slot the received capability landed in, or NO_CAP if the message
                 // brought none; x2 the second data word (a CALL's, or 0). x0 returns the first word.
@@ -191,7 +198,7 @@ pub(crate) fn invoke(
                 }
                 let reply = sched::ipc_call(ep, [a0, a1]);
                 if sched::take_ipc_aborted() {
-                    return Err(Error::NoSuchSlot); // endpoint revoked; no call, no reply
+                    return Err(Error::Gone); // endpoint revoked; no call, no reply
                 }
                 frame.set_arg(1, reply[1]); // r1; r0 returns in x0 below
                 Ok(reply[0] as i64)

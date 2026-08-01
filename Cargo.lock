@@ -269,6 +269,13 @@ name = "regions"
 version = "0.1.0"
 
 [[package]]
+name = "sink_proto"
+version = "0.1.0"
+dependencies = [
+ "abi",
+]
+
+[[package]]
 name = "slots"
 version = "0.1.0"
 
