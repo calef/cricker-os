@@ -13,8 +13,9 @@ name: toolchain bump
 # and it only became visible because a human ran a clean build and read the error.
 #
 # One PR, updated in place on a fixed branch, rather than one per day. Silent when there is nothing to
-# do, and silent when the overlay does not build, because that case is already reported by the
-# `toolchain drift` workflow and two notifications for one fact is noise.
+# do, and **loud when the overlay does not build**: that case opens a draft PR titled for the
+# breakage. It used to be silent there too, which is the bug fixed on 2026-08-01; see the long comment
+# on the "Open or update the pull request" step for the incident that made the reasoning visible.
 
 on:
   schedule:
@@ -85,16 +86,41 @@ jobs:
         env:
           RUSTUP_TOOLCHAIN: ${{ steps.plan.outputs.target }}
         run: |
+          set -o pipefail
           sed -i "s|^channel = \".*\"|channel = \"${{ steps.plan.outputs.target }}\"|" rust-toolchain.toml
           rm -rf target/cricker-farm
-          cargo xtask user-std
+          # Captured because the failure text IS the deliverable when this step fails: the PR body
+          # below quotes it, so the reader gets the compiler's own words rather than a link to a log
+          # that expires.
+          cargo xtask user-std 2>&1 | tee /tmp/overlay-build.log
 
+      # Runs whether or not the overlay built, and that is the whole point of this step.
+      #
+      # It used to be gated on `steps.build.outcome == 'success'`, so a broken overlay produced NO
+      # pull request, on the reasoning that the `toolchain drift` workflow already reports that case
+      # and two notifications for one fact is noise. The reasoning was wrong in a way that took a
+      # live incident to see: drift has no badge and posts no notification, so its report is a red
+      # entry in the Actions tab that nobody is prompted to look at. The PR was the only part of this
+      # mechanism that surfaces where a human already looks, and it suppressed itself in exactly the
+      # case that needed a human.
+      #
+      # On 2026-07-31 that happened for real. Drift went red on `set_perm_nofollow` at 09:38, this
+      # job ran at 10:31, reported SUCCESS, opened nothing, and the breakage stayed invisible until
+      # someone went looking for an unrelated reason. "Silent when there is nothing to do" and
+      # "silent when it is broken" had collapsed into the same behaviour, and those should be
+      # opposites.
+      #
+      # So a failed overlay build now proposes a DRAFT PR instead: the pin is raised, the overlay is
+      # untouched and broken, and this PR's own CI will be red. That red is not a defect in the PR,
+      # it is the evidence. Draft, because it must not be merged as-is, and titled for the breakage
+      # rather than for the bump.
       - name: Open or update the pull request
-        if: steps.build.outcome == 'success'
+        if: steps.install.outcome == 'success' && steps.plan.outputs.skip == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET: ${{ steps.plan.outputs.target }}
           CURRENT: ${{ steps.plan.outputs.current }}
+          BUILD: ${{ steps.build.outcome }}
         run: |
           set -e
           branch="toolchain/nightly-bump"
@@ -104,19 +130,18 @@ jobs:
           git add rust-toolchain.toml
           # The overlay may have needed new re-exports; include them if the build produced any.
           git add -A patches/std-cricker || true
-          git commit -m "toolchain: bump the pin to $TARGET
+
+          if [ "$BUILD" = "success" ]; then
+            title="toolchain: bump the pinned nightly to $TARGET"
+            draft=""
+            git commit -m "toolchain: bump the pin to $TARGET
 
           Proposed automatically. The std overlay builds clean against this nightly, which is the
           check that actually catches drift; everything else is this PR's own CI, which is the point
           of proposing rather than applying.
 
           Merging changes what every build in the project compiles with, so it wants a human."
-          git push --force origin "$branch"
-          # One PR, updated in place: create it only if there is not one open already.
-          if [ -z "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ]; then
-            gh pr create --head "$branch" --base main \
-              --title "toolchain: bump the pinned nightly to $TARGET" \
-              --body "Raises \`rust-toolchain.toml\` from \`$CURRENT\` to \`$TARGET\`.
+            body="Raises \`rust-toolchain.toml\` from \`$CURRENT\` to \`$TARGET\`.
 
           The std overlay was rebuilt from a clean farm against this nightly and compiles, which is the
           check that catches upstream drift. **Everything else is this PR's own CI**: both ISAs, the
@@ -130,5 +155,57 @@ jobs:
           This branch is force-pushed daily, so it always proposes the newest nightly rather than
           accumulating one PR per day."
           else
-            echo "An open PR already exists for $branch; force-pushed the newer pin to it."
+            # The overlay did NOT build. Propose it anyway, as a draft, titled for the breakage.
+            title="toolchain: $TARGET BREAKS the std overlay (needs a fix, do not merge)"
+            draft="--draft"
+            git commit -m "toolchain: $TARGET breaks the std overlay
+
+          NOT a proposal to merge. The pin is raised and the overlay is deliberately left broken so
+          that this branch's CI reproduces the breakage, which is the evidence.
+
+          Opened because the alternative was silence: the drift workflow reports this in the Actions
+          tab, which has no badge and sends no notification."
+            # The compiler's own words, trimmed to the errors. A log link expires; this does not.
+            errors="$(grep -E '^(error|warning: unused)' /tmp/overlay-build.log 2>/dev/null | head -20 || true)"
+            [ -n "$errors" ] || errors="(no error lines matched; see the job log)"
+            body="**Upstream has moved away from us.** \`$TARGET\` does not build the \`std\` overlay.
+
+          This is a **draft on purpose and must not be merged as-is.** The pin is raised and the
+          overlay is untouched, so this branch's CI will be red. That red is the evidence, not a
+          defect in the PR.
+
+          \`\`\`
+          $errors
+          \`\`\`
+
+          The fix is a commit to this branch teaching \`patches/std-cricker\` whatever std now wants.
+          Most often that is one name in the \`pub use unsupported_fs::{...}\` list in
+          \`sys/fs/cricker.rs\`, because the overlay patches std's own source and therefore tracks
+          upstream *internals* rather than any stable API. When it builds, this PR stops being a draft
+          on the next daily run.
+
+          You are reading this instead of nothing because the \`toolchain drift\` workflow has no
+          badge and posts no notification, so a red run there reaches nobody. A pull request is the
+          part of this mechanism that shows up where a human already looks."
+          fi
+
+          git push --force origin "$branch"
+          # One PR, updated in place. Force-pushing the branch updates an existing one's diff, but
+          # not its title or body, so those are refreshed explicitly: a PR that still says "breaks the
+          # overlay" after the overlay was fixed is worse than no PR at all.
+          existing="$(gh pr list --head "$branch" --state open --json number --jq '.[].number')"
+          if [ -z "$existing" ]; then
+            # shellcheck disable=SC2086 # $draft is a deliberate word-split: either --draft or empty.
+            gh pr create --head "$branch" --base main --title "$title" --body "$body" $draft
+          else
+            gh pr edit "$existing" --title "$title" --body "$body"
+            # Draft state has to move BOTH ways. Yesterday's build may have succeeded (leaving the PR
+            # ready to merge) while today's fails; retitling it "do not merge" while leaving the merge
+            # button live is the worst of both, so undo the ready state as well.
+            if [ "$BUILD" = "success" ]; then
+              gh pr ready "$existing" || true
+            else
+              gh pr ready "$existing" --undo || true
+            fi
+            echo "Updated PR #$existing in place."
           fi
