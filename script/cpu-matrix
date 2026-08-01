@@ -138,6 +138,12 @@ if [ -n "$failed" ]; then
     echo
     echo "cpu-matrix: failed on:$failed" >&2
     echo "The logs are in $OUT. Diagnose it; do not route around it by dropping the model." >&2
+    echo "" >&2
+    echo "FIRST, re-run the failing model on a QUIET machine. Several kernel tests assert against" >&2
+    echo "wall clock, and a busy host fails them on any model including rv64, so a red run under" >&2
+    echo "load proves nothing. Check top(1), not just the load average: a Time Machine backup shows" >&2
+    echo "up as load with the CPU idle and it has already produced one false failure here." >&2
+    echo "See the BUGS section of notes/cpu-models.md." >&2
     exit 1
 fi
 echo
