@@ -4,7 +4,7 @@
 //! every capability, it makes every syscall, and it hands the C nothing but a pointer and a length.
 //!
 //! ```text
-//!   kernel  <--- svc/ecall --->  cshim (Rust)  <--- C ABI: (u8*, usize) --->  cseam.c
+//!   kernel  <--- svc/ecall --->  cshim (Rust)  <--- C ABI: (u8*, usize) --->  c_seam.c
 //!                                ^^^^^^^^^^^^
 //!                                every capability and every syscall stops here
 //! ```

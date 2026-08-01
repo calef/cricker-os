@@ -2428,7 +2428,7 @@ and §26, and nothing depends on it yet.)*
 
 A memory-unsafe C component, compiled by bare-metal clang, confined by the kernel like any other
 process, faulting on a deliberate out-of-bounds write, and restarted by its supervisor. The component
-itself (`user/c/cseam.c`, 150 lines) is throwaway on purpose: **what this milestone de-risks is the
+itself (`user/c/c_seam.c`, 150 lines) is throwaway on purpose: **what this milestone de-risks is the
 seam**, before milestone 29's libghostty-vt rung and milestone 23's vendor-component claim owe
 anything to another project's toolchain and API churn. Concept note: notes/c-seam.md.
 

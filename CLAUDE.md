@@ -177,7 +177,7 @@ the requirements are known.
    **A `#[path]` module inside a `no_std` binary is unreachable by host tests and by Kani.** This
    project's entire method is pure logic in host-testable crates plus machine-checked proofs, and a
    shared module opts out of both. `cseam` is the case that proves it: it holds the address-space
-   layout and constants **deliberately written twice**, once in Rust and once in `user/c/cseam.c`,
+   layout and constants **deliberately written twice**, once in Rust and once in `user/c/c_seam.c`,
    with nothing checking that the two agree. A drift there shows up as a C component scribbling on
    the wrong page, arbitrarily far from the edit.
 

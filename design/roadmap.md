@@ -1162,7 +1162,7 @@ hand off across a live swap, the hardest handoff case yet named), 27 (`std::fs`)
 All four deliverables landed as specified, and the two that produced findings are worth reading before
 the next foreign component:
 
-1. **Toolchain.** `user/build.rs` compiles `user/c/cseam.c` with a clang resolved from a candidate list
+1. **Toolchain.** `user/build.rs` compiles `user/c/c_seam.c` with a clang resolved from a candidate list
    and *capability-checked* (`-print-targets` must list both aarch64 and riscv64), object handed to the
    linker for the `cshim` binary only. One compiler for both ISAs is §19 applied to the toolchain, which
    means **Apple's clang is rejected on purpose** (no RISC-V backend) even though it would compile the
@@ -1475,7 +1475,7 @@ a Linux-distribution-shaped layer will eventually sit on top of the OS component
 #### Where the current structure is straining, measured rather than felt
 
 - **`user/` is one crate doing two incompatible jobs.** 28 binaries, 34 files, 9,324 lines. It is
-  also a library: `virtio`, `vnet`, `socket_proto`, `suptree` and `cseam` are shared modules sitting
+  also a library: `vnet` and `netcli` are shared modules sitting
   beside the programs that consume them. So no component can express "I need the virtio driver bits
   but not the network stack", every component rebuilds when any shared module changes, and no
   component can take a dependency without handing it to all 28.
@@ -3349,12 +3349,12 @@ The rename also resolves an inconsistency already in the source: `dwarden.rs`'s 
 | `cwarden` | `c_confiner` |
 | `cshim` | `c_shim` |
 | `crates/c_seam` | already done, 2026-08-01 (rule 7) |
-| `user/c/cseam.c` | **`user/c/c_seam.c`**, and this one is a repair |
+| `user/c/c_seam.c` | **`user/c/c_seam.c`**, and this one is a repair |
 
 **That last row fixes a split the integrator created.** `c_seam` was chosen over `c_abi` partly
 *because* it keeps the Rust and C halves paired, and then only the Rust half was renamed when rule 7
 turned it into a crate. So the pairing argument is currently false in the tree: `crates/c_seam`
-faces `user/c/cseam.c`.
+faces `user/c/c_seam.c`.
 
 The pairing is not cosmetic. Both files state the same constants **by hand**, because a C compiler
 cannot see Rust, and `crates/c_seam`'s test reads the C source with `include_str!` to prove they
@@ -3363,20 +3363,36 @@ which is exactly what that test exists to contradict. **Renaming the C file mean
 `include_str!` path**, and the test failing is how a mistake there would announce itself.
 
 `user/build.rs`'s `C_SOURCES` table names both the source and the program it compiles into
-(`("c/cseam.c", "cshim")`), so it changes on both counts in one edit.
+(`("c/c_seam.c", "cshim")`), so it changes on both counts in one edit.
 
-#### Still open, and Chris's
+#### The live-replacement pair, settled 2026-08-01
 
-The `conx` pair: `cconx` forces `conx`, which has no recorded expansion anywhere (not §41, not
-`notes/live-replacement.md`, not the commit that introduced it). `user/c/conxsvc.c` travels with
-whatever they become.
+| Current | Settled |
+|---|---|
+| `conx` | **`rust_swappable`** |
+| `cconx` | **`c_swappable`** |
+| `user/c/conxsvc.c` | **`user/c/c_swappable.c`** |
 
-**Scope, which is the part to decide before starting.** There are **532 `warden` tokens** in the
-tree. This is not four filenames: it is helper functions, parameter names, struct fields, doc prose,
-and `DECISIONS.md` sections. Renaming the programs without the rest leaves a tree where the programs
-are caretakers and everything around them says warden, which is worse than either consistent state.
+`conx` was the most opaque name in the tree: **no recorded expansion anywhere**, not §41, not
+`notes/live-replacement.md`, not the commit that introduced it. These are milestone 23's swappable
+component in two implementations, and a client that does not notice the swap.
 
-**Program names are Chris's call** (CLAUDE.md). The table above is a proposal.
+**`rust_` breaks a precedent deliberately, and the exception is the point.** When `c_seam` was
+settled, the argument was that Rust is the constant and the foreign language is the variable, so
+naming only the variable is economical: it is why there is no `rust_kernel` or `rust_shell`. That
+holds where the language is **incidental**. Here it is the **subject**: this pair exists so that a
+Rust component can be replaced by a C one while `chatty` keeps calling, and the language is the whole
+reason there are two of them.
+
+Symmetry does real work too. `swappable` plus `c_swappable` would read as *the* swappable one and a
+C variant, implying a default. That is actively wrong: `conx` is the incumbent and `cconx` the
+replacement **only until the swap**, after which the roles invert. Neither is the default, and a
+symmetric pair says so.
+
+**One cost, recorded so nobody infers a family that is not there.** `c_` will then mean "written in
+C" across two unrelated milestones: `c_shim`, `c_seam` and `c_confiner` are milestone 36's
+foreign-language seam (§31), while `c_swappable` is milestone 23's replacement demo. The prefix means
+the same thing in both cases; the milestones are not related. Worth a line in `notes/naming.md`.
 
 #### BUGS
 

@@ -44,7 +44,7 @@ whose safety came from the language.
 ## The shape: a Rust shell that holds everything
 
 ```text
-   kernel  <--- svc / ecall --->  cshim (Rust)  <--- C ABI: (u8*, usize) --->  cseam.c
+   kernel  <--- svc / ecall --->  cshim (Rust)  <--- C ABI: (u8*, usize) --->  c_seam.c
                                   ^^^^^^^^^^^^
                                   every capability and every syscall stops here
 ```
@@ -53,7 +53,7 @@ whose safety came from the language.
 
 - **The C makes no syscalls.** Not because we asked nicely, but because a syscall needs a capability
   slot number and the C has never seen one. There is no `svc`, no `ecall`, and no inline asm anywhere
-  in `cseam.c`, and there could not usefully be: an `svc` with a made-up slot number gets
+  in `c_seam.c`, and there could not usefully be: an `svc` with a made-up slot number gets
   `NoSuchSlot`.
 - **The C holds no capabilities.** It is handed a pointer and a length.
 - So the foreign component **cannot widen the kernel's syscall surface** (DECISIONS §4 rule 3). A
@@ -81,8 +81,8 @@ Scalars and buffers. Not crossing, and each of these is a seam decision this spi
 make: structs by value, callbacks from C into Rust, ownership transfer, an error type, varargs, C++
 (name mangling, exceptions, static initializers), bitfields, enum widths.
 
-The layout of the shared page is agreed by a **comment in both languages** (`user/c/cseam.c`'s
-`CSEAM_*` defines and `user/src/cseam.rs`'s constants) rather than by generated bindings. For one page
+The layout of the shared page is agreed by a **comment in both languages** (`user/c/c_seam.c`'s
+`CSEAM_*` defines and `crates/c_seam`'s constants) rather than by generated bindings. For one page
 of bytes that is the right trade; for a real API it would not be, and the honest reason to say so here
 is that "we will generate bindings when there is an API worth generating" is a plan and "we forgot"
 is not.
@@ -174,7 +174,7 @@ this; it is worth knowing it is a property of `free`'s signature rather than a s
 
 ## The toolchain: bare-metal clang, one compiler for two ISAs
 
-`user/build.rs` compiles `user/c/cseam.c` and hands the object to the linker for the `cshim` binary
+`user/build.rs` compiles `user/c/c_seam.c` and hands the object to the linker for the `cshim` binary
 only (`cargo::rustc-link-arg-bin=cshim=...`). No archive and no `ar`: one translation unit, one object,
 straight onto the linker's command line. Every other program in the `user` package links exactly as
 before, which keeps the foreign component from becoming everyone's problem.
@@ -242,7 +242,7 @@ both:     -ffreestanding -fno-pic -fno-stack-protector -Os -std=c11 -Wall -Wextr
     |
     +-- cshim (instance N)   report endpoint, its own region's untyped, GRANT rw, WITNESS_RO ro
           |
-          +-- cseam.c        a pointer and a length
+          +-- c_seam.c        a pointer and a length
 ```
 
 `cwarden` is builder, supervisor, and checker at once. The checker role has to be a separate address

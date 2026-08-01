@@ -11138,7 +11138,7 @@ mod authority_tests {
 /// bug is a kernel memory corruption; here it is a page fault in an unprivileged process, and its
 /// supervisor restarts it.
 ///
-/// **What is under test is the seam, not the C.** `user/c/cseam.c` is deliberately throwaway: 150
+/// **What is under test is the seam, not the C.** `user/c/c_seam.c` is deliberately throwaway: 150
 /// lines, one honest function and two one-line bugs. What the milestone de-risks is everything around
 /// it, before a real foreign component (libghostty-vt, milestone 29's later rung) depends on it: a
 /// bare-metal clang in the build for both ISAs, a Rust `user_rt` shell that holds every capability so
@@ -11175,7 +11175,7 @@ mod c_seam_tests {
     use super::*;
     use crate::sched;
 
-    /// The report protocol, matching user/src/cseam.rs. Userspace owns the definition; the test
+    /// The report protocol, matching crates/c_seam. Userspace owns the definition; the test
     /// mirrors it, the same convention `authority_tests` and the net client's selectors follow.
     const RPT_RAN: u64 = 1;
     const RPT_DEATH: u64 = 2;
@@ -11183,7 +11183,7 @@ mod c_seam_tests {
     const RPT_VERDICT: u64 = 4;
     const RPT_FAILED: u64 = 9;
 
-    /// The verdict bits, matching `user/src/cseam.rs`'s `checks` module.
+    /// The verdict bits, matching `crates/c_seam`'s `checks` module.
     const IN_GRANT_WRITE_LANDED: u64 = 1 << 0;
     const WITNESS_RO_INTACT: u64 = 1 << 1;
     const WITNESS_FAR_INTACT: u64 = 1 << 2;
@@ -11197,7 +11197,7 @@ mod c_seam_tests {
     /// What the honest attempt must report: all of the above, plus a correct answer.
     const CONFINED_AND_CORRECT: u64 = CONFINED | OUTPUT_CORRECT;
 
-    /// The attempts, matching user/src/cseam.rs.
+    /// The attempts, matching crates/c_seam.
     const ATTEMPTS: usize = 3;
     const ATTEMPT_HONEST: u64 = 2;
 

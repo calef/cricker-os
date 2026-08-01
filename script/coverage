@@ -30,7 +30,7 @@ fi
 # narrow, not a way to keep the number green.
 #
 # `c_seam` is NOT excluded, because it is pure: constants, offsets, and small functions. It now
-# carries the test the seam never had, asserting that `user/c/cseam.c` states the same values
+# carries the test the seam never had, asserting that `user/c/c_seam.c` states the same values
 # this crate does. That test is the reason rule 7 is worth its churn.
 cargo llvm-cov --workspace --exclude kernel --exclude user --exclude xtask --exclude user_rt \
     --exclude supervision_proto --exclude swap_proto --no-report
@@ -75,7 +75,7 @@ awk -F: -v floor="$floor" '
         # rule 7 turned them into crates, having been #[path] modules nothing could measure.
         #
         # **c_seam is deliberately NOT here.** It is pure, and it now carries the test asserting
-        # that user/c/cseam.c states the same constants it does. Keep this list to things that
+        # that user/c/c_seam.c states the same constants it does. Keep this list to things that
         # physically cannot run, never to things that are merely untested.
         if (index(file, "/supervision_proto/src/") || index(file, "/swap_proto/src/") ||
             index(file, "/virtio/src/")) { next }
