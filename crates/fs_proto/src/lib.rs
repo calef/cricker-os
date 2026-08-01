@@ -985,13 +985,12 @@ pub mod verb {
         ///
         /// # BUGS
         ///
-        /// **The directory verbs other than `CREATE` answer `EBADF`, not `ENOTDIR`, and that is
-        /// inherited rather than argued.** Before this table they fell through one `_ =>` arm shared
-        /// with "you named a handle I never minted", so the two statements were conflated. Writing
-        /// the rows down is what made the conflation visible. `ENOTDIR` is very likely the right
-        /// answer for all seven, by exactly the argument `CREATE` already makes, but changing it
-        /// changes what a client on the wire observes, and that is a contract decision rather than
-        /// a table's to take. Recorded here, next to the rows, instead of only in a report.
+        /// Every directory verb answers `ENOTDIR`, the same statement `CREATE` makes: a file
+        /// capability is not a directory, so the request does not mean anything here. They
+        /// answered `EBADF` until 2026-08-01, inherited from the catch-all this table replaced,
+        /// which shared one arm with "you named a handle I never minted". Writing the rows down is
+        /// what made the conflation visible, and the fix is that the two words now mean one thing
+        /// each: `EBADF` is about the caller's handle, `ENOTDIR` is about the request.
         pub const POLICY: [Policy; super::TABLE.len()] = [
             Policy::Local,                   // OPEN: the one granted name, anything else ENOENT.
             Policy::Forward,                 // READ
@@ -1000,12 +999,20 @@ pub mod verb {
             Policy::Forward,                 // FSTAT
             Policy::Refused(grant::ENOTDIR), // CREATE: a file capability is not a directory.
             Policy::Forward,                 // TRUNCATE, EROFS without the direction
-            Policy::Refused(EBADF),          // OPENDIR
-            Policy::Refused(EBADF),          // READDIR
-            Policy::Refused(EBADF),          // MKDIR
-            Policy::Refused(EBADF),          // RENAME
-            Policy::Refused(EBADF),          // UNLINK
-            Policy::Refused(EBADF),          // RMDIR
+            // **All six say the same thing `CREATE` says**, and for the same reason: a file
+            // capability is not a directory, so "list it", "make a name in it" or "take a name out
+            // of it" do not *mean* anything here. There is no policy that could have said yes.
+            //
+            // They answered `EBADF` until 2026-08-01, inherited from the catch-all this table
+            // replaced, which shared one arm with "you named a handle I never minted". Two
+            // different statements came out as one word: one is about the request, the other about
+            // the caller's handle. Writing the rows down is what made the conflation visible.
+            Policy::Refused(grant::ENOTDIR), // OPENDIR
+            Policy::Refused(grant::ENOTDIR), // READDIR
+            Policy::Refused(grant::ENOTDIR), // MKDIR
+            Policy::Refused(grant::ENOTDIR), // RENAME
+            Policy::Refused(grant::ENOTDIR), // UNLINK
+            Policy::Refused(grant::ENOTDIR), // RMDIR
             // **The milestone-61 change.** All four used to answer `super::super::xattr::ENOTSUP`
             // here, so a
             // program behind a per-file grant could not read its own file's attributes. They are
@@ -1019,7 +1026,7 @@ pub mod verb {
             Policy::Forward, // REMOVEXATTR, EROFS without the direction
         ];
 
-        /// `EBADF`: no such handle. Also, today, every directory verb (see [`POLICY`]'s BUGS).
+        /// `EBADF`: no such handle, and only that since 2026-08-01 (see [`POLICY`]'s BUGS).
         pub const EBADF: i32 = 9;
 
         /// The policy for an opcode, or `None` for an opcode the contract does not carry.
@@ -2519,16 +2526,21 @@ mod tests {
     ///
     /// The distinction the table was most at risk of flattening. `CREATE` answers `ENOTDIR` because
     /// the request does not mean anything here, not `EACCES` and not a generic "denied"; the other
-    /// directory verbs answer `EBADF` today, which `POLICY`'s BUGS records as inherited rather than
-    /// argued. Both are pinned, so a change to either is a change somebody made on purpose.
+    /// directory verbs answer it too, since 2026-08-01. All seven are pinned, so a change to any of
+    /// them is a change somebody made on purpose, and `EBADF` stays available to mean the one thing
+    /// it should: the caller named a handle this program never minted.
     #[test]
     fn a_file_grants_refusals_keep_their_separate_meanings() {
-        use verb::file_grant::{EBADF, Policy};
+        use verb::file_grant::Policy;
         assert_eq!(
             verb::file_grant::of(fs::CREATE),
             Some(Policy::Refused(grant::ENOTDIR)),
             "CREATE must say `this is not a directory`, never `you were denied`"
         );
+        // Every directory verb answers what CREATE answers. `EBADF` would be a claim about the
+        // caller's handle; these are refusals about the REQUEST, which a file capability cannot
+        // give meaning to. The two must stay distinguishable, because `EBADF` is also what a
+        // forged handle gets, and a client cannot act on a word that means both.
         for op in [
             fs::OPENDIR,
             fs::READDIR,
@@ -2537,7 +2549,11 @@ mod tests {
             fs::UNLINK,
             fs::RMDIR,
         ] {
-            assert_eq!(verb::file_grant::of(op), Some(Policy::Refused(EBADF)));
+            assert_eq!(
+                verb::file_grant::of(op),
+                Some(Policy::Refused(grant::ENOTDIR)),
+                "a directory verb through a file grant is ENOTDIR, not EBADF",
+            );
         }
         // The two the caretaker answers out of what it holds rather than by asking the server.
         assert_eq!(verb::file_grant::of(fs::OPEN), Some(Policy::Local));

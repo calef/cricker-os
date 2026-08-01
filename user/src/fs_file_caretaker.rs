@@ -179,10 +179,11 @@ fn serve(handle: u64, name: &[u8], writable: bool) -> ! {
                 let second = if v.carries_w1 { w1 } else { 0 };
                 forward(fs::req(code, handle, n), second)
             }
-            // Not offered, and the errno says which kind of "no" this is. See
-            // `verb::file_grant::POLICY` for the row and for the honest note that the directory
-            // verbs other than CREATE answer EBADF rather than ENOTDIR, which is inherited from the
-            // catch-all this table replaced rather than argued for.
+            // Not offered, and the errno says which kind of "no" this is. Every directory verb
+            // answers ENOTDIR (a file capability is not a directory, so the request means
+            // nothing), which is a different statement from EBADF's "you named a handle I never
+            // minted" and from EACCES's "you were denied". Three refusals, three words, none of
+            // them standing in for another. See `verb::file_grant::POLICY` for the rows.
             Policy::Refused(errno) => reply_err(errno),
         };
         reply(reply_slot, r);
