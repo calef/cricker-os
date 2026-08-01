@@ -447,3 +447,49 @@ agent disproved it by measurement rather than argument.
 344 s on aarch64, because it is a real DHCP lease plus TCP and UDP round trips through an emulated NIC
 under TCG. That length is legitimate work, not a symptom, which is precisely what makes it awkward for
 the watchdogs: see the per-test ceiling discussion in [scheduler.md](scheduler.md).
+
+## BUGS: this is a GICv2 driver, and an aarch64 board port is a new interrupt controller
+
+Named here because this is where a reader meets the feature, and until 2026-08-01 the fact lived
+only in a comment inside `scripts/qemu-runner.sh`, which is the last place someone choosing a board
+would look.
+
+`kernel/src/drivers/gic.rs` implements **GICv2 and only GICv2**. The QEMU runner pins
+`gic-version=2` deliberately, so that a future QEMU changing its default cannot quietly hand us a
+controller we do not drive. That pin is protection, not support.
+
+**So the interesting question for an aarch64 board is not which CPU it has, it is which interrupt
+controller.** A Raspberry Pi 4 is a GIC-400, which is GICv2, and would work. Most server-class
+aarch64 and many modern SoCs are GICv3, which would not: GICv3 moves CPU-interface access from MMIO
+to system registers (`ICC_*`), which is a different driver rather than a different base address.
+Apple Silicon is not a GIC at all; it uses AIC.
+
+### Why there is no aarch64 CPU-model matrix, unlike RISC-V's (milestone 59, DECISIONS §53)
+
+The asymmetry is real and worth stating, because "we did it for RISC-V" is the obvious argument for
+doing it here and it is wrong.
+
+- **We already test on a conservative real core.** The aarch64 runner uses `-cpu cortex-a72`, an
+  ARMv8.0-A chip, not QEMU's `max`. RISC-V's default was the maximalist model, which is what made a
+  matrix worth building there. Here the emulator is *less* capable than a modern board, and code
+  that runs on an A72 runs on an A76.
+- **aarch64 has architectural feature discovery and RISC-V does not.** The `ID_AA64*` registers are
+  mandatory and readable at EL1, and this kernel already uses them: `arch/aarch64/mmu.rs` reads
+  `ID_AA64MMFR0_EL1::PARange` and feeds it to `TCR_EL1::IPS` rather than assuming a physical address
+  range. That is why milestone 60 (ISA discovery) is a RISC-V milestone specifically; RISC-V omitted
+  CPUID on purpose and left discovery to a device-tree string.
+
+### What no CPU matrix catches on either ISA
+
+**Memory ordering.** Different microarchitectures reorder differently, and a missing
+`Acquire`/`Release` can pass on one core and fail on another. **QEMU's TCG does not faithfully model
+reordering**, so no `-cpu` value tests it. That class is covered by a different mechanism and
+`ci.yml` says so: CI runs on a real aarch64 runner, because a missing barrier passes on an x86_64
+host and fails only on real ARM. Real silicon is the test; an emulator cannot be.
+
+### The measurement nobody has taken
+
+`-machine virt,gic-version=3` has never been booted here. It is one command, and it would turn "our
+driver does not support it" from an assumption into a recorded failure with an error message
+attached. Worth doing on the day an aarch64 board is actually chosen, and not before: there is none
+arriving, the VisionFive 2 is RISC-V, and the Raspberry Pi port is a stated future with no date.
