@@ -142,8 +142,8 @@ already answered by who holds what.
 
 ## The sinks
 
-`user/src/sink.rs` is one binary with roles, and it is the `fwarden` shape: a caretaker that speaks
-the sink contract to its client and the underlying protocol to whatever is behind it.
+`user/src/sink.rs` is one binary with roles, and it is the `fs_file_caretaker` shape: a caretaker
+that speaks the sink contract to its client and the underlying protocol to whatever is behind it.
 
 - **`ROLE_FILE`**: holds an `fs_proto` endpoint and a shared page, creates or opens one name, and
   appends every message's bytes at a running offset. `OP_EOF` closes the handle and reports the
@@ -206,10 +206,10 @@ wire identical, `SEND` keeps the message count identical, and the kernel's only 
   distinguishable from the `CALL`s it serves today. **That would be wrong.** That endpoint also
   carries `OP_READLINE`, so putting it in a child's output slot would hand the child the terminal's
   *input* as well, and a sink capability that can read the keyboard is not a sink capability. This
-  kernel offers no receive-on-a-set (`fwarden`'s note records the same gap and takes the same way
-  out), so the terminal's sink has to be a **separate endpoint served by an adapter process**, which
-  is exactly the shape `ROLE_FILE` is and proves against a real backend. Building the terminal
-  adapter means rewiring the shell and `sysinit`, whose files a sibling lane owns.
+  kernel offers no receive-on-a-set (`fs_file_caretaker`'s note records the same gap and takes the
+  same way out), so the terminal's sink has to be a **separate endpoint served by an adapter
+  process**, which is exactly the shape `ROLE_FILE` is and proves against a real backend. Building
+  the terminal adapter means rewiring the shell and `sysinit`, whose files a sibling lane owns.
 - **The console server's page-plus-ack channel is likewise untouched**, for the same client reason.
 - **`date` was already speaking the contract before it existed**, which is the `OP_BYTES == 0`
   decision paying out immediately: its hand-rolled framing is bit for bit a `BYTES` message. It

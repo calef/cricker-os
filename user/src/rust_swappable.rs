@@ -11,10 +11,11 @@
 //! log page (read/write), and the device's registers. No initrd, no budget, no way to build
 //! anything. A compromised instance is a bad console and nothing else.
 //!
-//! The serving loop is in `swap.rs` and is shared byte for byte with [`cconx`](../cconx/index.html),
-//! the replacement. The *only* difference between the two programs is the function that computes a
-//! request's answer: this one is Rust, that one is C. That is deliberate, and it is what makes the
-//! milestone's claim about the component rather than about the harness.
+//! The serving loop is in `swap.rs` and is shared byte for byte with
+//! [`c_swappable`](../c_swappable/index.html), the replacement. The *only* difference between the
+//! two programs is the function that computes a request's answer: this one is Rust, that one is C.
+//! That is deliberate, and it is what makes the milestone's claim about the component rather than
+//! about the harness.
 
 #![no_std]
 #![no_main]

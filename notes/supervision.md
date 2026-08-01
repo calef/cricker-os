@@ -104,8 +104,8 @@ child is a supervisor that can build processes, unless it proxies the reap throu
 
 - The **proxy** exists today: phase B.2's `subsup` holds no memory and asks `spawner` to reap. Right
   for a system's init, where the point is that init can no longer build.
-- Milestone 36's `cwarden` takes the **direct route** and therefore holds a full untyped budget for its
-  whole life, which is exactly the bundling the open fork is about.
+- Milestone 36's `c_confiner` takes the **direct route** and therefore holds a full untyped budget
+  for its whole life, which is exactly the bundling the open fork is about.
 - **The requirement, in one sentence: a supervisor needs `DESTROY` on one region it did not create.**
   Not `RETYPE`, not `SPLIT`, not a whole budget. Whether that becomes a rights bit split out of `WRITE`
   or a distinct `Untyped::REAP` method changes the rights model and the syscall surface, so it stays a
@@ -144,15 +144,15 @@ This is the part worth reading, because it says what §32 did and did not buy.
 - **`subsup` (milestone 22 phase B.2) now holds nothing but endpoints.** It had been the proxy: no
   memory of its own, asking `spawner` to reap on its behalf. The proxy is no longer needed, so the
   supervisor role reduces to exactly the authority its job describes. That is the payoff.
-- **`cwarden` (milestone 36) still holds a full construction budget, and that is a finding rather than
-  a failure.** It is *also* the builder: it splits a region per instance and lays `cshim` out in it,
-  and §32 does not touch construction. So the bundling §31 recorded was **two** things and only one of
-  them was the reap. What changed is that the per-instance region capability is now deleted as soon as
-  the child starts, instead of being held for the instance's whole life, so the warden holds nothing
-  that reaches a live instance's memory. Split roles 1 and 2 into separate processes and the supervisor
-  half would hold only endpoints, which is what `subsup` now demonstrates. Keeping them fused in the
-  spike stays deliberate: the requirement is visible in one program rather than hidden behind an IPC
-  hop.
+- **`c_confiner` (milestone 36) still holds a full construction budget, and that is a finding rather
+  than a failure.** It is *also* the builder: it splits a region per instance and lays `c_shim` out
+  in it, and §32 does not touch construction. So the bundling §31 recorded was **two** things and
+  only one of them was the reap. What changed is that the per-instance region capability is now
+  deleted as soon as the child starts, instead of being held for the instance's whole life, so the
+  caretaker holds nothing that reaches a live instance's memory. Split roles 1 and 2 into separate
+  processes and the supervisor half would hold only endpoints, which is what `subsup` now
+  demonstrates. Keeping them fused in the spike stays deliberate: the requirement is visible in one
+  program rather than hidden behind an IPC hop.
 
 The authorization invariant is machine-checked, not only tested: two Kani harnesses in `crates/caps`
 cover it, which is the right instrument for "a capability that cannot build cannot be made to build via

@@ -156,6 +156,9 @@ const ROLE_CRASH_VERIFY: u64 = 4;
 /// Milestone 47: the attacker against a per-*directory* grant. `a1` is a run index, which is the
 /// only thing it is told: everything else it has to find out by trying.
 const ROLE_DIR_ATTACKER: u64 = 5;
+/// Milestone 61: the attribute witness behind a **name-set** grant, the third caretaker. Told
+/// nothing; it tries a name the set carries and a name it does not, and reports what got through.
+const ROLE_SET_ATTRS: u64 = 6;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(role: u64, a1: u64, _a2: u64) -> ! {
@@ -165,6 +168,7 @@ pub extern "C" fn _start(role: u64, a1: u64, _a2: u64) -> ! {
         ROLE_CRASH_DRIVER => crash_driver(),
         ROLE_CRASH_VERIFY => crash_verify(),
         ROLE_DIR_ATTACKER => dir_attacker(a1),
+        ROLE_SET_ATTRS => set_attrs(),
         ROLE_PROOF => proof(),
         _ => proof(),
     }
@@ -232,21 +236,21 @@ fn crash_verify() -> ! {
 }
 
 /// **The attacker against a per-file grant** (milestone 31 phase 2). Spawned holding a *narrowed*
-/// endpoint: not the directory capability, but the file warden's, which designates exactly one file
-/// read-only. Its job is to try everything that would make that sentence false, and to report which
-/// attempts got through as a bitmap (`fixture::escape`).
+/// endpoint: not the directory capability, but the file caretaker's, which designates exactly one
+/// file read-only. Its job is to try everything that would make that sentence false, and to report
+/// which attempts got through as a bitmap (`fixture::escape`).
 ///
-/// **It is its own negative control, which is why it reports a bitmap and not a pass.** Run against a
-/// read-only grant, every bit must be clear. Run against a read/write grant of the same shape,
+/// **It is its own negative control, which is why it reports a bitmap and not a pass.** Run against
+/// a read-only grant, every bit must be clear. Run against a read/write grant of the same shape,
 /// `WROTE` and `TRUNCATED` must be **set** and everything else clear. Without that second run the
-/// first proves very little: a warden that refused every request would pass it, and so would a grant
-/// that reached nothing at all.
+/// first proves very little: a caretaker that refused every request would pass it, and so would a
+/// grant that reached nothing at all.
 ///
 /// **What makes the attempts real.** Each one is against something that exists and that the process
-/// one hop up the chain can genuinely reach: the neighbour file is on the image, one directory entry
-/// away, and the warden could open it on any request it liked. Milestone 33's attacker was handed a
-/// real neighbouring client's address rather than a fictional one for exactly this reason, and
-/// milestone 36 used two witnesses for the reason the paragraph above gives.
+/// one hop up the chain can genuinely reach: the neighbour file is on the image, one directory
+/// entry away, and the caretaker could open it on any request it liked. Milestone 33's attacker was
+/// handed a real neighbouring client's address rather than a fictional one for exactly this reason,
+/// and milestone 36 used two witnesses for the reason the paragraph above gives.
 ///
 /// `writable` also selects *which* file is granted, and that is a fixture constraint rather than a
 /// design one: the writable run damages what it is given, so it is given `scratch` (whose contents
@@ -294,8 +298,8 @@ fn attacker(writable: bool) -> ! {
         }
     }
 
-    // 1. A second file, by name. It exists, it sits in the same directory, and the warden could open
-    //    it. This capability names one file, so this must find nothing.
+    // 1. A second file, by name. It exists, it sits in the same directory, and the caretaker could
+    //    open it. This capability names one file, so this must find nothing.
     put_page(neighbour.as_bytes());
     let (r, _) = call(FILE, fs::req(fs::OPEN, 0, neighbour.len() as u64), 0);
     if (r as i64) >= 0 {
@@ -333,9 +337,9 @@ fn attacker(writable: bool) -> ! {
         verdict |= escape::CREATED;
     }
 
-    // 5. Handle guessing. The warden minted one handle and the FS server's own handle for the file is
-    //    a different number this process never saw, so spraying numbers is probing a table it is not
-    //    addressing. Every miss must be refused by the same check.
+    // 5. Handle guessing. The caretaker minted one handle and the FS server's own handle for the
+    //    file is a different number this process never saw, so spraying numbers is probing a table
+    //    it is not addressing. Every miss must be refused by the same check.
     let mut guess = 1u64;
     while guess < 8 {
         let (g, _) = call(FILE, fs::req(fs::READ, guess, 8), 0);
@@ -343,6 +347,94 @@ fn attacker(writable: bool) -> ! {
             verdict |= escape::FORGED_HANDLE;
         }
         guess += 1;
+    }
+
+    // 6. **Extended attributes** (milestone 61). Before it, all three caretakers answered
+    //    `EOPNOTSUPP` to all four verbs, so a program behind a per-file grant could not reach its
+    //    own file's attributes. That was uniform and honest and still a capability the confined
+    //    program should have had: an attribute is part of what a file *is*, so a capability that may
+    //    read the file may read what is attached to it, and one that may not write it may not change
+    //    them.
+    //
+    //    Three probes, and the middle one is the sharp one.
+    //
+    //    A listing works through **either** direction, because it is a read. Zero attributes is a
+    //    successful listing (`r0` = 0), so this distinguishes "forwarded and there were none" from
+    //    "refused", which the old behaviour could not.
+    let (l, _) = call(FILE, fs::req(fs::LISTXATTR, grant::HANDLE, 0), 0);
+    if (l as i64) < 0 {
+        verdict |= escape::GRANTED_ATTRS_FAILED;
+    }
+
+    //    A get of an attribute that is not set must answer `ENODATA`, **not** `EOPNOTSUPP`. That is
+    //    the difference between a request that reached the store and one the caretaker refused, and
+    //    it is the only probe here that a read-only grant can make about a verb that reads.
+    put_page(fixture::attrs::NAME);
+    let (g0, _) = call(
+        FILE,
+        fs::req(
+            fs::GETXATTR,
+            grant::HANDLE,
+            fixture::attrs::NAME.len() as u64,
+        ),
+        0,
+    );
+    if fs_proto::reply_errno(g0 as i64) == Some(xattr::ENOTSUP) {
+        verdict |= escape::GRANTED_ATTRS_FAILED;
+    }
+
+    //    A set: accepted only with the write direction, which is `WROTE`'s and `TRUNCATED`'s rule
+    //    applied to the third way of changing a file. When it is accepted it is read straight back
+    //    with its **type code**, because "the server took my attribute" and "my attribute is on the
+    //    file" are different claims, and then removed, so the run leaves the image as it found it.
+    put_page(fixture::attrs::NAME);
+    put_page_at(fixture::attrs::NAME.len(), fixture::attrs::VALUE);
+    let (s, _) = call(
+        FILE,
+        fs::req(
+            fs::SETXATTR,
+            grant::HANDLE,
+            fixture::attrs::NAME.len() as u64,
+        ),
+        xattr::spec(fixture::attrs::KIND, fixture::attrs::VALUE.len() as u64),
+    );
+    if (s as i64) >= 0 {
+        verdict |= escape::WROTE_ATTR;
+        put_page(fixture::attrs::NAME);
+        let (g, _) = call(
+            FILE,
+            fs::req(
+                fs::GETXATTR,
+                grant::HANDLE,
+                fixture::attrs::NAME.len() as u64,
+            ),
+            0,
+        );
+        get_page(xattr::reply_value_len(g as i64), &mut buf);
+        if (g as i64) < 0
+            || xattr::reply_kind(g as i64) != fixture::attrs::KIND
+            || xattr::reply_value_len(g as i64) != fixture::attrs::VALUE.len()
+            || &buf[..fixture::attrs::VALUE.len()] != fixture::attrs::VALUE
+        {
+            verdict |= escape::GRANTED_ATTRS_FAILED;
+        }
+        put_page(fixture::attrs::NAME);
+        let (rm, _) = call(
+            FILE,
+            fs::req(
+                fs::REMOVEXATTR,
+                grant::HANDLE,
+                fixture::attrs::NAME.len() as u64,
+            ),
+            0,
+        );
+        if (rm as i64) < 0 {
+            verdict |= escape::GRANTED_ATTRS_FAILED;
+        }
+    } else if writable {
+        // A writable grant that cannot set one is the control for the refusal: without it, a
+        // caretaker that refused every attribute request would pass the read-only run.
+        verdict |= escape::GRANTED_ATTRS_FAILED;
     }
 
     // Leave the fixture behind, as the LAST write, on the run that was allowed to damage it. The gate
@@ -366,18 +458,19 @@ fn attacker(writable: bool) -> ! {
 }
 
 /// **The attacker against a per-directory grant** (milestone 47). Spawned holding an endpoint to a
-/// `dwarden`, which is a capability to one subtree with one rights set. Its job is to make "it
-/// cannot reach its parent or a sibling, and it carries no right it was not given" false.
+/// `fs_subtree_caretaker`, which is a capability to one subtree with one rights set. Its job is to
+/// make "it cannot reach its parent or a sibling, and it carries no right it was not given" false.
 ///
 /// **It is told nothing about its own grant** beyond a run index (which only keeps the names it
 /// creates distinct across the runs that share one image). That is deliberate: it attempts every
 /// verb and reports a bitmap of what got through, and the kernel test asserts the *exact* expected
 /// set for each configuration. So the specification lives in the test rather than in the program
-/// being tested, and three runs of the same code are each other's controls: a warden that refused
-/// everything fails the wide run, and a warden that allowed everything fails the narrow one.
+/// being tested, and three runs of the same code are each other's controls: a caretaker that
+/// refused everything fails the wide run, and a caretaker that allowed everything fails the narrow
+/// one.
 ///
 /// **What makes the attempts real.** `motd` is in the parent and `other/secret` is in a sibling, and
-/// both are on the image, one directory entry from the warden, which could open either on any
+/// both are on the image, one directory entry from the caretaker, which could open either on any
 /// request it liked. Milestone 33's attacker was handed a real neighbour's address for exactly this
 /// reason.
 ///
@@ -418,6 +511,59 @@ fn dir_attacker(run: u64) -> ! {
             || &buf[..n as usize] != tree::INNER_BODY
         {
             v |= esc::GRANTED_ACCESS_FAILED;
+        }
+
+        // 4b. **Its attributes** (milestone 61). Reading them needs what reading the file needs, so
+        //     every configuration that got here should manage it; writing one needs `dir::WRITE`,
+        //     and the caretaker checks nothing, so the refusal comes from the FS server acting on
+        //     the rights the caretaker's one `OPENDIR` left on this handle.
+        //
+        //     The attribute is set on `inner` and then removed, so the post-run host check still
+        //     sees the file it pins, byte for byte, with nothing attached.
+        let (l, _) = call(FILE, fs::req(fs::LISTXATTR, own as u64, 0), 0);
+        if (l as i64) < 0 {
+            v |= esc::GRANTED_ACCESS_FAILED;
+        } else {
+            v |= esc::READ_ATTRS;
+        }
+
+        put_page(fixture::attrs::NAME);
+        put_page_at(fixture::attrs::NAME.len(), fixture::attrs::VALUE);
+        let (s, _) = call(
+            FILE,
+            fs::req(fs::SETXATTR, own as u64, fixture::attrs::NAME.len() as u64),
+            xattr::spec(fixture::attrs::KIND, fixture::attrs::VALUE.len() as u64),
+        );
+        if (s as i64) >= 0 {
+            put_page(fixture::attrs::NAME);
+            let (g, _) = call(
+                FILE,
+                fs::req(fs::GETXATTR, own as u64, fixture::attrs::NAME.len() as u64),
+                0,
+            );
+            get_page(xattr::reply_value_len(g as i64), &mut buf);
+            if (g as i64) >= 0
+                && xattr::reply_kind(g as i64) == fixture::attrs::KIND
+                && xattr::reply_value_len(g as i64) == fixture::attrs::VALUE.len()
+                && buf[..fixture::attrs::VALUE.len()] == *fixture::attrs::VALUE
+            {
+                v |= esc::SET_AN_ATTR;
+            } else {
+                v |= esc::GRANTED_ACCESS_FAILED;
+            }
+            put_page(fixture::attrs::NAME);
+            let (rm, _) = call(
+                FILE,
+                fs::req(
+                    fs::REMOVEXATTR,
+                    own as u64,
+                    fixture::attrs::NAME.len() as u64,
+                ),
+                0,
+            );
+            if (rm as i64) < 0 {
+                v |= esc::GRANTED_ACCESS_FAILED;
+            }
         }
     }
 
@@ -517,8 +663,9 @@ fn dir_attacker(run: u64) -> ! {
         v |= esc::RENAMED;
     }
 
-    // 12. Handle guessing, past anything the warden could have minted for it. The warden numbers its
-    //     client's handles in its own space, so a number it never issued is refused by one check.
+    // 12. Handle guessing, past anything the caretaker could have minted for it. The caretaker
+    //     numbers its client's handles in its own space, so a number it never issued is refused by
+    //     one check.
     let mut guess = 9u64;
     while guess < 16 {
         if call(FILE, fs::req(fs::READ, guess, 8), 0).0 as i64 >= 0
@@ -533,6 +680,100 @@ fn dir_attacker(run: u64) -> ! {
     // capability that is perfectly confined.
     if v & (esc::OPENED_ITS_OWN | esc::ENUMERATED | esc::DESCENDED | esc::CREATED) == 0 {
         v |= esc::GRANTED_ACCESS_FAILED;
+    }
+
+    send(REPORT, fixture::VERDICT, v, 0);
+    exit();
+}
+
+/// **The attribute witness behind a name-set grant** (milestone 61, the third caretaker).
+///
+/// `fs_nameset_caretaker` narrows a directory capability to a designated *set* of names, and it is
+/// the one caretaker that inspects a name on every request. Milestone 61 taught it four verbs whose
+/// operand is an **attribute** name rather than a directory name, and that distinction is the whole
+/// risk: filtering an attribute name against the set would refuse a program its own file's
+/// attributes, and *not* filtering a directory name would be an escape. This asks both questions.
+///
+/// It is told nothing about its grant. The kernel test wires it over the `sub` fixture with a set of
+/// exactly one name, so `inner` is designated and `deeper`, one entry away in the same directory, is
+/// not. `rm`'s witness already asks the naming question with `REMOVE` alone; this asks it with
+/// `READ`, because closing an attribute gap by opening a naming one would be a poor trade.
+///
+/// The attribute is removed before it reports, so the file the gate's post-run host check pins is
+/// left byte for byte as it was found, with nothing attached.
+fn set_attrs() -> ! {
+    use fixture::{dirscape as esc, tree};
+    let mut v = 0u64;
+    let mut buf = [0u8; 128];
+
+    // The name the set designates. Everything below hangs off this, so its failure is the control.
+    let own = dir_open(fs::ROOT, tree::INNER);
+    if own < 0 {
+        v |= esc::GRANTED_ACCESS_FAILED;
+    } else {
+        v |= esc::OPENED_ITS_OWN;
+
+        // A listing: a read, so it needs what reading the file needs and nothing more. Zero
+        // attributes is a successful listing, which is what tells "forwarded and there were none"
+        // apart from "the caretaker refused it".
+        let (l, _) = call(FILE, fs::req(fs::LISTXATTR, own as u64, 0), 0);
+        if (l as i64) < 0 {
+            v |= esc::GRANTED_ACCESS_FAILED;
+        } else {
+            v |= esc::READ_ATTRS;
+        }
+
+        // A set, read straight back with its type code, then removed. The attribute's name is not a
+        // name in the directory, so a caretaker that filtered it against the set would refuse this
+        // and the bit would stay clear.
+        put_page(fixture::attrs::NAME);
+        put_page_at(fixture::attrs::NAME.len(), fixture::attrs::VALUE);
+        let (s, _) = call(
+            FILE,
+            fs::req(fs::SETXATTR, own as u64, fixture::attrs::NAME.len() as u64),
+            xattr::spec(fixture::attrs::KIND, fixture::attrs::VALUE.len() as u64),
+        );
+        if (s as i64) >= 0 {
+            put_page(fixture::attrs::NAME);
+            let (g, _) = call(
+                FILE,
+                fs::req(fs::GETXATTR, own as u64, fixture::attrs::NAME.len() as u64),
+                0,
+            );
+            get_page(xattr::reply_value_len(g as i64), &mut buf);
+            if (g as i64) >= 0
+                && xattr::reply_kind(g as i64) == fixture::attrs::KIND
+                && xattr::reply_value_len(g as i64) == fixture::attrs::VALUE.len()
+                && buf[..fixture::attrs::VALUE.len()] == *fixture::attrs::VALUE
+            {
+                v |= esc::SET_AN_ATTR;
+            } else {
+                v |= esc::GRANTED_ACCESS_FAILED;
+            }
+            put_page(fixture::attrs::NAME);
+            let (rm, _) = call(
+                FILE,
+                fs::req(
+                    fs::REMOVEXATTR,
+                    own as u64,
+                    fixture::attrs::NAME.len() as u64,
+                ),
+                0,
+            );
+            if (rm as i64) < 0 {
+                v |= esc::GRANTED_ACCESS_FAILED;
+            }
+        } else {
+            v |= esc::GRANTED_ACCESS_FAILED;
+        }
+    }
+
+    // The naming question, by both routes: a file the set does not carry, and a directory it does
+    // not carry. Both are really in the granted directory and the caretaker one hop up could open
+    // either on any request it liked, so each refusal is a fact about the set.
+    if dir_open(fs::ROOT, tree::DEEPER) >= 0 || dir_descend(fs::ROOT, tree::DEEPER, dir::READ) >= 0
+    {
+        v |= esc::REACHED_AN_UNMATCHED_NAME;
     }
 
     send(REPORT, fixture::VERDICT, v, 0);

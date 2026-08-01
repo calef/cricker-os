@@ -14,10 +14,10 @@
 //! to it. A bare name in a file position is the second, and it is refused here with "you hold no
 //! such capability", which is a statement about this shell's cspace rather than a placeholder: the
 //! boot that starts it wires no FS service, so there is no directory to narrow. The mechanism a
-//! grant would use exists and is proven on both ISAs (`user/src/fwarden.rs`); see [`holdings`] and
-//! notes/grant-expression.md for exactly what is left. `caps` prints the shell's whole endowment,
-//! and `caps <command>` previews exactly what that command would grant, making DECISIONS §14's
-//! "reading one literal tells you a process's whole authority" interactively true.
+//! grant would use exists and is proven on both ISAs (`user/src/fs_file_caretaker.rs`); see
+//! [`holdings`] and notes/grant-expression.md for exactly what is left. `caps` prints the shell's
+//! whole endowment, and `caps <command>` previews exactly what that command would grant, making
+//! DECISIONS §14's "reading one literal tells you a process's whole authority" interactively true.
 //!
 //! # The grammar lost two words in milestone 47
 //!
@@ -75,10 +75,10 @@ const SH_BUDGET_PAGES: u64 = 128;
 /// **What this shell holds, which is what decides whether a named file can be backed.**
 ///
 /// A per-file grant is a directory capability narrowed to one name (milestone 31 phase 2,
-/// `user/src/fwarden.rs`), and a redirection is a file opened through one. Both need a directory to
-/// narrow, so both answer to this: a shell whose init granted it a directory capability (slot
-/// [`DIR_TERMINAL`]) can back `>` and `<`, and a shell whose init granted it none gets the
-/// milestone's headline refusal, which is **true** rather than a placeholder.
+/// `user/src/fs_file_caretaker.rs`), and a redirection is a file opened through one. Both need a
+/// directory to narrow, so both answer to this: a shell whose init granted it a directory
+/// capability (slot [`DIR_TERMINAL`]) can back `>` and `<`, and a shell whose init granted it none
+/// gets the milestone's headline refusal, which is **true** rather than a placeholder.
 ///
 /// The same binary is in both positions, which is the point: `date > report.txt` is refused in the
 /// wiring with no filesystem and runs in the wiring with one, and nothing in this file branches on
@@ -989,18 +989,18 @@ fn spawn(e: Endowment) {
     // which is the same rule that makes an unexpected token a refusal instead of a shrug.
     if e.file.is_some() {
         print(
-            b"  a file grant needs init to build the warden; this shell cannot deliver one yet\n",
+            b"  a file grant needs init to build the caretaker; this shell cannot deliver one yet\n",
         );
         return;
     }
     // The same rule one rung up, and `rm` is the first shipped program it applies to. A directory
-    // grant is delivered by a `dwarden` built from a directory this shell holds, and the boot that
-    // starts this shell wires no FS service, so `plan` has already refused with "you hold no such
-    // capability" and this line is what stops a future wiring from spawning `rm` with no capability
-    // at all. A silently ungranted `rm` would be the worst possible failure of this model: a program
-    // told to destroy something, holding nothing, saying nothing.
+    // grant is delivered by a `fs_subtree_caretaker` built from a directory this shell holds, and
+    // the boot that starts this shell wires no FS service, so `plan` has already refused with "you
+    // hold no such capability" and this line is what stops a future wiring from spawning `rm` with
+    // no capability at all. A silently ungranted `rm` would be the worst possible failure of this
+    // model: a program told to destroy something, holding nothing, saying nothing.
     if e.dir.is_some() {
-        print(b"  a directory grant needs init to build the warden; this shell cannot yet\n");
+        print(b"  a directory grant needs init to build the caretaker; this shell cannot yet\n");
         return;
     }
     // A memory grant is carved from the shell's own untyped. If our budget is spent, say so plainly
@@ -1113,9 +1113,9 @@ fn outcome(e: Endowment, answer: u64) {
         }
         // Supervised jobs report through the job frame and the interruptible path, not here; `date`
         // answers in text and is drained by `report_text` before this is reached. `rm` is
-        // unreachable from this prompt at all (a directory grant needs a warden this shell cannot
-        // build, and `spawn` says so), and when it is reachable it will report the way `date` does:
-        // diagnostics as text, then an exit status.
+        // unreachable from this prompt at all (a directory grant needs a caretaker this shell
+        // cannot build, and `spawn` says so), and when it is reachable it will report the way
+        // `date` does: diagnostics as text, then an exit status.
         Prog::Heeder | Prog::Spinner | Prog::Date | Prog::Rm | Prog::Wc => {}
     }
 }
@@ -1198,7 +1198,7 @@ fn preview(e: Endowment) {
         print(b" pages  split from this shell's budget\n");
     }
     // A file endowment reads as one line naming the file and the direction, because that IS the
-    // whole authority: an endpoint served by a file warden that will answer for this name and no
+    // whole authority: an endpoint served by a file caretaker that will answer for this name and no
     // other. The direction comes from the program's manifest, not from anything typed, which is why
     // it is worth printing: the line you typed plus this table is the child's complete authority.
     if let Some(g) = e.file {
@@ -2184,7 +2184,7 @@ fn jf_store(va: u64, off: usize, v: u64) {
 const REPORT: u64 = 1;
 
 /// **A shell driven by a script instead of a keyboard**, so the builtins above can be gated on both
-/// ISAs (DECISIONS §19) against a real subtree served by a real `dwarden`.
+/// ISAs (DECISIONS §19) against a real subtree served by a real `fs_subtree_caretaker`.
 ///
 /// It is **told nothing about which subtree it was rooted in**, beyond a run index that keeps the
 /// names it creates distinct across runs sharing one image. It tries to name one file that exists
@@ -2299,9 +2299,9 @@ fn navigate(spec: u64) -> ! {
     //
     //    Sent through the contract rather than typed as a command line, because **`rm` is a program
     //    now** (milestone 47's rmdir lane) and this witness holds no spawn channel: it is confined
-    //    to a subtree by a `dwarden` and nothing in its cspace names an init. So what is under test
-    //    here is the verb `rm` sends, at the far end of the same warden chain the program runs
-    //    behind, and `user/src/rm.rs`'s own guest test is what covers the program.
+    //    to a subtree by a `fs_subtree_caretaker` and nothing in its cspace names an init. So what
+    //    is under test here is the verb `rm` sends, at the far end of the same caretaker chain the
+    //    program runs behind, and `user/src/rm.rs`'s own guest test is what covers the program.
     if removed(&nav, fs::UNLINK, name_of(&doomed)) {
         v |= nb::UNLINKED;
         let mut buf = [0u8; 64];
@@ -2418,11 +2418,12 @@ impl Text {
 
 /// **The demonstration: `echo *.txt` prints exactly the authority `rm *.txt` would transfer.**
 ///
-/// Both halves run here, in a shell that holds a real directory capability behind a real `dwarden`,
-/// over a real `READDIR`. They share the expander (that is the point of there being one), and they
-/// do **not** share the plumbing: `echo` goes text → words → expand → print, and the grant goes
-/// parse → positionals → expand → `capsh::plan` → the grant's names → render. So a planner that
-/// narrowed, reordered or added to a set would show up here as a disagreement.
+/// Both halves run here, in a shell that holds a real directory capability behind a real
+/// `fs_subtree_caretaker`, over a real `READDIR`. They share the expander (that is the point of
+/// there being one), and they do **not** share the plumbing: `echo` goes text → words → expand →
+/// print, and the grant goes parse → positionals → expand → `capsh::plan` → the grant's names →
+/// render. So a planner that narrowed, reordered or added to a set would show up here as a
+/// disagreement.
 ///
 /// The three refusals after it are what stop the agreement from being vacuous in the other
 /// direction: a pattern that matched nothing, a pattern where one cannot mean anything, and a line
@@ -2439,7 +2440,7 @@ fn globbing(spec: u64) -> ! {
         v |= gb::EXPANDED;
     }
     // And it is not simply everything in the directory. Both strangers are one entry away and the
-    // warden a hop up could name either.
+    // caretaker a hop up could name either.
     if !shown.holds(tree::GLOB_MISS.as_bytes()) && !shown.holds(tree::GLOB_DIR.as_bytes()) {
         v |= gb::EXCLUDED_A_STRANGER;
     }

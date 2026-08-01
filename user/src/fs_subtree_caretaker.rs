@@ -1,19 +1,24 @@
-//! **The directory warden: a directory capability attenuated to one subtree** (milestone 47,
+//! **The subtree caretaker: a directory capability attenuated to one subtree** (milestone 47,
 //! notes/dir-capability.md).
 //!
-//! `fwarden` narrows a directory capability to one *file*. This narrows it to one *directory*, which
-//! is the shape `cd`, a per-process namespace, and every "here is somewhere to write your logs"
-//! grant actually want. It is the same caretaker pattern (Mark Miller's term): it holds the wider
-//! capability, exports a narrower one, and is the only path between them.
+//! `fs_file_caretaker` narrows a directory capability to one *file*. This narrows it to one
+//! *subtree*, which is the shape `cd`, a per-process namespace, and every "here is somewhere to
+//! write your logs" grant actually want. It is the same caretaker pattern (Mark Miller's term): it
+//! holds the wider capability, exports a narrower one, and is the only path between them.
+//!
+//! **Subtree, not directory, and the name now says which.** The old name said "directory", and that
+//! distinguished nothing: all three filesystem caretakers *hold* a directory capability. What this
+//! one serves is the directory **and everything beneath it**, reached through the handle the FS
+//! server minted, so `fs_subtree` is what a reader should predict from the name.
 //!
 //! # It performs no checks, and that is the design
 //!
-//! `fwarden` has to inspect requests, because a file capability and a directory capability speak
-//! different protocols and it is translating between them. This one does not. At startup it sends
-//! **one** [`fs::OPENDIR`], which asks the FS server for a handle to the granted name carrying the
-//! granted rights; the server intersects those rights with its own and refuses if the answer came up
-//! short. Everything the client can reach afterwards is reached *through that handle*, so the
-//! attenuation lives in the handle the server minted and not in any branch here.
+//! `fs_file_caretaker` has to inspect requests, because a file capability and a directory
+//! capability speak different protocols and it is translating between them. This one does not. At
+//! startup it sends **one** [`fs::OPENDIR`], which asks the FS server for a handle to the granted
+//! name carrying the granted rights; the server intersects those rights with its own and refuses if
+//! the answer came up short. Everything the client can reach afterwards is reached *through that
+//! handle*, so the attenuation lives in the handle the server minted and not in any branch here.
 //!
 //! What this process actually does is **translate a namespace**. The client numbers handles in its
 //! own space starting at [`fs_proto::fs::ROOT`], which is the granted directory; this maps each one
@@ -23,10 +28,10 @@
 //!
 //! Two consequences worth stating, because they are what the confinement rests on:
 //!
-//! - **The confined program holds an endpoint to this process and nothing that names the FS server**,
-//!   so "it cannot reach the parent directory" is a property of its cspace rather than of a branch
-//!   it is trusted to take. The boundary is an address space, which is why `fwarden`'s tests are
-//!   witnesses and not assertions, and why this one's are too.
+//! - **The confined program holds an endpoint to this process and nothing that names the FS
+//!   server**, so "it cannot reach the parent directory" is a property of its cspace rather than of
+//!   a branch it is trusted to take. The boundary is an address space, which is why
+//!   `fs_file_caretaker`'s tests are witnesses and not assertions, and why this one's are too.
 //! - **A rights-carrying handle alone would not confine it.** The FS server's handle table is per
 //!   server, not per client, so a program holding the FS-service endpoint could always name
 //!   [`fs_proto::fs::ROOT`] and be back at the image root. The handle is the authority; the endpoint
@@ -39,9 +44,9 @@
 //!   the subtree capability.
 //! - **slot 2**: a report endpoint, `WRITE`. Readiness, sent once the descent has succeeded.
 //! - **[`PAGE_VA`]**: the page shared with the FS server *and* with the client, one frame for all
-//!   three, sound for the reason `fwarden`'s note gives: every request on both hops is a blocking
-//!   `CALL`, so the client is parked inside its own call for the whole time this process is using
-//!   the page.
+//!   three, sound for the reason `fs_file_caretaker`'s note gives: every request on both hops is a
+//!   blocking `CALL`, so the client is parked inside its own call for the whole time this process
+//!   is using the page.
 //!
 //! The granted name and the requested rights arrive in the three `START` argument words
 //! ([`fs_proto::grant`], whose spec word carries a rights mask of any width), so a subtree grant
@@ -50,7 +55,7 @@
 #![no_std]
 #![no_main]
 
-use fs_proto::{fs, grant, op, reply_err, reply_errno};
+use fs_proto::{fs, grant, op, reply_err, reply_errno, verb};
 use user_rt::{call, invoke, recv_cap, send};
 
 /// The FS-service endpoint: the directory capability this process attenuates.
@@ -65,7 +70,7 @@ const PAGE_VA: u64 = 0x0000_0000_0060_0000;
 /// Its size, the contract's transfer unit.
 const PAGE: usize = fs_proto::PAGE;
 
-/// How many handles a confined program may hold open at once through this warden, including the
+/// How many handles a confined program may hold open at once through this caretaker, including the
 /// granted directory itself at index 0.
 ///
 /// Fixed and small because this process has no heap and runs on the single stack page `run` maps: a
@@ -74,7 +79,7 @@ const PAGE: usize = fs_proto::PAGE;
 /// is `EMFILE`, which is a real POSIX answer rather than a silently reused slot.
 const SLOTS: usize = 16;
 
-/// `EMFILE`: the client has as many handles open through this warden as it may.
+/// `EMFILE`: the client has as many handles open through this caretaker as it may.
 const EMFILE: i32 = 24;
 /// `EINVAL`, for the verbs this contract does not carry and for closing the root of a namespace.
 const EINVAL: i32 = 22;
@@ -127,10 +132,24 @@ impl Table {
 
 /// **The serve loop: a namespace translation and nothing else.**
 ///
-/// Every arm does the same three things, which is the point: map the client's handle to the FS
+/// Every request does the same three things, which is the point: map the client's handle to the FS
 /// server's, forward the request unchanged, and (for the verbs that mint a handle) map the answer
 /// back. There is no rights check anywhere in here, because the rights are on `dir`, the handle the
 /// FS server minted at startup, and everything the client can reach it reached through that handle.
+///
+/// # Milestone 61: the shape comes from the contract, and there is still no check
+///
+/// The `match` over opcodes is gone, replaced by [`fs_proto::verb`], which says for each verb
+/// whether the request's length field counts anything and whether its second word means something.
+/// **That is dispatch, not attenuation, and the distinction is the whole reason this program can be
+/// trusted.** A name filter or a rights test here would be a branch that could be wrong; a table
+/// lookup that decides whether to forward `len` or zero cannot refuse anything.
+///
+/// What it buys is that a verb added to the contract is forwarded from the day its row exists. The
+/// four extended-attribute verbs are the proof: they landed in milestone 57, this program was never
+/// taught them, and until now a program behind a subtree grant could not read its own files'
+/// attributes. It never needed teaching, only a table. The server still applies the grant's rights
+/// to them, because they take a **handle** and the handle is the one the server attenuated.
 fn serve(dir: u64) -> ! {
     let mut table = Table([None; SLOTS]);
     table.0[0] = Some(dir);
@@ -138,86 +157,74 @@ fn serve(dir: u64) -> ! {
     loop {
         let (w0, reply_slot, w1) = recv_cap(CLIENT);
         let len = fs::req_len(w0).min(PAGE) as u64;
-        let verb = op(w0);
+        let code = op(w0);
         let Some(server_handle) = table.get(fs::req_handle(w0)) else {
             reply(reply_slot, reply_err(EBADF));
             continue;
         };
+        // An opcode the contract does not carry. One refusal site, and `EINVAL` because a word this
+        // contract cannot resolve is a malformed request rather than a capability's refusal.
+        let Some(v) = verb::of(code) else {
+            reply(reply_slot, reply_err(EINVAL));
+            continue;
+        };
 
-        let r: i64 = match verb {
-            // The verbs that mint a handle: forward, then give the client a number of its own. The
-            // client never learns the FS server's numbering, so a handle it guesses is a guess in a
-            // space it did not choose.
-            fs::OPEN | fs::CREATE | fs::OPENDIR | fs::MKDIR => {
-                let r = forward(fs::req(verb, server_handle, len), w1);
-                if r < 0 {
-                    r
-                } else {
-                    match table.install(r as u64) {
-                        Some(client) => client as i64,
-                        None => {
-                            // Give the handle straight back rather than leaking it in the server:
-                            // this process holds the only reference to it and would otherwise pin a
-                            // node for the rest of the boot.
-                            forward(fs::req(fs::CLOSE, r as u64, 0), 0);
-                            reply_err(EMFILE)
-                        }
-                    }
-                }
+        let r: i64 = if code == fs::CLOSE {
+            // Closing the granted directory is refused for the same reason the FS server refuses to
+            // close its own root: it is not something the client opened, and a client that could
+            // close it could make every later request in its own session fail.
+            let client = fs::req_handle(w0);
+            if client == fs::ROOT {
+                reply_err(EINVAL)
+            } else {
+                table.0[client as usize] = None;
+                forward(fs::req(fs::CLOSE, server_handle, 0), 0)
             }
+        } else if v.operand == verb::Operand::Rename {
             // **The one verb whose second word is not opaque**, because it names a second directory.
             // Both handles are the client's, so both are translated, and this is still translation
             // and not a check: the FS server decides whether the rights on those two handles allow
             // the move, and this process does not know or ask what they are.
-            fs::RENAME => match table.get(fs::dst_handle(w1)) {
+            match table.get(fs::dst_handle(w1)) {
                 Some(dst) => forward(
-                    fs::req(verb, server_handle, len),
+                    fs::req(code, server_handle, len),
                     fs::rename_dst(dst, fs::dst_len(w1).min(PAGE) as u64),
                 ),
                 None => reply_err(EBADF),
-            },
-            // The verbs that operate on a handle. `w1` passes through untouched: it is an offset for
-            // READ/WRITE, a size for TRUNCATE and a cursor for READDIR, and none of them means
-            // anything to this process.
-            //
-            // `UNLINK` and `RMDIR` are here rather than with the handle-minting verbs above because
-            // they hand nothing back: a name goes away and no capability appears, so there is
-            // nothing to install in the table. They need no check here for the same reason nothing
-            // else does, and the reason is worth stating for the verbs that *destroy* something:
-            // the FS server resolves the name under the handle this process substituted, and that
-            // handle carries whatever `REMOVE` the grant carried.
-            //
-            // A recursive `rm -r` is therefore N of these requests, one per name, each resolved
-            // under a handle this table minted. **Nothing here loops**, and that is why a warden
-            // this small can be trusted with a destructive client: it cannot remove more per
-            // request than the client named, whatever the client meant.
-            fs::READ | fs::WRITE | fs::UNLINK | fs::RMDIR => {
-                forward(fs::req(verb, server_handle, len), w1)
             }
-            fs::TRUNCATE | fs::READDIR => forward(fs::req(verb, server_handle, 0), w1),
-            fs::FSTAT => forward(fs::req(fs::FSTAT, server_handle, 0), 0),
-            // Closing the granted directory is refused for the same reason the FS server refuses to
-            // close its own root: it is not something the client opened, and a client that could
-            // close it could make every later request in its own session fail.
-            fs::CLOSE => {
-                let client = fs::req_handle(w0);
-                if client == fs::ROOT {
-                    reply_err(EINVAL)
-                } else {
-                    table.0[client as usize] = None;
-                    forward(fs::req(fs::CLOSE, server_handle, 0), 0)
+        } else {
+            // Everything else is one forward. `len` travels only for the verbs whose length field
+            // counts something, and `w1` only for the verbs that read it (an offset for READ/WRITE,
+            // a size for TRUNCATE, a cursor for READDIR, a rights mask for OPENDIR/MKDIR, an
+            // attribute spec for SETXATTR). Zeroing the rest is not tidiness: it stops a client
+            // smuggling a length into a verb that has none.
+            //
+            // The destructive verbs are here with everything else, and the reason is worth stating:
+            // the FS server resolves the name under the handle this process substituted, and that
+            // handle carries whatever `REMOVE` the grant carried. A recursive `rm -r` is N of these
+            // requests, one per name. **Nothing here loops**, which is why a caretaker this small
+            // can be trusted with a destructive client: it cannot remove more per request than the
+            // client named, whatever the client meant.
+            let n = if v.carries_len() { len } else { 0 };
+            let second = if v.carries_w1 { w1 } else { 0 };
+            let r = forward(fs::req(code, server_handle, n), second);
+            // The verbs that mint a handle get a number of the client's own. The client never learns
+            // the FS server's numbering, so a handle it guesses is a guess in a space it did not
+            // choose.
+            if !v.mints_handle || r < 0 {
+                r
+            } else {
+                match table.install(r as u64) {
+                    Some(client) => client as i64,
+                    None => {
+                        // Give the handle straight back rather than leaking it in the server: this
+                        // process holds the only reference to it and would otherwise pin a node for
+                        // the rest of the boot.
+                        forward(fs::req(fs::CLOSE, r as u64, 0), 0);
+                        reply_err(EMFILE)
+                    }
                 }
             }
-            // **Extended attributes are not forwarded, and the refusal says exactly that**
-            // (milestone 57, DECISIONS §42). See `fwarden` for the argument; the short version is
-            // that a verb this caretaker does not offer must fail with a word that means "not
-            // offered" rather than with `EINVAL`, which reads as a malformed request. All three
-            // wardens answer the same thing so that behaviour does not depend on which one is in the
-            // chain.
-            fs::GETXATTR | fs::SETXATTR | fs::LISTXATTR | fs::REMOVEXATTR => {
-                reply_err(fs_proto::xattr::ENOTSUP)
-            }
-            _ => reply_err(EINVAL),
         };
         reply(reply_slot, r);
     }
@@ -248,9 +255,9 @@ pub extern "C" fn _start(name_lo: u64, name_hi: u64, spec: u64) -> ! {
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
-    // A warden that could not descend is a warden with nothing to attenuate: trap, and the kernel
-    // reaps it legibly. Its client then blocks on a call nobody answers, which notes/fs-server.md
-    // records as the cost of a dead server on a blocking contract.
+    // A caretaker that could not descend is a caretaker with nothing to attenuate: trap, and the
+    // kernel reaps it legibly. Its client then blocks on a call nobody answers, which
+    // notes/fs-server.md records as the cost of a dead server on a blocking contract.
     #[cfg(target_arch = "aarch64")]
     unsafe {
         core::arch::asm!("brk #0", options(nostack, nomem))

@@ -47,10 +47,10 @@ the evidence that the ambitious version is buildable, and knowing it exists shou
 an attribute layer that **forecloses** indexing later, even though we are not building indexing now.
 
 **The structural link worth recording**, because it is not obvious: a BFS query returns **a set of
-files**. Milestone 47 already decided that a set of files is what globbing produces, and that the way
-to grant one is an `fwarden` attenuated to a **name set**. So a query result and a glob result are the
-same object, and both are candidates for the same attenuation mechanism. If attributes ever become
-queryable here, the granting story is already designed.
+files**. Milestone 47 already decided that a set of files is what globbing produces, and that the
+way to grant one is an `fs_file_caretaker` attenuated to a **name set**. So a query result and a
+glob result are the same object, and both are candidates for the same attenuation mechanism. If
+attributes ever become queryable here, the granting story is already designed.
 
 **What does not transfer.** BFS's indexes are in-kernel; ours would live in the FS server or a layer
 above it, which is the microkernel version and fine. And indexing costs write amplification, which

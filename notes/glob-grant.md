@@ -5,13 +5,13 @@ on two byte strings with no filesystem in it; this note is the layer that turns 
 **authority**, and the demonstration that hangs on it.
 
 The code is `crates/capsh/src/expand.rs` (the expander and the name set, host-tested),
-`crates/fs_proto`'s `nameset` module (the wire encoding), `user/src/swarden.rs` (the caretaker),
-`user/src/shell.rs` (`echo`, and the grant path), `user/src/rm.rs` (the namespace mode), and
-`kernel/src/user.rs`'s `fs_service::start_granted_set` and `glob_grant_tests`.
+`crates/fs_proto`'s `nameset` module (the wire encoding), `user/src/fs_nameset_caretaker.rs` (the
+caretaker), `user/src/shell.rs` (`echo`, and the grant path), `user/src/rm.rs` (the namespace mode),
+and `kernel/src/user.rs`'s `fs_service::start_granted_set` and `glob_grant_tests`.
 
-Read [dir-capability.md](dir-capability.md) first for the rights ladder and `dwarden`, and
-[rm.md](rm.md) for why `rm` is a program with a directory grant. This lane is the wiring the other
-two left as the obvious next thing.
+Read [dir-capability.md](dir-capability.md) first for the rights ladder and `fs_subtree_caretaker`,
+and [rm.md](rm.md) for why `rm` is a program with a directory grant. This lane is the wiring the
+other two left as the obvious next thing.
 
 ## What a match grants, which was the whole question
 
@@ -25,9 +25,9 @@ The roadmap's four candidates and its verdict, which this lane implements rather
 | make `rm` a builtin | dodges the question, and costs `rm` as a program |
 | **a directory capability attenuated to a name set** | the principled one |
 
-The finding that makes it tractable is that this is a small change: `fwarden` already serves *a
-namespace of exactly one name*, so globbing generalizes the namespace and nothing else. Same
-caretaker shape, same `fs_proto` protocol above and below, **nothing new in the kernel**.
+The finding that makes it tractable is that this is a small change: `fs_file_caretaker` already
+serves *a namespace of exactly one name*, so globbing generalizes the namespace and nothing else.
+Same caretaker shape, same `fs_proto` protocol above and below, **nothing new in the kernel**.
 
 That generalization is in the type system rather than only in the prose. `capsh::DirGrant` used to
 carry `name: &[u8]`; it now carries `names: NameSet`, and a literal operand is the set of one.
@@ -35,14 +35,14 @@ carry `name: &[u8]`; it now carries `names: NameSet`, and a literal operand is t
 ## The property worth the lane
 
 **The expansion you see is the grant.** `echo *.txt` prints literally the authority that `rm *.txt`
-would transfer, because the matched set *is* the namespace the warden will serve.
+would transfer, because the matched set *is* the namespace the caretaker will serve.
 
 Unix cannot make that claim, and the reason is worth being precise about rather than waving at.
 Unix's `rm` gets its authority from the uid it inherits; the glob only tells it which of its existing
 powers to use. So `echo *.txt` on Unix prints a list of names that happens to be what `rm *.txt`
 would delete, which is a coincidence of good behaviour by `rm`, not a fact about what it was handed.
 Here it is the same object: the shell expands once, and the names it printed are the names the
-warden is built from.
+caretaker is built from.
 
 It only means anything if both go through **one** expander, which is why `capsh::expand::Expander`
 exists and why both `echo` and the grant planner drive it. The guest test then checks the pairing
@@ -92,37 +92,52 @@ Expanding a pattern is listing a directory, so it costs the authority to list a 
 `ENUMERATE | DESCEND | READ` and **no `REMOVE` at all**, which is the point of `echo` being the half
 that demonstrates this: showing the authority costs none of it.
 
-## `swarden`, and why it is a third warden
+## `fs_nameset_caretaker`, and why it is a third caretaker
 
 There were three candidate shapes, and this was a real fork rather than a formality.
 
-- **A generalization of `fwarden`.** The roadmap's phrasing invites it, and it does not work.
-  `fwarden` serves the *file* protocol: its client `OPEN`s a fixed handle, `CREATE` is `ENOTDIR`, and
-  every directory verb falls through to `EBADF`. Teaching it a set means teaching it `READDIR`,
-  `UNLINK` and `RMDIR`, which is not generalizing a file warden, it is writing a directory warden and
-  calling it a generalization.
-- **A mode on `dwarden`.** Tempting, because `dwarden` already does the handle-namespace translation.
-  Refused, and its own design property is the reason: **`dwarden` performs no rights checks at all**,
-  so there is no branch in it that can be wrong. A name filter is a check, and one that must be
-  consulted on every name-taking verb (`OPEN`, `CREATE`, `OPENDIR`, `MKDIR`, `UNLINK`, `RMDIR`, and
-  both halves of `RENAME`). A mode would trade that program's one strong property for a switch, and
-  put a forget-a-verb surface in the warden that most deliberately has none.
-- **A third warden.** Taken. It also has a structural reason and not only a stylistic one: **the two
-  grants have different shapes.** One name rides in two `START` argument words; a set does not fit in
-  any number of registers, so this program is started with a frame as well. Bolting that onto
-  `dwarden` would make every subtree grant carry machinery it does not use.
+- **A generalization of `fs_file_caretaker`.** The roadmap's phrasing invites it, and it does not
+  work. `fs_file_caretaker` serves the *file* protocol: its client `OPEN`s a fixed handle, `CREATE`
+  is `ENOTDIR`, and every directory verb falls through to `EBADF`. Teaching it a set means teaching
+  it `READDIR`, `UNLINK` and `RMDIR`, which is not generalizing a file caretaker, it is writing a
+  subtree caretaker and calling it a generalization.
+- **A mode on `fs_subtree_caretaker`.** Tempting, because `fs_subtree_caretaker` already does the
+  handle-namespace translation. Refused, and its own design property is the reason:
+  **`fs_subtree_caretaker` performs no rights checks at all**, so there is no branch in it that can
+  be wrong. A name filter is a check, and one that must be consulted on every name-taking verb
+  (`OPEN`, `CREATE`, `OPENDIR`, `MKDIR`, `UNLINK`, `RMDIR`, and both halves of `RENAME`). A mode
+  would trade that program's one strong property for a switch, and put a forget-a-verb surface in
+  the caretaker that most deliberately has none.
+- **A third caretaker.** Taken. It also has a structural reason and not only a stylistic one: **the
+  two grants have different shapes.** One name rides in two `START` argument words; a set does not
+  fit in any number of registers, so this program is started with a frame as well. Bolting that onto
+  `fs_subtree_caretaker` would make every subtree grant carry machinery it does not use.
 
-The honest cost is about thirty lines of handle table duplicated from `dwarden`. That is the price of
-keeping "this warden checks nothing" true of the one that says so.
+The honest cost is about thirty lines of handle table duplicated from `fs_subtree_caretaker`. That
+is the price of keeping "this caretaker checks nothing" true of the one that says so.
+
+Milestone 61 removed the *other* duplication, which was the dangerous one. Which verbs got asked
+"is this name in the set" used to be a list of match arms in this program, so a name-taking verb
+added to the contract would have arrived **unfiltered** and a set capability would quietly have
+reached a name the pattern never matched. It is now `fs_proto::verb`'s `takes_name()`, one row per
+verb, in a host-testable crate: the filter covers a new verb from the moment its row exists. What is
+*not* shared is the attenuation. `fs_subtree_caretaker` consults no policy at all and still does
+not, which is exactly the property a mode would have destroyed.
+
+The distinction that milestone made load-bearing is `Operand::Name` versus `Operand::Payload`. The
+four extended-attribute verbs carry a name in the shared page and it is **not** a name in the
+directory, so they pass the filter without being compared against the set. Filtering them would
+have refused a program its own file's attributes because `user.com.apple.metadata` is not one of
+the names the pattern matched, which is a category error the table now forecloses.
 
 ### One rule, and having only one is the design
 
 > **A name that is not in the set does not exist here.**
 
 Reading it, writing it, creating it, removing it and renaming onto it are all `ENOENT`, because in
-this scope there is no such name and nothing consulted a permission. That is `fwarden`'s sentence
-(DECISIONS §27) over a set instead of over one name, and it is why there is no per-verb policy here
-to get wrong.
+this scope there is no such name and nothing consulted a permission. That is `fs_file_caretaker`'s
+sentence (DECISIONS §27) over a set instead of over one name, and it is why there is no per-verb
+policy here to get wrong.
 
 The filter applies **at the granted directory and nowhere else**. A handle minted below it, by
 descending into a matched directory (which needs a `-r` grant's `DESCEND`), is unfiltered. That is
@@ -137,13 +152,13 @@ and `mv *.txt` is not something this shape can express.
 
 ### `READDIR` is answered from the set
 
-At the granted directory the warden does not ask the server at all: the set **is** the namespace, so
-there is nothing to filter out of a listing that is not already absent from this one. That avoids the
-cursor problem a filtering warden would have (the client's index and the server's would diverge the
-moment an entry was dropped) and costs no round trip.
+At the granted directory the caretaker does not ask the server at all: the set **is** the namespace,
+so there is nothing to filter out of a listing that is not already absent from this one. That avoids
+the cursor problem a filtering caretaker would have (the client's index and the server's would
+diverge the moment an entry was dropped) and costs no round trip.
 
 It is deliberately not gated on the `ENUMERATE` the grant carries, and that is not a widening: what a
-listing here reveals is exactly the set, which the command line already printed before the warden
+listing here reveals is exactly the set, which the command line already printed before the caretaker
 existed.
 
 The price is that a set record carries the entry's **type**, decided at expansion time from what the
@@ -207,10 +222,10 @@ kernel test's literal set provably the expansion.
 **In the guest, both ISAs** (`glob_grant_tests`, one `#[test_case]` because the two phases are one
 argument and their order is load-bearing):
 
-1. A real shell in a real `dwarden` expands one pattern two ways and reports agreement, plus the
-   three refusals that stop the agreement being vacuous.
+1. A real shell in a real `fs_subtree_caretaker` expands one pattern two ways and reports agreement,
+   plus the three refusals that stop the agreement being vacuous.
 2. **`rm` is the attacker.** Told to remove `gl-three.log` through the set capability: the file
-   exists, sits one directory entry away from the two names in the set, and the warden one hop up
+   exists, sits one directory entry away from the two names in the set, and the caretaker one hop up
    holds a capability that could remove it. `ENOENT`. Nothing in `rm` decided not to try.
 3. And the grant works: `rm` in namespace mode removes exactly the two names, which is what stops
    claim 2 being equally true of a capability that reaches nothing.
@@ -230,7 +245,8 @@ Known limitations, next to the feature rather than only in a tracker.
   shell an allocator or the grant a different carrier, not editing the constant.
 - **A literal operand's type bit is `false` because nothing enumerated it.** Only a set the shell
   expanded carries the types it observed. Today no wiring serves a single-name grant through
-  `swarden`, so nothing reads that bit; if one ever does, its listing would call a directory a file.
+  `fs_nameset_caretaker`, so nothing reads that bit; if one ever does, its listing would call a
+  directory a file.
 - **A set capability cannot move a name out of its set**, so `mv *.txt elsewhere/` is not expressible.
   Argued above under `RENAME`.
 - **Only the first pattern on a line is expanded.** No manifest declares two name slots, so a second
@@ -245,9 +261,14 @@ Known limitations, next to the feature rather than only in a tracker.
   no such capability". Both sentences are **true rather than placeholders** (the interactive boot
   wires no FS service, §27's amendment), and they agree with each other, which is the property this
   lane cares about. What is missing is a boot that wires an FS service into the interactive system.
-- **The shell cannot build the warden either.** `spawn` refuses a directory grant with "this shell
-  cannot yet", so the set grants that exist are wired by the kernel test. The mechanism is proven on
-  both ISAs; the delegation chain is the same one notes/grant-expression.md assesses for the clock.
+- **The shell cannot build the caretaker either.** `spawn` refuses a directory grant with "this
+  shell cannot yet", so the set grants that exist are wired by the kernel test. The mechanism is
+  proven on both ISAs; the delegation chain is the same one notes/grant-expression.md assesses for
+  the clock.
+- **The set is not consulted below the granted directory, including for attributes.** A handle
+  minted by descending into a matched directory is unfiltered, which is argued above for the naming
+  verbs and is the same answer for the four attribute verbs milestone 61 forwarded: what is under a
+  directory the pattern matched was never a question the pattern asked.
 
 ## EXAMPLES
 
@@ -282,7 +303,7 @@ Wire a set grant and attack it:
 let report = fs_service::start_granted_set(
     blk_server_image(),
     program("fs_server").unwrap(),
-    program("swarden").unwrap(),
+    program("fs_nameset_caretaker").unwrap(),
     program("rm").unwrap(),
     fs_service::SetGrant {
         dir: tree::GLOBSET,
@@ -307,9 +328,10 @@ cargo test -p fs_proto       # the set encoding, and the fixture pinned against 
 ## See also
 
 - [glob.md](glob.md): the matcher, and the four scope decisions this lane inherits.
-- [dir-capability.md](dir-capability.md): the rights ladder, `dwarden`, and why the endpoint is the
-  boundary.
+- [dir-capability.md](dir-capability.md): the rights ladder, `fs_subtree_caretaker`, and why the
+  endpoint is the boundary.
 - [rm.md](rm.md): `rm` as a program, and why `-r` widens the grant.
-- [grant-expression.md](grant-expression.md): the command line as a grant expression, and `fwarden`.
+- [grant-expression.md](grant-expression.md): the command line as a grant expression, and
+  `fs_file_caretaker`.
 - Milestone 47's "Globbing, which decides how every multi-file operation grants" in
   `design/roadmap.md`.

@@ -151,34 +151,34 @@ path = "src/fsclient.rs"
 test = false
 bench = false
 
-# The file warden (milestone 31 phase 2): a directory capability attenuated to one file, in one
+# The file caretaker (milestone 31 phase 2): a directory capability attenuated to one file, in one
 # direction. It is the caretaker that stands between the FS server and a program the command line
 # granted a single file, and it is a separate process so the narrowing is an address-space boundary
-# rather than a branch. mkinitrd packs it as "fwarden".
+# rather than a branch. mkinitrd packs it as "fs_file_caretaker".
 [[bin]]
-name = "fwarden"
-path = "src/fwarden.rs"
+name = "fs_file_caretaker"
+path = "src/fs_file_caretaker.rs"
 test = false
 bench = false
 
-# The directory warden (milestone 47): the same caretaker one rung up, narrowing a directory
+# The subtree caretaker (milestone 47): the same caretaker one rung up, narrowing a directory
 # capability to one SUBTREE with an explicit rights ladder. It is what `cd` and a per-process
-# namespace resolve to, and it is a separate process for fwarden's reason: the FS server's handle
-# table is per server, so only an address-space boundary keeps a program off the parent directory.
-# mkinitrd packs it as "dwarden".
+# namespace resolve to, and it is a separate process for fs_file_caretaker's reason: the FS
+# server's handle table is per server, so only an address-space boundary keeps a program off the
+# parent directory. mkinitrd packs it as "fs_subtree_caretaker".
 [[bin]]
-name = "dwarden"
-path = "src/dwarden.rs"
+name = "fs_subtree_caretaker"
+path = "src/fs_subtree_caretaker.rs"
 test = false
 bench = false
 
-# The set warden (milestone 47's globbing lane): the same caretaker over a namespace of the names a
-# pattern matched. A third warden rather than a mode on `dwarden`, because `dwarden`'s design
-# property is that it performs no checks at all, and a name filter is a check on every name-taking
-# verb. mkinitrd packs it as "swarden".
+# The nameset caretaker (milestone 47's globbing lane): the same caretaker over a namespace of the
+# names a pattern matched. A third caretaker rather than a mode on `fs_subtree_caretaker`, because
+# that program's design property is that it performs no checks at all, and a name filter is a check
+# on every name-taking verb. mkinitrd packs it as "fs_nameset_caretaker".
 [[bin]]
-name = "swarden"
-path = "src/swarden.rs"
+name = "fs_nameset_caretaker"
+path = "src/fs_nameset_caretaker.rs"
 test = false
 bench = false
 
@@ -219,19 +219,19 @@ path = "src/flaky.rs"
 test = false
 bench = false
 
-# The C seam (milestone 36). Three files, two binaries: `cshim` is the Rust user_rt shell that links
-# user/c/c_seam.c (compiled by build.rs with a bare-metal clang) and holds every capability the
-# foreign component is not allowed to see; `cwarden` builds it, supervises it, and holds the witness
-# pages that prove what the C could not reach. Both portable; both archives carry both.
+# The C seam (milestone 36). Three files, two binaries: `c_shim` is the Rust user_rt shell that
+# links user/c/c_seam.c (compiled by build.rs with a bare-metal clang) and holds every capability
+# the foreign component is not allowed to see; `c_confiner` builds it, supervises it, and holds the
+# witness pages that prove what the C could not reach. Both portable; both archives carry both.
 [[bin]]
-name = "cshim"
-path = "src/cshim.rs"
+name = "c_shim"
+path = "src/c_shim.rs"
 test = false
 bench = false
 
 [[bin]]
-name = "cwarden"
-path = "src/cwarden.rs"
+name = "c_confiner"
+path = "src/c_confiner.rs"
 test = false
 bench = false
 
@@ -292,10 +292,10 @@ bench = false
 
 # Live component replacement (milestone 23, DECISIONS §39). Four programs, one shared module
 # (src/swap.rs): `swapper` is the operator that swaps a running component under a talking client;
-# `conx` and `cconx` are the two instances of that component (the second computes its answers in C,
-# so the replacement is a different implementation in a different language); `chatty` is the client
-# that keeps talking across the swap and the attacker that tries to become the server. Portable,
-# both ISAs; the kernel's live_swap_tests drive them.
+# `rust_swappable` and `c_swappable` are the two instances of that component (the second computes
+# its answers in C, so the replacement is a different implementation in a different language);
+# `chatty` is the client that keeps talking across the swap and the attacker that tries to become
+# the server. Portable, both ISAs; the kernel's live_swap_tests drive them.
 [[bin]]
 name = "swapper"
 path = "src/swapper.rs"
@@ -303,14 +303,14 @@ test = false
 bench = false
 
 [[bin]]
-name = "conx"
-path = "src/conx.rs"
+name = "rust_swappable"
+path = "src/rust_swappable.rs"
 test = false
 bench = false
 
 [[bin]]
-name = "cconx"
-path = "src/cconx.rs"
+name = "c_swappable"
+path = "src/c_swappable.rs"
 test = false
 bench = false
 

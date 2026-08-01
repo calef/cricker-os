@@ -393,18 +393,18 @@ in the code or the conversation doesn't make sense, it belongs here.
   completely, and the blowup test runs at 100,000 bytes.
 - [Globbing, and the expansion you see is the grant](glob-grant.md): milestone 47's globbing lane:
   what a match *grants*, which is a directory capability attenuated to a **name set**. Why that is a
-  small change (`fwarden` already serves a namespace of exactly one name, so this widens the
-  namespace and nothing else, with nothing new in the kernel), and why the demonstration is the
+  small change (`fs_file_caretaker` already serves a namespace of exactly one name, so this widens
+  the namespace and nothing else, with nothing new in the kernel), and why the demonstration is the
   **pairing**: `echo *.txt` prints literally the authority `rm *.txt` would transfer, which Unix
   cannot claim because its `rm`'s authority never came from the command line. The structural
   consequence the roadmap predicted, landed: `plan_against` fills its slots by index and sees the
-  **set** rather than the pattern, because the endowment is the set. Why `swarden` is a **third**
-  warden and not a mode on `dwarden` (that program performs no checks at all, and a name filter is a
-  check on seven verbs), its one rule (a name not in the set does not exist here) and the `RENAME`
-  destination check that would have been easy to miss. A correction: the argument that bash's
-  pass-the-pattern-through is harmless because `*` is refused downstream is **false**, and the real
-  cost is a grant that acquires a referent later. And `ARG_MAX` as a capability limit, with the bound
-  set at eight by a stack overflow rather than by reasoning.
+  **set** rather than the pattern, because the endowment is the set. Why `fs_nameset_caretaker` is a
+  **third** caretaker and not a mode on `fs_subtree_caretaker` (that program performs no checks at
+  all, and a name filter is a check on seven verbs), its one rule (a name not in the set does not
+  exist here) and the `RENAME` destination check that would have been easy to miss. A correction:
+  the argument that bash's pass-the-pattern-through is harmless because `*` is refused downstream is
+  **false**, and the real cost is a grant that acquires a referent later. And `ARG_MAX` as a
+  capability limit, with the bound set at eight by a stack overflow rather than by reasoning.
 - [Generational names](generational-names.md): milestone 14 phase A: the thread table becomes a
   fixed generational slot table (`crates/slots`). A Tid is `(generation, slot)`; a dead thread's
   name can never resolve again, even after slot reuse. Bounded like an array, safe like a
@@ -473,7 +473,11 @@ in the code or the conversation doesn't make sense, it belongs here.
   a power cut at every one of 93 write points, the interrupted write torn at four offsets, and a
   device that lies about persistence, plus the controls that prove the injector bites (with the header
   ring's history removed, 92 of 93 fault points stop mounting) and the honest limit (a lying device is
-  never survivable and never silent).
+  never survivable and never silent). Milestone 61 added the **verb table**: one row per opcode in
+  `fs_proto::verb`, saying what a request's words mean and which rights the server demands, so the
+  three caretakers that proxy this contract dispatch off the contract instead of off three
+  hand-written matches, and a verb with no row is a compile error rather than a capability that is
+  quietly missing.
 - [The directory capability](dir-capability.md): milestone 47's keystone: a directory stops being
   one authority and becomes a **six-rung rights ladder**, with `OPENDIR` handing back a directory
   capability rather than bytes. Why `DESCEND` earns its own rung (bundle it with reading and the
@@ -483,10 +487,12 @@ in the code or the conversation doesn't make sense, it belongs here.
   right, `EROFS` for a mutating one, `EPERM` for `ENUMERATE`, which is the one rung where an empty
   listing would be a lie about the directory). The structural finding: the FS server's handle table
   is per *server*, so **the handle is the authority and the endpoint is the boundary**, which is why
-  `dwarden` exists and why, unlike `fwarden`, it performs no rights checks at all. `RENAME`'s two
-  atomicities stated apart (§42), the crash-atomic half measured at every fault point rather than
-  asserted, and the startup ordering bug that one shared frame hides until a warden stages a request
-  in it.
+  `fs_subtree_caretaker` exists and why, unlike `fs_file_caretaker`, it performs no rights checks at
+  all. `RENAME`'s two atomicities stated apart (§42), the crash-atomic half measured at every fault
+  point rather than asserted, and the startup ordering bug that one shared frame hides until a
+  caretaker stages a request in it. Milestone 61's section on the verb table records how the three
+  caretakers came to share a dispatch without sharing an attenuation, which is what keeps "this one
+  checks nothing" true of the one that says so.
 - [Removal needs a directory](rm.md): why `rm` is the first program granted a **directory** rather
   than a file (no per-file capability can express "take this name away", because a name lives in the
   directory that holds it), and why `-r` **widens the grant** rather than setting a flag: a program run
@@ -519,9 +525,10 @@ in the code or the conversation doesn't make sense, it belongs here.
   server: attributes key on the node, so **a rename carries them and nothing in the rename path
   knows they exist**, which AppleDouble sidecars get wrong. The three ways to leak a blob and what
   each costs, the `u32` type code nothing reads (carried so BFS-style indexing is not foreclosed),
-  and a BUGS section naming the reserved name, the caretakers answering `EOPNOTSUPP`, and the
-  crash-atomicity claim that is inherited from the transaction boundary rather than separately
-  measured.
+  and a BUGS section naming the reserved name and the crash-atomicity claim that is inherited from
+  the transaction boundary rather than separately measured. Milestone 61 added the section on the
+  three caretakers forwarding these verbs, and on which of them refuses a write through a read-only
+  grant (one does it itself; two leave it to the server, which is their design showing through).
 - [Reading the backup from a MacBook or a Linux host](host-recovery.md): milestone 57's answer to
   "the board is dead, can I get my data?": `redoxfs-host ls`/`cat`/`extract`, no FUSE, no kernel
   extension, no root, identical on macOS and Linux. Why none of upstream's five binaries already did
