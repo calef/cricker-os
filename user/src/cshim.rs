@@ -22,7 +22,7 @@
 //! | 1 | this instance's untyped region, WRITE | pays for `malloc`; a `DESTROY` of it is the reap |
 //! | 15 | the supervision endpoint | consumed by the kernel at `START` (§26) |
 //!
-//! plus two mappings the warden made: the grant at [`cseam::GRANT_VA`], read/write, and the
+//! plus two mappings the warden made: the grant at [`c_seam::GRANT_VA`], read/write, and the
 //! read-only witness page immediately after it. The C is told about the first and not the second.
 //!
 //! # Where `malloc` comes from
@@ -38,9 +38,6 @@
 // A source file shared by several binaries through `#[path]`, and each uses a different slice of it,
 // so the unused halves are expected. This is the one shape where a blanket allow is the honest one:
 // the module is compiled once per binary and no single binary is meant to use all of it (§38).
-#[path = "cseam.rs"]
-#[allow(dead_code)]
-mod cseam;
 
 use core::alloc::{GlobalAlloc, Layout};
 use user_rt::heap::UntypedHeap;
@@ -53,7 +50,7 @@ const HEAP_UT: u64 = 1; // WRITE: the region we were built in, which also pays f
 /// The heap's ceiling. Eight pages is one growth step (`user_rt::heap::MIN_GROW_PAGES`) and far more
 /// than the component's single scratch allocation needs; small on purpose, so a runaway C `malloc`
 /// loop hits a bounded wall inside its own budget.
-const HEAP_MAX: u64 = 8 * cseam::PAGE;
+const HEAP_MAX: u64 = 8 * c_seam::PAGE;
 
 /// The heap behind `malloc` and `free`. Not registered as `#[global_allocator]`: nothing in this
 /// program uses Rust's `alloc`, and the two C entry points below are the only callers.
@@ -73,17 +70,17 @@ pub extern "C" fn _start(_a0: u64, attempt: u64, _a2: u64) -> ! {
 
     // Report *before* the call, because two of the three attempts never return from it. This is how
     // the test knows a restarted instance reached its work at all.
-    send(REPORT, cseam::RPT_RAN, attempt, 0);
+    send(REPORT, c_seam::RPT_RAN, attempt, 0);
 
-    let grant = cseam::GRANT_VA as *mut u8;
-    let len = cseam::PAGE as usize;
+    let grant = c_seam::GRANT_VA as *mut u8;
+    let len = c_seam::PAGE as usize;
 
     match attempt {
         // SAFETY: none of this is safe, and that is the milestone. `grant` is a page the warden
         // mapped read/write for us, and `len` is its true length; the C is handed the truth and
         // misbehaves anyway. The kernel is what makes that survivable.
-        cseam::ATTEMPT_OVERRUN => unsafe { cseam_overrun(grant, len) },
-        cseam::ATTEMPT_WILD => unsafe { cseam_wild(grant, len) },
+        c_seam::ATTEMPT_OVERRUN => unsafe { cseam_overrun(grant, len) },
+        c_seam::ATTEMPT_WILD => unsafe { cseam_wild(grant, len) },
         // The honest path. The result also lands in the grant, so the checker reads it out of shared
         // memory rather than trusting a number we forwarded.
         _ => {

@@ -428,6 +428,9 @@ bench = false
 
 [dependencies]
 abi = { version = "0.1.0", path = "../crates/abi" }
+c_seam = { version = "0.1.0", path = "../crates/c_seam" }
+supervision_proto = { version = "0.1.0", path = "../crates/supervision_proto" }
+swap_proto = { version = "0.1.0", path = "../crates/swap_proto" }
 bitfont = { version = "0.1.0", path = "../crates/bitfont" }
 calendar = { version = "0.1.0", path = "../crates/calendar" }
 capsh = { version = "0.1.0", path = "../crates/capsh" }

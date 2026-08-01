@@ -27,7 +27,7 @@
 //! **The buffer is this process's own memory, and it is bounded.** The kernel does not grow: it
 //! keeps synchronous rendezvous with no allocation, and the queue is userspace policy in a
 //! userspace `.bss`, inside the region this instance was built in. A runaway producer fills it and
-//! gets [`QUEUE_FULL`](swap::QUEUE_FULL) back, which is backpressure as a value the producer can
+//! gets [`QUEUE_FULL`](swap_proto::QUEUE_FULL) back, which is backpressure as a value the producer can
 //! read rather than a policy hidden inside a server.
 //!
 //! **What it does not do**, stated so the ladder's top rung is not implied: it does not write to
@@ -40,9 +40,6 @@ use user_rt::{call, recv_cap, reply, send};
 
 // A source file shared by several binaries through `#[path]`, and each uses a different slice of it,
 // so the unused halves are expected (§38).
-#[path = "swap.rs"]
-#[allow(dead_code)]
-mod swap;
 
 /// What `swapper` endowed us with, in order. No budget, no device, no way to build anything: a
 /// compromised broker can reorder or drop the one channel it was placed on, and nothing else.
@@ -97,7 +94,7 @@ pub extern "C" fn _start(_a0: u64, _a1: u64, _a2: u64) -> ! {
     // one that takes the backend away, is the one that says so.
     let mut up = true;
     let mut buffered = 0u64;
-    send(RPT, swap::RPT_UP, 0, 0);
+    send(RPT, swap_proto::RPT_UP, 0, 0);
 
     loop {
         let (op, slot, arg) = recv_cap(FRONT);
@@ -105,48 +102,48 @@ pub extern "C" fn _start(_a0: u64, _a1: u64, _a2: u64) -> ! {
             continue; // the contract says CALL; with no reply capability there is nobody to answer
         }
         match op {
-            swap::OP_PUT if up => {
+            swap_proto::OP_PUT if up => {
                 // **Pass-through.** No copy, no queue, no scheduling policy: forward the two words
                 // and hand the backend's own answer straight back. This is the steady state, and it
                 // is the whole of the tax `broker_rtt` measures.
-                let (r0, r1) = call(BACK, swap::OP_PUT, arg);
+                let (r0, r1) = call(BACK, swap_proto::OP_PUT, arg);
                 reply(slot, r0, r1);
             }
-            swap::OP_PUT => {
+            swap_proto::OP_PUT => {
                 // The backend is away. Take custody and answer immediately, so the producer keeps
                 // running rather than parking on an endpoint nobody is receiving on.
                 if q.push(arg) {
                     buffered += 1;
-                    reply(slot, swap::ACCEPTED, q.count as u64);
+                    reply(slot, swap_proto::ACCEPTED, q.count as u64);
                 } else {
-                    reply(slot, swap::QUEUE_FULL, q.count as u64);
+                    reply(slot, swap_proto::QUEUE_FULL, q.count as u64);
                 }
             }
-            swap::BOP_DOWN => {
+            swap_proto::BOP_DOWN => {
                 up = false;
                 reply(slot, 0, q.count as u64);
             }
-            swap::BOP_UP => {
+            swap_proto::BOP_UP => {
                 // Drain in arrival order, before answering the operator, so "the broker is up
                 // again" and "the backlog is delivered" are the same event as far as anyone
                 // watching this endpoint is concerned.
                 let mut drained = 0u64;
                 while let Some(item) = q.pop() {
-                    let _ = call(BACK, swap::OP_PUT, item);
+                    let _ = call(BACK, swap_proto::OP_PUT, item);
                     drained += 1;
                 }
                 up = true;
-                send(RPT, swap::RPT_DRAINED, drained, buffered);
+                send(RPT, swap_proto::RPT_DRAINED, drained, buffered);
                 reply(slot, 0, drained);
             }
-            swap::OP_QUIESCE => {
-                send(RPT, swap::RPT_QUIESCED, 0, buffered);
-                reply(slot, swap::QUIESCED, buffered);
-                send(NOTE, swap::NOTE_BROKER_DONE, buffered, 0);
+            swap_proto::OP_QUIESCE => {
+                send(RPT, swap_proto::RPT_QUIESCED, 0, buffered);
+                reply(slot, swap_proto::QUIESCED, buffered);
+                send(NOTE, swap_proto::NOTE_BROKER_DONE, buffered, 0);
                 user_rt::exit()
             }
             _ => {
-                reply(slot, swap::BAD_REQUEST, 0);
+                reply(slot, swap_proto::BAD_REQUEST, 0);
             }
         }
     }
@@ -154,5 +151,5 @@ pub extern "C" fn _start(_a0: u64, _a1: u64, _a2: u64) -> ! {
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
-    swap::fail()
+    swap_proto::fail()
 }

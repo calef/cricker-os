@@ -32,11 +32,8 @@ use user_rt::{cap_delete, recv, send};
 // Each binary in the tree compiles the shared module but uses a different slice of it (the sub-server
 // builds nothing, the supervisor holds no memory), so the unused halves are expected, not dead. This
 // is the one shape where a blanket allow is the honest one: no single binary uses all of it (§38).
-#[path = "suptree.rs"]
-#[allow(dead_code)]
-mod suptree;
 
-use suptree::{Endow, REP_BUILT, REP_FAILED, REQ_BUILD};
+use supervision_proto::{Endow, REP_BUILT, REP_FAILED, REQ_BUILD};
 
 /// The capabilities rootsup endowed us with, in order.
 const REQ: u64 = 0; // READ: build/reap requests arrive here
@@ -57,7 +54,7 @@ pub extern "C" fn _start(_a0: u64, image_len: u64, _a2: u64) -> ! {
     // SAFETY: rootsup mapped `image_len` bytes of program image read-only at IMAGE_VA.
     let image = unsafe { core::slice::from_raw_parts(IMAGE_VA as *const u8, image_len as usize) };
     let Ok(elf) = elf::Elf::parse(image) else {
-        suptree::fail()
+        supervision_proto::fail()
     };
 
     loop {
@@ -82,10 +79,10 @@ pub extern "C" fn _start(_a0: u64, image_len: u64, _a2: u64) -> ! {
 /// reap either. The supervisor collects the corpse through its supervision endpoint, and these pages
 /// come back to this budget when it does.
 fn build(elf: &elf::Elf, attempt: u64) -> bool {
-    let Ok(region) = suptree::untyped_split(BUDGET, INSTANCE_PAGES) else {
+    let Ok(region) = supervision_proto::untyped_split(BUDGET, INSTANCE_PAGES) else {
         return false;
     };
-    let Ok(tcb) = suptree::build_child(
+    let Ok(tcb) = supervision_proto::build_child(
         BUDGET,
         region,
         elf,
@@ -98,7 +95,7 @@ fn build(elf: &elf::Elf, attempt: u64) -> bool {
     ) else {
         return false;
     };
-    if !suptree::tcb_start(tcb, 0, attempt, 0) {
+    if !supervision_proto::tcb_start(tcb, 0, attempt, 0) {
         return false;
     }
     cap_delete(tcb);
@@ -108,5 +105,5 @@ fn build(elf: &elf::Elf, attempt: u64) -> bool {
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
-    suptree::fail()
+    supervision_proto::fail()
 }

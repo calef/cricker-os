@@ -22,9 +22,6 @@
 // A source file shared by several binaries through `#[path]`, and each uses a different slice of it,
 // so the unused halves are expected. This is the one shape where a blanket allow is the honest one:
 // the module is compiled once per binary and no single binary is meant to use all of it (§38).
-#[path = "swap.rs"]
-#[allow(dead_code)]
-mod swap;
 
 /// `a0` says whether the operator endowed us with a device, and `a1` where our entries start in the
 /// shared witness page. Both come from the operator, because both are facts about the wiring rather
@@ -32,10 +29,10 @@ mod swap;
 /// queue broker does not, and neither can tell by looking.
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(device: u64, log_base: u64, _a2: u64) -> ! {
-    swap::serve(swap::V1, swap::digest, log_base, device != 0)
+    swap_proto::serve(swap_proto::V1, swap_proto::digest, log_base, device != 0)
 }
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
-    swap::fail()
+    swap_proto::fail()
 }
