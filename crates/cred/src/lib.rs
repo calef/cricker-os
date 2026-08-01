@@ -160,7 +160,7 @@ impl Cost {
         if p == 0 || p > MAX_P_COST || t == 0 {
             return None;
         }
-        if m_kib < MIN_M_COST || m_kib > Self::MAX_M_KIB {
+        if !(MIN_M_COST..=Self::MAX_M_KIB).contains(&m_kib) {
             return None;
         }
         // Safe now: `p <= 2^24 - 1`, so `p * 8` cannot overflow a u32.
@@ -578,9 +578,8 @@ mod tests {
             .build()
             .unwrap();
         let mut scratch = vec![Block::default(); params.block_count()];
-        let ctx =
-            Argon2::new_with_secret(&[0x03; 8], Algorithm::Argon2id, Version::V0x13, params)
-                .unwrap();
+        let ctx = Argon2::new_with_secret(&[0x03; 8], Algorithm::Argon2id, Version::V0x13, params)
+            .unwrap();
         let mut out = [0u8; 32];
         ctx.hash_password_into_with_memory(&[0x01; 32], &[0x02; 16], &mut out, &mut scratch)
             .unwrap();
@@ -737,7 +736,8 @@ mod tests {
         let mut mem = scratch(cost);
         let mut s = Store::<3>::new(cost, [7u8; SALT_LEN], [9u8; TAG_LEN]);
         for (i, name) in [&b"one"[..], b"two", b"three"].iter().enumerate() {
-            s.put(name, b"secret", [i as u8; SALT_LEN], &mut mem).unwrap();
+            s.put(name, b"secret", [i as u8; SALT_LEN], &mut mem)
+                .unwrap();
         }
         for name in [&b"one"[..], b"two", b"three"] {
             assert!(bool::from(s.select(name).found), "{name:?}");
@@ -759,7 +759,10 @@ mod tests {
         );
         s.put(b"b", b"s", [3u8; SALT_LEN], &mut mem).unwrap();
         assert_eq!(s.len(), 2);
-        assert_eq!(s.put(b"c", b"s", [4u8; SALT_LEN], &mut mem), Err(Error::Full));
+        assert_eq!(
+            s.put(b"c", b"s", [4u8; SALT_LEN], &mut mem),
+            Err(Error::Full)
+        );
     }
 
     #[test]
@@ -789,7 +792,10 @@ mod tests {
         assert!(Cost::new(1024, 0, 1).is_none(), "zero passes");
         assert!(Cost::new(1024, 1, 0).is_none(), "zero lanes");
         assert!(Cost::new(4, 1, 1).is_none(), "below Argon2's 8 KiB minimum");
-        assert!(Cost::new(1024, 1, 1024).is_none(), "m_cost below 8 * p_cost");
+        assert!(
+            Cost::new(1024, 1, 1024).is_none(),
+            "m_cost below 8 * p_cost"
+        );
         assert!(Cost::new(1024, 1, 1).is_some());
         assert!(Cost::DEFAULT.blocks() >= Cost::DEFAULT.m_kib() as usize - 4);
     }
@@ -850,8 +856,14 @@ mod tests {
         let mut s = Store::<1>::new(cost, [0u8; SALT_LEN], [0u8; TAG_LEN]);
         s.records[0] = back;
         s.used = 1;
-        assert_eq!(s.verify(b"chris", b"secret", &mut mem).unwrap(), Verdict::Match);
-        assert_eq!(s.verify(b"chris", b"wrong", &mut mem).unwrap(), Verdict::Mismatch);
+        assert_eq!(
+            s.verify(b"chris", b"secret", &mut mem).unwrap(),
+            Verdict::Match
+        );
+        assert_eq!(
+            s.verify(b"chris", b"wrong", &mut mem).unwrap(),
+            Verdict::Mismatch
+        );
     }
 
     /// **Every single-byte corruption is rejected or changes the record**, which is the strong

@@ -5050,6 +5050,548 @@ mod entropy_tests {
     }
 }
 
+/// **The credential service, its provisioner, and its clients** (milestone 56, the credential half;
+/// notes/credentials.md).
+///
+/// The kernel's part is the wiring, and here more than anywhere the wiring *is* the argument. Four
+/// processes, and the difference between three of them is one field of a `Spawn` literal:
+///
+/// | process | slot 0 | what that means |
+/// |---|---|---|
+/// | `credential` | the provision endpoint (READ) **and** the verify endpoint (READ, slot 1) | holds the store |
+/// | `credcli` provisioner | the **provision** endpoint (WRITE) | may write the store, until the seal |
+/// | `credcli` client | the **verify** endpoint (WRITE) | may ask a question about the store |
+/// | `credcli` attacker | the **verify** endpoint (WRITE) | the identical endowment, used otherwise |
+///
+/// The kernel never sees a secret, holds no store, and computes no hash. It creates two endpoints,
+/// two frames, and a budget, and hands each process a different subset. Everything after the spawn
+/// is userspace agreeing with userspace over `cred_proto`.
+///
+/// **Two frames and not one**, which is the detail worth stating: the provisioner writes plaintext
+/// secrets into its page, so a client sharing that frame would read them. The two pages are
+/// separate physical frames and neither process is ever given the other's.
+///
+/// Arch-neutral: one portable binary each, both ISAs (DECISIONS §19). Argon2id is arithmetic on
+/// `u64`s and neither the service nor its clients contain a line of assembly.
+#[cfg_attr(not(test), allow(dead_code))] // the milestone-56 credential tests are its callers
+pub mod credential_service {
+    use super::*;
+    use crate::cap::{Rights, endpoint_cap, untyped_cap};
+    use crate::sched::EpId;
+
+    /// Where the service maps the provisioner's page. Must match user/src/credential.rs.
+    const PROV_VA: u64 = 0x0000_0000_00e0_0000;
+    /// Where the service and a client map the verify page. Must match both programs.
+    const VERIFY_VA: u64 = 0x0000_0000_00e1_0000;
+
+    /// The service's untyped budget, in pages: 6 MiB. It pays for one thing, the Argon2id scratch,
+    /// which is `cred::Cost::DEFAULT.blocks()` KiB (4 MiB today), plus the page tables that map it
+    /// and the allocator's slack. Sized from the cost parameter rather than guessed, so raising the
+    /// cost is a change in two places that fail loudly together rather than one that fails at run
+    /// time under load.
+    const CRED_BUDGET_PAGES: u64 = 1536;
+
+    /// Extra stack pages for the service, and this is a **measured** number rather than a cautious
+    /// one: with the default single page the service takes a data abort at `0x4fff00`, 256 bytes
+    /// below the stack, on its first derivation. Argon2's inner loop copies whole 1 KiB `Block`s
+    /// through locals (`block_r`, `block_tmp` in `fill_block`), so one page is not close to enough
+    /// and no amount of care in *our* code would have made it enough. The net server takes 8 pages
+    /// for smoltcp for the same kind of reason; this takes 16, because a KDF that overflows its
+    /// stack fails as a killed process on every login rather than as a bad answer, and the pages
+    /// are cheap next to the 4 MiB the scratch already costs.
+    const CRED_STACK_PAGES: u64 = 16;
+
+    /// The clients' budgets. A `credcli` role holds no untyped at all: it maps one page the wiring
+    /// placed and calls one endpoint. There is nothing for it to build.
+    ///
+    /// This constant does not exist. The absence is the point, and it is written down because a
+    /// reader looking for "what memory does the attacker get" should find the answer rather than
+    /// conclude it was overlooked.
+    const _NO_CLIENT_BUDGET: () = ();
+
+    /// The `credcli` roles; must match user/src/credcli.rs.
+    pub const ROLE_HONEST: u64 = 0;
+    pub const ROLE_ATTACKER: u64 = 1;
+    pub const ROLE_PROVISIONER: u64 = 2;
+
+    /// The report words `credcli` and the service send, likewise.
+    pub const RPT_DONE: u64 = 0x_c2ed_c11e_0000_0001;
+    pub const RPT_READY: u64 = 0x_c2ed_0000_0000_0001;
+
+    /// A running credential service and the endpoints that reach it.
+    pub struct Wiring {
+        /// The service's readiness endpoint. It reports **after** the seal, so receiving on this is
+        /// also how a caller knows provisioning is over.
+        pub ready: EpId,
+        /// The verify endpoint. This is what a client is given, with WRITE.
+        pub verify: EpId,
+        /// The provision endpoint. Held here only so the provisioner can be spawned against it;
+        /// after the seal, the service has deleted its receive end and a `CALL` here would block
+        /// forever, which is why nothing sends on it afterwards.
+        pub provision: EpId,
+    }
+
+    /// **Wire and spawn the credential service.** It blocks on its provision endpoint immediately,
+    /// so nothing happens until [`provisioner`] runs.
+    ///
+    /// `entropy` is the entropy service's request endpoint (DECISIONS §44). It is not optional: a
+    /// credential service that cannot draw a salt refuses to start, and passing it a dead endpoint
+    /// is how that path gets tested.
+    pub fn start(image: &'static [u8], entropy: EpId) -> Wiring {
+        let provision = crate::sched::create_endpoint();
+        let verify = crate::sched::create_endpoint();
+        let ready = crate::sched::create_endpoint();
+        let budget =
+            crate::untyped::create(CRED_BUDGET_PAGES).expect("no untyped for the credential store");
+
+        // The two shared pages, then the extra stack, in one array the spawn closure owns.
+        let mut maps = [Mapping {
+            va: 0,
+            phys: 0,
+            flags: Flags::user_data(),
+        }; CRED_STACK_PAGES as usize + 2];
+        maps[0] = Mapping {
+            va: PROV_VA,
+            phys: frame(),
+            flags: Flags::user_data(),
+        };
+        maps[1] = Mapping {
+            va: VERIFY_VA,
+            phys: frame(),
+            flags: Flags::user_data(),
+        };
+        for k in 0..CRED_STACK_PAGES as usize {
+            let phys = crate::memory::alloc()
+                .expect("no frame for the credential service's stack")
+                .addr();
+            // SAFETY: fresh frame via the direct map; zero it so the process starts clean, which
+            // for this process also means it does not start with somebody else's bytes where its
+            // key material will go.
+            unsafe {
+                core::ptr::write_bytes(mmu::phys_to_virt(phys) as *mut u8, 0, FRAME_SIZE as usize);
+            }
+            maps[k + 2] = Mapping {
+                va: USER_STACK_VA - (k as u64 + 1) * FRAME_SIZE,
+                phys,
+                flags: Flags::user_data(),
+            };
+        }
+        crate::sched::spawn(move || {
+            run(
+                image,
+                Spawn {
+                    arg0: 0,
+                    arg1: 0, // no physical address: this process touches no device
+                    arg2: 0,
+                    grants: &[
+                        endpoint_cap(provision, Rights::READ), // slot 0: write the store, until SEAL
+                        endpoint_cap(verify, Rights::READ),    // slot 1: answer questions, forever
+                        endpoint_cap(entropy, Rights::WRITE),  // slot 2: salts, naming no device
+                        untyped_cap(budget),                   // slot 3: the memory-hard scratch
+                        endpoint_cap(ready, Rights::WRITE), // slot 4: one message, after the seal
+                    ],
+                    maps: &maps,
+                },
+            )
+        })
+        .expect("could not spawn the credential service");
+
+        Wiring {
+            ready,
+            verify,
+            provision,
+        }
+    }
+
+    /// **Spawn the provisioner** and wait for its report. It fills the store and seals it, so when
+    /// this returns the service is in phase two and the provision endpoint is dead at both ends.
+    ///
+    /// Its endowment is the provision endpoint, a report endpoint, and the provisioner's page. It
+    /// holds no verify endpoint, which is the mirror of the client's position: neither party can do
+    /// the other's job, and neither is prevented from it by a check.
+    pub fn provisioner(image: &'static [u8], w: &Wiring) -> [u64; 5] {
+        spawn_cli(image, ROLE_PROVISIONER, w.provision, PROV_VA)
+    }
+
+    /// **Spawn a client** in `role` against the verify endpoint, and wait for its report.
+    pub fn client(image: &'static [u8], w: &Wiring, role: u64) -> [u64; 5] {
+        spawn_cli(image, role, w.verify, VERIFY_VA)
+    }
+
+    /// The one spawn site the three `credcli` roles share, because the whole claim is that they
+    /// differ in their endowment and not in their code. Changing `endpoint` and `va` here is the
+    /// entire difference between a provisioner and an attacker.
+    fn spawn_cli(image: &'static [u8], role: u64, endpoint: EpId, va: u64) -> [u64; 5] {
+        let report = crate::sched::create_endpoint();
+        let maps = [Mapping {
+            va,
+            phys: page_for(va),
+            flags: Flags::user_data(),
+        }];
+        crate::sched::spawn(move || {
+            run(
+                image,
+                Spawn {
+                    arg0: role,
+                    arg1: 0,
+                    arg2: 0,
+                    grants: &[
+                        endpoint_cap(endpoint, Rights::WRITE), // slot 0: the service
+                        endpoint_cap(report, Rights::WRITE),   // slot 1: say what happened
+                    ],
+                    maps: &maps,
+                },
+            )
+        })
+        .expect("could not spawn a credential client");
+        crate::sched::ipc_recv(report)
+    }
+
+    /// The two shared frames, allocated once and remembered, because the service and its
+    /// counterparty must map the **same** physical frame and the spawns happen at different times.
+    ///
+    /// Plain atomics rather than a lock: the only writer is the boot/test thread.
+    static FRAMES: [core::sync::atomic::AtomicU64; 2] = [
+        core::sync::atomic::AtomicU64::new(0),
+        core::sync::atomic::AtomicU64::new(0),
+    ];
+
+    /// Allocate the next shared frame, in the order the service's `maps` array wants them.
+    fn frame() -> u64 {
+        use core::sync::atomic::Ordering;
+        let i = usize::from(FRAMES[0].load(Ordering::Acquire) != 0);
+        let phys = crate::memory::alloc()
+            .expect("no frame for a credential page")
+            .addr();
+        // SAFETY: a fresh frame, direct-mapped, owned by nobody else. Zeroed so a client's first
+        // look at the page cannot find somebody else's memory, which for this contract would mean
+        // finding it where a secret is supposed to go.
+        unsafe {
+            core::ptr::write_bytes(mmu::phys_to_virt(phys) as *mut u8, 0, FRAME_SIZE as usize);
+        }
+        // Release: the frame must be zeroed before another thread can observe the pointer to it.
+        FRAMES[i].store(phys, Ordering::Release);
+        phys
+    }
+
+    /// Which frame backs a given virtual address, for the counterparty's mapping.
+    fn page_for(va: u64) -> u64 {
+        use core::sync::atomic::Ordering;
+        let i = usize::from(va == VERIFY_VA);
+        let phys = FRAMES[i].load(Ordering::Acquire);
+        assert_ne!(
+            phys, 0,
+            "the credential service was not wired before a client"
+        );
+        phys
+    }
+
+    /// Read the shared frame behind `va` directly, which is a thing only the kernel can do and is
+    /// how a test checks a claim about what is *not* in a page.
+    pub fn peek(va: u64, out: &mut [u8]) {
+        use core::sync::atomic::Ordering;
+        let i = usize::from(va == VERIFY_VA);
+        let phys = FRAMES[i].load(Ordering::Acquire);
+        // SAFETY: a frame this module allocated and still owns, read through the direct map.
+        let page = unsafe {
+            core::slice::from_raw_parts(mmu::phys_to_virt(phys) as *const u8, FRAME_SIZE as usize)
+        };
+        let n = out.len().min(page.len());
+        out[..n].copy_from_slice(&page[..n]);
+    }
+
+    /// The verify page's address, for a test that wants to look at it.
+    pub const fn verify_page_va() -> u64 {
+        VERIFY_VA
+    }
+
+    /// Unpack the `k`th reply code from a `credcli` report's second word. One byte per code; see
+    /// user/src/credcli.rs `Codes`.
+    pub const fn nth(packed: u64, k: u32) -> u64 {
+        (packed >> (8 * k)) & 0xff
+    }
+}
+
+/// **A secret you can check and cannot read** (milestone 56, the credential half).
+///
+/// Not arch-gated: the same binaries, the same contract, the same assertions on aarch64 and
+/// riscv64, because a credential store that authenticates on one instruction set is not a
+/// credential store (§19).
+///
+/// What these prove that nothing else would:
+///
+/// - that a **userspace** client with one endpoint and no store gets a correct yes/no over a real
+///   Argon2id verification, with the salt drawn from a real virtio-rng;
+/// - that the **identical endowment**, used by a program that wants to write the store instead of
+///   reading it, cannot;
+/// - that the frame a client shares with the service holds **nothing** after the answer, which is
+///   the strongest form of "the reply carried no data" that a test can check.
+#[cfg(test)]
+mod credential_tests {
+    use super::*;
+    use credential_service as cs;
+
+    /// Wire the whole system once: the entropy service, the credential service, and the
+    /// provisioner that fills and seals the store. Returns the wiring, the provisioner's report,
+    /// and the service's readiness report.
+    ///
+    /// Once per boot, because the seal is irreversible: a second provisioner would `CALL` an
+    /// endpoint whose receiver is gone and block forever, which is the correct behaviour and a
+    /// terrible test.
+    ///
+    /// **The readiness message is taken here and not in the test that asserts on it**, which cost a
+    /// hang to learn. A `SEND` on this kernel's endpoints is a rendezvous: it blocks until somebody
+    /// receives. The credential service sends its readiness word between the seal and the serve
+    /// loop, so a test that let a client `CALL` before draining that message would find a service
+    /// that had not reached its serve loop, and the whole boot would deadlock with a sender and a
+    /// caller both waiting on nobody. The entropy service does not show this because its wiring
+    /// receives immediately.
+    fn provisioned() -> (cs::Wiring, [u64; 3], [u64; 3]) {
+        use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+        // Plain atomics rather than a lock or a `Once`: the only writer is the test thread, and
+        // the tree's `spin` is built without the `once` feature. Release/Acquire on `DONE` is what
+        // publishes the nine words next to it (rule 4: assume weak ordering).
+        static DONE: AtomicBool = AtomicBool::new(false);
+        #[allow(clippy::declare_interior_mutable_const)]
+        const ZERO: AtomicU64 = AtomicU64::new(0);
+        static SAVED: [AtomicU64; 9] = [ZERO; 9];
+
+        if !DONE.load(Ordering::Acquire) {
+            let rng = program("entropy").expect("no entropy program in the initrd archive");
+            let e = entropy_service::ensure(rng, entropy_service::Bus::Mmio)
+                .expect("no virtio-rng device on the mmio bus");
+            if let Some(r) = e.await_ready() {
+                assert_eq!(
+                    r[0],
+                    entropy_proto::READY,
+                    "the entropy service did not come up, so no salt could be drawn",
+                );
+            }
+            let svc = program("credential").expect("no credential program in the initrd archive");
+            let cli = program("credcli").expect("no credcli program in the initrd archive");
+            let w = cs::start(svc, e.request);
+            let report = cs::provisioner(cli, &w);
+            let ready = crate::sched::ipc_recv(w.ready);
+            for (slot, v) in SAVED.iter().zip([
+                w.ready,
+                w.verify,
+                w.provision,
+                report[0],
+                report[1],
+                report[2],
+                ready[0],
+                ready[1],
+                ready[2],
+            ]) {
+                slot.store(v, Ordering::Relaxed);
+            }
+            DONE.store(true, Ordering::Release);
+        }
+        let v = |i: usize| SAVED[i].load(Ordering::Relaxed);
+        (
+            cs::Wiring {
+                ready: v(0),
+                verify: v(1),
+                provision: v(2),
+            },
+            [v(3), v(4), v(5)],
+            [v(6), v(7), v(8)],
+        )
+    }
+
+    /// **Phase one lands, and the store's capacity is real.** Three identities go in, the fourth is
+    /// refused with `FULL` rather than quietly replacing somebody, and the seal is accepted.
+    ///
+    /// The service's own readiness message is checked here too, because it is sent *after* the
+    /// seal: receiving it is the kernel's evidence that the provisioning loop was left, not merely
+    /// that a `SEAL` was answered.
+    #[test_case]
+    fn provisioning_fills_the_store_and_the_seal_closes_it() {
+        let (_, report, ready) = provisioned();
+        assert_eq!(report[0], cs::RPT_DONE, "the provisioner did not report");
+        let codes = report[1];
+        for k in 0..3 {
+            assert_eq!(
+                cs::nth(codes, k),
+                cred_proto::OK,
+                "identity {k} was not stored (reply {}), codes {codes:#018x}",
+                cs::nth(codes, k),
+            );
+        }
+        assert_eq!(
+            cs::nth(codes, 3),
+            cred_proto::FULL,
+            "a fourth identity in a three-slot store must be refused, not silently accepted",
+        );
+        assert_eq!(
+            cs::nth(codes, 4),
+            cred_proto::OK,
+            "the seal was not accepted"
+        );
+        assert_eq!(
+            report[2], 1,
+            "the provisioner's page still held bytes after the seal: a plaintext secret survived \
+             in a frame the provisioner maps",
+        );
+
+        assert_eq!(
+            ready[0],
+            cs::RPT_READY,
+            "the credential service did not reach phase two (it reported {:#x}; a 0xDEAD_.. word's \
+             low byte names the step, see user/src/credential.rs)",
+            ready[0],
+        );
+        assert_eq!(
+            ready[1], 3,
+            "the sealed store does not hold three identities"
+        );
+        assert!(
+            ready[2] >= 1024,
+            "the wired Argon2id cost is {} KiB, which is not memory-hard in any useful sense",
+            ready[2],
+        );
+    }
+
+    /// **The headline.** A userspace client holding one endpoint, no store, no entropy and no
+    /// budget gets the right answer to four questions: the right secret, the wrong secret, an
+    /// identity nobody provisioned, and one person's password against another person's account.
+    ///
+    /// The last two are one assertion in spirit and two in fact, because they are the failures that
+    /// look alike from outside and come from different bugs: a lookup that ignores the identity,
+    /// and a comparison that ignores the pairing.
+    #[test_case]
+    fn a_client_gets_a_correct_yes_or_no_and_nothing_else() {
+        let (w, _, _) = provisioned();
+        let cli = program("credcli").expect("no credcli program in the initrd archive");
+        let r = cs::client(cli, &w, cs::ROLE_HONEST);
+        assert_eq!(r[0], cs::RPT_DONE, "the client did not report");
+        let codes = r[1];
+        assert_eq!(
+            cs::nth(codes, 0),
+            cred_proto::MATCH,
+            "the right secret for a provisioned identity was refused, codes {codes:#018x}",
+        );
+        assert_eq!(
+            cs::nth(codes, 1),
+            cred_proto::MISMATCH,
+            "the wrong secret was accepted, codes {codes:#018x}",
+        );
+        assert_eq!(
+            cs::nth(codes, 2),
+            cred_proto::MISMATCH,
+            "an identity nobody provisioned was accepted, codes {codes:#018x}",
+        );
+        assert_eq!(
+            cs::nth(codes, 3),
+            cred_proto::MISMATCH,
+            "one identity's secret opened another's account, codes {codes:#018x}",
+        );
+        assert_eq!(
+            r[2], 1,
+            "the shared page was not empty after the last reply: either the client's presented \
+             secret or something of the store's is still sitting in a frame two processes map",
+        );
+    }
+
+    /// **The same endowment, used to attack.** The attacker holds exactly what the honest client
+    /// holds, and tries to write the store through it: `PUT`, `SEAL`, an undefined opcode, and a
+    /// request whose lengths are outside the contract. Every one is refused, and the credential it
+    /// tried to install does not work.
+    ///
+    /// It is refused because there is nothing to refuse: the provision endpoint was deleted at both
+    /// ends before this program was spawned, so `PUT` here is not a privileged request arriving at
+    /// a guard, it is a word arriving at a loop that implements one opcode.
+    #[test_case]
+    fn the_same_endowment_cannot_write_the_store() {
+        let (w, _, _) = provisioned();
+        let cli = program("credcli").expect("no credcli program in the initrd archive");
+        let r = cs::client(cli, &w, cs::ROLE_ATTACKER);
+        assert_eq!(r[0], cs::RPT_DONE, "the attacker did not report");
+        let codes = r[1];
+
+        // **`PUT` gets MISMATCH, not MALFORMED, and that is the model working.** `provision::PUT`
+        // and `verify::VERIFY` are both opcode 1: the two spaces are independent because the
+        // *endpoint* gives a number its meaning. So what the attacker actually sent was a verify of
+        // an identity and a secret, and the honest answer is no. There was never a privileged
+        // request to refuse. This assertion was written expecting MALFORMED and the machine
+        // corrected it, which is worth recording here rather than quietly renumbering the opcodes
+        // to make the mistake more legible: renumbering would imply the service distinguishes a
+        // forbidden opcode from an unknown one, and it does not.
+        assert_eq!(
+            cs::nth(codes, 0),
+            cred_proto::MISMATCH,
+            "a PUT on the verify endpoint is a verify of an identity nobody provisioned, so the \
+             answer must be MISMATCH; codes {codes:#018x}",
+        );
+        for (k, what) in [
+            (1, "SEAL"),
+            (2, "an undefined opcode"),
+            (3, "a request with lengths outside the contract"),
+        ] {
+            assert_eq!(
+                cs::nth(codes, k),
+                cred_proto::MALFORMED,
+                "{what} on the verify endpoint was answered {} rather than MALFORMED, codes \
+                 {codes:#018x}",
+                cs::nth(codes, k),
+            );
+        }
+        assert_eq!(
+            cs::nth(codes, 4),
+            cred_proto::MISMATCH,
+            "the attacker installed a working credential for itself, codes {codes:#018x}",
+        );
+        assert_eq!(r[2], 1, "the attacker left bytes in the shared page");
+    }
+
+    /// **The service kept serving.** Every refusal above must be a reply, not a crash: a credential
+    /// service that a malformed request can kill is a login outage anybody can cause, and it is the
+    /// exact shape of the `argon2` cost-overflow panic `cred::Cost::new` exists to prevent.
+    #[test_case]
+    fn the_service_survives_everything_the_attacker_did() {
+        let (w, _, _) = provisioned();
+        let cli = program("credcli").expect("no credcli program in the initrd archive");
+        let _ = cs::client(cli, &w, cs::ROLE_ATTACKER);
+        let r = cs::client(cli, &w, cs::ROLE_HONEST);
+        assert_eq!(
+            cs::nth(r[1], 0),
+            cred_proto::MATCH,
+            "the credential service stopped answering correctly after an attacker talked to it",
+        );
+    }
+
+    /// **The kernel looks at the frame itself.** The client asserted the page was clean; this
+    /// reads the physical frame through the direct map, which no userspace program could do, and
+    /// checks that the shared page carries neither the secret that was presented nor any nonzero
+    /// byte at all.
+    ///
+    /// Checking for the literal secret as well as for zero is not redundant. "All zero" is the
+    /// property that holds today; "does not contain the secret" is the property that must hold if
+    /// the wipe is ever narrowed, and a test that only checked the first would go green on a
+    /// change that broke the second.
+    #[test_case]
+    fn the_shared_frame_holds_nothing_after_an_answer() {
+        let (w, _, _) = provisioned();
+        let cli = program("credcli").expect("no credcli program in the initrd archive");
+        let _ = cs::client(cli, &w, cs::ROLE_HONEST);
+
+        let mut page = [0u8; 4096];
+        cs::peek(cs::verify_page_va(), &mut page);
+        let secret = b"correct horse battery staple";
+        assert!(
+            !page.windows(secret.len()).any(|s| s == secret),
+            "the presented secret is still in the frame the client and the service share",
+        );
+        if let Some(i) = page.iter().position(|&b| b != 0) {
+            panic!(
+                "byte {i} of the shared frame is {:#04x} after the exchange: the service left \
+                 something in a page a client maps",
+                page[i],
+            );
+        }
+    }
+}
+
 /// **The NTP client, and the test server that answers it** (milestone 51; DECISIONS §43, §44).
 ///
 /// The kernel's part is the wiring, and the wiring *is* the argument. An NTP client here gets five

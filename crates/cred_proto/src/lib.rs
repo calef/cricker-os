@@ -29,6 +29,22 @@
 //! was given anything. That is the same attenuation-by-operation the clock's propose endpoint and
 //! the entropy service's request endpoint are: a smaller *object*, not a flag on a bigger one.
 //!
+//! # An opcode is not an authority
+//!
+//! [`provision::PUT`] and [`verify::VERIFY`] are **both opcode 1**, and that is deliberate rather
+//! than an oversight to be tidied away. The two opcode spaces are independent because **the
+//! endpoint gives a number its meaning, not the number itself**: a request is interpreted by
+//! whichever serve loop received it, and a client cannot choose which one that is.
+//!
+//! The consequence is worth seeing, because it is the model working. A program holding the verify
+//! endpoint that sends `PUT` does not get "permission denied". It gets [`MISMATCH`], because what
+//! it actually sent was a verify of an identity and a secret, and the honest answer to that
+//! question is no. There was never a privileged request to refuse.
+//!
+//! Renumbering the two spaces apart would make an attacker's mistake more legible in a log, and it
+//! would also be a small lie: it would imply the service distinguishes a forbidden opcode from an
+//! unknown one, and that distinction is exactly what this design does not have and does not want.
+//!
 //! # The reply never carries data
 //!
 //! Every reply here is **one word, and the second word is always zero** ([`NO_DATA`]). Not as a
@@ -108,9 +124,16 @@ pub const MISMATCH: u64 = 3;
 pub const MALFORMED: u64 = 4;
 /// A `PUT` with no slot left. Provisioning only.
 pub const FULL: u64 = 5;
+/// **The service could not obtain a salt** and therefore did not store anything. Provisioning
+/// only, and it is a distinct code rather than folded into [`MALFORMED`] because the two need
+/// different responses: a malformed request is the provisioner's bug, and this is the machine
+/// telling you it has no unpredictable bits. Serving the request anyway, with a salt the service
+/// made up, is the silent degradation DECISIONS §42 forbids, and it would be invisible: every
+/// login would keep working and the whole store would be one rainbow table wide.
+pub const NO_ENTROPY: u64 = 6;
 
 /// The largest reply code. Everything at or below this is a reply; see [`code`].
-pub const MAX_CODE: u64 = FULL;
+pub const MAX_CODE: u64 = NO_ENTROPY;
 
 /// Build a request's first word: the opcode, the identity's length, and the secret's length.
 ///
@@ -171,10 +194,7 @@ pub fn read(page: &[u8], w0: u64) -> Option<(&[u8], &[u8])> {
     if page.len() < SECRET_OFF + MAX_SECRET {
         return None;
     }
-    Some((
-        &page[ID_OFF..ID_OFF + i],
-        &page[SECRET_OFF..SECRET_OFF + s],
-    ))
+    Some((&page[ID_OFF..ID_OFF + i], &page[SECRET_OFF..SECRET_OFF + s]))
 }
 
 /// **Zero the request area of a shared page.** The service calls this after every request it
@@ -247,8 +267,13 @@ mod tests {
     #[test]
     fn a_second_request_leaves_nothing_of_the_first() {
         let mut page = [0u8; PAGE];
-        place(&mut page, b"a-very-long-identity-name", b"a-long-secret-value", verify::VERIFY)
-            .unwrap();
+        place(
+            &mut page,
+            b"a-very-long-identity-name",
+            b"a-long-secret-value",
+            verify::VERIFY,
+        )
+        .unwrap();
         let w = place(&mut page, b"cd", b"ef", verify::VERIFY).unwrap();
         let (id, secret) = read(&page, w).unwrap();
         assert_eq!(id, b"cd");
@@ -303,7 +328,15 @@ mod tests {
         let mut page = [0u8; PAGE];
         assert!(place(&mut page, &[b'x'; MAX_IDENTITY + 1], b"s", verify::VERIFY).is_none());
         assert!(place(&mut page, b"i", &[b'x'; MAX_SECRET + 1], verify::VERIFY).is_none());
-        assert!(place(&mut page, &[b'x'; MAX_IDENTITY], &[b'x'; MAX_SECRET], verify::VERIFY).is_some());
+        assert!(
+            place(
+                &mut page,
+                &[b'x'; MAX_IDENTITY],
+                &[b'x'; MAX_SECRET],
+                verify::VERIFY
+            )
+            .is_some()
+        );
     }
 
     #[test]

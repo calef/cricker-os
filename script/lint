@@ -184,7 +184,10 @@ echo "==> naming conventions"
 #    end in `d` go in the allow-list WITH a reason, the same shape as a per-item `#[allow]`.
 #
 #    Allowed: `asid` is Address Space IDentifier, the aarch64/RISC-V hardware term (notes/asids.md).
-naming_allow=" asid "
+#    Allowed: `cred` is the abbreviation of "credential", the same shortening `kbd` is of "keyboard".
+#    The thing it names is a store and a verifier, not a long-running process; the long-running
+#    process that holds one is spelled out in full, as `credential` (notes/credentials.md).
+naming_allow=" asid cred "
 named_for_a_daemon=""
 for name in \
     $(ls "$(dirname "$0")/../user/src" | sed 's/\.rs$//') \
