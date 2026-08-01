@@ -88,11 +88,25 @@ nothing needs. Crates are not in the archive and are unbounded.
 
 ## Crates
 
-`crates/` holds three audiences under one directory: kernel proof crates (`caps`, `paging`, `frames`,
-`regions`, `slots`, `asid`, `intrusive`, `dtb`, `elf`, `dma_validate`, `measure`, `uheap`), wire
-contracts (`fs_proto`, `gfx_proto`, `lineedit`, `compose`, `abi`), and userspace runtime (`user_rt`,
-`capsh`, `crickerfs`, `pci`, `vt`, `bitfont`). Naming does not currently distinguish them, and that
+`crates/` holds four audiences under one directory, and **naming does not distinguish them**, which
 is a known gap rather than a decision.
+
+- **Kernel logic**, host-tested and Kani-reachable: `caps`, `paging`, `frames`, `regions`, `slots`,
+  `asid`, `intrusive`, `ipc`, `dma_validate`, `measure`, `uheap`.
+- **Wire contracts**, spelled `*_proto` and checked for it by `script/lint`: `fs_proto`,
+  `socket_proto`, `sink_proto`, `cred_proto`, `clock_proto`, `entropy_proto`, `gfx_proto`,
+  `ntp_proto`, `supervision_proto`, `swap_proto`. Plus `abi`, which is the syscall boundary and
+  predates the suffix.
+- **Format and hardware parsers**: `elf`, `dtb`, `pci`, `gpt`, `crickerfs`.
+- **Userspace libraries**: `user_rt`, `capsh`, `virtio`, `vt`, `lineedit`, `bitfont`, `glob`,
+  `calendar`, `cred`, `compose`, `coremark`, `c_seam`.
+
+**`compose` and `lineedit` are the two that look like contracts and are not**, and an earlier
+version of this section listed them as such. Both are *logic* crates that happen to contain a
+protocol module: `compose` is the scene, the clipping and damage-rectangle arithmetic, and the
+composition itself; `lineedit` is a sans-IO editor with a `lineedit::proto` inside it. Renaming
+either to `*_proto` would promise a wire definition and deliver an algorithm, which is exactly the
+kind of claim §39 is about. The `*_proto` check is right to leave them alone.
 
 What the names actually do:
 
