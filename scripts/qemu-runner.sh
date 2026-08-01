@@ -235,8 +235,17 @@ fi
 #   - gic-version is PINNED to 2, so a future QEMU default cannot swap in a GICv3 our driver does
 #     not speak. QEMU emulates the GIC either way (Apple cores use their own AIC natively) and
 #     injects interrupts through HVF, so the MMIO GICv2 driver keeps working.
+#
+# CRICKER_CPU overrides the TCG model (milestone 59, the parity twin of the riscv runner's flag).
+# Under HVF there is nothing to override: the guest runs on the physical Apple core, so `-cpu host`
+# is the only answer and asking for anything else is a mistake worth failing on rather than
+# silently ignoring.
 if [ "$CRICKER_ACCEL" = "hvf" ]; then
     MACHINE="virt,accel=hvf,gic-version=2"
+    if [ -n "$CRICKER_CPU" ] && [ "$CRICKER_CPU" != "host" ]; then
+        echo "qemu-runner: CRICKER_CPU=$CRICKER_CPU cannot apply under HVF (the guest runs the physical core; -cpu host is mandatory)" >&2
+        exit 1
+    fi
     CPU="host"
 else
     # iommu=smmuv3 puts an SMMUv3 in front of the PCIe root complex (milestone 16b). It is on the
@@ -246,7 +255,7 @@ else
     # finds it) and an identity iommu-map for the bus. A plain boot without a PCI disk still gets the
     # SMMU; it just has nothing to confine.
     MACHINE="virt,gic-version=2,iommu=smmuv3"
-    CPU="cortex-a72"
+    CPU="${CRICKER_CPU:-cortex-a72}"
 fi
 
 # Number of cores. Four by default, matching cpu::MAX_CPUS and the SMP tests (§11). QEMU brings

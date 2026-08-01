@@ -58,8 +58,18 @@ const IMAGE_MIB: usize = 8;
 /// yet is part of the state rather than something the test forgets to look at.
 const NAMES: [&str; 4] = ["motd", "scratch", "made", "renamed"];
 
+/// One name's whole observable state: its bytes, and its extended attributes in store order.
+///
+/// The attributes are part of the state rather than a second test, and that is the point (milestone
+/// 57). They live in a **separate file** from the data they describe (`.cricker-attrs/<node id>`),
+/// so "the file and its metadata survive a cut together" is a claim about two writes reaching the
+/// platter in one commit, which is exactly what a prefix-consistency sweep can decide and nothing
+/// else here can. Before this the property was an argument from the transaction boundary.
+type Attrs = Vec<(Vec<u8>, u32, Vec<u8>)>;
+type Entry = (Vec<u8>, Attrs);
+
 /// The state of the filesystem: every name, and its contents, or `None` if it does not exist.
-type State = Vec<(&'static str, Option<Vec<u8>>)>;
+type State = Vec<(&'static str, Option<Entry>)>;
 
 /// Read the whole state out of a mounted server. Reads only, so calling it never perturbs the write
 /// log a [`Recording`] is building.
@@ -94,13 +104,38 @@ fn snapshot<D: redoxfs::Disk>(srv: &mut Server<D>) -> Result<State, syscall::err
                     off += n;
                 }
                 out.truncate(off);
+                let attrs = attrs_of(srv, h)?;
                 srv.close(h)?;
-                Some(out)
+                Some((out, attrs))
             }
         };
         state.push((name, content));
     }
     Ok(state)
+}
+
+/// Every attribute on one handle, name, kind and value, in the order the store holds them.
+///
+/// Fallible for the same reason [`snapshot`] is: a store file whose checksum does not match makes
+/// this fail, and that is a **detection**, not an empty attribute set. Reading a refusal as absence
+/// is the exact mistake that invented nine filesystem bugs the first time this harness was written,
+/// and it would be easier to make here, because "this file has no attributes" is the common case.
+fn attrs_of<D: redoxfs::Disk>(
+    srv: &mut Server<D>,
+    handle: u32,
+) -> Result<Attrs, syscall::error::Error> {
+    let mut page = [0u8; 4096];
+    let n = srv.list_xattr(handle, &mut page)?;
+    let names: Vec<Vec<u8>> = fs_proto::xattr::list::iter(&page[..n])
+        .map(|s| s.to_vec())
+        .collect();
+    let mut out = Vec::new();
+    for name in names {
+        let mut value = [0u8; 4096];
+        let (kind, len) = srv.get_xattr(handle, &name, &mut value)?;
+        out.push((name, kind, value[..len].to_vec()));
+    }
+    Ok(out)
 }
 
 /// What a fresh mount of a damaged platter produced. Three outcomes, and the fourth (a state that
@@ -239,9 +274,30 @@ fn record_workload() -> Recorded {
     srv.rename(root, "made", root, "renamed").expect("op 8");
     mark(&mut srv, &mut states, 8);
 
+    // Operations 9 to 12 are the attribute ones (milestone 57). They are interleaved with a write
+    // to the same file rather than run as a block, because the claim being measured is that an
+    // attribute and its file land **together**: the two live in different files on the platter, and
+    // a recovery that had the new bytes without the new attribute (or the reverse) is a state that
+    // never existed and fails the sweep below.
+    //
+    // The four cover the three shapes the store has. 9 creates the store directory and the node's
+    // first blob, which is two node creations inside one commit. 11 grows the blob, rewriting the
+    // store file in place. 12 **shrinks** it, which is the path that has to truncate afterwards or
+    // leave a tail the reader walks as records nobody wrote (DECISIONS §27, and notes/xattr.md).
+    srv.set_xattr(h, b"user.DOSATTRIB", fs_proto::xattr::RAW, b"0x20")
+        .expect("op 9");
+    mark(&mut srv, &mut states, 9);
+    srv.write(h, 0, &tagged(b'a', 300)).expect("op 10");
+    mark(&mut srv, &mut states, 10);
+    srv.set_xattr(h, b"user.com.apple.FinderInfo", 0x4353_5452, &[7u8; 32])
+        .expect("op 11");
+    mark(&mut srv, &mut states, 11);
+    srv.remove_xattr(h, b"user.DOSATTRIB").expect("op 12");
+    mark(&mut srv, &mut states, 12);
+
     // Sanity on the workload itself, so a test that silently stopped exercising anything fails here
     // rather than passing everywhere below.
-    assert_eq!(states.len(), 9, "eight operations plus the initial state");
+    assert_eq!(states.len(), 13, "twelve operations plus the initial state");
     for w in states.windows(2) {
         assert_ne!(
             w[0], w[1],

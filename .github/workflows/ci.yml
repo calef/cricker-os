@@ -82,6 +82,40 @@ jobs:
       # semihosting.
       - run: script/cibuild
 
+  cpu-matrix:
+    name: cpu matrix (riscv64 across QEMU CPU models)
+    runs-on: ubuntu-24.04-arm
+    # Five QEMU boots plus a std-farm build. Generous because a hung guest must fail loudly rather
+    # than sit on the runner's 6-hour default, the same reason the test job has one.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+      # The same cached QEMU the test and bench jobs use, restored before script/bootstrap for the
+      # same reason (bootstrap skips its apt install when QEMU is already on PATH).
+      - name: Cache QEMU
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/cricker-qemu
+          key: qemu-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.qemu-version') }}
+      - name: Build QEMU if the cache missed
+        run: script/ci-qemu
+      - name: Put it on PATH
+        run: echo "$HOME/.cache/cricker-qemu/bin" >> "$GITHUB_PATH"
+
+      # A JOB OF ITS OWN, not extra work inside `test`, and the reason is wall clock: the matrix is
+      # the same riscv64 suite five times over, so folding it into the gate would make every run four
+      # times longer for a check whose whole point is that it rarely changes anything. On its own
+      # runner it costs nothing a developer waits for.
+      #
+      # On every push and pull request rather than nightly, because the change that breaks this is a
+      # change to kernel/src/arch/riscv64/, which arrives in a pull request, and a nightly would
+      # report the failure a day after the merge that caused it.
+      #
+      # See notes/cpu-models.md, including its BUGS section: a narrower QEMU model is still QEMU.
+      - run: script/bootstrap
+      - run: script/cpu-matrix
+
   fmt:
     name: rustfmt
     runs-on: ubuntu-24.04-arm
