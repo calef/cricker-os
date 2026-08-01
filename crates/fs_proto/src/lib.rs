@@ -1527,6 +1527,22 @@ pub mod fixture {
         /// unlinked before the second, so nothing of it survives either.
         pub const NAV_INSIDE: &str = "in";
 
+        /// **The directory milestone 50's redirection witness works in**, a sibling of [`SUB`] for
+        /// the same reason that one has siblings: a shell that writes files needs somewhere its
+        /// writes cannot be mistaken for another test's, and the root is shared with every test in
+        /// the boot.
+        ///
+        /// ```text
+        ///   /redir      alpha  beta        <- the redirection witness is granted this
+        /// ```
+        ///
+        /// Two files rather than none, so `ls > out.txt` writes a listing with something in it and
+        /// the `wc` that counts it is counting more than the name of its own output file.
+        pub const REDIR: &str = "redir";
+        pub const REDIR_ONE: &str = "alpha";
+        pub const REDIR_TWO: &str = "beta";
+        pub const REDIR_BODY: &[u8] = b"CRK50: a file the redirection witness lists\n";
+
         /// **The subtree the `rm` program is granted** (milestone 47's `rm -r`), a sibling of
         /// [`SUB`] so a capability to one is provably not a capability to the other.
         ///
@@ -1610,10 +1626,11 @@ pub mod fixture {
         /// `made-by-std` in it), so an exact comparison would couple this milestone's gate to what
         /// unrelated tests happen to write. The upward-escape half is checked against [`MADE`] and
         /// [`MADE_DIR`] instead, which are names only the attacker writes.
-        pub const ROOT_ENTRIES: [&str; 6] = [
+        pub const ROOT_ENTRIES: [&str; 7] = [
             GLOBSET,
             super::MOTD_NAME,
             OTHER,
+            REDIR,
             RMTREE,
             super::SCRATCH_NAME,
             SUB,
