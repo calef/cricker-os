@@ -122,7 +122,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 56 | PARTIAL | Secrets, credentials, and the entropy to make them safe | the entropy half is **built** (§44): a real random source, capability-granted. The crypto and credential halves remain, and a secret is still a bearer token where a capability is an unforgeable reference |
 | 57 | PARTIAL | Partitioning and formatting a real drive, and extended attributes | you cannot find a partition without reading the table, and **we have no partition-table code at all**; all of it is testable in QEMU before the board lands. The host recovery tool (`ls`/`cat`/`extract`), `crates/gpt` and the **extended-attribute layer** are built; on-target `mkfs` and block-device enumeration are not |
 | 58 | NOT-STARTED | RISC-V TLB shootdown, and the flush that makes ASIDs pointless | every riscv context switch discards the whole TLB; the fix needs a **software** shootdown protocol, because `sfence.vma` does not broadcast |
-| 59 | NOT-STARTED | The CPU-model matrix: stop testing against one generous emulator | `-cpu rv64` enables nearly every ratified extension; the board is an RV64GC U74. Run the suite across `-cpu` profiles so "works on the generic model" surfaces before the hardware does |
+| 59 | BUILT | The CPU-model matrix: stop testing against one generous emulator | `-cpu rv64` enables nearly every ratified extension; the board is an RV64GC U74. `script/cpu-matrix` runs the riscv64 suite across five models and all 211 tests pass on every one, so we are already portable to the board's ISA. The ASID test written *for* the board is the gap no model can exercise |
 | 60 | NOT-STARTED | ISA discovery: read the machine instead of assuming it | nothing reads `riscv,isa-extensions`; RISC-V has no `CPUID`, so the device tree plus targeted probes are the architected answer. One `Isa` record, built at boot, printed at boot |
 | 61 | NOT-STARTED | The caretakers: one verb table, and names that say what you get | all three answer `EOPNOTSUPP` to xattr because each is a hand-written match over verbs; 4 verbs x 3 wardens recurs on every contract addition. A verb table in `fs_proto` inverts the failure mode |
 
@@ -3101,7 +3101,16 @@ that deserves measurement before a number.
 
 ### 59. The CPU-model matrix: stop testing against one generous emulator
 
-**Status: NOT-STARTED.** Raised by Chris on 2026-08-01, asking whether we should modify QEMU to match
+**Status: BUILT (2026-08-01).** `script/cpu-matrix` runs the riscv64 suite against `rv64`,
+`sifive-u54`, `rva22s64`, `rva23s64` and `thead-c906`; **211 tests pass on every one**, so the cheap
+experiment below came out the reassuring way and "we are already portable to the board's ISA" is now
+measured rather than predicted. `script/test` grew `--arch` and `--cpu`, both defaulting to today's
+behaviour, and CI grew a `cpu-matrix` job of its own. The full result, the preflight that keeps the
+matrix from being theatre, and an honest BUGS list are in [notes/cpu-models.md](../notes/cpu-models.md).
+The one thing it did **not** de-risk is the ASID width: every model reports 16 implemented bits, so
+the test written for the board still has no machine that can fail it.
+
+Raised by Chris on 2026-08-01, asking whether we should modify QEMU to match
 the chip, detect features, or something else.
 
 **The answer to the first is no.** A forked emulator is a machine that exists nowhere: it proves
@@ -3205,6 +3214,15 @@ assumes Sv39 on an Sv48 machine is the same violation one layer down.
 
 **Effort: not estimated.** Parsing is small; how many call sites genuinely need to vary is the unknown,
 and milestone 59 is what answers it.
+
+**What 59 answered, 2026-08-01: zero, on the five CPU models QEMU offers.** The suite passes
+unchanged from `sifive-u54` (bare RV64GC) to `rva23s64` (vector, `zicond`, pointer masking), so
+nothing in the kernel currently needs to branch on a discovered fact. That does **not** retire this
+milestone, and the reason is the sharpest thing 59 found: **QEMU reports `satp.ASID: 16 bits
+implemented` on every model**, including `sifive-u54`. The one place we already know a real chip may
+differ is the one place no emulator can tell us about, so discovery's value is not the branching, it
+is being able to say what the machine is instead of assuming it. See
+[notes/cpu-models.md](../notes/cpu-models.md).
 
 ### 61. The caretakers: one verb table, and names that say what you get
 
