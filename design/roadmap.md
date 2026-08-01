@@ -2013,7 +2013,15 @@ atomic-replace idiom that hard links are usually reached for); and, for symlinks
 containing `..` means when the holder's root is shallower than the creator's — §48 clamps, so it
 should clamp here too rather than erroring, but that is a decision.
 
-##### Open fork: is the mechanism right, and if so what is it called? (raised 2026-07-31)
+##### ~~Open fork~~ **SETTLED 2026-07-31: `bind`, not stored paths** (DECISIONS §50)
+
+**Chris chose namespace composition.** The analysis below is kept because the naming search is the
+evidence for the decision rather than a digression: twenty-eight-plus candidates, terminating without
+a winner, which is what a construct that does not fit any familiar relationship looks like. `bind`
+needed no search — Plan 9 and `mount --bind` already named it. See §50 for the decision, what it
+costs, and the inert-stored-path escape hatch if milestone 55 turns out to need on-disk fidelity.
+
+###### The analysis that settled it: was the mechanism right, and if so what is it called? (raised 2026-07-31)
 
 **Not decided.** Two questions, in this order, because the second keeps answering the first.
 
