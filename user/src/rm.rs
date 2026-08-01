@@ -67,6 +67,12 @@ const MAX_DEPTH: usize = 8;
 /// page itself on the stack it has.
 const LISTING: usize = 128;
 
+/// The buffer [`sweep`] decodes a **whole set** out of, sized by the contract rather than chosen:
+/// the widest set a grant carries, each name at its longest, as directory entries. It is one frame
+/// at the top of the stack and is never held across the recursion, which is why it can be larger
+/// than [`LISTING`] on a program with four stack pages.
+const SET_LISTING: usize = dirent::record_len(grant::MAX_NAME) * fs_proto::nameset::MAX_NAMES;
+
 /// The most rounds one directory takes before the walk gives up on it. A ceiling rather than a limit
 /// on directories: **each round removes everything it saw and starts again at cursor 0**, because a
 /// removal shifts every entry after it, so a cursor carried across removals would skip names. The
@@ -223,6 +229,42 @@ fn empty(handle: u64, flags: u64, depth: usize, count: &mut u64) -> Result<(), i
     Err(first_error.unwrap_or(ELOOP))
 }
 
+/// **Remove everything this process can see** (milestone 47's globbing lane).
+///
+/// `rm *.txt` grants a directory capability attenuated to the names the pattern matched, so what
+/// this program was handed is a namespace whose whole content is the operand. It is told so by a
+/// grant carrying no name at all ([`grant::WHOLE_NAMESPACE`]), and it learns the names by
+/// **enumerating its own capability**, which reveals exactly what the command line already printed.
+///
+/// **One listing, no rounds**, and that is not a shortcut: a set namespace is *fixed*, so the warden
+/// answers `READDIR` with the set whether or not a name still exists. Re-reading (which is what
+/// [`empty`] must do, because removing a name shifts a real directory's entries) would hand this
+/// loop the names it has already taken away and turn a finished job into a page of `ENOENT`s.
+fn sweep(flags: u64, count: &mut u64) -> Result<(), i32> {
+    let n = call(DIR, fs::req(fs::READDIR, fs::ROOT, 0), 0).0 as i64;
+    if n < 0 {
+        // A capability that may not be listed cannot say what it was granted, which is the one
+        // failure this mode cannot work around.
+        let errno = (-n) as i32;
+        diagnose(b"", errno);
+        return Err(errno);
+    }
+    let n = (n as usize).min(SET_LISTING);
+    let mut buf = [0u8; SET_LISTING];
+    get_page(n, &mut buf);
+
+    let mut first_error = None;
+    for (name, _) in dirent::iter(&buf[..n]) {
+        if let Err(e) = remove(fs::ROOT, name, flags, 0, count) {
+            first_error = first_error.or(Some(e));
+        }
+    }
+    match first_error {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
 /// **The `-v` line: the name, and nothing else.** `rm(1)`'s `-v` is "showing them as they are
 /// removed", and the default is silence, which is why every call to this is behind the option.
 fn say(name: &[u8], suffix: &[u8]) {
@@ -296,7 +338,15 @@ pub extern "C" fn _start(spec: u64, name_lo: u64, name_hi: u64) -> ! {
     let flags = grant::spec_rights(spec);
 
     let mut count = 0u64;
-    let status = match remove(fs::ROOT, &buf[..n], flags, 0, &mut count) {
+    // **A grant with no name in it means the operand is the namespace** (`grant::WHOLE_NAMESPACE`).
+    // A name cannot be empty, so a length of zero cannot be one, which is what lets a set grant say
+    // "everything you hold" without a second protocol. See [`sweep`].
+    let removal = if n == grant::WHOLE_NAMESPACE {
+        sweep(flags, &mut count)
+    } else {
+        remove(fs::ROOT, &buf[..n], flags, 0, &mut count)
+    };
+    let status = match removal {
         Ok(()) => fixture::rm::OK,
         Err(errno) => fixture::rm::status(errno),
     };
