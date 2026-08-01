@@ -126,6 +126,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 60 | NOT-STARTED | ISA discovery: read the machine instead of assuming it | nothing reads `riscv,isa-extensions`; RISC-V has no `CPUID`, so the device tree plus targeted probes are the architected answer. One `Isa` record, built at boot, printed at boot |
 | 61 | NOT-STARTED | The caretakers: one verb table, and names that say what you get | all three answer `EOPNOTSUPP` to xattr because each is a hand-written match over verbs; 4 verbs x 3 wardens recurs on every contract addition. A verb table in `fs_proto` inverts the failure mode |
 | 62 | NOT-STARTED | Tests that assert on time: make a red run mean something | ~19 bounded spins (`for _ in 0..N { yield_now() }`) and wall-clock assertions flake under load. Four separate lanes and the integrator hit them on 2026-08-01; the CPU matrix multiplies the exposure fivefold |
+| 63 | NOT-STARTED | Directory and package names: one spelling per thing | `fs-server` and `crates/fs_proto` spell the same idea two ways; `user-std/` holds a package called `hellostd`, matching neither its directory nor anything else. Needs a directory standard, which the tenet does not yet have |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -3523,6 +3524,62 @@ and it depends on a human remembering to apply it.
 
 **Effort: not estimated**, and deliberately: the count is known (~19 spins plus a handful of clock
 assertions) but how many are mechanical and how many need a rethink is not.
+
+### 63. Directory and package names: one spelling per thing
+
+**Status: NOT-STARTED.** Raised 2026-08-01, after `fsserver` was fixed and the survey behind it found
+the rest.
+
+#### The standard, which is derived rather than invented
+
+The naming tenet (CLAUDE.md) covers crates, programs, modules, shell entry points and markdown. It
+says nothing about **directories**, and the tree has three spellings as a result.
+
+The rule that already fits the tree and needs only to be written down:
+
+- **A directory that holds a Rust package is named exactly as the package**, so `snake_case`. Thirteen
+  of the multiword directories under `crates/` already do this (`fs_proto`, `dma_validate`,
+  `supervision_proto`).
+- **Any other directory is lowercase, and hyphenated if it needs two words**, the same convention as
+  markdown filenames and `script/` entry points, because a directory is a path element and paths are
+  hyphenated in the world outside this repository.
+
+That is not a new tier. It is the existing "each domain keeps its own convention" applied one level
+out: a package directory is a Rust name, and everything else is a path.
+
+#### The three that violate it
+
+| Now | Should be | Severity |
+|---|---|---|
+| `fs-server/`, package `fs-server` | `fs_server/`, package `fs_server` | consistent with itself, inconsistent with the other 37 crates |
+| `tools/redoxfs-host/`, package `redoxfs-host` | `tools/redoxfs_host/`, package `redoxfs_host` | same |
+| `user-std/`, package **`hellostd`** | one name, spelled once | **the real defect** |
+
+**`user-std` is the one worth doing even if the others are deferred.** The directory says one thing,
+the package says another, and the package name is squished besides. Neither name describes what is
+in it: `user-std/src/main.rs` is "the std proof (milestone 27): an ordinary Rust program, no
+`no_std`, running on the native capability ABI", which is one of this project's better
+demonstrations and is currently filed under a name that suggests a hello-world.
+
+#### Why this is its own milestone rather than part of 61
+
+Milestone 61 is already moving about 532 tokens plus eight programs, and a directory rename touches
+roughly forty files by path. Two renames in flight would collide in `notes/`, `DECISIONS.md` and
+`kernel/src/user.rs`, which is exactly the avoidable collision CLAUDE.md has three rules about. **This
+starts after 61 lands.**
+
+#### BUGS
+
+- **A hyphenated package name is not wrong in the wider ecosystem**, and that is the argument against
+  doing this at all. `wasm-bindgen` and `tracing-subscriber` are ordinary, Cargo normalises a hyphen
+  to an underscore for `use`, and nothing is broken today. The case for the change is internal
+  consistency (37 crates against 3) rather than correctness, and it should be weighed as such.
+- **`target/` and `targets/` sit next to each other** and mean unrelated things: build output, and the
+  custom target JSON specs (`aarch64-unknown-cricker.json`). Nothing enforces the distinction and one
+  is gitignored while the other is tracked. Worth folding in.
+
+**Effort: small**, and almost entirely mechanical, but it touches paths in `script/`, `xtask`,
+`deny.toml`, CI, and a long tail of notes.
 
 ### The backup-server ladder (53 to 55), and why it is the right deliverable
 
