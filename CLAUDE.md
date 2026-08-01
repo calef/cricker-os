@@ -134,7 +134,8 @@ These come from `DECISIONS.md`. They are cheap to follow and expensive to retrof
    supported architecture, proven by the same suite, or a scope note records the gap and the
    plan. If a feature works on one ISA and silently not another, that is the bug.
 
-Rules 2 and 3 are what keep the microkernel option open. We are deliberately **not**
+Rules 2, 3 and 7 are what keep the microkernel option open (7 because a contract you cannot
+test is a contract you cannot trust to replace a component behind). We are deliberately **not**
 speculatively trait-ifying every subsystem, because that builds the wrong abstraction before
 the requirements are known.
 
@@ -149,6 +150,30 @@ the requirements are known.
    restructure someone else's crate to make a model checker tractable. Vendor it if correctness is
    won by *exposure* rather than by reading the spec, which is why §46 says write the calendar and
    vendor the crypto.
+
+7. **Anything two binaries must agree on is a crate, never a `#[path]` module** (Chris, 2026-08-01).
+   If a constant, an opcode, a layout, or an error code is shared by more than one program, it goes
+   in `crates/` and is depended on. `#[path = "x.rs"] mod x;` is not an option.
+
+   **Three reasons, and the second is the one that matters.**
+
+   It removes a category that nothing enforces. A `#[path]` module is neither a program nor a crate,
+   so a reader meeting `cseam::GRANT_VA` cannot tell what they are looking at, and `user/src/` held
+   48 programs and 3 modules with nothing distinguishing them.
+
+   **A `#[path]` module inside a `no_std` binary is unreachable by host tests and by Kani.** This
+   project's entire method is pure logic in host-testable crates plus machine-checked proofs, and a
+   shared module opts out of both. `cseam` is the case that proves it: it holds the address-space
+   layout and constants **deliberately written twice**, once in Rust and once in `user/c/cseam.c`,
+   with nothing checking that the two agree. A drift there shows up as a C component scribbling on
+   the wrong page, arbitrarily far from the edit.
+
+   And it makes location self-enforcing for free. Once shared definitions live in `crates/`,
+   everything in `user/src/` is a program, with **no files moved** and no convention to remember.
+
+   This was already the tree's practice for seven crates (`fs_proto`, `sink_proto`, `cred_proto`,
+   `clock_proto`, `entropy_proto`, `ntp_proto`, `gfx_proto`) and the exceptions had no recorded
+   reason; `cseam.rs`'s header describes the `#[path]` mechanism without ever justifying it.
 
 ## Chris names the crates, the programs, and the shared modules
 
