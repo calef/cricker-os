@@ -1290,8 +1290,8 @@ fn initrd_riscv() -> bool {
     }
     // The FS server (milestone 32 phase 2), built for the riscv bare target, rides along when
     // present, exactly as hellostd does; `test` builds it first.
-    if let Ok(bytes) = read_stripped(&fsserver_elf(RISCV_TARGET)) {
-        blobs.push(("fsserver", bytes));
+    if let Ok(bytes) = read_stripped(&fs_server_elf(RISCV_TARGET)) {
+        blobs.push(("fs_server", bytes));
     }
     let files: Vec<(&str, &[u8])> = blobs.iter().map(|(n, b)| (*n, b.as_slice())).collect();
     let size = crickerfs::image_size(&files);
@@ -1544,9 +1544,9 @@ fn mkinitrd() -> bool {
     }
     // The FS server (milestone 32 phase 2) rides along IFF built (its own workspace/target; `test`
     // builds it). Absent for a plain interactive boot, which simply skips the FS-server test.
-    let fsserver = read_stripped(&fsserver_elf(TARGET)).ok();
-    if let Some(bytes) = &fsserver {
-        files.push(("fsserver", bytes.as_slice()));
+    let fs_server = read_stripped(&fs_server_elf(TARGET)).ok();
+    if let Some(bytes) = &fs_server {
+        files.push(("fs_server", bytes.as_slice()));
     }
     let size = crickerfs::image_size(&files);
     let mut img = std::vec![0u8; size];
@@ -1658,7 +1658,7 @@ fn fs_server_build(triple: &str) -> bool {
             "--manifest-path",
             "fs-server/Cargo.toml",
             "--bin",
-            "fsserver",
+            "fs_server",
             "--no-default-features",
             "--features",
             "el0",
@@ -1670,9 +1670,9 @@ fn fs_server_build(triple: &str) -> bool {
 }
 
 /// The FS-server ELF path for a target triple (always the release profile; see `fs_server_build`).
-fn fsserver_elf(triple: &str) -> String {
+fn fs_server_elf(triple: &str) -> String {
     workspace_root()
-        .join(format!("fs-server/target/{triple}/release/fsserver"))
+        .join(format!("fs-server/target/{triple}/release/fs_server"))
         .display()
         .to_string()
 }
@@ -2488,7 +2488,7 @@ fn bench() -> bool {
     // lines. Only meaningful with `--real`.
     let smp = std::env::args().any(|a| a == "--smp");
 
-    // For --smp, build the FS server (before user(), so mkinitrd packs the fsserver ELF) and the
+    // For --smp, build the FS server (before user(), so mkinitrd packs the fs_server ELF) and the
     // RedoxFS test image the runner attaches as the second mmio disk. The fs_read bench opens it; on
     // any run without the image the bench finds no second disk and skips, so this stays out of the
     // icount gate's build entirely.

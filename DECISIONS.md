@@ -1985,7 +1985,7 @@ That is determinism, not a fix. A second mount of a *used* image still fails its
 recipe is recorded in notes/fs-server.md (generate once, run one leg, then the other without
 regenerating) along with the leading hypothesis: accumulated **mount** state rather than bad data. A
 used image carries a higher header generation, a longer allocator log and more live tree blocks, so
-the second mount allocates more heap (capped at 8 MiB in `fsserver.rs`, bounded by
+the second mount allocates more heap (capped at 8 MiB in `fs_server.rs`, bounded by
 `FS_BUDGET_PAGES`) and may reach an allocator squash path a pristine mount never does. The next step
 is reading the errno the server returns, which nothing currently surfaces. Note the cost of the fix:
 the gate no longer exercises the cross-boot case at all, so this bug is now known-and-untested,

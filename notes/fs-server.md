@@ -59,7 +59,7 @@ data.
 RedoxFS speaks its own error type everywhere (`syscall::error::Error`, redox_syscall's errno). The
 sans-IO core (`fs_server::Server`) and the `Disk` impl both return `syscall::error::Result`,
 unmapped. The translation to the wire happens in **one place**, the FS server's serve loop
-(`fsserver.rs::serve`), via `fs_proto::reply_err`, which is just the negated errno. The client
+(`fs_server.rs::serve`), via `fs_proto::reply_err`, which is just the negated errno. The client
 inverts it with `fs_proto::reply_errno`. Keeping the core in RedoxFS's vocabulary is what makes the
 rule enforceable: there is no ABI type below the boundary to leak. The blk IPC has the same
 convention (a negative reply is a negated errno), and the `Disk` impl maps a negative blk reply to
@@ -406,7 +406,7 @@ disproved guess left standing sends the next reader down a road already walked.
 
 *Heap exhaustion and accumulated mount state: dead, measured.* The note used to say a used image carries
 a higher header generation, a longer allocator log and more live tree blocks, so the second mount would
-drive the FS server past its 8 MiB cap (`HEAP_MAX` in `fsserver.rs`, matched by `FS_BUDGET_PAGES` in
+drive the FS server past its 8 MiB cap (`HEAP_MAX` in `fs_server.rs`, matched by `FS_BUDGET_PAGES` in
 `kernel/src/user.rs`). It does not. `fs-server/src/bin/second_mount.rs` runs the real engine under the
 **same allocator the FS server uses** (`uheap`, the algorithm behind `user_rt::heap::UntypedHeap`), grown
 incrementally and capped identically, with the image in a `static` so it stays off the heap exactly as a

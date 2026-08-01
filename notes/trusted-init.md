@@ -282,7 +282,7 @@ migrates. Recorded here so the duplication is a scheduled removal and not a surp
 ## Not covered, deliberately
 
 The kernel measures the program **it** loads. Every other program in the archive (`console`, `input`,
-`shell`, `lineedit`, `netstack`, `fsserver`, ...) is loaded by init in userspace, and those bytes are not
+`shell`, `lineedit`, `netstack`, `fs_server`, ...) is loaded by init in userspace, and those bytes are not
 measured today, so the chain of trust stops at init's entry.
 
 The capability-correct extension is not "make the kernel measure everything": it is for **init to

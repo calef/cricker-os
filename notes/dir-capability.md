@@ -376,7 +376,7 @@ Grant a subtree to a confined program, read-only, and attack it:
 // kernel/src/user.rs, dir_capability_tests
 let report = fs_service::start_granted_dir(
     blk_server_image(),
-    program("fsserver").unwrap(),
+    program("fs_server").unwrap(),
     program("dwarden").unwrap(),
     program("fsclient").unwrap(),
     fs_service::DirGrant {

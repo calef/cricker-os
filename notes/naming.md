@@ -33,7 +33,7 @@ always the majority. The four `-d` names were the outliers.
 
 A **component** is the shippable unit: one binary in `user/src/`, one `[[bin]]` in `user/Cargo.toml`,
 one entry in the initrd archive. A **service** is what a component offers. A **contract** is the wire
-protocol it offers it over. "Server" is a fine role word inside a component (`fsserver` serves the FS
+protocol it offers it over. "Server" is a fine role word inside a component (`fs_server` serves the FS
 service). "Daemon" appears nowhere.
 
 - One lowercase word, no separators, no suffix. `netstack`, `compositor`, `display`, `lineedit`.

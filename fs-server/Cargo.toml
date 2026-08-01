@@ -40,8 +40,8 @@ bench = false
 # same reason every dedicated binary sets them: the default libtest target needs `extern crate test`,
 # which does not exist for the bare-metal targets.
 [[bin]]
-name = "fsserver"
-path = "src/bin/fsserver.rs"
+name = "fs_server"
+path = "src/bin/fs_server.rs"
 required-features = ["el0"]
 test = false
 bench = false

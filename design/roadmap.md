@@ -1513,7 +1513,7 @@ matching what DECISIONS already says:
 - a **service** is what it offers over a contract ("the FS service");
 - a **contract** is the wire protocol (`contracts/`).
 
-"Server" stays a fine role word inside a component (`fsserver` serves the FS service). "Daemon" gets
+"Server" stays a fine role word inside a component (`fs_server` serves the FS service). "Daemon" gets
 dropped.
 
 #### The four options
