@@ -4,7 +4,7 @@
 //! the recorded hypothesis is accumulated mount state driving the FS server past its 8 MiB heap cap.
 //! This binary settles it without an emulator: it runs the real engine under the **same allocator the
 //! FS server uses** (`uheap`, the algorithm behind `user_rt::heap::UntypedHeap`), grown incrementally
-//! and capped exactly the way `fsserver.rs` caps it, and it does the two mounts in one process:
+//! and capped exactly the way `fs_server.rs` caps it, and it does the two mounts in one process:
 //!
 //! 1. create the fixture image, then mount it and write (this is what makes the image *used*),
 //! 2. drop the mount the way a dying process does (no unmount), then **mount again and write**.
@@ -41,7 +41,7 @@ const PAGE: usize = 4096;
 const MIN_GROW_PAGES: usize = 8;
 
 /// The heap cap in bytes, from `CRICKER_HEAP_MIB`, defaulting to the FS server's 8 MiB
-/// (`fsserver.rs::HEAP_MAX`, which `FS_BUDGET_PAGES` in kernel/src/user.rs matches).
+/// (`fs_server.rs::HEAP_MAX`, which `FS_BUDGET_PAGES` in kernel/src/user.rs matches).
 fn heap_cap() -> usize {
     std::env::var("CRICKER_HEAP_MIB")
         .ok()

@@ -628,8 +628,8 @@ pub fn spawn_init(image: &'static [u8], role: u64, report: crate::sched::EpId) {
     // whole chain from here to the prompt treats it as "this boot has no filesystem" rather than as
     // a failure. The other roles are milestone 19d's tests, which wire their own worlds.
     let fs = if role == INIT_BOOT_ROLE {
-        program("fsserver").and_then(|fsserver| {
-            fs_service::root_directory(fs_service::blk_server_image(), fsserver)
+        program("fs_server").and_then(|fs_server| {
+            fs_service::root_directory(fs_service::blk_server_image(), fs_server)
         })
     } else {
         None
@@ -1198,8 +1198,8 @@ pub fn riscv_shell_boot(archive: &'static [u8], uart_irq: u32) -> Result<(), Loa
     // narrows the endpoint into the shell and maps the frame into its address space. `a2` carries
     // the rights the endpoint holds, which is also how init is told there is one at all. `None` is
     // the ordinary case for a run with no RedoxFS disk attached.
-    let fs_rights = match program("fsserver")
-        .and_then(|fsserver| fs_service::root_directory(fs_service::blk_server_image(), fsserver))
+    let fs_rights = match program("fs_server")
+        .and_then(|fs_server| fs_service::root_directory(fs_service::blk_server_image(), fs_server))
     {
         Some((file_ep, file_shared)) => {
             let s3 = crate::sched::tcb_insert_cap(
@@ -1972,8 +1972,8 @@ pub mod fs_service {
 
     // The VAs each process expects its mappings at. Each MUST match that program's source.
     const DMA_VA: u64 = 0x0000_0000_0090_0000; // block server DMA region, 2 pages (user/src/virtio.rs)
-    const BLK_PAGE_FS: u64 = 0x5000_0000; // FS server's block page (fsserver.rs BLK_PAGE)
-    const FILE_PAGE_FS: u64 = 0x5000_1000; // FS server's file page (fsserver.rs FILE_PAGE)
+    const BLK_PAGE_FS: u64 = 0x5000_0000; // FS server's block page (fs_server.rs BLK_PAGE)
+    const FILE_PAGE_FS: u64 = 0x5000_1000; // FS server's file page (fs_server.rs FILE_PAGE)
     const FILE_VA_CLIENT: u64 = 0x0000_0000_0060_0000; // client's file page (fsclient.rs FILE_VA)
 
     /// A std program's half of the same agreement (notes/abi.md §4, notes/std.md). Both constants
@@ -2097,7 +2097,7 @@ pub mod fs_service {
 
     /// Wire the block server and the FS server if this boot has not already, else hand back what is
     /// already running. `None` means no RedoxFS disk is attached.
-    fn ensure(blk_image: &'static [u8], fsserver_image: &'static [u8]) -> Option<Service> {
+    fn ensure(blk_image: &'static [u8], fs_server_image: &'static [u8]) -> Option<Service> {
         use core::sync::atomic::Ordering;
 
         if WIRED.load(Ordering::Acquire) {
@@ -2107,7 +2107,7 @@ pub mod fs_service {
                 None,
             ));
         }
-        let (blk_ready, ready, file_ep, file_shared) = wire_servers(blk_image, fsserver_image)?;
+        let (blk_ready, ready, file_ep, file_shared) = wire_servers(blk_image, fs_server_image)?;
         FILE_EP.store(file_ep, Ordering::Relaxed);
         FILE_SHARED.store(file_shared, Ordering::Relaxed);
         WIRED.store(true, Ordering::Release);
@@ -2115,11 +2115,11 @@ pub mod fs_service {
     }
 
     /// Wire and spawn the block server and the FS server. `blk_image` is the driver binary carrying
-    /// the block-server role (hello on aarch64, `blk` on riscv); `fsserver_image` is the same on
+    /// the block-server role (hello on aarch64, `blk` on riscv); `fs_server_image` is the same on
     /// both ISAs. Returns `(blk_ready, ready, file_ep, file_shared)`.
     fn wire_servers(
         blk_image: &'static [u8],
-        fsserver_image: &'static [u8],
+        fs_server_image: &'static [u8],
     ) -> Option<(EpId, EpId, EpId, u64)> {
         let (blk_ep, blk_ready, blk_shared) =
             spawn_block_server(blk_image, crate::virtio::find_block_device_n(1)?);
@@ -2127,7 +2127,7 @@ pub mod fs_service {
         let file_ep = crate::sched::create_endpoint(); // client WRITE (CALL) -> FS server READ
         let ready = crate::sched::create_endpoint(); // FS server WRITE -> the kernel test RECVs
         spawn_fs_server(
-            fsserver_image,
+            fs_server_image,
             FsServer {
                 slot: 0,
                 blk_ep,
@@ -2241,7 +2241,7 @@ pub mod fs_service {
         /// Milestone 37's crash injection, straight into the process's START arguments:
         /// `(which WRITE request to die in, block writes to allow first, bytes of the last one that
         /// reach the platter)`. All zero disables it, which is every FS server but the crash test's
-        /// first one. See `fs-server/src/bin/fsserver.rs`.
+        /// first one. See `fs-server/src/bin/fs_server.rs`.
         crash: (u64, u64, u64),
     }
 
@@ -2253,7 +2253,7 @@ pub mod fs_service {
     /// 4 KiB page overflows immediately (the first `open` faults ~4.2 KiB down). So map extra stack
     /// pages below USER_STACK_VA out of fresh frames. These are shared-style mappings (not freed on
     /// death), a one-time cost per FS server a boot starts.
-    fn spawn_fs_server(fsserver_image: &'static [u8], cfg: FsServer) {
+    fn spawn_fs_server(fs_server_image: &'static [u8], cfg: FsServer) {
         let budget =
             crate::untyped::create(cfg.budget_pages).expect("no heap budget for the FS server");
         let mut stack = [0u64; FS_STACK_PAGES as usize];
@@ -2285,7 +2285,7 @@ pub mod fs_service {
                 };
             }
             run(
-                fsserver_image,
+                fs_server_image,
                 Spawn {
                     arg0: cfg.crash.0,
                     arg1: cfg.crash.1,
@@ -2351,7 +2351,7 @@ pub mod fs_service {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn start_crash(
         blk_image: &'static [u8],
-        fsserver_image: &'static [u8],
+        fs_server_image: &'static [u8],
         client_image: &'static [u8],
     ) -> Option<CrashRun> {
         use core::sync::atomic::Ordering;
@@ -2364,7 +2364,7 @@ pub mod fs_service {
         let file_ep = crate::sched::create_endpoint();
         let fs_ready = crate::sched::create_endpoint();
         spawn_fs_server(
-            fsserver_image,
+            fs_server_image,
             FsServer {
                 slot: 1,
                 blk_ep,
@@ -2399,7 +2399,7 @@ pub mod fs_service {
     /// Returns `(ready, report)`.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn recover_crash(
-        fsserver_image: &'static [u8],
+        fs_server_image: &'static [u8],
         client_image: &'static [u8],
     ) -> (EpId, EpId) {
         use core::sync::atomic::Ordering;
@@ -2407,7 +2407,7 @@ pub mod fs_service {
         let file_ep = crate::sched::create_endpoint();
         let ready = crate::sched::create_endpoint();
         spawn_fs_server(
-            fsserver_image,
+            fs_server_image,
             FsServer {
                 slot: 2,
                 blk_ep: CRASH_BLK_EP.load(Ordering::Relaxed),
@@ -2498,11 +2498,11 @@ pub mod fs_service {
     /// and the endpoint the client reports on.
     pub fn start(
         blk_image: &'static [u8],
-        fsserver_image: &'static [u8],
+        fs_server_image: &'static [u8],
         client_image: &'static [u8],
         client_role: u64,
     ) -> Option<(Option<(EpId, EpId)>, EpId)> {
-        let (file_ep, file_shared, readiness) = ensure(blk_image, fsserver_image)?;
+        let (file_ep, file_shared, readiness) = ensure(blk_image, fs_server_image)?;
         // 0 = the end-to-end proof; 1 = the fs_read benchmark loop.
         let report = spawn_fs_client(client_image, file_ep, file_shared, client_role, 0, 0, 0);
         Some((readiness, report))
@@ -2602,7 +2602,7 @@ pub mod fs_service {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn start_granted(
         blk_image: &'static [u8],
-        fsserver_image: &'static [u8],
+        fs_server_image: &'static [u8],
         warden_image: &'static [u8],
         client_image: &'static [u8],
         grant: Grant,
@@ -2617,7 +2617,7 @@ pub mod fs_service {
             fs_proto::grant::fits(name.as_bytes()),
             "a granted name rides in two argument words; this one does not fit",
         );
-        let (file_ep, file_shared, readiness) = ensure(blk_image, fsserver_image)?;
+        let (file_ep, file_shared, readiness) = ensure(blk_image, fs_server_image)?;
         let narrow_ep = crate::sched::create_endpoint();
         let warden_ready = crate::sched::create_endpoint();
 
@@ -2735,9 +2735,9 @@ pub mod fs_service {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn root_directory(
         blk_image: &'static [u8],
-        fsserver_image: &'static [u8],
+        fs_server_image: &'static [u8],
     ) -> Option<(EpId, u64)> {
-        let (file_ep, file_shared, readiness) = ensure(blk_image, fsserver_image)?;
+        let (file_ep, file_shared, readiness) = ensure(blk_image, fs_server_image)?;
         await_service(readiness);
         Some((file_ep, file_shared))
     }
@@ -2755,7 +2755,7 @@ pub mod fs_service {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn narrow_dir(
         blk_image: &'static [u8],
-        fsserver_image: &'static [u8],
+        fs_server_image: &'static [u8],
         warden_image: &'static [u8],
         name: &'static str,
         rights: u64,
@@ -2764,7 +2764,7 @@ pub mod fs_service {
             fs_proto::grant::fits(name.as_bytes()),
             "a granted name rides in two argument words; this one does not fit",
         );
-        let (file_ep, file_shared, readiness) = ensure(blk_image, fsserver_image)?;
+        let (file_ep, file_shared, readiness) = ensure(blk_image, fs_server_image)?;
         let narrow_ep = crate::sched::create_endpoint();
         let warden_ready = crate::sched::create_endpoint();
 
@@ -2804,7 +2804,7 @@ pub mod fs_service {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn start_granted_dir(
         blk_image: &'static [u8],
-        fsserver_image: &'static [u8],
+        fs_server_image: &'static [u8],
         warden_image: &'static [u8],
         client_image: &'static [u8],
         grant: DirGrant,
@@ -2818,7 +2818,7 @@ pub mod fs_service {
             stack_pages,
         } = grant;
         let (narrow_ep, file_shared) =
-            narrow_dir(blk_image, fsserver_image, warden_image, name, rights)?;
+            narrow_dir(blk_image, fs_server_image, warden_image, name, rights)?;
 
         // The confined program. Its slot 0 looks exactly like a directory capability from inside,
         // and is one: the same protocol, the same page, a namespace of one subtree.
@@ -2878,7 +2878,7 @@ pub mod fs_service {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn start_granted_set(
         blk_image: &'static [u8],
-        fsserver_image: &'static [u8],
+        fs_server_image: &'static [u8],
         warden_image: &'static [u8],
         client_image: &'static [u8],
         grant: SetGrant<'_>,
@@ -2896,7 +2896,7 @@ pub mod fs_service {
             fs_proto::grant::fits(dir.as_bytes()),
             "a granted directory's name rides in two argument words; this one does not fit",
         );
-        let (file_ep, file_shared, readiness) = ensure(blk_image, fsserver_image)?;
+        let (file_ep, file_shared, readiness) = ensure(blk_image, fs_server_image)?;
         let narrow_ep = crate::sched::create_endpoint();
         let warden_ready = crate::sched::create_endpoint();
 
@@ -2987,10 +2987,10 @@ pub mod fs_service {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn start_file_sink(
         blk_image: &'static [u8],
-        fsserver_image: &'static [u8],
+        fs_server_image: &'static [u8],
         sink_image: &'static [u8],
     ) -> Option<FileSink> {
-        let (file_ep, file_shared, readiness) = ensure(blk_image, fsserver_image)?;
+        let (file_ep, file_shared, readiness) = ensure(blk_image, fs_server_image)?;
         let sink = crate::sched::create_endpoint();
         let report = crate::sched::create_endpoint();
         crate::sched::spawn(move || {
@@ -3032,10 +3032,10 @@ pub mod fs_service {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn start_sink_verify(
         blk_image: &'static [u8],
-        fsserver_image: &'static [u8],
+        fs_server_image: &'static [u8],
         sink_image: &'static [u8],
     ) -> Option<(EpId, EpId)> {
-        let (file_ep, file_shared, _) = ensure(blk_image, fsserver_image)?;
+        let (file_ep, file_shared, _) = ensure(blk_image, fs_server_image)?;
         let out = crate::sched::create_endpoint();
         let report = crate::sched::create_endpoint();
         crate::sched::spawn(move || {
@@ -3091,10 +3091,10 @@ pub mod fs_service {
     /// the program's stdout endpoint for the test to reassemble.
     pub fn start_std(
         blk_image: &'static [u8],
-        fsserver_image: &'static [u8],
+        fs_server_image: &'static [u8],
         std_image: &'static [u8],
     ) -> Option<(Option<(EpId, EpId)>, EpId)> {
-        let (file_ep, file_shared, readiness) = ensure(blk_image, fsserver_image)?;
+        let (file_ep, file_shared, readiness) = ensure(blk_image, fs_server_image)?;
         let report = crate::sched::create_endpoint();
         let heap =
             crate::untyped::create(STD_FS_HEAP_PAGES).expect("no untyped for the std fs heap");
@@ -7953,11 +7953,11 @@ mod std_tests {
     /// happens to write its commit, and the claim is not about that.
     pub(super) fn assert_a_kill_mid_transaction_recovers(
         blk_image: &'static [u8],
-        fsserver_image: &'static [u8],
+        fs_server_image: &'static [u8],
         client_image: &'static [u8],
     ) {
         use fs_proto::fixture::{READY, SUCCESS, crash};
-        let Some(run) = fs_service::start_crash(blk_image, fsserver_image, client_image) else {
+        let Some(run) = fs_service::start_crash(blk_image, fs_server_image, client_image) else {
             crate::println!("    (no crash disk attached; skipping)");
             return;
         };
@@ -7987,7 +7987,7 @@ mod std_tests {
              test, and the recovery below would be measuring the wrong thing",
         );
 
-        let (ready, report) = fs_service::recover_crash(fsserver_image, client_image);
+        let (ready, report) = fs_service::recover_crash(fs_server_image, client_image);
         assert_eq!(
             crate::sched::ipc_recv(ready)[0],
             READY,
@@ -9240,7 +9240,7 @@ mod tests {
     fn std_fs_reads_a_file_through_a_granted_directory_capability() {
         let (readiness, report) = match fs_service::start_std(
             init_image(),
-            program("fsserver").expect("no fsserver program in the initrd archive"),
+            program("fs_server").expect("no fs_server program in the initrd archive"),
             hellostd_image(),
         ) {
             Some(r) => r,
@@ -9272,7 +9272,7 @@ mod tests {
     fn the_fs_server_serves_redoxfs_over_a_capability_contract() {
         let (readiness, report) = match fs_service::start(
             init_image(),
-            program("fsserver").expect("no fsserver program in the initrd archive"),
+            program("fs_server").expect("no fs_server program in the initrd archive"),
             program("fsclient").expect("no fsclient program in the initrd archive"),
             0, // the end-to-end proof role, not the benchmark loop
         ) {
@@ -9374,7 +9374,7 @@ mod tests {
     fn attack_a_grant(rights: u64, writable: bool) -> Option<u64> {
         let report = match fs_service::start_granted(
             init_image(),
-            program("fsserver").expect("no fsserver program in the initrd archive"),
+            program("fs_server").expect("no fs_server program in the initrd archive"),
             program("fwarden").expect("no fwarden program in the initrd archive"),
             program("fsclient").expect("no fsclient program in the initrd archive"),
             fs_service::Grant {
@@ -9456,7 +9456,7 @@ mod tests {
     fn a_kill_mid_transaction_leaves_the_filesystem_consistent() {
         assert_a_kill_mid_transaction_recovers(
             init_image(),
-            program("fsserver").expect("no fsserver program in the initrd archive"),
+            program("fs_server").expect("no fs_server program in the initrd archive"),
             program("fsclient").expect("no fsclient program in the initrd archive"),
         );
     }
@@ -12686,7 +12686,7 @@ mod dir_capability_tests {
     fn attack_a_subtree(rights: u64, run: u64) -> Option<u64> {
         let report = match fs_service::start_granted_dir(
             blk_server_image(),
-            program("fsserver").expect("no fsserver program in the initrd archive"),
+            program("fs_server").expect("no fs_server program in the initrd archive"),
             program("dwarden").expect("no dwarden program in the initrd archive"),
             program("fsclient").expect("no fsclient program in the initrd archive"),
             fs_service::DirGrant {
@@ -12896,7 +12896,7 @@ mod shell_navigation_tests {
     fn navigate(root: &'static str, run: u64) -> Option<u64> {
         let report = fs_service::start_granted_dir(
             dir_capability_tests::blk_server_image(),
-            program("fsserver").expect("no fsserver program in the initrd archive"),
+            program("fs_server").expect("no fs_server program in the initrd archive"),
             program("dwarden").expect("no dwarden program in the initrd archive"),
             program("shell").expect("no shell program in the initrd archive"),
             fs_service::DirGrant {
@@ -13072,7 +13072,7 @@ mod rm_program_tests {
         let (lo, hi) = fs_proto::grant::pack_name(name.as_bytes());
         let report = fs_service::start_granted_dir(
             dir_capability_tests::blk_server_image(),
-            program("fsserver").expect("no fsserver program in the initrd archive"),
+            program("fs_server").expect("no fs_server program in the initrd archive"),
             program("dwarden").expect("no dwarden program in the initrd archive"),
             program("rm").expect("no rm program in the initrd archive"),
             fs_service::DirGrant {
@@ -13278,7 +13278,7 @@ mod glob_grant_tests {
     fn shell_expanded() -> Option<u64> {
         let report = fs_service::start_granted_dir(
             dir_capability_tests::blk_server_image(),
-            program("fsserver").expect("no fsserver program in the initrd archive"),
+            program("fs_server").expect("no fs_server program in the initrd archive"),
             program("dwarden").expect("no dwarden program in the initrd archive"),
             program("shell").expect("no shell program in the initrd archive"),
             fs_service::DirGrant {
@@ -13334,7 +13334,7 @@ mod glob_grant_tests {
         let (lo, hi) = fs_proto::grant::pack_name(name.as_bytes());
         let report = fs_service::start_granted_set(
             dir_capability_tests::blk_server_image(),
-            program("fsserver").expect("no fsserver program in the initrd archive"),
+            program("fs_server").expect("no fs_server program in the initrd archive"),
             program("swarden").expect("no swarden program in the initrd archive"),
             program("rm").expect("no rm program in the initrd archive"),
             fs_service::SetGrant {
@@ -13588,7 +13588,7 @@ mod riscv_virtio_tests {
     fn the_fs_server_serves_redoxfs_over_a_capability_contract() {
         let (readiness, report) = match fs_service::start(
             blk_image(),
-            program("fsserver").expect("no fsserver program in the initrd archive"),
+            program("fs_server").expect("no fs_server program in the initrd archive"),
             program("fsclient").expect("no fsclient program in the initrd archive"),
             0, // the end-to-end proof role, not the benchmark loop
         ) {
@@ -13625,7 +13625,7 @@ mod riscv_virtio_tests {
     fn std_fs_reads_a_file_through_a_granted_directory_capability() {
         let (readiness, report) = match fs_service::start_std(
             blk_image(),
-            program("fsserver").expect("no fsserver program in the initrd archive"),
+            program("fs_server").expect("no fs_server program in the initrd archive"),
             program("hellostd").expect("no hellostd program in the initrd archive"),
         ) {
             Some(r) => r,
@@ -13675,7 +13675,7 @@ mod riscv_virtio_tests {
     fn attack_a_grant(rights: u64, writable: bool) -> Option<u64> {
         let report = match fs_service::start_granted(
             blk_image(),
-            program("fsserver").expect("no fsserver program in the initrd archive"),
+            program("fs_server").expect("no fs_server program in the initrd archive"),
             program("fwarden").expect("no fwarden program in the initrd archive"),
             program("fsclient").expect("no fsclient program in the initrd archive"),
             fs_service::Grant {
@@ -13716,7 +13716,7 @@ mod riscv_virtio_tests {
     fn a_kill_mid_transaction_leaves_the_filesystem_consistent() {
         assert_a_kill_mid_transaction_recovers(
             blk_image(),
-            program("fsserver").expect("no fsserver program in the initrd archive"),
+            program("fs_server").expect("no fs_server program in the initrd archive"),
             program("fsclient").expect("no fsclient program in the initrd archive"),
         );
     }
@@ -14720,7 +14720,7 @@ mod redirection_tests {
         if cache.is_none() {
             let dir = fs_service::narrow_dir(
                 dir_capability_tests::blk_server_image(),
-                program("fsserver")?,
+                program("fs_server")?,
                 program("dwarden").expect("no dwarden program in the initrd archive"),
                 fs_proto::fixture::tree::REDIR,
                 dir::ALL,
@@ -15020,7 +15020,7 @@ mod sink_tests {
     fn one_reader_two_sources_and_the_same_answer() {
         let sink_image = program("sink").expect("no sink program in the initrd archive");
         let blk = program("init").expect("no init program in the initrd archive");
-        let Some(fsserver) = program("fsserver") else {
+        let Some(fs_server) = program("fs_server") else {
             crate::println!("    (no FS server in this archive; skipping)");
             return;
         };
@@ -15052,7 +15052,7 @@ mod sink_tests {
         );
 
         // Arm two: the same bytes, through a real filesystem. Write them first.
-        let Some(file_sink) = fs_service::start_file_sink(blk, fsserver, sink_image) else {
+        let Some(file_sink) = fs_service::start_file_sink(blk, fs_server, sink_image) else {
             crate::println!("    (no RedoxFS disk attached; the pipe arm stands alone)");
             return;
         };
@@ -15078,7 +15078,7 @@ mod sink_tests {
 
         // Then read them back into `wc`, which is `<`.
         let Some((source, verify_report)) =
-            fs_service::start_sink_verify(blk, fsserver, sink_image)
+            fs_service::start_sink_verify(blk, fs_server, sink_image)
         else {
             panic!("the FS service vanished between the file sink and its source");
         };
@@ -15127,7 +15127,7 @@ mod sink_tests {
         let clock = program("clock").expect("no clock program in the initrd archive");
         let entropy = program("entropy").expect("no entropy program in the initrd archive");
         let sink_image = program("sink").expect("no sink program in the initrd archive");
-        let Some(fsserver) = program("fsserver") else {
+        let Some(fs_server) = program("fs_server") else {
             crate::println!("    (no FS server in this archive; skipping)");
             return;
         };
@@ -15149,7 +15149,7 @@ mod sink_tests {
         // `fs_service::await_warden` records: it stages a name in the page it shares with the FS
         // server, and a client that already existed could write over it.
         let blk = program("init").expect("no init program in the initrd archive");
-        let Some(file_sink) = fs_service::start_file_sink(blk, fsserver, sink_image) else {
+        let Some(file_sink) = fs_service::start_file_sink(blk, fs_server, sink_image) else {
             crate::println!("    (no RedoxFS disk attached; skipping)");
             return;
         };
@@ -15176,7 +15176,7 @@ mod sink_tests {
 
         // The read-back, in a third process with its own FS session, and only now that the sink has
         // closed the file: the two share the FS server's one file page.
-        let Some((out, verify_report)) = fs_service::start_sink_verify(blk, fsserver, sink_image)
+        let Some((out, verify_report)) = fs_service::start_sink_verify(blk, fs_server, sink_image)
         else {
             panic!("the FS service vanished between the file sink and its verifier");
         };

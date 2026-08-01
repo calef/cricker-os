@@ -35,7 +35,7 @@ cargo fmt --manifest-path tools/redoxfs-host/Cargo.toml "$@"
 # fs-server is a third workspace, for the same reason, and it was missed when this script was fixed
 # on 2026-07-31: `--all` does not cross a workspace boundary, and naming one of the two outliers
 # looks exactly like naming both. Milestone 57's lane found it by running `cargo fmt` there by hand
-# and getting three unformatted lines in `fsserver.rs` that had been sitting in a CI-gated tree.
+# and getting three unformatted lines in `fs_server.rs` that had been sitting in a CI-gated tree.
 #
 # The general lesson is the one script/fmt already carries a scar for: this file is a GATE, so a
 # thing it does not reach is a thing nothing reaches.

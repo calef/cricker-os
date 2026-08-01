@@ -643,16 +643,16 @@ fn fs_read() {
     }
     // The three binaries the service needs. On aarch64 the block server is a role of `init` (the
     // hello multiplexer), as in the fs-server test. Absent any of them, or the RedoxFS disk, skip.
-    let (Some(blk_image), Some(fsserver), Some(fsclient)) = (
+    let (Some(blk_image), Some(fs_server), Some(fsclient)) = (
         crate::user::program("init"),
-        crate::user::program("fsserver"),
+        crate::user::program("fs_server"),
         crate::user::program("fsclient"),
     ) else {
         return;
     };
     // Spawn the block server, the FS server, and the client in its ROLE_BENCH (timed) role.
     let Some((readiness, report)) =
-        crate::user::fs_service::start(blk_image, fsserver, fsclient, 1)
+        crate::user::fs_service::start(blk_image, fs_server, fsclient, 1)
     else {
         return; // no RedoxFS disk on this run
     };

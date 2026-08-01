@@ -281,7 +281,7 @@ Wire a set grant and attack it:
 // kernel/src/user.rs, glob_grant_tests
 let report = fs_service::start_granted_set(
     blk_server_image(),
-    program("fsserver").unwrap(),
+    program("fs_server").unwrap(),
     program("swarden").unwrap(),
     program("rm").unwrap(),
     fs_service::SetGrant {
