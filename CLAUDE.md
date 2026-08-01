@@ -150,9 +150,9 @@ the requirements are known.
    won by *exposure* rather than by reading the spec, which is why §46 says write the calendar and
    vendor the crypto.
 
-## Chris names the programs and the shared modules
+## Chris names the crates, the programs, and the shared modules
 
-**The name of a program or a shared module is Chris's call, not a lane's and not yours**
+**The name of a crate, a program, or a shared module is Chris's call, not a lane's and not yours**
 (2026-08-01). This is the same rule as `DECISIONS.md` section numbers, one level up: it is global to
 the tree, so it is decided by the person who can see the whole tree.
 
@@ -179,10 +179,18 @@ new program or module ships a **provisional** name, says so in its report, and e
 the integrator surfaces it. Never rename on your own initiative either, because a rename is a naming
 decision with extra steps.
 
-**Not yet decided:** whether this covers crate names too. Crates are just as reader-facing
-(`fs_proto`, `capsh`, `cred`), and arguably more, since they are what a newcomer greps first. The rule
-above says programs and modules because that is what was asked for on 2026-08-01. Ask before treating
-a crate name as settled.
+**Crates are in scope too** (extended 2026-08-01). They are the most reader-facing names in the tree:
+a newcomer greps `crates/` before they ever open `user/src/`, and a crate name appears in every
+`Cargo.toml` that depends on it, in every `use` statement, and in the dependency graph an outsider
+reads to understand the shape of the system.
+
+The crate names have the same three failure modes the programs did. **Abbreviations** that need a
+decoder (`capsh`, `uheap`, `vt`). **Generic words** that could name almost anything in an operating
+system (`compose`, `measure`, `regions`, `slots`, `caps`, `frames`). And **standard terms that are
+genuinely right** and should not be touched (`elf`, `pci`, `dtb`, `gpt`, `ipc`, `paging`, `glob`,
+`asid`), because renaming those would cost a reader the recognition the whole tenet exists to buy.
+That last group matters: this rule is not a licence to rename everything, and a name a reader already
+knows from outside this project is the best name available.
 
 ### The convention: `snake_case`, one rule, everywhere
 
