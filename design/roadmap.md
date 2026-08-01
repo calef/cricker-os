@@ -1974,6 +1974,79 @@ need no such case: a shell holding a subtree cannot name the root, so there is n
 escalation to recursive removal, which is Unix's behaviour and worth keeping for the same reason
 `rmdir` is empty-only.
 
+#### `ln`: hard links make it not a tree, and symlinks stop being an escalation
+
+Two verbs with very different stories. Neither is built.
+
+**Hard links are mechanically easy.** RedoxFS keeps link counts, and **§48's deferred-delete fix
+already depends on them** — "the last link goes" is exactly what made `rm` an unlink rather than a
+revoke. A second name for one node is a short step from there.
+
+**The problem is structural, and it is ours rather than Unix's.** §47 justified `DESCEND` as a
+separate right because otherwise "the shape of the tree would decide how much authority a grant
+carried". **Hard links make it not a tree.** A file reachable from two directories sits in two
+subtrees, so "this subtree" stops having a clean boundary: you granted a name, and the node is also
+reachable through one you did not mention. That is not automatically wrong — the grant was the name —
+but every piece of subtree reasoning written so far quietly assumes a DAG cannot happen, and that
+assumption should be made explicit before it is falsified. Unix forbids hard links to *directories* to
+prevent cycles; the argument is stronger here, where a cycle also defeats `rm -r`'s bottom-up
+termination.
+
+**Symlinks are the interesting one, and the answer is a real result.** A symlink stores a **path**,
+resolved at open time — and this milestone already decided paths resolve **in the client, against the
+holder's own position**, with `..` clamped at the root (§48). So: resolved against *whose* namespace?
+
+Resolve against **the holder's**, and it follows that **a symlink cannot escalate**. It can only name
+what the resolver could already reach. Unix's symlink attacks — the `/tmp` races, the confused-deputy
+TOCTOU classics — work because resolution happens against a *global* namespace carrying the
+*victim's* authority. There is no global namespace here and no borrowed authority, so a symlink can
+**misdirect but cannot grant**. Same shape as the `PATH` result above: the escalation vector closes
+because there is nothing ambient to point into.
+
+The cost is that one symlink means different things to different holders. That sounds alarming and is
+exactly Plan 9's per-process namespace behaviour, so it is a well-explored place to stand rather than
+a novel one.
+
+**What to settle before building either:** whether hard links are offered at all given the DAG
+consequence (declining is defensible, and `mv` plus `RENAME` already covers the common
+atomic-replace idiom that hard links are usually reached for); and, for symlinks, what a stored path
+containing `..` means when the holder's root is shallower than the creator's — §48 clamps, so it
+should clamp here too rather than erroring, but that is a decision.
+
+##### Where `rm` meets them, which is where the sharp edges are
+
+**`rm` on a symlink removes the link, never the target.** `rm(1)` says so outright — "the rm utility
+removes symbolic links, not the files referenced by the links" — and it is right for the reason §48
+already established: `rm` operates on a **name in a directory**, and a symlink is a name.
+
+**`rm -r` must not descend through a symlink**, and our reason differs from Unix's in a way worth
+recording. Unix declines because following would **escape**: a symlink to `/` inside a directory
+would turn `rm -r` into `rm -rf /`. Here it could not escape — a symlink resolves in the holder's
+namespace, and `rm`'s namespace is the granted subtree with `..` clamped at its root (§48), so a
+symlink cannot name anything outside the grant. **We keep the behaviour and lose the reason.** The
+behaviour still earns its place: following would delete a different set of names than the grant
+named, and "surprising but bounded" is still surprising.
+
+**`rm` on a hard-linked file removes one name and the data survives.** That is not a special case, it
+is exactly §48's unlink-versus-revoke distinction, and the mechanism is already built: RedoxFS's
+deferred delete (`on_open_node` / `on_close_node` and the release list) is what makes the last link,
+not the first, the one that frees.
+
+**The sharp one: `rm -r subtree/` where a file inside is also linked from outside.** The subtree goes
+away and the data does not, because the outside name still holds it. That is correct — you removed the
+names you were granted, and you were never granted the other one — but it means **"I deleted the
+subtree" and "that content is gone" stop being the same statement.** For a backup target (milestone
+55) that distinction is worth stating rather than discovering.
+
+**And the cycle, which is a termination argument rather than a taste one.** `rm -r` works bottom-up,
+so a hard link making a directory its own descendant does not merely confuse it — it **does not
+terminate**. Unix forbids hard-linked directories for this reason among others; here the same
+prohibition is load-bearing for a verb we have already shipped the recursion for.
+
+**One footgun inherited if symlinks land:** `rm -r link` versus `rm -r link/`. The trailing slash
+changes whether the target's contents are in scope, which is a real source of accidents in Unix.
+Decide it explicitly rather than letting the path parser decide by accident.
+
 #### `touch`, and the reason file times were refused has expired
 
 Not built, and it splits the way `mv` and `rm` did. **Creating an empty file if absent** is
