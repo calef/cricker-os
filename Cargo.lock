@@ -211,6 +211,7 @@ dependencies = [
  "paging",
  "pci",
  "regions",
+ "sink_proto",
  "slots",
  "spin",
  "tock-registers",

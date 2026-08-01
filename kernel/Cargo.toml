@@ -60,6 +60,10 @@ measure = { version = "0.1.0", path = "../crates/measure" }
 ntp_proto = { version = "0.1.0", path = "../crates/ntp_proto" }
 paging = { version = "0.1.0", path = "../crates/paging" }
 regions = { version = "0.1.0", path = "../crates/regions" }
+# The byte-sink contract (milestone 50). The kernel's tests are a *sink* for every std program they
+# spawn, so the framing they decode comes from the same definition the PAL packs with rather than
+# from a second copy of it in a test helper, which is what it was before this milestone.
+sink_proto = { version = "0.1.0", path = "../crates/sink_proto" }
 slots = { version = "0.1.0", path = "../crates/slots" }
 spin = { version = "0.12", default-features = false, features = ["spin_mutex"] }
 vt = { version = "0.1.0", path = "../crates/vt" }

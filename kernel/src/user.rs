@@ -2893,6 +2893,109 @@ pub mod fs_service {
         ))
     }
 
+    /// **Put a file behind a byte sink** (milestone 50, notes/sink-protocol.md).
+    ///
+    /// Wires the FS service (or reuses this boot's) and spawns `user/src/sink.rs` in its file role:
+    /// it holds the FS-service endpoint, a report endpoint, and the page it shares with the FS
+    /// server, and it serves one endpoint whose only expressible request is "append these bytes".
+    ///
+    /// `sink` is the capability a program's output slot gets, and **that endpoint is the whole of
+    /// what the writer holds**, which is the property the milestone rests on: it is created here
+    /// and handed out with `WRITE` to whoever is redirected and `READ` to the sink.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub struct FileSink {
+        /// The FS service's two readiness endpoints, if this call is the one that wired it.
+        pub readiness: Option<(EpId, EpId)>,
+        /// The byte sink. Goes into a program's output slot with `WRITE`.
+        pub sink: EpId,
+        /// Readiness first, then `DONE` and the byte total at end of stream.
+        pub report: EpId,
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn start_file_sink(
+        blk_image: &'static [u8],
+        fsserver_image: &'static [u8],
+        sink_image: &'static [u8],
+    ) -> Option<FileSink> {
+        let (file_ep, file_shared, readiness) = ensure(blk_image, fsserver_image)?;
+        let sink = crate::sched::create_endpoint();
+        let report = crate::sched::create_endpoint();
+        crate::sched::spawn(move || {
+            run(
+                sink_image,
+                Spawn {
+                    arg0: SINK_ROLE_FILE,
+                    arg1: 0,
+                    arg2: 0,
+                    grants: &[
+                        endpoint_cap(sink, Rights::READ), // slot 0: the byte sink it serves
+                        endpoint_cap(file_ep, Rights::WRITE), // slot 1: CALL the FS server
+                        endpoint_cap(report, Rights::WRITE), // slot 2: readiness and the total
+                    ],
+                    maps: &[Mapping {
+                        va: FILE_VA_CLIENT,
+                        phys: file_shared,
+                        flags: Flags::user_data(),
+                    }],
+                },
+            )
+        })
+        .expect("could not spawn the file sink");
+        Some(FileSink {
+            readiness,
+            sink,
+            report,
+        })
+    }
+
+    /// **Read back what the file sink wrote**, in a different process with a different FS session.
+    ///
+    /// Spawned only after the sink has reported that it closed the file, because the two share the
+    /// FS server's one file page (the [`await_warden`] lesson: one page is sound between parties
+    /// that are never using it at once, and sequencing is what makes that true).
+    ///
+    /// It streams the file's contents out **over the sink contract**, so the bytes that reach the
+    /// test arrive in the same sixteen-byte framing a `println!` does. Returns `(out, report)`.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn start_sink_verify(
+        blk_image: &'static [u8],
+        fsserver_image: &'static [u8],
+        sink_image: &'static [u8],
+    ) -> Option<(EpId, EpId)> {
+        let (file_ep, file_shared, _) = ensure(blk_image, fsserver_image)?;
+        let out = crate::sched::create_endpoint();
+        let report = crate::sched::create_endpoint();
+        crate::sched::spawn(move || {
+            run(
+                sink_image,
+                Spawn {
+                    arg0: SINK_ROLE_VERIFY,
+                    arg1: 0,
+                    arg2: 0,
+                    grants: &[
+                        endpoint_cap(out, Rights::WRITE), // slot 0: where the file's bytes go
+                        endpoint_cap(file_ep, Rights::WRITE), // slot 1: CALL the FS server
+                        endpoint_cap(report, Rights::WRITE), // slot 2: the size it found
+                    ],
+                    maps: &[Mapping {
+                        va: FILE_VA_CLIENT,
+                        phys: file_shared,
+                        flags: Flags::user_data(),
+                    }],
+                },
+            )
+        })
+        .expect("could not spawn the sink verifier");
+        Some((out, report))
+    }
+
+    /// `user/src/sink.rs`'s roles. Kept in sync with that file by name and by this comment; a
+    /// mismatch spawns the wrong role and hangs, which is why they are named here rather than
+    /// spelled as bare integers at the two call sites.
+    const SINK_ROLE_FILE: u64 = 1;
+    const SINK_ROLE_VERIFY: u64 = 2;
+
     /// The `std::fs` client's heap budget and extra stack. Same magnitudes as the networked std
     /// program: it is a full std program (formatting, `Vec`, `String`, `read_to_string`), so it
     /// needs the generous heap and the deep stack std's machinery wants.
@@ -7055,8 +7158,25 @@ pub mod std_service {
         clock_image: &'static [u8],
         entropy_image: &'static [u8],
     ) -> EpId {
-        let budget = crate::untyped::create(BUDGET_PAGES).expect("no untyped for hellostd");
         let report = crate::sched::create_endpoint();
+        start_on(image, clock_image, entropy_image, report);
+        report
+    }
+
+    /// The same spawn, with **the output sink chosen by the caller** (milestone 50).
+    ///
+    /// This split is the milestone's finding expressed as a function signature: everything about a
+    /// std program's wiring is fixed except one endpoint capability, and putting a different one in
+    /// slot 1 is the whole of redirection. The program is not told, cannot ask, and the two callers
+    /// of this function hand it an endpoint the kernel receives on and an endpoint a file sink
+    /// receives on. See `sink_tests`.
+    pub fn start_on(
+        image: &'static [u8],
+        clock_image: &'static [u8],
+        entropy_image: &'static [u8],
+        report: EpId,
+    ) {
+        let budget = crate::untyped::create(BUDGET_PAGES).expect("no untyped for hellostd");
 
         // The entropy service, wired once per boot and shared with the milestone-56 tests. Its
         // request endpoint is the whole of a std program's randomness authority: `SystemRng` is a
@@ -7127,8 +7247,6 @@ pub mod std_service {
             )
         })
         .expect("could not spawn hellostd");
-
-        report
     }
 }
 
@@ -7136,38 +7254,59 @@ pub mod std_service {
 mod std_tests {
     use super::*;
 
-    /// Reassemble a std program's stdout off its endpoint until `want` bytes have arrived, and
-    /// compare byte for byte. The PAL SENDs 16 bytes per message (w0 = byte count, w1|w2 = the
-    /// bytes, little-endian), and `SEND` blocks until a receiver takes it, so taking exactly
-    /// `want.len()` bytes consumes exactly the messages the program sent, and the program has
-    /// reached `SYS_EXIT` by the time the last one lands.
+    /// Reassemble a std program's stdout off its endpoint until the writer says the stream is over,
+    /// and compare byte for byte.
+    ///
+    /// The framing is the sink contract's (`crates/sink_proto`, milestone 50), which for bytes is
+    /// bit-for-bit the framing the PAL used before that contract existed: `w0` is the count, `w1`
+    /// and `w2` are the bytes, little-endian. `SEND` blocks until a receiver takes it, so the
+    /// program is somewhere between its last `println!` and `SYS_EXIT` when the bytes land.
+    ///
+    /// **It reads to end of stream rather than to a byte count, and that is a strengthening.**
+    /// Stopping at `want.len()` proved the right bytes came out and said nothing about whether more
+    /// were coming; draining to `OP_EOF` proves the program printed exactly this and then finished,
+    /// and it exercises the end-of-stream announcement std's `cleanup` now makes, which is what a
+    /// pipe's reader will depend on.
     ///
     /// Shared by every std test on both ISAs (the arch-gated test modules reach it here), so all of
     /// them assert the same way and a drift in one is a diff in one place.
     pub(super) fn assert_std_transcript(report: crate::sched::EpId, want: &[u8], what: &str) {
         let mut got = [0u8; 512];
-        let mut len = 0usize;
-        while len < want.len() {
-            let words = crate::sched::ipc_recv(report);
-            let count = words[0] as usize;
-            assert!(
-                (1..=16).contains(&count),
-                "{what}: stdout message with a bad byte count: {count}"
-            );
-            let mut chunk = [0u8; 16];
-            chunk[..8].copy_from_slice(&words[1].to_le_bytes());
-            chunk[8..].copy_from_slice(&words[2].to_le_bytes());
-            for &b in &chunk[..count] {
-                assert!(len < got.len(), "{what}: printed more than the transcript");
-                got[len] = b;
-                len += 1;
-            }
-        }
+        let len = drain_sink(report, &mut got, what);
         assert_eq!(
             &got[..len],
             want,
             "{what}: stdout did not match the transcript"
         );
+    }
+
+    /// Reassemble a sink-contract stream into `out` until end of stream; returns its length.
+    ///
+    /// The one decoder for every sink in the suite, on purpose. The indifference test's whole claim
+    /// is that two destinations produce the same bytes, and it would be a much weaker claim if each
+    /// arm were decoded by its own code.
+    pub(super) fn drain_sink(ep: crate::sched::EpId, out: &mut [u8], what: &str) -> usize {
+        let mut len = 0usize;
+        loop {
+            let words = crate::sched::ipc_recv(ep);
+            let mut chunk = [0u8; sink_proto::INLINE_MAX];
+            match sink_proto::unpack(words[0], words[1], words[2], &mut chunk) {
+                sink_proto::Msg::Bytes(n) => {
+                    for &b in &chunk[..n] {
+                        assert!(len < out.len(), "{what}: wrote more than the buffer holds");
+                        out[len] = b;
+                        len += 1;
+                    }
+                }
+                sink_proto::Msg::Eof => return len,
+                sink_proto::Msg::Malformed => {
+                    panic!(
+                        "{what}: a sink message the contract does not define: {:#x}",
+                        words[0]
+                    )
+                }
+            }
+        }
     }
 
     /// Consume the FS service's two readiness sentinels, if this caller is the one that wired it.
@@ -7298,7 +7437,7 @@ mod std_tests {
     /// so a drift in std's behaviour, the PAL, or the demo is a loud diff rather than a mystery.
     /// `os cricker` proves `std::env::consts::OS` resolves through the patched `env_consts`; the
     /// two `unsupported` lines prove `fs`/`net` refuse honestly rather than pretend.
-    const EXPECTED: &[u8] = b"hello from std on cricker-os\n\
+    pub(super) const EXPECTED: &[u8] = b"hello from std on cricker-os\n\
         os cricker\n\
         vec sum 149985000\n\
         string len 800\n\
@@ -12858,6 +12997,247 @@ mod riscv_virtio_tests {
             &word.to_le_bytes(),
             b"CRKWRIT1",
             "after a mid-write kill, a fresh driver could not use the device",
+        );
+    }
+}
+
+/// **The sink contract, and the one behaviour it changed** (milestone 50, notes/sink-protocol.md).
+///
+/// Two claims, one per test, and they need each other. The first is that a program cannot tell what
+/// its output slot holds; the second is that when what it held is destroyed, the program finds out.
+/// Without the second, "indifferent" would mean "unable to notice anything", which is a much
+/// cheaper property and the wrong one.
+///
+/// Both run on both ISAs (§19), because the claim is about a contract and not about an instruction
+/// set.
+#[cfg(test)]
+mod sink_tests {
+    use super::*;
+    use crate::cap::{Rights, endpoint_cap};
+    use crate::sched::EpId;
+    use sink_proto::fixture;
+
+    /// `user/src/sink.rs`'s writer role. Its `arg1` is how many times to write the transcript, with
+    /// 0 meaning "until the sink stops taking it".
+    const ROLE_WRITER: u64 = 0;
+
+    /// Spawn the writer against `sink`, and return the endpoint it reports its classification on.
+    ///
+    /// `None` is the case that has no sink, and the wiring says so by **leaving slot 0 empty**
+    /// rather than by passing a flag: an empty cspace slot is how this kernel spells "you were
+    /// never given one", and it is the refusal an ungranted display client meets too (§29). The
+    /// report still goes in at slot 1, placed rather than appended, so the program that holds no
+    /// sink is otherwise wired identically to the one that does.
+    fn spawn_writer(image: &'static [u8], sink: Option<EpId>, repeat: u64) -> EpId {
+        let report = crate::sched::create_endpoint();
+        crate::sched::spawn(move || match sink {
+            Some(ep) => run(
+                image,
+                Spawn {
+                    arg0: ROLE_WRITER,
+                    arg1: repeat,
+                    arg2: 0,
+                    grants: &[
+                        endpoint_cap(ep, Rights::WRITE),     // slot 0: the byte sink
+                        endpoint_cap(report, Rights::WRITE), // slot 1: the classification
+                    ],
+                    maps: &[],
+                },
+            ),
+            None => {
+                crate::sched::grant_at(1, endpoint_cap(report, Rights::WRITE))
+                    .expect("the writer's report slot was already occupied");
+                run(
+                    image,
+                    Spawn {
+                        arg0: ROLE_WRITER,
+                        arg1: repeat,
+                        arg2: 0,
+                        grants: &[],
+                        maps: &[],
+                    },
+                )
+            }
+        })
+        .expect("could not spawn the sink writer");
+        report
+    }
+
+    /// **The same program, two destinations, the same bytes.**
+    ///
+    /// `hellostd` is spawned twice with **identical grants except for what is behind slot 1**: once
+    /// with an endpoint this test receives on, which is the pipe shape (an ordinary receiver, no
+    /// page, no reply), and once with an endpoint served by `sink` in its file role, which appends
+    /// every message into a file on the real RedoxFS image through the real FS server. The file is
+    /// then read back by a **third** process with its own FS session and streamed home over the
+    /// sink contract.
+    ///
+    /// The two arms share nothing but sixteen bytes of message. One ends in the kernel's own
+    /// address space; the other crosses two userspace processes, an FS server, a block server and a
+    /// virtio disk. The binary is identical, its code never chose either, and the bytes must be
+    /// equal.
+    ///
+    /// **What would make this vacuous, and why it is not.** Comparing each arm against a constant
+    /// would pass if both arms were broken the same way, so the second arm is compared against
+    /// *what the first arm actually received*, and the first arm against the pinned transcript. An
+    /// empty file would satisfy "equal" if the program printed nothing, so the byte count is
+    /// asserted on both sides as well.
+    #[test_case]
+    fn a_program_cannot_tell_what_its_output_slot_holds() {
+        let hellostd = program("hellostd").expect("no hellostd program in the initrd archive");
+        let clock = program("clock").expect("no clock program in the initrd archive");
+        let entropy = program("entropy").expect("no entropy program in the initrd archive");
+        let sink_image = program("sink").expect("no sink program in the initrd archive");
+        let Some(fsserver) = program("fsserver") else {
+            crate::println!("    (no FS server in this archive; skipping)");
+            return;
+        };
+
+        // Arm one: the kernel receives. Everything here is what the existing std test does, which
+        // is the point: nothing was special-cased for the sink.
+        let direct = crate::sched::create_endpoint();
+        std_service::start_on(hellostd, clock, entropy, direct);
+        let mut first = [0u8; 512];
+        let n1 = super::std_tests::drain_sink(direct, &mut first, "hellostd, direct endpoint");
+        assert_eq!(
+            &first[..n1],
+            super::std_tests::EXPECTED,
+            "the direct arm did not print the pinned transcript, so it is no reference for what \
+             the other arm produces",
+        );
+
+        // Arm two: a file sink. It opens its file before the writer exists, for the reason
+        // `fs_service::await_warden` records: it stages a name in the page it shares with the FS
+        // server, and a client that already existed could write over it.
+        let blk = program("init").expect("no init program in the initrd archive");
+        let Some(file_sink) = fs_service::start_file_sink(blk, fsserver, sink_image) else {
+            crate::println!("    (no RedoxFS disk attached; skipping)");
+            return;
+        };
+        let (sink_ep, sink_report) = (file_sink.sink, file_sink.report);
+        fs_service::await_service(file_sink.readiness);
+        assert_eq!(
+            crate::sched::ipc_recv(sink_report)[0],
+            fixture::READY,
+            "the file sink could not open its file, so there was nothing to redirect into",
+        );
+
+        std_service::start_on(hellostd, clock, entropy, sink_ep);
+        let [done, total, ..] = crate::sched::ipc_recv(sink_report);
+        assert_eq!(
+            done,
+            fixture::DONE,
+            "the file sink reported {done:#x} rather than finishing: it refused a message, or the \
+             FS server refused a write",
+        );
+        assert_eq!(
+            total as usize, n1,
+            "the file sink wrote {total} bytes for a program that printed {n1}",
+        );
+
+        // The read-back, in a third process with its own FS session, and only now that the sink has
+        // closed the file: the two share the FS server's one file page.
+        let Some((out, verify_report)) = fs_service::start_sink_verify(blk, fsserver, sink_image)
+        else {
+            panic!("the FS service vanished between the file sink and its verifier");
+        };
+        let mut second = [0u8; 512];
+        let n2 = super::std_tests::drain_sink(out, &mut second, "hellostd, file sink");
+        let [vdone, vsize, ..] = crate::sched::ipc_recv(verify_report);
+        assert_eq!(
+            vdone,
+            fixture::DONE,
+            "the verifier could not read back the file the sink wrote ({vdone:#x})",
+        );
+        assert_eq!(
+            vsize as usize, n2,
+            "the verifier streamed a length it did not find on the platter",
+        );
+
+        assert_eq!(
+            &second[..n2],
+            &first[..n1],
+            "the same program printed different bytes into a file than into an endpoint, so its \
+             output destination is something it can tell apart",
+        );
+        crate::println!("    ({n1} bytes, identical through an endpoint and through RedoxFS)");
+    }
+
+    /// **A dead reader ends the writer, and a missing one does not.** Milestone 50's one behaviour
+    /// change, asserted by value on all three outcomes.
+    ///
+    /// Unix needs `SIGPIPE` here because an anonymous file descriptor gives the kernel no way to
+    /// reach a writer that is not making a syscall. This writer *is* making a syscall, on a
+    /// capability the kernel can see is dead, so the fact arrives as a return code.
+    ///
+    /// 1. **A sink that stays**: the transcript arrives and the writer classifies `Ok`.
+    /// 2. **A sink destroyed under it**: this test takes a few messages, reclaims the region the
+    ///    endpoint was retyped from (§16), and the writer's blocked `SEND` classifies `Gone`.
+    ///    Blocked is the case that matters: a producer in `yes | head` is almost always parked in a
+    ///    send when its reader exits.
+    /// 3. **No sink at all**: an empty slot classifies `NoSink` and the program **keeps running**.
+    ///
+    /// Case 3 is what makes case 2 mean anything. Both used to be `NoSuchSlot`, so a writer that
+    /// ended on case 2 would have ended on case 3 as well, killing every program that was simply
+    /// never given a console.
+    #[test_case]
+    fn a_destroyed_sink_ends_the_writer_and_an_absent_one_does_not() {
+        let image = program("sink").expect("no sink program in the initrd archive");
+
+        // 1. A sink that stays.
+        let live = crate::sched::create_endpoint();
+        let report = spawn_writer(image, Some(live), 1);
+        let mut got = [0u8; 256];
+        let n = super::std_tests::drain_sink(live, &mut got, "the writer with a live sink");
+        assert_eq!(
+            &got[..n],
+            fixture::TRANSCRIPT,
+            "the writer did not deliver its transcript to a sink that was there",
+        );
+        let [class, total, ..] = crate::sched::ipc_recv(report);
+        assert_eq!(
+            (class, total as usize),
+            (
+                fixture::code(sink_proto::Sent::Ok),
+                fixture::TRANSCRIPT.len()
+            ),
+            "a writer whose sink stayed put must classify Ok",
+        );
+
+        // 2. A sink destroyed under a writer blocked in a send. The endpoint is retyped out of a
+        // region this test owns, because destroying the region is how an endpoint dies (§16) and
+        // the kernel's own endpoints are not in one.
+        let region = crate::untyped::create(4).expect("no untyped for the doomed sink");
+        let doomed = crate::sched::create_endpoint_from(region).expect("no endpoint in the region");
+        let report = spawn_writer(image, Some(doomed), 0);
+        // Take a few messages first, so the writer is demonstrably running and parked in the next
+        // send rather than having failed before it ever reached one.
+        for _ in 0..3 {
+            let _ = crate::sched::ipc_recv(doomed);
+        }
+        crate::sched::reclaim_region(region).expect("the doomed sink's region would not reclaim");
+        let [class, total, ..] = crate::sched::ipc_recv(report);
+        assert_eq!(
+            class,
+            fixture::code(sink_proto::Sent::Gone),
+            "a writer whose sink was destroyed classified {class} rather than Gone. Before \
+             milestone 50 this arrived as NoSuchSlot, indistinguishable from never having had a \
+             sink, which is exactly why `yes | head` could not end.",
+        );
+        assert!(
+            total >= 3,
+            "the writer reported {total} bytes through, so it never reached a live send and the \
+             classification above says nothing about a sink dying under one",
+        );
+
+        // 3. No sink at all: the slot is empty, and the program keeps running.
+        let report = spawn_writer(image, None, 1);
+        let [class, total, ..] = crate::sched::ipc_recv(report);
+        assert_eq!(
+            (class, total),
+            (fixture::code(sink_proto::Sent::NoSink), 0),
+            "a program with an empty output slot must keep running and print into the void, which \
+             is what every OS does to a process whose stdout is closed",
         );
     }
 }
