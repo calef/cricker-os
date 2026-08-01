@@ -150,11 +150,18 @@ the requirements are known.
    won by *exposure* rather than by reading the spec, which is why §46 says write the calendar and
    vendor the crypto.
 
-## Chris names the programs
+## Chris names the programs and the shared modules
 
-**A program's name is Chris's call, not a lane's and not yours** (2026-08-01). This is the same rule
-as `DECISIONS.md` section numbers, one level up: it is global to the tree, so it is decided by the
-person who can see the whole tree.
+**The name of a program or a shared module is Chris's call, not a lane's and not yours**
+(2026-08-01). This is the same rule as `DECISIONS.md` section numbers, one level up: it is global to
+the tree, so it is decided by the person who can see the whole tree.
+
+**Shared modules are in scope for a reason.** `user/src/` holds 51 files: 48 are `[[bin]]` programs
+and three are modules compiled into other programs with `#[path = "..."] mod ...` (`cseam.rs`,
+`suptree.rs`, `swap.rs`). **Nothing in the naming distinguishes them**, so a reader who tries to run
+`cseam` has been misled by the directory. A shared module's name has to answer a question a program's
+name never raises, which is *"where does this get compiled into?"*, and that makes it a naming problem
+of its own rather than a smaller version of the program one.
 
 The reason is his: **names are what make this OS accessible to humans and to LLMs.** A reader meets a
 name before they meet anything else, and in a capability system the name is often the only thing that
@@ -168,9 +175,14 @@ not in the commit that introduced it. `cseam.rs` sits among 48 programs and is n
 module. Every one of those was a locally reasonable choice by whoever was mid-task.
 
 **How to work it.** Propose names with what each thing actually does, and wait. A lane that needs a
-new program ships a **provisional** name, says so in its report, and expects it to change; the
-integrator surfaces it. Never rename on your own initiative either, because a rename is a naming
+new program or module ships a **provisional** name, says so in its report, and expects it to change;
+the integrator surfaces it. Never rename on your own initiative either, because a rename is a naming
 decision with extra steps.
+
+**Not yet decided:** whether this covers crate names too. Crates are just as reader-facing
+(`fs_proto`, `capsh`, `cred`), and arguably more, since they are what a newcomer greps first. The rule
+above says programs and modules because that is what was asked for on 2026-08-01. Ask before treating
+a crate name as settled.
 
 ### The convention: `snake_case`, one rule, everywhere
 
