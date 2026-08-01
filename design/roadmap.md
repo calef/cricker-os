@@ -2059,8 +2059,26 @@ person looking rather than the thing looked into**, plus divination); `mimic` an
 besides; `echo` collides with a shell builtin **we already have**, exactly as `alias` collides with
 zsh's; and `parallel` means concurrency, in a system with four cores and per-CPU run queues.
 
-**That the naming is this hard is itself evidence.** Fifteen candidates, the first eight failing for a
-*different* reason each and the last seven finding no new ones, and the one that passed every test failed on the word being occupied by its own inverse. The
+**Two later candidates are worth their own line.** `harmonic` clears all three tests — the stored path
+as fundamental, the holder as resonator — and fails on **the direction of causation**, a failure mode
+none of the others had: a harmonic is *determined by* its fundamental, whereas our resolution is
+determined by the **namespace**, not by the stored name. The metaphor points the causal arrow
+backwards. (`harmony` is simply the wrong axis: it means concord, where ours may resolve to nothing.)
+
+`reflection` is **the best of the mirror family**, better than `mirror` itself, because a reflection is
+explicitly *not the thing* where a computing mirror implies an identical replica — and its causation is
+right, since what you see depends on the mirror *and* where you stand. It fails on a harder collision:
+in programming, **reflection is runtime introspection of types**, which is precise, universal, and in
+our own domain.
+
+**And that is the pattern behind the whole family.** `mirror` → replica, `reflection` → introspection,
+`echo` → a shell builtin we ship, `parallel` → concurrency. **Physical-optics vocabulary has been
+comprehensively borrowed by computing for unrelated meanings**, so the one metaphor that actually fits
+this construct is the one whose every word is already spent. That is not bad luck; it is why a flat,
+non-metaphorical name is the likely answer if the mechanism survives at all.
+
+**That the naming is this hard is itself evidence.** Seventeen candidates, the first eight failing for a
+*different* reason each and the rest finding almost none, and the one that passed every test failed on the word being occupied by its own inverse. The
 construct is the only thing in this design whose meaning depends on who is looking, and the vocabulary
 has no slot for that. Plan 9 hit the same wall from the same premises and answered with a different
 mechanism rather than a better noun — which is why this fork is **mechanism first**.
