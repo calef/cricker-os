@@ -465,6 +465,25 @@ that entry means something it was never allowed to mean. `check_component` now e
 boundary, deliberately there and not patched into the vendored engine: it is a rule of *this*
 contract, not a bug in RedoxFS, whose other callers may name entries whatever they like.
 
+## Extended attributes are a layer on top, not a change to the engine (milestone 57)
+
+`GETXATTR`, `SETXATTR`, `LISTXATTR` and `REMOVEXATTR` are served by the same loop over the same
+endpoint, and RedoxFS knows nothing about any of them: the server keeps one blob per node in a
+reserved directory of the image, keyed on the node's `TreePtr` id. Three things that belong in this
+note rather than in [xattr.md](xattr.md), because they are facts about *this* server:
+
+- **The transaction guarantee is what makes it safe.** Every mutation runs inside one `fs.tx`, so an
+  attribute and the file it is on reach the platter in one commit. That was the check DECISIONS §34
+  required before the layer was viable, and it is the same property `RENAME`'s crash atomicity rests
+  on.
+- **The purge asks the engine.** `remove_node` answers `Some(id)` exactly when a node's last link
+  went, so `unlink` and `rmdir` take the attributes away on `Some` and never have to decide for
+  themselves. `rename_node` is the exception: it removes a replaced destination and discards the
+  freed id, so `Server::rename` notices that one for itself.
+- **The reserved name is enforced at our boundary**, in `check_component` and in `read_dir`, for the
+  same reason the one-component rule is ours: it is a rule of *this* contract, not a bug in RedoxFS,
+  whose other callers may name entries whatever they like.
+
 ## A per-file grant: the caretaker between the directory and the program
 
 Milestone 31's `run wc report.txt` grants one file, and the unit of authority here is a *directory*.

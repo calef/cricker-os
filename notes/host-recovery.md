@@ -138,6 +138,27 @@ below writes with upstream's archiver rather than with our own `put`.
 - Refusals are asserted, not assumed: `..`, `cat` of a directory, `ls` of a file, a missing name.
 - The image is hashed before and after a read to prove the read wrote nothing.
 
+## The attribute store is visible here, and that is a decision (milestone 57)
+
+An image written by cricker-os carries a directory in its root called **`.cricker-attrs`**, holding
+one small file per node that has extended attributes, named for that node's `TreePtr` id in hex.
+`redoxfs-host ls` shows it, `extract` copies it out, and upstream's FUSE mount would too.
+
+That is deliberate rather than a leak, and both halves are worth saying:
+
+- **It is unreachable through the contract.** No client of the FS server can open, create, list, or
+  descend into it, in any directory. The confinement is the *contract's*, and a recovery host is not
+  a client of the contract; it holds the image file.
+- **And a backup that carries the store carries the metadata.** The attributes come out with the
+  files rather than being lost at the boundary, which for a Time Machine target is the outcome you
+  want. The format is written down in `fs_proto::xattr::store` precisely so a person holding a
+  damaged image can read it: a record is a name length, a `u32` type code, a `u16` value length,
+  then the name and the value, little-endian.
+
+What the tool does **not** do is put an attribute back on the right file during an `extract`, or
+render one in a listing. Recovering attributes today means reading the blob files and doing the
+node-id-to-name mapping by hand. See notes/xattr.md.
+
 ## What this does not do, and where it goes next
 
 - **It reads an image file, not a raw device.** Finding a filesystem on a real disk means reading
