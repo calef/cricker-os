@@ -287,10 +287,10 @@ pub fn magic_component(token: &[u8]) -> Result<bool, Refusal> {
         None => return Ok(false),
     };
     for step in lead {
-        if let Step::Down(name) = step {
-            if glob::has_magic(name) {
-                return Err(Refusal::PatternInPath);
-            }
+        if let Step::Down(name) = step
+            && glob::has_magic(name)
+        {
+            return Err(Refusal::PatternInPath);
         }
     }
     Ok(match last {
@@ -403,7 +403,10 @@ mod tests {
             core::array::from_fn(|i| (&names[i][..], false));
         assert_eq!(expand(b"a*", &listing), Err(Refusal::TooManyNames));
         // Exactly the bound is fine: this is a ceiling that is met, not one with slack in it.
-        assert_eq!(expand(b"a*", &listing[..MAX_NAMES]).unwrap().len(), MAX_NAMES);
+        assert_eq!(
+            expand(b"a*", &listing[..MAX_NAMES]).unwrap().len(),
+            MAX_NAMES
+        );
     }
 
     /// A name that matched and cannot travel in a grant is a refusal too, for the same reason: the
@@ -436,7 +439,10 @@ mod tests {
         assert_eq!(magic_component(b"logs/*.txt"), Ok(true));
         assert_eq!(magic_component(b"report.txt"), Ok(false));
         assert_eq!(magic_component(b"logs/report.txt"), Ok(false));
-        assert_eq!(magic_component(b"*/report.txt"), Err(Refusal::PatternInPath));
+        assert_eq!(
+            magic_component(b"*/report.txt"),
+            Err(Refusal::PatternInPath)
+        );
         assert_eq!(magic_component(b"a/*/b"), Err(Refusal::PatternInPath));
         // The refusals a path already has still come first: the token is parsed before anything
         // asks whether it has magic in it.

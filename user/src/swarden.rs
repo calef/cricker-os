@@ -216,8 +216,7 @@ fn serve(dir: u64, set: &[u8]) -> ! {
                 let dn = name_at(len, dst_len, &mut dst);
                 let dst_handle = table.get(fs::dst_handle(w1));
                 let src_ok = !filtered || nameset::contains(set, &src[..sn]);
-                let dst_ok =
-                    dst_handle != Some(dir) || nameset::contains(set, &dst[..dn]);
+                let dst_ok = dst_handle != Some(dir) || nameset::contains(set, &dst[..dn]);
                 match dst_handle {
                     _ if !(src_ok && dst_ok) => reply_err(ENOENT),
                     Some(d) => forward(

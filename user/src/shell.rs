@@ -1527,9 +1527,7 @@ impl Text {
     /// Whether a name appears in what was collected. Used only for the stranger check, where the
     /// names are distinctive enough that a substring is the right question.
     fn holds(&self, needle: &[u8]) -> bool {
-        self.as_bytes()
-            .windows(needle.len())
-            .any(|w| w == needle)
+        self.as_bytes().windows(needle.len()).any(|w| w == needle)
     }
 }
 
@@ -1597,13 +1595,13 @@ fn globbing(spec: u64) -> ! {
     }
 
     // 4. A pattern in a leading component, refused where it is read.
-    if let Command::Run(bad) = capsh::parse(b"rm */gone") {
-        if matches!(
+    if let Command::Run(bad) = capsh::parse(b"rm */gone")
+        && matches!(
             expansion(&mut nav, &bad),
             Err(Say::Cannot(Refusal::PatternInPath))
-        ) {
-            v |= gb::PATTERN_IN_PATH_REFUSED;
-        }
+        )
+    {
+        v |= gb::PATTERN_IN_PATH_REFUSED;
     }
 
     // 5. And a line with no pattern in it is still text: byte for byte, spacing included.

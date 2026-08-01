@@ -1818,7 +1818,10 @@ fn redoxfs_glob_grant_took_exactly_the_match() -> bool {
         .iter()
         .any(|n| globset.iter().any(|got| got == n));
     if !matched_gone && globset.len() == 4 {
-        eprintln!("milestone-47 glob check: `{}` is untouched; the guest never ran the set grant (skipping)", tree::GLOBSET);
+        eprintln!(
+            "milestone-47 glob check: `{}` is untouched; the guest never ran the set grant (skipping)",
+            tree::GLOBSET
+        );
         return true;
     }
     for name in [tree::GLOB_ONE, tree::GLOB_TWO] {
