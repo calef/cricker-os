@@ -33,6 +33,7 @@ members = [
     "crates/swap_proto",
     "crates/socket_proto",
     "crates/sink_proto",
+    "crates/virtio",
     "crates/intrusive",
     "crates/lineedit",
     "crates/measure",

@@ -22,8 +22,6 @@
 #![no_std]
 #![no_main]
 
-mod virtio;
-
 use abi::{Error, endpoint};
 use capsh::{Prog, spawnproto};
 use user_rt::{call, cap_delete, exit, invoke, recv, recv_cap as rt_recv_cap, send, yield_now};

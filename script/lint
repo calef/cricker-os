@@ -265,14 +265,12 @@ esac
 #
 #    This check is the one that would have caught the whole class. It counts consumers per include
 #    target, so it fails the moment a second binary reaches for the same file.
-#    **`virtio` is allowed, and it is a debt rather than an exception.** It is shared by `blk` and
-#    `hello`, and it cannot become a crate as it stands because it reaches back into whichever
-#    binary includes it: `use crate::{check, invoke, send}`, where `check` is defined differently by
-#    each (`blk` panics, `hello` calls its own `fail`). So it is not a shared *contract* at all, it
-#    is a shared *implementation with a per-binary hook*, which is a different and worse thing than
-#    the rule was written for. 1035 lines and 13 call sites; the fix is to pass the hook in, and it
-#    wants its own change. Until then this entry keeps the check honest about what it is tolerating.
-path_module_allow=" virtio "
+#    The allow-list is empty, and that is the intended steady state. `virtio` was the one
+#    entry: it could not be a crate while it reached back into whichever binary included it
+#    for `check`, and the fix was to delete `check` rather than to pass it in. Rust already
+#    has the per-binary "how this program dies" hook, `#[panic_handler]`, and both binaries
+#    already had one doing the same thing. An entry here needs that kind of reason.
+path_module_allow=" "
 shared_modules=""
 for target in $(grep -rhoE '#\[path = "[a-z_0-9]+\.rs"\]' "$(dirname "$0")/../user/src" 2>/dev/null |
                 sed 's/.*"\(.*\)\.rs".*/\1/' | sort -u); do

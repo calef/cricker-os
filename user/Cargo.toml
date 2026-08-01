@@ -431,6 +431,7 @@ abi = { version = "0.1.0", path = "../crates/abi" }
 c_seam = { version = "0.1.0", path = "../crates/c_seam" }
 supervision_proto = { version = "0.1.0", path = "../crates/supervision_proto" }
 swap_proto = { version = "0.1.0", path = "../crates/swap_proto" }
+virtio = { version = "0.1.0", path = "../crates/virtio" }
 socket_proto = { version = "0.1.0", path = "../crates/socket_proto" }
 bitfont = { version = "0.1.0", path = "../crates/bitfont" }
 calendar = { version = "0.1.0", path = "../crates/calendar" }

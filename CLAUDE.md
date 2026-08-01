@@ -181,10 +181,16 @@ the requirements are known.
 (2026-08-01). This is the same rule as `DECISIONS.md` section numbers, one level up: it is global to
 the tree, so it is decided by the person who can see the whole tree.
 
-**Shared modules are in scope for a reason.** `user/src/` holds 51 files: 48 are `[[bin]]` programs
-and three are modules compiled into other programs with `#[path = "..."] mod ...` (`cseam.rs`,
-`suptree.rs`, `swap.rs`). **Nothing in the naming distinguishes them**, so a reader who tries to run
-`cseam` has been misled by the directory. A shared module's name has to answer a question a program's
+**Shared modules are in scope for a reason.** `user/src/` used to hold 48 `[[bin]]` programs and a
+handful of modules compiled into them with `#[path = "..."] mod ...`, with **nothing in the naming
+distinguishing them**, so a reader who tried to run `cseam` was misled by the directory. Rule 7
+retired that category on 2026-08-01: what two binaries share is a crate, and what remains in
+`user/src/` beside the programs is single-consumer submodules (`vnet`, `netcli`), which are ordinary
+Rust. `script/lint` now counts consumers per `#[path]` target and fails at two.
+
+The count in an earlier draft of this paragraph said "three modules" and was wrong: the grep that
+produced it matched only single-line includes, and several were two lines. Take a count from the
+merged tree, with a pattern you have checked against the real shapes. A shared module's name has to answer a question a program's
 name never raises, which is *"where does this get compiled into?"*, and that makes it a naming problem
 of its own rather than a smaller version of the program one.
 
