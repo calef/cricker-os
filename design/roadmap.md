@@ -3579,6 +3579,15 @@ The rule that already fits the tree and needs only to be written down:
 That is not a new tier. It is the existing "each domain keeps its own convention" applied one level
 out: a package directory is a Rust name, and everything else is a path.
 
+#### Crate renames settled in review (2026-08-01)
+
+| Now | Settled | Why |
+|---|---|---|
+| `caps` | **`capability`** | the crate is the capability *model*, not a container: it exports `Cap`, `Rights`, `Object`, `Reap` and `CSpace`. `cap_space` was considered and rejected because it names one of five exports and stutters as `cap_space::CSpace`. `CSpace` itself stays: it is seL4's own spelling. |
+
+These are folded in here rather than given their own milestone because a crate rename is a
+directory rename, which is what this milestone already is.
+
 #### The three that violate it
 
 | Now | Should be | Severity |
