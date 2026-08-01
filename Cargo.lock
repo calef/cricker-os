@@ -48,6 +48,7 @@ name = "capsh"
 version = "0.1.0"
 dependencies = [
  "fs_proto",
+ "glob",
 ]
 
 [[package]]
@@ -138,6 +139,9 @@ version = "0.1.0"
 [[package]]
 name = "fs_proto"
 version = "0.1.0"
+dependencies = [
+ "glob",
+]
 
 [[package]]
 name = "gfx_proto"
@@ -372,6 +376,7 @@ dependencies = [
  "entropy_proto",
  "fs_proto",
  "gfx_proto",
+ "glob",
  "lineedit",
  "ntp_proto",
  "smoltcp",

@@ -360,6 +360,10 @@ Known limitations, next to the feature rather than only in a tracker.
   the single stack page `run` maps, so a growable table would need an allocator and a 4 KiB local
   would overflow the stack on the first request. Sixteen is well past what the attacker or any
   `cd`/`ls` sequence needs.
+- **A single-name grant is still the directory the name is in**, which is wider than the name. The
+  globbing lane closed that for a *pattern* operand (a set warden, `user/src/swarden.rs`, serves only
+  the names that matched: see [glob-grant.md](glob-grant.md)) and it is still open for a literal one,
+  because a set of exactly one has no wiring behind it today.
 - **The rights are not printed by `caps` yet.** §42 says the rights *are* the discovery mechanism for
   what a mount offers, and they are introspectable in principle; nothing renders them at the shell
   today because the interactive boot wires no FS service (§27's amendment records that refusal).

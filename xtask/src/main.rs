@@ -1051,6 +1051,8 @@ fn initrd_riscv() -> bool {
             "--bin",
             "dwarden",
             "--bin",
+            "swarden",
+            "--bin",
             "heeder",
             "--bin",
             "spinner",
@@ -1132,6 +1134,7 @@ fn initrd_riscv() -> bool {
         ("fsclient", "fsclient"),
         ("fwarden", "fwarden"),
         ("dwarden", "dwarden"),
+        ("swarden", "swarden"),
         ("heeder", "heeder"),
         ("spinner", "spinner"),
         // The authority-shrinking supervision tree (milestone 22 phase B.2): an init that hands its
@@ -1393,6 +1396,9 @@ fn mkinitrd() -> bool {
         // `rm` (milestone 47's rmdir lane): the first program endowed a directory capability.
         // Portable, so both archives carry it.
         "rm",
+        // The set warden (milestone 47's globbing lane): a directory capability attenuated to the
+        // names a pattern matched. Portable, so both archives carry it.
+        "swarden",
         "entropy",
         "ntp",
     ] {
@@ -1658,9 +1664,18 @@ fn stage_subtree() -> Option<String> {
     let rmtree = root.join(tree::RMTREE);
     let doomed = rmtree.join(tree::RM_DOOMED);
     let nested = doomed.join(tree::RM_NESTED);
+    // Milestone 47's globbing tree, a sibling of both. Two names the pattern matches and two it does
+    // not, in one directory, so "the grant is what matched" is a claim about *which* names.
+    let globset = root.join(tree::GLOBSET);
+    let globdir = globset.join(tree::GLOB_DIR);
     let ok = std::fs::create_dir_all(&deeper).is_ok()
         && std::fs::create_dir_all(&other).is_ok()
         && std::fs::create_dir_all(&nested).is_ok()
+        && std::fs::create_dir_all(&globdir).is_ok()
+        && std::fs::write(globset.join(tree::GLOB_ONE), tree::GLOB_BODY).is_ok()
+        && std::fs::write(globset.join(tree::GLOB_TWO), tree::GLOB_BODY).is_ok()
+        && std::fs::write(globset.join(tree::GLOB_MISS), tree::GLOB_BODY).is_ok()
+        && std::fs::write(globdir.join(tree::GLOB_INNER), tree::GLOB_BODY).is_ok()
         && std::fs::write(sub.join(tree::INNER), tree::INNER_BODY).is_ok()
         && std::fs::write(deeper.join(tree::LEAF), tree::LEAF_BODY).is_ok()
         && std::fs::write(other.join(tree::SECRET), tree::SECRET_BODY).is_ok()
@@ -1770,6 +1785,86 @@ fn redoxfs_check_after_run() -> bool {
             fs_proto::fixture::WRITE_PATTERN,
         )
         && redoxfs_subtree_was_confined()
+        && redoxfs_glob_grant_took_exactly_the_match()
+}
+
+/// **The set grant, witnessed from outside the guest** (milestone 47's globbing lane).
+///
+/// The guest reports that `echo gl-*.txt` and the grant `rm gl-*.txt` would transfer are the same
+/// names, and that a `rm` behind a set warden removed what it held. Both are statements by the thing
+/// under test. This is the other kind: the host, with the pinned engine, reading the image the run
+/// left behind.
+///
+/// Three claims, and they only mean anything together:
+///
+/// 1. **The two matched names are gone.** The expansion the guest printed is what actually
+///    disappeared, so "the expansion is the grant" is a fact about the disk.
+/// 2. **The two names the pattern did not match are still there.** They sit in the same directory,
+///    one entry away, and the warden a hop up holds a capability that could remove either. So their
+///    survival is a fact about the *set*, not about what was reachable.
+/// 3. **The unmatched directory still holds its file.** A `rm` that had walked into it would have
+///    emptied it, and a set capability carrying no `-r` cannot even look inside one it *did* match.
+fn redoxfs_glob_grant_took_exactly_the_match() -> bool {
+    use fs_proto::fixture::tree;
+    let img = redoxfs_disk_path();
+    let Some(globset) = redoxfs_ls(&img, tree::GLOBSET) else {
+        eprintln!("milestone-47 glob check: `{}` did not list", tree::GLOBSET);
+        return false;
+    };
+    // No RedoxFS disk, or a boot that never ran the test: the fixture is untouched, and this check
+    // has nothing to say. `redoxfs_subtree_was_confined` makes the same allowance for the same
+    // reason (a `run` that skipped the FS tests must not fail the gate).
+    let matched_gone = ![tree::GLOB_ONE, tree::GLOB_TWO]
+        .iter()
+        .any(|n| globset.iter().any(|got| got == n));
+    if !matched_gone && globset.len() == 4 {
+        eprintln!(
+            "milestone-47 glob check: `{}` is untouched; the guest never ran the set grant (skipping)",
+            tree::GLOBSET
+        );
+        return true;
+    }
+    for name in [tree::GLOB_ONE, tree::GLOB_TWO] {
+        if globset.iter().any(|got| got == name) {
+            eprintln!(
+                "MILESTONE-47 GLOB FAILED: `{name}` matched the pattern and is still in `{}` \
+                 ({globset:?}). What the expansion showed is not what the grant took away.",
+                tree::GLOBSET,
+            );
+            return false;
+        }
+    }
+    for name in [tree::GLOB_MISS, tree::GLOB_DIR] {
+        if !globset.iter().any(|got| got == name) {
+            eprintln!(
+                "MILESTONE-47 GLOB FAILED: `{name}` did NOT match the pattern and is gone from \
+                 `{}` ({globset:?}). A set capability reached a name one directory entry away that \
+                 the command line never designated.",
+                tree::GLOBSET,
+            );
+            return false;
+        }
+    }
+    let inner = format!("{}/{}", tree::GLOBSET, tree::GLOB_DIR);
+    match redoxfs_ls(&img, &inner) {
+        Some(names) if names.iter().any(|n| n == tree::GLOB_INNER) => {
+            eprintln!(
+                "glob grant: `{}` matched two names in `{}` and exactly those two are gone; \
+                 {globset:?} is what the pattern did not designate",
+                core::str::from_utf8(tree::GLOB_PATTERN).unwrap_or("?"),
+                tree::GLOBSET,
+            );
+            true
+        }
+        other => {
+            eprintln!(
+                "MILESTONE-47 GLOB FAILED: `{inner}` holds {other:?} and should still hold `{}`. \
+                 An unmatched directory was walked into.",
+                tree::GLOB_INNER,
+            );
+            false
+        }
+    }
 }
 
 /// **The directory capability's confinement, asserted from outside the confined program**

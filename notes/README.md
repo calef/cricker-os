@@ -359,6 +359,20 @@ in the code or the conversation doesn't make sense, it belongs here.
   bound computable before the match starts. Also the second place a model checker was the wrong tool:
   equivalence with exhaustive search was settled by enumerating 2.7 million pattern/name pairs
   completely, and the blowup test runs at 100,000 bytes.
+- [Globbing, and the expansion you see is the grant](glob-grant.md) — milestone 47's globbing lane:
+  what a match *grants*, which is a directory capability attenuated to a **name set**. Why that is a
+  small change (`fwarden` already serves a namespace of exactly one name, so this widens the
+  namespace and nothing else, with nothing new in the kernel), and why the demonstration is the
+  **pairing**: `echo *.txt` prints literally the authority `rm *.txt` would transfer, which Unix
+  cannot claim because its `rm`'s authority never came from the command line. The structural
+  consequence the roadmap predicted, landed: `plan_against` fills its slots by index and sees the
+  **set** rather than the pattern, because the endowment is the set. Why `swarden` is a **third**
+  warden and not a mode on `dwarden` (that program performs no checks at all, and a name filter is a
+  check on seven verbs), its one rule (a name not in the set does not exist here) and the `RENAME`
+  destination check that would have been easy to miss. A correction: the argument that bash's
+  pass-the-pattern-through is harmless because `*` is refused downstream is **false**, and the real
+  cost is a grant that acquires a referent later. And `ARG_MAX` as a capability limit, with the bound
+  set at eight by a stack overflow rather than by reasoning.
 - [Generational names](generational-names.md) — milestone 14 phase A: the thread table becomes a
   fixed generational slot table (`crates/slots`). A Tid is `(generation, slot)`; a dead thread's
   name can never resolve again, even after slot reuse. Bounded like an array, safe like a
