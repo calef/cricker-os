@@ -175,19 +175,46 @@ takes some messages, destroys the region, and the writer reports that its next S
 ## Benchmarks
 
 `println!` is on the ABI fastpath and `relay_rtt` / `call_reply` price exactly the kind of hop this
-lane could have added. It added none: `OP_BYTES == 0` keeps the wire identical, and SEND keeps the
-message count identical. The measured movement is recorded in notes/benchmarks.md; the summary is
-that the default rung costs nothing, which is what milestone 50's own argument requires.
+lane could have added. It added none, and the numbers say so rather than the argument doing it.
+Deterministic icount ticks against `bench/baseline.txt`, on the pinned QEMU:
+
+| | aarch64 | riscv64 |
+|---|---|---|
+| `ipc_rtt_el0` (an EL0 send/receive round trip, the closest thing to a `println!`) | +0.13% | -0.63% |
+| `relay_rtt` (a hop through a userspace relay) | +0.01% | +0.02% |
+| `call_reply` | 0.00% | +0.00% |
+| `null_syscall` | +0.00% | -0.04% |
+
+Everything moved by less than 1% and in both directions, which is build noise on an instruction
+count. **The baseline file was deliberately not updated**, because updating it is a statement that a
+performance change was intended, and there was none.
+
+Two honest caveats. There is **no benchmark that prices `println!` itself**; what these price is the
+`SEND` that `println!` is, so a regression inside the PAL's chunking loop would not appear here.
+And the reason the fastpath is untouched is structural rather than lucky: `OP_BYTES == 0` keeps the
+wire identical, `SEND` keeps the message count identical, and the kernel's only change is on the
+*failure* return of an aborted send, which no benchmark takes.
 
 ## What is still missing, named where a reader meets it
 
 - **stdin.** `Stdin::read` still returns honest EOF. Both `< file` and a pipe's read end need an
   input-slot convention that does not exist, and this lane did not invent one: the sink contract is
   one-directional by construction and a source contract is its own design.
-- **The other two sinks are not converted.** `lineedit`'s `OP_WRITE` and the console server's
-  page-plus-ack channel still speak their own protocols to their existing clients. Converting them
-  means editing the shell and `sysinit`, which a sibling lane owns; the sink contract is what they
-  would be converted *to*, and `ROLE_FILE` proves the shape works against a real backend.
+- **The terminal is not converted, and the reason is a capability argument, not a scheduling one.**
+  The obvious cheap move is to have the `lineedit` component serve the sink contract on the endpoint
+  it already has: a `SEND` arrives there with no reply capability, so it is trivially
+  distinguishable from the `CALL`s it serves today. **That would be wrong.** That endpoint also
+  carries `OP_READLINE`, so putting it in a child's output slot would hand the child the terminal's
+  *input* as well, and a sink capability that can read the keyboard is not a sink capability. This
+  kernel offers no receive-on-a-set (`fwarden`'s note records the same gap and takes the same way
+  out), so the terminal's sink has to be a **separate endpoint served by an adapter process**, which
+  is exactly the shape `ROLE_FILE` is and proves against a real backend. Building the terminal
+  adapter means rewiring the shell and `sysinit`, whose files a sibling lane owns.
+- **The console server's page-plus-ack channel is likewise untouched**, for the same client reason.
+- **`date` was already speaking the contract before it existed**, which is the `OP_BYTES == 0`
+  decision paying out immediately: its hand-rolled framing is bit for bit a `BYTES` message. It
+  announces no end of stream, because nothing yet reads its output as a stream; when `|` lands, it
+  will need to.
 - **No buffering.** A pipe built from this contract is full lockstep, where Unix's 64 KB buffer lets
   a producer run ahead. If buffering earns its place it arrives as a component that speaks the sink
   contract on both sides and is inserted into the chain, not as a redesign.
