@@ -7,8 +7,8 @@ under a client that is talking to it, and the client's stream is unbroken.*
 
 ```text
                    ┌──── the stable name: one endpoint object, forever ────┐
-   chatty ──CALL──►│                       SVC                              │◄─RECV_CAP── conx  (v1, Rust)
-  (a client)       └────────────────────────────────────────────────────────┘◄─RECV_CAP── cconx (v2, C)
+   chatty ──CALL──►│                       SVC                              │◄─RECV_CAP── rust_swappable  (v1, Rust)
+  (a client)       └────────────────────────────────────────────────────────┘◄─RECV_CAP── c_swappable (v2, C)
                                             ▲
                                             │ swapper, an unprivileged operator, changes
                                             │ WHICH of the two is parked in RECV_CAP
@@ -20,8 +20,8 @@ shares `suptree.rs`:
 | program | what it is | what it holds |
 |---|---|---|
 | `swapper` | the operator: builder, supervisor and verifier | a budget, one device capability, four endpoints |
-| `conx` | the component, version 1 (Rust) | the service endpoint (READ), a report endpoint, a coordination channel, the device, a shared page |
-| `cconx` | the component, version 2, whose answers are computed in **C** | identical |
+| `rust_swappable` | the component, version 1 (Rust) | the service endpoint (READ), a report endpoint, a coordination channel, the device, a shared page |
+| `c_swappable` | the component, version 2, whose answers are computed in **C** | identical |
 | `chatty` | the client, the producer, and the attacker (three roles, one binary) | the service endpoint (**WRITE**, not READ) |
 | `broker` | the queue broker, the ladder's opt-in rung | a front endpoint (READ), a back endpoint (WRITE) |
 
@@ -133,11 +133,11 @@ silently: the instance reports `RPT_PROBE_SURVIVED` and the test refuses the run
 capability to the stable endpoint, it tries to park itself in `RECV_CAP` and take the client's
 requests. `NotPermitted`.
 
-**And the replacement is written in C** (`user/c/conxsvc.c`, over the seam DECISIONS §31 built). That
-is the strongest form of the claim available: what held across the swap is the *contract*, not a
-recompile of the same source. The C holds no capability and makes no syscall, because the Rust shell
-around it holds every capability and makes every syscall; its entire interface to the system is
-`(uint64_t) -> uint64_t`.
+**And the replacement is written in C** (`user/c/c_swappable.c`, over the seam DECISIONS §31 built).
+That is the strongest form of the claim available: what held across the swap is the *contract*, not
+a recompile of the same source. The C holds no capability and makes no syscall, because the Rust
+shell around it holds every capability and makes every syscall; its entire interface to the system
+is `(uint64_t) -> uint64_t`.
 
 ## The latency ladder
 

@@ -487,18 +487,18 @@ note rather than in [xattr.md](xattr.md), because they are facts about *this* se
 ## A per-file grant: the caretaker between the directory and the program
 
 Milestone 31's `run wc report.txt` grants one file, and the unit of authority here is a *directory*.
-`user/src/fwarden.rs` is the difference: a caretaker process that holds the directory capability,
-opens the granted name once, and serves this same contract on its own endpoint with a namespace of
-exactly one name and a direction it cannot widen. The design, the three refusals, and the two
-attacker witnesses that prove it are written up in [grant-expression.md](grant-expression.md); the
-part that belongs here is why it is a process:
+`user/src/fs_file_caretaker.rs` is the difference: a caretaker process that holds the directory
+capability, opens the granted name once, and serves this same contract on its own endpoint with a
+namespace of exactly one name and a direction it cannot widen. The design, the three refusals, and
+the two attacker witnesses that prove it are written up in
+[grant-expression.md](grant-expression.md); the part that belongs here is why it is a process:
 
 **This server receives on one endpoint.** Serving a second, narrower one would need a receive over a
 *set* of endpoints, which the kernel does not offer, and the way to add it is to badge endpoint
 capabilities (seL4's answer). That is a design fork, recorded rather than taken. The caretaker needs
 nothing new: it is an ordinary client of this contract above, and an ordinary server of it below. The
 "bound directory" seam this note has always advertised for milestone 31 turned out to be used from
-the *other* side: the warden binds nothing new here, it just never asks for more than one name.
+the *other* side: the caretaker binds nothing new here, it just never asks for more than one name.
 
 ## For later milestones
 

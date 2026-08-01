@@ -205,7 +205,8 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, fs_rights: u64) -> ! {
     }
     // The filesystem too. init is the ELF loader, not an FS client: the shell holds the narrowed
     // copies and this process never speaks `fs_proto`. The day `rm` is reachable from the prompt,
-    // init keeps the endpoint instead, because building a `dwarden` is its job and not the shell's.
+    // init keeps the endpoint instead, because building a `fs_subtree_caretaker` is its job and not
+    // the shell's.
     if with_fs {
         cap_delete(FS_EP);
         cap_delete(FS_PAGE);

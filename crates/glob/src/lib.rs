@@ -8,14 +8,14 @@
 //! that the interesting question about globbing here is not *how to match*, which is a solved
 //! problem with fifty years of prior art, but **what a match grants**: `rm *.txt` with five hundred
 //! hits must convey exactly those five hundred files and nothing else, which the roadmap answers
-//! with an `fwarden` attenuated to a **name set** rather than a directory capability. That wiring
-//! needs the directory-capability verb and the shell's expansion path, and it is a different lane.
-//! What is left over is exactly this: a total function on two byte strings, which is the part that
-//! can be machine-checked.
+//! with an `fs_file_caretaker` attenuated to a **name set** rather than a directory capability.
+//! That wiring needs the directory-capability verb and the shell's expansion path, and it is a
+//! different lane. What is left over is exactly this: a total function on two byte strings, which
+//! is the part that can be machine-checked.
 //!
 //! The property the rest of the milestone wants from this crate is small and worth stating: **the
 //! expansion you see is the grant.** `echo *.txt` prints literally the authority `rm *.txt` would
-//! transfer, because the matched set *is* the namespace the warden will serve. That only means
+//! transfer, because the matched set *is* the namespace the caretaker will serve. That only means
 //! anything if the matcher is the same matcher in both places and cannot be talked into a different
 //! answer, so it lives here, once, with proofs.
 //!
@@ -193,7 +193,7 @@ pub fn matches_with(pattern: &[u8], name: &[u8], dot: Dot) -> bool {
 /// closed. False means the pattern is a literal, and [`literal`] will give you the name it is.
 ///
 /// The shell needs this before it plans a grant: a word with no magic names one file and wants a
-/// single-name warden, while a word with magic is an enumeration and wants a warden over the
+/// single-name caretaker, while a word with magic is an enumeration and wants a caretaker over the
 /// matched set. Answering "yes" too eagerly is not a correctness bug (expanding a literal yields
 /// that one name), but it costs a directory enumeration for nothing, so this is precise: an
 /// unterminated `[` is a literal byte and is reported as such.
@@ -1017,9 +1017,9 @@ mod verification {
     /// **A pattern with no magic in it matches exactly one name: itself, unescaped.**
     ///
     /// The theorem the shell's grant planner rests on. If [`has_magic`] says no, the word names one
-    /// file, so the shell can skip the enumeration and ask for a single-name warden; if that were
-    /// wrong in either direction the grant would be wrong, either missing a file or naming one the
-    /// user did not write.
+    /// file, so the shell can skip the enumeration and ask for a single-name caretaker; if that
+    /// were wrong in either direction the grant would be wrong, either missing a file or naming one
+    /// the user did not write.
     ///
     /// Quantified over every pattern of up to three arbitrary bytes, which includes the escape
     /// corners (`\*`, `\\`, a trailing `\`) and the unterminated brackets that are literals rather

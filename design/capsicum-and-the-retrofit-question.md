@@ -30,11 +30,11 @@ agreement between two that share premises**, and it should be cited whenever the
 design needs defending.
 
 The second convergence is sharper. Capability mode broke `getaddrinfo()`, because DNS resolution
-needs `/etc/resolv.conf` and there is no path to open it with. FreeBSD's answer is **`libcasper`**: a
-helper process that retains the wider authority and serves a narrow interface to the sandboxed
-program. That is **exactly the warden pattern**: `fwarden` holding a directory capability and
-exporting one file, `cwarden` holding a region and confining a C component. Two projects, opposite
-directions, same answer.
+needs `/etc/resolv.conf` and there is no path to open it with. FreeBSD's answer is **`libcasper`**:
+a helper process that retains the wider authority and serves a narrow interface to the sandboxed
+program. That is **exactly the caretaker pattern**: `fs_file_caretaker` holding a directory
+capability and exporting one file, `c_confiner` holding a region and confining a C component. Two
+projects, opposite directions, same answer.
 
 ## The argument cuts both ways, and that is the useful part
 
@@ -93,7 +93,7 @@ compared with a Capsicum-sandboxed daemon on its merits rather than on architect
 ## See also
 
 - DECISIONS §14 (this is a demonstration OS) for why adoption is not the goal.
-- DECISIONS §31 (the foreign-language seam) and the `fwarden` / `cwarden` sources for the warden
-  pattern `libcasper` independently arrived at.
+- DECISIONS §31 (the foreign-language seam) and the `fs_file_caretaker` / `c_confiner` sources for
+  the caretaker pattern `libcasper` independently arrived at.
 - Milestone 47's `PATH` and absolute-paths sections, where the "no global namespace to search" result
   is the same one `cap_enter()` produces by removal.

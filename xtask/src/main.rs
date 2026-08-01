@@ -1089,11 +1089,11 @@ fn initrd_riscv() -> bool {
             "--bin",
             "fsclient",
             "--bin",
-            "fwarden",
+            "fs_file_caretaker",
             "--bin",
-            "dwarden",
+            "fs_subtree_caretaker",
             "--bin",
-            "swarden",
+            "fs_nameset_caretaker",
             "--bin",
             "heeder",
             "--bin",
@@ -1111,9 +1111,9 @@ fn initrd_riscv() -> bool {
             "--bin",
             "painter",
             "--bin",
-            "cwarden",
+            "c_confiner",
             "--bin",
-            "cshim",
+            "c_shim",
             "--bin",
             "compositor",
             "--bin",
@@ -1125,9 +1125,9 @@ fn initrd_riscv() -> bool {
             "--bin",
             "swapper",
             "--bin",
-            "conx",
+            "rust_swappable",
             "--bin",
-            "cconx",
+            "c_swappable",
             "--bin",
             "chatty",
             "--bin",
@@ -1192,9 +1192,9 @@ fn initrd_riscv() -> bool {
         ("netstack", "netstack"),
         ("budgeter", "budgeter"),
         ("fsclient", "fsclient"),
-        ("fwarden", "fwarden"),
-        ("dwarden", "dwarden"),
-        ("swarden", "swarden"),
+        ("fs_file_caretaker", "fs_file_caretaker"),
+        ("fs_subtree_caretaker", "fs_subtree_caretaker"),
+        ("fs_nameset_caretaker", "fs_nameset_caretaker"),
         ("heeder", "heeder"),
         ("spinner", "spinner"),
         // The authority-shrinking supervision tree (milestone 22 phase B.2): an init that hands its
@@ -1208,10 +1208,10 @@ fn initrd_riscv() -> bool {
         // into the surface it serves. Portable, so both archives carry both.
         ("display", "display"),
         ("painter", "painter"),
-        // The C seam (milestone 36): the warden and the Rust shell that links user/c/c_seam.c. The C
-        // is compiled for this ISA by user/build.rs, so the riscv shell carries riscv C.
-        ("cwarden", "cwarden"),
-        ("cshim", "cshim"),
+        // The C seam (milestone 36): the confiner and the Rust shell that links user/c/c_seam.c.
+        // The C is compiled for this ISA by user/build.rs, so the riscv shell carries riscv C.
+        ("c_confiner", "c_confiner"),
+        ("c_shim", "c_shim"),
         // The compositor and a window client (milestone 33, rung two). Portable, so both archives
         // carry both: the isolation this rung proves is a property of the kernel's mappings, and it
         // has to hold on either ISA or it is not a property.
@@ -1227,8 +1227,8 @@ fn initrd_riscv() -> bool {
         // the swap, and the queue broker for the opt-in rung. Portable, so both archives carry all
         // five and both ISAs run literally the same swap.
         ("swapper", "swapper"),
-        ("conx", "conx"),
-        ("cconx", "cconx"),
+        ("rust_swappable", "rust_swappable"),
+        ("c_swappable", "c_swappable"),
         ("chatty", "chatty"),
         ("broker", "broker"),
         // The clock service (milestone 51). Portable, so both archives carry it: it holds both RTC
@@ -1407,17 +1407,23 @@ fn mkinitrd() -> bool {
             return false;
         }
     };
-    let fwarden = match read_stripped(&bin_elf("fwarden")) {
+    let fs_file_caretaker = match read_stripped(&bin_elf("fs_file_caretaker")) {
         Ok(bytes) => bytes,
         Err(e) => {
-            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("fwarden"));
+            eprintln!(
+                "mkinitrd: cannot read {}: {e}",
+                bin_elf("fs_file_caretaker")
+            );
             return false;
         }
     };
-    let dwarden = match read_stripped(&bin_elf("dwarden")) {
+    let fs_subtree_caretaker = match read_stripped(&bin_elf("fs_subtree_caretaker")) {
         Ok(bytes) => bytes,
         Err(e) => {
-            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("dwarden"));
+            eprintln!(
+                "mkinitrd: cannot read {}: {e}",
+                bin_elf("fs_subtree_caretaker")
+            );
             return false;
         }
     };
@@ -1446,16 +1452,15 @@ fn mkinitrd() -> bool {
     // "worker", "console", "input", "shell" are the split system binaries (19f.2-5), "lineedit" is
     // the line discipline between them (milestone 28), "coremark" is the compute workload (19e),
     // "elbench" is the EL0 microbenchmark program (primitive suite), and "allocdemo" proves the
-    // user_rt heap (milestone 27). init (and the bench boot) load each by name. All are entries
-    // in the one archive.
-    // The authority-shrinking supervision tree (milestone 22 phase B.2), read as a group: four small
-    // portable programs that share one module, packed under their own names for both ISAs.
-    // The display pair (milestone 29) reads as a group for the same reason: the confined virtio-gpu
-    // driver and the client that draws into the surface it serves, both portable.
-    // The C seam (milestone 36) reads as a group too: the warden that builds, supervises, and checks
-    // the foreign component, and the Rust shell that links it. Both portable.
-    // The compositor and its window clients (milestone 33, rung two) read as a group for the same
-    // reason: one server, one client binary with several roles, both portable.
+    // user_rt heap (milestone 27). init (and the bench boot) load each by name. All are entries in
+    // the one archive. The authority-shrinking supervision tree (milestone 22 phase B.2), read as a
+    // group: four small portable programs that share one module, packed under their own names for
+    // both ISAs. The display pair (milestone 29) reads as a group for the same reason: the confined
+    // virtio-gpu driver and the client that draws into the surface it serves, both portable. The C
+    // seam (milestone 36) reads as a group too: the confiner that builds, supervises, and checks
+    // the foreign component, and the Rust shell that links it. Both portable. The compositor and
+    // its window clients (milestone 33, rung two) read as a group for the same reason: one server,
+    // one client binary with several roles, both portable.
     let mut tree: Vec<(&str, Vec<u8>)> = Vec::new();
     for name in [
         "rootsup",
@@ -1464,15 +1469,15 @@ fn mkinitrd() -> bool {
         "flaky",
         "display",
         "painter",
-        "cwarden",
-        "cshim",
+        "c_confiner",
+        "c_shim",
         "compositor",
         "window",
         "vterm",
         "kbd",
         "swapper",
-        "conx",
-        "cconx",
+        "rust_swappable",
+        "c_swappable",
         "chatty",
         "broker",
         "clock",
@@ -1480,9 +1485,9 @@ fn mkinitrd() -> bool {
         // `rm` (milestone 47's rmdir lane): the first program endowed a directory capability.
         // Portable, so both archives carry it.
         "rm",
-        // The set warden (milestone 47's globbing lane): a directory capability attenuated to the
-        // names a pattern matched. Portable, so both archives carry it.
-        "swarden",
+        // The nameset caretaker (milestone 47's globbing lane): a directory capability attenuated
+        // to the names a pattern matched. Portable, so both archives carry it.
+        "fs_nameset_caretaker",
         "entropy",
         // The credential service and its clients (milestone 56, the credential half). Portable, so
         // both archives carry both.
@@ -1522,8 +1527,8 @@ fn mkinitrd() -> bool {
         ("netstack", &netstack),
         ("budgeter", &budgeter),
         ("fsclient", &fsclient),
-        ("fwarden", &fwarden),
-        ("dwarden", &dwarden),
+        ("fs_file_caretaker", &fs_file_caretaker),
+        ("fs_subtree_caretaker", &fs_subtree_caretaker),
         ("heeder", &heeder),
         ("spinner", &spinner),
     ];
@@ -1895,17 +1900,17 @@ fn redoxfs_check_after_run() -> bool {
 /// **The set grant, witnessed from outside the guest** (milestone 47's globbing lane).
 ///
 /// The guest reports that `echo gl-*.txt` and the grant `rm gl-*.txt` would transfer are the same
-/// names, and that a `rm` behind a set warden removed what it held. Both are statements by the thing
-/// under test. This is the other kind: the host, with the pinned engine, reading the image the run
-/// left behind.
+/// names, and that a `rm` behind a nameset caretaker removed what it held. Both are statements by
+/// the thing under test. This is the other kind: the host, with the pinned engine, reading the
+/// image the run left behind.
 ///
 /// Three claims, and they only mean anything together:
 ///
 /// 1. **The two matched names are gone.** The expansion the guest printed is what actually
 ///    disappeared, so "the expansion is the grant" is a fact about the disk.
 /// 2. **The two names the pattern did not match are still there.** They sit in the same directory,
-///    one entry away, and the warden a hop up holds a capability that could remove either. So their
-///    survival is a fact about the *set*, not about what was reachable.
+///    one entry away, and the caretaker a hop up holds a capability that could remove either. So
+///    their survival is a fact about the *set*, not about what was reachable.
 /// 3. **The unmatched directory still holds its file.** A `rm` that had walked into it would have
 ///    emptied it, and a set capability carrying no `-r` cannot even look inside one it *did* match.
 fn redoxfs_glob_grant_took_exactly_the_match() -> bool {
@@ -1985,7 +1990,7 @@ fn redoxfs_glob_grant_took_exactly_the_match() -> bool {
 /// 2. **Nothing the attacker made is in the root.** It was granted `sub` and creates inside it, so
 ///    a name of its making at this level got out.
 /// 3. **Its creations ARE in `sub`**, which is what stops claim 2 from being vacuous: an attacker
-///    that created nothing would satisfy it perfectly, and so would a warden that refused
+///    that created nothing would satisfy it perfectly, and so would a caretaker that refused
 ///    everything. And `sub` holds both a **renamed** name and an **un**renamed one, which is the
 ///    `REMOVE` rung witnessed from outside the guest: one capability moved a name and another,
 ///    running the same code against the same directory, could not.
@@ -2887,9 +2892,9 @@ fn image() -> bool {
 ///
 /// The initrd is *reserved RAM*: the frame allocator never owns those pages, so every byte in the
 /// archive is a byte the running system does not have. And a debug build is almost entirely debug
-/// information: `conx` is 720 KB, of which **3 KB** is `.text` plus `.rodata` and the other 717 KB is
-/// `.debug_*`. Twenty-odd programs like that made a 26 MB archive out of well under a megabyte of
-/// code, on a machine with 128 MB.
+/// information: `rust_swappable` is 720 KB, of which **3 KB** is `.text` plus `.rodata` and the
+/// other 717 KB is `.debug_*`. Twenty-odd programs like that made a 26 MB archive out of well under
+/// a megabyte of code, on a machine with 128 MB.
 ///
 /// Nothing ever read those bytes. `crates/elf` parses **program headers only** (it has no
 /// section-header code at all), so the loader cannot see a debug section on either side of the

@@ -1,10 +1,11 @@
 #![cfg_attr(not(test), no_std)]
 //! **The C seam's shared half** (milestone 36, DECISIONS §31).
 //!
-//! Two Rust programs sit either side of the foreign component: `cshim` is the shell that links the C
-//! and calls it, and `cwarden` is the process that builds `cshim`, supervises it, and holds the
-//! witness pages that prove what the C could not reach. This is what they agree on: the address-space
-//! layout, the report protocol, and the constants that are also written down in `user/c/c_seam.c`.
+//! Two Rust programs sit either side of the foreign component: `c_shim` is the shell that links the
+//! C and calls it, and `c_confiner` is the process that builds `c_shim`, supervises it, and holds
+//! the witness pages that prove what the C could not reach. This is what they agree on: the
+//! address-space layout, the report protocol, and the constants that are also written down in
+//! `user/c/c_seam.c`.
 //!
 //! A crate rather than a `#[path]` module since 2026-08-01 (CLAUDE.md rule 7): what two binaries
 //! must agree on is a crate, so that the agreement is reachable by host tests and by Kani. The test
@@ -13,7 +14,7 @@
 //! # The layout, and why these numbers
 //!
 //! ```text
-//!   cshim (the C component's process)          cwarden (the checker)
+//!   c_shim (the C component's process)          c_confiner (the checker)
 //!   ------------------------------------       -----------------------------------------
 //!   0x0040_0000  text / rodata / data          0x0040_0000  text / rodata / data
 //!   0x0050_0000  stack                         0x0050_0000  stack
@@ -41,7 +42,7 @@
 pub const PAGE: u64 = 4096;
 
 /// Where the shared grant is mapped, in **both** address spaces at the same virtual address. Same
-/// number on both sides on purpose, so `cseam_wild`'s target address is one the checker can name
+/// number on both sides on purpose, so `c_seam_wild`'s target address is one the checker can name
 /// without translating anything.
 pub const GRANT_VA: u64 = 0x5000_0000;
 
@@ -54,7 +55,7 @@ pub const WITNESS_RO_VA: u64 = GRANT_VA + PAGE;
 pub const WITNESS_FAR_VA: u64 = GRANT_VA + 2 * PAGE;
 
 // ===========================================================================================
-// The grant's contents. Mirrors the `CSEAM_*` defines in user/c/c_seam.c; a C ABI has no way to
+// The grant's contents. Mirrors the `C_SEAM_*` defines in user/c/c_seam.c; a C ABI has no way to
 // share a struct definition without one language generating the other's bindings, and for one page
 // of bytes the comment in both files is the honest cheaper answer.
 // ===========================================================================================
@@ -81,7 +82,7 @@ pub fn pattern_far(i: usize) -> u8 {
     (i.wrapping_mul(17).wrapping_add(3) & 0xff) as u8
 }
 
-/// FNV-1a over `bytes`, uppercased the way `cseam_transform` uppercases. The Rust recomputation of
+/// FNV-1a over `bytes`, uppercased the way `c_seam_transform` uppercases. The Rust recomputation of
 /// what the C returns: two implementations of one definition, which is what makes the checksum a
 /// real check rather than an echo.
 pub fn expected_checksum(bytes: &[u8]) -> u32 {
@@ -95,7 +96,7 @@ pub fn expected_checksum(bytes: &[u8]) -> u32 {
 }
 
 // ===========================================================================================
-// What each attempt asks the C to do. Passed to `cshim` in its second argument register, which is
+// What each attempt asks the C to do. Passed to `c_shim` in its second argument register, which is
 // also its attempt number: attempt 0 overruns, attempt 1 goes wild, attempt 2 does the real work.
 // The order matters, because "the supervisor restarts it and the restarted component works" is only
 // proven if the honest run comes *after* the crashes.
@@ -116,15 +117,15 @@ const _: () = assert!(ATTEMPT_OVERRUN == 0);
 const _: () = assert!(ATTEMPT_WILD < ATTEMPTS && ATTEMPT_HONEST < ATTEMPTS);
 const _: () = assert!(ATTEMPTS == 3);
 
-// ===========================================================================================
-// The report protocol. `cwarden` and `cshim` hold a WRITE view of one report endpoint; the kernel
+// =========================================================================================== The
+// report protocol. `c_confiner` and `c_shim` hold a WRITE view of one report endpoint; the kernel
 // test is the receiver. Same shape as suptree.rs's, and mirrored in kernel/src/user.rs.
 // ===========================================================================================
 
 /// The C component's shell reached the C call. `w1` = attempt. Sent **before** the call, because two
 /// of the three attempts never return from it.
 pub const RPT_RAN: u64 = 1;
-/// The warden's supervision endpoint delivered a death. `w1` = the kernel-stamped tid, `w2` = the
+/// The confiner's supervision endpoint delivered a death. `w1` = the kernel-stamped tid, `w2` = the
 /// event (`EVENT_FAULT` or `EVENT_EXIT`).
 pub const RPT_DEATH: u64 = 2;
 /// Where the death happened, as the kernel reported it. `w1` = the faulting pc, `w2` = the faulting
@@ -198,9 +199,9 @@ mod tests {
     /// **Both sides of the seam agree, constant for constant.**
     #[test]
     fn the_c_side_states_the_same_offsets() {
-        assert_eq!(c_define("CSEAM_IN_OFF"), IN_OFF as u64, "CSEAM_IN_OFF");
-        assert_eq!(c_define("CSEAM_OUT_OFF"), OUT_OFF as u64, "CSEAM_OUT_OFF");
-        assert_eq!(c_define("CSEAM_MARK"), MARK as u64, "CSEAM_MARK");
+        assert_eq!(c_define("C_SEAM_IN_OFF"), IN_OFF as u64, "C_SEAM_IN_OFF");
+        assert_eq!(c_define("C_SEAM_OUT_OFF"), OUT_OFF as u64, "C_SEAM_OUT_OFF");
+        assert_eq!(c_define("C_SEAM_MARK"), MARK as u64, "C_SEAM_MARK");
     }
 
     /// The wild-store skip has to land outside the two mapped pages, which is the whole of what
@@ -209,7 +210,7 @@ mod tests {
     /// measuring the wrong page while still passing.
     #[test]
     fn the_wild_store_skips_a_whole_page() {
-        assert_eq!(c_define("CSEAM_WILD_SKIP"), PAGE, "CSEAM_WILD_SKIP");
+        assert_eq!(c_define("C_SEAM_WILD_SKIP"), PAGE, "C_SEAM_WILD_SKIP");
         assert_eq!(WITNESS_FAR_VA - WITNESS_RO_VA, PAGE);
     }
 

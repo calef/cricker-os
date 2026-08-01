@@ -437,9 +437,9 @@ pub mod fs {
 /// holder *learns*:
 ///
 /// - **A naming right** ([`dir::READ`]/[`dir::WRITE`] for [`fs::OPEN`], [`dir::DESCEND`] for
-///   [`fs::OPENDIR`]) answers `ENOENT`. In this scope there is no such name, which is the
-///   same sentence `fwarden` says for the same reason: a holder must not be able to map what it
-///   cannot reach.
+///   [`fs::OPENDIR`]) answers `ENOENT`. In this scope there is no such name, which is the same
+///   sentence `fs_file_caretaker` says for the same reason: a holder must not be able to map what
+///   it cannot reach.
 /// - **A mutating right** ([`dir::CREATE`], [`dir::REMOVE`], and [`dir::WRITE`] on a file handle)
 ///   answers [`dir::EROFS`]. Through this capability that directory is read-only. `EACCES` was
 ///   rejected here for the reason DECISIONS §27 rejected it for files: it implies a policy that
@@ -704,10 +704,10 @@ pub mod dirent {
 /// directory, and how the narrowing travels.
 ///
 /// A directory capability lets its holder name anything in the bound directory. `run wc report.txt`
-/// must hand over less than that: **one file, in one direction, and nothing else**. The narrowing is
-/// done by an attenuator, `user/src/fwarden.rs`, which holds the directory capability, opens exactly
-/// the granted name once at startup, and then serves the *same* [`fs`] protocol on its own endpoint
-/// with three rules:
+/// must hand over less than that: **one file, in one direction, and nothing else**. The narrowing
+/// is done by an attenuator, `user/src/fs_file_caretaker.rs`, which holds the directory capability,
+/// opens exactly the granted name once at startup, and then serves the *same* [`fs`] protocol on
+/// its own endpoint with three rules:
 ///
 /// 1. **[`fs::OPEN`] answers only the granted name.** Any other name is `ENOENT`, because in this
 ///    scope there is no such name; nothing consulted a permission. The holder cannot enumerate, and
@@ -718,22 +718,22 @@ pub mod dirent {
 ///    capability is read-only; there is no policy to consult and no way to widen it from inside.
 ///
 /// The attenuator pattern is Mark Miller's caretaker, and putting it in a separate process is what
-/// makes the claim checkable: the confined program holds an endpoint to the warden and nothing that
-/// names the FS server, so it cannot route around the narrowing even in principle. Open-by-path
-/// still exists only inside a server (DECISIONS §27); the warden just serves a server whose entire
-/// namespace is one name.
+/// makes the claim checkable: the confined program holds an endpoint to the caretaker and nothing
+/// that names the FS server, so it cannot route around the narrowing even in principle.
+/// Open-by-path still exists only inside a server (DECISIONS §27); the caretaker just serves a
+/// server whose entire namespace is one name.
 pub mod grant {
-    /// The granted directions, packed into the warden's spec word. Read alone is the common case
+    /// The granted directions, packed into the caretaker's spec word. Read alone is the common case
     /// (`run wc report.txt`); write implies read, since a writer that cannot read back is a shape
     /// nothing has asked for.
     pub const READ: u64 = 1 << 0;
     pub const WRITE: u64 = 1 << 1;
 
     /// The longest granted name, in bytes. The name rides in **two `START` argument words** rather
-    /// than a frame, so a per-file grant costs no extra page and no extra mapping, and the warden
-    /// needs nothing mapped before it runs. Sixteen bytes is short, and deliberately so: it is a
-    /// demonstrator's limit, not a filesystem's, and lifting it means giving the warden a frame,
-    /// which is a change to the wiring and not to this contract.
+    /// than a frame, so a per-file grant costs no extra page and no extra mapping, and the
+    /// caretaker needs nothing mapped before it runs. Sixteen bytes is short, and deliberately so:
+    /// it is a demonstrator's limit, not a filesystem's, and lifting it means giving the caretaker
+    /// a frame, which is a change to the wiring and not to this contract.
     pub const MAX_NAME: usize = 16;
 
     /// `EROFS`, the reply to a write through a read-only grant. Chosen over `EACCES` on purpose:
@@ -746,13 +746,13 @@ pub mod grant {
     /// directory" is a fact about what the holder has, not a refusal of what it asked.
     pub const ENOTDIR: i32 = 20;
 
-    /// The handle the warden mints for the one file it serves. Fixed, because there is exactly one:
-    /// a holder that guesses a different number gets `EBADF` from the same check every other handle
-    /// goes through.
+    /// The handle the caretaker mints for the one file it serves. Fixed, because there is exactly
+    /// one: a holder that guesses a different number gets `EBADF` from the same check every other
+    /// handle goes through.
     pub const HANDLE: u64 = 0;
 
-    /// Pack a granted name into the two argument words the warden is started with. Names shorter than
-    /// [`MAX_NAME`] are zero-padded; longer ones are refused by the caller (see [`fits`]).
+    /// Pack a granted name into the two argument words the caretaker is started with. Names shorter
+    /// than [`MAX_NAME`] are zero-padded; longer ones are refused by the caller (see [`fits`]).
     pub const fn pack_name(name: &[u8]) -> (u64, u64) {
         let mut lo = [0u8; 8];
         let mut hi = [0u8; 8];
@@ -780,7 +780,7 @@ pub mod grant {
         !name.is_empty() && name.len() <= MAX_NAME
     }
 
-    /// Pack the name length and the granted rights into the warden's third argument word.
+    /// Pack the name length and the granted rights into the caretaker's third argument word.
     pub const fn spec(len: usize, rights: u64) -> u64 {
         ((len as u64) & 0xff) | (rights << 8)
     }
@@ -815,17 +815,17 @@ pub mod grant {
 ///
 /// [`grant`] narrows a directory down to one name, which is what `wc report.txt` and `rm old.txt`
 /// designate. `rm *.txt` designates more than one and fewer than all, and the roadmap's decided
-/// answer is a directory capability attenuated to **the names that matched**. `fwarden` already
-/// serves a namespace of exactly one name; this is the same shape with a wider namespace, served by
-/// `user/src/swarden.rs`.
+/// answer is a directory capability attenuated to **the names that matched**. `fs_file_caretaker`
+/// already serves a namespace of exactly one name; this is the same shape with a wider namespace,
+/// served by `user/src/fs_nameset_caretaker.rs`.
 ///
 /// # Why the set rides in a frame and the single name does not
 ///
 /// One name fits in two `START` argument words, which is why a per-file grant costs no page. A set
 /// does not fit in any number of registers, so it is written into a frame the wiring maps
-/// **read-only** into the warden. That is the honest place for `ARG_MAX` to reappear: it is not a
-/// buffer limit any more, it is the size of a capability, and [`nameset::MAX_NAMES`] is where the ceiling is
-/// declared.
+/// **read-only** into the caretaker. That is the honest place for `ARG_MAX` to reappear: it is not
+/// a buffer limit any more, it is the size of a capability, and [`nameset::MAX_NAMES`] is where the
+/// ceiling is declared.
 ///
 /// # The encoding, and why each name carries its type
 ///
@@ -833,11 +833,12 @@ pub mod grant {
 /// are the length (a name is at most [`grant::MAX_NAME`] bytes, so seven bits is room to spare). A
 /// zero header terminates the set, which is why a name may not be empty.
 ///
-/// The type bit is carried because the warden **answers `READDIR` from the set itself** rather than
-/// filtering the server's listing: the set is the namespace, so listing it needs no round trip and
-/// no cursor translation. The type is what the directory said at the moment the grant was planned,
-/// which is the same "resolved at grant time" rule every other part of a grant follows: a `cd` after
-/// the fact cannot change what an already-planned grant means, and neither can a `mkdir`.
+/// The type bit is carried because the caretaker **answers `READDIR` from the set itself** rather
+/// than filtering the server's listing: the set is the namespace, so listing it needs no round trip
+/// and no cursor translation. The type is what the directory said at the moment the grant was
+/// planned, which is the same "resolved at grant time" rule every other part of a grant follows: a
+/// `cd` after the fact cannot change what an already-planned grant means, and neither can a
+/// `mkdir`.
 pub mod nameset {
     use super::grant;
 
@@ -898,9 +899,9 @@ pub mod nameset {
         Names { buf, at: 0 }
     }
 
-    /// Whether `name` is in the set. **This is the whole of the attenuation**: the warden asks it
-    /// once per name-taking request against its granted directory, and a name that is not in the set
-    /// is `ENOENT`, because in that scope there is no such name.
+    /// Whether `name` is in the set. **This is the whole of the attenuation**: the caretaker asks
+    /// it once per name-taking request against its granted directory, and a name that is not in the
+    /// set is `ENOENT`, because in that scope there is no such name.
     pub fn contains(buf: &[u8], name: &[u8]) -> bool {
         iter(buf).any(|(n, _)| n == name)
     }
@@ -1033,11 +1034,12 @@ pub mod xattr {
     /// `EOPNOTSUPP`: **this capability does not offer extended attributes at all.**
     ///
     /// DECISIONS §42's rule is that a backend which cannot meet a verb's guarantee does not offer
-    /// the verb, and that the refusal is loud. The caretakers (`fwarden`, `dwarden`, `swarden`)
-    /// answer this: they serve this same protocol over a narrowed namespace and do not forward
-    /// attribute requests, so a program behind one learns that its capability does not carry
-    /// attributes rather than that its request was malformed. `EINVAL` would have been the silent
-    /// degradation, because it reads as "you sent nonsense" rather than "this does not do that".
+    /// the verb, and that the refusal is loud. The caretakers (`fs_file_caretaker`,
+    /// `fs_subtree_caretaker`, `fs_nameset_caretaker`) answer this: they serve this same protocol
+    /// over a narrowed namespace and do not forward attribute requests, so a program behind one
+    /// learns that its capability does not carry attributes rather than that its request was
+    /// malformed. `EINVAL` would have been the silent degradation, because it reads as "you sent
+    /// nonsense" rather than "this does not do that".
     pub const ENOTSUP: i32 = 95;
 
     /// **The reserved name the attribute store lives under**, in the image root.
@@ -1429,7 +1431,7 @@ pub mod fixture {
     /// failure names itself. That shape is what lets one attacker serve as its own negative control:
     /// run against a read-only grant every bit must be clear, and run against a read/write grant of
     /// the same shape the two write bits must be **set**, which is what proves the read-only
-    /// refusals were a narrowed capability rather than a warden that refuses everything.
+    /// refusals were a narrowed capability rather than a caretaker that refuses everything.
     pub mod escape {
         /// It opened a file the grant does not designate. Never allowed.
         pub const SECOND_FILE: u64 = 1 << 0;
@@ -1599,7 +1601,8 @@ pub mod fixture {
         pub const GLOB_ONE: &str = "gl-one.txt";
         pub const GLOB_TWO: &str = "gl-two.txt";
         /// A file in the same directory that the pattern does **not** match. It is the escape the
-        /// set warden is attacked with: it exists, and the warden one hop up could remove it.
+        /// nameset caretaker is attacked with: it exists, and the caretaker one hop up could remove
+        /// it.
         pub const GLOB_MISS: &str = "gl-three.log";
         /// A directory in the same directory, not matched either. It is why a set record carries a
         /// type bit at all.
@@ -1639,7 +1642,7 @@ pub mod fixture {
 
     /// **The directory attacker's report** (milestone 47), a bitmap for the same reason the per-file
     /// attacker's is one: the test asserts an *expected set*, so the read-only run and the wide run
-    /// are each other's control and a warden that refused everything fails one of them.
+    /// are each other's control and a caretaker that refused everything fails one of them.
     pub mod dirscape {
         /// It opened a file that exists only in the granted directory's **parent**. Never allowed:
         /// this is "cannot reach its parent".
@@ -1676,7 +1679,7 @@ pub mod fixture {
         /// It reached something with a handle it was never given. Never allowed.
         pub const FORGED_HANDLE: u64 = 1 << 10;
         /// **It opened the file inside its own grant**, which it is supposed to be able to do. The
-        /// control bit: without it every refusal above is equally consistent with a warden that
+        /// control bit: without it every refusal above is equally consistent with a caretaker that
         /// answers no to everything, or a grant that reaches nothing at all.
         pub const OPENED_ITS_OWN: u64 = 1 << 13;
         /// **The thing it should be able to do failed**, so nothing above was proven. A capability
@@ -1754,9 +1757,9 @@ pub mod fixture {
     /// **What the globbing witness reports** (milestone 47's globbing lane): a bitmap, for the same
     /// reason every other witness here reports one, and with the same vacuity control at the end.
     ///
-    /// The shell it runs in holds a real directory capability served by a real `dwarden`, so what is
-    /// under test is the prompt's own expansion path over a real `READDIR`, not a reimplementation
-    /// of it.
+    /// The shell it runs in holds a real directory capability served by a real
+    /// `fs_subtree_caretaker`, so what is under test is the prompt's own expansion path over a real
+    /// `READDIR`, not a reimplementation of it.
     pub mod globscape {
         /// `echo` expanded the pattern into a non-empty set. The precondition for everything else:
         /// a shell that expanded nothing agrees with a grant of nothing, perfectly and uselessly.
@@ -2504,7 +2507,7 @@ mod tests {
         assert!(nameset::contains(&buf[..n], b"logs"));
         assert!(
             !nameset::contains(&buf[..n], b"log"),
-            "a prefix is a different name; the warden's whole check is this comparison",
+            "a prefix is a different name; the caretaker's whole check is this comparison",
         );
 
         // A full set fits exactly, and one more name does not: BYTES is a bound that is met, not a

@@ -124,7 +124,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 58 | NOT-STARTED | RISC-V TLB shootdown, and the flush that makes ASIDs pointless | every riscv context switch discards the whole TLB; the fix needs a **software** shootdown protocol, because `sfence.vma` does not broadcast |
 | 59 | BUILT | The CPU-model matrix: stop testing against one generous emulator | `-cpu rv64` enables nearly every ratified extension; the board is an RV64GC U74. `script/cpu-matrix` runs the riscv64 suite across five models and all 211 tests pass on every one, so we are already portable to the board's ISA. The ASID test written *for* the board is the gap no model can exercise |
 | 60 | NOT-STARTED | ISA discovery: read the machine instead of assuming it | nothing reads `riscv,isa-extensions`; RISC-V has no `CPUID`, so the device tree plus targeted probes are the architected answer. One `Isa` record, built at boot, printed at boot |
-| 61 | NOT-STARTED | The caretakers: one verb table, and names that say what you get | all three answer `EOPNOTSUPP` to xattr because each is a hand-written match over verbs; 4 verbs x 3 wardens recurs on every contract addition. A verb table in `fs_proto` inverts the failure mode |
+| 61 | NOT-STARTED | The caretakers: one verb table, and names that say what you get | all three answer `EOPNOTSUPP` to xattr because each is a hand-written match over verbs; 4 verbs x 3 caretakers recurs on every contract addition. A verb table in `fs_proto` inverts the failure mode |
 | 62 | NOT-STARTED | Tests that assert on time: make a red run mean something | ~19 bounded spins (`for _ in 0..N { yield_now() }`) and wall-clock assertions flake under load. Four separate lanes and the integrator hit them on 2026-08-01; the CPU matrix multiplies the exposure fivefold |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
@@ -376,19 +376,19 @@ unchecked, and its *authority* is broad, so within that authority a corrupted in
    forks found and reported rather than built through (a reap-only right, and turning a tid into a
    handle). See DECISIONS §26's phase B.2 block and notes/trusted-init.md.
 
-   **Both of those forks are now closed (DECISIONS §32, BUILT 2026-07-29, both ISAs).** Reaping moved
-   off `Untyped::DESTROY`, which needs `WRITE` on the region and therefore the same right that *builds*
-   a process from it, onto `Endpoint::REAP` on the supervision endpoint. Authorization needed no new
-   bookkeeping: §26 already records `Thread::fault_ep` and the kernel already stamps the tid, so the
-   check is that the named thread's recorded endpoint *is* the one being invoked. The tid-to-handle fork
-   is closed for this case by the same move, because the tid is authorized relative to the endpoint it
-   arrived on rather than being a global handle. The measured payoff: **`subsup` now holds nothing but
-   endpoints**, since the phase B.2 proxy that had to ask `spawner` to reap is no longer needed. The
-   measured limit: milestone 36's `cwarden` still holds a construction budget because it is *also* the
-   builder, which shows the bundling was two things and only one of them was the reap. `REAP` refuses a
-   live thread on purpose, so a **hung** child still cannot be restarted; that is the watchdog case and
-   it belongs to 23. Two Kani harnesses in `crates/caps` cover the authorization invariant. See
-   notes/supervision.md.
+   **Both of those forks are now closed (DECISIONS §32, BUILT 2026-07-29, both ISAs).** Reaping
+   moved off `Untyped::DESTROY`, which needs `WRITE` on the region and therefore the same right that
+   *builds* a process from it, onto `Endpoint::REAP` on the supervision endpoint. Authorization
+   needed no new bookkeeping: §26 already records `Thread::fault_ep` and the kernel already stamps
+   the tid, so the check is that the named thread's recorded endpoint *is* the one being invoked.
+   The tid-to-handle fork is closed for this case by the same move, because the tid is authorized
+   relative to the endpoint it arrived on rather than being a global handle. The measured payoff:
+   **`subsup` now holds nothing but endpoints**, since the phase B.2 proxy that had to ask `spawner`
+   to reap is no longer needed. The measured limit: milestone 36's `c_confiner` still holds a
+   construction budget because it is *also* the builder, which shows the bundling was two things and
+   only one of them was the reap. `REAP` refuses a live thread on purpose, so a **hung** child still
+   cannot be restarted; that is the watchdog case and it belongs to 23. Two Kani harnesses in
+   `crates/caps` cover the authorization invariant. See notes/supervision.md.
 3. **Supervise, don't relaunch-in-kernel.** What happens when init (or any server) *fails*, as
    distinct from being corrupted. The failure of init degrades to a **halt, never a breach**
    (the kernel's guarantees hold regardless), so the only open question is availability: halt, or
@@ -999,7 +999,7 @@ prerequisite piece and worth building first as its own tested step. Feeds 23 and
 
 ### 31. A capability shell: designation is authorization
 
-**In brief.** The command line becomes a **grant expression**: naming a resource in a command IS the capability grant (`wc report.txt` passes one readable file cap; `wc` alone can read nothing, and the refusal is "no such capability", not EPERM); untyped budgets as first-class grants; a SHILL-style manifest per program checked at spawn; a `caps` command printing a process's whole endowment. **Phase 1 built, both ISAs**: `capsh` (host-tested parse + manifest + spawn protocol), the shell over the existing surface, `--mem N` made real by the `budgeter` program, manifest refusals, `caps`/`caps <command>` introspection; one kernel fix, `Untyped::SPLIT` now grants the child `GRANT` (DECISIONS §16 amendment). **Phase 2 built, both ISAs**: the FS contract's `CREATE`/`TRUNCATE` (so `std::fs::write` works), and per-file grants as a **caretaker process** (`fwarden`) that narrows a directory capability to one file in one direction, proven by a read-only and a writable attacker. One scope note: the interactive shell still refuses a named file because its boot wires no FS service, so it holds no directory to narrow. **The grammar shown here is milestone 47's**, which deleted the `run` verb and the `file:` designator this milestone shipped with; the mechanism did not change, only the spelling. Notes: grant-expression.md, program-manifest.md, fs-server.md
+**In brief.** The command line becomes a **grant expression**: naming a resource in a command IS the capability grant (`wc report.txt` passes one readable file cap; `wc` alone can read nothing, and the refusal is "no such capability", not EPERM); untyped budgets as first-class grants; a SHILL-style manifest per program checked at spawn; a `caps` command printing a process's whole endowment. **Phase 1 built, both ISAs**: `capsh` (host-tested parse + manifest + spawn protocol), the shell over the existing surface, `--mem N` made real by the `budgeter` program, manifest refusals, `caps`/`caps <command>` introspection; one kernel fix, `Untyped::SPLIT` now grants the child `GRANT` (DECISIONS §16 amendment). **Phase 2 built, both ISAs**: the FS contract's `CREATE`/`TRUNCATE` (so `std::fs::write` works), and per-file grants as a **caretaker process** (`fs_file_caretaker`) that narrows a directory capability to one file in one direction, proven by a read-only and a writable attacker. One scope note: the interactive shell still refuses a named file because its boot wires no FS service, so it holds no directory to narrow. **The grammar shown here is milestone 47's**, which deleted the `run` verb and the `file:` designator this milestone shipped with; the mechanism did not change, only the spelling. Notes: grant-expression.md, program-manifest.md, fs-server.md
 
 **Why it matters.** **no-ambient-authority made user-visible**: the inversion of Unix's model at the one interface a human touches. Milestone 23's component contract in embryo, met first at the shell
 
@@ -1015,28 +1015,28 @@ child `GRANT` so an untyped is delegable (DECISIONS §16 amendment), which the h
 required and no other object type lacked. Notes: grant-expression.md, program-manifest.md.
 
 **Phase 2 built (both ISAs): per-file grants.** The FS service's unit of authority is a *directory*
-(DECISIONS §27), and `run wc file:report.txt` says less than that, so the narrowing is a **caretaker**
-in Mark Miller's sense: `user/src/fwarden.rs` holds the directory capability, opens the granted name
-once, and serves the same contract on its own endpoint with a namespace of exactly one name. Any
-other name is `ENOENT` (in this scope there is no such name); `CREATE` is `ENOTDIR` (a file is not a
-directory); a write without the direction is `EROFS`. Each refusal is a fact about what the holder
-has, not a permission that could have said yes.
+(DECISIONS §27), and `run wc file:report.txt` says less than that, so the narrowing is a
+**caretaker** in Mark Miller's sense: `user/src/fs_file_caretaker.rs` holds the directory
+capability, opens the granted name once, and serves the same contract on its own endpoint with a
+namespace of exactly one name. Any other name is `ENOENT` (in this scope there is no such name);
+`CREATE` is `ENOTDIR` (a file is not a directory); a write without the direction is `EROFS`. Each
+refusal is a fact about what the holder has, not a permission that could have said yes.
 
 It is a separate process for two reasons. The FS server receives on one endpoint, so serving a
 second narrower one would need a receive over a *set*, which means badging endpoint capabilities
 (seL4's answer) and is a design fork, recorded rather than taken. And it makes the claim checkable:
-the confined program holds an endpoint to the warden and nothing that names the FS server, so "it
+the confined program holds an endpoint to the caretaker and nothing that names the FS server, so "it
 cannot reach a second file" is a property of its cspace rather than of a branch it is trusted to
 take.
 
 **Proven by an attacker, twice, and the second run is what makes the first mean anything.** It
 reports a bitmap of what got through. Read-only grant: every bit clear, against a neighbouring file
-that exists and that the warden could open. Read/write grant, same shape: the two write bits set and
-everything else clear. A warden that refused every request passes the first and fails the second.
-Phase 2 also landed the contract's `CREATE` and `TRUNCATE` (so `File::create` and `std::fs::write`
-work rather than returning `Unsupported`), a name check that was previously true only by the absence
-of a path walker, and a measured stack for the FS server after a 528-byte overflow presented as a
-mystery 900-second test.
+that exists and that the caretaker could open. Read/write grant, same shape: the two write bits set
+and everything else clear. A caretaker that refused every request passes the first and fails the
+second. Phase 2 also landed the contract's `CREATE` and `TRUNCATE` (so `File::create` and
+`std::fs::write` work rather than returning `Unsupported`), a name check that was previously true
+only by the absence of a path walker, and a measured stack for the FS server after a 528-byte
+overflow presented as a mystery 900-second test.
 
 **Why the status is PARTIAL and not BUILT, stated plainly.** The mechanism is complete and gated on
 both ISAs, but this milestone's headline is about *the one interface a human touches*, and at that
@@ -1049,10 +1049,10 @@ decision is a function of what the shell *holds* rather than of the calendar, wh
 hardcoded "arrives with milestone 32" was not.
 
 **Phase 3, then, is exactly one thing:** wire an FS service into the interactive boot (the kernel's
-shell boot path, a RedoxFS disk on the interactive runner, and init building the warden per grant),
-and flip `holdings()` in `user/src/shell.rs`. It was not done here because **nothing in the test suite
-boots the interactive shell**, so it would ship unexercised, and a demonstrator's ungated feature is
-worse than a recorded gap. Whoever takes it should consider gating that boot first.
+shell boot path, a RedoxFS disk on the interactive runner, and init building the caretaker per
+grant), and flip `holdings()` in `user/src/shell.rs`. It was not done here because **nothing in the
+test suite boots the interactive shell**, so it would ship unexercised, and a demonstrator's ungated
+feature is worse than a recorded gap. Whoever takes it should consider gating that boot first.
 
 **Deliverable.** Invert Unix's authority model at the command line. A Unix child inherits your
 entire authority; a cricker-os command line is a **grant expression**: every argument that
@@ -1153,7 +1153,7 @@ hand off across a live swap, the hardest handoff case yet named), 27 (`std::fs`)
 
 ### 36. A foreign-language component, seam first (spike; feeds 29 and 23)
 
-**In brief.** Prove the FFI seam end to end with a *minimal* C component before committing to a large one: bare-metal clang for both bare targets in the build, a Rust `user_rt` shell that holds every capability and does every syscall while the C code gets plain buffers over the C ABI (so the §4 surface does not widen), and only the handful of libc symbols the component actually needs, with `malloc` on milestone 27's untyped-backed `GlobalAlloc`. The deliverable that matters is one test: a deliberate out-of-bounds write in the C code faults the process, touches nothing outside its grant, and its supervisor restarts it. **Built, DECISIONS §31, both ISAs**: clang capability-checked for both backends from one compiler (Apple's is rejected: no RISC-V), `cshim` holds every capability so the C holds none, the libc turned out to be **two** symbols not five (`compiler_builtins` already supplies the rest), and two witnesses prove the confinement (a read-only page that is the *same physical frame*, and a different frame at the same virtual address). notes/c-seam.md
+**In brief.** Prove the FFI seam end to end with a *minimal* C component before committing to a large one: bare-metal clang for both bare targets in the build, a Rust `user_rt` shell that holds every capability and does every syscall while the C code gets plain buffers over the C ABI (so the §4 surface does not widen), and only the handful of libc symbols the component actually needs, with `malloc` on milestone 27's untyped-backed `GlobalAlloc`. The deliverable that matters is one test: a deliberate out-of-bounds write in the C code faults the process, touches nothing outside its grant, and its supervisor restarts it. **Built, DECISIONS §31, both ISAs**: clang capability-checked for both backends from one compiler (Apple's is rejected: no RISC-V), `c_shim` holds every capability so the C holds none, the libc turned out to be **two** symbols not five (`compiler_builtins` already supplies the rest), and two witnesses prove the confinement (a read-only page that is the *same physical frame*, and a different frame at the same virtual address). notes/c-seam.md
 
 **Why it matters.** **the thesis in one assertion.** Memory-unsafe foreign code is not a dilution of "a verified core that confines unverified workloads", it is the strongest available demonstration of it: the more unverified the component, the more the confinement has to prove. It also de-risks 29's libghostty-vt rung and 23's vendor-component claim *before* we owe anything to another project's toolchain or API churn
 
@@ -1162,15 +1162,15 @@ hand off across a live swap, the hardest handoff case yet named), 27 (`std::fs`)
 All four deliverables landed as specified, and the two that produced findings are worth reading before
 the next foreign component:
 
-1. **Toolchain.** `user/build.rs` compiles `user/c/c_seam.c` with a clang resolved from a candidate list
-   and *capability-checked* (`-print-targets` must list both aarch64 and riscv64), object handed to the
-   linker for the `cshim` binary only. One compiler for both ISAs is §19 applied to the toolchain, which
-   means **Apple's clang is rejected on purpose** (no RISC-V backend) even though it would compile the
-   aarch64 half. `script/bootstrap` grew `brew install llvm` / `apt-get install clang`, and the CI
-   clippy job grew the same, since it clippies `user`.
-2. **Linkage.** `cshim` (Rust) holds every capability and makes every syscall; the C gets `(u8*, usize)`
-   and returns a scalar. The syscall surface did not change, and could not have: the C cannot name a
-   capability slot.
+1. **Toolchain.** `user/build.rs` compiles `user/c/c_seam.c` with a clang resolved from a candidate
+   list and *capability-checked* (`-print-targets` must list both aarch64 and riscv64), object
+   handed to the linker for the `c_shim` binary only. One compiler for both ISAs is §19 applied to
+   the toolchain, which means **Apple's clang is rejected on purpose** (no RISC-V backend) even
+   though it would compile the aarch64 half. `script/bootstrap` grew `brew install llvm` / `apt-get
+   install clang`, and the CI clippy job grew the same, since it clippies `user`.
+2. **Linkage.** `c_shim` (Rust) holds every capability and makes every syscall; the C gets `(u8*,
+   usize)` and returns a scalar. The syscall surface did not change, and could not have: the C
+   cannot name a capability slot.
 3. **libc.** The object demands five symbols; the linker demands **two** (`malloc`, `free`), because
    `compiler_builtins` already supplies `memcpy`/`memset`/`strlen` weakly for bare targets. **Do not
    shim the other three:** the obvious Rust `memcpy` is `copy_nonoverlapping`, which lowers to a call to
@@ -1178,17 +1178,18 @@ the next foreign component:
    problem at any stack size. `malloc` is milestone 27's untyped heap on the instance's own region, so
    one `DESTROY` reclaims it.
 4. **The test.** `c_seam_tests`, both ISAs: two out-of-bounds writes (one byte past into a read-only
-   page that is the *same physical frame* the warden holds read/write; one page past into an address the
-   component has no mapping for and the warden does), both fault at exactly the address the C computed,
-   both leave a position-derived witness pattern intact byte for byte, and the third instance does real
-   C work whose output is checked against an independent Rust computation. The control that makes it
-   mean anything: each bug stores *inside* its grant first, and that store must be visible.
+   page that is the *same physical frame* the confiner holds read/write; one page past into an
+   address the component has no mapping for and the confiner does), both fault at exactly the
+   address the C computed, both leave a position-derived witness pattern intact byte for byte, and
+   the third instance does real C work whose output is checked against an independent Rust
+   computation. The control that makes it mean anything: each bug stores *inside* its grant first,
+   and that store must be visible.
 
-**The fork this fed, stated concretely.** The warden is builder, supervisor, and checker in one process,
-because reaping needs `WRITE` on the region and `WRITE` is also what builds one. **A supervisor needs
-exactly `DESTROY` on one region it did not create**, and nothing narrower exists. Milestone 22 phase
-B.2's IPC proxy is the workaround that exists today; this spike deliberately did not use it, so the
-requirement is visible in one program instead of hidden behind a hop.
+**The fork this fed, stated concretely.** The confiner is builder, supervisor, and checker in one
+process, because reaping needs `WRITE` on the region and `WRITE` is also what builds one. **A
+supervisor needs exactly `DESTROY` on one region it did not create**, and nothing narrower exists.
+Milestone 22 phase B.2's IPC proxy is the workaround that exists today; this spike deliberately did
+not use it, so the requirement is visible in one program instead of hidden behind a hop.
 
 **What it does not prove**, recorded so 29 and 23 do not inherit false confidence: one `clang -c` is
 not a build system, one translation unit is not a link order, this component's five symbols are not
@@ -1838,7 +1839,7 @@ a child holds a capability to one file and cannot re-resolve anything. `rm` is `
 because the FS server's handle table is per *server* and it cannot enumerate the clients holding
 handles. The headline is proven with the real shell binary: two shells rooted in two subtrees, each
 told nothing about which it holds, and neither can name the other's files (notes/shell-navigation.md).
-**Still to do**: attaching the built `crates/glob` to an attenuated name-set warden, completion,
+**Still to do**: attaching the built `crates/glob` to an attenuated name-set caretaker, completion,
 environment, and `PATH`. The `std` PAL still answers `Unsupported` for `rename`, `unlink` and
 `rmdir`, which is now a binding gap rather than a missing verb for the first two.
 
@@ -2053,7 +2054,7 @@ Worked, and rejected with reasons rather than by taste:
 | `costume`, `disguise` | Both imply **an underlying thing being dressed or concealed**, reinstating exactly the object identity the word must avoid. `disguise` also claims intent to mislead, naming into existence a danger this design removes: a stored name here cannot escalate, because it resolves only within what the holder already reaches |
 | `projection`, `shadow` | Honest about viewpoint-dependence without implying concealment, and still **metaphors**. This project names descriptively (`netstack`, `compositor`, `lineedit`), which is §39's doing; `link` got away with a false claim partly *because* it was a metaphor |
 | `mirror` family (`erised`, `matsuyama`) | **The best framing anyone found, and the only family to pass all three tests**: a mirror shows something viewer-dependent, implies no object identity, implies no connection, and does not collide with "reference". It fails on the word rather than the idea. In computing a **mirror is an identical replica at another location**: "same content, elsewhere", which is the identity claim we are trying to avoid. The literary instances add their own wrong axis: Erised shows what you **desire** (ours shows what your namespace resolves to, often nothing), and the Matsuyama tale is about a **mistake** (the deception axis where `disguise` failed). Both also need a decoder ring, and `notes/naming.md` sets the bar at names that parse without prior exposure |
-| `fsalias` | Fixes the zsh collision, and prefixes are in-style here (`fwarden`, `dwarden`, `cwarden`). But **"filesystem alias" is exactly what Finder calls a macOS alias** (the object-tracking one), so the prefix picks the *wrong* one of the word's two meanings. And prefixing to fix a collision is a smell: it answers *which* alias, where the objection was that **alias claims another name for the same thing** |
+| `fsalias` | Fixes the zsh collision, and prefixes are in-style here (`fs_file_caretaker`, `fs_subtree_caretaker`, `c_confiner`). But **"filesystem alias" is exactly what Finder calls a macOS alias** (the object-tracking one), so the prefix picks the *wrong* one of the word's two meanings. And prefixing to fix a collision is a smell: it answers *which* alias, where the objection was that **alias claims another name for the same thing** |
 
 **The descriptive candidate, if the mechanism survives:** a third **entry kind** beside file and
 directory: a **`path`**. A directory entry names a file, a directory, or a path; it stores a path and
@@ -2154,18 +2155,18 @@ arbitrary value", and does the file's write right already cover both? Neither an
 ##### Built 2026-07-31: the matcher, then the grant. See notes/glob.md and notes/glob-grant.md.
 
 The decided answer is implemented rather than revisited: `rm *.txt` grants a directory capability
-attenuated to a **name set**, served by `user/src/swarden.rs`. Four things this section did not
-predict, and one it did:
+attenuated to a **name set**, served by `user/src/fs_nameset_caretaker.rs`. Four things this section
+did not predict, and one it did:
 
 - **It predicted the shape of the change to `capsh`**, and that is exactly what happened.
   `plan_against` fills its slots by **index** now, and takes an `Expansion` keyed to that index,
   because the endowment is the set rather than the pattern. `DirGrant.name` became `DirGrant.names`,
   which is the finding in the type system: a literal operand is the set of one.
-- **The warden is a third one, not a generalization of `fwarden` or a mode on `dwarden`.** `fwarden`
-  serves the *file* protocol, so teaching it a set would be writing a directory warden; and
-  `dwarden`'s design property is that it performs **no checks at all**, which a name filter (on seven
-  name-taking verbs) would end. The grants also have different shapes: a name rides in registers, a
-  set needs a frame.
+- **The caretaker is a third one, not a generalization of `fs_file_caretaker` or a mode on
+  `fs_subtree_caretaker`.** `fs_file_caretaker` serves the *file* protocol, so teaching it a set
+  would be writing a directory caretaker; and `fs_subtree_caretaker`'s design property is that it
+  performs **no checks at all**, which a name filter (on seven name-taking verbs) would end. The
+  grants also have different shapes: a name rides in registers, a set needs a frame.
 - **An empty match is a refusal**, zsh's answer. The obvious argument for bash's pass-through was
   checked and is **wrong**: nothing here refuses `*` in a component, so passing the pattern through
   builds a grant whose namespace is a name nobody has, and which acquires a referent the moment
@@ -2177,8 +2178,9 @@ predict, and one it did:
   not scheduling ones. `xargs` is still not built: the answer at the bound is a refusal.
 
 Tests: `capsh` and `fs_proto` host suites; `kernel::user::glob_grant_tests` on both ISAs (a real
-shell expanding one pattern two ways, then `rm` as its own attacker behind a real `swarden`); and
-`xtask::redoxfs_glob_grant_took_exactly_the_match` reading the image from outside the guest.
+shell expanding one pattern two ways, then `rm` as its own attacker behind a real
+`fs_nameset_caretaker`); and `xtask::redoxfs_glob_grant_took_exactly_the_match` reading the image
+from outside the guest.
 
 zsh's glob engine is the best thing in the shell (`**/*.rs`, and qualifiers: `*(.)` for regular
 files, `*(om[1])` for newest, `*(Lm+1)` for over a megabyte). The mechanism is unremarkable here
@@ -2194,15 +2196,15 @@ The fork is not how to match. It is **what a match grants**.
 | Make `rm` a builtin so the shell deletes and nothing is granted | Dodges the question, and costs `rm` as a program |
 | **A directory capability attenuated to a name set** | **The principled one** |
 
-The last is a smaller change than it looks, and that is the finding. `fwarden` today serves "a
-namespace of exactly one name"; globbing generalizes it to a **set** of names. Same caretaker, same
-`fs_proto` protocol above and below, wider namespace. **Nothing new in the kernel**, and the
-attenuation stays checkable from outside the confined program exactly as it is today.
+The last is a smaller change than it looks, and that is the finding. `fs_file_caretaker` today
+serves "a namespace of exactly one name"; globbing generalizes it to a **set** of names. Same
+caretaker, same `fs_proto` protocol above and below, wider namespace. **Nothing new in the kernel**,
+and the attenuation stays checkable from outside the confined program exactly as it is today.
 
 **The property worth demonstrating: the expansion you see is the grant.** `echo *.txt` prints
-literally the authority that `rm *.txt` would transfer, because the matched set *is* the namespace the
-warden will serve. Unix cannot make that claim, since `rm`'s authority never came from the command
-line at all; the glob merely told it which of its existing powers to use.
+literally the authority that `rm *.txt` would transfer, because the matched set *is* the namespace
+the caretaker will serve. Unix cannot make that claim, since `rm`'s authority never came from the
+command line at all; the glob merely told it which of its existing powers to use.
 
 **Who expands.** The shell, before planning the grant, which is also what Unix does, so there is no
 divergence to earn. The structural consequence is that `capsh::plan` must see the expanded set rather
@@ -2574,11 +2576,12 @@ capability naming everything survives. Unix's root is always one `sudo` away by 
 
 #### Groups are a delegation pattern, not a mechanism to build
 
-Sharing is two parties holding the same capability, or capabilities derived from a common one; nothing
-needs to be added to support it. Managed sharing (revocable, narrower for some holders, auditable) is
-a **caretaker**, and `fwarden` is already that shape: a component holding a resource and serving
-several clients on its own terms. So this milestone builds no group mechanism and instead documents
-the two patterns, because the alternative is someone inventing a group table later.
+Sharing is two parties holding the same capability, or capabilities derived from a common one;
+nothing needs to be added to support it. Managed sharing (revocable, narrower for some holders,
+auditable) is a **caretaker**, and `fs_file_caretaker` is already that shape: a component holding a
+resource and serving several clients on its own terms. So this milestone builds no group mechanism
+and instead documents the two patterns, because the alternative is someone inventing a group table
+later.
 
 #### Login: authentication produces capabilities
 
@@ -2722,10 +2725,11 @@ the result.
 | `fs_proto` | CALL, handle + offset + shared page, `WRITE` |
 | console server | shared page, SEND length, ACK on a separate reply endpoint |
 
-Four shapes for "write these bytes there". A child cannot be indifferent to what is in its output slot
-until they are one, and **that unification is the milestone**. The precedent is `fwarden`, which is a
-caretaker precisely because it "serves the same `fs_proto` protocol its own client speaks": narrowing
-preserves the protocol, so a pipe, a file, and a terminal become substitutable.
+Four shapes for "write these bytes there". A child cannot be indifferent to what is in its output
+slot until they are one, and **that unification is the milestone**. The precedent is
+`fs_file_caretaker`, which is a caretaker precisely because it "serves the same `fs_proto` protocol
+its own client speaks": narrowing preserves the protocol, so a pipe, a file, and a terminal become
+substitutable.
 
 #### The result that is better than Unix, and worth stating plainly
 
@@ -3265,9 +3269,10 @@ what the capability is**, not a filter over a wider one.
 
 #### The rename
 
-`warden` is a synonym we invented for a pattern that has a name. `DECISIONS.md` §31 already cites the
-right one, **caretaker** (Mark Miller's term), while the code says warden; §50 settled that using the
-existing name claims "this is that", and inventing a synonym asserts novelty where there is none.
+`warden` is a synonym we invented for a pattern that has a name. `DECISIONS.md` §31 already cites
+the right one, **caretaker** (Mark Miller's term), while the code says warden; §50 settled that
+using the existing name claims "this is that", and inventing a synonym asserts novelty where there
+is none.
 
 Names say **what the holder ends up able to do**, so a reader can predict the surface without opening
 the file:
@@ -3298,8 +3303,8 @@ current name distinguishes nothing.
   *serving* rather than to exist, and the shorter name does not say so; the doc comment carries that
   precision. Taken because the whole family shares the ambiguity and resolves it the same way, and
   parallelism with `wait_for_service` is worth more than the extra word.
-- **`cwarden` becomes `c_confiner`**, out of the caretaker family entirely: it holds a **region** and
-  confines foreign code rather than attenuating a directory capability to a narrower one.
+- **`cwarden` becomes `c_confiner`**, out of the caretaker family entirely: it holds a **region**
+  and confines foreign code rather than attenuating a directory capability to a narrower one.
 
 #### The names, settled 2026-08-01
 
@@ -3391,16 +3396,17 @@ symmetric pair says so.
 
 **One cost, recorded so nobody infers a family that is not there.** `c_` will then mean "written in
 C" across two unrelated milestones: `c_shim`, `c_seam` and `c_confiner` are milestone 36's
-foreign-language seam (§31), while `c_swappable` is milestone 23's replacement demo. The prefix means
-the same thing in both cases; the milestones are not related. Worth a line in `notes/naming.md`.
+foreign-language seam (§31), while `c_swappable` is milestone 23's replacement demo. The prefix
+means the same thing in both cases; the milestones are not related. Worth a line in
+`notes/naming.md`.
 
 #### BUGS
 
 - **A table is a new place to be wrong, and a wrong row is wrong in three programs at once.** It is
   pure data in a host-testable crate, so Kani and host tests can reach it, which a hand-written match
   in a `no_std` binary cannot.
-- **It does not make the caretakers interchangeable**, and after the refutation above it must not try
-  to. Only the verb dispatch is shared; what each attenuates to stays hand-written.
+- **It does not make the caretakers interchangeable**, and after the refutation above it must not
+  try to. Only the verb dispatch is shared; what each attenuates to stays hand-written.
 
 **Effort: medium.** The table is small; teaching three programs and proving each on both ISAs is the
 work, and the rename touches roughly 180 references.
@@ -3969,9 +3975,10 @@ crash atomicity is measured rather than inherited: milestone 37's sweep now carr
 attributes in its state and four attribute operations in its workload, interleaved with a write to
 the same file, so "the file and its metadata land together" is decided rather than argued.
 
-**What is still not done, and is named rather than implied:** the caretakers (`fwarden`, `dwarden`,
-`swarden`) answer `EOPNOTSUPP` to all four verbs rather than forwarding, so a program behind a
-per-file grant cannot reach its file's attributes (that is milestone 61's job).
+**What is still not done, and is named rather than implied:** the caretakers (`fs_file_caretaker`,
+`fs_subtree_caretaker`, `fs_nameset_caretaker`) answer `EOPNOTSUPP` to all four verbs rather than
+forwarding, so a program behind a per-file grant cannot reach its file's attributes (that is
+milestone 61's job).
 
 
 - **Extend the on-disk format.** Correct, and atomic by construction since the metadata rides

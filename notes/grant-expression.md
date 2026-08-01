@@ -195,11 +195,11 @@ capability, and every name in an `OPEN` resolves under it (DECISIONS §27). `wc 
 less than that. It names one file, so it must grant one file.
 
 The narrowing is a **caretaker**, Mark Miller's pattern: a process that holds the wider capability,
-exports a narrower one, and is the only path between them. `user/src/fwarden.rs` opens the granted
-name once at startup and then serves the *same* `fs_proto::fs` contract on its own endpoint:
+exports a narrower one, and is the only path between them. `user/src/fs_file_caretaker.rs` opens the
+granted name once at startup and then serves the *same* `fs_proto::fs` contract on its own endpoint:
 
 ```text
-  FS server ──file IPC──► fwarden ──narrowed file IPC──► the confined program
+  FS server ──file IPC──► fs_file_caretaker ──narrowed file IPC──► the confined program
               (a directory)          (one file, one direction)
 ```
 
@@ -219,15 +219,15 @@ a *set* of endpoints, which this kernel does not offer; the way to add it is to 
 capabilities a **badge** (seL4's answer), and that is a design fork, recorded rather than taken. The
 caretaker needs nothing new: it is an ordinary FS client above and an ordinary FS server below.
 
-It is also the stronger form of the claim. The confined program holds an endpoint to the warden and
-**nothing that names the FS server**, so "it cannot reach a second file" is a property of its cspace,
-not of a branch it is trusted to take. The boundary is an address space. That is the same reason
-milestone 36's checker lives outside the component it checks.
+It is also the stronger form of the claim. The confined program holds an endpoint to the caretaker
+and **nothing that names the FS server**, so "it cannot reach a second file" is a property of its
+cspace, not of a branch it is trusted to take. The boundary is an address space. That is the same
+reason milestone 36's checker lives outside the component it checks.
 
-The grant costs no memory. The name and the direction ride in the warden's three `START` argument
+The grant costs no memory. The name and the direction ride in the caretaker's three `START` argument
 words (`fs_proto::grant`, 16 bytes of name), and one frame is shared by all three processes, which is
 sound because every request on both hops is a blocking `CALL`: the client is parked inside its own
-call for the whole time the warden touches the page.
+call for the whole time the caretaker touches the page.
 
 ### How it is proven, and why one test would not have been enough
 
@@ -235,16 +235,16 @@ An attacker (`fsclient`'s third role) reports a **bitmap of what got through**, 
 twice, on both ISAs:
 
 - **Read-only grant of `motd`: every bit must be clear.** It tries to open `scratch`, which exists,
-  sits one directory entry away, and the warden could open on any request it liked. It tries to write
-  and truncate the file it *can* read (refusing a write to a file it cannot even name would prove
-  nothing). It tries to create. It sprays handle numbers.
+  sits one directory entry away, and the caretaker could open on any request it liked. It tries to
+  write and truncate the file it *can* read (refusing a write to a file it cannot even name would
+  prove nothing). It tries to create. It sprays handle numbers.
 - **Read/write grant, same shape: the two write bits must be SET and everything else clear.**
 
-The second run is what makes the first mean anything. A warden that refused every request would pass
-the read-only test, and so would a grant that reached nothing at all; it fails the writable one. Each
-accepted write is read straight back, because "the server accepted my write" and "my write landed"
-are different claims. This is milestone 36's two-witness shape, and milestone 33's rule that an
-attacker must be pointed at a real neighbour rather than a fictional one.
+The second run is what makes the first mean anything. A caretaker that refused every request would
+pass the read-only test, and so would a grant that reached nothing at all; it fails the writable
+one. Each accepted write is read straight back, because "the server accepted my write" and "my write
+landed" are different claims. This is milestone 36's two-witness shape, and milestone 33's rule that
+an attacker must be pointed at a real neighbour rather than a fictional one.
 
 ### The manifest declares the direction; the command line designates the file
 
@@ -274,8 +274,8 @@ would have quietly become a lie the moment the mechanism landed. A refusal that 
 hold stays true as your holdings change; one that describes a release does not.
 
 What remains is wiring an FS service into the interactive boot (kernel boot path, a RedoxFS disk on
-the interactive runner, init building the warden per grant). It is deliberately not built here because
-**nothing in the test suite boots the interactive shell**, so it would ship unexercised. The
+the interactive runner, init building the caretaker per grant). It is deliberately not built here
+because **nothing in the test suite boots the interactive shell**, so it would ship unexercised. The
 mechanism it would use is proven on both ISAs by the tests above.
 
 Phase 1 grants what exists today: program spawns, endpoints, frames, untyped budgets, device caps.

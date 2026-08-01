@@ -166,8 +166,8 @@ destination. A store of untyped blobs cannot become an indexed one later without
 word, paid once, buys the option.
 
 The structural link worth carrying: a BFS query returns **a set of files**, and milestone 47 already
-decided that a set of files is granted by an `swarden` attenuated to a name set. So if attributes
-ever become queryable here, the granting story is already designed.
+decided that a set of files is granted by an `fs_nameset_caretaker` attenuated to a name set. So if
+attributes ever become queryable here, the granting story is already designed.
 
 **BUGS.** The kind is 31 bits, not 32, because it rides in the sign-protected half of a reply word
 (the protocol's error convention is that a negative reply is a negated errno). BFS-style
@@ -230,12 +230,12 @@ Named here because a reader who meets the feature deserves to meet its edges at 
   The refusal is `EINVAL`, the same one `..` gets, because the name is not expressible here rather
   than not permitted. Reserving it in every directory instead of only in the root is a deliberate
   trade: the rule a client has to remember is one sentence.
-- **The caretakers do not forward attribute requests.** `fwarden`, `dwarden` and `swarden` answer
-  `EOPNOTSUPP` to all four verbs. That is §42-honest (a verb that is not offered fails loudly, and
-  `EINVAL` would have read as "you sent nonsense") and it is uniform across all three on purpose, so
-  behaviour does not depend on which caretaker happens to be in the chain. It is also a real gap: a
-  program behind a per-file grant cannot read its file's attributes. Pass-through is buildable and
-  is not built.
+- **The caretakers do not forward attribute requests.** `fs_file_caretaker`, `fs_subtree_caretaker`
+  and `fs_nameset_caretaker` answer `EOPNOTSUPP` to all four verbs. That is §42-honest (a verb that
+  is not offered fails loudly, and `EINVAL` would have read as "you sent nonsense") and it is
+  uniform across all three on purpose, so behaviour does not depend on which caretaker happens to be
+  in the chain. It is also a real gap: a program behind a per-file grant cannot read its file's
+  attributes. Pass-through is buildable and is not built.
 - **An unlinked-but-open file loses its attributes immediately.** POSIX would let `fgetxattr` keep
   working through the open handle until the last one closed; here the purge is in the unlink's
   transaction, because that is the only place it can be crash-atomic with the removal. Deferring it

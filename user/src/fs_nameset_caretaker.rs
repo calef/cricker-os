@@ -1,41 +1,41 @@
-//! **The set warden: a directory capability attenuated to the names a pattern matched** (milestone
-//! 47's globbing lane, notes/glob-grant.md).
+//! **The nameset caretaker: a directory capability attenuated to the names a pattern matched**
+//! (milestone 47's globbing lane, notes/glob-grant.md).
 //!
-//! `fwarden` narrows a directory capability to one **file**. `dwarden` narrows it to one
-//! **subtree**. This narrows it to a **set of names in one directory**, which is what `rm *.txt`
-//! designates and what neither of the other two can express.
+//! `fs_file_caretaker` narrows a directory capability to one **file**. `fs_subtree_caretaker`
+//! narrows it to one **subtree**. This narrows it to a **set of names in one directory**, which is
+//! what `rm *.txt` designates and what neither of the other two can express.
 //!
-//! # Why this is a third warden and not a mode on the second
+//! # Why this is a third caretaker and not a mode on the second
 //!
 //! It was a real fork, and the reasons are three, in the order they mattered:
 //!
-//! 1. **`dwarden` performs no checks at all, and that is its design** (notes/dir-capability.md).
-//!    Every attenuation it provides lives in the handle the FS server minted for it at startup, so
-//!    there is no branch in it that could be wrong. A name filter is a check, and one that has to be
-//!    consulted on **every name-taking verb** (`OPEN`, `CREATE`, `OPENDIR`, `MKDIR`, `UNLINK`,
-//!    `RMDIR`, and both halves of `RENAME`). Adding a mode would trade that program's one strong
-//!    property for a switch, and it would put a forget-a-verb surface in the warden that most
-//!    deliberately has none.
-//! 2. **`fwarden` cannot be generalized into this**, though the roadmap's phrasing invites the
-//!    thought. It serves the *file* protocol: its client `OPEN`s a fixed handle and the warden
-//!    answers `ENOTDIR` to `CREATE` and refuses every directory verb. Teaching it a set would mean
-//!    teaching it `READDIR`, `UNLINK` and `RMDIR`, which is not generalizing a file warden, it is
-//!    writing a directory warden and calling it one.
-//! 3. **The grants have different shapes.** A single name rides in two `START` argument words; a set
-//!    does not fit in any number of registers, so this program is started with a **frame** as well
-//!    (`fs_proto::nameset`). Bolting that onto `dwarden` would make every subtree grant carry
-//!    machinery it does not use.
+//! 1. **`fs_subtree_caretaker` performs no checks at all, and that is its design**
+//!    (notes/dir-capability.md). Every attenuation it provides lives in the handle the FS server
+//!    minted for it at startup, so there is no branch in it that could be wrong. A name filter is a
+//!    check, and one that has to be consulted on **every name-taking verb** (`OPEN`, `CREATE`,
+//!    `OPENDIR`, `MKDIR`, `UNLINK`, `RMDIR`, and both halves of `RENAME`). Adding a mode would
+//!    trade that program's one strong property for a switch, and it would put a forget-a-verb
+//!    surface in the caretaker that most deliberately has none.
+//! 2. **`fs_file_caretaker` cannot be generalized into this**, though the roadmap's phrasing
+//!    invites the thought. It serves the *file* protocol: its client `OPEN`s a fixed handle and the
+//!    caretaker answers `ENOTDIR` to `CREATE` and refuses every directory verb. Teaching it a set
+//!    would mean teaching it `READDIR`, `UNLINK` and `RMDIR`, which is not generalizing a file
+//!    caretaker, it is writing a subtree caretaker and calling it one.
+//! 3. **The grants have different shapes.** A single name rides in two `START` argument words; a
+//!    set does not fit in any number of registers, so this program is started with a **frame** as
+//!    well (`fs_proto::nameset`). Bolting that onto `fs_subtree_caretaker` would make every subtree
+//!    grant carry machinery it does not use.
 //!
-//! What *is* the roadmap's finding, and holds exactly: this is the same caretaker, speaking the same
-//! `fs_proto` protocol above and below, over a wider namespace. **Nothing new in the kernel.**
+//! What *is* the roadmap's finding, and holds exactly: this is the same caretaker, speaking the
+//! same `fs_proto` protocol above and below, over a wider namespace. **Nothing new in the kernel.**
 //!
 //! # The rule, and the fact that there is only one
 //!
 //! **A name that is not in the set does not exist here.** One sentence covers every verb: reading
 //! it, writing it, creating it, removing it and renaming onto it are all `ENOENT`, because in this
-//! scope there is no such name and nothing consulted a permission. That is `fwarden`'s sentence
-//! (DECISIONS §27) over a set instead of over one name, and it is why there is no per-verb policy
-//! here to get wrong.
+//! scope there is no such name and nothing consulted a permission. That is `fs_file_caretaker`'s
+//! sentence (DECISIONS §27) over a set instead of over one name, and it is why there is no per-verb
+//! policy here to get wrong.
 //!
 //! The filter applies at the **granted directory** and nowhere else. A handle minted below it (by
 //! descending into a matched directory, which needs a `-r` grant's `DESCEND`) is unfiltered, and
@@ -47,12 +47,13 @@
 //! - **slot 0**: the FS-service endpoint, `WRITE`. The directory capability being attenuated.
 //! - **slot 1**: the narrowed endpoint, `READ`. Holding it is holding the set.
 //! - **slot 2**: a report endpoint, `WRITE`. Readiness, sent once the descent has succeeded.
-//! - **[`PAGE_VA`]**: the page shared with the FS server *and* the client, for `fwarden`'s reason.
+//! - **[`PAGE_VA`]**: the page shared with the FS server *and* the client, for
+//!   `fs_file_caretaker`'s reason.
 //! - **[`SET_VA`]**: a **read-only** frame holding the encoded set, copied into a local at startup
 //!   and never read again, so nothing that happens to that page afterwards can widen the namespace.
 //!
 //! The granted directory's name and rights ride in the three `START` argument words exactly as
-//! `dwarden`'s do.
+//! `fs_subtree_caretaker`'s do.
 
 #![no_std]
 #![no_main]
@@ -76,10 +77,11 @@ const SET_VA: u64 = 0x0000_0000_0070_0000;
 const PAGE: usize = fs_proto::PAGE;
 
 /// How many handles a confined program may hold open at once, including the granted directory at
-/// index 0. `dwarden`'s number, for `dwarden`'s reason: no heap, one stack page.
+/// index 0. `fs_subtree_caretaker`'s number, for `fs_subtree_caretaker`'s reason: no heap, one
+/// stack page.
 const SLOTS: usize = 16;
 
-/// `EMFILE`: as many handles open through this warden as the client may have.
+/// `EMFILE`: as many handles open through this caretaker as the client may have.
 const EMFILE: i32 = 24;
 /// `EINVAL`, for the verbs this contract does not carry and for closing the root of a namespace.
 const EINVAL: i32 = 22;
@@ -118,8 +120,8 @@ fn reply(slot: u64, r0: i64) {
     unsafe { invoke(slot, abi::reply::REPLY, r0 as u64, 0, 0) };
 }
 
-/// The client's handle namespace, `dwarden`'s table verbatim: `table[i]` is the FS server's handle
-/// for the client's handle `i`. Slot 0 is the granted directory and is never freed.
+/// The client's handle namespace, `fs_subtree_caretaker`'s table verbatim: `table[i]` is the FS
+/// server's handle for the client's handle `i`. Slot 0 is the granted directory and is never freed.
 struct Table([Option<u64>; SLOTS]);
 
 impl Table {
@@ -147,8 +149,8 @@ fn name_at(off: usize, len: usize, buf: &mut [u8; grant::MAX_NAME]) -> usize {
     len
 }
 
-/// **The serve loop.** Every arm is `dwarden`'s, plus one question asked in one place: when a
-/// request names something **in the granted directory**, is that name in the set?
+/// **The serve loop.** Every arm is `fs_subtree_caretaker`'s, plus one question asked in one place:
+/// when a request names something **in the granted directory**, is that name in the set?
 fn serve(dir: u64, set: &[u8]) -> ! {
     let mut table = Table([None; SLOTS]);
     table.0[0] = Some(dir);
@@ -247,9 +249,9 @@ fn serve(dir: u64, set: &[u8]) -> ! {
                 }
             }
             // **Extended attributes are not forwarded, and the refusal says exactly that**
-            // (milestone 57, DECISIONS §42). See `fwarden` for the argument. All three wardens
-            // answer the same word so that behaviour does not depend on which caretaker a program
-            // happens to be behind.
+            // (milestone 57, DECISIONS §42). See `fs_file_caretaker` for the argument. All three
+            // caretakers answer the same word so that behaviour does not depend on which caretaker
+            // a program happens to be behind.
             fs::GETXATTR | fs::SETXATTR | fs::LISTXATTR | fs::REMOVEXATTR => {
                 reply_err(fs_proto::xattr::ENOTSUP)
             }
@@ -294,9 +296,9 @@ pub extern "C" fn _start(name_lo: u64, name_hi: u64, spec: u64) -> ! {
     let mut buf = [0u8; grant::MAX_NAME];
     let n = grant::unpack_name(name_lo, name_hi, grant::spec_len(spec), &mut buf);
 
-    // The descent, exactly `dwarden`'s: ask for the granted directory with the granted rights, and
-    // die rather than come up serving a hole. Everything the client reaches, it reaches through the
-    // handle this one request minted.
+    // The descent, exactly `fs_subtree_caretaker`'s: ask for the granted directory with the granted
+    // rights, and die rather than come up serving a hole. Everything the client reaches, it reaches
+    // through the handle this one request minted.
     put_at(0, &buf[..n]);
     let (r0, _) = call(
         FS,
@@ -319,8 +321,8 @@ pub extern "C" fn _start(name_lo: u64, name_hi: u64, spec: u64) -> ! {
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
-    // A warden that could not descend, or was handed an empty set, has nothing to attenuate: trap,
-    // and the kernel reaps it legibly. Its client then blocks on a call nobody answers, which
+    // A caretaker that could not descend, or was handed an empty set, has nothing to attenuate:
+    // trap, and the kernel reaps it legibly. Its client then blocks on a call nobody answers, which
     // notes/fs-server.md records as the cost of a dead server on a blocking contract.
     #[cfg(target_arch = "aarch64")]
     unsafe {

@@ -23,14 +23,14 @@ The roadmap's four candidate answers and its verdict:
 | make `rm` a builtin | dodges the question, and costs `rm` as a program |
 | **a directory capability attenuated to a name set** | the principled one |
 
-`fwarden` today serves a namespace of exactly one name; globbing generalizes it to a **set**. Same
-caretaker, same `fs_proto` above and below, nothing new in the kernel. That is a wiring job, it needs
-the directory-capability verb, and it is a different lane.
+`fs_file_caretaker` today serves a namespace of exactly one name; globbing generalizes it to a
+**set**. Same caretaker, same `fs_proto` above and below, nothing new in the kernel. That is a
+wiring job, it needs the directory-capability verb, and it is a different lane.
 
 What falls out is this crate: a total function on two byte strings, which is exactly the part that
 can be machine-checked. The property the wiring lane wants from it is worth stating, because it is
 the whole demonstration: **the expansion you see is the grant.** `echo *.txt` prints literally the
-authority `rm *.txt` would transfer, because the matched set *is* the namespace the warden will
+authority `rm *.txt` would transfer, because the matched set *is* the namespace the caretaker will
 serve. Unix cannot make that claim, since `rm`'s authority never came from the command line at all.
 That only means anything if the matcher is one matcher, used in both places, that cannot be talked
 into a different answer.
@@ -56,9 +56,10 @@ Six functions, and each is there for a caller that exists:
 - **`matches`** is the matcher.
 - **`has_magic`** and **`literal`** are the two questions the shell asks of a word *before* it plans
   a grant: is this a pattern at all, and if not, what name is it with the escapes stripped? A word
-  with no magic names one file and wants a single-name warden; a word with magic is an enumeration
-  and wants a warden over the matched set. `literal` exists so escape-stripping is written once: `a\*b`
-  is the file called `a*b`, and getting that wrong means asking the filesystem for a name nobody has.
+  with no magic names one file and wants a single-name caretaker; a word with magic is an
+  enumeration and wants a caretaker over the matched set. `literal` exists so escape-stripping is
+  written once: `a\*b` is the file called `a*b`, and getting that wrong means asking the filesystem
+  for a name nobody has.
 - **`match_steps`** and **`cost_bound`** are the anti-blowup claim made checkable. See below.
 
 Everything is **bytes**. A name here is a byte string (`fs_proto::grant::MAX_NAME` is sixteen of
