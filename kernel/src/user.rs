@@ -2359,7 +2359,7 @@ pub mod fs_service {
     /// The most extra stack pages [`spawn_fs_client`] will map below the one `run` gives every
     /// program. Small on purpose: a client that needs more than this is a client whose frames want
     /// looking at, not a number that wants raising.
-    const CLIENT_EXTRA_STACK: usize = 4;
+    const CLIENT_EXTRA_STACK: usize = 8;
 
     /// Spawn one client holding exactly a file-service endpoint, a report endpoint and its view of
     /// the shared page. Returns the report endpoint.
@@ -2372,6 +2372,12 @@ pub mod fs_service {
     /// process that had died. A shell carries a path stack (eight levels of name), a parsed path,
     /// and a listing buffer, all by value, so 4 KiB is genuinely tight for it. Same discipline as
     /// the FS server's stack (DECISIONS §27): sized by what it did, not by what looks generous.
+    ///
+    /// **Milestone 50 moved it again, the same way.** `Endowment` grew a sink and a source, each of
+    /// which can carry a whole `FileGrant`, and the shell now holds one endowment per pipeline
+    /// stage; four extra pages overflowed by 48 bytes at the same `sp` and with the same symptom.
+    /// Recorded because it will happen a third time: the shell's stack is sized by the largest value
+    /// `capsh` hands it, so a field added there is a page needed here.
     fn spawn_fs_client(
         client_image: &'static [u8],
         file_ep: EpId,
@@ -12369,7 +12375,7 @@ mod rm_program_tests {
                 arg2: hi,
                 // Measured the way `spawn_fs_client` asks for: the recursion is real stack, each
                 // level holding a listing buffer by value, and this program has no allocator.
-                stack_pages: 4,
+                stack_pages: 6,
             },
         )?;
 
@@ -12583,7 +12589,7 @@ mod glob_grant_tests {
                 // more. That measurement is also what set `nameset::MAX_NAMES`: sixteen names did
                 // not fit in the four pages this wiring maps, and `CLIENT_EXTRA_STACK`'s note is
                 // right that the answer to that is smaller frames rather than a bigger number.
-                stack_pages: 4,
+                stack_pages: 6,
             },
         )?;
         let [tag, verdict, ..] = sched::ipc_recv(report);
@@ -12630,7 +12636,7 @@ mod glob_grant_tests {
                 role: fs_proto::grant::spec(name.len(), flags),
                 arg: lo,
                 arg2: hi,
-                stack_pages: 4,
+                stack_pages: 6,
             },
         )
         .expect("the FS service was wired by the shell phase");
@@ -13384,6 +13390,519 @@ mod riscv_virtio_tests {
             &word.to_le_bytes(),
             b"CRKWRIT1",
             "after a mid-write kill, a fresh driver could not use the device",
+        );
+    }
+}
+
+/// **The operators, end to end: `|` is two processes and an endpoint** (milestone 50,
+/// notes/pipes.md).
+///
+/// One module for both ISAs, for [`shell_navigation_tests`]'s reason: nothing here is
+/// architecture-specific, so the parity gate (DECISIONS §19) is met by the same test running twice.
+///
+/// What is wired is the **real shell binary**, in a role that reads a script instead of a keyboard,
+/// with the interactive endowment: a terminal, a spawn channel, a result channel, and a budget. The
+/// kernel plays the two parties on the other ends.
+///
+/// - **The terminal.** The test itself serves `lineedit::proto::OP_WRITE` and collects every byte
+///   the shell prints. So the assertion is made against *what a person would see*, which is the
+///   strongest form this can take: a pipeline that ran but printed the wrong thing fails here.
+/// - **init.** A second thread serves `capsh::spawnproto`, receiving the delegated sink and source
+///   capabilities and building each stage with them. It is deliberately the same protocol
+///   `user/src/sysinit.rs` serves, because the shell cannot tell the difference and neither should
+///   this test; what it is not is the same *code*, and that gap is named in notes/pipes.md's BUGS.
+#[cfg(test)]
+pub mod pipeline_service {
+    use super::*;
+    use crate::cap::{Rights, endpoint_cap, untyped_cap};
+    use crate::sched::EpId;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    /// The `shell` binary's pipeline role (`user/src/shell.rs`).
+    const ROLE_PIPELINE: u64 = 3;
+
+    /// The VAs the shell hardcodes for its terminal pages. Must match user/src/shell.rs.
+    const OUT_VA: u64 = 0x0000_0000_0060_0000;
+    const LINE_VA: u64 = 0x0000_0000_00b0_0000;
+
+    /// The budget the shell mints its pipes out of. Each pipeline splits a region off this and
+    /// gives it back, so one number covers a script of several lines; it matches sysinit's grant.
+    const SH_BUDGET_PAGES: u64 = 128;
+
+    /// Pages of stack **below** the one `run` maps. A shell needs more than a hand-sized program
+    /// for `spawn_fs_client`'s measured reason, and milestone 50 added an array of planned
+    /// endowments to what it carries by value.
+    const SHELL_EXTRA_STACK: usize = 6;
+
+    /// What the kernel holds of a scripted shell.
+    pub struct Wiring {
+        /// The terminal endpoint the shell `CALL`s. The test serves it.
+        pub term: EpId,
+        /// Where the shell's printed bytes land, so the test can read them out.
+        pub out_phys: u64,
+    }
+
+    /// The collected transcript. A static because the terminal service and the assertions are the
+    /// same thread and the buffer outlives one call; sized for the whole script with room to spare,
+    /// so a transcript that ran long is truncated rather than overrunning.
+    static TRANSCRIPT: spin::Mutex<[u8; 4096]> = spin::Mutex::new([0; 4096]);
+    static WRITTEN: AtomicUsize = AtomicUsize::new(0);
+
+    /// **Wire a scripted shell and the init service behind it.**
+    ///
+    /// The endowment is deliberately the interactive one, slot for slot, because a witness with a
+    /// wider endowment would be proving something about a shell nobody runs.
+    pub fn start() -> Option<Wiring> {
+        let image = program("shell")?;
+        let term = crate::sched::create_endpoint();
+        let spawn_ep = crate::sched::create_endpoint();
+        let result = crate::sched::create_endpoint();
+        let budget = crate::untyped::create(SH_BUDGET_PAGES)?;
+        let out_phys = crate::memory::alloc()?.addr();
+        let line_phys = crate::memory::alloc()?.addr();
+        // SAFETY: two freshly allocated frames, named through the direct map, owned by nobody yet.
+        unsafe {
+            core::ptr::write_bytes(
+                mmu::phys_to_virt(out_phys) as *mut u8,
+                0,
+                FRAME_SIZE as usize,
+            );
+            core::ptr::write_bytes(
+                mmu::phys_to_virt(line_phys) as *mut u8,
+                0,
+                FRAME_SIZE as usize,
+            );
+        }
+        WRITTEN.store(0, Ordering::SeqCst);
+
+        // init first, so a shell that spawns before the service is listening merely blocks in a
+        // rendezvous rather than failing.
+        crate::sched::spawn(move || init_service(spawn_ep, result))?;
+
+        crate::sched::spawn(move || {
+            // The extra stack goes in as ordinary mappings below the one `run` maps, which is the
+            // shape `spawn_fs_client` uses and for the same measured reason: a shell carries a path
+            // stack, a parsed line and now an array of planned endowments, all by value.
+            let mut maps = [Mapping {
+                va: OUT_VA,
+                phys: out_phys,
+                flags: Flags::user_data(),
+            }; 2 + SHELL_EXTRA_STACK];
+            maps[1] = Mapping {
+                va: LINE_VA,
+                phys: line_phys,
+                flags: Flags::user_rodata(),
+            };
+            for (k, m) in maps[2..].iter_mut().enumerate() {
+                m.va = USER_STACK_VA - (k as u64 + 1) * FRAME_SIZE;
+                m.phys = crate::memory::alloc()
+                    .expect("no frame for the shell's stack")
+                    .addr();
+                m.flags = Flags::user_data();
+            }
+            run(
+                image,
+                Spawn {
+                    arg0: ROLE_PIPELINE,
+                    arg1: 0,
+                    arg2: 0,
+                    grants: &[
+                        endpoint_cap(term, Rights::WRITE),     // slot 0: the terminal
+                        endpoint_cap(spawn_ep, Rights::WRITE), // slot 1: direct init
+                        endpoint_cap(result, Rights::READ),    // slot 2: a child's answer
+                        untyped_cap(budget),                   // slot 3: what it mints pipes from
+                    ],
+                    maps: &maps,
+                },
+            )
+        })?;
+
+        Some(Wiring { term, out_phys })
+    }
+
+    /// **Serve the terminal until the shell says it is finished**, collecting everything it printed.
+    ///
+    /// One `OP_WRITE` at a time, replied the way the real line discipline replies (the byte count),
+    /// because the shell blocks on that reply and a test that answered differently would be testing
+    /// a terminal nobody has.
+    pub fn transcript(w: &Wiring, sentinel: &[u8], out: &mut [u8]) -> usize {
+        loop {
+            let m = crate::sched::ipc_recv_cap(w.term);
+            let (w0, slot) = (m[0], m[1]);
+            let crate::cap::Object::Reply(caller) = crate::sched::current_cap(slot)
+                .expect("the shell's terminal write carried no reply capability")
+                .object
+            else {
+                panic!("the shell sent the terminal something that was not a CALL");
+            };
+            let n = lineedit::proto::len(w0);
+            if lineedit::proto::op(w0) == lineedit::proto::OP_WRITE {
+                let mut buf = TRANSCRIPT.lock();
+                let at = WRITTEN.load(Ordering::SeqCst);
+                let n = n.min(buf.len().saturating_sub(at));
+                for i in 0..n {
+                    // SAFETY: the shell's output page, mapped read/write into it and named here
+                    // through the direct map; `n` is bounded by the page and by the buffer.
+                    buf[at + i] = unsafe {
+                        core::ptr::read_volatile(
+                            (mmu::phys_to_virt(w.out_phys) + i as u64) as *const u8,
+                        )
+                    };
+                }
+                WRITTEN.store(at + n, Ordering::SeqCst);
+            }
+            crate::sched::ipc_reply(caller, [n as u64, 0]);
+            crate::sched::delete_current_cap(slot).expect("consume the one-shot reply");
+
+            let done = {
+                let buf = TRANSCRIPT.lock();
+                let len = WRITTEN.load(Ordering::SeqCst);
+                len >= sentinel.len() && buf[len - sentinel.len()..len] == *sentinel
+            };
+            if done {
+                let buf = TRANSCRIPT.lock();
+                let len = WRITTEN.load(Ordering::SeqCst).min(out.len());
+                out[..len].copy_from_slice(&buf[..len]);
+                return len;
+            }
+        }
+    }
+
+    /// **init, as the shell sees it**: the spawn protocol, including milestone 50's two delegated
+    /// capabilities.
+    ///
+    /// The whole of what the operators added is here, and it is small: receive an endpoint, and put
+    /// it where the result endpoint would have gone. Nothing decides what is behind it, because
+    /// nothing here can find out.
+    fn init_service(spawn_ep: EpId, result: EpId) -> ! {
+        loop {
+            let m = crate::sched::ipc_recv(spawn_ep);
+            let (w0, w1, w2) = (m[0], m[1], m[2]);
+            let prog = capsh::Prog::from_id(capsh::spawnproto::prog_id(w0));
+            let arg = capsh::spawnproto::arg(w1);
+            let wiring = capsh::spawnproto::wiring(w2);
+
+            // In the protocol's order. A capability received but never expected, or expected and
+            // never sent, deadlocks both sides, which is why the order is the contract.
+            let sink = if wiring.sink {
+                take_endpoint(spawn_ep)
+            } else {
+                None
+            };
+            let source = if wiring.source {
+                take_endpoint(spawn_ep)
+            } else {
+                None
+            };
+            // A `--mem` grant is received and dropped: no stage of the pipeline script asks for
+            // one, and receiving it anyway is what keeps the two sides in lockstep if one ever
+            // does. `user/src/sysinit.rs` is where a budget actually reaches a child.
+            if capsh::spawnproto::mem_pages(w2) > 0 {
+                let m = crate::sched::ipc_recv_cap(spawn_ep);
+                let _ = crate::sched::delete_current_cap(m[1]);
+            }
+
+            let image = prog.and_then(|p| program(p.name()));
+            let started = match image {
+                Some(image) => {
+                    // Slot 0 is the output: the result endpoint, or the sink the shell delegated.
+                    // Slot 1 is the input source when there is one. That is the whole difference.
+                    let out = sink.unwrap_or(result);
+                    crate::sched::spawn(move || match source {
+                        Some(src) => run(
+                            image,
+                            Spawn {
+                                arg0: arg,
+                                arg1: 0,
+                                arg2: 0,
+                                grants: &[
+                                    endpoint_cap(out, Rights::WRITE),
+                                    endpoint_cap(src, Rights::READ),
+                                ],
+                                maps: &[],
+                            },
+                        ),
+                        None => run(
+                            image,
+                            Spawn {
+                                arg0: arg,
+                                arg1: 0,
+                                arg2: 0,
+                                grants: &[endpoint_cap(out, Rights::WRITE)],
+                                maps: &[],
+                            },
+                        ),
+                    })
+                    .is_some()
+                }
+                None => false,
+            };
+
+            // A redirected child's answer goes somewhere else, so the shell has nothing to read and
+            // init owes it an ack. Unredirected, the child's own message is the shell's single read.
+            if wiring.sink {
+                crate::sched::ipc_send(
+                    result,
+                    [
+                        if started {
+                            capsh::spawnproto::SPAWN_OK
+                        } else {
+                            capsh::spawnproto::SPAWN_FAILED
+                        },
+                        0,
+                        0,
+                    ],
+                );
+            } else if !started {
+                crate::sched::ipc_send(result, [capsh::spawnproto::SPAWN_FAILED, 0, 0]);
+            }
+        }
+    }
+
+    /// Take one delegated capability and read the endpoint out of it. The slot is dropped straight
+    /// away: what init needs is the *name* of the endpoint, and holding the capability afterwards
+    /// would fill a cspace over a long session for nothing.
+    fn take_endpoint(ep: EpId) -> Option<EpId> {
+        let m = crate::sched::ipc_recv_cap(ep);
+        let slot = m[1];
+        let cap = crate::sched::current_cap(slot).ok()?;
+        let _ = crate::sched::delete_current_cap(slot);
+        match cap.object {
+            crate::cap::Object::Endpoint(id) => Some(id),
+            _ => None,
+        }
+    }
+}
+
+/// **`>`, `<` and `|` at a real prompt** (milestone 50, notes/pipes.md).
+///
+/// The claim under test is one sentence: **a program holds an endpoint for its output and cannot
+/// tell what is on the other end.** So the assertions are all of the form "the same binary, two
+/// destinations, the same bytes", never "the pipeline printed something".
+#[cfg(test)]
+mod pipeline_tests {
+    use super::*;
+
+    /// The last line `user/src/shell.rs`'s pipeline role prints. Must match `PIPELINE_DONE` there.
+    const DONE: &[u8] = b"== pipelines done\n";
+
+    /// The script's transcript, run **once** and shared by every assertion below.
+    ///
+    /// Cached because running it is expensive (a shell, an init service, and several spawned
+    /// programs) and because the assertions are about one run of one script: re-running it per test
+    /// would not be four independent measurements, it would be the same measurement four times.
+    static TRANSCRIPT: spin::Mutex<Option<([u8; 3072], usize)>> = spin::Mutex::new(None);
+
+    /// Run the script if nothing has yet, and hand back everything the shell printed.
+    fn transcript(out: &mut [u8; 3072]) -> usize {
+        let mut cache = TRANSCRIPT.lock();
+        if cache.is_none() {
+            let Some(w) = pipeline_service::start() else {
+                panic!("no shell program in the initrd archive, or no memory to wire one");
+            };
+            let mut buf = [0u8; 3072];
+            let n = pipeline_service::transcript(&w, DONE, &mut buf);
+            *cache = Some((buf, n));
+        }
+        let (buf, n) = cache.as_ref().expect("just filled");
+        out.copy_from_slice(buf);
+        *n
+    }
+
+    /// The text the shell printed in response to `line`, up to but not including the next prompt.
+    ///
+    /// The transcript is echoed prompts and answers, so slicing it this way is what lets each
+    /// assertion below name the command it is about instead of counting lines.
+    fn answer<'a>(t: &'a [u8], line: &[u8]) -> &'a [u8] {
+        let mut needle = [0u8; 64];
+        needle[0] = b'$';
+        needle[1] = b' ';
+        needle[2..2 + line.len()].copy_from_slice(line);
+        needle[2 + line.len()] = b'\n';
+        let needle = &needle[..3 + line.len()];
+        let start = t
+            .windows(needle.len())
+            .position(|w| w == needle)
+            .unwrap_or_else(|| {
+                panic!(
+                    "the shell never ran {:?}. transcript:\n{}",
+                    core::str::from_utf8(line).unwrap(),
+                    core::str::from_utf8(t).unwrap_or("<not utf-8>"),
+                )
+            })
+            + needle.len();
+        let rest = &t[start..];
+        let end = rest
+            .windows(2)
+            .position(|w| w == b"$ ")
+            .unwrap_or(rest.len());
+        &rest[..end]
+    }
+
+    /// Parse `wc`'s three numbers out of what the shell printed for it. The shell prefixes two
+    /// spaces; `wc` prints `lines words bytes` and a newline.
+    fn counts(said: &[u8]) -> (u64, u64, u64) {
+        let text = core::str::from_utf8(said).expect("wc printed non-UTF-8");
+        let mut it = text.split_ascii_whitespace().map(|w| {
+            w.parse::<u64>()
+                .unwrap_or_else(|_| panic!("wc printed {text:?}, which is not three numbers"))
+        });
+        let (l, w, b) = (
+            it.next().expect("no line count"),
+            it.next().expect("no word count"),
+            it.next().expect("no byte count"),
+        );
+        assert!(
+            it.next().is_none(),
+            "wc printed more than three numbers: {text:?}"
+        );
+        (l, w, b)
+    }
+
+    /// **The headline: the same `date`, two destinations, the same bytes.**
+    ///
+    /// `date` is spawned twice from the same ELF with the same argument. The first time its output
+    /// slot holds the shell's result endpoint and the shell prints what arrives; the second time it
+    /// holds an endpoint into `wc`, and `wc` counts what arrives. Neither `date` was told which, and
+    /// there is no message on the sink contract that could have told it.
+    ///
+    /// The assertion is the byte count, which is the one number that has to agree. It is compared
+    /// against the *observed* first arm rather than a constant, so it holds whether or not this
+    /// boot has a clock and whatever `date` decides to say.
+    ///
+    /// The word and line counts are checked too, because a byte count alone would pass for a `wc`
+    /// that had simply counted the right number of wrong bytes.
+    #[test_case]
+    fn one_program_two_destinations_and_the_same_bytes() {
+        let mut buf = [0u8; 3072];
+        let n = transcript(&mut buf);
+        let t = &buf[..n];
+
+        // Arm one: the shell's own result endpoint. It prints two spaces, then date's bytes.
+        let direct = answer(t, b"date");
+        assert!(
+            direct.starts_with(b"  ") && direct.ends_with(b"\n"),
+            "date printed {:?}, which is not one line through the shell",
+            core::str::from_utf8(direct).unwrap_or("<not utf-8>"),
+        );
+        let printed = &direct[2..];
+
+        // Arm two: an endpoint into `wc`.
+        let (lines, words, bytes) = counts(&answer(t, b"date | wc")[2..]);
+        assert_eq!(
+            bytes as usize,
+            printed.len(),
+            "the same date wrote {} bytes to the shell and {bytes} into a pipe: {:?}",
+            printed.len(),
+            core::str::from_utf8(printed).unwrap_or("<not utf-8>"),
+        );
+        assert_eq!(lines, 1, "date prints one line either way");
+        assert_eq!(
+            words as usize,
+            core::str::from_utf8(printed)
+                .expect("date printed non-UTF-8")
+                .split_ascii_whitespace()
+                .count(),
+            "the words differ between the two destinations",
+        );
+    }
+
+    /// **A builtin can lead a pipeline, because the shell can be a sink's client too.**
+    ///
+    /// `echo hello world | wc` is a real two-party pipeline with only one spawned process in it:
+    /// the shell writes the bytes into the endpoint itself. That costs no new mechanism, and it is
+    /// what the sink contract being register-only buys (notes/sink-protocol.md): being a writer
+    /// needs one capability and nothing else.
+    ///
+    /// Twelve bytes: `hello world` plus the newline the shell adds, which is what `echo` prints.
+    #[test_case]
+    fn the_shell_can_be_the_producer() {
+        let mut buf = [0u8; 3072];
+        let n = transcript(&mut buf);
+        let t = &buf[..n];
+        assert_eq!(
+            counts(&answer(t, b"echo hello world | wc")[2..]),
+            (1, 2, 12),
+            "the shell's own bytes did not arrive at wc intact",
+        );
+    }
+
+    /// **Three stages, so a middle one is a real middle.**
+    ///
+    /// The second `wc` counts the first `wc`'s output, which is only possible because `wc` writes
+    /// the same contract it reads. `1 2 12\n` is seven bytes, one line, three words.
+    #[test_case]
+    fn a_pipeline_composes_past_two_stages() {
+        let mut buf = [0u8; 3072];
+        let n = transcript(&mut buf);
+        let t = &buf[..n];
+        assert_eq!(
+            counts(&answer(t, b"echo hello world | wc | wc")[2..]),
+            (1, 3, 7),
+            "the middle stage's output did not reach the last one",
+        );
+    }
+
+    /// **The refusals happen at the prompt, with nothing spawned**, which is the half of this that
+    /// Unix cannot do. Each of these is a fact the manifest knows and a shell can therefore act on
+    /// before it moves any authority.
+    #[test_case]
+    fn the_line_is_refused_before_anything_is_spawned() {
+        let mut buf = [0u8; 3072];
+        let n = transcript(&mut buf);
+        let t = &buf[..n];
+
+        // A reader with nothing to read. On Unix this is a shell that appears to hang.
+        let said = answer(t, b"wc");
+        assert!(
+            core::str::from_utf8(said)
+                .unwrap_or("")
+                .contains("waits forever"),
+            "`wc` alone should be refused for having no input, not run: {:?}",
+            core::str::from_utf8(said).unwrap_or("<not utf-8>"),
+        );
+
+        // A program whose answer is a register, on the left of a pipe.
+        let said = answer(t, b"worker 9 | wc");
+        assert!(
+            core::str::from_utf8(said)
+                .unwrap_or("")
+                .contains("byte stream"),
+            "`worker 9 | wc` should be refused for having no bytes: {:?}",
+            core::str::from_utf8(said).unwrap_or("<not utf-8>"),
+        );
+
+        // And one that reads nothing, on the right of one.
+        let said = answer(t, b"date | date");
+        assert!(
+            core::str::from_utf8(said)
+                .unwrap_or("")
+                .contains("no input"),
+            "`date | date` should be refused: date reads nothing. got {:?}",
+            core::str::from_utf8(said).unwrap_or("<not utf-8>"),
+        );
+    }
+
+    /// **`>` needs a filesystem this shell was granted none of, and it says so** rather than
+    /// running the command and printing the output to the terminal.
+    ///
+    /// This is the honest half of milestone 50: the interactive boot wires no FS service, so the
+    /// shell holds no directory to resolve a redirection against, and `date > report.txt` is the
+    /// same "you hold no such capability" a named file gets. The mechanism behind `>` is proven in
+    /// [`sink_tests`] against a real RedoxFS image; what is missing is a boot that has both a
+    /// filesystem and a spawn channel in one shell. See notes/pipes.md.
+    #[test_case]
+    fn a_redirection_a_shell_cannot_back_is_refused_rather_than_dropped() {
+        let mut buf = [0u8; 3072];
+        let n = transcript(&mut buf);
+        let t = &buf[..n];
+        let said = answer(t, b"date > report.txt");
+        assert!(
+            core::str::from_utf8(said)
+                .unwrap_or("")
+                .contains("no such capability"),
+            "a redirection this shell cannot back must be refused, not silently dropped: {:?}",
+            core::str::from_utf8(said).unwrap_or("<not utf-8>"),
         );
     }
 }

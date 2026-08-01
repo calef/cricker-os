@@ -105,7 +105,7 @@ pub extern "C" fn _start(fmt: u64, offset_minutes: u64, provenance: u64) -> ! {
     // difference between this program and `SystemTime::now()`: it has an error channel and uses it.
     let Some(page) = clock_page() else {
         line(b"date: the time is unknown: this process holds no clock capability");
-        exit();
+        end();
     };
     let r = page.read();
     if !state::known(r.state) {
@@ -115,12 +115,12 @@ pub extern "C" fn _start(fmt: u64, offset_minutes: u64, provenance: u64) -> ! {
         if provenance != 0 {
             source_line(r.state, r.generation);
         }
-        exit();
+        end();
     }
 
     let Ok(offset) = UtcOffset::from_minutes(offset_minutes as i64 as i32) else {
         line(b"date: that UTC offset is not one RFC 3339 can write");
-        exit();
+        end();
     };
 
     // Nanoseconds to seconds, truncating towards zero, which is exact here: the wall clock is a
@@ -133,14 +133,14 @@ pub extern "C" fn _start(fmt: u64, offset_minutes: u64, provenance: u64) -> ! {
     // because "unreachable" is a claim about today's policy and this is a claim about arithmetic.
     let Ok(dt) = DateTime::from_unix(unix_secs, offset) else {
         line(b"date: the clock reads a time outside the calendar's range");
-        exit();
+        end();
     };
 
     line(dt.format(format_of(fmt)).as_bytes());
     if provenance != 0 {
         source_line(r.state, r.generation);
     }
-    exit();
+    end();
 }
 
 /// The `a0` selector as a [`Format`]. An unrecognised value is `Human` rather than an error: this
@@ -201,6 +201,23 @@ fn source_line(st: u64, generation: u64) {
     }
     push(&mut buf, &mut n, &digits[d..]);
     line(&buf[..n]);
+}
+
+/// **Announce the end of the stream, then exit** (milestone 50).
+///
+/// `date` was already writing the sink contract's `BYTES` framing before that contract had a name,
+/// because `OP_BYTES` is zero and a bytes message's first word is therefore its byte count
+/// (notes/sink-protocol.md). What it was missing is the other half: a reader downstream of a `|`
+/// has no way to know the producer is finished except by being told, and inferring it from a death
+/// notification would be a fact about process supervision standing in for a fact about a stream.
+///
+/// So every exit path from `_start` goes through here. The send blocks until somebody takes it,
+/// which for a reader that stopped at the newline means this process stays parked; that is the same
+/// rendezvous every send on this system has, and the alternative (a stream whose end is invisible)
+/// makes `date | wc` impossible.
+fn end() -> ! {
+    send(REPORT, sink_proto::eof(), 0, 0);
+    exit();
 }
 
 /// The clock page, or `None` when this process was granted no clock.

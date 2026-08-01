@@ -397,6 +397,15 @@ path = "src/sink.rs"
 test = false
 bench = false
 
+# The consumer (milestone 50): counts what arrives on its input and writes the numbers to its
+# output, both over the sink contract. The first program in the tree that reads a stream, and the
+# right-hand side of `date | wc`. Portable, so both ISAs' archives carry it.
+[[bin]]
+name = "wc"
+path = "src/wc.rs"
+test = false
+bench = false
+
 [dependencies]
 abi = { version = "0.1.0", path = "../crates/abi" }
 bitfont = { version = "0.1.0", path = "../crates/bitfont" }

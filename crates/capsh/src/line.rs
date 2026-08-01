@@ -391,7 +391,10 @@ mod tests {
     #[test]
     fn a_pipeline_has_a_ceiling() {
         assert!(split(b"echo a | wc | wc | wc").is_ok());
-        assert_eq!(split(b"echo a | wc | wc | wc | wc"), Err(Refusal::TooManyStages));
+        assert_eq!(
+            split(b"echo a | wc | wc | wc | wc"),
+            Err(Refusal::TooManyStages)
+        );
     }
 
     /// A redirection designates one destination; a pattern designates a set. Refused where the
