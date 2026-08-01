@@ -129,6 +129,41 @@ tests came along unchanged once three things moved.
    comment stood in for a real blocker for a year, which is this note's recurring lesson in a new
    costume.
 
+**Two defects the port surfaced, both invisible until the tests ran on the second machine.**
+
+- **init built the wrong program.** Several init roles in `hello` build a child out of *this
+  binary's own* ELF and re-enter it at another role, and they found that ELF by reading the archive
+  entry literally named `"init"`. Right on aarch64, where hello *is* the boot program; wrong on
+  RISC-V, where `init` is the portable `builder` demo. init built a child out of `builder`, started
+  it at a role `builder` does not have, and the child reached for an initrd mapping it did not own
+  and died. Nothing said "wrong program": the test waiting on that child's report just never got one
+  and the 90 s ceiling fired. `hello::ROLES_ENTRY` now names the entry per ISA, matching the kernel's
+  `INIT_ROLES_ENTRY`, and the two must agree.
+
+- **The fault record was published before it was written.** Every test that reads the last-fault
+  record watches `USER_FAULTS` rise and then calls `last_user_fault()`, so the counter is the
+  record's publication flag; it was being bumped *first*, on both ISAs, all relaxed. A reader
+  therefore gets either an earlier fault's record (the assertion satisfied by the wrong evidence) or,
+  on the boot's first fault, a zero that decodes as "nothing faulted". The tests only passed because
+  something earlier in the suite had already faulted at the same address for the same reason. Fixed
+  by storing the record first and making the counter's `fetch_add` the `Release`, with an `Acquire`
+  fence in the accessor.
+
+**The assertions were broken on purpose to check they still bite** (a ported test that has never
+failed is not evidence it still catches what the original caught). Four representative properties,
+one per category, each broken in the kernel or in the user program and each confirmed red on
+**both** ISAs before being restored:
+
+| Category | What was broken | What happened, on both ISAs |
+| --- | --- | --- |
+| Fault assertions | `outlaw`'s `READ_KERNEL` reads an *unmapped* address instead of the kernel's | `a_user_program_cannot_read_a_kernel_address` fails on `Translation(Read)` versus `Permission(Read)`. This is the one worth having: it proves the permission-versus-translation distinction is load-bearing on RISC-V too, where it is *derived* by walking the tables rather than read out of a register. |
+| ELF rejection | `paging::Mapper::map`'s `WrongHalf` guard disabled | `an_elf_that_asks_to_be_loaded_over_the_kernel_is_refused` fails with `left: None`: the load fully succeeded, mapping a user program on top of the kernel. |
+| Capability rules | the `GRANT` check on `SEND_CAP` disabled | `a_capability_can_be_delegated_over_ipc_and_grant_gates_re_delegation` fails as a lost-wakeup hang, identically on both. The receiver's re-delegation is no longer refused, so it blocks in the send it expected to fail and its verdict never arrives. Red, but through the watchdog rather than the assertion. |
+| `userspace_init_*` | hello's `child()` reports `CHILD_WORD ^ 1` | `userspace_init_parses_an_elf_and_builds_a_running_child` fails on the exact word. |
+
+The first of those is also what found the publication-ordering defect above, because breaking a test
+and running it *alone* puts it in a state the full suite never reaches.
+
 **What stays aarch64-only, and why.** Each is written at the test, not in a blanket module comment,
 because a blanket comment is exactly how the old claim survived past being true.
 
@@ -160,9 +195,48 @@ should assert once it is.
 `riscv_virtio_tests` was written when `tests` was unreachable from RISC-V, so it re-derives the disk,
 FS and network properties with its own copies of `wait_for`, the net selectors, and the transcript
 plumbing. Now that `tests` runs on both, 24 of its tests are gated to aarch64 solely because the twin
-exists. The two are not textually identical (aarch64 drives the driver as a role of `hello`, RISC-V
-as the dedicated `blk` binary), so merging them means choosing one and deleting the other side's
-roles. Worth doing; out of scope for a test-portability lane.
+exists.
+
+The finishing pass measured the overlap rather than guessing at it, and the answer is more
+encouraging than "not textually identical" suggested. Of the 24 shared names, **nine bodies are
+byte-for-byte identical** (the five socket-contract tests, `std_net`, the two smoltcp DHCP tests, and
+the FS server's stack-headroom check). Of the fifteen that differ, thirteen differ **only in which
+image drives the driver**: aarch64 passes `init_image()`, because there the virtio driver is a role
+of `hello`, and RISC-V passes `blk_image()`, the dedicated binary. The remaining two differ only in a
+comment and in an assertion message. There is no behavioural divergence anywhere in the 24.
+
+So the merge is smaller than it looked: pick `blk` on both ISAs (a dedicated binary is the better
+choice regardless, and hello would keep its role for nothing), delete `riscv_virtio_tests`' 24 copies
+along with its duplicate `wait_for`, net selectors and image helpers, and keep its two genuinely
+RISC-V-only tests (`a_faulting_user_thread_is_killed_and_the_kernel_survives` and
+`the_page_tables_say_u_mode_cannot_read_the_kernels_memory`, the software-walk twin of the `AT S1E0R`
+test). **Still not done**, and deliberately: it doubles the aarch64 leg's slowest tests during the
+transition and it is a change to what the *disk and network* tests prove, which is a different
+subject from making the userspace suite portable. It is now a measured piece of work rather than an
+estimated one.
+
+### Open gap: `no_leaked_threads` has never policed `user::tests`, and fixing it is not cheap
+
+The leak police sorts by module path, and `no_leaked_threads` sorts before `tests`. So the one module
+whose whole subject is user threads has never been checked for leaving any behind, which is how four
+never-exiting spinners accumulated in it unnoticed until one of them starved
+`reclaim_frees_a_started_then_exited_childs_regions` off a four-hart machine.
+
+Two of the four were one-shot roles with nothing left to do and now `exit()`. The other two cannot,
+and that is the obstacle:
+
+- `a_user_program_that_never_yields_is_preempted_anyway` runs `spinner`, whose entire point is that
+  it never yields, never syscalls, and never returns. A thread that exits would not test anything.
+- `a_process_spends_untyped_and_the_kernel_never_allocates` reads the kernel's free-frame count the
+  instant its child reports. If the child exited there, the number read would be the teardown's
+  rather than the measurement's, so the child spins to hold the state still.
+
+Both are spawned **bare** (`sched::spawn` around `user::run`), not into a reclaimable region, so
+there is no `reclaim_region` to arm the kill with and no other way for a test to tear down a user
+thread it started. Making the module policeable therefore means giving the kernel a way to kill a
+bare user thread by `Tid`, which is a kernel change with its own design questions, not a test
+reordering. Recorded here rather than done under a test lane. Reordering the runner *without* that
+change would simply turn a silent gap into a permanently red gate.
 
 ### B (original scope). In-kernel test suite on RISC-V — M, low-medium risk. Highest value per effort.
 
