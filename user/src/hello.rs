@@ -291,6 +291,25 @@ fn program(initrd_len: u64, name: &str) -> Option<&'static [u8]> {
         unsafe { core::slice::from_raw_parts(INITRD_VA as *const u8, initrd_len as usize) };
     crickerfs::Fs::parse(archive).ok()?.read(name)
 }
+
+/// **The archive entry holding this binary**, which is not the same name on both machines.
+///
+/// Several init roles build a child out of *this* program's own ELF and re-enter it at a different
+/// role ([`CHILD`], [`DEV_CHILD`], [`IRQ_CHILD`]). To do that they have to find hello in the archive,
+/// and the name it is packed under differs: aarch64 packs hello as `init`, because there hello *is*
+/// the boot program; RISC-V's `init` is the portable `builder` demo, so hello goes in under its own
+/// name. The kernel side of the same fact is `kernel::user::INIT_ROLES_ENTRY`; the two must agree.
+///
+/// This was a hardcoded `"init"`, which is right on aarch64 and silently wrong on RISC-V: init
+/// happily built a child out of `builder`'s ELF and started it at a role `builder` does not have, so
+/// the child reached for an initrd mapping it did not own, faulted, was killed, and the test waiting
+/// on its report blocked until the watchdog fired. Nothing said "wrong program"; it just never
+/// answered.
+#[cfg(target_arch = "aarch64")]
+const ROLES_ENTRY: &str = "init";
+#[cfg(target_arch = "riscv64")]
+const ROLES_ENTRY: &str = "hello";
+
 /// The init role that builds a device-driver child (milestone 19d.2); matches kernel test wiring.
 const INIT_DEV: u64 = 23;
 /// The init role that brings up the real console server and prints through it (milestone 19d.2b).
@@ -618,7 +637,7 @@ fn init_irq(initrd_len: u64) -> ! {
     const REPORT: u64 = 1;
     const TEST_IRQ: u64 = 3; // the Irq cap the kernel granted init (spawn_init)
 
-    let Some(init_bytes) = program(initrd_len, "init") else {
+    let Some(init_bytes) = program(initrd_len, ROLES_ENTRY) else {
         fail_report(REPORT)
     };
     let Ok(elf) = elf::Elf::parse(init_bytes) else {
@@ -796,7 +815,7 @@ fn init_build(initrd_len: u64, device: bool) -> ! {
     const UART_DEV: u64 = 2; // the UART device cap the kernel granted init (spawn_init)
     const CHILD_UART_VA: u64 = 0x0070_0000;
 
-    let Some(init_bytes) = program(initrd_len, "init") else {
+    let Some(init_bytes) = program(initrd_len, ROLES_ENTRY) else {
         send(REPORT, 0, 0, 0);
         exit();
     };
