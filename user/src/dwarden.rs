@@ -208,6 +208,15 @@ fn serve(dir: u64) -> ! {
                     forward(fs::req(fs::CLOSE, server_handle, 0), 0)
                 }
             }
+            // **Extended attributes are not forwarded, and the refusal says exactly that**
+            // (milestone 57, DECISIONS §42). See `fwarden` for the argument; the short version is
+            // that a verb this caretaker does not offer must fail with a word that means "not
+            // offered" rather than with `EINVAL`, which reads as a malformed request. All three
+            // wardens answer the same thing so that behaviour does not depend on which one is in the
+            // chain.
+            fs::GETXATTR | fs::SETXATTR | fs::LISTXATTR | fs::REMOVEXATTR => {
+                reply_err(fs_proto::xattr::ENOTSUP)
+            }
             _ => reply_err(EINVAL),
         };
         reply(reply_slot, r);
