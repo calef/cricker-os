@@ -152,6 +152,17 @@ path = "src/fwarden.rs"
 test = false
 bench = false
 
+# The directory warden (milestone 47): the same caretaker one rung up, narrowing a directory
+# capability to one SUBTREE with an explicit rights ladder. It is what `cd` and a per-process
+# namespace resolve to, and it is a separate process for fwarden's reason: the FS server's handle
+# table is per server, so only an address-space boundary keeps a program off the parent directory.
+# mkinitrd packs it as "dwarden".
+[[bin]]
+name = "dwarden"
+path = "src/dwarden.rs"
+test = false
+bench = false
+
 # The EL0 microbenchmark program (primitive suite): self-times syscall/IPC primitives from EL0, the
 # lmbench way, so the numbers include the trap the kernel-side benchmarks skip. Run by the bench boot.
 [[bin]]
@@ -319,6 +330,16 @@ path = "src/date.rs"
 test = false
 bench = false
 
+# `rm` (milestone 47's rmdir lane): the first program endowed a **directory** capability, and the
+# reason `rm` stopped being a shell builtin. A builtin runs with the shell's whole endowment; this
+# takes an attenuated grant, so its recursion can only reach what it was handed. `mkinitrd` packs it
+# as "rm" for both ISAs.
+[[bin]]
+name = "rm"
+path = "src/rm.rs"
+test = false
+bench = false
+
 # The keyboard driver (milestone 29's input): a confined userspace virtio-input driver whose whole
 # power to inject a keystroke is the mapping of the compositor's input ring, not the doorbell every
 # client holds. `mkinitrd` packs it as "kbd" for both ISAs.
@@ -338,6 +359,16 @@ path = "src/entropy.rs"
 test = false
 bench = false
 
+# The NTP client (milestone 51): holds a network capability and the right to PROPOSE a time, and
+# deliberately not the right to set one. One binary, three roles (the client, the test server that
+# answers it, and the probe that proves the clock page is unreachable). `mkinitrd` packs it as "ntp"
+# for both ISAs.
+[[bin]]
+name = "ntp"
+path = "src/ntp.rs"
+test = false
+bench = false
+
 [dependencies]
 abi = { version = "0.1.0", path = "../crates/abi" }
 bitfont = { version = "0.1.0", path = "../crates/bitfont" }
@@ -352,6 +383,7 @@ entropy_proto = { version = "0.1.0", path = "../crates/entropy_proto" }
 fs_proto = { version = "0.1.0", path = "../crates/fs_proto" }
 gfx_proto = { version = "0.1.0", path = "../crates/gfx_proto" }
 lineedit = { version = "0.1.0", path = "../crates/lineedit" }
+ntp_proto = { version = "0.1.0", path = "../crates/ntp_proto" }
 user_rt = { version = "0.1.0", path = "../crates/user_rt" }
 vt = { version = "0.1.0", path = "../crates/vt" }
 

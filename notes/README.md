@@ -207,11 +207,13 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [The command line as a grant expression](grant-expression.md) — milestone 31: naming a resource
   in a command is how you grant it (Miller's "designation is authorization"), the inversion of
   Unix's ambient authority at the one interface a human touches. The shell's own budget, the
-  `SEND_CAP`-to-init spawn protocol, `run --mem N` made real by the `budgeter` program, the "you
+  `SEND_CAP`-to-init spawn protocol, `--mem N` made real by the `budgeter` program, the "you
   hold no such capability" refusal, and the `SPLIT`-grants-`GRANT` fix that let untyped be delegated.
   Phase 2 adds **per-file grants**: a caretaker process narrowing a directory capability to one file
   in one direction, proven by a read-only and a writable attacker, and why the second one is what
-  makes the first mean anything.
+  makes the first mean anything. Milestone 47 then deleted two words from the grammar (`run` and
+  `file:`), because the manifest was already doing the work the designator claimed credit for, and
+  records what a shell that could delegate a **clock** to `date` would need.
 - [Live component replacement](live-replacement.md) — milestone 23, the flagship: a running
   component swapped under a client that is talking to it. Why there is **no broker in the fast path**
   (the endpoint is the stable name, so the swap costs nothing and the kernel's own sender queue
@@ -313,13 +315,17 @@ in the code or the conversation doesn't make sense, it belongs here.
   prior art (seL4 dataports, Fuchsia Netstack3, Plan 9 /net as the counter-design), the socket
   contract proposal and its open fork, the smoltcp 0.13.1 pin, and the driver/server work that
   follows.
-- [NTP, the wire format](ntp.md) — milestone 51 lane C (`crates/ntp_proto`). The 48-byte NTPv4
-  packet, the 1900-epoch fixed-point timestamp and the **fixed era pivot** chosen for the 2036
-  rollover (and why picking the era nearest to "now" is worse), the offset and delay arithmetic, and
-  the seven response checks that are the entire spoofing resistance of unauthenticated NTP. Scope is
-  recorded plainly: no NTS, and why that is a separate decision rather than a stretch goal. Also the
-  place where a model checker turned out to be the wrong tool and exhausting a 10^9 domain was the
-  right one.
+- [NTP: the wire format, and the client that carries it](ntp.md) — milestone 51 lanes C and D. The
+  48-byte NTPv4 packet, the 1900-epoch fixed-point timestamp and the **fixed era pivot** chosen for
+  the 2036 rollover (and why picking the era nearest to "now" is worse), the offset and delay
+  arithmetic, and the seven response checks that are the entire spoofing resistance of
+  unauthenticated NTP. Then the client: five capability slots, **none of them the clock page**, so a
+  compromised time client can lie inside the service's bounds and can do nothing else. The nonce
+  comes from the entropy service or the client refuses to send anything, the poll interval is a
+  yield-spin because there is no timed wait, and the test server is honest about what substituting a
+  peer at a capability boundary does and does not prove. Scope recorded plainly: no NTS, and why that
+  is a separate decision rather than a stretch goal. Also the place where a model checker turned out
+  to be the wrong tool and exhausting a 10^9 domain was the right one.
 - [Hardening the repository itself](repo-hardening.md) — milestone 44's other half: the GitHub
   settings that cannot be committed. Private vulnerability reporting, and the exact ruleset for
   `main` with the seven required checks, written to be followed rather than interpreted. Includes the
@@ -343,6 +349,16 @@ in the code or the conversation doesn't make sense, it belongs here.
   and truncating division reports 1970 for the last day of 1969, why the range stops at year 9999,
   why leap seconds are a named error rather than a clamp, and the scope note that a fixed UTC offset
   is in and the IANA database is out (it is a data-distribution problem, not a calendar one).
+- [The glob matcher](glob.md) — milestone 47's pure-computation lane: `*`, `?`, `[a-z]`, `[!a]` and
+  escaping over bytes, with no filesystem in it. Why the matcher is separate from the granting (the
+  interesting question is what a match *grants*, and "the expansion you see is the grant" only holds
+  if there is one matcher), why **`**` is out permanently** (it is a traversal feature, and descending
+  needs a capability, so putting it in a string matcher hides an authority question in a pure
+  function), and why zsh's qualifiers are out (they need a read right beyond enumerate). Then the
+  single-backtrack-point algorithm and the reason a hostile pattern cannot be made to hang, with the
+  bound computable before the match starts. Also the second place a model checker was the wrong tool:
+  equivalence with exhaustive search was settled by enumerating 2.7 million pattern/name pairs
+  completely, and the blowup test runs at 100,000 bytes.
 - [Generational names](generational-names.md) — milestone 14 phase A: the thread table becomes a
   fixed generational slot table (`crates/slots`). A Tid is `(generation, slot)`; a dead thread's
   name can never resolve again, even after slot reuse. Bounded like an array, safe like a
@@ -412,6 +428,40 @@ in the code or the conversation doesn't make sense, it belongs here.
   device that lies about persistence, plus the controls that prove the injector bites (with the header
   ring's history removed, 92 of 93 fault points stop mounting) and the honest limit (a lying device is
   never survivable and never silent).
+- [The directory capability](dir-capability.md) — milestone 47's keystone: a directory stops being
+  one authority and becomes a **six-rung rights ladder**, with `OPENDIR` handing back a directory
+  capability rather than bytes. Why `DESCEND` earns its own rung (bundle it with reading and the
+  *shape of the tree* decides how much authority a grant carries, which is ambient authority
+  reintroduced by recursion), why attenuation is `parent & requested` by construction rather than a
+  check anyone could forget, and why the refusal errno is part of the design (`ENOENT` for a naming
+  right, `EROFS` for a mutating one, `EPERM` for `ENUMERATE`, which is the one rung where an empty
+  listing would be a lie about the directory). The structural finding: the FS server's handle table
+  is per *server*, so **the handle is the authority and the endpoint is the boundary**, which is why
+  `dwarden` exists and why, unlike `fwarden`, it performs no rights checks at all. `RENAME`'s two
+  atomicities stated apart (§42), the crash-atomic half measured at every fault point rather than
+  asserted, and the startup ordering bug that one shared frame hides until a warden stages a request
+  in it.
+- [Removal needs a directory](rm.md) — why `rm` is the first program granted a **directory** rather
+  than a file (no per-file capability can express "take this name away", because a name lives in the
+  directory that holds it), and why `-r` **widens the grant** rather than setting a flag: a program run
+  without it holds no way to descend, so **its recursion is not disabled by a branch anybody has to get
+  right**. Also `RMDIR` being empty-only, Unix's reporting checked against `rm(1)` rather than
+  remembered, and why we need no special case for `/` where Unix ships one.
+
+- [Navigating with no global namespace](shell-navigation.md) — milestone 47's commands: `cd`, `pwd`,
+  `ls`, `mkdir`, `rm` as **builtins** (which retires the worry that a listing *program* would hold the
+  power to read everything it lists). The three earned divergences and why each is forced rather than
+  chosen: no absolute paths (the name cannot be *expressed*, so `InvalidFilename` and not
+  `PermissionDenied`), `..` stopping at your root (not a check: the shell pops the stack of
+  capabilities it descended through, and at the root there is nothing to pop), and `pwd` relative to
+  that root. Why the cwd stops at the process boundary, and where in the code it does: a grant records
+  the directory it was resolved in **as a value**, so a child cannot re-resolve a name and a later `cd`
+  cannot change what an earlier grant meant. `rm` is **unlink and says so**, which cost a real
+  implementation: RedoxFS frees a node the moment its last link goes, so the first version was a
+  *revoke*, and registering an open node with the engine's usage table is what makes a holder keep
+  reading. Revocation is not offered, and the reason is the per-server handle table. The headline, with
+  the real shell binary on both ISAs: two shells rooted in two subtrees, each told nothing about which
+  it holds, and neither can name the other's files.
 - [Reading the backup from a MacBook or a Linux host](host-recovery.md) — milestone 57's answer to
   "the board is dead, can I get my data?": `redoxfs-host ls`/`cat`/`extract`, no FUSE, no kernel
   extension, no root, identical on macOS and Linux. Why none of upstream's five binaries already did

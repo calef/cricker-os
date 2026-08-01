@@ -2077,7 +2077,9 @@ Read/write, same shape: the two write bits **set** and everything else clear. A 
 every request passes the first test and fails the second. Each accepted write is read straight back,
 because "the server accepted my write" and "my write landed" are different claims.
 
-**The interactive shell still refuses `file:`, and that refusal is true rather than pending.** The
+**The interactive shell still refuses a named file, and that refusal is true rather than pending.**
+(It was spelled `file:NAME` when this was written; milestone 47 removed the designator, and a bare
+token in a file position designates the file now. The mechanism is unchanged.) The
 boot that starts the shell wires no FS service, so the shell holds no directory to narrow, and `caps`
 says so in those words. `capsh` carries the whole vocabulary (a `FileSpec` in the manifest, a
 `FileGrant` in the endowment, refusals both ways) and the decision is a function of what the shell
@@ -4068,12 +4070,36 @@ The Gregorian calendar is **fully specified**: every rule is written down, and a
 3,652,425 days in range settles it. Nothing about being widely used tells you more than the quantifier
 does.
 
-Cryptography is the opposite, and milestone 56 already records the opposite call: **vendor it, do not
-write it.** Correctness there includes resistance to attacks not yet published and side-channel
+Cryptography is the opposite: **take it, do not write it.** Correctness there includes resistance to attacks not yet published and side-channel
 behaviour no specification states, and that is bought by years of exposure and review. A proof that
 our AES matches the spec would not make it safe to use.
 
 So the distinguishing question is not size. It is **whether the spec is the whole of correctness.**
+
+### Amendment (2026-07-31): taking is not vendoring, and crypto is a *dependency*
+
+An earlier wording of rule 4 said crypto should be **vendored**, which conflated two decisions. Rule 4
+is about **write versus take**. Whether a taken thing is *vendored* or *depended on* is separate, and
+does not follow from it.
+
+**The tree's actual trigger for vendoring is "we must patch it."** RedoxFS is vendored because it
+needed a divergence patch to build `no_std`, and `script/vendor-verify` exists to prove exactly that:
+"upstream **plus our recorded patches**". **smoltcp is a whole subsystem and an ordinary
+dependency**, because nothing needed changing. So "subsystem, therefore vendor" is not what this tree
+does, and never was.
+
+RustCrypto's crates are already `no_std`, so no patch is needed and the trigger never fires. With no
+divergence, `vendor-verify` has nothing to prove that `Cargo.lock` does not already.
+
+**And for crypto in particular, vendoring is actively worse.** Advisories are the whole point in that
+category, and `cargo-deny` / `cargo-audit` work against registry versions; a vendored copy is
+invisible to an advisory until a human notices. Milestone 42 named that gap in general terms — "we
+confine code we did not write; an advisory against it is invisible today" — and crypto is where it
+bites hardest. Vendoring it would take on the maintenance burden **and** give up the pipeline that
+makes the burden survivable.
+
+So: **crypto is an ordinary dependency**, pinned in `Cargo.lock`, gated by `deny.toml` and
+`script/supply-chain`. Vendor only what must be patched.
 
 ### The honest costs of writing, recorded so they are not rediscovered as complaints
 
@@ -4098,6 +4124,233 @@ That is the gap this entry closes.
 
 `deny.toml`, `script/supply-chain` and `script/vendor-verify` from milestone 44, and `vendor/`'s pin
 plus divergence-patch discipline. A dependency taken under rule 2 goes through all of them.
+
+## 47. A directory capability carries six rights, and a child can never exceed its parent
+
+**Built 2026-07-31** (milestone 47's keystone). Concept note: notes/dir-capability.md.
+
+Milestone 47's own finding was that `cd`, `mkdir` and per-process namespaces all converge on one
+missing primitive: **a verb that returns a directory capability rather than bytes**. It is the first
+place the §27 contract hands back *authority* instead of *data*, which is why it got §32's level of
+care rather than being added as another opcode.
+
+### The rights, and why there are six
+
+`ENUMERATE`, `READ`, `WRITE`, `CREATE`, `REMOVE`, `DESCEND`. Milestone 47 named five; **`DESCEND` is
+the one it did not, and it earns its rung**. If descending came bundled with reading, granting a
+directory would transitively grant its entire subtree, and **the shape of the tree would decide how
+much authority a grant carried** — ambient authority reintroduced by recursion. A file handle inherits
+its directory's `READ`/`WRITE`, so "open, read versus write" is structural: what may be done to a file
+was decided when the directory was granted.
+
+### The refusal errno is part of the decision, because it decides what the holder learns
+
+- A **naming** right withheld (`READ`/`WRITE` for `OPEN`, `DESCEND` for `OPENDIR`) answers `ENOENT`:
+  *in this scope there is no such name*. `fwarden`'s sentence, for `fwarden`'s reason.
+- A **mutating** right withheld (`CREATE`, `REMOVE`, `WRITE`) answers `EROFS`, **not `EACCES`**, per
+  §27: `EACCES` implies a policy that could have said yes, and there is no policy here.
+- `ENUMERATE` withheld answers `EPERM`, the one rung where neither works. "No such name" is nonsense
+  when you hold the directory, and an empty listing would be **a lie about the directory rather than a
+  fact about the capability** — §42's silent degradation exactly.
+
+### Attenuation is by construction, not by check
+
+`Rights::attenuate` is `parent & requested` and is **the only constructor** for a non-root rights set
+(`Rights::root` is called once, by the mount). There is no widening path to forget. The server also
+refuses when the intersection is smaller than the request, but that is *truthfulness, not safety*:
+delete it and the property still holds. Proven three ways — Kani at one and two levels, host tests,
+and a guest probe — and falsified first: returning `Rights(requested)` turns 3 host tests and 2
+harnesses red.
+
+### The structural finding: the handle is the authority, the endpoint is the boundary
+
+The FS server's handle table is per **server**, not per client. So a rights-carrying handle attenuates
+only its holder: **anyone holding the FS-service endpoint can name `fs::ROOT` and be back at the image
+root.** That is why `dwarden` exists, and it is the same wall `fwarden` hit (no badged endpoints, one
+receive per server).
+
+`dwarden` performs **no rights checks at all** — one `OPENDIR` at startup, then pure handle-namespace
+translation. The attenuation lives entirely in the handle the server minted. **A stronger story than
+`fwarden`'s**, which does inspect requests: there is no check to get wrong.
+
+### The bug this shipped with, and the general rule it produced
+
+`dwarden` panicked in its own `_start` on riscv64 and passed on aarch64. Three processes share one
+frame, justified by `fwarden`'s argument that every request on both hops is a blocking `CALL`, so a
+client is parked inside its own call while the warden uses the page. **That holds once the warden is
+serving and not at startup**, where the warden stages the granted name and then blocks — and a
+confined program that already exists overwrites it.
+
+In the failing case it is not even a race: when the wiring call also wires the FS service, the server
+is parked in its readiness `SEND`, so the warden's descent cannot be answered until someone drains it,
+and the client owns that entire window. **So draining a readiness sentinel is sequencing, not merely
+an assertion.** `fwarden` carried the same latent bug and took the same three lines. The fix is
+ordering, not a second page.
+
+### `RENAME`
+
+`REMOVE` on the source, `CREATE` on the destination, checked before anything resolves.
+**Concurrency-atomic** because the serve loop runs one request to completion, so there is no
+concurrent observer inside the server. **Crash-atomic, and measured rather than asserted**: it is the
+final operation of `crash_consistency.rs`'s workload, so the sweep that cuts the device at every write
+cuts inside it, with both names in `NAMES` so "both" and "neither" fail. Milestone 55 depends on this
+(`fruit:posix_rename`).
+
+Not offered, each refused loudly rather than silently: `renameat2`'s `EXCHANGE`/`NOREPLACE` (§42),
+cross-filesystem move, and moving a **directory** between directories (`EINVAL` — POSIX's cycle guard
+is a path-prefix test and this contract has no paths). Two kind checks are ours rather than the
+engine's: RedoxFS's `rename_node` will rename a file over a directory.
+
+### What the proof looks like from outside
+
+Three runs against three rights sets, each other's controls. The attacker is told nothing about its
+grant beyond a run index and reports a bitmap the test checks exactly; `OPENED_ITS_OWN` and
+`GRANTED_ACCESS_FAILED` stop a warden that refuses *everything* from passing. Then from outside the
+guest entirely, the host tool reads the image the run left and asserts the fixture intact, no
+attacker-made name at the root, its creations in `sub`, and `sub` holding **both a renamed and an
+unrenamed name**. **No in-guest verdict could report that.**
+
+## 48. Navigation is the shell rebinding what it holds, and every shell has its own root
+
+**Built 2026-07-31** (milestone 47). Concept note: notes/shell-navigation.md. Rests on §47's
+directory-capability keystone.
+
+`cd`, `pwd`, `ls`, `mkdir` and `rm` are **shell builtins, not programs** — the same category as
+`caps`. They spawn nothing, need no grant, and confer no authority, because the shell is reading and
+rebinding what it already holds. That also retires a worry raised while designing `ls`: a listing
+*program* would be over-granted, holding the power to read everything it lists. It is not a program.
+
+### The headline, and it is demonstrated rather than argued
+
+**Two shells holding different subtrees cannot name each other's files** — not by policy, but because
+no capability reaching them exists. `two_shells_with_different_roots_cannot_name_each_others_files`
+runs the **real shell binary** in a scripted role on both ISAs. Neither shell is told which subtree it
+holds; each tries `sub/inner` and `other/secret` and reports what it reached, so the property is read
+off the *pair* rather than asserted by either. Falsified first: pointing the second shell at `sub`
+fails with "it opened a file that exists only in the OTHER shell's root". A host check then reads the
+post-run image for both subtrees from outside the guest entirely.
+
+### `..` is clamped by not having anything to send
+
+The shell holds a **stack of the directory capabilities it descended through**, one per level. `..`
+pops one; at the root there is nothing to pop, so **no request is made at all**. The FS server would
+also refuse `..` as a component, so the two mechanisms agree without either depending on the other —
+and the clamp is not a string check that could be spelled around. A path is validated against a copy
+of the position before anything is sent, so `cd ../../..` from one level down is refused whole and
+moves nothing.
+
+### The cwd stops at the process boundary, and the grant is a value
+
+`plan_against` walks a leading path **once, at the prompt**, against the shell's position *now*, and
+records where it landed in `FileGrant { dir: nav::Cwd, … }`. `dir` is a **value, not a pointer at the
+shell**, so a later `cd` cannot change what an already-planned grant means (a host test moves the
+shell afterwards and checks the grant did not follow). What stops a child re-resolving is that it
+receives a capability to one file, no directory and no cwd: **there is nothing for a string to be
+resolved against.** The convenience is the shell's; the authority is explicit. A child able to
+re-resolve a name later would be ambient authority smuggled in through a convenience feature.
+
+§27 stays intact: the resolver lives in the client, so the server still only ever sees one component
+relative to a capability presented to it.
+
+### `rm` is an unlink, and the first version was accidentally a revoke
+
+Milestone 47 required these be distinguished: **unlink** removes a name while existing holders keep
+reading (the atomic-replace and temp-file idioms depend on it); **revoke** kills the object and every
+capability goes stale.
+
+The first implementation was a revoke, and the machine said so: RedoxFS frees a node the instant its
+last link goes, so a read after unlink got `ENOENT` from a deallocated node. **The engine already had
+Unix's deferred delete — `on_open_node`/`on_close_node` and a release list — and nothing was using
+it.** Registering on open and deregistering on close is what makes the verb an unlink; deleting either
+half turns the test red.
+
+The test also caught a gap in itself: with only the `open` registration removed it stayed green,
+because it exercised the `create` path. It now goes through both doors. **A test that passes when half
+the mechanism is deleted is the failure that matters.**
+
+**Revoke is not offered**, for a structural reason rather than a scheduling one: it would mean
+invalidating handles the FS server minted for clients it cannot enumerate, because the handle table is
+per *server* (§47).
+
+### Gaps reported rather than papered over
+
+- **No `RMDIR`.** `mkdir` can make a directory no verb removes (`rm` answers `EISDIR`). Declined
+  deliberately: **a verb that removes whatever it finds is how one word takes a subtree away.** It is
+  the obvious next step, with `rm -r` behind it.
+- **No verb reports what rights a handle carries**, so a shell must ask for exactly what it holds
+  (`OPENDIR` refuses when the intersection is smaller than the request). The shell is told its rights
+  at spawn; a program handed a directory by someone else can only be told out of band or probe.
+- **The interactive prompt still holds no directory**, so at a keyboard all five say so truthfully.
+  Wiring an FS service into the interactive boot is a wiring change, not a change here.
+- Two shells run **sequentially**: the three processes in a warden chain share one page with the FS
+  server, so two live clients would clobber each other's requests.
+
+## 49. Removal is a directory operation, and `-r` widens the grant rather than setting a flag
+
+**Built 2026-07-31** (milestone 47). Concept note: notes/rm.md. Rests on §47's rights ladder and §48's
+navigation.
+
+### Why `rm` needed new grant surface
+
+**No per-file capability can express "take this name away."** A name lives in a directory, so removal
+is an operation on the directory that holds it. `wc report.txt` can be granted the file; `rm
+report.txt` cannot. So `rm` is the first program granted a **directory**, and `Manifest` grew
+`DirSpec` beside `FileSpec`. The child gets a capability to the directory the name is *in*, plus the
+name.
+
+This also moved `rm` from a **builtin** (where §48 left it) to a **program**, which is Unix's shape.
+`cd`/`pwd`/`ls` stay builtins because the shell is rebinding what it already holds; `rm -r` is a
+destructive loop. A builtin would run with the shell's **entire endowment**, while a program takes an
+explicit attenuated grant.
+
+### The result worth the whole milestone
+
+`DirSpec::Required { subtree_flag: Some(b'r') }`. Without the flag the capability carries authority to
+take names out of one directory **and nothing else** — it cannot list beneath a subdirectory and
+cannot descend into one. Typing `-r` widens it to walking what is underneath.
+
+> **A program run without `-r` holds no way to descend, so its recursion is not disabled by a branch
+> anybody has to get right.**
+
+Unix's `rm` *decides* not to recurse. This one **cannot**. And because the widening happens at the
+prompt, `caps rm -r logs/` shows strictly more authority than `caps rm logs/`: **typing `-r` is
+visibly handing over more**, rather than setting a flag whose consequences live elsewhere. That is the
+grant expression (§14, milestone 31) reaching a case where the flag *is* part of the grant.
+
+### `RMDIR` is empty-only, which is what makes the recursion safe
+
+Requires `REMOVE` on the parent, answers `ENOTEMPTY` otherwise. **No single call in the contract can
+take a subtree away**; the recursion is a userspace loop of individually safe single-step operations.
+Not revocation, for §48's reason: the handle table is per *server*, so handles cannot be invalidated
+for clients the server cannot enumerate.
+
+`rm -r` needs `ENUMERATE`, `DESCEND` and `REMOVE` **at every level**, so the walk stops exactly where
+the capabilities stop — structurally, not by a check.
+
+**`rm(1)` ships a literal special case** ("it is an error to attempt to remove the files `/`, `.` or
+`..`") because Unix needs one. We need none: a shell holding a subtree cannot name the root, so there
+is nothing to special-case. If such a guard ever feels necessary, that is a signal something else
+broke.
+
+### Unix's semantics, kept, and one correction to this project's own reasoning
+
+Silent on success (`-v` exists because the default prints nothing); failure is a diagnostic plus a
+non-zero exit; `rm` on a directory without `-r` refuses with `EISDIR`; an interrupted `rm -r` leaves a
+partial tree, reports, and exits non-zero, because a transaction spanning requests would break §47's
+one-request-to-completion property.
+
+**`-f` stays, and an earlier draft of milestone 47 was wrong about it.** That draft argued it should
+not exist, reasoning that with no prompting its only remaining meaning is suppressing errors, which
+§42 forbids. But `-f` ignores *nonexistent* files and suppresses their effect on the exit status; its
+real value is **idempotency**, and "absence is the desired state" is not a lie about failure. Recorded
+because the wrong reasoning is the reusable part: a divergence has to be checked against what the
+thing actually does, not against what its name suggests.
+
+### The fixture detail that makes `-f` testable at all
+
+`RM_MISSING` is a name the fixture **never stages**, asserted by a host test. Without that, the `-f`
+run and the plain run are indistinguishable — the whole of `-f` is that a name which is not there is
+not an error, so a fixture that accidentally staged it would make the test pass while proving nothing.
 
 ## Reading
 

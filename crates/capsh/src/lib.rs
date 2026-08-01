@@ -8,22 +8,45 @@
 //! Unix-flavored EPERM.
 //!
 //! It performs no IO and makes no syscalls. It turns a line of bytes into a decision: a
-//! [`Command`], and for a `run` command an [`Endowment`] (exactly what to grant the child) or a
+//! [`Command`], and for a program invocation an [`Endowment`] (exactly what to grant the child) or a
 //! typed [`Refusal`] the shell prints at the prompt. That split is DECISIONS §7 applied, the same
 //! shape as `lineedit`: the parsing and the manifest checking are host-tested in milliseconds, and
 //! only the wiring (the shell and init that carry the caps) needs QEMU. See
 //! notes/grant-expression.md and notes/program-manifest.md.
 //!
+//! # The grammar, after milestone 47 took two words out of it
+//!
+//! ```text
+//! <prog> [-abc] [--mem N] [token ...]
+//! caps [command]
+//! help
+//! echo <text>
+//! ```
+//!
+//! Short options arrived with `rm` (milestone 47's rmdir lane), and they are checked against the
+//! program's [`Manifest`] at the prompt rather than passed along unread, because one of them can
+//! **widen a grant**: `rm -r logs` hands over the subtree that `rm logs` does not.
+//!
+//! There is no `run` verb and no `file:` designator, and both removals are milestone 47's
+//! (roadmap, "`file:` and `run` are not earned"). A bare program name spawns it, because a shell
+//! where builtins are bare words and programs need a prefix makes the user learn which class a
+//! command is in before they can type it. A bare token in a file position designates the file,
+//! because `file:` marked the half of the grant that was already visible (*which* file) and said
+//! nothing about the half that matters (read or write), which lives in the [`Manifest`] by design.
+//!
 //! # The three moving parts
 //!
-//! - [`parse`] tokenizes a command line into a [`Command`]. For `run`, it separates the program
-//!   name, an optional integer argument, the `--mem N` budget grant, and forward-looking file
-//!   designators (`file:PATH`), which phase 1 parses but cannot honor yet.
+//! - [`parse`] tokenizes a command line into a [`Command`]. A first word that is not a builtin is a
+//!   program invocation, and everything after it is the `--mem N` budget grant plus **unclassified
+//!   positional tokens**: the parser deliberately does not decide which token is the argument and
+//!   which is the file, because that is the manifest's job.
 //! - A [`Manifest`] is a program's declared endowment: does it take an argument, does it require
-//!   (or forbid) a memory grant, does it report back. [`Prog::manifest`] is the static table.
-//! - [`plan`] checks a parsed `run` against the named program's manifest and yields an
-//!   [`Endowment`] or a [`Refusal`]. A mismatch is caught here, at the prompt, before anything is
-//!   spawned, which is milestone 23's component contract in embryo.
+//!   (or forbid) a memory grant, may it be granted a file and in which direction, does it report
+//!   back. [`Prog::manifest`] is the static table.
+//! - [`plan`] checks a parsed invocation against the named program's manifest, **placing the
+//!   positional tokens into the slots the manifest declares**, and yields an [`Endowment`] or a
+//!   [`Refusal`]. A mismatch is caught here, at the prompt, before anything is spawned, which is
+//!   milestone 23's component contract in embryo.
 //!
 //! # The wire half
 //!
@@ -34,6 +57,7 @@
 #![no_std]
 
 pub mod jobframe;
+pub mod nav;
 pub mod spawnproto;
 
 /// A program the shell can spawn. The set is small and closed in phase 1; each variant carries a
@@ -59,16 +83,46 @@ pub enum Prog {
     /// the forcible tier (the shell tearing its region down) ends it. The case the cooperative tier
     /// cannot reach, and the reason the second `^C` exists.
     Spinner,
+    /// Print the wall-clock time (milestone 51, `user/src/date.rs`). It takes nothing from the
+    /// command line: no argument, no memory, no file. **Its whole authority is a read-only mapping
+    /// of the clock page, which init endows and this shell cannot**, so at the interactive prompt
+    /// today it prints "the time is unknown: this process holds no clock capability" and that
+    /// sentence is true rather than a placeholder. See notes/grant-expression.md for what a shell
+    /// that could delegate a clock would need.
+    Date,
+    /// **Remove a name, and with `-r` the tree under it** (milestone 47, `user/src/rm.rs`).
+    ///
+    /// A **program, not a builtin**, and that is Unix's shape rather than a divergence from it.
+    /// `cd`, `pwd` and `ls` are builtins here because the shell is rebinding what it already holds;
+    /// `rm -r` is a destructive loop, not a rebinding. A builtin would run with the shell's **entire
+    /// endowment**, while a program takes an explicit attenuated grant, so `caps rm -r logs` prints
+    /// the subtree at risk before anything happens and a bug in the recursion can only reach what it
+    /// was handed. See [`DirSpec`].
+    Rm,
 }
+
+/// The number of programs [`Prog::id`] can name, which is the size of the table init indexes with
+/// it. Init's array is `[Option<&Elf>; COUNT]`, so adding a variant without widening the array is
+/// an out-of-bounds panic in init rather than a compile error; the constant is here so both inits
+/// can be written against one number.
+pub const PROG_COUNT: usize = 6;
 
 impl Prog {
     /// Resolve a program by the name typed on the command line.
+    ///
+    /// Builtins are matched first by [`parse`], so a program named `help`, `echo` or `caps` would
+    /// be unreachable. The program namespace must not contain those three names.
     pub fn from_name(name: &[u8]) -> Option<Prog> {
         match name {
             b"worker" => Some(Prog::Worker),
             b"budgeter" => Some(Prog::Budgeter),
             b"heeder" => Some(Prog::Heeder),
             b"spinner" => Some(Prog::Spinner),
+            b"date" => Some(Prog::Date),
+            // `rm` stopped being a builtin in milestone 47's rmdir lane, which is what makes this
+            // line reachable: a builtin would have shadowed it, because `parse` matches those
+            // first.
+            b"rm" => Some(Prog::Rm),
             _ => None,
         }
     }
@@ -80,6 +134,8 @@ impl Prog {
             Prog::Budgeter => "budgeter",
             Prog::Heeder => "heeder",
             Prog::Spinner => "spinner",
+            Prog::Date => "date",
+            Prog::Rm => "rm",
         }
     }
 
@@ -90,6 +146,8 @@ impl Prog {
             Prog::Budgeter => 1,
             Prog::Heeder => 2,
             Prog::Spinner => 3,
+            Prog::Date => 4,
+            Prog::Rm => 5,
         }
     }
 
@@ -100,6 +158,8 @@ impl Prog {
             1 => Some(Prog::Budgeter),
             2 => Some(Prog::Heeder),
             3 => Some(Prog::Spinner),
+            4 => Some(Prog::Date),
+            5 => Some(Prog::Rm),
             _ => None,
         }
     }
@@ -111,6 +171,8 @@ impl Prog {
                 arg: ArgSpec::Required,
                 mem: MemSpec::Forbidden,
                 file: FileSpec::Forbidden,
+                dir: DirSpec::Forbidden,
+                flags: NO_FLAGS,
                 reports: true,
                 // A worker finishes in one step; there is no long computation to interrupt, so it
                 // is granted no interrupt channel. The shell waits for its result and no ^C tier
@@ -124,6 +186,8 @@ impl Prog {
                 // shell's own budget can actually back.
                 mem: MemSpec::Required { min: 1, max: 64 },
                 file: FileSpec::Forbidden,
+                dir: DirSpec::Forbidden,
+                flags: NO_FLAGS,
                 reports: true,
                 interruptible: false,
             },
@@ -135,6 +199,8 @@ impl Prog {
                 arg: ArgSpec::Forbidden,
                 mem: MemSpec::Forbidden,
                 file: FileSpec::Forbidden,
+                dir: DirSpec::Forbidden,
+                flags: NO_FLAGS,
                 reports: false,
                 interruptible: true,
             },
@@ -142,14 +208,61 @@ impl Prog {
                 arg: ArgSpec::Forbidden,
                 mem: MemSpec::Forbidden,
                 file: FileSpec::Forbidden,
+                dir: DirSpec::Forbidden,
+                flags: NO_FLAGS,
                 reports: false,
                 interruptible: true,
+            },
+            // `date` declares an empty grant expression, and that is the interesting part: its
+            // authority (a read-only mapping of the clock page) is not something the command line
+            // can hand over, so there is nothing to type and nothing to forbid getting wrong.
+            // `FileSpec::Forbidden` and `MemSpec::Forbidden` are the load-bearing half: a clock
+            // reader has no use for either, so naming one is refused rather than granted-and-
+            // ignored. It reports through the shared result endpoint, one framed line of text.
+            //
+            // `ArgSpec::Forbidden` is a **deliberate under-declaration**: `date` reads three
+            // registers (format, UTC offset, provenance), and a manifest that could express that
+            // needs positional arity, which milestone 47 explicitly defers. So the shell spawns it
+            // with the defaults (`Human`, UTC, no provenance line), which is the `date` a person
+            // typing `date` wants; the selectors arrive when `ArgSpec` grows.
+            Prog::Date => Manifest {
+                arg: ArgSpec::Forbidden,
+                mem: MemSpec::Forbidden,
+                file: FileSpec::Forbidden,
+                dir: DirSpec::Forbidden,
+                flags: NO_FLAGS,
+                reports: true,
+                interruptible: false,
+            },
+            // **The first program endowed a directory**, and the first with options. It takes no
+            // integer and no memory: what it needs is the authority to take a name out of the
+            // directory that holds it, which is a capability and not a number.
+            //
+            // `subtree_flag: Some(b'r')` is the whole of "`rm -r` hands over more than `rm`". A
+            // grant without it cannot descend or enumerate, so the recursion is not merely disabled
+            // by a branch in the program: the capability to walk was never handed over, and a `rm`
+            // that tried anyway would be told there is no such name.
+            Prog::Rm => Manifest {
+                arg: ArgSpec::Forbidden,
+                mem: MemSpec::Forbidden,
+                file: FileSpec::Forbidden,
+                dir: DirSpec::Required {
+                    subtree_flag: Some(b'r'),
+                },
+                // In `rmopt`'s bit order, which is what that module pins.
+                flags: b"rfv",
+                reports: true,
+                interruptible: false,
             },
         }
     }
 }
 
-/// A program's expectation about the integer argument (`run worker 9`'s `9`).
+/// A program that takes no short options. Spelled once so a manifest reads as a declaration rather
+/// than as an empty literal repeated six times.
+pub const NO_FLAGS: &[u8] = b"";
+
+/// A program's expectation about the integer argument (`worker 9`'s `9`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ArgSpec {
     /// The program consumes an argument; omitting it is [`Refusal::ArgRequired`].
@@ -168,13 +281,18 @@ pub enum MemSpec {
     Required { min: u64, max: u64 },
 }
 
-/// A program's expectation about a **file grant** (`file:PATH`), milestone 31 phase 2.
+/// A program's expectation about a **file grant**, milestone 31 phase 2.
 ///
 /// **The manifest declares the direction; the command line designates the file.** That split is the
 /// SHILL shape and it is deliberate: a program knows whether it needs to write (that is a property of
 /// what it does), while *which* file is the human's business and belongs on the command line. So
-/// `run wc file:report.txt` reads and `run tee report.txt` writes, with no flag either way, and the
-/// authority is still exactly what the line says because the program's half is fixed and published.
+/// `wc report.txt` reads and `tee report.txt` writes, with no flag either way, and the authority is
+/// still exactly what the line says because the program's half is fixed and published.
+///
+/// This enum is also what decides that a bare token *is* a file at all. Milestone 47 removed the
+/// `file:` prefix on the finding that it announced the visible half of the grant and was silent on
+/// the half that matters: `worker 5 extra` is refused because worker's manifest says `Forbidden`,
+/// not because of any prefix. The manifest was doing all the work.
 ///
 /// One file, not a list. A program that needs two files needs a manifest that says so, and that is a
 /// later widening (`Required { count }`) rather than something to leave ambiguous now.
@@ -187,6 +305,44 @@ pub enum FileSpec {
     Required { writable: bool },
 }
 
+/// A program's expectation about a **directory grant**, milestone 47's `rm -r`.
+///
+/// [`FileSpec`] narrows a directory capability down to one file. This is the rung above: the program
+/// is granted a capability to **a whole directory**, because what it does cannot be expressed as one
+/// file. `rm` is the case that forced it: removing a name is an operation on the *directory that
+/// holds it*, and no per-file capability carries the authority to do it.
+///
+/// # The grant is the directory the name is in, and that is wider than the name
+///
+/// `rm logs/old` hands `rm` a capability to `logs`, not to `old`, because that is what the
+/// filesystem contract can express: `UNLINK` resolves a name under a directory handle. So the
+/// program could remove any name in that directory, and it removes the one it was told. That is a
+/// real over-grant, it is declared rather than hidden, and it is the same gap globbing closes: the
+/// answer is a directory capability attenuated to a **name set** (the warden `fwarden` already is
+/// for one name), which is a later lane. Until then the honest statement is that `rm` is granted the
+/// directory, and `caps rm -r logs` prints exactly that before anything happens.
+///
+/// # Why the rights are not a mask here
+///
+/// The fields say what the program will *do*, not what the wire calls it. `fs_proto::dir`'s
+/// six-rung ladder is the filesystem contract's vocabulary, and translating into it belongs to the
+/// shell, which holds both contracts; keeping it out of `capsh` is [`MAX_FILE_NAME`]'s rule, that a
+/// command line can be checked without linking the filesystem.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DirSpec {
+    /// The program takes no directory.
+    Forbidden,
+    /// The program is granted a capability to the directory that holds what the command names,
+    /// carrying the authority to **take names out of it** and nothing else.
+    ///
+    /// `subtree_flag`, when the option it names is on the command line, widens that to walking and
+    /// listing what is underneath, which is what a recursive removal needs at every level. The
+    /// widening is the point rather than a convenience: **typing `-r` visibly hands over more**, and
+    /// a program run without it holds a capability that cannot even see a subdirectory, let alone
+    /// descend into one.
+    Required { subtree_flag: Option<u8> },
+}
+
 /// A program's SHILL-style manifest: the endowment it declares it expects. The shell checks the
 /// command's grants against this at spawn, so a mismatch is a refusal at the prompt rather than a
 /// mystery hang inside a program that did not get what it needed. See notes/program-manifest.md.
@@ -194,9 +350,24 @@ pub enum FileSpec {
 pub struct Manifest {
     pub arg: ArgSpec,
     pub mem: MemSpec,
-    /// A per-file grant (`file:PATH`), milestone 31 phase 2. See [`FileSpec`] for why the direction
-    /// lives here and the name lives on the command line.
+    /// A per-file grant, milestone 31 phase 2. See [`FileSpec`] for why the direction lives here
+    /// and the name lives on the command line.
     pub file: FileSpec,
+    /// A per-**directory** grant, milestone 47's `rm -r`. See [`DirSpec`]: the program is handed a
+    /// capability to the directory holding what the command names, because what it does (taking a
+    /// name out) is an operation on a directory and not on a file.
+    pub dir: DirSpec,
+    /// **The short options this program accepts**, as their letters, in the order their bits are
+    /// numbered ([`Endowment::flags`]). Empty for a program that takes none, which is every program
+    /// but `rm` today.
+    ///
+    /// The manifest owns this for the same reason it owns the file's direction: which options exist
+    /// is a property of what the program does, and the shell must be able to refuse `-q` at the
+    /// prompt rather than pass a letter along for the program to ignore. An option is **not**
+    /// authority by itself, which is why the parser may collect letters before it knows the
+    /// program; what makes one matter here is that `subtree_flag` lets one *widen a grant*, and
+    /// that widening is checked and printed before anything is spawned.
+    pub flags: &'static [u8],
     /// Endowed with the shared result endpoint (so it can report back). Every phase-1 program
     /// reports; the field exists so a program that does not can drop the channel it never uses.
     pub reports: bool,
@@ -217,33 +388,90 @@ pub enum Command<'a> {
     Help,
     /// `echo <text>`: print the rest of the line verbatim.
     Echo(&'a [u8]),
-    /// `caps`: print this shell's own endowment. `caps <run ...>` (a tail) previews what that
-    /// command would grant; the tail is carried for the shell to re-parse.
+    /// `caps`: print this shell's own endowment. `caps <command>` (a tail) previews what that
+    /// command would grant; the tail is carried for the shell to re-parse. The tail is the command
+    /// you would have typed, unprefixed, which is the whole point of the spelling: what you inspect
+    /// and what you run cannot drift apart.
     Caps(&'a [u8]),
-    /// `run [--mem N] <prog> [arg] [file:PATH ...]`: the grant expression.
+    /// `cd [path]`: rebind the shell's position inside the directory capability it already holds.
+    /// **A builtin, in the same category as `caps`**: it spawns nothing, grants nothing, and confers
+    /// no new authority, because a working directory *is* a capability the shell holds used as the
+    /// default base for resolving names (see [`nav`]).
+    ///
+    /// An empty operand means **your root**. There is no `HOME` here, and the root of your namespace
+    /// is the one distinguished place you have: it is exactly what you were granted.
+    Cd(&'a [u8]),
+    /// `pwd`: print where you are, **relative to your root** ([`nav::Cwd::render`]). Naming anything
+    /// above it would imply a namespace that does not exist.
+    Pwd,
+    /// `ls [path]`: enumerate a directory you can reach, the cwd by default. A builtin rather than a
+    /// program, which retires the worry that a listing program would be over-granted: it would have
+    /// to hold the power to read everything it lists.
+    Ls(&'a [u8]),
+    /// `mkdir <path>`: make a directory and, in the same verb, obtain a capability to it
+    /// (`fs_proto::fs::MKDIR` is descend-with-creation). Needs `CREATE` **and** `DESCEND`.
+    Mkdir(&'a [u8]),
+    /// A program invocation: `<prog> [--mem N] [token ...]`. Named `Run` for the act of running a
+    /// program, not for a verb on the line; milestone 47 deleted the verb. A first word that is not
+    /// a builtin lands here even when no such program exists, and [`plan`] answers
+    /// [`Refusal::NoSuchProgram`], which is the "there is nothing there to name" shape of
+    /// no-ambient-authority applied to programs.
     Run(RunSpec<'a>),
-    /// A first word that is not a known command.
-    Unknown(&'a [u8]),
 }
 
-/// The parsed form of a `run` command, before the manifest check. [`plan`] turns it into an
+/// The most positional tokens a [`RunSpec`] keeps. Two would cover every manifest shape today (an
+/// argument and a file); the headroom exists so a third token is *refused* rather than dropped
+/// before anything looks at it.
+pub const MAX_POSITIONALS: usize = 4;
+
+/// The parsed form of a program invocation, before the manifest check. [`plan`] turns it into an
 /// [`Endowment`] or a [`Refusal`].
+///
+/// **The positional tokens are deliberately unclassified here.** The parser knows the shape of a
+/// token, not what it means: which one is the integer argument and which is the file is a question
+/// only the program's [`Manifest`] can answer, and milestone 47 removed the `file:` prefix precisely
+/// because the manifest was already answering it. Keeping them in order and letting [`plan_against`]
+/// place them is what makes that true in the code rather than only in the prose.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct RunSpec<'a> {
     /// The program name as typed (may not resolve).
     pub prog: &'a [u8],
-    /// `--mem N`, if given.
+    /// `--mem N`, if given. Recognized before or after the program name, because with the `run`
+    /// verb gone the line reads `budgeter --mem 16` the way every other command line does.
     pub mem: Option<u64>,
-    /// The single positional integer argument, if given.
-    pub arg: Option<u64>,
-    /// A file designator was present (`file:PATH`). Phase 1 records only that one appeared, so it
-    /// can be refused with "you hold no such capability": the shell holds no directory capability
-    /// until milestone 32's FS server lands. `Some(path)` is the first such path, for the message.
-    pub file: Option<&'a [u8]>,
-    /// A designator the parser did not understand (an unexpected extra token). Kept so the shell
-    /// can refuse it rather than silently ignore authority the user thought they were granting.
+    /// The positional tokens after the program name, in order, filled prefix in `pos[..npos]`.
+    pos: [&'a [u8]; MAX_POSITIONALS],
+    npos: usize,
+    /// The short-option letters typed, in order, filled prefix in `opts[..nopts]`. Collected without
+    /// knowing the program, because **an option letter is not authority**: what it may do is widen a
+    /// grant, and that is decided in [`plan_against`] against the manifest, at the prompt, before
+    /// anything is spawned. A letter no manifest declares is [`Refusal::NoSuchOption`] there.
+    opts: [u8; MAX_FLAGS],
+    nopts: usize,
+    /// A token nothing can place: a flag-shaped token that is not `--mem`, or one past
+    /// [`MAX_POSITIONALS`]. Kept so the shell refuses it rather than silently ignoring authority the
+    /// user thought they were granting. A **flag** that fell through to the file position would be
+    /// the one way a typo could turn into a capability transfer, so it never reaches that position.
     pub unexpected: Option<&'a [u8]>,
 }
+
+impl<'a> RunSpec<'a> {
+    /// The positional tokens, in the order typed. [`plan_against`] places them into the slots the
+    /// manifest declares; nothing else should interpret them.
+    pub fn positionals(&self) -> &[&'a [u8]] {
+        &self.pos[..self.npos]
+    }
+
+    /// The short-option letters typed, in order. Meaningless until a manifest says which exist.
+    pub fn options(&self) -> &[u8] {
+        &self.opts[..self.nopts]
+    }
+}
+
+/// The most short-option letters one invocation may carry (`rm -rfv` is three). A ceiling rather
+/// than a limit anybody meets, and past it the line is [`Refusal::Unexpected`] rather than quietly
+/// short of an option the user typed.
+pub const MAX_FLAGS: usize = 8;
 
 /// What a valid `run` resolves to: exactly the authority to hand the child, and nothing else.
 /// Reading this is reading the whole endowment, which is §14's "one literal tells you a process's
@@ -259,6 +487,15 @@ pub struct Endowment<'a> {
     /// Delivered as an endpoint served by a file warden (`user/src/fwarden.rs`), so what the child
     /// ends up holding designates this name and nothing else.
     pub file: Option<FileGrant<'a>>,
+    /// The one directory to narrow down to, and the name in it the program is to act on, or `None`.
+    /// Delivered as an endpoint served by a **directory** warden (`user/src/dwarden.rs`), so what
+    /// the child ends up holding reaches that directory and nothing above or beside it.
+    pub dir: Option<DirGrant<'a>>,
+    /// **The short options that were on the line**, as a bitmask: bit `i` is set when the manifest's
+    /// `flags[i]` was typed. Numbered by position in the manifest rather than by letter, so nothing
+    /// here has to know what any option means; the program and the manifest agree on the order, and
+    /// a host test pins them (`capsh::rmopt`).
+    pub flags: u64,
     /// Grant the shared result endpoint.
     pub reports: bool,
     /// Wire the two-tier `^C` path for this job (mirrors the manifest). When true the shell mints
@@ -266,16 +503,71 @@ pub struct Endowment<'a> {
     pub interruptible: bool,
 }
 
-/// One resolved per-file grant: the name the command designated and the direction the program's
-/// manifest declared. The pair is the whole authority: `fs_proto::grant` packs exactly this into the
-/// file warden's three start arguments.
+/// One resolved per-file grant: the directory it was resolved against, the name the command
+/// designated, and the direction the program's manifest declared. Those three are the whole
+/// authority; `fs_proto::grant` packs the name and the direction into the file warden's start
+/// arguments, and the directory is which capability the warden is handed to narrow.
+///
+/// # The cwd stops at the process boundary, and this value is where that is true
+///
+/// `wc report.txt` resolves the name against the shell's position **at the moment the grant is
+/// made**, and this is that moment: [`plan_against`] walks any leading path once, here, and records
+/// where it landed. The child receives a capability to that one file. It has no cwd, inherits
+/// nothing, and cannot re-resolve anything, which is the point: a child that could re-resolve a name
+/// later would have ambient authority smuggled in through a string.
+///
+/// That [`dir`](FileGrant::dir) is a **value** rather than a reference to the shell's position is
+/// what makes it structural instead of a promise. A `cd` after this grant is planned cannot change
+/// what the grant means, because there is nothing here that points at the shell any more.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct FileGrant<'a> {
+    /// The directory the name was resolved in, relative to the shell's root, fixed at plan time.
+    pub dir: nav::Cwd,
+    /// The final component. Always a single component: a path was resolved into `dir`, not passed
+    /// on, because the FS contract takes one component per request and no server here walks a path.
     pub name: &'a [u8],
     pub writable: bool,
 }
 
-/// **What the shell itself holds**, which is what decides whether a designator can be backed at all.
+/// One resolved **directory** grant (milestone 47's `rm -r`): the directory the child is handed a
+/// capability to, the single name in it the program was told to act on, and whether that capability
+/// must reach below the directory or only name what is directly in it.
+///
+/// It is [`FileGrant`]'s shape one rung up, and the same rule holds for the same reason: `dir` is
+/// **where the operand's leading path landed, fixed at plan time**, as a value rather than a pointer
+/// at the shell, so a later `cd` cannot change what an already-planned grant means. The child holds
+/// a capability to that directory, has no cwd, and cannot re-resolve anything.
+///
+/// **The three of these together are the whole authority**, and that is what makes `caps rm -r logs`
+/// worth typing: the subtree at risk is printed before anything happens, and a bug in the program's
+/// recursion can only reach what this names.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct DirGrant<'a> {
+    /// The directory the capability designates, relative to the shell's root, fixed at plan time.
+    pub dir: nav::Cwd,
+    /// The name in it the program is to act on. Always a single component, for [`FileGrant`]'s
+    /// reason: a path was resolved into `dir` rather than passed on.
+    pub name: &'a [u8],
+    /// The capability must reach **below** this directory (walk into it and list it), because the
+    /// program was given the option its manifest declares for that. False means it may take names
+    /// out of this one directory and cannot even see what is under it.
+    pub subtree: bool,
+}
+
+/// **`rm`'s options**, by the bit they occupy in [`Endowment::flags`], which is their position in
+/// [`Prog::Rm`]'s manifest. Named here so the shell, the program and the tests share one definition
+/// rather than three copies of an ordering; `rm_options_are_numbered_by_their_position` pins them.
+pub mod rmopt {
+    /// `-r`: recurse. It is also `rm`'s `subtree_flag`, so typing it visibly widens the grant.
+    pub const RECURSIVE: u64 = 1 << 0;
+    /// `-f`: ignore a name that is not there, and do not let its absence change the exit status.
+    /// It is **not** "ignore errors": a removal that fails for any other reason still reports.
+    pub const FORCE: u64 = 1 << 1;
+    /// `-v`: say what was removed. It exists because the default says nothing.
+    pub const VERBOSE: u64 = 1 << 2;
+}
+
+/// **What the shell itself holds**, which is what decides whether a designation can be backed at all.
 ///
 /// This is why it is a parameter rather than a constant. "You hold no such capability" must be a
 /// statement about the shell's actual cspace, not a hardcoded era: the same command line is a
@@ -286,29 +578,52 @@ pub struct FileGrant<'a> {
 pub struct Holdings {
     /// The shell holds a directory capability it can narrow into a per-file grant.
     pub dir: bool,
+    /// **Where in that capability it currently is**, which is the other half of what it holds: a
+    /// working directory is a directory capability used as the default base for resolving names, so
+    /// it belongs here beside the fact that there is one. Defaults to the root, which is also the
+    /// only position a shell holding no directory can be in.
+    pub cwd: nav::Cwd,
 }
 
-/// Why a `run` was refused, decided at the prompt before any spawn. Each variant maps to one
+/// Why an invocation was refused, decided at the prompt before any spawn. Each variant maps to one
 /// legible line; [`Refusal::message`] is the fixed half, host-tested so the wording cannot drift.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Refusal {
-    /// The named program does not exist.
+    /// The named program does not exist. Also where a mistyped builtin lands, since with the `run`
+    /// verb gone the first word is either a builtin or a program name.
     NoSuchProgram,
-    /// The command designated a resource this shell holds no capability for: a `file:PATH` in a
-    /// shell that was never granted a directory to narrow. This is the refusal the milestone is
-    /// about: not "permission denied" but "there is nothing you hold that could grant this."
+    /// The command designated a resource this shell holds no capability for: a file named at a
+    /// program that takes one, in a shell that was never granted a directory to narrow. This is the
+    /// refusal the milestone is about: not "permission denied" but "there is nothing you hold that
+    /// could grant this."
     NoSuchCapability(CapKind),
-    /// The program takes no file, but one was named. The milestone's inversion cuts both ways: a
-    /// designator the program has no use for is authority the user did not mean to move, so it is
-    /// refused rather than granted-and-ignored.
+    /// The program takes no file, but a token was left over that nothing else could be. The
+    /// milestone's inversion cuts both ways: a name the program has no use for is authority the user
+    /// did not mean to move, so it is refused rather than granted-and-ignored. **This is the refusal
+    /// the `file:` prefix was wrongly credited with**: `worker 5 extra` stops here because worker's
+    /// manifest says `FileSpec::Forbidden`, which is what refused it before the prefix went away.
     FileForbidden,
-    /// The program is endowed a file and the command named none. A `file:PATH` is the only way it
-    /// can get one, so this is caught at the prompt rather than as an empty slot at runtime.
+    /// The program is endowed a file and the command named none. Naming it on the line is the only
+    /// way it can get one, so this is caught at the prompt rather than as an empty slot at runtime.
     FileRequired,
-    /// The named file is not something this shell can express: empty, a path rather than a single
-    /// component, or longer than the two argument words a grant's name rides in
-    /// (`fs_proto::grant::MAX_NAME`).
+    /// The program is endowed a **directory** and the command named nothing in one. `rm` with no
+    /// operand is this: there is no default, because a default would be a grant nobody typed.
+    PathRequired,
+    /// A short option this program does not declare. Refused at the prompt rather than handed over
+    /// for the program to ignore, and it is the same rule as an unplaceable token: **the line means
+    /// exactly what it says or it does not run.** It matters more than it looks here, because an
+    /// option can widen a grant (`rm -r`), so a shell that silently dropped one would be a shell
+    /// whose printed preview and actual transfer could disagree.
+    NoSuchOption,
+    /// The named file is not something this shell can express: empty, a component longer than the
+    /// two argument words a grant's name rides in (`fs_proto::grant::MAX_NAME`), deeper than the
+    /// shell tracks, or a path that designates a directory rather than a file.
     FileNotNameable,
+    /// **The name began with `/`.** Its own refusal rather than a shape complaint, because the
+    /// reason is the milestone's: there is no namespace here to root an absolute path in, so the
+    /// name cannot be *expressed*. Nothing checked a permission, which is why the `std` PAL answers
+    /// `InvalidFilename` and not `PermissionDenied` for the same token.
+    NoAbsolutePath,
     /// The program takes no memory grant, but `--mem` was given.
     MemForbidden,
     /// The program requires a memory grant, but none was given.
@@ -319,8 +634,10 @@ pub enum Refusal {
     ArgRequired,
     /// The program takes no argument, but one was given.
     ArgForbidden,
-    /// An extra token the parser could not place. Refused rather than ignored, so authority the
-    /// user thought they were granting never silently evaporates.
+    /// A token no slot in the manifest can hold, and that no other refusal reads truer for: a
+    /// second integer at a program that takes one, a flag that is not `--mem`, a name past the one
+    /// file a program is granted. Refused rather than ignored, so authority the user thought they
+    /// were granting never silently evaporates.
     Unexpected,
 }
 
@@ -329,7 +646,7 @@ pub enum Refusal {
 /// the refusal's shape.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CapKind {
-    /// A file or directory, designated `file:PATH`. Arrives with milestone 32's FS server.
+    /// A file or directory, designated by naming it. Arrives with milestone 32's FS server.
     File,
 }
 
@@ -339,22 +656,30 @@ impl Refusal {
     /// voice: a refusal that reads like the capability model, not like errno.
     pub fn message(self) -> &'static str {
         match self {
-            Refusal::NoSuchProgram => "no such program",
+            // The hint is not decoration. With `run` gone, a mistyped builtin and a mistyped
+            // program name arrive at the same refusal, so this line has to be able to point at
+            // both halves of what the prompt understands.
+            Refusal::NoSuchProgram => "no such program (try 'help' for the builtins)",
             Refusal::NoSuchCapability(CapKind::File) => {
                 "you hold no such capability: this shell was granted no directory to narrow"
             }
-            Refusal::FileForbidden => "takes no file; drop the file: designator",
-            Refusal::FileRequired => "is granted one file; name it with file:<name>",
+            // "drop the name", in the same voice as "drop the --mem": the token would have been a
+            // file, and this program is declared to take none.
+            Refusal::FileForbidden => "takes no file; drop the name",
+            Refusal::FileRequired => "is granted one file; name it on the line",
+            Refusal::PathRequired => "is granted the directory holding what you name; name it",
+            Refusal::NoSuchOption => "no such option (this shell will not pass one along unread)",
             Refusal::FileNotNameable => {
-                "that is not a name this shell can grant: one component, at most 16 bytes"
+                "that is not a name this shell can grant: at most 16 bytes a component, 8 deep"
             }
+            Refusal::NoAbsolutePath => nav::Refused::Absolute.message(),
             Refusal::MemForbidden => "takes no memory grant; drop the --mem",
             Refusal::MemRequired => "needs a memory grant; add --mem <pages>",
             Refusal::MemOutOfRange { .. } => "memory grant is out of the range it declares",
             Refusal::ArgRequired => "needs an integer argument",
             Refusal::ArgForbidden => "takes no argument",
             Refusal::Unexpected => {
-                "unexpected argument (this shell will not grant what it cannot name)"
+                "unexpected argument (this shell will not grant what it cannot place)"
             }
         }
     }
@@ -385,8 +710,14 @@ pub fn tokenize<'a, 'b>(line: &'a [u8], out: &'b mut [&'a [u8]]) -> &'b [&'a [u8
 
 /// Parse a whole command line into a [`Command`]. Pure and allocation-free.
 ///
-/// The grammar is small: the first token selects the command. `echo` keeps the rest of the line
-/// verbatim (so `echo   two  spaces` prints its spaces); everything else works on tokens.
+/// The grammar is small: the first token selects the command, and a first token that is not one of
+/// the three builtins is a **program name**, because milestone 47 deleted the `run` verb. `echo`
+/// keeps the rest of the line verbatim (so `echo   two  spaces` prints its spaces); everything else
+/// works on tokens.
+///
+/// Builtins win over programs, which is why [`Prog::from_name`] must never learn a name that is
+/// also a builtin. Three reserved words is the whole cost of a shell where every command is typed
+/// the same way.
 pub fn parse(line: &[u8]) -> Command<'_> {
     let trimmed = trim(line);
     if trimmed.is_empty() {
@@ -397,26 +728,46 @@ pub fn parse(line: &[u8]) -> Command<'_> {
         b"help" => Command::Help,
         b"echo" => Command::Echo(rest),
         b"caps" => Command::Caps(rest),
-        b"run" => Command::Run(parse_run(rest)),
-        _ => Command::Unknown(first),
+        // The navigation builtins (milestone 47). They take a path operand rather than tokens,
+        // because a path is one designation however many slashes it has, and `trim` is all the
+        // classification they need.
+        b"cd" => Command::Cd(trim(rest)),
+        b"pwd" => Command::Pwd,
+        b"ls" => Command::Ls(trim(rest)),
+        b"mkdir" => Command::Mkdir(trim(rest)),
+        // **`rm` is deliberately not here.** It was a builtin in the commands lane and is a program
+        // now (milestone 47's rmdir lane): a builtin runs with the shell's whole endowment, and a
+        // destructive loop should take an explicit attenuated grant instead. Since builtins are
+        // matched first, deleting the line is the entire change at this level; `Prog::from_name`
+        // picks the word up.
+        // Not a builtin, so it is a program invocation, and the whole line (name included) is the
+        // grant expression. Whether the program exists is `plan`'s question, not the parser's.
+        _ => Command::Run(parse_run(trimmed)),
     }
 }
 
-/// Parse the tail of a `run` command (everything after `run`) into a [`RunSpec`]. Recognizes the
-/// `--mem N` flag anywhere before the program name, then a program name, then at most one integer
-/// argument and any number of `file:PATH` designators.
-pub fn parse_run(tail: &[u8]) -> RunSpec<'_> {
+/// Parse a whole program invocation (the line, starting at the program name) into a [`RunSpec`].
+///
+/// It recognizes `--mem N` in any position and takes the first other token as the program name;
+/// every token after that is kept **in order and unclassified**, because deciding which one is the
+/// argument and which is the file needs the manifest (see [`plan_against`]). The one thing it does
+/// classify is a flag: a token starting with `-` that is not `--mem` is refused rather than allowed
+/// to fall into the file position, which is the single way a typo could otherwise become a
+/// capability transfer.
+pub fn parse_run(line: &[u8]) -> RunSpec<'_> {
     let mut toks: [&[u8]; 16] = [b""; 16];
-    let toks = tokenize(tail, &mut toks);
+    let toks = tokenize(line, &mut toks);
 
     let mut mem = None;
     let mut prog: &[u8] = b"";
-    let mut arg = None;
-    let mut file = None;
+    let mut pos = [&b""[..]; MAX_POSITIONALS];
+    let mut npos = 0;
+    let mut opts = [0u8; MAX_FLAGS];
+    let mut nopts = 0;
     let mut unexpected = None;
+    let mut have_prog = false;
 
     let mut i = 0;
-    // Flags first (only --mem N today), then the program name.
     while i < toks.len() {
         let t = toks[i];
         if t == b"--mem" {
@@ -430,26 +781,28 @@ pub fn parse_run(tail: &[u8]) -> RunSpec<'_> {
             }
             continue;
         }
-        // First non-flag token is the program name; break to positional parsing.
-        break;
-    }
-    if i < toks.len() {
-        prog = toks[i];
-        i += 1;
-    }
-    // Positional arguments after the program name.
-    while i < toks.len() {
-        let t = toks[i];
-        if let Some(path) = strip_prefix(t, b"file:") {
-            if file.is_none() {
-                file = Some(path);
-            }
-        } else if let Some(v) = parse_u64(t) {
-            if arg.is_none() {
-                arg = Some(v);
+        if t.first() == Some(&b'-') {
+            // A cluster of short options (`-r`, `-rf`), kept for the manifest to check. Anything
+            // else shaped like a flag is refused: it never becomes a program name and never reaches
+            // the file position, because an unknown flag silently designating a file is exactly the
+            // typo-into-a-grant the old `file:` prefix was there to prevent, and this is the part
+            // of that job worth keeping.
+            let letters = &t[1..];
+            let short = !letters.is_empty() && letters.iter().all(u8::is_ascii_alphabetic);
+            if short && nopts + letters.len() <= MAX_FLAGS {
+                for &c in letters {
+                    opts[nopts] = c;
+                    nopts += 1;
+                }
             } else if unexpected.is_none() {
                 unexpected = Some(t);
             }
+        } else if !have_prog {
+            prog = t;
+            have_prog = true;
+        } else if npos < MAX_POSITIONALS {
+            pos[npos] = t;
+            npos += 1;
         } else if unexpected.is_none() {
             unexpected = Some(t);
         }
@@ -459,35 +812,24 @@ pub fn parse_run(tail: &[u8]) -> RunSpec<'_> {
     RunSpec {
         prog,
         mem,
-        arg,
-        file,
+        pos,
+        npos,
+        opts,
+        nopts,
         unexpected,
     }
 }
 
-/// Check a parsed `run` against the program's manifest and produce the exact [`Endowment`] to
+/// Check a parsed invocation against the program's manifest and produce the exact [`Endowment`] to
 /// grant, or the [`Refusal`] to print. The whole authority decision lives here: after this returns
 /// `Ok`, the shell grants precisely what the `Endowment` names and the child can reach nothing
 /// else.
 ///
-/// The order of checks is deliberate. A designated resource the shell cannot back
-/// ([`Refusal::NoSuchCapability`]) is reported before manifest quibbles, because "you named
-/// something I hold no capability for" is the milestone's headline refusal and should win over
-/// "and also your --mem is out of range."
+/// The program is resolved first, because "there is no such program" is a fact about the system and
+/// everything else is a fact about a program that exists.
 pub fn plan<'a>(run: &RunSpec<'a>, holds: Holdings) -> Result<Endowment<'a>, Refusal> {
-    // A resource this shell cannot back AT ALL trumps everything: the command is asking for
-    // authority nobody here holds, and no manifest detail changes that. Note that this is now a
-    // question about `holds`, not about the calendar: the same line is a refusal in a shell granted
-    // no directory and a real grant in one that was.
-    if run.file.is_some() && !holds.dir {
-        return Err(Refusal::NoSuchCapability(CapKind::File));
-    }
-    if run.unexpected.is_some() {
-        return Err(Refusal::Unexpected);
-    }
-
     let prog = Prog::from_name(run.prog).ok_or(Refusal::NoSuchProgram)?;
-    plan_against(run, prog, prog.manifest())
+    plan_against(run, prog, prog.manifest(), holds)
 }
 
 /// [`plan`]'s second half, against an **explicit** manifest rather than the static table.
@@ -497,35 +839,131 @@ pub fn plan<'a>(run: &RunSpec<'a>, holds: Holdings) -> Result<Endowment<'a>, Ref
 /// tested logic instead of a branch nothing reaches. The second is milestone 23, where a manifest
 /// travels *with* a component rather than living in this table, and the composer checks a program it
 /// did not write. That is the same call with a different source of the manifest.
+///
+/// **This is where the positional tokens acquire meaning**, and the order is the order they are
+/// typed in: the integer argument first if the manifest declares one, then the file if it declares
+/// one. A token past the last declared slot is unplaceable, and unplaceable is a refusal.
 pub fn plan_against<'a>(
     run: &RunSpec<'a>,
     prog: Prog,
     m: Manifest,
+    holds: Holdings,
 ) -> Result<Endowment<'a>, Refusal> {
-    // The file grant. Checked before the argument and the memory rules for the same reason the
-    // un-backable case above wins: a designator that moves a *capability* is the milestone's
-    // headline, and it should not be shadowed by "and also your --mem is out of range".
-    let file = match (m.file, run.file) {
-        (FileSpec::Forbidden, None) => None,
-        (FileSpec::Forbidden, Some(_)) => return Err(Refusal::FileForbidden),
-        (FileSpec::Required { .. }, None) => return Err(Refusal::FileRequired),
-        (FileSpec::Required { writable }, Some(name)) => {
-            if !file_name_fits(name) {
-                return Err(Refusal::FileNotNameable);
+    // A flag nothing knows, or a token past what any manifest could hold. Nothing about this
+    // program's declaration can rescue it, so it is answered before the slots are filled.
+    if run.unexpected.is_some() {
+        return Err(Refusal::Unexpected);
+    }
+
+    // The options, before any grant is placed: a letter this program does not declare is a refusal
+    // at the prompt, never a letter passed along for the program to ignore. It comes first because
+    // one of them may *widen the directory grant* below, so the line has to be known-good before
+    // anything is decided about how much authority it moves.
+    let mut flags = 0u64;
+    for &letter in run.options() {
+        let bit = m
+            .flags
+            .iter()
+            .position(|&d| d == letter)
+            .ok_or(Refusal::NoSuchOption)?;
+        flags |= 1 << bit;
+    }
+
+    let mut pos = run.positionals();
+
+    // The argument takes the first positional, and it must be an integer: `worker eight` is a
+    // missing argument, not a file named "eight", because worker's manifest declares no file.
+    let arg = match m.arg {
+        ArgSpec::Required => {
+            let (first, rest) = pos.split_first().ok_or(Refusal::ArgRequired)?;
+            let v = parse_u64(first).ok_or(Refusal::ArgRequired)?;
+            pos = rest;
+            v
+        }
+        ArgSpec::Forbidden => 0,
+    };
+
+    // The file grant takes the next positional. The name is the whole designation; the direction
+    // comes from the manifest, which is why `wc report.txt` reads and `tee report.txt` writes
+    // without the human typing a mode.
+    let file = match m.file {
+        FileSpec::Forbidden => None,
+        FileSpec::Required { writable } => {
+            let (token, rest) = pos.split_first().ok_or(Refusal::FileRequired)?;
+            pos = rest;
+            // What the shell holds decides whether the designation can be backed at all, and it
+            // wins over the name's shape: "there is nothing I hold that could grant this" is a
+            // bigger fact than "and that name is too long".
+            if !holds.dir {
+                return Err(Refusal::NoSuchCapability(CapKind::File));
             }
-            Some(FileGrant { name, writable })
+            // **Resolve at grant time.** The leading path is walked here, once, against where the
+            // shell is standing now, and the result is recorded in the grant as a value. Nothing
+            // downstream re-resolves anything: the child gets a capability to one file, and a `cd`
+            // after this line cannot change what that grant means. See [`FileGrant`].
+            let parsed = nav::path(token).map_err(nav_refusal)?;
+            let (lead, name) = parsed
+                .split_last_component()
+                .ok_or(Refusal::FileNotNameable)?;
+            let mut dir = holds.cwd;
+            dir.apply(lead).map_err(nav_refusal)?;
+            Some(FileGrant {
+                dir,
+                name,
+                writable,
+            })
         }
     };
 
-    // The argument.
-    let arg = match (m.arg, run.arg) {
-        (ArgSpec::Required, Some(v)) => v,
-        (ArgSpec::Required, None) => return Err(Refusal::ArgRequired),
-        (ArgSpec::Forbidden, None) => 0,
-        (ArgSpec::Forbidden, Some(_)) => return Err(Refusal::ArgForbidden),
+    // The directory grant takes the next positional, and it is resolved exactly as a file grant is:
+    // the leading path is walked here, once, against where the shell is standing now, and the
+    // result is recorded as a value. The child is handed a capability to the directory the name is
+    // **in**, plus the name, because taking a name away is an operation on the directory that holds
+    // it and no per-file capability can express it. See [`DirSpec`].
+    let dir = match m.dir {
+        DirSpec::Forbidden => None,
+        DirSpec::Required { subtree_flag } => {
+            let (token, rest) = pos.split_first().ok_or(Refusal::PathRequired)?;
+            pos = rest;
+            if !holds.dir {
+                return Err(Refusal::NoSuchCapability(CapKind::File));
+            }
+            let parsed = nav::path(token).map_err(nav_refusal)?;
+            let (lead, name) = parsed
+                .split_last_component()
+                .ok_or(Refusal::FileNotNameable)?;
+            if !file_name_fits(name) {
+                return Err(Refusal::FileNotNameable);
+            }
+            let mut at = holds.cwd;
+            at.apply(lead).map_err(nav_refusal)?;
+            // Typing the recursion option is what widens the capability from "take names out of
+            // this directory" to "walk what is under it". A program run without it holds no way to
+            // descend, so its recursion is not disabled by a branch anybody has to get right.
+            let subtree = match subtree_flag {
+                Some(letter) => match m.flags.iter().position(|&d| d == letter) {
+                    Some(bit) => flags & (1 << bit) != 0,
+                    // A manifest naming an option it does not declare is a bug in the manifest, and
+                    // the safe reading is the narrow one: no widening.
+                    None => false,
+                },
+                None => false,
+            };
+            Some(DirGrant {
+                dir: at,
+                name,
+                subtree,
+            })
+        }
     };
 
-    // The memory grant.
+    // Anything left designates a slot this program does not have.
+    if let Some(&extra) = pos.first() {
+        return Err(unplaceable(extra, m));
+    }
+
+    // The memory grant. A flag, not a position, so it is checked last: it cannot be confused with
+    // anything and it should not shadow a refusal about a resource.
     let mem_pages = match (m.mem, run.mem) {
         (MemSpec::Forbidden, None) => 0,
         (MemSpec::Forbidden, Some(_)) => return Err(Refusal::MemForbidden),
@@ -543,9 +981,44 @@ pub fn plan_against<'a>(
         arg,
         mem_pages,
         file,
+        dir,
+        flags,
         reports: m.reports,
         interruptible: m.interruptible,
     })
+}
+
+/// A navigation refusal, in the vocabulary the prompt prints for a *grant*. Only the absolute path
+/// keeps its own line, because that one is a statement about the whole model rather than about the
+/// token's shape.
+fn nav_refusal(r: nav::Refused) -> Refusal {
+    match r {
+        nav::Refused::Absolute => Refusal::NoAbsolutePath,
+        _ => Refusal::FileNotNameable,
+    }
+}
+
+/// Which refusal to print for a token no declared slot can hold.
+///
+/// The manifest decides that the token is unplaceable; the token's *shape* only decides which true
+/// sentence reads closest to what the user meant. An integer at a program that takes no integer is
+/// "takes no argument"; a name at a program that takes no file is "takes no file"; anything else is
+/// the generic unexpected-argument line.
+fn unplaceable(tok: &[u8], m: Manifest) -> Refusal {
+    let numeric = parse_u64(tok).is_some();
+    if numeric && matches!(m.arg, ArgSpec::Forbidden) {
+        Refusal::ArgForbidden
+    } else if !numeric
+        && matches!(m.file, FileSpec::Forbidden)
+        && matches!(m.dir, DirSpec::Forbidden)
+    {
+        // Only when the program can be handed **neither** a file nor a directory does "takes no
+        // file" read true. A second name at `rm` is a name it has nowhere to put, which is the
+        // generic line: one operand is what a manifest granting one directory can express.
+        Refusal::FileForbidden
+    } else {
+        Refusal::Unexpected
+    }
 }
 
 /// The longest file name a per-file grant can carry. Duplicated from `fs_proto::grant::MAX_NAME`
@@ -593,15 +1066,6 @@ fn split_first_word(s: &[u8]) -> (&[u8], &[u8]) {
         i += 1;
     }
     (word, &s[i..])
-}
-
-/// `s` without `prefix`, or `None` if it does not start with it.
-pub fn strip_prefix<'a>(s: &'a [u8], prefix: &[u8]) -> Option<&'a [u8]> {
-    if s.len() >= prefix.len() && &s[..prefix.len()] == prefix {
-        Some(&s[prefix.len()..])
-    } else {
-        None
-    }
 }
 
 /// Parse a base-10 `u64`. `None` for empty or any non-digit byte, so `--mem twelve` is a missing
@@ -724,10 +1188,48 @@ mod tests {
     }
 
     #[test]
-    fn help_and_unknown() {
+    fn help_is_a_builtin_and_everything_else_is_a_program() {
+        // The whole of milestone 47's `run` removal, in three lines: three reserved words, and any
+        // other first token is a program name. Nobody has to know which class a command is in.
         assert_eq!(parse(b"help"), Command::Help);
         assert_eq!(parse(b"  help  "), Command::Help);
-        assert_eq!(parse(b"frobnicate"), Command::Unknown(b"frobnicate"));
+        let Command::Run(r) = parse(b"frobnicate") else {
+            panic!("a bare word must be a program invocation")
+        };
+        assert_eq!(r.prog, b"frobnicate");
+
+        // Milestone 47's navigation builtins. They parse to themselves, and, because builtins win
+        // over programs, **the program namespace must never learn one of these names**: it would be
+        // unreachable, and the reader would have no way to tell why.
+        assert_eq!(parse(b"pwd"), Command::Pwd);
+        assert_eq!(parse(b"cd deeper"), Command::Cd(b"deeper"));
+        assert_eq!(parse(b"cd"), Command::Cd(b""), "bare `cd` is your root");
+        assert_eq!(parse(b"ls"), Command::Ls(b""));
+        assert_eq!(parse(b"ls  sub "), Command::Ls(b"sub"));
+        assert_eq!(parse(b"mkdir logs"), Command::Mkdir(b"logs"));
+        // **And `rm` is a program**, which is the whole of milestone 47's rmdir lane at this level.
+        // A builtin would have shadowed the name, so this line is also the check that it no longer
+        // does; the manifest is what decides what the operand grants.
+        let Command::Run(r) = parse(b"rm old.txt") else {
+            panic!("`rm` must parse as a program invocation, not a builtin")
+        };
+        assert_eq!(r.prog, b"rm");
+        assert_eq!(Prog::from_name(b"rm"), Some(Prog::Rm));
+        for reserved in [
+            &b"help"[..],
+            b"echo",
+            b"caps",
+            b"cd",
+            b"pwd",
+            b"ls",
+            b"mkdir",
+        ] {
+            assert!(
+                Prog::from_name(reserved).is_none(),
+                "`{}` is a builtin, so a program of that name could never be run",
+                core::str::from_utf8(reserved).unwrap(),
+            );
+        }
     }
 
     #[test]
@@ -738,12 +1240,13 @@ mod tests {
     }
 
     #[test]
-    fn run_worker_with_arg() {
-        let Command::Run(r) = parse(b"run worker 9") else {
-            panic!("not a run")
+    fn a_bare_program_name_spawns_it() {
+        // What `run worker 9` used to say. The name is the command; the manifest places the 9.
+        let Command::Run(r) = parse(b"worker 9") else {
+            panic!("not an invocation")
         };
         assert_eq!(r.prog, b"worker");
-        assert_eq!(r.arg, Some(9));
+        assert_eq!(r.positionals(), [&b"9"[..]]);
         assert_eq!(r.mem, None);
         let e = plan(&r, Holdings::default()).unwrap();
         assert_eq!(e.prog, Prog::Worker);
@@ -753,24 +1256,41 @@ mod tests {
     }
 
     #[test]
-    fn worker_needs_an_argument() {
-        let Command::Run(r) = parse(b"run worker") else {
+    fn worker_needs_an_integer_argument() {
+        let Command::Run(r) = parse(b"worker") else {
+            panic!()
+        };
+        assert_eq!(plan(&r, Holdings::default()), Err(Refusal::ArgRequired));
+        // And a token that cannot be an integer is a missing argument, not a file: worker's
+        // manifest declares no file, so there is no other slot the word could have meant.
+        let Command::Run(r) = parse(b"worker eight") else {
             panic!()
         };
         assert_eq!(plan(&r, Holdings::default()), Err(Refusal::ArgRequired));
     }
 
     #[test]
-    fn worker_refuses_a_memory_grant() {
-        let Command::Run(r) = parse(b"run --mem 8 worker 3") else {
-            panic!()
-        };
-        assert_eq!(plan(&r, Holdings::default()), Err(Refusal::MemForbidden));
+    fn worker_refuses_a_memory_grant_whichever_side_the_flag_is_typed() {
+        // `--mem` survives the grammar change as an ordinary flag, and with the verb gone it reads
+        // where a Unix user would type it: after the command name. Both spellings are the same
+        // grant, so both must reach the same refusal.
+        for line in [&b"worker 3 --mem 8"[..], b"--mem 8 worker 3"] {
+            let Command::Run(r) = parse(line) else {
+                panic!()
+            };
+            assert_eq!(r.prog, b"worker");
+            assert_eq!(
+                plan(&r, Holdings::default()),
+                Err(Refusal::MemForbidden),
+                "{}",
+                core::str::from_utf8(line).unwrap(),
+            );
+        }
     }
 
     #[test]
     fn budgeter_needs_a_memory_grant() {
-        let Command::Run(r) = parse(b"run budgeter") else {
+        let Command::Run(r) = parse(b"budgeter") else {
             panic!()
         };
         assert_eq!(plan(&r, Holdings::default()), Err(Refusal::MemRequired));
@@ -778,7 +1298,7 @@ mod tests {
 
     #[test]
     fn budgeter_with_mem_plans_the_grant() {
-        let Command::Run(r) = parse(b"run --mem 16 budgeter") else {
+        let Command::Run(r) = parse(b"budgeter --mem 16") else {
             panic!()
         };
         let e = plan(&r, Holdings::default()).unwrap();
@@ -789,14 +1309,14 @@ mod tests {
 
     #[test]
     fn budgeter_mem_out_of_range() {
-        let Command::Run(r) = parse(b"run --mem 999 budgeter") else {
+        let Command::Run(r) = parse(b"budgeter --mem 999") else {
             panic!()
         };
         assert_eq!(
             plan(&r, Holdings::default()),
             Err(Refusal::MemOutOfRange { min: 1, max: 64 })
         );
-        let Command::Run(r0) = parse(b"run --mem 0 budgeter") else {
+        let Command::Run(r0) = parse(b"budgeter --mem 0") else {
             panic!()
         };
         assert_eq!(
@@ -807,7 +1327,7 @@ mod tests {
 
     #[test]
     fn budgeter_takes_no_argument() {
-        let Command::Run(r) = parse(b"run --mem 8 budgeter 5") else {
+        let Command::Run(r) = parse(b"budgeter --mem 8 5") else {
             panic!()
         };
         assert_eq!(plan(&r, Holdings::default()), Err(Refusal::ArgForbidden));
@@ -815,43 +1335,67 @@ mod tests {
 
     #[test]
     fn unknown_program_is_refused_by_name() {
-        let Command::Run(r) = parse(b"run frobnicate 1") else {
+        let Command::Run(r) = parse(b"frobnicate 1") else {
             panic!()
         };
         assert_eq!(plan(&r, Holdings::default()), Err(Refusal::NoSuchProgram));
+        // A mistyped builtin lands here too, now that the first word is either a builtin or a
+        // program, so the line has to point at both halves of what the prompt understands.
+        let Command::Run(r) = parse(b"hlep") else {
+            panic!()
+        };
+        let msg = plan(&r, Holdings::default()).unwrap_err().message();
+        assert!(msg.contains("no such program"), "{msg}");
+        assert!(msg.contains("help"), "{msg}");
     }
 
     #[test]
-    fn a_file_designator_is_no_such_capability() {
-        // The headline refusal, in the shell as it is actually endowed today: it holds no directory
-        // capability, so there is nothing it could narrow, and the honest answer is about what it
-        // holds rather than about a permission.
-        let Command::Run(r) = parse(b"run worker 3 file:report.txt") else {
+    fn a_bare_unplaceable_token_is_still_refused() {
+        // **The safety property the `file:` prefix was credited with, proven without it.** The old
+        // note argued the prefix stopped a stray word from becoming a capability transfer. It did
+        // not: the manifest did. `worker 5 extra` has no slot for `extra` because worker declares
+        // `FileSpec::Forbidden`, so nothing is granted and the prompt says why.
+        let Command::Run(r) = parse(b"worker 5 extra") else {
             panic!()
         };
-        assert_eq!(r.file, Some(&b"report.txt"[..]));
+        assert_eq!(r.positionals(), [&b"5"[..], &b"extra"[..]]);
+        assert_eq!(plan(&r, Holdings::default()), Err(Refusal::FileForbidden));
+        // In a shell that DOES hold a directory the answer is identical, which is the point: the
+        // manifest decides, not the endowment.
+        assert_eq!(plan(&r, WITH_DIR), Err(Refusal::FileForbidden));
+    }
+
+    #[test]
+    fn the_manifest_refuses_a_file_to_a_program_that_declares_none() {
+        // The same rule from the other side: a name at a program with no file slot, in a shell that
+        // could back one. Refused rather than granted-and-ignored, because a name the program has
+        // no use for is authority the user thought they were moving.
+        let Command::Run(r) = parse(b"heeder report.txt") else {
+            panic!()
+        };
         assert_eq!(
-            plan(&r, Holdings::default()),
-            Err(Refusal::NoSuchCapability(CapKind::File))
+            plan_against(&r, Prog::Heeder, Prog::Heeder.manifest(), WITH_DIR),
+            Err(Refusal::FileForbidden),
         );
-        assert!(
-            plan(&r, Holdings::default())
-                .unwrap_err()
-                .message()
-                .contains("no such capability")
+        assert_eq!(
+            Refusal::FileForbidden.message(),
+            "takes no file; drop the name"
         );
     }
 
     #[test]
-    fn file_refusal_beats_manifest_quibbles() {
-        // Even though worker also has a missing arg and a forbidden --mem here, the un-grantable
-        // resource wins: "you named something I cannot back" is the point.
-        let Command::Run(r) = parse(b"run --mem 8 worker file:secret") else {
+    fn an_unknown_flag_never_reaches_the_file_position() {
+        // The one thing a designator prefix genuinely bought: a token that is *shaped* like a flag
+        // must not fall through into a grant. A shell that read `--secret` as a file name would
+        // turn a typo into a capability transfer, which is the failure the prefix was defending
+        // against, so the defence stays where it actually applies.
+        let Command::Run(r) = parse(b"wc --secret report.txt") else {
             panic!()
         };
+        assert_eq!(r.unexpected, Some(&b"--secret"[..]));
         assert_eq!(
-            plan(&r, Holdings::default()),
-            Err(Refusal::NoSuchCapability(CapKind::File))
+            plan_against(&r, Prog::Worker, READS_A_FILE, WITH_DIR),
+            Err(Refusal::Unexpected),
         );
     }
 
@@ -862,6 +1406,8 @@ mod tests {
         arg: ArgSpec::Forbidden,
         mem: MemSpec::Forbidden,
         file: FileSpec::Required { writable: false },
+        dir: DirSpec::Forbidden,
+        flags: NO_FLAGS,
         reports: true,
         interruptible: false,
     };
@@ -872,27 +1418,45 @@ mod tests {
         ..READS_A_FILE
     };
 
-    /// A shell that WAS granted a directory to narrow.
-    const WITH_DIR: Holdings = Holdings { dir: true };
+    /// The shape milestone 47 says nothing ships yet and everything hinges on: a program that takes
+    /// **both** an integer and a file. It is the reason the prefix could be removed now (positional
+    /// resolution is unambiguous while at most one bare token is a file) and the reason `ArgSpec`
+    /// will have to grow position and arity later.
+    const STAMPS_A_FILE: Manifest = Manifest {
+        arg: ArgSpec::Required,
+        mem: MemSpec::Forbidden,
+        file: FileSpec::Required { writable: true },
+        dir: DirSpec::Forbidden,
+        flags: NO_FLAGS,
+        reports: true,
+        interruptible: false,
+    };
+
+    /// A shell that WAS granted a directory to narrow, standing at its root.
+    const WITH_DIR: Holdings = Holdings {
+        dir: true,
+        cwd: nav::Cwd::root(),
+    };
 
     #[test]
-    fn a_file_designator_plans_one_narrowed_grant() {
+    fn a_bare_name_is_the_grant_and_the_manifest_is_the_direction() {
         // The headline: naming a file IS the grant, and the direction comes from the manifest, not
-        // from a flag on the line. `run wc file:report.txt` reads; the same line against a writing
-        // program writes; the human never types a mode.
-        let Command::Run(r) = parse(b"run wc file:report.txt") else {
+        // from anything typed. `wc report.txt` reads; the identical line against a writing program
+        // writes. That opposite-authority-same-syntax pair is exactly why `file:` came out: it
+        // decorated the half that was already visible.
+        let Command::Run(r) = parse(b"wc report.txt") else {
             panic!()
         };
-        assert_eq!(r.file, Some(&b"report.txt"[..]));
-        let e = plan_against(&r, Prog::Worker, READS_A_FILE).unwrap();
-        let g = e.file.expect("the file designator did not become a grant");
+        assert_eq!(r.positionals(), [&b"report.txt"[..]]);
+        let e = plan_against(&r, Prog::Worker, READS_A_FILE, WITH_DIR).unwrap();
+        let g = e.file.expect("the name did not become a grant");
         assert_eq!(g.name, b"report.txt");
         assert!(
             !g.writable,
             "the manifest declared a read, so the grant reads"
         );
 
-        let e = plan_against(&r, Prog::Worker, WRITES_A_FILE).unwrap();
+        let e = plan_against(&r, Prog::Worker, WRITES_A_FILE, WITH_DIR).unwrap();
         assert!(
             e.file.unwrap().writable,
             "the same command line against a writing program grants a writable file",
@@ -900,52 +1464,133 @@ mod tests {
     }
 
     #[test]
-    fn a_program_endowed_a_file_is_refused_when_the_command_names_none() {
-        // The manifest's whole job: catch the mismatch at the prompt instead of letting the program
-        // fault on an empty slot somewhere deep inside itself.
-        let Command::Run(r) = parse(b"run wc") else {
+    fn a_file_whose_name_is_all_digits_is_still_a_file() {
+        // Why the parser refuses to classify: a shape-based rule ("a number is the argument") would
+        // read `wc 2026` as a missing file and an unexpected integer. The manifest knows this
+        // program has no argument slot and one file slot, so there is only one thing the token can
+        // be.
+        let Command::Run(r) = parse(b"wc 2026") else {
+            panic!()
+        };
+        let e = plan_against(&r, Prog::Worker, READS_A_FILE, WITH_DIR).unwrap();
+        assert_eq!(e.file.unwrap().name, b"2026");
+    }
+
+    #[test]
+    fn positionals_fill_the_manifest_slots_in_the_order_typed() {
+        // The integer first, then the name, for a program that declares both. This is the shape
+        // milestone 47 deferred rather than designed, so pin the behaviour it does have: the order
+        // is the order, and swapping the tokens is a refusal rather than a surprise grant.
+        let Command::Run(r) = parse(b"stamp 7 report.txt") else {
+            panic!()
+        };
+        let e = plan_against(&r, Prog::Worker, STAMPS_A_FILE, WITH_DIR).unwrap();
+        assert_eq!(e.arg, 7);
+        assert_eq!(e.file.unwrap().name, b"report.txt");
+        assert!(e.file.unwrap().writable);
+
+        let Command::Run(swapped) = parse(b"stamp report.txt 7") else {
             panic!()
         };
         assert_eq!(
-            plan_against(&r, Prog::Worker, READS_A_FILE),
-            Err(Refusal::FileRequired)
+            plan_against(&swapped, Prog::Worker, STAMPS_A_FILE, WITH_DIR),
+            Err(Refusal::ArgRequired),
         );
     }
 
     #[test]
-    fn a_file_named_at_a_program_that_takes_none_is_refused_not_ignored() {
-        // The inversion cuts both ways. A designator the program has no use for is authority the
-        // user thought they were moving, so it is refused rather than granted-and-dropped.
-        let Command::Run(r) = parse(b"run worker 3 file:report.txt") else {
+    fn a_program_endowed_a_file_is_refused_when_the_command_names_none() {
+        // The manifest's whole job: catch the mismatch at the prompt instead of letting the program
+        // fault on an empty slot somewhere deep inside itself.
+        let Command::Run(r) = parse(b"wc") else {
             panic!()
         };
         assert_eq!(
-            plan_against(&r, Prog::Worker, Prog::Worker.manifest()),
-            Err(Refusal::FileForbidden),
+            plan_against(&r, Prog::Worker, READS_A_FILE, WITH_DIR),
+            Err(Refusal::FileRequired)
+        );
+        assert_eq!(
+            Refusal::FileRequired.message(),
+            "is granted one file; name it on the line"
         );
     }
 
     #[test]
     fn a_name_that_cannot_travel_as_a_grant_is_refused_at_the_prompt() {
-        // A grant's name rides in two argument words and is a single component, the same rule the FS
-        // server enforces. A path is not something this shell can express: there is no namespace
-        // here to walk, so it is refused where it was typed rather than turning into an ENOENT from
-        // a server that was asked something meaningless.
-        for line in [
-            &b"run wc file:this-name-is-far-too-long.txt"[..],
-            b"run wc file:sub/report.txt",
-            b"run wc file:..",
-        ] {
+        // A grant's name rides in two argument words, so a component that does not fit them cannot
+        // travel; `..` designates a directory rather than a file, so it is not a thing to grant.
+        // Both are refused where they were typed rather than turning into an ENOENT from a server
+        // that was asked something meaningless.
+        for line in [&b"wc this-name-is-far-too-long.txt"[..], b"wc .."] {
             let Command::Run(r) = parse(line) else {
                 panic!()
             };
             assert_eq!(
-                plan_against(&r, Prog::Worker, READS_A_FILE),
+                plan_against(&r, Prog::Worker, READS_A_FILE, WITH_DIR),
                 Err(Refusal::FileNotNameable),
                 "{}",
                 core::str::from_utf8(line).unwrap(),
             );
         }
+        // An absolute path gets its own refusal, because the reason is different in kind: the name
+        // cannot be expressed here at all. It must not read as a permission.
+        let Command::Run(r) = parse(b"wc /etc/passwd") else {
+            panic!()
+        };
+        let refused = plan_against(&r, Prog::Worker, READS_A_FILE, WITH_DIR);
+        assert_eq!(refused, Err(Refusal::NoAbsolutePath));
+        assert!(!refused.unwrap_err().message().contains("denied"));
+    }
+
+    /// **The cwd stops at the process boundary**, which is the rule most likely to be got wrong.
+    /// `wc report.txt` resolves the name against the shell's position *at the moment the grant is
+    /// made*, and the grant records where that was. A path operand is walked here, once, so the
+    /// child never sees one.
+    #[test]
+    fn a_name_is_resolved_against_the_shells_position_at_grant_time() {
+        let mut holds = WITH_DIR;
+        assert!(holds.cwd.apply(nav::path(b"logs").unwrap().steps()).is_ok());
+
+        let Command::Run(r) = parse(b"wc report.txt") else {
+            panic!()
+        };
+        let here = plan_against(&r, Prog::Worker, READS_A_FILE, holds)
+            .unwrap()
+            .file
+            .unwrap();
+        assert_eq!(here.name, b"report.txt");
+        assert_eq!(here.dir.depth(), 1, "resolved where the shell was standing");
+
+        // A path operand is resolved to a directory plus one component, so the FS contract still
+        // only ever sees a single name relative to a capability presented to it (§27 intact).
+        let Command::Run(r) = parse(b"wc 2026/report.txt") else {
+            panic!()
+        };
+        let deeper = plan_against(&r, Prog::Worker, READS_A_FILE, holds)
+            .unwrap()
+            .file
+            .unwrap();
+        assert_eq!(deeper.name, b"report.txt");
+        assert_eq!(deeper.dir.depth(), 2);
+        assert_eq!(deeper.dir.component(1), b"2026");
+
+        // **And the grant does not follow the shell.** Moving afterwards cannot change what an
+        // already-planned grant means, because the grant carries a value and not a pointer to
+        // wherever the shell happens to be next. This is the whole of "the child cannot re-resolve".
+        holds.cwd.ascend();
+        assert_eq!(here.dir.depth(), 1, "the grant moved when the shell did");
+
+        // `..` in a grant's path is resolved at the prompt too, and clamps at the root exactly as
+        // `cd` does: there is nothing above the root to name, so the grant cannot be for a file up
+        // there whatever the token says.
+        let Command::Run(r) = parse(b"wc ../../secret") else {
+            panic!()
+        };
+        assert_eq!(
+            plan_against(&r, Prog::Worker, READS_A_FILE, WITH_DIR),
+            Err(Refusal::FileNotNameable),
+            "a grant cannot name its way out of the shell's root",
+        );
     }
 
     #[test]
@@ -953,23 +1598,30 @@ mod tests {
         // Phase 1 hardcoded this refusal, which was true then and would have quietly become a lie.
         // The same command line must read as "you hold nothing that could grant this" in a shell
         // that was granted no directory, and as a real grant in one that was.
-        let Command::Run(r) = parse(b"run wc file:report.txt") else {
+        let Command::Run(r) = parse(b"wc report.txt") else {
             panic!()
         };
         assert_eq!(
-            plan_against(&r, Prog::Worker, READS_A_FILE)
+            plan_against(&r, Prog::Worker, READS_A_FILE, WITH_DIR)
                 .map(|e| e.file.map(|g| g.name))
                 .unwrap(),
             Some(&b"report.txt"[..]),
             "with a directory in hand, the same line is a grant",
         );
+        let refused = plan_against(&r, Prog::Worker, READS_A_FILE, Holdings::default());
         assert_eq!(
-            plan(&r, Holdings::default()),
+            refused,
             Err(Refusal::NoSuchCapability(CapKind::File)),
             "with no directory in hand, it is the milestone's headline refusal",
         );
-        // And the holdings only decide the un-backable case; they do not conjure a grant for a
-        // program whose manifest takes no file.
+        assert!(
+            refused
+                .unwrap_err()
+                .message()
+                .contains("no such capability")
+        );
+        // And it is reached only through a manifest that declares a file. `wc` is not a program the
+        // static table knows, so the same line through `plan` stops at the name.
         assert_eq!(plan(&r, WITH_DIR), Err(Refusal::NoSuchProgram));
     }
 
@@ -985,12 +1637,11 @@ mod tests {
     }
 
     #[test]
-    fn unexpected_token_is_refused_not_ignored() {
-        let Command::Run(r) = parse(b"run worker 3 5") else {
+    fn a_second_integer_is_unexpected_not_ignored() {
+        let Command::Run(r) = parse(b"worker 3 5") else {
             panic!()
         };
-        assert_eq!(r.arg, Some(3));
-        assert_eq!(r.unexpected, Some(&b"5"[..]));
+        assert_eq!(r.positionals(), [&b"3"[..], &b"5"[..]]);
         assert_eq!(plan(&r, Holdings::default()), Err(Refusal::Unexpected));
     }
 
@@ -998,7 +1649,7 @@ mod tests {
     fn mem_flag_must_have_a_numeric_value() {
         // `--mem twelve` is a missing grant, not a silent zero: parse_u64 rejects it, so budgeter
         // sees "no --mem given" and refuses.
-        let Command::Run(r) = parse(b"run --mem twelve budgeter") else {
+        let Command::Run(r) = parse(b"budgeter --mem twelve") else {
             panic!()
         };
         assert_eq!(r.mem, None);
@@ -1006,19 +1657,285 @@ mod tests {
     }
 
     #[test]
-    fn caps_carries_its_tail() {
+    fn caps_previews_the_command_you_would_have_typed() {
+        // The new spelling, and the reason for it: the tail is the line itself, so what you inspect
+        // and what you run cannot drift apart. With `run` gone there is no verb left to echo.
         assert_eq!(parse(b"caps"), Command::Caps(b""));
         assert_eq!(
-            parse(b"caps run --mem 16 budgeter"),
-            Command::Caps(b"run --mem 16 budgeter")
+            parse(b"caps budgeter --mem 16"),
+            Command::Caps(b"budgeter --mem 16")
+        );
+        let Command::Caps(tail) = parse(b"caps budgeter --mem 16") else {
+            panic!()
+        };
+        let (Command::Run(previewed), Command::Run(typed)) =
+            (parse(tail), parse(b"budgeter --mem 16"))
+        else {
+            panic!()
+        };
+        assert_eq!(
+            plan(&previewed, Holdings::default()),
+            plan(&typed, Holdings::default()),
+            "the preview must plan the identical endowment to the command itself",
         );
     }
 
     #[test]
-    fn prog_id_round_trips() {
-        for p in [Prog::Worker, Prog::Budgeter] {
-            assert_eq!(Prog::from_id(p.id()), Some(p));
+    fn date_takes_nothing_from_the_command_line() {
+        // `date` is the first program whose authority is entirely init's to give (a read-only
+        // mapping of the clock page), so its grant expression is empty and both halves matter:
+        // typing nothing works, and typing anything is refused rather than passed along.
+        let Command::Run(r) = parse(b"date") else {
+            panic!()
+        };
+        let e = plan(&r, Holdings::default()).unwrap();
+        assert_eq!(e.prog, Prog::Date);
+        assert_eq!((e.arg, e.mem_pages), (0, 0));
+        assert!(e.file.is_none());
+        assert!(e.reports, "it answers with a line of text");
+        assert!(!e.interruptible, "it prints once and exits");
+
+        let Command::Run(r) = parse(b"date 5") else {
+            panic!()
+        };
+        assert_eq!(plan(&r, Holdings::default()), Err(Refusal::ArgForbidden));
+        let Command::Run(r) = parse(b"date report.txt") else {
+            panic!()
+        };
+        assert_eq!(plan(&r, WITH_DIR), Err(Refusal::FileForbidden));
+        let Command::Run(r) = parse(b"date --mem 4") else {
+            panic!()
+        };
+        assert_eq!(plan(&r, Holdings::default()), Err(Refusal::MemForbidden));
+    }
+
+    // ---- `rm` is a program, and its operand grants a directory (milestone 47's rmdir lane) ----
+
+    /// **The headline at this level: naming something to remove grants the directory that holds
+    /// it.** `rm old.txt` hands `rm` a capability to the directory `old.txt` is in, plus that one
+    /// name, because taking a name away is an operation on a directory and no per-file capability
+    /// can express it.
+    ///
+    /// The grant is therefore **wider than the name typed**, which is stated here rather than
+    /// hidden: the same capability could remove anything else in that directory. Narrowing it to
+    /// the names on the line is the name-set warden globbing needs, and it is the same shape.
+    #[test]
+    fn naming_something_to_remove_grants_the_directory_that_holds_it() {
+        let Command::Run(r) = parse(b"rm old.txt") else {
+            panic!()
+        };
+        let e = plan(&r, WITH_DIR).unwrap();
+        assert_eq!(e.prog, Prog::Rm);
+        let g = e.dir.expect("the operand did not become a directory grant");
+        assert_eq!(g.name, b"old.txt");
+        assert_eq!(g.dir.depth(), 0, "resolved where the shell was standing");
+        assert!(
+            !g.subtree,
+            "without -r the capability must not reach below the directory it was given",
+        );
+        assert!(e.file.is_none(), "rm takes no file capability, ever");
+        assert_eq!((e.arg, e.mem_pages), (0, 0));
+
+        // A path operand is walked at the prompt, so the grant is the directory it landed in and
+        // the child still only ever sees one component (§27 intact).
+        let Command::Run(r) = parse(b"rm logs/2026/old.txt") else {
+            panic!()
+        };
+        let g = plan(&r, WITH_DIR).unwrap().dir.unwrap();
+        assert_eq!(g.name, b"old.txt");
+        assert_eq!(g.dir.depth(), 2);
+        assert_eq!(g.dir.component(0), b"logs");
+        assert_eq!(g.dir.component(1), b"2026");
+    }
+
+    /// **Typing `-r` is what hands over more**, and that is the property worth having a test for:
+    /// the recursion is not a branch in the program that a bug could take anyway. Without the
+    /// option the capability cannot walk or list, so a `rm` that tried would be told there is no
+    /// such name.
+    #[test]
+    fn the_recursion_option_is_what_widens_the_grant() {
+        let narrow = {
+            let Command::Run(r) = parse(b"rm logs") else {
+                panic!()
+            };
+            plan(&r, WITH_DIR).unwrap()
+        };
+        let wide = {
+            let Command::Run(r) = parse(b"rm -r logs") else {
+                panic!()
+            };
+            plan(&r, WITH_DIR).unwrap()
+        };
+        assert_eq!(narrow.dir.unwrap().name, wide.dir.unwrap().name);
+        assert!(!narrow.dir.unwrap().subtree);
+        assert!(wide.dir.unwrap().subtree, "-r must widen the grant");
+        assert_eq!(narrow.flags, 0);
+        assert_eq!(wide.flags, rmopt::RECURSIVE);
+    }
+
+    /// The option letters and the bits `rmopt` names are one thing spelled twice (the manifest has
+    /// the letters, the program has the bits), so a change to either without the other has to fail
+    /// here in milliseconds. A cluster is one token, as every Unix `rm -rf` is typed.
+    #[test]
+    fn rm_options_are_numbered_by_their_position_in_its_manifest() {
+        let Command::Run(r) = parse(b"rm -rfv doomed") else {
+            panic!()
+        };
+        assert_eq!(r.options(), b"rfv");
+        let e = plan(&r, WITH_DIR).unwrap();
+        assert_eq!(e.flags, rmopt::RECURSIVE | rmopt::FORCE | rmopt::VERBOSE);
+        // Separately typed, in any order, is the same grant: options are a set.
+        let Command::Run(r) = parse(b"rm -v -f -r doomed") else {
+            panic!()
+        };
+        assert_eq!(plan(&r, WITH_DIR).unwrap().flags, e.flags);
+        // And each letter alone lands on exactly its own bit.
+        for (line, want) in [
+            (&b"rm -r x"[..], rmopt::RECURSIVE),
+            (b"rm -f x", rmopt::FORCE),
+            (b"rm -v x", rmopt::VERBOSE),
+        ] {
+            let Command::Run(r) = parse(line) else {
+                panic!()
+            };
+            assert_eq!(
+                plan(&r, WITH_DIR).unwrap().flags,
+                want,
+                "{}",
+                core::str::from_utf8(line).unwrap(),
+            );
         }
+    }
+
+    /// An option nothing declares is refused **at the prompt**, not passed along unread. It matters
+    /// more here than it looks: an option can widen a grant, so a shell that silently dropped one
+    /// would be a shell whose printed preview and actual transfer could disagree.
+    #[test]
+    fn an_option_the_manifest_does_not_declare_is_refused() {
+        let Command::Run(r) = parse(b"rm -q doomed") else {
+            panic!()
+        };
+        assert_eq!(plan(&r, WITH_DIR), Err(Refusal::NoSuchOption));
+        // A cluster is refused whole, on its first unknown letter: `-rq` must not half-apply.
+        let Command::Run(r) = parse(b"rm -rq doomed") else {
+            panic!()
+        };
+        assert_eq!(plan(&r, WITH_DIR), Err(Refusal::NoSuchOption));
+        // And a program that declares no options at all refuses every one.
+        let Command::Run(r) = parse(b"worker -r 9") else {
+            panic!()
+        };
+        assert_eq!(plan(&r, WITH_DIR), Err(Refusal::NoSuchOption));
+        assert!(
+            !Refusal::NoSuchOption.message().contains("denied"),
+            "a refusal is a fact about the command, never a policy",
+        );
+    }
+
+    /// `rm` with nothing to remove, and `rm` in a shell that holds no directory. The second is the
+    /// milestone's headline refusal reaching a **shipped** program for the first time: until now no
+    /// program in the static table declared a grant the interactive shell cannot back.
+    #[test]
+    fn rm_needs_an_operand_and_something_to_narrow() {
+        let Command::Run(r) = parse(b"rm") else {
+            panic!()
+        };
+        assert_eq!(plan(&r, WITH_DIR), Err(Refusal::PathRequired));
+        let Command::Run(r) = parse(b"rm -rf") else {
+            panic!()
+        };
+        assert_eq!(
+            plan(&r, WITH_DIR),
+            Err(Refusal::PathRequired),
+            "options are not operands: `rm -rf` names nothing",
+        );
+
+        let Command::Run(r) = parse(b"rm doomed") else {
+            panic!()
+        };
+        assert_eq!(
+            plan(&r, Holdings::default()),
+            Err(Refusal::NoSuchCapability(CapKind::File)),
+            "a shell granted no directory holds nothing that could back this",
+        );
+    }
+
+    /// The same shape refusals a file grant gets, because they are the same resolver: an absolute
+    /// path cannot be expressed, a name that cannot travel in a grant is refused where it was
+    /// typed, and `..` clamps at the shell's root so a grant cannot name its way out.
+    #[test]
+    fn a_directory_grant_cannot_be_named_out_of_the_shells_root() {
+        for (line, want) in [
+            (&b"rm /etc/passwd"[..], Refusal::NoAbsolutePath),
+            (b"rm ..", Refusal::FileNotNameable),
+            (b"rm ../motd", Refusal::FileNotNameable),
+            (
+                b"rm this-name-is-far-too-long.txt",
+                Refusal::FileNotNameable,
+            ),
+        ] {
+            let Command::Run(r) = parse(line) else {
+                panic!()
+            };
+            assert_eq!(
+                plan(&r, WITH_DIR),
+                Err(want),
+                "{}",
+                core::str::from_utf8(line).unwrap(),
+            );
+        }
+    }
+
+    /// **One operand, and a second is refused rather than ignored.** `rm a b` is a real Unix line
+    /// and this shell does not run it: a manifest grants one directory, and two names in two
+    /// different directories are two grants. That is the same widening globbing needs (`rm *.txt`
+    /// is the same question), so it waits for the same answer instead of getting a private one.
+    #[test]
+    fn rm_takes_one_operand_because_a_manifest_grants_one_directory() {
+        let Command::Run(r) = parse(b"rm a b") else {
+            panic!()
+        };
+        assert_eq!(plan(&r, WITH_DIR), Err(Refusal::Unexpected));
+        assert!(
+            !Refusal::Unexpected.message().contains("no such"),
+            "the second name is unplaceable, not unknown",
+        );
+    }
+
+    /// The directory grant is resolved **at grant time** and recorded as a value, exactly as a file
+    /// grant is, so a `cd` afterwards cannot change what an already-planned `rm` would take away.
+    #[test]
+    fn a_directory_grant_is_fixed_where_it_was_planned() {
+        let mut holds = WITH_DIR;
+        assert!(holds.cwd.apply(nav::path(b"logs").unwrap().steps()).is_ok());
+        let Command::Run(r) = parse(b"rm -r old") else {
+            panic!()
+        };
+        let g = plan(&r, holds).unwrap().dir.unwrap();
+        assert_eq!(g.dir.depth(), 1);
+        assert_eq!(g.dir.component(0), b"logs");
+        holds.cwd.ascend();
+        assert_eq!(g.dir.depth(), 1, "the grant followed the shell");
+    }
+
+    #[test]
+    fn prog_id_round_trips() {
+        for p in [
+            Prog::Worker,
+            Prog::Budgeter,
+            Prog::Heeder,
+            Prog::Spinner,
+            Prog::Date,
+            Prog::Rm,
+        ] {
+            assert_eq!(Prog::from_id(p.id()), Some(p));
+            assert_eq!(Prog::from_name(p.name().as_bytes()), Some(p));
+            assert!(
+                (p.id() as usize) < PROG_COUNT,
+                "init indexes a [_; PROG_COUNT] with this",
+            );
+        }
+        assert_eq!(Prog::from_id(PROG_COUNT as u64), None);
         assert_eq!(Prog::from_id(99), None);
     }
 
@@ -1035,7 +1952,7 @@ mod tests {
         // Fast jobs finish in one step; the shell just waits for them, no ^C tier.
         assert!(!Prog::Worker.manifest().interruptible);
         assert!(!Prog::Budgeter.manifest().interruptible);
-        let Command::Run(r) = parse(b"run worker 9") else {
+        let Command::Run(r) = parse(b"worker 9") else {
             panic!()
         };
         assert!(!plan(&r, Holdings::default()).unwrap().interruptible);

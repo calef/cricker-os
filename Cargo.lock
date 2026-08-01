@@ -144,6 +144,10 @@ name = "gfx_proto"
 version = "0.1.0"
 
 [[package]]
+name = "glob"
+version = "0.1.0"
+
+[[package]]
 name = "gpt"
 version = "0.1.0"
 
@@ -187,6 +191,7 @@ dependencies = [
  "bitfont",
  "calendar",
  "caps",
+ "capsh",
  "clock_proto",
  "compose",
  "coremark",
@@ -202,6 +207,7 @@ dependencies = [
  "ipc",
  "lineedit",
  "measure",
+ "ntp_proto",
  "paging",
  "pci",
  "regions",
@@ -367,6 +373,7 @@ dependencies = [
  "fs_proto",
  "gfx_proto",
  "lineedit",
+ "ntp_proto",
  "smoltcp",
  "user_rt",
  "vt",

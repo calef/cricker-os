@@ -68,3 +68,9 @@ cargo kani -p gpt
 
 echo "==> kani: calendar (the civil-date arithmetic, and the parser on hostile text)"
 cargo kani -p calendar
+
+echo "==> kani: glob (matching is total, and a hostile pattern cannot be made to blow up)"
+cargo kani -p glob
+
+echo "==> kani: fs_proto (a directory capability's child never exceeds its parent, at any depth)"
+cargo kani -p fs_proto

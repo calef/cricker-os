@@ -1049,6 +1049,8 @@ fn initrd_riscv() -> bool {
             "--bin",
             "fwarden",
             "--bin",
+            "dwarden",
+            "--bin",
             "heeder",
             "--bin",
             "spinner",
@@ -1091,7 +1093,11 @@ fn initrd_riscv() -> bool {
             "--bin",
             "date",
             "--bin",
+            "rm",
+            "--bin",
             "entropy",
+            "--bin",
+            "ntp",
             "--target",
             RISCV_TARGET,
         ],
@@ -1125,6 +1131,7 @@ fn initrd_riscv() -> bool {
         ("budgeter", "budgeter"),
         ("fsclient", "fsclient"),
         ("fwarden", "fwarden"),
+        ("dwarden", "dwarden"),
         ("heeder", "heeder"),
         ("spinner", "spinner"),
         // The authority-shrinking supervision tree (milestone 22 phase B.2): an init that hands its
@@ -1167,9 +1174,13 @@ fn initrd_riscv() -> bool {
         // `date` (milestone 51). Portable for the same reason the service is: it reads a page and
         // formats it, and neither half knows which instruction set it is on.
         ("date", "date"),
+        ("rm", "rm"),
         // The entropy service (milestone 56). Portable, so both archives carry it: it holds the
         // virtio-rng driver, and the wiring tells it which bus the device came off.
         ("entropy", "entropy"),
+        // The NTP client (milestone 51), with its test server and its clock-page probe as roles of
+        // the same binary. Portable, so both archives carry it and both ISAs run the same tests.
+        ("ntp", "ntp"),
     ];
     let mut blobs: Vec<(&str, Vec<u8>)> = Vec::new();
     for &(archive_name, bin_name) in entries {
@@ -1316,6 +1327,13 @@ fn mkinitrd() -> bool {
             return false;
         }
     };
+    let dwarden = match read_stripped(&bin_elf("dwarden")) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("dwarden"));
+            return false;
+        }
+    };
     let fsclient = match read_stripped(&bin_elf("fsclient")) {
         Ok(bytes) => bytes,
         Err(e) => {
@@ -1372,7 +1390,11 @@ fn mkinitrd() -> bool {
         "broker",
         "clock",
         "date",
+        // `rm` (milestone 47's rmdir lane): the first program endowed a directory capability.
+        // Portable, so both archives carry it.
+        "rm",
         "entropy",
+        "ntp",
     ] {
         match read_stripped(&bin_elf(name)) {
             Ok(bytes) => tree.push((name, bytes)),
@@ -1397,6 +1419,7 @@ fn mkinitrd() -> bool {
         ("budgeter", &budgeter),
         ("fsclient", &fsclient),
         ("fwarden", &fwarden),
+        ("dwarden", &dwarden),
         ("heeder", &heeder),
         ("spinner", &spinner),
     ];
@@ -1573,9 +1596,11 @@ fn redoxfs_host(args: &[&str]) -> bool {
 }
 
 /// Build the RedoxFS test image the FS server serves: an empty filesystem with the two fixture
-/// files (`motd`, `scratch`) the client reads and writes. Made host-side with the pinned engine, so
-/// an image the server opens is proven against exactly the code that opens it. Arch-neutral (the
-/// on-disk format does not depend on the CPU), so one image serves both ISA test legs.
+/// files (`motd`, `scratch`) the client reads and writes, plus milestone 47's **subtree**
+/// (`sub/` with a file and a grandchild, and the sibling `other/` a directory capability must not
+/// reach). Made host-side with the pinned engine, so an image the server opens is proven against
+/// exactly the code that opens it. Arch-neutral (the on-disk format does not depend on the CPU), so
+/// one image serves both ISA test legs.
 fn mkredoxfs() -> bool {
     let img = redoxfs_disk_path();
     // **`CRICKER_KEEP_REDOXFS=1` keeps an existing image instead of rebuilding it.** This is the
@@ -1600,9 +1625,55 @@ fn mkredoxfs() -> bool {
     }
     let motd = motd.display().to_string();
     let scratch = scratch.display().to_string();
+    let Some(tree) = stage_subtree() else {
+        return false;
+    };
     redoxfs_host(&["mkfs", &img, "16"])
         && redoxfs_host(&["put", &img, fs_proto::fixture::MOTD_NAME, &motd])
         && redoxfs_host(&["put", &img, fs_proto::fixture::SCRATCH_NAME, &scratch])
+        && redoxfs_host(&["import", &img, &tree])
+}
+
+/// Stage milestone 47's subtree as a host directory and return its path, for `import` to copy into
+/// the image root.
+///
+/// **`import` rather than a new `mkdir` verb on the host tool**, deliberately: `import` is upstream
+/// RedoxFS's own archiver (`redoxfs::archive`), so the directories the confinement tests attack are
+/// written by the people who defined the format rather than by us. notes/host-recovery.md already
+/// makes that argument for `extract`; this is the same one on the write side.
+///
+/// The staging directory is rebuilt from scratch each time, because a name left behind by an older
+/// fixture would end up in the image and fail the post-run `ls /` check for a reason that has
+/// nothing to do with the run.
+fn stage_subtree() -> Option<String> {
+    use fs_proto::fixture::tree;
+    let root = workspace_root().join("target/redoxfs-tree");
+    let _ = std::fs::remove_dir_all(&root);
+    let sub = root.join(tree::SUB);
+    let deeper = sub.join(tree::DEEPER);
+    let other = root.join(tree::OTHER);
+    // Milestone 47's `rm -r` tree, a sibling of `sub` so a capability to one is provably not a
+    // capability to the other. `rm-keep` sits beside the doomed tree, inside the same grant: the
+    // program could have removed it and does not, because nothing named it.
+    let rmtree = root.join(tree::RMTREE);
+    let doomed = rmtree.join(tree::RM_DOOMED);
+    let nested = doomed.join(tree::RM_NESTED);
+    let ok = std::fs::create_dir_all(&deeper).is_ok()
+        && std::fs::create_dir_all(&other).is_ok()
+        && std::fs::create_dir_all(&nested).is_ok()
+        && std::fs::write(sub.join(tree::INNER), tree::INNER_BODY).is_ok()
+        && std::fs::write(deeper.join(tree::LEAF), tree::LEAF_BODY).is_ok()
+        && std::fs::write(other.join(tree::SECRET), tree::SECRET_BODY).is_ok()
+        && std::fs::write(rmtree.join(tree::RM_KEEP), tree::RM_KEEP_BODY).is_ok()
+        && std::fs::write(rmtree.join(tree::RM_SOLO), tree::RM_BODY).is_ok()
+        && std::fs::write(doomed.join(tree::RM_ONE), tree::RM_BODY).is_ok()
+        && std::fs::write(doomed.join(tree::RM_TWO), tree::RM_BODY).is_ok()
+        && std::fs::write(nested.join(tree::RM_LEAF), tree::RM_BODY).is_ok();
+    if !ok {
+        eprintln!("mkredoxfs: cannot stage the milestone-47 subtree");
+        return None;
+    }
+    Some(root.display().to_string())
 }
 
 /// Where the **crash test's** RedoxFS image is written (milestone 37). The runners derive exactly
@@ -1698,6 +1769,172 @@ fn redoxfs_check_after_run() -> bool {
             fs_proto::fixture::SCRATCH_NAME,
             fs_proto::fixture::WRITE_PATTERN,
         )
+        && redoxfs_subtree_was_confined()
+}
+
+/// **The directory capability's confinement, asserted from outside the confined program**
+/// (milestone 47).
+///
+/// The in-guest attacker reports a bitmap of what got through, which is a statement by the thing
+/// being tested. This is the other kind of evidence: a different process, on the host, with the
+/// pinned engine, reading the image the run left behind. Four claims, and each one is an escape
+/// that no in-guest verdict could have reported, because a program that broke out and then lied
+/// would still have left the file on the disk.
+///
+/// 1. **The fixture's own names are all still in the image root.** A capability granted on `sub`
+///    can remove nothing above itself, so a missing name here is an escape too.
+/// 2. **Nothing the attacker made is in the root.** It was granted `sub` and creates inside it, so
+///    a name of its making at this level got out.
+/// 3. **Its creations ARE in `sub`**, which is what stops claim 2 from being vacuous: an attacker
+///    that created nothing would satisfy it perfectly, and so would a warden that refused
+///    everything. And `sub` holds both a **renamed** name and an **un**renamed one, which is the
+///    `REMOVE` rung witnessed from outside the guest: one capability moved a name and another,
+///    running the same code against the same directory, could not.
+/// 4. **The two files nothing was granted the authority to change read back byte for byte.**
+///    `other/secret` is one directory entry away from the grant and the FS server can reach it on
+///    any request it likes; `sub/inner` is *inside* the grant, and the attacker writes only to what
+///    it made, so a change there means it wrote through something it should not have.
+///
+/// **BUGS.** Claim 1 checks containment, not equality, and that is deliberate rather than lazy: the
+/// root is shared with every other test in the boot, and the `std::fs` test creates `made-by-std`
+/// in it. An exact comparison would make this check fail whenever an unrelated test started or
+/// stopped writing a file, which is a coupling that manufactures facts (DECISIONS §27). The cost is
+/// that a leaked name whose spelling matches neither fixture prefix would slip past claim 2, so the
+/// attacker's names are the thing this check is precise about.
+fn redoxfs_subtree_was_confined() -> bool {
+    use fs_proto::fixture::tree;
+    let img = redoxfs_disk_path();
+
+    let (Some(root), Some(sub)) = (redoxfs_ls(&img, "/"), redoxfs_ls(&img, tree::SUB)) else {
+        eprintln!("milestone-47 confinement check: the image did not list after the run");
+        return false;
+    };
+    for want in tree::ROOT_ENTRIES {
+        if !root.iter().any(|n| n == want) {
+            eprintln!(
+                "MILESTONE-47 CONFINEMENT FAILED: `{want}` is gone from the image root (it holds \
+                 {root:?}). Nothing in this run held a capability that could remove it.",
+            );
+            return false;
+        }
+    }
+    // A run index is appended to each name so three attacker runs sharing one image do not collide,
+    // so the prefix is what identifies a creation rather than the whole name.
+    let attackers_own = |n: &String| {
+        n.starts_with(tree::MADE) || n.starts_with(tree::MADE_DIR) || n.starts_with(tree::MOVED)
+    };
+    if let Some(leaked) = root.iter().find(|n| attackers_own(n)) {
+        eprintln!(
+            "MILESTONE-47 CONFINEMENT FAILED: `{leaked}` is in the image ROOT. A program granted a \
+             capability to `{}` created a name in its parent.",
+            tree::SUB,
+        );
+        return false;
+    }
+    let count = |prefix: &str| sub.iter().filter(|n| n.starts_with(prefix)).count();
+    let (made_files, made_dirs, moved) =
+        (count(tree::MADE), count(tree::MADE_DIR), count(tree::MOVED));
+    if made_files == 0 || made_dirs == 0 {
+        eprintln!(
+            "milestone-47 confinement check: `{}` holds {sub:?}, with {made_files} created files \
+             and {made_dirs} created directories. The attacker created nothing, so \"nothing it \
+             made escaped to the root\" is true of a capability that reaches nothing at all.",
+            tree::SUB,
+        );
+        return false;
+    }
+    // `made_files` counts the names that were created and NOT renamed, so requiring both counts to
+    // be non-zero is the `REMOVE` rung asserted from out here: a capability carrying it moved a
+    // name, and one without it left its own name exactly where it made it.
+    if moved == 0 {
+        eprintln!(
+            "MILESTONE-47 CONFINEMENT FAILED: `{}` holds {sub:?} and nothing was renamed. A \
+             capability carrying REMOVE and CREATE must be able to move a name it made, or the \
+             refusals the other runs report are refusals of a verb that never works.",
+            tree::SUB,
+        );
+        return false;
+    }
+    let sibling = format!("{}/{}", tree::OTHER, tree::SECRET);
+    let granted = format!("{}/{}", tree::SUB, tree::INNER);
+    redoxfs_reads_back(&sibling, tree::SECRET_BODY)
+        && redoxfs_reads_back(&granted, tree::INNER_BODY)
+        && shell_navigation_landed(&root, &sub)
+        && match redoxfs_ls(&img, tree::OTHER) {
+            // The **second** shell's leavings, in the sibling it was rooted at. Checking only `sub`
+            // would leave the headline property half-witnessed from out here: two shells with two
+            // roots each wrote into their own and neither into the other's.
+            Some(other) => shell_navigation_landed(&root, &other),
+            None => false,
+        }
+}
+
+/// **`rm` witnessed from outside the guest** (milestone 47's commands).
+///
+/// The navigating shell reports that its `rm` worked and that the handle it still held kept reading
+/// the bytes. Both are statements by the thing under test. This is the other kind of evidence: the
+/// host, with the pinned engine, reading the image the run left behind, where the name it removed
+/// must not be, the name it kept must be, and neither may have appeared in the root.
+///
+/// The pair is what makes it non-vacuous. A shell that created nothing satisfies "the removed name
+/// is absent" perfectly, so the kept name has to be there beside it.
+fn shell_navigation_landed(root: &[String], home: &[String]) -> bool {
+    use fs_proto::fixture::tree;
+    let count = |dir: &[String], prefix: &str| dir.iter().filter(|n| n.starts_with(prefix)).count();
+
+    if count(home, tree::NAV_KEPT) == 0 || count(home, tree::NAV_DIR) == 0 {
+        eprintln!(
+            "milestone-47 navigation check: a shell's root holds {home:?}, with nothing a \
+             navigating shell made in it. \"what it removed is gone\" is true of a shell that \
+             created nothing, so this proves nothing without it.",
+        );
+        return false;
+    }
+    if count(home, tree::NAV_GONE) != 0 {
+        eprintln!(
+            "MILESTONE-47 NAVIGATION FAILED: a shell's root still holds a `{}` name, so its `rm` \
+             reported success and never reached the platter: {home:?}",
+            tree::NAV_GONE,
+        );
+        return false;
+    }
+    let leaked = |n: &&String| {
+        n.starts_with(tree::NAV_KEPT)
+            || n.starts_with(tree::NAV_GONE)
+            || n.starts_with(tree::NAV_DIR)
+    };
+    if let Some(name) = root.iter().find(leaked) {
+        eprintln!(
+            "MILESTONE-47 NAVIGATION FAILED: `{name}` is in the image ROOT. A shell rooted at a \
+             subtree made a name in its parent.",
+        );
+        return false;
+    }
+    true
+}
+
+/// The names in one directory of the post-run image, sorted, via the host tool's `ls`. Its output is
+/// `kind size name` per line and the fixture's names carry no spaces, so the name is the last field.
+fn redoxfs_ls(image: &str, path: &str) -> Option<Vec<String>> {
+    let out = capture(
+        "cargo",
+        &[
+            "run",
+            "--quiet",
+            "--manifest-path",
+            "tools/redoxfs-host/Cargo.toml",
+            "--",
+            "ls",
+            image,
+            path,
+        ],
+    )?;
+    let mut names: Vec<String> = out
+        .lines()
+        .filter_map(|l| l.split_whitespace().last().map(str::to_string))
+        .collect();
+    names.sort();
+    Some(names)
 }
 
 /// `cat` one file out of the post-run image with the host tool and compare it byte for byte.

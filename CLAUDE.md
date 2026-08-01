@@ -64,6 +64,25 @@ Two kinds bit us on 2026-07-30:
 --check` verifies that a cited `§N` resolves to *some* section, never that it resolves to the right
 one, so a well-formed wrong citation is invisible to it. This has already produced two of them.
 
+**Some shared state is global to the *machine*, not the repo, and `rustup toolchain link` is the one
+that has bitten.** The `cricker-dev` toolchain the `std` farm needs is a symlink in
+`~/.rustup/toolchains`, so `xtask std-src` repoints a **user-account-wide** name at whichever
+worktree ran it last. Two lanes building the farm race for it, and the loser silently compiles
+against a farm inside someone else's worktree; deleting that worktree then breaks the toolchain for
+everything, surfacing far from the cause as "override toolchain 'cricker-dev' is not installed"
+during an unrelated build. Fix: `rustup toolchain link cricker-dev "$(pwd)/target/cricker-farm"` from
+the main checkout. This is the same rule as the paragraph above, one level out: the integrator owns
+what is shared, and "shared" is wider than this repository.
+
+**Delete a lane's worktree too, and do it before the disk decides for you.** On 2026-07-31 the data
+volume hit **zero bytes free** with 42 agent worktrees holding **78 GB**. Two lanes died mid-work and
+could not even run `pgrep` to check whether they had leaked emulators, because every tool must create
+an output file before it runs. Deleting the branch at merge does not remove the ~2 GB of `target/`
+behind it, so **prune the worktree in the same breath**, and `git worktree prune` afterwards. If a
+lane is blocked, commit and **push** its work before removing anything: a snapshot on the remote
+cannot be lost by a cleanup. The warning signs were noted hours earlier and not acted on, and then
+four more lanes were launched on top of them.
+
 **Delete a lane's branch when you merge it, and never use a branch as a filing cabinet.** Forty-seven
 branches accumulated in about two days of lane work and had to be pruned by hand on 2026-07-31; this
 recurs by default, because merging is what finishes a lane and deleting is a separate act nobody is
