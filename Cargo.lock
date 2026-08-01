@@ -376,6 +376,7 @@ dependencies = [
  "entropy_proto",
  "fs_proto",
  "gfx_proto",
+ "glob",
  "lineedit",
  "ntp_proto",
  "smoltcp",

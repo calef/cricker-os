@@ -163,6 +163,16 @@ path = "src/dwarden.rs"
 test = false
 bench = false
 
+# The set warden (milestone 47's globbing lane): the same caretaker over a namespace of the names a
+# pattern matched. A third warden rather than a mode on `dwarden`, because `dwarden`'s design
+# property is that it performs no checks at all, and a name filter is a check on every name-taking
+# verb. mkinitrd packs it as "swarden".
+[[bin]]
+name = "swarden"
+path = "src/swarden.rs"
+test = false
+bench = false
+
 # The EL0 microbenchmark program (primitive suite): self-times syscall/IPC primitives from EL0, the
 # lmbench way, so the numbers include the trap the kernel-side benchmarks skip. Run by the bench boot.
 [[bin]]
@@ -382,6 +392,10 @@ elf = { version = "0.1.0", path = "../crates/elf" }
 entropy_proto = { version = "0.1.0", path = "../crates/entropy_proto" }
 fs_proto = { version = "0.1.0", path = "../crates/fs_proto" }
 gfx_proto = { version = "0.1.0", path = "../crates/gfx_proto" }
+# The matcher, so the shell can ask "is this word a pattern at all" before it does anything with it.
+# Expansion itself lives in `capsh::expand`; this is only `has_magic`, which decides whether an
+# arbitrary word (`echo a:b`) is text to print or a designation to resolve.
+glob = { version = "0.1.0", path = "../crates/glob" }
 lineedit = { version = "0.1.0", path = "../crates/lineedit" }
 ntp_proto = { version = "0.1.0", path = "../crates/ntp_proto" }
 user_rt = { version = "0.1.0", path = "../crates/user_rt" }

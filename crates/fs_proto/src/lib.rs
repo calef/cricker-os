@@ -1072,6 +1072,13 @@ pub mod fixture {
         /// removed it would have had to walk it.
         pub const GLOB_INNER: &str = "gl-inner";
         pub const GLOB_BODY: &[u8] = b"CRK47-GLOB: a name a pattern either matched or did not\n";
+        /// A pattern that matches **nothing** here, so the empty-expansion refusal has something to
+        /// be about. Same prefix as the others deliberately: it fails on the extension alone, which
+        /// is the case a matcher that gave up early would get wrong.
+        pub const GLOB_NOMATCH: &[u8] = b"gl-*.rs";
+        /// A line with no pattern in it, echoed to check that globbing did not quietly turn `echo`
+        /// into a word-splitter. Its two consecutive spaces are the whole point.
+        pub const GLOB_PLAIN: &[u8] = b"two  spaces";
 
         /// **The names the image root must still carry after a run**, checked by the post-run host
         /// tool: this is the half of the assertion made from *outside* the confined program, and no
@@ -1205,6 +1212,37 @@ pub mod fixture {
         /// And once the name inside it was taken out, `RMDIR` removed it. Without this, the bit
         /// above is equally true of a `RMDIR` that refuses everything.
         pub const RMDIR_REMOVED_EMPTY: u64 = 1 << 19;
+    }
+
+    /// **What the globbing witness reports** (milestone 47's globbing lane): a bitmap, for the same
+    /// reason every other witness here reports one, and with the same vacuity control at the end.
+    ///
+    /// The shell it runs in holds a real directory capability served by a real `dwarden`, so what is
+    /// under test is the prompt's own expansion path over a real `READDIR`, not a reimplementation
+    /// of it.
+    pub mod globscape {
+        /// `echo` expanded the pattern into a non-empty set. The precondition for everything else:
+        /// a shell that expanded nothing agrees with a grant of nothing, perfectly and uselessly.
+        pub const EXPANDED: u64 = 1 << 0;
+        /// **The names `echo` printed and the names the grant carries are the same bytes.** The
+        /// headline: the expansion you see is the authority that moves.
+        pub const AGREED: u64 = 1 << 1;
+        /// The expansion contains neither [`super::tree::GLOB_MISS`] nor [`super::tree::GLOB_DIR`],
+        /// which exist in the same directory and are one entry away. Without this, [`AGREED`] is
+        /// equally true of a shell that expanded a pattern to everything it could see.
+        pub const EXCLUDED_A_STRANGER: u64 = 1 << 2;
+        /// A pattern that matched nothing was **refused**, rather than printed as itself. zsh's
+        /// answer, and the model's: an empty expansion is an empty grant.
+        pub const NO_MATCH_REFUSED: u64 = 1 << 3;
+        /// A pattern in a leading path component was refused. Selecting directories to walk is an
+        /// authority question, so it is not one a matcher answers (notes/glob.md).
+        pub const PATTERN_IN_PATH_REFUSED: u64 = 1 << 4;
+        /// A line with no pattern in it came out of `echo` **byte for byte**, spacing included.
+        /// Globbing is not allowed to quietly turn `echo` into a word-splitter.
+        pub const TEXT_UNTOUCHED: u64 = 1 << 5;
+        /// Something that should have worked did not, so nothing above proves anything. Always a
+        /// failure.
+        pub const GLOB_FAILED: u64 = 1 << 6;
     }
 
     /// **What the `rm` program reports, and how a diagnostic is told from the verdict**
