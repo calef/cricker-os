@@ -2082,13 +2082,14 @@ mod tests {
     /// targets are designated here too**, which is the part worth reading: a `>` name becomes a
     /// writable [`FileGrant`] and a `<` name a readable one, and both are resolved against the same
     /// `Holdings` an operand would be.
-    fn plan_line(
-        text: &[u8],
-        holds: Holdings,
-    ) -> Result<([Option<Endowment>; line::MAX_STAGES], usize), (usize, Refusal)> {
+    /// What [`plan_line`] answers: the planned stages and how many there are, or the stage index
+    /// that refused and why. Named because the tuple is long enough that clippy is right about it.
+    type Planned = Result<([Option<Endowment>; line::MAX_STAGES], usize), (usize, Refusal)>;
+
+    fn plan_line(text: &[u8], holds: Holdings) -> Planned {
         let l = line::split(text).map_err(|r| (0, r))?;
         let out = match l.output {
-            Some(t) => Some(redirect_target(t, holds, true).map_err(|r| (l.len() - 1, r))?),
+            Some(t) => Some(redirect_target(t, holds, true).map_err(|r| (l.stage_count() - 1, r))?),
             None => None,
         };
         let inp = match l.input {
@@ -2106,7 +2107,7 @@ mod tests {
             };
             plans[i] = Some(plan_streams(&run, holds, streams).map_err(|r| (i, r))?);
         }
-        Ok((plans, l.len()))
+        Ok((plans, l.stage_count()))
     }
 
     /// **The headline, at the level this crate can prove it: `>` and `|` are one field.**
