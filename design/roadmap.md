@@ -3283,6 +3283,35 @@ the file:
 while both siblings are named for what they **serve**, and since all three hold a directory the
 current name distinguishes nothing.
 
+#### Settled 2026-08-01
+
+- **The family noun is `caretaker`.** Settled when Chris chose `wait_for_caretaker` over
+  `await_warden`: a helper cannot be named for a pattern its callees are not. §50's rule is the
+  reason (use the name the literature already has; a synonym asserts novelty where there is none),
+  and `DECISIONS.md` §31 has cited Miller's term correctly since milestone 31 while the code said
+  warden.
+- **The `await_*` helpers become `wait_for_*`.** `await` reads as async/await, which this project
+  rejected at a design fork, and there is no async here. Four of them travel together
+  (`wait_for_service`, `wait_for_caretaker`, `wait_for_compositor`, `wait_for_ready`) plus the
+  `warden_ready` parameter, because three renamed and one not is worse than either consistent state.
+- **`wait_for_caretaker`, not `wait_for_caretaker_ready`.** It waits for the caretaker to be
+  *serving* rather than to exist, and the shorter name does not say so; the doc comment carries that
+  precision. Taken because the whole family shares the ambiguity and resolves it the same way, and
+  parallelism with `wait_for_service` is worth more than the extra word.
+- **`cwarden` becomes `c_confiner`**, out of the caretaker family entirely: it holds a **region** and
+  confines foreign code rather than attenuating a directory capability to a narrower one.
+
+#### Still open, and Chris's
+
+The **qualifiers** for the three: `file_` / `subtree_` / `nameset_` is the proposal, with
+`one_file_caretaker` and `name_caretaker` live alternatives for the first. And whether the C-seam
+siblings (`cshim`, `cseam`) convert in the same pass.
+
+**Scope, which is the part to decide before starting.** There are **532 `warden` tokens** in the
+tree. This is not four filenames: it is helper functions, parameter names, struct fields, doc prose,
+and `DECISIONS.md` sections. Renaming the programs without the rest leaves a tree where the programs
+are caretakers and everything around them says warden, which is worse than either consistent state.
+
 **Program names are Chris's call** (CLAUDE.md). The table above is a proposal.
 
 #### BUGS
