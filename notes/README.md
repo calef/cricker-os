@@ -204,6 +204,15 @@ in the code or the conversation doesn't make sense, it belongs here.
   presents (the `OP_WRITE`/`OP_READLINE`/`OP_BYTES` IPC protocol, the read flags, the shared
   pages, and the honest limits), written down so milestones 29 and 31 implement against a
   contract, not against today's component.
+- [The sink protocol](sink-protocol.md) — milestone 50's protocol lane: the four "write these bytes
+  there" protocols become one, so a terminal, a file and a pipe are substitutable in a capability
+  slot and a program stops being able to tell which it has. Register-only and SEND, both forced
+  rather than chosen (a sink that needs a page mapped at an agreed address is no longer one grant,
+  and a CALL would make every program on the right of a `|` know it was there). The finding
+  underneath: the kernel could not tell **"gone"** from **"never had one"**, both arrived as
+  `NoSuchSlot`, so the only available behaviour was the wrong one for a pipeline. `abi::Error::Gone`
+  is the fix, `SIGPIPE` arrives through std's own `is_ebadf` seam, and the indifference test runs one
+  ELF against two destinations that share nothing but sixteen bytes of message.
 - [The command line as a grant expression](grant-expression.md) — milestone 31: naming a resource
   in a command is how you grant it (Miller's "designation is authorization"), the inversion of
   Unix's ambient authority at the one interface a human touches. The shell's own budget, the

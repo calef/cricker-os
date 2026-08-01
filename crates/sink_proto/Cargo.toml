@@ -1,0 +1,22 @@
+[package]
+name = "sink_proto"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+# The byte-sink contract of milestone 50 (notes/sink-protocol.md): the one framing every
+# "write these bytes there" destination speaks, so a terminal, a file and a pipe become
+# substitutable in one capability slot. Pure logic, host-tested, no_std, dependency-free, so
+# the writers (std's `println!`, a `no_std` program), the sinks, and the kernel-side tests
+# share ONE definition and cannot drift. Same split `fs_proto` makes for the filesystem
+# contract and `clock_proto` for the wall clock.
+
+[dependencies]
+
+# `abi` is a DEV-dependency on purpose. This crate is copied verbatim into the patched std
+# sysroot by `cargo xtask std-src`, where there is no `abi` crate to link, so the runtime code
+# must not name one; [`GONE`] restates the kernel's error number instead. The generator truncates
+# the file at `#[cfg(test)] mod tests`, so the test that pins the two together is compiled here
+# and never travels.
+[dev-dependencies]
+abi = { path = "../abi" }

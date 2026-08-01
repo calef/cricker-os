@@ -113,7 +113,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 47 | IN-PROGRESS | Navigation and naming: cd, pwd, ls, mkdir, rm, paths, and environment | **divergence from Unix must be earned, never stylistic.** Keep the commands; change only what the capability model actually forces, and get one missing primitive right |
 | 48 | NOT-STARTED | Job control: jobs, wait, kill, fg, bg, and a stopped state | **most of it needs no new kernel surface**, and the tty's most tangled feature turns out to be a capability transfer |
 | 49 | NOT-STARTED | Users, login, and attribution: what identity is for once it stops being authority | three of Unix's four uses for a uid are already answered structurally; the fourth, **attribution, has no mechanism at all** |
-| 50 | NOT-STARTED | Pipes and redirection: one sink protocol, and `\|` turns out to be an endpoint | the mechanism already exists (**stdout is a capability in slot 1**); the work is unifying four byte-sink protocols, not adding a parser rule |
+| 50 | PARTIAL | Pipes and redirection: one sink protocol, and `\|` turns out to be an endpoint | the sink contract is **built** (`crates/sink_proto`, notes/sink-protocol.md) and a program is proven indifferent to what its output slot holds; `>`, `<`, `\|` and stdin remain |
 | 51 | PARTIAL | Wall-clock time, the `date` command, and an NTP service | the machine knows what time it is: two RTC drivers, the clock service (§43), `crates/calendar`, `crates/ntp_proto`, `date`, and an NTP client holding **propose and not set**. `date` is **not yet reachable from the shell** |
 | 52 | RECORDED | Subshells without `fork`, and what copying an endowment means | `( ... )` is fork, we deliberately have no fork, and **capability duplication is not a total function** |
 | 53 | NOT-STARTED | The board's own peripherals: network and storage on real silicon | 16a boots the board; this is what makes it able to *do* anything, and it is where virtio stops carrying us |
@@ -2606,6 +2606,31 @@ noting estimates for unbuilt work are guesses on a history-calibrated scale, and
 could be one lane or three depending on which fork wins.
 
 ### 50. Pipes and redirection: one sink protocol, and `|` turns out to be an endpoint
+
+**The protocol lane built 2026-07-31** (`crates/sink_proto`, `user/src/sink.rs`, the std PAL's
+`sys/stdio`, and `abi::Error::Gone`; concept note: notes/sink-protocol.md). One framing for "write
+these bytes there", proven on both ISAs by running one `hellostd` ELF against two destinations that
+share nothing but sixteen bytes of message and comparing the bytes.
+
+Three things came out of it that were not in the plan below.
+
+- **The kernel could not express the thing the plan required.** "Gone" and "never had one" both
+  arrived as `NoSuchSlot`, so no amount of userspace protocol design could have recovered the
+  distinction; the ABI grew a variant. That is the finding, and it is why doing this before `|`
+  existed was right.
+- **`SIGPIPE` needed no new mechanism above the ABI**, because std already splits fatal from
+  swallowed print failures through `is_ebadf`, and the old PAL was defeating it by answering `true`
+  unconditionally.
+- **A sink capability must not double as a terminal-service capability**, which is what stops
+  `lineedit` from simply serving the contract on the endpoint it already has: that endpoint also
+  carries `OP_READLINE`, so handing it to a child as its output slot would grant the child the
+  terminal's *input*. The terminal's sink is therefore a separate endpoint served by an adapter,
+  which is the shape `user/src/sink.rs`'s file role proves against a real backend. Converting
+  `lineedit` and the console server is left with the shell work, because their clients are the
+  shell and `sysinit`.
+
+Still open here: `>`, `<`, `|`, stdin, and buffering. The paragraphs below are the design as it
+stood before the lane; where they differ from the note, the note is what was built.
 
 **In brief.** The shell has no `|`, `>`, or `<`, and a shell without them is not a shell. The
 surprise on investigating is that **the mechanism is already built** and the missing piece is

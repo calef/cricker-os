@@ -215,6 +215,7 @@ dependencies = [
  "paging",
  "pci",
  "regions",
+ "sink_proto",
  "slots",
  "spin",
  "tock-registers",
@@ -271,6 +272,13 @@ dependencies = [
 [[package]]
 name = "regions"
 version = "0.1.0"
+
+[[package]]
+name = "sink_proto"
+version = "0.1.0"
+dependencies = [
+ "abi",
+]
 
 [[package]]
 name = "slots"
@@ -379,6 +387,7 @@ dependencies = [
  "glob",
  "lineedit",
  "ntp_proto",
+ "sink_proto",
  "smoltcp",
  "user_rt",
  "vt",
