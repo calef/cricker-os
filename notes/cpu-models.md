@@ -40,16 +40,27 @@ value silently ignored.
 
 ## The result: the suite passes on all five models
 
-2026-08-01, QEMU 11.0.2, macOS on Apple Silicon, load average 3.3. **211 kernel tests, 211 passed,
-on every model.** Each row was produced by exactly the command shown.
+2026-08-01, QEMU 11.0.2 (the pin in `.qemu-version`), macOS on Apple Silicon, load average 4.5
+falling to 2.9 across the run, about four minutes for all five. **211 kernel tests, 211 passed, on
+every model.** Each row was produced by exactly the command shown.
 
 | model | `script/test --arch riscv64 --cpu <model>` | `riscv,isa` the machine advertises |
 |---|---|---|
-| `rv64` | 211 passed | `rv64imafdch_...` (46 extensions, incl. `svadu`, `sstc`, `zba`/`zbb`/`zbc`/`zbs`, `h`) |
+| `rv64` | 211 passed | `rv64imafdch_...` (42 named extensions after the base, incl. `svadu`, `sstc`, `zba`/`zbb`/`zbc`/`zbs`, and `h`) |
 | `sifive-u54` | 211 passed | `rv64imafdc_zicntr_zicsr_zifencei_zihpm_sdtrig` |
 | `rva22s64` | 211 passed | `rv64imafdcb_...` (RVA22 S profile, `svade`, `svinval`, `svpbmt`) |
 | `rva23s64` | 211 passed | `rv64imafdcbvh_...` (RVA23 S profile, vector, `zicond`, pointer masking) |
 | `thead-c906` | 211 passed | `rv64imafdc_..._xtheadba_xtheadbb_xtheadbs_xtheadcmo_...` |
+
+The `riscv,isa` column is QEMU's own, and reproducible without booting anything:
+
+```
+$ qemu-system-riscv64 -machine virt,dumpdtb=u54.dtb -cpu sifive-u54 -bios none -display none
+$ strings u54.dtb | grep '^rv64i.'
+rv64imafdc_zicntr_zicsr_zifencei_zihpm_sdtrig
+$ strings u54.dtb | grep 'riscv,sv'
+riscv,sv39
+```
 
 So the reassuring thing the roadmap predicted is true, and now it is measured rather than argued:
 **we are already portable to the board's ISA.** `sifive-u54` advertises RV64GC and nothing else, and
@@ -157,6 +168,35 @@ through SBI, so it works on both.
 - **Five models is a sample, not a proof.** `qemu-system-riscv64 -cpu help` lists 26. The five here
   were picked for a reason (see the comment block in `script/cpu-matrix`), and a sixth that broke
   something would be a better result than these five passing.
+
+- **The matrix inherits the suite's load sensitivity, and multiplies its exposure by five.** Several
+  kernel tests assert against wall clock: `a_thread_that_never_yields_is_preempted_anyway` gives the
+  polite thread one second, `the_handler_keeps_up_when_no_lock_is_held` counts missed ticks,
+  `a_finished_thread_is_reaped_and_its_memory_returned` waits on the reaper. A busy host fails them.
+
+  Two runs in this milestone did exactly that, and both were worth chasing rather than shrugging at,
+  because the whole point of the matrix is that a model-specific failure is real news. **Neither was
+  model-specific**, and the evidence is worth keeping:
+
+  - `rva23s64` failed the preemption test at load average 4.0. Re-run quiet, it passed four times out
+    of four.
+  - `rva22s64` failed the reaper test during a Time Machine backup (load average 7.5 with the CPU 92%
+    idle, which is the tell: `backupd` was in uninterruptible I/O wait, so the load average was
+    measuring disk, not CPU). Re-run once the backup finished, the whole matrix went green.
+  - Under eight spinning processes on an eight-core host, **`rv64` failed too**, at
+    `arch/riscv64/timer.rs`'s missed-tick assertion, and `rva23s64` failed at two other wall-clock
+    assertions (`smp.rs:258`, `sched.rs:2611`).
+
+  **The control failing is what settles it**: `rv64` is the model every RISC-V result in this tree
+  was taken on, so if it fails under load then load is the variable. Across the milestone, 28
+  riscv64 legs on an unloaded host produced 2 failures, both while something else was using the
+  machine; 4 legs under deliberately induced load produced 3, including the control.
+
+  So CLAUDE.md's rule applies here with force. **Load causes false failures, not false passes**, so a
+  green matrix under load is conclusive and a red one is not. Before you diagnose a model, re-run it
+  quiet, and check `top` rather than only the load average. The CI job is five sequential QEMU runs
+  where `test` does one, so it is five times the existing exposure to a noisy runner rather than a
+  new kind of risk. If it flakes there, the fix is those tests' timing budgets, not dropping a model.
 
 ## Where it sits in CI
 
