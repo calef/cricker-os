@@ -233,6 +233,26 @@ whose whole subject is user threads has never been checked for leaving any behin
 never-exiting spinners accumulated in it unnoticed until one of them starved
 `reclaim_frees_a_started_then_exited_childs_regions` off a four-hart machine.
 
+**Measured, not estimated.** Moving the probe to run last (rename the module so it sorts after
+`tests`) and having it report rather than assert gives, on the merged tree:
+
+```
+[PROBE] leaked runnable = 2, table = 87     # aarch64
+[PROBE] leaked runnable = 2, table = 87     # riscv64
+```
+
+Identical on both legs. The two are `untyped_demo` (pc deep inside `hello`) and `spinner` (pc at its
+entry, a tight loop), exactly the two named below. The other 85 threads in the table are **Blocked**,
+which is the healthy steady state: they are the long-lived userspace servers earlier tests started,
+waiting on endpoints. A thread dump full of Blocked user threads is not a leak, and reading it as one
+sends the investigation to the wrong place.
+
+Worth stating plainly, because the direction is counter-intuitive: **de-gating the module did not make
+this worse in aggregate.** aarch64 carried **four** of these before (`spinner`, `untyped_demo`,
+`printing_client`, `self_check_client`); making the two one-shot roles `exit()` cut it to two. RISC-V
+went from zero to two, because the module did not run there at all. So RISC-V now sits in exactly the
+condition aarch64 has been in for many milestones, rather than a worse one, and aarch64 improved.
+
 Two of the four were one-shot roles with nothing left to do and now `exit()`. The other two cannot,
 and that is the obstacle:
 
@@ -248,6 +268,41 @@ thread it started. Making the module policeable therefore means giving the kerne
 bare user thread by `Tid`, which is a kernel change with its own design questions, not a test
 reordering. Recorded here rather than done under a test lane. Reordering the runner *without* that
 change would simply turn a silent gap into a permanently red gate.
+
+**What the change would be, precisely, so it can be scoped without rediscovering it.** The mechanism
+already exists and is proven: `reap_region_objects` sets `t.killed = true` on every live thread in a
+region and the scheduler converts a killed thread to a corpse at its next preemption (DECISIONS §16's
+armed kill, the tier §24's `^C` escalation stands on). What is missing is only the ability to name
+**one thread** instead of a region.
+
+1. `sched::kill_thread(tid: Tid)`, test-support, roughly ten lines: take `SCHED`, resolve `tid`, set
+   `killed = true`. No new syscall and no change to the user-visible surface (rule 3 is about the
+   syscall boundary; this is an in-kernel function for in-kernel tests).
+2. The two tests above kill their subject after asserting, and wait for `thread_present` to go false.
+3. `no_leaked_threads` then moves to run last, and polices the module for the first time.
+
+**The risk that makes it its own piece of work rather than a footnote:** killing `untyped_demo` frees
+its frames, so every later free-frame baseline in the suite may shift. That is precisely the class of
+change that needs a full run on both ISAs to believe, and it is why it does not belong bolted onto a
+test-portability lane.
+
+### The suite's deadline tests are host-load sensitive, on `main`, today
+
+Worth recording separately because it was nearly misattributed. `kernel::smp::tests` uses a ten-second
+wall-clock `wait_for` and asserts that work placed on a core actually ran there. Under host
+contention (several QEMU instances competing for eight cores, which is the normal condition when
+concurrent lanes are running), the guest's vCPU threads are starved and the assertion fails:
+
+```
+run 4: FAIL secondary cores did not run scheduled work in time
+TOTAL main: pass=5 fail=1
+```
+
+That is **unmodified `main`**, six runs under synthetic load. The same tests pass reliably on a quiet
+machine. So a failure in `kernel::smp::tests` is evidence about the host before it is evidence about
+the diff, and the control worth running first is *the same load against `main`*. These tests run
+before `kernel::user::*`, so nothing that module leaks can reach them; the ordering alone rules out
+the tempting explanation.
 
 ### B (original scope). In-kernel test suite on RISC-V — M, low-medium risk. Highest value per effort.
 
