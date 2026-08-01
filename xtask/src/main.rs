@@ -1221,6 +1221,12 @@ fn initrd_riscv() -> bool {
         // The entropy service (milestone 56). Portable, so both archives carry it: it holds the
         // virtio-rng driver, and the wiring tells it which bus the device came off.
         ("entropy", "entropy"),
+        // The credential service and its clients (milestone 56, the credential half). Portable, so
+        // both archives carry both: the claim is that holding the verify endpoint does not let you
+        // read or write the store, and that has to hold on either instruction set or it is not a
+        // claim.
+        ("credential", "credential"),
+        ("credcli", "credcli"),
         // The NTP client (milestone 51), with its test server and its clock-page probe as roles of
         // the same binary. Portable, so both archives carry it and both ISAs run the same tests.
         ("ntp", "ntp"),
@@ -1455,6 +1461,10 @@ fn mkinitrd() -> bool {
         // names a pattern matched. Portable, so both archives carry it.
         "swarden",
         "entropy",
+        // The credential service and its clients (milestone 56, the credential half). Portable, so
+        // both archives carry both.
+        "credential",
+        "credcli",
         "ntp",
         // The outlaw (milestone 19's user-test port): the privilege-boundary programs
         // kernel::user::tests used to hand-assemble. Portable, so both archives carry it.
