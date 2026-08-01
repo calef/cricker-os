@@ -58,10 +58,12 @@
 
 pub mod expand;
 pub mod jobframe;
+pub mod line;
 pub mod nav;
 pub mod spawnproto;
 
 use expand::{Expansion, Name, NameSet};
+use line::{Sink, Source};
 
 /// A program the shell can spawn. The set is small and closed in phase 1; each variant carries a
 /// static [`Manifest`] and a stable wire id for [`spawnproto`].
@@ -102,13 +104,27 @@ pub enum Prog {
     /// the subtree at risk before anything happens and a bug in the recursion can only reach what it
     /// was handed. See [`DirSpec`].
     Rm,
+    /// **Count what arrives on its input** (milestone 50, `user/src/wc.rs`): lines, words and
+    /// bytes, printed as one line of text.
+    ///
+    /// The first program that declares [`InputSpec::Required`], and the reason that spec exists.
+    /// `wc` with nothing feeding it would block on a receive forever, and the shell can see that at
+    /// the prompt: the manifest says it reads a stream, so a line that gives it none is
+    /// [`Refusal::InputRequired`] before anything is spawned. Unix cannot make that check, because
+    /// there fd 0 always exists and "nobody is ever going to write to it" is not a property of the
+    /// command line.
+    ///
+    /// Its output is [`OutputSpec::Bytes`] because it has to be: `wc`'s answer is text, so `echo a
+    /// | wc | wc` composes, and a program that reported a number in a register could not be on the
+    /// left of a pipe at all.
+    Wc,
 }
 
 /// The number of programs [`Prog::id`] can name, which is the size of the table init indexes with
 /// it. Init's array is `[Option<&Elf>; COUNT]`, so adding a variant without widening the array is
 /// an out-of-bounds panic in init rather than a compile error; the constant is here so both inits
 /// can be written against one number.
-pub const PROG_COUNT: usize = 6;
+pub const PROG_COUNT: usize = 7;
 
 impl Prog {
     /// Resolve a program by the name typed on the command line.
@@ -126,6 +142,7 @@ impl Prog {
             // line reachable: a builtin would have shadowed it, because `parse` matches those
             // first.
             b"rm" => Some(Prog::Rm),
+            b"wc" => Some(Prog::Wc),
             _ => None,
         }
     }
@@ -139,6 +156,7 @@ impl Prog {
             Prog::Spinner => "spinner",
             Prog::Date => "date",
             Prog::Rm => "rm",
+            Prog::Wc => "wc",
         }
     }
 
@@ -151,6 +169,7 @@ impl Prog {
             Prog::Spinner => 3,
             Prog::Date => 4,
             Prog::Rm => 5,
+            Prog::Wc => 6,
         }
     }
 
@@ -163,6 +182,7 @@ impl Prog {
             3 => Some(Prog::Spinner),
             4 => Some(Prog::Date),
             5 => Some(Prog::Rm),
+            6 => Some(Prog::Wc),
             _ => None,
         }
     }
@@ -176,6 +196,11 @@ impl Prog {
                 file: FileSpec::Forbidden,
                 dir: DirSpec::Forbidden,
                 flags: NO_FLAGS,
+                // A worker answers with a number in a register, which is older than the sink
+                // contract and still the right shape for one integer. It is also why `worker 9 >
+                // out.txt` is refused: there are no bytes to put in the file.
+                output: OutputSpec::Words,
+                input: InputSpec::Forbidden,
                 reports: true,
                 // A worker finishes in one step; there is no long computation to interrupt, so it
                 // is granted no interrupt channel. The shell waits for its result and no ^C tier
@@ -191,6 +216,9 @@ impl Prog {
                 file: FileSpec::Forbidden,
                 dir: DirSpec::Forbidden,
                 flags: NO_FLAGS,
+                // The page count it managed to map, in a register. Same reason as worker's.
+                output: OutputSpec::Words,
+                input: InputSpec::Forbidden,
                 reports: true,
                 interruptible: false,
             },
@@ -204,6 +232,11 @@ impl Prog {
                 file: FileSpec::Forbidden,
                 dir: DirSpec::Forbidden,
                 flags: NO_FLAGS,
+                // It reports through the shared job frame and holds no output capability at all,
+                // which is a third thing a slot can be and the reason `OutputSpec` has three
+                // variants: `Silent` is not "bytes nobody reads", it is no slot.
+                output: OutputSpec::Silent,
+                input: InputSpec::Forbidden,
                 reports: false,
                 interruptible: true,
             },
@@ -213,6 +246,8 @@ impl Prog {
                 file: FileSpec::Forbidden,
                 dir: DirSpec::Forbidden,
                 flags: NO_FLAGS,
+                output: OutputSpec::Silent,
+                input: InputSpec::Forbidden,
                 reports: false,
                 interruptible: true,
             },
@@ -234,6 +269,13 @@ impl Prog {
                 file: FileSpec::Forbidden,
                 dir: DirSpec::Forbidden,
                 flags: NO_FLAGS,
+                // **`date` was speaking the sink contract before the contract existed**, because
+                // its hand-rolled framing is bit for bit a `BYTES` message (notes/sink-protocol.md
+                // on why `OP_BYTES` is zero). So it is the first program that can be piped, and it
+                // needed one change to be one: an end-of-stream message, without which a reader
+                // waits forever on a producer that has already exited.
+                output: OutputSpec::Bytes,
+                input: InputSpec::Forbidden,
                 reports: true,
                 interruptible: false,
             },
@@ -254,11 +296,66 @@ impl Prog {
                 },
                 // In `rmopt`'s bit order, which is what that module pins.
                 flags: b"rfv",
+                // `-v` prints names, and it prints them the way `date` prints a time. Piping `rm
+                // -rv logs | wc` is therefore expressible; whether it is a good idea is the user's
+                // business and not the manifest's.
+                output: OutputSpec::Bytes,
+                input: InputSpec::Forbidden,
+                reports: true,
+                interruptible: false,
+            },
+            // **The consumer**, and the only program that declares an input. Everything else about
+            // it is empty: no argument, no memory, no file, no directory, no options. What it does
+            // is entirely decided by what is in its input slot, which is the point of having it.
+            Prog::Wc => Manifest {
+                arg: ArgSpec::Forbidden,
+                mem: MemSpec::Forbidden,
+                file: FileSpec::Forbidden,
+                dir: DirSpec::Forbidden,
+                flags: NO_FLAGS,
+                output: OutputSpec::Bytes,
+                input: InputSpec::Required,
                 reports: true,
                 interruptible: false,
             },
         }
     }
+}
+
+/// **What a program's output slot carries.** Declared per program because this system has two
+/// conventions for "a program said something" and they are not interchangeable; see
+/// [`Manifest::output`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum OutputSpec {
+    /// Nothing. The program holds no output capability (the interrupt demonstrators report through
+    /// a shared frame). Redirecting it is [`Refusal::NotAByteStream`], and so is piping it, because
+    /// there is no slot to substitute.
+    Silent,
+    /// One or more raw `u64` answers on the result endpoint, read by the shell and rendered by it.
+    /// Older than the sink contract and still right for an integer; not redirectable.
+    Words,
+    /// The sink contract (`crates/sink_proto`): self-framing byte messages ending in `OP_EOF`. The
+    /// only output that `>` and `|` can substitute, because it is the only one whose meaning does
+    /// not depend on who is reading it.
+    Bytes,
+}
+
+/// **Whether a program reads an input stream**, milestone 50's `<` and the right-hand end of `|`.
+///
+/// The asymmetry with [`OutputSpec`] is deliberate and it is a fact about the two directions.
+/// Output has three shapes because the system grew two of them before the sink contract existed.
+/// Input has one shape, because nothing read a stream at all until this milestone: the source
+/// contract is the sink contract received rather than sent, and there was never a chance for a
+/// second convention to establish itself.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum InputSpec {
+    /// The program reads nothing. Giving it an input is [`Refusal::InputForbidden`] rather than a
+    /// capability it would never receive on, because a slot nobody reads is authority that moved
+    /// for no reason.
+    Forbidden,
+    /// The program reads an input stream and cannot do anything without one. A line that gives it
+    /// none is [`Refusal::InputRequired`] **at the prompt**, which is a check Unix cannot make.
+    Required,
 }
 
 /// A program that takes no short options. Spelled once so a manifest reads as a declaration rather
@@ -371,6 +468,20 @@ pub struct Manifest {
     /// program; what makes one matter here is that `subtree_flag` lets one *widen a grant*, and
     /// that widening is checked and printed before anything is spawned.
     pub flags: &'static [u8],
+    /// **What this program's output slot carries** (milestone 50). A slot is a capability, but what
+    /// travels over it is a convention, and `>` and `|` only make sense for one of them: a program
+    /// that answers with a number in a register cannot have a file put behind it, because a file
+    /// sink would receive a word it has no way to read as bytes.
+    ///
+    /// Declaring it is what lets `worker 5 > out.txt` be [`Refusal::NotAByteStream`] at the prompt
+    /// instead of a file full of nothing. Unix has no equivalent because on Unix every program's
+    /// stdout is bytes by construction; here the register fastpath is real and older than the sink
+    /// contract, so the two conventions coexist and the manifest is where they are told apart.
+    pub output: OutputSpec,
+    /// **Whether this program reads an input stream** (milestone 50). See [`InputSpec`]: a program
+    /// that declares [`InputSpec::Required`] and is given nothing would block forever on a receive,
+    /// and that is a mistake the shell can catch at the prompt.
+    pub input: InputSpec,
     /// Endowed with the shared result endpoint (so it can report back). Every phase-1 program
     /// reports; the field exists so a program that does not can drop the channel it never uses.
     pub reports: bool,
@@ -506,6 +617,13 @@ pub struct Endowment {
     /// here has to know what any option means; the program and the manifest agree on the order, and
     /// a host test pins them (`capsh::rmopt`).
     pub flags: u64,
+    /// **What goes in the child's output slot** (milestone 50): the shell's own result endpoint,
+    /// the pipe to the next stage, or a file sink. Reading this line is reading everything `>` and
+    /// `|` did, and it is one field because they are one mechanism.
+    pub sink: line::Sink,
+    /// **What goes in the child's input slot**: nothing, the pipe from the previous stage, or a
+    /// file streamed out over the same contract. [`sink`](Endowment::sink)'s mirror.
+    pub source: line::Source,
     /// Grant the shared result endpoint.
     pub reports: bool,
     /// Wire the two-tier `^C` path for this job (mirrors the manifest). When true the shell mints
@@ -688,6 +806,47 @@ pub enum Refusal {
     /// A pattern matched more than one name at a program that is granted exactly one **file**. The
     /// count is the designation, so this is a fact about the line rather than a policy.
     AmbiguousFile,
+    // ---- milestone 50's operators. Every one of these is decided before anything is spawned,
+    // which matters more here than elsewhere: a pipeline that half-starts leaves a process blocked
+    // on a channel nobody will ever write to.
+    /// **`>` or `<` with nothing after it.** A redirection is a designation, and there is nothing
+    /// designated.
+    NoRedirectTarget,
+    /// **One stage, two destinations** (`date > a > b`), or two inputs. Neither "the last wins" nor
+    /// "the first wins" is a rule anybody should have to remember.
+    RedirectRepeated,
+    /// **A redirection somewhere a pipeline already answers the question.** `a > f | b` says where
+    /// `a`'s bytes go and then pipes them somewhere else. Refused rather than resolved by
+    /// precedence.
+    RedirectMidPipeline,
+    /// **A word after a redirection's name** (`< f wc`). The spelling this shell takes is `wc < f`.
+    /// See notes/pipes.md: refusing the other order is what keeps a stage's text a slice of the
+    /// line in a shell with no allocator.
+    WordAfterRedirect,
+    /// **A pipeline stage with no command in it** (`| wc`, `a |`, `a || b`).
+    EmptyStage,
+    /// **More stages than one line may carry** ([`line::MAX_STAGES`]). A ceiling on processes and
+    /// endpoints, not on a buffer.
+    TooManyStages,
+    /// **A pattern where a redirection's name goes.** A redirection designates one destination and
+    /// a pattern designates a set, so even a pattern that matched exactly one name would make what
+    /// the line writes to depend on what is in the directory.
+    PatternInRedirect,
+    /// **This program's output is not a byte stream**, so there is nothing for `>` or `|` to
+    /// substitute. See [`OutputSpec`]: `worker 9` answers with a number in a register, and a file
+    /// sink handed that word would write nothing legible into the file.
+    NotAByteStream,
+    /// **This program reads no input**, and the line gave it one. Authority that moved for no
+    /// reason, refused for the same reason an unplaceable token is.
+    InputForbidden,
+    /// **This program reads an input stream and the line gave it none.** `wc` on its own would
+    /// block on a receive forever; the manifest says so, so the prompt can. **The refusal Unix
+    /// cannot produce**, because there fd 0 always exists.
+    InputRequired,
+    /// **A builtin in a pipeline stage that the shell cannot supply.** `cd | wc` is the shape: a
+    /// builtin rebinds what the shell holds and produces no stream. The producing builtins (`echo`,
+    /// `ls`, `pwd`) are not this, because the shell writes their bytes into the pipe itself.
+    NotAPipelineStage,
     /// A token no slot in the manifest can hold, and that no other refusal reads truer for: a
     /// second integer at a program that takes one, a flag that is not `--mem`, a name past the one
     /// file a program is granted. Refused rather than ignored, so authority the user thought they
@@ -753,6 +912,35 @@ impl Refusal {
             Refusal::ArgForbidden => "takes no argument",
             Refusal::Unexpected => {
                 "unexpected argument (this shell will not grant what it cannot place)"
+            }
+            // The operators' refusals. Each says what the line designates rather than what was
+            // denied, in the same voice as the grant refusals above: nothing here consults a
+            // permission, and a pipeline that could not be built is a line that did not name one.
+            Refusal::NoRedirectTarget => "a redirection names a file; this one names nothing",
+            Refusal::RedirectRepeated => {
+                "one output and one input to a stage: this line names two of one of them"
+            }
+            Refusal::RedirectMidPipeline => {
+                "the pipeline already says where that goes: only the first stage takes input and \
+                 only the last is redirected"
+            }
+            Refusal::WordAfterRedirect => {
+                "the redirection goes last: write 'wc < report.txt', not '< report.txt wc'"
+            }
+            Refusal::EmptyStage => "a pipeline stage with no command in it",
+            Refusal::TooManyStages => "that is more stages than one line carries (at most 4)",
+            Refusal::PatternInRedirect => {
+                "a redirection names one file, and a pattern designates a set"
+            }
+            Refusal::NotAByteStream => {
+                "does not write a byte stream, so there is nothing for > or | to redirect"
+            }
+            Refusal::InputForbidden => "reads no input; there is no slot for those bytes to go in",
+            Refusal::InputRequired => {
+                "reads an input stream: give it one with '< name' or a pipe, or it waits forever"
+            }
+            Refusal::NotAPipelineStage => {
+                "is a builtin that produces no stream, so it cannot be a stage of a pipeline"
             }
         }
     }
@@ -905,8 +1093,35 @@ pub fn parse_run(line: &[u8]) -> RunSpec<'_> {
 /// [`Expansion::none`] is the answer for a line with no pattern on it, which is every line the shell
 /// could plan before milestone 47's globbing lane.
 pub fn plan(run: &RunSpec<'_>, holds: Holdings, expanded: Expansion) -> Result<Endowment, Refusal> {
+    plan_stage(run, holds, expanded, Streams::default())
+}
+
+/// **What the operators decided for this stage**: which capability its output slot gets and which
+/// its input slot gets. [`line::split`] and the shell between them produce it; [`plan_stage`] checks
+/// it against the program's manifest.
+///
+/// It is a pair rather than two arguments because the two are one question asked in two directions,
+/// and because a stage in the middle of a pipeline has both.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Streams {
+    pub sink: Sink,
+    pub source: Source,
+}
+
+/// [`plan`], with the operators' answer folded in.
+///
+/// The stream check comes **after** the grant check and not before, deliberately. A line can be
+/// wrong about both (`worker > out.txt` names no integer *and* has no bytes to write), and the
+/// grant refusal is the one that reads truer: what a program is endowed is a bigger fact about the
+/// line than where its output was going to go.
+pub fn plan_stage(
+    run: &RunSpec<'_>,
+    holds: Holdings,
+    expanded: Expansion,
+    streams: Streams,
+) -> Result<Endowment, Refusal> {
     let prog = Prog::from_name(run.prog).ok_or(Refusal::NoSuchProgram)?;
-    plan_against(run, prog, prog.manifest(), holds, expanded)
+    plan_against_with(run, prog, prog.manifest(), holds, expanded, streams)
 }
 
 /// [`plan`]'s second half, against an **explicit** manifest rather than the static table.
@@ -941,6 +1156,19 @@ pub fn plan_against(
     m: Manifest,
     holds: Holdings,
     expanded: Expansion,
+) -> Result<Endowment, Refusal> {
+    plan_against_with(run, prog, m, holds, expanded, Streams::default())
+}
+
+/// [`plan_against`], with the operators' answer. The one that does the work; the other two are the
+/// spellings without a pipeline on the line.
+pub fn plan_against_with(
+    run: &RunSpec<'_>,
+    prog: Prog,
+    m: Manifest,
+    holds: Holdings,
+    expanded: Expansion,
+    streams: Streams,
 ) -> Result<Endowment, Refusal> {
     // A flag nothing knows, or a token past what any manifest could hold. Nothing about this
     // program's declaration can rescue it, so it is answered before the slots are filled.
@@ -1062,6 +1290,8 @@ pub fn plan_against(
         }
     };
 
+    check_streams(m, streams)?;
+
     Ok(Endowment {
         prog,
         arg,
@@ -1069,9 +1299,61 @@ pub fn plan_against(
         file,
         dir,
         flags,
+        sink: streams.sink,
+        source: streams.source,
         reports: m.reports,
         interruptible: m.interruptible,
     })
+}
+
+/// **Resolve a redirection's name into the grant that backs it** (milestone 50).
+///
+/// `> report.txt` and `< report.txt` designate a file the same way an operand does: the leading
+/// path is walked against where the shell stands **now**, once, and the result is a value. So this
+/// is [`designate`] with the pattern case taken out, because [`line::split`] has already refused a
+/// pattern here.
+///
+/// `writable` comes from the operator rather than from a manifest, and that is the one place this
+/// shell reads a direction off the line. It is not the exception it looks like: the program is not
+/// being granted a file at all. It is being handed a **sink**, which appends and can do nothing
+/// else, and the direction is a property of which end of the pipe the shell is building.
+pub fn redirect_target(
+    token: &[u8],
+    holds: Holdings,
+    writable: bool,
+) -> Result<FileGrant, Refusal> {
+    if !holds.dir {
+        return Err(Refusal::NoSuchCapability(CapKind::File));
+    }
+    let (dir, names) = designate(token, 0, holds.cwd, Expansion::none())?;
+    let name = names.only().ok_or(Refusal::FileNotNameable)?;
+    Ok(FileGrant {
+        dir,
+        name: Name::new(name).ok_or(Refusal::FileNotNameable)?,
+        writable,
+    })
+}
+
+/// **Whether this program can be wired the way the line asks**, which is the whole of the operators'
+/// manifest check.
+///
+/// Two questions, and they are not symmetric because the two directions are not. **Output**: has
+/// this program got bytes to redirect at all? A `Words` program answers with a number in a register
+/// and a `Silent` one holds no output capability, so in both cases there is nothing for `>` or `|`
+/// to substitute and the honest answer is that the line asked for something that does not exist.
+/// **Input**: a program that reads a stream and is handed none blocks forever, and a program that
+/// reads nothing and is handed one has been given authority for no reason. Both are refusals, and
+/// the first one is the one Unix cannot make.
+fn check_streams(m: Manifest, streams: Streams) -> Result<(), Refusal> {
+    if !matches!(streams.sink, Sink::Report) && !matches!(m.output, OutputSpec::Bytes) {
+        return Err(Refusal::NotAByteStream);
+    }
+    match (m.input, streams.source) {
+        (InputSpec::Required, Source::None) => Err(Refusal::InputRequired),
+        (InputSpec::Forbidden, Source::None) => Ok(()),
+        (InputSpec::Forbidden, _) => Err(Refusal::InputForbidden),
+        (InputSpec::Required, _) => Ok(()),
+    }
 }
 
 /// **What one operand token designates**: the directory its leading path landed in, and the set of
@@ -1554,6 +1836,8 @@ mod tests {
         file: FileSpec::Required { writable: false },
         dir: DirSpec::Forbidden,
         flags: NO_FLAGS,
+        output: OutputSpec::Words,
+        input: InputSpec::Forbidden,
         reports: true,
         interruptible: false,
     };
@@ -1574,6 +1858,8 @@ mod tests {
         file: FileSpec::Required { writable: true },
         dir: DirSpec::Forbidden,
         flags: NO_FLAGS,
+        output: OutputSpec::Words,
+        input: InputSpec::Forbidden,
         reports: true,
         interruptible: false,
     };
@@ -1766,9 +2052,236 @@ mod tests {
                 .message()
                 .contains("no such capability")
         );
-        // And it is reached only through a manifest that declares a file. `wc` is not a program the
-        // static table knows, so the same line through `plan` stops at the name.
-        assert_eq!(plan(&r, WITH_DIR), Err(Refusal::NoSuchProgram));
+        // And it is reached only through a manifest that declares a file. Nothing in the static
+        // table declares one, so the same *line* is refused for its name before a file is ever
+        // considered. (`wc` used to be the name this line typed, and milestone 50 shipped a `wc`,
+        // which is why it is spelled with a name nothing will ever claim.)
+        let Command::Run(named) = parse(b"nosuchprog report.txt") else {
+            panic!()
+        };
+        assert_eq!(plan(&named, WITH_DIR), Err(Refusal::NoSuchProgram));
+    }
+
+    // ---- milestone 50: the operators, checked against the manifests that ship ----
+
+    /// Plan one stage of a line with the operators' answer folded in. The shim the operator tests
+    /// use, for the reason the other two shims exist: the lines below should read like command
+    /// lines and not like plumbing.
+    fn plan_streams(
+        run: &RunSpec<'_>,
+        holds: Holdings,
+        streams: Streams,
+    ) -> Result<Endowment, Refusal> {
+        super::plan_stage(run, holds, Expansion::none(), streams)
+    }
+
+    /// Parse a whole line and plan every stage of it, which is what the shell does. Returns the
+    /// endowments in order, or the first refusal with the stage it came from.
+    ///
+    /// It exists so the tests below can be written as the lines a person types. **The redirection
+    /// targets are designated here too**, which is the part worth reading: a `>` name becomes a
+    /// writable [`FileGrant`] and a `<` name a readable one, and both are resolved against the same
+    /// `Holdings` an operand would be.
+    fn plan_line(
+        text: &[u8],
+        holds: Holdings,
+    ) -> Result<([Option<Endowment>; line::MAX_STAGES], usize), (usize, Refusal)> {
+        let l = line::split(text).map_err(|r| (0, r))?;
+        let out = match l.output {
+            Some(t) => Some(redirect_target(t, holds, true).map_err(|r| (l.len() - 1, r))?),
+            None => None,
+        };
+        let inp = match l.input {
+            Some(t) => Some(redirect_target(t, holds, false).map_err(|r| (0, r))?),
+            None => None,
+        };
+        let mut plans: [Option<Endowment>; line::MAX_STAGES] = [None; line::MAX_STAGES];
+        for (i, stage) in l.stages().iter().enumerate() {
+            let Command::Run(run) = parse(stage) else {
+                return Err((i, Refusal::NotAPipelineStage));
+            };
+            let streams = Streams {
+                sink: l.sink_for(i, out),
+                source: l.source_for(i, inp),
+            };
+            plans[i] = Some(plan_streams(&run, holds, streams).map_err(|r| (i, r))?);
+        }
+        Ok((plans, l.len()))
+    }
+
+    /// **The headline, at the level this crate can prove it: `>` and `|` are one field.**
+    ///
+    /// The same `date`, planned three ways, differs in exactly one thing. Nothing about the
+    /// program's own endowment (its argument, its memory, its files, its options) moves, because
+    /// redirection is not a grant to the program at all: it is a different capability in a slot
+    /// that was always going to hold one.
+    #[test]
+    fn redirecting_and_piping_change_one_field_and_nothing_else() {
+        let (plain, _) = plan_line(b"date", WITH_DIR).unwrap();
+        let (piped, n) = plan_line(b"date | wc", WITH_DIR).unwrap();
+        let (filed, _) = plan_line(b"date > report.txt", WITH_DIR).unwrap();
+        assert_eq!(n, 2);
+        let (a, b, c) = (plain[0].unwrap(), piped[0].unwrap(), filed[0].unwrap());
+        assert_eq!(a.sink, line::Sink::Report);
+        assert_eq!(b.sink, line::Sink::Pipe);
+        assert!(matches!(c.sink, line::Sink::File(g) if g.name.as_bytes() == b"report.txt"));
+        // And everything else is identical, which is the claim. Compared field by field rather than
+        // by clearing `sink` and comparing wholes, so a field added later has to be thought about.
+        for other in [b, c] {
+            assert_eq!(a.prog, other.prog);
+            assert_eq!(a.arg, other.arg);
+            assert_eq!(a.mem_pages, other.mem_pages);
+            assert_eq!(a.file, other.file);
+            assert_eq!(a.dir, other.dir);
+            assert_eq!(a.flags, other.flags);
+            assert_eq!(a.source, other.source);
+            assert_eq!(a.reports, other.reports);
+            assert_eq!(a.interruptible, other.interruptible);
+        }
+    }
+
+    /// The joints of a pipeline are pipes, its head reads and its tail writes. Three stages, so the
+    /// middle one is a real middle and not an end wearing a disguise.
+    #[test]
+    fn a_pipeline_wires_its_joints_and_only_its_ends_touch_a_file() {
+        let (p, n) = plan_line(b"date | wc | wc > out.txt", WITH_DIR).unwrap();
+        assert_eq!(n, 3);
+        assert_eq!(p[0].unwrap().source, line::Source::None);
+        assert_eq!(p[0].unwrap().sink, line::Sink::Pipe);
+        assert_eq!(p[1].unwrap().source, line::Source::Pipe);
+        assert_eq!(p[1].unwrap().sink, line::Sink::Pipe);
+        assert_eq!(p[2].unwrap().source, line::Source::Pipe);
+        assert!(
+            matches!(p[2].unwrap().sink, line::Sink::File(g) if g.name.as_bytes() == b"out.txt")
+        );
+    }
+
+    /// **The refusal Unix cannot produce.** `wc` declares that it reads a stream, so a `wc` with
+    /// nothing feeding it is caught at the prompt rather than becoming a process blocked on a
+    /// receive that will never complete. On Unix the same command is a shell that appears to hang.
+    #[test]
+    fn a_reader_with_nothing_to_read_is_refused_at_the_prompt() {
+        assert_eq!(plan_line(b"wc", WITH_DIR), Err((0, Refusal::InputRequired)));
+        // And the two ways to give it one both satisfy it.
+        assert!(plan_line(b"wc < report.txt", WITH_DIR).is_ok());
+        assert!(plan_line(b"date | wc", WITH_DIR).is_ok());
+        let msg = Refusal::InputRequired.message();
+        assert!(msg.contains("waits forever"), "{msg}");
+    }
+
+    /// The mirror: a program that reads nothing, handed an input. Authority that moved for no
+    /// reason, which this shell refuses in every other position too.
+    #[test]
+    fn a_program_that_reads_nothing_is_refused_an_input() {
+        assert_eq!(
+            plan_line(b"date < report.txt", WITH_DIR),
+            Err((0, Refusal::InputForbidden)),
+        );
+        assert_eq!(
+            plan_line(b"date | date", WITH_DIR),
+            Err((1, Refusal::InputForbidden)),
+        );
+    }
+
+    /// **A program whose answer is a register cannot be redirected**, and the manifest is what says
+    /// so. `worker 9 > out.txt` would otherwise write a `u64` into a byte sink, which is a file
+    /// with nothing legible in it and no error anywhere.
+    #[test]
+    fn only_a_byte_stream_can_be_redirected() {
+        assert_eq!(
+            plan_line(b"worker 9 > out.txt", WITH_DIR),
+            Err((0, Refusal::NotAByteStream)),
+        );
+        assert_eq!(
+            plan_line(b"worker 9 | wc", WITH_DIR),
+            Err((0, Refusal::NotAByteStream)),
+        );
+        // The interrupt demonstrators hold no output capability at all, which is the third case and
+        // reaches the same refusal from the other side.
+        assert_eq!(
+            plan_line(b"heeder | wc", WITH_DIR),
+            Err((0, Refusal::NotAByteStream)),
+        );
+        // A `Bytes` program in the same position is fine, so the refusal is about the declaration
+        // and not about the operator.
+        assert!(plan_line(b"date > out.txt", WITH_DIR).is_ok());
+    }
+
+    /// The grant refusal wins over the stream refusal when a line is wrong about both, because what
+    /// a program is endowed is a bigger fact about the line than where its bytes were going.
+    #[test]
+    fn a_missing_argument_is_reported_before_a_missing_byte_stream() {
+        // `worker` needs an integer AND has no bytes to redirect. Both are true; one is printed.
+        assert_eq!(
+            plan_line(b"worker > out.txt", WITH_DIR),
+            Err((0, Refusal::ArgRequired)),
+        );
+    }
+
+    /// A redirection is a designation like any other, so a shell that holds no directory cannot
+    /// back one. The same sentence an operand gets, for the same reason.
+    #[test]
+    fn a_redirection_needs_a_directory_to_resolve_against() {
+        assert_eq!(
+            plan_line(b"date > report.txt", Holdings::default()),
+            Err((0, Refusal::NoSuchCapability(CapKind::File))),
+        );
+        // A pipeline with no file on it needs no directory at all, which is what makes `date | wc`
+        // runnable in a shell that holds nothing but a spawn channel.
+        assert!(plan_line(b"date | wc", Holdings::default()).is_ok());
+    }
+
+    /// A redirection resolves its leading path exactly as an operand does, against where the shell
+    /// stands, and records the result as a value.
+    #[test]
+    fn a_redirection_resolves_its_leading_path() {
+        let mut deeper = nav::Cwd::root();
+        deeper.apply(nav::path(b"logs").unwrap().steps()).unwrap();
+        let holds = Holdings {
+            dir: true,
+            cwd: deeper,
+        };
+        let (p, _) = plan_line(b"date > old/report.txt", holds).unwrap();
+        let line::Sink::File(g) = p[0].unwrap().sink else {
+            panic!("not a file sink")
+        };
+        assert_eq!(g.name.as_bytes(), b"report.txt");
+        assert!(g.writable, "a `>` target is written");
+        let mut buf = [0u8; nav::RENDER_MAX];
+        let n = g.dir.render(&mut buf);
+        assert_eq!(&buf[..n], b"/logs/old");
+        // An absolute path is refused with the model's own sentence, not a shape complaint.
+        assert_eq!(
+            plan_line(b"date > /etc/report", holds),
+            Err((0, Refusal::NoAbsolutePath)),
+        );
+    }
+
+    /// A `<` target is readable and a `>` target is writable, and that is the one direction this
+    /// shell reads off the line rather than out of a manifest. It is not an exception: the program
+    /// is handed a sink or a source, neither of which is a file capability.
+    #[test]
+    fn the_operator_decides_the_direction() {
+        let (p, _) = plan_line(b"wc < in.txt > out.txt", WITH_DIR).unwrap();
+        let line::Source::File(i) = p[0].unwrap().source else {
+            panic!()
+        };
+        let line::Sink::File(o) = p[0].unwrap().sink else {
+            panic!()
+        };
+        assert!(!i.writable);
+        assert!(o.writable);
+    }
+
+    /// A builtin is not a pipeline stage the planner spawns, because it spawns nothing. The shell
+    /// handles the producing ones (`echo`, `ls`, `pwd`) itself; everything else is refused here
+    /// rather than parsed into a program that does not exist.
+    #[test]
+    fn a_builtin_is_not_something_the_planner_spawns() {
+        assert_eq!(
+            plan_line(b"cd logs | wc", WITH_DIR),
+            Err((0, Refusal::NotAPipelineStage)),
+        );
     }
 
     #[test]
