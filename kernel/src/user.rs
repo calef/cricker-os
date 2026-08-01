@@ -12354,7 +12354,18 @@ mod glob_grant_tests {
                 // reason: nothing on this wire reports what a handle holds.
                 arg: fs_proto::grant::spec(0, dir::ENUMERATE | dir::DESCEND | dir::READ),
                 arg2: 0,
-                stack_pages: 2,
+                // **Four, and the number is a measurement**, as the navigating role's two were.
+                // Two overflowed by 256 bytes, presenting as a data abort on the shell's own `sp`
+                // and then as the 60 s lost-wakeup watchdog, because the test was still waiting for
+                // a report from a process that had died.
+                //
+                // The cost is a name set travelling **by value** through a chain of frames a debug
+                // build does not collapse: the expander holds one, `Expansion` carries one into
+                // `plan`, `designate` returns one, and the `Endowment` that comes back carries one
+                // more. That measurement is also what set `nameset::MAX_NAMES`: sixteen names did
+                // not fit in the four pages this wiring maps, and `CLIENT_EXTRA_STACK`'s note is
+                // right that the answer to that is smaller frames rather than a bigger number.
+                stack_pages: 4,
             },
         )?;
         let [tag, verdict, ..] = sched::ipc_recv(report);

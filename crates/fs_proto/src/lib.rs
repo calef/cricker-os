@@ -787,17 +787,17 @@ pub mod nameset {
     /// **The most names one set grant carries**, and the point where `ARG_MAX` becomes a capability
     /// limit rather than a buffer limit.
     ///
-    /// The number is set by what the two ends can hold **by value** with no allocator: the shell
-    /// carries the expansion through planning on the stack it has, and the warden keeps the whole
-    /// encoded set in a local so it never re-reads a page a client could be writing. Sixteen names
-    /// of sixteen bytes is 256 bytes at each end.
+    /// The number is set by what the two ends can hold **by value** with no allocator, and it was
+    /// **measured rather than chosen**: at sixteen names the shell ran off the bottom of its stack
+    /// planning one grant, because a set travels by value through four frames a debug build does not
+    /// collapse. Eight names of sixteen bytes is 152 bytes per copy, and the shell fits.
     ///
     /// There is a second reason, and it is the one that decides the *shape* of the failure: `caps rm
     /// *.txt` prints the set before anything runs, and a grant nobody can read is a grant nobody
     /// checked. Exceeding this is a **refusal at the prompt** (`capsh::Refusal::TooManyNames`), never
     /// a truncation, because a glob that quietly granted a prefix of what it matched would be the
     /// worst outcome this lane could produce.
-    pub const MAX_NAMES: usize = 16;
+    pub const MAX_NAMES: usize = 8;
 
     /// Bytes an encoded set occupies at most: a header and a name each, plus the terminator.
     pub const BYTES: usize = MAX_NAMES * (1 + grant::MAX_NAME) + 1;

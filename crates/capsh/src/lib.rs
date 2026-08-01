@@ -732,7 +732,7 @@ impl Refusal {
             // command either named something grantable or it did not.
             Refusal::NoMatch => "no name here matches that pattern, so there is nothing to grant",
             Refusal::TooManyNames => {
-                "that pattern matched more names than one grant can carry (at most 16)"
+                "that pattern matched more names than one grant can carry (at most 8)"
             }
             Refusal::MatchNotNameable => {
                 "a name it matched cannot travel in a grant: at most 16 bytes"
@@ -2206,7 +2206,7 @@ mod tests {
         }
         assert_eq!(over.finish(), Err(Refusal::TooManyNames));
         assert!(
-            Refusal::TooManyNames.message().contains("16"),
+            Refusal::TooManyNames.message().contains("8"),
             "a bound the prompt will not name is a bound nobody can work around",
         );
     }
