@@ -1,0 +1,325 @@
+//! **`rm`: remove a name, and with `-r` the tree under it** (milestone 47, notes/rm-recursion.md).
+//!
+//! A **program, not a shell builtin**, and that is Unix's shape rather than a divergence from it.
+//! `cd`, `pwd` and `ls` are builtins here because the shell is rebinding a capability it already
+//! holds; this is a destructive loop, not a rebinding. A builtin would run with the shell's **entire
+//! endowment**. A program takes an explicit attenuated grant, so `caps rm -r logs` prints the
+//! subtree at risk before anything happens, and a bug in the recursion below can only reach what
+//! this process was handed.
+//!
+//! # The recursion is in here, and that is the design
+//!
+//! `fs_proto` has no verb that removes a subtree. [`fs::UNLINK`] refuses a directory and
+//! [`fs::RMDIR`] refuses a non-empty one, so **no single call on that contract can take a tree
+//! away**. What this program does is the loop Unix does: enumerate, unlink the files, recurse into
+//! the directories, remove them from the bottom up. Every step is one request the FS server runs to
+//! completion, and every step needs the right for it **at that level**, so the walk stops exactly
+//! where the capabilities stop rather than where a check somebody wrote remembered to look.
+//!
+//! An interrupted run therefore leaves a **partial tree**, with what failed reported and a non-zero
+//! exit. That is what `rm(1)` does too, and it is forced here: there is no transaction spanning
+//! requests, and adding one would mean the FS server holding a transaction open across receives,
+//! which is exactly the property its serve loop relies on not doing.
+//!
+//! # Capability contract (kernel/src/user.rs `fs_service::start_granted_dir`)
+//!
+//! - **slot 0**: the narrowed directory endpoint, `WRITE`. [`fs::ROOT`] on it is the directory that
+//!   holds the operand: the shell resolves any leading path at the prompt and grants **the
+//!   directory the name is in**, because taking a name away is an operation on a directory.
+//! - **slot 1**: a report endpoint, `WRITE`. Diagnostics and `-v` lines as framed text, then one
+//!   verdict; see [`fs_proto::fixture::rm`].
+//! - **[`PAGE_VA`]**: the page shared with the FS server, where a name goes out and a listing comes
+//!   back.
+//!
+//! The name and the options ride in the three `START` argument words, packed by
+//! [`fs_proto::grant`] exactly as a per-file grant's name is, so this program costs no extra frame
+//! and holds nothing that names an init, a terminal, or the filesystem above its grant.
+
+#![no_std]
+#![no_main]
+
+use fs_proto::{dir, dirent, fixture, fs, grant};
+use user_rt::{call, exit, send};
+
+/// The granted directory capability: this program's whole authority.
+const DIR: u64 = 0;
+/// Where the diagnostics, the `-v` lines and the verdict go.
+const REPORT: u64 = 1;
+/// The page shared with the FS server.
+const PAGE_VA: u64 = 0x0000_0000_0060_0000;
+
+/// `ENOENT`. Not in [`dir`]'s list because it is POSIX's oldest number and this contract answers it
+/// from three different rungs; `-f` cares about exactly one of them (see [`remove`]).
+const ENOENT: i32 = 2;
+/// `ELOOP`, borrowed for a tree deeper than this program can walk. It is **this program's refusal
+/// and not the filesystem's**, which is why it prints its own sentence for it: nothing was wrong
+/// with the directory.
+const ELOOP: i32 = 40;
+
+/// How deep the walk goes. This program has no allocator, so the recursion is real stack, and each
+/// level holds a listing buffer by value. Eight matches the shell's path stack (`capsh::nav`) and is
+/// well inside the sixteen handles a `dwarden` will mint. Deeper is refused rather than silently
+/// leaving a tree half-removed with a zero exit status.
+const MAX_DEPTH: usize = 8;
+
+/// One round of a directory listing, decoded out of the shared page. The page is sixteen times
+/// larger; a directory bigger than this buffer is read in rounds, and this program cannot hold the
+/// page itself on the stack it has.
+const LISTING: usize = 128;
+
+/// The most rounds one directory takes before the walk gives up on it. A ceiling rather than a limit
+/// on directories: **each round removes everything it saw and starts again at cursor 0**, because a
+/// removal shifts every entry after it, so a cursor carried across removals would skip names. The
+/// bound is here so a directory whose entries somehow stop going away costs a diagnostic instead of
+/// a process that never exits.
+const MAX_ROUNDS: usize = 64;
+
+/// Copy `bytes` into the shared page.
+fn put_page(bytes: &[u8]) {
+    for (i, &b) in bytes.iter().take(fs_proto::PAGE).enumerate() {
+        // SAFETY: PAGE_VA is a mapped, writable page of fs_proto::PAGE bytes.
+        unsafe { core::ptr::write_volatile((PAGE_VA + i as u64) as *mut u8, b) };
+    }
+}
+
+/// Copy `n` bytes out of it (a listing landed there).
+fn get_page(n: usize, out: &mut [u8]) {
+    for (i, b) in out.iter_mut().take(n).enumerate() {
+        // SAFETY: as above; `n` is bounded by the page and by `out`.
+        *b = unsafe { core::ptr::read_volatile((PAGE_VA + i as u64) as *const u8) };
+    }
+}
+
+/// One request that names something: stage the name in the shared page and call. The reply is the
+/// contract's `i64`, so a negative value is a negated errno.
+fn name_call(verb: u64, handle: u64, name: &[u8], w1: u64) -> i64 {
+    put_page(name);
+    call(DIR, fs::req(verb, handle, name.len() as u64), w1).0 as i64
+}
+
+/// Give a directory handle back. A failure here is not actionable and is deliberately dropped: this
+/// program is exiting shortly either way, and a handle nobody closes pins a node in a server whose
+/// table outlives its clients.
+fn close(handle: u64) {
+    call(DIR, fs::req(fs::CLOSE, handle, 0), 0);
+}
+
+/// **Remove `name` from the directory `parent` names**, recursing if it is a directory and `-r` is
+/// on. Returns the errno of the first failure, or `Ok`.
+///
+/// The order of the two attempts is the whole of "`rm` on a directory is a refusal, never a silent
+/// escalation": the [`fs::UNLINK`] goes first, and its `EISDIR` is what a plain `rm` reports. The
+/// recursive path is only reached because the option said so.
+fn remove(parent: u64, name: &[u8], flags: u64, depth: usize, count: &mut u64) -> Result<(), i32> {
+    let r = name_call(fs::UNLINK, parent, name, 0);
+    if r == 0 {
+        *count += 1;
+        if flags & capsh::rmopt::VERBOSE != 0 {
+            say(name, b"");
+        }
+        return Ok(());
+    }
+    let errno = (-r) as i32;
+
+    // **`-f`, and exactly what it means.** `rm(1)`: "If the file does not exist, do not display a
+    // diagnostic message or modify the exit status." So it suppresses both, and it suppresses them
+    // for *this* case only. A permission failure on a name that exists still reports, and so does an
+    // `ENOENT` from anywhere else in the walk: the `OPENDIR` below answers `ENOENT` when the
+    // capability may not descend (a naming right withheld is "in this scope there is no such name",
+    // by design), and swallowing that would turn a walk that could not start into a silent success.
+    // That is a real hazard rather than a hypothetical one, and it is why this branch is here and
+    // not around the whole function.
+    if errno == ENOENT && flags & capsh::rmopt::FORCE != 0 {
+        return Ok(());
+    }
+    if errno != dir::EISDIR {
+        diagnose(name, errno);
+        return Err(errno);
+    }
+
+    // It is a directory. Without `-r` that is the answer, and it is `rm`'s answer.
+    if flags & capsh::rmopt::RECURSIVE == 0 {
+        diagnose(name, dir::EISDIR);
+        return Err(dir::EISDIR);
+    }
+    if depth >= MAX_DEPTH {
+        diagnose(name, ELOOP);
+        return Err(ELOOP);
+    }
+
+    // Ask for exactly what a recursive removal needs, which is exactly what a `-r` grant carries.
+    // Asking for more would be refused (`EPERM`) rather than quietly narrowed, and asking through a
+    // grant that carries less is `ENOENT` from the rung above: **a `rm` handed the narrow grant
+    // cannot even learn there is a subtree there.**
+    let child = name_call(fs::OPENDIR, parent, name, dir::REMOVE_TREE);
+    if child < 0 {
+        diagnose(name, (-child) as i32);
+        return Err((-child) as i32);
+    }
+    let emptied = empty(child as u64, flags, depth + 1, count);
+    close(child as u64);
+    emptied?;
+
+    // Bottom-up: the name goes only once nothing is behind it. A `RMDIR` before this point would
+    // have been `ENOTEMPTY`, which is the contract refusing to let one call take a tree away.
+    let r = name_call(fs::RMDIR, parent, name, 0);
+    if r < 0 {
+        diagnose(name, (-r) as i32);
+        return Err((-r) as i32);
+    }
+    *count += 1;
+    if flags & capsh::rmopt::VERBOSE != 0 {
+        say(name, b"/");
+    }
+    Ok(())
+}
+
+/// Take everything out of the directory `handle` names, depth first.
+///
+/// Each round reads one page of entries **from cursor 0** and removes every name it decoded, then
+/// starts again, because removing a name shifts the entries after it and `READDIR`'s cursor is an
+/// index (notes/dir-capability.md records that caveat where the verb is defined). Restarting is the
+/// cheap correct answer; carrying the cursor would skip names.
+///
+/// A failure does not stop the round: `rm(1)` removes what it can and reports what it cannot, so
+/// the first errno is kept and the walk keeps going. What it does stop is the `RMDIR` above, which
+/// would only have answered `ENOTEMPTY` anyway.
+fn empty(handle: u64, flags: u64, depth: usize, count: &mut u64) -> Result<(), i32> {
+    let mut first_error = None;
+    for _ in 0..MAX_ROUNDS {
+        let n = call(DIR, fs::req(fs::READDIR, handle, 0), 0).0 as i64;
+        if n < 0 {
+            // `ENUMERATE` withheld is `EPERM` here, and that is the walk stopping where the
+            // capability stops: it can see the directory and not what is in it.
+            let errno = (-n) as i32;
+            diagnose(b"", errno);
+            return Err(first_error.unwrap_or(errno));
+        }
+        if n == 0 {
+            return match first_error {
+                Some(e) => Err(e),
+                None => Ok(()),
+            };
+        }
+        // Copy the round out of the shared page before anything else uses it: every removal below
+        // stages a name in that same page, so a listing read lazily out of it would be reading its
+        // own successor's request.
+        let n = (n as usize).min(LISTING);
+        let mut buf = [0u8; LISTING];
+        get_page(n, &mut buf);
+
+        let mut progress = false;
+        for (name, _) in dirent::iter(&buf[..n]) {
+            match remove(handle, name, flags, depth, count) {
+                Ok(()) => progress = true,
+                Err(e) => first_error = first_error.or(Some(e)),
+            }
+        }
+        if !progress {
+            // Nothing in this round could be removed, so another round would read the same names.
+            return Err(first_error.unwrap_or(dir::EPERM));
+        }
+    }
+    Err(first_error.unwrap_or(ELOOP))
+}
+
+/// **The `-v` line: the name, and nothing else.** `rm(1)`'s `-v` is "showing them as they are
+/// removed", and the default is silence, which is why every call to this is behind the option.
+fn say(name: &[u8], suffix: &[u8]) {
+    let mut out = [0u8; 64];
+    let n = pack(&mut out, &[name, suffix, b"\n"]);
+    text(&out[..n]);
+}
+
+/// **A diagnostic, which is not behind an option**: a failure is a line plus a non-zero exit,
+/// always. The sentence comes from [`dir::explain`], so what a human reads is chosen next to the
+/// decision that chose the errno rather than reinvented here.
+fn diagnose(name: &[u8], errno: i32) {
+    let reason: &[u8] = if errno == ELOOP {
+        // This program's own refusal, not the filesystem's: `explain` would say "the filesystem
+        // refused", which would be a lie about which side gave up.
+        b"deeper than rm can walk without an allocator"
+    } else {
+        dir::explain(errno).as_bytes()
+    };
+    let mut out = [0u8; 96];
+    let n = if name.is_empty() {
+        pack(&mut out, &[b"rm: ", reason, b"\n"])
+    } else {
+        pack(&mut out, &[b"rm: ", name, b": ", reason, b"\n"])
+    };
+    text(&out[..n]);
+}
+
+/// Concatenate `parts` into `out`, returning the length. Truncating rather than growing, because
+/// this program has no allocator and a diagnostic that could not be printed is worse than one that
+/// is short.
+fn pack(out: &mut [u8], parts: &[&[u8]]) -> usize {
+    let mut n = 0;
+    for part in parts {
+        for &b in *part {
+            if n == out.len() {
+                return n;
+            }
+            out[n] = b;
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Send a line as framed text, 16 bytes per message: the std PAL's stdout framing, which `date`
+/// shares deliberately so there is one convention for "a program printed something".
+fn text(bytes: &[u8]) {
+    for chunk in bytes.chunks(16) {
+        let mut w1 = 0u64;
+        let mut w2 = 0u64;
+        for (i, &b) in chunk.iter().enumerate() {
+            if i < 8 {
+                w1 |= (b as u64) << (8 * i);
+            } else {
+                w2 |= (b as u64) << (8 * (i - 8));
+            }
+        }
+        send(REPORT, chunk.len() as u64, w1, w2);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn _start(spec: u64, name_lo: u64, name_hi: u64) -> ! {
+    let mut buf = [0u8; grant::MAX_NAME];
+    let n = grant::unpack_name(name_lo, name_hi, grant::spec_len(spec), &mut buf);
+    // The options ride in the spec word's mask field, the same field a warden's rights ride in:
+    // both are "what this process was started with", and neither needs a frame. The bit order is
+    // `capsh::rmopt`, which is the shell's own numbering, so the program and the prompt cannot
+    // disagree about what `-r` means.
+    let flags = grant::spec_rights(spec);
+
+    let mut count = 0u64;
+    let status = match remove(fs::ROOT, &buf[..n], flags, 0, &mut count) {
+        Ok(()) => fixture::rm::OK,
+        Err(errno) => fixture::rm::status(errno),
+    };
+    // The verdict, last and once. Anything this run printed went out before it, so a receiver that
+    // takes this as its first message knows the run printed nothing, which is `rm(1)`'s default.
+    send(REPORT, fixture::VERDICT, status, count);
+    exit();
+}
+
+#[panic_handler]
+fn panic(_: &core::panic::PanicInfo) -> ! {
+    // Nothing here should panic: every reply is matched and every buffer is bounded. A fault the
+    // kernel turns into a kill is the honest signal if one ever does, and it fails the waiting test
+    // rather than reporting a status nobody computed.
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("brk #0", options(nostack, nomem))
+    };
+    #[cfg(target_arch = "riscv64")]
+    unsafe {
+        core::arch::asm!("ebreak", options(nostack, nomem))
+    };
+    loop {
+        core::hint::spin_loop();
+    }
+}

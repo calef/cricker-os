@@ -1,13 +1,15 @@
-# NTP, the wire format (milestone 51 lane C)
+# NTP: the wire format, and the client that carries it
 
-The 48 bytes of RFC 5905, the 1900-epoch fixed-point timestamp, the offset arithmetic, and the
-handful of checks that are the whole of unauthenticated NTP's spoofing resistance. All of it in
-`crates/ntp_proto`, which is pure computation: no socket, no clock, no service, and its tests run in
-milliseconds on the host.
+Two halves, built a day apart. **The wire format** is `crates/ntp_proto` (milestone 51 lane C): the
+48 bytes of RFC 5905, the 1900-epoch fixed-point timestamp, the offset arithmetic, and the handful of
+checks that are the whole of unauthenticated NTP's spoofing resistance. Pure computation, no socket,
+no clock, no service, and its tests run in milliseconds on the host. **The client** is
+`user/src/ntp.rs` (milestone 51 lane D), the process that turns those bytes into a clock correction,
+and it is the second half of this file.
 
-Milestone 51's other two lanes own the RTC drivers and the clock service, and `date` plus the
-calendar crate. This note is the protocol half. The authority argument, that reading the clock is
-harmless and setting it is a real capability, belongs with the service and is recorded there.
+Milestone 51's other lanes own the RTC drivers and the clock service, and `date` plus the calendar
+crate. The authority argument in full, that reading the clock is harmless and setting it is a real
+capability, belongs with the service and is recorded in notes/clock.md.
 
 ## Why the protocol is a crate and not part of a component
 
@@ -185,13 +187,178 @@ The general rule this is an instance of, and it is worth keeping: **a model chec
 domains too big to enumerate, not a better tool for domains that are not.** Check first whether you
 can just try all of them.
 
-## What is not here
+## What is not in the crate
 
-- No socket, no `netstack` client, no retry or poll scheduling, no server selection or clock
-  filtering. Those belong to the component that will carry these bytes.
+- No socket, no `netstack` client, no retry scheduling, no server selection or clock filtering.
+  Those belong to the component that carries these bytes, which is the rest of this file.
 - No leap-second handling beyond passing the indicator through. A pending leap second is not a
   rejection: the server's clock is fine, the day is not 86400 seconds long, and interpreting that is
   the calendar's problem.
 - No NTS, no MAC, as above.
 - No `Duration`/`SystemTime` conversions. The crate is `no_std` and deals in `(u64, u32)`, so the
   clock service can hold whatever type it likes.
+
+# The client (milestone 51 lane D)
+
+`user/src/ntp.rs`. Five capability slots, and **the interesting one is the slot that is missing.**
+
+```text
+  entropy ──an endpoint──►┌──────────────┐──an endpoint──► netstack ──► the network
+  (8 random bytes)        │  ntp client  │ (the socket contract, UDP 123)
+                          └──────┬───────┘
+                                 │ an endpoint: PROPOSE
+                         ┌───────▼────────┐
+                         │ clock service  │──writes──► the clock page
+                         └────────────────┘   (the client holds NO mapping of it,
+                                               read-only or otherwise)
+```
+
+| slot | what it is | what it lets the client do |
+|---|---|---|
+| 0 | a report endpoint (WRITE) | say what happened |
+| 1 | the socket contract's endpoint (WRITE) | send and receive datagrams |
+| 2 | an untyped budget | mint and map one shared frame |
+| 3 | the clock service's **propose** endpoint (WRITE) | **ask** for a time |
+| 4 | the entropy service's endpoint (WRITE) | obtain eight random bytes |
+
+There is no clock page here in either direction, so "set the time" is not an operation this process
+can express. **A compromised NTP client can lie inside the service's bounds and can do nothing
+else**: it cannot set the clock to 2038, it cannot move it backwards past a second, and it holds no
+authority over anything but the socket it was given. Unix cannot make that claim, because `ntpd`
+runs as root and `settimeofday` takes any value it is handed.
+
+The claim is proved the way the machine proves things rather than argued.
+`an_ntp_client_holds_no_writable_clock_page` spawns the **same binary with the same five slots**,
+hands it the exact address at which a process holding the *set* authority maps the clock page
+(`clock_service::CLOCK_VA`), and watches it write there and die of a fault, with the page's
+generation unchanged on both sides of the attempt. The address is the one that would matter, so the
+test cannot degenerate into poking at nothing; the boundary is the mapping, and knowing where to look
+buys nothing.
+
+## Reading the time without a mapping
+
+The client needs T1 and T4 in the same timescale as the server's T2 and T3, and it holds no clock
+page. So it uses `propose::STATE`, which the contract crate put there for exactly this caller: "a
+proposer is exactly the process that may hold the endpoint and no mapping". One round trip, once, to
+anchor `wall0` against the monotonic counter; everything after that is counter arithmetic, which is
+ambient and costs one instruction.
+
+The bootstrap case falls out rather than needing a branch. When the clock is `UNKNOWN` the service
+answers 0, T1 and T4 are then measured from 1970, the offset comes out as the whole distance to the
+server's clock, and the proposal lands on the server's time. That is the machine with no RTC, and it
+is the case NTP exists for.
+
+## The nonce comes from the entropy service, and refuses to come from anywhere else
+
+`Query::with_nonce` is free hardening (above): a server never interprets the client's transmit
+timestamp, so 64 random bits on the wire take an off-path attacker from about twelve bits of
+guesswork to sixty-four. **That is worth exactly as much as the bits are unguessable.**
+
+Until 2026-07-30 the only source in this tree was splitmix64 seeded off the virtual counter, which
+notes/entropy.md calls predictable to anyone who can guess boot-relative time. The entropy service
+(DECISIONS §44) landed that day, so the nonce is one eight-byte draw from it, one per attempt.
+
+**A client with no entropy capability stops.** It reports `RPT_NO_ENTROPY` and exits *before it
+touches the network at all*: no socket, no frame, no datagram. Falling back to the weak stream would
+be §42's silent degradation in the one place where the entire value of the number is that nobody can
+predict it, and it is the same call `SystemRng` makes when it panics rather than degrading. The two
+failures stay distinguishable with no probe, because `entropy_proto::delivered` reads a byte count of
+`0..=8` and every kernel `CALL` error is one of the small negatives: `NoSuchSlot` means "there is no
+entropy service", 0 means "the service has none".
+
+The test asserts what did *not* happen, which is the harder half: the server's report endpoint has no
+waiting sender, so no request was ever built.
+
+## One shot, because there is no timed wait
+
+The syscall surface is `EXIT`, `YIELD`, `INVOKE`, `CAP_DELETE`. There is no sleep, no timeout and no
+deadline anywhere in it, which is the milestone 51 block's open fork. So a poll interval is a
+yield-spin: a thread that stays runnable for the whole interval and costs scheduler work in
+proportion to it. At NTP's ordinary 64-second poll that is not a service anybody should ship.
+
+So this is a **one-shot synchroniser**: up to three requests a couple of milliseconds apart, one
+proposal, exit. That is not a workaround and it is not a stub; it is the honest shape available, and
+**a long-running client is the timed-wait fork's to build.** Adding a sleep syscall to get one would
+be settling that fork by accident, in the milestone least entitled to settle it.
+
+**A kiss-o'-death is not retried**, and this is a property of the client rather than of the crate. A
+rejected reply *is* retried, because it may have been a spoof that beat the real server back; stratum
+0 is an instruction (`RATE` means back off, `DENY` means go away) and retrying into one is the
+abusive behaviour the packet exists to stop. The test counts requests: three for a bad origin, one
+for a kiss.
+
+## The test server, and what it does and does not prove
+
+The client's whole network authority is one endpoint capability, so the tests **substitute the peer
+at that boundary**: a second role of the same binary holds `READ` on the endpoint the client holds
+`WRITE` on, and speaks the same socket contract (`user/src/netproto.rs`, the same file `netstack`
+compiles) while being an NTP server on the other side of it. The client cannot tell, and **there is
+no test-only branch anywhere in the client**. That is the shape a capability system makes available,
+and it is why this is the honest choice rather than a compromise.
+
+What it proves: the socket-contract glue (minting a frame, delegating it, the destination header,
+`SENDTO`/`RECV` framing), that the 48 bytes are a well-formed NTPv4 client packet addressed to port
+123, that the nonce is 64 unpredictable bits rather than a clock reading, that a reply failing
+`Query::accept` moves nothing, that an accepted sample reaches the clock as a **proposal** (the page
+publishes `SYNCED`, which nothing but the service can write), and that a proposal outside the policy
+is refused **by the service** while the client behaves perfectly.
+
+What it does not prove, stated plainly because a test server is exactly the kind of thing that gets
+overclaimed:
+
+- **Not that smoltcp, UDP, IPv4 and the NIC carry the bytes.** Milestone 30's socket-contract tests
+  prove that path with a real datagram over the confined NIC, and this lane deliberately does not
+  re-prove it.
+- **Not anything about a real time server.** Nothing in QEMU's slirp answers UDP 123 (its built-in
+  servers are TFTP, DHCP and a DNS NAT, and `guestfwd` is TCP-only), so there is no offline peer to
+  point at; pointing the gate at a public server would make it depend on somebody else's network, the
+  way the DNS check already has to be non-gating for exactly that reason.
+- **Not that the client and the real `netstack` agree**, beyond both compiling `netproto.rs`. The
+  stub implements the server side of that contract, and a misreading of it would be a misreading on
+  both sides at once. Compiling the same file rather than a copy is what keeps that risk to the
+  semantics rather than the layout.
+
+The honest summary: the client is proven against a server we wrote, over a network we wrote, and the
+parts we did not write are proven elsewhere.
+
+## What is proven, and where
+
+Six kernel tests (`ntp_tests` in `kernel/src/user.rs`), not arch-gated: one portable binary, so
+aarch64 and riscv64 run literally the same assertions. The suite went from 181 to 187 tests on
+aarch64 and 152 to 158 on riscv64.
+
+| test | what would have to be broken for it to pass anyway |
+|---|---|
+| `an_ntp_exchange_reaches_the_clock_as_a_proposal` | the request is NTPv4, mode 3, port 123; the correction arrives; the page says `SYNCED`, which only the service writes; the clock moved by about what the server claimed |
+| `a_reply_that_fails_validation_never_becomes_a_proposal` | a bad origin, a kiss-o'-death and a 20-byte datagram each leave the page's generation untouched, and the kiss is not retried |
+| `a_proposal_outside_the_policy_is_refused_by_the_service` | two hours forward and ten seconds back are both refused, by the service, with the client behaving perfectly |
+| `an_ntp_client_holds_no_writable_clock_page` | the write faults, at that exact address on aarch64, and the process does not survive it |
+| `the_nonce_on_the_wire_is_random_and_is_not_the_clock` | two exchanges differ, and neither transmit field is within an hour of the clock |
+| `without_entropy_the_client_refuses_rather_than_guessing` | the refusal names `NoSuchSlot`, and no request was ever sent |
+
+Every one of those assertions was **watched fail** before it was trusted: the write removed from the
+probe, `with_nonce` swapped for the plain form, a proposal made despite a rejection, a fallback
+inserted where the entropy refusal is, the kiss-o'-death `break` deleted, the offset dropped from the
+correction, and the destination port hard-coded past the wiring. Seven mutations, seven failures,
+each naming the right thing.
+
+Two of them found a real defect in the *tests* rather than in the client, and it is worth recording
+because it is the shape a test-server design invites: with the client mutated to carry on, an
+unbounded `ipc_recv` on a report nobody would ever send became a sixty-second watchdog hang instead
+of an assertion. Both waits are now bounded, so "the client never got there" fails in two seconds
+with a sentence.
+
+## What the client does not do
+
+- **No server selection, no clock filter, no combining.** RFC 5905's selection and clustering
+  algorithms exist because a real client polls several servers and weighs their samples. One server,
+  one sample, one proposal is what a one-shot synchroniser can honestly do, and the machinery for
+  more wants the poll loop that wants the timed wait.
+- **No slewing.** Nothing here gradually corrects; a proposal is a step the service bounds. Slewing
+  is a policy the *service* could adopt, and DECISIONS §43 records why it is a choice rather than a
+  correctness requirement: `Instant` is never in the write path, so a step cannot perturb monotonic
+  time.
+- **No NTS and no MAC**, as the crate half of this file records at length.
+- **No `init` endowment.** Nothing in the interactive boot runs the NTP client; the tests wire it.
+  Ambient time synchronisation would be ambient authority, and which process may propose a time
+  should be as visible as which process may reach the network.

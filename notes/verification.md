@@ -589,6 +589,40 @@ bigger hammer but a smaller target. Decomposing the risky arithmetic out of the 
 named: that the *number* of segments and their mutual overlap are handled without panic across all
 64 possible headers, which the by-example tests still cover.
 
+## The glob matcher, and the two things that made it tractable
+
+Six in `crates/glob/src/lib.rs`, milestone 47's pattern matcher (see [glob.md](glob.md) for the crate
+itself, which carries the harness table). The target is a loop over two byte strings where the
+pattern is untrusted, so the property that matters is the one BMC is best at: **totality**, no panic
+and no hang on any input.
+
+It also produced two findings worth having next to the calendar's, because both are about the same
+thing: **the cost of a proof is the shape of the code, not the size of the claim.**
+
+- **Two loops became one, and the claim did not move.** The first version found a bracket
+  expression's closing `]` in one loop and tested membership in another, nested inside the match loop
+  Kani was already unrolling. One harness reached 3.5 GB and twelve minutes before it was killed.
+  Scanning the class once, deciding membership as it goes, removed a whole loop from the unrolling
+  and is less work at runtime too. DECISIONS §46 rule 1 in one edit.
+- **An unwind bound too high is as expensive as a claim too big.** These harnesses were first written
+  with `#[kani::unwind(60)]`, picked from a loose algebraic bound. The measured worst case over the
+  same domain is **10**. A host test now enumerates that domain and pins the number, so the unwind
+  bounds are derived from a measurement rather than from arithmetic on a worst case that cannot
+  happen. Every outer iteration charges at least one step, which is what makes the measured step
+  count a sound upper bound for the iteration count.
+
+Kani also falsified a *harness* here rather than the code: with a fully symbolic class body, `[!y]`
+is already a negated class, so "`[xy]` and `[!xy]` are complements" is false when `x` is `!`. It came
+back in 42 seconds with the counterexample. Worth recording because the reflex on a red harness is to
+suspect the code.
+
+**The cost, stated rather than discovered.** About ten minutes of solver time for the six, which puts
+`glob` second to `calendar` in this suite. Two thirds of it is the two harnesses that quantify over a
+symbolic-length pattern **and** a symbolic-length name at once, which is the calendar's finding again
+from a different direction: the expensive thing is not the property, it is the second symbolic
+length. Cutting one harness's name bound from three bytes to two took it from 279s to 199s without
+weakening it, because that harness's rule is a predicate on the name's first byte.
+
 ## Running it
 
 ```
@@ -596,7 +630,7 @@ script/verify
 ```
 
 Self-installs Kani on first run (its own nightly toolchain and a CBMC backend, a minute of
-download), then runs `cargo kani` over every crate carrying harnesses: **95 harnesses across 16 crates** as of milestone 51, in a few minutes. (This line said 67 for a while after it was 69; the
+download), then runs `cargo kani` over every crate carrying harnesses: **101 harnesses across 17 crates** as of milestone 51, in a few minutes. (This line said 67 for a while after it was 69; the
 count is now taken by grepping `#[kani::proof]` rather than by memory.) Not in `script/bootstrap`,
 because the kernel build does not need it; same self-install pattern as `script/coverage`. A new
 proof crate goes in that script's list, and a new harness in an existing crate is picked up with no

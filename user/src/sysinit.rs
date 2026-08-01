@@ -164,8 +164,8 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, _x2: u64) -> ! {
     }
 
     // The spawn service (milestone 31's grant expression, wire half; capsh::spawnproto). The shell
-    // resolved a `run` into a program, an argument, and a memory-grant page count, and it directs us
-    // rather than building the child itself: we hold the initrd, so we stay the ELF loader (the
+    // resolved a command into a program, an argument, and a memory-grant page count, and it directs
+    // us rather than building the child itself: we hold the initrd, so we stay the ELF loader (the
     // parser lives in one place, out of the shell). We endow every child the result endpoint at slot
     // 0, and the untyped the shell delegates at slot 1 when a `--mem` grant rode along. Nothing else:
     // the child's authority is exactly what the command line named. See the spawn_service comment.
@@ -173,6 +173,7 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, _x2: u64) -> ! {
     let budgeter = fs.read("budgeter").and_then(|b| elf::Elf::parse(b).ok());
     let heeder = fs.read("heeder").and_then(|b| elf::Elf::parse(b).ok());
     let spinner = fs.read("spinner").and_then(|b| elf::Elf::parse(b).ok());
+    let date = fs.read("date").and_then(|b| elf::Elf::parse(b).ok());
     spawn_service(
         spawn_ep,
         result_ep,
@@ -181,6 +182,14 @@ pub extern "C" fn _start(_x0: u64, initrd_len: u64, _x2: u64) -> ! {
             budgeter.as_ref(),
             heeder.as_ref(),
             spinner.as_ref(),
+            date.as_ref(),
+            // `rm` (milestone 47) has a slot and **deliberately no ELF**: it is endowed a directory
+            // capability, and this boot wires no FS service, so there is nothing to narrow one from.
+            // The shell refuses the command before it reaches here ("you hold no such capability"),
+            // which is why an empty slot is honest rather than a hole: spawning `rm` with nothing to
+            // remove from would be the worst failure this model has, a program told to destroy
+            // something, holding nothing, saying nothing.
+            None,
         ],
     )
 }
@@ -204,8 +213,13 @@ fn opt_cap(slot: u64) -> Option<u64> {
 /// the delegation with a job untyped and a shared job frame; we build the whole child *from that
 /// untyped* (so the shell's region owns it and can `DESTROY` it to tear it down, milestone 24), map
 /// the job frame in, endow nothing else, start it, and send `SPAWN_OK` once as the shell's
-/// go-ahead. The `progs` array is indexed by [`Prog::id`].
-fn spawn_service(spawn_ep: u64, result_ep: u64, progs: [Option<&elf::Elf>; 4]) -> ! {
+/// go-ahead. The `progs` array is indexed by [`Prog::id`], so it is [`capsh::PROG_COUNT`] long: a
+/// variant added to `capsh` without a slot here would be an out-of-bounds read in init.
+fn spawn_service(
+    spawn_ep: u64,
+    result_ep: u64,
+    progs: [Option<&elf::Elf>; capsh::PROG_COUNT],
+) -> ! {
     loop {
         let (w0, w1, w2) = recv(spawn_ep);
         let prog = Prog::from_id(spawnproto::prog_id(w0));

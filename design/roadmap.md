@@ -110,11 +110,11 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 44 | PARTIAL | GitHub repository hardening: policy, private reporting, code scanning, pull requests | a repository with a security thesis should be able to receive a report privately |
 | 45 | BUILT | Triage the CodeQL code-scanning alerts, and decide what the tool is for | the alerts land on this project's most-used unsafe abstraction |
 | 46 | BUILT | Rename the components for what they are, and write down the naming rules | a name is a claim, and `-d` claims something we rejected; conventions that matter get a checker, not a paragraph |
-| 47 | NOT-STARTED | Navigation and naming: cd, pwd, ls, mkdir, rm, paths, and environment | **divergence from Unix must be earned, never stylistic.** Keep the commands; change only what the capability model actually forces, and get one missing primitive right |
+| 47 | IN-PROGRESS | Navigation and naming: cd, pwd, ls, mkdir, rm, paths, and environment | **divergence from Unix must be earned, never stylistic.** Keep the commands; change only what the capability model actually forces, and get one missing primitive right |
 | 48 | NOT-STARTED | Job control: jobs, wait, kill, fg, bg, and a stopped state | **most of it needs no new kernel surface**, and the tty's most tangled feature turns out to be a capability transfer |
 | 49 | NOT-STARTED | Users, login, and attribution: what identity is for once it stops being authority | three of Unix's four uses for a uid are already answered structurally; the fourth, **attribution, has no mechanism at all** |
 | 50 | NOT-STARTED | Pipes and redirection: one sink protocol, and `\|` turns out to be an endpoint | the mechanism already exists (**stdout is a capability in slot 1**); the work is unifying four byte-sink protocols, not adding a parser rule |
-| 51 | PARTIAL | Wall-clock time, the `date` command, and an NTP service | lanes A and C built (two RTC drivers, the clock service with DECISIONS §43, and the NTPv4 wire format): the machine knows what time it is, and **reading the clock is a read-only page while setting it is a writable one**. `date` is built too, reads-only by its wiring, and says plainly when the machine does not know the time. The NTP client remains |
+| 51 | PARTIAL | Wall-clock time, the `date` command, and an NTP service | the machine knows what time it is: two RTC drivers, the clock service (§43), `crates/calendar`, `crates/ntp_proto`, `date`, and an NTP client holding **propose and not set**. `date` is **not yet reachable from the shell** |
 | 52 | RECORDED | Subshells without `fork`, and what copying an endowment means | `( ... )` is fork, we deliberately have no fork, and **capability duplication is not a total function** |
 | 53 | NOT-STARTED | The board's own peripherals: network and storage on real silicon | 16a boots the board; this is what makes it able to *do* anything, and it is where virtio stops carrying us |
 | 54 | NOT-STARTED | A network file service a Mac can actually mount | the first real workload with a real user, and the security claim backup servers deserve |
@@ -995,17 +995,18 @@ prerequisite piece and worth building first as its own tested step. Feeds 23 and
 
 ### 31. A capability shell: designation is authorization
 
-**In brief.** The command line becomes a **grant expression**: naming a resource in a command IS the capability grant (`run wc file:report.txt` passes one readable file cap; `run wc` alone can read nothing, and the refusal is "no such capability", not EPERM); untyped budgets as first-class grants; a SHILL-style manifest per program checked at spawn; a `caps` command printing a process's whole endowment. **Phase 1 built, both ISAs**: `capsh` (host-tested parse + manifest + spawn protocol), the shell over the existing surface, `run --mem N` made real by the `budgeter` program, manifest refusals, `caps`/`caps run ...` introspection; one kernel fix, `Untyped::SPLIT` now grants the child `GRANT` (DECISIONS §16 amendment). **Phase 2 built, both ISAs**: the FS contract's `CREATE`/`TRUNCATE` (so `std::fs::write` works), and per-file grants as a **caretaker process** (`fwarden`) that narrows a directory capability to one file in one direction, proven by a read-only and a writable attacker. One scope note: the interactive shell still refuses `file:` because its boot wires no FS service, so it holds no directory to narrow. Notes: grant-expression.md, program-manifest.md, fs-server.md
+**In brief.** The command line becomes a **grant expression**: naming a resource in a command IS the capability grant (`wc report.txt` passes one readable file cap; `wc` alone can read nothing, and the refusal is "no such capability", not EPERM); untyped budgets as first-class grants; a SHILL-style manifest per program checked at spawn; a `caps` command printing a process's whole endowment. **Phase 1 built, both ISAs**: `capsh` (host-tested parse + manifest + spawn protocol), the shell over the existing surface, `--mem N` made real by the `budgeter` program, manifest refusals, `caps`/`caps <command>` introspection; one kernel fix, `Untyped::SPLIT` now grants the child `GRANT` (DECISIONS §16 amendment). **Phase 2 built, both ISAs**: the FS contract's `CREATE`/`TRUNCATE` (so `std::fs::write` works), and per-file grants as a **caretaker process** (`fwarden`) that narrows a directory capability to one file in one direction, proven by a read-only and a writable attacker. One scope note: the interactive shell still refuses a named file because its boot wires no FS service, so it holds no directory to narrow. **The grammar shown here is milestone 47's**, which deleted the `run` verb and the `file:` designator this milestone shipped with; the mechanism did not change, only the spelling. Notes: grant-expression.md, program-manifest.md, fs-server.md
 
 **Why it matters.** **no-ambient-authority made user-visible**: the inversion of Unix's model at the one interface a human touches. Milestone 23's component contract in embryo, met first at the shell
 
 **Phase 1 built (both ISAs).** The command line is a grant expression: `capsh` (a host-tested crate)
 parses it and checks it against a per-program manifest; the shell holds its own untyped budget and
-delegates from it. `run --mem N budgeter` splits N pages off the shell's budget and delegates the
+delegates from it. `budgeter --mem N` splits N pages off the shell's budget and delegates the
 untyped to init, which endows the child; the budgeter maps them and reports the count (15 of 16, the
 rest paid for page tables), proving the grant is real, not parsed-and-ignored. Manifest mismatches
-and a `file:PATH` designator ("you hold no such capability") are refused at the prompt; `caps` and
-`caps run ...` print a process's whole endowment. One kernel change: `Untyped::SPLIT` grants the
+and a named file a program declares but this shell cannot back ("you hold no such capability") are
+refused at the prompt; `caps` and `caps <command>` print a process's whole endowment. (The spelling
+is milestone 47's: it shipped as `run --mem N budgeter` and `file:PATH`.) One kernel change: `Untyped::SPLIT` grants the
 child `GRANT` so an untyped is delegable (DECISIONS §16 amendment), which the headline feature
 required and no other object type lacked. Notes: grant-expression.md, program-manifest.md.
 
@@ -1035,7 +1036,7 @@ mystery 900-second test.
 
 **Why the status is PARTIAL and not BUILT, stated plainly.** The mechanism is complete and gated on
 both ISAs, but this milestone's headline is about *the one interface a human touches*, and at that
-interface `run wc file:report.txt` is still a refusal. The interactive shell holds no directory to
+interface `wc report.txt` is still a refusal. The interactive shell holds no directory to
 narrow, because the boot that starts it wires no FS service; the refusal it prints ("you hold no such
 capability: this shell was granted no directory to narrow") is **true** rather than a placeholder,
 and `caps` says the same. `capsh` carries the whole vocabulary (`FileSpec` in the manifest, a
@@ -1823,9 +1824,19 @@ arrival, or a checker that is red on arrival.
 
 **In brief.** A navigation model for a system with no global namespace. Keep the Unix command names
 and behaviour wherever they can work honestly; diverge only where the capability model forces it, and
-say why each divergence is earned. **Nothing here exists yet**: no `cd`, `pwd`, `ls`, `mkdir` or `rm`,
-no enumeration verb, and `mkdir`/`unlink`/`rename`/`rmdir` are all `Unsupported` in the `std` PAL,
-backed by no verb.
+say why each divergence is earned. **The keystone is built** (the directory capability and its
+six-rung rights ladder, DECISIONS §47, notes/dir-capability.md), and so are **the five commands, on
+both ISAs**: `cd`, `pwd`, `ls`, `mkdir` and `rm` as shell builtins, `..` clamped at your root by
+popping the stack of capabilities the shell descended through, `pwd` relative to that root, and a
+name on a command line resolved against the shell's position **at the moment the grant is made**, so
+a child holds a capability to one file and cannot re-resolve anything. `rm` is `UNLINK`, added to
+`fs_proto` here and separated from revocation in the contract's own words; revocation is not offered,
+because the FS server's handle table is per *server* and it cannot enumerate the clients holding
+handles. The headline is proven with the real shell binary: two shells rooted in two subtrees, each
+told nothing about which it holds, and neither can name the other's files (notes/shell-navigation.md).
+**Still to do**: attaching the built `crates/glob` to an attenuated name-set warden, completion,
+environment, and `PATH`. The `std` PAL still answers `Unsupported` for `rename`, `unlink` and
+`rmdir`, which is now a binding gap rather than a missing verb for the first two.
 
 **Why it matters.** Chris's framing, and it is the governing constraint: *"I hate Windows/DOS
 specifically because they went differently than virtually every other OS I've used."* Gratuitous
@@ -1852,7 +1863,7 @@ need no grant, and confer no new authority, because the shell is reading and reb
 holds. This also retires a worry raised while designing `ls` — that a listing program would be
 over-granted, holding the power to read everything it lists. It is not a program.
 
-**The cwd stops at the process boundary.** `run wc file:report.txt` resolves the name against the
+**The cwd stops at the process boundary.** `wc report.txt` resolves the name against the
 shell's current directory *at the moment the grant is made*, and the child receives a capability to
 that one file. The child has no cwd, inherits nothing, and cannot re-resolve anything. The convenience
 is the shell's; the authority is explicit.
@@ -1901,6 +1912,160 @@ manifest declares direction and the human designates the file without typing a m
 capability reaches, structurally. A shell rooted at a subtree cannot recursively delete the system,
 because no capability naming those files exists in it. Not a guard rail, not a confirmation prompt,
 not a check that could be wrong: there is nothing to name.
+
+#### `rmdir` and `rm -r`: Unix already made the safe choice (decided 2026-07-31)
+
+`mkdir` shipped in §48 with no way to remove what it makes: `rm` answers `EISDIR` and there is no
+`RMDIR`. The lane declined to add one, on the grounds that "a verb that removes whatever it finds is
+how one word takes a subtree away". That objection is right about a *recursive* verb and does not
+apply to Unix's, which is the point.
+
+**`rmdir(2)` removes only an empty directory**, and that is the whole safety property. The recursion
+in `rm -r` lives in **userspace**, as a loop of individually safe single-step operations: walk, unlink
+files, remove empty directories bottom-up. **No single call in the contract can take a subtree away.**
+
+So: `RMDIR` requiring `REMOVE` on the parent, refusing non-empty with `ENOTEMPTY`, and explicitly
+**not** revocation, for §48's reason — the handle table is per server, so handles cannot be
+invalidated for clients the server cannot enumerate.
+
+**The recursion is bounded by construction, which Unix cannot say.** `rm -r` needs `ENUMERATE` to see,
+`DESCEND` to recurse and `REMOVE` to delete, *at every level*, so the walk stops exactly where the
+capabilities stop. Unix bounds `rm -rf /` with a permission check per file, which is a check that can
+be wrong and famously has been. This milestone's existing note stands: not a guard rail, not a
+confirmation prompt, "there is nothing to name".
+
+**`rm` is a program, not a builtin, and that is Unix's shape rather than a divergence from it.**
+`cd`/`pwd`/`ls` are builtins here because the shell is rebinding what it already holds; `rm -r` is a
+destructive loop, not a rebinding. A builtin would run with the shell's **entire endowment**, while a
+program takes an explicit attenuated grant — so `caps rm -r logs/` prints the subtree at risk before
+anything happens, and a bug in the recursion can only reach what it was handed. Same shape as
+globbing below: attenuate, then hand over.
+
+**`-f` stays, with Unix's semantics** (Chris, 2026-07-31). An earlier draft of this section argued it
+should not exist, on the reasoning that with no prompting its only remaining meaning is suppressing
+errors, which §42 forbids. **That was wrong about what `-f` does.** It means *ignore nonexistent files
+and do not prompt* — a permission failure on a file that exists still reports. Its real value is
+**idempotency**: `rm -f maybe-there` succeeding is what makes a script re-runnable, and "absence is
+the desired state" is not a lie about failure. The divergence did not earn its keep.
+
+**Reporting is Unix's, and it is quieter than an earlier draft of this section claimed.** Checked
+against `rm(1)` rather than remembered: **silence on success** — `-v` exists precisely because the
+default prints nothing ("be verbose when deleting files, showing them as they are removed"). Failure
+is a diagnostic plus exit status: "exits 0 if all of the named files or file hierarchies were
+removed… If an error occurs, rm exits with a value >0." So a partial `rm -r` says what it could not
+do and exits non-zero, and says nothing about what it did. An earlier draft here said it should
+"report what it removed", which is the `-v` behaviour, not the default.
+
+`-f` is also broader than that draft assumed: "attempt to remove the files without prompting for
+confirmation, **regardless of the file's permissions**. If the file does not exist, do not display a
+diagnostic message **or modify the exit status**." So it suppresses the missing-file diagnostic *and*
+its effect on the exit status. The claim that a permission failure still reports under `-f` was wrong.
+
+**One thing to settle when building it.** A `rm -r` interrupted halfway leaves a partial tree, and
+there is no transaction spanning requests — adding one would mean the server holding a transaction
+open across receives, which conflicts with the serve-loop-runs-one-request-to-completion property §47
+relies on for concurrency atomicity. Partial, with failures reported and a non-zero exit, is the
+answer, and it happens to be exactly what Unix already does.
+
+**Worth noticing while copying Unix here:** `rm(1)` says "it is an error to attempt to remove the
+files `/`, `.` or `..`". That is a **literal special-case guard for `/`**, shipped in the utility —
+precisely the "guard rail, a check that could be wrong" this milestone contrasts itself against. We
+need no such case: a shell holding a subtree cannot name the root, so there is nothing to special-case. And `rm` on a directory stays a **refusal** (`EISDIR`) rather than a silent
+escalation to recursive removal, which is Unix's behaviour and worth keeping for the same reason
+`rmdir` is empty-only.
+
+#### `ln`: hard links make it not a tree, and symlinks stop being an escalation
+
+Two verbs with very different stories. Neither is built.
+
+**Hard links are mechanically easy.** RedoxFS keeps link counts, and **§48's deferred-delete fix
+already depends on them** — "the last link goes" is exactly what made `rm` an unlink rather than a
+revoke. A second name for one node is a short step from there.
+
+**The problem is structural, and it is ours rather than Unix's.** §47 justified `DESCEND` as a
+separate right because otherwise "the shape of the tree would decide how much authority a grant
+carried". **Hard links make it not a tree.** A file reachable from two directories sits in two
+subtrees, so "this subtree" stops having a clean boundary: you granted a name, and the node is also
+reachable through one you did not mention. That is not automatically wrong — the grant was the name —
+but every piece of subtree reasoning written so far quietly assumes a DAG cannot happen, and that
+assumption should be made explicit before it is falsified. Unix forbids hard links to *directories* to
+prevent cycles; the argument is stronger here, where a cycle also defeats `rm -r`'s bottom-up
+termination.
+
+**Symlinks are the interesting one, and the answer is a real result.** A symlink stores a **path**,
+resolved at open time — and this milestone already decided paths resolve **in the client, against the
+holder's own position**, with `..` clamped at the root (§48). So: resolved against *whose* namespace?
+
+Resolve against **the holder's**, and it follows that **a symlink cannot escalate**. It can only name
+what the resolver could already reach. Unix's symlink attacks — the `/tmp` races, the confused-deputy
+TOCTOU classics — work because resolution happens against a *global* namespace carrying the
+*victim's* authority. There is no global namespace here and no borrowed authority, so a symlink can
+**misdirect but cannot grant**. Same shape as the `PATH` result above: the escalation vector closes
+because there is nothing ambient to point into.
+
+The cost is that one symlink means different things to different holders. That sounds alarming and is
+exactly Plan 9's per-process namespace behaviour, so it is a well-explored place to stand rather than
+a novel one.
+
+**What to settle before building either:** whether hard links are offered at all given the DAG
+consequence (declining is defensible, and `mv` plus `RENAME` already covers the common
+atomic-replace idiom that hard links are usually reached for); and, for symlinks, what a stored path
+containing `..` means when the holder's root is shallower than the creator's — §48 clamps, so it
+should clamp here too rather than erroring, but that is a decision.
+
+##### Where `rm` meets them, which is where the sharp edges are
+
+**`rm` on a symlink removes the link, never the target.** `rm(1)` says so outright — "the rm utility
+removes symbolic links, not the files referenced by the links" — and it is right for the reason §48
+already established: `rm` operates on a **name in a directory**, and a symlink is a name.
+
+**`rm -r` must not descend through a symlink**, and our reason differs from Unix's in a way worth
+recording. Unix declines because following would **escape**: a symlink to `/` inside a directory
+would turn `rm -r` into `rm -rf /`. Here it could not escape — a symlink resolves in the holder's
+namespace, and `rm`'s namespace is the granted subtree with `..` clamped at its root (§48), so a
+symlink cannot name anything outside the grant. **We keep the behaviour and lose the reason.** The
+behaviour still earns its place: following would delete a different set of names than the grant
+named, and "surprising but bounded" is still surprising.
+
+**`rm` on a hard-linked file removes one name and the data survives.** That is not a special case, it
+is exactly §48's unlink-versus-revoke distinction, and the mechanism is already built: RedoxFS's
+deferred delete (`on_open_node` / `on_close_node` and the release list) is what makes the last link,
+not the first, the one that frees.
+
+**The sharp one: `rm -r subtree/` where a file inside is also linked from outside.** The subtree goes
+away and the data does not, because the outside name still holds it. That is correct — you removed the
+names you were granted, and you were never granted the other one — but it means **"I deleted the
+subtree" and "that content is gone" stop being the same statement.** For a backup target (milestone
+55) that distinction is worth stating rather than discovering.
+
+**And the cycle, which is a termination argument rather than a taste one.** `rm -r` works bottom-up,
+so a hard link making a directory its own descendant does not merely confuse it — it **does not
+terminate**. Unix forbids hard-linked directories for this reason among others; here the same
+prohibition is load-bearing for a verb we have already shipped the recursion for.
+
+**One footgun inherited if symlinks land:** `rm -r link` versus `rm -r link/`. The trailing slash
+changes whether the target's contents are in scope, which is a real source of accidents in Unix.
+Decide it explicitly rather than letting the path parser decide by accident.
+
+#### `touch`, and the reason file times were refused has expired
+
+Not built, and it splits the way `mv` and `rm` did. **Creating an empty file if absent** is
+expressible today (`fs_proto::fs::CREATE`, milestone 31 phase 2, and §49's `DirSpec` already shapes
+"a program granted the directory a name lives in"). **Updating the modification time** is not, and the
+reason is narrow: the `std` PAL records that "the server keeps an mtime **but the contract does not
+carry one**". RedoxFS tracks it; `fs_proto` does not expose it.
+
+**The justification for that has gone stale.** `notes/std.md` refused file times partly because "there
+is no wall clock to interpret it against anyway" — true when written, and false since milestone 51
+landed the clock (§43, RTC drivers on both ISAs, `date`). Same shape as §43's own untestability note,
+which milestone 47's `date` work disproved: **a scope note outlives the condition that justified it.**
+
+**The authority question, which should be decided rather than defaulted into.** `touch` does two
+different things to a timestamp: set it to *now*, and `touch -t` set it to *whatever you say*. The
+second is the ability to **lie about history**, which matters for anything reasoning from mtime —
+backups included, and milestone 55 is a Time Machine target. That is §43's asymmetry again (reading
+harmless, setting an authority), one level down: is "set to now" the same right as "set to an
+arbitrary value", and does the file's write right already cover both? Neither answer is obvious.
 
 #### Globbing, which decides how every multi-file operation grants
 
@@ -2068,6 +2233,41 @@ different packaging story and is worth being on the record before anyone designs
 around the assumption that installation means writing into a globally readable directory.
 
 #### `file:` and `run` are not earned, and come out (decided 2026-07-30)
+
+##### Built 2026-07-31: the grammar change, ahead of the commands.
+
+`run` and `file:` are gone from `capsh` and the shell. A bare program name spawns it (`worker 9`,
+`budgeter --mem 16`, `date`); a bare token in a file position designates the file, and the manifest
+still declares the direction. `--mem N` stays, and is now accepted on either side of the program
+name because with the verb gone a leading flag reads wrong.
+
+**The change the analysis above did not anticipate: the parser stopped classifying tokens at all.**
+`RunSpec` keeps the positionals in the order typed and `plan_against` places them into the slots the
+manifest declares, which is what makes "the manifest says what it is" true in the code rather than
+only in the prose. A shape-based rule (a number is the argument, anything else is the file) would
+have read `wc 2026` as a missing file.
+
+`caps <command>` is the preview's new spelling: the tail is the command you would have typed, so
+what you inspect and what you run cannot drift apart, and it is the Unix prefix-word idiom (`time`,
+`nice`, `env`) rather than new grammar. The refusals moved from "drop the `file:` designator" to
+positional wording, and one refusal **order** changed on purpose: a program's own declaration is
+checked before what the shell holds, so `worker report.txt` answers "takes no file; drop the name"
+(true whatever this shell holds) rather than "you hold no such capability" (an accident of this
+boot). The consequence, recorded rather than glossed: no shipped program declares
+`FileSpec::Required`, so the headline "no such capability" refusal is no longer reachable from the
+prompt, only through `plan_against` in the host tests.
+
+**`date` came along with it**, because with `run` gone `date` is exactly what a person types, and
+the shell had never heard of it (`Prog` knew four programs). It has a `Prog` entry and an all-
+`Forbidden` manifest; the shell spawns it with the register defaults, since `ArgSpec` has no
+position or arity yet. **It is the first program whose whole authority the command line cannot
+name**: a read-only mapping of the clock page, which init endows. This boot starts no clock service,
+so it prints "the time is unknown: this process holds no clock capability", and `caps date` says so
+before you run it. What a shell that could delegate a clock would need is assessed in
+notes/grant-expression.md and is its own lane: kernel boot wiring on both ISAs, a spawn-protocol
+position, both inits, and nothing in the suite boots the interactive shell to prove any of it.
+
+Tests: `crates/capsh` host suite, 34 cases. Notes: grant-expression.md, program-manifest.md, date.md.
 
 Chris asked to be convinced they were worth the typing. They are not, and the case against each is
 stronger than the case that put them there.
@@ -2412,8 +2612,8 @@ build settled that this block left open, and one place it went somewhere the blo
 - **The unknown state is the default**, since a zeroed page reads as `UNKNOWN`. Its one uncomfortable
   consequence: `SystemTime::now()` has no error channel, so an unknown clock is a **panic**, and std
   has no way for a program to ask before it asks. Recorded in DECISIONS §43 as a limit, not a win.
-- **Still open, and unchanged by this lane:** the timed-wait fork below, `date` plus the calendar
-  crate, and NTP.
+- **Still open:** nothing in this milestone. The timed-wait fork below is recorded here but is a
+  kernel-surface decision of its own, tracked separately and not a milestone-51 deliverable.
 
 **In brief.** The machine does not know what time it is, and says so in a way that is easy to miss:
 `SystemTime` is the monotonic counter offset from `UNIX_EPOCH`, so **it reports January 1970 plus
@@ -2474,7 +2674,16 @@ to 2038, and it holds no authority over anything but the network socket it was g
 
 #### `date`, the deliverable
 
-**Built 2026-07-31** (notes/date.md; `user/src/date.rs`, `kernel::user::date_tests`). A hundred
+**Built 2026-07-31** (notes/date.md; `user/src/date.rs`, `kernel::user::date_tests`).
+
+**Reachable from a test, not from the prompt, and that is why this milestone is `PARTIAL` and not
+`BUILT`** (found by Chris, 2026-07-31, by typing `date` at `script/server` and getting "unknown
+command"). The binary is in the initrd and tested on both ISAs, but `capsh::Prog` knows only `worker`,
+`budgeter`, `heeder` and `spinner`, so the shell cannot spawn it. The lane deferred that as
+"milestone 31's manifest machinery", which is a defensible scope call that nonetheless leaves the
+*command* half of "the `date` command" undone. **A program a user cannot invoke is not a command**,
+and the status said otherwise until he checked. Being folded into the milestone 47 grammar lane, which
+owns `capsh` and is removing `run` — after which `date` at the prompt is exactly what he typed. A hundred
 lines, most of them comments, because the design had settled everything interesting first: read the
 page, add the counter, hand the number to `calendar`. Five formats, a fixed UTC offset in minutes,
 and an optional second line naming the clock's **provenance**, which renders `clock_proto`'s four
@@ -2527,8 +2736,33 @@ response checks that are the whole of plain NTP's spoofing resistance. Host-test
 (the era pivot over all 4.2 billion seconds from 1970 to 2104; parse/serialise and the origin-nonce
 check over all 2^384 packets). Problem 1 above is **recorded, not solved**: the crate is
 unauthenticated NTPv4 and says so in its own documentation, NTS stays a separate decision, and the
-crate does not implement half of it. What remains in this lane is the client that carries the bytes,
-which wants a socket and therefore the service lane's proposal capability.
+crate does not implement half of it.
+
+**The client is built** (2026-07-31, `user/src/ntp.rs`, notes/ntp.md). It holds **five capability
+slots and none of them is the clock page**, so the block's claim above is now a fact the machine
+enforces rather than a design intention: `an_ntp_client_holds_no_writable_clock_page` gives the same
+binary the same five slots plus the exact address a *setter* maps the page at, and it faults. Four
+things the build settled or found:
+
+- **`propose::STATE` is how a client with no mapping reads the time**, which is what the contract
+  crate put it there for. One round trip to anchor against the monotonic counter, and the
+  unknown-clock bootstrap falls out with no branch: the service answers 0, T1 and T4 are measured
+  from 1970, and the proposal lands on the server's time.
+- **The nonce is one draw from the entropy service, and its absence is a refusal.** No capability
+  means no request at all, not a fallback to the counter-seeded stream, because
+  `Query::with_nonce`'s 64 bits are worth nothing if they are guessable (§42's rule, §44's source).
+- **A kiss-o'-death is not retried** while an ordinary rejection is, which is a property of the
+  client rather than of the crate, and the test counts requests to prove it.
+- **It is a one-shot synchroniser, not a continuously polling service,** because the timed-wait fork
+  below is unsettled. A
+  poll interval is a yield-spin; adding a sleep syscall to get a real one would settle that fork by
+  accident. Three attempts a couple of milliseconds apart, one proposal, exit.
+
+The test server is a second role of the same binary holding `READ` on the endpoint the client holds
+`WRITE` on, so the client's network path is substituted **at the capability boundary** and its code
+has no test-only branch. What that leaves unproven is recorded rather than glossed: smoltcp, UDP and
+the NIC are milestone 30's to prove, and nothing in slirp answers UDP 123, so there is no offline
+real server to point a gate at.
 
 #### The fork this exposes, which is bigger than the milestone
 
@@ -2989,7 +3223,9 @@ not by object.**
 
 #### Decisions to make before building
 
-- **Vendor the crypto, do not write it.** RustCrypto's crates are `no_std` and reviewed, and the
+- **Take the crypto as a dependency, do not write it and do not vendor it** (§46, amended
+  2026-07-31: vendoring is for what must be patched, and RustCrypto needs no patch; a vendored copy is
+  also invisible to `cargo-deny`/`cargo-audit`, which is the one thing crypto most needs). Its crates are `no_std` and reviewed, and the
   supply-chain tooling from milestone 44 (`deny.toml`, `script/supply-chain`, `script/vendor-verify`)
   already exists for exactly this shape. Writing our own AES or SHA is a bad idea and the entry should
   say so rather than leaving it open.
@@ -3009,7 +3245,7 @@ not by object.**
 **Sequencing.** Before milestone 55. **The entropy half is done**, which was worth doing early and on
 its own, since `std::random`'s caveat tainted anything security-adjacent anywhere in the tree and the
 virtio-rng driver was testable in QEMU with no board required. **Effort for the rest: not estimated**;
-vendoring crypto and writing a credential service are well-understood, and the secrets-at-rest
+taking crypto as a dependency and writing a credential service are well-understood, and the secrets-at-rest
 question is not.
 
 ### 57. Partitioning and formatting a real drive, and extended attributes

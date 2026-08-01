@@ -247,11 +247,13 @@ fn serve(server: &mut Server<IpcDisk>) -> ! {
         let offset = w1;
 
         let result: Result<i64> = match op(w0) {
+            // The handle field is the **parent directory**, not a file: `fs::ROOT` is the endpoint's
+            // bound directory, which is what every client that predates directory handles sends.
             fs::OPEN => {
                 // SAFETY: the name is `len` bytes the client wrote at the start of FILE_PAGE.
                 let name_bytes = unsafe { file_page(len) };
                 match core::str::from_utf8(name_bytes) {
-                    Ok(name) => server.open_file(name).map(|h| h as i64),
+                    Ok(name) => server.open_file_at(handle, name).map(|h| h as i64),
                     Err(_) => Err(Error::new(EINVAL)),
                 }
             }
@@ -274,7 +276,67 @@ fn serve(server: &mut Server<IpcDisk>) -> ! {
                 // SAFETY: the name is `len` bytes the client wrote at the start of FILE_PAGE.
                 let name_bytes = unsafe { file_page(len) };
                 match core::str::from_utf8(name_bytes) {
-                    Ok(name) => server.create_file(name).map(|h| h as i64),
+                    Ok(name) => server.create_file_at(handle, name).map(|h| h as i64),
+                    Err(_) => Err(Error::new(EINVAL)),
+                }
+            }
+            // **The verbs that hand back authority** (milestone 47). Both share OPEN's shape: the
+            // name is `len` bytes at the start of the shared page and the reply is a handle. What
+            // differs is the second word, which carries the rights the caller is asking the child
+            // to have rather than an offset. It is `offset` here only because that is what the
+            // wire's second word is called; the server intersects it with the parent's rights and
+            // refuses if the answer is smaller than the request.
+            fs::OPENDIR | fs::MKDIR => {
+                // SAFETY: the name is `len` bytes the client wrote at the start of FILE_PAGE.
+                let name_bytes = unsafe { file_page(len) };
+                match core::str::from_utf8(name_bytes) {
+                    Ok(name) if op(w0) == fs::OPENDIR => {
+                        server.open_dir(handle, name, offset).map(|h| h as i64)
+                    }
+                    Ok(name) => server.make_dir(handle, name, offset).map(|h| h as i64),
+                    Err(_) => Err(Error::new(EINVAL)),
+                }
+            }
+            // The cursor rides in the second word for TRUNCATE's reason: `len` is clamped to one
+            // page above, and a cursor is an index into a directory rather than a payload length.
+            // The listing goes into the shared page and `r0` says how much of it was filled.
+            fs::READDIR => {
+                // SAFETY: the whole page is ours to fill; the encoder never writes past its slice.
+                let buf = unsafe { file_page(BLOCK) };
+                server.read_dir(handle, offset as u32, buf).map(|n| n as i64)
+            }
+            // **The only verb that names two directories**, so the second word is a packed pair
+            // (handle, length) rather than a scalar and both names ride in the shared page, source
+            // first. The page is the bound: a pair of names longer than it is EINVAL here rather
+            // than a clamp, because clamping a name is renaming something else.
+            fs::RENAME => {
+                let dst_len = fs::dst_len(offset);
+                if len + dst_len > BLOCK {
+                    Err(Error::new(EINVAL))
+                } else {
+                    // SAFETY: both names are the client's bytes at the start of FILE_PAGE, and the
+                    // sum is checked against the page above.
+                    let (src, dst) = unsafe { file_page(len + dst_len) }.split_at(len);
+                    match (core::str::from_utf8(src), core::str::from_utf8(dst)) {
+                        (Ok(src), Ok(dst)) => server
+                            .rename(handle, src, fs::dst_handle(offset) as u32, dst)
+                            .map(|()| 0),
+                        _ => Err(Error::new(EINVAL)),
+                    }
+                }
+            }
+            // `rm`'s two verbs. OPEN's shape again (a name at the start of the shared page,
+            // resolved under the handle), and the reply is 0 rather than a handle: they hand
+            // nothing back, which is the whole difference between removing a name and destroying an
+            // object. They are one arm because they differ only in the kind they will remove, and
+            // that difference is the safety property: `UNLINK` refuses a directory, `RMDIR` refuses
+            // a non-empty one, and neither spelling removes whatever it finds.
+            fs::UNLINK | fs::RMDIR => {
+                // SAFETY: the name is `len` bytes the client wrote at the start of FILE_PAGE.
+                let name_bytes = unsafe { file_page(len) };
+                match core::str::from_utf8(name_bytes) {
+                    Ok(name) if op(w0) == fs::UNLINK => server.unlink(handle, name).map(|()| 0),
+                    Ok(name) => server.rmdir(handle, name).map(|()| 0),
                     Err(_) => Err(Error::new(EINVAL)),
                 }
             }

@@ -1,7 +1,6 @@
 # cricker-os
 
 [![CI](https://github.com/calef/cricker-os/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/calef/cricker-os/actions/workflows/ci.yml)
-[![toolchain drift](https://github.com/calef/cricker-os/actions/workflows/toolchain-drift.yml/badge.svg)](https://github.com/calef/cricker-os/actions/workflows/toolchain-drift.yml)
 
 A capability microkernel for aarch64 and riscv64, written in Rust, from the first instruction.
 
@@ -47,7 +46,7 @@ than a formality:
 | Gate | What it proves |
 |---|---|
 | `script/test` | The host-logic crates, then the kernel under QEMU on **both ISAs**, aarch64 and riscv64. Architectural parity is a gate, not an aspiration (DECISIONS §19). |
-| `script/verify` | 95 Kani harnesses across 16 crates: the capability model, IPC, MMU isolation, the DMA validator, the IOMMU domain, the NTP era pivot. |
+| `script/verify` | 101 Kani harnesses across 17 crates: the capability model, IPC, MMU isolation, the DMA validator, the IOMMU domain, the NTP era pivot. |
 | `script/bench --check` | icount instruction counts against a committed baseline, on both ISAs, so a performance regression surfaces next to the change that caused it. |
 | `script/lint` | clippy at `-D warnings`, plus broken intra-doc links, stray conflict markers, the roadmap's status vocabulary, DECISIONS numbering and citations, and that every script is documented. |
 | `script/supply-chain` | cargo-deny (advisories, licences, bans, sources) over every workspace, and proof that each vendored tree is the published tarball plus exactly its recorded patches. |
@@ -56,8 +55,16 @@ than a formality:
 CI runs on an **aarch64** runner deliberately: this kernel targets a weakly-ordered machine, and a
 missing `Acquire`/`Release` passes on an x86_64 host and fails only on real ARM. Both the Rust
 toolchain and QEMU are pinned to exact versions, so "the tests passed" means the same thing on a
-laptop and on a runner. The second badge is a daily check of whether the *newest* nightly still
-builds us; it is informational and never blocks a merge.
+laptop and on a runner.
+
+**Toolchain drift is checked daily and deliberately has no badge.** The
+[toolchain drift](.github/workflows/toolchain-drift.yml) workflow builds against the *newest* nightly
+rather than the pin, so that upstream drifting away from us is discovered early instead of presenting
+the whole bill on the day someone raises the date. It is expected to go red: that is the signal
+working, not a defect in whatever commit happened to trigger the run, and the fix is a bump commit at
+a time of our choosing. A badge for it would be worse than useless — **a badge that is designed to go
+red periodically teaches readers to discount badges**, which is the only thing a badge must not do.
+Its result lives in the Actions tab, where a notice belongs.
 
 ## What it does
 
@@ -171,86 +178,23 @@ contact with month four. The short version:
 | **Architecture** | Three declared targets: aarch64 (first: clean exception model, weak ordering as a discipline), riscv64 (at parity), x86_64 (declared, not started). **Parity is a gate, not an aspiration** (DECISIONS §19): a capability ships on every supported ISA under the same suite, or the gap is on the record. |
 | **Target** | QEMU `virt` (TCG and HVF) for daily work; real hardware is milestone 16. |
 | **Kernel shape** | **Capability microkernel** (seL4-shaped, decided at milestone 7): no `open()`, no ambient authority, drivers are EL0 processes, and since milestone 14 the kernel allocates nothing. See DECISIONS.md §10 and §14. |
-| **Execution** | **Preemptive threads with real stacks.** Not async. See below. |
-| **SMP** | Four cores, per-CPU run queues, cross-core placement by inbox plus IPI. (v1 said "one core, refactor when it hurts"; it hurt, we refactored.) |
+| **Execution** | **Preemptive threads with real stacks.** Not async: async assumes "I compiled everything that runs", and an operating system's whole purpose is to run code it did not compile ([§5](DECISIONS.md)). |
+| **SMP** | Four cores, per-CPU run queues, cross-core placement by inbox plus IPI. (the original plan said "one core, refactor when it hurts"; it hurt.) |
 | **Verification** | Machine-checked proofs (Kani) of the capability core: `caps`, IPC, the MMU isolation invariants. The frontier moves inward from the pure-logic crates. |
 | **Testing** | QEMU harness plus host-testable pure-logic crates from the first commit, plus benchmarks with committed baselines that fail on regression. |
 
-### Why not async/await
-
-Because it's a ceiling, not a tradeoff.
-
-A userspace process is an arbitrary ELF binary. It has its own stack, it never yields, and
-it will loop forever, because you will write a bug. Under cooperative scheduling one bad
-user program hangs the machine permanently, with no recovery.
-
-Real user mode *requires* per-thread stacks, a context switch that saves and restores the
-register file, and timer-driven preemption. Async doesn't defer that work. It forecloses
-it. So we build real threads first, and async can come back later in userspace, on top of
-them, exactly the way a real OS lets a program run Tokio.
-
-**Async's core assumption is "I compiled everything that runs." An operating system's entire
-purpose is to run code it did not compile.** That's why Embassy is excellent on a
-microcontroller and impossible here.
-
-And Go corroborates it the hard way. Goroutines were originally cooperative, yielding at
-function calls, and Go owns its compiler and compiles *every line that runs*. It still didn't
-work: a goroutine in a tight loop with no function calls never yields, and the garbage
-collector could never stop it. **Go 1.14 added asynchronous preemption**, which is a timer
-interrupt built in userspace out of signals. If a language that owns its entire toolchain
-couldn't get away with cooperative scheduling, a kernel running arbitrary ELF binaries
-certainly can't. See [DECISIONS.md](DECISIONS.md) §5.
-
 ## Milestones
 
-The v1 plan, all built. The dividing line between "a Rust program that boots" and "an
-operating system" is milestone 7.
+**Not repeated here.** They live in **[design/roadmap.md](design/roadmap.md)**, which has a status
+column with a fixed vocabulary and a checker (`script/roadmap`) that fails the build if a milestone is
+cited in prose without a row, or carries a status outside the vocabulary. This file used to hold a
+second copy: fifty-two lines of tick-marks, a partial and out-of-order subset, and nothing checking
+it. A duplicate of a gated artifact is the copy that goes stale, because only one of them has the
+gate.
 
-| # | | |
-|---|---|---|
-| 1 | Boot to Rust, print to UART | ✅ |
-| 2 | Exception vectors, handlers, legible fault reports | ✅ |
-| 3 | Physical frame allocator, device tree parsing | ✅ |
-| 4 | MMU on, W^X, guard page, kernel heap, higher-half | ✅ |
-| 5 | GIC + timer interrupts | ✅ |
-| 6 | Kernel threads, context switch, scheduler | ✅ |
-| 7 | **EL0, address spaces, capabilities, ELF loader, IPC** | ✅ |
-| 8 | **The console driver leaves the kernel** | ✅ |
-| 9 | virtio-blk in userspace + a filesystem server | ✅ |
-| 10 | A process server, and a shell that spawns binaries | ✅ |
-| 11 | Untyped memory: the kernel stops allocating for userspace | ✅ |
-
-The post-v1 roadmap ([design/roadmap.md](design/roadmap.md)), reordered by DECISIONS §14
-around verification and real workloads:
-
-| # | | |
-|---|---|---|
-| 12 | Call/Reply IPC: a one-shot reply capability | ✅ |
-| 13 | Frame revocation: un-share a page from every holder | ✅ |
-| 26 | Object revocation: tear a process back down | ✅ |
-| 18 | Verify the capability core: `caps`, IPC, MMU invariants (Kani) | ✅ |
-| 14 | Kernel objects from untyped: the kernel heap is deleted | ✅ |
-| 15 | Tagged address spaces (ASIDs) | ✅ |
-| 21 | Benchmarks with teeth: icount + committed baselines | ✅ |
-| 19 | A real workload: userspace init, the native ABI, CoreMark | ✅ |
-| 20 | The second architecture: RISC-V, brought to full parity | ✅ |
-| 25 | Cross-OS numbers: vs Linux and macOS at a matched tier | ✅ (seL4 waits on real-hardware PMU) |
-| 16 | Real hardware (16a: RISC-V silicon first) + IOMMU isolation in QEMU on both ISAs (16b: SMMUv3 + ratified RISC-V IOMMU behind one seam) | next |
-| 22 | Trusted init: verify it, shrink what a broken one can do | ahead |
-| 23 | A capability-routed component OS with live replacement | the destination |
-| 17 | Multikernel-leaning scheduler | optional research |
-| 24 | A second aarch64 board (Virtualization.framework) | optional |
-| 27 | Rust `std` on the native ABI | ahead (feeds 23) |
-| 28 | A solid terminal: the line discipline as a component | ahead (feeds 23, 27) |
-| 29 | A display terminal (framebuffer, virtio-gpu, libghostty-vt) | optional |
-| 30 | The network stack as a confined component (virtio-net, smoltcp) | ahead (feeds 23, 27) |
-| 31 | A capability shell: designation is authorization (SHILL-inspired) | ahead (feeds 22, 23) |
-| 32 | A real filesystem: RedoxFS behind a capability FS server | ahead (feeds 23, 27, 31) |
-
-Also built along the way, outside the numbering: a four-part adversarial security audit,
-per-process spawn quotas, kernel-mediated DMA confinement (QEMU `virt` has no IOMMU),
-capability delegation between processes, and frame capabilities (shared memory a process owns
-and delegates).
+If you want the shape rather than the list: milestone 7 is the dividing line between "a Rust program
+that boots" and "an operating system" — it is where EL0, address spaces, capabilities, the ELF loader
+and IPC arrive together.
 
 ## Things this project has already gotten wrong
 

@@ -53,7 +53,7 @@ hosttest = ["redoxfs/std", "redox_syscall/std"]
 # The EL0 binary's world: the userspace runtime and the ABI constants. Enabled only for the target
 # build, which also drops the default (`--no-default-features --features el0`), so the pure no_std
 # core is what links into the kernel image.
-el0 = ["dep:user_rt", "dep:abi", "dep:fs_proto"]
+el0 = ["dep:user_rt", "dep:abi"]
 
 # The initrd carries this binary's ELF, so keep it small and deterministic (the same knobs
 # user-std uses). Only the target build uses the release profile; host tests use dev and unwind.
@@ -73,8 +73,13 @@ uheap = { version = "0.1.0", path = "../crates/uheap" }
 # is byte-for-byte the trait's. Cargo unifies the two at one version.
 redox_syscall = { version = "0.9.0", default-features = false }
 
-# EL0-only, optional (behind `el0`): the syscall runtime, the ABI numbers, the wire protocols. None
-# of these compile for the host, so they are absent from the host test build.
+# The wire protocols. NOT optional since milestone 47: the rights ladder a directory capability
+# carries (`fs_proto::dir`) is the sans-IO core's own vocabulary rather than something the serve loop
+# bolts on at the boundary, which is what makes the attenuation impossible to forget. Pure no_std
+# logic with no dependencies of its own, so it costs the host build nothing.
+fs_proto = { version = "0.1.0", path = "../crates/fs_proto" }
+
+# EL0-only, optional (behind `el0`): the syscall runtime and the ABI numbers. Neither compiles for
+# the host, so they are absent from the host test build.
 user_rt = { version = "0.1.0", path = "../crates/user_rt", optional = true }
 abi = { version = "0.1.0", path = "../crates/abi", optional = true }
-fs_proto = { version = "0.1.0", path = "../crates/fs_proto", optional = true }

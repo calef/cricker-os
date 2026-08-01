@@ -2503,7 +2503,7 @@ pub mod fs_service {
             },
         );
 
-        let driver_report = spawn_fs_client(client_image, file_ep, file_shared, 3, 0);
+        let driver_report = spawn_fs_client(client_image, file_ep, file_shared, 3, 0, 0, 0);
         Some(CrashRun {
             blk_ready,
             fs_ready,
@@ -2542,36 +2542,64 @@ pub mod fs_service {
                 crash: (0, 0, 0), // this one is not armed: it is the one that has to survive
             },
         );
-        let report = spawn_fs_client(client_image, file_ep, file_shared, 4, 0);
+        let report = spawn_fs_client(client_image, file_ep, file_shared, 4, 0, 0, 0);
         (ready, report)
     }
 
-    /// Spawn one `fsclient` role holding exactly a file-service endpoint, a report endpoint and its
-    /// view of the shared page. Returns the report endpoint.
+    /// The most extra stack pages [`spawn_fs_client`] will map below the one `run` gives every
+    /// program. Small on purpose: a client that needs more than this is a client whose frames want
+    /// looking at, not a number that wants raising.
+    const CLIENT_EXTRA_STACK: usize = 4;
+
+    /// Spawn one client holding exactly a file-service endpoint, a report endpoint and its view of
+    /// the shared page. Returns the report endpoint.
+    ///
+    /// `extra_stack` is pages **below** the single one `run` maps. The hand-written `fsclient` roles
+    /// need none: they hold a handle and a small buffer. The navigating shell (milestone 47's
+    /// commands) needs some, and the number is a measurement rather than a guess: with none it
+    /// overflowed by 192 bytes, which presented as a data abort on its own `sp` and then as the
+    /// 60-second lost-wakeup watchdog, because the kernel test was still waiting for a report from a
+    /// process that had died. A shell carries a path stack (eight levels of name), a parsed path,
+    /// and a listing buffer, all by value, so 4 KiB is genuinely tight for it. Same discipline as
+    /// the FS server's stack (DECISIONS §27): sized by what it did, not by what looks generous.
     fn spawn_fs_client(
         client_image: &'static [u8],
         file_ep: EpId,
         file_shared: u64,
         role: u64,
         arg: u64,
+        arg2: u64,
+        extra_stack: usize,
     ) -> EpId {
+        assert!(
+            extra_stack <= CLIENT_EXTRA_STACK,
+            "an FS client asked for more stack than this wiring maps",
+        );
         let report = crate::sched::create_endpoint();
         crate::sched::spawn(move || {
+            let mut maps = [Mapping {
+                va: FILE_VA_CLIENT,
+                phys: file_shared,
+                flags: Flags::user_data(),
+            }; 1 + CLIENT_EXTRA_STACK];
+            for (k, m) in maps[1..=extra_stack].iter_mut().enumerate() {
+                m.va = USER_STACK_VA - (k as u64 + 1) * FRAME_SIZE;
+                m.phys = frame();
+            }
             run(
                 client_image,
                 Spawn {
                     arg0: role,
                     arg1: arg,
-                    arg2: 0,
+                    // A third word, because the `rm` program is started the way a **grant** is
+                    // (`fs_proto::grant`): a spec word and two words of name. Every other client
+                    // here takes a role and one number and leaves this zero.
+                    arg2,
                     grants: &[
                         endpoint_cap(file_ep, Rights::WRITE), // slot 0: CALL the FS server
                         endpoint_cap(report, Rights::WRITE),  // slot 1: report to the kernel
                     ],
-                    maps: &[Mapping {
-                        va: FILE_VA_CLIENT,
-                        phys: file_shared,
-                        flags: Flags::user_data(),
-                    }],
+                    maps: &maps[..1 + extra_stack],
                 },
             )
         })
@@ -2593,7 +2621,7 @@ pub mod fs_service {
     ) -> Option<(Option<(EpId, EpId)>, EpId)> {
         let (file_ep, file_shared, readiness) = ensure(blk_image, fsserver_image)?;
         // 0 = the end-to-end proof; 1 = the fs_read benchmark loop.
-        let report = spawn_fs_client(client_image, file_ep, file_shared, client_role, 0);
+        let report = spawn_fs_client(client_image, file_ep, file_shared, client_role, 0, 0, 0);
         Some((readiness, report))
     }
 
@@ -2631,14 +2659,61 @@ pub mod fs_service {
         pub arg: u64,
     }
 
-    /// What a wired grant hands back: the FS service's readiness endpoints if this call is the one
-    /// that wired it, the warden's own readiness endpoint, and the endpoint the confined program
-    /// reports on.
+    /// **Drain the FS service's two readiness sentinels**, which is a sequencing act and not only an
+    /// assertion.
+    ///
+    /// Both servers announce with a blocking `SEND`, so each is parked inside its own announcement
+    /// until somebody receives it. Nothing they serve can be answered before that. Every caller that
+    /// needs the service to be *running* rather than merely spawned has to come through here first,
+    /// and [`await_warden`] documents what that ordering is load-bearing for.
+    ///
+    /// `None` means an earlier caller in this boot already wired the service and drained these.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub struct Granted {
-        pub readiness: Option<(EpId, EpId)>,
-        pub warden_ready: EpId,
-        pub report: EpId,
+    pub fn await_service(readiness: Option<(EpId, EpId)>) {
+        let Some((blk_ready, fs_ready)) = readiness else {
+            return;
+        };
+        assert_eq!(
+            crate::sched::ipc_recv(blk_ready)[0],
+            fs_proto::fixture::READY,
+            "the block server did not bring the RedoxFS device up",
+        );
+        assert_eq!(
+            crate::sched::ipc_recv(fs_ready)[0],
+            fs_proto::fixture::READY,
+            "the FS server did not open the RedoxFS image",
+        );
+    }
+
+    /// **Wait for a warden's startup request to have been answered, before the program it confines
+    /// exists at all.**
+    ///
+    /// This is a correction, and the bug it fixes is worth stating where it was made rather than
+    /// only in the note. All three processes share **one frame** (the module comment above argues
+    /// that is sound because every request on both hops is a blocking `CALL`, so the client is
+    /// parked inside its own call for the whole time the warden is using the page). That argument
+    /// holds once the warden is serving. It does not hold at **startup**, where the warden stages
+    /// the granted name in the page and then blocks in a `CALL` to the FS server: a confined
+    /// program that already exists writes its own first name over that page, and the FS server
+    /// resolves whatever it finds there.
+    ///
+    /// It is not even a race in the common case. When this call is the one that wires the service,
+    /// the FS server is parked inside its readiness `SEND`, so the warden's descent cannot be
+    /// answered until [`await_service`] drains it, and the client has that whole window to clobber
+    /// the page. The warden then dies (it will not serve a hole) and its client blocks forever on a
+    /// call nobody will answer, which is how this presented: a userspace `ebreak` followed by the
+    /// 60 s lost-wakeup watchdog. It passed on aarch64 and failed on riscv, which is the shape of a
+    /// timing bug and was one.
+    ///
+    /// The fix is ordering, not a second page: drain the service, wait for the warden's own
+    /// sentinel, and only then spawn the confined program.
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn await_warden(warden_ready: EpId) {
+        assert_eq!(
+            crate::sched::ipc_recv(warden_ready)[0],
+            fs_proto::fixture::READY,
+            "the warden could not open what it was granted, so there is nothing to attenuate",
+        );
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -2648,7 +2723,7 @@ pub mod fs_service {
         warden_image: &'static [u8],
         client_image: &'static [u8],
         grant: Grant,
-    ) -> Option<Granted> {
+    ) -> Option<EpId> {
         let Grant {
             name,
             rights,
@@ -2691,21 +2766,131 @@ pub mod fs_service {
         })
         .expect("could not spawn the file warden");
 
+        // Both handshakes before the client exists, in this order and for [`await_warden`]'s reason:
+        // the servers are parked inside their announcements until they are drained, and the warden's
+        // own request is staged in the page all three share.
+        await_service(readiness);
+        await_warden(warden_ready);
+
         // The confined program. Its slot 0 looks exactly like a directory capability from inside, and
         // is not one: same protocol, same page, a namespace of one name.
-        let report = spawn_fs_client(
+        Some(spawn_fs_client(
             client_image,
             narrow_ep,
             file_shared,
             client_role,
             client_arg,
-        );
+            0,
+            0,
+        ))
+    }
 
-        Some(Granted {
-            readiness,
-            warden_ready,
-            report,
+    /// **Wire a per-directory grant and the program confined to it** (milestone 47,
+    /// notes/dir-capability.md). The same three-process shape [`start_granted`] wires, one rung up:
+    ///
+    /// ```text
+    ///   FS server ──file IPC──► dwarden ──narrowed file IPC──► the confined program
+    ///            (the image root)         (one subtree, one rights set)
+    /// ```
+    ///
+    /// The warden holds the root directory capability and the confined program holds an endpoint to
+    /// the warden and **nothing that names the FS server**, which is what makes "it cannot reach the
+    /// parent directory or a sibling" a statement about its cspace rather than about a branch. That
+    /// argument is `fwarden`'s, and it is load-bearing here for an extra reason: the FS server's
+    /// handle table is per *server*, so a rights-carrying handle on its own would not confine a
+    /// program that could still name [`fs_proto::fs::ROOT`].
+    ///
+    /// `rights` is a [`fs_proto::dir`] mask. It is what the warden *asks* for; the FS server
+    /// intersects it with the root's and refuses if the answer is smaller, so a wiring that asked
+    /// for more than exists fails at the warden's first request rather than silently serving less.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub struct DirGrant {
+        /// The directory the warden descends into, one component under the image root. Must fit
+        /// [`fs_proto::grant::MAX_NAME`].
+        pub name: &'static str,
+        /// The [`fs_proto::dir`] rights the subtree capability is to carry.
+        pub rights: u64,
+        /// The confined program's `arg0` (its role) and `arg1`.
+        pub role: u64,
+        pub arg: u64,
+        /// Its `arg2`. Zero for every client that takes a role and a number; the `rm` program is
+        /// started with a **grant's** three words instead (a spec and two of name), so it uses all
+        /// three and its "role" word is the spec.
+        pub arg2: u64,
+        /// Stack pages beyond the one `run` maps, for a confined program that needs them. The
+        /// hand-written attacker needs none; a shell does (see [`spawn_fs_client`]).
+        pub stack_pages: usize,
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn start_granted_dir(
+        blk_image: &'static [u8],
+        fsserver_image: &'static [u8],
+        warden_image: &'static [u8],
+        client_image: &'static [u8],
+        grant: DirGrant,
+    ) -> Option<EpId> {
+        let DirGrant {
+            name,
+            rights,
+            role: client_role,
+            arg: client_arg,
+            arg2: client_arg2,
+            stack_pages,
+        } = grant;
+        assert!(
+            fs_proto::grant::fits(name.as_bytes()),
+            "a granted name rides in two argument words; this one does not fit",
+        );
+        let (file_ep, file_shared, readiness) = ensure(blk_image, fsserver_image)?;
+        let narrow_ep = crate::sched::create_endpoint();
+        let warden_ready = crate::sched::create_endpoint();
+
+        // The grant rides in the START arguments exactly as a per-file grant does: the name in two
+        // words and the rights in the spec word, whose rights field has no fixed width. So a subtree
+        // grant costs no frame either.
+        let (lo, hi) = fs_proto::grant::pack_name(name.as_bytes());
+        let spec = fs_proto::grant::spec(name.len(), rights);
+
+        crate::sched::spawn(move || {
+            run(
+                warden_image,
+                Spawn {
+                    arg0: lo,
+                    arg1: hi,
+                    arg2: spec,
+                    grants: &[
+                        endpoint_cap(file_ep, Rights::WRITE), // slot 0: CALL the FS server
+                        endpoint_cap(narrow_ep, Rights::READ), // slot 1: serve the narrowed capability
+                        endpoint_cap(warden_ready, Rights::WRITE), // slot 2: readiness, once
+                    ],
+                    maps: &[Mapping {
+                        va: FILE_VA_CLIENT,
+                        phys: file_shared,
+                        flags: Flags::user_data(),
+                    }],
+                },
+            )
         })
+        .expect("could not spawn the directory warden");
+
+        // Both handshakes before the client exists. See [`await_warden`]: this is the call that
+        // found the bug, because a warden whose descent is answered only after the service is
+        // drained gives its client an unbounded window to write over the staged name.
+        await_service(readiness);
+        await_warden(warden_ready);
+
+        // The confined program. Its slot 0 looks exactly like a directory capability from inside,
+        // and is one: the same protocol, the same page, a namespace of one subtree.
+        Some(spawn_fs_client(
+            client_image,
+            narrow_ep,
+            file_shared,
+            client_role,
+            client_arg,
+            client_arg2,
+            stack_pages,
+        ))
     }
 
     /// The `std::fs` client's heap budget and extra stack. Same magnitudes as the networked std
@@ -3882,7 +4067,11 @@ pub mod clock_service {
     use crate::sched::EpId;
 
     /// Where the service expects its two mappings. Must match user/src/clock.rs.
-    const CLOCK_VA: u64 = 0x00c0_0000;
+    ///
+    /// `CLOCK_VA` is public because it is the address the **set** authority lives at, and milestone
+    /// 51's NTP tests aim a write there from a process that holds no such mapping. An attack on an
+    /// address nobody uses would prove nothing.
+    pub const CLOCK_VA: u64 = 0x00c0_0000;
     const RTC_VA: u64 = 0x00d0_0000;
 
     /// What the clock service was wired with, so a test (or a real init) can play its clients.
@@ -4813,6 +5002,653 @@ mod entropy_tests {
             8,
             "the service stopped serving after an unknown opcode",
         );
+    }
+}
+
+/// **The NTP client, and the test server that answers it** (milestone 51; DECISIONS §43, §44).
+///
+/// The kernel's part is the wiring, and the wiring *is* the argument. An NTP client here gets five
+/// slots: a report endpoint, the socket contract's endpoint, an untyped budget, the clock service's
+/// **propose** endpoint, and the entropy service's endpoint. What it does not get is a mapping of
+/// the clock page, in either direction, which is the whole difference between this and a Unix
+/// `ntpd` running as root.
+///
+/// The test server is a role of the same binary holding `READ` on the endpoint the client holds
+/// `WRITE` on. Substituting the peer at a capability boundary is how a capability system tests a
+/// client: the client's code does not change and cannot tell. See user/src/ntp.rs for what that
+/// proves and what it leaves to milestone 30's socket-contract tests.
+///
+/// Arch-neutral: one portable binary, both ISAs (DECISIONS §19).
+#[cfg_attr(not(test), allow(dead_code))] // the tests are its callers
+pub mod ntp_service {
+    use super::*;
+    use crate::cap::{Rights, endpoint_cap, untyped_cap};
+    use crate::sched::EpId;
+
+    /// The roles of the `ntp` binary. Must match user/src/ntp.rs.
+    pub const ROLE_CLIENT: u64 = 0;
+    pub const ROLE_SERVER: u64 = 1;
+    pub const ROLE_PROBE_CLOCK: u64 = 2;
+
+    /// The words the `ntp` binary reports. Must match user/src/ntp.rs.
+    ///
+    /// The whole vocabulary is here even though the tests assert on five of the eight: the point of
+    /// a mirror is that it is complete, and a failing test that prints `3` is only readable if `3`
+    /// has a name on this side too.
+    #[allow(dead_code)]
+    pub mod rpt {
+        pub const SYNCED: u64 = 1;
+        pub const REJECTED: u64 = 2;
+        pub const NO_REPLY: u64 = 3;
+        pub const NO_ENTROPY: u64 = 4;
+        pub const NET_ERROR: u64 = 5;
+        pub const PROBING: u64 = 6;
+        pub const SERVED: u64 = 7;
+        pub const BAD_LOCAL_TIME: u64 = 8;
+    }
+
+    /// Which reply the test server sends. Must match `user/src/ntp.rs`'s `srv`.
+    pub mod srv {
+        pub const GOOD: u64 = 0;
+        pub const BAD_ORIGIN: u64 = 1;
+        pub const KISS_OF_DEATH: u64 = 2;
+        pub const SHORT: u64 = 3;
+    }
+
+    /// The small integers the client reports a `ntp_proto::Reject` as. Must match
+    /// `user/src/ntp.rs`'s `reject_code`; kept as distinct values rather than a bool because which
+    /// check refused a packet is the difference between a broken server and an attack.
+    pub mod reject {
+        pub const LENGTH: u64 = 1;
+        pub const KISS_OF_DEATH: u64 = 4;
+        pub const ORIGIN_MISMATCH: u64 = 7;
+    }
+
+    /// How many requests the client makes before giving up. Must match `ATTEMPTS` in user/src/ntp.rs.
+    pub const ATTEMPTS: u64 = 3;
+
+    /// Each role mints or maps exactly one shared frame and pays for its page tables. Small and
+    /// fixed: neither role links a heap.
+    const BUDGET_PAGES: u64 = 16;
+    /// Extra stack pages. The client builds a 48-byte packet and does IPC; the same three `netcli`
+    /// and its relatives get is plenty and leaves no doubt.
+    const STACK_PAGES: u64 = 3;
+
+    /// A running test server: the endpoint a client speaks the socket contract on, and the endpoint
+    /// it reports the first request it saw on.
+    pub struct Server {
+        /// The socket contract's endpoint. The server holds `READ`; a client is given `WRITE`.
+        pub stack: EpId,
+        /// **Drain this before waiting on the client.** The server reports once, with a blocking
+        /// `send`, and the client's `RECV` is queued behind it.
+        pub report: EpId,
+    }
+
+    /// Extra stack for a spawned role, allocated and zeroed. Returned by value so the spawn closure
+    /// owns it.
+    fn stack_pages() -> [Mapping; STACK_PAGES as usize] {
+        let mut maps = [Mapping {
+            va: 0,
+            phys: 0,
+            flags: Flags::user_data(),
+        }; STACK_PAGES as usize];
+        for (k, m) in maps.iter_mut().enumerate() {
+            let phys = crate::memory::alloc()
+                .expect("no frame for an ntp role's stack")
+                .addr();
+            // SAFETY: a fresh frame through the direct map; zero it so the process starts clean.
+            unsafe {
+                core::ptr::write_bytes(mmu::phys_to_virt(phys) as *mut u8, 0, FRAME_SIZE as usize);
+            }
+            m.va = USER_STACK_VA - (k as u64 + 1) * FRAME_SIZE;
+            m.phys = phys;
+        }
+        maps
+    }
+
+    /// Spawn the test server: `variant` selects the reply it builds, `claimed_nanos` is the
+    /// wall-clock time it claims. The kernel supplies the claimed time because the server holds no
+    /// clock capability of its own, which keeps every test's expectation an exact number rather
+    /// than a window.
+    pub fn start_server(image: &'static [u8], variant: u64, claimed_nanos: u64) -> Server {
+        let stack = crate::sched::create_endpoint();
+        let report = crate::sched::create_endpoint();
+        let budget = crate::untyped::create(BUDGET_PAGES).expect("no untyped for the ntp server");
+        let maps = stack_pages();
+
+        crate::sched::spawn(move || {
+            run(
+                image,
+                Spawn {
+                    arg0: ROLE_SERVER,
+                    arg1: variant,
+                    arg2: claimed_nanos,
+                    grants: &[
+                        endpoint_cap(report, Rights::WRITE), // slot 0: the one report
+                        endpoint_cap(stack, Rights::READ),   // slot 1: serve the socket contract
+                        untyped_cap(budget),                 // slot 2: map the client's frame
+                    ],
+                    maps: &maps,
+                },
+            )
+        })
+        .expect("could not spawn the ntp test server");
+
+        Server { stack, report }
+    }
+
+    /// **The client's endowment, in one place.** `entropy` is an `Option` on purpose: a client wired
+    /// without it is the test that proves the refusal is loud, and the empty slot is what "no
+    /// entropy capability" actually is.
+    ///
+    /// `role` picks the client proper or the clock-page probe, which is given **the same five
+    /// slots** so that what the probe fails to reach, it fails to reach as a fully endowed NTP
+    /// client rather than as a stripped-down one.
+    fn spawn_role(
+        image: &'static [u8],
+        role: u64,
+        a1: u64,
+        a2: u64,
+        stack: EpId,
+        propose: EpId,
+        entropy: Option<EpId>,
+    ) -> EpId {
+        let report = crate::sched::create_endpoint();
+        let budget = crate::untyped::create(BUDGET_PAGES).expect("no untyped for the ntp client");
+        let maps = stack_pages();
+        // Slot 4 is granted or it is not; there is no third state and no flag inside it. An
+        // ungranted slot answers a `CALL` with `NoSuchSlot`, which is how the client tells "there
+        // is no entropy service" from "the service has none".
+        let n_grants = if entropy.is_some() { 5 } else { 4 };
+        let entropy = entropy.unwrap_or(0);
+
+        crate::sched::spawn(move || {
+            run(
+                image,
+                Spawn {
+                    arg0: role,
+                    arg1: a1,
+                    arg2: a2,
+                    grants: &[
+                        endpoint_cap(report, Rights::WRITE),  // slot 0: the verdict
+                        endpoint_cap(stack, Rights::WRITE),   // slot 1: the network
+                        untyped_cap(budget),                  // slot 2: the shared frame
+                        endpoint_cap(propose, Rights::WRITE), // slot 3: ask, never tell
+                        endpoint_cap(entropy, Rights::WRITE), // slot 4: the nonce
+                    ][..n_grants],
+                    maps: &maps,
+                },
+            )
+        })
+        .expect("could not spawn the ntp client");
+
+        report
+    }
+
+    /// Spawn the NTP client against `stack`, told which server to ask (`ip` packed big-endian,
+    /// `port`). Returns its report endpoint.
+    pub fn start_client(
+        image: &'static [u8],
+        stack: EpId,
+        propose: EpId,
+        entropy: Option<EpId>,
+        ip: u32,
+        port: u16,
+    ) -> EpId {
+        spawn_role(
+            image,
+            ROLE_CLIENT,
+            ip as u64,
+            port as u64,
+            stack,
+            propose,
+            entropy,
+        )
+    }
+
+    /// Spawn the clock-page probe: the client's endowment, pointed at `va`.
+    pub fn start_probe(
+        image: &'static [u8],
+        stack: EpId,
+        propose: EpId,
+        entropy: Option<EpId>,
+        va: u64,
+    ) -> EpId {
+        spawn_role(image, ROLE_PROBE_CLOCK, va, 0, stack, propose, entropy)
+    }
+}
+
+/// **An NTP client may propose a time and may not set one** (milestone 51).
+///
+/// The milestone's demonstrable claim, and the one Unix cannot make: `ntpd` runs as root and may set
+/// the clock to anything. Here the network-facing component holds an endpoint the clock service is
+/// free to refuse, and holds no mapping of the page the offset lives in. These tests take that
+/// apart: the happy path lands as a **proposal**, a reply that fails validation moves nothing, a
+/// proposal outside the policy's bounds is refused **by the service**, and a write aimed straight at
+/// the clock page kills the process.
+///
+/// Not arch-gated: one portable binary, the same assertions on aarch64 and riscv64 (DECISIONS §19).
+#[cfg(test)]
+mod ntp_tests {
+    use super::*;
+    use crate::arch::exceptions::USER_FAULTS;
+    use clock_proto::{NANOS_PER_SEC, policy, state, status};
+    use core::sync::atomic::Ordering;
+    use ntp_service::{ATTEMPTS, reject, rpt, srv};
+
+    /// Bounded by wall clock rather than by a yield count: since DECISIONS §28 the work a test
+    /// spawns runs on other cores, so a yield on an idle core elapses no real time. Two seconds is
+    /// far under the 60 s hang watchdog, so a genuine lost wakeup still fails loudly.
+    fn wait_for(mut cond: impl FnMut() -> bool) -> bool {
+        let deadline = crate::arch::timer::now() + 2 * crate::arch::timer::frequency();
+        while crate::arch::timer::now() < deadline {
+            if cond() {
+                return true;
+            }
+            crate::sched::yield_now();
+        }
+        cond()
+    }
+
+    fn ntp_image() -> &'static [u8] {
+        program("ntp").expect("no ntp program in the initrd archive")
+    }
+
+    /// **A fresh clock service per test.** Each one allocates its own page and reads the RTC again,
+    /// so a step taken in one test cannot bias the next one's bounds, and each test's "before" is
+    /// genuinely before.
+    fn clock() -> clock_service::Wiring {
+        let image = program("clock").expect("no clock program in the initrd archive");
+        let w = clock_service::start(image);
+        let report = crate::sched::ipc_recv(w.report);
+        assert!(
+            state::known(report[1]),
+            "the clock service does not know the time, so there is nothing for NTP to correct",
+        );
+        w
+    }
+
+    /// The entropy service's request endpoint: the client's whole authority over randomness, and it
+    /// names no device. `ensure` wires the service once per boot; whichever test asks first pays.
+    fn entropy() -> crate::sched::EpId {
+        let image = program("entropy").expect("no entropy program in the initrd archive");
+        let w = entropy_service::ensure(image, entropy_service::Bus::Mmio).expect(
+            "no virtio-rng device on the mmio bus: is CRICKER_RNG missing from the test leg?",
+        );
+        if let Some(report) = w.await_ready() {
+            assert_eq!(
+                report[0],
+                entropy_proto::READY,
+                "the entropy service did not come up (it reported {:#x})",
+                report[0],
+            );
+        }
+        w.request
+    }
+
+    /// Where the client is told to send. Nothing listens there; the test server is behind the
+    /// endpoint, not behind the address. The address is asserted anyway, because a client that
+    /// invented its own destination would be one that ignores its wiring.
+    const SERVER_IP: u32 = 0x0a00_0202; // 10.0.2.2, slirp's gateway
+    const SERVER_PORT: u16 = ntp_proto::PORT;
+
+    /// Run one exchange: a fresh server at `claimed_nanos`, a fresh client, both reports drained in
+    /// the order the blocking `send` requires. Returns `(the server's report, the client's report)`.
+    fn exchange(
+        clock: &clock_service::Wiring,
+        variant: u64,
+        claimed_nanos: u64,
+    ) -> ([u64; 5], [u64; 5]) {
+        let server = ntp_service::start_server(ntp_image(), variant, claimed_nanos);
+        let client = ntp_service::start_client(
+            ntp_image(),
+            server.stack,
+            clock.propose,
+            Some(entropy()),
+            SERVER_IP,
+            SERVER_PORT,
+        );
+        // The server blocks in its one `send` until this returns, and the client's RECV is queued
+        // behind it, so the order here is load-bearing rather than stylistic. The bounded wait is
+        // what turns "the client never sent a request" into a failure that names itself instead of
+        // a sixty-second watchdog hang: `ipc_recv` on an endpoint nobody will ever send on does not
+        // come back.
+        assert!(
+            wait_for(|| crate::sched::endpoint_waiting_senders(server.report) > 0),
+            "the test server never saw a request: the client failed before it reached the network",
+        );
+        let served = crate::sched::ipc_recv(server.report);
+        assert!(
+            wait_for(|| crate::sched::endpoint_waiting_senders(client) > 0),
+            "the client never reported: it is still blocked somewhere in the exchange",
+        );
+        let reported = crate::sched::ipc_recv(client);
+        (served, reported)
+    }
+
+    /// **The exchange lands as a proposal, and the service is what decides.**
+    ///
+    /// The whole path in one test: eight bytes of real entropy become a nonce, a well-formed NTPv4
+    /// client packet goes out to port 123, a server reply comes back, `Query::accept` produces a
+    /// sample, and the correction reaches the clock **through the propose endpoint**. The proof that
+    /// it went that way rather than by a write is the state word: an accepted proposal publishes
+    /// `SYNCED`, which nothing but the service can produce.
+    #[test_case]
+    fn an_ntp_exchange_reaches_the_clock_as_a_proposal() {
+        let clock = clock();
+        let before = clock.page().read();
+        let step = NANOS_PER_SEC / 2;
+        let wall_before = clock.wall_nanos();
+        let claimed = wall_before + step;
+
+        let (served, reported) = exchange(&clock, srv::GOOD, claimed);
+
+        // What the server saw on the wire: the packet is ours and it is addressed where it was told.
+        assert_eq!(served[0], rpt::SERVED);
+        assert_eq!(
+            served[2] >> 32,
+            ntp_proto::PORT as u64,
+            "the client did not address UDP 123",
+        );
+        assert_eq!(
+            (served[2] >> 8) & 0xff,
+            ntp_proto::VERSION as u64,
+            "not an NTPv4 request",
+        );
+        assert_eq!(
+            served[2] & 0xff,
+            ntp_proto::mode::CLIENT as u64,
+            "not a client-mode request: a server would take this for an unsolicited packet",
+        );
+
+        assert_eq!(
+            reported[0],
+            rpt::SYNCED,
+            "the client did not synchronise (report {:?})",
+            reported,
+        );
+        assert_eq!(
+            reported[1],
+            status::ACCEPTED,
+            "the clock service refused a half-second correction",
+        );
+
+        let after = clock.page().read();
+        assert_eq!(
+            after.state,
+            state::SYNCED,
+            "the clock is {} rather than SYNCED: an accepted proposal is not a SET, and only the \
+             service can publish this",
+            after.state,
+        );
+        assert_eq!(
+            after.generation,
+            before.generation + 1,
+            "exactly one publish: the proposal",
+        );
+
+        // And the clock really moved, by about what the server claimed. The lower bound is what
+        // fails if the proposal was dropped on the floor; the upper bound is what fails if the
+        // client believed a server it should have bounded.
+        let moved = clock.wall_nanos() - wall_before;
+        assert!(
+            moved >= step * 4 / 5,
+            "the wall clock moved {moved} ns, less than the {step} ns the server claimed",
+        );
+        assert!(
+            moved < step + 3 * NANOS_PER_SEC,
+            "the wall clock moved {moved} ns, far past the {step} ns the server claimed",
+        );
+    }
+
+    /// **A reply that fails validation moves nothing.**
+    ///
+    /// Three replies a real client meets, and each is a different situation rather than three ways
+    /// of saying "bad packet": an origin that is not our nonce is the off-path spoof the check
+    /// exists for, a kiss-o'-death is an instruction, and twenty bytes is something that is not NTP
+    /// arriving on our socket. `ntp_proto` proves the checks themselves over 2^384 packets; what is
+    /// proved here is that the client **honours the verdict**, which is a property of this component.
+    ///
+    /// The attempt count is the second half of it. A rejected reply is retried, because it may have
+    /// been a spoof that beat the real server; a kiss-o'-death is **not**, because retrying into one
+    /// is the abusive behaviour the packet exists to stop.
+    #[test_case]
+    fn a_reply_that_fails_validation_never_becomes_a_proposal() {
+        let clock = clock();
+        let before = clock.page().read();
+        let claimed = clock.wall_nanos() + NANOS_PER_SEC / 2;
+
+        for (variant, code, attempts, what) in [
+            (
+                srv::BAD_ORIGIN,
+                reject::ORIGIN_MISMATCH,
+                ATTEMPTS,
+                "an origin that is not the nonce we sent",
+            ),
+            (
+                srv::KISS_OF_DEATH,
+                reject::KISS_OF_DEATH,
+                1,
+                "a kiss-o'-death, which must not be retried",
+            ),
+            (
+                srv::SHORT,
+                reject::LENGTH,
+                ATTEMPTS,
+                "twenty bytes, which is not an NTP packet",
+            ),
+        ] {
+            let (_, reported) = exchange(&clock, variant, claimed);
+            assert_eq!(
+                reported[0],
+                rpt::REJECTED,
+                "the client accepted {what} (report {reported:?})",
+            );
+            assert_eq!(reported[1], code, "the wrong check refused {what}");
+            assert_eq!(
+                reported[2], attempts,
+                "the client made {} requests against {what}, not {attempts}",
+                reported[2],
+            );
+            assert_eq!(
+                clock.page().read(),
+                before,
+                "the clock page changed after {what}: a refused reply reached the offset",
+            );
+        }
+    }
+
+    /// **The bounds are the service's, and the client cannot argue with them.**
+    ///
+    /// The client does everything right here: a valid sample, an honest proposal, a truthful report.
+    /// It is the *service* that says no, twice, and asymmetrically: two hours forward is refused for
+    /// walking past an expiry, and ten seconds backward is refused because moving backward makes
+    /// instants happen twice (DECISIONS §43). A compromised client can lie inside those bounds and
+    /// can do nothing else, which is the sentence this test is here to make true rather than
+    /// asserted.
+    #[test_case]
+    fn a_proposal_outside_the_policy_is_refused_by_the_service() {
+        let clock = clock();
+        let before = clock.page().read();
+
+        for (claimed, want, what) in [
+            (
+                clock.wall_nanos() + 2 * policy::MAX_STEP_FORWARD_NANOS,
+                status::REFUSED_TOO_FAR_FORWARD,
+                "two hours forward",
+            ),
+            (
+                clock.wall_nanos() - 10 * NANOS_PER_SEC,
+                status::REFUSED_TOO_FAR_BACKWARD,
+                "ten seconds backward",
+            ),
+        ] {
+            let (_, reported) = exchange(&clock, srv::GOOD, claimed);
+            assert_eq!(
+                reported[0],
+                rpt::SYNCED,
+                "the client should have accepted the sample and proposed it ({what}, report \
+                 {reported:?}); the refusal under test is the service's, not the client's",
+            );
+            assert_eq!(
+                reported[1], want,
+                "the service answered {} to a server claiming {what}",
+                reported[1],
+            );
+            assert_eq!(
+                clock.page().read(),
+                before,
+                "the clock page changed on a refused proposal ({what})",
+            );
+        }
+    }
+
+    /// **The client holds no writable clock page, and knowing where one would be buys it nothing.**
+    ///
+    /// The same binary, the same five slots an NTP client is given, plus the exact address at which
+    /// a process holding the *set* authority maps the clock page. It reports the address, writes
+    /// there, and dies. The boundary is the mapping and not the layout, so there is no address at
+    /// which this write succeeds; this one is chosen because it is the address that would matter.
+    ///
+    /// This is the claim Unix cannot make. `ntpd` runs as root: there is no address in a Unix system
+    /// its `settimeofday` cannot reach.
+    #[test_case]
+    fn an_ntp_client_holds_no_writable_clock_page() {
+        let clock = clock();
+        let before = clock.page().read();
+        // An endpoint nobody serves: the probe never sends a request, and giving it a real server
+        // would only add a process to the boot.
+        let stack = crate::sched::create_endpoint();
+
+        let faults = USER_FAULTS.load(Ordering::Relaxed);
+        let report = ntp_service::start_probe(
+            ntp_image(),
+            stack,
+            clock.propose,
+            Some(entropy()),
+            clock_service::CLOCK_VA,
+        );
+
+        let [tag, va, ..] = crate::sched::ipc_recv(report);
+        assert_eq!(tag, rpt::PROBING, "the probe never reached its write");
+        assert_eq!(va, clock_service::CLOCK_VA);
+
+        assert!(
+            wait_for(|| USER_FAULTS.load(Ordering::Relaxed) > faults),
+            "an NTP client wrote the clock page at {va:#x} and was NOT stopped",
+        );
+        // The exact address, on both ISAs. This half was written aarch64-only, because aarch64 had a
+        // last-fault record (`FAR_EL1`, stashed for tests) and RISC-V had only a fault *count*. The
+        // portable record keeps it on both. The *kind* is deliberately not asserted here: the probe
+        // holds no mapping of the clock page at all, so the fault is a translation fault, and the
+        // claim being made is about the address the client aimed at.
+        assert_eq!(
+            crate::arch::exceptions::last_user_fault().map(|(_, addr)| addr),
+            Some(va),
+            "something faulted, but not at the clock page's address",
+        );
+        assert_eq!(
+            crate::sched::endpoint_waiting_senders(report),
+            0,
+            "the probe reported past its write: the write did not fault, so an NTP client set the \
+             clock by hand",
+        );
+        assert_eq!(
+            clock.page().read(),
+            before,
+            "the clock page changed while an NTP client was writing at it",
+        );
+    }
+
+    /// **The nonce is unpredictable, because it comes from the entropy service.**
+    ///
+    /// Two exchanges, and the server reports what was actually on the wire each time. Two things
+    /// follow, and the second is the one worth having: the two nonces differ, and neither of them is
+    /// a **time**. A client using `Query::new` would put its own clock in the transmit field, whose
+    /// seconds would be within a moment of now; a 64-bit draw from the device lands in a random one
+    /// of 2^32 seconds, so a false failure here is a 7201-in-2^32 event (about one boot in 600,000).
+    ///
+    /// This is what `Query::with_nonce` is worth, and it is worth nothing if the bits are guessable:
+    /// before the entropy service landed, the only source here was splitmix64 seeded off the virtual
+    /// counter, which notes/entropy.md calls predictable to anyone who can guess boot-relative time.
+    #[test_case]
+    fn the_nonce_on_the_wire_is_random_and_is_not_the_clock() {
+        let clock = clock();
+        let claimed = clock.wall_nanos() + NANOS_PER_SEC / 2;
+
+        // A time in the NTP era the transmit field would carry if it were a clock reading.
+        let now_ntp_secs = clock.wall_nanos() / NANOS_PER_SEC + ntp_proto::UNIX_DELTA;
+
+        let mut nonces = [0u64; 2];
+        for slot in nonces.iter_mut() {
+            let (served, reported) = exchange(&clock, srv::GOOD, claimed);
+            assert_eq!(served[0], rpt::SERVED);
+            assert_eq!(reported[0], rpt::SYNCED, "report {reported:?}");
+            *slot = served[1];
+        }
+
+        assert_ne!(
+            nonces[0], nonces[1],
+            "two exchanges put the same nonce on the wire: the transmit field is not random",
+        );
+        for (i, &nonce) in nonces.iter().enumerate() {
+            let secs = nonce >> 32;
+            assert!(
+                secs.abs_diff(now_ntp_secs) > 3600,
+                "nonce {i} decodes to {secs}, within an hour of the clock ({now_ntp_secs}): the \
+                 transmit field is a timestamp, not 64 random bits",
+            );
+        }
+    }
+
+    /// **No entropy capability, no request.**
+    ///
+    /// DECISIONS §42's no-silent-degradation rule where degrading quietly is worst. The client is
+    /// wired with slot 4 empty, which is what "no entropy service" actually is, and it stops before
+    /// it touches the network: the server's report endpoint has no waiting sender, so no request was
+    /// ever built. The alternative, a quiet fall back to the counter-seeded stream, would hand an
+    /// off-path attacker the twelve bits `Query::with_nonce` exists to take away from them, and
+    /// nothing in the report would say so. It is the call `SystemRng` makes when it panics.
+    #[test_case]
+    fn without_entropy_the_client_refuses_rather_than_guessing() {
+        let clock = clock();
+        let before = clock.page().read();
+        let server = ntp_service::start_server(ntp_image(), srv::GOOD, clock.wall_nanos());
+        let report = ntp_service::start_client(
+            ntp_image(),
+            server.stack,
+            clock.propose,
+            None, // slot 4 empty
+            SERVER_IP,
+            SERVER_PORT,
+        );
+
+        // Bounded, because the failure this test guards against is a client that carries on: it
+        // would block in the network it should never have reached, and an unbounded `ipc_recv` here
+        // would report that as a watchdog hang rather than as the refusal that did not happen.
+        assert!(
+            wait_for(|| crate::sched::endpoint_waiting_senders(report) > 0),
+            "the client neither refused nor reported: with no nonce it can trust, it went to the \
+             network anyway and is blocked there",
+        );
+        let reported = crate::sched::ipc_recv(report);
+        assert_eq!(
+            reported[0],
+            rpt::NO_ENTROPY,
+            "the client proceeded without a source of unguessable bits (report {reported:?})",
+        );
+        assert_eq!(
+            reported[1] as i64,
+            abi::Error::NoSuchSlot as i64,
+            "an ungranted slot must answer NoSuchSlot (-1), 'there is nothing there', not {}",
+            reported[1] as i64,
+        );
+        assert_eq!(
+            crate::sched::endpoint_waiting_senders(server.report),
+            0,
+            "the server saw a request: the client sent one without a nonce it could trust",
+        );
+        assert_eq!(clock.page().read(), before, "the clock moved anyway");
     }
 }
 
@@ -6421,19 +7257,10 @@ mod std_tests {
     pub(super) fn assert_fs_service_ready(
         readiness: Option<(crate::sched::EpId, crate::sched::EpId)>,
     ) {
-        let Some((blk_ready, ready)) = readiness else {
-            return;
-        };
-        assert_eq!(
-            crate::sched::ipc_recv(blk_ready)[0],
-            fs_proto::fixture::READY,
-            "the block server did not bring the RedoxFS device up",
-        );
-        assert_eq!(
-            crate::sched::ipc_recv(ready)[0],
-            fs_proto::fixture::READY,
-            "the FS server did not open the RedoxFS image",
-        );
+        // One copy, in `fs_service`, because draining these is **sequencing** and not only an
+        // assertion: each server is parked inside its own blocking announcement until somebody
+        // receives it, so nothing it serves can be answered first. The wardens depend on that.
+        fs_service::await_service(readiness);
     }
 
     /// Build the exact bytes `hellostd` prints when it is granted a directory capability, into
@@ -7590,7 +8417,7 @@ mod tests {
     /// Wire a per-file grant of the given direction, run the attacker against it, and return its
     /// verdict bitmap. `None` when no RedoxFS disk is attached (nothing to test; do not fail).
     fn attack_a_grant(rights: u64, writable: bool) -> Option<u64> {
-        let granted = match fs_service::start_granted(
+        let report = match fs_service::start_granted(
             init_image(),
             program("fsserver").expect("no fsserver program in the initrd archive"),
             program("fwarden").expect("no fwarden program in the initrd archive"),
@@ -7614,13 +8441,9 @@ mod tests {
                 return None;
             }
         };
-        assert_fs_service_ready(granted.readiness);
-        assert_eq!(
-            sched::ipc_recv(granted.warden_ready)[0],
-            fs_proto::fixture::READY,
-            "the warden could not open the granted name, so there was nothing to attack",
-        );
-        let [tag, verdict, ..] = sched::ipc_recv(granted.report);
+        // The two handshakes happened inside `start_granted`, before this attacker existed: they
+        // are what makes the warden's own staged request safe on a page all three share.
+        let [tag, verdict, ..] = sched::ipc_recv(report);
         assert_eq!(
             tag,
             fs_proto::fixture::VERDICT,
@@ -10766,6 +11589,570 @@ mod reap_tests {
     }
 }
 
+/// **The directory capability, attacked** (milestone 47, notes/dir-capability.md).
+///
+/// One module for both ISAs rather than an aarch64 test with a riscv twin, which the FS tests above
+/// have. Nothing here is architecture-specific: it wires three portable programs and asserts on a
+/// bitmap, so the only difference between the legs is which binary carries the block-server role,
+/// and that is one `cfg` in [`blk_server_image`] rather than a second copy of every assertion. The
+/// parity gate (DECISIONS §19) is met by literally the same test running twice.
+#[cfg(test)]
+mod dir_capability_tests {
+    use super::*;
+    use crate::sched;
+    use fs_proto::dir;
+    use fs_proto::fixture::dirscape as esc;
+
+    /// The binary carrying the block server's role, which is the one thing the two ISAs disagree
+    /// about: on aarch64 it is a role of the `init`/hello binary, on riscv the dedicated `blk` one.
+    pub(super) fn blk_server_image() -> &'static [u8] {
+        #[cfg(target_arch = "aarch64")]
+        return program("init").expect("no init program in the initrd archive");
+        #[cfg(target_arch = "riscv64")]
+        return program("blk").expect("no blk program in the initrd archive");
+    }
+
+    /// Wire a `dwarden` holding a capability to the fixture's `sub` with exactly `rights`, run the
+    /// directory attacker against it, and return its verdict bitmap. `run` keeps the names the
+    /// attacker creates distinct, because all three runs share one image within a boot and an
+    /// `EEXIST` would otherwise read as a refusal.
+    ///
+    /// `None` when no RedoxFS disk is attached (nothing to test; do not fail).
+    fn attack_a_subtree(rights: u64, run: u64) -> Option<u64> {
+        let report = match fs_service::start_granted_dir(
+            blk_server_image(),
+            program("fsserver").expect("no fsserver program in the initrd archive"),
+            program("dwarden").expect("no dwarden program in the initrd archive"),
+            program("fsclient").expect("no fsclient program in the initrd archive"),
+            fs_service::DirGrant {
+                name: fs_proto::fixture::tree::SUB,
+                rights,
+                role: 5, // ROLE_DIR_ATTACKER
+                arg: run,
+                arg2: 0,
+                stack_pages: 0,
+            },
+        ) {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no RedoxFS disk attached; skipping)");
+                return None;
+            }
+        };
+        // Both handshakes happened inside `start_granted_dir`, before this attacker existed. That
+        // ordering is the fix for the startup clobber `fs_service::await_warden` records.
+        let [tag, verdict, ..] = sched::ipc_recv(report);
+        assert_eq!(
+            tag,
+            fs_proto::fixture::VERDICT,
+            "the attacker's report is not a verdict word",
+        );
+        Some(verdict)
+    }
+
+    /// Compare a verdict against the exact set the configuration is specified to produce, and say
+    /// what the difference means in words rather than in hex.
+    ///
+    /// Both directions are failures and they are different failures, which is why this is not one
+    /// equality assertion: a bit set that should not be is an escape, and a bit clear that should be
+    /// set means the capability did not work, so every refusal it reported proves nothing.
+    fn assert_verdict(got: u64, want: u64, what: &str) {
+        let leaked = got & !want;
+        let missing = want & !got;
+        assert_eq!(
+            leaked,
+            0,
+            "the {what} directory capability leaked: {}",
+            describe_dirscape(leaked),
+        );
+        assert_eq!(
+            missing, 0,
+            "the {what} directory capability could not do what it was granted ({missing:#x}), so \
+             its refusals prove nothing: a capability that reaches nothing is trivially confined",
+        );
+    }
+
+    /// Name the bits a verdict set, so a failure reads as a sentence instead of a bitmap.
+    fn describe_dirscape(v: u64) -> &'static str {
+        if v & esc::REACHED_PARENT != 0 {
+            "it opened a file that is in the granted directory's PARENT"
+        } else if v & esc::REACHED_SIBLING != 0 {
+            "it reached the granted directory's SIBLING"
+        } else if v & esc::WALKED_UP != 0 {
+            "`..` resolved to something"
+        } else if v & esc::WIDENED != 0 {
+            "a child carried a right its parent did not have"
+        } else if v & esc::ENUMERATED_A_STRANGER != 0 {
+            "a listing held a name from outside the grant"
+        } else if v & esc::FORGED_HANDLE != 0 {
+            "it reached something with a handle it was never given"
+        } else if v & esc::CREATED != 0 {
+            "it created a name through a capability with no create right"
+        } else if v & esc::MADE_A_DIR != 0 {
+            "it made a directory through a capability that could not"
+        } else if v & esc::RENAMED != 0 {
+            "it renamed a name through a capability with no remove right"
+        } else if v & esc::WROTE != 0 {
+            "it wrote through a capability with no write right"
+        } else if v & esc::DESCENDED != 0 {
+            "it descended through a capability with no descend right"
+        } else if v & esc::ENUMERATED != 0 {
+            "it enumerated through a capability with no enumerate right"
+        } else if v & esc::GRANTED_ACCESS_FAILED != 0 {
+            "the granted access itself failed, so nothing was actually proven"
+        } else {
+            "nothing (an empty verdict should not have failed an assertion)"
+        }
+    }
+
+    /// **A read-only explorer: it may descend, read and list, and it reaches nothing above itself.**
+    ///
+    /// This is milestone 47's keystone under attack. The attacker holds a capability to `sub` and
+    /// spends its life trying to name `motd` (which is in the parent), `other` and `other/secret`
+    /// (which are in a sibling), and `..`. All three exist on the image and the warden one hop up
+    /// can reach every one of them on any request it likes, so each refusal is a fact about the
+    /// capability rather than about the filesystem.
+    ///
+    /// It also proves both halves of "a child can never exceed its parent": a child asked for no
+    /// rights can do nothing at all, and a child asked for a right this grant does not carry is
+    /// refused rather than quietly given something smaller.
+    #[test_case]
+    fn a_read_only_directory_capability_reaches_its_subtree_and_nothing_above_it() {
+        let Some(v) = attack_a_subtree(dir::DESCEND | dir::READ | dir::ENUMERATE, 1) else {
+            return;
+        };
+        assert_verdict(
+            v,
+            esc::OPENED_ITS_OWN | esc::ENUMERATED | esc::DESCENDED,
+            "read-only",
+        );
+    }
+
+    /// **The same attacker against a capability carrying every right**, which is what makes the run
+    /// above mean anything.
+    ///
+    /// Without it, a `dwarden` that answered no to everything would pass the read-only test
+    /// perfectly, and so would a grant that reached nothing at all. Here the same requests through
+    /// the same code succeed: it writes, it creates, it makes a directory. And it *still* reaches
+    /// nothing above itself, which is the point: the widening is exactly the axes that were widened.
+    #[test_case]
+    fn a_full_directory_capability_does_everything_inside_and_nothing_outside() {
+        let Some(v) = attack_a_subtree(dir::ALL, 2) else {
+            return;
+        };
+        assert_verdict(
+            v,
+            esc::OPENED_ITS_OWN
+                | esc::ENUMERATED
+                | esc::DESCENDED
+                | esc::CREATED
+                | esc::WROTE
+                | esc::RENAMED
+                | esc::MADE_A_DIR,
+            "full",
+        );
+    }
+
+    /// **Milestone 47's motivating sentence, made a test**: a program handed a directory to write
+    /// into can add to it and write to what it added, and it cannot walk into a subdirectory or find
+    /// out what else is in there.
+    ///
+    /// Three rungs withheld at once (`DESCEND`, `ENUMERATE`, `REMOVE`), and two of them are the
+    /// interesting cases:
+    ///
+    /// - `DESCEND` withheld while `CREATE` is held: `mkdir` needs both, so this capability can make
+    ///   a file and cannot make a directory. A directory it could not have walked into would be a
+    ///   way to mint a capability out of a right that was withheld.
+    /// - `REMOVE` withheld while `CREATE` is held is **"add to this, destroy nothing"** exactly, and
+    ///   it is what `RENAME` exists to make falsifiable: this attacker creates a name and then tries
+    ///   to move it, through the same code the full run below moves it with, and cannot. Before that
+    ///   verb existed nothing on the wire consulted `REMOVE` at all, so the rung was a claim rather
+    ///   than a rule.
+    #[test_case]
+    fn an_append_only_directory_capability_adds_and_cannot_walk_or_list() {
+        let Some(v) = attack_a_subtree(dir::READ | dir::WRITE | dir::CREATE, 3) else {
+            return;
+        };
+        assert_verdict(
+            v,
+            esc::OPENED_ITS_OWN | esc::CREATED | esc::WROTE,
+            "append-only",
+        );
+    }
+}
+
+/// **The navigation builtins, and the property that two shells cannot name each other's files**
+/// (milestone 47's commands; notes/shell-navigation.md).
+///
+/// One module for both ISAs, for [`dir_capability_tests`]'s reason: nothing here is
+/// architecture-specific, so the parity gate (DECISIONS §19) is met by the same test running twice.
+///
+/// What is wired is the **real shell binary**, in a role that reads a script instead of a keyboard,
+/// holding a `dwarden`'s narrowed endpoint where the interactive one holds a terminal. So the
+/// builtins under test are the builtins at the prompt rather than a reimplementation of them, and
+/// the thing being confined is a shell.
+#[cfg(test)]
+mod shell_navigation_tests {
+    use super::*;
+    use crate::sched;
+    use fs_proto::dir;
+    use fs_proto::fixture::{navscape as nb, tree};
+
+    /// The `shell` binary's navigating role (`user/src/shell.rs`).
+    const ROLE_NAVIGATE: u64 = 1;
+
+    /// The bits every navigating shell must report whatever it was rooted in: `pwd` at its root,
+    /// `..` clamped, an absolute path refused, a listing, and the whole `mkdir` / create / `rm`
+    /// sequence including the two halves of "unlink is not revoke".
+    const ALWAYS: u64 = nb::PWD_IS_ROOT
+        | nb::CLAMPED_AT_ROOT
+        | nb::ABSOLUTE_REFUSED
+        | nb::LISTED
+        | nb::CREATED
+        | nb::MADE_DIR
+        | nb::UNLINKED
+        | nb::HOLDER_KEPT_READING
+        | nb::NAME_GONE_AFTER_UNLINK
+        | nb::UNLINK_REFUSED_A_DIRECTORY
+        // The two halves of "no single call takes a subtree away", added with `RMDIR`: a directory
+        // with a name in it is refused, and the same call works once the name is out.
+        | nb::RMDIR_REFUSED_NON_EMPTY
+        | nb::RMDIR_REMOVED_EMPTY;
+
+    /// Wire a `dwarden` holding a capability to `root` and run the shell's navigation script inside
+    /// it. `run` keeps the names it creates distinct across runs sharing one image.
+    ///
+    /// The run index and the rights ride in one word packed by `fs_proto::grant::spec`, the same
+    /// packing the warden's own grant uses: the shell is **told** what its capability carries
+    /// because nothing on this wire reports what a handle holds, and `OPENDIR` refuses a request
+    /// wider than the parent rather than narrowing it (notes/shell-navigation.md).
+    ///
+    /// `None` when no RedoxFS disk is attached.
+    fn navigate(root: &'static str, run: u64) -> Option<u64> {
+        let report = fs_service::start_granted_dir(
+            dir_capability_tests::blk_server_image(),
+            program("fsserver").expect("no fsserver program in the initrd archive"),
+            program("dwarden").expect("no dwarden program in the initrd archive"),
+            program("shell").expect("no shell program in the initrd archive"),
+            fs_service::DirGrant {
+                name: root,
+                rights: dir::ALL,
+                role: ROLE_NAVIGATE,
+                arg: fs_proto::grant::spec(run as usize, dir::ALL),
+                arg2: 0,
+                // Measured, not guessed: see `spawn_fs_client`. A shell carries a path stack, a
+                // parsed path and a listing buffer by value, and one page is 192 bytes short.
+                stack_pages: 2,
+            },
+        )?;
+        let [tag, verdict, ..] = sched::ipc_recv(report);
+        assert_eq!(
+            tag,
+            fs_proto::fixture::VERDICT,
+            "the shell's report is not a verdict word",
+        );
+        Some(verdict)
+    }
+
+    /// Compare a report against the exact set the configuration is specified to produce. Both
+    /// directions are failures and they are different ones: a bit set that should not be is a
+    /// shell reaching past its root, and a bit clear that should be set is a shell that could not
+    /// navigate at all, whose refusals therefore prove nothing.
+    fn assert_report(got: u64, want: u64, what: &str) {
+        assert_eq!(
+            got & !want,
+            0,
+            "the shell rooted at {what} did something it must not: {}",
+            describe(got & !want),
+        );
+        assert_eq!(
+            got & want,
+            want,
+            "the shell rooted at {what} could not do what its capability allows ({:#x} missing), \
+             so every refusal it reported proves nothing",
+            want & !got,
+        );
+    }
+
+    /// Name a bit, so a failure reads as a sentence.
+    fn describe(v: u64) -> &'static str {
+        if v & nb::WALKED_UP != 0 {
+            "`..` climbed out of its root"
+        } else if v & (nb::REACHED_SECRET | nb::REACHED_INNER) != 0 {
+            "it opened a file that exists only in the OTHER shell's root"
+        } else if v & (nb::SAW_SECRET | nb::SAW_INNER) != 0 {
+            "its listing held a name from the other shell's root"
+        } else if v & nb::NAVIGATION_FAILED != 0 {
+            "the navigation itself failed, so nothing was proven"
+        } else if v & nb::DESCENDED != 0 {
+            "it descended into a directory that is not in its root"
+        } else {
+            "something no other bit describes"
+        }
+    }
+
+    /// **A shell navigates the subtree it holds, and cannot climb out of it.**
+    ///
+    /// `pwd` renders `/` at its root because that is the root of the only namespace it has; `..`
+    /// there is refused with nothing sent, because `..` is a pop of the stack of capabilities the
+    /// shell descended through and at the root there is nothing to pop; an absolute path is refused
+    /// as *unnameable*, since there is no namespace to root one in. Then the verbs that change the
+    /// tree, including the one this milestone insists on separating: `rm` removes the **name**, the
+    /// handle the shell still holds keeps reading the bytes, and the name really is gone.
+    #[test_case]
+    fn a_shell_navigates_its_own_subtree_and_clamps_at_its_root() {
+        let Some(v) = navigate(tree::SUB, 4) else {
+            crate::println!("    (no RedoxFS disk attached; skipping)");
+            return;
+        };
+        assert_report(
+            v,
+            ALWAYS | nb::REACHED_INNER | nb::SAW_INNER | nb::DESCENDED | nb::RETURNED,
+            "sub",
+        );
+    }
+
+    /// **The headline: every shell has its own root, and neither can name the other's files.**
+    ///
+    /// Two shells, two subtrees of one image, one script. Each tries to open `sub/inner` and
+    /// `other/secret` and reports which it reached, and it is **told nothing about which subtree it
+    /// was rooted in**, so the property is read off the pair rather than claimed by either. The
+    /// listings are checked the same way, because a listing is a rendering of authority: a name from
+    /// the other shell's root appearing in one would be an escape even though nothing was opened.
+    ///
+    /// Not by policy. The FS server can reach both directories on any request it likes, and the
+    /// wardens one hop up hold the whole image root. What stops each shell is that **no capability
+    /// reaching the other subtree exists in its cspace**, which is why the two runs are sequential
+    /// and it costs nothing: they are separate processes with separate roots, and being alive at the
+    /// same instant would prove no more than this does (they share one page with the FS server, so
+    /// the harness runs them in turn).
+    #[test_case]
+    fn two_shells_with_different_roots_cannot_name_each_others_files() {
+        let Some(a) = navigate(tree::SUB, 5) else {
+            crate::println!("    (no RedoxFS disk attached; skipping)");
+            return;
+        };
+        let b = navigate(tree::OTHER, 6).expect("the service was wired for the first shell");
+
+        assert_report(
+            a,
+            ALWAYS | nb::REACHED_INNER | nb::SAW_INNER | nb::DESCENDED | nb::RETURNED,
+            "sub",
+        );
+        // The second holds a subtree with no child directory in it, so it cannot descend, and that
+        // difference is the point: the same script against a different capability does different
+        // things, and neither shell's world contains the other's.
+        assert_report(b, ALWAYS | nb::REACHED_SECRET | nb::SAW_SECRET, "other");
+
+        // Stated once more as the crossing, because that is the sentence the milestone makes and an
+        // exact-set assertion is easy to read as a list of unrelated facts.
+        assert_eq!(
+            (a & nb::REACHED_SECRET, b & nb::REACHED_INNER),
+            (0, 0),
+            "a shell named a file in the other shell's root",
+        );
+        assert_ne!(a & nb::REACHED_INNER, 0);
+        assert_ne!(b & nb::REACHED_SECRET, 0);
+    }
+}
+
+/// **`rm` as a program, and a recursive removal bounded by the capability it was handed**
+/// (milestone 47's `rm -r`; notes/rm-recursion.md).
+///
+/// One module for both ISAs, for [`dir_capability_tests`]'s reason: nothing here is
+/// architecture-specific, so the parity gate (DECISIONS §19) is met by the same test running twice.
+///
+/// What is wired is the **real `rm` binary** (`user/src/rm.rs`) behind a real `dwarden`, started the
+/// way the shell would start it: the name in a grant's two argument words and the options in the
+/// spec word, in `capsh::rmopt`'s bit order, so the numbers here come from the manifest the prompt
+/// checks against rather than from a second copy of an ordering.
+///
+/// The thing being demonstrated is not that a loop can delete a tree. It is that **the walk stops
+/// exactly where the capabilities stop**: the same command line against the same tree does the
+/// whole job through one grant and cannot begin through a narrower one, and no branch in the
+/// program decides which.
+#[cfg(test)]
+mod rm_program_tests {
+    use super::*;
+    use crate::sched;
+    use capsh::rmopt;
+    use fs_proto::dir;
+    use fs_proto::fixture::{VERDICT, rm as rr, tree};
+
+    /// The most messages one run may send before the harness stops reading. A `rm` that never sent
+    /// its verdict would otherwise hang the boot; this turns it into a failed assertion.
+    const MAX_MESSAGES: usize = 64;
+
+    /// What one run of the program reported.
+    struct Outcome {
+        /// Its exit status: 0, or the errno of the first failure (`fs_proto::fixture::rm`).
+        status: u64,
+        /// How many names it removed.
+        removed: u64,
+        /// **How many lines of text it printed before the verdict.** Zero is the interesting value:
+        /// `rm(1)` is silent on success, and a `SEND` blocks until somebody receives it, so a line
+        /// that was emitted cannot be missed by looking after the fact.
+        printed: usize,
+    }
+
+    /// Run `rm` once inside a `dwarden` holding [`tree::RMTREE`] with exactly `rights`, told to
+    /// remove `name` with `flags`.
+    ///
+    /// `None` when no RedoxFS disk is attached (nothing to test; do not fail).
+    fn run_rm(rights: u64, name: &str, flags: u64) -> Option<Outcome> {
+        assert!(
+            fs_proto::grant::fits(name.as_bytes()),
+            "the operand rides in two argument words",
+        );
+        let (lo, hi) = fs_proto::grant::pack_name(name.as_bytes());
+        let report = fs_service::start_granted_dir(
+            dir_capability_tests::blk_server_image(),
+            program("fsserver").expect("no fsserver program in the initrd archive"),
+            program("dwarden").expect("no dwarden program in the initrd archive"),
+            program("rm").expect("no rm program in the initrd archive"),
+            fs_service::DirGrant {
+                name: tree::RMTREE,
+                rights,
+                // `rm` is started with a **grant's** three words rather than a role and a number:
+                // the spec (the operand's length, and the options where a warden's rights ride),
+                // then the two words of name.
+                role: fs_proto::grant::spec(name.len(), flags),
+                arg: lo,
+                arg2: hi,
+                // Measured the way `spawn_fs_client` asks for: the recursion is real stack, each
+                // level holding a listing buffer by value, and this program has no allocator.
+                stack_pages: 4,
+            },
+        )?;
+
+        // `printed` is the enumeration index rather than a counter, and the two coincide exactly:
+        // the verdict arm returns *before* the increment, so on the iteration that sees it, the
+        // index is the number of text frames that arrived first. That is the quantity being
+        // reported, so this is not merely appeasing the lint.
+        for (printed, _) in (0..MAX_MESSAGES).enumerate() {
+            let [w0, w1, w2, _, _] = sched::ipc_recv(report);
+            if w0 == VERDICT {
+                return Some(Outcome {
+                    status: w1,
+                    removed: w2,
+                    printed,
+                });
+            }
+            // A text frame: its first word is a byte count, which cannot collide with the verdict
+            // word. That is what makes "it printed nothing" an assertion rather than a hope.
+            assert!(w0 <= 16, "neither a verdict nor a text frame: {w0:#x}");
+        }
+        panic!("rm sent {MAX_MESSAGES} messages and never a verdict");
+    }
+
+    /// **The headline: `rm -r` removes the subtree it was granted, and a narrower capability
+    /// cannot begin.**
+    ///
+    /// Three runs against one tree, in order, because they are one argument:
+    ///
+    /// 1. `rm rm-doomed` with the full grant is **`EISDIR` and nothing removed**. A directory is a
+    ///    refusal, never a silent escalation to recursive removal, which is `rm(1)`'s behaviour and
+    ///    is what makes `-r` mean something.
+    /// 2. `rm -r rm-doomed` through a capability carrying only `REMOVE` **cannot even look**: the
+    ///    `OPENDIR` is `ENOENT`, because a naming right withheld answers "in this scope there is no
+    ///    such name" (DECISIONS §47). The tree is still there. Nothing in the program decided this;
+    ///    the capability to walk was never handed over.
+    /// 3. The same command through a capability carrying `ENUMERATE｜DESCEND｜REMOVE` takes the
+    ///    whole tree, bottom-up, five names.
+    ///
+    /// Runs 1 and 2 are what make run 3 more than "a loop deleted some files": the *same binary*,
+    /// the *same operand*, and the outcome is decided by what was in the cspace.
+    #[test_case]
+    fn rm_r_takes_the_subtree_it_was_granted_and_a_narrower_grant_cannot_begin() {
+        let Some(refused) = run_rm(dir::REMOVE_TREE, tree::RM_DOOMED, 0) else {
+            crate::println!("    (no RedoxFS disk attached; skipping)");
+            return;
+        };
+        assert_eq!(
+            refused.status,
+            rr::status(dir::EISDIR),
+            "`rm` of a directory must refuse, not quietly recurse",
+        );
+        assert_eq!(refused.removed, 0);
+        assert!(
+            refused.printed > 0,
+            "a failure is a diagnostic AND an exit status; this one printed nothing",
+        );
+
+        // The narrow grant: it may take names out of `rmtree` and may not walk into anything.
+        let blind = run_rm(dir::REMOVE, tree::RM_DOOMED, rmopt::RECURSIVE)
+            .expect("the service was wired by the first run");
+        assert_eq!(
+            blind.status,
+            rr::status(2), // ENOENT
+            "a capability that may not descend must not learn that the subtree is there",
+        );
+        assert_eq!(
+            blind.removed, 0,
+            "a `rm -r` that could not walk must not have removed anything on the way",
+        );
+
+        // And the same line through the grant that carries the walk.
+        let done = run_rm(
+            dir::REMOVE_TREE,
+            tree::RM_DOOMED,
+            rmopt::RECURSIVE | rmopt::VERBOSE,
+        )
+        .expect("the service was wired by the first run");
+        assert_eq!(done.status, rr::OK, "the removal reported a failure");
+        assert_eq!(
+            done.removed, 5,
+            "two files, a leaf, the directory holding it, and the top: five names",
+        );
+        assert_eq!(
+            done.printed, 5,
+            "`-v` prints one line per name removed, and nothing else",
+        );
+    }
+
+    /// **`-f` is idempotency, and silence is the default.** Both are `rm(1)`'s, checked against the
+    /// man page rather than remembered.
+    ///
+    /// - `rm rm-nothing` on a name that is not there is a diagnostic and a non-zero status.
+    /// - `rm -f rm-nothing` is **neither**: "if the file does not exist, do not display a diagnostic
+    ///   message or modify the exit status". That is what makes a script re-runnable, and "absence
+    ///   is the desired state" is not a lie about failure.
+    /// - `rm rm-solo` on a name that *is* there removes it and **prints nothing at all**, which is
+    ///   why `-v` exists. Without this run the `-f` claim above is equally true of a program that
+    ///   never prints.
+    ///
+    /// Its names are its own, so this run and the recursive one above cannot depend on each other's
+    /// order.
+    #[test_case]
+    fn rm_f_ignores_a_name_that_is_not_there_and_success_says_nothing() {
+        let Some(loud) = run_rm(dir::REMOVE_TREE, tree::RM_MISSING, 0) else {
+            crate::println!("    (no RedoxFS disk attached; skipping)");
+            return;
+        };
+        assert_eq!(loud.status, rr::status(2), "a missing name is ENOENT");
+        assert!(loud.printed > 0, "and it says so");
+
+        let quiet = run_rm(dir::REMOVE_TREE, tree::RM_MISSING, rmopt::FORCE)
+            .expect("the service was wired by the first run");
+        assert_eq!(
+            quiet.status,
+            rr::OK,
+            "`-f` must not modify the exit status for a name that is not there",
+        );
+        assert_eq!(quiet.printed, 0, "`-f` suppresses the diagnostic too");
+        assert_eq!(quiet.removed, 0, "there was nothing to remove");
+
+        let did = run_rm(dir::REMOVE_TREE, tree::RM_SOLO, 0)
+            .expect("the service was wired by the first run");
+        assert_eq!(did.status, rr::OK);
+        assert_eq!(did.removed, 1);
+        assert_eq!(
+            did.printed, 0,
+            "success prints nothing; `-v` is the option that changes that",
+        );
+    }
+}
+
 /// Parity C: the virtio-blk driver, its two attackers, and the DMA confinement, on RISC-V.
 ///
 /// These are the riscv twins of the three disk tests in the aarch64 module above, separate
@@ -11041,7 +12428,7 @@ mod riscv_virtio_tests {
     /// The riscv half of the aarch64 twin's helper; the only difference is the block-server binary
     /// (the portable `blk` here, the PL011-tied `hello` there).
     fn attack_a_grant(rights: u64, writable: bool) -> Option<u64> {
-        let granted = match fs_service::start_granted(
+        let report = match fs_service::start_granted(
             blk_image(),
             program("fsserver").expect("no fsserver program in the initrd archive"),
             program("fwarden").expect("no fwarden program in the initrd archive"),
@@ -11063,13 +12450,9 @@ mod riscv_virtio_tests {
                 return None;
             }
         };
-        assert_fs_service_ready(granted.readiness);
-        assert_eq!(
-            sched::ipc_recv(granted.warden_ready)[0],
-            fs_proto::fixture::READY,
-            "the warden could not open the granted name, so there was nothing to attack",
-        );
-        let [tag, verdict, ..] = sched::ipc_recv(granted.report);
+        // The two handshakes happened inside `start_granted`, before this attacker existed: they
+        // are what makes the warden's own staged request safe on a page all three share.
+        let [tag, verdict, ..] = sched::ipc_recv(report);
         assert_eq!(
             tag,
             fs_proto::fixture::VERDICT,

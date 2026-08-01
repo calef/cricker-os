@@ -17,10 +17,17 @@
 # The `std` overlay (patches/std-cricker) is the most exposed part of the tree, because it patches
 # std's own source and therefore tracks upstream's internals rather than a stable API.
 #
-# BUMPING THIS IS A DELIBERATE COMMIT. Raise the date, run script/test, and expect the overlay's
-# `pub use unsupported_fs::{...}` list in sys/fs/cricker.rs to need new names; `set_perm_nofollow` is
-# the one already known to be waiting. A scheduled non-gating CI job against a newer nightly, so the
+# BUMPING THIS IS A DELIBERATE COMMIT, and `script/toolchain-bump` does it end to end: it raises the
+# date, rebuilds the farm from scratch, runs the gates, and restores the old pin on any failure, so a
+# bad bump leaves the tree building and nothing committed.
+#
+# Expect the overlay to need work, and expect the FIRST guess to be wrong. Bumping to 2026-07-31 hit
+# `set_perm_nofollow` exactly as forecast below, and adding it to the `pub use unsupported_fs::{...}`
+# list did NOT fix it: that version takes `unsupported_fs::FilePermissions` and the overlay defines
+# its own, so the signature does not match. It needed a local twin of `set_perm` instead. **The
+# re-export list is the common repair, not the only one** — when upstream's function touches a type
+# the overlay replaces, the overlay has to implement it. A scheduled non-gating CI job against a newer nightly, so the
 # bump is a notice rather than a surprise, is still outstanding (roadmap milestone 42's neighbourhood).
-channel = "nightly-2026-07-26"
+channel = "nightly-2026-07-31"
 components = ["rust-src", "llvm-tools", "rustfmt", "clippy"]
 targets = ["aarch64-unknown-none-softfloat", "riscv64imac-unknown-none-elf"]
