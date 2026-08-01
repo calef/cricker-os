@@ -150,6 +150,49 @@ the requirements are known.
    won by *exposure* rather than by reading the spec, which is why §46 says write the calendar and
    vendor the crypto.
 
+## Chris names the programs
+
+**A program's name is Chris's call, not a lane's and not yours** (2026-08-01). This is the same rule
+as `DECISIONS.md` section numbers, one level up: it is global to the tree, so it is decided by the
+person who can see the whole tree.
+
+The reason is his: **names are what make this OS accessible to humans and to LLMs.** A reader meets a
+name before they meet anything else, and in a capability system the name is often the only thing that
+says what a program can *do*. `DECISIONS.md` §39 already says a name is a claim; this says who gets to
+make the claim.
+
+The evidence that it needed a rule is the tree itself. `dwarden` is named for what it **holds** while
+its two siblings are named for what they **serve**, so a reader who correctly infers the scheme gets
+it wrong. `conx` has no recorded expansion anywhere: not in §41, not in `notes/live-replacement.md`,
+not in the commit that introduced it. `cseam.rs` sits among 48 programs and is not one; it is a shared
+module. Every one of those was a locally reasonable choice by whoever was mid-task.
+
+**How to work it.** Propose names with what each thing actually does, and wait. A lane that needs a
+new program ships a **provisional** name, says so in its report, and expects it to change; the
+integrator surfaces it. Never rename on your own initiative either, because a rename is a naming
+decision with extra steps.
+
+### The convention: `snake_case`, one rule, everywhere
+
+Crates already do this (`fs_proto`, `cred_proto`, `user_rt`). Programs did not: **0 of 57** used an
+underscore, so multiword names were squished (`fsclient`, `sysinit`, `credcli`).
+
+An earlier draft of this rule had two tiers, short names for programs a user types and underscores for
+programs only the system spawns. **Chris rejected it, correctly**: the category is not a stable
+property of a program. `wc` was internal plumbing and became a prompt-typed pipeline stage in one day,
+and a convention keyed to something that changes produces renames. It is also not how Unix got its
+names; the terseness of `ls` is an emergent pressure on words people type constantly, not a rule
+anyone wrote down. Codifying an emergent property turns it into a classification chore that every
+contributor has to get right.
+
+So: one rule, no branch to get wrong. A short name for a typed command is then a *choice its author
+makes*, not a convention to apply, and nobody needs a rule to know `wc` beats `word_count`.
+
+**One constraint to know:** `crickerfs` caps archive names at `NAME_LEN = 24` bytes. It can be raised,
+and there is no data migration because every image regenerates from that crate, but it costs
+directory entries per block and kernel stack (`Fs` holds entries as a fixed array on the boot and
+spawn paths). Do not let it pick a name; do not spend a format change on bytes nothing needs.
+
 ## The syscall surface is a boundary, not a habit
 
 Milestone 7's process-model question is decided: capabilities, an `svc` + `x8` ABI with a narrow,
