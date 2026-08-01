@@ -62,9 +62,14 @@ laptop and on a runner.
 rather than the pin, so that upstream drifting away from us is discovered early instead of presenting
 the whole bill on the day someone raises the date. It is expected to go red: that is the signal
 working, not a defect in whatever commit happened to trigger the run, and the fix is a bump commit at
-a time of our choosing. A badge for it would be worse than useless — **a badge that is designed to go
+a time of our choosing. A badge for it would be worse than useless: **a badge that is designed to go
 red periodically teaches readers to discount badges**, which is the only thing a badge must not do.
 Its result lives in the Actions tab, where a notice belongs.
+
+The CI badge is held to the same standard, which took a fix to make true. Runs on `main` are never
+superseded by a later push, because a **cancelled** run also renders as a badge that is not green,
+and that is the failure worth avoiding hardest: it looks cosmetic and it is actually the signal going
+missing. See the concurrency comment in [ci.yml](.github/workflows/ci.yml).
 
 ## What it does
 
@@ -193,7 +198,7 @@ it. A duplicate of a gated artifact is the copy that goes stale, because only on
 gate.
 
 If you want the shape rather than the list: milestone 7 is the dividing line between "a Rust program
-that boots" and "an operating system" — it is where EL0, address spaces, capabilities, the ELF loader
+that boots" and "an operating system": it is where EL0, address spaces, capabilities, the ELF loader
 and IPC arrive together.
 
 ## Things this project has already gotten wrong

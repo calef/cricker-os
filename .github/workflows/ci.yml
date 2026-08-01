@@ -14,10 +14,20 @@ on:
 permissions:
   contents: read
 
-# A quick follow-up push supersedes the in-flight run on the same ref, rather than queueing behind it.
+# On a branch or a PR, a follow-up push supersedes the in-flight run: only the tip is interesting.
+#
+# **On `main` it must not**, and the reason is a real failure rather than a preference. A full run
+# takes around forty minutes; pushes to `main` during a working session land every fifteen. With
+# `cancel-in-progress` unconditional, every run was killed by the next push before it finished --
+# ten of twelve consecutive runs ended `cancelled`, so **CI verified nothing on `main` for ten
+# pushes** while the badge reported the newest completed run, which was a cancellation.
+#
+# That is the bad kind of failure: it looks like a red badge (cosmetic, ignorable) and it is
+# actually the absence of the signal the badge exists to carry. Every commit that reaches `main`
+# gets a complete run, even if several queue up behind each other.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 # Each job's real work is a script from script/ (the "Scripts to Rule Them All" set), so CI runs
 # exactly what a developer runs locally. See notes/scripts.md.
@@ -202,7 +212,7 @@ jobs:
       - name: Publish the summary to the run
         run: |
           {
-            echo '### Coverage — host-logic crates'
+            echo '### Coverage: host-logic crates'
             echo '```'
             cargo llvm-cov report --summary-only
             echo '```'
