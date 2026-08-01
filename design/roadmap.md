@@ -3342,9 +3342,34 @@ And `fs_file_caretaker` says filesystem twice, which is the price of the scheme 
 The rename also resolves an inconsistency already in the source: `dwarden.rs`'s header says
 "attenuated to one **subtree**" while its second paragraph says "narrows it to one **directory**".
 
+#### The C-seam family converts in the same pass (Chris, 2026-08-01)
+
+| Current | Settled |
+|---|---|
+| `cwarden` | `c_confiner` |
+| `cshim` | `c_shim` |
+| `crates/c_seam` | already done, 2026-08-01 (rule 7) |
+| `user/c/cseam.c` | **`user/c/c_seam.c`**, and this one is a repair |
+
+**That last row fixes a split the integrator created.** `c_seam` was chosen over `c_abi` partly
+*because* it keeps the Rust and C halves paired, and then only the Rust half was renamed when rule 7
+turned it into a crate. So the pairing argument is currently false in the tree: `crates/c_seam`
+faces `user/c/cseam.c`.
+
+The pairing is not cosmetic. Both files state the same constants **by hand**, because a C compiler
+cannot see Rust, and `crates/c_seam`'s test reads the C source with `include_str!` to prove they
+agree. Two names that no longer match make the duplication look accidental rather than mechanical,
+which is exactly what that test exists to contradict. **Renaming the C file means updating the
+`include_str!` path**, and the test failing is how a mistake there would announce itself.
+
+`user/build.rs`'s `C_SOURCES` table names both the source and the program it compiles into
+(`("c/cseam.c", "cshim")`), so it changes on both counts in one edit.
+
 #### Still open, and Chris's
 
-Whether the C-seam siblings (`cshim`, `cseam`) convert in the same pass, and the `conx` pair.
+The `conx` pair: `cconx` forces `conx`, which has no recorded expansion anywhere (not §41, not
+`notes/live-replacement.md`, not the commit that introduced it). `user/c/conxsvc.c` travels with
+whatever they become.
 
 **Scope, which is the part to decide before starting.** There are **532 `warden` tokens** in the
 tree. This is not four filenames: it is helper functions, parameter names, struct fields, doc prose,
