@@ -122,6 +122,8 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 56 | PARTIAL | Secrets, credentials, and the entropy to make them safe | the entropy half is **built** (§44): a real random source, capability-granted. The crypto and credential halves remain, and a secret is still a bearer token where a capability is an unforgeable reference |
 | 57 | PARTIAL | Partitioning and formatting a real drive, and extended attributes | you cannot find a partition without reading the table, and **we have no partition-table code at all**; all of it is testable in QEMU before the board lands. The host recovery tool (`ls`/`cat`/`extract`) is built; GPT, on-target `mkfs` and xattrs are not |
 | 58 | NOT-STARTED | RISC-V TLB shootdown, and the flush that makes ASIDs pointless | every riscv context switch discards the whole TLB; the fix needs a **software** shootdown protocol, because `sfence.vma` does not broadcast |
+| 59 | NOT-STARTED | The CPU-model matrix: stop testing against one generous emulator | `-cpu rv64` enables nearly every ratified extension; the board is an RV64GC U74. Run the suite across `-cpu` profiles so "works on the generic model" surfaces before the hardware does |
+| 60 | NOT-STARTED | ISA discovery: read the machine instead of assuming it | nothing reads `riscv,isa-extensions`; RISC-V has no `CPUID`, so the device tree plus targeted probes are the architected answer. One `Isa` record, built at boot, printed at boot |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -3064,6 +3066,113 @@ taking it as a side effect of writing tests.
 with its acknowledgement, then removing the flush behind the probe's gate, then re-baselining
 `ctx_switch`. **Effort: not estimated**; the shootdown is the unknown, and it is the kind of unknown
 that deserves measurement before a number.
+
+### 59. The CPU-model matrix: stop testing against one generous emulator
+
+**Status: NOT-STARTED.** Raised by Chris on 2026-08-01, asking whether we should modify QEMU to match
+the chip, detect features, or something else.
+
+**The answer to the first is no.** A forked emulator is a machine that exists nowhere: it proves
+nothing about the real chip and nothing about the standard emulator, which is the worst of both. We
+also pin QEMU for benchmark determinism (`.qemu-version`, and CI builds it from source), so a fork
+multiplies that maintenance. QEMU already lets us **narrow** rather than patch, and narrowing is the
+whole milestone.
+
+#### What we actually run against today
+
+`qemu-system-riscv64 -machine virt -cpu rv64 -bios default`. **`rv64` is QEMU's maximalist model**: it
+enables essentially every ratified extension QEMU implements. The VisionFive 2's JH7110 is a SiFive
+U74, which is **RV64GC**. So the emulator will accept things the board will not, and every RISC-V
+result we have was taken on the permissive one.
+
+#### The reassuring part, stated before the worrying part
+
+We build for **`riscv64imac`**: no `F`, no `D`. RV64GC is IMAFDC. **We are already a strict subset of
+the board's ISA**, so the compiler cannot emit an instruction the U74 lacks. That is a real result
+and it narrows this milestone considerably.
+
+What it does **not** cover is the part that is hand-written: `asm!` in `arch/riscv64/`, CSR reads and
+writes that QEMU may implement more permissively than SiFive, and implementation-defined widths. That
+is the exposure, and it is exactly the class a narrower `-cpu` catches.
+
+#### The work
+
+Run the existing suite against more than one CPU model. QEMU ships **`sifive-u54`** (the U74's
+family) and the profile models **`rva22s64`** and **`rva23s64`**; `thead-c906` is a useful hostile
+case because it is a real chip with real divergences.
+
+**This reframes what parity means.** Today parity is two ISAs (DECISIONS §19). With hardware arriving
+it should be *the same suite across CPU profiles*, because "aarch64 and riscv64 both pass" stops being
+the strongest available claim once we know riscv64 was only ever tested on the friendliest model.
+
+#### Why this comes BEFORE discovery (milestone 60)
+
+Because it needs no discovery to run, and **what it breaks tells us what is worth discovering.**
+Building an `Isa` record first means guessing which facts matter; running the matrix first means the
+machine names them. That is the same posture as the ASID probe and the device-tree-pointer correction:
+measure, then write down what the measurement said.
+
+The cheap experiment is one command and it may well pass, in which case the result is "we are already
+portable to the board's ISA", recorded with the evidence.
+
+#### BUGS
+
+- **`sifive-u54` in QEMU is still QEMU.** It will not reproduce the JH7110's cache behaviour, its real
+  memory map, or its errata. This catches the ISA-and-CSR class and is not a substitute for the board.
+- **A green matrix is not a portable kernel.** It is the absence of one specific class of failure.
+
+**Effort: small**, and it is the highest ratio of de-risking to work of anything before the board
+lands (~2026-08-21).
+
+### 60. ISA discovery: read the machine instead of assuming it
+
+**Status: NOT-STARTED.** The gap found while answering milestone 59's question: **nothing in the tree
+reads the ISA.** No `riscv,isa`, no `riscv,isa-extensions`, no `mmu-type`. We run on what the target
+triple implies plus exactly one runtime probe.
+
+#### Why the device tree, and why there is no shortcut
+
+**RISC-V deliberately has no `CPUID`.** `misa` exists but is coarse, is permitted to read as zero, and
+says nothing about post-2015 extensions. The architected answer is the device tree
+(`riscv,isa-extensions`, `mmu-type` for Sv39 versus Sv48) plus SBI for firmware-provided facilities.
+We already parse DTB (`crates/dtb`), so this is parsing plus somewhere to put the answer.
+
+#### The shape, and the trap
+
+**One `Isa` record, populated once at boot, printed at boot.** The trap is `if isa.has_x()` sprouting
+across the kernel, which turns a fact into a hundred branches. The places that genuinely vary are few
+and nameable: TLB flush strategy, ASID width, Sv39 versus Sv48, IOMMU presence. Keep it to those.
+
+**Do not build a chip-abstraction framework on one board.** CLAUDE.md's rule against speculatively
+trait-ifying applies with force here: the second real board should tell us what the abstraction is.
+One record and four call sites is not a framework, and that is the point.
+
+#### Discovery has three tiers and we should be explicit about which is which
+
+1. **The device tree** declares what firmware claims.
+2. **A targeted probe** measures what the silicon does. `probe_asid_bits()` (built 2026-07-31) is the
+   pattern: write ones, read back what stuck.
+3. **Trap-and-detect** executes an instruction and catches the illegal-instruction fault. Last resort,
+   needs the exception path, and we should not need it.
+
+**Keep the probes even once the tree is parsed.** The tree is a claim and the probe is a measurement,
+and when they disagree the machine wins. That is not a hypothetical here: this project has already
+been wrong about a QEMU boot register it believed the documentation about.
+
+#### Truthfulness (§42's habit, applied to hardware)
+
+If something required is absent, **say so and stop**, rather than running degraded and reporting
+success. §42 makes a filesystem declare what it offers and be honest about it; a kernel that silently
+assumes Sv39 on an Sv48 machine is the same violation one layer down.
+
+#### BUGS
+
+- **Discovery does not make us portable**, it makes us honest. Knowing an extension is missing and
+  doing something useful about it are different milestones.
+- **The device tree can lie**, or firmware can describe a machine it is not. Tier 2 exists for that.
+
+**Effort: not estimated.** Parsing is small; how many call sites genuinely need to vary is the unknown,
+and milestone 59 is what answers it.
 
 ### The backup-server ladder (53 to 55), and why it is the right deliverable
 
