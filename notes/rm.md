@@ -73,6 +73,24 @@ plain run would be indistinguishable, because the whole of `-f` is that a name w
 not an error. A fixture that accidentally shipped that name would make the test pass while proving
 nothing, and `fs_proto` has a host test asserting it is never staged.
 
+## `rm *.txt`: the operand can be a set, and then it is the namespace
+
+Milestone 47's globbing lane, [glob-grant.md](glob-grant.md). `rm old.txt` grants the directory
+holding one name; `rm *.txt` grants that directory **attenuated to the names the pattern matched**,
+served by `user/src/swarden.rs`. The over-grant this note used to declare (the capability could
+remove anything else in that directory) is closed for a pattern operand and remains for a literal
+one, which is the honest state: a single name still travels through `dwarden`.
+
+A set does not fit in the two argument words a name rides in, so `rm` is started with a grant whose
+name is **zero bytes long** (`fs_proto::grant::WHOLE_NAMESPACE`). It means "the operand is your
+namespace", and `rm` learns the names by enumerating the capability it holds, which reveals exactly
+what the command line already printed.
+
+It sweeps in **one listing with no rounds**, and the contrast with the recursive walk is a fact about
+the namespace rather than an optimization. That walk must re-read from cursor 0, because removing a
+name shifts a real directory's entries; a set namespace is fixed, so re-reading would hand the loop
+the names this run has already taken away.
+
 ## BUGS
 
 - **A verdict word must not look like a byte count.** The report channel carries text frames (first
@@ -90,4 +108,5 @@ nothing, and `fs_proto` has a host test asserting it is never staged.
 - DECISIONS §47 (the directory-capability keystone and its six rights), §48 (navigation, and why `rm`
   was a builtin before this), §42 (a filesystem declares what it offers and must be truthful).
 - Milestone 47's "`rmdir` and `rm -r`: Unix already made the safe choice" in `design/roadmap.md`.
-- `notes/dir-capability.md` for the rights ladder and `dwarden`.
+- `notes/dir-capability.md` for the rights ladder and `dwarden`, and `notes/glob-grant.md` for the
+  set warden a pattern operand is served by.

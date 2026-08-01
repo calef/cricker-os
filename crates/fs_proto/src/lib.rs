@@ -767,12 +767,12 @@ pub mod grant {
 /// One name fits in two `START` argument words, which is why a per-file grant costs no page. A set
 /// does not fit in any number of registers, so it is written into a frame the wiring maps
 /// **read-only** into the warden. That is the honest place for `ARG_MAX` to reappear: it is not a
-/// buffer limit any more, it is the size of a capability, and [`MAX_NAMES`] is where the ceiling is
+/// buffer limit any more, it is the size of a capability, and [`nameset::MAX_NAMES`] is where the ceiling is
 /// declared.
 ///
 /// # The encoding, and why each name carries its type
 ///
-/// A record is one header byte then the name: bit 7 of the header is [`IS_DIR`] and the low seven
+/// A record is one header byte then the name: bit 7 of the header is [`nameset::IS_DIR`] and the low seven
 /// are the length (a name is at most [`grant::MAX_NAME`] bytes, so seven bits is room to spare). A
 /// zero header terminates the set, which is why a name may not be empty.
 ///
@@ -1861,7 +1861,12 @@ mod tests {
             );
         }
         // Every name in the set has to be able to travel in one, or the grant cannot be built.
-        for name in [tree::GLOB_ONE, tree::GLOB_TWO, tree::GLOB_MISS, tree::GLOB_DIR] {
+        for name in [
+            tree::GLOB_ONE,
+            tree::GLOB_TWO,
+            tree::GLOB_MISS,
+            tree::GLOB_DIR,
+        ] {
             assert!(grant::fits(name.as_bytes()), "{name} does not fit a grant");
         }
     }
@@ -1896,8 +1901,7 @@ mod tests {
             Some(nameset::BYTES),
             "the widest set this contract carries must fit its own buffer exactly",
         );
-        let over: [(&[u8], bool); nameset::MAX_NAMES + 1] =
-            [(b"a", false); nameset::MAX_NAMES + 1];
+        let over: [(&[u8], bool); nameset::MAX_NAMES + 1] = [(b"a", false); nameset::MAX_NAMES + 1];
         assert_eq!(nameset::encode(&over, &mut buf), None, "one name too many");
         assert_eq!(
             nameset::encode(&[(b"seventeen-bytes!!", false)], &mut buf),

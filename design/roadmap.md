@@ -1976,6 +1976,35 @@ escalation to recursive removal, which is Unix's behaviour and worth keeping for
 
 #### Globbing, which decides how every multi-file operation grants
 
+##### Built 2026-07-31: the matcher, then the grant. See notes/glob.md and notes/glob-grant.md.
+
+The decided answer is implemented rather than revisited: `rm *.txt` grants a directory capability
+attenuated to a **name set**, served by `user/src/swarden.rs`. Four things this section did not
+predict, and one it did:
+
+- **It predicted the shape of the change to `capsh`**, and that is exactly what happened.
+  `plan_against` fills its slots by **index** now, and takes an `Expansion` keyed to that index,
+  because the endowment is the set rather than the pattern. `DirGrant.name` became `DirGrant.names`,
+  which is the finding in the type system: a literal operand is the set of one.
+- **The warden is a third one, not a generalization of `fwarden` or a mode on `dwarden`.** `fwarden`
+  serves the *file* protocol, so teaching it a set would be writing a directory warden; and
+  `dwarden`'s design property is that it performs **no checks at all**, which a name filter (on seven
+  name-taking verbs) would end. The grants also have different shapes: a name rides in registers, a
+  set needs a frame.
+- **An empty match is a refusal**, zsh's answer. The obvious argument for bash's pass-through was
+  checked and is **wrong**: nothing here refuses `*` in a component, so passing the pattern through
+  builds a grant whose namespace is a name nobody has, and which acquires a referent the moment
+  somebody creates that file.
+- **`ARG_MAX` landed at eight names, set by a stack overflow rather than by reasoning.** Sixteen was
+  the number the argument produced; the shell ran off the bottom of its stack planning one grant,
+  twice. Exceeding the bound is a loud refusal at the prompt, never a truncation.
+- **Qualifiers and `**` stayed out**, for notes/glob.md's reasons, which are authority questions and
+  not scheduling ones. `xargs` is still not built: the answer at the bound is a refusal.
+
+Tests: `capsh` and `fs_proto` host suites; `kernel::user::glob_grant_tests` on both ISAs (a real
+shell expanding one pattern two ways, then `rm` as its own attacker behind a real `swarden`); and
+`xtask::redoxfs_glob_grant_took_exactly_the_match` reading the image from outside the guest.
+
 zsh's glob engine is the best thing in the shell (`**/*.rs`, and qualifiers: `*(.)` for regular
 files, `*(om[1])` for newest, `*(Lm+1)` for over a megabyte). The mechanism is unremarkable here
 because **a glob is an enumeration**, and the rights ladder above already separates `enumerate` out.
