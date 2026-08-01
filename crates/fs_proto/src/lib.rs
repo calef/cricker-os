@@ -333,6 +333,54 @@ pub mod fs {
     /// rather than reaching something else. See the BUGS section of notes/rm-recursion.md.
     pub const RMDIR: u64 = 13;
 
+    /// **Read one extended attribute of the node a handle names** (milestone 57).
+    ///
+    /// The attribute's name is [`req_len`] bytes at the start of the shared page, the handle in
+    /// [`req_handle`] is the **file or directory** the attribute is on, and the second word is 0.
+    /// Reply `r0` = [`super::xattr::reply`], which packs the value's type code and its length; the
+    /// value itself lands in the shared page. `ENODATA` if the attribute is not set.
+    ///
+    /// Needs [`super::dir::READ`] on the handle, refused with `EBADF`, which is exactly what
+    /// [`READ`] needs and answers: an attribute is part of what a file *is*, so the direction the
+    /// capability carries is the direction that governs it. See [`super::xattr`] for why there is no
+    /// separate attribute right.
+    pub const GETXATTR: u64 = 14;
+    /// **Set one extended attribute on the node a handle names** (milestone 57).
+    ///
+    /// The only verb here that carries two payloads and a type: the name is [`req_len`] bytes at the
+    /// start of the shared page and the value follows it back to back, with the value's length and
+    /// its type code packed into the second word by [`super::xattr::spec`]. Reply `r0` = 0.
+    ///
+    /// Creating and replacing are one operation, unlike [`CREATE`]: an attribute has no handle and
+    /// no identity of its own, so "it already had a value" is not a fact a caller can act on
+    /// differently. Linux's `XATTR_CREATE`/`XATTR_REPLACE` flags are deliberately not offered, for
+    /// DECISIONS §42's reason: they are emulable only racily above the store.
+    ///
+    /// Needs [`super::dir::WRITE`], refused with [`super::dir::EROFS`]. `ERANGE` for a name this
+    /// store cannot hold, [`super::xattr::E2BIG`] for an over-long value, and
+    /// [`super::xattr::ENOSPC`] when the node already holds [`super::xattr::MAX_COUNT`] attributes.
+    pub const SETXATTR: u64 = 15;
+    /// **List the attribute names on the node a handle names** (milestone 57).
+    ///
+    /// [`req_len`] and the second word are both 0. Reply `r0` = how many bytes of the shared page
+    /// were filled with [`super::xattr::list`] records; 0 means the node has no attributes.
+    ///
+    /// There is **no cursor**, unlike [`READDIR`], and that is a property rather than an omission:
+    /// [`super::xattr::MAX_COUNT`] names of [`super::xattr::MAX_NAME`] bytes fit one page exactly,
+    /// so a listing is always complete in one reply and cannot be observed half-changed.
+    ///
+    /// Needs [`super::dir::READ`], refused with `EBADF`, for [`GETXATTR`]'s reason.
+    pub const LISTXATTR: u64 = 16;
+    /// **Remove one extended attribute from the node a handle names** (milestone 57).
+    ///
+    /// [`GETXATTR`]'s shape: the name is [`req_len`] bytes at the start of the shared page, the
+    /// second word is 0. Reply `r0` = 0, or `ENODATA` if the attribute was not set. Removing an
+    /// attribute that is not there is an **error, not a no-op**, because the caller asked about a
+    /// specific thing and "it was not there" is the answer.
+    ///
+    /// Needs [`super::dir::WRITE`], refused with [`super::dir::EROFS`].
+    pub const REMOVEXATTR: u64 = 17;
+
     /// The largest length or offset that fits the packing below (40 bits). Far above [`super::PAGE`],
     /// so a single request never carries more than one page of payload regardless; the bound only
     /// guards the bit-packing.
@@ -490,6 +538,15 @@ pub mod dir {
             9 => "no such handle",
             24 => "too many handles open at once",
             EINVAL => "that is not a name this contract can resolve",
+            // The extended-attribute vocabulary (milestone 57). It renders here rather than in an
+            // `xattr::explain` of its own for this module's own reason: the sentence a human reads
+            // belongs next to the decision about what the errno means, and there is one such place.
+            // Every line is still a fact about the thing or the capability.
+            super::xattr::ENODATA => "that attribute is not set",
+            super::xattr::ERANGE => "that is not a name an attribute can have",
+            super::xattr::E2BIG => "that attribute value is too large to store",
+            super::xattr::ENOSPC => "that already holds as many attributes as it can",
+            super::xattr::ENOTSUP => "this capability does not carry extended attributes",
             _ => "the filesystem refused",
         }
     }
@@ -873,6 +930,469 @@ pub mod nameset {
             Some((name, head & IS_DIR != 0))
         }
     }
+}
+
+/// **Extended attributes: the limits, the encodings, and the store the FS server keeps them in**
+/// (milestone 57, DECISIONS §34's 2026-07-31 amendment).
+///
+/// An extended attribute is a named byte string attached to a file or a directory. Samba stores
+/// Apple's Time Machine metadata in them (`streams_xattr`), which is why they exist here at all, and
+/// milestone 55's backup target is the deliverable on the other end.
+///
+/// # It is a layer, and the contract is why that is safe
+///
+/// RedoxFS has none of this. The decision was to build it **above** the engine rather than to fork
+/// the on-disk format, and the argument that settled it was reversibility: this module is the
+/// contract, so whether an attribute lives in a node's on-disk structure or in a store the server
+/// manages is invisible to every client. Moving the implementation later changes nothing above this
+/// line.
+///
+/// On Linux a layer like this would be worthless, because anything can open the file directly and
+/// walk around it. **Here nothing can.** Every path to the disk goes through [`fs`], so a layer above
+/// the filesystem is as authoritative as the filesystem.
+///
+/// # There is no attribute right, and that is deliberate
+///
+/// [`fs::GETXATTR`] and [`fs::LISTXATTR`] need [`dir::READ`]; [`fs::SETXATTR`] and
+/// [`fs::REMOVEXATTR`] need [`dir::WRITE`]. No seventh rung was added to the ladder. An attribute is
+/// part of what a file *is*, not a separate object with its own authority, so a capability that may
+/// read a file may read what is attached to it and a capability that may not write it may not
+/// change them. Adding a rung would also mean every existing grant silently gained or lost a right
+/// depending on which way the default fell, which is the kind of change milestone 47's monotonicity
+/// property exists to make impossible.
+///
+/// # The type code exists so indexing is not foreclosed
+///
+/// Every attribute carries a `u32` **kind**, and this layer never interprets it: it is stored,
+/// returned, and otherwise ignored. [`xattr::RAW`] is what a POSIX-style client writes, and it is what
+/// Samba will write.
+///
+/// The reason to carry a field nothing reads is `design/haiku-bfs-and-packages.md`. BFS made
+/// attributes **typed and indexed**, with live queries over them, and that design's author went on to
+/// build Spotlight; it is the ambitious version of this feature and it is a real destination. A store
+/// of untyped blobs cannot be indexed later without a format migration and a wire break. A store that
+/// round-trips a type code can. The cost of not foreclosing it is four bytes per record and one
+/// packed word, paid now, once.
+///
+/// **BUGS.** The kind is 31 bits, not 32, because it rides in the sign-protected half of a reply word
+/// (see [`xattr::reply`]). BFS-style four-character codes are ASCII and fit; a code with its top bit set does
+/// not, and [`fs::SETXATTR`] answers `EINVAL` rather than truncating it.
+pub mod xattr {
+    /// The longest attribute **name**, in bytes. 255, which is Linux's `XATTR_NAME_MAX`, chosen so
+    /// that nothing Samba writes is refused for its name: `user.org.netatalk.Metadata` and
+    /// `user.com.apple.metadata:_kMDItemUserTags` are both well inside it, and a limit that refused
+    /// a real client's name would be discovered on the board rather than here. It is also exactly
+    /// what one length byte holds, which is what makes [`list`]'s records a byte cheaper than
+    /// [`super::dirent`]'s.
+    pub const MAX_NAME: usize = 255;
+
+    /// The longest attribute **value**, in bytes.
+    ///
+    /// Three kibibytes, and the bound that sets it is the transport: [`fs::SETXATTR`] carries a name
+    /// and a value in one [`super::PAGE`], so `MAX_NAME + MAX_VALUE` must fit 4096 with room that a
+    /// reader can see is room. It is far above what the application needs (Apple's `AFP_AfpInfo` is
+    /// 402 bytes, a `FinderInfo` blob is 32) and far below what Samba's `streams_xattr` can be asked
+    /// to hold, because that feature stores whole alternate data streams as attributes.
+    ///
+    /// **BUGS.** A resource fork larger than this is refused with [`E2BIG`], loudly, per DECISIONS
+    /// §42: an attribute store that silently truncated a value would hand back a file that looked
+    /// intact and was not. Lifting the limit means chunking the transfer across requests, which the
+    /// contract does not do for anything today.
+    pub const MAX_VALUE: usize = 3072;
+
+    /// The most attributes one file or directory may carry.
+    ///
+    /// Sixteen, and it is the number that makes [`fs::LISTXATTR`] complete in one reply: sixteen
+    /// names of [`MAX_NAME`] bytes plus their length prefixes is 4096 bytes, exactly one
+    /// [`super::PAGE`]. A cursor would otherwise be needed, and a cursored listing can be observed
+    /// half-changed, which is a worse property than a ceiling. Samba with `fruit` uses a handful per
+    /// file.
+    ///
+    /// **BUGS.** The seventeenth attribute is [`ENOSPC`], not an eviction.
+    pub const MAX_COUNT: usize = 16;
+
+    /// The largest **kind** code, [`i32::MAX`] as a `u32`. See this module's header: the kind rides
+    /// in a reply word whose sign bit means "error", so bit 31 is not available to it.
+    pub const MAX_KIND: u32 = i32::MAX as u32;
+
+    /// The kind a POSIX-style client writes: an uninterpreted byte string. Zero, so a client that
+    /// knows nothing about kinds writes the right one by writing nothing.
+    pub const RAW: u32 = 0;
+
+    /// `ENODATA`: the named attribute is not set on this node. The only error that means absence,
+    /// which is the discipline `ENOENT` earns in [`dir::explain`]: an instrument that reads any
+    /// failure as "not there" reports filesystems that never existed (notes/fs-server.md).
+    pub const ENODATA: i32 = 61;
+    /// `ERANGE`: the name is empty, longer than [`MAX_NAME`], or holds a NUL. A fact about the name,
+    /// not about the capability.
+    pub const ERANGE: i32 = 34;
+    /// `E2BIG`: the value is longer than [`MAX_VALUE`].
+    pub const E2BIG: i32 = 7;
+    /// `ENOSPC`: the node already holds [`MAX_COUNT`] attributes and this would be a new one.
+    pub const ENOSPC: i32 = 28;
+    /// `EOPNOTSUPP`: **this capability does not offer extended attributes at all.**
+    ///
+    /// DECISIONS §42's rule is that a backend which cannot meet a verb's guarantee does not offer
+    /// the verb, and that the refusal is loud. The caretakers (`fwarden`, `dwarden`, `swarden`)
+    /// answer this: they serve this same protocol over a narrowed namespace and do not forward
+    /// attribute requests, so a program behind one learns that its capability does not carry
+    /// attributes rather than that its request was malformed. `EINVAL` would have been the silent
+    /// degradation, because it reads as "you sent nonsense" rather than "this does not do that".
+    pub const ENOTSUP: i32 = 95;
+
+    /// **The reserved name the attribute store lives under**, in the image root.
+    ///
+    /// It is refused by every name-taking verb and skipped by [`fs::READDIR`], in **every**
+    /// directory rather than only in the root, so the rule a client has to remember is one sentence
+    /// instead of a location-dependent one. A store a client could name would be part of the
+    /// namespace, and then "the attributes of a file" would be reachable as ordinary bytes by
+    /// anything holding the directory.
+    ///
+    /// **BUGS.** You cannot create a file called `.cricker-attrs` anywhere on a cricker-os
+    /// filesystem, at any rights. The refusal is `EINVAL`, the same one `..` gets, because the name
+    /// is not expressible rather than not permitted.
+    ///
+    /// Recovery **does** see it. `redoxfs-host extract` and upstream's FUSE mount show this
+    /// directory as ordinary data, so a backup carries the attributes out with the files. That is a
+    /// decision and not a leak (notes/host-recovery.md); the store is unnameable through the
+    /// *contract*, and the contract is what confines a client.
+    pub const STORE_DIR: &str = ".cricker-attrs";
+
+    /// Pack [`fs::SETXATTR`]'s second word: the value's type code in the high 32 bits, its length in
+    /// the low 32. The name's length rides in the request word's own length field, as every other
+    /// verb's payload length does, so the two lengths never share a field.
+    pub const fn spec(kind: u32, value_len: u64) -> u64 {
+        ((kind as u64) << 32) | (value_len & 0xffff_ffff)
+    }
+    /// The type code from a [`fs::SETXATTR`] second word.
+    pub const fn spec_kind(w1: u64) -> u32 {
+        (w1 >> 32) as u32
+    }
+    /// The value length from a [`fs::SETXATTR`] second word.
+    pub const fn spec_value_len(w1: u64) -> usize {
+        (w1 & 0xffff_ffff) as usize
+    }
+
+    /// Pack [`fs::GETXATTR`]'s reply: the kind in the high bits, the value's length in the low 32.
+    ///
+    /// **It is an [`i64`] and it must stay non-negative**, because this whole protocol's error
+    /// boundary is "negative is a negated errno" ([`super::reply_err`]). That is what costs the kind
+    /// its 32nd bit, and it is the right trade: a separate reply word does not exist, and a header
+    /// in front of the value would make every client copy the value twice.
+    pub const fn reply(kind: u32, value_len: usize) -> i64 {
+        (((kind & MAX_KIND) as i64) << 32) | (value_len as i64 & 0xffff_ffff)
+    }
+    /// The kind of a [`fs::GETXATTR`] reply. Only meaningful when the reply is non-negative.
+    pub const fn reply_kind(r0: i64) -> u32 {
+        ((r0 >> 32) as u32) & MAX_KIND
+    }
+    /// The value's length, in bytes, of a [`fs::GETXATTR`] reply.
+    pub const fn reply_value_len(r0: i64) -> usize {
+        (r0 as u64 & 0xffff_ffff) as usize
+    }
+
+    /// Whether `name` is a name this store can hold: non-empty, at most [`MAX_NAME`] bytes, and free
+    /// of NUL.
+    ///
+    /// **Bytes, not UTF-8, and no namespace prefix is required.** Linux insists on
+    /// `user.`/`security.`/`trusted.` because those namespaces mean different privilege; there is no
+    /// privilege here to mean, so requiring the prefix would be inventing a policy to enforce. NUL is
+    /// the one byte refused, because every client that will ever write one of these names (Samba, and
+    /// anything speaking the POSIX API) hands it over as a C string, and a name with a NUL in it
+    /// would come back shorter than it went out.
+    pub const fn valid_name(name: &[u8]) -> bool {
+        if name.is_empty() || name.len() > MAX_NAME {
+            return false;
+        }
+        let mut i = 0;
+        while i < name.len() {
+            if name[i] == 0 {
+                return false;
+            }
+            i += 1;
+        }
+        true
+    }
+
+    /// **How [`fs::LISTXATTR`] packs names into the shared page**: one length byte, then that many
+    /// bytes of name, repeated. No flags byte and no type code, because a listing answers "what is
+    /// attached" and [`fs::GETXATTR`] answers "what is it"; carrying the kind here would double the
+    /// record header to save a round trip nobody has asked for.
+    ///
+    /// The reply's `r0` is how many bytes were filled, so a client iterates until it has consumed
+    /// exactly that many, exactly as [`super::dirent`] works.
+    pub mod list {
+        /// Bytes one record takes: one for the length, plus the name.
+        pub const fn record_len(name_len: usize) -> usize {
+            1 + name_len
+        }
+
+        /// The most bytes a complete listing can occupy: every attribute a node may hold, at the
+        /// longest name each. Equal to [`super::super::PAGE`], which is what lets
+        /// [`super::super::fs::LISTXATTR`] answer without a cursor.
+        pub const MAX_BYTES: usize = super::MAX_COUNT * record_len(super::MAX_NAME);
+
+        /// Write one record at the start of `out`, returning its length, or `None` if it does not
+        /// fit or the name is not one this store holds.
+        pub fn encode(out: &mut [u8], name: &[u8]) -> Option<usize> {
+            let n = record_len(name.len());
+            if !super::valid_name(name) || out.len() < n {
+                return None;
+            }
+            out[0] = name.len() as u8;
+            out[1..n].copy_from_slice(name);
+            Some(n)
+        }
+
+        /// Walk the records in `buf` (exactly the `r0` bytes a [`super::super::fs::LISTXATTR`] reply
+        /// filled). Stops at a zero length byte and at the first record that runs off the end, which
+        /// is what a truncated reply looks like and must not be read as a name.
+        pub fn iter(buf: &[u8]) -> Names<'_> {
+            Names { buf, at: 0 }
+        }
+
+        /// The iterator [`iter`] returns.
+        pub struct Names<'a> {
+            buf: &'a [u8],
+            at: usize,
+        }
+
+        impl<'a> Iterator for Names<'a> {
+            type Item = &'a [u8];
+
+            fn next(&mut self) -> Option<Self::Item> {
+                let len = *self.buf.get(self.at)? as usize;
+                if len == 0 {
+                    return None;
+                }
+                let name = self.buf.get(self.at + 1..self.at + 1 + len)?;
+                self.at += record_len(len);
+                Some(name)
+            }
+        }
+    }
+
+    /// **The store's on-disk record format, and the whole of the layer's semantics as pure
+    /// functions.**
+    ///
+    /// One node's attributes are one blob: a sequence of records, each a [`store::RECORD_HEADER`]-byte
+    /// header (a name length, a `u32` kind, a `u16` value length, all little-endian) followed by the
+    /// name and then the value. The FS server keeps one such blob per node in a file named for the
+    /// node's `TreePtr` id ([`store::file_name`]) inside [`STORE_DIR`].
+    ///
+    /// **Why the format is published here rather than hidden in the server.** Two reasons, and the
+    /// first is the honest one: every interesting rule of this feature (what replaces what, when a
+    /// limit is hit, what a truncated blob means) lives in [`store::set`], [`store::remove`] and [`store::get`], which are
+    /// pure functions over a byte slice and therefore host-tested in milliseconds instead of under an
+    /// emulator. The second is recovery: a person holding a damaged image and the `redoxfs-host`
+    /// tool can read the store, because the format is written down next to the code that makes it.
+    ///
+    /// **Keyed on the node, which is what makes rename free.** A rename changes a directory entry and
+    /// not the node, so attributes follow a file across one without any code knowing a rename
+    /// happened. AppleDouble sidecars get exactly this wrong, and so would any path-keyed store; the
+    /// correctness is only available inside the FS server, which is an argument *for* the layer
+    /// rather than a consolation for it.
+    pub mod store {
+        use super::{E2BIG, ENODATA, ENOSPC, ERANGE, MAX_COUNT, MAX_KIND, MAX_VALUE, valid_name};
+
+        /// A record's fixed header: one byte of name length, four of kind, two of value length.
+        pub const RECORD_HEADER: usize = 1 + 4 + 2;
+
+        /// Bytes one record occupies.
+        pub const fn record_len(name_len: usize, value_len: usize) -> usize {
+            RECORD_HEADER + name_len + value_len
+        }
+
+        /// The largest a node's whole blob can be: [`MAX_COUNT`] records at the widest each. This is
+        /// the ceiling on what one node costs the store, and the reason the count limit exists at
+        /// all rather than being left to the disk.
+        pub const MAX_BYTES: usize = MAX_COUNT * record_len(super::MAX_NAME, MAX_VALUE);
+
+        /// The name of the file that holds a node's blob: its `TreePtr` id in lowercase hex, always
+        /// eight characters, so the store directory's entries sort and read predictably in a
+        /// recovery listing.
+        pub const fn file_name(node_id: u32) -> [u8; 8] {
+            let mut out = [b'0'; 8];
+            let mut i = 0;
+            while i < 8 {
+                let nibble = ((node_id >> (28 - 4 * i)) & 0xf) as u8;
+                out[i] = if nibble < 10 {
+                    b'0' + nibble
+                } else {
+                    b'a' + nibble - 10
+                };
+                i += 1;
+            }
+            out
+        }
+
+        /// Walk a blob's records: `(name, kind, value)` each.
+        ///
+        /// Stops at a zero name length and at the first record that runs off the end. Both are what a
+        /// **truncated or zero-padded** blob looks like, and neither may be read as an attribute: a
+        /// torn write that left half a record behind must produce fewer attributes, never a value
+        /// with somebody else's bytes on the end of it.
+        pub fn iter(blob: &[u8]) -> Records<'_> {
+            Records { blob, at: 0 }
+        }
+
+        /// How many attributes a blob holds.
+        pub fn count(blob: &[u8]) -> usize {
+            iter(blob).count()
+        }
+
+        /// The value and kind of one attribute, or `None` if it is not set.
+        pub fn get<'a>(blob: &'a [u8], name: &[u8]) -> Option<(u32, &'a [u8])> {
+            iter(blob)
+                .find(|(n, ..)| *n == name)
+                .map(|(_, k, v)| (k, v))
+        }
+
+        /// Write the [`super::list`] records for every attribute in `blob` into `out`, returning the
+        /// bytes used. A complete listing always fits [`super::list::MAX_BYTES`]; a shorter `out`
+        /// stops before the record that will not fit rather than splitting one.
+        pub fn list(blob: &[u8], out: &mut [u8]) -> usize {
+            let mut used = 0;
+            for (name, ..) in iter(blob) {
+                match super::list::encode(&mut out[used..], name) {
+                    Some(n) => used += n,
+                    None => break,
+                }
+            }
+            used
+        }
+
+        /// **Set `name` to `value`, producing the new blob in `out` and returning its length.**
+        ///
+        /// An existing attribute is replaced **in place**, so the order a client sees from
+        /// [`super::super::fs::LISTXATTR`] does not shuffle when a value changes; a new one is
+        /// appended. Create and replace are one operation, for the reason
+        /// [`super::super::fs::SETXATTR`] gives.
+        ///
+        /// `out` must hold `blob.len() + record_len(name.len(), value.len())`, which is always
+        /// enough because replacing can only shrink the result. A shorter one is [`ENOSPC`], which a
+        /// correctly sized caller never sees.
+        ///
+        /// Errors are errnos rather than a bespoke type, because the FS server's rule is that
+        /// nothing below the serve loop speaks the wire's vocabulary and everything speaks the
+        /// engine's.
+        pub fn set(
+            blob: &[u8],
+            name: &[u8],
+            kind: u32,
+            value: &[u8],
+            out: &mut [u8],
+        ) -> Result<usize, i32> {
+            if !valid_name(name) {
+                return Err(ERANGE);
+            }
+            if value.len() > MAX_VALUE {
+                return Err(E2BIG);
+            }
+            if kind > MAX_KIND {
+                return Err(syscall_einval());
+            }
+            let mut used = 0;
+            let mut replaced = false;
+            for (n, k, v) in iter(blob) {
+                let (n, k, v) = if n == name {
+                    replaced = true;
+                    (name, kind, value)
+                } else {
+                    (n, k, v)
+                };
+                used += write_record(&mut out[used..], n, k, v).ok_or(ENOSPC)?;
+            }
+            if !replaced {
+                if count(blob) >= MAX_COUNT {
+                    return Err(ENOSPC);
+                }
+                used += write_record(&mut out[used..], name, kind, value).ok_or(ENOSPC)?;
+            }
+            Ok(used)
+        }
+
+        /// **Remove `name`, producing the new blob in `out` and returning its length.** [`ENODATA`]
+        /// if it was not set: the caller asked about one specific thing, so "it was not there" is the
+        /// answer rather than a silent success. `out` must be at least `blob.len()`.
+        pub fn remove(blob: &[u8], name: &[u8], out: &mut [u8]) -> Result<usize, i32> {
+            if !valid_name(name) {
+                return Err(ERANGE);
+            }
+            let mut used = 0;
+            let mut found = false;
+            for (n, k, v) in iter(blob) {
+                if n == name {
+                    found = true;
+                    continue;
+                }
+                used += write_record(&mut out[used..], n, k, v).ok_or(ENOSPC)?;
+            }
+            if found { Ok(used) } else { Err(ENODATA) }
+        }
+
+        /// `EINVAL`, spelled here so this module needs no dependency on the error crate. The kind
+        /// field is the only thing that answers it: a code with bit 31 set cannot ride home in a
+        /// reply word, and truncating it would hand back a type that was never written.
+        const fn syscall_einval() -> i32 {
+            22
+        }
+
+        /// Lay one record at the start of `out`; `None` if it does not fit.
+        fn write_record(out: &mut [u8], name: &[u8], kind: u32, value: &[u8]) -> Option<usize> {
+            let n = record_len(name.len(), value.len());
+            if out.len() < n || name.len() > super::MAX_NAME || value.len() > MAX_VALUE {
+                return None;
+            }
+            out[0] = name.len() as u8;
+            out[1..5].copy_from_slice(&kind.to_le_bytes());
+            out[5..7].copy_from_slice(&(value.len() as u16).to_le_bytes());
+            out[RECORD_HEADER..RECORD_HEADER + name.len()].copy_from_slice(name);
+            out[RECORD_HEADER + name.len()..n].copy_from_slice(value);
+            Some(n)
+        }
+
+        /// The iterator [`iter`] returns.
+        pub struct Records<'a> {
+            blob: &'a [u8],
+            at: usize,
+        }
+
+        impl<'a> Iterator for Records<'a> {
+            type Item = (&'a [u8], u32, &'a [u8]);
+
+            fn next(&mut self) -> Option<Self::Item> {
+                let head = self.blob.get(self.at..self.at + RECORD_HEADER)?;
+                let name_len = head[0] as usize;
+                if name_len == 0 {
+                    return None;
+                }
+                let kind = u32::from_le_bytes([head[1], head[2], head[3], head[4]]);
+                let value_len = u16::from_le_bytes([head[5], head[6]]) as usize;
+                let body = self.at + RECORD_HEADER;
+                let name = self.blob.get(body..body + name_len)?;
+                let value = self
+                    .blob
+                    .get(body + name_len..body + name_len + value_len)?;
+                self.at += record_len(name_len, value_len);
+                Some((name, kind, value))
+            }
+        }
+    }
+
+    use super::{dir, fs};
+
+    /// A [`fs::SETXATTR`] carries a name and a value in one page, so the two limits together must
+    /// leave the transport room. Checked at compile time because both sides are constants: a change
+    /// that broke it should fail the build rather than wait for a request that happens to be wide.
+    const _: () = assert!(MAX_NAME + MAX_VALUE <= super::PAGE);
+    /// And a complete listing must fit one page, which is what lets [`fs::LISTXATTR`] have no cursor.
+    const _: () = assert!(list::MAX_BYTES <= super::PAGE);
+    /// The four verbs must not collide with the thirteen that were already on the wire.
+    const _: () = assert!(fs::GETXATTR > fs::RMDIR && fs::REMOVEXATTR <= 0xff);
+    /// The rights these verbs consult are the ones [`fs::READ`] and [`fs::WRITE`] consult; nothing
+    /// here invents a rung, so a mask this module needs is a mask the ladder already defines.
+    const _: () = assert!((dir::READ | dir::WRITE) & !dir::ALL == 0);
 }
 
 /// The phase-2 end-to-end test fixture, in one place so the three programs that touch it agree: the
@@ -1279,6 +1799,70 @@ pub mod fixture {
         }
     }
 
+    /// **What the extended-attribute witness reports** (milestone 57), a bitmap for the reason every
+    /// other witness here reports one: the kernel test asserts an *exact* set, so a client that could
+    /// do nothing and a client that could do everything both fail, and a failure names itself.
+    ///
+    /// It rides the third word of the FS client's proof report, beside the `motd` head and the
+    /// success sentinel, because the attribute layer is served by the same FS server over the same
+    /// endpoint and a second boot of the whole three-process stack would prove nothing new.
+    pub mod attrs {
+        /// An attribute was set and read back with **its type code and its bytes**. The type code
+        /// half is what makes this more than a byte-string round trip: a layer that dropped the kind
+        /// would pass every other bit here.
+        pub const SET_AND_READ_BACK: u64 = 1 << 0;
+        /// The listing named it, and named nothing else. "Nothing else" is the half that catches a
+        /// store keyed on the wrong node, which would show up as somebody else's attributes.
+        pub const LISTED: u64 = 1 << 1;
+        /// **The attribute followed its file across a rename.** The headline property, and the one
+        /// an AppleDouble sidecar gets wrong. It works because the store keys on the node and a
+        /// rename changes a directory entry, so nothing in the rename path knows attributes exist.
+        pub const SURVIVED_RENAME: u64 = 1 << 2;
+        /// After a remove, reading it answers `ENODATA`. Without this, [`SET_AND_READ_BACK`] is
+        /// equally consistent with a store that never forgets anything.
+        pub const GONE_AFTER_REMOVE: u64 = 1 << 3;
+        /// **A file recreated at a name whose previous occupant had attributes has none.** The
+        /// on-device half of "deletion is in the same transaction as the file's": a leaked blob is
+        /// not wasted space, it is somebody else's metadata on a file that never asked for it.
+        pub const GONE_AFTER_UNLINK: u64 = 1 << 4;
+        /// A value past [`super::super::xattr::MAX_VALUE`] was refused with
+        /// [`super::super::xattr::E2BIG`], loudly, rather than stored short (DECISIONS §42).
+        pub const OVERSIZE_REFUSED: u64 = 1 << 5;
+        /// The store's directory could not be opened, created, or descended into. A client that
+        /// could name it could read any file's attributes as ordinary bytes.
+        pub const STORE_UNNAMEABLE: u64 = 1 << 6;
+        /// And a full enumeration of the root did not name it, which is the other half: what cannot
+        /// be named is also not listed. Reported only if the enumeration ran to the end and returned
+        /// something, so an empty listing cannot pass as a clean one.
+        pub const STORE_UNLISTED: u64 = 1 << 7;
+        /// **Something that should have worked did not**, so nothing above proves anything. The
+        /// control bit, in the shape every other witness here uses.
+        pub const ATTRS_FAILED: u64 = 1 << 8;
+
+        /// What a correct run reports, stated once so the two ISA legs' assertions cannot drift.
+        pub const EXPECTED: u64 = SET_AND_READ_BACK
+            | LISTED
+            | SURVIVED_RENAME
+            | GONE_AFTER_REMOVE
+            | GONE_AFTER_UNLINK
+            | OVERSIZE_REFUSED
+            | STORE_UNNAMEABLE
+            | STORE_UNLISTED;
+
+        /// The file the witness makes, sets an attribute on, and renames. Its own name, so nothing
+        /// it leaves behind can be confused with a fixture the post-run host check pins.
+        pub const PROBE: &str = "attr-probe";
+        /// What it renames [`PROBE`] to. The attribute has to be readable through this name.
+        pub const PROBE_MOVED: &str = "attr-moved";
+        /// The attribute the witness writes, spelled the way Samba spells one.
+        pub const NAME: &[u8] = b"user.com.apple.metadata";
+        /// Its value: opaque bytes, which is exactly what `streams_xattr` stores.
+        pub const VALUE: &[u8] = b"CRK57: an opaque byte string\n";
+        /// Its type code, `'CSTR'` in BFS's spelling. Non-zero on purpose: a layer that silently
+        /// wrote [`super::super::xattr::RAW`] would pass a test whose fixture used the default.
+        pub const KIND: u32 = 0x4353_5452;
+    }
+
     /// **The on-device crash test's vocabulary** (milestone 37, DECISIONS §34 condition 1).
     ///
     /// The host sweep in `fs-server/tests/crash_consistency.rs` proves the property exhaustively
@@ -1322,6 +1906,11 @@ pub mod fixture {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The crate is `no_std`, so its own tests have to say where the allocating types come from. They
+    // are here only to build fixtures; nothing under test allocates.
+    extern crate std;
+    use std::{format, vec, vec::Vec};
 
     /// **The crash fixture's two payloads must be the same length**, and the millisecond test that
     /// says so is not pedantry: `WRITE` does not truncate, so the moment B is shorter than A the
@@ -1435,6 +2024,11 @@ mod tests {
             9,
             24,
             dir::EINVAL,
+            xattr::ENODATA,
+            xattr::ERANGE,
+            xattr::E2BIG,
+            xattr::ENOSPC,
+            xattr::ENOTSUP,
             // An errno this contract does not name still has to render as something a human can
             // read, rather than as an empty line or a panic.
             5,
@@ -1601,6 +2195,10 @@ mod tests {
             ("RENAME", fs::RENAME),
             ("UNLINK", fs::UNLINK),
             ("RMDIR", fs::RMDIR),
+            ("GETXATTR", fs::GETXATTR),
+            ("SETXATTR", fs::SETXATTR),
+            ("LISTXATTR", fs::LISTXATTR),
+            ("REMOVEXATTR", fs::REMOVEXATTR),
         ];
         for (i, (na, a)) in ops.iter().enumerate() {
             assert!(*a <= 0xff, "{na} does not fit the 8-bit opcode field");
@@ -1917,5 +2515,366 @@ mod tests {
         // the reader run off the end of the set and into whatever followed it.
         let mut tight = [0u8; 8];
         assert_eq!(nameset::encode(&[(b"one.txt", false)], &mut tight), None);
+    }
+
+    // --- Extended attributes (milestone 57) ---
+
+    /// Scratch big enough for any blob this store can hold, so a test never fails on its own buffer.
+    fn scratch() -> Vec<u8> {
+        vec![0u8; xattr::store::MAX_BYTES]
+    }
+
+    /// **A name and a value survive the store round trip, at every length the limits allow**,
+    /// including the two that a `u8` length byte and a `u16` value length are most likely to get
+    /// wrong. A value read back short is a file that looks intact and is not, which is the exact
+    /// failure DECISIONS §42 says must never be silent.
+    #[test]
+    fn an_attribute_round_trips_at_the_edges_of_both_limits() {
+        use xattr::store;
+        let widest_name = vec![b'n'; xattr::MAX_NAME];
+        let widest_value = vec![0xABu8; xattr::MAX_VALUE];
+        for (name, value) in [
+            (&b"user.DOSATTRIB"[..], &b"0x20"[..]),
+            (&b"a"[..], &b""[..]),
+            (&widest_name[..], &widest_value[..]),
+            (
+                &b"user.com.apple.metadata:_kMDItemUserTags"[..],
+                &[0u8; 1][..],
+            ),
+        ] {
+            let mut out = scratch();
+            let n = store::set(&[], name, xattr::RAW, value, &mut out).expect("set");
+            assert_eq!(store::count(&out[..n]), 1);
+            let (kind, got) = store::get(&out[..n], name).expect("the name we just wrote");
+            assert_eq!(kind, xattr::RAW);
+            assert_eq!(got, value, "the value did not come back as it went in");
+        }
+    }
+
+    /// **The kind is carried and never interpreted**, which is the whole of "do not foreclose
+    /// indexing" (`design/haiku-bfs-and-packages.md`). A BFS-style four-character code has to survive
+    /// the store and the reply word, and a code with bit 31 set has to be refused rather than
+    /// truncated into a type nobody wrote.
+    #[test]
+    fn a_type_code_survives_the_store_and_the_reply_word() {
+        use xattr::store;
+        // 'CSTR' and 'LONG', BFS's own spellings, plus the largest code the reply word can carry.
+        for kind in [xattr::RAW, 0x4353_5452, 0x4C4F_4E47, xattr::MAX_KIND] {
+            let mut out = scratch();
+            let n = store::set(&[], b"typed", kind, b"body", &mut out).expect("set");
+            assert_eq!(store::get(&out[..n], b"typed").unwrap().0, kind);
+
+            let r = xattr::reply(kind, 4);
+            assert!(r >= 0, "a reply word must never read as an error");
+            assert_eq!(xattr::reply_kind(r), kind, "kind through the reply word");
+            assert_eq!(
+                xattr::reply_value_len(r),
+                4,
+                "length through the reply word"
+            );
+        }
+        // Bit 31 is not the store's to give away: refuse it where it is written.
+        let mut out = scratch();
+        assert_eq!(
+            store::set(&[], b"toobig", xattr::MAX_KIND + 1, b"x", &mut out),
+            Err(22),
+            "a kind that cannot ride home must be refused, not truncated",
+        );
+    }
+
+    /// **Every limit refuses rather than truncating**, and each with its own errno, so a caller can
+    /// tell "your name is wrong" from "your value is too big" from "this file is full". One errno for
+    /// all three would make the honest failure §42 demands unactionable.
+    #[test]
+    fn each_limit_answers_with_its_own_word_and_nothing_is_clipped() {
+        use xattr::store;
+        let mut out = scratch();
+        assert_eq!(
+            store::set(&[], b"", xattr::RAW, b"v", &mut out),
+            Err(xattr::ERANGE)
+        );
+        assert_eq!(
+            store::set(
+                &[],
+                &vec![b'x'; xattr::MAX_NAME + 1],
+                xattr::RAW,
+                b"v",
+                &mut out
+            ),
+            Err(xattr::ERANGE),
+        );
+        assert_eq!(
+            store::set(&[], b"has\0nul", xattr::RAW, b"v", &mut out),
+            Err(xattr::ERANGE),
+            "a NUL would come back as a shorter name than went out",
+        );
+        assert_eq!(
+            store::set(
+                &[],
+                b"big",
+                xattr::RAW,
+                &vec![0u8; xattr::MAX_VALUE + 1],
+                &mut out
+            ),
+            Err(xattr::E2BIG),
+        );
+
+        // Fill a node to its ceiling, then ask for one more.
+        let mut blob: Vec<u8> = Vec::new();
+        for i in 0..xattr::MAX_COUNT {
+            let mut next = scratch();
+            let n = store::set(
+                &blob,
+                format!("a{i}").as_bytes(),
+                xattr::RAW,
+                b"v",
+                &mut next,
+            )
+            .expect("within the count");
+            blob = next[..n].to_vec();
+        }
+        assert_eq!(store::count(&blob), xattr::MAX_COUNT);
+        assert_eq!(
+            store::set(&blob, b"one-too-many", xattr::RAW, b"v", &mut out),
+            Err(xattr::ENOSPC),
+        );
+        // And the ceiling is on NEW names only: replacing one of the sixteen still works, which is
+        // what keeps a full file usable rather than frozen.
+        let n =
+            store::set(&blob, b"a0", xattr::RAW, b"replaced", &mut out).expect("replace at cap");
+        assert_eq!(store::count(&out[..n]), xattr::MAX_COUNT);
+        assert_eq!(store::get(&out[..n], b"a0").unwrap().1, b"replaced");
+    }
+
+    /// A replacement lands **in place**, so a listing does not shuffle when a value changes, and a
+    /// new name appends. A client that walked a listing while updating values would otherwise see
+    /// names move under it for no reason it could observe.
+    #[test]
+    fn a_replacement_keeps_its_position_and_a_new_name_appends() {
+        use xattr::store;
+        let (mut blob, mut out) = (Vec::new(), scratch());
+        for name in [&b"one"[..], b"two", b"three"] {
+            let n = store::set(&blob, name, xattr::RAW, b"v1", &mut out).unwrap();
+            blob = out[..n].to_vec();
+        }
+        let names = |b: &[u8]| store::iter(b).map(|(n, ..)| n.to_vec()).collect::<Vec<_>>();
+        assert_eq!(
+            names(&blob),
+            [b"one".to_vec(), b"two".to_vec(), b"three".to_vec()]
+        );
+
+        // A longer value in the middle: the order holds and only that record changes.
+        let n = store::set(&blob, b"two", 7, b"a much longer value", &mut out).unwrap();
+        assert_eq!(
+            names(&out[..n]),
+            [b"one".to_vec(), b"two".to_vec(), b"three".to_vec()]
+        );
+        assert_eq!(
+            store::get(&out[..n], b"two"),
+            Some((7, &b"a much longer value"[..]))
+        );
+        assert_eq!(
+            store::get(&out[..n], b"one"),
+            Some((xattr::RAW, &b"v1"[..]))
+        );
+    }
+
+    /// Removing takes exactly one attribute and leaves the rest byte for byte, and removing what is
+    /// not there is [`xattr::ENODATA`] rather than a quiet success. The caller asked about one
+    /// specific thing.
+    #[test]
+    fn removing_takes_one_attribute_and_says_so_when_there_is_none() {
+        use xattr::store;
+        let (mut blob, mut out) = (Vec::new(), scratch());
+        for name in [&b"keep-a"[..], b"drop", b"keep-b"] {
+            let n = store::set(&blob, name, xattr::RAW, name, &mut out).unwrap();
+            blob = out[..n].to_vec();
+        }
+        let n = store::remove(&blob, b"drop", &mut out).expect("remove");
+        assert_eq!(store::count(&out[..n]), 2);
+        assert_eq!(store::get(&out[..n], b"drop"), None);
+        assert_eq!(
+            store::get(&out[..n], b"keep-a"),
+            Some((xattr::RAW, &b"keep-a"[..]))
+        );
+        assert_eq!(
+            store::get(&out[..n], b"keep-b"),
+            Some((xattr::RAW, &b"keep-b"[..]))
+        );
+        assert_eq!(
+            store::remove(&out[..n], b"drop", &mut scratch()),
+            Err(xattr::ENODATA)
+        );
+        // The last one out leaves an empty blob, which is how the server knows to delete the file.
+        let mut b = out[..n].to_vec();
+        for name in [&b"keep-a"[..], b"keep-b"] {
+            let m = store::remove(&b, name, &mut out).unwrap();
+            b = out[..m].to_vec();
+        }
+        assert_eq!(b.len(), 0);
+    }
+
+    /// **A truncated or zero-padded blob yields fewer attributes, never a torn one.** This is the
+    /// property that matters after a crash: RedoxFS gives us whole transactions, but the reader must
+    /// not be the weak link, and a value that came back with the next record's bytes on the end of it
+    /// would be corruption the checksums could not see.
+    #[test]
+    fn a_torn_blob_reads_back_short_rather_than_wrong() {
+        use xattr::store;
+        let mut out = scratch();
+        let mut blob = Vec::new();
+        for name in [&b"one"[..], b"two"] {
+            let n = store::set(&blob, name, xattr::RAW, b"value", &mut out).unwrap();
+            blob = out[..n].to_vec();
+        }
+        let whole = store::count(&blob);
+        assert_eq!(whole, 2);
+        for cut in 0..blob.len() {
+            let seen = store::iter(&blob[..cut]).count();
+            assert!(
+                seen < whole,
+                "a cut at {cut} produced a whole second record"
+            );
+            for (name, _, value) in store::iter(&blob[..cut]) {
+                assert!(
+                    !name.is_empty() && value == b"value",
+                    "a torn record was read as data"
+                );
+            }
+        }
+        // A zero-padded tail (what a partially written block leaves) stops the walk rather than
+        // producing empty-named attributes.
+        let mut padded = blob.clone();
+        padded.extend_from_slice(&[0u8; 64]);
+        assert_eq!(store::count(&padded), whole);
+    }
+
+    /// A listing round-trips through the page encoding, and the widest listing this contract permits
+    /// fits one page **exactly**, which is what lets `LISTXATTR` answer without a cursor. If that
+    /// stops being true, the verb needs a cursor and the note needs rewriting.
+    #[test]
+    fn the_widest_listing_fits_one_page_and_round_trips() {
+        use xattr::store;
+        assert_eq!(
+            xattr::list::MAX_BYTES,
+            PAGE,
+            "the no-cursor property is this equality"
+        );
+
+        let mut blob = Vec::new();
+        let mut out = scratch();
+        let names: Vec<Vec<u8>> = (0..xattr::MAX_COUNT)
+            .map(|i| {
+                let mut n = vec![b'a' + i as u8; xattr::MAX_NAME];
+                n[0] = b'0' + i as u8;
+                n
+            })
+            .collect();
+        for name in &names {
+            let n = store::set(&blob, name, xattr::RAW, b"", &mut out).unwrap();
+            blob = out[..n].to_vec();
+        }
+        let mut page = [0u8; PAGE];
+        let used = store::list(&blob, &mut page);
+        assert_eq!(used, PAGE, "sixteen widest names fill the page and no more");
+        let back: Vec<Vec<u8>> = xattr::list::iter(&page[..used])
+            .map(|n| n.to_vec())
+            .collect();
+        assert_eq!(back, names, "the listing did not come back as it went in");
+
+        // A short buffer stops before the record that will not fit rather than splitting a name.
+        let mut tiny = [0u8; 300];
+        let n = store::list(&blob, &mut tiny);
+        assert_eq!(xattr::list::iter(&tiny[..n]).count(), 1);
+    }
+
+    /// The two packed words carry their fields without bleeding, at the extremes. A value length
+    /// that spilled into the kind would hand a caller somebody else's type; a kind that spilled into
+    /// the length would hand it somebody else's bytes.
+    #[test]
+    fn the_attribute_words_carry_a_kind_and_a_length_without_bleeding() {
+        for &(kind, len) in &[
+            (xattr::RAW, 0usize),
+            (1, xattr::MAX_VALUE),
+            (xattr::MAX_KIND, xattr::MAX_VALUE),
+            (0xFFFF_FFFF, 1), // a caller that ignores MAX_KIND: the reply masks rather than lies
+        ] {
+            let w1 = xattr::spec(kind, len as u64);
+            assert_eq!(xattr::spec_kind(w1), kind, "kind through the request word");
+            assert_eq!(
+                xattr::spec_value_len(w1),
+                len,
+                "length through the request word"
+            );
+            let r = xattr::reply(kind, len);
+            assert!(r >= 0);
+            assert_eq!(xattr::reply_kind(r), kind & xattr::MAX_KIND);
+            assert_eq!(xattr::reply_value_len(r), len);
+        }
+    }
+
+    /// The attribute witness's bits must not overlap, for the reason every other witness's must not:
+    /// the kernel test asserts an exact set, so two outcomes on one bit make a wrong verdict read as
+    /// a right one. `EXPECTED` is pinned against them here so the two ISA legs cannot assert
+    /// something the bits no longer spell.
+    #[test]
+    fn the_attribute_witness_bits_are_distinct_and_its_expectation_matches_them() {
+        use fixture::attrs::*;
+        let bits = [
+            SET_AND_READ_BACK,
+            LISTED,
+            SURVIVED_RENAME,
+            GONE_AFTER_REMOVE,
+            GONE_AFTER_UNLINK,
+            OVERSIZE_REFUSED,
+            STORE_UNNAMEABLE,
+            STORE_UNLISTED,
+            ATTRS_FAILED,
+        ];
+        let mut seen = 0u64;
+        for b in bits {
+            assert_ne!(
+                b, 0,
+                "zero is the empty report; it cannot also be an outcome"
+            );
+            assert_eq!(seen & b, 0, "two attribute outcomes share a bit");
+            seen |= b;
+        }
+        assert_eq!(
+            EXPECTED,
+            seen & !ATTRS_FAILED,
+            "a correct run reports every outcome and no failure",
+        );
+        // The witness's fixture has to be usable: two distinct names it can create and rename
+        // between, and a name and value the store will actually accept.
+        assert_ne!(PROBE, PROBE_MOVED);
+        assert!(grant::fits(PROBE.as_bytes()) && grant::fits(PROBE_MOVED.as_bytes()));
+        assert!(xattr::valid_name(NAME));
+        assert!(VALUE.len() <= xattr::MAX_VALUE);
+        // Checked at COMPILE time: both sides are constants, so a fixture that fell back to the
+        // default kind should fail the build rather than wait for the suite. The same discipline
+        // `a_text_frame_and_a_verdict_are_told_apart_by_the_first_word` uses.
+        const _: () = assert!(
+            fixture::attrs::KIND != xattr::RAW,
+            "a default kind would hide a layer that dropped it",
+        );
+    }
+
+    /// The store's file names are the node ids, and two nodes never share one. That equality is what
+    /// makes rename free and what makes a leaked blob dangerous, so it is pinned rather than assumed.
+    #[test]
+    fn a_store_file_is_named_for_exactly_one_node() {
+        use xattr::store::file_name;
+        assert_eq!(&file_name(0), b"00000000");
+        assert_eq!(&file_name(1), b"00000001");
+        assert_eq!(&file_name(0xdead_beef), b"deadbeef");
+        assert_eq!(&file_name(u32::MAX), b"ffffffff");
+        let mut seen = std::collections::BTreeSet::new();
+        for id in [0u32, 1, 2, 16, 255, 4096, 0x0100_0000, u32::MAX] {
+            assert!(
+                seen.insert(file_name(id)),
+                "two node ids share a store file"
+            );
+        }
     }
 }

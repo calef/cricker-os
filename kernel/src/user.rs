@@ -7341,6 +7341,52 @@ mod std_tests {
         );
     }
 
+    /// **The extended-attribute witness's verdict** (milestone 57), asserted as an exact set so that
+    /// a client which could do nothing and one which could do everything both fail.
+    ///
+    /// One copy, here beside the other shared FS assertions, because the two ISA legs assert the
+    /// same thing and the useful part is naming *which* claim broke rather than printing a number
+    /// the reader has to decode. Each missing bit is one sentence about the layer.
+    pub(super) fn assert_attrs(attrs: u64) {
+        use fs_proto::fixture::attrs as a;
+        if attrs == a::EXPECTED {
+            return;
+        }
+        for (bit, what) in [
+            (
+                a::SET_AND_READ_BACK,
+                "an attribute set and read back with its type code",
+            ),
+            (a::LISTED, "the listing named it and nothing else"),
+            (a::SURVIVED_RENAME, "it followed its file across a rename"),
+            (a::GONE_AFTER_REMOVE, "removing it made it ENODATA"),
+            (
+                a::GONE_AFTER_UNLINK,
+                "a file remade at the same name inherited nothing",
+            ),
+            (
+                a::OVERSIZE_REFUSED,
+                "an over-long value was refused with E2BIG",
+            ),
+            (
+                a::STORE_UNNAMEABLE,
+                "the attribute store could not be named",
+            ),
+            (a::STORE_UNLISTED, "and did not appear in an enumeration"),
+        ] {
+            if attrs & bit == 0 {
+                crate::println!("    MISSING: {what}");
+            }
+        }
+        if attrs & a::ATTRS_FAILED != 0 {
+            crate::println!("    the witness reported that something it should do failed");
+        }
+        panic!(
+            "the extended-attribute witness reported {attrs:#x}, expected {:#x}",
+            a::EXPECTED,
+        );
+    }
+
     pub(super) fn assert_fs_service_ready(
         readiness: Option<(crate::sched::EpId, crate::sched::EpId)>,
     ) {
@@ -7797,8 +7843,8 @@ mod tests {
     // RISC-V twins in `riscv_virtio_tests` and are gated to aarch64 here.
     #[cfg(target_arch = "aarch64")]
     use super::std_tests::{
-        assert_a_kill_mid_transaction_recovers, assert_fs_service_ready, assert_std_transcript,
-        std_fs_expected,
+        assert_a_kill_mid_transaction_recovers, assert_attrs, assert_fs_service_ready,
+        assert_std_transcript, std_fs_expected,
     };
     use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -8576,9 +8622,10 @@ mod tests {
         // `std::fs` test shares the same service, and each sentinel is sent exactly once).
         assert_fs_service_ready(readiness);
 
-        // Then: the client has read motd, round-tripped scratch, and reported. If any of the three
-        // processes faults, it never sends and the QEMU-level timeout is the backstop.
-        let [head, status, ..] = sched::ipc_recv(report);
+        // Then: the client has read motd, round-tripped scratch, exercised extended attributes, and
+        // reported. If any of the three processes faults, it never sends and the QEMU-level timeout
+        // is the backstop.
+        let [head, status, attrs, ..] = sched::ipc_recv(report);
         assert_eq!(
             status,
             fs_proto::fixture::SUCCESS,
@@ -8589,6 +8636,7 @@ mod tests {
             &fs_proto::fixture::MOTD[..8],
             "the client read the wrong motd bytes off the RedoxFS image",
         );
+        assert_attrs(attrs);
     }
 
     /// **A read-only per-file grant, attacked** (milestone 31 phase 2, notes/grant-expression.md).
@@ -12696,8 +12744,8 @@ mod riscv_virtio_tests {
     use super::*;
     // Shared with the aarch64 module so both ISAs assert a std transcript the same way.
     use super::std_tests::{
-        assert_a_kill_mid_transaction_recovers, assert_fs_service_ready, assert_std_transcript,
-        std_fs_expected,
+        assert_a_kill_mid_transaction_recovers, assert_attrs, assert_fs_service_ready,
+        assert_std_transcript, std_fs_expected,
     };
     use crate::sched;
     use core::sync::atomic::Ordering;
@@ -12889,7 +12937,7 @@ mod riscv_virtio_tests {
         };
 
         assert_fs_service_ready(readiness);
-        let [head, status, ..] = sched::ipc_recv(report);
+        let [head, status, attrs, ..] = sched::ipc_recv(report);
         assert_eq!(
             status,
             fs_proto::fixture::SUCCESS,
@@ -12900,6 +12948,10 @@ mod riscv_virtio_tests {
             &fs_proto::fixture::MOTD[..8],
             "the client read the wrong motd bytes off the RedoxFS image",
         );
+        // Milestone 57: the same attribute witness, the same exact expected set. The layer is the
+        // FS server's own logic rather than anything arch-specific, so what this leg adds is the
+        // parity gate's own claim (DECISIONS §19): it ships on both ISAs or it does not ship.
+        assert_attrs(attrs);
     }
 
     /// **`std::fs` over the FS-service contract, on the second ISA** (milestone 27 phase two, the

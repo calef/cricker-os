@@ -53,8 +53,11 @@ pub mod crash;
 use alloc::vec::Vec;
 
 use fs_proto::dir::{self, Rights};
-use redoxfs::{Disk, FileSystem, Node, TreePtr};
-use syscall::error::{EBADF, EEXIST, EINVAL, EISDIR, ENOTDIR, EPERM, EROFS, Error, Result};
+use fs_proto::xattr;
+use redoxfs::{Disk, FileSystem, Node, Transaction, TreePtr};
+use syscall::error::{
+    EBADF, EEXIST, EINVAL, EIO, EISDIR, ENOENT, ENOTDIR, EPERM, EROFS, Error, Result,
+};
 
 /// What one handle names, and what may be done through it.
 ///
@@ -156,10 +159,7 @@ impl<D: Disk> Server<D> {
             tx.on_open_node(node.ptr())?;
             Ok(node.ptr())
         })?;
-        Ok(self.install(Entry::File(
-            ptr,
-            rights.attenuate(dir::READ | dir::WRITE),
-        )))
+        Ok(self.install(Entry::File(ptr, rights.attenuate(dir::READ | dir::WRITE))))
     }
 
     /// **Descend: resolve `name` under the directory `handle` names and hand back a handle to the
@@ -236,6 +236,12 @@ impl<D: Disk> Server<D> {
         self.fs.tx(|tx| {
             let mut children = Vec::new();
             tx.child_nodes(ptr, &mut children)?;
+            // **The attribute store is not part of the namespace** (milestone 57). Filtered here,
+            // before the cursor is applied, so the cursor still counts what the client can see; a
+            // filter applied after `skip` would make one entry vanish at whichever offset the store
+            // happened to sort to. `check_component` refuses the name on the way in, so this is the
+            // other half of the same rule rather than a second one.
+            children.retain(|e| e.name() != Some(xattr::STORE_DIR));
             children.sort_unstable_by(|a, b| a.name().unwrap_or("").cmp(b.name().unwrap_or("")));
             let mut used = 0;
             for entry in children.iter().skip(cursor as usize) {
@@ -325,10 +331,7 @@ impl<D: Disk> Server<D> {
             tx.on_open_node(node.ptr())?;
             Ok(node.ptr())
         })?;
-        Ok(self.install(Entry::File(
-            ptr,
-            rights.attenuate(dir::READ | dir::WRITE),
-        )))
+        Ok(self.install(Entry::File(ptr, rights.attenuate(dir::READ | dir::WRITE))))
     }
 
     /// Set the size of the file a handle names to exactly `size` bytes (milestone 31 phase 2).
@@ -404,6 +407,13 @@ impl<D: Disk> Server<D> {
             if node.data().is_dir() && !same_dir {
                 return Err(Error::new(EINVAL));
             }
+            // The node a replaced destination names, when this rename is its last link. Its
+            // extended attributes have to go with it, in **this** transaction: `rename_node` calls
+            // `remove_node` on the destination and throws the freed id away, so nothing else here
+            // ever learns that a node died, and a leaked blob would be inherited by whatever node
+            // the engine hands that id to next. Attributes keyed on a node are free across a rename
+            // and dangerous across a reuse, which are two halves of the same property.
+            let mut replaced = None;
             if let Ok(existing) = tx.find_node(dst_parent, dst) {
                 // A no-op rename is a success, not a self-replacement: `remove_node` would take the
                 // only link and `link_node` would then have nothing to point at.
@@ -417,8 +427,18 @@ impl<D: Disk> Server<D> {
                         ENOTDIR
                     }));
                 }
+                if existing.data().links() == 1 {
+                    replaced = Some(existing.id());
+                }
             }
-            tx.rename_node(src_parent, src, dst_parent, dst)
+            tx.rename_node(src_parent, src, dst_parent, dst)?;
+            // The source keeps its node and therefore keeps its attributes, with no code here
+            // knowing a rename happened. That is the whole reason the store keys on a node rather
+            // than on a path, and it is what an AppleDouble sidecar gets wrong.
+            if let Some(id) = replaced {
+                purge_attrs(tx, id)?;
+            }
+            Ok(())
         })
     }
 
@@ -457,9 +477,18 @@ impl<D: Disk> Server<D> {
         // `remove_node` compares the node's kind against the mode it is given, so `EISDIR` for a
         // directory is the engine's own answer here and matches POSIX. Contrast `rename`, where the
         // kind check had to be ours because the engine never compares the two.
-        self.fs
-            .tx(|tx| tx.remove_node(parent, name, Node::MODE_FILE))
-            .map(|_| ())
+        //
+        // It also answers `Some(id)` **exactly when the node's last link went**, which is precisely
+        // when its extended attributes must go too, and `None` when a link remains. So the purge
+        // asks the engine rather than guessing, and it happens inside the same transaction as the
+        // removal: a crash cannot leave a freed node's attributes behind for the next node to
+        // inherit that id (milestone 57, DECISIONS §34).
+        self.fs.tx(|tx| {
+            if let Some(id) = tx.remove_node(parent, name, Node::MODE_FILE)? {
+                purge_attrs(tx, id)?;
+            }
+            Ok(())
+        })
     }
 
     /// **Remove an empty directory `name` from the directory `handle` names: `rmdir(2)`, and
@@ -501,9 +530,116 @@ impl<D: Disk> Server<D> {
         // from inside the same transaction that would have removed it. Both are POSIX's words for
         // `rmdir`, which is why neither is checked again out here: a second opinion that could
         // disagree with the engine is worse than one that cannot.
+        //
+        // A directory carries extended attributes exactly as a file does, so it is purged exactly as
+        // a file is. See [`Server::unlink`] for why the engine's `Some(id)` is what decides it.
+        self.fs.tx(|tx| {
+            if let Some(id) = tx.remove_node(parent, name, Node::MODE_DIR)? {
+                purge_attrs(tx, id)?;
+            }
+            Ok(())
+        })
+    }
+
+    // --- Extended attributes (milestone 57, DECISIONS §34's 2026-07-31 amendment) ---
+    //
+    // The engine has none of this. The four methods below are a **layer**: a store the server keeps
+    // in the image, keyed on the node's `TreePtr` id, published as `fs_proto::xattr::store`. What
+    // makes the layer legitimate here and worthless on Linux is that nothing can bypass it, because
+    // every path to these bytes goes through `fs_proto`. See notes/xattr.md.
+
+    /// **Read one extended attribute of the node `handle` names**, returning its type code and the
+    /// number of bytes written into `out`.
+    ///
+    /// Needs [`dir::READ`], refused with `EBADF`, which is what [`Server::read`] needs and answers.
+    /// `ENODATA` if the attribute is not set: the only error that means absence, which is the
+    /// discipline milestone 37's harness learned the hard way (notes/fs-server.md).
+    ///
+    /// **`ERANGE` if `out` is shorter than the value**, never a short read. POSIX's own answer, and
+    /// DECISIONS §42's rule: a value clipped to fit would hand back a file that looked intact and
+    /// was not. In the running system `out` is the shared page, which is larger than
+    /// [`xattr::MAX_VALUE`] by construction, so this cannot fire on the wire.
+    pub fn get_xattr(&mut self, handle: u32, name: &[u8], out: &mut [u8]) -> Result<(u32, usize)> {
+        if !xattr::valid_name(name) {
+            return Err(Error::new(xattr::ERANGE));
+        }
+        let ptr = self.node_at(handle, dir::READ, EBADF)?;
+        self.fs.tx(|tx| {
+            let blob = read_attrs(tx, ptr.id())?;
+            let (kind, value) = xattr::store::get(&blob, name).ok_or(Error::new(xattr::ENODATA))?;
+            if out.len() < value.len() {
+                return Err(Error::new(xattr::ERANGE));
+            }
+            out[..value.len()].copy_from_slice(value);
+            Ok((kind, value.len()))
+        })
+    }
+
+    /// **Set one extended attribute on the node `handle` names.** Creating and replacing are one
+    /// operation ([`fs_proto::fs::SETXATTR`] says why).
+    ///
+    /// Needs [`dir::WRITE`], refused with [`dir::EROFS`], which is what [`Server::write`] needs and
+    /// answers. The three ceilings answer their own words ([`xattr::ERANGE`], [`xattr::E2BIG`],
+    /// [`xattr::ENOSPC`]) so a caller can tell which one it hit.
+    ///
+    /// **Crash-atomic with the file's own bytes**, because the read, the rewrite and the store
+    /// write all happen inside one `fs.tx`, which reaches the platter as one commit in RedoxFS's
+    /// header ring. That was the check that had to pass before this layer was viable at all
+    /// (DECISIONS §34), and it is why an attribute cannot survive a crash that lost the file or
+    /// vice versa.
+    pub fn set_xattr(&mut self, handle: u32, name: &[u8], kind: u32, value: &[u8]) -> Result<()> {
+        // Checked before anything is allocated or opened, so a client cannot make the server size a
+        // buffer from a length it invented. `store::set` checks again, and that is the copy the host
+        // tests exercise; this one is the boundary.
+        if !xattr::valid_name(name) {
+            return Err(Error::new(xattr::ERANGE));
+        }
+        if value.len() > xattr::MAX_VALUE {
+            return Err(Error::new(xattr::E2BIG));
+        }
+        let ptr = self.node_at(handle, dir::WRITE, EROFS)?;
+        self.clock += 1;
+        let now = self.clock;
+        self.fs.tx(|tx| {
+            let blob = read_attrs(tx, ptr.id())?;
+            // Replacing can only shrink, so the old blob plus one whole new record is always enough
+            // and `store::set` never has to refuse for want of room.
+            let mut out =
+                alloc::vec![0u8; blob.len() + xattr::store::record_len(name.len(), value.len())];
+            let n = xattr::store::set(&blob, name, kind, value, &mut out).map_err(Error::new)?;
+            write_attrs(tx, ptr.id(), &out[..n], now)
+        })
+    }
+
+    /// **List the attribute names on the node `handle` names**, filling `out` with
+    /// [`xattr::list`] records and returning the bytes used. Needs [`dir::READ`], refused with
+    /// `EBADF`.
+    ///
+    /// No cursor, unlike [`Server::read_dir`]: a complete listing fits one page by construction
+    /// ([`xattr::MAX_COUNT`]), so it cannot be observed half-changed the way a cursored directory
+    /// walk can.
+    pub fn list_xattr(&mut self, handle: u32, out: &mut [u8]) -> Result<usize> {
+        let ptr = self.node_at(handle, dir::READ, EBADF)?;
         self.fs
-            .tx(|tx| tx.remove_node(parent, name, Node::MODE_DIR))
-            .map(|_| ())
+            .tx(|tx| Ok(xattr::store::list(&read_attrs(tx, ptr.id())?, out)))
+    }
+
+    /// **Remove one extended attribute from the node `handle` names.** Needs [`dir::WRITE`],
+    /// refused with [`dir::EROFS`]. `ENODATA` if it was not set, rather than a quiet success: the
+    /// caller asked about one specific thing.
+    pub fn remove_xattr(&mut self, handle: u32, name: &[u8]) -> Result<()> {
+        if !xattr::valid_name(name) {
+            return Err(Error::new(xattr::ERANGE));
+        }
+        let ptr = self.node_at(handle, dir::WRITE, EROFS)?;
+        self.clock += 1;
+        let now = self.clock;
+        self.fs.tx(|tx| {
+            let blob = read_attrs(tx, ptr.id())?;
+            let mut out = alloc::vec![0u8; blob.len()];
+            let n = xattr::store::remove(&blob, name, &mut out).map_err(Error::new)?;
+            write_attrs(tx, ptr.id(), &out[..n], now)
+        })
     }
 
     /// Take the disk back out of the server, **dropping the mount without unmounting**, which is
@@ -578,6 +714,23 @@ impl<D: Disk> Server<D> {
         }
     }
 
+    /// The node a handle names, **file or directory alike**, once its rights carry `needed`.
+    ///
+    /// The only place in this file that does not care which kind a handle is, and extended
+    /// attributes are the only thing that does not care: a directory carries them exactly as a file
+    /// does, so a verb that refused one kind would be inventing a distinction the feature has not
+    /// got. `refusal` differs by direction for [`Server::file_at`]'s reason.
+    fn node_at(&self, handle: u32, needed: u64, refusal: i32) -> Result<TreePtr<Node>> {
+        let (ptr, rights) = match self.entry(handle)? {
+            Entry::Dir(ptr, rights) | Entry::File(ptr, rights) => (ptr, rights),
+        };
+        if rights.allows(needed) {
+            Ok(ptr)
+        } else {
+            Err(Error::new(refusal))
+        }
+    }
+
     /// Resolve `name` under the directory `handle` names, requiring `needed` on the parent, and
     /// return the child **directory** with the parent's rights for the caller to attenuate.
     ///
@@ -620,10 +773,18 @@ impl<D: Disk> Server<D> {
 ///
 /// Deliberately checked here rather than patched into the vendored engine: it is a rule of *our*
 /// contract, not a bug in RedoxFS, whose callers are free to name entries whatever they like.
+/// **And the attribute store's name is reserved, everywhere** (milestone 57). A store a client could
+/// name would be part of the namespace, and then "the attributes of a file" would be reachable as
+/// ordinary bytes by anything holding the directory they live in, which is precisely what DECISIONS
+/// §34's amendment says to get right. It is refused in every directory rather than only in the root
+/// so that the rule a client has to remember is one sentence instead of a location-dependent one,
+/// and `EINVAL` is the answer because the name is not expressible here rather than not permitted.
+/// [`Server::read_dir`] is the other half: what cannot be named is also not listed.
 fn check_component(name: &str) -> Result<()> {
     if name.is_empty()
         || name == "."
         || name == ".."
+        || name == xattr::STORE_DIR
         || name.contains('/')
         || name.contains('\\')
         || name.contains(':')
@@ -632,6 +793,119 @@ fn check_component(name: &str) -> Result<()> {
         return Err(Error::new(EINVAL));
     }
     Ok(())
+}
+
+/// The name of the file holding one node's attribute blob: its `TreePtr` id in hex. ASCII by
+/// construction, so the conversion cannot fail; the error arm exists so a future change to
+/// [`xattr::store::file_name`] cannot silently alias two nodes onto one blob.
+fn store_file(id: u32) -> Result<([u8; 8], usize)> {
+    let bytes = xattr::store::file_name(id);
+    if core::str::from_utf8(&bytes).is_err() {
+        return Err(Error::new(EIO));
+    }
+    Ok((bytes, 8))
+}
+
+/// The attribute store's directory in the image root, or `None` if nothing has ever set an
+/// attribute on this filesystem.
+///
+/// **`ENOENT` is the only error read as absence**, and every other one is propagated. A dropped
+/// write to the root's tree block makes a lookup answer `EIO`, and reading that as "there are no
+/// attributes" is exactly the false negative that made milestone 37's harness report filesystems
+/// that never existed (notes/fs-server.md). Here it would silently hand a client an empty attribute
+/// set for a file that has some.
+fn find_store<D: Disk>(tx: &mut Transaction<D>) -> Result<Option<TreePtr<Node>>> {
+    match tx.find_node(TreePtr::root(), xattr::STORE_DIR) {
+        Ok(node) => Ok(Some(node.ptr())),
+        Err(e) if e.errno == ENOENT => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// One node's attribute blob, or empty if it has none. Never partial: a blob longer than the layer
+/// can hold is `EIO`, because the alternative is reading whatever is in the first
+/// [`xattr::store::MAX_BYTES`] of a file this layer did not write.
+fn read_attrs<D: Disk>(tx: &mut Transaction<D>, node_id: u32) -> Result<Vec<u8>> {
+    let Some(dir_ptr) = find_store(tx)? else {
+        return Ok(Vec::new());
+    };
+    let (bytes, n) = store_file(node_id)?;
+    let name = core::str::from_utf8(&bytes[..n]).map_err(|_| Error::new(EIO))?;
+    let node = match tx.find_node(dir_ptr, name) {
+        Ok(node) => node,
+        Err(e) if e.errno == ENOENT => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    let size = node.data().size() as usize;
+    if size > xattr::store::MAX_BYTES {
+        return Err(Error::new(EIO));
+    }
+    let mut blob = alloc::vec![0u8; size];
+    let read = tx.read_node(node.ptr(), 0, &mut blob, 0, 0)?;
+    blob.truncate(read);
+    Ok(blob)
+}
+
+/// Replace one node's attribute blob. An **empty** blob removes the store file rather than leaving a
+/// zero-length one behind, so "no file" and "no attributes" stay the same statement and the store
+/// does not accumulate an entry per node that ever held an attribute.
+fn write_attrs<D: Disk>(
+    tx: &mut Transaction<D>,
+    node_id: u32,
+    blob: &[u8],
+    now: u64,
+) -> Result<()> {
+    if blob.is_empty() {
+        return purge_attrs(tx, node_id);
+    }
+    let (bytes, n) = store_file(node_id)?;
+    let name = core::str::from_utf8(&bytes[..n]).map_err(|_| Error::new(EIO))?;
+    let dir_ptr = match find_store(tx)? {
+        Some(ptr) => ptr,
+        // 0o700 rather than 0o755: the mode is decoration here (this contract has no uid to check
+        // it against), and the narrower one is what a recovery tool's listing should suggest.
+        None => tx
+            .create_node(
+                TreePtr::root(),
+                xattr::STORE_DIR,
+                Node::MODE_DIR | 0o700,
+                now,
+                0,
+            )?
+            .ptr(),
+    };
+    let ptr = match tx.find_node(dir_ptr, name) {
+        Ok(node) => node.ptr(),
+        Err(e) if e.errno == ENOENT => tx
+            .create_node(dir_ptr, name, Node::MODE_FILE | 0o600, now, 0)?
+            .ptr(),
+        Err(e) => return Err(e),
+    };
+    tx.write_node(ptr, 0, blob, now, 0)?;
+    // **Then shrink to exactly the new length.** A write does not truncate, so a blob that got
+    // shorter would leave the previous one's tail behind and the reader would walk records nobody
+    // wrote. That is DECISIONS §27's four-times-corrected failure met again, and here it would
+    // present as corrupted attributes rather than as a longer file.
+    tx.truncate_node(ptr, blob.len() as u64, now, 0)?;
+    Ok(())
+}
+
+/// Take one node's attributes away. Called from [`Server::unlink`], [`Server::rmdir`] and
+/// [`Server::rename`] **inside the same transaction as the removal**, which is the whole of why a
+/// freed node id cannot hand its attributes to the next node issued that id.
+///
+/// A node with no store file is not an error: most nodes have no attributes.
+fn purge_attrs<D: Disk>(tx: &mut Transaction<D>, node_id: u32) -> Result<()> {
+    let Some(dir_ptr) = find_store(tx)? else {
+        return Ok(());
+    };
+    let (bytes, n) = store_file(node_id)?;
+    let name = core::str::from_utf8(&bytes[..n]).map_err(|_| Error::new(EIO))?;
+    match tx.remove_node(dir_ptr, name, Node::MODE_FILE) {
+        Ok(_) => Ok(()),
+        Err(e) if e.errno == ENOENT => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 /// One filesystem block, in bytes (RedoxFS's `BLOCK_SIZE`): the unit [`BlockIo`] transfers.
@@ -983,7 +1257,10 @@ mod tests {
     fn handles_are_reused_after_close() {
         let mut srv = server_with(&[("a", b"1"), ("b", b"2")]);
         let h0 = srv.open_file("a").unwrap();
-        assert_ne!(h0, 0, "slot 0 is the bound directory and is never handed out");
+        assert_ne!(
+            h0, 0,
+            "slot 0 is the bound directory and is never handed out"
+        );
         srv.close(h0).unwrap();
         let h1 = srv.open_file("b").unwrap();
         assert_eq!(h0, h1, "a freed slot is reused before growing the table");
@@ -1013,7 +1290,9 @@ mod tests {
                 .create_node(TreePtr::root(), "sub", Node::MODE_DIR | 0o755, 0, 0)?
                 .ptr();
             file(tx, sub, "inner", b"inside the grant")?;
-            let deeper = tx.create_node(sub, "deeper", Node::MODE_DIR | 0o755, 0, 0)?.ptr();
+            let deeper = tx
+                .create_node(sub, "deeper", Node::MODE_DIR | 0o755, 0, 0)?
+                .ptr();
             file(tx, deeper, "leaf", b"two levels down")?;
             let other = tx
                 .create_node(TreePtr::root(), "other", Node::MODE_DIR | 0o755, 0, 0)?
@@ -1031,7 +1310,11 @@ mod tests {
 
     /// Collect a whole directory listing through `read_dir`, driving the cursor the way a client
     /// does, so the cursor and the "a record is never split" rule are exercised rather than assumed.
-    fn list(srv: &mut Server<DiskMemory>, handle: u32, buf_len: usize) -> Result<Vec<(String, bool)>> {
+    fn list(
+        srv: &mut Server<DiskMemory>,
+        handle: u32,
+        buf_len: usize,
+    ) -> Result<Vec<(String, bool)>> {
         let mut out = Vec::new();
         let mut buf = vec![0u8; buf_len];
         let mut cursor = 0u32;
@@ -1056,7 +1339,9 @@ mod tests {
     #[test]
     fn a_child_directory_handle_names_only_what_is_in_it() {
         let mut srv = server_with_tree();
-        let sub = srv.open_dir(fs_proto::fs::ROOT as u32, "sub", dir::ALL).unwrap();
+        let sub = srv
+            .open_dir(fs_proto::fs::ROOT as u32, "sub", dir::ALL)
+            .unwrap();
 
         let inner = srv.open_file_at(sub, "inner").expect("its own file opens");
         let mut buf = [0u8; 64];
@@ -1104,7 +1389,9 @@ mod tests {
         // Asking for what the parent has, or less, works, and the child is bounded either way.
         let deeper = srv.open_dir(sub, "deeper", narrow).unwrap();
         assert_eq!(
-            srv.create_file_at(deeper, "smuggled").err().map(|e| e.errno),
+            srv.create_file_at(deeper, "smuggled")
+                .err()
+                .map(|e| e.errno),
             Some(EROFS),
             "a grandchild must not have gained the create right the root grant withheld",
         );
@@ -1132,7 +1419,12 @@ mod tests {
                 syscall::error::ENOENT,
             ),
             (dir::CREATE, dir::CREATE, "create", EROFS),
-            (dir::DESCEND, dir::DESCEND, "descend", syscall::error::ENOENT),
+            (
+                dir::DESCEND,
+                dir::DESCEND,
+                "descend",
+                syscall::error::ENOENT,
+            ),
             // `rm`'s rung. Until `unlink` existed only `rename` consulted REMOVE, and a rename
             // needs CREATE as well, so this is the first probe that isolates this one.
             (dir::REMOVE, dir::REMOVE, "unlink", EROFS),
@@ -1219,9 +1511,13 @@ mod tests {
         // The same property through the OTHER door. `create` and `open` register the node
         // separately, so a test that only creates would leave half the verb unproven; deleting the
         // registration in `open_file_at` alone left this test green the first time it was run.
-        let h = srv.open_file_at(sub, "inner").expect("open an existing file");
+        let h = srv
+            .open_file_at(sub, "inner")
+            .expect("open an existing file");
         srv.unlink(sub, "inner").expect("unlink what was opened");
-        let n = srv.read(h, 0, &mut buf).expect("an opener keeps reading too");
+        let n = srv
+            .read(h, 0, &mut buf)
+            .expect("an opener keeps reading too");
         assert_eq!(&buf[..n], b"inside the grant");
         srv.close(h).unwrap();
     }
@@ -1395,10 +1691,7 @@ mod tests {
         let ro = srv
             .open_dir(fs_proto::fs::ROOT as u32, "sub", dir::ALL & !dir::REMOVE)
             .unwrap();
-        assert_eq!(
-            srv.unlink(ro, "inner").err().map(|e| e.errno),
-            Some(EROFS),
-        );
+        assert_eq!(srv.unlink(ro, "inner").err().map(|e| e.errno), Some(EROFS),);
         assert_eq!(
             srv.unlink(ro, "never-existed").err().map(|e| e.errno),
             Some(EROFS),
@@ -1448,16 +1741,15 @@ mod tests {
     #[test]
     fn a_listing_holds_exactly_the_directorys_own_names() {
         let mut srv = server_with_tree();
-        let sub = srv.open_dir(fs_proto::fs::ROOT as u32, "sub", dir::ALL).unwrap();
+        let sub = srv
+            .open_dir(fs_proto::fs::ROOT as u32, "sub", dir::ALL)
+            .unwrap();
 
         let mut got = list(&mut srv, sub, 256).expect("enumerate");
         got.sort();
         assert_eq!(
             got,
-            vec![
-                ("deeper".to_string(), true),
-                ("inner".to_string(), false)
-            ],
+            vec![("deeper".to_string(), true), ("inner".to_string(), false)],
             "the listing must be the granted directory's names and their kinds",
         );
 
@@ -1494,7 +1786,9 @@ mod tests {
         let mut srv = server_with_tree();
         // No REMOVE, so nothing made below may remove either.
         let held = dir::DESCEND | dir::CREATE | dir::READ | dir::WRITE | dir::ENUMERATE;
-        let sub = srv.open_dir(fs_proto::fs::ROOT as u32, "sub", held).unwrap();
+        let sub = srv
+            .open_dir(fs_proto::fs::ROOT as u32, "sub", held)
+            .unwrap();
 
         let made = srv.make_dir(sub, "logs", held).expect("mkdir");
         assert_eq!(
@@ -1551,7 +1845,10 @@ mod tests {
         let file = srv.open_file_at(sub, "inner").unwrap();
         let mut buf = [0u8; 32];
 
-        assert_eq!(srv.read(sub, 0, &mut buf).err().map(|e| e.errno), Some(EISDIR));
+        assert_eq!(
+            srv.read(sub, 0, &mut buf).err().map(|e| e.errno),
+            Some(EISDIR)
+        );
         assert_eq!(srv.write(sub, 0, b"x").err().map(|e| e.errno), Some(EISDIR));
         assert_eq!(srv.truncate(sub, 0).err().map(|e| e.errno), Some(EISDIR));
         assert_eq!(
@@ -1578,8 +1875,14 @@ mod tests {
         );
         // And a forged handle is still EBADF, from the same one check every verb goes through.
         for h in [99u32, 1000] {
-            assert_eq!(srv.read_dir(h, 0, &mut buf).err().map(|e| e.errno), Some(EBADF));
-            assert_eq!(srv.open_dir(h, "sub", 0).err().map(|e| e.errno), Some(EBADF));
+            assert_eq!(
+                srv.read_dir(h, 0, &mut buf).err().map(|e| e.errno),
+                Some(EBADF)
+            );
+            assert_eq!(
+                srv.open_dir(h, "sub", 0).err().map(|e| e.errno),
+                Some(EBADF)
+            );
         }
     }
 
@@ -1615,7 +1918,11 @@ mod tests {
         );
         let h = srv.open_file_at(deeper, "moved").expect("the moved name");
         let n = srv.read(h, 0, &mut buf).unwrap();
-        assert_eq!(&buf[..n], b"inside the grant", "the bytes followed the name");
+        assert_eq!(
+            &buf[..n],
+            b"inside the grant",
+            "the bytes followed the name"
+        );
     }
 
     /// **The `REMOVE` rung, which had no verb until this one.** A capability that may create and
@@ -1627,9 +1934,7 @@ mod tests {
         let mut srv = server_with_tree();
         let root = fs_proto::fs::ROOT as u32;
         // Everything but REMOVE: milestone 47's motivating sentence, "add to this, destroy nothing".
-        let append = srv
-            .open_dir(root, "sub", dir::ALL & !dir::REMOVE)
-            .unwrap();
+        let append = srv.open_dir(root, "sub", dir::ALL & !dir::REMOVE).unwrap();
         assert_eq!(
             srv.rename(append, "inner", append, "elsewhere")
                 .err()
@@ -1853,15 +2158,21 @@ mod tests {
         let mut disk = image_with_tree();
         {
             let mut srv = Server::open(disk).expect("open");
-            let sub = srv.open_dir(fs_proto::fs::ROOT as u32, "sub", dir::ALL).unwrap();
+            let sub = srv
+                .open_dir(fs_proto::fs::ROOT as u32, "sub", dir::ALL)
+                .unwrap();
             let made = srv.make_dir(sub, "made", dir::ALL).unwrap();
             let f = srv.create_file_at(made, "note").unwrap();
             srv.write(f, 0, b"written two levels down").unwrap();
             disk = srv.fs.disk; // no unmount, as a dying process leaves it
         }
         let mut srv = Server::open(disk).expect("reopen");
-        let sub = srv.open_dir(fs_proto::fs::ROOT as u32, "sub", dir::ALL).unwrap();
-        let made = srv.open_dir(sub, "made", dir::ALL).expect("the made directory");
+        let sub = srv
+            .open_dir(fs_proto::fs::ROOT as u32, "sub", dir::ALL)
+            .unwrap();
+        let made = srv
+            .open_dir(sub, "made", dir::ALL)
+            .expect("the made directory");
         let f = srv.open_file_at(made, "note").expect("the file in it");
         let mut buf = [0u8; 64];
         let n = srv.read(f, 0, &mut buf).unwrap();
@@ -2194,5 +2505,466 @@ mod tests {
             short,
             "the chunked create/truncate/write round trip lost bytes"
         );
+    }
+
+    // --- Extended attributes (milestone 57) ---
+
+    /// The node id behind a name, so a test can talk about the thing the store keys on rather than
+    /// about the name that happens to point at it. This is the whole trick of the layer, so the
+    /// tests have to be able to see it.
+    fn node_id_of(srv: &mut Server<DiskMemory>, parent: TreePtr<Node>, name: &str) -> u32 {
+        srv.fs
+            .tx(|tx| Ok(tx.find_node(parent, name)?.id()))
+            .unwrap_or_else(|e| panic!("no node behind {name}: {e:?}"))
+    }
+
+    /// Whether the store still holds a blob for `node_id`. Reaches past the contract deliberately:
+    /// a client cannot name the store, so a test that could only use the contract could not tell
+    /// "the attributes were purged" from "the attributes are unreachable".
+    fn store_holds(srv: &mut Server<DiskMemory>, node_id: u32) -> bool {
+        srv.fs
+            .tx(|tx| {
+                let Some(dir) = find_store(tx)? else {
+                    return Ok(false);
+                };
+                let bytes = xattr::store::file_name(node_id);
+                let name = core::str::from_utf8(&bytes).expect("hex is ASCII");
+                Ok(tx.find_node(dir, name).is_ok())
+            })
+            .unwrap()
+    }
+
+    /// The attribute names on a handle, through the contract, in the order the store holds them.
+    fn attr_names(srv: &mut Server<DiskMemory>, handle: u32) -> Vec<Vec<u8>> {
+        let mut page = [0u8; 4096];
+        let n = srv.list_xattr(handle, &mut page).expect("list");
+        fs_proto::xattr::list::iter(&page[..n])
+            .map(|s| s.to_vec())
+            .collect()
+    }
+
+    /// One attribute's value through the contract.
+    fn attr(srv: &mut Server<DiskMemory>, handle: u32, name: &[u8]) -> Result<(u32, Vec<u8>)> {
+        let mut page = [0u8; 4096];
+        let (kind, n) = srv.get_xattr(handle, name, &mut page)?;
+        Ok((kind, page[..n].to_vec()))
+    }
+
+    /// **An attribute is on the disk, not in the server.** Set it, drop the mount the way a dying
+    /// process does, mount the same image again, and read it back. Without this the whole layer
+    /// could be a map in a `Server` and every other test here would still pass.
+    #[test]
+    fn an_attribute_survives_a_mount_it_was_not_written_in() {
+        let disk = image_with(&[("motd", b"hello")]);
+        let mut srv = Server::open(disk).unwrap();
+        let h = srv.open_file("motd").unwrap();
+        srv.set_xattr(h, b"user.DOSATTRIB", xattr::RAW, b"0x20")
+            .expect("set");
+        srv.set_xattr(h, b"user.com.apple.FinderInfo", 0x4353_5452, &[7u8; 32])
+            .expect("set a typed one");
+        let disk = srv.fs.disk; // no unmount, exactly as on device
+
+        let mut srv = Server::open(disk).unwrap();
+        let h = srv.open_file("motd").unwrap();
+        assert_eq!(
+            attr(&mut srv, h, b"user.DOSATTRIB").unwrap(),
+            (xattr::RAW, b"0x20".to_vec()),
+        );
+        assert_eq!(
+            attr(&mut srv, h, b"user.com.apple.FinderInfo").unwrap(),
+            (0x4353_5452, vec![7u8; 32]),
+            "the type code has to survive the platter too, or indexing is foreclosed after all",
+        );
+        assert_eq!(
+            attr_names(&mut srv, h),
+            [
+                b"user.DOSATTRIB".to_vec(),
+                b"user.com.apple.FinderInfo".to_vec()
+            ],
+        );
+    }
+
+    /// **The headline: a rename carries the attributes, and nothing in the rename path knows they
+    /// exist.**
+    ///
+    /// The store keys on the node's `TreePtr`, and a rename changes a directory entry rather than a
+    /// node, so this works by construction. It is the correctness property that is only available
+    /// inside the FS server, and the one AppleDouble sidecars (and any path-keyed store) get wrong,
+    /// so it is pinned rather than reasoned about. The node id is asserted unchanged as well, since
+    /// that equality is *why* it holds.
+    #[test]
+    fn a_rename_carries_the_attributes_because_the_store_keys_on_the_node() {
+        let mut srv = server_with_tree();
+        let h = srv.open_file("motd").unwrap();
+        srv.set_xattr(h, b"user.tag", 9, b"follow me").unwrap();
+        let before = node_id_of(&mut srv, TreePtr::root(), "motd");
+
+        // Rename within the root, then into a subdirectory: neither touches the node.
+        srv.rename(
+            fs_proto::fs::ROOT as u32,
+            "motd",
+            fs_proto::fs::ROOT as u32,
+            "motd2",
+        )
+        .expect("rename in place");
+        let sub = srv
+            .open_dir(fs_proto::fs::ROOT as u32, "sub", dir::ALL)
+            .unwrap();
+        srv.rename(fs_proto::fs::ROOT as u32, "motd2", sub, "moved")
+            .expect("rename across directories");
+
+        let after = node_id_of(&mut srv, TreePtr::root(), "sub");
+        assert_ne!(
+            after, before,
+            "sanity: the subdirectory is a different node"
+        );
+        let moved = srv
+            .open_file_at(sub, "moved")
+            .expect("open at its new name");
+        assert_eq!(
+            attr(&mut srv, moved, b"user.tag").unwrap(),
+            (9, b"follow me".to_vec()),
+            "the attribute did not follow the file across two renames",
+        );
+        assert!(
+            store_holds(&mut srv, before),
+            "and it is still the same node's blob"
+        );
+    }
+
+    /// **Unlink takes the attributes with the file, in the same transaction**, and a node id issued
+    /// again afterwards inherits nothing.
+    ///
+    /// This is the correctness bug wearing a housekeeping costume that DECISIONS §34's amendment
+    /// names: a leaked blob is not wasted space, it is somebody else's metadata attached to a file
+    /// that never asked for it. The reuse half is the one that makes it a bug rather than a leak, so
+    /// it is tested by actually provoking the reuse.
+    #[test]
+    fn unlink_takes_the_attributes_and_a_reused_node_inherits_nothing() {
+        let mut srv = server_with_tree();
+        let h = srv.create_file("doomed").unwrap();
+        srv.set_xattr(h, b"user.secret", xattr::RAW, b"not yours")
+            .unwrap();
+        let doomed = node_id_of(&mut srv, TreePtr::root(), "doomed");
+        assert!(store_holds(&mut srv, doomed));
+
+        srv.close(h).unwrap(); // an open handle pins the node; close first so the id is really freed
+        srv.unlink(fs_proto::fs::ROOT as u32, "doomed").unwrap();
+        assert!(
+            !store_holds(&mut srv, doomed),
+            "the blob outlived the file it belonged to",
+        );
+
+        // **Provoke the reuse rather than reasoning about it.** RedoxFS releases a freed node id, so
+        // a fresh create gets it back, and today the very first one does. The loop is bounded and
+        // the miss is asserted rather than skipped: without a reuse the interesting half of this
+        // test is vacuous, and a silent skip is how a test stops proving anything without saying so.
+        // If a future engine stops recycling ids promptly, widen the bound; do not delete the
+        // assertion.
+        let mut reused = None;
+        for i in 0..8 {
+            let name = format!("fresh{i}");
+            let nh = srv.create_file(&name).unwrap();
+            if node_id_of(&mut srv, TreePtr::root(), &name) == doomed {
+                reused = Some(nh);
+                break;
+            }
+        }
+        let nh =
+            reused.expect("no create reused the freed node id, so the reuse case went untested");
+        assert!(
+            attr_names(&mut srv, nh).is_empty(),
+            "a new file was handed the previous occupant's attributes",
+        );
+        assert_eq!(
+            attr(&mut srv, nh, b"user.secret").unwrap_err().errno,
+            xattr::ENODATA,
+        );
+    }
+
+    /// A rename that **replaces** a destination takes the replaced file's attributes too. RedoxFS's
+    /// `rename_node` removes that node and throws the freed id away, so this is the one removal the
+    /// engine cannot tell us about and the server has to notice for itself.
+    #[test]
+    fn a_rename_over_a_file_takes_the_replaced_files_attributes() {
+        let mut srv = server_with_tree();
+        let victim = srv.create_file("victim").unwrap();
+        srv.set_xattr(victim, b"user.doomed", xattr::RAW, b"x")
+            .unwrap();
+        srv.close(victim).unwrap();
+        let victim_id = node_id_of(&mut srv, TreePtr::root(), "victim");
+
+        let winner = srv.create_file("winner").unwrap();
+        srv.set_xattr(winner, b"user.kept", xattr::RAW, b"y")
+            .unwrap();
+        let winner_id = node_id_of(&mut srv, TreePtr::root(), "winner");
+
+        srv.rename(
+            fs_proto::fs::ROOT as u32,
+            "winner",
+            fs_proto::fs::ROOT as u32,
+            "victim",
+        )
+        .expect("replace");
+
+        assert!(
+            !store_holds(&mut srv, victim_id),
+            "the replaced file's attributes outlived it",
+        );
+        assert!(
+            store_holds(&mut srv, winner_id),
+            "and the survivor kept its own"
+        );
+        let h = srv.open_file("victim").unwrap();
+        assert_eq!(attr_names(&mut srv, h), [b"user.kept".to_vec()]);
+    }
+
+    /// `rmdir` purges exactly as `unlink` does, because a directory carries attributes exactly as a
+    /// file does. A verb that purged one kind and not the other would leak on whichever half its
+    /// author was not thinking about.
+    #[test]
+    fn a_directory_carries_attributes_and_rmdir_takes_them_with_it() {
+        let mut srv = server_with_tree();
+        let d = srv
+            .make_dir(fs_proto::fs::ROOT as u32, "attrdir", dir::ALL)
+            .unwrap();
+        srv.set_xattr(d, b"user.on-a-directory", 3, b"yes").unwrap();
+        let id = node_id_of(&mut srv, TreePtr::root(), "attrdir");
+        assert_eq!(
+            attr(&mut srv, d, b"user.on-a-directory").unwrap(),
+            (3, b"yes".to_vec()),
+        );
+
+        srv.rmdir(fs_proto::fs::ROOT as u32, "attrdir").unwrap();
+        assert!(
+            !store_holds(&mut srv, id),
+            "an empty directory left its attributes behind"
+        );
+    }
+
+    /// **The store is not in the namespace.** It cannot be listed, opened, descended into, created,
+    /// renamed or removed, in any directory, at full rights. If a client could name it, "the
+    /// attributes of a file" would be reachable as ordinary bytes by anything holding the directory.
+    #[test]
+    fn the_attribute_store_is_not_in_the_namespace() {
+        let mut srv = server_with_tree();
+        let h = srv.open_file("motd").unwrap();
+        srv.set_xattr(h, b"user.x", xattr::RAW, b"1").unwrap();
+
+        // It is really there: this test would be vacuous against a filesystem with no store at all.
+        assert!(
+            srv.fs.tx(|tx| Ok(find_store(tx)?.is_some())).unwrap(),
+            "nothing was created, so nothing is being hidden",
+        );
+
+        let root = fs_proto::fs::ROOT as u32;
+        let listed = list(&mut srv, root, 4096).unwrap();
+        assert!(
+            !listed.iter().any(|(n, _)| n == xattr::STORE_DIR),
+            "a listing named the attribute store: {listed:?}",
+        );
+        // Every name-taking verb, at every rights this contract can carry, and the answer is always
+        // the same one `..` gets: the name is not expressible here.
+        assert_eq!(
+            srv.open_file_at(root, xattr::STORE_DIR).unwrap_err().errno,
+            EINVAL
+        );
+        assert_eq!(
+            srv.open_dir(root, xattr::STORE_DIR, dir::ALL)
+                .unwrap_err()
+                .errno,
+            EINVAL,
+        );
+        assert_eq!(
+            srv.create_file_at(root, xattr::STORE_DIR)
+                .unwrap_err()
+                .errno,
+            EINVAL
+        );
+        assert_eq!(
+            srv.make_dir(root, xattr::STORE_DIR, dir::ALL)
+                .unwrap_err()
+                .errno,
+            EINVAL,
+        );
+        assert_eq!(
+            srv.unlink(root, xattr::STORE_DIR).unwrap_err().errno,
+            EINVAL
+        );
+        assert_eq!(srv.rmdir(root, xattr::STORE_DIR).unwrap_err().errno, EINVAL);
+        assert_eq!(
+            srv.rename(root, "motd", root, xattr::STORE_DIR)
+                .unwrap_err()
+                .errno,
+            EINVAL,
+        );
+        // And it is reserved in a *subdirectory* too, so the rule is one sentence rather than a
+        // location-dependent one.
+        let sub = srv.open_dir(root, "sub", dir::ALL).unwrap();
+        assert_eq!(
+            srv.create_file_at(sub, xattr::STORE_DIR).unwrap_err().errno,
+            EINVAL
+        );
+    }
+
+    /// **An attribute takes the direction the capability carries**, and no new rung was added to the
+    /// ladder to say so: reading one needs what reading the file needs, changing one needs what
+    /// writing the file needs, and each is refused with the word that verb already answers.
+    #[test]
+    fn attributes_take_the_direction_the_capability_already_carries() {
+        let mut srv = server_with_tree();
+
+        // A read-only directory, so the file handle under it inherits read and not write.
+        let ro = srv
+            .open_dir(fs_proto::fs::ROOT as u32, "sub", dir::READ | dir::DESCEND)
+            .unwrap();
+        let h = srv.open_file_at(ro, "inner").unwrap();
+        let mut page = [0u8; 4096];
+        assert_eq!(
+            srv.list_xattr(h, &mut page).unwrap(),
+            0,
+            "reading is allowed"
+        );
+        assert_eq!(
+            srv.set_xattr(h, b"user.x", xattr::RAW, b"1")
+                .unwrap_err()
+                .errno,
+            EROFS,
+            "through this capability the file is read-only, and so are its attributes",
+        );
+        assert_eq!(srv.remove_xattr(h, b"user.x").unwrap_err().errno, EROFS);
+
+        // And the mirror: a write-only directory's file handle may set and may not read, which is
+        // `EBADF` because it is a fact about the handle rather than about the capability.
+        let wo = srv
+            .open_dir(fs_proto::fs::ROOT as u32, "sub", dir::WRITE | dir::DESCEND)
+            .unwrap();
+        let h = srv.open_file_at(wo, "inner").unwrap();
+        srv.set_xattr(h, b"user.x", xattr::RAW, b"1")
+            .expect("writing is allowed");
+        assert_eq!(
+            srv.get_xattr(h, b"user.x", &mut page).unwrap_err().errno,
+            EBADF
+        );
+        assert_eq!(srv.list_xattr(h, &mut page).unwrap_err().errno, EBADF);
+        // A handle that was never minted is EBADF here as it is everywhere else.
+        assert_eq!(srv.list_xattr(999, &mut page).unwrap_err().errno, EBADF);
+    }
+
+    /// **Every ceiling refuses at the server boundary with its own word**, so a client can act on
+    /// which one it hit. DECISIONS §42's rule is that an offered verb fails loudly rather than
+    /// degrading; a store that clipped a value would hand back a file that looked intact and was not.
+    #[test]
+    fn every_ceiling_refuses_loudly_and_with_its_own_word() {
+        let mut srv = server_with_tree();
+        let h = srv.open_file("motd").unwrap();
+        let mut page = [0u8; 4096];
+
+        assert_eq!(
+            srv.set_xattr(h, b"", xattr::RAW, b"v").unwrap_err().errno,
+            xattr::ERANGE,
+        );
+        assert_eq!(
+            srv.set_xattr(h, &vec![b'n'; xattr::MAX_NAME + 1], xattr::RAW, b"v")
+                .unwrap_err()
+                .errno,
+            xattr::ERANGE,
+        );
+        assert_eq!(
+            srv.set_xattr(h, b"user.big", xattr::RAW, &vec![0u8; xattr::MAX_VALUE + 1])
+                .unwrap_err()
+                .errno,
+            xattr::E2BIG,
+        );
+        // The widest value the contract allows must actually work, or the limit above is a limit on
+        // nothing and the refusal proves only that the check exists.
+        srv.set_xattr(
+            h,
+            b"user.widest",
+            xattr::RAW,
+            &vec![0xCDu8; xattr::MAX_VALUE],
+        )
+        .expect("the widest permitted value");
+        assert_eq!(
+            attr(&mut srv, h, b"user.widest").unwrap().1.len(),
+            xattr::MAX_VALUE,
+        );
+
+        // Fill the node and ask for one more.
+        for i in 1..xattr::MAX_COUNT {
+            srv.set_xattr(h, format!("user.a{i}").as_bytes(), xattr::RAW, b"v")
+                .unwrap();
+        }
+        assert_eq!(
+            srv.set_xattr(h, b"user.overflow", xattr::RAW, b"v")
+                .unwrap_err()
+                .errno,
+            xattr::ENOSPC,
+        );
+        // Replacing at the cap still works: the ceiling is on new names, not on a full file.
+        srv.set_xattr(h, b"user.a1", xattr::RAW, b"replaced")
+            .unwrap();
+
+        // Absence is ENODATA, from both verbs, and is the only error that means it.
+        assert_eq!(
+            srv.get_xattr(h, b"user.never-set", &mut page)
+                .unwrap_err()
+                .errno,
+            xattr::ENODATA,
+        );
+        assert_eq!(
+            srv.remove_xattr(h, b"user.never-set").unwrap_err().errno,
+            xattr::ENODATA,
+        );
+        // And a buffer too small for the value is ERANGE, never a short read.
+        let mut tiny = [0u8; 4];
+        assert_eq!(
+            srv.get_xattr(h, b"user.widest", &mut tiny)
+                .unwrap_err()
+                .errno,
+            xattr::ERANGE,
+        );
+    }
+
+    /// **A shorter blob does not leave the longer one's tail behind.** The store file is written and
+    /// then truncated to length, because a write does not truncate; without the truncate the reader
+    /// walks records nobody wrote. That is DECISIONS §27's four-times-corrected failure met in a
+    /// place where it would present as corrupted metadata rather than as a longer file.
+    #[test]
+    fn a_shrinking_attribute_set_does_not_leave_a_tail() {
+        let mut srv = server_with_tree();
+        let h = srv.open_file("motd").unwrap();
+        for i in 0..6 {
+            srv.set_xattr(h, format!("user.n{i}").as_bytes(), 1, &[b'x'; 200])
+                .unwrap();
+        }
+        assert_eq!(attr_names(&mut srv, h).len(), 6);
+
+        // Take five of them away and shrink the sixth's value: every byte of the old blob is past
+        // the end of the new one.
+        for i in 0..5 {
+            srv.remove_xattr(h, format!("user.n{i}").as_bytes())
+                .unwrap();
+        }
+        srv.set_xattr(h, b"user.n5", 1, b"tiny").unwrap();
+
+        let disk = srv.fs.disk;
+        let mut srv = Server::open(disk).unwrap();
+        let h = srv.open_file("motd").unwrap();
+        assert_eq!(attr_names(&mut srv, h), [b"user.n5".to_vec()]);
+        assert_eq!(
+            attr(&mut srv, h, b"user.n5").unwrap(),
+            (1, b"tiny".to_vec())
+        );
+
+        // And the last one out takes the store file with it, so the store does not accumulate an
+        // entry per node that ever held an attribute.
+        let id = node_id_of(&mut srv, TreePtr::root(), "motd");
+        srv.remove_xattr(h, b"user.n5").unwrap();
+        assert!(
+            !store_holds(&mut srv, id),
+            "an emptied blob left its file behind"
+        );
+        assert!(attr_names(&mut srv, h).is_empty());
     }
 }

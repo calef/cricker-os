@@ -25,7 +25,7 @@
 
 extern crate alloc;
 
-use fs_proto::{blk, fs, op, reply_err, req};
+use fs_proto::{blk, fs, op, reply_err, req, xattr};
 use fs_server::Server;
 use redoxfs::Disk;
 use syscall::error::{EINVAL, EIO, Error, Result};
@@ -303,7 +303,9 @@ fn serve(server: &mut Server<IpcDisk>) -> ! {
             fs::READDIR => {
                 // SAFETY: the whole page is ours to fill; the encoder never writes past its slice.
                 let buf = unsafe { file_page(BLOCK) };
-                server.read_dir(handle, offset as u32, buf).map(|n| n as i64)
+                server
+                    .read_dir(handle, offset as u32, buf)
+                    .map(|n| n as i64)
             }
             // **The only verb that names two directories**, so the second word is a packed pair
             // (handle, length) rather than a scalar and both names ride in the shared page, source
@@ -339,6 +341,55 @@ fn serve(server: &mut Server<IpcDisk>) -> ! {
                     Ok(name) => server.rmdir(handle, name).map(|()| 0),
                     Err(_) => Err(Error::new(EINVAL)),
                 }
+            }
+            // **Extended attributes** (milestone 57). The handle field is the file or directory the
+            // attribute is on rather than a parent directory, which is the one shape difference from
+            // OPEN: an attribute has no name in any namespace, so there is nothing to resolve it
+            // under. The layer itself is in `fs_server`; this is only where the page is cut up.
+            fs::GETXATTR => {
+                // The name comes in on the page and the value goes back out on it, so the name is
+                // copied to the stack before the reply is written over it. 255 bytes against a
+                // measured 127 KiB high-water on a 397 KiB grant (notes/fs-server.md).
+                let mut name = [0u8; xattr::MAX_NAME];
+                if len > name.len() {
+                    Err(Error::new(xattr::ERANGE))
+                } else {
+                    // SAFETY: the name is `len` bytes the client wrote at the start of FILE_PAGE.
+                    name[..len].copy_from_slice(unsafe { file_page(len) });
+                    // SAFETY: the whole page is ours to fill, and the server refuses a value that
+                    // will not fit rather than writing past it.
+                    let out = unsafe { file_page(BLOCK) };
+                    server
+                        .get_xattr(handle, &name[..len], out)
+                        .map(|(kind, n)| xattr::reply(kind, n))
+                }
+            }
+            // The only verb here carrying two payloads: the name is `len` bytes at the start of the
+            // page and the value follows it, with the value's length and its type code packed into
+            // the second word. The page is the bound, and a pair that overruns it is EINVAL rather
+            // than a clamp, for RENAME's reason: clipping a value stores something nobody wrote.
+            fs::SETXATTR => {
+                let value_len = xattr::spec_value_len(offset);
+                if len + value_len > BLOCK {
+                    Err(Error::new(EINVAL))
+                } else {
+                    // SAFETY: both payloads are the client's bytes at the start of FILE_PAGE, and
+                    // the sum is checked against the page above.
+                    let (name, value) = unsafe { file_page(len + value_len) }.split_at(len);
+                    server
+                        .set_xattr(handle, name, xattr::spec_kind(offset), value)
+                        .map(|()| 0)
+                }
+            }
+            fs::LISTXATTR => {
+                // SAFETY: the whole page is ours to fill; the encoder never writes past its slice.
+                let buf = unsafe { file_page(BLOCK) };
+                server.list_xattr(handle, buf).map(|n| n as i64)
+            }
+            fs::REMOVEXATTR => {
+                // SAFETY: the name is `len` bytes the client wrote at the start of FILE_PAGE.
+                let name = unsafe { file_page(len) };
+                server.remove_xattr(handle, name).map(|()| 0)
             }
             // The new size rides in the second word, NOT in the length field, because it is an
             // offset-shaped quantity: `len` is clamped to one page above, which would silently cap a
