@@ -103,6 +103,11 @@ the names this run has already taken away.
 - **Recursion depth is real stack**, since the program has no allocator and each level holds a listing
   buffer by value. `rm` asks for 4 stack pages. A deep enough tree will exhaust it, and the failure
   will be a data abort rather than a diagnostic.
+- **`rm` removes nothing this contract has since grown**, and that is now checked rather than
+  assumed. Milestone 61 made the caretakers dispatch off `fs_proto::verb`, so a verb added to the
+  contract is forwarded by them from the day its row exists; `rm` still holds `REMOVE` and nothing
+  else, so what it can *send* is unchanged. The two facts are independent and it is worth saying so:
+  the caretaker got wider, the grant did not.
 
 ## See also
 

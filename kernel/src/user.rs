@@ -9341,6 +9341,38 @@ mod tests {
         );
     }
 
+    /// **A read-only per-file grant carries its file's attributes, and cannot write them**
+    /// (milestone 61).
+    ///
+    /// It is the same run as the test above, read a second way, which is why it costs nothing: a
+    /// clean verdict of zero already says both halves. `GRANTED_ATTRS_FAILED` clear means the
+    /// listing and the get went **through** the caretaker to the store, which they could not do
+    /// before this milestone (all four attribute verbs answered `EOPNOTSUPP`); `WROTE_ATTR` clear
+    /// means the set did not, because a read-only grant must not forward one.
+    ///
+    /// Stated as its own assertion rather than left inside the zero, because "the verdict was zero"
+    /// does not tell a reader which properties were in it, and the whole point of a bitmap is that
+    /// each bit is a sentence. The writable twin below is what stops this passing vacuously.
+    #[cfg(target_arch = "aarch64")]
+    #[test_case]
+    fn a_read_only_per_file_grant_reads_its_files_attributes_and_writes_none() {
+        use fs_proto::fixture::escape;
+        let Some(verdict) = attack_a_grant(fs_proto::grant::READ, false) else {
+            return;
+        };
+        assert_eq!(
+            verdict & escape::GRANTED_ATTRS_FAILED,
+            0,
+            "the caretaker did not forward the attribute reads, so a program behind a per-file \
+             grant still cannot reach its own file's attributes",
+        );
+        assert_eq!(
+            verdict & escape::WROTE_ATTR,
+            0,
+            "a read-only grant forwarded SETXATTR: an attribute is a way to change a file",
+        );
+    }
+
     /// **A writable per-file grant, attacked** (the second witness, and the first one's control).
     ///
     /// Same caretaker, same attacker, same neighbouring file; only the granted direction changes.
@@ -9364,11 +9396,16 @@ mod tests {
         else {
             return;
         };
+        // `WROTE_ATTR` joined the expected set in milestone 61, and it is the third way to change a
+        // file: bytes, length, and what is attached to it. A direction check that covered only the
+        // first two would have left one open.
+        let expected = escape::WROTE | escape::TRUNCATED | escape::WROTE_ATTR;
         assert_eq!(
             verdict,
-            escape::WROTE | escape::TRUNCATED,
-            "a writable grant must write and truncate its own file and do nothing else: {}",
-            describe_escape(verdict & !(escape::WROTE | escape::TRUNCATED)),
+            expected,
+            "a writable grant must write, truncate and set an attribute on its own file and do \
+             nothing else: {}",
+            describe_escape(verdict & !expected),
         );
     }
 
@@ -9428,6 +9465,10 @@ mod tests {
             "it reached a file with a handle it was never given"
         } else if v & escape::GRANTED_READ_FAILED != 0 {
             "the granted read itself failed, so nothing above was actually proven"
+        } else if v & escape::WROTE_ATTR != 0 {
+            "it set an extended attribute through a read-only grant"
+        } else if v & escape::GRANTED_ATTRS_FAILED != 0 {
+            "it could not reach its own file's attributes, which milestone 61 says it carries"
         } else {
             "nothing (an empty verdict should not have failed an assertion)"
         }
@@ -12772,6 +12813,12 @@ mod dir_capability_tests {
             "it descended through a capability with no descend right"
         } else if v & esc::ENUMERATED != 0 {
             "it enumerated through a capability with no enumerate right"
+        } else if v & esc::REACHED_AN_UNMATCHED_NAME != 0 {
+            "it reached a name in the granted directory that the grant's set does not carry"
+        } else if v & esc::SET_AN_ATTR != 0 {
+            "it set an extended attribute through a capability with no write right"
+        } else if v & esc::READ_ATTRS != 0 {
+            "it read extended attributes through a capability that could not open the file"
         } else if v & esc::GRANTED_ACCESS_FAILED != 0 {
             "the granted access itself failed, so nothing was actually proven"
         } else {
@@ -12797,7 +12844,7 @@ mod dir_capability_tests {
         };
         assert_verdict(
             v,
-            esc::OPENED_ITS_OWN | esc::ENUMERATED | esc::DESCENDED,
+            esc::OPENED_ITS_OWN | esc::ENUMERATED | esc::DESCENDED | esc::READ_ATTRS,
             "read-only",
         );
     }
@@ -12823,7 +12870,9 @@ mod dir_capability_tests {
                 | esc::CREATED
                 | esc::WROTE
                 | esc::RENAMED
-                | esc::MADE_A_DIR,
+                | esc::MADE_A_DIR
+                | esc::READ_ATTRS
+                | esc::SET_AN_ATTR,
             "full",
         );
     }
@@ -12850,8 +12899,62 @@ mod dir_capability_tests {
         };
         assert_verdict(
             v,
-            esc::OPENED_ITS_OWN | esc::CREATED | esc::WROTE,
+            esc::OPENED_ITS_OWN | esc::CREATED | esc::WROTE | esc::READ_ATTRS | esc::SET_AN_ATTR,
             "append-only",
+        );
+    }
+
+    /// **A name-set capability carries its files' attributes and still designates only its names**
+    /// (milestone 61, the third caretaker).
+    ///
+    /// The other two caretakers are covered by the runs above and by the per-file attacker.
+    /// `fs_nameset_caretaker` is the one that inspects a name on **every** request, so teaching it
+    /// four verbs whose operand is an *attribute* name rather than a directory name is where this
+    /// milestone could most easily have gone wrong, in either direction:
+    ///
+    /// - Filter the attribute name against the set, and a program behind `rm *.txt` cannot read what
+    ///   is attached to a file the pattern did match. `READ_ATTRS` and `SET_AN_ATTR` catch that.
+    /// - Stop filtering the directory names, and the set stops being a set. `REACHED_AN_UNMATCHED`
+    ///   `_NAME` catches that, and the witness holds `dir::READ`, which `rm`'s own witness does not,
+    ///   so the naming question is asked here through the verbs `rm` never sends.
+    ///
+    /// The set is one name inside the `sub` fixture, so `deeper` is one directory entry away and the
+    /// caretaker one hop up holds a capability that could open it.
+    #[test_case]
+    fn a_name_set_capability_reads_its_attributes_and_still_names_only_its_set() {
+        let report = match fs_service::start_granted_set(
+            blk_server_image(),
+            program("fsserver").expect("no fsserver program in the initrd archive"),
+            program("fs_nameset_caretaker")
+                .expect("no fs_nameset_caretaker program in the initrd archive"),
+            program("fsclient").expect("no fsclient program in the initrd archive"),
+            fs_service::SetGrant {
+                dir: fs_proto::fixture::tree::SUB,
+                // Exactly one name, and `deeper` deliberately left out of it.
+                names: &[(fs_proto::fixture::tree::INNER.as_bytes(), false)],
+                rights: dir::READ | dir::WRITE | dir::DESCEND,
+                role: 6, // ROLE_SET_ATTRS
+                arg: 0,
+                arg2: 0,
+                stack_pages: 0,
+            },
+        ) {
+            Some(r) => r,
+            None => {
+                crate::println!("    (no RedoxFS disk attached; skipping)");
+                return;
+            }
+        };
+        let [tag, v, ..] = sched::ipc_recv(report);
+        assert_eq!(
+            tag,
+            fs_proto::fixture::VERDICT,
+            "the name-set witness's report is not a verdict word",
+        );
+        assert_verdict(
+            v,
+            esc::OPENED_ITS_OWN | esc::READ_ATTRS | esc::SET_AN_ATTR,
+            "name-set",
         );
     }
 }
@@ -13658,6 +13761,11 @@ mod riscv_virtio_tests {
 
     /// **A read-only per-file grant, attacked, on the second ISA** (the parity gate). The aarch64
     /// twin carries the reasoning: same caretaker, same attacker, same verdict.
+    ///
+    /// Milestone 61's attribute forwarding is inside this zero, in both directions: the attribute
+    /// reads reached the store (`GRANTED_ATTRS_FAILED` clear) and the attribute write did not
+    /// (`WROTE_ATTR` clear). Spelled out in the aarch64 twin's second assertion; here the exact
+    /// verdict carries it, which is what the parity gate wants (§19: the same suite, both ISAs).
     #[test_case]
     fn a_read_only_per_file_grant_survives_an_attacker() {
         let Some(verdict) = attack_a_grant(fs_proto::grant::READ, false) else {
@@ -13680,8 +13788,9 @@ mod riscv_virtio_tests {
         };
         assert_eq!(
             verdict,
-            escape::WROTE | escape::TRUNCATED,
-            "a writable grant must write and truncate its own file and do nothing else",
+            escape::WROTE | escape::TRUNCATED | escape::WROTE_ATTR,
+            "a writable grant must write, truncate and set an attribute on its own file and do \
+             nothing else",
         );
     }
 

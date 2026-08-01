@@ -159,6 +159,32 @@ caretaker never minted is `EBADF` from one check.
 It costs no memory: the granted name and the rights mask ride in the three `START` argument words
 (`fs_proto::grant`), and one frame is shared by all three processes.
 
+### The verb table, and how it stayed a translation (milestone 61)
+
+Each of the three caretakers used to be a hand-written `match` over the opcode, and nothing made a
+`match` and the contract agree. So the way it failed was that **a verb added to `fs_proto` was
+simply absent from a caretaker and the capability silently was not there**. That is not
+hypothetical: milestone 57 added the four extended-attribute verbs, none of the three was taught
+them, and nothing failed. Programs behind every kind of grant just could not reach their files'
+attributes.
+
+`fs_proto::verb` is a row per verb saying what the request word's length field counts
+(`Operand::None`, `Name`, `Payload`, `Rename`), whether the second word means anything, whether the
+reply is a new handle, and which `dir` rights the server will demand. `verb::of(op)` is the whole of
+a caretaker's dispatch now, and a verb with no row is a **compile error**, so forgetting fails the
+build rather than producing a capability that is quietly missing.
+
+**The table shares the dispatch and never the attenuation**, which is what keeps this program's one
+strong property intact. A table lookup that decides whether to forward the length field or a zero
+cannot refuse anything; a name filter or a rights test here would be a branch that could be wrong.
+`fs_subtree_caretaker` consults no policy table at all, and there is nothing for it to consult: the
+attenuation is still entirely in the handle the server minted.
+
+The three caretakers therefore stay three programs, and the roadmap's refutation of collapsing them
+holds: `fs_subtree_caretaker` and `fs_nameset_caretaker` serve identical verb surfaces **by opposite
+means**, one by checking nothing and one by checking every name, and `fs_file_caretaker` translates
+between two protocols rather than narrowing one.
+
 ### One frame, and the startup ordering that argument does not cover
 
 The one-frame argument is `fs_file_caretaker`'s: every request on both hops is a blocking `CALL`, so
@@ -369,6 +395,16 @@ Known limitations, next to the feature rather than only in a tracker.
 - **The rights are not printed by `caps` yet.** §42 says the rights *are* the discovery mechanism for
   what a mount offers, and they are introspectable in principle; nothing renders them at the shell
   today because the interactive boot wires no FS service (§27's amendment records that refusal).
+- **A wrong row in `fs_proto::verb` is wrong in three programs at once** (milestone 61). The
+  mitigation is that it is pure data in a host-testable crate, so the tests and Kani can reach it,
+  which a hand-written match in a `no_std` binary could not. The row that decides a security
+  property rather than a formatting one is `takes_name()`, because it is what `fs_nameset_caretaker`
+  filters on: a name-taking verb whose row said otherwise would walk straight past the filter. It is
+  pinned by a host test that spells the expected list out rather than deriving it from the field it
+  is checking.
+- ~~**The caretakers answer `EOPNOTSUPP` to the extended-attribute verbs.**~~ Closed by milestone
+  61; see [xattr.md](xattr.md) for which caretaker refuses a write through a read-only grant and
+  which leaves it to the server.
 
 ## EXAMPLES
 
