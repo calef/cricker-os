@@ -2013,6 +2013,46 @@ atomic-replace idiom that hard links are usually reached for); and, for symlinks
 containing `..` means when the holder's root is shallower than the creator's — §48 clamps, so it
 should clamp here too rather than erroring, but that is a decision.
 
+##### Open fork: is the mechanism right, and if so what is it called? (raised 2026-07-31)
+
+**Not decided.** Two questions, in this order, because the second keeps answering the first.
+
+**Mechanism first. Plan 9 has no symlinks — it has `bind`.** Per-process namespaces made them
+unnecessary: you do not need a stored path that resolves oddly per holder when you can compose the
+holder's namespace directly. This milestone already took Plan 9's answer for absolute paths and for
+`PATH`; taking Unix's here, renamed, would be the inconsistent choice. **Settle whether we want
+namespace composition instead** before settling a noun.
+
+**Then the name, because "symbolic link" fails §39 on both halves.** "Symbolic" is defined *against*
+"hard", so if hard links are declined the adjective contrasts with something that does not exist.
+"Link" is worse: **it links nothing.** The by-name-ness is the entire content — there is no object
+identity, and two holders may resolve the same entry to different files or to nothing.
+
+The criterion, which rules out most candidates at once. A name here must **not imply object
+identity**, must **not imply a connection**, and must **not collide with "reference"** — in a
+capability system a reference is unforgeable and holder-independent, the exact inverse of this. That
+disposes of `link`, `reference`, `shortcut` and `pointer`.
+
+Worked, and rejected with reasons rather than by taste:
+
+| Candidate | Why not |
+|---|---|
+| `alias` | Semantically closer than `link` — a shell alias is stored text, expanded at use, meaning what the current environment makes it mean, with no identity claim. But **taken twice**: zsh's `alias` (which this milestone tracks, so we would collide with ourselves), and macOS "aliases", which store a file ID and **survive the target moving** — they track the object, the inverse of ours. Borrowing a Mac term for its opposite is a poor trade on a project whose first real user is a Mac |
+| `costume`, `disguise` | Both imply **an underlying thing being dressed or concealed**, reinstating exactly the object identity the word must avoid. `disguise` also claims intent to mislead, naming into existence a danger this design removes: a stored name here cannot escalate, because it resolves only within what the holder already reaches |
+| `projection`, `shadow` | Honest about viewpoint-dependence without implying concealment, and still **metaphors**. This project names descriptively (`netstack`, `compositor`, `lineedit`), which is §39's doing; `link` got away with a false claim partly *because* it was a metaphor |
+
+**The descriptive candidate, if the mechanism survives:** a third **entry kind** beside file and
+directory — a **`path`**. A directory entry names a file, a directory, or a path; it stores a path and
+the holder resolves it, which is the whole description. It also reads correctly when it fails: *"that
+entry is a path that does not resolve"* is what happened, where *"that link is broken"* implies
+something was once connected. The verb becomes writing a path into a directory rather than "linking",
+which retires the `ln -s` shape and its trailing-slash footgun with it.
+
+**That the naming is this hard is itself evidence.** Every candidate fails because the construct is a
+poor fit for the model — it is the one thing in the design whose meaning depends on who is looking.
+Plan 9 hit the same wall from the same premises and answered with a different mechanism rather than a
+better noun.
+
 ##### Where `rm` meets them, which is where the sharp edges are
 
 **`rm` on a symlink removes the link, never the target.** `rm(1)` says so outright — "the rm utility
