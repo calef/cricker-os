@@ -154,9 +154,11 @@ fn self_check_client() -> ! {
     // back in. Yield is authority over ourselves; nobody has to grant it.
     yield_now();
 
-    loop {
-        core::hint::spin_loop();
-    }
+    // Then exit rather than spin. This is a one-shot role with nothing left to do, and a user
+    // thread that never exits sits on a core for the rest of the boot: `no_leaked_threads` says so
+    // in as many words, and it was three such leaks that starved a later test off a four-hart
+    // machine entirely.
+    exit();
 }
 
 /// A program that checks its own image and then prints, through the console server, using the
@@ -169,10 +171,10 @@ fn printing_client() -> ! {
     check(print(b"      hello from EL0, printed by a driver that also runs at EL0.\n").is_ok());
     check(print(b"      the kernel never saw these bytes.\n").is_ok());
 
-    // Done. Spin, so the timer can prove it still preempts us. No syscall, no yield, no call.
-    loop {
-        core::hint::spin_loop();
-    }
+    // Done, so exit. This used to spin ("so the timer can prove it still preempts us"), which the
+    // dedicated `spinner` binary proves better and without leaving a CPU-bound thread behind for
+    // the rest of the run. See `self_check_client`.
+    exit();
 }
 
 /// Print `bytes` by handing them to the console server through shared memory.
@@ -1309,6 +1311,10 @@ fn untyped_demo() -> ! {
     }
 
     send(REPORT, mapped, 0, 0);
+    // **This one must NOT exit**, unlike the other one-shot roles. The test reads the kernel's
+    // used-frame count the instant this report lands, and exiting here would tear this address
+    // space down in that same window, so the number it reads would be the teardown's rather than
+    // the measurement's. Spinning holds the state still until the assertion has looked at it.
     loop {
         core::hint::spin_loop();
     }

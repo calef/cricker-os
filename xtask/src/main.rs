@@ -572,9 +572,14 @@ fn user_std() -> bool {
 /// else in the archive is loaded by init, in userspace, so it is not part of the kernel's trust root.
 /// aarch64 boots `init` (the `hello` binary's init role); riscv64's tour boots `init` (the portable
 /// `builder`) and its shell boot boots `sysinit`.
+///
+/// riscv64 also lists **`hello`**, which is the same program aarch64 measures as `init`: `spawn_init`
+/// enters it directly for the userspace-init tests, and `trust::require` refuses any entry the trust
+/// root does not name. A kernel that could enter a program it never measured would be the hole
+/// measured boot exists to close, so the entry is here rather than the check being relaxed there.
 fn boot_programs(arch: &str) -> &'static [&'static str] {
     match arch {
-        "riscv64" => &["init", "sysinit"],
+        "riscv64" => &["init", "sysinit", "hello"],
         _ => &["init"],
     }
 }
@@ -1009,7 +1014,6 @@ fn riscv_initrd_path() -> String {
 /// CRICKER_INITRD=target/initrd-riscv.img cargo run -p kernel --target riscv64imac-unknown-none-elf
 /// ```
 fn initrd_riscv() -> bool {
-    // Only the portable bins: hello/console/input/shell are aarch64-wired and do not build here.
     if !run(
         "cargo",
         &[
@@ -1098,6 +1102,10 @@ fn initrd_riscv() -> bool {
             "entropy",
             "--bin",
             "ntp",
+            "--bin",
+            "outlaw",
+            "--bin",
+            "hello",
             "--target",
             RISCV_TARGET,
         ],
@@ -1181,6 +1189,17 @@ fn initrd_riscv() -> bool {
         // The NTP client (milestone 51), with its test server and its clock-page probe as roles of
         // the same binary. Portable, so both archives carry it and both ISAs run the same tests.
         ("ntp", "ntp"),
+        // The outlaw (milestone 19's user-test port): the privilege-boundary programs
+        // kernel::user::tests used to hand-assemble as aarch64 machine code.
+        ("outlaw", "outlaw"),
+        // **`hello` under its own name.** On aarch64 the archive's "init" IS hello, and the whole
+        // milestone 7-19 role catalogue (the printing client, the untyped demo, the granter and
+        // receiver, the call server, the init roles) lives in it. riscv's "init" is the `builder`
+        // demo instead, so the roles need their own entry here for the test suite to reach them.
+        // The stale claim this replaces read "hello/console/input/shell are aarch64-wired and do not
+        // build here"; three of the four are in the list above, and hello only ever needed its
+        // hand-rolled syscalls routed through user_rt.
+        ("hello", "hello"),
     ];
     let mut blobs: Vec<(&str, Vec<u8>)> = Vec::new();
     for &(archive_name, bin_name) in entries {
@@ -1395,6 +1414,9 @@ fn mkinitrd() -> bool {
         "rm",
         "entropy",
         "ntp",
+        // The outlaw (milestone 19's user-test port): the privilege-boundary programs
+        // kernel::user::tests used to hand-assemble. Portable, so both archives carry it.
+        "outlaw",
     ] {
         match read_stripped(&bin_elf(name)) {
             Ok(bytes) => tree.push((name, bytes)),
