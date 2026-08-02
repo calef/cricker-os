@@ -56,7 +56,34 @@ refs = subprocess.run(
     ["git", "grep", "-hoE", "§[0-9]+", "--", ":!DECISIONS.md", ":!vendor", ":!*.lock"],
     cwd=root, capture_output=True, text=True,
 ).stdout
-dangling = sorted({int(r[1:]) for r in refs.split()} - set(seen))
+
+# **`git grep` output is not only matches.** For a binary file it prints the SENTENCE
+# "Binary file <path> matches" instead, so this stream can contain prose about files rather than
+# text from them. Feeding that to `int()` is how this check died three times on 2026-08-02 with
+# `invalid literal for int() with base 10: 'inary'`: the tokeniser took "Binary", stripped one
+# character for the section sign, and tried to read the rest as a number.
+#
+# The cause each time was a committed build artifact, and the diagnosis cost far more than the
+# artifact did, because the error named a string that appears nowhere in the tree. So parse only
+# what the pattern promised, and say plainly when the stream contains something else: a checker
+# that cannot read its own input should report that, not crash inside a conversion.
+cited = set()
+unparsed = []
+for token in refs.split():
+    if token.startswith("§") and token[1:].isdigit():
+        cited.add(int(token[1:]))
+    else:
+        unparsed.append(token)
+if unparsed:
+    # Almost certainly "Binary file ... matches", which means something is tracked that should not
+    # be. Name it rather than guessing, and do not fail on it: the citation check itself is still
+    # valid for everything that did parse.
+    joined = " ".join(unparsed[:12])
+    print(f"decisions: ignoring {len(unparsed)} unparseable git-grep token(s): {joined}",
+          file=sys.stderr)
+    print("decisions: this usually means a binary file is tracked (git grep prints a sentence, "
+          "not a match). Check `git ls-files` for build artifacts.", file=sys.stderr)
+dangling = sorted(cited - set(seen))
 for n in dangling:
     problems.append(f"§{n} is cited in the tree but DECISIONS.md has no such section")
 
