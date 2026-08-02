@@ -1,0 +1,39 @@
+# libFuzzer dictionary for the device-tree walker.
+#
+# **A dictionary is the cheap half of a grammar.** The device tree's structure block is a stream of
+# 32-bit tokens and NUL-terminated names, and a fuzzer that has to discover `0x00000001` means
+# "open a node" by flipping bits spends its whole budget in the parser's first three branches. These
+# are the byte strings the format's own grammar is made of, so a mutation that splices one in lands
+# on a token boundary instead of near one.
+#
+# The property names are here for the same reason the tokens are: `#address-cells` and `#size-cells`
+# are what steer `decode_reg`'s arithmetic, and `reg` is the one property whose value is decoded
+# rather than skipped. The node names are the needles `kernel/src/arch/` actually looks for.
+
+magic="\xd0\x0d\xfe\xed"
+
+token_begin_node="\x00\x00\x00\x01"
+token_end_node="\x00\x00\x00\x02"
+token_prop="\x00\x00\x00\x03"
+token_nop="\x00\x00\x00\x04"
+token_end="\x00\x00\x00\x09"
+
+prop_address_cells="#address-cells\x00"
+prop_size_cells="#size-cells\x00"
+prop_reg="reg\x00"
+prop_compatible="compatible\x00"
+prop_device_type="device_type\x00"
+prop_initrd_start="linux,initrd-start\x00"
+prop_initrd_end="linux,initrd-end\x00"
+
+node_memory="memory@"
+node_chosen="chosen\x00"
+node_reserved_memory="reserved-memory\x00"
+node_intc="intc@"
+node_plic="plic@"
+node_virtio="virtio_mmio@"
+node_soc="soc\x00"
+
+compat_pl031="arm,pl031\x00"
+compat_goldfish="google,goldfish-rtc\x00"
+compat_plic="riscv,plic0\x00"

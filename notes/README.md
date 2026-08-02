@@ -376,6 +376,17 @@ in the code or the conversation doesn't make sense, it belongs here.
   smaller target, and of every new property being falsified before it was believed. Milestone 51's
   calendar added the finding that a 64-bit division and a symbolic-length slice cost far more than
   the logic wrapped around them.
+- [Fuzzing the parse surface](fuzzing.md): milestone 42's second leg, and the complement to the
+  proofs above. Starts with the question that decides whether it is worth having at all, given 107
+  Kani harnesses: **what does fuzzing find that Kani does not**, answered against three worked cases
+  in this tree rather than in general (`elf`'s totality proof that did not return, `dtb`'s proved
+  leaves under unproved walkers, and `crickerfs`, where the gap was not a bound at all but a property
+  nobody had written down). Four targets chosen on one rule, does this read bytes from outside the
+  trust boundary, with the crates deliberately *not* fuzzed named and argued. Three bugs, one found by
+  the fuzzer, one by a round-trip property, and one by reading the code while writing a target that
+  then failed to rediscover it in ten minutes. The CI budget and why fuzzing cannot be a gate anyone
+  waits on, the corpus discipline (seeds committed, working corpus not, crashes become host tests),
+  and a BUGS section that says what a green run does not mean.
 - [The calendar crate](calendar.md): milestone 51's pure-computation lane: Unix seconds to a civil
   date and back, weekday, day of year, five formats, an RFC 3339 parser. Why 1900 is not a leap year
   and truncating division reports 1970 for the last day of 1969, why the range stops at year 9999,

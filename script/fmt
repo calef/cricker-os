@@ -40,3 +40,8 @@ cargo fmt --manifest-path tools/redoxfs_host/Cargo.toml "$@"
 # The general lesson is the one script/fmt already carries a scar for: this file is a GATE, so a
 # thing it does not reach is a thing nothing reaches.
 cargo fmt --manifest-path fs_server/Cargo.toml "$@"
+
+# And the fuzz workspace (milestone 42), a fourth for the same reason. Formatting builds nothing, so
+# this costs a rustfmt pass over four small files and closes the hole before it opens: the lesson
+# above is that a gate does not reach across a workspace boundary, and this is a new boundary.
+cargo fmt --manifest-path fuzz/Cargo.toml "$@"

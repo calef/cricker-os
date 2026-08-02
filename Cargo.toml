@@ -52,9 +52,15 @@ members = [
 # `fuser`, whose build script panics on macOS) out of our builds. They are still gated, just on
 # their own: script/lint, script/fmt, and cargo xtask test each drive them by --manifest-path. See
 # vendor/README.md. Nothing in the kernel depends on redoxfs yet; that is milestone 32 phase 2.
+#
+# `fuzz` is excluded for a different reason (milestone 42): its targets link libFuzzer's `main`, are
+# built with a sanitizer and `-Zbuild-std`, and are meaningless to `cargo build`. It is its own
+# workspace root as well, so this entry is belt and braces; it is here so a reader of this list sees
+# every directory in the tree that is a package and is not ours to build in the ordinary way.
 exclude = [
     "vendor/redoxfs",
     "tools/redoxfs_host",
+    "fuzz",
 ]
 
 # Shared package metadata. Each member opts in with `license.workspace = true`, so the

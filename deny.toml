@@ -65,6 +65,23 @@ allow = [
     # attribution required at all.
     "0BSD",
 ]
+
+# **NCSA, for `libfuzzer-sys` and nothing else** (milestone 42's fuzzing leg). An exception rather
+# than an allow-list entry, so it is scoped to the one crate that needs it: a second crate arriving
+# with NCSA would still stop the build and get looked at, which is the whole reason this file uses an
+# allow-list.
+#
+# The licence is not a compromise. NCSA (University of Illinois/NCSA Open Source) is OSI approved and
+# FSF free, and reads as BSD-3-Clause and MIT stapled together: permissive, attribution, no
+# endorsement, no copyleft. `libfuzzer-sys` carries it because it vendors LLVM's libFuzzer C++ source,
+# which is where the runtime actually comes from; the Rust half is the usual MIT OR Apache-2.0.
+#
+# It is also the narrowest possible exposure. Nothing that boots links it: the fuzz workspace is
+# excluded from the main one, produces no artifact this project ships, and is built only by
+# `script/fuzz` and the CI job of the same name.
+[[licenses.exceptions]]
+crate = "libfuzzer-sys"
+allow = ["NCSA"]
 # NOT allowed, and the reason is worth stating rather than leaving as an absence: anything copyleft.
 # `r-efi` offers `MIT OR Apache-2.0 OR LGPL-2.1-or-later` and resolves cleanly because MIT is on the
 # list; a crate offering LGPL *only* would fail here, which is the intended behaviour for a kernel

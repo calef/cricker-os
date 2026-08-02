@@ -1,0 +1,18 @@
+# The working corpus, the crash artifacts, and the build tree.
+#
+# **None of these are committed, and the corpus is the one worth explaining.** libFuzzer grows
+# `corpus/<target>/` without limit: every input that reaches a new edge is written there, so a few
+# minutes of fuzzing leaves thousands of files and a long run leaves hundreds of megabytes. Committing
+# that would put a machine-generated, machine-specific, unbounded blob in the history of a repository
+# whose whole documentation argument is that a reader can follow it.
+#
+# The seeds ARE committed (`seeds/`), and the difference is the point: a seed is a chosen input with a
+# reason, a corpus entry is an artifact of one run on one machine.
+#
+# Crash artifacts are not committed either, and that is a discipline rather than an omission: when a
+# target finds a crash, the input becomes a host test in the crate that owns the bug, where it runs in
+# milliseconds on every `script/test` forever. See notes/fuzzing.md.
+corpus/
+artifacts/
+coverage/
+target/
