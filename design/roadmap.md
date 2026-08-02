@@ -3584,6 +3584,7 @@ out: a package directory is a Rust name, and everything else is a path.
 | Now | Settled | Why |
 |---|---|---|
 | `shell` | **`swish`** | the shell gets a proper name rather than a category. See the block below. |
+| `capsh` | **`grant_plan`** | it plans grants from a command line; `sysinit` executes them, and that boundary is real. Not named for `swish`, because **seven things use it** (`swish`, `sysinit`, `rm`, `heeder`, `hello`, `fs_nameset_caretaker`, `kernel/src/user.rs`), so naming it for one consumer repeats `dwarden`'s defect. `designation`, `designate` and `designator` were considered and rejected together: **the user designates by typing a name**, and this crate's job starts after that, so all three put it in a role it does not hold. Synonyms of grant (`endow`, `award`, `confer`, `bestow`, `allot`, `furnish`) were rejected because "grant" is already this tree's word and a synonym is a decoder ring; `endow` is additionally taken by `supervision_proto::Endow`. |
 | `caps` | **`capability`** | the crate is the capability *model*, not a container: it exports `Cap`, `Rights`, `Object`, `Reap` and `CSpace`. `cap_space` was considered and rejected because it names one of five exports and stutters as `cap_space::CSpace`. `CSpace` itself stays: it is seL4's own spelling. |
 
 These are folded in here rather than given their own milestone because a crate rename is a
