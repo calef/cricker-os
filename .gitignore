@@ -1,4 +1,11 @@
-/target
+# Anchored `/target` ignores ONLY the top-level one. This tree has four cargo workspaces
+# (`fs-server/`, `tools/redoxfs-host/`, `std_exerciser/`, and the root), and on 2026-08-02 a
+# `git add -A` swept 680 build artifacts from a nested `target/` into a commit, which is what
+# GitHub's large-file warning and a broken `script/decisions` were both reporting: `git grep`
+# emitted "Binary file ... matches" and the parser read "inary" as a section number.
+#
+# Unanchored, so it matches at any depth.
+target/
 *.ll
 
 # Claude Code agent worktrees and local session files

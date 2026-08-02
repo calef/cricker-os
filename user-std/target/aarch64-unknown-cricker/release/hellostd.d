@@ -1,1 +1,0 @@
-/Users/calef/projects/cricker-os/user-std/target/aarch64-unknown-cricker/release/hellostd: /Users/calef/projects/cricker-os/crates/fs_proto/src/lib.rs /Users/calef/projects/cricker-os/user-std/../user/link.ld /Users/calef/projects/cricker-os/user-std/build.rs /Users/calef/projects/cricker-os/user-std/src/main.rs
