@@ -212,8 +212,32 @@ mod tests {
     /// Ten seconds is far beyond any honest completion here (these are sub-second locally) and well
     /// inside the harness's 90 s per-test ceiling, which remains the real backstop for a genuine hang.
     /// Still a leak trap rather than a masked failure: work that never runs times out and fails.
+    /// Wait for `cond`, yielding, up to a budget chosen to sit **inside** the suite's per-test
+    /// watchdog.
+    ///
+    /// **Sixty seconds, not ten, and the reason is host contention rather than guest slowness.**
+    /// These tests assert that work placed on a secondary actually ran there. On a shared CI runner
+    /// (or a laptop running several QEMU instances) the guest's vCPU threads are starved of *host*
+    /// CPU, so guest wall clock advances while the secondaries get no chance to run at all. Ten
+    /// seconds was short enough that ordinary CI load produced a red run on unmodified `main`:
+    /// measured at 1 failure in 6 runs under synthetic load, and on 2026-08-02 it failed three
+    /// pull requests in a row, each time on a different RISC-V CPU model. **A failure that moves
+    /// between models is a statement about the host, not about the ISA.**
+    ///
+    /// Widening a timeout usually hides a bug, and this project has said so in this very file's
+    /// neighbourhood. It does not here, and the distinction is what makes the change honest:
+    /// `all_ran` is *exactly* the property under test, not a proxy for it. Widening a wait that
+    /// stands in for the property (a yield count, a whole-machine thread headcount) hides the
+    /// property breaking; widening a wait on the property itself only delays noticing, and the thing
+    /// that notices is the layer below.
+    ///
+    /// **That layer is why this is 60 and not unbounded.** `DEFAULT_BUDGET_SECS` fails any test at
+    /// 90 s, so a genuinely dead secondary is caught either way. Staying under it means this test
+    /// reports `secondary cores did not run scheduled work in time`, which names the subsystem,
+    /// rather than the watchdog's generic livelock message. Two deadlines for one property is what
+    /// produced the false reds; one of them is now clearly subordinate to the other.
     fn wait_for(mut cond: impl FnMut() -> bool) -> bool {
-        let deadline = crate::arch::timer::now() + 10 * crate::arch::timer::frequency();
+        let deadline = crate::arch::timer::now() + 60 * crate::arch::timer::frequency();
         while crate::arch::timer::now() < deadline {
             if cond() {
                 return true;
