@@ -272,7 +272,7 @@ impl ClockPage {
 /// else at all.
 pub mod propose {
     /// Where the opcode sits in the first `CALL` word: bits 63:56, the same position `fs_proto`
-    /// and `lineedit::proto` use, so the contracts read alike.
+    /// and `line_editor::proto` use, so the contracts read alike.
     pub const OP_SHIFT: u32 = 56;
 
     /// Build a request's first word.

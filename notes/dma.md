@@ -70,7 +70,7 @@ that matters for milestone 16a:
 
 | The address path | What confines it | The evidence |
 |---|---|---|
-| An address in a **virtqueue descriptor** (every byte a disk or a NIC touches, and the GPU's command ring) | the shadow-ring validator below, plus the IOMMU where there is one | **Proved for every input.** Seven Kani harnesses over `crates/dma_validate`: both directions, indirect descriptors, chain cycles, ring-index wraparound, overflowing arithmetic, multi-queue blocks, and the mutated-after-validation race. Plus the end-to-end attacker tests, both ISAs, both transports. |
+| An address in a **virtqueue descriptor** (every byte a disk or a NIC touches, and the GPU's command ring) | the shadow-ring validator below, plus the IOMMU where there is one | **Proved for every input.** Seven Kani harnesses over `crates/dma_validator`: both directions, indirect descriptors, chain cycles, ring-index wraparound, overflowing arithmetic, multi-queue blocks, and the mutated-after-validation race. Plus the end-to-end attacker tests, both ISAs, both transports. |
 | The **page set of an IOMMU domain** (which frames the hardware will translate at all) | the domain builder | **Proved for every grant.** Six harnesses over `paging::domain`: the domain maps every whole page of the grant and no byte outside it. Format-independent, so one proof covers SMMUv3 and the RISC-V IOMMU. The remaining link (`Mapper::map` writes exactly the one leaf it is told) stays tested on both formats. |
 | An address in a **device command payload** (virtio-gpu resource backings) | the IOMMU, and nothing else | **Partly proved, by the row above, and only there.** The validator cannot see these addresses at all: they are not in its input, so nothing about them is provable *from the transport*. What the domain proof buys is that the barrier's allow-list is exact; that the hardware then faults an address outside it stays an attacker test. |
 
@@ -104,7 +104,7 @@ unconfined there by standing default.
 
 ## The validator
 
-Since milestone 35 the validation logic lives in `crates/dma_validate`, a host-testable pure-logic
+Since milestone 35 the validation logic lives in `crates/dma_validator`, a host-testable pure-logic
 crate the kernel's `validate_and_shadow` calls, and it is **machine-checked**: seven Kani harnesses
 prove no descriptor the walk copies into the shadow escapes the granted region or is indirect, for
 every input (both directions, multi-queue, chain cycles, ring-index wraparound, and the

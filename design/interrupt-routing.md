@@ -27,7 +27,7 @@ Two cases, and the split is the whole difficulty:
 
 1. **The foreground process is blocked reading.** This one is already handled. The terminal fails
    the parked `OP_READLINE` with `FLAG_INTERRUPTED`; the shell sees it, discards the line, and
-   reprompts. No process was doing work, so there is nothing to stop. `lineedit` does this today.
+   reprompts. No process was doing work, so there is nothing to stop. `line_editor` does this today.
 2. **The foreground process is running.** A runaway loop, a long compute, a wedged driver call.
    There is no outstanding read to fail. Interrupting it means reaching a process that is *not
    asking to be reached*, which is exactly the authority Unix grants ambiently and we do not.

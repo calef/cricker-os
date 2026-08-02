@@ -316,7 +316,7 @@ What this does and does not buy, measured honestly:
 - It **does** move each device's interrupt (and the wake it causes) off core 0 onto its assigned
   core. Verified: the full aarch64 suite (disk, PCIe disk, both DHCP round trips) stays green with
   the lines spread, and a diskless boot's device IRQs land on cores other than 0.
-- It **does not**, on its own, make the heavy `std_net` pipeline (smoltcp in `netstack`, plus the std
+- It **does not**, on its own, make the heavy `std_net` pipeline (smoltcp in `net_stack`, plus the std
   program) go faster under SMP, because that pipeline is a chain of IPC rendezvous, and a rendezvous
   wake still lands on the *waker's* core (`cpu::current`). Spreading the interrupt moves the whole
   chain to the interrupt's core; it does not parallelize it. Parallelizing the pipeline needs the
@@ -409,7 +409,7 @@ computes from current state. It is the smallest possible critical section (a rea
 write) and it is off the hot path, so it costs nothing measurable.
 
 Proven the same way as the GIC: the riscv suite is green at the 4-hart boot with device sources
-spread across harts (disk read, the interrupt-driven fs-server block server, both routed to whatever
+spread across harts (disk read, the interrupt-driven fs_server block server, both routed to whatever
 hart the round-robin picked, plus the SMP placement tests). As on aarch64, this distributes the
 interrupt and the wake it causes; it does not by itself parallelize the `std_net` pipeline, which
 needs the load-aware rendezvous wake (see below).
@@ -419,18 +419,18 @@ needs the load-aware rendezvous wake (see below).
 Recorded so it is not re-diagnosed as one, and left in place with its resolution because the wrong
 diagnosis was tempting and the right one took two agents to reach.
 
-The `std_net` test (smoltcp in `netstack` serving a std program's `UdpSocket`/`TcpStream`) used to hang
+The `std_net` test (smoltcp in `net_stack` serving a std program's `UdpSocket`/`TcpStream`) used to hang
 under the 4-core boot on **both** ISAs, watchdog-killed at 60 s, while in the same run the hand-built
-DHCP round trips (`virtio_net`, `virtio_net_pci`) passed and the interrupt-driven fs-server block
+DHCP round trips (`virtio_net`, `virtio_net_pci`) passed and the interrupt-driven fs_server block
 server passed. That asymmetry was the tell: interrupt delivery under SMP was sound, and the hang was
 specific to the heavier, longer, timer-driven smoltcp pipeline.
 
 Two things were wrong, and only one of them was scheduling:
 
-1. **A real deadlock.** `netstack` blocked on the NIC interrupt while smoltcp still had a retransmit
+1. **A real deadlock.** `net_stack` blocked on the NIC interrupt while smoltcp still had a retransmit
    pending, so neither side would move: the timer that would have retransmitted was never polled
    because the thread was parked in `Irq::WAIT`, and no packet was coming to wake it. That is a
-   mutual-idle deadlock, not slowness, and no amount of core placement fixes it. `netstack` now bounds
+   mutual-idle deadlock, not slowness, and no amount of core placement fixes it. `net_stack` now bounds
    its wait by smoltcp's own next-poll deadline.
 2. **Serialization on one core.** With the deadlock gone the pipeline ran, but slowly: its threads
    are woken by a mix of device IRQ and IPC rendezvous, and both wakes pinned to one core. DECISIONS

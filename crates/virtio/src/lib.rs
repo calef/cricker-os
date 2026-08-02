@@ -964,7 +964,7 @@ fn complete_blk(used_before: u16) {
     // really ours (a wakeup can be stale, coalesced, or a prior operator's). This is the same loop
     // `complete_block` uses. An earlier note (notes/fs-server.md) claimed this "overran the watchdog"
     // and forced a poll; it does not, because the whole-block reads above keep the mount's read count
-    // low enough that a WAIT per read fits comfortably (proven: fs-server test green on both ISAs at
+    // low enough that a WAIT per read fits comfortably (proven: fs_server test green on both ISAs at
     // the 4-core boot). QEMU still completes synchronously inside `NOTIFY`, so the interrupt is
     // already pending and the kernel's pending-signal count (DECISIONS §9a) returns this WAIT at once
     // rather than blocking on an event already over. See notes/dma.md.

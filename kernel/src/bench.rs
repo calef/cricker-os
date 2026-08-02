@@ -138,7 +138,7 @@ fn ipc_rtt() {
 /// **The confined-server tax: a request routed through a server that fans out to a backend.** This
 /// is the microkernel architecture's per-request cost that a monolith does not pay, and the topology
 /// both real userspace servers use: the FS server CALLs the block server (`client -> fs -> blk -> fs
-/// -> client`), netstack CALLs the NIC driver (`client -> netstack -> driver -> netstack -> client`). Each
+/// -> client`), net_stack CALLs the NIC driver (`client -> net_stack -> driver -> net_stack -> client`). Each
 /// iteration here is that two-hop shape: the client sends to a relay, the relay forwards to a backend
 /// and waits, the backend replies, the relay replies to the client. Two rendezvous become four, two
 /// context switches become four.
@@ -147,7 +147,7 @@ fn ipc_rtt() {
 /// what one confined intermediary that delegates to a backend costs, the "server tax" a skeptic asks
 /// about, isolated and deterministic. It is on the icount baseline for exactly that reason. The real
 /// servers' end-to-end numbers are elsewhere and cannot be gated: `fs_read` (below) is device-latency
-/// dominated (~200 us/block under HVF swamps this few-hundred-tick tax), and netstack's path is DHCP- and
+/// dominated (~200 us/block under HVF swamps this few-hundred-tick tax), and net_stack's path is DHCP- and
 /// timer-driven, neither deterministic under `-icount`. So this kernel-side topology bench is how the
 /// server tax gets a gated regression number; see notes/benchmarks.md.
 fn relay_rtt() {
@@ -349,7 +349,7 @@ fn map_new() {
     drop(space); // teardown outside the timed window; it is spawn_reap's kind of cost, not map's
 }
 
-// Roles for the `elbench` EL0 program (must match user/src/elbench.rs). One binary, one micro-
+// Roles for the `os_primitives_benchmarker` EL0 program (must match user/src/os_primitives_benchmarker.rs). One binary, one micro-
 // measurement per role, chosen through `START`'s `arg0`.
 const EL_NULL_SYSCALL: u64 = 0;
 const EL_YIELDER: u64 = 1;
@@ -367,18 +367,18 @@ const EL_SPAWN: u64 = 6;
 const SPAWN_EL0_BUDGET: u64 = 64;
 
 /// Warmup + timed map counts the bench boot must provision the target region for. `MAP_EL0_ITERS`
-/// **must equal** elbench's `MAP_ITERS` and `MAP_EL0_WARMUP` its `MAP_WARMUP`: the region is sized for
-/// their sum plus page-table and record overhead, and if elbench asks for more maps than the region
+/// **must equal** os_primitives_benchmarker's `MAP_ITERS` and `MAP_EL0_WARMUP` its `MAP_WARMUP`: the region is sized for
+/// their sum plus page-table and record overhead, and if os_primitives_benchmarker asks for more maps than the region
 /// funds, the surplus fail (a cheap error return, not a real map) and skew the number. Kept here
 /// rather than shared because the two crates have no common header, the way EL_* mirror ROLE_*.
 const MAP_EL0_ITERS: u64 = 500;
 const MAP_EL0_WARMUP: u64 = 8;
 const MAP_EL0_OVERHEAD: u64 = 32;
 
-/// Spawn the `elbench` EL0 program in a given role, granting it `report` (slot 0) to answer on.
-/// `false` if there is no `elbench` in the initrd (the bench boot then skips that line).
-fn spawn_elbench(role: u64, report: sched::EpId) -> bool {
-    let Some(image) = crate::user::program("elbench") else {
+/// Spawn the `os_primitives_benchmarker` EL0 program in a given role, granting it `report` (slot 0) to answer on.
+/// `false` if there is no `os_primitives_benchmarker` in the initrd (the bench boot then skips that line).
+fn spawn_os_primitives_benchmarker(role: u64, report: sched::EpId) -> bool {
+    let Some(image) = crate::user::program("os_primitives_benchmarker") else {
         return false;
     };
     sched::spawn(move || {
@@ -393,19 +393,19 @@ fn spawn_elbench(role: u64, report: sched::EpId) -> bool {
             },
         )
     })
-    .expect("bench: could not spawn elbench");
+    .expect("bench: could not spawn os_primitives_benchmarker");
     true
 }
 
 /// **Null syscall latency, measured from EL0 (the primitive suite).** The `bench:` lines above are
-/// kernel-internal, no trap. This one is what lmbench measures: the bench boot spawns the `elbench`
+/// kernel-internal, no trap. This one is what lmbench measures: the bench boot spawns the `os_primitives_benchmarker`
 /// EL0 program, which self-times a loop of the cheapest `svc` and reports `[ticks, iters]`; we print
 /// it in the same format. The gap between this and a hypothetical kernel-side null syscall is roughly
-/// the EL0<->EL1 boundary cost, which is the whole point of measuring here. See user/src/elbench.rs.
+/// the EL0<->EL1 boundary cost, which is the whole point of measuring here. See user/src/os_primitives_benchmarker.rs.
 fn null_syscall_el0() {
     let report = sched::create_endpoint();
-    if !spawn_elbench(EL_NULL_SYSCALL, report) {
-        println!("bench: null_syscall skipped (no elbench in the initrd)");
+    if !spawn_os_primitives_benchmarker(EL_NULL_SYSCALL, report) {
+        println!("bench: null_syscall skipped (no os_primitives_benchmarker in the initrd)");
         return;
     }
     let [ticks, iters, ..] = sched::ipc_recv(report);
@@ -416,16 +416,16 @@ fn null_syscall_el0() {
 /// bench boot spawns a *yielder* peer and a *timer*, two separate EL0 processes; the timer self-times
 /// a loop of `SYS_YIELD`, each handing the CPU to the peer and back, two switches per iteration, each
 /// an address-space change. With the boot thread blocked here on the report and only those two ready,
-/// the alternation is clean. See user/src/elbench.rs.
+/// the alternation is clean. See user/src/os_primitives_benchmarker.rs.
 fn ctx_switch_el0() {
     let report = sched::create_endpoint();
     // The peer first, so the timer always has something to switch to. It shares the report endpoint
     // (it never sends on it); the spawn shape stays uniform.
-    if !spawn_elbench(EL_YIELDER, report) {
-        println!("bench: ctx_switch skipped (no elbench in the initrd)");
+    if !spawn_os_primitives_benchmarker(EL_YIELDER, report) {
+        println!("bench: ctx_switch skipped (no os_primitives_benchmarker in the initrd)");
         return;
     }
-    if !spawn_elbench(EL_CTX_SWITCH, report) {
+    if !spawn_os_primitives_benchmarker(EL_CTX_SWITCH, report) {
         return;
     }
     let [ticks, iters, ..] = sched::ipc_recv(report);
@@ -435,10 +435,10 @@ fn ctx_switch_el0() {
 /// **IPC round-trip latency, measured from EL0 (the primitive suite).** lmbench's `lat_pipe`. Two
 /// EL0 processes and two endpoints: a server (RECV request, SEND reply) and a client that self-times
 /// a loop of SEND-then-RECV and reports. The server is spawned first so a request always meets a
-/// waiting receiver. Grants differ per role, so the spawns are inline rather than via `spawn_elbench`.
+/// waiting receiver. Grants differ per role, so the spawns are inline rather than via `spawn_os_primitives_benchmarker`.
 fn ipc_rtt_el0() {
-    let Some(image) = crate::user::program("elbench") else {
-        println!("bench: ipc_rtt skipped (no elbench in the initrd)");
+    let Some(image) = crate::user::program("os_primitives_benchmarker") else {
+        println!("bench: ipc_rtt skipped (no os_primitives_benchmarker in the initrd)");
         return;
     };
     let request = sched::create_endpoint();
@@ -491,14 +491,14 @@ fn ipc_rtt_el0() {
 /// **Map latency, measured from EL0 (the primitive suite).** lmbench's `lat_mmap`. Unlike the three
 /// above, the map path *consumes* resources per call, so the bench boot builds the target here rather
 /// than granting an endpoint: a fresh registry address space (its own untyped region as budget) and a
-/// single frame. `elbench` (EL_MAP) is granted a WRITE cap on that space and a READ cap on the frame,
+/// single frame. `os_primitives_benchmarker` (EL_MAP) is granted a WRITE cap on that space and a READ cap on the frame,
 /// then times a loop of `invoke(aspace, MAP_INTO, va_i, frame, MAP_RO)`, aliasing the one frame at a
-/// fresh VA each iteration. The target is a separate space, not `elbench`'s own (a run()-adopted space
+/// fresh VA each iteration. The target is a separate space, not `os_primitives_benchmarker`'s own (a run()-adopted space
 /// is not in the registry MAP_INTO resolves), which is immaterial: the map path's cost is the same
-/// whoever owns the space. See user/src/elbench.rs.
+/// whoever owns the space. See user/src/os_primitives_benchmarker.rs.
 fn map_el0() {
-    let Some(image) = crate::user::program("elbench") else {
-        println!("bench: map_el0 skipped (no elbench in the initrd)");
+    let Some(image) = crate::user::program("os_primitives_benchmarker") else {
+        println!("bench: map_el0 skipped (no os_primitives_benchmarker in the initrd)");
         return;
     };
     // The target space, backed by its own region. The region pays for the root, the intermediate
@@ -552,10 +552,10 @@ fn map_el0() {
 /// and, crucially, `DESTROY`s the child's region afterward, so the loop repeats. The bench boot hands
 /// the spawner three things: a big untyped budget (slot 1), a report endpoint to answer on (slot 0),
 /// and a child-done endpoint (slot 2, READ|WRITE|GRANT) it delegates a WRITE view of to each child.
-/// See user/src/elbench.rs.
+/// See user/src/os_primitives_benchmarker.rs.
 fn spawn_el0() {
-    let Some(image) = crate::user::program("elbench") else {
-        println!("bench: spawn_el0 skipped (no elbench in the initrd)");
+    let Some(image) = crate::user::program("os_primitives_benchmarker") else {
+        println!("bench: spawn_el0 skipped (no os_primitives_benchmarker in the initrd)");
         return;
     };
     let Some(region) = crate::untyped::create(SPAWN_EL0_BUDGET) else {
@@ -608,14 +608,14 @@ fn coremark_compute() {
 /// through a granted *directory capability* and reads a block, over the real confined stack, a block
 /// server driving the RedoxFS disk by DMA and an FS server (the vendored RedoxFS engine, no_std, on
 /// its own heap) mounting it over blk IPC. `kernel/src/user.rs::fs_service` wires all three; the
-/// client (`user/src/fsclient.rs`, `ROLE_BENCH`) times a warm read loop and reports `[ticks, iters]`.
+/// client (`user/src/fs_test_client.rs`, `ROLE_BENCH`) times a warm read loop and reports `[ticks, iters]`.
 ///
 /// **Why it is `--real`-only and never gates, unlike the primitives.** The FS server's mount is
 /// device-driven: hundreds of block reads gated on the disk's completion interrupt, plus the engine's
 /// own logic. Under `-icount shift=0` that path is not deterministic (interrupt timing is not part of
 /// the instruction clock), so an icount baseline for it would enshrine exactly the non-determinism the
 /// 2026-07-28 lesson warns against. So it runs only on the `--real --smp` boot (HVF, where the whole
-/// stack is proven by the fs-server test), self-skipping everywhere else via the same
+/// stack is proven by the fs_server test), self-skipping everywhere else via the same
 /// `online_count() > 1` gate as the throughput bench, so `bench/baseline.txt` never sees it.
 ///
 /// **What the number means: whole-path cost, dominated by the device.** ~204 us/read (HVF,
@@ -642,17 +642,17 @@ fn fs_read() {
         return;
     }
     // The three binaries the service needs. On aarch64 the block server is a role of `init` (the
-    // hello multiplexer), as in the fs-server test. Absent any of them, or the RedoxFS disk, skip.
-    let (Some(blk_image), Some(fs_server), Some(fsclient)) = (
+    // hello multiplexer), as in the fs_server test. Absent any of them, or the RedoxFS disk, skip.
+    let (Some(blk_image), Some(fs_server), Some(fs_test_client)) = (
         crate::user::program("init"),
         crate::user::program("fs_server"),
-        crate::user::program("fsclient"),
+        crate::user::program("fs_test_client"),
     ) else {
         return;
     };
     // Spawn the block server, the FS server, and the client in its ROLE_BENCH (timed) role.
     let Some((readiness, report)) =
-        crate::user::fs_service::start(blk_image, fs_server, fsclient, 1)
+        crate::user::fs_service::start(blk_image, fs_server, fs_test_client, 1)
     else {
         return; // no RedoxFS disk on this run
     };

@@ -1,0 +1,23 @@
+[package]
+name = "grant_plan"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+
+# The matcher, and only the matcher. `glob` is a total function on two byte strings with no
+# filesystem in it; deciding what a match *grants* is command-line logic, which is this crate's job.
+# Depending on it here is what makes "one matcher, driven by both `echo` and the grant planner" true
+# in the code rather than a convention two callers are trusted to keep.
+# The `version` is required, not decoration: cargo-deny treats a path dep with no version as a
+# wildcard, and `allow-wildcard-paths` deliberately does not exempt a crate that other crates depend
+# on. `grant_plan` is depended on by `user` and `kernel`, so it is exactly that case.
+glob = { version = "0.1.0", path = "../glob" }
+
+# `fs_proto` is a DEV dependency only, and deliberately: the shell must be able to check a command
+# line without linking the filesystem contract. It is here so one host test can pin the grant name
+# limit against the contract that actually carries it, which is what makes the duplicated constant
+# safe rather than a drift waiting to happen.
+[dev-dependencies]
+fs_proto = { version = "0.1.0", path = "../fs_proto" }

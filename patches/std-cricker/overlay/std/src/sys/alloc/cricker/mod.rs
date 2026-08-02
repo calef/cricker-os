@@ -1,6 +1,6 @@
 //! The System allocator for cricker-os: the untyped-backed heap, inside std.
 //!
-//! The algorithm is `crates/uheap`, generated verbatim into `uheap.rs` next door by
+//! The algorithm is `crates/user_heap`, generated verbatim into `user_heap.rs` next door by
 //! `cargo xtask std-src` (so the host-tested source is the only source). This file is the same
 //! policy layer as `user_rt::heap::UntypedHeap`, re-stated for std because std cannot depend on
 //! the out-of-tree crate: a spinlock, lazy wiring to the untyped in slot 0, and grow-on-demand
@@ -15,13 +15,13 @@
 use crate::alloc::Layout;
 use crate::sys::pal::cricker::{abi, rt};
 
-mod uheap;
+mod user_heap;
 
 const PAGE: u64 = 4096;
 const MIN_GROW_PAGES: u64 = 8;
 
 struct Inner {
-    heap: uheap::Heap,
+    heap: user_heap::Heap,
     committed: u64,
 }
 
@@ -35,7 +35,7 @@ unsafe impl Sync for SpinHeap {}
 
 static HEAP: SpinHeap = SpinHeap {
     locked: crate::sync::atomic::AtomicBool::new(false),
-    inner: crate::cell::UnsafeCell::new(Inner { heap: uheap::Heap::new(), committed: 0 }),
+    inner: crate::cell::UnsafeCell::new(Inner { heap: user_heap::Heap::new(), committed: 0 }),
 };
 
 struct Guard;
@@ -106,7 +106,7 @@ pub unsafe fn alloc(layout: Layout) -> *mut u8 {
             return p.as_ptr();
         }
         let slack = layout.align().saturating_sub(PAGE as usize) as u64;
-        let need = uheap::effective_size(layout) as u64 + slack;
+        let need = user_heap::effective_size(layout) as u64 + slack;
         if !grow(inner, need) {
             return crate::ptr::null_mut();
         }

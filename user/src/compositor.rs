@@ -18,7 +18,7 @@
 //!
 //! # Why the doorbell can be shared, and why there is no authorization code here
 //!
-//! The full argument is in `compose`'s crate docs and notes/compositor.md; the short version is that
+//! The full argument is in `compositor`'s crate docs and notes/compositor.md; the short version is that
 //! a shared endpoint carries no sender identity, so **nothing in a message is trusted**. The two verbs
 //! are content-free (`HELLO`, `COMMIT`), every per-client fact is read from that client's own control
 //! page, and every privileged answer travels through memory the holder was granted rather than
@@ -27,7 +27,7 @@
 //!
 //! # What it does not do
 //!
-//! No window management (the scene is `compose::SCENE`, fixed), no alpha, no GPU (rung four), no text
+//! No window management (the scene is `compositor::SCENE`, fixed), no alpha, no GPU (rung four), no text
 //! (rung three). And one structural limit worth reading before believing anything else here: this
 //! process has **one blocking wait point**, because a thread can only be parked in one `RECV` and
 //! this kernel has no wait-any primitive and no threads sharing an address space. That is the reason
@@ -38,8 +38,8 @@
 #![no_std]
 #![no_main]
 
-use compose::proto::{ctl, ring, wlist};
-use compose::{Rect, SCENE};
+use compositor::proto::{ctl, ring, wlist};
+use compositor::{Rect, SCENE};
 use gfx_proto as gfx;
 use user_rt::{call, invoke, recv_cap, send};
 
@@ -86,7 +86,7 @@ fn wr32(va: u64, v: u32) {
 /// display driver. No other thread in this process exists, so there is no aliasing question.
 fn screen() -> &'static mut [u32] {
     // SAFETY: see above.
-    unsafe { core::slice::from_raw_parts_mut(SCREEN_VA as *mut u32, compose::SCREEN_PIXELS) }
+    unsafe { core::slice::from_raw_parts_mut(SCREEN_VA as *mut u32, compositor::SCREEN_PIXELS) }
 }
 
 /// Client `i`'s surface, as a slice. The pixels the client writes and this process only reads.
@@ -157,7 +157,7 @@ fn flush(damage: Rect) {
 /// over the shared doorbell.
 ///
 /// `FOCUS_NEXT` moves focus, which is the compositor's decision and nobody else's. Every other byte
-/// goes to the focused client as `lineedit::proto::OP_BYTES`, the terminal contract's driver half
+/// goes to the focused client as `line_editor::proto::OP_BYTES`, the terminal contract's driver half
 /// verbatim, so a terminal is a client of this compositor without either contract changing.
 fn drain_input(focusable: usize, focus: &mut u32) {
     let mut head = rd32(RING_VA + ring::HEAD);
@@ -168,7 +168,7 @@ fn drain_input(focusable: usize, focus: &mut u32) {
         let byte = unsafe { core::ptr::read_volatile(at as *const u8) };
         head = head.wrapping_add(1);
 
-        if byte == compose::proto::FOCUS_NEXT {
+        if byte == compositor::proto::FOCUS_NEXT {
             if focusable > 0 {
                 *focus = (*focus + 1) % focusable as u32;
                 wr32(WLIST_VA + wlist::FOCUSED, *focus);
@@ -180,7 +180,7 @@ fn drain_input(focusable: usize, focus: &mut u32) {
             // client answers, and the answer is the flow control that keeps a fast source from
             // outrunning a slow client. It also means a focused client that stops answering stalls
             // this loop, which is the honest cost of one wait point (see the module note).
-            let w0 = lineedit::proto::req(lineedit::proto::OP_BYTES, 1);
+            let w0 = line_editor::proto::req(line_editor::proto::OP_BYTES, 1);
             let _ = call(INPUT + *focus as u64, w0, byte as u64);
         }
         // A byte with no focusable client to receive it is dropped. Not silently: there is nobody
@@ -205,7 +205,7 @@ fn serve_frame(
 ) {
     drain_input(focusable, focus);
 
-    let mut damage = compose::EMPTY;
+    let mut damage = compositor::EMPTY;
     for i in 0..n {
         let c = ctl_va(i);
         let seq = rd32(c + ctl::SEQ);
@@ -233,7 +233,7 @@ fn serve_frame(
                 ctl::STATUS_CLIPPED
             },
         );
-        damage = damage.union(&compose::damage_to_screen(&SCENE[i], asked));
+        damage = damage.union(&compositor::damage_to_screen(&SCENE[i], asked));
         wr32(c + ctl::ACKED, seq);
     }
 
@@ -247,13 +247,13 @@ fn serve_frame(
 /// **empty** source, so it is not drawn: before anyone has painted, the screen is the background, not
 /// whatever the surfaces happened to hold.
 fn paint(n: usize, damage: Rect, committed: &[bool]) {
-    let mut srcs: [&[u32]; compose::MAX_WINDOWS] = [&[]; compose::MAX_WINDOWS];
+    let mut srcs: [&[u32]; compositor::MAX_WINDOWS] = [&[]; compositor::MAX_WINDOWS];
     for (i, s) in srcs.iter_mut().enumerate().take(n) {
         if committed[i] {
             *s = source(i);
         }
     }
-    compose::composite(screen(), &srcs[..n], n, damage);
+    compositor::composite(screen(), &srcs[..n], n, damage);
     flush(damage);
 }
 
@@ -261,12 +261,12 @@ fn paint(n: usize, damage: Rect, committed: &[bool]) {
 pub extern "C" fn _start(windows: u64, focusable: u64, _arg2: u64) -> ! {
     let n = windows as usize;
     let focusable = focusable as usize;
-    if n > SCENE.len() || n > compose::MAX_WINDOWS || focusable > n {
+    if n > SCENE.len() || n > compositor::MAX_WINDOWS || focusable > n {
         die(E_TOO_MANY_WINDOWS);
     }
     let mut focus: u32 = 0;
-    let mut last_seq = [0u32; compose::MAX_WINDOWS];
-    let mut committed = [false; compose::MAX_WINDOWS];
+    let mut last_seq = [0u32; compositor::MAX_WINDOWS];
+    let mut committed = [false; compositor::MAX_WINDOWS];
 
     publish(n, focus);
 
@@ -278,7 +278,7 @@ pub extern "C" fn _start(windows: u64, focusable: u64, _arg2: u64) -> ! {
     // predict rather than "whatever was in those frames".
     paint(n, Rect::screen(), &committed);
 
-    send(REPORT, compose::status::COMP_UP, n as u64, focus as u64);
+    send(REPORT, compositor::status::COMP_UP, n as u64, focus as u64);
 
     loop {
         // One wait point, and everything arrives here: a client's HELLO or COMMIT, and the input
@@ -286,13 +286,13 @@ pub extern "C" fn _start(windows: u64, focusable: u64, _arg2: u64) -> ! {
         // caller, which is how a reply reaches whoever rang without this program ever knowing who
         // that was.
         let (w0, reply_slot, _) = recv_cap(DOORBELL);
-        let r0: i64 = match compose::proto::op(w0) {
-            compose::proto::HELLO => 0,
-            compose::proto::COMMIT => {
+        let r0: i64 = match compositor::proto::op(w0) {
+            compositor::proto::HELLO => 0,
+            compositor::proto::COMMIT => {
                 serve_frame(n, focusable, &mut focus, &mut last_seq, &mut committed);
                 0
             }
-            _ => compose::proto::EBADOP,
+            _ => compositor::proto::EBADOP,
         };
         // SAFETY: `svc`/`ecall`; the kernel validated the Reply capability and consumes it here.
         unsafe { invoke(reply_slot, abi::reply::REPLY, r0 as u64, 0, 0) };

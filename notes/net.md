@@ -64,7 +64,7 @@ The reuse call (smoltcp, not a hand-built TCP) is settled in the roadmap. What t
 is the *contract*: how a process asks a userspace stack to open a socket, and how bytes and events
 cross the boundary.
 
-**seL4 netstack componentization** (and the CAmkES/lwIP and later Rust efforts). The stack is a
+**seL4 net_stack componentization** (and the CAmkES/lwIP and later Rust efforts). The stack is a
 component; clients reach it over seL4 endpoints, and bulk data moves through **shared dataports**
 (pre-shared memory regions), not through the IPC message. Control (open, connect, close, "data
 ready") travels as small messages on the endpoint; payload lives in the shared region. This is the
@@ -160,32 +160,32 @@ smoltcp is no_std-clean and used across embedded Rust.
 **Corrected assumption.** smoltcp bills itself as "for bare-metal, real-time systems **without a
 heap**." It can run with fixed socket buffers and a static `SocketSet`, so the net server does **not**
 strictly need the untyped-backed `GlobalAlloc` that RedoxFS (milestone 32) and the `std` PAL
-(milestone 27) require. In the build we shipped, netstack does use `alloc` (over user_rt's `UntypedHeap`,
+(milestone 27) require. In the build we shipped, net_stack does use `alloc` (over user_rt's `UntypedHeap`,
 milestone 27) because it is available and makes the socket set and per-frame buffers simpler; the
 `alloc` feature is a convenience, not a precondition, so a fixed-capacity server remains possible if
 that heap were ever unavailable.
 
 ## Piece 3 phase A: smoltcp doing DHCP over the confined NIC (built, both ISAs)
 
-The net server, `netstack` (user/src/netstack.rs), is the networking form of the userspace-reuse thesis: a
+The net server, `net_stack` (user/src/net_stack.rs), is the networking form of the userspace-reuse thesis: a
 real, reused TCP/IP stack (smoltcp 0.13.1, not hand-built) running entirely at EL0 over a NIC the
 kernel confines by DMA. The kernel knows nothing about DHCP.
 
-- `user/src/vnet.rs` presents smoltcp's `phy::Device` over the receive/transmit virtqueues: it brings
+- `user/src/net_transport.rs` presents smoltcp's `phy::Device` over the receive/transmit virtqueues: it brings
   the NIC up through the `Virtio` capability, posts receive buffers, copies received frames out (RX
   tokens own their bytes so they never borrow the device), and transmits via the DMA ring (TX tokens
-  carry a raw pointer to the device, sound because netstack is single-threaded and the device outlives
+  carry a raw pointer to the device, sound because net_stack is single-threaded and the device outlives
   any token within a poll).
-- `netstack` links `alloc` over user_rt's `UntypedHeap`, builds a smoltcp `Interface` and a DHCP socket,
+- `net_stack` links `alloc` over user_rt's `UntypedHeap`, builds a smoltcp `Interface` and a DHCP socket,
   and runs the poll loop, blocking on the NIC interrupt between polls. It reports the acquired
   address, which the test asserts lands in slirp's 10.0.2.0/24 (`the_net_server_acquires_a_dhcp_lease_over_smoltcp`
   and its `_pci` twin, both ISAs). Only a real DHCP handshake driven by smoltcp over the confined NIC
   produces that.
-- The spawn service (`virtio_service::start_net_server{,_pci}`) grants netstack the confined transport,
+- The spawn service (`virtio_service::start_net_server{,_pci}`) grants net_stack the confined transport,
   the interrupt, a DMA page, a report endpoint, and an **untyped budget** for the heap, plus extra
   stack pages for smoltcp's packet building.
 - **Caveat (recorded):** the DMA region is one 4 KiB page, so the buffers are small and the MTU is
-  small (`vnet::MTU`, 576). DHCP, DNS, and small TCP segments fit; a full 1514-byte frame does not. A
+  small (`net_transport::MTU`, 576). DHCP, DNS, and small TCP segments fit; a full 1514-byte frame does not. A
   larger MTU needs a multi-page contiguous DMA region, which the spawn path does not build yet. This
   is a demonstrator limit, not a protocol one.
 
@@ -194,37 +194,37 @@ not yet built is the client-facing socket contract that lets *other* processes u
 
 ## Piece 3 phase B: the client-facing socket contract (built, both ISAs)
 
-The §25 contract, so a process other than netstack can open sockets. netstack, after DHCP, serves requests
+The §25 contract, so a process other than net_stack can open sockets. net_stack, after DHCP, serves requests
 on a `Stack` endpoint; a client holds `WRITE` on it plus its own untyped budget. Files:
-`crates/socket_proto/src/lib.rs` (the wire format), the serve loop in `user/src/netstack.rs`, and the client in
-`user/src/netcli.rs` (a module of the netstack binary, dispatched by the entry role, see the archive
+`crates/socket_proto/src/lib.rs` (the wire format), the serve loop in `user/src/net_stack.rs`, and the client in
+`user/src/socket_test_client.rs` (a module of the net_stack binary, dispatched by the entry role, see the archive
 note below).
 
 - **A socket is a socket id.** Open returns a small integer, carried in the request word of every
   later call; the per-connection **shared frame** is the real granted resource, delegated once at
-  open via `SEND_CAP` and mapped by netstack at a per-socket VA. No ambient network: the client acts only
+  open via `SEND_CAP` and mapped by net_stack at a per-socket VA. No ambient network: the client acts only
   through the `Stack` capability it was granted, and bytes cross in the shared frame, never in a
   message.
 - **Operations.** `ATTACH_FRAME` is a `SEND_CAP` (it carries the frame). The rest are `CALL`s (which
-  mint the reply cap netstack answers on), the socket id packed into the request word: `OPEN_UDP` /
+  mint the reply cap net_stack answers on), the socket id packed into the request word: `OPEN_UDP` /
   `OPEN_TCP`; `SENDTO(len)` and `RECV() -> len` for UDP (destination and payload in the shared
-  frame); `CONNECT` / `SEND(len)` / `RECV()` for TCP; `CLOSE`. A blocking `RECV` is netstack driving the
+  frame); `CONNECT` / `SEND(len)` / `RECV()` for TCP; `CLOSE`. A blocking `RECV` is net_stack driving the
   smoltcp poll loop (WAIT on the NIC interrupt) until the socket has data, then replying, the disk
   driver's discipline one layer up.
 - **Frame layout, pinned.** One data region reused per operation, NOT a split TX/RX ring: the
   phase-one contract is one *synchronous* exchange per `CALL` (the client blocks in the CALL while
-  netstack drives the network), so a request's payload and its reply never coexist. A split ring becomes
+  net_stack drives the network), so a request's payload and its reply never coexist. A split ring becomes
   necessary only with asynchronous or streaming sockets, deferred with the concurrency model.
-- **Concurrency model, phase one:** single-threaded netstack, one synchronous exchange per request. netstack
+- **Concurrency model, phase one:** single-threaded net_stack, one synchronous exchange per request. net_stack
   blocks on the `Stack` endpoint between requests and drives the network inside handling one. This
   suits the `std::net` PAL's blocking calls; concurrent connections and listening sockets want either
   userspace threads (milestone 19c TCBs) or a select-like wait, the phase-two extension.
-- **One binary, one archive entry.** The client rides in the netstack binary (a nonzero entry role runs
+- **One binary, one archive entry.** The client rides in the net_stack binary (a nonzero entry role runs
   it) rather than a separate binary, because the crickerfs archive directory held at most 15 files at
   the time and the initrd was already near that ceiling. (The ceiling is `crickerfs::MAX_FILES`, 76
   since 2026-08-01; see [crickerfs.md](crickerfs.md). The decision stands on its own merits, but the
-  pressure behind it is gone.) A subtlety worth recording: netstack reports its DHCP
-  lease with a *blocking* `send`, so the spawn service drains that report before returning, or netstack
+  pressure behind it is gone.) A subtlety worth recording: net_stack reports its DHCP
+  lease with a *blocking* `send`, so the spawn service drains that report before returning, or net_stack
   never reaches its serve loop and the client's first request hangs. That was the one real bug in
   bring-up, caught by a watchdog hang.
 
@@ -235,7 +235,7 @@ transports, on aarch64 and riscv64:
 
 - **UDP, `a_client_resolves_dns_through_the_socket_contract`.** A real DNS A-query for `example.com`
   to slirp's built-in resolver (10.0.2.3:53); the client verifies the reply is a response (QR bit) to
-  its own transaction id. Proves UDP send and receive through the whole path (client, netstack, smoltcp,
+  its own transaction id. Proves UDP send and receive through the whole path (client, net_stack, smoltcp,
   confined NIC). It relies on the test host being able to resolve DNS, which slirp forwards; a host
   with no resolver would make this time out.
 - **TCP, `a_client_echoes_over_tcp_through_the_socket_contract`.** A full round trip against a slirp
@@ -256,15 +256,15 @@ UDP, DHCP, no sockets-API mimicry beyond what the PAL needs.
 
 ### Ephemeral ports must be independent of the socket id (a fix the PAL found)
 
-The first version of netstack derived a socket's local port from its socket id (`LOCAL_PORT_BASE + sid`).
+The first version of net_stack derived a socket's local port from its socket id (`LOCAL_PORT_BASE + sid`).
 That is wrong, and the `std::net` PAL flushed it out: a program that opens a TCP socket, closes it,
 and opens another reuses the same socket id, so it reused the exact local port. Reconnecting to the
 same peer on an identical 4-tuple whose slirp flow had not yet cleared makes the SYN go unanswered,
-and netstack stalled in its bounded connect poll forever. Bisection confirmed it: a fresh id connects, a
+and net_stack stalled in its bounded connect poll forever. Bisection confirmed it: a fresh id connects, a
 reused id hangs.
 
-The fix is what any real stack does: netstack allocates ephemeral local ports from a private range with a
-**rotating allocator** independent of the socket id (`user/src/netstack.rs`, `PortAllocator`). Each open
+The fix is what any real stack does: net_stack allocates ephemeral local ports from a private range with a
+**rotating allocator** independent of the socket id (`user/src/net_stack.rs`, `PortAllocator`). Each open
 advances the cursor, so a just-closed connection's port is not handed out again until the whole range
 has cycled, and a port a live socket still holds is skipped outright. Socket-id reuse is then safe:
 the reopened socket gets a new local port, a new 4-tuple, and a new slirp flow.
@@ -284,7 +284,7 @@ is fine until an exchange depends on one of smoltcp's *own* timers. smoltcp driv
 delayed ACKs, and DNS timeouts from its clock, which only advances when we call `poll`. If a segment's
 ACK is dropped, the peer goes quiet waiting for our retransmit, and our retransmit is a timer event
 that only fires on the next `poll`, which we are not doing because we are blocked on an interrupt the
-peer will never send. netstack waits for the peer, the peer waits for netstack, both idle. Instrumenting the
+peer will never send. net_stack waits for the peer, the peer waits for net_stack, both idle. Instrumenting the
 PLIC at the hang showed the truth: **no source pending, the net source still enabled**. Not a masked
 line, not a lost IRQ; the device was simply idle, because both ends were waiting on the same stalled
 timer. aarch64 happened never to drop a segment (different servicing latency), so it never armed the
@@ -292,7 +292,7 @@ retransmit path; the riscv SMP scatter, which moves the driver and its wakes acr
 enough to drop one and expose the hole. It was not the IRQ affinity: forcing every source back to the
 boot hart's PLIC context still hung, which ruled the PLIC out.
 
-The fix (`wait_for_nic`, `user/src/netstack.rs`) asks smoltcp when it next needs to run. With **no** timer
+The fix (`wait_for_nic`, `user/src/net_stack.rs`) asks smoltcp when it next needs to run. With **no** timer
 pending (`poll_delay` is `None`), it blocks on the interrupt, the common case, 0% CPU until a frame
 arrives, and correct because with nothing of our own outstanding we are purely waiting on the peer,
 whose retransmit will wake us. With a timer **pending**, it does not block: it yields and lets the
@@ -340,7 +340,7 @@ can be dropped by a third party.
 
 What the gate proves now: a client holding only a `Stack` endpoint and a shared frame can open a UDP
 socket by id, send a datagram to an address of its choosing, and read the reply back through the same
-frame, over both the mmio and PCIe transports, on both ISAs. That is the whole client-to-netstack-to-
+frame, over both the mmio and PCIe transports, on both ISAs. That is the whole client-to-net_stack-to-
 smoltcp-to-confined-NIC path, which is what the test was ever really for.
 
 What it no longer proves, deliberately: that DNS resolution works, or that the guest can reach

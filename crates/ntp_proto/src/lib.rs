@@ -3,7 +3,7 @@
 //! Milestone 51 gives the machine a wall clock. This crate is the third lane of it: the bytes on
 //! the wire and the arithmetic over them, with no socket, no clock, no service and no policy. The
 //! clock service owns the offset and the authority to set it; a later phase carries these 48 bytes
-//! over `netstack`. Keeping the protocol here means the parser, the fixed-point conversion and the
+//! over `net_stack`. Keeping the protocol here means the parser, the fixed-point conversion and the
 //! response checks are host-tested in milliseconds and machine-checked by Kani, rather than being
 //! debugged inside a QEMU boot against a live server (DECISIONS §14's rule about what compiles for
 //! the host, and the same split `fs_proto` and `gfx_proto` make for their contracts).
@@ -842,7 +842,7 @@ mod tests {
     /// tool for domains that are not.
     ///
     /// It needs an optimised build to be this quick; `[profile.dev.package.ntp_proto]` in the
-    /// workspace manifest supplies one, the same way `measure` gets one for SHA-256.
+    /// workspace manifest supplies one, the same way `measured_boot` gets one for SHA-256.
     #[test]
     fn every_nanosecond_survives_the_round_trip() {
         for n in 0..1_000_000_000u32 {

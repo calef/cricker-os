@@ -2,7 +2,7 @@
 //!
 //! Where init's process-construction authority went. It holds one untyped budget (WRITE only, so it
 //! may spend memory but never lend it), a request channel, and **one program image** copied into its
-//! address space by rootsup. It does not hold the initrd, so "build me program X" is not a thing that
+//! address space by root_supervisor. It does not hold the initrd, so "build me program X" is not a thing that
 //! can be asked of it: the only program it can name is the one it was handed.
 //!
 //! Each instance is built in its **own region** split off the budget, which keeps one instance's
@@ -35,14 +35,14 @@ use user_rt::{cap_delete, recv, send};
 
 use supervision_proto::{Endow, REP_BUILT, REP_FAILED, REQ_BUILD};
 
-/// The capabilities rootsup endowed us with, in order.
+/// The capabilities root_supervisor endowed us with, in order.
 const REQ: u64 = 0; // READ: build/reap requests arrive here
 const REP: u64 = 1; // WRITE: answers go back here
 const BUDGET: u64 = 2; // WRITE: the memory every instance is made of
 const REPORT: u64 = 3; // WRITE|GRANT: so each instance can report for itself
 const CHILDFAULT: u64 = 4; // READ|GRANT: so each instance is born supervised
 
-/// Where rootsup copied the one program image we may build. Must match rootsup.rs.
+/// Where root_supervisor copied the one program image we may build. Must match root_supervisor.rs.
 const IMAGE_VA: u64 = 0x3000_0000;
 
 /// Pages per instance region: enough for the sub-server's segments, its stack, its address-space
@@ -51,7 +51,7 @@ const INSTANCE_PAGES: u64 = 48;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(_a0: u64, image_len: u64, _a2: u64) -> ! {
-    // SAFETY: rootsup mapped `image_len` bytes of program image read-only at IMAGE_VA.
+    // SAFETY: root_supervisor mapped `image_len` bytes of program image read-only at IMAGE_VA.
     let image = unsafe { core::slice::from_raw_parts(IMAGE_VA as *const u8, image_len as usize) };
     let Ok(elf) = elf::Elf::parse(image) else {
         supervision_proto::fail()

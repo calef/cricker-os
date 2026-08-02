@@ -28,10 +28,10 @@ available. Re-point new agents at it.
   the qemu-bounded ceiling cover; ratified 2026-07-29).
 - **Interrupt delivery:** the block server now WAITs on completion instead of polling (the
   "WAIT hangs" belief was a misdiagnosis); GIC + PLIC device-line affinity, both ISAs.
-- **netstack smoltcp-timer fix:** poll retransmit/ACK timers instead of blocking only on the NIC
+- **net_stack smoltcp-timer fix:** poll retransmit/ACK timers instead of blocking only on the NIC
   IRQ; closed the RISC-V std_net mutual-idle deadlock SMP timing exposed. std_net completes
   both ISAs (~300s aarch64, under the heartbeat on riscv).
-- **Milestone 35 (prove the DMA boundary):** crates/dma_validate proves, for every input, that
+- **Milestone 35 (prove the DMA boundary):** crates/dma_validator proves, for every input, that
   no descriptor chain escapes the driver's grant (TX/RX, indirect, multi-queue, TOCTOU). Plus
   the `Untyped::SPLIT` never-widens harness (authority-never-widens now proved at every mint
   site). IOMMU maps-exactly-the-grant recorded as a Verus target, not forced under Kani.
@@ -49,15 +49,15 @@ service), §28 (SMP placement) + amendment, §16 amendment (SPLIT rights inherit
 
 ## Wave-3: what's next, roughly in order
 
-1. **`^C` implementation** (§24 decided, not built): two-tier, shell-held. lineedit detects `^C`,
+1. **`^C` implementation** (§24 decided, not built): two-tier, shell-held. line_editor detects `^C`,
    shell holds the interrupt endpoint, cooperative then forcible (DESTROY force-kill). Ready to
    schedule; needs no new kernel surface.
 2. ~~**Milestone 22 phase B** (trusted init).~~ **DONE 2026-07-29** (DECISIONS §26's phase B.1 and
    B.2 blocks, notes/trusted-init.md). B.1: the build hashes the boot program and the kernel refuses
-   to enter anything else (SHA-256 in `crates/measure`, digest compiled into the kernel image, fails
+   to enter anything else (SHA-256 in `crates/measured_boot`, digest compiled into the kernel image, fails
    closed on a *missing* measurement too). B.2: a four-program tree where construction moves to a
    sub-server holding one program image, the supervisor holds no memory at all, and init deletes its
-   budget; proven by authority on both ISAs. **Leftovers:** the interactive boot's init (`sysinit`,
+   budget; proven by authority on both ISAs. **Leftovers:** the interactive boot's init (`system_initializer`,
    `hello`'s init role) still holds its budget for life because it is the shell's spawn service, and
    migrating that hand-validated path is the next increment; two design forks are recorded for Chris
    (a reap-only right so a root supervisor can recover without regaining construction authority, and
@@ -73,7 +73,7 @@ service), §28 (SMP placement) + amendment, §16 amendment (SPLIT rights inherit
 4. **Milestone 31 phase 2:** per-file grants pointing at FS-server directory caps.
 5. **Milestone 23** (the flagship): capability-routed component OS with live replacement. All
    prerequisites now exist (revocation, supervision, dedicated binaries, components with real
-   state: netstack under open connections, the FS server). Console hot-swap is instance one.
+   state: net_stack under open connections, the FS server). Console hot-swap is instance one.
 6. **The display ladder** (roadmap "The display ladder"): 29 (VT terminal over virtio-gpu) ->
    33 (compositor component) -> apps on the std PAL -> 34 (virtio-gpu 3D). Chris's stated
    destination is "something like COSMIC driving a GPU." Rung 5 (bare-metal BXE 3D) is struck.

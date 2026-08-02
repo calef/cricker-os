@@ -21,7 +21,7 @@ out-of-band convention (notes/abi.md §4) grants them at fixed slots:
 
 - **slot 0: an untyped budget.** The global allocator draws heap pages from it lazily via
   `untyped::MAP`, one page per invoke, at `0x4000_0000`. This is the same untyped-backed heap the
-  `allocdemo` workload proved (`crates/uheap` algorithm, host-tested), restated inside std because
+  `allocator_exerciser` workload proved (`crates/user_heap` algorithm, host-tested), restated inside std because
   std cannot depend on an out-of-tree crate.
 - **slot 1: an endpoint with WRITE.** `stdout` and `stderr` SEND here, 16 bytes per message (w0 =
   byte count, w1|w2 = the bytes, little-endian). std's own `LineWriter` batches user writes; the
@@ -30,7 +30,7 @@ out-of-band convention (notes/abi.md §4) grants them at fixed slots:
 Three more slots exist, and a program holds each only if it was *given* the thing behind it
 (milestone 27 phase two, the `std::net` and `std::fs` bindings below):
 
-- **slot 2: a `Stack` endpoint with WRITE.** `std::net` speaks netstack's socket contract over it.
+- **slot 2: a `Stack` endpoint with WRITE.** `std::net` speaks net_stack's socket contract over it.
 - **slot 3: an untyped budget** the net PAL mints each socket's shared frame from.
 - **slot 4: an FS-service endpoint with WRITE**, which *is* a directory capability, plus the page it
   shares with the FS server mapped at `0x1100_0000`. `std::fs` speaks the §27 file contract over it.
@@ -60,7 +60,7 @@ std by `cargo xtask std-src`. Each file binds one std concept to the ABI:
 | `Instant`, `SystemTime` | the virtual counter, `CNTVCT_EL0` / `rdtime` (`sys/time/cricker.rs`) |
 | `panic!` | print, then `brk`/`ebreak`: a fault the kernel attributes. No unwinding. |
 | `thread::spawn` | `Unsupported` in phase one; `sleep`/`yield` are real |
-| `net` (`TcpStream`, outbound `UdpSocket`) | netstack's socket contract on slots 2/3 (`sys/net/connection/cricker.rs`), or `Unsupported` when not granted |
+| `net` (`TcpStream`, outbound `UdpSocket`) | net_stack's socket contract on slots 2/3 (`sys/net/connection/cricker.rs`), or `Unsupported` when not granted |
 | `fs` (`File`, `metadata`, `read`/`write`) | the FS service's file contract on slot 4 (`sys/fs/cricker.rs`), or `Unsupported` when no directory was granted |
 | `std::random::SystemRng` | the entropy service's endpoint on slot 6 (`sys/random/cricker.rs`), or a **panic** when not granted |
 | `HashMap` seed | the same service when granted; splitmix64 from the counter when not, and labelled |
@@ -69,7 +69,7 @@ std by `cargo xtask std-src`. Each file binds one std concept to the ABI:
 The syscall glue (`sys/pal/cricker/rt.rs`) is a deliberate twin of `crates/user_rt`: the same
 `svc`/`ecall` wrappers, restated because std cannot depend on the crate. The ABI **constants** are
 not restated: `abi.rs` is generated verbatim from `crates/abi` by `std-src`, so the numbers cannot
-drift. Likewise `uheap.rs` from `crates/uheap` (the host-tested heap algorithm is the only heap
+drift. Likewise `user_heap.rs` from `crates/user_heap` (the host-tested heap algorithm is the only heap
 algorithm), `netproto.rs` from `crates/socket_proto/src/lib.rs`, and `fsproto.rs` from `crates/fs_proto`: every
 wire format the PAL speaks has exactly one definition, and it lives with the server that answers it.
 
@@ -87,13 +87,13 @@ builds one:
    thing tried and measured).
 2. **Replace the `src` subtree with a real copy** (independent inodes), so patching it never
    touches the shared rustup toolchain.
-3. **Patch that copy**: drop in the overlay PAL files, generate `abi.rs`/`uheap.rs`, and insert a
+3. **Patch that copy**: drop in the overlay PAL files, generate `abi.rs`/`user_heap.rs`, and insert a
    `target_os = "cricker"` arm into std's `cfg_select!` dispatchers (pal, alloc, stdio, random,
    thread, time, io/error, thread_local storage and guard) plus `env_consts` and the
    `restricted_std` chain in std's `build.rs`.
 4. **Link it** as the `cricker-dev` toolchain (`rustup toolchain link`).
 
-`cargo xtask user-std` then builds the `hellostd` demo for both custom targets against it. The build
+`cargo xtask std-exerciser` then builds the `std_exerciser` demo for both custom targets against it. The build
 sets `RUSTUP_TOOLCHAIN=cricker-dev` explicitly rather than `+cricker-dev`, because the cargo proxy
 that launched xtask already exports `RUSTUP_TOOLCHAIN=nightly`, which would override a `+` selector
 and silently build std from the *unpatched* sysroot.
@@ -121,43 +121,43 @@ the bare target.
 
 ## `std::net` over the socket contract (milestone 27 phase two)
 
-`sys/net/connection/cricker.rs` binds std's `TcpStream` and outbound `UdpSocket` to netstack's socket
+`sys/net/connection/cricker.rs` binds std's `TcpStream` and outbound `UdpSocket` to net_stack's socket
 contract (DECISIONS §25, notes/net.md, `crates/socket_proto/src/lib.rs`). The PAL is a **client** of the
 frozen contract, nothing more: it holds the `Stack` endpoint (slot 2) and a frame untyped (slot 3),
-and for each socket it mints a shared `Frame`, maps it, delegates it to netstack (`SEND_CAP`,
+and for each socket it mints a shared `Frame`, maps it, delegates it to net_stack (`SEND_CAP`,
 `OP_ATTACH_FRAME`), and then drives the socket with `CALL`s carrying a socket id. Control words ride
-the message; bytes sit in the shared frame. This is the exact path the hand-written `netcli` client
+the message; bytes sit in the shared frame. This is the exact path the hand-written `socket_test_client` client
 walks, reached through std's blocking API instead.
 
 The wire constants are not restated: `netproto.rs` is generated verbatim from `crates/socket_proto/src/lib.rs`
 into `sys/pal/cricker/netproto.rs` by `std-src`, the same anti-drift discipline as `abi.rs` and
-`uheap.rs`. If the contract changes, the PAL's numbers change with it, because there is one source.
+`user_heap.rs`. If the contract changes, the PAL's numbers change with it, because there is one source.
 
 What binds, and how it maps to the contract:
 
 - **`TcpStream::{connect, read, write, ...}`** -> `OP_OPEN_TCP`, `OP_CONNECT`, `OP_RECV`, `OP_SEND`,
-  `OP_CLOSE` (on `Drop`). `read` blocks in netstack until data arrives (a blocked `RECV`), the blocking
+  `OP_CLOSE` (on `Drop`). `read` blocks in net_stack until data arrives (a blocked `RECV`), the blocking
   semantics std's default API wants. A short `read` keeps the segment's tail in a per-socket residual
   buffer, so a stream never drops bytes.
 - **`UdpSocket::{bind, connect, send, recv, send_to, recv_from}`** -> `OP_OPEN_UDP`, `OP_SENDTO`,
   `OP_RECV`. UDP `connect` only fixes a default peer (no contract call, matching Unix). `bind`'s
-  local address is validated but not honored: netstack assigns an ephemeral local port.
-- **Errors map by meaning, no errno.** A refused TCP connect is `ConnectionRefused`; a netstack timeout
+  local address is validated but not honored: net_stack assigns an ephemeral local port.
+- **Errors map by meaning, no errno.** A refused TCP connect is `ConnectionRefused`; a net_stack timeout
   on `RECV` is `TimedOut`; a datagram larger than the frame is `InvalidInput`; an IPv6 address is
-  `Unsupported` (netstack is IPv4-only). A `CALL` on an empty `Stack` slot (no network granted) reads
+  `Unsupported` (net_stack is IPv4-only). A `CALL` on an empty `Stack` slot (no network granted) reads
   back negative and becomes `Unsupported`, the same answer a program with no net grants gets.
 
 The concurrency model is the contract's: single-threaded, one synchronous exchange at a time. A
 program can hold up to `MAX_SOCKETS` (4) sockets at once and interleave them, but there is only ever
 one operation in flight, which is all a single-threaded process can do anyway.
 
-**A finding, recorded honestly.** netstack derives a socket's local port from its socket id
+**A finding, recorded honestly.** net_stack derives a socket's local port from its socket id
 (`LOCAL_PORT_BASE + sid`), so an id is not an ephemeral port that rotates; reopening a just-closed id
 reuses its exact local port. Against QEMU's slirp, a TCP connect that reuses a port whose previous
-flow has not cleared stalls (the SYN's answer never comes, and netstack blocks in its bounded poll on
+flow has not cleared stalls (the SYN's answer never comes, and net_stack blocks in its bounded poll on
 the NIC interrupt). The PAL softens this by handing out ids round-robin, so consecutive opens prefer
 different ids and ports, but a program that churns through more than `MAX_SOCKETS` sockets quickly
-can still hit a reused port. The real fix is netstack assigning ephemeral local ports independent of the
+can still hit a reused port. The real fix is net_stack assigning ephemeral local ports independent of the
 socket id, which is a **contract-side change reported up, not a client workaround**. The demo
 sidesteps it by keeping its UDP and TCP sockets on distinct ids at once.
 
@@ -216,7 +216,7 @@ invoke-error space (-1..-8), so `-2` is both `ENOENT` and `WrongObject`, and `-5
 `BadMethod`. It is harmless in practice: only `-1` and `-3` are read as "you hold no such
 capability", and neither `EPERM` nor `ESRCH` is in the FS server's vocabulary, while `-2` is left to
 the errno mapping so a missing file reads as `NotFound`. The clean fix is a tag or an offset in the
-reply word, which is a contract change (`fs_proto`, the FS server, and `fsclient`), reported up
+reply word, which is a contract change (`fs_proto`, the FS server, and `fs_test_client`), reported up
 rather than papered over here.
 
 ### What binds, and what stays Unsupported
@@ -295,7 +295,7 @@ completes, not why the poll path did not.
   Unsupported list is `TcpListener` (no LISTEN/accept verb in the contract), non-blocking mode and
   read/write timeouts (the contract is blocking-only, no poll verb), DNS via `lookup_host` (no
   resolver rides the contract, so `ToSocketAddrs` handles numeric addresses only, and a program that
-  wants DNS does it as a plain UDP query, as the demo does), IPv6 (netstack is IPv4-only), and `peek` /
+  wants DNS does it as a plain UDP query, as the demo does), IPv6 (net_stack is IPv4-only), and `peek` /
   socket duplication / multicast join-leave (no contract verb backs them). `UdpSocket::recv_from`
   reports the connected peer or the last send destination as the datagram source, because the
   contract's `RECV` does not carry it; that is correct for the request/response pattern the demo
@@ -341,7 +341,7 @@ completes, not why the poll path did not.
 
 ## The proof
 
-`user-std/src/main.rs` is an ordinary Rust program, no `no_std`, no attributes, no `unsafe`. It is
+`std_exerciser/src/main.rs` is an ordinary Rust program, no `no_std`, no attributes, no `unsafe`. It is
 **one binary with three behaviours, chosen by the authority it was granted**: on start it probes for
 a directory capability (`File::open` on the fixture name) and then for the network (a single
 `UdpSocket::bind`), and the results branch it.
@@ -357,7 +357,7 @@ a directory capability (`File::open` on the fixture name) and then for the netwo
   `/tmp/escape` or `../escape` is refused exactly as opening them is, so `CREATE` did not widen what a
   client can reach. The kernel test `std_fs_reads_a_file_through_a_granted_directory_capability`
   spawns it this way.
-- **Granted the network** (slots 2 and 3, alongside a running netstack): the bind succeeds, and the
+- **Granted the network** (slots 2 and 3, alongside a running net_stack): the bind succeeds, and the
   program does a real UDP DNS query to slirp's resolver and a TCP echo round trip to slirp's
   guestfwd peer, both through `std::net` and both asserted. The kernel test
   `std_net_runs_over_the_socket_contract` spawns it this way.

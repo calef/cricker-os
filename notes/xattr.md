@@ -8,7 +8,7 @@ members. Time Machine speaks SMB, Samba stores Apple's metadata as extended attr
 (`streams_xattr`), and RedoxFS has none. So this is on the critical path to hardware, not a
 feature we thought would be nice.
 
-The contract is `fs_proto::xattr`; the layer is `fs-server/src/lib.rs`; the mechanism was decided
+The contract is `fs_proto::xattr`; the layer is `fs_server/src/lib.rs`; the mechanism was decided
 in DECISIONS §34's 2026-07-31 amendment.
 
 ## The shape, in one picture
@@ -133,7 +133,7 @@ the grounds that noticing it had emptied would cost a walk. **That was wrong abo
 so the engine's own check *is* the emptiness test and there is nothing to enumerate. Attempting the
 removal and accepting the refusal costs one lookup, on the removals that emptied a blob.
 
-The reason to bother is on the recovery side rather than the byte. `redoxfs-host extract` copies the
+The reason to bother is on the recovery side rather than the byte. `redoxfs_host extract` copies the
 store out with the tree, so a leftover empty `.cricker-attrs` would land in somebody's recovered
 Documents folder as a directory nothing explains. A filesystem with no attributes on it is now
 indistinguishable from one that never had any.
@@ -227,7 +227,7 @@ let (kind, n) = srv.get_xattr(h, b"user.com.apple.metadata", &mut page)?;
 assert_eq!(kind, 0x4353_5452);
 ```
 
-The same thing on the wire, which is what `user/src/fsclient.rs` does:
+The same thing on the wire, which is what `user/src/fs_test_client.rs` does:
 
 ```rust
 // SET: the name and the value go into the shared page back to back; the value's length and its
@@ -247,10 +247,10 @@ let (kind, len) = (xattr::reply_kind(r0 as i64), xattr::reply_value_len(r0 as i6
 Getting them back off a dead board, which is what the whole feature is for:
 
 ```console
-$ redoxfs-host xattr backup.img photo.jpg
+$ redoxfs_host xattr backup.img photo.jpg
          6  kind 0x43535452 'CSTR'  user.com.apple.metadata:_kMDItemUserTags
         32  kind 0x00000000  user.com.apple.FinderInfo
-$ redoxfs-host extract backup.img / recovered
+$ redoxfs_host extract backup.img / recovered
 extracted / to recovered: 4 files, 3 directories, 0 symlinks, 165 bytes,
   3 attributes reattached, 1 type codes dropped
 ```
@@ -296,7 +296,7 @@ Named here because a reader who meets the feature deserves to meet its edges at 
 byte slice (`fs_proto::xattr::store`), so what replaces what, which ceiling refuses, and what a
 truncated blob means are all tested without a filesystem: seven tests in `fs_proto`, including a
 sweep that cuts a blob at every byte and asserts it reads back **short rather than wrong**. Ten more
-in `fs-server` drive the real engine against a `DiskMemory` image: persistence across a mount the
+in `fs_server` drive the real engine against a `DiskMemory` image: persistence across a mount the
 attribute was not written in, the rename property, the purge with a provoked node-id reuse, the
 replaced-destination purge, the store's invisibility to seven verbs and to a listing, both rights
 directions, every ceiling, and the shrink-without-a-tail.
@@ -304,7 +304,7 @@ directions, every ceiling, and the shrink-without-a-tail.
 **Crash-consistent, measured rather than argued** (milestone 57, closing what used to be a BUGS
 entry here). The old claim was sound and second-hand: every mutation runs inside one `fs.tx`, and
 milestone 37's sweep proves prefix consistency for whatever a transaction contains, so the property
-held by construction. It is now in the sweep. `fs-server/tests/crash_consistency.rs` reads each
+held by construction. It is now in the sweep. `fs_server/tests/crash_consistency.rs` reads each
 name's attributes as part of the filesystem's state, and the workload grew four attribute operations
 covering the three shapes the store has: **creating** it (two node creations in one commit),
 **growing** a blob, and **shrinking** one, which is the path that must truncate afterwards. They are
@@ -316,7 +316,7 @@ The workload's own sanity check does double duty here. An attribute operation ch
 observable unless the snapshot reads attributes, so a harness that quietly stopped looking fails at
 the fixture rather than passing everywhere below it.
 
-**On device, both ISAs** (DECISIONS §19). `user/src/fsclient.rs`'s proof role carries a witness that
+**On device, both ISAs** (DECISIONS §19). `user/src/fs_test_client.rs`'s proof role carries a witness that
 reports a bitmap, and the kernel test asserts an **exact** set, so a client that could do nothing
 and one that could do everything both fail. Eight claims: set and read back *with the type code*,
 listed and nothing else, survived a rename, gone after a remove, gone after an unlink and remake,

@@ -351,7 +351,7 @@ mod verification {
     /// receive collects it, the pop is destructive, so afterwards the endpoint holds no name for
     /// the caller in either queue and no later receive can produce it again. From that moment the
     /// kernel-minted Reply capability is the *only* name for the blocked caller anywhere, and the
-    /// caps side (consume-on-use, proved in `crates/caps`) makes that name single-use.
+    /// capability side (consume-on-use, proved in `crates/capability`) makes that name single-use.
     ///
     /// One waiter covers the general case here as everywhere in this module, plus one fact the
     /// queue cannot see: a blocked thread cannot run, so it cannot enqueue itself a second time.
