@@ -335,6 +335,14 @@ regresses. The crate's host tests cover that instead.
 header block's length and the fixtures are 512-byte disks. 4K-native disks exist and take a different
 path through `array_blocks`.
 
+**`gpt_table` barely reaches `check_backup`.** The input is one contiguous disk prefix, so the
+harness passes the *primary* header and array as the backup, which fails on the first field
+comparison (`my_lba != alternate_lba`) almost every time. Everything past that comparison, which is
+seven more fields and a second `check_entry_array`, is effectively untested by this target. Reaching
+it wants the input split into a head and a tail, which the committed `.head`/`.tail` fixture pair is
+already shaped for and which would cost those fixtures their status as directly-usable seeds. Worth
+doing; not done.
+
 ## See also
 
 - notes/verification.md, the proofs and their bounds. Read it first; this note is its complement.
