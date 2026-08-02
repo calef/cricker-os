@@ -117,6 +117,38 @@ Later milestones read more:
 | 8 | `virtio_mmio`, where the block device is |
 | Pi port | all of it, because none of the addresses will match |
 
+## BUGS
+
+**The blob is the first thing this kernel reads and the last thing it can check against anything
+else.** The pointer comes from firmware, before there is a frame allocator or any way to report a
+failure, so every limitation here is a limitation on the boot path specifically.
+
+- **A node nested deeper than 16 is invisible to `node_reg` and `node_reg_compatible`.** Both carry
+  `#address-cells`/`#size-cells` down a fixed 16-entry per-depth stack, and past it they stop
+  tracking, so they refuse to match rather than decode a region with cell widths they no longer
+  know. Nothing in the trees we boot nests past 4. `node_prop` keeps no per-depth state and so has
+  no such limit, which means the two lookups disagree about how deep a tree can be. Until
+  2026-08-02 `node_reg` did **not** refuse: it matched at any depth and then indexed past the stack,
+  which was an out-of-bounds panic on a 17-deep tree (milestone 42, notes/fuzzing.md).
+- **A `reg` pair whose `start + size` wraps 64 bits is `Error::RegionOverflow`, not a clamped
+  region.** `kernel/src/memory.rs` decides where RAM is from these, and "the firmware's memory map
+  is impossible" is something a boot path should be told. `Region::end()` saturates as a backstop,
+  because the type is `pub` with `pub` fields.
+- **`memory_regions` finds `/memory` nodes by NAME, not by `device_type`.** `device_type = "memory"`
+  is the more correct check and arrives after the node name; the name is unambiguous on every board
+  we have met. A board that spells it otherwise would have its RAM missed entirely.
+- **`node_reg` matches a node-name prefix rather than `compatible`.** That is a deliberate
+  simplification for two boards, documented at the function. `node_reg_compatible` is the correct
+  one and is what milestone 51's RTC lookup uses.
+- **Nothing validates the structure block's nesting balance.** A blob with more `FDT_END_NODE`
+  tokens than `FDT_BEGIN_NODE` is walked rather than refused: the three `usize` walkers saturate
+  their depth at zero and the three `i32` ones let it go negative. Neither can index anything (every
+  array access is guarded and the negative depths simply match nothing), so it is a wart rather than
+  a hole, but an unbalanced tree is not told apart from a well-formed one.
+
+`crates/dtb/tests/hostile.rs` holds the regressions for the first two, hand-built rather than
+fuzzer-minimized, so a reader meets the attack next to the code.
+
 ---
 
 *Add to this file as new device tree concepts come up.*
