@@ -200,11 +200,21 @@ Three kinds of input, and they are kept apart because they have different reason
 
 **Seeds are committed, and they are read-only.** A fuzzer starting from `[]` spends its first minutes
 rediscovering that a device tree begins `d0 0d fe ed`. With a sixty-second budget it would never get
-past the magic check. But `fuzz/seeds/` is nearly empty, because the seeds this project needs
+past the magic check. But `fuzz/seeds/` holds exactly one file, because the seeds this project needs
 **already exist in the tree**: `crates/dtb/tests/fixtures/` holds three real device trees dumped from
 the boards we boot, and `crates/gpt/tests/fixtures/` holds two real disks formatted by `sgdisk` and
 by Apple's Disk Utility. `script/fuzz` passes those directories to libFuzzer as extra corpus
 arguments. Copying them under `fuzz/` would create a second copy that can drift from the first.
+
+The exception is `fuzz/seeds/elf_parse/minimal_rx.elf`, 120 bytes, because nothing else in the tree is
+a small ELF (our real binaries are over a megabyte). It is hand-assembled, and
+[fuzz/seeds/README.md](../fuzz/seeds/README.md) carries the generator that produces it.
+
+**A seed that stops parsing is not a seed, and nothing about a fuzz run would say so.** The target
+returns immediately on anything the parser rejects, so a corpus of rejected inputs reports the same
+"no crashes" a working one does. `crates/elf/tests/fuzz_seed.rs` holds that seed to actually parsing,
+and to carrying this build's `e_machine`, which is a compile-time constant and would be wrong on a
+riscv64 developer machine. The other three targets seed from fixtures that already have tests.
 
 **Dictionaries are committed** (`fuzz/dictionaries/*.dict`), and they are the cheap half of a
 grammar. A device tree's structure block is a stream of 32-bit tokens; a fuzzer that has to discover

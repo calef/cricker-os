@@ -301,10 +301,10 @@ jobs:
       # is, and every second of it is a second the gate is slower for every commit forever.
       #
       # **60 seconds per target, four targets**, plus the build. The number is chosen against what
-      # the budget actually buys rather than by feel: a target does ~25,000 executions a second on
-      # this hardware, so a minute is around 1.5 million inputs per target and about six million per
-      # run. Both bugs this leg found were reachable well inside that (`Region::end`'s overflow came
-      # out of a ten-minute exploratory run from a cold corpus; from the seeds it is much faster).
+      # the budget actually buys rather than by feel: `dtb_walk` sustained 19,470 executions a second
+      # over ten minutes on the developer machine, so a minute is over a million inputs per target
+      # and four to six million per run, from a seed corpus already past every magic-number check.
+      # A runner is a different machine; the order of magnitude is what the budget is chosen against.
       #
       # **What this job is for, stated so it is not mistaken for something else.** It is a
       # REGRESSION TRIPWIRE, not a search. A minute per target from a seed corpus re-covers the
