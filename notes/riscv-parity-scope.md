@@ -226,7 +226,30 @@ transition and it is a change to what the *disk and network* tests prove, which 
 subject from making the userspace suite portable. It is now a measured piece of work rather than an
 estimated one.
 
-### Open gap: `no_leaked_threads` has never policed `user::tests`, and fixing it is not cheap
+### CLOSED 2026-08-02: `no_leaked_threads` has never policed `user::tests`
+
+**Fixed, and the scope below turned out to be right on every point.** The gap is closed, the two
+spinners are reaped, and the probe (now `thread_leak_police`, named to sort after `tests`) runs last
+and is green on both ISAs: 216 aarch64, 215 riscv64.
+
+Three things worth keeping from doing it, because the analysis below could not have predicted them:
+
+- **The bug bit on CI before the fix landed**, on 2026-08-02, exactly as this section forecast and in
+  the forecast's own words. `reclaim_frees_a_started_then_exited_childs_regions` ran **90 s against a
+  budget it normally clears in under 5**, tripping the watchdog on a pull request that had touched
+  only `dtb` and `crickerfs`. The starvation reaches a test on a branch that cannot have caused it,
+  which is what made it look like a flake worth re-running. **It was not a flake.**
+- **The probe was proven to bite before being believed.** Leaking the spinner on purpose fails it,
+  `1 thread(s) are still runnable after the suite quiesced`, with the dump. A reordered probe that
+  has never failed is not evidence it polices anything.
+- **The free-frame shift this section flagged as the reason it needed a full run did not materialise.**
+  Killing `untyped_demo` frees its frames, and every later baseline in the suite was expected to move;
+  both ISAs pass unchanged. Recorded because the risk was real and correctly identified, and the
+  measurement is what retires it rather than the argument.
+
+The original analysis follows, unedited, because the plan it lays out is what was built.
+
+---
 
 The leak police sorts by module path, and `no_leaked_threads` sorts before `tests`. So the one module
 whose whole subject is user threads has never been checked for leaving any behind, which is how four
