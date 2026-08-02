@@ -15043,6 +15043,63 @@ mod redirection_tests {
         );
     }
 
+    /// **`>>` is `>` with the emptying left out, and the two are measured against each other.**
+    ///
+    /// The script runs the same two commands twice, changing one character:
+    ///
+    /// ```text
+    /// echo one > trunc.txt        echo one > app.txt
+    /// echo two > trunc.txt        echo two >> app.txt
+    /// ```
+    ///
+    /// so the append file must hold **exactly twice** what the truncate file holds, in all three
+    /// counts. Doubling is the assertion rather than `(2, 2, 8)` because a literal would be a claim
+    /// about what `echo` prints; this is a claim about what the operator did, and it holds whatever
+    /// the two lines say.
+    ///
+    /// The truncate arm is load-bearing in its own right: it is what says `>` still empties the
+    /// file, which is the property `>>` exists to be the opposite of.
+    #[test_case]
+    fn append_keeps_what_truncate_throws_away() {
+        let mut buf = [0u8; 3072];
+        let Some(n) = transcript(&mut buf) else {
+            crate::println!("    (no RedoxFS disk attached; skipping)");
+            return;
+        };
+        let t = &buf[..n];
+
+        let (tl, tw, tb) = counts(&answer(t, b"wc < trunc.txt")[2..]);
+        assert!(
+            tb > 0,
+            "the truncate arm wrote nothing, so the comparison below proves nothing",
+        );
+        assert_eq!(
+            counts(&answer(t, b"wc < app.txt")[2..]),
+            (tl * 2, tw * 2, tb * 2),
+            "`>>` did not keep the first line: `>` wrote ({tl}, {tw}, {tb}) for the same two \
+             commands, so append must be exactly twice that",
+        );
+
+        // **`>>` creates a name that is not there**, so it is not "open, then seek to the end":
+        // there is nothing to open. On a fresh fixture that file holds exactly one copy of what
+        // `echo one` writes; the assertion is stated as a whole number of copies because
+        // `CRICKER_KEEP_REDOXFS=1` deliberately re-runs the suite against the image the last boot
+        // left behind, and this line would then append to its own leftovers. Order-independent
+        // either way, and it still fails on a `>>` that wrote a partial or a doubled line.
+        assert_eq!(
+            (tl, tw),
+            (1, 1),
+            "the truncate arm should be one line of one word; the check below assumes it",
+        );
+        let (fl, fw, fb) = counts(&answer(t, b"wc < fresh.txt")[2..]);
+        assert!(
+            fb >= tb && fb % tb == 0 && fl == fb / tb && fw == fl,
+            "`>> a-name-that-is-not-there` should have created it and written one line into it, \
+             and reported some whole number of those lines; got ({fl}, {fw}, {fb}) against a \
+             single line of ({tl}, {tw}, {tb})",
+        );
+    }
+
     /// **A redirection that cannot be opened refuses the line rather than running it.**
     ///
     /// `<` does not create, so `wc < nosuch.txt` is the filesystem's own sentence and nothing is

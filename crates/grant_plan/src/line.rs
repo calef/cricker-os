@@ -21,7 +21,7 @@
 //!
 //! ```text
 //! line  := stage ('|' stage)*
-//! stage := <command words> ('<' name | '>' name)*
+//! stage := <command words> ('<' name | '>' name | '>>' name)*
 //! ```
 //!
 //! Three rules, each of which exists to keep a line from meaning something other than it looks
@@ -40,7 +40,7 @@
 //! # EXAMPLES
 //!
 //! ```
-//! # use grant_plan::line::{split, Line};
+//! # use grant_plan::line::{split, Line, Mode};
 //! let l = split(b"date | wc").unwrap();
 //! assert_eq!(l.stages(), [&b"date"[..], b"wc"]);
 //! assert!(l.input.is_none() && l.output.is_none());
@@ -48,6 +48,10 @@
 //! let l = split(b"date > report.txt").unwrap();
 //! assert_eq!(l.stages(), [&b"date"[..]]);
 //! assert_eq!(l.output, Some(&b"report.txt"[..]));
+//! assert_eq!(l.mode(), Mode::Truncate);
+//!
+//! // `>>` names the same destination and only changes what happens to what is already in it.
+//! assert_eq!(split(b"date >> report.txt").unwrap().mode(), Mode::Append);
 //!
 //! // Whitespace around an operator is optional, as it is in every shell.
 //! assert_eq!(split(b"date>report.txt").unwrap().output, Some(&b"report.txt"[..]));
@@ -55,13 +59,13 @@
 //!
 //! # BUGS
 //!
-//! - **No `>>`.** Every sink this contract can build appends already (a sink has no seek), so `>`
-//!   and `>>` would differ only in whether the file is emptied first. That choice belongs to the
-//!   sink's wiring rather than to the writer, and until there is a second spelling worth having,
-//!   one operator that truncates is the honest surface. notes/pipes.md records the fork.
 //! - **No `2>`.** There is one output slot. A second stream is a second capability and a second
 //!   convention, and inventing one before a program has two things to say would be inventing the
-//!   convention rather than discovering it.
+//!   convention rather than discovering it. notes/pipes.md carries the analysis.
+//! - **No `<<`.** A here-document is refused as [`Refusal::NoRedirectTarget`], because the second
+//!   `<` is read as the operator it is and then there is no name after it. The message is about a
+//!   missing name where the mistake was a missing feature, which is a wording gap and not a
+//!   silent acceptance.
 //! - **A redirection cannot be quoted away.** There is no quoting in this shell at all, so a file
 //!   whose name contains `>` cannot be named. That is a gap in the tokenizer, not in this module.
 
@@ -86,9 +90,28 @@ pub enum Sink {
     /// The next stage of a pipeline. An endpoint the shell minted, held `WRITE` here and `READ` by
     /// the stage downstream, and nothing else exists: **the rendezvous is the pipe**.
     Pipe,
-    /// A file, named on the line. Delivered as an endpoint served by a sink process
-    /// (`user/src/sink.rs`), so what the program holds cannot seek, truncate, re-read or stat.
-    File(crate::FileGrant),
+    /// A file, named on the line, and what `>` versus `>>` decided about the bytes already in it.
+    /// What the program holds is an endpoint either way, so it cannot seek, truncate, re-read or
+    /// stat, and it cannot tell the two spellings apart.
+    File(crate::FileGrant, Mode),
+}
+
+/// **What a `>` does to the bytes already in the file, which is the whole of `>` versus `>>`.**
+///
+/// It is a fact about how the **shell** opens the file and not about the stage that writes it
+/// (DECISIONS §55: the file behind a `>` is the shell itself). A sink has no seek and appends by
+/// construction, so both spellings hand the program the identical capability and differ only in
+/// where the shell's first write lands. That is why this rides beside [`Sink::File`] rather than
+/// inside [`crate::FileGrant`]: the grant is the authority, and this is not part of it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Mode {
+    /// `>`: empty the file before the command runs. Emptying it *before* is what makes
+    /// `ls > out.txt` report one more name than the `ls` before it did, which is Unix's order and
+    /// is worth being able to see.
+    #[default]
+    Truncate,
+    /// `>>`: keep what is there and start writing at the end of it.
+    Append,
 }
 
 /// **Where a stage's bytes come from**, which is what `<` and the right-hand side of `|` decide.
@@ -117,8 +140,12 @@ pub struct Line<'a> {
     nstages: usize,
     /// The name after `<`, if the line has one. It belongs to the first stage.
     pub input: Option<&'a [u8]>,
-    /// The name after `>`, if the line has one. It belongs to the last stage.
+    /// The name after `>` or `>>`, if the line has one. It belongs to the last stage.
     pub output: Option<&'a [u8]>,
+    /// Which of the two spellings named it. Private because it means nothing without
+    /// [`output`](Line::output), and a caller that could set the two independently could describe a
+    /// line nobody could type; read it through [`mode`](Line::mode).
+    append: bool,
 }
 
 impl<'a> Line<'a> {
@@ -141,6 +168,16 @@ impl<'a> Line<'a> {
         self.nstages == 1 && self.input.is_none() && self.output.is_none()
     }
 
+    /// Whether the line's `>` empties the file first. [`Mode::Truncate`] on a line with no `>` at
+    /// all, which nothing reads: there is no file for it to describe.
+    pub fn mode(&self) -> Mode {
+        if self.append {
+            Mode::Append
+        } else {
+            Mode::Truncate
+        }
+    }
+
     /// What stage `i`'s output slot holds: the pipe when something is downstream, the file when the
     /// line named one, and the shell's result endpoint otherwise.
     ///
@@ -151,7 +188,7 @@ impl<'a> Line<'a> {
             Sink::Pipe
         } else {
             match file {
-                Some(g) => Sink::File(g),
+                Some(g) => Sink::File(g, self.mode()),
                 None => Sink::Report,
             }
         }
@@ -183,6 +220,7 @@ pub fn split(line: &[u8]) -> Result<Line<'_>, Refusal> {
     let mut stages = [&b""[..]; MAX_STAGES];
     let mut ins: [Option<&[u8]>; MAX_STAGES] = [None; MAX_STAGES];
     let mut outs: [Option<&[u8]>; MAX_STAGES] = [None; MAX_STAGES];
+    let mut apps = [false; MAX_STAGES];
     let mut n = 0usize;
 
     let mut i = 0usize;
@@ -201,6 +239,14 @@ pub fn split(line: &[u8]) -> Result<Line<'_>, Refusal> {
         while i < line.len() && (line[i] == b'<' || line[i] == b'>') {
             let op = line[i];
             i += 1;
+            // `>>` is one operator spelled with two characters, and the second one is consumed here
+            // rather than left to be read as an operator with an empty name. A second `<` is not:
+            // there is no here-document, so `<<` falls through and is refused for the name it does
+            // not have.
+            let append = op == b'>' && i < line.len() && line[i] == b'>';
+            if append {
+                i += 1;
+            }
             while i < line.len() && line[i].is_ascii_whitespace() {
                 i += 1;
             }
@@ -217,6 +263,9 @@ pub fn split(line: &[u8]) -> Result<Line<'_>, Refusal> {
                 return Err(Refusal::RedirectRepeated);
             }
             slot[n] = Some(target);
+            if op == b'>' {
+                apps[n] = append;
+            }
             // A word after the name is the `< f wc` spelling. Refused rather than reordered: see
             // the module note.
             let mut j = i;
@@ -267,6 +316,7 @@ pub fn split(line: &[u8]) -> Result<Line<'_>, Refusal> {
         nstages: n,
         input: ins[0],
         output: outs[n - 1],
+        append: apps[n - 1],
     })
 }
 
@@ -332,6 +382,56 @@ mod tests {
         assert_eq!(l.output, Some(&b"report.txt"[..]));
         let l = split(b"wc<in>out").unwrap();
         assert_eq!((l.input, l.output), (Some(&b"in"[..]), Some(&b"out"[..])));
+    }
+
+    /// **`>>` names the same file and only changes what happens to what is in it.**
+    ///
+    /// Everything else about the line is identical, which is the claim: append is not a second
+    /// destination, a second capability or a second protocol. It is one bit about how the shell
+    /// opens the file it was already going to open.
+    #[test]
+    fn append_is_the_same_redirection_with_one_bit_changed() {
+        let t = split(b"date > report.txt").unwrap();
+        let a = split(b"date >> report.txt").unwrap();
+        assert_eq!(t.stages(), a.stages());
+        assert_eq!(t.output, a.output);
+        assert_eq!(t.mode(), Mode::Truncate);
+        assert_eq!(a.mode(), Mode::Append);
+        // The two characters are one operator, so no whitespace is needed on either side of it and
+        // the name still stops where the name stops.
+        let a = split(b"date>>report.txt").unwrap();
+        assert_eq!(a.output, Some(&b"report.txt"[..]));
+        assert_eq!(a.mode(), Mode::Append);
+        // And it reaches the sink, which is the only place anything downstream reads it.
+        assert!(matches!(a.sink_for(0, None), Sink::Report));
+        // A line with no `>` on it has nothing to append to, and says Truncate because that is the
+        // default rather than because it means anything.
+        assert_eq!(split(b"date | wc").unwrap().mode(), Mode::Truncate);
+    }
+
+    /// `>>` inherits every rule `>` has, because it is the same operator: the tail of the pipeline
+    /// only, one per stage, one name, and a name that is not a pattern.
+    #[test]
+    fn append_inherits_every_rule_truncate_has() {
+        assert_eq!(split(b"date >> f | wc"), Err(Refusal::RedirectMidPipeline));
+        assert_eq!(split(b"date >> a >> b"), Err(Refusal::RedirectRepeated));
+        assert_eq!(split(b"date > a >> b"), Err(Refusal::RedirectRepeated));
+        assert_eq!(split(b"date >> *.txt"), Err(Refusal::PatternInRedirect));
+        assert_eq!(split(b"date >> f extra"), Err(Refusal::WordAfterRedirect));
+        assert_eq!(split(b"date >>"), Err(Refusal::NoRedirectTarget));
+        assert_eq!(split(b"date >>>f"), Err(Refusal::NoRedirectTarget));
+        // The legal shape at the tail of a pipeline, with an input on the head.
+        let l = split(b"wc < a | wc >> b").unwrap();
+        assert_eq!((l.input, l.output), (Some(&b"a"[..]), Some(&b"b"[..])));
+        assert_eq!(l.mode(), Mode::Append);
+    }
+
+    /// **There is no here-document**, and `<<` is refused rather than read as `<` twice. The second
+    /// `<` is an operator, so the first one has no name after it; the refusal is about the missing
+    /// name, which is the module note's one wording gap.
+    #[test]
+    fn there_is_no_here_document() {
+        assert_eq!(split(b"wc << EOF"), Err(Refusal::NoRedirectTarget));
     }
 
     #[test]
