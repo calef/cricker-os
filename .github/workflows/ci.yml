@@ -277,6 +277,49 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: script/supply-chain
 
+  fuzz:
+    name: fuzz (parsers, 60s per target)
+    runs-on: ubuntu-24.04-arm
+    # Build, then four one-minute runs. Generous against a cold `-Zbuild-std`, which compiles the
+    # standard library with the sanitizer on the first run of the day.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+      # No install step: `script/fuzz` installs the version pinned in `.cargo-fuzz-version` when the
+      # one on PATH does not match, exactly as it does on a developer's machine. That is the opposite
+      # trade from the supply-chain and coverage jobs, which take a prebuilt binary because they
+      # compile nothing of ours; this job compiles the fuzz targets and the standard library anyway,
+      # so one more `cargo install` behind the same cache is not the expensive part, and having one
+      # installation path means CI cannot silently run a different tool than a developer does.
+      #
+      # `-Zbuild-std` needs `rust-src`, which `rust-toolchain.toml` already lists for the kernel.
+
+      # **A JOB OF ITS OWN**, the same argument `cpu-matrix` makes above and for a stronger reason.
+      # Fuzzing has no completion condition: a fuzz target does not pass, it runs out of time. So it
+      # cannot be a step inside a gate somebody waits on, because the only knob is how long the wait
+      # is, and every second of it is a second the gate is slower for every commit forever.
+      #
+      # **60 seconds per target, four targets**, plus the build. The number is chosen against what
+      # the budget actually buys rather than by feel: a target does ~25,000 executions a second on
+      # this hardware, so a minute is around 1.5 million inputs per target and about six million per
+      # run. Both bugs this leg found were reachable well inside that (`Region::end`'s overflow came
+      # out of a ten-minute exploratory run from a cold corpus; from the seeds it is much faster).
+      #
+      # **What this job is for, stated so it is not mistaken for something else.** It is a
+      # REGRESSION TRIPWIRE, not a search. A minute per target from a seed corpus re-covers the
+      # ground the parsers are already known to survive and notices when a change breaks it. Finding
+      # something genuinely new is the job of a long run on a developer's machine
+      # (`script/fuzz --time 3600`), and it is deliberately not automated: a nightly job that finds a
+      # crash at 4am, with no corpus persisted between runs, produces an artifact nobody can
+      # reproduce and an alert nobody dispositions, which is DECISIONS §35's wallpaper failure.
+      #
+      # **The corpus is not persisted between runs, on purpose.** Caching it would make the job's
+      # coverage depend on which runs happened before it, so a red run could not be reproduced from
+      # the repository alone. Every run starts from exactly the committed seeds and the two fixture
+      # directories, which is the same starting point a developer gets.
+      - run: script/fuzz --time 60
+
   coverage:
     name: coverage (host crates)
     runs-on: ubuntu-24.04-arm
