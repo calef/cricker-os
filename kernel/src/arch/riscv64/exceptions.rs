@@ -120,8 +120,44 @@ unsafe extern "C" {
 /// stack, with the user address space installed.
 #[inline(always)]
 pub unsafe fn enter_user(frame: *mut TrapFrame) -> ! {
+    // **Refuse to enter U-mode with no entry point.** A thread dispatched with `sepc == 0` fetches
+    // its first instruction from address 0, takes an instruction page fault, and dies; whatever it
+    // was supposed to serve then never answers, so every thread waiting on it blocks and the run
+    // ends 60 s later in the lost-wakeup watchdog, arbitrarily far from the cause. CI has produced
+    // that hang in three different tests on three different CPU models (2026-08-02), and it has
+    // never reproduced locally, so this converts a rare hang into a loud failure carrying its own
+    // evidence rather than something to be re-run past.
+    //
+    // The comparison is a load and a branch on a frame this function already touches, so the hot
+    // path keeps the property the `#[inline(always)]` above exists for: no call, nothing pushed
+    // over the frame that sits at the top of this stack.
+    //
+    // SAFETY: the caller's contract says `frame` is a valid, writable `TrapFrame`.
+    let sepc = unsafe { (*frame).sepc };
+    if sepc == 0 {
+        // SAFETY: as above; read before the cold call below is allowed to use this stack.
+        let user_sp = unsafe { (*frame).x[2] };
+        entered_user_with_no_entry_point(user_sp);
+    }
+
     // SAFETY: the caller's contract; `user_return` never returns.
     unsafe { user_return(frame) }
+}
+
+/// The `sepc == 0` case, out of line so [`enter_user`] stays a tail jump.
+///
+/// Its arguments are read from the frame **before** it is called, because the frame lives at the top
+/// of this very stack and this call is entitled to overwrite it.
+#[cold]
+#[inline(never)]
+fn entered_user_with_no_entry_point(user_sp: u64) -> ! {
+    panic!(
+        "thread {} on core {} was dispatched to U-mode with sepc = 0 (user sp {:#018x}). \
+         Its context was never built, or was built and not seen by this core.",
+        crate::sched::current(),
+        crate::cpu::id(),
+        user_sp,
+    )
 }
 
 /// Diagnostic stub (the watchdog dump's EL0-PC column): the riscv trap frame is not at a fixed
