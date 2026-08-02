@@ -13,10 +13,10 @@
 //!
 //! ```text
 //!   blocks 0..DIR_BLOCKS   the superblock and directory
-//!     magic   "CRKR0001"   (8 bytes)
-//!     count   u32 LE       how many files
-//!     ...then `count` directory entries, each 32 bytes:
-//!       name        24 bytes, NUL-padded
+//!     magic   "CRKR0002"   (8 bytes)
+//!     count   u32 LE       how many files          <- HEADER_LEN = 12 bytes so far
+//!     ...then `count` directory entries, each ENTRY_LEN = 40 bytes:
+//!       name        NAME_LEN = 32 bytes, NUL-padded
 //!       start_block u32 LE  where the file's data begins (an absolute block number)
 //!       len         u32 LE  the file's length in bytes
 //!
@@ -25,51 +25,120 @@
 //!
 //! The directory is [`DIR_BLOCKS`] blocks, holding the magic, the count, and up to [`MAX_FILES`]
 //! entries. It grew from one block to two at milestone 24 (the interactive system plus its demo
-//! programs passed fifteen files), and to four on 2026-07-30 (three lanes landing together made 32). `start_block` is an absolute block number, so a reader never needs
-//! to know `DIR_BLOCKS` to find data; only the writer places it. That is why the magic did not need
-//! to change: a reader (the kernel loader, the EL0 blk driver) is oblivious to where data begins.
+//! programs passed fifteen files), to four on 2026-07-30 (three lanes landing together made 32), and
+//! to six on 2026-08-01 when the entries got wider. `start_block` is an absolute block number, so a
+//! reader never needs to know `DIR_BLOCKS` to find data; only the writer places it.
+//!
+//! # Names
+//!
+//! A name is at most [`NAME_LEN`] bytes and is **not** NUL-terminated when it uses all of them, so a
+//! reader compares against `NAME_LEN` bytes and stops at the first NUL if there is one.
+//! [`write_image`] refuses a longer name rather than truncating it; see BUGS.
+//!
+//! # EXAMPLES
+//!
+//! Pack two files and read one back:
+//!
+//! ```
+//! # use crickerfs::{Fs, image_size, write_image};
+//! let files: [(&str, &[u8]); 2] = [("motd", b"welcome\n"), ("os_primitives_benchmarker", b"\x7fELF")];
+//! let mut img = vec![0u8; image_size(&files)];
+//! write_image(&files, &mut img).unwrap();
+//!
+//! let fs = Fs::parse(&img).unwrap();
+//! assert_eq!(fs.read("motd"), Some(&b"welcome\n"[..]));
+//! assert_eq!(fs.len(), 2);
+//! ```
+//!
+//! # BUGS
+//!
+//! - **A name longer than [`NAME_LEN`] is an error, not a truncation.** It used to be silently
+//!   truncated, which is the worse failure: two long names that agree in their first `NAME_LEN`
+//!   bytes become one entry, and `init` loads whichever program happened to be packed first. The
+//!   build now stops with [`Error::NameTooLong`].
+//! - **[`MAX_FILES`] is a ceiling that grows with the SUITE, not with the system**, so the cost is
+//!   invisible to each branch that causes it and lands on whoever merges. Three lanes landing
+//!   together on 2026-07-30 pushed the archive from 31 files to 32 and forced a directory resize.
+//! - **A reader holding one block cannot see the whole directory.** The EL0 blk driver
+//!   (`crates/virtio`) buffers block 0 only, so it can find the first
+//!   [`ENTRIES_IN_FIRST_BLOCK`] files and no more. It is used on the tiny test disk, not the
+//!   initrd, but the limit is real and nothing in the format announces it.
+//! - **No directories, no writes, no permissions.** This is a boot archive. The read-write
+//!   filesystem is the RedoxFS server in `fs-server/` (DECISIONS §34), which is a different job.
 
 #![no_std]
 
 /// The block size, and the alignment of everything.
 pub const BLOCK: usize = 512;
 
-/// Superblock magic. Version in the last four bytes, so a format change is legible. Kept at `0001`
-/// across the milestone-24 two-block-directory change on purpose: `start_block` is absolute, so the
-/// change is invisible to a reader (the kernel loader, and the EL0 blk driver that checks this
-/// magic), and every image regenerates from this one crate. Bumping it would only have broken the
-/// blk driver's hardcoded check, for no reader-visible gain.
-pub const MAGIC: [u8; 8] = *b"CRKR0001";
+/// Superblock magic. Version in the last four bytes, so a format change is legible.
+///
+/// **Bumped `0001` to `0002` on 2026-08-01, when [`NAME_LEN`] went from 24 to 32.** The rule the
+/// milestone-24 change established is the one being followed here, not overturned: bump when a
+/// reader can tell. That change moved `DIR_BLOCKS` only, and `start_block` is absolute, so no
+/// reader could tell and bumping would have broken the blk driver's hardcoded check for nothing.
+/// A wider entry is the opposite case. A reader still striding 32 bytes finds a plausible name at
+/// the wrong offset and a start block cut out of the middle of one, and returns the wrong file
+/// instead of an error. The version byte exists to turn exactly that silence into
+/// [`Error::BadMagic`], and it is what makes a stale image left in `target/` fail loudly.
+pub const MAGIC: [u8; 8] = *b"CRKR0002";
 
 /// How many blocks the superblock-and-directory occupies. File data starts after it.
-pub const DIR_BLOCKS: usize = 4;
+pub const DIR_BLOCKS: usize = 6;
 
-const NAME_LEN: usize = 24;
-const ENTRY_LEN: usize = 32;
-/// The most files an archive can hold: the directory blocks, past the 12-byte header, in 32-byte
-/// entries. 63 at `DIR_BLOCKS = 4`.
+/// The magic plus the count, before the first entry.
+pub const HEADER_LEN: usize = 12;
+
+/// The longest archive name, in bytes. A name that uses all of them has no NUL terminator.
 ///
-/// **This is a ceiling that grows with the SUITE, not with the system**, which is the same shape as
-/// the kernel's old endpoint carve: every parallel branch fits on its own, and the union of their
-/// binaries is what crosses the line, so the cost is invisible to each branch that causes it and
-/// lands on whoever merges. It went 2 blocks (31 files) to 4 (63) on 2026-07-30, when three lanes
-/// landing together added `fs_file_caretaker`, `vterm` and `kbd` and made 32.
+/// **32 since 2026-08-01, up from 24** (milestone 63's prerequisite). The names in this system are
+/// decided by what a program *does* (CLAUDE.md's naming tenet), and 24 had started deciding them
+/// instead: `fs_subtree_caretaker` is 20 bytes and `sub_server_supervisor` is 21, so a fourth
+/// qualifier would not have fit on either, and `os_primitives_benchmarker` is 25 and did not fit at
+/// all. 32 clears the longest settled name by 7 bytes.
 ///
-/// **Doubled rather than quadrupled, deliberately.** [`Fs`] holds `entries` as a fixed array and is a
-/// stack local in the kernel's boot and spawn paths, so this constant is kernel stack: 63 entries is
-/// ~2 KB, 127 would be ~4 KB. The same day this was raised, the FS server was found to have died from
-/// being 528 bytes short of stack, which is a poor day to spend kilobytes for headroom nobody needs.
+/// **Not larger**, because the cost is per entry and the benefit is speculative: every extra 8 bytes
+/// of name is 8 bytes off every directory entry in every image, and no name anyone has argued for
+/// comes near 32. The next raise is as cheap as this one was (there is no data migration; every
+/// image regenerates from this crate), so buying headroom now buys nothing.
+pub const NAME_LEN: usize = 32;
+
+/// One directory entry: the name, then `start_block` and `len` as `u32`s.
+pub const ENTRY_LEN: usize = NAME_LEN + 8;
+
+/// How many entries fit **entirely inside block 0**, which is the bound for a reader that has only
+/// one block buffered. 12 at `NAME_LEN = 32`.
 ///
-/// **The real fix, when this next bites:** parse entries lazily out of the image instead of copying
-/// them into a fixed array. [`Fs`] already borrows the whole image so lookups can return slices into
-/// it, so the array is a convenience rather than a requirement, and removing it would retire both the
-/// limit and the stack cost at once.
-pub const MAX_FILES: usize = (DIR_BLOCKS * BLOCK - 12) / ENTRY_LEN;
+/// Entries are packed from [`HEADER_LEN`] with no per-block padding, so an entry may straddle a
+/// block boundary. That costs nothing to a reader holding the whole image (the kernel, the FS
+/// server, `xtask`), and it is the whole limit for one that does not: the EL0 blk driver reads
+/// block 0 into a 512-byte DMA buffer and walks the directory there. Without this bound it would
+/// read the entry after the last complete one out of whatever follows the buffer.
+pub const ENTRIES_IN_FIRST_BLOCK: usize = (BLOCK - HEADER_LEN) / ENTRY_LEN;
+
+/// The most files an archive can hold: the directory blocks, past the header, in whole entries.
+/// **76 at `DIR_BLOCKS = 6` and `ENTRY_LEN = 40`.**
+///
+/// **`DIR_BLOCKS` moved from 4 to 6 with the wider entry, on purpose.** Widening alone would have
+/// dropped the ceiling from 63 files to 50, and the riscv64 initrd holds **exactly 50 files today**,
+/// so the next program added to it would have failed the build. This ceiling is crossed by lanes
+/// that cannot see each other, which is how it was crossed last time. 6 blocks put it at 76 and cost
+/// 1 KB of image, once, in a multi-megabyte initrd.
+///
+/// **It costs no kernel stack, which is new.** It used to: [`Fs`] copied every entry into a fixed
+/// `[Entry; MAX_FILES]` and is a stack local on the boot and spawn paths, so 63 entries was ~2 KB of
+/// stack and raising the limit overflowed a 4-page kernel stack the day it was raised. That array is
+/// gone (see [`Fs`]), so the only price of a bigger directory now is image bytes.
+pub const MAX_FILES: usize = (DIR_BLOCKS * BLOCK - HEADER_LEN) / ENTRY_LEN;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
     BadMagic,
     TooManyFiles,
+    /// A name longer than [`NAME_LEN`] bytes. Refused rather than truncated: two names agreeing in
+    /// their first `NAME_LEN` bytes would otherwise become one entry, and the loader would fetch
+    /// whichever program was packed first. See the crate's BUGS section.
+    NameTooLong,
     /// A file's data runs past the end of the image.
     OutOfBounds,
     /// The image is smaller than the directory span (`DIR_BLOCKS` blocks).
@@ -98,10 +167,11 @@ impl Entry {
 
 /// A parsed superblock. Borrows the whole image so file lookups can return slices into it.
 ///
-/// **Holds no entry array, deliberately.** It used to copy every directory entry into a fixed
-/// `[Entry; MAX_FILES]`, which made [`MAX_FILES`] a charge against the *kernel stack*: `Fs` is a stack
-/// local in the boot and spawn paths, and raising the limit from 31 to 63 entries on 2026-07-30
-/// overflowed a 4-page kernel stack immediately, faulting on the guard page while parsing the initrd.
+/// **Holds no entry array, deliberately, and that is what made the 2026-08-01 raise cheap.** It used
+/// to copy every directory entry into a fixed `[Entry; MAX_FILES]`, which made [`MAX_FILES`] a charge
+/// against the *kernel stack*: `Fs` is a stack local in the boot and spawn paths, and raising the
+/// limit from 31 to 63 entries on 2026-07-30 overflowed a 4-page kernel stack immediately, faulting
+/// on the guard page while parsing the initrd.
 /// Entries are decoded from the borrowed image on demand instead, which costs a few instructions per
 /// lookup on a path that runs a handful of times per boot, and retires the stack cost and the ceiling
 /// together. The image is already borrowed for exactly this reason.
@@ -112,8 +182,9 @@ pub struct Fs<'a> {
 
 impl<'a> Fs<'a> {
     pub fn parse(image: &'a [u8]) -> Result<Self, Error> {
-        // The directory blocks must be present before any entry offset (up to 12 + MAX_FILES*32,
-        // which sits inside DIR_BLOCKS) is read; this guard is what makes those reads sound.
+        // The directory blocks must be present before any entry offset (up to HEADER_LEN +
+        // MAX_FILES*ENTRY_LEN, which sits inside DIR_BLOCKS) is read; this guard is what makes
+        // those reads sound.
         if image.len() < DIR_BLOCKS * BLOCK {
             return Err(Error::Truncated);
         }
@@ -154,7 +225,7 @@ impl<'a> Fs<'a> {
     /// Decode entry `i` out of the directory. Caller guarantees `i < count`, which every caller here
     /// does by construction; `parse` has already bounds-checked the directory span.
     fn entry_at(image: &[u8], i: usize) -> Entry {
-        let off = 12 + i * ENTRY_LEN;
+        let off = HEADER_LEN + i * ENTRY_LEN;
         let mut name = [0u8; NAME_LEN];
         name.copy_from_slice(&image[off..off + NAME_LEN]);
         Entry {
@@ -189,17 +260,24 @@ pub fn write_image(files: &[(&str, &[u8])], out: &mut [u8]) -> Result<usize, Err
     if files.len() > MAX_FILES {
         return Err(Error::TooManyFiles);
     }
+    // Every name is checked before a byte is written, so a rejected archive is not a half-written
+    // one. This used to truncate instead; see Error::NameTooLong for why that was the worse answer.
+    for (name, _) in files {
+        if name.len() > NAME_LEN {
+            return Err(Error::NameTooLong);
+        }
+    }
 
     for b in out.iter_mut() {
         *b = 0;
     }
     out[0..8].copy_from_slice(&MAGIC);
-    out[8..12].copy_from_slice(&(files.len() as u32).to_le_bytes());
+    out[8..HEADER_LEN].copy_from_slice(&(files.len() as u32).to_le_bytes());
 
     let mut block = DIR_BLOCKS as u32; // data starts after the superblock and directory
     for (i, (name, data)) in files.iter().enumerate() {
-        let off = 12 + i * ENTRY_LEN;
-        let n = name.len().min(NAME_LEN);
+        let off = HEADER_LEN + i * ENTRY_LEN;
+        let n = name.len(); // checked against NAME_LEN above
         out[off..off + n].copy_from_slice(&name.as_bytes()[..n]);
         out[off + NAME_LEN..off + NAME_LEN + 4].copy_from_slice(&block.to_le_bytes());
         out[off + NAME_LEN + 4..off + NAME_LEN + 8]
@@ -284,7 +362,7 @@ mod tests {
         img[0..8].copy_from_slice(&MAGIC);
         img[8..12].copy_from_slice(&1u32.to_le_bytes());
         // one entry, start_block 100 (way past the image)
-        let off = 12;
+        let off = HEADER_LEN;
         img[off + NAME_LEN..off + NAME_LEN + 4].copy_from_slice(&100u32.to_le_bytes());
         img[off + NAME_LEN + 4..off + NAME_LEN + 8].copy_from_slice(&1u32.to_le_bytes());
         assert_eq!(Fs::parse(&img).err(), Some(Error::OutOfBounds));
@@ -299,6 +377,48 @@ mod tests {
             write_image(&files, &mut img).err(),
             Some(Error::TooManyFiles)
         );
+    }
+
+    /// **The longest settled program name fits, and one byte more is refused.** The limit exists to
+    /// bound a name, and a name is what the reader will actually collide with, so the test names the
+    /// real one: `os_primitives_benchmarker` (25 bytes) is what forced the raise from 24.
+    #[test]
+    fn a_name_is_bounded_by_name_len_and_a_longer_one_is_refused() {
+        let data: &[u8] = b"y";
+        let longest = "os_primitives_benchmarker";
+        assert!(longest.len() <= NAME_LEN, "the name that forced the raise");
+
+        // A name using every byte has no NUL terminator, which is the case name_str must handle.
+        let full = "x".repeat(NAME_LEN);
+        let files: [(&str, &[u8]); 2] = [(longest, data), (full.as_str(), data)];
+        let mut img = vec![0u8; image_size(&files)];
+        write_image(&files, &mut img).unwrap();
+        let fs = Fs::parse(&img).unwrap();
+        assert_eq!(fs.read(longest), Some(data));
+        assert_eq!(fs.read(&full), Some(data));
+
+        // One byte over is an error, not a truncation: truncating would have merged two names.
+        let over = "x".repeat(NAME_LEN + 1);
+        let files: [(&str, &[u8]); 1] = [(over.as_str(), data)];
+        let mut img = vec![0u8; image_size(&files)];
+        assert_eq!(
+            write_image(&files, &mut img).err(),
+            Some(Error::NameTooLong)
+        );
+    }
+
+    /// **`MAX_FILES` costs no kernel stack, and this is what keeps it that way.** `Fs` is a stack
+    /// local on the kernel's boot and spawn paths; when it held a `[Entry; MAX_FILES]`, raising the
+    /// limit overflowed a 4-page kernel stack the same day. Reintroducing the array would make this
+    /// fail rather than making a boot fault on a guard page.
+    #[test]
+    fn fs_does_not_grow_with_max_files() {
+        assert_eq!(
+            core::mem::size_of::<Fs>(),
+            core::mem::size_of::<&[u8]>() + core::mem::size_of::<usize>(),
+            "Fs is a borrowed image and a count, nothing per-entry"
+        );
+        assert_eq!(core::mem::size_of::<Entry>(), ENTRY_LEN);
     }
 
     #[test]
@@ -341,7 +461,7 @@ mod tests {
             })
             .collect();
         assert!(
-            files.len() > (BLOCK - 12) / ENTRY_LEN,
+            files.len() > ENTRIES_IN_FIRST_BLOCK,
             "test must exceed one block"
         );
 
