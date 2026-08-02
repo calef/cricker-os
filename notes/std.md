@@ -374,7 +374,7 @@ initrd (the parity gate, DECISIONS §19). The fs transcript splices the file's o
 expected buffer from the shared fixture, so that one comparison covers the whole path: disk,
 DMA-confined block server, FS server running an engine we did not write, the file contract, the PAL,
 and the stdout endpoint. One binary also keeps the initrd inside its crickerfs directory limit
-(`crickerfs::MAX_FILES`, 31 entries).
+(`crickerfs::MAX_FILES`, 31 entries when this was written and 76 since 2026-08-01).
 `cargo xtask test` builds the demo for both targets first, so both initrds carry it; both test legs
 attach a virtio-net NIC (`CRICKER_NET`) with the guestfwd echo peer and the RedoxFS image as the
 second disk.

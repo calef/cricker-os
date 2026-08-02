@@ -299,10 +299,12 @@ It is also the same guard rail as "standard terms are already right", applied to
 vocabulary. We do not rename `elf`, and we should not respell `supply-chain` either: a name whose
 shape a reader already knows from outside costs them nothing.
 
-**One constraint to know:** `crickerfs` caps archive names at `NAME_LEN = 24` bytes. It can be raised,
-and there is no data migration because every image regenerates from that crate, but it costs
-directory entries per block and kernel stack (`Fs` holds entries as a fixed array on the boot and
-spawn paths). Do not let it pick a name; do not spend a format change on bytes nothing needs.
+**One constraint to know:** `crickerfs` caps archive names at `NAME_LEN = 32` bytes, raised from 24 on
+2026-08-01 so `os_primitives_benchmarker` would fit. It can be raised again, and there is no data
+migration because every image regenerates from that crate, but it costs directory entries per block.
+(The old warning that it also costs kernel stack was stale: `Fs` stopped holding entries as a fixed
+array when the FS-server stack bug was fixed. See notes/crickerfs.md.) Do not let it pick a name; do
+not spend a format change on bytes nothing needs.
 
 ## The syscall surface is a boundary, not a habit
 

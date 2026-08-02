@@ -47,13 +47,14 @@ proceed." Mismatch: stop now, it's the wrong kind of thing. It's called "magic" 
 means nothing on its own; it's just an agreed sentinel.
 
 ELF's is `7F 45 4C 46` (`␡ELF`), the first four bytes above. Ours are not the only ones in the
-tree: `crates/crickerfs` tags its superblock with `CRKR0001`. Both crates return `Error::BadMagic`
+tree: `crates/crickerfs` tags its superblock with `CRKR0002`. Both crates return `Error::BadMagic`
 when the check fails, and it is usually the *first* thing they check, because it is the cheapest
 guard there is: one comparison that turns "wrong format" from an unbounded disaster into an
 immediate, named refusal.
 
-We hit it for real at milestone 19f. The initrd became a crickerfs archive (first bytes `CRKR0001`),
-but the milestone tour and several tests still handed that blob to the *ELF* loader. The parser read
+We hit it for real at milestone 19f. The initrd became a crickerfs archive (first bytes `CRKR0001`
+then, since the 2026-08-01 name widening, `CRKR0002`), but the milestone tour and several tests
+still handed that blob to the *ELF* loader. The parser read
 `43 52 4B 52` (`CRKR`) where it wanted `7F 45 4C 46`, and refused: `LoadError::NotLoadable(BadMagic)`,
 followed by "the kernel is fine." The bug was upstream (feeding the wrong bytes); the magic check is
 what surfaced it cleanly instead of letting the loader read archive bytes as machine code and crash

@@ -595,6 +595,11 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [ELF](elf.md): the container the kernel ships in. Sections vs. segments, where the
   entry point lives, what QEMU actually does with `-kernel` (almost nothing), and what a
   magic number is (the `BadMagic` that caught the 19f archive fed to the ELF loader).
+- [crickerfs](crickerfs.md): the boot archive, and the 2026-08-01 change that widened its names
+  from 24 bytes to 32. What the wider entry cost (`MAX_FILES`, `DIR_BLOCKS`, and a kernel-stack
+  charge that turned out to have been retired already), why the magic bumped this time when it
+  did not last time, the three readers a format change has to reach, and the silent name
+  truncation found on the way.
 - [The boot protocol](boot-protocol.md): how QEMU decides whether you're a kernel or an
   anonymous blob, and the 64-byte arm64 Image header that is the entire difference. Why
   `text_offset` and the linker script must agree, and why the failure mode is silent.

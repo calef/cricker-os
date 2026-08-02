@@ -3367,8 +3367,9 @@ globbing is merely its only caller today. `subtree_` rather than `directory_`, b
 is the exact defect `dwarden` has and this rename exists to fix.
 
 **Two costs, recorded rather than discovered later.** `fs_subtree_caretaker` and
-`fs_nameset_caretaker` are 20 bytes against `crickerfs`'s 24-byte archive limit (`NAME_LEN`), so
-four bytes of headroom and a four-part name would not fit; that constraint is now load-bearing.
+`fs_nameset_caretaker` are 20 bytes against `crickerfs`'s archive limit (`NAME_LEN`), which was 24
+when this was written, so four bytes of headroom and a four-part name would not fit; that constraint
+was load-bearing and is what led to raising the limit to 32 on 2026-08-01 (notes/crickerfs.md).
 And `fs_file_caretaker` says filesystem twice, which is the price of the scheme being uniform.
 
 The rename also resolves an inconsistency already in the source: `dwarden.rs`'s header says
@@ -3671,6 +3672,15 @@ starts after 61 lands.**
   is gitignored while the other is tracked. Worth folding in.
 
 #### Raise `NAME_LEN` FIRST, because one rename now depends on it
+
+**DONE, 2026-08-01, ahead of the rename and on its own merits.** `NAME_LEN` is 32, `ENTRY_LEN` 40,
+`DIR_BLOCKS` 6, `MAX_FILES` 76 (up from 63), and the magic is `CRKR0002`. `os_primitives_benchmarker`
+fits with seven bytes to spare, so the rename below is unblocked. **One thing in the paragraphs below
+was wrong and is worth reading before trusting them:** the kernel-stack cost had already been
+retired, because `Fs` stopped holding a fixed entry array when the FS-server stack bug was fixed, so
+the raise was much cheaper than the trade described here. The measured numbers and the reasoning are
+in [notes/crickerfs.md](../notes/crickerfs.md). The paragraphs are kept as written because the
+decision to do this first, rather than under pressure from a name, is the part that generalises.
 
 `crickerfs` caps archive names at 24 bytes, and **three naming decisions have crowded it while a
 fourth exceeds it**: `fs_subtree_caretaker` at 20, `sub_server_supervisor` at 21, and
