@@ -789,7 +789,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
 
                 // Milestone 11: a process spends its own memory; the kernel allocates nothing.
                 if let Some(image) = user::program("init")
-                    && let Some((_region, report)) = user::untyped_service::start(image, 24)
+                    && let Some((_region, report, _demo)) = user::untyped_service::start(image, 24)
                 {
                     sched::ipc_recv(report); // the process signals it is loaded and ready
                     let before = memory::stats().unwrap().used;
