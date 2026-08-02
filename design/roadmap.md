@@ -130,6 +130,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 64 | NOT-STARTED | Enough `std` to run somebody else's crate | milestone 27 shipped the PAL; `fs` answers `Unsupported` in 32 of 54 functions and `thread` in 4 of 6. Measured against real crates.io dependencies rather than guessed at, because the gap that matters is the one a chosen crate actually hits |
 | 65 | NOT-STARTED | A secrets service: hold the key, expose the operation, never the key | NTLMv2 does not verify a presented secret, it **computes with a key**, so §54's verifier shape does not fit it. Generalises the credentialer into a software HSM. Blocks milestone 55 |
 | 66 | NOT-STARTED | Vaultwarden: somebody else's real application, running here | the north star for "runs real workloads". Names the gaps concretely rather than aspirationally: no TCP **listen or accept** in the socket contract, threads mostly stubs, most of `std::fs` unsupported, no async runtime, no TLS, and SQLite is a C library. Largest single item on this roadmap |
+| 67 | NOT-STARTED | `swish` the language: quoting, sequencing, and exit status | `swish` is an interactive shell without control flow. Quoting is the one that is a correctness gap rather than a convenience: **a filename with a space is currently unnameable** |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -4028,6 +4029,64 @@ capability model meets the server model for the first time.
 
 **Effort: not estimated, and deliberately not.** The first honest deliverable is the sequence, not a
 date.
+
+### 67. `swish` the language: quoting, sequencing, and exit status
+
+**Status: NOT-STARTED.** Raised 2026-08-02, from measuring `swish` against a minimal POSIX shell.
+
+#### Where `swish` actually stands
+
+It has `help`, `echo`, `caps` (the whole endowment, and a **preview** of what a command would grant),
+`cd`, `pwd`, `ls`, `mkdir`, `rm`, program spawn with a file grant, `worker`, `budgeter --mem N`,
+`date`, `wc`, **globbing**, **pipes**, and **redirection**. `ls | wc` and `ls > out.txt` run at a live
+prompt on both ISAs.
+
+**So it is an interactive shell without control flow.** The effort went into the
+capability-interesting parts, composition and grants and navigation, which was the right order. What
+is missing is the *scripting language*.
+
+#### What this milestone covers, and what already has one
+
+| Gap | Where it lives |
+|---|---|
+| **Quoting**: `"..."`, `'...'`, backslash | **here** |
+| **Sequencing**: `;`, `&&`, `\|\|` | **here** |
+| **Exit status**: `$?`, which `&&` needs | **here** |
+| `>>` and `2>` | **here** (named unbuilt in `notes/pipes.md`) |
+| Variables, assignment, `export` | milestone 47 (studied: "the same question wearing a string costume") |
+| Job control: `&`, `jobs`, `fg`, `bg`, `wait`, `kill` | milestone 48 |
+| Subshells, command substitution `$(...)` | milestone 52 |
+| Scripts, `if`/`while`/`for`/`case`, functions | **nowhere yet, and deliberately** |
+
+#### Quoting is the one that is not a convenience
+
+**A filename with a space is currently unnameable.** That is a correctness gap in a shell whose whole
+thesis is that *naming a resource is granting it*: a resource you cannot name is a resource you cannot
+grant, so the gap lands squarely on the thing this shell exists to demonstrate.
+
+It also interacts with globbing (§52's name sets) and with the grant planner: a quoted name must not
+be glob-expanded, and an unquoted one must be. That is a parser change with a capability consequence,
+which is why it belongs with the other two rather than being filed as polish.
+
+#### Exit status is a capability question in disguise
+
+`&&` needs to know whether the previous command succeeded. Programs already report through a result
+endpoint, so the mechanism exists; what does not exist is `$?` at the prompt, or a decision about
+**what a status means when the thing that failed was a refusal rather than an error**. `swish` refuses
+constantly and by design (`Refusal::TooManyNames`, "you hold no such capability"), and whether a
+refusal is a non-zero status or something else is a design fork, not an implementation detail.
+
+#### BUGS
+
+- **Scripting is not scoped here on purpose.** `if`/`while`/`for`/functions and reading a script file
+  are a much larger thing, and this project has no story yet for what a script *is* when a program
+  namespace is an endowment. Doing quoting and sequencing first is what makes that question
+  answerable rather than theoretical.
+- **The four gaps above are not independent.** `&&` needs exit status, and both want quoting to be
+  settled first, or the parser gets rewritten twice.
+
+**Effort: small to medium**, and mostly in `grant_plan`, which is host-testable, so most of it can be
+proven in milliseconds without an emulator.
 
 ### The backup-server ladder (53 to 55), and why it is the right deliverable
 
