@@ -551,6 +551,7 @@ name = "virtio"
 version = "0.1.0"
 dependencies = [
  "abi",
+ "crickerfs",
  "fs_proto",
  "user_rt",
 ]

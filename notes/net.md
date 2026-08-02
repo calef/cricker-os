@@ -220,8 +220,10 @@ note below).
   suits the `std::net` PAL's blocking calls; concurrent connections and listening sockets want either
   userspace threads (milestone 19c TCBs) or a select-like wait, the phase-two extension.
 - **One binary, one archive entry.** The client rides in the netstack binary (a nonzero entry role runs
-  it) rather than a separate binary, because the crickerfs archive directory holds at most 15 files
-  and the initrd was already near that ceiling. A subtlety worth recording: netstack reports its DHCP
+  it) rather than a separate binary, because the crickerfs archive directory held at most 15 files at
+  the time and the initrd was already near that ceiling. (The ceiling is `crickerfs::MAX_FILES`, 76
+  since 2026-08-01; see [crickerfs.md](crickerfs.md). The decision stands on its own merits, but the
+  pressure behind it is gone.) A subtlety worth recording: netstack reports its DHCP
   lease with a *blocking* `send`, so the spawn service drains that report before returning, or netstack
   never reaches its serve loop and the client's first request hangs. That was the one real bug in
   bring-up, caught by a watchdog hang.

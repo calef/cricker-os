@@ -183,7 +183,7 @@ pub fn run(dma_phys: u64) -> ! {
     for (i, b) in magic.iter_mut().enumerate() {
         *b = dma_read::<u8>(OFF_DATA + i as u64);
     }
-    assert!(&magic == b"CRKR0001");
+    assert!(magic == crickerfs::MAGIC);
 
     // Walk the directory (still in the block-0 buffer) to find the file named "motd", then read
     // its first data block. This is a **read from a read-only filesystem, off a real disk, by a
@@ -232,7 +232,7 @@ pub fn run_write(dma_phys: u64) -> ! {
     for (i, b) in magic.iter_mut().enumerate() {
         *b = dma_read::<u8>(OFF_DATA + i as u64);
     }
-    assert!(&magic == b"CRKR0001");
+    assert!(magic == crickerfs::MAGIC);
     let scratch = find_file(b"scratch").unwrap_or_else(|| report_code(0xE6)) as u64;
 
     // Write the pattern...
@@ -260,7 +260,7 @@ pub fn run_write(dma_phys: u64) -> ! {
     for (i, b) in magic.iter_mut().enumerate() {
         *b = dma_read::<u8>(OFF_DATA + i as u64);
     }
-    assert!(&magic == b"CRKR0001");
+    assert!(magic == crickerfs::MAGIC);
     assert!(find_file(b"motd").is_some());
 
     send(REPORT, u64::from_le_bytes(head), 0, 0);
@@ -287,7 +287,7 @@ pub fn run_write_abandon(dma_phys: u64) -> ! {
     for (i, b) in magic.iter_mut().enumerate() {
         *b = dma_read::<u8>(OFF_DATA + i as u64);
     }
-    assert!(&magic == b"CRKR0001");
+    assert!(magic == crickerfs::MAGIC);
     let scratch = find_file(b"scratch").unwrap_or_else(|| report_code(0xE6)) as u64;
 
     for i in 0..BLOCK {
@@ -376,11 +376,17 @@ pub fn run_attack_indirect(dma_phys: u64) -> ! {
 }
 
 /// Find a file in the crickerfs directory sitting in the block-0 buffer, returning its start
-/// block. The format: magic(8), count u32, then entries of { name\[24\], start_block u32, len u32 }.
+/// block. The format is `crickerfs`'s and the offsets come from that crate rather than being
+/// restated here: header (magic 8, count u32), then entries of
+/// { name\[NAME_LEN\], start_block u32, len u32 }.
+///
+/// **Only the entries inside block 0 are visible**, because block 0 is all this driver has
+/// buffered. That is `crickerfs::ENTRIES_IN_FIRST_BLOCK`, not the archive's whole `count`, and
+/// reading further would read past the DMA data buffer. The disk this walks holds three files.
 fn find_file(name: &[u8]) -> Option<u32> {
-    let count = dma_read::<u32>(OFF_DATA + 8);
-    for i in 0..count.min(15) as u64 {
-        let entry = OFF_DATA + 12 + i * 32;
+    let count = dma_read::<u32>(OFF_DATA + 8) as usize;
+    for i in 0..count.min(crickerfs::ENTRIES_IN_FIRST_BLOCK) as u64 {
+        let entry = OFF_DATA + crickerfs::HEADER_LEN as u64 + i * crickerfs::ENTRY_LEN as u64;
         let mut matches = true;
         for (j, &want) in name.iter().enumerate() {
             if dma_read::<u8>(entry + j as u64) != want {
@@ -388,9 +394,12 @@ fn find_file(name: &[u8]) -> Option<u32> {
                 break;
             }
         }
-        // The name must end here (next byte is the NUL padding), so "motd" does not match "motdx".
-        if matches && dma_read::<u8>(entry + name.len() as u64) == 0 {
-            return Some(dma_read::<u32>(entry + 24));
+        // The name must end here, so "motd" does not match "motdx": either the next byte is NUL
+        // padding, or the name used every byte of the field and there is no padding to check.
+        let ends =
+            name.len() == crickerfs::NAME_LEN || dma_read::<u8>(entry + name.len() as u64) == 0;
+        if matches && ends {
+            return Some(dma_read::<u32>(entry + crickerfs::NAME_LEN as u64));
         }
     }
     None
