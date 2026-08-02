@@ -3617,7 +3617,8 @@ out: a package directory is a Rust name, and everything else is a path.
 | `vnet` | **`net_transport`** | named for its **role**, not the device class, because naming it `virtio_net` would collide: `crates/virtio` also drives net. It is the adapter that presents smoltcp's `phy::Device` so frames can cross the virtqueue, which is a different job from the driver underneath. Same principle that made `display_terminal` beat `video_terminal` for the program: distinguish by what a thing does, not by what hardware it touches. |
 | `rootsup` | **`root_supervisor`** | 15 bytes. `sup` was the abbreviation, so `root_sup` would have relocated the problem rather than fixed it. |
 | `subsup` | **`sub_server_supervisor`** | 21 bytes. Exact where `sub_supervisor` is ambiguous: it supervises **a sub-server**, rather than being a supervisor beneath another one. "Sub-server" is established vocabulary, 44 occurrences across `DECISIONS.md`, `supervision_proto`, the kernel and the notes, so the name is built from a word a reader has already met. |
-| `allocdemo` | **`allocator_demo`** | `alloc_demo` was proposed and corrected by Chris: `alloc` is the crate it *uses*, the allocator is what it *proves*. It wires `user_rt::heap::UntypedHeap` and shows freed memory is reusable rather than leaked. |
+| `allocdemo` | **`allocator_exerciser`** | `alloc` is the crate it *uses*; the allocator is what it *proves*. It wires `user_rt::heap::UntypedHeap` and shows freed memory is reusable rather than leaked. **`exerciser`, not `demo`**: see below. |
+| `user-std/` + package `hellostd` | **`std_exerciser`** (directory and package) | the worst mismatch in the tree: directory and package disagreed and neither described the contents. It is "the std proof: an ordinary Rust program, no `no_std`, running on the native capability ABI", one binary whose three behaviours are chosen by the authority it was granted. Same milestone 27 as the allocator one, so they are siblings by construction and now read as the pair they are. |
 | `credential` | **`credentialer`** | an agent noun in the `broker`/`swapper`/`painter` family, and a **real profession**: a credentialer verifies licenses against records they hold and never hands the record back, which is this service exactly. I argued for the plain noun on the `clock`/`entropy` resource pattern and was wrong twice: `credentialer` is not a coinage, and **this service will never give you a credential**, so naming it for the resource implies the one thing it exists to refuse. |
 | `credcli` | **`credentialer_test_client`** | 24 bytes, exactly the current cap, comfortable once `NAME_LEN` moves. |
 | `fsclient` | **`fs_test_client`** | see the note below on why all three carry `test`. |
@@ -3697,6 +3698,30 @@ starts after 61 lands.**
 - **`target/` and `targets/` sit next to each other** and mean unrelated things: build output, and the
   custom target JSON specs (`aarch64-unknown-cricker.json`). Nothing enforces the distinction and one
   is gitignored while the other is tracked. Worth folding in.
+
+#### `exerciser`, not `demo` (Chris, 2026-08-01)
+
+**"Exercise" is this tree's own verb**, 130 uses across it, and these programs use it about
+themselves: "exercises the capability-shaped contract", "exercises the platform", "every line
+exercises a PAL surface". `demo` was never the word they reached for.
+
+It is also **real systems vocabulary** rather than a coinage: memory exercisers, bus exercisers and
+disk exercisers have meant "a program that puts a subsystem through its paces" for decades, which
+puts it in the guard-rail category of terms a reader already knows.
+
+And it is more precise. A demo *shows something off*; an exerciser *puts it under load and sees
+whether it holds*. `allocator_exerciser` does interleaved allocation and free in arbitrary order,
+drop-and-reuse, and a final large allocation that must fit in pages already committed, proving freed
+memory is genuinely reusable. Its own header calls that "the allocator **workload**".
+
+It is an agent noun, so it joins `broker`, `spawner`, `painter`, `credentialer` and `benchmarker`,
+which is where the noun rule points.
+
+**This category is distinct from the `_test_client` trio and the distinction is real.** A client
+exercises a **service contract from the outside**, with a server on the other end; that is what
+`client` means in those names. An exerciser demonstrates a capability of the system in itself, with
+no contract being probed from a client side. `std_test_program` was considered and rejected for
+importing the clients' vocabulary into the wrong family.
 
 #### Why the three clients carry `test` (Chris, 2026-08-01)
 
