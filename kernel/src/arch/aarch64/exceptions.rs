@@ -127,8 +127,45 @@ unsafe extern "C" {
 /// stack, with EL0's code and stack mapped and `TTBR0` installed.
 #[inline(always)]
 pub unsafe fn enter_user(frame: *mut TrapFrame) -> ! {
+    // **Refuse to enter EL0 with no entry point**, the twin of the riscv64 check (DECISIONS §19:
+    // a capability ships on every architecture or a scope note records the gap, and a diagnostic
+    // that exists on one ISA would report the bug only where it happens to be looked for).
+    //
+    // A thread entered with `elr == 0` fetches its first instruction from address 0 and dies, and
+    // whatever it served never answers, so the run ends in the lost-wakeup watchdog far from the
+    // cause. The paragraph above already records this shape on this ISA: a real call frame pushed
+    // over the trap frame was "observed as a child thread getting `sp_el0 = 0`". That was fixed by
+    // the `#[inline(always)]`; this catches the same corruption arriving by any other route.
+    //
+    // A load and a branch on a frame this function already touches, so nothing is pushed over the
+    // frame and the inlining property above is preserved.
+    //
+    // SAFETY: the caller owns the frame's validity, as documented.
+    let elr = unsafe { (*frame).elr };
+    if elr == 0 {
+        // SAFETY: as above; read before the cold call is allowed to use this stack.
+        let sp_el0 = unsafe { (*frame).sp_el0 };
+        entered_user_with_no_entry_point(sp_el0);
+    }
+
     // SAFETY: the caller owns the frame's validity, as documented.
     unsafe { enter_userspace(frame) }
+}
+
+/// The `elr == 0` case, out of line so [`enter_user`] stays a tail call.
+///
+/// Its argument is read from the frame **before** it is called, because the frame overlaps this very
+/// stack and this call is entitled to overwrite it, which is the corruption the check exists to name.
+#[cold]
+#[inline(never)]
+fn entered_user_with_no_entry_point(sp_el0: u64) -> ! {
+    panic!(
+        "thread {} on core {} was dispatched to EL0 with elr = 0 (sp_el0 {:#018x}). \
+         Its context was never built, or was built and not seen by this core.",
+        crate::sched::current(),
+        crate::cpu::id(),
+        sp_el0,
+    )
 }
 
 /// **Diagnostic: the EL0 PC of a thread from the TrapFrame at the top of its kernel stack.** A
