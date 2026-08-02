@@ -3585,6 +3585,8 @@ out: a package directory is a Rust name, and everything else is a path.
 |---|---|---|
 | `shell` | **`swish`** | the shell gets a proper name rather than a category. See the block below. |
 | `capsh` | **`grant_plan`** | it plans grants from a command line; `sysinit` executes them, and that boundary is real. Not named for `swish`, because **seven things use it** (`swish`, `sysinit`, `rm`, `heeder`, `hello`, `fs_nameset_caretaker`, `kernel/src/user.rs`), so naming it for one consumer repeats `dwarden`'s defect. `designation`, `designate` and `designator` were considered and rejected together: **the user designates by typing a name**, and this crate's job starts after that, so all three put it in a role it does not hold. Synonyms of grant (`endow`, `award`, `confer`, `bestow`, `allot`, `furnish`) were rejected because "grant" is already this tree's word and a synonym is a decoder ring; `endow` is additionally taken by `supervision_proto::Endow`. |
+| `rootsup` | **`root_supervisor`** | 15 bytes. `sup` was the abbreviation, so `root_sup` would have relocated the problem rather than fixed it. |
+| `subsup` | **`sub_server_supervisor`** | 21 bytes. Exact where `sub_supervisor` is ambiguous: it supervises **a sub-server**, rather than being a supervisor beneath another one. "Sub-server" is established vocabulary, 44 occurrences across `DECISIONS.md`, `supervision_proto`, the kernel and the notes, so the name is built from a word a reader has already met. |
 | `allocdemo` | **`allocator_demo`** | `alloc_demo` was proposed and corrected by Chris: `alloc` is the crate it *uses*, the allocator is what it *proves*. It wires `user_rt::heap::UntypedHeap` and shows freed memory is reusable rather than leaked. |
 | `credential` | **`credentialer`** | an agent noun in the `broker`/`swapper`/`painter` family, and a **real profession**: a credentialer verifies licenses against records they hold and never hands the record back, which is this service exactly. I argued for the plain noun on the `clock`/`entropy` resource pattern and was wrong twice: `credentialer` is not a coinage, and **this service will never give you a credential**, so naming it for the resource implies the one thing it exists to refuse. |
 | `credcli` | **`credentialer_client`** | named for whom it asks rather than what it presents, so the pair reads as a pair. |
@@ -3664,6 +3666,21 @@ starts after 61 lands.**
 - **`target/` and `targets/` sit next to each other** and mean unrelated things: build output, and the
   custom target JSON specs (`aarch64-unknown-cricker.json`). Nothing enforces the distinction and one
   is gitignored while the other is tracked. Worth folding in.
+
+#### Raise `NAME_LEN` in the same pass
+
+`crickerfs` caps archive names at 24 bytes, and **two naming decisions have now bumped against it**:
+`fs_subtree_caretaker` at 20 and `sub_server_supervisor` at 21. Three bytes of headroom is not a
+budget, it is a trap, and discovering it a third time as a build error during an unrelated change is
+the expensive way to find out.
+
+It is a real trade rather than a free win. `NAME_LEN` sits inside `ENTRY_LEN = 32`, so widening it
+costs directory entries per block (`MAX_FILES` is 63 at `DIR_BLOCKS = 4`) and it costs **kernel
+stack**, because `Fs` holds `entries` as a fixed array that is a stack local in the boot and spawn
+paths. The FS server was once found to have died 528 bytes short of stack, so this is not headroom to
+spend casually. There is no data migration, because every image regenerates from the crate.
+
+Do it here, with the numbers written down, rather than under pressure from a name that will not fit.
 
 **Effort: small**, and almost entirely mechanical, but it touches paths in `script/`, `xtask`,
 `deny.toml`, CI, and a long tail of notes.
