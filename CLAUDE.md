@@ -246,9 +246,14 @@ The exception is a **term of art that happens to be a verb**, where the word is 
 already uses. `bind` (§50) is Plan 9's, and respelling it as a noun would assert novelty where there
 is none. That is the paragraph above, not a hole in this one.
 
-Three crates predate this rule and are queued in milestone 63: `compose` (which calls itself "the
-compositor contract"), `measure` ("measured boot"), and `dma_validate`, which names itself a noun in
-its own first line, "the DMA-confinement **validator**".
+Three crates predated this rule and were settled by it on the day it was written: `compose` becomes
+`compositor`, `measure` becomes `measured_boot`, and `dma_validate` becomes `dma_validator`. Each had
+named itself a noun in its own first line while carrying a verb as its name.
+
+**A crate and a program may share a name, and it says something when they do**: the crate is that
+program's logic, lifted out so it can be host-tested and Kani-reachable while the program keeps the
+IO. `coremark`, `line_editor` and `compositor` are all this pair, and splitting the names would hide
+a relationship worth seeing.
 
 ### The convention: one rule per domain, and each domain's own
 
