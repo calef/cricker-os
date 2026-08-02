@@ -1109,12 +1109,12 @@ pub fn riscv_uart_driver_demo(
 }
 
 /// **Boot the interactive shell system on RISC-V** (parity D). The riscv counterpart of aarch64's
-/// `spawn_init` + `init_boot`: load `sysinit` (the portable system builder) as the boot process, map
+/// `spawn_init` + `init_boot`: load `system_initializer` (the portable system builder) as the boot process, map
 /// the whole initrd into it, and grant it three capabilities: a large untyped budget (slot 0), the
 /// NS16550's registers as a device cap (slot 1), and the UART receive interrupt as an `Irq` cap (slot
-/// 2). From those, `sysinit` builds the console server, the input driver, and the shell out of its
+/// 2). From those, `system_initializer` builds the console server, the input driver, and the shell out of its
 /// own budget and wires them together; the kernel touches none of it. Unlike the other demos this
-/// does not block: `sysinit` and its children run on the scheduler while the boot thread parks.
+/// does not block: `system_initializer` and its children run on the scheduler while the boot thread parks.
 #[cfg(target_arch = "riscv64")]
 #[cfg_attr(not(feature = "shell"), allow(dead_code))] // the `shell` boot mode is the only caller
 pub fn riscv_shell_boot(archive: &'static [u8], uart_irq: u32) -> Result<(), LoadError> {
@@ -1126,14 +1126,14 @@ pub fn riscv_shell_boot(archive: &'static [u8], uart_irq: u32) -> Result<(), Loa
 
     let fs = crickerfs::Fs::parse(archive).expect("initrd is not a crickerfs archive");
     let init_bytes = fs
-        .read("sysinit")
-        .expect("archive has no 'sysinit' program");
-    // Measured boot (milestone 22 phase B.1): `sysinit` is riscv's boot program, so it is in the
+        .read("system_initializer")
+        .expect("archive has no 'system_initializer' program");
+    // Measured boot (milestone 22 phase B.1): `system_initializer` is riscv's boot program, so it is in the
     // trust root under its own name and checked here, before its address space is built.
-    crate::trust::require("sysinit", init_bytes);
+    crate::trust::require("system_initializer", init_bytes);
     let elf = Elf::parse(init_bytes).map_err(LoadError::NotLoadable)?;
 
-    // sysinit's address space: its segments, a deep stack (it runs an ELF loader that builds three
+    // system_initializer's address space: its segments, a deep stack (it runs an ELF loader that builds three
     // children), and the whole archive mapped read-only so it can load them by name.
     let content: u64 = elf
         .segments()
@@ -1163,18 +1163,19 @@ pub fn riscv_shell_boot(archive: &'static [u8], uart_irq: u32) -> Result<(), Loa
             )
             .map_err(LoadError::Unmappable)?;
     }
-    let aspace_name = readopt_user_aspace(space).expect("register sysinit aspace");
+    let aspace_name = readopt_user_aspace(space).expect("register system_initializer aspace");
 
     // Route the UART receive interrupt to an endpoint; the input driver's Irq cap will WAIT on it.
     let irq_ep = crate::sched::create_endpoint();
     crate::sched::bind_irq(uart_irq, irq_ep);
-    let build_region = crate::untyped::create(2048).expect("no building budget for sysinit");
+    let build_region =
+        crate::untyped::create(2048).expect("no building budget for system_initializer");
 
     let tcb_region = crate::untyped::create(2).expect("no tcb region");
     let tid = crate::sched::create_tcb(tcb_region).expect("no tcb");
-    // slot 0: the delegable root budget (milestone 31), GRANT included so sysinit can split off a
+    // slot 0: the delegable root budget (milestone 31), GRANT included so system_initializer can split off a
     // budget for the shell and hand it on; rights only narrow downward. slot 1: the NS16550
-    // registers, WRITE|GRANT so sysinit maps them into the console and input drivers. slot 2: the
+    // registers, WRITE|GRANT so system_initializer maps them into the console and input drivers. slot 2: the
     // UART Irq, READ|GRANT so it can delegate it to input.
     let s0 = crate::sched::tcb_insert_cap(tid, crate::cap::untyped_root_cap(build_region), None)
         .expect("insert budget");
@@ -1512,14 +1513,14 @@ pub mod virtio_service {
     }
 
     /// The heap budget the net server (smoltcp) draws from, in pages: the socket set, per-frame
-    /// transmit buffers, and caches, plus the program's own page tables. netstack caps its heap at 128
+    /// transmit buffers, and caches, plus the program's own page tables. net_stack caps its heap at 128
     /// pages, so 192 leaves headroom without being unbounded.
     const NET_SERVER_BUDGET_PAGES: u64 = 192;
     /// smoltcp builds packets on the stack; one mapped stack page is not enough. Eight extra keeps
-    /// the poll loop clear (allocdemo needed three for `alloc` collections; smoltcp asks more).
+    /// the poll loop clear (allocator_exerciser needed three for `alloc` collections; smoltcp asks more).
     const NET_SERVER_STACK_PAGES: u64 = 8;
 
-    /// Start the **net server** (milestone 30, piece 3): the `netstack` binary, which runs smoltcp over
+    /// Start the **net server** (milestone 30, piece 3): the `net_stack` binary, which runs smoltcp over
     /// the confined NIC and does DHCP. Like [`wire`] it hands the confined `Virtio` capability, the
     /// interrupt, a DMA page, and a report endpoint; unlike it, the server also gets an **untyped
     /// budget** (slot 3) for the heap smoltcp allocates against, and extra stack pages. Returns the
@@ -1555,9 +1556,9 @@ pub mod virtio_service {
 
     /// [`wire`] for the net server: the same confined transport, interrupt, DMA page, and report
     /// endpoint, plus an untyped budget for the heap, extra stack pages, and a **`Stack` endpoint**
-    /// (slot 4) where clients' socket-contract requests arrive. `netstack` is its own binary (loaded by
+    /// (slot 4) where clients' socket-contract requests arrive. `net_stack` is its own binary (loaded by
     /// name), so no role selector is passed. Returns `(report endpoint, stack endpoint)`; a caller
-    /// that has no client (the phase-A DHCP tests) ignores the stack, and netstack simply blocks on it.
+    /// that has no client (the phase-A DHCP tests) ignores the stack, and net_stack simply blocks on it.
     fn wire_net_server(
         image: &'static [u8],
         transport: crate::virtio::Transport,
@@ -1583,7 +1584,7 @@ pub mod virtio_service {
         let stack = crate::sched::create_endpoint();
         let vid = crate::virtio::register(transport, dma, FRAME_SIZE, rid);
         let budget =
-            crate::untyped::create(NET_SERVER_BUDGET_PAGES).expect("no untyped for netstack");
+            crate::untyped::create(NET_SERVER_BUDGET_PAGES).expect("no untyped for net_stack");
 
         // The DMA mapping plus the extra stack pages, in one array the spawn closure owns.
         let mut maps = [Mapping {
@@ -1615,7 +1616,7 @@ pub mod virtio_service {
             run(
                 image,
                 Spawn {
-                    arg0: 0, // netstack is its own binary; no role selector
+                    arg0: 0, // net_stack is its own binary; no role selector
                     arg1: dma,
                     arg2: 0,
                     grants: &[
@@ -1639,9 +1640,9 @@ pub mod virtio_service {
     const NET_CLIENT_BUDGET_PAGES: u64 = 16;
 
     /// **Spawn the net server and a client of its socket contract** (milestone 30, piece 3 phase B).
-    /// Both are the `netstack` binary (`image`): the server is entry role 0, the client is a nonzero
+    /// Both are the `net_stack` binary (`image`): the server is entry role 0, the client is a nonzero
     /// role (the client rides in the same binary to keep the initrd under its 15-file directory
-    /// limit). They share a `Stack` endpoint: netstack holds `READ` (it serves), the client holds
+    /// limit). They share a `Stack` endpoint: net_stack holds `READ` (it serves), the client holds
     /// `WRITE` (it requests). The client also gets its own untyped (to mint and delegate the shared
     /// frame) and a report endpoint. `cli_arg` selects which exchange the client drives (UDP DNS or
     /// TCP echo). Returns the client's report endpoint, or `None` if no NIC is attached.
@@ -1662,7 +1663,7 @@ pub mod virtio_service {
             )
         };
 
-        let (netstack_report, stack) = wire_net_server(image, transport, intid, rid);
+        let (net_stack_report, stack) = wire_net_server(image, transport, intid, rid);
 
         // The client: WRITE on the shared stack endpoint, its own untyped, a report endpoint. Two
         // extra stack pages cover its DNS-query building and IPC; it links no heap.
@@ -1688,7 +1689,7 @@ pub mod virtio_service {
 
         crate::sched::spawn(move || {
             run(
-                image, // the netstack binary again; a nonzero entry role runs its client half
+                image, // the net_stack binary again; a nonzero entry role runs its client half
                 Spawn {
                     arg0: cli_arg,
                     arg1: 0,
@@ -1706,25 +1707,25 @@ pub mod virtio_service {
         })
         .expect("could not spawn the net client");
 
-        // netstack reports its DHCP lease with a blocking `send`; drain it here so netstack unblocks and
+        // net_stack reports its DHCP lease with a blocking `send`; drain it here so net_stack unblocks and
         // enters its serve loop (the client's first request blocks until it does). This also
         // confirms DHCP completed before the client's exchange runs. The client, spawned above,
         // waits at its first request meanwhile.
-        crate::sched::ipc_recv(netstack_report);
+        crate::sched::ipc_recv(net_stack_report);
 
         Some(cli_report)
     }
 
     /// The networked std client's heap budget and extra stack, both larger than the hand-written
     /// client's: it is a full std program (formatting, `Vec`, `String`), so it needs the same
-    /// generous heap and stack the `hellostd` demo does.
+    /// generous heap and stack the `std_exerciser` demo does.
     const STD_NET_HEAP_PAGES: u64 = 256;
     const STD_NET_STACK_PAGES: u64 = 32;
 
     /// **Spawn the net server and a `std::net` client** (milestone 27 phase two): the same
-    /// `hellostd` std binary, but now given the network, so its `UdpSocket::bind` probe succeeds
+    /// `std_exerciser` std binary, but now given the network, so its `UdpSocket::bind` probe succeeds
     /// and it drives a real UDP DNS query and a TCP echo round trip through `std::net`, whose PAL
-    /// binds to this same netstack socket contract. netstack is `netstack_image` (entry role 0, holding the
+    /// binds to this same net_stack socket contract. net_stack is `net_stack_image` (entry role 0, holding the
     /// NIC and `READ` on the `Stack` endpoint); `std_image` is the ordinary std ELF given the std
     /// slot convention (heap untyped at 0, stdout at 1) plus the two net slots (the `Stack`
     /// endpoint `WRITE` at 2, an untyped budget for its per-socket shared frames at 3). Over the
@@ -1732,14 +1733,15 @@ pub mod virtio_service {
     /// same binary spawned without slots 2 and 3 runs the offline transcript instead, which is what
     /// makes "no ambient network" visible: authority, not the code, decides. Returns the program's
     /// stdout endpoint for the test to reassemble, or `None` if no NIC is attached.
-    pub fn start_net_std(netstack_image: &'static [u8], std_image: &'static [u8]) -> Option<EpId> {
+    pub fn start_net_std(net_stack_image: &'static [u8], std_image: &'static [u8]) -> Option<EpId> {
         use crate::cap::untyped_cap;
 
         let dev = crate::virtio::find_net_device()?;
         let transport = crate::virtio::Transport::Mmio {
             mmio_phys: dev.mmio_phys,
         };
-        let (netstack_report, stack) = wire_net_server(netstack_image, transport, dev.intid, None);
+        let (net_stack_report, stack) =
+            wire_net_server(net_stack_image, transport, dev.intid, None);
 
         let report = crate::sched::create_endpoint();
         let heap =
@@ -1783,9 +1785,9 @@ pub mod virtio_service {
         })
         .expect("could not spawn the networked std program");
 
-        // Same discipline as start_net_stack: drain netstack's blocking DHCP report so it reaches its
+        // Same discipline as start_net_stack: drain net_stack's blocking DHCP report so it reaches its
         // serve loop before the std program's first request, and confirm DHCP completed.
-        crate::sched::ipc_recv(netstack_report);
+        crate::sched::ipc_recv(net_stack_report);
 
         Some(report)
     }
@@ -1974,7 +1976,7 @@ pub mod fs_service {
     const DMA_VA: u64 = 0x0000_0000_0090_0000; // block server DMA region, 2 pages (user/src/virtio.rs)
     const BLK_PAGE_FS: u64 = 0x5000_0000; // FS server's block page (fs_server.rs BLK_PAGE)
     const FILE_PAGE_FS: u64 = 0x5000_1000; // FS server's file page (fs_server.rs FILE_PAGE)
-    const FILE_VA_CLIENT: u64 = 0x0000_0000_0060_0000; // client's file page (fsclient.rs FILE_VA)
+    const FILE_VA_CLIENT: u64 = 0x0000_0000_0060_0000; // client's file page (fs_test_client.rs FILE_VA)
 
     /// A std program's half of the same agreement (notes/abi.md §4, notes/std.md). Both constants
     /// MUST match the std PAL's `sys/pal/cricker/rt.rs`: the slot it looks for the FS-service
@@ -2082,7 +2084,7 @@ pub mod fs_service {
     ///
     /// The block server owns the RedoxFS device: a second wiring would put a second driver on the
     /// same virtio slot and re-bind its interrupt, so the two client tests (the hand-written
-    /// `fsclient` and the std program) share one wired service instead. Whichever runs first pays
+    /// `fs_test_client` and the std program) share one wired service instead. Whichever runs first pays
     /// for the wiring and receives the two readiness endpoints; the other sees `None` for them,
     /// because a readiness sentinel is sent once and has already been taken. Plain atomics rather
     /// than a lock: the only writer is the boot/test thread that calls these functions.
@@ -2241,7 +2243,7 @@ pub mod fs_service {
         /// Milestone 37's crash injection, straight into the process's START arguments:
         /// `(which WRITE request to die in, block writes to allow first, bytes of the last one that
         /// reach the platter)`. All zero disables it, which is every FS server but the crash test's
-        /// first one. See `fs-server/src/bin/fs_server.rs`.
+        /// first one. See `fs_server/src/bin/fs_server.rs`.
         crash: (u64, u64, u64),
     }
 
@@ -2431,7 +2433,7 @@ pub mod fs_service {
     /// Spawn one client holding exactly a file-service endpoint, a report endpoint and its view of
     /// the shared page. Returns the report endpoint.
     ///
-    /// `extra_stack` is pages **below** the single one `run` maps. The hand-written `fsclient` roles
+    /// `extra_stack` is pages **below** the single one `run` maps. The hand-written `fs_test_client` roles
     /// need none: they hold a handle and a small buffer. The navigating shell (milestone 47's
     /// commands) needs some, and the number is a measurement rather than a guess: with none it
     /// overflowed by 192 bytes, which presented as a data abort on its own `sp` and then as the
@@ -2444,7 +2446,7 @@ pub mod fs_service {
     /// which can carry a whole `FileGrant`, and the shell now holds one endowment per pipeline
     /// stage; four extra pages overflowed by 48 bytes at the same `sp` and with the same symptom.
     /// Recorded because it will happen a third time: the shell's stack is sized by the largest value
-    /// `capsh` hands it, so a field added there is a page needed here.
+    /// `grant_plan` hands it, so a field added there is a page needed here.
     fn spawn_fs_client(
         client_image: &'static [u8],
         file_ep: EpId,
@@ -2491,7 +2493,7 @@ pub mod fs_service {
     }
 
     /// Wire the service (or reuse this boot's) and spawn the hand-written client
-    /// (`user/src/fsclient.rs`): the file-service endpoint, which IS its directory capability, the
+    /// (`user/src/fs_test_client.rs`): the file-service endpoint, which IS its directory capability, the
     /// report endpoint, and its view of the shared file page. It names nothing else in the system.
     ///
     /// Returns `(readiness, report)`: the two readiness endpoints if this call wired the service,
@@ -2865,7 +2867,7 @@ pub mod fs_service {
         pub dir: &'static str,
         /// The set, as `(name, is_dir)`: what the shell's expansion produced. At most
         /// `fs_proto::nameset::MAX_NAMES` of them, and an over-long set is a panic here because the
-        /// shell refuses it at the prompt (`capsh::Refusal::TooManyNames`), so one arriving means
+        /// shell refuses it at the prompt (`grant_plan::Refusal::TooManyNames`), so one arriving means
         /// the wiring built a grant no command line could have expressed.
         pub names: &'a [(&'a [u8], bool)],
         /// The [`fs_proto::dir`] rights the caretaker asks for on its descent.
@@ -3166,7 +3168,7 @@ fn term_print(out: u64, ep: crate::sched::EpId, text: &[u8]) {
     }
     // The bytes must be visible to the terminal before the request that names them.
     core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-    let w0 = lineedit::proto::req(lineedit::proto::OP_WRITE, text.len() as u64);
+    let w0 = line_editor::proto::req(line_editor::proto::OP_WRITE, text.len() as u64);
     let r = crate::sched::ipc_call(ep, [w0, 0]);
     assert_eq!(
         r[0],
@@ -3367,7 +3369,7 @@ pub mod display_service {
     }
 
     /// Where the display terminal maps the page an application writes text into. Must match
-    /// user/src/vterm.rs `OUT_VA`.
+    /// user/src/display_terminal.rs `OUT_VA`.
     const OUT_VA_TERM: u64 = 0x0000_0000_0068_0000;
 
     /// What the kernel keeps after wiring a display terminal onto the scanout.
@@ -3412,9 +3414,9 @@ pub mod display_service {
         // And the script's geometry is the scanout's, checked here rather than trusted, because the
         // script is what three independent parties predict the picture from.
         const _: () = assert!(
-            gfx_proto::WIDTH / bitfont::GLYPH_W == vt::script::COLS
-                && gfx_proto::HEIGHT / bitfont::GLYPH_H == vt::script::ROWS,
-            "vt::script's geometry and the scanout's have drifted apart",
+            gfx_proto::WIDTH / bitfont::GLYPH_W == video_terminal::script::COLS
+                && gfx_proto::HEIGHT / bitfont::GLYPH_H == video_terminal::script::ROWS,
+            "video_terminal::script's geometry and the scanout's have drifted apart",
         );
 
         let (driver_report, display_ep, surface) = wire_driver(driver_image, 0, 0)?;
@@ -3453,7 +3455,7 @@ pub mod display_service {
             run(
                 term_image,
                 Spawn {
-                    arg0: vt::status::MODE_DISPLAY,
+                    arg0: video_terminal::status::MODE_DISPLAY,
                     arg1: 0, // no physical address: a terminal has no business knowing one
                     arg2: 0,
                     grants: &[
@@ -3498,7 +3500,7 @@ pub mod display_service {
                 for (k, &b) in chunk.iter().enumerate() {
                     w1 |= (b as u64) << (8 * k);
                 }
-                let w0 = lineedit::proto::req(lineedit::proto::OP_BYTES, chunk.len() as u64);
+                let w0 = line_editor::proto::req(line_editor::proto::OP_BYTES, chunk.len() as u64);
                 assert_eq!(
                     crate::sched::ipc_call(self.term, [w0, w1])[0],
                     0,
@@ -3517,7 +3519,7 @@ pub mod display_service {
 
         /// **The scanout holds exactly the picture `expect` describes.** Compared pixel for pixel
         /// rather than by digest, so a failure names a coordinate.
-        pub fn assert_screen_is(&self, expect: &vt::Vt, what: &str) {
+        pub fn assert_screen_is(&self, expect: &video_terminal::Vt, what: &str) {
             for y in 0..gfx_proto::HEIGHT {
                 for x in 0..gfx_proto::WIDTH {
                     let (got, want) = (self.screen_pixel(x, y), expect.pixel(x, y));
@@ -3565,7 +3567,7 @@ pub mod compositor_service {
     use super::*;
     use crate::cap::{Rights, endpoint_cap};
     use crate::sched::EpId;
-    use compose::SCENE;
+    use compositor::SCENE;
 
     // The compositor's address space. Must match user/src/compositor.rs.
     const SCREEN_VA: u64 = 0x0000_0000_0080_0000;
@@ -3613,13 +3615,13 @@ pub mod compositor_service {
         /// The input ring page, shared with the input source and nobody else.
         pub ring: u64,
         /// Each client's frames: its control page, then its surface.
-        pub client: [u64; compose::MAX_WINDOWS],
+        pub client: [u64; compositor::MAX_WINDOWS],
         /// Each client's report endpoint. One per client, so the kernel knows who is speaking: the
         /// kernel is the spawner and may hold per-client channels, which is exactly the identity the
         /// compositor deliberately does not have.
-        pub client_report: [EpId; compose::MAX_WINDOWS],
+        pub client_report: [EpId; compositor::MAX_WINDOWS],
         /// Each focusable client's input endpoint (the compositor holds WRITE, the client READ).
-        pub input: [EpId; compose::MAX_WINDOWS],
+        pub input: [EpId; compositor::MAX_WINDOWS],
         pub n: usize,
         pub focusable: usize,
         image: &'static [u8],
@@ -3638,10 +3640,11 @@ pub mod compositor_service {
     /// [`Wiring::report`] before spawning clients, which is also the reason a client's first act is a
     /// content-free `HELLO`: either order works.
     pub fn start(n: usize, focusable: usize, display: EpId, screen: u64) -> Wiring {
-        assert!(n <= SCENE.len() && n <= compose::MAX_WINDOWS && focusable <= n);
+        assert!(n <= SCENE.len() && n <= compositor::MAX_WINDOWS && focusable <= n);
         let image = program("compositor").expect("no compositor program in the initrd archive");
         let client_image = program("window").expect("no window program in the initrd archive");
-        let term_image = program("vterm").expect("no vterm program in the initrd archive");
+        let term_image =
+            program("display_terminal").expect("no display_terminal program in the initrd archive");
 
         let wlist = zeroed_frame();
         let ring = zeroed_frame();
@@ -3652,7 +3655,7 @@ pub mod compositor_service {
         // neighbour attack real, because it puts a client's neighbour's pixels in the frame physically
         // after its own grant. A test that attacked a scattered allocation would prove only that it
         // could not find the neighbour.
-        let mut per_client = [0u64; compose::MAX_WINDOWS];
+        let mut per_client = [0u64; compositor::MAX_WINDOWS];
         let mut total = 0u64;
         for (i, win) in SCENE.iter().take(n).enumerate() {
             per_client[i] = 1 + win.frames() as u64; // a control page, then the surface
@@ -3671,9 +3674,9 @@ pub mod compositor_service {
             );
         }
 
-        let mut client = [0u64; compose::MAX_WINDOWS];
-        let mut client_report = [0; compose::MAX_WINDOWS];
-        let mut input = [0; compose::MAX_WINDOWS];
+        let mut client = [0u64; compositor::MAX_WINDOWS];
+        let mut client_report = [0; compositor::MAX_WINDOWS];
+        let mut input = [0; compositor::MAX_WINDOWS];
         let mut at = run_base;
         for i in 0..n {
             client[i] = at;
@@ -3856,7 +3859,7 @@ pub mod compositor_service {
         /// belongs to nobody in userspace.
         pub fn client_surface_digest(&self, i: usize) -> u64 {
             let base = mmu::phys_to_virt(self.client[i] + FRAME_SIZE);
-            compose::surface_checksum(SCENE[i].w, SCENE[i].h, |k| {
+            compositor::surface_checksum(SCENE[i].w, SCENE[i].h, |k| {
                 // SAFETY: inside the frames this kernel allocated for client `i`'s surface, reached
                 // through the direct map.
                 unsafe { core::ptr::read_volatile((base + (k * 4) as u64) as *const u32) }
@@ -3865,7 +3868,7 @@ pub mod compositor_service {
 
         /// The composed screen, read by the kernel through the direct map.
         pub fn screen_pixel(&self, x: u32, y: u32) -> u32 {
-            let at = mmu::phys_to_virt(self.screen) + (y * compose::SCREEN_W + x) as u64 * 4;
+            let at = mmu::phys_to_virt(self.screen) + (y * compositor::SCREEN_W + x) as u64 * 4;
             // SAFETY: inside the scanout frames, reached through the direct map.
             unsafe { core::ptr::read_volatile(at as *const u32) }
         }
@@ -3873,7 +3876,7 @@ pub mod compositor_service {
         /// Write `v` into the screen at `(x, y)`: the poison a damage test needs, so that "the
         /// compositor did not touch this" is an observation rather than an inference.
         pub fn poison_screen_pixel(&self, x: u32, y: u32, v: u32) {
-            let at = mmu::phys_to_virt(self.screen) + (y * compose::SCREEN_W + x) as u64 * 4;
+            let at = mmu::phys_to_virt(self.screen) + (y * compositor::SCREEN_W + x) as u64 * 4;
             // SAFETY: as above; the kernel owns these frames and no device is reading them in the
             // tests that poison (the display is a kernel stand-in there).
             unsafe { core::ptr::write_volatile(at as *mut u32, v) };
@@ -3882,7 +3885,7 @@ pub mod compositor_service {
         /// Which window the compositor says has focus, read out of the page it publishes. The
         /// compositor's decision, witnessed rather than asked for.
         pub fn focused(&self) -> u32 {
-            let at = mmu::phys_to_virt(self.wlist) + compose::proto::wlist::FOCUSED;
+            let at = mmu::phys_to_virt(self.wlist) + compositor::proto::wlist::FOCUSED;
             // SAFETY: inside the window-list frame this kernel allocated.
             unsafe { core::ptr::read_volatile(at as *const u32) }
         }
@@ -3896,8 +3899,8 @@ pub mod compositor_service {
             let base = mmu::phys_to_virt(self.ring);
             for &b in bytes {
                 let at = base
-                    + compose::proto::ring::BYTES
-                    + (self.ring_tail % compose::proto::ring::CAPACITY) as u64;
+                    + compositor::proto::ring::BYTES
+                    + (self.ring_tail % compositor::proto::ring::CAPACITY) as u64;
                 // SAFETY: inside the ring frame this kernel allocated and shares with the compositor.
                 unsafe { core::ptr::write_volatile(at as *mut u8, b) };
                 self.ring_tail = self.ring_tail.wrapping_add(1);
@@ -3907,11 +3910,11 @@ pub mod compositor_service {
             // SAFETY: inside the ring frame.
             unsafe {
                 core::ptr::write_volatile(
-                    (base + compose::proto::ring::TAIL) as *mut u32,
+                    (base + compositor::proto::ring::TAIL) as *mut u32,
                     self.ring_tail,
                 )
             };
-            let w0 = compose::proto::req(compose::proto::COMMIT, 0);
+            let w0 = compositor::proto::req(compositor::proto::COMMIT, 0);
             crate::sched::ipc_call(self.doorbell, [w0, 0]);
         }
 
@@ -3920,7 +3923,7 @@ pub mod compositor_service {
         /// The milestone tour uses it; the compositor tests all type something first.
         #[cfg_attr(test, allow(dead_code))]
         pub fn ring_doorbell(&self, op: u64) -> u64 {
-            crate::sched::ipc_call(self.doorbell, [compose::proto::req(op, 0), 0])[0]
+            crate::sched::ipc_call(self.doorbell, [compositor::proto::req(op, 0), 0])[0]
         }
 
         /// **Spawn a display terminal as window `i`** (milestone 29's text increment).
@@ -3937,7 +3940,7 @@ pub mod compositor_service {
         /// **Its input endpoint and its terminal endpoint are the same endpoint**, deliberately.
         /// This process has one wait point (DECISIONS §33), so an application printing and the
         /// compositor typing must arrive on one endpoint and be told apart by opcode, exactly as
-        /// `lineedit` does for the serial terminal. The compositor holds WRITE on it because window `i`
+        /// `line_editor` does for the serial terminal. The compositor holds WRITE on it because window `i`
         /// is focusable; the kernel holds it too, as the spawner.
         ///
         /// Returns the output page's physical address. `i` must be below `focusable`, or the
@@ -4001,7 +4004,7 @@ pub mod compositor_service {
                 run(
                     image,
                     Spawn {
-                        arg0: vt::status::MODE_WINDOW,
+                        arg0: video_terminal::status::MODE_WINDOW,
                         arg1: 0,
                         arg2: 0,
                         grants: &grants,
@@ -4018,7 +4021,7 @@ pub mod compositor_service {
         }
     }
 
-    // A display terminal's address space. Must match user/src/vterm.rs. Different numbers from a
+    // A display terminal's address space. Must match user/src/display_terminal.rs. Different numbers from a
     // `window` client's, because they are different programs; the kernel picks each binary's.
     const T_SURFACE_VA: u64 = 0x0000_0000_0060_0000;
     const T_OUT_VA: u64 = 0x0000_0000_0068_0000;
@@ -4040,12 +4043,12 @@ pub mod compositor_service {
 
     /// The most mappings a compositor can need: the screen, the list, the ring, and every client's
     /// control page and surface.
-    const MAX_COMP_MAPS: usize = SCREEN_FRAMES as usize + 2 + compose::MAX_WINDOWS * 4;
+    const MAX_COMP_MAPS: usize = SCREEN_FRAMES as usize + 2 + compositor::MAX_WINDOWS * 4;
     /// The most a client can need: its control page, its surface, and (capture only) the screen and
     /// the window list.
     const MAX_CLIENT_MAPS: usize = 4 + SCREEN_FRAMES as usize + 1;
     /// Report, display, doorbell, and one input endpoint per focusable client.
-    const MAX_COMP_GRANTS: usize = 3 + compose::MAX_WINDOWS;
+    const MAX_COMP_GRANTS: usize = 3 + compositor::MAX_WINDOWS;
 
     /// A fresh zeroed frame, for a page the kernel hands two processes to share.
     fn zeroed_frame() -> u64 {
@@ -4188,7 +4191,7 @@ pub mod keyboard_service {
         /// **Take what the driver has typed into the ring**, advancing the head the way a compositor
         /// does. Returns how many bytes landed in `out`.
         pub fn take_typed(&mut self, out: &mut [u8]) -> usize {
-            use compose::proto::ring;
+            use compositor::proto::ring;
             let base = mmu::phys_to_virt(self.ring);
             // SAFETY: inside the ring frame this kernel allocated and shares with the driver.
             let tail = unsafe { core::ptr::read_volatile((base + ring::TAIL) as *const u32) };
@@ -4217,8 +4220,8 @@ pub mod keyboard_service {
                 panic!("the keyboard driver rang without a reply capability");
             };
             assert_eq!(
-                compose::proto::op(m[0]),
-                compose::proto::COMMIT,
+                compositor::proto::op(m[0]),
+                compositor::proto::COMMIT,
                 "the keyboard driver rang with something other than COMMIT",
             );
             crate::sched::ipc_reply(caller, [0, 0]);
@@ -5192,10 +5195,10 @@ mod entropy_tests {
 ///
 /// | process | slot 0 | what that means |
 /// |---|---|---|
-/// | `credential` | the provision endpoint (READ) **and** the verify endpoint (READ, slot 1) | holds the store |
-/// | `credcli` provisioner | the **provision** endpoint (WRITE) | may write the store, until the seal |
-/// | `credcli` client | the **verify** endpoint (WRITE) | may ask a question about the store |
-/// | `credcli` attacker | the **verify** endpoint (WRITE) | the identical endowment, used otherwise |
+/// | `credentialer` | the provision endpoint (READ) **and** the verify endpoint (READ, slot 1) | holds the store |
+/// | `credentialer_test_client` provisioner | the **provision** endpoint (WRITE) | may write the store, until the seal |
+/// | `credentialer_test_client` client | the **verify** endpoint (WRITE) | may ask a question about the store |
+/// | `credentialer_test_client` attacker | the **verify** endpoint (WRITE) | the identical endowment, used otherwise |
 ///
 /// The kernel never sees a secret, holds no store, and computes no hash. It creates two endpoints,
 /// two frames, and a budget, and hands each process a different subset. Everything after the spawn
@@ -5213,7 +5216,7 @@ pub mod credential_service {
     use crate::cap::{Rights, endpoint_cap, untyped_cap};
     use crate::sched::EpId;
 
-    /// Where the service maps the provisioner's page. Must match user/src/credential.rs.
+    /// Where the service maps the provisioner's page. Must match user/src/credentialer.rs.
     const PROV_VA: u64 = 0x0000_0000_00e0_0000;
     /// Where the service and a client map the verify page. Must match both programs.
     const VERIFY_VA: u64 = 0x0000_0000_00e1_0000;
@@ -5235,7 +5238,7 @@ pub mod credential_service {
     /// are cheap next to the 4 MiB the scratch already costs.
     const CRED_STACK_PAGES: u64 = 16;
 
-    /// The clients' budgets. A `credcli` role holds no untyped at all: it maps one page the wiring
+    /// The clients' budgets. A `credentialer_test_client` role holds no untyped at all: it maps one page the wiring
     /// placed and calls one endpoint. There is nothing for it to build.
     ///
     /// This constant does not exist. The absence is the point, and it is written down because a
@@ -5243,12 +5246,12 @@ pub mod credential_service {
     /// conclude it was overlooked.
     const _NO_CLIENT_BUDGET: () = ();
 
-    /// The `credcli` roles; must match user/src/credcli.rs.
+    /// The `credentialer_test_client` roles; must match user/src/credentialer_test_client.rs.
     pub const ROLE_HONEST: u64 = 0;
     pub const ROLE_ATTACKER: u64 = 1;
     pub const ROLE_PROVISIONER: u64 = 2;
 
-    /// The report words `credcli` and the service send, likewise.
+    /// The report words `credentialer_test_client` and the service send, likewise.
     pub const RPT_DONE: u64 = 0x_c2ed_c11e_0000_0001;
     pub const RPT_READY: u64 = 0x_c2ed_0000_0000_0001;
 
@@ -5352,7 +5355,7 @@ pub mod credential_service {
         spawn_cli(image, role, w.verify, VERIFY_VA)
     }
 
-    /// The one spawn site the three `credcli` roles share, because the whole claim is that they
+    /// The one spawn site the three `credentialer_test_client` roles share, because the whole claim is that they
     /// differ in their endowment and not in their code. Changing `endpoint` and `va` here is the
     /// entire difference between a provisioner and an attacker.
     fn spawn_cli(image: &'static [u8], role: u64, endpoint: EpId, va: u64) -> [u64; 5] {
@@ -5439,8 +5442,8 @@ pub mod credential_service {
         VERIFY_VA
     }
 
-    /// Unpack the `k`th reply code from a `credcli` report's second word. One byte per code; see
-    /// user/src/credcli.rs `Codes`.
+    /// Unpack the `k`th reply code from a `credentialer_test_client` report's second word. One byte per code; see
+    /// user/src/credentialer_test_client.rs `Codes`.
     pub const fn nth(packed: u64, k: u32) -> u64 {
         (packed >> (8 * k)) & 0xff
     }
@@ -5501,8 +5504,10 @@ mod credential_tests {
                     "the entropy service did not come up, so no salt could be drawn",
                 );
             }
-            let svc = program("credential").expect("no credential program in the initrd archive");
-            let cli = program("credcli").expect("no credcli program in the initrd archive");
+            let svc =
+                program("credentialer").expect("no credentialer program in the initrd archive");
+            let cli = program("credentialer_test_client")
+                .expect("no credentialer_test_client program in the initrd archive");
             let w = cs::start(svc, e.request);
             let report = cs::provisioner(cli, &w);
             let ready = crate::sched::ipc_recv(w.ready);
@@ -5572,7 +5577,7 @@ mod credential_tests {
             ready[0],
             cs::RPT_READY,
             "the credential service did not reach phase two (it reported {:#x}; a 0xDEAD_.. word's \
-             low byte names the step, see user/src/credential.rs)",
+             low byte names the step, see user/src/credentialer.rs)",
             ready[0],
         );
         assert_eq!(
@@ -5596,7 +5601,8 @@ mod credential_tests {
     #[test_case]
     fn a_client_gets_a_correct_yes_or_no_and_nothing_else() {
         let (w, _, _) = provisioned();
-        let cli = program("credcli").expect("no credcli program in the initrd archive");
+        let cli = program("credentialer_test_client")
+            .expect("no credentialer_test_client program in the initrd archive");
         let r = cs::client(cli, &w, cs::ROLE_HONEST);
         assert_eq!(r[0], cs::RPT_DONE, "the client did not report");
         let codes = r[1];
@@ -5638,7 +5644,8 @@ mod credential_tests {
     #[test_case]
     fn the_same_endowment_cannot_write_the_store() {
         let (w, _, _) = provisioned();
-        let cli = program("credcli").expect("no credcli program in the initrd archive");
+        let cli = program("credentialer_test_client")
+            .expect("no credentialer_test_client program in the initrd archive");
         let r = cs::client(cli, &w, cs::ROLE_ATTACKER);
         assert_eq!(r[0], cs::RPT_DONE, "the attacker did not report");
         let codes = r[1];
@@ -5684,7 +5691,8 @@ mod credential_tests {
     #[test_case]
     fn the_service_survives_everything_the_attacker_did() {
         let (w, _, _) = provisioned();
-        let cli = program("credcli").expect("no credcli program in the initrd archive");
+        let cli = program("credentialer_test_client")
+            .expect("no credentialer_test_client program in the initrd archive");
         let _ = cs::client(cli, &w, cs::ROLE_ATTACKER);
         let r = cs::client(cli, &w, cs::ROLE_HONEST);
         assert_eq!(
@@ -5706,7 +5714,8 @@ mod credential_tests {
     #[test_case]
     fn the_shared_frame_holds_nothing_after_an_answer() {
         let (w, _, _) = provisioned();
-        let cli = program("credcli").expect("no credcli program in the initrd archive");
+        let cli = program("credentialer_test_client")
+            .expect("no credentialer_test_client program in the initrd archive");
         let _ = cs::client(cli, &w, cs::ROLE_HONEST);
 
         let mut page = [0u8; 4096];
@@ -5791,7 +5800,7 @@ pub mod ntp_service {
     /// Each role mints or maps exactly one shared frame and pays for its page tables. Small and
     /// fixed: neither role links a heap.
     const BUDGET_PAGES: u64 = 16;
-    /// Extra stack pages. The client builds a 48-byte packet and does IPC; the same three `netcli`
+    /// Extra stack pages. The client builds a 48-byte packet and does IPC; the same three `socket_test_client`
     /// and its relatives get is plenty and leaves no doubt.
     const STACK_PAGES: u64 = 3;
 
@@ -6410,7 +6419,7 @@ pub mod untyped_service {
     }
 }
 
-/// **The untyped-backed userspace heap** (milestone 27): spawn the `allocdemo` workload, the
+/// **The untyped-backed userspace heap** (milestone 27): spawn the `allocator_exerciser` workload, the
 /// first program that links `extern crate alloc`, with an untyped budget (slot 0) and a report
 /// endpoint (slot 1). The program wires `user_rt::heap` as its global allocator, churns
 /// `Vec`/`String`/`BTreeMap` with frees in arbitrary order, asserts every intermediate result
@@ -6434,7 +6443,8 @@ pub mod alloc_service {
     const EXTRA_STACK_PAGES: u64 = 3;
 
     pub fn start(image: &'static [u8]) -> EpId {
-        let budget = crate::untyped::create(BUDGET_PAGES).expect("no untyped for allocdemo");
+        let budget =
+            crate::untyped::create(BUDGET_PAGES).expect("no untyped for allocator_exerciser");
         let report = crate::sched::create_endpoint();
 
         let mut stack = [Mapping {
@@ -6444,7 +6454,7 @@ pub mod alloc_service {
         }; EXTRA_STACK_PAGES as usize];
         for (k, m) in stack.iter_mut().enumerate() {
             let phys = crate::memory::alloc()
-                .expect("no frame for allocdemo stack")
+                .expect("no frame for allocator_exerciser stack")
                 .addr();
             // SAFETY: fresh frame via the direct map; zero it so the new process starts clean.
             unsafe {
@@ -6469,7 +6479,7 @@ pub mod alloc_service {
                 },
             )
         })
-        .expect("could not spawn allocdemo");
+        .expect("could not spawn allocator_exerciser");
 
         report
     }
@@ -6486,12 +6496,13 @@ mod heap_tests {
     /// and stayed inside its own 64-page cap, i.e. growth is demand-driven, not budget-eating.
     #[test_case]
     fn a_process_runs_alloc_collections_on_its_own_untyped() {
-        let image = program("allocdemo").expect("no allocdemo program in the initrd archive");
+        let image = program("allocator_exerciser")
+            .expect("no allocator_exerciser program in the initrd archive");
         let report = alloc_service::start(image);
         let words = crate::sched::ipc_recv(report);
         assert_eq!(
             words[0], 0xA110_C0DE,
-            "allocdemo did not complete its heap workout",
+            "allocator_exerciser did not complete its heap workout",
         );
         let committed = words[1];
         assert!(committed > 0, "the heap never grew: nothing was allocated?");
@@ -6528,8 +6539,8 @@ mod compositor_tests {
     use super::*;
     use crate::arch::exceptions::USER_FAULTS;
     use crate::sched;
-    use compose::proto::wlist;
-    use compose::{Rect, SCENE, status};
+    use compositor::proto::wlist;
+    use compositor::{Rect, SCENE, status};
     use compositor_service::{
         ROLE_CAPTURE, ROLE_INPUT, ROLE_PROBE_INPUT, ROLE_PROBE_NEIGHBOUR, ROLE_PROBE_SCREEN,
         ROLE_SMALL_DAMAGE, ROLE_VICTIM, Wiring,
@@ -6659,7 +6670,7 @@ mod compositor_tests {
         );
         assert_eq!(
             digest,
-            compose::expected_window_checksum(i),
+            compositor::expected_window_checksum(i),
             "window {i} did not paint its own window's pattern into its own surface",
         );
         assert_eq!(
@@ -6668,14 +6679,14 @@ mod compositor_tests {
         );
     }
 
-    /// The whole screen equals the picture `compose` says `committed` windows produce. The kernel's own
+    /// The whole screen equals the picture `compositor` says `committed` windows produce. The kernel's own
     /// witness, computed from the contract and read through the direct map, so no process is grading its
     /// own homework.
     fn assert_screen_is(w: &Wiring, committed: usize) {
-        for y in 0..compose::SCREEN_H {
-            for x in 0..compose::SCREEN_W {
+        for y in 0..compositor::SCREEN_H {
+            for x in 0..compositor::SCREEN_W {
                 let got = w.screen_pixel(x, y);
-                let want = compose::expected_screen_pixel(committed, x, y);
+                let want = compositor::expected_screen_pixel(committed, x, y);
                 assert_eq!(
                     got, want,
                     "the composed screen is wrong at ({x},{y}): {got:#010x}, expected {want:#010x} \
@@ -6732,7 +6743,7 @@ mod compositor_tests {
             take_call(w.client_report[VICTIM], status::WIN_PAINTED);
         assert_eq!(
             reported,
-            compose::expected_window_checksum(VICTIM),
+            compositor::expected_window_checksum(VICTIM),
             "the victim did not paint its own window's pattern",
         );
         let before = w.client_surface_digest(VICTIM);
@@ -6844,7 +6855,7 @@ mod compositor_tests {
     /// under TCG would mean nothing); it observes **what was flushed** and **what was left alone**:
     ///
     /// - the kernel plays the display, so the flush rectangle is a value it can compare against
-    ///   `compose::damage_to_screen`, and the count of flushes says one commit produced one flush;
+    ///   `compositor::damage_to_screen`, and the count of flushes says one commit produced one flush;
     /// - between the two frames the kernel **poisons every screen pixel outside** the rectangle the
     ///   coming commit should produce. A compositor that repainted the screen would erase the poison.
     ///   Finding it intact afterwards is the proof, and it is the same technique the crate's host test
@@ -6868,7 +6879,7 @@ mod compositor_tests {
         );
         assert_eq!(
             LAST_FLUSH.load(Ordering::SeqCst),
-            gfx_proto::rect(0, 0, compose::SCREEN_W, compose::SCREEN_H),
+            gfx_proto::rect(0, 0, compositor::SCREEN_W, compositor::SCREEN_H),
             "the startup flush should be the whole screen",
         );
         assert_screen_is(&w, 0);
@@ -6878,19 +6889,19 @@ mod compositor_tests {
         w.spawn_client(0, ROLE_SMALL_DAMAGE);
         expect_painted(&w, 0);
         let (client0, slot0, d0) = take_call(w.client_report[0], status::WIN_PAINTED);
-        assert_eq!(d0, compose::expected_window_checksum(0));
+        assert_eq!(d0, compositor::expected_window_checksum(0));
         w.spawn_client(1, 0);
         expect_painted(&w, 1);
         assert_screen_is(&w, 2);
 
         // Poison everything the coming commit must not touch.
-        let want = compose::damage_to_screen(&SCENE[0], compose::SMALL_DAMAGE);
+        let want = compositor::damage_to_screen(&SCENE[0], compositor::SMALL_DAMAGE);
         assert!(
             !want.is_empty() && want.area() * 20 < Rect::screen().area(),
             "the damage rectangle under test is not small: {want:?}",
         );
-        for y in 0..compose::SCREEN_H {
-            for x in 0..compose::SCREEN_W {
+        for y in 0..compositor::SCREEN_H {
+            for x in 0..compositor::SCREEN_W {
                 if !want.contains(x as i32, y as i32) {
                     w.poison_screen_pixel(x, y, POISON);
                 }
@@ -6918,13 +6929,13 @@ mod compositor_tests {
             "the flush was not the client's damage placed on the screen",
         );
 
-        for y in 0..compose::SCREEN_H {
-            for x in 0..compose::SCREEN_W {
+        for y in 0..compositor::SCREEN_H {
+            for x in 0..compositor::SCREEN_W {
                 let got = w.screen_pixel(x, y);
                 if want.contains(x as i32, y as i32) {
                     assert_eq!(
                         got,
-                        compose::expected_screen_pixel(2, x, y),
+                        compositor::expected_screen_pixel(2, x, y),
                         "inside the damage, ({x},{y}) was not recomposited",
                     );
                 } else {
@@ -6981,7 +6992,7 @@ mod compositor_tests {
         assert_eq!(count, 1);
 
         // Focus moves, and we read the compositor's decision out of the page it publishes.
-        w.type_bytes(&[compose::proto::FOCUS_NEXT]);
+        w.type_bytes(&[compositor::proto::FOCUS_NEXT]);
         assert_eq!(
             w.focused(),
             1,
@@ -7029,7 +7040,7 @@ mod compositor_tests {
     /// # And the terminal is a client, unchanged at both seams
     ///
     /// `compositor` cannot tell a display terminal from the `window` client that paints a coordinate
-    /// pattern: same grants, same control page, same doorbell, same `COMMIT`. Neither `compose` nor
+    /// pattern: same grants, same control page, same doorbell, same `COMMIT`. Neither `compositor` nor
     /// `gfx_proto` needed a line changed to carry text. That is the seam claim made twice in one
     /// milestone, once at each rung.
     ///
@@ -7045,55 +7056,57 @@ mod compositor_tests {
 
         // Both terminals up. Each negotiated its geometry out of the control page the compositor
         // published, so a window whose size the client did not choose is the *normal* case here.
-        let mut terms = [vt::Vt::new(1, 1), vt::Vt::new(1, 1)];
+        let mut terms = [video_terminal::Vt::new(1, 1), video_terminal::Vt::new(1, 1)];
         let mut clients = [None, None];
         for i in 0..2 {
             let c = w.spawn_terminal(i);
             let [tag, dims, mode, ..] = sched::ipc_recv(w.client_report[i]);
             assert_eq!(
                 tag,
-                vt::status::TERM_UP,
+                video_terminal::status::TERM_UP,
                 "terminal {i} did not come up (it reported {tag:#x}; a 0xDEAD_.. word's low byte \
-                 names the step, see user/src/vterm.rs)",
+                 names the step, see user/src/display_terminal.rs)",
             );
-            assert_eq!(mode, vt::status::MODE_WINDOW);
+            assert_eq!(mode, video_terminal::status::MODE_WINDOW);
             let (cols, rows) = ((dims & 0xffff_ffff) as u32, (dims >> 32) as u32);
             assert_eq!(
                 (cols, rows),
                 (SCENE[i].w / bitfont::GLYPH_W, SCENE[i].h / bitfont::GLYPH_H),
                 "terminal {i} sized itself to a grid its window cannot hold",
             );
-            terms[i] = vt::script::window(i, cols, rows);
+            terms[i] = video_terminal::script::window(i, cols, rows);
             clients[i] = Some(c);
         }
 
         // Each terminal prints its own banner. Different text per window, so an OP_WRITE delivered
         // to the wrong terminal is a wrong picture rather than a duplicate one.
         for (i, c) in clients.iter().enumerate() {
-            c.as_ref().unwrap().print(vt::script::WINDOW_BANNER[i]);
+            c.as_ref()
+                .unwrap()
+                .print(video_terminal::script::WINDOW_BANNER[i]);
         }
 
         // Type at the focused terminal, move focus with TAB, type at the next one. `type_bytes`
         // writes the input ring and rings the doorbell, which is exactly what a keyboard driver
         // does; the authority it exercises is the ring mapping, and no client has one.
         assert_eq!(w.focused(), 0, "focus should start on the bottom window");
-        w.type_bytes(vt::script::WINDOW_TYPED[0]);
+        w.type_bytes(video_terminal::script::WINDOW_TYPED[0]);
         assert_eq!(w.focused(), 0, "typing must not move focus");
-        w.type_bytes(&[compose::proto::FOCUS_NEXT]);
+        w.type_bytes(&[compositor::proto::FOCUS_NEXT]);
         assert_eq!(
             w.focused(),
             1,
             "TAB did not move focus: the compositor's own policy decision, published in the window \
              list so it can be witnessed rather than asked for",
         );
-        w.type_bytes(vt::script::WINDOW_TYPED[1]);
+        w.type_bytes(video_terminal::script::WINDOW_TYPED[1]);
 
         // The picture. Every pixel of the composed screen, against the two engines the kernel ran
-        // itself: window content from `vt`, placement and stacking from `compose`.
-        for y in 0..compose::SCREEN_H {
-            for x in 0..compose::SCREEN_W {
+        // itself: window content from `video_terminal`, placement and stacking from `compositor`.
+        for y in 0..compositor::SCREEN_H {
+            for x in 0..compositor::SCREEN_W {
                 let got = w.screen_pixel(x, y);
-                let want = compose::expected_screen_pixel_with(2, x, y, |i, sx, sy| {
+                let want = compositor::expected_screen_pixel_with(2, x, y, |i, sx, sy| {
                     terms[i].pixel(sx, sy)
                 });
                 assert_eq!(
@@ -7108,15 +7121,16 @@ mod compositor_tests {
         // have to produce a different picture. Asserted rather than assumed, because if the two
         // scripts ever became the same text this test would keep passing while proving nothing.
         let swapped = [
-            vt::script::window(1, terms[0].cols(), terms[0].rows()),
-            vt::script::window(0, terms[1].cols(), terms[1].rows()),
+            video_terminal::script::window(1, terms[0].cols(), terms[0].rows()),
+            video_terminal::script::window(0, terms[1].cols(), terms[1].rows()),
         ];
         assert!(
-            (0..compose::SCREEN_H).any(|y| (0..compose::SCREEN_W).any(|x| {
-                compose::expected_screen_pixel_with(2, x, y, |i, sx, sy| swapped[i].pixel(sx, sy))
-                    != compose::expected_screen_pixel_with(2, x, y, |i, sx, sy| {
-                        terms[i].pixel(sx, sy)
-                    })
+            (0..compositor::SCREEN_H).any(|y| (0..compositor::SCREEN_W).any(|x| {
+                compositor::expected_screen_pixel_with(2, x, y, |i, sx, sy| {
+                    swapped[i].pixel(sx, sy)
+                }) != compositor::expected_screen_pixel_with(2, x, y, |i, sx, sy| {
+                    terms[i].pixel(sx, sy)
+                })
             })),
             "the two terminals show the same thing: this test cannot tell mis-routed input from \
              correct input",
@@ -7133,7 +7147,7 @@ mod compositor_tests {
     ///    Its one report is the compositor's *startup* frame, which is the background alone, so it is
     ///    also the check that an empty screen is a defined picture rather than whatever was in RAM;
     /// 2. **the kernel**, reading the scanout frames through the direct map and comparing every pixel
-    ///    against `compose::expected_screen_pixel`, a value it computed itself;
+    ///    against `compositor::expected_screen_pixel`, a value it computed itself;
     /// 3. **a capture client in its own address space**, which holds a read-only mapping of the screen
     ///    (that mapping being the screenshot capability) and digests what it sees;
     /// 4. **the host**, through QEMU's monitor, comparing `screendump`'s PPM against the same
@@ -7183,7 +7197,7 @@ mod compositor_tests {
         assert_eq!(pixels, gfx_proto::PIXELS as u64);
         assert_eq!(
             driver_digest,
-            compose::expected_screen_checksum(0),
+            compositor::expected_screen_checksum(0),
             "the frames the device read for the compositor's first flush are not the background: an \
              empty screen must be a defined picture",
         );
@@ -7207,7 +7221,7 @@ mod compositor_tests {
         );
         assert_eq!(
             shot,
-            compose::expected_screen_checksum(3),
+            compositor::expected_screen_checksum(3),
             "a client holding the screen's read-only mapping digested a different screen than the \
              kernel computed from the contract",
         );
@@ -7510,8 +7524,8 @@ mod display_tests {
     /// Text is the case where "it looked right" is most tempting and least sufficient, so the
     /// picture is a **value three parties compute independently**:
     ///
-    /// - the **terminal** runs the `vt` engine over the bytes it was sent and paints what it says;
-    /// - the **kernel** runs the same engine over the same script (`vt::script`) and compares the
+    /// - the **terminal** runs the `video_terminal` engine over the bytes it was sent and paints what it says;
+    /// - the **kernel** runs the same engine over the same script (`video_terminal::script`) and compares the
     ///   scanout frames pixel for pixel through the direct map. It never asks the terminal anything;
     /// - the **host** runs it again and compares QEMU's `screendump` against the same definition
     ///   (`cargo xtask`, beside this suite). That one is not optional: `-display none` means nothing
@@ -7519,14 +7533,14 @@ mod display_tests {
     ///   would satisfy the first two and show garbage on a screen.
     ///
     /// And the host checker has a **negative control**: it must reject the same screen with one
-    /// letter changed (`vt::script::GREETING_TYPO`). A checker that only asked "is there ink?" would
+    /// letter changed (`video_terminal::script::GREETING_TYPO`). A checker that only asked "is there ink?" would
     /// pass every run including the ones that drew the wrong thing.
     ///
     /// # What the script exercises, and why each part is there
     ///
     /// Four rows of text (a one-row picture would hide a stride error), three renditions (a terminal
     /// that ignored SGR would draw every glyph correctly and still fail), a `\r\n` pair (what
-    /// `lineedit::expand_output` puts on the wire for a Unix `\n`), descenders and an underscore (the
+    /// `line_editor::expand_output` puts on the wire for a Unix `\n`), descenders and an underscore (the
     /// glyph rows a font table truncated to seven would lose), and then **keystrokes**, delivered as
     /// `OP_BYTES`: the terminal contract's driver half, byte for byte what `user/src/input.rs` sends
     /// and what the compositor forwards to a focused client.
@@ -7544,9 +7558,10 @@ mod display_tests {
     #[test_case]
     fn a_bitmap_font_and_a_vt_engine_put_readable_text_on_the_scanout() {
         let display = program("display").expect("no display program in the initrd archive");
-        let vterm = program("vterm").expect("no vterm program in the initrd archive");
+        let display_terminal =
+            program("display_terminal").expect("no display_terminal program in the initrd archive");
 
-        let w = display_service::start_terminal(display, vterm).expect(
+        let w = display_service::start_terminal(display, display_terminal).expect(
             "no virtio-gpu-pci function on the bus: is CRICKER_GPU missing from the test leg, or \
              the -device virtio-gpu-pci line from the runner?",
         );
@@ -7565,20 +7580,21 @@ mod display_tests {
         let [tag, dims, mode, ..] = sched::ipc_recv(w.term_report);
         assert_eq!(
             tag,
-            vt::status::TERM_UP,
+            video_terminal::status::TERM_UP,
             "the display terminal did not come up (it reported {tag:#x}; a 0xDEAD_.. word's low \
-             byte names the step, see user/src/vterm.rs)",
+             byte names the step, see user/src/display_terminal.rs)",
         );
         assert_eq!(
             dims,
-            vt::script::COLS as u64 | ((vt::script::ROWS as u64) << 32),
+            video_terminal::script::COLS as u64 | ((video_terminal::script::ROWS as u64) << 32),
             "the terminal sized itself to a different grid than the script predicts",
         );
-        assert_eq!(mode, vt::status::MODE_DISPLAY);
+        assert_eq!(mode, video_terminal::status::MODE_DISPLAY);
 
         // The driver's account of the terminal's first flush: the blank grid. A second address
         // space's witness, taken after the device reported the transfer complete.
-        let blank = vt::Vt::new(vt::script::COLS, vt::script::ROWS);
+        let blank =
+            video_terminal::Vt::new(video_terminal::script::COLS, video_terminal::script::ROWS);
         let [tag, driver_digest, pixels, ..] = sched::ipc_recv(w.driver_report);
         assert_eq!(tag, gfx::status::FLUSHED, "the driver served no flush");
         assert_eq!(pixels, gfx::PIXELS as u64);
@@ -7598,20 +7614,21 @@ mod display_tests {
 
         // Play the application, then the input driver. Both replies mean the pixels are on the
         // device's side, so there is nothing to poll and nothing to sleep for.
-        w.print(vt::script::GREETING);
-        w.type_bytes(vt::script::TYPED);
+        w.print(video_terminal::script::GREETING);
+        w.type_bytes(video_terminal::script::TYPED);
 
         // The kernel's own witness: every pixel, against the engine it ran itself.
-        let expect = vt::script::full_screen();
+        let expect = video_terminal::script::full_screen();
         w.assert_screen_is(&expect, "after the greeting and the typing");
 
         // A wrong screen must not pass this. The typo picture differs from the real one in one
         // letter, so asserting they differ at all is what says the comparison above has teeth: if
         // `assert_screen_is` were somehow vacuous, this would still be true, which is why the check
         // is that the two *pictures* differ rather than that the screen is not the typo.
-        let mut typo = vt::Vt::new(vt::script::COLS, vt::script::ROWS);
-        typo.feed(vt::script::GREETING_TYPO);
-        typo.feed(vt::script::TYPED);
+        let mut typo =
+            video_terminal::Vt::new(video_terminal::script::COLS, video_terminal::script::ROWS);
+        typo.feed(video_terminal::script::GREETING_TYPO);
+        typo.feed(video_terminal::script::TYPED);
         assert!(
             (0..gfx::HEIGHT)
                 .any(|y| (0..gfx::WIDTH).any(|x| typo.pixel(x, y) != expect.pixel(x, y))),
@@ -7640,7 +7657,7 @@ mod display_tests {
     /// Nothing in the guest can press a key: that is the point of a device test. So the **host**
     /// does it, over the same QEMU monitor connection the scanout check already holds open.
     /// `cargo xtask` sends `sendkey` beside this suite, exactly as it dumps the scanout beside it,
-    /// and `vt::script::HOST_KEY` is the one definition of which key so the pressing side and the
+    /// and `video_terminal::script::HOST_KEY` is the one definition of which key so the pressing side and the
     /// asserting side cannot drift. The keys go out from the start of the run and QEMU drops them
     /// until a driver sets `DRIVER_OK`, so there is nothing to synchronize.
     ///
@@ -7649,7 +7666,7 @@ mod display_tests {
     /// The path from **a physical key event to a terminal byte**: the device is enumerated and
     /// checked (`DeviceID` is virtio-input, not whatever the transport felt like saying), the event
     /// queue is programmed through the confined transport with every buffer device-**writable**,
-    /// an event arrives by interrupt, `vt::keymap` turns an evdev code into a character, and the
+    /// an event arrives by interrupt, `video_terminal::keymap` turns an evdev code into a character, and the
     /// byte lands in the input ring.
     ///
     /// The rest of the path (ring to focused client to pixels) is
@@ -7681,7 +7698,7 @@ mod display_tests {
         let [tag, buffers, ..] = sched::ipc_recv(w.report);
         assert_eq!(
             tag,
-            vt::status::KBD_UP,
+            video_terminal::status::KBD_UP,
             "the keyboard driver did not come up (it reported {tag:#x}; a 0xDEAD_.. word's low byte \
              names the step, see user/src/kbd.rs)",
         );
@@ -7704,7 +7721,7 @@ mod display_tests {
             "the keyboard driver came up but never typed anything in ten seconds: the host's \
              `sendkey {}` is not reaching the device (is the monitor socket attached? see \
              cargo xtask's scanout check, which owns that connection)",
-            vt::script::HOST_KEY,
+            video_terminal::script::HOST_KEY,
         );
         w.answer_doorbell();
 
@@ -7714,11 +7731,11 @@ mod display_tests {
         for (i, &b) in typed[..n].iter().enumerate() {
             assert_eq!(
                 b,
-                vt::script::HOST_KEY_BYTE,
+                video_terminal::script::HOST_KEY_BYTE,
                 "byte {i} of {n} from the keyboard is {:?}, not the {:?} the host pressed: the \
                  evdev keycode was mapped wrong, or a key release was counted as a press",
                 b as char,
-                vt::script::HOST_KEY_BYTE as char,
+                video_terminal::script::HOST_KEY_BYTE as char,
             );
         }
         // A release must not type. The host sends press *and* release for each `sendkey`, so a
@@ -7733,9 +7750,9 @@ mod display_tests {
     }
 }
 
-/// **Rust `std` on the native ABI** (milestone 27): spawn the `hellostd` demo, an ordinary Rust
+/// **Rust `std` on the native ABI** (milestone 27): spawn the `std_exerciser` demo, an ordinary Rust
 /// program (no `no_std`, no attributes) built for the `*-unknown-cricker` custom target with std's
-/// PAL implemented directly over the capability ABI. It gets the same two grants as `allocdemo`,
+/// PAL implemented directly over the capability ABI. It gets the same two grants as `allocator_exerciser`,
 /// an untyped budget (slot 0, which the std `GlobalAlloc` draws the heap from) and an endpoint
 /// (slot 1, which `println!` SENDs to). Its stdout is a fixed, deterministic transcript the test
 /// reassembles from the endpoint and checks byte for byte. Portable: the aarch64 ELF runs on
@@ -7795,7 +7812,7 @@ pub mod std_service {
         entropy_image: &'static [u8],
         report: EpId,
     ) {
-        let budget = crate::untyped::create(BUDGET_PAGES).expect("no untyped for hellostd");
+        let budget = crate::untyped::create(BUDGET_PAGES).expect("no untyped for std_exerciser");
 
         // The entropy service, wired once per boot and shared with the milestone-56 tests. Its
         // request endpoint is the whole of a std program's randomness authority: `SystemRng` is a
@@ -7832,7 +7849,7 @@ pub mod std_service {
         };
         for (k, m) in maps[1..].iter_mut().enumerate() {
             let phys = crate::memory::alloc()
-                .expect("no frame for hellostd stack")
+                .expect("no frame for std_exerciser stack")
                 .addr();
             // SAFETY: fresh frame via the direct map; zero it so the new process starts clean.
             unsafe {
@@ -7865,7 +7882,7 @@ pub mod std_service {
                 },
             )
         })
-        .expect("could not spawn hellostd");
+        .expect("could not spawn std_exerciser");
     }
 }
 
@@ -8066,7 +8083,7 @@ mod std_tests {
         fs_service::wait_for_service(readiness);
     }
 
-    /// Build the exact bytes `hellostd` prints when it is granted a directory capability, into
+    /// Build the exact bytes `std_exerciser` prints when it is granted a directory capability, into
     /// `buf`; returns the length. Not a `const` because the motd's contents are spliced in from the
     /// shared fixture, and that is the load-bearing part: those bytes came off the RedoxFS image,
     /// through the FS server, through `std::fs`, and out the stdout endpoint.
@@ -8097,7 +8114,7 @@ mod std_tests {
         n
     }
 
-    /// The exact bytes `hellostd` prints, in order. `println!` is line-buffered and every line
+    /// The exact bytes `std_exerciser` prints, in order. `println!` is line-buffered and every line
     /// ends in `\n`, so the whole transcript is flushed by the time the program exits. Pinned here
     /// so a drift in std's behaviour, the PAL, or the demo is a loud diff rather than a mystery.
     /// `os cricker` proves `std::env::consts::OS` resolves through the patched `env_consts`; the
@@ -8131,11 +8148,12 @@ mod std_tests {
     /// checked it did not crash.
     #[test_case]
     fn a_whole_std_program_runs_on_the_native_abi() {
-        let image = program("hellostd").expect("no hellostd program in the initrd archive");
+        let image =
+            program("std_exerciser").expect("no std_exerciser program in the initrd archive");
         let clock = program("clock").expect("no clock program in the initrd archive");
         let entropy = program("entropy").expect("no entropy program in the initrd archive");
         let report = std_service::start(image, clock, entropy);
-        assert_std_transcript(report, EXPECTED, "hellostd");
+        assert_std_transcript(report, EXPECTED, "std_exerciser");
     }
 }
 
@@ -8583,16 +8601,16 @@ mod tests {
         program("worker").expect("no worker program in the initrd archive")
     }
 
-    /// The `netstack` program's ELF bytes (milestone 30, piece 3): the smoltcp net server, a distinct
+    /// The `net_stack` program's ELF bytes (milestone 30, piece 3): the smoltcp net server, a distinct
     /// binary loaded by name. Used only by the net tests, whose RISC-V twins live in
     /// `riscv_virtio_tests`.
     #[cfg(target_arch = "aarch64")]
-    fn netstack_image() -> &'static [u8] {
-        program("netstack").expect("no netstack program in the initrd archive")
+    fn net_stack_image() -> &'static [u8] {
+        program("net_stack").expect("no net_stack program in the initrd archive")
     }
 
-    /// The net client's test selectors and its success word, matching user/src/netcli.rs. The
-    /// client is a nonzero entry role of the `netstack` binary, so it needs no image of its own.
+    /// The net client's test selectors and its success word, matching user/src/socket_test_client.rs. The
+    /// client is a nonzero entry role of the `net_stack` binary, so it needs no image of its own.
     #[cfg(target_arch = "aarch64")]
     const NET_TEST_UDP_DNS: u64 = 1;
     #[cfg(target_arch = "aarch64")]
@@ -9188,7 +9206,7 @@ mod tests {
     /// driver blocks waiting for that interrupt with nothing else to run, and the scheduler idles
     /// rather than declaring a deadlock.
     // RISC-V twin: `riscv_virtio_tests::a_userspace_driver_reads_a_file_from_a_virtio_disk`. Gated here rather than run twice: that
-    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // module drives the same property through the dedicated `blk`/`net_stack` binaries, and a
     // second copy through hello's roles would double the suite's slowest tests to prove
     // nothing new. See this module's comment on the two kinds of gate.
     #[cfg(target_arch = "aarch64")]
@@ -9236,7 +9254,7 @@ mod tests {
     /// std, including the refusal of `..`, of an absolute path, and of a nested path. And the same
     /// binary run without slot 4 gets `Unsupported`, which the offline std test asserts.
     // RISC-V twin: `riscv_virtio_tests::std_fs_reads_a_file_through_a_granted_directory_capability`. Gated here rather than run twice: that
-    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // module drives the same property through the dedicated `blk`/`net_stack` binaries, and a
     // second copy through hello's roles would double the suite's slowest tests to prove
     // nothing new. See this module's comment on the two kinds of gate.
     #[cfg(target_arch = "aarch64")]
@@ -9245,7 +9263,7 @@ mod tests {
         let (readiness, report) = match fs_service::start_std(
             init_image(),
             program("fs_server").expect("no fs_server program in the initrd archive"),
-            hellostd_image(),
+            std_exerciser_image(),
         ) {
             Some(r) => r,
             None => {
@@ -9268,7 +9286,7 @@ mod tests {
     /// success here is the whole capability contract holding: designation is authorization, the
     /// handle is a server-minted token, and a real CoW filesystem we did not write runs confined.
     // RISC-V twin: `riscv_virtio_tests::the_fs_server_serves_redoxfs_over_a_capability_contract`. Gated here rather than run twice: that
-    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // module drives the same property through the dedicated `blk`/`net_stack` binaries, and a
     // second copy through hello's roles would double the suite's slowest tests to prove
     // nothing new. See this module's comment on the two kinds of gate.
     #[cfg(target_arch = "aarch64")]
@@ -9277,7 +9295,7 @@ mod tests {
         let (readiness, report) = match fs_service::start(
             init_image(),
             program("fs_server").expect("no fs_server program in the initrd archive"),
-            program("fsclient").expect("no fsclient program in the initrd archive"),
+            program("fs_test_client").expect("no fs_test_client program in the initrd archive"),
             0, // the end-to-end proof role, not the benchmark loop
         ) {
             Some(r) => r,
@@ -9314,7 +9332,7 @@ mod tests {
     /// `run wc report.txt` must hand over one file, not the directory it lives in. This wires
     /// exactly that: an `fs_file_caretaker` holding the directory capability, a confined program
     /// holding only the caretaker's endpoint, and a grant of `motd`, read-only. The program is the
-    /// attacker role of `fsclient`, and it spends its life trying to make that sentence false.
+    /// attacker role of `fs_test_client`, and it spends its life trying to make that sentence false.
     ///
     /// **What makes it a witness and not a formality.** Every attempt is against something that
     /// really exists and that the process one hop up the chain can really reach: `scratch` is on
@@ -9324,7 +9342,7 @@ mod tests {
     /// refused *everything* would pass it; that is what the writable twin below is for, and why the
     /// verdict is a bitmap rather than a boolean.
     // RISC-V twin: `riscv_virtio_tests::a_read_only_per_file_grant_survives_an_attacker`. Gated here rather than run twice: that
-    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // module drives the same property through the dedicated `blk`/`net_stack` binaries, and a
     // second copy through hello's roles would double the suite's slowest tests to prove
     // nothing new. See this module's comment on the two kinds of gate.
     #[cfg(target_arch = "aarch64")]
@@ -9385,7 +9403,7 @@ mod tests {
     ///   same code, succeed. A confinement test with no witness that the thing being confined
     ///   *works* is a test that passes when the feature is missing entirely.
     // RISC-V twin: `riscv_virtio_tests::a_writable_per_file_grant_writes_that_file_and_still_only_that_file`. Gated here rather than run twice: that
-    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // module drives the same property through the dedicated `blk`/`net_stack` binaries, and a
     // second copy through hello's roles would double the suite's slowest tests to prove
     // nothing new. See this module's comment on the two kinds of gate.
     #[cfg(target_arch = "aarch64")]
@@ -9418,7 +9436,7 @@ mod tests {
             program("fs_server").expect("no fs_server program in the initrd archive"),
             program("fs_file_caretaker")
                 .expect("no fs_file_caretaker program in the initrd archive"),
-            program("fsclient").expect("no fsclient program in the initrd archive"),
+            program("fs_test_client").expect("no fs_test_client program in the initrd archive"),
             fs_service::Grant {
                 // The writable run damages what it is granted, so it is granted the file the fixture
                 // discipline already covers; see the attacker's own note.
@@ -9494,7 +9512,7 @@ mod tests {
     /// FS-server process killed inside its own transaction, and a real second process recovering the
     /// disk it left behind. See `std_tests::assert_a_kill_mid_transaction_recovers`.
     // RISC-V twin: `riscv_virtio_tests::a_kill_mid_transaction_leaves_the_filesystem_consistent`. Gated here rather than run twice: that
-    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // module drives the same property through the dedicated `blk`/`net_stack` binaries, and a
     // second copy through hello's roles would double the suite's slowest tests to prove
     // nothing new. See this module's comment on the two kinds of gate.
     #[cfg(target_arch = "aarch64")]
@@ -9503,12 +9521,12 @@ mod tests {
         assert_a_kill_mid_transaction_recovers(
             init_image(),
             program("fs_server").expect("no fs_server program in the initrd archive"),
-            program("fsclient").expect("no fsclient program in the initrd archive"),
+            program("fs_test_client").expect("no fs_test_client program in the initrd archive"),
         );
     }
 
     // RISC-V twin: `riscv_virtio_tests::the_fs_servers_stack_still_has_headroom`. Gated here rather than run twice: that
-    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // module drives the same property through the dedicated `blk`/`net_stack` binaries, and a
     // second copy through hello's roles would double the suite's slowest tests to prove
     // nothing new. See this module's comment on the two kinds of gate.
     #[cfg(target_arch = "aarch64")]
@@ -9538,7 +9556,7 @@ mod tests {
     /// DISCOVER left (TX) and the OFFER returned (RX), across both queues and both directions of the
     /// confinement, with no TCP/IP stack in the loop.
     // RISC-V twin: `riscv_virtio_tests::a_userspace_driver_completes_a_dhcp_round_trip_over_virtio_net`. Gated here rather than run twice: that
-    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // module drives the same property through the dedicated `blk`/`net_stack` binaries, and a
     // second copy through hello's roles would double the suite's slowest tests to prove
     // nothing new. See this module's comment on the two kinds of gate.
     #[cfg(target_arch = "aarch64")]
@@ -9575,7 +9593,7 @@ mod tests {
     /// mmio one. Proves the multi-queue confinement and the net driver work over the bus real
     /// hardware uses.
     // RISC-V twin: `riscv_virtio_tests::a_userspace_driver_completes_a_dhcp_round_trip_over_virtio_net_pci`. Gated here rather than run twice: that
-    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // module drives the same property through the dedicated `blk`/`net_stack` binaries, and a
     // second copy through hello's roles would double the suite's slowest tests to prove
     // nothing new. See this module's comment on the two kinds of gate.
     #[cfg(target_arch = "aarch64")]
@@ -9605,13 +9623,13 @@ mod tests {
     /// address, which must land in slirp's 10.0.2.0/24, so only a real DHCP round trip driven by
     /// smoltcp over the confined NIC can produce it.
     // RISC-V twin: `riscv_virtio_tests::the_net_server_acquires_a_dhcp_lease_over_smoltcp`. Gated here rather than run twice: that
-    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // module drives the same property through the dedicated `blk`/`net_stack` binaries, and a
     // second copy through hello's roles would double the suite's slowest tests to prove
     // nothing new. See this module's comment on the two kinds of gate.
     #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn the_net_server_acquires_a_dhcp_lease_over_smoltcp() {
-        let report = match virtio_service::start_net_server(netstack_image()) {
+        let report = match virtio_service::start_net_server(net_stack_image()) {
             Some(r) => r,
             None => {
                 crate::println!("    (no virtio-net device attached; skipping)");
@@ -9629,13 +9647,13 @@ mod tests {
     /// The net server over the PCIe transport, behind the IOMMU (milestone 30, §20): smoltcp drives
     /// a NIC confined in hardware and still gets its lease.
     // RISC-V twin: `riscv_virtio_tests::the_net_server_acquires_a_dhcp_lease_over_smoltcp_pci`. Gated here rather than run twice: that
-    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // module drives the same property through the dedicated `blk`/`net_stack` binaries, and a
     // second copy through hello's roles would double the suite's slowest tests to prove
     // nothing new. See this module's comment on the two kinds of gate.
     #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn the_net_server_acquires_a_dhcp_lease_over_smoltcp_pci() {
-        let report = match virtio_service::start_net_server_pci(netstack_image()) {
+        let report = match virtio_service::start_net_server_pci(net_stack_image()) {
             Some(r) => r,
             None => {
                 crate::println!("    (no virtio-net-pci device attached; skipping)");
@@ -9654,7 +9672,7 @@ mod tests {
     /// client process holds a `Stack` endpoint and its own untyped, mints a shared frame, delegates
     /// it, opens a UDP socket by id, sends a datagram, and reads the reply back through the same
     /// frame. No ambient network: the client acts only through the capability it was granted, and the
-    /// bytes cross in the shared frame, never in a message. Proves the whole path, client to netstack to
+    /// bytes cross in the shared frame, never in a message. Proves the whole path, client to net_stack to
     /// smoltcp to the confined NIC, over the mmio transport.
     ///
     /// The peer is **slirp's own TFTP server** (10.0.2.2:69), served inside libslirp, so the exchange
@@ -9663,14 +9681,14 @@ mod tests {
     /// nameserver, so the gate depended on the developer's DNS answering at that instant and flaked
     /// (~2.5% per query, measured). The real-resolution case still runs, non-gating, below.
     // RISC-V twin: `riscv_virtio_tests::a_client_completes_a_udp_round_trip_through_the_socket_contract`. Gated here rather than run twice: that
-    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // module drives the same property through the dedicated `blk`/`net_stack` binaries, and a
     // second copy through hello's roles would double the suite's slowest tests to prove
     // nothing new. See this module's comment on the two kinds of gate.
     #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn a_client_completes_a_udp_round_trip_through_the_socket_contract() {
         let report =
-            match virtio_service::start_net_stack(netstack_image(), NET_TEST_UDP_TFTP, false) {
+            match virtio_service::start_net_stack(net_stack_image(), NET_TEST_UDP_TFTP, false) {
                 Some(r) => r,
                 None => {
                     crate::println!("    (no virtio-net device attached; skipping)");
@@ -9686,14 +9704,14 @@ mod tests {
 
     /// The same UDP round trip over the PCIe transport, behind the IOMMU.
     // RISC-V twin: `riscv_virtio_tests::a_client_completes_a_udp_round_trip_through_the_socket_contract_pci`. Gated here rather than run twice: that
-    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // module drives the same property through the dedicated `blk`/`net_stack` binaries, and a
     // second copy through hello's roles would double the suite's slowest tests to prove
     // nothing new. See this module's comment on the two kinds of gate.
     #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn a_client_completes_a_udp_round_trip_through_the_socket_contract_pci() {
         let report =
-            match virtio_service::start_net_stack(netstack_image(), NET_TEST_UDP_TFTP, true) {
+            match virtio_service::start_net_stack(net_stack_image(), NET_TEST_UDP_TFTP, true) {
                 Some(r) => r,
                 None => {
                     crate::println!("    (no virtio-net-pci device attached; skipping)");
@@ -9715,14 +9733,14 @@ mod tests {
     /// that arrives and is *wrong* (not our transaction id, or not a response), because that would be
     /// our defect. The deterministic UDP coverage is the TFTP pair above. See notes/net.md.
     // RISC-V twin: `riscv_virtio_tests::a_client_resolves_a_real_dns_name_when_the_host_resolver_answers`. Gated here rather than run twice: that
-    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // module drives the same property through the dedicated `blk`/`net_stack` binaries, and a
     // second copy through hello's roles would double the suite's slowest tests to prove
     // nothing new. See this module's comment on the two kinds of gate.
     #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn a_client_resolves_a_real_dns_name_when_the_host_resolver_answers() {
         let report =
-            match virtio_service::start_net_stack(netstack_image(), NET_TEST_UDP_DNS, false) {
+            match virtio_service::start_net_stack(net_stack_image(), NET_TEST_UDP_DNS, false) {
                 Some(r) => r,
                 None => {
                     crate::println!("    (no virtio-net device attached; skipping)");
@@ -9747,16 +9765,16 @@ mod tests {
     /// socket by id, connects to slirp's guestfwd echo peer (10.0.2.9:7777, piped to `/bin/cat`),
     /// sends a payload, receives the echo, and closes. The full round trip, handshake through
     /// bidirectional data to teardown, deterministic and zero-host-setup (nothing outlives QEMU),
-    /// through the client, netstack, smoltcp, and the confined NIC.
+    /// through the client, net_stack, smoltcp, and the confined NIC.
     // RISC-V twin: `riscv_virtio_tests::a_client_echoes_over_tcp_through_the_socket_contract`. Gated here rather than run twice: that
-    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // module drives the same property through the dedicated `blk`/`net_stack` binaries, and a
     // second copy through hello's roles would double the suite's slowest tests to prove
     // nothing new. See this module's comment on the two kinds of gate.
     #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn a_client_echoes_over_tcp_through_the_socket_contract() {
         let report =
-            match virtio_service::start_net_stack(netstack_image(), NET_TEST_TCP_ECHO, false) {
+            match virtio_service::start_net_stack(net_stack_image(), NET_TEST_TCP_ECHO, false) {
                 Some(r) => r,
                 None => {
                     crate::println!("    (no virtio-net device attached; skipping)");
@@ -9772,14 +9790,14 @@ mod tests {
 
     /// The same TCP echo round trip over the PCIe transport, behind the IOMMU.
     // RISC-V twin: `riscv_virtio_tests::a_client_echoes_over_tcp_through_the_socket_contract_pci`. Gated here rather than run twice: that
-    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // module drives the same property through the dedicated `blk`/`net_stack` binaries, and a
     // second copy through hello's roles would double the suite's slowest tests to prove
     // nothing new. See this module's comment on the two kinds of gate.
     #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn a_client_echoes_over_tcp_through_the_socket_contract_pci() {
         let report =
-            match virtio_service::start_net_stack(netstack_image(), NET_TEST_TCP_ECHO, true) {
+            match virtio_service::start_net_stack(net_stack_image(), NET_TEST_TCP_ECHO, true) {
                 Some(r) => r,
                 None => {
                     crate::println!("    (no virtio-net-pci device attached; skipping)");
@@ -9795,18 +9813,18 @@ mod tests {
 
     /// **Regression: reusing a socket id is safe** (the ephemeral-port fix). A client opens a TCP
     /// socket on id 0, connects to the echo peer, closes it, then reopens the same id and connects
-    /// again. netstack derived the local port from the socket id, so the reopen reused the exact port and
+    /// again. net_stack derived the local port from the socket id, so the reopen reused the exact port and
     /// the second connect stalled on a slirp flow that had not cleared; the rotating allocator hands
     /// the reopen a fresh port, so both connects complete. The client reports OK only if they do.
     // RISC-V twin: `riscv_virtio_tests::a_reopened_socket_id_connects_again_over_tcp`. Gated here rather than run twice: that
-    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // module drives the same property through the dedicated `blk`/`net_stack` binaries, and a
     // second copy through hello's roles would double the suite's slowest tests to prove
     // nothing new. See this module's comment on the two kinds of gate.
     #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn a_reopened_socket_id_connects_again_over_tcp() {
         let report =
-            match virtio_service::start_net_stack(netstack_image(), NET_TEST_TCP_REOPEN, false) {
+            match virtio_service::start_net_stack(net_stack_image(), NET_TEST_TCP_REOPEN, false) {
                 Some(r) => r,
                 None => {
                     crate::println!("    (no virtio-net device attached; skipping)");
@@ -9821,33 +9839,33 @@ mod tests {
         );
     }
 
-    /// The `hellostd` std program's ELF bytes. The same binary the offline std test spawns; given
+    /// The `std_exerciser` std program's ELF bytes. The same binary the offline std test spawns; given
     /// the network here, its `UdpSocket::bind` probe succeeds and it runs the net transcript.
     #[cfg(target_arch = "aarch64")]
-    fn hellostd_image() -> &'static [u8] {
-        program("hellostd").expect("no hellostd program in the initrd archive")
+    fn std_exerciser_image() -> &'static [u8] {
+        program("std_exerciser").expect("no std_exerciser program in the initrd archive")
     }
 
-    /// The exact transcript `hellostd` prints when it is granted the network. Pinned so a drift in
+    /// The exact transcript `std_exerciser` prints when it is granted the network. Pinned so a drift in
     /// the net PAL, the contract, or the demo is a loud diff rather than a mystery.
     #[cfg(target_arch = "aarch64")]
     const STD_NET_EXPECTED: &[u8] = b"std net on cricker-os\nudp ok\ntcp echo ok\n";
 
-    /// **`std::net` end to end over the socket contract** (milestone 27 phase two): the `hellostd`
+    /// **`std::net` end to end over the socket contract** (milestone 27 phase two): the `std_exerciser`
     /// std binary, given the network, does a real UDP DNS query and a TCP echo round trip through
-    /// `std::net::{UdpSocket, TcpStream}`, whose PAL binds to netstack's contract. The program never
+    /// `std::net::{UdpSocket, TcpStream}`, whose PAL binds to net_stack's contract. The program never
     /// sees a capability or a socket id; it writes to a socket and reads from it. This closes the
     /// `net honestly unsupported` gap from phase one: std's networking runs on the native ABI,
     /// reaching the same path the hand-written client does through std's blocking API. Its stdout
-    /// is reassembled off the endpoint and compared byte for byte, the `hellostd` discipline.
+    /// is reassembled off the endpoint and compared byte for byte, the `std_exerciser` discipline.
     // RISC-V twin: `riscv_virtio_tests::std_net_runs_over_the_socket_contract`. Gated here rather than run twice: that
-    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // module drives the same property through the dedicated `blk`/`net_stack` binaries, and a
     // second copy through hello's roles would double the suite's slowest tests to prove
     // nothing new. See this module's comment on the two kinds of gate.
     #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn std_net_runs_over_the_socket_contract() {
-        let report = match virtio_service::start_net_std(netstack_image(), hellostd_image()) {
+        let report = match virtio_service::start_net_std(net_stack_image(), std_exerciser_image()) {
             Some(r) => r,
             None => {
                 crate::println!("    (no virtio-net device attached; skipping)");
@@ -9950,7 +9968,7 @@ mod tests {
     /// this one, so the device is never told to go and never touches the kernel. The driver
     /// reports `1` when it was refused.
     // RISC-V twin: `riscv_virtio_tests::the_kernel_refuses_a_dma_descriptor_that_escapes_the_drivers_region`. Gated here rather than run twice: that
-    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // module drives the same property through the dedicated `blk`/`net_stack` binaries, and a
     // second copy through hello's roles would double the suite's slowest tests to prove
     // nothing new. See this module's comment on the two kinds of gate.
     #[cfg(target_arch = "aarch64")]
@@ -9978,7 +9996,7 @@ mod tests {
     /// the device follow the table out. The kernel strips the feature and refuses the flag, so the
     /// device is never rung. The driver reports `1` when it was refused.
     // RISC-V twin: `riscv_virtio_tests::the_kernel_refuses_an_indirect_descriptor_escape`. Gated here rather than run twice: that
-    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // module drives the same property through the dedicated `blk`/`net_stack` binaries, and a
     // second copy through hello's roles would double the suite's slowest tests to prove
     // nothing new. See this module's comment on the two kinds of gate.
     #[cfg(target_arch = "aarch64")]
@@ -10006,7 +10024,7 @@ mod tests {
     /// the same subsystem, from the same portable crate and seam, on the second bus of the
     /// second interrupt controller.
     // RISC-V twin: `riscv_virtio_tests::a_userspace_driver_reads_a_file_over_the_pcie_transport`. Gated here rather than run twice: that
-    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // module drives the same property through the dedicated `blk`/`net_stack` binaries, and a
     // second copy through hello's roles would double the suite's slowest tests to prove
     // nothing new. See this module's comment on the two kinds of gate.
     #[cfg(target_arch = "aarch64")]
@@ -10043,7 +10061,7 @@ mod tests {
     /// read-back head. A matching report therefore certifies the round trip AND that the write
     /// landed only on its own block.
     // RISC-V twin: `riscv_virtio_tests::a_userspace_driver_writes_a_block_and_reads_it_back`. Gated here rather than run twice: that
-    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // module drives the same property through the dedicated `blk`/`net_stack` binaries, and a
     // second copy through hello's roles would double the suite's slowest tests to prove
     // nothing new. See this module's comment on the two kinds of gate.
     #[cfg(target_arch = "aarch64")]
@@ -10068,7 +10086,7 @@ mod tests {
     /// hold on both buses, exactly as the read path does, or the transport seam has a
     /// direction-shaped hole.
     // RISC-V twin: `riscv_virtio_tests::a_userspace_driver_writes_a_block_over_the_pcie_transport`. Gated here rather than run twice: that
-    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // module drives the same property through the dedicated `blk`/`net_stack` binaries, and a
     // second copy through hello's roles would double the suite's slowest tests to prove
     // nothing new. See this module's comment on the two kinds of gate.
     #[cfg(target_arch = "aarch64")]
@@ -10100,7 +10118,7 @@ mod tests {
     /// round trip, which proves the abandoned request wedged nothing: not the device, not the
     /// validator's per-registration state, not the disk.
     // RISC-V twin: `riscv_virtio_tests::a_driver_killed_mid_write_leaves_the_device_and_transport_sane`. Gated here rather than run twice: that
-    // module drives the same property through the dedicated `blk`/`netstack` binaries, and a
+    // module drives the same property through the dedicated `blk`/`net_stack` binaries, and a
     // second copy through hello's roles would double the suite's slowest tests to prove
     // nothing new. See this module's comment on the two kinds of gate.
     #[cfg(target_arch = "aarch64")]
@@ -10943,11 +10961,11 @@ mod force_kill_tests {
 /// phase B.2).
 ///
 /// Cross-ISA, because every piece is portable: the whole tree is four ordinary user programs
-/// (`rootsup`, `spawner`, `subsup`, `flaky`) built out of the capability verbs, and the kernel's only
+/// (`root_supervisor`, `spawner`, `sub_server_supervisor`, `flaky`) built out of the capability verbs, and the kernel's only
 /// part is the fault endpoint phase A already built.
 ///
-/// The kernel spawns `rootsup` the way it spawns init: the archive mapped read-only, one untyped
-/// budget, one report endpoint. rootsup then builds a construction sub-server and a supervisor, hands
+/// The kernel spawns `root_supervisor` the way it spawns init: the archive mapped read-only, one untyped
+/// budget, one report endpoint. root_supervisor then builds a construction sub-server and a supervisor, hands
 /// each exactly what it needs, and **deletes its own budget**. From then on the tree runs without it:
 /// the sub-server crashes, its supervisor hears about it, reaps it through the spawner, and asks for a
 /// replacement, which runs and exits cleanly. init could not have done any of that, and that is what
@@ -10965,7 +10983,7 @@ mod authority_tests {
     const REPORT_SUP_GAVE_UP: u64 = 4;
     const REPORT_FAILED: u64 = 9;
 
-    /// Pages in rootsup's construction budget. It builds two servers out of this, splits the
+    /// Pages in root_supervisor's construction budget. It builds two servers out of this, splits the
     /// spawner's budget from it, and then deletes it; the spawner's split is the only memory the tree
     /// spends afterwards.
     const ROOT_BUDGET_PAGES: u64 = 1024;
@@ -10974,12 +10992,13 @@ mod authority_tests {
     /// process in the tree holds a WRITE view of.
     ///
     /// Deliberately the same endowment `spawn_init` gives (`INITRD_VA`, an untyped in slot 0, a report
-    /// endpoint in slot 1) so what is being tested is rootsup's *choices*, not a privileged shortcut.
+    /// endpoint in slot 1) so what is being tested is root_supervisor's *choices*, not a privileged shortcut.
     fn spawn_tree() -> sched::EpId {
         let (initrd_start, initrd_len) = memory::initrd_region().expect("no initrd region");
         let initrd_pages = initrd_len.div_ceil(FRAME_SIZE);
-        let bytes = program("rootsup").expect("no rootsup program in the initrd archive");
-        let elf = Elf::parse(bytes).expect("rootsup is not loadable");
+        let bytes =
+            program("root_supervisor").expect("no root_supervisor program in the initrd archive");
+        let elf = Elf::parse(bytes).expect("root_supervisor is not loadable");
 
         let content: u64 = elf
             .segments()
@@ -10992,12 +11011,12 @@ mod authority_tests {
             + initrd_pages / 512
             + INIT_STACK_PAGES
             + 8;
-        let mut space = AddressSpace::new(content).expect("no memory for rootsup");
-        map_segments(&mut space, &elf).expect("could not lay out rootsup");
+        let mut space = AddressSpace::new(content).expect("no memory for root_supervisor");
+        map_segments(&mut space, &elf).expect("could not lay out root_supervisor");
         for k in 0..INIT_STACK_PAGES {
             space
                 .map_new(USER_STACK_VA - k * FRAME_SIZE, Flags::user_data())
-                .expect("could not map rootsup's stack");
+                .expect("could not map root_supervisor's stack");
         }
         for i in 0..initrd_pages {
             space
@@ -11008,15 +11027,16 @@ mod authority_tests {
                 )
                 .expect("could not map the initrd");
         }
-        let aspace = readopt_user_aspace(space).expect("register the rootsup aspace");
+        let aspace = readopt_user_aspace(space).expect("register the root_supervisor aspace");
 
         let report = sched::create_endpoint();
-        let budget = crate::untyped::create(ROOT_BUDGET_PAGES).expect("no budget for rootsup");
+        let budget =
+            crate::untyped::create(ROOT_BUDGET_PAGES).expect("no budget for root_supervisor");
         let tcb_region = crate::untyped::create(2).expect("no tcb region");
         let tid = sched::create_tcb(tcb_region).expect("no tcb");
         let s0 = sched::tcb_insert_cap(tid, crate::cap::untyped_root_cap(budget), None)
             .expect("insert budget");
-        assert_eq!(s0, 0, "rootsup's budget must land in slot 0");
+        assert_eq!(s0, 0, "root_supervisor's budget must land in slot 0");
         let s1 = sched::tcb_insert_cap(
             tid,
             crate::cap::endpoint_cap(
@@ -11026,7 +11046,10 @@ mod authority_tests {
             None,
         )
         .expect("insert report");
-        assert_eq!(s1, 1, "rootsup's report endpoint must land in slot 1");
+        assert_eq!(
+            s1, 1,
+            "root_supervisor's report endpoint must land in slot 1"
+        );
         sched::configure_tcb(tid, elf.entry(), USER_STACK_TOP, aspace).expect("configure");
         sched::start_tcb(tid, [0, initrd_len, 0]).expect("start");
         report
@@ -11089,7 +11112,7 @@ mod authority_tests {
 
     /// **init drops its construction authority, and the drop is real.**
     ///
-    /// rootsup builds its two servers, deletes the wiring capabilities and then the untyped budget
+    /// root_supervisor builds its two servers, deletes the wiring capabilities and then the untyped budget
     /// itself, and immediately tries the two primitives that build things: retype a page, and retype a
     /// kernel object. Both must fail, and they must fail with `NoSuchSlot` (there is nothing there)
     /// rather than `NotPermitted` (there is something there and you may not use it), because the
@@ -11995,7 +12018,7 @@ mod live_swap_tests {
 /// **Measured boot: the kernel refuses to enter an init it was not built for** (milestone 22 phase
 /// B.1, DECISIONS §22).
 ///
-/// Cross-ISA, because the check is portable: one hash implementation (`crates/measure`), one trust
+/// Cross-ISA, because the check is portable: one hash implementation (`crates/measured_boot`), one trust
 /// root generated into the kernel image by `build.rs`, called from the boot path on both
 /// architectures (aarch64 `spawn_init`, riscv `riscv_initrd_demo` / `riscv_shell_boot`).
 ///
@@ -12012,7 +12035,7 @@ mod measured_boot_tests {
     use super::*;
 
     /// The boot-program entry both architectures' kernels load themselves. (riscv's shell boot loads
-    /// `sysinit` instead, measured under that name by the same trust root; `init` is the entry both
+    /// `system_initializer` instead, measured under that name by the same trust root; `init` is the entry both
     /// ISAs have, so it is the one this test can assert on portably.)
     const BOOT_PROGRAM: &str = "init";
 
@@ -12043,21 +12066,21 @@ mod measured_boot_tests {
     #[test_case]
     fn a_tampered_boot_program_and_an_unmeasured_name_are_both_refused() {
         let bytes = program(BOOT_PROGRAM).expect("no boot program in the initrd archive");
-        let mut h = measure::Sha256::new();
+        let mut h = measured_boot::Sha256::new();
         h.update(&[bytes[0] ^ 1]);
         h.update(&bytes[1..]);
         let tampered = h.finalize();
 
         assert_eq!(
-            measure::verify_digest(crate::trust::TRUST_ROOT, BOOT_PROGRAM, &tampered),
-            Err(measure::VerifyError::Mismatch),
+            measured_boot::verify_digest(crate::trust::TRUST_ROOT, BOOT_PROGRAM, &tampered),
+            Err(measured_boot::VerifyError::Mismatch),
             "a boot program with one bit flipped still satisfied the trust root",
         );
         // Fail-closed on the other axis: a program the trust root says nothing about is refused, not
         // waved through. This is what makes an empty or stale trust root safe.
         assert_eq!(
             crate::trust::verify("no-such-program", bytes),
-            Err(measure::VerifyError::Unmeasured),
+            Err(measured_boot::VerifyError::Unmeasured),
             "the kernel vouched for a program it has no measurement for",
         );
     }
@@ -12738,7 +12761,7 @@ mod dir_capability_tests {
             program("fs_server").expect("no fs_server program in the initrd archive"),
             program("fs_subtree_caretaker")
                 .expect("no fs_subtree_caretaker program in the initrd archive"),
-            program("fsclient").expect("no fsclient program in the initrd archive"),
+            program("fs_test_client").expect("no fs_test_client program in the initrd archive"),
             fs_service::DirGrant {
                 name: fs_proto::fixture::tree::SUB,
                 rights,
@@ -12927,7 +12950,7 @@ mod dir_capability_tests {
             program("fs_server").expect("no fs_server program in the initrd archive"),
             program("fs_nameset_caretaker")
                 .expect("no fs_nameset_caretaker program in the initrd archive"),
-            program("fsclient").expect("no fsclient program in the initrd archive"),
+            program("fs_test_client").expect("no fs_test_client program in the initrd archive"),
             fs_service::SetGrant {
                 dir: fs_proto::fixture::tree::SUB,
                 // Exactly one name, and `deeper` deliberately left out of it.
@@ -12976,7 +12999,7 @@ mod shell_navigation_tests {
     use fs_proto::dir;
     use fs_proto::fixture::{navscape as nb, tree};
 
-    /// The `shell` binary's navigating role (`user/src/shell.rs`).
+    /// The `swish` binary's navigating role (`user/src/swish.rs`).
     const ROLE_NAVIGATE: u64 = 1;
 
     /// The bits every navigating shell must report whatever it was rooted in: `pwd` at its root,
@@ -13012,7 +13035,7 @@ mod shell_navigation_tests {
             program("fs_server").expect("no fs_server program in the initrd archive"),
             program("fs_subtree_caretaker")
                 .expect("no fs_subtree_caretaker program in the initrd archive"),
-            program("shell").expect("no shell program in the initrd archive"),
+            program("swish").expect("no swish program in the initrd archive"),
             fs_service::DirGrant {
                 name: root,
                 rights: dir::ALL,
@@ -13143,7 +13166,7 @@ mod shell_navigation_tests {
 ///
 /// What is wired is the **real `rm` binary** (`user/src/rm.rs`) behind a real
 /// `fs_subtree_caretaker`, started the way the shell would start it: the name in a grant's two
-/// argument words and the options in the spec word, in `capsh::rmopt`'s bit order, so the numbers
+/// argument words and the options in the spec word, in `grant_plan::rmopt`'s bit order, so the numbers
 /// here come from the manifest the prompt checks against rather than from a second copy of an
 /// ordering.
 ///
@@ -13155,9 +13178,9 @@ mod shell_navigation_tests {
 mod rm_program_tests {
     use super::*;
     use crate::sched;
-    use capsh::rmopt;
     use fs_proto::dir;
     use fs_proto::fixture::{VERDICT, rm as rr, tree};
+    use grant_plan::rmopt;
 
     /// The most messages one run may send before the harness stops reading. A `rm` that never sent
     /// its verdict would otherwise hang the boot; this turns it into a failed assertion.
@@ -13351,7 +13374,7 @@ mod glob_grant_tests {
     use fs_proto::dir;
     use fs_proto::fixture::{VERDICT, globscape as gb, rm as rr, tree};
 
-    /// The `shell` binary's globbing role (`user/src/shell.rs`).
+    /// The `swish` binary's globbing role (`user/src/swish.rs`).
     const ROLE_GLOB: u64 = 2;
 
     /// The most messages one `rm` run may send before the harness stops reading, as
@@ -13397,7 +13420,7 @@ mod glob_grant_tests {
             program("fs_server").expect("no fs_server program in the initrd archive"),
             program("fs_subtree_caretaker")
                 .expect("no fs_subtree_caretaker program in the initrd archive"),
-            program("shell").expect("no shell program in the initrd archive"),
+            program("swish").expect("no swish program in the initrd archive"),
             fs_service::DirGrant {
                 name: tree::GLOBSET,
                 rights: dir::ENUMERATE | dir::DESCEND | dir::READ,
@@ -13538,13 +13561,13 @@ mod riscv_virtio_tests {
         program("blk").expect("no blk program in the initrd archive")
     }
 
-    /// The `netstack` program's ELF bytes (milestone 30, piece 3): the smoltcp net server.
-    fn netstack_image() -> &'static [u8] {
-        program("netstack").expect("no netstack program in the initrd archive")
+    /// The `net_stack` program's ELF bytes (milestone 30, piece 3): the smoltcp net server.
+    fn net_stack_image() -> &'static [u8] {
+        program("net_stack").expect("no net_stack program in the initrd archive")
     }
 
-    /// The net client's test selectors and success word, matching user/src/netcli.rs. The client is
-    /// a nonzero entry role of the `netstack` binary, so it needs no image of its own.
+    /// The net client's test selectors and success word, matching user/src/socket_test_client.rs. The client is
+    /// a nonzero entry role of the `net_stack` binary, so it needs no image of its own.
     const NET_TEST_UDP_DNS: u64 = 1;
     const NET_TEST_TCP_ECHO: u64 = 2;
     const NET_TEST_TCP_REOPEN: u64 = 3;
@@ -13707,7 +13730,7 @@ mod riscv_virtio_tests {
         let (readiness, report) = match fs_service::start(
             blk_image(),
             program("fs_server").expect("no fs_server program in the initrd archive"),
-            program("fsclient").expect("no fsclient program in the initrd archive"),
+            program("fs_test_client").expect("no fs_test_client program in the initrd archive"),
             0, // the end-to-end proof role, not the benchmark loop
         ) {
             Some(r) => r,
@@ -13744,7 +13767,7 @@ mod riscv_virtio_tests {
         let (readiness, report) = match fs_service::start_std(
             blk_image(),
             program("fs_server").expect("no fs_server program in the initrd archive"),
-            program("hellostd").expect("no hellostd program in the initrd archive"),
+            program("std_exerciser").expect("no std_exerciser program in the initrd archive"),
         ) {
             Some(r) => r,
             None => {
@@ -13802,7 +13825,7 @@ mod riscv_virtio_tests {
             program("fs_server").expect("no fs_server program in the initrd archive"),
             program("fs_file_caretaker")
                 .expect("no fs_file_caretaker program in the initrd archive"),
-            program("fsclient").expect("no fsclient program in the initrd archive"),
+            program("fs_test_client").expect("no fs_test_client program in the initrd archive"),
             fs_service::Grant {
                 name: if writable {
                     fs_proto::fixture::SCRATCH_NAME
@@ -13842,7 +13865,7 @@ mod riscv_virtio_tests {
         assert_a_kill_mid_transaction_recovers(
             blk_image(),
             program("fs_server").expect("no fs_server program in the initrd archive"),
-            program("fsclient").expect("no fsclient program in the initrd archive"),
+            program("fs_test_client").expect("no fs_test_client program in the initrd archive"),
         );
     }
 
@@ -13908,7 +13931,7 @@ mod riscv_virtio_tests {
     /// (milestone 30, piece 3). A reused userspace TCP/IP stack, driving a kernel-confined device.
     #[test_case]
     fn the_net_server_acquires_a_dhcp_lease_over_smoltcp() {
-        let report = match virtio_service::start_net_server(netstack_image()) {
+        let report = match virtio_service::start_net_server(net_stack_image()) {
             Some(r) => r,
             None => {
                 crate::println!("    (no virtio-net device attached; skipping)");
@@ -13926,7 +13949,7 @@ mod riscv_virtio_tests {
     /// The riscv net server over PCIe, behind the RISC-V IOMMU (milestone 30, §20).
     #[test_case]
     fn the_net_server_acquires_a_dhcp_lease_over_smoltcp_pci() {
-        let report = match virtio_service::start_net_server_pci(netstack_image()) {
+        let report = match virtio_service::start_net_server_pci(net_stack_image()) {
             Some(r) => r,
             None => {
                 crate::println!("    (no virtio-net-pci device attached; skipping)");
@@ -13948,7 +13971,7 @@ mod riscv_virtio_tests {
     #[test_case]
     fn a_client_completes_a_udp_round_trip_through_the_socket_contract() {
         let report =
-            match virtio_service::start_net_stack(netstack_image(), NET_TEST_UDP_TFTP, false) {
+            match virtio_service::start_net_stack(net_stack_image(), NET_TEST_UDP_TFTP, false) {
                 Some(r) => r,
                 None => {
                     crate::println!("    (no virtio-net device attached; skipping)");
@@ -13966,7 +13989,7 @@ mod riscv_virtio_tests {
     #[test_case]
     fn a_client_completes_a_udp_round_trip_through_the_socket_contract_pci() {
         let report =
-            match virtio_service::start_net_stack(netstack_image(), NET_TEST_UDP_TFTP, true) {
+            match virtio_service::start_net_stack(net_stack_image(), NET_TEST_UDP_TFTP, true) {
                 Some(r) => r,
                 None => {
                     crate::println!("    (no virtio-net-pci device attached; skipping)");
@@ -13985,7 +14008,7 @@ mod riscv_virtio_tests {
     #[test_case]
     fn a_client_resolves_a_real_dns_name_when_the_host_resolver_answers() {
         let report =
-            match virtio_service::start_net_stack(netstack_image(), NET_TEST_UDP_DNS, false) {
+            match virtio_service::start_net_stack(net_stack_image(), NET_TEST_UDP_DNS, false) {
                 Some(r) => r,
                 None => {
                     crate::println!("    (no virtio-net device attached; skipping)");
@@ -14011,7 +14034,7 @@ mod riscv_virtio_tests {
     #[test_case]
     fn a_client_echoes_over_tcp_through_the_socket_contract() {
         let report =
-            match virtio_service::start_net_stack(netstack_image(), NET_TEST_TCP_ECHO, false) {
+            match virtio_service::start_net_stack(net_stack_image(), NET_TEST_TCP_ECHO, false) {
                 Some(r) => r,
                 None => {
                     crate::println!("    (no virtio-net device attached; skipping)");
@@ -14029,7 +14052,7 @@ mod riscv_virtio_tests {
     #[test_case]
     fn a_client_echoes_over_tcp_through_the_socket_contract_pci() {
         let report =
-            match virtio_service::start_net_stack(netstack_image(), NET_TEST_TCP_ECHO, true) {
+            match virtio_service::start_net_stack(net_stack_image(), NET_TEST_TCP_ECHO, true) {
                 Some(r) => r,
                 None => {
                     crate::println!("    (no virtio-net-pci device attached; skipping)");
@@ -14048,7 +14071,7 @@ mod riscv_virtio_tests {
     #[test_case]
     fn a_reopened_socket_id_connects_again_over_tcp() {
         let report =
-            match virtio_service::start_net_stack(netstack_image(), NET_TEST_TCP_REOPEN, false) {
+            match virtio_service::start_net_stack(net_stack_image(), NET_TEST_TCP_REOPEN, false) {
                 Some(r) => r,
                 None => {
                     crate::println!("    (no virtio-net device attached; skipping)");
@@ -14062,23 +14085,23 @@ mod riscv_virtio_tests {
         );
     }
 
-    /// The `hellostd` std program's ELF bytes from the riscv initrd. Given the network here, its
+    /// The `std_exerciser` std program's ELF bytes from the riscv initrd. Given the network here, its
     /// `UdpSocket::bind` probe succeeds and it runs the net transcript.
-    fn hellostd_image() -> &'static [u8] {
-        program("hellostd").expect("no hellostd program in the initrd archive")
+    fn std_exerciser_image() -> &'static [u8] {
+        program("std_exerciser").expect("no std_exerciser program in the initrd archive")
     }
 
-    /// The exact transcript `hellostd` prints when it is granted the network.
+    /// The exact transcript `std_exerciser` prints when it is granted the network.
     const STD_NET_EXPECTED: &[u8] = b"std net on cricker-os\nudp ok\ntcp echo ok\n";
 
     /// **`std::net` end to end over the socket contract, on the second ISA** (milestone 27 phase
-    /// two): the riscv twin of the aarch64 std-net test. The `hellostd` std binary, given the
+    /// two): the riscv twin of the aarch64 std-net test. The `std_exerciser` std binary, given the
     /// network, does a real UDP DNS query and a TCP echo round trip through `std::net`, whose PAL
-    /// binds to netstack's contract, proving std's networking runs on the native ABI on both
+    /// binds to net_stack's contract, proving std's networking runs on the native ABI on both
     /// architectures (the §19 parity gate). Its stdout is reassembled and compared byte for byte.
     #[test_case]
     fn std_net_runs_over_the_socket_contract() {
-        let report = match virtio_service::start_net_std(netstack_image(), hellostd_image()) {
+        let report = match virtio_service::start_net_std(net_stack_image(), std_exerciser_image()) {
             Some(r) => r,
             None => {
                 crate::println!("    (no virtio-net device attached; skipping)");
@@ -14244,12 +14267,12 @@ mod riscv_virtio_tests {
 /// with the interactive endowment: a terminal, a spawn channel, a result channel, and a budget. The
 /// kernel plays the two parties on the other ends.
 ///
-/// - **The terminal.** The test itself serves `lineedit::proto::OP_WRITE` and collects every byte
+/// - **The terminal.** The test itself serves `line_editor::proto::OP_WRITE` and collects every byte
 ///   the shell prints. So the assertion is made against *what a person would see*, which is the
 ///   strongest form this can take: a pipeline that ran but printed the wrong thing fails here.
-/// - **init.** A second thread serves `capsh::spawnproto`, receiving the delegated sink and source
+/// - **init.** A second thread serves `grant_plan::spawnproto`, receiving the delegated sink and source
 ///   capabilities and building each stage with them. It is deliberately the same protocol
-///   `user/src/sysinit.rs` serves, because the shell cannot tell the difference and neither should
+///   `user/src/system_initializer.rs` serves, because the shell cannot tell the difference and neither should
 ///   this test; what it is not is the same *code*, and that gap is named in notes/pipes.md's BUGS.
 #[cfg(test)]
 pub mod pipeline_service {
@@ -14258,15 +14281,15 @@ pub mod pipeline_service {
     use crate::sched::EpId;
     use core::sync::atomic::{AtomicUsize, Ordering};
 
-    /// The `shell` binary's pipeline role (`user/src/shell.rs`).
+    /// The `swish` binary's pipeline role (`user/src/swish.rs`).
     const ROLE_PIPELINE: u64 = 3;
 
-    /// The VAs the shell hardcodes for its terminal pages. Must match user/src/shell.rs.
+    /// The VAs the shell hardcodes for its terminal pages. Must match user/src/swish.rs.
     const OUT_VA: u64 = 0x0000_0000_00c0_0000;
     const LINE_VA: u64 = 0x0000_0000_00b0_0000;
 
     /// The budget the shell mints its pipes out of. Each pipeline splits a region off this and
-    /// gives it back, so one number covers a script of several lines; it matches sysinit's grant.
+    /// gives it back, so one number covers a script of several lines; it matches system_initializer's grant.
     const SH_BUDGET_PAGES: u64 = 128;
 
     /// Pages of stack **below** the one `run` maps. A shell needs more than a hand-sized program
@@ -14310,15 +14333,15 @@ pub mod pipeline_service {
         start_with(ROLE_REDIRECT, rights, Some(dir))
     }
 
-    /// The shell's redirection role (`user/src/shell.rs`).
+    /// The shell's redirection role (`user/src/swish.rs`).
     const ROLE_REDIRECT: u64 = 4;
 
     /// Where an FS client maps the page it shares with the FS server (`fs_service`'s
-    /// `FILE_VA_CLIENT`, and `user/src/shell.rs`'s `FS_VA`).
+    /// `FILE_VA_CLIENT`, and `user/src/swish.rs`'s `FS_VA`).
     const FS_VA: u64 = 0x0000_0000_0060_0000;
 
     fn start_with(role: u64, arg: u64, dir: Option<(EpId, u64)>) -> Option<Wiring> {
-        let image = program("shell")?;
+        let image = program("swish")?;
         let term = crate::sched::create_endpoint();
         let spawn_ep = crate::sched::create_endpoint();
         let result = crate::sched::create_endpoint();
@@ -14433,8 +14456,8 @@ pub mod pipeline_service {
             else {
                 panic!("the shell sent the terminal something that was not a CALL");
             };
-            let n = lineedit::proto::len(w0);
-            if lineedit::proto::op(w0) == lineedit::proto::OP_WRITE {
+            let n = line_editor::proto::len(w0);
+            if line_editor::proto::op(w0) == line_editor::proto::OP_WRITE {
                 let mut buf = TRANSCRIPT.lock();
                 let at = WRITTEN.load(Ordering::SeqCst);
                 let n = n.min(buf.len().saturating_sub(at));
@@ -14529,9 +14552,9 @@ pub mod pipeline_service {
         loop {
             let m = crate::sched::ipc_recv(spawn_ep);
             let (w0, w1, w2) = (m[0], m[1], m[2]);
-            let prog = capsh::Prog::from_id(capsh::spawnproto::prog_id(w0));
-            let arg = capsh::spawnproto::arg(w1);
-            let wiring = capsh::spawnproto::wiring(w2);
+            let prog = grant_plan::Prog::from_id(grant_plan::spawnproto::prog_id(w0));
+            let arg = grant_plan::spawnproto::arg(w1);
+            let wiring = grant_plan::spawnproto::wiring(w2);
 
             // In the protocol's order. A capability received but never expected, or expected and
             // never sent, deadlocks both sides, which is why the order is the contract.
@@ -14547,8 +14570,8 @@ pub mod pipeline_service {
             };
             // A `--mem` grant is received and dropped: no stage of the pipeline script asks for
             // one, and receiving it anyway is what keeps the two sides in lockstep if one ever
-            // does. `user/src/sysinit.rs` is where a budget actually reaches a child.
-            if capsh::spawnproto::mem_pages(w2) > 0 {
+            // does. `user/src/system_initializer.rs` is where a budget actually reaches a child.
+            if grant_plan::spawnproto::mem_pages(w2) > 0 {
                 let m = crate::sched::ipc_recv_cap(spawn_ep);
                 let _ = crate::sched::delete_current_cap(m[1]);
             }
@@ -14596,16 +14619,16 @@ pub mod pipeline_service {
                     result,
                     [
                         if started {
-                            capsh::spawnproto::SPAWN_OK
+                            grant_plan::spawnproto::SPAWN_OK
                         } else {
-                            capsh::spawnproto::SPAWN_FAILED
+                            grant_plan::spawnproto::SPAWN_FAILED
                         },
                         0,
                         0,
                     ],
                 );
             } else if !started {
-                crate::sched::ipc_send(result, [capsh::spawnproto::SPAWN_FAILED, 0, 0]);
+                crate::sched::ipc_send(result, [grant_plan::spawnproto::SPAWN_FAILED, 0, 0]);
             }
         }
     }
@@ -14634,7 +14657,7 @@ pub mod pipeline_service {
 mod pipeline_tests {
     use super::*;
 
-    /// The last line `user/src/shell.rs`'s pipeline role prints. Must match `PIPELINE_DONE` there.
+    /// The last line `user/src/swish.rs`'s pipeline role prints. Must match `PIPELINE_DONE` there.
     const DONE: &[u8] = b"== pipelines done\n";
 
     /// The script's transcript, run **once** and shared by every assertion below.
@@ -14649,7 +14672,7 @@ mod pipeline_tests {
         let mut cache = TRANSCRIPT.lock();
         if cache.is_none() {
             let Some(w) = pipeline_service::start() else {
-                panic!("no shell program in the initrd archive, or no memory to wire one");
+                panic!("no swish program in the initrd archive, or no memory to wire one");
             };
             let mut buf = [0u8; 3072];
             let n = pipeline_service::transcript(&w, DONE, &mut buf);
@@ -14830,7 +14853,7 @@ mod redirection_tests {
     use fs_proto::dir;
     use pipeline_service::{answer, counts};
 
-    /// The last line `user/src/shell.rs`'s redirection role prints. Must match `REDIRECT_DONE`.
+    /// The last line `user/src/swish.rs`'s redirection role prints. Must match `REDIRECT_DONE`.
     const DONE: &[u8] = b"== redirections done\n";
 
     /// The script's transcript, run **once** and shared by every assertion below, for
@@ -14852,7 +14875,7 @@ mod redirection_tests {
                 dir::ALL,
             )?;
             let Some(w) = pipeline_service::start_redirecting(dir, dir::ALL) else {
-                panic!("no shell program in the initrd archive, or no memory to wire one");
+                panic!("no swish program in the initrd archive, or no memory to wire one");
             };
             let mut buf = [0u8; 3072];
             let n = pipeline_service::transcript(&w, DONE, &mut buf);
@@ -15230,7 +15253,7 @@ mod sink_tests {
 
     /// **The same program, two destinations, the same bytes.**
     ///
-    /// `hellostd` is spawned twice with **identical grants except for what is behind slot 1**: once
+    /// `std_exerciser` is spawned twice with **identical grants except for what is behind slot 1**: once
     /// with an endpoint this test receives on, which is the pipe shape (an ordinary receiver, no
     /// page, no reply), and once with an endpoint served by `sink` in its file role, which appends
     /// every message into a file on the real RedoxFS image through the real FS server. The file is
@@ -15249,7 +15272,8 @@ mod sink_tests {
     /// asserted on both sides as well.
     #[test_case]
     fn a_program_cannot_tell_what_its_output_slot_holds() {
-        let hellostd = program("hellostd").expect("no hellostd program in the initrd archive");
+        let std_exerciser =
+            program("std_exerciser").expect("no std_exerciser program in the initrd archive");
         let clock = program("clock").expect("no clock program in the initrd archive");
         let entropy = program("entropy").expect("no entropy program in the initrd archive");
         let sink_image = program("sink").expect("no sink program in the initrd archive");
@@ -15261,9 +15285,9 @@ mod sink_tests {
         // Arm one: the kernel receives. Everything here is what the existing std test does, which
         // is the point: nothing was special-cased for the sink.
         let direct = crate::sched::create_endpoint();
-        std_service::start_on(hellostd, clock, entropy, direct);
+        std_service::start_on(std_exerciser, clock, entropy, direct);
         let mut first = [0u8; 512];
-        let n1 = super::std_tests::drain_sink(direct, &mut first, "hellostd, direct endpoint");
+        let n1 = super::std_tests::drain_sink(direct, &mut first, "std_exerciser, direct endpoint");
         assert_eq!(
             &first[..n1],
             super::std_tests::EXPECTED,
@@ -15287,7 +15311,7 @@ mod sink_tests {
             "the file sink could not open its file, so there was nothing to redirect into",
         );
 
-        std_service::start_on(hellostd, clock, entropy, sink_ep);
+        std_service::start_on(std_exerciser, clock, entropy, sink_ep);
         let [done, total, ..] = crate::sched::ipc_recv(sink_report);
         assert_eq!(
             done,
@@ -15307,7 +15331,7 @@ mod sink_tests {
             panic!("the FS service vanished between the file sink and its verifier");
         };
         let mut second = [0u8; 512];
-        let n2 = super::std_tests::drain_sink(out, &mut second, "hellostd, file sink");
+        let n2 = super::std_tests::drain_sink(out, &mut second, "std_exerciser, file sink");
         let [vdone, vsize, ..] = crate::sched::ipc_recv(verify_report);
         assert_eq!(
             vdone,

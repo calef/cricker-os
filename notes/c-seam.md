@@ -350,7 +350,7 @@ builds a process from it** (`RETYPE`, `RETYPE_OBJ`, `SPLIT`). There is no narrow
 - **What it would have preferred:** a **reap-only right over one region it did not create**. That is
   enough to collect a corpse and return its pages, and not enough to build anything.
 - **The alternative that exists today**, and why this milestone did not use it: milestone 22 phase
-  B.2's proxy. Its supervisor (`subsup`) holds no memory at all and asks a construction sub-server
+  B.2's proxy. Its supervisor (`sub_server_supervisor`) holds no memory at all and asks a construction sub-server
   (`spawner`) to reap on its behalf, so policy and authority sit either side of an IPC boundary. That
   is the right answer for a system's init, where the whole point is that init can no longer build. It
   is the wrong answer *here*, because it moves the requirement behind an IPC hop and the requirement is

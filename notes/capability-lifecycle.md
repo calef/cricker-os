@@ -6,7 +6,7 @@ authority is copied, how it narrows, and, at the end, why it cannot yet be revok
 
 ## Authority moves by copy-with-narrowing, never by widening
 
-A `Cap<O>` is `Copy` (`crates/caps`). Authority spreads by **deriving** a copy, and the one rule
+A `Cap<O>` is `Copy` (`crates/capability`). Authority spreads by **deriving** a copy, and the one rule
 is that a derivative's rights are a **subset** of the source's:
 
 ```rust

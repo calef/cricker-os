@@ -1,14 +1,14 @@
 //! `std::net` for cricker-os (milestone 27 phase two): `TcpStream` and outbound `UdpSocket` bound
-//! to the netstack socket contract (DECISIONS §25, notes/net.md, `user/src/netproto.rs`).
+//! to the net_stack socket contract (DECISIONS §25, notes/net.md, `user/src/netproto.rs`).
 //!
 //! This is the client half of the contract std sees. A std program given the network holds a
 //! `Stack` endpoint at slot 2 and an untyped budget at slot 3 (the slot convention in
 //! `pal/cricker/rt.rs`). Opening a socket mints a shared `Frame` from the untyped, maps it, and
-//! delegates it to netstack (`SEND_CAP`, `OP_ATTACH_FRAME`); every later operation is one `CALL`
+//! delegates it to net_stack (`SEND_CAP`, `OP_ATTACH_FRAME`); every later operation is one `CALL`
 //! carrying a **socket id** and control words, with the payload already sitting in the shared
-//! frame. netstack drives smoltcp over the confined NIC and replies. Bytes never cross a message.
+//! frame. net_stack drives smoltcp over the confined NIC and replies. Bytes never cross a message.
 //!
-//! **Blocking, one exchange at a time.** The contract is synchronous: a `CALL` blocks in netstack
+//! **Blocking, one exchange at a time.** The contract is synchronous: a `CALL` blocks in net_stack
 //! while it services the network, so a std `read` blocks until data arrives, exactly the
 //! semantics `std::net`'s default blocking API wants. The target is single-threaded, so a program
 //! can hold several sockets (up to `MAX_SOCKETS`) but can only ever have one operation in flight.
@@ -22,7 +22,7 @@
 //! - **DNS / `lookup_host`.** No resolver rides the contract; the demo uses literal addresses and
 //!   does its own DNS as a plain UDP round trip. `lookup_host` returns `Unsupported`, so
 //!   `ToSocketAddrs` resolves only already-numeric addresses.
-//! - **IPv6.** netstack is IPv4-only (smoltcp built with `proto-ipv4`). A V6 address is `Unsupported`.
+//! - **IPv6.** net_stack is IPv4-only (smoltcp built with `proto-ipv4`). A V6 address is `Unsupported`.
 //! - **`peek`, `duplicate`, multicast join/leave.** No contract verb backs them.
 //!
 //! Advisory knobs with no contract effect (`set_nodelay`, `set_ttl`, `set_linger`, broadcast,
@@ -46,7 +46,7 @@ const STACK: u64 = rt::STACK_SLOT;
 const NET_UNTYPED: u64 = rt::NET_UNTYPED_SLOT;
 
 /// Where each socket's shared frame maps in this process. One page per id, well clear of the
-/// program image (0x40_0000), its stack (below 0x50_0000), and the heap (0x4000_0000). netstack maps
+/// program image (0x40_0000), its stack (below 0x50_0000), and the heap (0x4000_0000). net_stack maps
 /// the same frame at its own address; the two are the one shared page the contract grants.
 const FRAME_BASE: u64 = 0x0000_0000_1000_0000;
 
@@ -59,15 +59,15 @@ fn frame_va(id: u64) -> u64 {
 // A small fixed table, one entry per possible socket id, guarded by a spinlock (uncontended on
 // this single-threaded target, correct if threads ever arrive, the same discipline as the heap in
 // `sys/alloc/cricker`). It tracks which ids are in use, which have had their shared frame attached
-// to netstack (a once-per-id, sticky fact so open/close cycles reuse the frame without re-mapping an
-// already-mapped VA), a per-TCP-socket residual buffer (bytes netstack delivered into the frame that a
+// to net_stack (a once-per-id, sticky fact so open/close cycles reuse the frame without re-mapping an
+// already-mapped VA), a per-TCP-socket residual buffer (bytes net_stack delivered into the frame that a
 // short `read` could not take), and each UDP socket's peer/last destination.
 
 struct Slot {
     in_use: bool,
     attached: bool,
     // TCP: bytes received but not yet handed to the caller (a `read` whose buffer was smaller than
-    // the segment netstack delivered). Served before the next `RECV`, so a stream never drops bytes.
+    // the segment net_stack delivered). Served before the next `RECV`, so a stream never drops bytes.
     res_off: usize,
     res_len: usize,
     res: [u8; DATA_MAX],
@@ -94,7 +94,7 @@ impl Slot {
 struct Registry {
     locked: AtomicBool,
     slots: UnsafeCell<[Slot; MAX_SOCKETS]>,
-    // A round-robin cursor for id allocation. netstack derives each socket's local port from its id
+    // A round-robin cursor for id allocation. net_stack derives each socket's local port from its id
     // (`LOCAL_PORT_BASE + sid`), so handing out ids in rotation rather than always the lowest free
     // one keeps a fresh open from immediately reusing the port a just-closed socket held, which
     // slirp can still be holding. See the reuse note in notes/std.md.
@@ -219,7 +219,7 @@ fn is_syscall_err(r0: u64) -> bool {
 
 // --- Attaching a shared frame ----------------------------------------------------------------
 
-/// Ensure socket `id` has a shared frame delegated to netstack. Once per id and sticky: the frame and
+/// Ensure socket `id` has a shared frame delegated to net_stack. Once per id and sticky: the frame and
 /// its mapping outlive an open/close cycle, so a reused id does not re-map an already-mapped VA.
 fn ensure_attached(id: u64) -> io::Result<()> {
     {
@@ -245,7 +245,7 @@ fn ensure_attached(id: u64) -> io::Result<()> {
         return Err(io::const_error!(io::ErrorKind::Other, "mapping the socket frame failed"));
     }
 
-    // Delegate it (narrowed to read/write) to netstack with the ATTACH request. A negative result
+    // Delegate it (narrowed to read/write) to net_stack with the ATTACH request. A negative result
     // means no `Stack` endpoint in slot 2: Unsupported.
     // SAFETY: plain syscall; the frame carries GRANT (minted by RETYPE), narrowed here.
     if unsafe {
@@ -266,7 +266,7 @@ fn ensure_attached(id: u64) -> io::Result<()> {
 }
 
 /// Open a socket of the given kind, returning its id. Fails `Unsupported` if the network was not
-/// granted, or `Other` if netstack refused.
+/// granted, or `Other` if net_stack refused.
 fn open(is_tcp: bool) -> io::Result<u64> {
     let id = alloc_id().ok_or_else(|| {
         io::const_error!(io::ErrorKind::Other, "too many open sockets (contract limit)")
@@ -288,7 +288,7 @@ fn open(is_tcp: bool) -> io::Result<u64> {
     Ok(id)
 }
 
-/// Close socket `id`: tell netstack to drop it, then release the id (keeping its attached frame).
+/// Close socket `id`: tell net_stack to drop it, then release the id (keeping its attached frame).
 fn abandon(id: u64) {
     let _ = rt::call(STACK, req(OP_CLOSE, id), 0);
     free_id(id);
@@ -478,7 +478,7 @@ impl TcpStream {
     }
 
     pub fn socket_addr(&self) -> io::Result<SocketAddr> {
-        // The local address (a DHCP-assigned IP, an ephemeral port netstack picks) is not reported
+        // The local address (a DHCP-assigned IP, an ephemeral port net_stack picks) is not reported
         // back across the contract. Honestly unsupported rather than fabricated.
         unsupported()
     }
@@ -605,7 +605,7 @@ pub struct UdpSocket {
 
 impl UdpSocket {
     pub fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<UdpSocket> {
-        // The requested local address is validated (must be a numeric V4) but not honored: netstack
+        // The requested local address is validated (must be a numeric V4) but not honored: net_stack
         // binds an ephemeral local port per socket. A program that wants a specific local port is
         // not served by this phase of the contract.
         let mut chosen = None;

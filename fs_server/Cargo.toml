@@ -1,0 +1,85 @@
+# The milestone-32 filesystem server. Its OWN workspace root (empty [workspace]), deliberately not a
+# member of the cricker-os workspace, for the same reason redoxfs_host and std_exerciser are: it depends
+# on the vendored RedoxFS engine (vendor/redoxfs), which is its own workspace, and cargo forbids a
+# member of one workspace from depending on an in-tree crate another workspace owns. Keeping it out
+# also keeps our -D warnings clippy gate and cargo fmt off the vendored engine underneath it, while
+# our own code here is still gated by --manifest-path (script/lint, script/fmt, cargo xtask test).
+#
+# The crate is host-testable and target-buildable from one source. `cargo test` (default features,
+# `hosttest`) builds the sans-IO Server<D> core against std RedoxFS and a DiskMemory fixture, in
+# milliseconds, no emulator. The EL0 binary (added under `--features el0 --no-default-features` for
+# the bare targets) wraps that core in the IPC Disk and the serve loop. See notes/fs-server.md.
+[workspace]
+
+[package]
+name = "fs_server"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+# Unpublishable by construction: it depends on ../vendor/redoxfs by path, and crates.io forbids path
+# dependencies. Saying so is what lets cargo-deny's wildcard ban (deny.toml) tell an in-tree path dep
+# apart from a registry `version = "*"`, which is the thing that ban is actually for.
+publish = false
+
+[lib]
+name = "fs_server"
+path = "src/lib.rs"
+
+# The second-mount repro (fix/redoxfs-second-mount): runs the engine under the FS server's own
+# allocator, capped the way the device caps it, and does two mounts in one process. Host-only (it
+# needs std RedoxFS to build the fixture), so it rides `hosttest` and never enters the el0 build.
+[[bin]]
+name = "second_mount"
+path = "src/bin/second_mount.rs"
+required-features = ["hosttest"]
+test = false
+bench = false
+
+# The EL0 binary. Behind `el0` so a host `cargo test` (which cannot compile user_rt's EL0 asm)
+# never tries to build it; the target build turns defaults off and el0 on. test/bench off for the
+# same reason every dedicated binary sets them: the default libtest target needs `extern crate test`,
+# which does not exist for the bare-metal targets.
+[[bin]]
+name = "fs_server"
+path = "src/bin/fs_server.rs"
+required-features = ["el0"]
+test = false
+bench = false
+
+[features]
+# Host default: the sans-IO core plus the std RedoxFS a `cargo test` fixture needs.
+default = ["hosttest"]
+hosttest = ["redoxfs/std", "redox_syscall/std"]
+# The EL0 binary's world: the userspace runtime and the ABI constants. Enabled only for the target
+# build, which also drops the default (`--no-default-features --features el0`), so the pure no_std
+# core is what links into the kernel image.
+el0 = ["dep:user_rt", "dep:abi"]
+
+# The initrd carries this binary's ELF, so keep it small and deterministic (the same knobs
+# std_exerciser uses). Only the target build uses the release profile; host tests use dev and unwind.
+[profile.release]
+opt-level = "s"
+debug = false
+strip = "debuginfo"
+
+[dependencies]
+# The vendored engine, no default features: the pure no_std core (creation APIs stay host-side).
+redoxfs = { path = "../vendor/redoxfs", default-features = false }
+# The untyped heap's ALGORITHM (the EL0 binary uses it through user_rt::heap). Depended on directly so
+# the `second_mount` host repro can run the engine under the same allocator, capped the same way, with
+# no syscalls and no emulator. Tiny and no_std, so it is harmless in the el0 build too.
+user_heap = { version = "0.1.0", path = "../crates/user_heap" }
+# The same redox_syscall (lib name `syscall`) RedoxFS uses, so our Server's `syscall::error::Result`
+# is byte-for-byte the trait's. Cargo unifies the two at one version.
+redox_syscall = { version = "0.9.0", default-features = false }
+
+# The wire protocols. NOT optional since milestone 47: the rights ladder a directory capability
+# carries (`fs_proto::dir`) is the sans-IO core's own vocabulary rather than something the serve loop
+# bolts on at the boundary, which is what makes the attenuation impossible to forget. Pure no_std
+# logic with no dependencies of its own, so it costs the host build nothing.
+fs_proto = { version = "0.1.0", path = "../crates/fs_proto" }
+
+# EL0-only, optional (behind `el0`): the syscall runtime and the ABI numbers. Neither compiles for
+# the host, so they are absent from the host test build.
+user_rt = { version = "0.1.0", path = "../crates/user_rt", optional = true }
+abi = { version = "0.1.0", path = "../crates/abi", optional = true }

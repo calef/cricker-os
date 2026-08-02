@@ -162,9 +162,9 @@ pub mod reply {
     pub const REPLY: u64 = 0;
 }
 
-/// The rights bits, matching `caps::Rights`, so userspace can name the rights to narrow a
+/// The rights bits, matching `capability::Rights`, so userspace can name the rights to narrow a
 /// delegated capability to (the `rights` argument to [`endpoint::SEND_CAP`]) without depending on
-/// the kernel's `caps` crate.
+/// the kernel's `capability` crate.
 /// Object types for [`untyped::RETYPE_OBJ`]: what a page of untyped becomes.
 pub mod objtype {
     /// An IPC endpoint, page-resident, owned by the caller's budget (milestone 19a).

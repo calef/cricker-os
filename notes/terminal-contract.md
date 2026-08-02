@@ -3,7 +3,7 @@
 Milestone 28. This is the interface a terminal presents, written down so that the programs on
 either side of it can be built independently and swapped without either one knowing. Milestones
 29 (the display terminal) and 31 (the capability shell) implement *against* this contract rather
-than against `lineedit`, the particular component that satisfies it today.
+than against `line_editor`, the particular component that satisfies it today.
 
 A terminal sits between two driver endpoints and an application:
 
@@ -31,12 +31,12 @@ A contract has a wire half and an IPC half, and they are independent.
   [line-discipline.md](line-discipline.md) with the engine that produces it.
 - **The IPC half** is the protocol on the endpoints: the opcodes, the flags, the shared pages.
   This is what a client and the drivers must speak, and it is the substance of this note. The
-  framing constants live in `lineedit::proto` so the server, its clients, and the kernel-side
+  framing constants live in `line_editor::proto` so the server, its clients, and the kernel-side
   tests share one definition.
 
 The protocol is a **userspace** protocol, not kernel ABI. The kernel routes these words the way
 it routes any IPC (§10, §12); it never reads an opcode. Adding an opcode is a change to this note
-and to `lineedit::proto`, not a change to the syscall surface.
+and to `line_editor::proto`, not a change to the syscall surface.
 
 ## The IPC protocol
 
@@ -123,7 +123,7 @@ Owes:
 Does not owe:
 
 - **Terminal size tracking.** The redraw math assumes a line fits one row. A line longer than the
-  terminal is wide will redraw incorrectly past the margin. `lineedit::LINE_MAX` keeps this rare;
+  terminal is wide will redraw incorrectly past the margin. `line_editor::LINE_MAX` keeps this rare;
   a full fix needs size negotiation the serial contract does not carry. Honest limit, recorded.
 - **Tab completion.** Completion needs the command namespace, which is the application's
   knowledge, not the terminal's. Tab is ignored here and belongs to the shell (milestone 31).
@@ -139,7 +139,7 @@ input arrives. Noted, not papered over; see [shell.md](shell.md).
 
 ## For milestones 29 and 31
 
-- **29 (display terminal): built, 2026-07-30**, and the prediction held. `user/src/vterm.rs`
+- **29 (display terminal): built, 2026-07-30**, and the prediction held. `user/src/display_terminal.rs`
   implements the *same IPC half* against a framebuffer and a VT engine instead of a serial line and
   this line discipline: `OP_WRITE` prints from the client's output page, `OP_BYTES` carries
   keystrokes in from a driver (or from the compositor, forwarding to the focused client), and the
@@ -149,13 +149,13 @@ input arrives. Noted, not papered over; see [shell.md](shell.md).
   Two things this note could not have predicted, both recorded in [glyphs.md](glyphs.md):
 
   - **The display terminal does not serve `OP_READLINE`.** It renders a stream and echoes
-    keystrokes; it is not a line discipline. A client that wants edited lines composes `lineedit` in
+    keystrokes; it is not a line discipline. A client that wants edited lines composes `line_editor` in
     front of it and prints the discipline's echo through `OP_WRITE`, which needs **no new protocol at
-    all**, because `lineedit`'s echo is exactly a byte stream the VT engine parses. That is not a
-    hope: `crates/vt` proves it on the host by running both components against each other.
+    all**, because `line_editor`'s echo is exactly a byte stream the VT engine parses. That is not a
+    hope: `crates/video_terminal` proves it on the host by running both components against each other.
   - **The one-endpoint consequence.** A terminal has two classes of sender (an application printing,
     an input source typing) and a process here has one wait point (DECISIONS §33), so both arrive on
-    one endpoint and are told apart by opcode, exactly as `lineedit` does. The security consequence is
+    one endpoint and are told apart by opcode, exactly as `line_editor` does. The security consequence is
     stated rather than hidden: an application holding that endpoint could send `OP_BYTES` and forge a
     keystroke into **its own** terminal. It gains nothing by it, and the boundary that matters (one
     client's input not reaching another's) is the compositor's and is a capability there.

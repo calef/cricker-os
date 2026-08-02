@@ -46,7 +46,7 @@ Three pieces, no new syscall, no new capability, no key material.
    mangling and the boot fails, which is the correct direction to be wrong in.
 
 2. **The kernel image carries the digest.** `kernel/build.rs` reads the manifest and generates
-   `TRUST_ROOT: &[measure::Measurement]` into `OUT_DIR`; `kernel/src/trust.rs` includes it. The
+   `TRUST_ROOT: &[measured_boot::Measurement]` into `OUT_DIR`; `kernel/src/trust.rs` includes it. The
    expected value is part of the thing doing the checking, which is what lets this work with no keys
    and no certificate chain.
 
@@ -60,7 +60,7 @@ The meaning of the whole arrangement is one sentence: **this kernel image runs e
 
 - **Wrong bytes halt.** There is no second init to fall back to and no recovery that would not be the
   thing we are preventing.
-- **A missing measurement halts too.** `measure::VerifyError::Unmeasured` is a refusal, not a pass. A
+- **A missing measurement halts too.** `measured_boot::VerifyError::Unmeasured` is a refusal, not a pass. A
   kernel built without the manifest gets an *empty* trust root, and an empty trust root vouches for
   nothing. This matters more than the mismatch case: the natural bug in a measured-boot
   implementation is for the check to quietly evaporate when the build step does not run, and then
@@ -74,7 +74,7 @@ never runs") hold.
 
 ## The hash: SHA-256, hand-written, one implementation
 
-`crates/measure` is about a hundred lines of shifts and adds: no dependency, no allocation, no
+`crates/measured_boot` is about a hundred lines of shifts and adds: no dependency, no allocation, no
 `unsafe`, `no_std`, host-tested.
 
 **Why a cryptographic hash at all.** The threat is someone substituting the initrd bytes. A fast
@@ -88,7 +88,7 @@ lines of tree hashing inside the boundary we are trying to keep small); SHA-3 is
 to audit for no gain here. SHA-256 is small, boring, and checkable by hand against `shasum -a 256` on
 any machine on earth. Speed is not a constraint: it runs once per boot over a 1.2 MB ELF, before the
 first user instruction. (It is compiled at `opt-level = 2` even in debug builds, via a
-`[profile.dev.package.measure]` override, because an unoptimized SHA-256 is a visible tax under TCG
+`[profile.dev.package.measured_boot]` override, because an unoptimized SHA-256 is a visible tax under TCG
 and there is nothing in it a debugger wants to step through.)
 
 **Vendored or hand-written: hand-written.** A vendored crate would be more code and a supply-chain
@@ -129,7 +129,7 @@ Two consequences worth knowing:
 
 ## What is proven
 
-- **Host** (`crates/measure`, milliseconds): the published SHA-256 vectors; streaming in any chunking
+- **Host** (`crates/measured_boot`, milliseconds): the published SHA-256 vectors; streaming in any chunking
   equals one-shot; a flipped bit changes the digest; accept / mismatch / unmeasured are the three
   verdicts, and both an unknown name and an empty root are refusals; hex round-trips and malformed
   hex does not parse as zeros.
@@ -167,31 +167,31 @@ tree, in one sequence.
 
 B.1 settled *what bytes init is*. B.2 is the other half: **what a compromised init can still reach.**
 
-The pre-B.2 init (`sysinit`, `hello`'s init role) holds a large untyped budget for its entire life,
+The pre-B.2 init (`system_initializer`, `hello`'s init role) holds a large untyped budget for its entire life,
 because it stays the system's process builder. Every process in the system is therefore one bug in
 init away from being built wrong. The answer is not to make init more careful; it is to make it
 **hold less**, and to make it hold it for less time.
 
 ### The tree
 
-Four small portable programs (`user/src/rootsup.rs`, `spawner.rs`, `subsup.rs`, `flaky.rs`, sharing
+Four small portable programs (`user/src/root_supervisor.rs`, `spawner.rs`, `sub_server_supervisor.rs`, `flaky.rs`, sharing
 `user/src/suptree.rs`):
 
 ```text
-  rootsup   the root untyped + the initrd + a report endpoint       (briefly)
+  root_supervisor   the root untyped + the initrd + a report endpoint       (briefly)
     |
     +-- spawner   one program image, one budget (WRITE), no initrd  (can build only that program)
     |
-    +-- subsup    a request channel + a fault endpoint, NO memory   (cannot build anything)
+    +-- sub_server_supervisor    a request channel + a fault endpoint, NO memory   (cannot build anything)
             |
             +-- flaky   a report endpoint                           (the supervised sub-server)
 
-  then: rootsup deletes its untyped and becomes a RECV loop on its own supervision endpoint.
+  then: root_supervisor deletes its untyped and becomes a RECV loop on its own supervision endpoint.
 ```
 
 Each split is chosen so that the authority is the smallest thing that still does the job:
 
-- **The spawner holds a program image, not the initrd.** rootsup copies `flaky`'s bytes into fresh
+- **The spawner holds a program image, not the initrd.** root_supervisor copies `flaky`'s bytes into fresh
   read-only pages in the spawner's address space (the `blobs` field of `Endow`). So "build me program
   X" is not a request the spawner *can* honour for any other X: the only program it can name is the
   one it was handed. Compare init, which holds a 14 MB archive of every program in the system.
@@ -202,13 +202,13 @@ Each split is chosen so that the authority is the smallest thing that still does
   the pages to the budget (§16's return-of-pages), so the restart loop is not a leak.
 - **The supervisor holds no memory at all.** Its entire power is to ask the spawner for a rebuild of
   one program. A compromised supervisor is a restart loop, not a foothold.
-- **rootsup deletes the budget** once the two servers are running (and the wiring capabilities, and
+- **root_supervisor deletes the budget** once the two servers are running (and the wiring capabilities, and
   the spawner's budget copy). What is left cannot make a page, an address space, a thread, or an
   endpoint.
 
 ### Restart policy is userspace code, and stays there
 
-`subsup` is the policy: bounded retries (two), a clean exit read as "finished" rather than "crashed",
+`sub_server_supervisor` is the policy: bounded retries (two), a clean exit read as "finished" rather than "crashed",
 a give-up when the budget runs out. It reaps the corpse through the spawner before rebuilding, because
 §26's corpse is dead-until-reaped. None of that is in the kernel, and the kernel's whole contribution
 is one five-word message. That is DECISIONS §26 working as designed: the kernel is the only witness to
@@ -221,7 +221,7 @@ rebuild, the spawner is what **can**. Policy and authority, separated by an IPC 
 
 `kernel/src/user.rs`, `authority_tests`:
 
-- `init_drops_its_construction_authority_and_cannot_build_again`. After the handoff, rootsup tries the
+- `init_drops_its_construction_authority_and_cannot_build_again`. After the handoff, root_supervisor tries the
   two primitives that build things (retype a page, retype a kernel object) and reports the result from
   *inside* the process, because what matters is what the holder can do and only the holder can ask.
   Both fail, and they fail with `NoSuchSlot` (there is nothing there), not `NotPermitted` (there is
@@ -251,13 +251,13 @@ there rather than here because it is an exception-path fact, not an init fact.
 1. **Reaping requires the same right as building.** `Untyped::DESTROY` needs `WRITE` on the region,
    and so does `RETYPE`. So a root supervisor that could restart a dead tier-one server is a root
    supervisor that can build processes, which is exactly the authority we set out to give away.
-   rootsup therefore chooses to be *unable* to build, and its policy for a dead tier-one server is
+   root_supervisor therefore chooses to be *unable* to build, and its policy for a dead tier-one server is
    "report and stop", the fail-closed floor pushed as high and as small as it goes. Splitting a
    reap-only right out of `WRITE` (a rights bit, or a distinct `Untyped::REAP`) would let a root
    supervisor recover without regaining construction authority. That is a kernel surface change and a
    rights-model change, so it is Chris's call, not a thing to slip in.
 2. **A supervisor cannot turn a tid into a handle.** The kernel's fault message names the dead thread
-   by tid (§26.5), but no method turns a tid into something a builder holds, so `subsup` names
+   by tid (§26.5), but no method turns a tid into something a builder holds, so `sub_server_supervisor` names
    instances by a handle the *spawner* issues instead. That works because this tree runs one
    sub-server at a time; a supervisor with many children would need the mapping. The options are a
    `Tcb::NAME` method (small, and the tid is already exposed in the fault message, so it discloses
@@ -267,7 +267,7 @@ there rather than here because it is an exception-path fact, not an init fact.
 ### What is left of milestone 22 phase B
 
 The tree proves the pattern on the real capability system, with real programs, on both ISAs. It is
-**not yet the interactive boot's init**: `sysinit` (riscv) and `hello`'s init role (aarch64) still hold
+**not yet the interactive boot's init**: `system_initializer` (riscv) and `hello`'s init role (aarch64) still hold
 their budgets for life, because they stay the shell's spawn service. Migrating them is the next
 increment, and it is deliberately not done blind in the same pass: that boot path is validated by hand
 (the automated suite cannot inject keystrokes), so changing who holds the spawn service there wants an
@@ -275,14 +275,14 @@ interactive run to confirm, not a green unit test. The shape it would take is al
 tree: the spawn service becomes a sub-server holding the archive and a budget, init wires the shell to
 *it* instead of to itself, and init then drops what it no longer needs.
 
-The other honest gap: `suptree.rs`'s child builder is a generalization of `sysinit.rs`'s
-`build_child` rather than a replacement for it, so that loader logic exists twice until sysinit
+The other honest gap: `suptree.rs`'s child builder is a generalization of `system_initializer.rs`'s
+`build_child` rather than a replacement for it, so that loader logic exists twice until system_initializer
 migrates. Recorded here so the duplication is a scheduled removal and not a surprise.
 
 ## Not covered, deliberately
 
 The kernel measures the program **it** loads. Every other program in the archive (`console`, `input`,
-`shell`, `lineedit`, `netstack`, `fs_server`, ...) is loaded by init in userspace, and those bytes are not
+`shell`, `line_editor`, `net_stack`, `fs_server`, ...) is loaded by init in userspace, and those bytes are not
 measured today, so the chain of trust stops at init's entry.
 
 The capability-correct extension is not "make the kernel measure everything": it is for **init to

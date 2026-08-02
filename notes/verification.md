@@ -5,7 +5,7 @@ note is *how*, and the record of the experiment that green-lit it.
 
 ## Tests sample; proofs quantify
 
-The `caps` tests check the cases we thought to write: READ cannot become WRITE, an empty slot is
+The `capability` tests check the cases we thought to write: READ cannot become WRITE, an empty slot is
 `NoSuchSlot`, a derived cap names the same object. Good tests, but they say nothing about the inputs
 we did not enumerate. A proof harness asks a different question. `kani::any()` is an unconstrained
 value, so:
@@ -54,7 +54,7 @@ two-slot table. What it cannot swallow whole is an *unbounded* loop or an arbitr
 structure, which would build an infinite formula. So Kani **bounds**: it unrolls loops to a limit and
 gives structures concrete sizes.
 
-The `paging` and `caps` harnesses have no unbounded loops (the four levels are literally four), so
+The `paging` and `capability` harnesses have no unbounded loops (the four levels are literally four), so
 their proofs are *complete*, not "up to a bound." But the moment a harness reasons over `map_range`
 for a symbolic `count`, or the `Mapper` building tables, you either bound it (prove it for count <= N)
 or reach for a heavier technique (induction, a tool like Verus). "Bounded model checking is automatic
@@ -69,7 +69,7 @@ A proof is only as good as three things, and each is worth being blunt about:
    checks. This is the main failure mode, not solver bugs.
 2. **It covers only what the model captures.** Kani models Rust's semantics. It does not model the
    hardware, and `unsafe` that breaks Rust's assumptions is outside it. That is exactly why we verify
-   the pure-logic crates (`caps`, `paging`'s arithmetic) and not the `arch/` assembly: the model is
+   the pure-logic crates (`capability`, `paging`'s arithmetic) and not the `arch/` assembly: the model is
    faithful where there is no hardware and no `unsafe`. It is also why §14 promises a *small verified
    TCB with an unverified layer beneath it*, not a proof of the whole machine. **Concurrency is the
    sharpest edge of this limit**: every queue and endpoint proof here is single-threaded, and the
@@ -81,7 +81,7 @@ A proof is only as good as three things, and each is worth being blunt about:
 
 ## What is proved today
 
-Eight harnesses in `crates/caps/src/lib.rs`, under `#[cfg(kani)]`:
+Eight harnesses in `crates/capability/src/lib.rs`, under `#[cfg(kani)]`:
 
 | Harness | Property |
 |---|---|
@@ -207,7 +207,7 @@ one rests on:
    anywhere in the system. (The caller is never in the receiver queue: `ipc_call` does not `recv`,
    and a blocked thread cannot run to enqueue itself again.)
 2. **Consume-on-use is final**: `a_deleted_capability_stays_deleted` and
-   `delete_touches_only_its_slot` in `crates/caps`. The syscall layer deletes the Reply capability
+   `delete_touches_only_its_slot` in `crates/capability`. The syscall layer deletes the Reply capability
    the instant it is invoked; the proofs say no table state exists in which the consumed slot can
    be invoked again, and consuming one caller's Reply cannot disturb another's.
 3. **The capability cannot be duplicated or delegated**: structural, not a harness. There is no
@@ -217,7 +217,7 @@ one rests on:
    an inspection argument, backed end-to-end by the QEMU test in which the call server invokes its
    Reply twice and the kernel refuses the second (`user/src/hello.rs`, `call_server`).
 
-No rewire because `caps::CSpace` and `ipc::Endpoint` already *are* the kernel's cspace and endpoint
+No rewire because `capability::CSpace` and `ipc::Endpoint` already *are* the kernel's cspace and endpoint
 state; the proofs landed on code the kernel was running all along.
 
 Three in `crates/slots/src/lib.rs`, the generational thread table (milestone 14 phase A; see
@@ -280,7 +280,7 @@ Four in `crates/pci/src/lib.rs`, the config-space decode the kernel runs on **de
 | `read_bars_is_total_for_any_device` | the BAR size probe never panics on garbage device answers (`!mask + 1` cannot overflow: the type bits are masked first) |
 | `the_capability_walk_terminates_on_any_device` | a capability list forming ANY graph, cycles included, is walked at most 64 hops; the bounded-walk discipline proved rather than argued |
 
-Seven in `crates/dma_validate/src/lib.rs`, the DMA-confinement validator (milestone 35). This is the
+Seven in `crates/dma_validator/src/lib.rs`, the DMA-confinement validator (milestone 35). This is the
 last isolation boundary in the system that was attacker-tested but never proved. It confines a
 userspace virtio driver's DMA: on every `NOTIFY` the kernel walks the driver's descriptors, refuses
 any whose buffer escapes the driver's granted region (or is indirect), and copies the validated ones
@@ -318,7 +318,7 @@ with its justification:
 
 | Bound | Value | Why it is adequate |
 |---|---|---|
-| queue size (`QS`) | 8 | **It is the system's own bound, not a proof convenience.** `dma_validate::LAYOUT_QSIZE` is the kernel's `QSIZE`, `setup_queue` refuses `num > QSIZE`, and the kernel now *aliases* the crate's constant rather than keeping a copy. So the proof is over the shipping configuration, and no larger ring can exist to be unproved. |
+| queue size (`QS`) | 8 | **It is the system's own bound, not a proof convenience.** `dma_validator::LAYOUT_QSIZE` is the kernel's `QSIZE`, `setup_queue` refuses `num > QSIZE`, and the kernel now *aliases* the crate's constant rather than keeping a copy. So the proof is over the shipping configuration, and no larger ring can exist to be unproved. |
 | chain length | ≤ `qsize` = 8 | The walk is `for _ in 0..qsize`, and a chain cannot usefully be longer: there are only 8 descriptors, so any longer walk is revisiting one. A **cycle** is therefore covered rather than excluded: `next` is fully symbolic, so `0 → 1 → 0 → …` is among the proved inputs, and the loop bound is what makes it terminate instead of hanging. |
 | loop unrolling | `unwind(10)` / `unwind(11)` | One more than each loop can need, so Kani's *unwinding assertion* is part of the proof: if any input could drive a loop longer, verification fails. That turns the bound from an assumption into the **termination proof**. Checked by falsification: delete `validate_and_shadow`'s batch-size guard and the unwinding assertion fails at iteration 11. |
 | batch size | ≤ `qsize` | Proved as a property (`an_oversized_batch_is_refused`), not assumed: a claim of more than `qsize` new entries is refused before a single read. |
@@ -433,7 +433,7 @@ So the two paths have genuinely different evidence, and conflating them is the e
 
 | Path | What confines it | Strength of the evidence |
 |---|---|---|
-| Addresses in **descriptors** (disk, NIC, and the GPU's own command ring) | the shadow-ring validator, plus the IOMMU where present | **machine-checked for every input** (`crates/dma_validate`), plus end-to-end attacker tests on both ISAs and both transports |
+| Addresses in **descriptors** (disk, NIC, and the GPU's own command ring) | the shadow-ring validator, plus the IOMMU where present | **machine-checked for every input** (`crates/dma_validator`), plus end-to-end attacker tests on both ISAs and both transports |
 | Addresses in a **command payload** (virtio-gpu backings) | the IOMMU, and *only* the IOMMU | **the barrier's allow-list is proved exact; the hardware honouring it is attacker-tested.** `an_enumerated_page_lies_inside_the_grant` and `every_whole_page_of_the_grant_is_enumerated` prove the domain maps exactly the granted pages, which is the property that makes an out-of-grant payload address untranslatable; `the_iommu_refuses_the_gpu_a_framebuffer_outside_the_drivers_grant` then points a backing at a frame left out of the domain and asserts the IOMMU's fault queue recorded a fault there, on both ISAs |
 
 The middle column of that second row is the one useful thing this milestone could prove about the payload
@@ -640,10 +640,10 @@ change.
 
 - **Proofs live behind `#[cfg(kani)]`.** An ordinary `cargo build`/`cargo test` never compiles them,
   and the crate needs no dependency on `kani` (its intrinsics are injected only under `cargo kani`).
-- **Verify pure logic first.** The §7 host crates (`caps`, `paging`, `elf`, `frames`, the ASID
+- **Verify pure logic first.** The §7 host crates (`capability`, `paging`, `elf`, `frames`, the ASID
   allocator when it lands) are the frontier: small, allocation-light, already host-compiled. Bounded
   model checking is happiest there.
-- **Spread inward from the capability core**, the order §14 sets: `caps`, then IPC (rendezvous,
+- **Spread inward from the capability core**, the order §14 sets: `capability`, then IPC (rendezvous,
   one-shot reply), then the MMU isolation invariants. **All three steps are done** (milestone 18);
   each proved a property the security story previously rested on by argument. The frontier now
   moves with milestone 14: proving properties *of the kernel* at scale wants a kernel that does

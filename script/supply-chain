@@ -24,7 +24,7 @@
 #   - **vendor/redoxfs** enters our builds only through the two consumers below, at the feature sets
 #     we actually build. Checking it standalone would evaluate its default features (`fuse`, which
 #     wants macFUSE) and report on code nothing here ever compiles.
-#   - **user-std** (milestone 27's std demo) has exactly one dependency, an in-tree path dep on
+#   - **std_exerciser** (milestone 27's std demo) has exactly one dependency, an in-tree path dep on
 #     crates/fs_proto, which the main workspace already covers. There is no third-party graph to check.
 #
 # See notes/scripts.md.
@@ -54,7 +54,7 @@ fi
 # entry, and the same file is applied to all three. A skip that is irrelevant to the workspace being
 # checked is expected, not a finding. (The mirror-image warning for licences is handled in the config
 # itself, via `unused-allowed-license`.)
-for manifest in Cargo.toml fs-server/Cargo.toml tools/redoxfs-host/Cargo.toml; do
+for manifest in Cargo.toml fs_server/Cargo.toml tools/redoxfs_host/Cargo.toml; do
     echo "==> cargo-deny: $manifest"
     cargo deny --manifest-path "$manifest" --all-features --config deny.toml \
         check -A unmatched-skip

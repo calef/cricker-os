@@ -29,7 +29,7 @@
 //!
 //! # What it does not do
 //!
-//! No key repeat of its own (the device sends repeats and [`vt::keymap`] honours them), no LEDs, no
+//! No key repeat of its own (the device sends repeats and [`video_terminal::keymap`] honours them), no LEDs, no
 //! layout switching, no mouse or tablet (a `virtio-tablet-pci` presents the same PCI id, which is
 //! recorded in `crates/pci` rather than guessed at), and no configuration-space query: it drives the
 //! event queue and nothing else. The honest limits are in notes/glyphs.md.
@@ -165,11 +165,11 @@ fn die(code: u64) -> ! {
 
 /// **Put a byte in the compositor's input ring.**
 ///
-/// The ring is `compose::proto::ring`: a byte buffer with a head the compositor advances and a tail
+/// The ring is `compositor::proto::ring`: a byte buffer with a head the compositor advances and a tail
 /// this driver advances. Writing the bytes *before* the tail is the whole synchronization, and the
 /// fence between them is what makes it true on a weakly ordered machine (DECISIONS rule 4).
 fn ring_push(tail: &mut u32, byte: u8) {
-    use compose::proto::ring;
+    use compositor::proto::ring;
     let at = RING_VA + ring::BYTES + (*tail % ring::CAPACITY) as u64;
     // SAFETY: inside the ring frame the kernel mapped read/write into this process and the
     // compositor, and nowhere else.
@@ -178,7 +178,7 @@ fn ring_push(tail: &mut u32, byte: u8) {
 }
 
 fn ring_publish(tail: u32) {
-    use compose::proto::ring;
+    use compositor::proto::ring;
     // The bytes must be visible before the tail that advertises them.
     core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
     // SAFETY: inside the ring frame.
@@ -253,9 +253,9 @@ pub extern "C" fn _start(_arg0: u64, dma_phys: u64, _arg2: u64) -> ! {
         invoke(VIRTIO, virtio::NOTIFY, EVENT_Q, 0, 0);
     }
 
-    send(REPORT, vt::status::KBD_UP, EVENTS as u64, 0);
+    send(REPORT, video_terminal::status::KBD_UP, EVENTS as u64, 0);
 
-    let mut keys = vt::keymap::Keyboard::new();
+    let mut keys = video_terminal::keymap::Keyboard::new();
     let mut seen: u16 = 0; // used-ring index already drained
     let mut tail: u32 = 0; // our end of the compositor's input ring
     loop {
@@ -304,9 +304,13 @@ pub extern "C" fn _start(_arg0: u64, dma_phys: u64, _arg2: u64) -> ! {
             // Publish the tail, then ring. **The doorbell carries nothing**, and that is the design:
             // what was typed is in a page the compositor maps and no client does. This is also the
             // frame that will show the keystroke, because the compositor drains the ring and then
-            // rescans every client's control page before it composites (see user/src/vterm.rs).
+            // rescans every client's control page before it composites (see user/src/display_terminal.rs).
             ring_publish(tail);
-            let _ = call(DOORBELL, compose::proto::req(compose::proto::COMMIT, 0), 0);
+            let _ = call(
+                DOORBELL,
+                compositor::proto::req(compositor::proto::COMMIT, 0),
+                0,
+            );
         }
     }
 }

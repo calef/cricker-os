@@ -7,7 +7,7 @@
 //! # The endowment is the argument
 //!
 //! ```text
-//!   entropy ──an endpoint──►┌──────────────┐──an endpoint──► netstack ──► the network
+//!   entropy ──an endpoint──►┌──────────────┐──an endpoint──► net_stack ──► the network
 //!   (8 random bytes,        │  ntp client  │ (the socket contract, UDP 123)
 //!    the nonce)             └──────┬───────┘
 //!                                  │ an endpoint: PROPOSE
@@ -70,7 +70,7 @@
 //!
 //! [`ROLE_SERVER`] is **both an NTP server and the network**: it holds `READ` on an endpoint the
 //! client was given `WRITE` on, and it speaks the same socket contract (`crates/socket_proto/src/lib.rs`)
-//! `netstack` does. The client cannot tell, and that is the point rather than a convenience: the
+//! `net_stack` does. The client cannot tell, and that is the point rather than a convenience: the
 //! client's network path is one endpoint capability, so substituting the peer at that boundary runs
 //! the client's **real, unmodified code**. There is no test-only branch anywhere in the client.
 //!
@@ -95,10 +95,10 @@ use clock_proto::propose;
 use ntp_proto::{Packet, Query, Reject, Short, Timestamp, leap, mode};
 use user_rt::{call, cap_delete, cntfrq, exit, invoke, now, recv_cap, reply, send, yield_now};
 
-// The socket contract, verbatim from the file `netstack` compiles, so the client and the test
+// The socket contract, verbatim from the file `net_stack` compiles, so the client and the test
 // server cannot drift from the real server's idea of the wire format.
 // An NTP client speaks the UDP half of the contract and never the TCP half, so the rest of the
-// file is dead here. Allowed rather than trimmed: the value of compiling the *same file* netstack
+// file is dead here. Allowed rather than trimmed: the value of compiling the *same file* net_stack
 // does is that the two cannot drift, and a per-consumer subset would throw that away.
 #[allow(dead_code)]
 use socket_proto::*;
@@ -164,7 +164,7 @@ pub mod srv {
 }
 
 /// How many requests one synchronisation makes before giving up. Three is a client's ordinary
-/// behaviour on a lossy path, not a widened timeout; the DNS check in `netcli` settled on the same
+/// behaviour on a lossy path, not a widened timeout; the DNS check in `socket_test_client` settled on the same
 /// number for the same reason.
 pub const ATTEMPTS: u32 = 3;
 
@@ -179,7 +179,7 @@ const RETRY_GAP_NANOS: u64 = 2 * 1_000_000;
 const SERVER_TURNAROUND_NANOS: u64 = 1_000;
 
 /// Where both roles map the shared socket frame in their own address spaces. Above the program's
-/// segments; the same address `netcli` uses, and each address space is its own.
+/// segments; the same address `socket_test_client` uses, and each address space is its own.
 const FRAME_VA: u64 = 0x0000_0000_00A0_0000;
 
 /// The one socket id this client uses.
@@ -199,7 +199,7 @@ pub extern "C" fn _start(role: u64, a1: u64, a2: u64) -> ! {
 // =================================================================================================
 
 /// Report and stop. One-shot, so it **exits** rather than parking: a role left spinning on a run
-/// queue starves later tests on the same core, which is the finding `netcli`'s `done` records.
+/// queue starves later tests on the same core, which is the finding `socket_test_client`'s `done` records.
 fn done(w0: u64, w1: u64, w2: u64) -> ! {
     send(REPORT, w0, w1, w2);
     exit();
@@ -391,7 +391,7 @@ fn reject_code(r: Reject) -> u64 {
 }
 
 /// Mint one frame from our own budget, map it, and delegate it to the socket contract's server.
-/// Exactly what `netcli` does, because it is exactly the same contract.
+/// Exactly what `socket_test_client` does, because it is exactly the same contract.
 fn attach_frame() {
     // SAFETY: `svc`. RETYPE answers with the new frame capability's slot, or a negative error.
     let frame = unsafe { invoke(UNTYPED, ut::RETYPE, 0, 0, 0) };
@@ -419,7 +419,7 @@ fn attach_frame() {
 }
 
 // =================================================================================================
-// The shared frame. Absolute-VA volatile access, the same shape netstack and netcli use.
+// The shared frame. Absolute-VA volatile access, the same shape net_stack and socket_test_client use.
 // =================================================================================================
 
 fn r8(va: u64) -> u8 {

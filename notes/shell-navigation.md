@@ -11,8 +11,8 @@ because they went differently than virtually every other OS I've used."* Gratuit
 every user forever. So the bar is not "is this more capability-pure", it is **"does the model
 actually force this"**, and three divergences clear it. The rest of Unix's surface survives.
 
-The pure half is `crates/capsh/src/nav.rs` (host-tested in milliseconds); the requests are
-`user/src/shell.rs`; the wire verb `rm` needed is `fs_proto::fs::UNLINK` with `Server::unlink` behind
+The pure half is `crates/grant_plan/src/nav.rs` (host-tested in milliseconds); the requests are
+`user/src/swish.rs`; the wire verb `rm` needed is `fs_proto::fs::UNLINK` with `Server::unlink` behind
 it; the guest proof is `kernel/src/user.rs`'s `shell_navigation_tests` and the host half is
 `xtask::shell_navigation_landed`.
 
@@ -37,7 +37,7 @@ What is bad about Unix's cwd is three specific things, and `cd` is none of them:
 
 - **No absolute paths.** There is no namespace to root one in. The refusal is that the name **cannot
   be expressed**, not that a permission was checked, which is why the `std` PAL answers
-  `InvalidFilename` rather than `PermissionDenied` and why `capsh::Refusal::NoAbsolutePath` is its
+  `InvalidFilename` rather than `PermissionDenied` and why `grant_plan::Refusal::NoAbsolutePath` is its
   own variant rather than a shape complaint. Plan 9 kept the syntax by making `/` the root of *your*
   namespace; that is the roadmap's recommendation for later, and until it is built the syntax is
   refused rather than quietly reinterpreted as relative.
@@ -56,7 +56,7 @@ which is the one distinguished place a shell has and is exactly what it was gran
 
 ## The cwd stops at the process boundary
 
-This is the rule most likely to be got wrong, and the place it is made true is `capsh::FileGrant`.
+This is the rule most likely to be got wrong, and the place it is made true is `grant_plan::FileGrant`.
 
 `wc report.txt` resolves the name against the shell's position **at the moment the grant is made**.
 `plan_against` walks any leading path once, there, and records where it landed *as a value*:
@@ -124,7 +124,7 @@ thing, with `rm -r` behind it, and both belong to whoever picks up recursive rem
 
 ## Two shells, two roots, and neither can name the other's files
 
-The headline, and it is proven with the **real shell binary**: `user/src/shell.rs` grew a role that
+The headline, and it is proven with the **real shell binary**: `user/src/swish.rs` grew a role that
 reads a script instead of a keyboard, holding a `fs_subtree_caretaker`'s narrowed endpoint where the
 interactive one holds a terminal. So what the guest test exercises is what the prompt exercises, not
 a reimplementation of it, and the thing being confined is a shell.
@@ -186,7 +186,7 @@ should be able to answer for every capability rather than a flag on one verb.
   it is the same state the per-file grant has been in since milestone 31. The builtins are gated in
   the navigating role on both ISAs; what is missing is a boot that wires an FS service into the
   interactive system, which is a wiring change and not a change here.
-- **The shell tracks 8 levels and 16-byte components.** Both are `capsh::nav`'s constants: the path
+- **The shell tracks 8 levels and 16-byte components.** Both are `grant_plan::nav`'s constants: the path
   stack is an array because this program has no allocator, and 16 bytes is `fs_proto::grant::MAX_NAME`
   (a name that could be `cd`'d into but not granted would be a place you can reach and cannot talk
   about). Deeper is `TooDeep`, refused rather than truncated, because a truncated path names a
@@ -227,7 +227,7 @@ $ rm logs
 Unlink, and the thing that makes it an unlink:
 
 ```rust
-// fs-server/src/lib.rs, and the test beside it
+// fs_server/src/lib.rs, and the test beside it
 let h = srv.create_file_at(sub, "doomed").unwrap();
 srv.write(h, 0, b"the bytes outlive the name").unwrap();
 srv.unlink(sub, "doomed").unwrap();
@@ -238,7 +238,7 @@ srv.read(h, 0, &mut buf).unwrap();                   // and the object is not
 Resolve at grant time, from the shell's side:
 
 ```rust
-// capsh: the grant records WHERE it was resolved, as a value
+// grant_plan: the grant records WHERE it was resolved, as a value
 let g = plan_against(&run, prog, m, holds)?.file.unwrap();
 // g.dir is the directory as it stood when the line was typed; a later `cd` cannot change it,
 // and the child holds a capability to g.name in g.dir and no way to name anything else.
@@ -248,6 +248,6 @@ Run it:
 
 ```sh
 script/test                  # both ISAs, plus the post-run host check on the image
-cargo test -p capsh          # the cwd, the clamp, and resolve-at-grant-time
-cargo test --manifest-path fs-server/Cargo.toml   # unlink, and that it is not a revoke
+cargo test -p grant_plan          # the cwd, the clamp, and resolve-at-grant-time
+cargo test --manifest-path fs_server/Cargo.toml   # unlink, and that it is not a revoke
 ```

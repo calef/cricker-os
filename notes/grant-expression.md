@@ -3,8 +3,8 @@
 Milestone 31, phase 1. This is the note on the one idea the capability shell exists to make
 visible: on a cricker-os command line, **naming a resource is how you grant it**. Mark Miller's
 principle, "designation is authorization," applied at the one interface a human touches. The pure
-logic lives in the `capsh` crate (host-tested); the wiring is `shell.rs` and the two init paths
-(`hello.rs` init_boot on aarch64, `sysinit.rs` on riscv). The manifest half is written up
+logic lives in the `grant_plan` crate (host-tested); the wiring is `swish.rs` and the two init paths
+(`hello.rs` init_boot on aarch64, `system_initializer.rs` on riscv). The manifest half is written up
 separately in [program-manifest.md](program-manifest.md).
 
 ## What Unix does, and why it is the opposite
@@ -105,7 +105,7 @@ and `CAP_INSERT`s it into the shell, so the shell has memory that is genuinely i
 
 The shell does not build children itself; init holds the initrd and stays the ELF loader (the
 parser lives in one place, out of the shell). So the shell **directs** init and **delegates** the
-capabilities it grants, over the spawn endpoint. The protocol (`capsh::spawnproto`, a userspace
+capabilities it grants, over the spawn endpoint. The protocol (`grant_plan::spawnproto`, a userspace
 protocol like the terminal contract, DECISIONS §21):
 
 1. The shell resolves the command into an endowment (program id, argument, page count), checking it
@@ -267,7 +267,7 @@ call for the whole time the caretaker touches the page.
 
 ### How it is proven, and why one test would not have been enough
 
-An attacker (`fsclient`'s third role) reports a **bitmap of what got through**, not a pass. It is run
+An attacker (`fs_test_client`'s third role) reports a **bitmap of what got through**, not a pass. It is run
 twice, on both ISAs:
 
 - **Read-only grant of `motd`: every bit must be clear.** It tries to open `scratch`, which exists,
@@ -311,7 +311,7 @@ cspace**, not a placeholder:
 the boot that starts it wires no FS service, so init grants it a terminal, a spawn channel, a result
 channel and a budget, and nothing that names a filesystem. `caps` prints the absence in those words.
 
-The decision is a function of `capsh::Holdings`, not of the calendar, and that distinction is the
+The decision is a function of `grant_plan::Holdings`, not of the calendar, and that distinction is the
 lesson. Phase 1 hardcoded the refusal ("arrives with milestone 32"), which was true when written and
 would have quietly become a lie the moment the mechanism landed. A refusal that describes what you
 hold stays true as your holdings change; one that describes a release does not.
@@ -371,14 +371,14 @@ different subsystems:
    is what maps it.
 2. **Init has no way to receive the page.** The kernel would have to hand init a read-only frame cap
    for it, and init would have to keep a copy for the shell.
-3. **The spawn protocol carries no clock.** `capsh::spawnproto` delegates in a fixed order (the
+3. **The spawn protocol carries no clock.** `grant_plan::spawnproto` delegates in a fixed order (the
    interrupt pair, then the `--mem` untyped); a clock is a third position and a new flag word, in
    both inits.
 4. **The child needs the page mapped *and* the cap inserted**, at `CLOCK_VA` and slot 1, because
    `date` probes the slot before touching the address (a process with no clock must get an answer,
    not a fault).
 
-That is a kernel boot change on two ISAs, a protocol change, both inits, the shell and `capsh`, and
+That is a kernel boot change on two ISAs, a protocol change, both inits, the shell and `grant_plan`, and
 **nothing in the test suite boots the interactive shell**, so all of it would ship unexercised. That
 is the same reason the FS wiring above was left out of phase 2, and the same answer applies: it is
 its own lane, and the honest "no clock capability" line holds the place until then.
@@ -397,7 +397,7 @@ A foreground job the user can `^C` is another grant the command line expresses, 
 same way: the manifest marks a program `interruptible`, and the shell endows a supervised job with
 what the two-tier interrupt (DECISIONS §24) needs, and nothing more.
 
-- **A shared job frame** the shell mints per job (`capsh::jobframe`) and maps into the child. The
+- **A shared job frame** the shell mints per job (`grant_plan::jobframe`) and maps into the child. The
   cooperative signal is a word in it: on the first `^C` the shell writes the interrupt flag, and a
   cooperative program reads it between work units and exits cleanly. Shared memory, not an endpoint,
   because a running computation cannot poll an endpoint (no non-blocking receive); this is the one
@@ -411,6 +411,6 @@ what the two-tier interrupt (DECISIONS §24) needs, and nothing more.
 A program the command did not run as a supervised job holds no job frame and no reclaimable region,
 so it cannot be signaled or torn down through this path; the authority is exactly the endowment, as
 everywhere else. The escalation policy (how many `^C`, the grace timeout) is the shell's, host-tested
-in `capsh::Escalation`. The two demonstrators are `heeder` (heeds the cooperative `^C`) and `spinner`
+in `grant_plan::Escalation`. The two demonstrators are `heeder` (heeds the cooperative `^C`) and `spinner`
 (a bare loop only the forcible tier ends). See DECISIONS §24's implementation amendment and
 notes/terminal-contract.md's `OP_INTRCOUNT`.

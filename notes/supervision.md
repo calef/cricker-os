@@ -102,7 +102,7 @@ Reaping is `Untyped::DESTROY`, which needs `WRITE` on the region. **`WRITE` on a
 builds a process from it** (`RETYPE`, `RETYPE_OBJ`, `SPLIT`). So a supervisor that can restart its
 child is a supervisor that can build processes, unless it proxies the reap through something else.
 
-- The **proxy** exists today: phase B.2's `subsup` holds no memory and asks `spawner` to reap. Right
+- The **proxy** exists today: phase B.2's `sub_server_supervisor` holds no memory and asks `spawner` to reap. Right
   for a system's init, where the point is that init can no longer build.
 - Milestone 36's `c_confiner` takes the **direct route** and therefore holds a full untyped budget
   for its whole life, which is exactly the bundling the open fork is about.
@@ -141,7 +141,7 @@ future operation that needs to name a child is a fresh decision and should try t
 
 This is the part worth reading, because it says what §32 did and did not buy.
 
-- **`subsup` (milestone 22 phase B.2) now holds nothing but endpoints.** It had been the proxy: no
+- **`sub_server_supervisor` (milestone 22 phase B.2) now holds nothing but endpoints.** It had been the proxy: no
   memory of its own, asking `spawner` to reap on its behalf. The proxy is no longer needed, so the
   supervisor role reduces to exactly the authority its job describes. That is the payoff.
 - **`c_confiner` (milestone 36) still holds a full construction budget, and that is a finding rather
@@ -150,10 +150,10 @@ This is the part worth reading, because it says what §32 did and did not buy.
   only one of them was the reap. What changed is that the per-instance region capability is now
   deleted as soon as the child starts, instead of being held for the instance's whole life, so the
   caretaker holds nothing that reaches a live instance's memory. Split roles 1 and 2 into separate
-  processes and the supervisor half would hold only endpoints, which is what `subsup` now
+  processes and the supervisor half would hold only endpoints, which is what `sub_server_supervisor` now
   demonstrates. Keeping them fused in the spike stays deliberate: the requirement is visible in one
   program rather than hidden behind an IPC hop.
 
-The authorization invariant is machine-checked, not only tested: two Kani harnesses in `crates/caps`
+The authorization invariant is machine-checked, not only tested: two Kani harnesses in `crates/capability`
 cover it, which is the right instrument for "a capability that cannot build cannot be made to build via
 reap" because it quantifies over rights combinations rather than sampling them.

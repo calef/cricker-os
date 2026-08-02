@@ -71,7 +71,7 @@ in the code or the conversation doesn't make sense, it belongs here.
   `heap`/`slab` crates were deleted outright on 2026-07-27 once nothing referenced them: the
   git history preserves the work, and a demonstrator's tree should hold what it ships. The
   note stays; building the allocator and then earning its deletion were both the point.
-  **Milestone 27 brought the heap back in userspace**: `crates/uheap` (the algorithm,
+  **Milestone 27 brought the heap back in userspace**: `crates/user_heap` (the algorithm,
   host-tested) plus `user_rt::heap` (a `GlobalAlloc` that grows out of the process's own
   untyped via `untyped::MAP`); the note's last section is that story.
 - [Physical memory](physical-memory.md): the frame allocator. Why a bitmap and not a free
@@ -132,7 +132,7 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [Rust `std` on the native ABI](std.md): milestone 27: std's platform layer implemented directly
   on the capability ABI (Hermit's shape, not a POSIX shim). Heap from an untyped budget, stdout to an
   endpoint, time from the virtual counter, `panic!` faults, `thread::spawn` honestly `Unsupported`,
-  and (phase two) `std::net` bound to netstack's socket contract and `std::fs` bound to the FS service.
+  and (phase two) `std::net` bound to net_stack's socket contract and `std::fs` bound to the FS service.
   What a path *means* with no global namespace ("under the directory I hold", so `..` and an absolute
   path are refused as un-nameable rather than served), how a program detects it holds no filesystem
   without faulting on an unmapped page, how build-std runs against a hardlink-cloned patched
@@ -197,7 +197,7 @@ in the code or the conversation doesn't make sense, it belongs here.
   (console receive), and worker processes spawned on command. Proof the whole stack works, as a
   conversation between processes the kernel only routes.
 - [The line discipline as a userspace component](line-discipline.md): milestone 28: the tty
-  layer as a process (`lineedit`) on plain endpoints, a sans-IO editing engine host-tested against a
+  layer as a process (`line_editor`) on plain endpoints, a sans-IO editing engine host-tested against a
   screen model, why it was built rather than porting `noline`/`embedded-cli`, and the Reply-cap
   argument that makes it deadlock-free.
 - [The terminal contract](terminal-contract.md): milestone 28: the interface a terminal
@@ -367,7 +367,7 @@ in the code or the conversation doesn't make sense, it belongs here.
   limitation and the missing resource quotas are named rather than hidden.
 - [Machine-checked proofs (Kani)](verification.md): the verification thesis (DECISIONS §14) in
   practice: the capability model is proved for *every* input, not just tested on the cases we wrote.
-  Run by `script/verify`. Milestone 18 completed the spread inward: `caps`, then IPC (rendezvous and
+  Run by `script/verify`. Milestone 18 completed the spread inward: `capability`, then IPC (rendezvous and
   the one-shot Reply), then the MMU isolation invariants, each proof landing on code the kernel runs.
   Milestone 35 reached the last unproved isolation boundary (the DMA validator and the IOMMU domain's
   page set) and added the two things that keep a proof honest: **the bounds with their justifications**,
@@ -530,7 +530,7 @@ in the code or the conversation doesn't make sense, it belongs here.
   three caretakers forwarding these verbs, and on which of them refuses a write through a read-only
   grant (one does it itself; two leave it to the server, which is their design showing through).
 - [Reading the backup from a MacBook or a Linux host](host-recovery.md): milestone 57's answer to
-  "the board is dead, can I get my data?": `redoxfs-host ls`/`cat`/`extract`, no FUSE, no kernel
+  "the board is dead, can I get my data?": `redoxfs_host ls`/`cat`/`extract`, no FUSE, no kernel
   extension, no root, identical on macOS and Linux. Why none of upstream's five binaries already did
   this (`redoxfs-ar` only writes), why the read paths must not write to the image (`cleanup` tidies,
   and `read_node`'s atime update fires only on files last read over an hour ago, so it passes every

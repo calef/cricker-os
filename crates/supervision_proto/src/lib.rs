@@ -14,12 +14,12 @@
 #![allow(clippy::new_without_default)]
 //! **The supervision tree: the shared half** (milestone 22 phase B.2).
 //!
-//! Three programs make up the tree that shrinks init's authority (`rootsup`, `spawner`, `subsup`,
+//! Three programs make up the tree that shrinks init's authority (`root_supervisor`, `spawner`, `sub_server_supervisor`,
 //! plus the `flaky` sub-server they manage), and this is what they share: the protocol words they
 //! speak, and the userspace ELF loader they build children with. Compiled into each binary with
 //! `#[path = "suptree.rs"] mod suptree;`, the same way `blk` and `hello` share the `virtio` module.
 //!
-//! The loader is a generalization of `sysinit`'s `build_child`: it takes the builder's own budget and
+//! The loader is a generalization of `system_initializer`'s `build_child`: it takes the builder's own budget and
 //! the budget the child is built *from* as separate arguments (they are the same for a server building
 //! out of its own memory, and different for a spawner building each child in its own reclaimable
 //! region), it can place a capability in the reserved fault slot so the child is born supervised, and

@@ -179,13 +179,13 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         pci::init_iommu();
 
         // A bench build runs the primitive suite here and parks, instead of the tour. It needs the
-        // `elbench` and `coremark` programs in the initrd (cargo xtask initrd-riscv packs them). The
+        // `os_primitives_benchmarker` and `coremark` programs in the initrd (cargo xtask initrd-riscv packs them). The
         // RISC-V equivalent of the aarch64 boot's `#[cfg(feature = "bench")] bench::run()`.
         #[cfg(feature = "bench")]
         bench::run();
 
         // A `shell` build hands the machine to userspace init here and parks, instead of the tour.
-        // The kernel loads `sysinit` from the initrd, grants it the NS16550 and the UART interrupt,
+        // The kernel loads `system_initializer` from the initrd, grants it the NS16550 and the UART interrupt,
         // and it builds the console server, input driver, and shell out of its own budget; the shell
         // is interactive over the serial. This is the RISC-V equivalent of the aarch64 `initboot`
         // path. Needs the shell programs in the initrd (cargo xtask initrd-riscv packs them).
@@ -215,7 +215,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
                 }
                 None => println!("  shell: no initrd (run `cargo xtask initrd-riscv`)"),
             }
-            // The boot thread parks; sysinit and its children (console/input/shell) run on the
+            // The boot thread parks; system_initializer and its children (console/input/shell) run on the
             // scheduler. `halt` is a preemptible wfi loop, so they get scheduled from here on.
             arch::halt();
         }
@@ -811,11 +811,11 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
 
         // **Milestone 19d.2c, completed at 28: userspace init is the boot path.** The kernel stops
         // wiring services itself. It hands off to init, which brings up the console server, the line
-        // discipline (`lineedit`, milestone 28), the input driver, and the shell out of its own budget
+        // discipline (`line_editor`, milestone 28), the input driver, and the shell out of its own budget
         // through the granular verbs. This is the line that retires the kernel as the system's
         // builder. Every aarch64 interactive build reaches it: `--features shell` and the milestone
         // tour hand off straight away (the tour after running its demos), the same way `initboot`
-        // always has, and the same way RISC-V's `--features shell` hands off to `sysinit`. The
+        // always has, and the same way RISC-V's `--features shell` hands off to `system_initializer`. The
         // legacy kernel-wired `user::shell_service` is retired as a boot path (it cannot host the
         // milestone-28 shell, which speaks the terminal contract, not the raw console protocol) and
         // is kept only as dead code for reference.

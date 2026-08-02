@@ -20,7 +20,7 @@ serves a destination (the demonstrator), so a milestone earns its place by movin
 core running real confined workloads*, not only by what it teaches in isolation.
 
 **Verify inward from the capability core.** §14 makes verification the goal, and the frontier is the
-pure-logic §7 crates. The `caps` model is proved already (`script/verify`, notes/verification.md);
+pure-logic §7 crates. The `capability` model is proved already (`script/verify`, notes/verification.md);
 IPC and the MMU invariants are next. This threads through the list rather than being one milestone.
 
 ## The milestones
@@ -126,7 +126,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 60 | NOT-STARTED | ISA discovery: read the machine instead of assuming it | nothing reads `riscv,isa-extensions`; RISC-V has no `CPUID`, so the device tree plus targeted probes are the architected answer. One `Isa` record, built at boot, printed at boot |
 | 61 | BUILT | The caretakers: one verb table, and names that say what you get | **built, both ISAs.** The rename landed first (532 tokens, not four filenames); `fs_proto::verb` is one row per opcode and a verb with no row is a compile error; all three caretakers forward the four extended-attribute verbs, proven by three witnesses each with a control that must fail |
 | 62 | NOT-STARTED | Tests that assert on time: make a red run mean something | ~19 bounded spins (`for _ in 0..N { yield_now() }`) and wall-clock assertions flake under load. Four separate lanes and the integrator hit them on 2026-08-01; the CPU matrix multiplies the exposure fivefold |
-| 63 | NOT-STARTED | Directory and package names: one spelling per thing | `fs-server` and `crates/fs_proto` spell the same idea two ways; `user-std/` holds a package called `hellostd`, matching neither its directory nor anything else. Needs a directory standard, which the tenet does not yet have |
+| 63 | BUILT | Directory and package names: one spelling per thing | **built, both ISAs.** Eight crates, fourteen programs and modules, and the three violating directories renamed to the spellings settled in review; `fs-server` is `fs_server`, `user-std`/`hellostd` is `std_exerciser` twice, and the shell has a name (`swish`). The tables below keep the old spellings on purpose, because they are the record of the decision |
 | 64 | NOT-STARTED | Enough `std` to run somebody else's crate | milestone 27 shipped the PAL; `fs` answers `Unsupported` in 32 of 54 functions and `thread` in 4 of 6. Measured against real crates.io dependencies rather than guessed at, because the gap that matters is the one a chosen crate actually hits |
 | 65 | NOT-STARTED | A secrets service: hold the key, expose the operation, never the key | NTLMv2 does not verify a presented secret, it **computes with a key**, so §54's verifier shape does not fit it. Generalises the credentialer into a software HSM. Blocks milestone 55 |
 | 66 | NOT-STARTED | Vaultwarden: somebody else's real application, running here | the north star for "runs real workloads". Names the gaps concretely rather than aspirationally: no TCP **listen or accept** in the socket contract, threads mostly stubs, most of `std::fs` unsupported, no async runtime, no TLS, and SQLite is a C library. Largest single item on this roadmap |
@@ -361,7 +361,7 @@ unchecked, and its *authority* is broad, so within that authority a corrupted in
    "trustworthy system." Built as the **measured** variant: the build hashes the archive entry it
    packed and `kernel/build.rs` compiles the digest into the kernel image, so the check means "this
    kernel image runs exactly this init" with no keys and no signature code in the TCB. SHA-256,
-   hand-written in `crates/measure`, one implementation shared by the build and the kernel. Fails
+   hand-written in `crates/measured_boot`, one implementation shared by the build and the kernel. Fails
    closed both ways: wrong bytes halt, and an *unmeasured* program halts too (an empty trust root
    vouches for nothing). Both ISAs. The **signature** variant (update init without rebuilding the
    kernel, at the cost of Ed25519 in the TCB and a key-custody question) is recorded in DECISIONS §26's
@@ -370,12 +370,12 @@ unchecked, and its *authority* is broad, so within that authority a corrupted in
    remaining increment.)** Reduce what a compromised init can do: hand most process-construction to
    smaller, less-privileged sub-servers, so init's own authority is minimal and short-lived (build the
    first servers, then drop the untyped). The less init holds, the less a broken init costs. Built as a
-   four-program tree (`rootsup`, `spawner`, `subsup`, `flaky`): the spawner holds one program image and
+   four-program tree (`root_supervisor`, `spawner`, `sub_server_supervisor`, `flaky`): the spawner holds one program image and
    a `WRITE`-only budget (not the archive, so it can build exactly one program), the supervisor holds
    no memory at all and can only *ask*, and the root deletes its untyped once both are running. Proven
    on both ISAs by authority rather than timing: after the handoff, retyping a page or a kernel object
    from init fails with `NoSuchSlot`, and a faulting sub-server is reaped and restarted by its own
-   supervisor. `sysinit` and `hello`'s init role still hold their budgets for life (they remain the
+   supervisor. `system_initializer` and `hello`'s init role still hold their budgets for life (they remain the
    shell's spawn service); migrating that hand-validated boot path is the next increment. Two design
    forks found and reported rather than built through (a reap-only right, and turning a tid into a
    handle). See DECISIONS §26's phase B.2 block and notes/trusted-init.md.
@@ -387,12 +387,12 @@ unchecked, and its *authority* is broad, so within that authority a corrupted in
    the tid, so the check is that the named thread's recorded endpoint *is* the one being invoked.
    The tid-to-handle fork is closed for this case by the same move, because the tid is authorized
    relative to the endpoint it arrived on rather than being a global handle. The measured payoff:
-   **`subsup` now holds nothing but endpoints**, since the phase B.2 proxy that had to ask `spawner`
+   **`sub_server_supervisor` now holds nothing but endpoints**, since the phase B.2 proxy that had to ask `spawner`
    to reap is no longer needed. The measured limit: milestone 36's `c_confiner` still holds a
    construction budget because it is *also* the builder, which shows the bundling was two things and
    only one of them was the reap. `REAP` refuses a live thread on purpose, so a **hung** child still
    cannot be restarted; that is the watchdog case and it belongs to 23. Two Kani harnesses in
-   `crates/caps` cover the authorization invariant. See notes/supervision.md.
+   `crates/capability` cover the authorization invariant. See notes/supervision.md.
 3. **Supervise, don't relaunch-in-kernel.** What happens when init (or any server) *fails*, as
    distinct from being corrupted. The failure of init degrades to a **halt, never a breach**
    (the kernel's guarantees hold regardless), so the only open question is availability: halt, or
@@ -461,7 +461,7 @@ which is the "deferred CDT finally earns its keep" this block predicted, at one 
 (the component here is near-stateless, which is what makes kill-and-replace sufficient), a component
 manifest (endowments are literals in the operator's source), dependency-aware orchestration, and the
 hung-component case (§32's watchdog). Also the console proper: the component swapped owns the real
-UART and is shaped like a console server, but `lineedit`/`vterm`/`compositor` are not themselves swapped,
+UART and is shaped like a console server, but `line_editor`/`display_terminal`/`compositor` are not themselves swapped,
 because the interactive stack is not running under the test harness.
 
 **The destination the design points at, and a product ambition.** A client names an *endpoint*,
@@ -575,15 +575,15 @@ table.
 
 ### 18. Verify the capability core, then spread inward
 
-**In brief.** Machine-checked proofs of `caps`, then IPC, then MMU isolation
+**In brief.** Machine-checked proofs of `capability`, then IPC, then MMU isolation
 
-**Why it matters.** **the verification itself.** **Built:** `caps`, IPC (rendezvous + one-shot Reply), and the MMU isolation invariants are all proved
+**Why it matters.** **the verification itself.** **Built:** `capability`, IPC (rendezvous + one-shot Reply), and the MMU isolation invariants are all proved
 
 **Green-lit and started; see DECISIONS §14 and notes/verification.md.** This is the verification
 thesis as an actual work item rather than an aspiration.
 
 **Deliverable.** Machine-checked proofs (Kani) of the security-critical logic, spreading inward from
-the capability core. `crates/caps` is proved already: five harnesses covering "`derive` never widens
+the capability core. `crates/capability` is proved already: five harnesses covering "`derive` never widens
 rights," "userspace cannot forge a right," and the subset order's reflexivity and transitivity, each
 for *every* input rather than sampled cases (`script/verify`). Next, in order, IPC (the rendezvous
 and the one-shot reply) and the MMU isolation invariants.
@@ -598,11 +598,11 @@ scale wants a kernel that does not allocate.
 unbounded proof.
 
 **Status (2026-07-29), with milestone 35 done.** The proved set is now broad: 13 crates, ~60
-harnesses, covering `caps`, `ipc` (rendezvous, one-shot reply, the collected-sender path), the MMU
+harnesses, covering `capability`, `ipc` (rendezvous, one-shot reply, the collected-sender path), the MMU
 codec on *both* formats (`paging`: VMSAv8-64 and Sv39, level-walk and leaf permission separation),
 generational names (`slots`: a removed name never resolves again), frame allocation, region
 split/destroy arithmetic, ELF parsing, the device-tree reader, ASID allocation, PCI decode, and now
-the DMA-confinement validator (`dma_validate`) and the IOMMU domain's page set (`paging::domain`), both
+the DMA-confinement validator (`dma_validator`) and the IOMMU domain's page set (`paging::domain`), both
 milestone 35. An audit against the TCB (prompted by asking "what should we prove that we haven't")
 found the boundaries proved with **one glaring exception: the DMA-confinement validator was
 attacker-tested, never proved.** Milestone 35 closed it: the validator is extracted and proved for every
@@ -632,7 +632,7 @@ the validator sits inside the kernel crate.
 **Deliverable.**
 
 1. **Extract and prove the validator.** Lift the validation logic into a `crates/`-style
-   host-testable crate (the way `caps`, `ipc`, and `paging` were carved out), then prove the core
+   host-testable crate (the way `capability`, `ipc`, and `paging` were carved out), then prove the core
    property: no validated descriptor chain can reference memory outside the driver's granted
    region. Cover **both directions** (TX device-reads and RX device-writes-into-driver-memory,
    the milestone 30 addition), **indirect descriptors** (the escape the attacker suite already
@@ -640,7 +640,7 @@ the validator sits inside the kernel crate.
    calling the proved logic; the extraction must not change behaviour, held against the green
    attacker suite.
 2. **The `Untyped::SPLIT` rights harness.** SPLIT mints a child budget at `untyped_cap_rights`, a
-   fresh-mint site *outside* `caps::derive`, so the existing "derive never widens rights" proof
+   fresh-mint site *outside* `capability::derive`, so the existing "derive never widens rights" proof
    does not reach it. It is currently pinned by one kernel test (added with milestone 31's
    rights-inheritance fix). Add the companion harness, "split never widens rights", beside the
    existing one, so the "authority never widens" story is proved at *every* mint site.
@@ -653,7 +653,7 @@ the validator sits inside the kernel crate.
 tables, the bounds with their justifications, and the boundary statement; notes/dma.md leads with the
 what-is-proved-and-what-is-not map.
 
-1. **The validator** is `crates/dma_validate`, host-testable pure logic the kernel's
+1. **The validator** is `crates/dma_validator`, host-testable pure logic the kernel's
    `validate_and_shadow` calls; **seven** Kani harnesses prove no descriptor the walk shadows escapes
    the granted region or is indirect, covering both directions (symbolic flags include the RX
    device-writable bit), indirect descriptors, chains including cycles, **ring-index wraparound through
@@ -662,7 +662,7 @@ what-is-proved-and-what-is-not map.
    (DMA-escape and indirect-escape, both ISAs, both transports) is unchanged and green, so the
    extraction is faithful. The ring layout constants moved *into* the crate with the kernel aliasing
    them, because a proof about a copy of the layout proves nothing about the layout that runs.
-2. **`split_never_widens_rights`** in `crates/caps` proves the `Untyped::SPLIT` mint (routed through
+2. **`split_never_widens_rights`** in `crates/capability` proves the `Untyped::SPLIT` mint (routed through
    `Cap::mint_child`) gives the child **exactly** the parent's rights. §16's amendment (SPLIT grants
    `GRANT` so a budget is delegable) makes the loose phrasing wrong, so the property is stated and
    proved as equality: `mint_child` takes no rights argument, delegability is a property of the *root's*
@@ -709,7 +709,7 @@ claim currently rests on testing.
 **What stays unproved, on purpose.** The confined components themselves (`smoltcp`, RedoxFS, the
 drivers) are *not* proof targets: the whole point of the capability core is that a confined
 component need not be trusted. Proof effort belongs at the confinement boundary, not on the code
-it confines. Likewise the userspace-only crates (`uheap`, `capsh`, `lineedit`) and scheduler
+it confines. Likewise the userspace-only crates (`user_heap`, `grant_plan`, `line_editor`) and scheduler
 placement policy stay host-tested; a bad placement is a performance bug, not a safety hole.
 
 ### 19. Run a real workload
@@ -838,7 +838,7 @@ workloads" is committed). What remains open:
 **Built 2026-07-28, both ISAs green; phase two complete 2026-07-29.** std's platform layer runs
 directly on the capability ABI (Hermit's shape); a real std program (`Vec`, `String`, `HashMap`,
 `println!`, `Instant`) is spawned and checked byte for byte on aarch64 and riscv64. Phase two bound
-**`std::net`** to netstack's socket contract and **`std::fs`** to the §27 FS service, so the same binary
+**`std::net`** to net_stack's socket contract and **`std::fs`** to the §27 FS service, so the same binary
 now has three behaviours chosen by its grants alone: a filesystem if it holds a directory capability,
 a network if it holds a `Stack` endpoint, and honest `Unsupported` for whichever it was not given.
 `std::fs`'s interesting half is what a path *means* with no global namespace: "under the directory I
@@ -877,7 +877,7 @@ the history here cannot bound). Off the thesis path, like 20 was: a reach the de
 
 ### 28. A solid terminal: the line discipline as a component
 
-**In brief.** Line editing, history, ANSI in/out, control characters, and a written terminal contract, as a **swappable userspace component** between the input/console drivers and applications; Ctrl-C as a capability-routed interrupt to the foreground process, not a Unix signal. **Built, §21**: `lineedit` on both ISAs, a sans-IO engine (20 host tests), the contract in notes/terminal-contract.md, `shell_service` retired for userspace init; Ctrl-C routing **built** (two-tier, DECISIONS §24 amendment): a shared-flag cooperative tier and an `Untyped::DESTROY` forcible tier, shell-held, proven on both ISAs with `heeder`/`spinner`; the shell learns of `^C` through `lineedit`'s `OP_INTRCOUNT`
+**In brief.** Line editing, history, ANSI in/out, control characters, and a written terminal contract, as a **swappable userspace component** between the input/console drivers and applications; Ctrl-C as a capability-routed interrupt to the foreground process, not a Unix signal. **Built, §21**: `line_editor` on both ISAs, a sans-IO engine (20 host tests), the contract in notes/terminal-contract.md, `shell_service` retired for userspace init; Ctrl-C routing **built** (two-tier, DECISIONS §24 amendment): a shared-flag cooperative tier and an `Untyped::DESTROY` forcible tier, shell-held, proven on both ISAs with `heeder`/`spinner`; the shell learns of `^C` through `line_editor`'s `OP_INTRCOUNT`
 
 **Why it matters.** a terminal with real behavior is a far better "instance one" for milestone 23's live component replacement than the raw echo loop, and 27's stdio semantics need a terminal that has semantics. Serial, deliberately; the display terminal is 29, and they must not be confused
 
@@ -924,9 +924,9 @@ notes/framebuffer-contract.md.
 
 **Increment two built (2026-07-30, both ISAs): glyphs, the grid, and a real keyboard.** DECISIONS
 §37, notes/glyphs.md. A public-domain 8x8 bitmap font (`crates/bitfont`; the licence drove the choice,
-because a font is compiled into the image), a **sans-IO VT engine** (`crates/vt`) checked against the
+because a font is compiled into the image), a **sans-IO VT engine** (`crates/video_terminal`) checked against the
 *real* line discipline's echo stream rather than a written-down list of escape sequences, a display
-terminal (`user/src/vterm.rs`) that is a client at **both** display seams with exactly `painter`'s and
+terminal (`user/src/display_terminal.rs`) that is a client at **both** display seams with exactly `painter`'s and
 exactly `window`'s authority, and a confined virtio-input keyboard driver (`user/src/kbd.rs`).
 
 Three things are worth carrying forward from it. **The picture is a value three witnesses compute
@@ -939,7 +939,7 @@ capability from the producing side as well as the receiving one.
 
 **Still deferred, and stated rather than implied:** scrollback (it wants a ring of off-screen rows and
 a viewport, which changes the damage model), UTF-8, reflow, and line editing in the display terminal
-(`lineedit` composes in front of it with no new protocol, which `crates/vt` proves on the host). The VT
+(`line_editor` composes in front of it with no new protocol, which `crates/video_terminal` proves on the host). The VT
 engine's language remains an open question, and notes/glyphs.md now **prices** it: building the Rust
 engine first changed what the comparison is about, because a VT engine fits the §31 C seam's shape
 almost perfectly and the real cost of adopting libghostty-vt is rebuilding the *proof structure*, not
@@ -993,21 +993,21 @@ validator's discipline, not be retrofitted when a NIC needs it on real hardware.
 **Prior art and reuse.** The reuse call is the easiest in the plan: `smoltcp` (no_std,
 kernel-agnostic, event-driven, proven across embedded Rust; Redox has shipped on it). Building
 TCP by hand proves nothing thesis-relevant. Prior art to read before the contract is drawn:
-seL4's netstack componentization, Fuchsia's Netstack3 (Rust, capability-routed, the closest
+seL4's net_stack componentization, Fuchsia's Netstack3 (Rust, capability-routed, the closest
 cousin), and Plan 9's /net as the counter-design (per-connection filesystem, everything a
 file). Testing is cheap: QEMU's user-mode networking NATs the guest with zero host setup.
 
 **Sequencing.** After the PCIe transport (done); the multi-queue confinement is the
 prerequisite piece and worth building first as its own tested step. Feeds 23 and 27.
-**Effort: 3 lanes** (measured: multi-queue confinement, the driver and netstack, then the socket contract).
+**Effort: 3 lanes** (measured: multi-queue confinement, the driver and net_stack, then the socket contract).
 
 ### 31. A capability shell: designation is authorization
 
-**In brief.** The command line becomes a **grant expression**: naming a resource in a command IS the capability grant (`wc report.txt` passes one readable file cap; `wc` alone can read nothing, and the refusal is "no such capability", not EPERM); untyped budgets as first-class grants; a SHILL-style manifest per program checked at spawn; a `caps` command printing a process's whole endowment. **Phase 1 built, both ISAs**: `capsh` (host-tested parse + manifest + spawn protocol), the shell over the existing surface, `--mem N` made real by the `budgeter` program, manifest refusals, `caps`/`caps <command>` introspection; one kernel fix, `Untyped::SPLIT` now grants the child `GRANT` (DECISIONS §16 amendment). **Phase 2 built, both ISAs**: the FS contract's `CREATE`/`TRUNCATE` (so `std::fs::write` works), and per-file grants as a **caretaker process** (`fs_file_caretaker`) that narrows a directory capability to one file in one direction, proven by a read-only and a writable attacker. One scope note: the interactive shell still refuses a named file because its boot wires no FS service, so it holds no directory to narrow. **The grammar shown here is milestone 47's**, which deleted the `run` verb and the `file:` designator this milestone shipped with; the mechanism did not change, only the spelling. Notes: grant-expression.md, program-manifest.md, fs-server.md
+**In brief.** The command line becomes a **grant expression**: naming a resource in a command IS the capability grant (`wc report.txt` passes one readable file cap; `wc` alone can read nothing, and the refusal is "no such capability", not EPERM); untyped budgets as first-class grants; a SHILL-style manifest per program checked at spawn; a `caps` command printing a process's whole endowment. **Phase 1 built, both ISAs**: `grant_plan` (host-tested parse + manifest + spawn protocol), the shell over the existing surface, `--mem N` made real by the `budgeter` program, manifest refusals, `caps`/`caps <command>` introspection; one kernel fix, `Untyped::SPLIT` now grants the child `GRANT` (DECISIONS §16 amendment). **Phase 2 built, both ISAs**: the FS contract's `CREATE`/`TRUNCATE` (so `std::fs::write` works), and per-file grants as a **caretaker process** (`fs_file_caretaker`) that narrows a directory capability to one file in one direction, proven by a read-only and a writable attacker. One scope note: the interactive shell still refuses a named file because its boot wires no FS service, so it holds no directory to narrow. **The grammar shown here is milestone 47's**, which deleted the `run` verb and the `file:` designator this milestone shipped with; the mechanism did not change, only the spelling. Notes: grant-expression.md, program-manifest.md, fs-server.md
 
 **Why it matters.** **no-ambient-authority made user-visible**: the inversion of Unix's model at the one interface a human touches. Milestone 23's component contract in embryo, met first at the shell
 
-**Phase 1 built (both ISAs).** The command line is a grant expression: `capsh` (a host-tested crate)
+**Phase 1 built (both ISAs).** The command line is a grant expression: `grant_plan` (a host-tested crate)
 parses it and checks it against a per-program manifest; the shell holds its own untyped budget and
 delegates from it. `budgeter --mem N` splits N pages off the shell's budget and delegates the
 untyped to init, which endows the child; the budgeter maps them and reports the count (15 of 16, the
@@ -1047,14 +1047,14 @@ both ISAs, but this milestone's headline is about *the one interface a human tou
 interface `wc report.txt` is still a refusal. The interactive shell holds no directory to
 narrow, because the boot that starts it wires no FS service; the refusal it prints ("you hold no such
 capability: this shell was granted no directory to narrow") is **true** rather than a placeholder,
-and `caps` says the same. `capsh` carries the whole vocabulary (`FileSpec` in the manifest, a
+and `caps` says the same. `grant_plan` carries the whole vocabulary (`FileSpec` in the manifest, a
 `FileGrant` in the endowment, refusals both ways, `caps` printing the file endowment), and the
 decision is a function of what the shell *holds* rather than of the calendar, which phase 1's
 hardcoded "arrives with milestone 32" was not.
 
 **Phase 3, then, is exactly one thing:** wire an FS service into the interactive boot (the kernel's
 shell boot path, a RedoxFS disk on the interactive runner, and init building the caretaker per
-grant), and flip `holdings()` in `user/src/shell.rs`. It was not done here because **nothing in the
+grant), and flip `holdings()` in `user/src/swish.rs`. It was not done here because **nothing in the
 test suite boots the interactive shell**, so it would ship unexercised, and a demonstrator's ungated
 feature is worse than a recorded gap. Whoever takes it should consider gating that boot first.
 
@@ -1226,7 +1226,7 @@ kernel today); confined C means one bug scribbles its own grant and gets restart
    trait already uses, just across a language boundary instead of a trait boundary.
 3. **The libc question, answered by tier.** Shim only the symbols the component actually needs
    (`memcpy`, `memset`, `strlen`, `malloc`/`free`), with `malloc` backed by milestone 27's
-   untyped-backed `GlobalAlloc` (`crates/uheap` plus `user_rt::heap`).
+   untyped-backed `GlobalAlloc` (`crates/user_heap` plus `user_rt::heap`).
 4. **The test that is the point.** A deliberate out-of-bounds write in the C code must fault the
    process, leave everything outside its grant untouched, and be restarted by its supervisor.
 
@@ -1300,7 +1300,7 @@ unchecked. Four things came out of it that a list of unused functions would not 
 **Two gate holes closed alongside**, both the same shape as the one this milestone was chartered
 against. `script/lint` linted riscv64 only under `watchdog_probe`, so the whole riscv `shell` boot
 path was compiled by `xtask` and checked by nobody; the boot-mode loop now runs on both ISAs. And
-fs-server, its own workspace, had only ever seen the rustdoc pass, so its code was never clippy'd at
+fs_server, its own workspace, had only ever seen the rustdoc pass, so its code was never clippy'd at
 all; adding the pass found a real `deref_addrof` in `second_mount`.
 
 **Two premises in the scope note turned out not to hold, and are corrected here rather than quietly
@@ -1377,7 +1377,7 @@ it when no other lane is open, or accept the rebases. **Effort: 1 lane estimated
 
 ### 40. Documentation as a system service: searchable, rendered, and installed by packages
 
-**In brief.** Markdown authored, **rendered** for display rather than shown raw, searchable locally, and installed by the package that owns it. Reuse `pulldown-cmark` for parsing (CommonMark is a fiddly spec worth taking from someone else) and write the ANSI renderer against `lineedit`'s contract, because `termimad`/`mdcat` sit on `crossterm` and assume a POSIX terminal we do not have. Phase 1 is a terminal viewer and pager, phase 2 a host-built inverted index shipped as a per-package shard, phase 3 a graphical viewer riding the display ladder. Two constraints found while scoping: **`readdir` refuses and the §27 contract has no such verb**, so nothing can walk a tree for documents, and **font rendering is still milestone 29's remaining increment**, so the terminal comes first
+**In brief.** Markdown authored, **rendered** for display rather than shown raw, searchable locally, and installed by the package that owns it. Reuse `pulldown-cmark` for parsing (CommonMark is a fiddly spec worth taking from someone else) and write the ANSI renderer against `line_editor`'s contract, because `termimad`/`mdcat` sit on `crossterm` and assume a POSIX terminal we do not have. Phase 1 is a terminal viewer and pager, phase 2 a host-built inverted index shipped as a per-package shard, phase 3 a graphical viewer riding the display ladder. Two constraints found while scoping: **`readdir` refuses and the §27 contract has no such verb**, so nothing can walk a tree for documents, and **font rendering is still milestone 29's remaining increment**, so the terminal comes first
 
 **Why it matters.** **the OS explains itself, on itself.** The project's whole argument is already markdown (DECISIONS, thirty-plus notes, this roadmap), so a capability-confined viewer serving them is a better milestone-23 demonstration than another synthetic test and costs the documentation nothing. The missing `readdir` turns out to be a feature: **enumeration is authority**, so indexing at package-build time is both the way around the gap and the more honest shape, which is the same answer `apropos` reached for a different reason. And `doc notes/ipc-naming.md` granting exactly one readable file is milestone 31's designation-is-authorization made into something a person uses
 
@@ -1416,7 +1416,7 @@ That split is the reuse judgment, and it is the same one milestone 32 made about
 |---|---|---|
 | Parse | **`pulldown-cmark`** (pure Rust, CommonMark, event-stream API, few dependencies) | **Take it.** The event stream is the right shape for a renderer that emits ANSI. Milestone 27's `std` is what makes this buildable at all. |
 | Parse | `comrak` (GFM: tables, strikethrough, footnotes) | Consider later if GFM tables matter; more dependencies. |
-| Render | `termimad`, `mdcat` | **Do not take.** Both sit on `crossterm`, which assumes a POSIX terminal (termios, ioctl). Porting that is more work than emitting ANSI against `lineedit`'s contract, which we own and already speak (§21). |
+| Render | `termimad`, `mdcat` | **Do not take.** Both sit on `crossterm`, which assumes a POSIX terminal (termios, ioctl). Porting that is more work than emitting ANSI against `line_editor`'s contract, which we own and already speak (§21). |
 | Search | `tantivy` | **Too heavy.** It assumes a filesystem and mmap. |
 | Search | A host-built inverted index shipped in the package | **Take this shape.** Built by `xtask` where there are no constraints, merged by the viewer across installed packages. |
 | UI | `ratatui` | Possible for a pager later; needs a backend against our terminal contract first. |
@@ -1438,7 +1438,7 @@ That split is the reuse judgment, and it is the same one milestone 32 made about
 
 #### Phasing
 
-- **Phase 1, the terminal viewer.** `pulldown-cmark` to an ANSI renderer over `lineedit`'s contract:
+- **Phase 1, the terminal viewer.** `pulldown-cmark` to an ANSI renderer over `line_editor`'s contract:
   headings, emphasis, lists, block quotes, code blocks, and a pager. Works on the serial console
   today and inherits the display terminal for free when 29's glyph work lands. Host-tested in
   milliseconds like every other pure-logic piece: markdown in, styled bytes out.
@@ -1463,7 +1463,7 @@ package files instead of letting installers mutate shared directories. It reache
 47's conclusion that **installing a program is granting it into a namespace**, from an entirely different
 motive (atomic, rollback-able installs), which is the useful kind of convergence.
 
-**In brief.** **Analysis recorded, no decision taken.** The tree is a monorepo for a deliberately loosely-coupled system, and it is straining in measurable ways: `user/` is 28 binaries and 9,324 lines in one crate that is also a shared library, `fs-server/` has already escaped into its own workspace for real dependency reasons, `crates/` conflates kernel proof crates with wire contracts and userspace runtime so the boundary a third party cares about is invisible, and every crate is version 0.1.0. Four options are written up with their trade-offs (restructure in place; multiple workspaces in one repo; split repos; monorepo plus a later distribution *manifest* repo), along with a naming argument (**components** and **services**, never "daemons", because a Unix daemon is defined by the ambient authority this OS does not have) and the observation that milestone 31's program manifest plus §22's measured-boot hashing are already three quarters of a package format
+**In brief.** **Analysis recorded, no decision taken.** The tree is a monorepo for a deliberately loosely-coupled system, and it is straining in measurable ways: `user/` is 28 binaries and 9,324 lines in one crate that is also a shared library, `fs_server/` has already escaped into its own workspace for real dependency reasons, `crates/` conflates kernel proof crates with wire contracts and userspace runtime so the boundary a third party cares about is invisible, and every crate is version 0.1.0. Four options are written up with their trade-offs (restructure in place; multiple workspaces in one repo; split repos; monorepo plus a later distribution *manifest* repo), along with a naming argument (**components** and **services**, never "daemons", because a Unix daemon is defined by the ambient authority this OS does not have) and the observation that milestone 31's program manifest plus §22's measured-boot hashing are already three quarters of a package format
 
 **Why it matters.** **the structure has to serve the thesis, and one constraint dominates.** A single `script/test` proving the whole system on both ISAs is this project's credibility mechanism and what makes rule 5 a gate rather than an aspiration; splitting repos trades that for decoupling nothing external needs yet. Recommendation recorded (monorepo now, distribution as a separate manifest repo, executed as multiple workspaces, not before 23 forces it) so the eventual decision starts from evidence rather than from taste
 
@@ -1480,27 +1480,27 @@ a Linux-distribution-shaped layer will eventually sit on top of the OS component
 #### Where the current structure is straining, measured rather than felt
 
 - **`user/` is one crate doing two incompatible jobs.** 28 binaries, 34 files, 9,324 lines. It is
-  also a library: `vnet` and `netcli` are shared modules sitting
+  also a library: `net_transport` and `socket_test_client` are shared modules sitting
   beside the programs that consume them. So no component can express "I need the virtio driver bits
   but not the network stack", every component rebuilds when any shared module changes, and no
   component can take a dependency without handing it to all 28.
-- **One component has already escaped, for real reasons.** `fs-server/` is its own workspace with its
+- **One component has already escaped, for real reasons.** `fs_server/` is its own workspace with its
   own `Cargo.lock`, because RedoxFS's default features pull `fuser` (whose build script panics on
   macOS) and its core wants `std` under test. Milestone 36 did the same to the toolchain by requiring
   a cross-capable clang. Two instances is a pattern: the first components with genuine dependency
   needs of their own had to leave.
 - **`crates/` conflates three audiences with different rules**, so the boundary a third party would
-  care about is invisible: kernel proof crates (`caps`, `paging`, `frames`, `regions`, `slots`,
-  `asid`, `intrusive`, `dtb`, `elf`, `dma_validate`, `measure`, `uheap`, Kani-proved and nobody
-  else's business), wire contracts (`fs_proto`, `gfx_proto`, `lineedit`, `compose`, `abi`, the
-  **only** things an external component needs), and userspace runtime (`user_rt`, `capsh`,
+  care about is invisible: kernel proof crates (`capability`, `paging`, `frames`, `regions`, `slots`,
+  `asid`, `intrusive`, `dtb`, `elf`, `dma_validator`, `measured_boot`, `user_heap`, Kani-proved and nobody
+  else's business), wire contracts (`fs_proto`, `gfx_proto`, `line_editor`, `compositor`, `abi`, the
+  **only** things an external component needs), and userspace runtime (`user_rt`, `grant_plan`,
   `crickerfs`, `pci`).
 - **Every crate is `version = "0.1.0"`.** Correct for internal crates, fatal for a published
   contract, and contracts are exactly what milestone 23's live replacement makes into a compatibility
   surface.
-- **Not everything in `user/` is a service.** `heeder`, `spinner`, `flaky`, `allocdemo`, `worker`,
-  `builder`, `coremark`, `elbench` are fixtures and benchmarks. Mixing them with `netstack`, `display`,
-  `compositor` and `lineedit` is much of why the directory reads as shapeless.
+- **Not everything in `user/` is a service.** `heeder`, `spinner`, `flaky`, `allocator_exerciser`, `worker`,
+  `builder`, `coremark`, `os_primitives_benchmarker` are fixtures and benchmarks. Mixing them with `net_stack`, `display`,
+  `compositor` and `line_editor` is much of why the directory reads as shapeless.
 
 #### Naming: components and services, not daemons
 
@@ -1526,7 +1526,7 @@ dropped.
 | | Shape | Buys | Costs |
 |---|---|---|---|
 | **A** | One workspace, restructured directories (`kernel/`, `components/`, `contracts/`, `runtime/`, `fixtures/`, `tools/`) | Legibility, cheapest | Does not fix per-component dependencies unless each component also becomes its own crate, which is the actual work |
-| **B** | One repo, multiple workspaces (generalize what `fs-server/` already does, driven by `xtask --manifest-path`) | Real dependency isolation; a component can use `std` or a foreign toolchain without infecting the kernel build | More lock files, slower cold builds, more complex xtask |
+| **B** | One repo, multiple workspaces (generalize what `fs_server/` already does, driven by `xtask --manifest-path`) | Real dependency isolation; a component can use `std` or a foreign toolchain without infecting the kernel build | More lock files, slower cold builds, more complex xtask |
 | **C** | Split repos: kernel, components, distribution | Maximum decoupling; what an ecosystem with third-party components looks like | **The integration gate**, see below |
 | **D** | Monorepo now; distribution as a separate *manifest* repo later | Keeps the gate; distro consumes released artifacts, the way Yocto, Buildroot and Alpine aports separate recipes from sources | Defers the decoupling question rather than answering it |
 
@@ -1571,7 +1571,7 @@ exact failure rule 5 exists to catch, plus cross-repo changes become multi-PR da
 | `calendar` | **Real**, competing with `time` and `chrono`; the differentiator is the proofs plus strict `no_std` |
 | `dtb`, `pci` | Plausible, though `fdt` already occupies much of that space |
 | `ntp_proto` | Overlaps heavily with ntpd-rs's mature `ntp-proto` |
-| Everything else | Bound to our kernel model (`caps`, `slots`, `frames`, `regions`, `ipc`, `paging`, `asid`) or specific to us (`crickerfs`, `capsh`, `dma_validate`) |
+| Everything else | Bound to our kernel model (`capability`, `slots`, `frames`, `regions`, `ipc`, `paging`, `asid`) or specific to us (`crickerfs`, `grant_plan`, `dma_validator`) |
 
 **The argument for publishing is a thesis argument, not a utility one**, and that is the version worth
 acting on. A `no_std`, I/O-free GPT parser carrying eight machine-checked proofs is a **publishable
@@ -1599,7 +1599,7 @@ in-tree consumer, and treat publication as evidence rather than as a product lin
 #### The cheap first move, which commits to none of the four
 
 **Split `user/` three ways**: `components/` for the services, `fixtures/` for the test programs, and
-lift `virtio`, `vnet`, `socket_proto`, `suptree` into `runtime/` crates. That ends the
+lift `virtio`, `net_transport`, `socket_proto`, `suptree` into `runtime/` crates. That ends the
 crate-is-both-a-program-collection-and-a-library problem, makes dependencies expressible, and leaves
 the gate untouched.
 
@@ -1693,13 +1693,13 @@ have proved that either.
 and how a fuzzer's findings triage against §35's three dispositions is its own design pass; bolting a
 `cargo-fuzz` job onto milestone 44's lane would have produced a job nobody reads.
 
-**In brief.** Three things CI does not do. **Advisories and licences**: no `cargo-audit`/`cargo-deny`, so a published advisory against a dependency is invisible, and licence obligations go unrecorded, which stops being cosmetic the moment milestone 39's distribution exists. **Vendored integrity**: `vendor/redoxfs` is pinned at 0.9.1 with a `patches/` discipline and *nothing verifies the tree equals upstream-plus-our-patches*. **Fuzzing the parse surface**: Kani proves `elf`, `dtb` and `crickerfs` under *chosen bounds*, and a fuzzer explores byte sequences past those bounds and finds panics rather than property violations, which is complementary rather than redundant. Several crates are unproved entirely and take attacker-shaped input: the `fs_proto`/`gfx_proto`/`lineedit` decoders, `capsh` (which parses the human's command line), `compose` (clipping arithmetic, where its own note says off-by-one is the classic bug), and `measure`, the SHA-256 behind the measured-boot trust root
+**In brief.** Three things CI does not do. **Advisories and licences**: no `cargo-audit`/`cargo-deny`, so a published advisory against a dependency is invisible, and licence obligations go unrecorded, which stops being cosmetic the moment milestone 39's distribution exists. **Vendored integrity**: `vendor/redoxfs` is pinned at 0.9.1 with a `patches/` discipline and *nothing verifies the tree equals upstream-plus-our-patches*. **Fuzzing the parse surface**: Kani proves `elf`, `dtb` and `crickerfs` under *chosen bounds*, and a fuzzer explores byte sequences past those bounds and finds panics rather than property violations, which is complementary rather than redundant. Several crates are unproved entirely and take attacker-shaped input: the `fs_proto`/`gfx_proto`/`line_editor` decoders, `grant_plan` (which parses the human's command line), `compositor` (clipping arithmetic, where its own note says off-by-one is the classic bug), and `measured_boot`, the SHA-256 behind the measured-boot trust root
 
 **Why it matters.** **the thesis is confining code we did not write, so not knowing when that code has a published advisory is an odd blind spot**, and milestone 32's flagship claim ("a real filesystem we did not write") is only as good as our ability to say what we are actually running. Fuzzing is the honest complement to bounded model checking: Kani answers "is the property true inside these bounds", a fuzzer answers "does anything crash outside them", and the project currently only asks the first
 
 ### 43. A second security audit, with a different lens
 
-**In brief.** The first audit (notes/arch-audit.md) read the **assembly and arch layer** and found three real bugs: the `eret`/`sret` privilege-escalation staging race, a stale `tp` on S-mode trap return corrupting cross-hart per-CPU data, and the PLIC's lock-free read-modify-write. A second pass should deliberately NOT re-read that, and should take the surface that has appeared since. Headline lens: **time-of-check to time-of-use across shared pages.** Every service contract now moves bulk data through a page shared with the client (blk, file, gfx, compose, lineedit, netstack), so a server that validates a length or an offset from the request word and *then* reads the page has a double-fetch window a malicious client controls; 19 files touch that pattern. Further lenses: integer overflow in the wire's size and offset arithmetic (`fs_proto` packs a 40-bit length, and `TRUNCATE` takes a size in the second word); capability lifetime races between revocation and an in-flight use, now that generational names, `Untyped::DESTROY` and `Endpoint::REAP` all reclaim; and a census of the **804** `unsafe` occurrences, triaging which carry a stated safety argument
+**In brief.** The first audit (notes/arch-audit.md) read the **assembly and arch layer** and found three real bugs: the `eret`/`sret` privilege-escalation staging race, a stale `tp` on S-mode trap return corrupting cross-hart per-CPU data, and the PLIC's lock-free read-modify-write. A second pass should deliberately NOT re-read that, and should take the surface that has appeared since. Headline lens: **time-of-check to time-of-use across shared pages.** Every service contract now moves bulk data through a page shared with the client (blk, file, gfx, compose, line_editor, net_stack), so a server that validates a length or an offset from the request word and *then* reads the page has a double-fetch window a malicious client controls; 19 files touch that pattern. Further lenses: integer overflow in the wire's size and offset arithmetic (`fs_proto` packs a 40-bit length, and `TRUNCATE` takes a size in the second word); capability lifetime races between revocation and an in-flight use, now that generational names, `Untyped::DESTROY` and `Endpoint::REAP` all reclaim; and a census of the **804** `unsafe` occurrences, triaging which carry a stated safety argument
 
 **Why it matters.** **the attack surface roughly doubled after the first audit was written**: the compositor's shared surfaces, the C seam, the reap right, `std::fs`/`std::net`, and the FS service all arrived afterwards. The first audit's value came from reading for a *pattern* rather than waiting for a failure (it found the PLIC race that way), so the return on a second pass depends entirely on choosing a lens the first one did not use. Double-fetch is that lens: it is invisible to every gate we run, because both the check and the use are individually correct
 
@@ -1758,9 +1758,9 @@ code did. The real comparison is `/language:rust`: 2 results on `refs/heads/main
 
 ### 46. Rename the components for what they are, and write down the naming rules
 
-**Built 2026-07-30, both ISAs.** Five renames in one mechanical commit: `netd` → `netstack`,
-`compd` → `compositor`, `gpud` → `display`, `termd` → `lineedit`, and the crate `crates/linedisc` →
-`crates/lineedit`. The scope estimated here at 398 came in at **457 whole-word token replacements
+**Built 2026-07-30, both ISAs.** Five renames in one mechanical commit: `netd` → `net_stack`,
+`compd` → `compositor`, `gpud` → `display`, `termd` → `line_editor`, and the crate `crates/linedisc` →
+`crates/line_editor`. The scope estimated here at 398 came in at **457 whole-word token replacements
 across 4 file moves and 1 directory move** (`netd` 184, `linedisc` 93, `termd` 77, `gpud` 67,
 `compd` 36); the estimate was measured before milestones 23 and 37 landed and the tree grew under it,
 which is the ordinary way a count like this drifts. The conventions are notes/naming.md, indexed in
@@ -1798,10 +1798,10 @@ Looking for the tree's naming conventions on 2026-07-30 turned up three real inc
 them anybody's decision:
 
 - **Word separation in crate names is split down the middle.** `fs_proto`, `gfx_proto`,
-  `dma_validate`, `user_rt` use underscores; `capsh`, `crickerfs`, `bitfont`, `lineedit`, `coremark`
+  `dma_validator`, `user_rt` use underscores; `grant_plan`, `crickerfs`, `bitfont`, `line_editor`, `coremark`
   run the words together. Two habits, no rule.
 - **The wire contract is spelled four ways**: `fs_proto` and `gfx_proto` (crates, underscore),
-  `socket_proto` (a module, no underscore), and `lineedit::proto` (a submodule). One concept.
+  `socket_proto` (a module, no underscore), and `line_editor::proto` (a submodule). One concept.
 - **Branch prefixes contain a literal duplicate**: eight in use, including both `feature/` and `feat/`.
 
 Write the *principle* in prose, because it needs judgement and no checker can evaluate it: name a
@@ -1822,8 +1822,8 @@ ratchet was built on):
 The note lands in `notes/` and is indexed in `notes/README.md`; `script/lint` already enforces that
 every script has an entry in `notes/scripts.md`, so the precedent for gating documentation exists.
 
-**Why both halves are one lane.** They share a landing point: the note must describe `netstack`,
-`compositor`, `display` and `lineedit` rather than names that are about to change, and the `-d` check
+**Why both halves are one lane.** They share a landing point: the note must describe `net_stack`,
+`compositor`, `display` and `line_editor` rather than names that are about to change, and the `-d` check
 would fail until the rename lands. Splitting them would mean writing documentation that is stale on
 arrival, or a checker that is red on arrival.
 
@@ -2056,7 +2056,7 @@ Worked, and rejected with reasons rather than by taste:
 |---|---|
 | `alias` | Semantically closer than `link`: a shell alias is stored text, expanded at use, meaning what the current environment makes it mean, with no identity claim. But **taken twice**: zsh's `alias` (which this milestone tracks, so we would collide with ourselves), and macOS "aliases", which store a file ID and **survive the target moving**: they track the object, the inverse of ours. Borrowing a Mac term for its opposite is a poor trade on a project whose first real user is a Mac |
 | `costume`, `disguise` | Both imply **an underlying thing being dressed or concealed**, reinstating exactly the object identity the word must avoid. `disguise` also claims intent to mislead, naming into existence a danger this design removes: a stored name here cannot escalate, because it resolves only within what the holder already reaches |
-| `projection`, `shadow` | Honest about viewpoint-dependence without implying concealment, and still **metaphors**. This project names descriptively (`netstack`, `compositor`, `lineedit`), which is §39's doing; `link` got away with a false claim partly *because* it was a metaphor |
+| `projection`, `shadow` | Honest about viewpoint-dependence without implying concealment, and still **metaphors**. This project names descriptively (`net_stack`, `compositor`, `line_editor`), which is §39's doing; `link` got away with a false claim partly *because* it was a metaphor |
 | `mirror` family (`erised`, `matsuyama`) | **The best framing anyone found, and the only family to pass all three tests**: a mirror shows something viewer-dependent, implies no object identity, implies no connection, and does not collide with "reference". It fails on the word rather than the idea. In computing a **mirror is an identical replica at another location**: "same content, elsewhere", which is the identity claim we are trying to avoid. The literary instances add their own wrong axis: Erised shows what you **desire** (ours shows what your namespace resolves to, often nothing), and the Matsuyama tale is about a **mistake** (the deception axis where `disguise` failed). Both also need a decoder ring, and `notes/naming.md` sets the bar at names that parse without prior exposure |
 | `fsalias` | Fixes the zsh collision, and prefixes are in-style here (`fs_file_caretaker`, `fs_subtree_caretaker`, `c_confiner`). But **"filesystem alias" is exactly what Finder calls a macOS alias** (the object-tracking one), so the prefix picks the *wrong* one of the word's two meanings. And prefixing to fix a collision is a smell: it answers *which* alias, where the objection was that **alias claims another name for the same thing** |
 
@@ -2162,7 +2162,7 @@ The decided answer is implemented rather than revisited: `rm *.txt` grants a dir
 attenuated to a **name set**, served by `user/src/fs_nameset_caretaker.rs`. Four things this section
 did not predict, and one it did:
 
-- **It predicted the shape of the change to `capsh`**, and that is exactly what happened.
+- **It predicted the shape of the change to `grant_plan`**, and that is exactly what happened.
   `plan_against` fills its slots by **index** now, and takes an `Expansion` keyed to that index,
   because the endowment is the set rather than the pattern. `DirGrant.name` became `DirGrant.names`,
   which is the finding in the type system: a literal operand is the set of one.
@@ -2181,7 +2181,7 @@ did not predict, and one it did:
 - **Qualifiers and `**` stayed out**, for notes/glob.md's reasons, which are authority questions and
   not scheduling ones. `xargs` is still not built: the answer at the bound is a refusal.
 
-Tests: `capsh` and `fs_proto` host suites; `kernel::user::glob_grant_tests` on both ISAs (a real
+Tests: `grant_plan` and `fs_proto` host suites; `kernel::user::glob_grant_tests` on both ISAs (a real
 shell expanding one pattern two ways, then `rm` as its own attacker behind a real
 `fs_nameset_caretaker`); and `xtask::redoxfs_glob_grant_took_exactly_the_match` reading the image
 from outside the guest.
@@ -2211,7 +2211,7 @@ the caretaker will serve. Unix cannot make that claim, since `rm`'s authority ne
 command line at all; the glob merely told it which of its existing powers to use.
 
 **Who expands.** The shell, before planning the grant, which is also what Unix does, so there is no
-divergence to earn. The structural consequence is that `capsh::plan` must see the expanded set rather
+divergence to earn. The structural consequence is that `grant_plan::plan` must see the expanded set rather
 than the pattern, since the endowment is the set.
 
 **Two costs to design rather than gloss.**
@@ -2377,7 +2377,7 @@ around the assumption that installation means writing into a globally readable d
 
 ##### Built 2026-07-31: the grammar change, ahead of the commands.
 
-`run` and `file:` are gone from `capsh` and the shell. A bare program name spawns it (`worker 9`,
+`run` and `file:` are gone from `grant_plan` and the shell. A bare program name spawns it (`worker 9`,
 `budgeter --mem 16`, `date`); a bare token in a file position designates the file, and the manifest
 still declares the direction. `--mem N` stays, and is now accepted on either side of the program
 name because with the verb gone a leading flag reads wrong.
@@ -2408,7 +2408,7 @@ before you run it. What a shell that could delegate a clock would need is assess
 notes/grant-expression.md and is its own lane: kernel boot wiring on both ISAs, a spawn-protocol
 position, both inits, and nothing in the suite boots the interactive shell to prove any of it.
 
-Tests: `crates/capsh` host suite, 34 cases. Notes: grant-expression.md, program-manifest.md, date.md.
+Tests: `crates/grant_plan` host suite, 34 cases. Notes: grant-expression.md, program-manifest.md, date.md.
 
 Chris asked to be convinced they were worth the typing. They are not, and the case against each is
 stronger than the case that put them there.
@@ -2596,7 +2596,7 @@ shell, so the request cannot be phrased. A check that cannot be wrong because it
 
 #### There is no root, and that is a statable property
 
-Milestone 22 did something Unix structurally cannot: `rootsup` **gives its authority away**, deleting
+Milestone 22 did something Unix structurally cannot: `root_supervisor` **gives its authority away**, deleting
 its untyped once the sub-servers are running. The consequence is worth stating plainly next to the
 benchmarks, because it is the kind of claim a demonstrator exists to make: **there is no point after
 boot at which any principal can do everything**, not as a policy or a hardening measure but because no
@@ -2618,7 +2618,7 @@ over a capability set**: a root directory, a budget, a terminal. That is a bette
 as a cleaner model, since a compromised login service leaks *what it can grant* rather than the
 ability to become anyone. It is the powerbox pattern with the human at one end, and it needs a real
 answer to a question we have never faced: **who gets which capabilities at startup**, which is
-currently a build-time fact baked into `rootsup`.
+currently a build-time fact baked into `root_supervisor`.
 
 #### Attribution is the actual work, and the one place Unix does something we do not
 
@@ -2644,7 +2644,7 @@ could be one lane or three depending on which fork wins.
 
 **The protocol lane built 2026-07-31** (`crates/sink_proto`, `user/src/sink.rs`, the std PAL's
 `sys/stdio`, and `abi::Error::Gone`; concept note: notes/sink-protocol.md). One framing for "write
-these bytes there", proven on both ISAs by running one `hellostd` ELF against two destinations that
+these bytes there", proven on both ISAs by running one `std_exerciser` ELF against two destinations that
 share nothing but sixteen bytes of message and comparing the bytes.
 
 Three things came out of it that were not in the plan below.
@@ -2657,15 +2657,15 @@ Three things came out of it that were not in the plan below.
   swallowed print failures through `is_ebadf`, and the old PAL was defeating it by answering `true`
   unconditionally.
 - **A sink capability must not double as a terminal-service capability**, which is what stops
-  `lineedit` from simply serving the contract on the endpoint it already has: that endpoint also
+  `line_editor` from simply serving the contract on the endpoint it already has: that endpoint also
   carries `OP_READLINE`, so handing it to a child as its output slot would grant the child the
   terminal's *input*. The terminal's sink is therefore a separate endpoint served by an adapter,
   which is the shape `user/src/sink.rs`'s file role proves against a real backend. Converting
-  `lineedit` and the console server is left with the shell work, because their clients are the
-  shell and `sysinit`.
+  `line_editor` and the console server is left with the shell work, because their clients are the
+  shell and `system_initializer`.
 
-**The operators lane built 2026-07-31** (`crates/capsh/src/line.rs`, `user/src/wc.rs`, the shell,
-`sysinit`, and two bits on `capsh::spawnproto`; concept note: notes/pipes.md). `date | wc` runs at a
+**The operators lane built 2026-07-31** (`crates/grant_plan/src/line.rs`, `user/src/wc.rs`, the shell,
+`system_initializer`, and two bits on `grant_plan::spawnproto`; concept note: notes/pipes.md). `date | wc` runs at a
 real prompt on both ISAs, with the shell minting the endpoint out of its own budget and init putting
 it in the child's output slot. The kernel did not change.
 
@@ -2691,7 +2691,7 @@ Four things came out of it that were not in the plan below.
 and refuse correctly but **cannot run at the interactive prompt**, because no boot yet gives one
 shell both a filesystem and a spawn channel. Both mechanisms are proven against a real RedoxFS image
 in `sink_tests` (a program writing into a file sink, and the same `wc` reading a pipe and a file and
-answering identically), so what is missing is wiring in `sysinit` rather than design. Also still
+answering identically), so what is missing is wiring in `system_initializer` rather than design. Also still
 open: buffering (a pipeline is full lockstep and has not been benchmarked against a Unix pipe),
 `>>`, `2>`, and the terminal's own sink adapter.
 
@@ -2715,7 +2715,7 @@ spawner chose**, and redirection is putting a different capability in that slot.
 new object, no `dup2`. The existing doc comment even anticipates the case: a failed SEND is swallowed
 so "a program without a console still runs, it just prints into the void".
 
-The same is true at the other end of the design. `lineedit::proto::OP_BYTES` already documents
+The same is true at the other end of the design. `line_editor::proto::OP_BYTES` already documents
 `the rendezvous is the flow control`, which is exactly a pipe's back-pressure story.
 
 #### A pipe is an endpoint, not an object
@@ -2749,7 +2749,7 @@ the result.
 | Sink | Protocol today |
 |---|---|
 | std `println!` | SEND, register-only, 16 bytes/msg, w0 = len, w1\|w2 = bytes |
-| `lineedit` (crate and component) | CALL, shared page, `OP_WRITE`, r0 = bytes consumed |
+| `line_editor` (crate and component) | CALL, shared page, `OP_WRITE`, r0 = bytes consumed |
 | `fs_proto` | CALL, handle + offset + shared page, `WRITE` |
 | console server | shared page, SEND length, ACK on a separate reply endpoint |
 
@@ -2877,12 +2877,12 @@ to 2038, and it holds no authority over anything but the network socket it was g
 
 **Reachable from a test, not from the prompt, and that is why this milestone is `PARTIAL` and not
 `BUILT`** (found by Chris, 2026-07-31, by typing `date` at `script/server` and getting "unknown
-command"). The binary is in the initrd and tested on both ISAs, but `capsh::Prog` knows only `worker`,
+command"). The binary is in the initrd and tested on both ISAs, but `grant_plan::Prog` knows only `worker`,
 `budgeter`, `heeder` and `spinner`, so the shell cannot spawn it. The lane deferred that as
 "milestone 31's manifest machinery", which is a defensible scope call that nonetheless leaves the
 *command* half of "the `date` command" undone. **A program a user cannot invoke is not a command**,
 and the status said otherwise until he checked. Being folded into the milestone 47 grammar lane, which
-owns `capsh` and is removing `run`: after which `date` at the prompt is exactly what he typed. A hundred
+owns `grant_plan` and is removing `run`: after which `date` at the prompt is exactly what he typed. A hundred
 lines, most of them comments, because the design had settled everything interesting first: read the
 page, add the counter, hand the number to `calendar`. Five formats, a fixed UTC offset in minutes,
 and an optional second line naming the clock's **provenance**, which renders `clock_proto`'s four
@@ -2918,7 +2918,7 @@ the parser behind it (notes/verification.md).
 
 #### NTP, and the chicken-and-egg worth recording before it is discovered
 
-Buildable today: `netstack` runs smoltcp, and NTP is UDP on port 123. Two honest problems:
+Buildable today: `net_stack` runs smoltcp, and NTP is UDP on port 123. Two honest problems:
 
 1. **Plain NTP is unauthenticated and trivially spoofable.** NTS (RFC 8915) is the answer, and it
    needs TLS, which needs certificate validation, which needs **a roughly correct clock**. The
@@ -3376,7 +3376,7 @@ was to put the disambiguation in the doc comment. Carrying it in the name is str
 `fs_subtree` cannot be misread as either of the others.
 
 `fs_` and not `file_`, because `file` is already one of the qualifiers and `file_file_caretaker` is
-the reductio. It is also **not a new convention**: `fs_proto`, `fs-server` and `fs_service` already
+the reductio. It is also **not a new convention**: `fs_proto`, `fs_server` and `fs_service` already
 use `fs` as this project's filesystem marker, so this applies an existing one where it was missing.
 
 An earlier draft of this block settled on bare `file_` / `subtree_` / `nameset_`, on the objection
@@ -3587,8 +3587,13 @@ assertions) but how many are mechanical and how many need a rethink is not.
 
 ### 63. Directory and package names: one spelling per thing
 
-**Status: NOT-STARTED.** Raised 2026-08-01, after `fsserver` was fixed and the survey behind it found
-the rest.
+**Status: BUILT, 2026-08-01, both ISAs.** Raised 2026-08-01, after `fsserver` was fixed and the
+survey behind it found the rest.
+
+**Every table and paragraph below keeps the OLD spellings**, because this block is the record of the
+decision and a name's argument is unreadable once the name it argued against is gone. Everywhere
+else in the tree carries the new ones. What landed, and the three things that did not, are in
+[notes/naming.md](../notes/naming.md).
 
 #### The standard, which is derived rather than invented
 
@@ -4060,7 +4065,7 @@ carrying us**: every driver we have talks to QEMU's paravirtual devices, and rea
 
 **What it needs.**
 
-- **Ethernet.** The JH7110 uses a Synopsys DesignWare GMAC (`dwmac`). Our netstack (smoltcp) is
+- **Ethernet.** The JH7110 uses a Synopsys DesignWare GMAC (`dwmac`). Our net_stack (smoltcp) is
   device-agnostic above the driver, so this is a driver, not a stack rewrite. Rule 2 applies: it takes
   a base address and knows nothing else.
 - **Storage**, and there is a real choice here. The SD/eMMC controller is the simplest path; **NVMe
@@ -4287,7 +4292,7 @@ constant would be passed straight through. notes/entropy.md carries the full lis
 
 An identity, a secret, and a way to check the second against the first without ever being able to
 read it. `crates/cred` (Argon2id, the store, constant-time verification), `crates/cred_proto` (the
-wire contract), `user/src/credential.rs` (the service), `user/src/credcli.rs` (its provisioner,
+wire contract), `user/src/credentialer.rs` (the service), `user/src/credentialer_test_client.rs` (its provisioner,
 client, and attacker). Five kernel tests on both ISAs, 26 host tests, three Kani harnesses.
 
 **The bearer-token problem below is answered, and the answer is sharper than "hand out the
@@ -4449,7 +4454,7 @@ node's last link went), the store's name is unnameable and unlistable in every d
 shrinking blob is truncated to length so the reader never walks records nobody wrote. The
 rename-replacement case is the one removal the engine cannot report, and the server notices it.
 
-**BUILT 2026-08-01: the recovery side, and two of the three named gaps closed.** `redoxfs-host
+**BUILT 2026-08-01: the recovery side, and two of the three named gaps closed.** `redoxfs_host
 extract` puts the attributes back on the extracted files (`setxattr` on macOS, `lsetxattr` on Linux,
 neither following a symlink), `ls` marks an entry that has them with `@`, and `xattr IMAGE PATH
 [NAME]` renders or dumps them without extracting. The type code cannot come along, because no host
@@ -4497,7 +4502,7 @@ either way.**
 |---|---|---|
 | **GPT parsing** | **None** | Mandatory even if we never write one: you cannot find a partition on a real disk without reading the table |
 | GPT writing | None | The `mkpart` equivalent. Protective MBR, header, entry array, two CRC32s, backup header at the last LBA |
-| `mkfs` on the target | Host only | `redoxfs-host mkfs IMAGE SIZE_MIB` is a std host tool; the FS server is `no_std` |
+| `mkfs` on the target | Host only | `redoxfs_host mkfs IMAGE SIZE_MIB` is a std host tool; the FS server is `no_std` |
 | Block device enumeration | None | "What drives are attached", which is enumeration again and bounded by capabilities exactly as milestone 47's globbing and completion are |
 
 #### Finding 2026-08-01: `mkfs` on the target is blocked on **entropy**, not on `std`
@@ -4526,7 +4531,7 @@ gated on plumbing the entropy service to the program that does them, and neither
 
 This is a **decision for Chris**, because the fix is a divergence from the pin (`patches/README.md` records the
 patch and how to submit it, which is the mitigation), and §46's rule is that taking one is a decision rather than a convenience. It is
-also worth weighing against the pragmatic alternative: `redoxfs-host` on a Mac can partition and
+also worth weighing against the pragmatic alternative: `redoxfs_host` on a Mac can partition and
 format the drive today, which is what actually gets a disk ready for the board on 2026-08-21, and the
 target-side version is then a capability demonstration rather than a prerequisite.
 
@@ -4574,7 +4579,7 @@ extraction verbs did not exist and are now ours. See notes/host-recovery.md.
 tool depends on it with `default-features = false, features = ["std"]`, so **`fuse` is excluded by our
 own choice** and re-enabling it is a feature flag plus the `fuser` dependency.
 
-**What shipped**: `redoxfs-host ls IMAGE [PATH]`, `cat IMAGE PATH`, `extract IMAGE PATH DEST`, plus
+**What shipped**: `redoxfs_host ls IMAGE [PATH]`, `cat IMAGE PATH`, `extract IMAGE PATH DEST`, plus
 `import IMAGE HOST_DIR` on the write side (upstream's own `redoxfs::archive`, which is what makes
 the round-trip test read something our writer did not produce). Paths resolve from the image root and
 `..` is refused, the same rule the FS server enforces on the wire. `fuse` is still off and `fuser` is
@@ -4595,7 +4600,7 @@ Three paths, and they are not equally good:
 
 | Path | Cost | Verdict |
 |---|---|---|
-| **Extend `tools/redoxfs-host` with `ls` / `cat` / `extract`** | Small; the engine already links there with `std` | **Do this first.** No FUSE, no kernel extension, no root, identical on macOS and Linux. The thing you want at 2am with a dead board. Check whether upstream's `redoxfs-ar` already covers it |
+| **Extend `tools/redoxfs_host` with `ls` / `cat` / `extract`** | Small; the engine already links there with `std` | **Do this first.** No FUSE, no kernel extension, no root, identical on macOS and Linux. The thing you want at 2am with a dead board. Check whether upstream's `redoxfs-ar` already covers it |
 | **Linux mount via the `fuse` feature** | A feature flag | Nearly free, and upstream maintains it: it is how Redox developers work with images |
 | **macOS mount via macFUSE** | A third-party system extension plus reduced security mode on Apple Silicon | Works, genuinely awkward. **Optional convenience, not the recovery story** |
 

@@ -4,7 +4,7 @@
 #
 # The kernel and user crates are bare-metal and only run under QEMU, where host instrumentation
 # does not reach; DECISIONS.md §7 deliberately keeps the testable logic in host crates, and this
-# measures exactly those (abi, caps, crickerfs, dtb, elf, frames, paging, pci, ...). Requires
+# measures exactly those (abi, capability, crickerfs, dtb, elf, frames, paging, pci, ...). Requires
 # cargo-llvm-cov. Not one of the canonical "Scripts to Rule Them All"; see notes/scripts.md.
 
 set -e
@@ -69,7 +69,7 @@ awk -F: -v floor="$floor" '
         # All three need a kernel underneath. Two are thin wrappers over the user_rt syscalls (build a
         # child, quiesce a component); virtio is a driver whose seven entry points each orchestrate a
         # live device. Its security-critical part is already elsewhere and already tested: the
-        # descriptor-ring validation is crates/dma_validate (milestone 35), which is why this file is
+        # descriptor-ring validation is crates/dma_validator (milestone 35), which is why this file is
         # thin on pure logic, with two volatile ops in a thousand lines. So
         # every line needs a kernel underneath. They became visible to this gate on 2026-08-01 when
         # rule 7 turned them into crates, having been #[path] modules nothing could measure.

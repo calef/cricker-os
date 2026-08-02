@@ -7,7 +7,7 @@ confines a serious component it knows nothing about, and the thing milestone 31'
 point at (they now exist; see the caretaker section below).
 
 The written contract lives with its code in `crates/fs_proto`, the way the terminal contract lives
-in `lineedit::proto` (notes/terminal-contract.md). This note is the design around it.
+in `line_editor::proto` (notes/terminal-contract.md). This note is the design around it.
 
 ## Three processes, two protocols
 
@@ -28,10 +28,10 @@ which is milestone 23's hot-swap claim in component form.
   brings the RedoxFS disk up, then serves read/write/size over **blk IPC** forever. The device
   confinement is unchanged from any driver (the kernel owns the transport and validates every DMA
   descriptor, notes/dma.md), so a serving block driver is as confined as a reading one.
-- **The FS server** (`fs-server/`, its own workspace because it links the vendored engine) runs the
+- **The FS server** (`fs_server/`, its own workspace because it links the vendored engine) runs the
   no_std RedoxFS core behind a `Disk` trait implemented over blk IPC, allocating everything from its
   own untyped budget through the milestone-27 `GlobalAlloc`. It serves **file IPC** to clients.
-- **The client** (`user/src/fsclient.rs`) is the program a milestone-31 shell will be: it holds only
+- **The client** (`user/src/fs_test_client.rs`) is the program a milestone-31 shell will be: it holds only
   a directory capability and opens files by name under it.
 
 The kernel wires all three (`kernel/src/user.rs::fs_service`), handing each a `Spawn` literal that
@@ -83,7 +83,7 @@ choices keep that inside the test's watchdog:
    `used.idx` decide when the completion is really its own (a wakeup can be stale or coalesced), the
    same loop the read driver uses. This is a **correction** (fix/irq-delivery, 2026-07-29): the
    earlier note here claimed interrupt-driven completion "overran the watchdog" and forced a poll of
-   the used ring. It does not. Booted with the WAIT path, the fs-server test passes on both ISAs at
+   the used ring. It does not. Booted with the WAIT path, the fs_server test passes on both ISAs at
    the 4-core SMP boot (aarch64 141 tests, riscv64 84 tests), the mount's hundreds of WAIT-driven
    completions all landing well inside the 60 s watchdog. The completion IRQ reaches the block
    server's endpoint exactly as it reaches any milestone-9 driver's; the whole-block reads above are
@@ -192,7 +192,7 @@ consistency, and "an acknowledged write is wholly present or wholly absent" is a
 
 **How the injector works, and why it is not an approximation.** The seam is `BlockIo`, the trait the
 FS server reaches its disk through: on device it is `IpcDisk` calling the block server, on the host a
-`Vec`. `fs-server/src/crash.rs` runs the workload **once** against a recorder that applies every
+`Vec`. `fs_server/src/crash.rs` runs the workload **once** against a recorder that applies every
 block write and appends it to an ordered log. That log is what the platter was asked to do, so the
 disk after a failure at point `i` is the pristine image plus the first `i` entries, optionally with
 one of them truncated. For a device that does not reorder, that is not a model of a crash, it *is*
@@ -281,7 +281,7 @@ and three 8 MiB reservations do not fit in this machine's 128 MiB. The first sym
 
 The std-gated core APIs are exactly creation (`FileSystem::create`, uuid v4, getrandom). The FS
 server only ever OPENS an image; entropy never becomes a userspace dependency. Test images are made
-host-side by `tools/redoxfs-host` with the same pinned engine that serves them (roadmap §32 port
+host-side by `tools/redoxfs_host` with the same pinned engine that serves them (roadmap §32 port
 plan item 4). The host tool's `mkfs` was also fixed to start from an empty file: `DiskFile::create`
 opens without truncating, so `mkfs` over an existing image left stale blocks past the new write and
 produced an image that failed to open. Removing the file first makes it idempotent, which the test
@@ -293,7 +293,7 @@ flow relies on (it regenerates the image every run).
 block server driving it over DMA, an FS server mounting it over blk IPC and serving from its own
 heap, and a client opening the shipped `motd` through a granted directory capability and reading it
 back byte for byte. The engine mounts, the contract holds, the confinement holds. The sans-IO core is
-host-tested for both read AND write against a `DiskMemory` image (`fs-server` lib tests), so the
+host-tested for both read AND write against a `DiskMemory` image (`fs_server` lib tests), so the
 filesystem *logic* is proven on both paths independently of any device.
 
 **The write path is proven on-device too, which is a correction** (2026-07-29, milestone 27 phase
@@ -312,11 +312,11 @@ write to the same block loops" is also not quite the shape of it. What is now pr
 the tree rather than by reasoning:
 
 - **A repeat write inside one run works, on both ISAs.** The FS client writes the same block three
-  times in one run (`user/src/fsclient.rs`), and it passes on aarch64 and riscv64 against a freshly
+  times in one run (`user/src/fs_test_client.rs`), and it passes on aarch64 and riscv64 against a freshly
   generated image. The image afterwards carries the pass-3 payload, so the third write really reached
   the disk. This is the reproduction the old gate could not perform: it depends on nothing left over
   from a previous invocation, so it cannot hide behind `mkredoxfs` rewriting the target first.
-- **The host does not reproduce any of it.** Four `fs-server` host tests, all green in milliseconds:
+- **The host does not reproduce any of it.** Four `fs_server` host tests, all green in milliseconds:
   three writes to one block; the same through the EL0 binary's exact chunking; record-sized repeat
   writes (the multi-block and compressed-tail paths); and write, drop the mount with no unmount,
   reopen, and write again. That last one is the shape the device fails at, and on the host it passes.
@@ -339,7 +339,7 @@ panicked inside its write block. That panic, read as "the server refused the wri
 It explains every observation, including why three investigations disagreed: the symptom depended on
 what the previous boot's client happened to leave behind, and that changed as the client changed.
 
-`fs-server`'s `a_shorter_write_does_not_truncate_and_that_is_what_broke_across_boots` pins the semantics
+`fs_server`'s `a_shorter_write_does_not_truncate_and_that_is_what_broke_across_boots` pins the semantics
 with those exact byte counts, so the sharp edge is now a test rather than a trap. If it ever fails, the
 contract grew a verb and that is a deliberate decision.
 
@@ -407,8 +407,8 @@ disproved guess left standing sends the next reader down a road already walked.
 *Heap exhaustion and accumulated mount state: dead, measured.* The note used to say a used image carries
 a higher header generation, a longer allocator log and more live tree blocks, so the second mount would
 drive the FS server past its 8 MiB cap (`HEAP_MAX` in `fs_server.rs`, matched by `FS_BUDGET_PAGES` in
-`kernel/src/user.rs`). It does not. `fs-server/src/bin/second_mount.rs` runs the real engine under the
-**same allocator the FS server uses** (`uheap`, the algorithm behind `user_rt::heap::UntypedHeap`), grown
+`kernel/src/user.rs`). It does not. `fs_server/src/bin/second_mount.rs` runs the real engine under the
+**same allocator the FS server uses** (`user_heap`, the algorithm behind `user_rt::heap::UntypedHeap`), grown
 incrementally and capped identically, with the image in a `static` so it stays off the heap exactly as a
 real disk does. At the device's own 8 MiB cap it completes **30 mount-and-write cycles**, every one fine,
 heap high-water **flat at 352 KiB**, and the cap never once refuses a growth. Four percent of the budget,

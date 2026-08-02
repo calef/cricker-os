@@ -44,14 +44,14 @@ reach past the boundaries the kernel enforces. Anything that breaks one of these
 
 - **Capability forgery or widening.** Minting a capability that was never granted, widening rights
   across `derive`, `Send`, or delegation, naming another process's CSpace or endpoints, or reusing a
-  generational name after revocation (DECISIONS §10, §13, §16; `crates/caps`).
+  generational name after revocation (DECISIONS §10, §13, §16; `crates/capability`).
 - **MMU escape.** EL0 reading, writing, or executing kernel memory or another address space;
   breaking W^X; a stale TLB entry exposing a dead owner's data; anything reachable from userspace
   that maps physical memory outside the process's own untyped budget (`crates/paging`,
   notes/mmu.md).
 - **DMA escape.** A device programmed by a userspace driver to read or write memory outside the
   grant it was given, through the software descriptor validator or past the IOMMU domain (DECISIONS
-  §20, §23, §30; `crates/dma_validate`, notes/iommu.md).
+  §20, §23, §30; `crates/dma_validator`, notes/iommu.md).
 - **IPC.** Anything that lets a message reach an endpoint the sender cannot name, a reply
   capability be used twice or by the wrong thread, or a server be confused about which client it is
   answering (DECISIONS §12, §26; `crates/ipc`).
@@ -67,7 +67,7 @@ reach past the boundaries the kernel enforces. Anything that breaks one of these
   authority it was not given is exactly the claim under test (DECISIONS §27, §31; notes/c-seam.md,
   notes/redoxfs-audit.md).
 - **The boot trust root.** Anything that lets an unmeasured or altered init run as though it were
-  measured (`crates/measure`, notes/trusted-init.md).
+  measured (`crates/measured_boot`, notes/trusted-init.md).
 - **The supply chain of this repository.** A dependency or vendored tree that is not what the
   manifest says it is. `script/supply-chain` is supposed to make that checkable; a way around it is
   a finding.

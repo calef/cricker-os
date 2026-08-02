@@ -10,16 +10,16 @@ crickerfs = { version = "0.1.0", path = "../crates/crickerfs" }
 fs_proto = { version = "0.1.0", path = "../crates/fs_proto" }
 # The measured-boot hash (milestone 22 phase B.1): the build and the kernel measure init through the
 # same implementation, so there is one definition of the digest.
-measure = { version = "0.1.0", path = "../crates/measure" }
+measured_boot = { version = "0.1.0", path = "../crates/measured_boot" }
 # The framebuffer contract (milestone 29): the host-side scanout check compares QEMU's screendump
 # against the same pattern the guest painted, from the same definition, so the two cannot drift.
 gfx_proto = { version = "0.1.0", path = "../crates/gfx_proto" }
 # The compositor contract (milestone 33): the same scanout check also verifies the screen the
 # compositor composed, against the same scene and the same per-pixel definition the guest used. A
 # compositor's output is the thing a guest-side digest cannot confirm on its own.
-compose = { version = "0.1.0", path = "../crates/compose" }
+compositor = { version = "0.1.0", path = "../crates/compositor" }
 # The VT engine (milestone 29's text increment): the host-side scanout check runs the same engine
 # over the same script the guest's terminal was sent, so "readable text reached the device" is a
 # pixel-for-pixel claim rather than an impression. Text is the case where eyeballing is most
 # tempting and least sufficient.
-vt = { version = "0.1.0", path = "../crates/vt" }
+video_terminal = { version = "0.1.0", path = "../crates/video_terminal" }

@@ -21,7 +21,7 @@ use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 // `wake_load_aware`) and every line of console output (`console::_print`, which covers each test's
 // "ok"). Progress is also credited when any online core is running a real, non-idle thread
 // ([`any_core_running_real_work`]). If none of that happens for ~60 s the run fails. That second
-// signal is what lets `std_net` pass honestly: it spends its ~300 s in netstack's *userspace* smoltcp
+// signal is what lets `std_net` pass honestly: it spends its ~300 s in net_stack's *userspace* smoltcp
 // poll, CPU-bound, making no wake and no output for stretches over a minute, yet a real thread runs
 // the whole time. A genuine lost wakeup is the opposite: every thread `Blocked`, every core parked on
 // its idle thread.
@@ -97,8 +97,8 @@ const DEFAULT_BUDGET_SECS: u64 = 90;
 /// Keep budgets roughly 2x the measured time: enough headroom that host load or a debug build does
 /// not produce a flaky failure, tight enough to still catch a hang.
 const SLOW_TESTS: &[(&str, u64)] = &[
-    // Measured ~300 to 344 s on aarch64: a serial netstack<->hellostd pipeline whose time is spent in
-    // netstack's userspace smoltcp poll (DHCP, DNS, then a TCP echo). The longest honest test we have,
+    // Measured ~300 to 344 s on aarch64: a serial net_stack<->std_exerciser pipeline whose time is spent in
+    // net_stack's userspace smoltcp poll (DHCP, DNS, then a TCP echo). The longest honest test we have,
     // and the reason a single global ceiling would have to be uselessly large.
     ("std_net_runs_over_the_socket_contract", 700),
 ];

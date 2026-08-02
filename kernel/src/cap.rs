@@ -1,6 +1,6 @@
 //! What a capability in cricker-os can point at.
 //!
-//! The table itself is `crates/caps`, which is pure logic and knows nothing about this file.
+//! The table itself is `crates/capability`, which is pure logic and knows nothing about this file.
 //! This is the kernel's half: **the set of nouns.**
 //!
 //! DECISIONS.md §10 and notes/capabilities.md.
@@ -106,19 +106,19 @@ pub enum Object {
     Virtio(usize),
 }
 
-pub type Cap = caps::Cap<Object>;
+pub type Cap = capability::Cap<Object>;
 
 /// A thread's capability table: 16 slots, fixed at the type (milestone 14 phase B.1). The size
 /// was already the de-facto limit (`CSpace::empty()` made 16); now it is part of the type and
 /// creating a cspace cannot allocate. Growing it is a one-number change here, paid in TCB size.
 pub const CSPACE_SLOTS: usize = 16;
-pub type CSpace = caps::CSpace<Object, CSPACE_SLOTS>;
+pub type CSpace = capability::CSpace<Object, CSPACE_SLOTS>;
 
 // The ABI names the reserved fault slot as `CSPACE_SLOTS - 1`, so the two constants must agree or
 // the kernel would read the fault endpoint from a different slot than the supervisor wrote it to.
 const _: () = assert!(CSPACE_SLOTS as u64 == abi::CSPACE_SLOTS);
 
-pub use caps::{Error, Rights};
+pub use capability::{Error, Rights};
 
 /// A capability naming an endpoint, with the given rights.
 ///

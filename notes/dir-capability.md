@@ -8,7 +8,7 @@ program being confined.
 
 The contract lives with its code in `crates/fs_proto` (the `dir` and `dirent` modules, and the
 `OPENDIR`/`READDIR`/`MKDIR`/`RENAME` verbs in `fs`). The engine-side implementation is
-`fs-server/src/lib.rs`; the caretaker is `user/src/fs_subtree_caretaker.rs`; the wiring and the
+`fs_server/src/lib.rs`; the caretaker is `user/src/fs_subtree_caretaker.rs`; the wiring and the
 attacks are `kernel/src/user.rs` (`fs_service::start_granted_dir` and `dir_capability_tests`). This
 note is the argument around them. Read [fs-server.md](fs-server.md) first for the contract this
 extends.
@@ -237,7 +237,7 @@ POSIX made, so:
 - **Crash-atomic: yes, and measured.** The whole rename runs inside one `fs.tx`, which reaches the
   platter through one commit in RedoxFS's header ring. That is a design claim until something cuts
   the power, so the rename is now **the last operation of the workload in
-  `fs-server/tests/crash_consistency.rs`**, whose sweep cuts the device at every write the workload
+  `fs_server/tests/crash_consistency.rs`**, whose sweep cuts the device at every write the workload
   makes and mounts what is left. A recovery holding the file under both names, or under neither, is
   a state that never existed and fails the sweep. Both names are in that test's `NAMES`, so a
   snapshot reads both and cannot miss either case.
@@ -279,7 +279,7 @@ nothing in them is architecture-specific, so the parity gate (§19) is met by li
 running twice.
 
 Each wires a `fs_subtree_caretaker` holding a capability to the fixture's `sub` with one rights set,
-and runs the `ROLE_DIR_ATTACKER` role of `fsclient` against it. The image carries:
+and runs the `ROLE_DIR_ATTACKER` role of `fs_test_client` against it. The image carries:
 
 ```text
   /            motd  scratch  sub/  other/
@@ -368,7 +368,7 @@ Known limitations, next to the feature rather than only in a tracker.
 - **`std::fs::rename` is still `Unsupported`.** The verb exists on the wire and in the server; the
   std PAL has not been bound to it. Milestone 55 depends on this (`fruit:posix_rename` in the
   reference Samba config), so it is the next step rather than a permanent gap. Binding it is a change
-  to `patches/std-cricker`, which rebuilds the std farm and moves the `hellostd` transcript, and it
+  to `patches/std-cricker`, which rebuilds the std farm and moves the `std_exerciser` transcript, and it
   was kept out of this lane deliberately.
 - ~~**`UNLINK` does not exist.**~~ Built by the commands lane, along with the unlink/revoke split the
   roadmap argues for: see [shell-navigation.md](shell-navigation.md). `REMOVE` now gates two verbs.
@@ -416,7 +416,7 @@ let report = fs_service::start_granted_dir(
     blk_server_image(),
     program("fs_server").unwrap(),
     program("fs_subtree_caretaker").unwrap(),
-    program("fsclient").unwrap(),
+    program("fs_test_client").unwrap(),
     fs_service::DirGrant {
         name: fs_proto::fixture::tree::SUB,
         rights: dir::DESCEND | dir::READ | dir::ENUMERATE,
@@ -455,6 +455,6 @@ Run the whole thing:
 ```sh
 script/test                         # both ISAs, plus the post-run host confinement check
 cargo test -p fs_proto              # the contract and the ladder's arithmetic
-cargo test --manifest-path fs-server/Cargo.toml   # the engine side, and the crash sweep
+cargo test --manifest-path fs_server/Cargo.toml   # the engine side, and the crash sweep
 cargo kani -p fs_proto              # attenuation never widens, at any depth
 ```

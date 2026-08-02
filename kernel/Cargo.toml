@@ -21,26 +21,26 @@ bitfont = { version = "0.1.0", path = "../crates/bitfont" }
 # kernel computes straight from the clock page. Same discipline as bitfont/vt above: the test
 # predicts from the shared definition rather than keeping a second copy of it.
 calendar = { version = "0.1.0", path = "../crates/calendar" }
-caps = { version = "0.1.0", path = "../crates/caps" }
+capability = { version = "0.1.0", path = "../crates/capability" }
 # The shell's grant-expression logic (milestone 47's `rm -r`). The kernel plans nothing; its `rm`
 # test **starts the program the way the shell would**, so the option bits it packs come from the
 # manifest the prompt checks against rather than from a second copy of an ordering. Same rule as
-# `lineedit`, `bitfont` and `calendar` below: no party has its own copy of a shared definition.
-capsh = { version = "0.1.0", path = "../crates/capsh" }
+# `line_editor`, `bitfont` and `calendar` below: no party has its own copy of a shared definition.
+grant_plan = { version = "0.1.0", path = "../crates/grant_plan" }
 # The wall-clock contract (milestone 51, DECISIONS §43). The kernel discovers the RTC by
 # `compatible` and names the binding with these constants, and its clock tests read the shared page
 # through the same seqlock the service publishes with, so no party has its own copy of the layout.
 clock_proto = { version = "0.1.0", path = "../crates/clock_proto" }
 # The compositor contract (milestone 33): the kernel wires the scene and its tests predict the
 # composed screen from the same definition the compositor and its clients paint from.
-compose = { version = "0.1.0", path = "../crates/compose" }
+compositor = { version = "0.1.0", path = "../crates/compositor" }
 # The credential contract (milestone 56, the credential half). The kernel wires the credential
 # service and its provisioner, and its tests read the reply codes the userspace clients report, so
 # no party has its own copy of what a verdict means.
 cred_proto = { version = "0.1.0", path = "../crates/cred_proto" }
 coremark = { version = "0.1.0", path = "../crates/coremark" }
 crickerfs = { version = "0.1.0", path = "../crates/crickerfs" }
-dma_validate = { version = "0.1.0", path = "../crates/dma_validate" }
+dma_validator = { version = "0.1.0", path = "../crates/dma_validator" }
 fs_proto = { version = "0.1.0", path = "../crates/fs_proto" }
 gfx_proto = { version = "0.1.0", path = "../crates/gfx_proto" }
 # The entropy contract (milestone 56, DECISIONS §44). The kernel wires the entropy service and its
@@ -56,8 +56,8 @@ ipc = { version = "0.1.0", path = "../crates/ipc" }
 # The terminal contract's IPC framing (DECISIONS §21): the kernel's display-terminal tests play both
 # an application (OP_WRITE) and an input driver (OP_BYTES), so they speak the same protocol the
 # serial terminal's clients and drivers do rather than a second one invented for a test.
-lineedit = { version = "0.1.0", path = "../crates/lineedit" }
-measure = { version = "0.1.0", path = "../crates/measure" }
+line_editor = { version = "0.1.0", path = "../crates/line_editor" }
+measured_boot = { version = "0.1.0", path = "../crates/measured_boot" }
 # The NTPv4 wire format (milestone 51). The kernel's NTP tests read the request the client actually
 # put on the wire, so the version, mode and port they assert on come from the same definition the
 # client serialised from rather than from three copies of RFC 5905 §7.3.
@@ -70,7 +70,7 @@ regions = { version = "0.1.0", path = "../crates/regions" }
 sink_proto = { version = "0.1.0", path = "../crates/sink_proto" }
 slots = { version = "0.1.0", path = "../crates/slots" }
 spin = { version = "0.12", default-features = false, features = ["spin_mutex"] }
-vt = { version = "0.1.0", path = "../crates/vt" }
+video_terminal = { version = "0.1.0", path = "../crates/video_terminal" }
 
 # Typed, compile-time-checked MMIO register blocks. An off-by-four in a device's
 # register layout becomes a build error instead of a mystery at runtime.
@@ -79,7 +79,7 @@ tock-registers = "0.10"
 [build-dependencies]
 # The measured-boot digest parser, shared with the kernel proper so the manifest the build writes and
 # the trust root the kernel checks have exactly one definition of the format (milestone 22 phase B.1).
-measure = { version = "0.1.0", path = "../crates/measure" }
+measured_boot = { version = "0.1.0", path = "../crates/measured_boot" }
 
 [features]
 # The benchmark boot (milestone 21): run the microbenchmarks and halt. See script/bench.

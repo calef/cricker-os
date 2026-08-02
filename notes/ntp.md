@@ -180,7 +180,7 @@ The answer was not a cleverer harness. **The domain is 10^9 values, and running 
 of them takes 0.6 s.** So the test does that: `every_nanosecond_survives_the_round_trip` is
 exhaustive, which is a *complete* verification of the function, strictly stronger than any bounded
 solver result. The crate gets `opt-level = 2` in the dev profile to keep it that quick, the same way
-`measure` does for SHA-256. The bounded Kani harness stays as the in-gate regression guard on the low
+`measured_boot` does for SHA-256. The bounded Kani harness stays as the in-gate regression guard on the low
 corner where the truncation bug lives.
 
 The general rule this is an instance of, and it is worth keeping: **a model checker is the tool for
@@ -189,7 +189,7 @@ can just try all of them.
 
 ## What is not in the crate
 
-- No socket, no `netstack` client, no retry scheduling, no server selection or clock filtering.
+- No socket, no `net_stack` client, no retry scheduling, no server selection or clock filtering.
   Those belong to the component that carries these bytes, which is the rest of this file.
 - No leap-second handling beyond passing the indicator through. A pending leap second is not a
   rejection: the server's clock is fine, the day is not 86400 seconds long, and interpreting that is
@@ -203,7 +203,7 @@ can just try all of them.
 `user/src/ntp.rs`. Five capability slots, and **the interesting one is the slot that is missing.**
 
 ```text
-  entropy ──an endpoint──►┌──────────────┐──an endpoint──► netstack ──► the network
+  entropy ──an endpoint──►┌──────────────┐──an endpoint──► net_stack ──► the network
   (8 random bytes)        │  ntp client  │ (the socket contract, UDP 123)
                           └──────┬───────┘
                                  │ an endpoint: PROPOSE
@@ -291,7 +291,7 @@ for a kiss.
 
 The client's whole network authority is one endpoint capability, so the tests **substitute the peer
 at that boundary**: a second role of the same binary holds `READ` on the endpoint the client holds
-`WRITE` on, and speaks the same socket contract (`crates/socket_proto/src/lib.rs`, the same file `netstack`
+`WRITE` on, and speaks the same socket contract (`crates/socket_proto/src/lib.rs`, the same file `net_stack`
 compiles) while being an NTP server on the other side of it. The client cannot tell, and **there is
 no test-only branch anywhere in the client**. That is the shape a capability system makes available,
 and it is why this is the honest choice rather than a compromise.
@@ -313,7 +313,7 @@ overclaimed:
   servers are TFTP, DHCP and a DNS NAT, and `guestfwd` is TCP-only), so there is no offline peer to
   point at; pointing the gate at a public server would make it depend on somebody else's network, the
   way the DNS check already has to be non-gating for exactly that reason.
-- **Not that the client and the real `netstack` agree**, beyond both compiling `netproto.rs`. The
+- **Not that the client and the real `net_stack` agree**, beyond both compiling `netproto.rs`. The
   stub implements the server side of that contract, and a misreading of it would be a misreading on
   both sides at once. Compiling the same file rather than a copy is what keeps that risk to the
   semantics rather than the layout.

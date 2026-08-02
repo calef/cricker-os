@@ -21,7 +21,7 @@ and priced it is notes/redoxfs-audit.md).
      root (also commented as a pin divergence in the file). This is what keeps it out of the
      cricker-os workspace, so our `-D warnings` clippy gate and `cargo fmt` never touch upstream
      code we do not own, and its default features (which pull `fuser`, a macFUSE build on macOS)
-     never ride into our builds. `tools/redoxfs-host` is a separate own-workspace crate for the
+     never ride into our builds. `tools/redoxfs_host` is a separate own-workspace crate for the
      same reason; a cricker-os *member* cannot depend on an in-tree crate that another workspace
      owns without a "multiple workspace roots" error, so both live outside.
 - Everything else is byte-identical to the published package, including files we do not use
@@ -42,12 +42,12 @@ and priced it is notes/redoxfs-audit.md).
 - **License:** upstream's own `LICENSE` (MIT), unchanged. The cricker-os dual-license terms do
   not apply inside this directory.
 - **Feature use here:** the kernel-facing consumer (phase 2's FS server) builds it
-  `--no-default-features` (pure no_std core); `tools/redoxfs-host` builds it with `std` only,
+  `--no-default-features` (pure no_std core); `tools/redoxfs_host` builds it with `std` only,
   deliberately not `fuse`, so host mkfs/inspection needs no macFUSE. Creation APIs
   (`FileSystem::create`, uuid, getrandom) are std-gated and stay host-side; the server only
   ever opens an existing image (roadmap §32, port plan item 4).
 - **Kept honest by:** `cargo xtask test` runs the host round-trip test (`cargo test --manifest-path
-  tools/redoxfs-host/Cargo.toml`) and builds the no_std core for both bare-metal targets
+  tools/redoxfs_host/Cargo.toml`) and builds the no_std core for both bare-metal targets
   (`cargo build --manifest-path vendor/redoxfs/Cargo.toml --no-default-features --target ...`), so
   the pin cannot bit-rot silently. `script/lint` and `script/fmt` gate the host tool by the same
   `--manifest-path`, since it is outside the main workspace their `--workspace`/`--all` sweeps see.

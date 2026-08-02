@@ -16,7 +16,7 @@ What blocked it was that we had four different protocols for "write these bytes 
 | Sink | Protocol before this lane |
 |---|---|
 | std `println!` | SEND, register-only, 16 bytes per message, `w0` = length, `w1`\|`w2` = bytes |
-| `lineedit` | CALL, shared page, `OP_WRITE`, `r0` = bytes consumed |
+| `line_editor` | CALL, shared page, `OP_WRITE`, `r0` = bytes consumed |
 | `fs_proto` | CALL, handle plus offset plus shared page, `WRITE` |
 | console server | shared page, SEND the length, ACK on a second endpoint |
 
@@ -46,7 +46,7 @@ The difference is whether the writer learns anything. A CALL would return "bytes
 for a self-framing message is always "all of them", and it would pay a second IPC hop on the hottest
 path in the system to say so. Back-pressure does not need the reply: SEND blocks until a receiver
 takes the message, so **the rendezvous is the flow control**, which is the property
-`lineedit::proto::OP_BYTES` had already written down.
+`line_editor::proto::OP_BYTES` had already written down.
 
 SEND also makes the reader of a pipe an ordinary program that does nothing but `recv`. With a CALL
 protocol every pipe reader would owe a reply, which means every program on the right of a `|` would
@@ -158,7 +158,7 @@ that speaks the sink contract to its client and the underlying protocol to whate
 
 `kernel::user::sink_tests`, both ISAs.
 
-The same `hellostd` ELF is spawned twice with **identical grants except for what is behind slot 1**:
+The same `std_exerciser` ELF is spawned twice with **identical grants except for what is behind slot 1**:
 once with an endpoint the kernel test receives on directly (the pipe shape: the reader is an
 ordinary receiver), and once with an endpoint served by `sink` in `ROLE_FILE`, which writes the bytes
 into a file on the real RedoxFS image through the real FS server. The test then reads that file back
@@ -201,7 +201,7 @@ wire identical, `SEND` keeps the message count identical, and the kernel's only 
   input-slot convention that does not exist, and this lane did not invent one: the sink contract is
   one-directional by construction and a source contract is its own design.
 - **The terminal is not converted, and the reason is a capability argument, not a scheduling one.**
-  The obvious cheap move is to have the `lineedit` component serve the sink contract on the endpoint
+  The obvious cheap move is to have the `line_editor` component serve the sink contract on the endpoint
   it already has: a `SEND` arrives there with no reply capability, so it is trivially
   distinguishable from the `CALL`s it serves today. **That would be wrong.** That endpoint also
   carries `OP_READLINE`, so putting it in a child's output slot would hand the child the terminal's
@@ -209,7 +209,7 @@ wire identical, `SEND` keeps the message count identical, and the kernel's only 
   kernel offers no receive-on-a-set (`fs_file_caretaker`'s note records the same gap and takes the
   same way out), so the terminal's sink has to be a **separate endpoint served by an adapter
   process**, which is exactly the shape `ROLE_FILE` is and proves against a real backend. Building
-  the terminal adapter means rewiring the shell and `sysinit`, whose files a sibling lane owns.
+  the terminal adapter means rewiring the shell and `system_initializer`, whose files a sibling lane owns.
 - **The console server's page-plus-ack channel is likewise untouched**, for the same client reason.
 - **`date` was already speaking the contract before it existed**, which is the `OP_BYTES == 0`
   decision paying out immediately: its hand-rolled framing is bit for bit a `BYTES` message. It
