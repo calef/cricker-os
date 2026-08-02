@@ -291,6 +291,23 @@ cargo fuzz cmin dtb_walk         # keep the smallest input per edge
 rm -rf fuzz/corpus fuzz/artifacts
 ```
 
+**Add a target.** Four steps, and the first is the one that decides whether the other three are worth
+doing.
+
+1. **Answer "what does this find that a proof does not".** If the crate's Kani harnesses already
+   cover the function's totality, do not add a panic-hunting target; add a *property* target, or
+   nothing. `crickerfs_roundtrip` is the worked example of the first, and the "deliberately not
+   fuzzed" list above is the worked example of the second.
+2. `fuzz/fuzz_targets/<name>.rs`, plus a `[[bin]]` block in `fuzz/Cargo.toml` (with
+   `test = false, doc = false, bench = false`) and the path dependency on the crate under test.
+   The header comment is not optional: say what the input is, where it comes from, and what the
+   target adds over the proofs. That paragraph is what a reader needs to decide whether to trust it.
+3. **Give it seeds.** Prefer a fixture that already exists, wired into `script/fuzz`'s per-target
+   `case`; commit a new one only if nothing in the tree fits, and give it a test that it is still
+   valid (`crates/elf/tests/fuzz_seed.rs`). A dictionary if the format has fixed tokens.
+4. Add the name to `targets` and to `--list` in `script/fuzz`. The CI job needs no change: it runs
+   every target, and its budget is per target, so a fifth one costs a minute.
+
 ## BUGS
 
 **Ten minutes of fuzzing did not find the `node_reg` bug, and a reader did.** This is the most
