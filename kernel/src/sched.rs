@@ -2096,6 +2096,44 @@ pub fn thread_present(tid: Tid) -> bool {
         .is_some_and(|s| s.threads.get(tid).is_some())
 }
 
+/// **Arm a kill on one thread by name** (test support), the single-thread form of what
+/// [`reap_region_objects`] does to a whole region.
+///
+/// This exists because a test that spawns a **bare** user thread had no way to take it back. A
+/// thread spawned into a reclaimable region is torn down by reclaiming the region; a thread spawned
+/// with plain [`spawn`] around `user::run` belongs to no region, so there was no handle to end it
+/// with. Two tests need a subject that never exits on its own (a spinner whose point is that it
+/// never yields, and a child that must hold the free-frame count still while it is read), and both
+/// therefore leaked a runnable thread for the rest of the suite. Two spinning threads on a four-hart
+/// machine is a scheduling load the rest of the suite then runs under, which is how it presented:
+/// `reclaim_frees_a_started_then_exited_childs_regions` starved and tripped its watchdog, on CI,
+/// intermittently, far from the tests that caused it.
+///
+/// **No new syscall and no change to the user-visible surface.** DECISIONS §16's armed kill is the
+/// whole mechanism: setting `killed` makes the scheduler convert the thread to a corpse at its next
+/// preemption, which is exactly how `DESTROY` and §24's `^C` escalation already work. Rule 3 governs
+/// the syscall boundary; this is an in-kernel function for in-kernel tests.
+///
+/// Returns whether a live thread was found and marked. A `false` means the `Tid` did not resolve,
+/// which for a generational name means the thread is already gone rather than that the kill failed.
+///
+/// The kill is **armed, not immediate**: the thread dies at its next preemption, so a caller that
+/// needs it actually gone waits for [`thread_present`] to go false rather than assuming.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn kill_thread(tid: Tid) -> bool {
+    let mut guard = SCHED.lock();
+    let Some(sched) = guard.as_mut() else {
+        return false;
+    };
+    match sched.threads.get_mut(tid) {
+        Some(t) => {
+            t.killed = true;
+            true
+        }
+        None => false,
+    }
+}
+
 pub fn thread_count() -> usize {
     SCHED.lock().as_ref().map_or(0, |s| s.threads.len())
 }

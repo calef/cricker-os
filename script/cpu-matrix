@@ -122,6 +122,16 @@ for m in $MODELS; do
     else
         echo "    FAIL  ($log)"
         failed="$failed $m"
+        # Print the evidence, because "the log is in $OUT" is true locally and useless in CI, where
+        # $OUT is thrown away when the runner is recycled. Diagnosing the 2026-08-02 failures needed
+        # a local re-run purely to read a file this script had already written and discarded.
+        # Bounded so five failing models cannot bury the summary below.
+        echo "    ---- why (from $log) ----"
+        grep -aE '\[PANIC\]|panicked at|WATCHDOG|assertion|^error|test .* FAILED' "$log" \
+            | head -12 | sed 's/^/    /'
+        echo "    ---- last 20 lines ----"
+        tail -20 "$log" | sed 's/^/    /'
+        echo "    -------------------------"
     fi
 done
 

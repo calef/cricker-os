@@ -6392,13 +6392,19 @@ pub mod untyped_service {
     const ROLE_UNTYPED_DEMO: u64 = 7;
 
     /// Carve `pages` of memory into an untyped region, hand it to a fresh process, and return the
-    /// region id and the endpoint the process reports on. The kernel's ONE allocation is the
-    /// untyped itself; everything the process maps afterward spends that, not the allocator.
-    pub fn start(image: &'static [u8], pages: u64) -> Option<(u64, EpId)> {
+    /// region id, the endpoint the process reports on, and the thread it runs as. The kernel's ONE
+    /// allocation is the untyped itself; everything the process maps afterward spends that, not the
+    /// allocator.
+    ///
+    /// **The `Tid` is returned because this process does not exit.** It reports its result and then
+    /// spins, deliberately, so that the free-frame count its caller reads is the measurement's
+    /// rather than a teardown's. That makes it a thread only the caller can end, and a caller that
+    /// drops the name has leaked a spinning thread onto every test that runs after it.
+    pub fn start(image: &'static [u8], pages: u64) -> Option<(u64, EpId, crate::thread::Tid)> {
         let region = crate::untyped::create(pages)?;
         let report = crate::sched::create_endpoint();
 
-        crate::sched::spawn(move || {
+        let tid = crate::sched::spawn(move || {
             run(
                 image,
                 Spawn {
@@ -6415,7 +6421,7 @@ pub mod untyped_service {
         })
         .expect("could not spawn the untyped demo");
 
-        Some((region, report))
+        Some((region, report, tid))
     }
 }
 
@@ -8594,6 +8600,29 @@ mod tests {
         })
     }
 
+    /// **Take back a thread from [`spawn_bare`] that will never exit on its own.**
+    ///
+    /// A bare thread belongs to no reclaimable region, so nothing tears it down when the test that
+    /// started it returns. For a subject whose whole point is that it never exits (a spinner, or a
+    /// child holding a measurement still), "the test ended" and "the thread ended" are unrelated
+    /// events, and the thread just keeps running.
+    ///
+    /// That is not merely untidy. Two such threads spinning on a four-hart machine is a load every
+    /// later test in the suite then runs under, and it starved
+    /// `reclaim_frees_a_started_then_exited_childs_regions` into its watchdog on CI, intermittently,
+    /// nowhere near the tests responsible. See `notes/riscv-parity-scope.md`.
+    ///
+    /// The kill is armed rather than immediate (DECISIONS §16), so this waits for the name to stop
+    /// resolving instead of assuming the thread is gone on return. Returns whether it actually went;
+    /// callers assert on it, because a silent failure here restores the leak this exists to remove.
+    fn reap_bare(tid: crate::thread::Tid) -> bool {
+        if !sched::kill_thread(tid) {
+            // Already gone. Nothing to wait for, and not a failure.
+            return true;
+        }
+        wait_for(|| !sched::thread_present(tid))
+    }
+
     /// The `worker` program's ELF bytes (milestone 19f.2), a distinct binary in the archive, not a
     /// role of the init/hello binary. `_start(x0, x1, x2)` reads its input in `x1` and needs no
     /// role selector.
@@ -8744,7 +8773,7 @@ mod tests {
         let preemptions = sched::preemptions();
         let faults = USER_FAULTS.load(Ordering::Relaxed);
 
-        spawn_bare(spinner_image(), 0, 0).expect("spawn failed");
+        let spinner = spawn_bare(spinner_image(), 0, 0).expect("spawn failed");
 
         // Give it the CPU and then take it back, without asking.
         timer::spin_for(timer::frequency() / 10);
@@ -8761,6 +8790,14 @@ mod tests {
 
         // And we are here, running, having taken the CPU back from a program that never
         // offered it.
+
+        // Now take it back for good. `spinner` never yields, never syscalls and never returns, so
+        // nothing but an armed kill ends it, and leaving it running would spend a core for the rest
+        // of the suite. The assertions above are already done, so the kill cannot weaken them.
+        assert!(
+            reap_bare(spinner),
+            "the spinning user thread outlived its kill"
+        );
     }
 
     /// Forge an ELF64 header by hand, so a test can ask for something no linker would emit.
@@ -9921,7 +9958,7 @@ mod tests {
         let used = || crate::memory::stats().expect("no allocator").used;
 
         const PAGES: u64 = 24;
-        let (region, report) = untyped_service::start(init_image(), PAGES)
+        let (region, report, demo) = untyped_service::start(init_image(), PAGES)
             .expect("could not create the untyped region");
 
         // The process sends a "ready" signal once it is fully loaded (its ELF and stack are
@@ -9959,6 +9996,11 @@ mod tests {
             "the untyped had {} pages left unspent; the process gave up early",
             total - watermark,
         );
+
+        // Every measurement above is taken. The demo spins to hold the free-frame count still while
+        // it is read, which is the reason it does not exit on its own, and also the reason it has to
+        // be ended here: past this point it is a spinning thread with nothing left to hold.
+        assert!(reap_bare(demo), "the untyped demo outlived its kill");
     }
 
     /// **The DMA-confinement fix, end to end.** A malicious driver at EL0 holds a real `Virtio`
@@ -15437,13 +15479,30 @@ mod sink_tests {
 /// crammed onto core 0 (the scheduler places every spawn and wake on the current core, DECISIONS
 /// "Open design ideas": the SMP placement gap) starve a later heavy test past the 60 s watchdog.
 ///
-/// This module is deliberately the **last** thing in the file so it runs after every driver test on
-/// both ISAs, catching an accumulated leak wherever it came from. It quiesces first (yielding lets a
-/// just-finished thread be reaped by the next context switch), then asserts nothing but the idle
-/// threads and this probe is still runnable. A leak fails here with the offending thread in the dump,
-/// on the test that leaked's own turf, rather than as a mysterious watchdog trip three tests later.
+/// It quiesces first (yielding lets a just-finished thread be reaped by the next context switch),
+/// then asserts nothing but the idle threads and this probe is still runnable. A leak fails here with
+/// the offending thread in the dump, on the test that leaked's own turf, rather than as a mysterious
+/// watchdog trip three tests later.
+///
+/// **The name is what makes this run last, not its position in the file**, and getting that wrong is
+/// how the module spent many milestones never policing the one place that needed it. Tests run in
+/// link order, which is alphabetical by module path, so being the last thing in the file bought
+/// nothing: as `no_leaked_threads` it sorted before `tests`, and `kernel::user::tests` is precisely
+/// the module whose whole subject is user threads. Measured on 2026-08-02, the probe ran 158 test
+/// lines before the last test it was supposed to police.
+///
+/// So it is named to sort after `tests`, and the tree's own word for it (`notes/riscv-parity-scope.md`
+/// calls this the leak police) is the name.
+///
+/// # BUGS
+///
+/// The ordering is still only alphabetical. A future `kernel::user` module sorting after
+/// `thread_leak_police` would run after the probe and could leak unpoliced, silently, exactly as
+/// `tests` did. Nothing enforces this; there is no "run me last" attribute in
+/// `custom_test_frameworks`. If that happens, the symptom will again be a starvation watchdog
+/// somewhere unrelated rather than a failure here.
 #[cfg(test)]
-mod no_leaked_threads {
+mod thread_leak_police {
     use crate::sched;
 
     #[test_case]
