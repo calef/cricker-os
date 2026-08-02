@@ -3586,6 +3586,7 @@ out: a package directory is a Rust name, and everything else is a path.
 | `shell` | **`swish`** | the shell gets a proper name rather than a category. See the block below. |
 | `capsh` | **`grant_plan`** | it plans grants from a command line; `sysinit` executes them, and that boundary is real. Not named for `swish`, because **seven things use it** (`swish`, `sysinit`, `rm`, `heeder`, `hello`, `fs_nameset_caretaker`, `kernel/src/user.rs`), so naming it for one consumer repeats `dwarden`'s defect. `designation`, `designate` and `designator` were considered and rejected together: **the user designates by typing a name**, and this crate's job starts after that, so all three put it in a role it does not hold. Synonyms of grant (`endow`, `award`, `confer`, `bestow`, `allot`, `furnish`) were rejected because "grant" is already this tree's word and a synonym is a decoder ring; `endow` is additionally taken by `supervision_proto::Endow`. |
 | `vterm` | **`display_terminal`** | the tree's own phrase for it, verbatim from its header: "The display terminal (milestone 29, the display ladder's text)." Deliberately **not** the same name as its crate, unlike `compositor` and `line_editor`: the crate is named for the **protocol** it implements (the VT standard, bytes in and a grid out) and the program for its **role** (the terminal on the display), and both facts are worth keeping. It also sits next to `display`, the virtio-gpu driver it is a client of, so the display ladder reads straight from the filenames. `text_console` was rejected because `console` is already a program. |
+| `elbench` | **`os_primitives_benchmarker`** | **25 bytes: this one requires `NAME_LEN` to be raised first** (see below). `el` was aarch64-only vocabulary for a program that runs on both ISAs, since RISC-V has U/S/M-mode and no exception levels. `os_primitives` is §14's own phrase and disambiguates: in a kernel tree, bare "primitives" reads as *synchronization* primitives. `benchmarker` rather than `benchmark` because **this tree already uses "benchmark" for the output**: `bench/baseline.txt` holds the committed measurements and `notes/benchmarks.md` is about the numbers. The agent noun names the producer, distinct from the product, and joins `broker`, `spawner`, `painter`, `budgeter`, `compositor` and `credentialer`. (`coremark` is not a counter-example: it is a proper noun, EEMBC's industry benchmark.) |
 | `vnet` | **`net_transport`** | named for its **role**, not the device class, because naming it `virtio_net` would collide: `crates/virtio` also drives net. It is the adapter that presents smoltcp's `phy::Device` so frames can cross the virtqueue, which is a different job from the driver underneath. Same principle that made `display_terminal` beat `video_terminal` for the program: distinguish by what a thing does, not by what hardware it touches. |
 | `rootsup` | **`root_supervisor`** | 15 bytes. `sup` was the abbreviation, so `root_sup` would have relocated the problem rather than fixed it. |
 | `subsup` | **`sub_server_supervisor`** | 21 bytes. Exact where `sub_supervisor` is ambiguous: it supervises **a sub-server**, rather than being a supervisor beneath another one. "Sub-server" is established vocabulary, 44 occurrences across `DECISIONS.md`, `supervision_proto`, the kernel and the notes, so the name is built from a word a reader has already met. |
@@ -3669,10 +3670,15 @@ starts after 61 lands.**
   custom target JSON specs (`aarch64-unknown-cricker.json`). Nothing enforces the distinction and one
   is gitignored while the other is tracked. Worth folding in.
 
-#### Raise `NAME_LEN` in the same pass
+#### Raise `NAME_LEN` FIRST, because one rename now depends on it
 
-`crickerfs` caps archive names at 24 bytes, and **two naming decisions have now bumped against it**:
-`fs_subtree_caretaker` at 20 and `sub_server_supervisor` at 21. Three bytes of headroom is not a
+`crickerfs` caps archive names at 24 bytes, and **three naming decisions have crowded it while a
+fourth exceeds it**: `fs_subtree_caretaker` at 20, `sub_server_supervisor` at 21, and
+`os_primitives_benchmarker` at **25, which does not fit at all**.
+
+That makes this a **prerequisite rather than a tidy-up**, and the ordering matters: raise the cap on
+its own merits, with the costs below written down, and *then* land the rename. Choosing a worse name
+to fit a limit, or raising a limit because a name demanded it, are both the wrong way round. Three bytes of headroom is not a
 budget, it is a trap, and discovering it a third time as a build error during an unrelated change is
 the expensive way to find out.
 
