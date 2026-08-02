@@ -116,8 +116,26 @@ archive is never a half-written one. The build stops and names the file. This is
 worth stating where a reader meets it (the crate's `# Names` and `# BUGS` sections) rather than only
 in a constant.
 
+**The same failure had a second half, and it took a fuzzer to find it** (2026-08-02, milestone 42,
+notes/fuzzing.md). A name is NUL-padded on disk and every reader stops at the first NUL, so a name
+with a NUL *inside* it is unrepresentable in exactly the way a name over `NAME_LEN` is: `"a\0b"` was
+accepted, written, and decoded back as `"a"`, and `read("a\0b")` answered `None`. Data written and
+not readable, with nothing panicking and no test noticing. It survived the truncation fix because
+the fix was written against the case somebody had hit, and nobody types a NUL. It is now
+`Error::NameHasNul`, and `fuzz/fuzz_targets/crickerfs_roundtrip` asserts the general property the two
+errors are instances of: what goes in comes out.
+
+Worth stating in full, because it is the argument for having a round-trip harness at all: `Fs::parse`
+is *proved total* by Kani, over every image length with no bound, and that proof is completely silent
+here. Nothing panicked. The property that broke had never been written down.
+
 ## BUGS
 
+- **A duplicate name is not an error, and the first one wins.** `Fs::read` returns the first entry
+  whose name matches, so packing two files under one name silently hides the second. The disk tool
+  builds its list from a directory listing, where names are unique by construction, which is why this
+  has never bitten; nothing in the format prevents it. Surfaced by the round-trip fuzz target, which
+  had to be written to expect it.
 - **A reader holding one block cannot see the whole directory.** The EL0 blk driver buffers block 0
   only, so it can find the first `ENTRIES_IN_FIRST_BLOCK` files (12) and no more. It walks the tiny
   three-file test disk, not the initrd, so nothing hits it today, and nothing in the format announces
