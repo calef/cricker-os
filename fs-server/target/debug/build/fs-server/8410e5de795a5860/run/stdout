@@ -1,4 +1,0 @@
-cargo::rerun-if-changed=../user/link.ld
-cargo::rustc-link-arg-bin=fs_server=-T/Users/calef/projects/cricker-os/fs-server/../user/link.ld
-cargo::rustc-link-arg-bin=fs_server=-u_start
-cargo::rustc-link-arg-bin=fs_server=--build-id=none
