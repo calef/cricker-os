@@ -301,18 +301,24 @@ jobs:
       # is, and every second of it is a second the gate is slower for every commit forever.
       #
       # **60 seconds per target, four targets**, plus the build. The number is chosen against what
-      # the budget actually buys rather than by feel: `dtb_walk` sustained 19,470 executions a second
-      # over ten minutes on the developer machine, so a minute is over a million inputs per target
-      # and four to six million per run, from a seed corpus already past every magic-number check.
-      # A runner is a different machine; the order of magnitude is what the budget is chosen against.
+      # the budget actually buys rather than by feel. Ten minutes on each target on the developer
+      # machine came to 317 million executions, and the SLOWEST of the four (`dtb_walk`, which runs
+      # seven full walks per accepted input) sustained 19,470 a second. So a minute buys at least a
+      # million inputs on every target, from a corpus already past every magic-number check. A runner
+      # is a different machine; the order of magnitude is what the budget is chosen against.
       #
-      # **What this job is for, stated so it is not mistaken for something else.** It is a
-      # REGRESSION TRIPWIRE, not a search. A minute per target from a seed corpus re-covers the
-      # ground the parsers are already known to survive and notices when a change breaks it. Finding
+      # **What this job is for, stated so it is not mistaken for something else.** It is a SWEEP over
+      # the ground the seed corpus reaches quickly, not a search and not a guarantee. Finding
       # something genuinely new is the job of a long run on a developer's machine
       # (`script/fuzz --time 3600`), and it is deliberately not automated: a nightly job that finds a
       # crash at 4am, with no corpus persisted between runs, produces an artifact nobody can
       # reproduce and an alert nobody dispositions, which is DECISIONS §35's wallpaper failure.
+      #
+      # **Do not mistake it for the regression guard, because it is not one.** Measured rather than
+      # assumed: with both of this milestone's `dtb` fixes reverted, sixty seconds from the committed
+      # seeds found NOTHING, and fifteen minutes found the overflow after 13.1 million executions.
+      # What holds those two bugs down is `crates/dtb/tests/hostile.rs`, which runs in milliseconds
+      # on every `script/test` on both ISAs. The fuzzer finds a thing once; a host test keeps it.
       #
       # **The corpus is not persisted between runs, on purpose.** Caching it would make the job's
       # coverage depend on which runs happened before it, so a red run could not be reproduced from
