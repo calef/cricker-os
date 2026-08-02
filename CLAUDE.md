@@ -236,6 +236,20 @@ genuinely right** and should not be touched (`elf`, `pci`, `dtb`, `gpt`, `ipc`, 
 That last group matters: this rule is not a licence to rename everything, and a name a reader already
 knows from outside this project is the best name available.
 
+**Name things with nouns** (Chris, 2026-08-01). A crate, a program or a module is a *thing*, so it
+takes the name of a thing: `capability`, `grant_plan`, `user_heap`, `video_terminal`, `line_editor`,
+`fs_subtree_caretaker`. A verb names an action and a namespace is not one, which is audible at the
+call site: `line_edit::expand_output` reads as an instruction where `line_editor::expand_output`
+reads as a location.
+
+The exception is a **term of art that happens to be a verb**, where the word is the one the field
+already uses. `bind` (§50) is Plan 9's, and respelling it as a noun would assert novelty where there
+is none. That is the paragraph above, not a hole in this one.
+
+Three crates predate this rule and are queued in milestone 63: `compose` (which calls itself "the
+compositor contract"), `measure` ("measured boot"), and `dma_validate`, which names itself a noun in
+its own first line, "the DMA-confinement **validator**".
+
 ### The convention: one rule per domain, and each domain's own
 
 Crates already do this (`fs_proto`, `cred_proto`, `user_rt`). Programs did not: **0 of 57** used an
