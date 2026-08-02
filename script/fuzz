@@ -1,0 +1,121 @@
+#!/bin/sh
+# script/fuzz: run the coverage-guided fuzz targets over the parsers that read bytes we did not
+# write (milestone 42's second leg). See notes/fuzzing.md.
+#
+# **Fuzzing has no completion condition, so this takes a time budget instead.** A proof either
+# discharges or it does not; a fuzzer runs until you stop it. Everything else about the way this is
+# wired follows from that one fact: the default is short enough to run in the inner loop, CI gets its
+# own job rather than a slot in a gate somebody waits on, and a longer run is a flag rather than a
+# different tool.
+#
+#   script/fuzz                     every target, 60 seconds each
+#   script/fuzz --time 900          every target, 15 minutes each
+#   script/fuzz dtb_walk            one target, 60 seconds
+#   script/fuzz --time 0 dtb_walk   one target, until it finds something or you stop it
+#   script/fuzz --list              the targets and what each one is for
+#
+# **Seeds are passed as read-only corpus directories, never copied.** `crates/dtb/tests/fixtures`
+# holds three real device trees dumped from the boards we boot, and `crates/gpt/tests/fixtures` holds
+# two real disks formatted by `sgdisk` and by Apple's Disk Utility. Those are already in the tree with
+# their own reason to exist, and duplicating their bytes under `fuzz/seeds/` would create a second
+# copy that can drift from the first. libFuzzer writes only to the FIRST corpus directory it is
+# given, so the fixtures stay untouched.
+#
+# Not part of script/lint or script/test, on purpose. Both are gates a developer waits on, and a
+# minute per target is not a wait either of them should grow.
+
+set -e
+cd "$(dirname "$0")/.."
+
+# Every target, in the order they cost us the most if they are wrong: the device tree is parsed before
+# anything else exists, and the ELF loader maps what it parses.
+targets="dtb_walk elf_parse gpt_table crickerfs_roundtrip"
+
+usage() {
+    cat <<'EOF'
+usage: script/fuzz [--time SECONDS] [--list] [TARGET...]
+
+  --time N   seconds per target (default 60; 0 means run until stopped)
+  --list     list the targets and what each one covers
+EOF
+}
+
+seconds=60
+wanted=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --time) seconds="$2"; shift 2 ;;
+        --time=*) seconds="${1#--time=}"; shift ;;
+        --list)
+            echo "dtb_walk             device tree, parsed at boot from firmware bytes"
+            echo "elf_parse            ELF64 headers, and the loader maps what it parses"
+            echo "gpt_table            GUID partition table, off a disk somebody else formatted"
+            echo "crickerfs_roundtrip  the archive writer and reader agree (a property, not a panic)"
+            exit 0
+            ;;
+        -h|--help) usage; exit 0 ;;
+        -*) echo "script/fuzz: unknown argument '$1'" >&2; usage >&2; exit 2 ;;
+        *) wanted="$wanted $1"; shift ;;
+    esac
+done
+if [ -n "$wanted" ]; then
+    targets="$wanted"
+fi
+
+# The version is PINNED in .cargo-fuzz-version, the same discipline as .cargo-deny-version,
+# .qemu-version and rust-toolchain.toml, and for the reason cargo-deny's comment records as a scar: a
+# tool whose verdict is a gate has to be the same tool everywhere. cargo-fuzz in particular chooses
+# the sanitizer, the profile and whether `-Zbuild-std` is on by default, and those defaults have
+# moved between minor versions.
+pinned="$(cat .cargo-fuzz-version)"
+installed="$(cargo fuzz --version 2>/dev/null | awk '{print $2}')"
+if [ "$installed" != "$pinned" ]; then
+    echo "==> Installing cargo-fuzz $pinned (have: ${installed:-none})"
+    cargo install --locked "cargo-fuzz@$pinned"
+fi
+
+for target in $targets; do
+    # `cargo fuzz list` prints one name per line, so the newlines become spaces before the match.
+    case " $(cargo fuzz list | tr '\n' ' ') " in
+        *" $target "*) ;;
+        *) echo "script/fuzz: no such target '$target' (try --list)" >&2; exit 2 ;;
+    esac
+
+    # The writable corpus first, then the read-only seed directories. Both kinds are listed per
+    # target rather than discovered, because a seed is a choice with a reason: a directory that
+    # happens to hold files is not a corpus.
+    corpus="fuzz/corpus/$target"
+    mkdir -p "$corpus"
+    set -- "$corpus"
+    # An `if` rather than `[ ... ] && set --`, because under `set -e` a trailing AND-OR list whose
+    # left side is false exits the script, and "this target has no seed directory" is not a failure.
+    if [ -d "fuzz/seeds/$target" ]; then
+        set -- "$@" "fuzz/seeds/$target"
+    fi
+    case "$target" in
+        dtb_walk) set -- "$@" crates/dtb/tests/fixtures ;;
+        gpt_table) set -- "$@" crates/gpt/tests/fixtures ;;
+    esac
+
+    # A dictionary where the format has one. It is the cheap half of a grammar: without it the
+    # fuzzer spends its budget rediscovering that a device-tree token is `\x00\x00\x00\x01` and that
+    # an ELF starts `\x7fELF`, which are facts, not discoveries.
+    dict=""
+    if [ -f "fuzz/dictionaries/$target.dict" ]; then
+        dict="-dict=fuzz/dictionaries/$target.dict"
+    fi
+
+    echo "==> fuzz: $target (${seconds}s, corpus $corpus)"
+    # -timeout=10: one input that takes ten seconds is a hang, and a hang found at minute nine of a
+    # ten-minute budget should be reported as a hang rather than as a run that finished quietly.
+    # -print_final_stats=1: the execs/second and the corpus size are the only evidence that the run
+    # did anything, and a fuzz job whose output is silence is a job nobody can audit.
+    #
+    # $dict is unquoted on purpose: it is either empty (and must vanish rather than become an empty
+    # argument) or one whole `-dict=...` token with no spaces in it.
+    # shellcheck disable=SC2086
+    cargo fuzz run "$target" "$@" -- \
+        $dict -max_total_time="$seconds" -timeout=10 -print_final_stats=1
+done
+
+echo "==> fuzz: no crashes in $(echo "$targets" | wc -w | tr -d ' ') targets at ${seconds}s each"

@@ -1,0 +1,45 @@
+# libFuzzer dictionary for the ELF loader's front half.
+#
+# `Elf::parse` rejects on four constants in its first fifteen lines (magic, class, endianness,
+# version) and then on a fifth, `e_machine`, twelve lines later. A fuzzer that has to guess
+# `EM_AARCH64 = 183` at offset 18 before it can reach a single interesting branch is a fuzzer that
+# spends its budget proving the magic check works.
+#
+# The `p_type` values are here because everything the loader does is gated on `PT_LOAD`, and the
+# flag combinations because the W^X refusal and the unreachable-segment refusal are each one byte.
+
+magic="\x7fELF"
+class64="\x02"
+little_endian="\x01"
+ev_current="\x01"
+
+# e_type: ET_EXEC (accepted) and ET_DYN (refused as NeedsRelocation), little-endian u16.
+etype_exec="\x02\x00"
+etype_dyn="\x03\x00"
+
+# e_machine, little-endian u16: aarch64 is 183, riscv is 243. One build accepts one of them.
+machine_aarch64="\xb7\x00"
+machine_riscv="\xf3\x00"
+
+# p_type: PT_LOAD is the only one mapped; PT_NULL and PT_DYNAMIC are the common neighbours a real
+# file carries, and each is a skipped header the walk still has to step over.
+pt_null="\x00\x00\x00\x00"
+pt_load="\x01\x00\x00\x00"
+pt_dynamic="\x02\x00\x00\x00"
+
+# p_flags: R, W, X, RX, RW, and the RWX that must be refused.
+pf_x="\x01\x00\x00\x00"
+pf_w="\x02\x00\x00\x00"
+pf_r="\x04\x00\x00\x00"
+pf_rx="\x05\x00\x00\x00"
+pf_rw="\x06\x00\x00\x00"
+pf_rwx="\x07\x00\x00\x00"
+
+# e_phentsize = 56 and a plausible e_phoff = 64, the two fields that bound the header table.
+phentsize_56="\x38\x00"
+phoff_64="\x40\x00\x00\x00\x00\x00\x00\x00"
+
+# The address arithmetic worth landing on exactly: a page boundary, and the values that make
+# `vaddr + memsz` wrap.
+page_4k="\x00\x10\x00\x00\x00\x00\x00\x00"
+u64_max="\xff\xff\xff\xff\xff\xff\xff\xff"
