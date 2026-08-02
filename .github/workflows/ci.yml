@@ -90,17 +90,48 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Needs history to diff against the base for the scope check below.
+          fetch-depth: 0
+
+      # **The same predicate the proofs use, for the same reason.** This is five full riscv boots,
+      # the slowest job after `verify`, and a change to a markdown file cannot alter what a QEMU CPU
+      # model executes. Adding it here was prompted by watching a notes-only pull request skip the
+      # 42-minute proof in 17 seconds and then sit in this job anyway.
+      #
+      # The predicate is deliberately identical rather than tuned narrower (this job's own comment
+      # notes that what breaks it is a change to kernel/src/arch/riscv64/). One rule that is easy to
+      # believe beats two that have to be kept in agreement, and the asymmetry argument is the same:
+      # skipping a run that was needed is a broken gate, running one that was not costs minutes.
+      - name: Does this change need the matrix?
+        id: scope
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          [ -n "$base" ] || base="$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)"
+          changed="$(git diff --name-only "$base" HEAD)"
+          echo "changed files:"; echo "$changed" | sed 's/^/  /'
+          if [ -z "$(printf '%s\n' "$changed" | grep -vE '^(notes/|design/|[A-Z_]+\.md$)' || true)" ]; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            echo "==> documentation only; no CPU model can be affected"
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: Swatinem/rust-cache@v2
+        if: steps.scope.outputs.needed == 'true'
       # The same cached QEMU the test and bench jobs use, restored before script/bootstrap for the
       # same reason (bootstrap skips its apt install when QEMU is already on PATH).
       - name: Cache QEMU
+        if: steps.scope.outputs.needed == 'true'
         uses: actions/cache@v4
         with:
           path: ~/.cache/cricker-qemu
           key: qemu-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.qemu-version') }}
       - name: Build QEMU if the cache missed
+        if: steps.scope.outputs.needed == 'true'
         run: script/ci-qemu
       - name: Put it on PATH
+        if: steps.scope.outputs.needed == 'true'
         run: echo "$HOME/.cache/cricker-qemu/bin" >> "$GITHUB_PATH"
 
       # A JOB OF ITS OWN, not extra work inside `test`, and the reason is wall clock: the matrix is
@@ -114,7 +145,9 @@ jobs:
       #
       # See notes/cpu-models.md, including its BUGS section: a narrower QEMU model is still QEMU.
       - run: script/bootstrap
+        if: steps.scope.outputs.needed == 'true'
       - run: script/cpu-matrix
+        if: steps.scope.outputs.needed == 'true'
       # The per-model logs, kept only when something failed. `script/cpu-matrix` now prints an
       # excerpt inline, which answers most questions without leaving the browser; this is for the
       # ones it does not, because the full boot log is thousands of lines and belongs in a download
