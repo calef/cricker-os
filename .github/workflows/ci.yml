@@ -115,6 +115,18 @@ jobs:
       # See notes/cpu-models.md, including its BUGS section: a narrower QEMU model is still QEMU.
       - run: script/bootstrap
       - run: script/cpu-matrix
+      # The per-model logs, kept only when something failed. `script/cpu-matrix` now prints an
+      # excerpt inline, which answers most questions without leaving the browser; this is for the
+      # ones it does not, because the full boot log is thousands of lines and belongs in a download
+      # rather than in the job output. Without it the evidence lives only on a runner that is about
+      # to be destroyed, which on 2026-08-02 forced a local re-run to read a file CI had already
+      # written.
+      - name: Upload the per-model logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cpu-matrix-logs
+          path: target/cpu-matrix/
 
   fmt:
     name: rustfmt
