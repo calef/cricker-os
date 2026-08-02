@@ -11,3 +11,6 @@ target/
 # Claude Code agent worktrees and local session files
 .claude/
 .playwright-mcp/
+
+# macOS finder junk, tracked once by accident.
+.DS_Store

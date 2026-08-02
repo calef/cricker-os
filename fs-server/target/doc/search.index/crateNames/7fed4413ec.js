@@ -1,1 +1,0 @@
-rd_("ifs_server")
