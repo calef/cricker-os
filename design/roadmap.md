@@ -127,6 +127,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 61 | BUILT | The caretakers: one verb table, and names that say what you get | **built, both ISAs.** The rename landed first (532 tokens, not four filenames); `fs_proto::verb` is one row per opcode and a verb with no row is a compile error; all three caretakers forward the four extended-attribute verbs, proven by three witnesses each with a control that must fail |
 | 62 | NOT-STARTED | Tests that assert on time: make a red run mean something | ~19 bounded spins (`for _ in 0..N { yield_now() }`) and wall-clock assertions flake under load. Four separate lanes and the integrator hit them on 2026-08-01; the CPU matrix multiplies the exposure fivefold |
 | 63 | NOT-STARTED | Directory and package names: one spelling per thing | `fs-server` and `crates/fs_proto` spell the same idea two ways; `user-std/` holds a package called `hellostd`, matching neither its directory nor anything else. Needs a directory standard, which the tenet does not yet have |
+| 64 | NOT-STARTED | Enough `std` to run somebody else's crate | milestone 27 shipped the PAL; `fs` answers `Unsupported` in 32 of 54 functions and `thread` in 4 of 6. Measured against real crates.io dependencies rather than guessed at, because the gap that matters is the one a chosen crate actually hits |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -3727,6 +3728,78 @@ Do it here, with the numbers written down, rather than under pressure from a nam
 
 **Effort: small**, and almost entirely mechanical, but it touches paths in `script/`, `xtask`,
 `deny.toml`, CI, and a long tail of notes.
+
+### 64. Enough `std` to run somebody else's crate
+
+**Status: NOT-STARTED.** Raised 2026-08-01, from a question with a number behind it: does milestone
+27 mean ordinary Rust programs run here?
+
+#### What 27 actually delivered, and where it stops
+
+`std` on the native ABI is **BUILT**, and the proof program is real: `println!`, `Vec`, `String`,
+`Instant`, `SystemTime` and `std::random` all work through the PAL in `patches/std-cricker/`.
+
+The bound is in the PAL's own answers:
+
+| module | functions | answering `Unsupported` |
+|---|---|---|
+| `time` | 8 | 0 |
+| `stdio` | 5 | 3 |
+| `thread` | 6 | **4** |
+| `fs` | 54 | **32** |
+
+`std::fs` has the metadata surface (`size`, `perm`, `modified`, `is_dir`, `read`, `write`, `append`,
+`truncate`) and answers `Unsupported` for most of the rest. **That is honest rather than broken**
+(§42: declare what you offer), and it is exactly what milestone 27's own text claims: it widens real
+workloads to *"most of crates.io **that stays off fs and threads**"*. The qualifier is doing the work
+in that sentence, and this milestone is about removing it.
+
+#### Why now rather than at 27
+
+The pieces that were missing then exist now. The FS service and its wire contract (§27), the three
+caretakers and their verb table (§56), extended attributes (§54), and `fs_test_client`'s worked grant
+path all landed after 27 did. `std::fs` could not have been backed by a capability-shaped filesystem
+that did not yet exist.
+
+And it is on the critical path in a way the roadmap does not currently say: **milestone 55 wants
+Samba-shaped code**, and nothing realistic in that space stays off `fs` and threads.
+
+#### How to scope it, which is the whole method
+
+**Do not fill in functions by guessing which matter.** Pick real crates, build them, and let the
+failures name the work. The gap that matters is the one a chosen dependency actually hits, and a PAL
+completed by inspection would be a large amount of code justified by nobody's use.
+
+Candidate probes, roughly in order of how much they would teach:
+
+- a pure-computation crate with no IO, to establish the floor,
+- a serialization crate, which pulls in `alloc` patterns and trait-heavy generics,
+- something that opens a file by path, which is where **the capability question bites**: `File::open`
+  takes a path and this system has no ambient authority, so either the PAL resolves against a
+  granted directory or the call must keep answering honestly,
+- something that spawns a thread, which is the other half.
+
+**The `File::open` question is a design fork, not an implementation task**, and it should be raised
+before code is written. §50 chose `bind` over stored paths and §48 settled resolution; how a
+`std::fs::File::open("config.toml")` finds its directory capability, or refuses to, is the same
+question one layer up. It may be that the honest answer is a program namespace (milestone 47's `PATH`
+analysis) rather than a PAL trick.
+
+#### BUGS
+
+- **"Runs unmodified" is the claim to be careful with.** A crate that compiles is not a crate that
+  works, and a crate that works under one grant may fail under another, because on this system what a
+  program can do depends on what it holds. The acceptance evidence has to be a crate doing its job
+  with a stated endowment, not a green build.
+- **The PAL patches std's own source**, so every function added here is more surface for
+  `toolchain drift` to break against a future nightly. That is a real recurring cost and the reason
+  to add only what a probe demands.
+- **Threads open a scheduling question this project has not answered.** `std::thread::spawn` implies
+  a thread the program owns; the kernel has TCBs and a budget model, and which of those a `std`
+  thread is has never been decided.
+
+**Effort: not estimated**, deliberately. The measurement is the first deliverable: pick the probes,
+build them, and report what breaks.
 
 ### The backup-server ladder (53 to 55), and why it is the right deliverable
 
