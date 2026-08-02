@@ -88,10 +88,15 @@ often the only thing that says what a program can *do*.
 cost nothing to learn. This tenet is a naming authority, not a renaming mandate, and renaming `elf`
 would destroy the recognition the whole thing exists to buy.
 
-**One constraint:** `crickerfs` caps archive names at `NAME_LEN = 24` bytes, so a program's name is
-bounded. It can be raised (no data migration, every image regenerates), but it costs directory
-entries per block and kernel stack. Do not let it pick a name; do not spend a format change on bytes
-nothing needs. Crates are not in the archive and are unbounded.
+**One constraint:** `crickerfs` caps archive names at `NAME_LEN = 32` bytes, so a program's name is
+bounded. Crates are not in the archive and are unbounded.
+
+It was 24 until 2026-08-01, when it had started deciding names rather than bounding them: two settled
+names were within four bytes of it and `os_primitives_benchmarker` exceeded it. Raising it costs
+directory entries per block, and nothing else now that `Fs` no longer holds an entry array. See
+[crickerfs.md](crickerfs.md) for the numbers. The rule that survives the raise: **do not let the
+limit pick a name, and do not spend a format change on bytes nothing needs.** 32 clears the longest
+settled name by seven bytes, which is a budget rather than the three bytes that were left before.
 
 ## Crates
 

@@ -6,5 +6,9 @@ license.workspace = true
 
 [dependencies]
 abi = { version = "0.1.0", path = "../abi" }
+# The archive format, rather than a second copy of its offsets. This driver reads the crickerfs
+# directory out of a block-0 buffer, and when the entry layout changed on 2026-08-01 its hardcoded
+# stride was the only place in the tree that had to be found by hand.
+crickerfs = { version = "0.1.0", path = "../crickerfs" }
 fs_proto = { version = "0.1.0", path = "../fs_proto" }
 user_rt = { version = "0.1.0", path = "../user_rt" }
