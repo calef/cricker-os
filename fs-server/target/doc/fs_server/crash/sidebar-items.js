@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["Damage"],"fn":["blank_image","damaged_image","header_at","only_this_generation"],"struct":["MemIo","Recording","Write"]};

@@ -1,0 +1,4 @@
+cargo::rerun-if-changed=../user/link.ld
+cargo::rustc-link-arg=-T/Users/calef/projects/cricker-os/user-std/../user/link.ld
+cargo::rustc-link-arg=-u_start
+cargo::rustc-link-arg=--build-id=none

@@ -284,10 +284,10 @@ section said "everywhere" and was wrong. Three domains, each keeping its own con
 | Any other directory | `hyphens` if it needs two words | a directory is a path element, and paths are hyphenated outside this repository |
 
 The directory rows are the same principle one level out, not a new tier: a package directory is a
-Rust name, and everything else is a path. Three directories violate them today (`fs-server/`,
-`tools/redoxfs-host/`, and `user-std/`, whose package is called `hellostd` and matches neither).
-That is milestone 63, deliberately **after** milestone 61, because two renames in flight would
-collide in `notes/`, `DECISIONS.md` and `kernel/src/user.rs`.
+Rust name, and everything else is a path. Three directories violated them when this was written
+(`fs-server/`, `tools/redoxfs-host/`, and `user-std/`, whose package was called `hellostd` and
+matched neither); **milestone 63 fixed all three on 2026-08-01**, along with about twenty other
+names. The rule is now descriptive of the tree rather than aspirational.
 
 **This is not the two-tier rule Chris rejected**, and the difference is the one he identified. That
 split was *within* one domain, keyed on an **unstable** property: `wc` moved from internal plumbing

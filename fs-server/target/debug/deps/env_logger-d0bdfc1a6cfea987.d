@@ -1,0 +1,11 @@
+/Users/calef/projects/cricker-os/fs-server/target/debug/deps/env_logger-d0bdfc1a6cfea987.d: /Users/calef/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/env_logger-0.11.11/src/lib.rs /Users/calef/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/env_logger-0.11.11/src/logger.rs /Users/calef/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/env_logger-0.11.11/src/writer/mod.rs /Users/calef/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/env_logger-0.11.11/src/writer/buffer.rs /Users/calef/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/env_logger-0.11.11/src/writer/target.rs /Users/calef/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/env_logger-0.11.11/src/fmt/mod.rs /Users/calef/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/env_logger-0.11.11/src/fmt/humantime.rs
+
+/Users/calef/projects/cricker-os/fs-server/target/debug/deps/libenv_logger-d0bdfc1a6cfea987.rmeta: /Users/calef/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/env_logger-0.11.11/src/lib.rs /Users/calef/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/env_logger-0.11.11/src/logger.rs /Users/calef/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/env_logger-0.11.11/src/writer/mod.rs /Users/calef/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/env_logger-0.11.11/src/writer/buffer.rs /Users/calef/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/env_logger-0.11.11/src/writer/target.rs /Users/calef/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/env_logger-0.11.11/src/fmt/mod.rs /Users/calef/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/env_logger-0.11.11/src/fmt/humantime.rs
+
+/Users/calef/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/env_logger-0.11.11/src/lib.rs:
+/Users/calef/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/env_logger-0.11.11/src/logger.rs:
+/Users/calef/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/env_logger-0.11.11/src/writer/mod.rs:
+/Users/calef/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/env_logger-0.11.11/src/writer/buffer.rs:
+/Users/calef/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/env_logger-0.11.11/src/writer/target.rs:
+/Users/calef/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/env_logger-0.11.11/src/fmt/mod.rs:
+/Users/calef/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/env_logger-0.11.11/src/fmt/humantime.rs:
