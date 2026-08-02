@@ -4,7 +4,7 @@
 //! FS server, the client, and the kernel-side tests, share one definition and cannot drift. The
 //! kernel routes these words the way it routes any IPC (§10, §12): it never reads an opcode. Adding
 //! one is a change to this crate and the note, not to the syscall surface. This is the same split
-//! `lineedit::proto` makes for the terminal contract.
+//! `line_editor::proto` makes for the terminal contract.
 //!
 //! # The two protocols
 //!
@@ -44,7 +44,7 @@
 pub const PAGE: usize = 4096;
 
 /// Where a request packs its opcode: bits 63:56 of the first `CALL` word, the same position
-/// `lineedit::proto` uses, so the two contracts read alike.
+/// `line_editor::proto` uses, so the two contracts read alike.
 pub const OP_SHIFT: u32 = 56;
 
 /// Build a request's first word from just an opcode (the block protocol's shape: the operand, a
@@ -224,7 +224,7 @@ pub mod fs {
     /// - **Crash-atomic: yes.** The whole rename runs in one RedoxFS transaction and reaches the
     ///   platter through one commit in the header ring, so a fresh mount finds the old name or the
     ///   new one and never both or neither. This is measured, not argued: it is the last operation
-    ///   of `fs-server/tests/crash_consistency.rs`'s workload, so the sweep that cuts the device at
+    ///   of `fs_server/tests/crash_consistency.rs`'s workload, so the sweep that cuts the device at
     ///   every write in that workload cuts inside this one too.
     ///
     /// The temp-file-then-rename idiom needs both, which is why §42 states them separately: saying
@@ -790,7 +790,7 @@ pub mod verb {
     /// **Every verb the file-service contract carries, in opcode order.**
     ///
     /// The rights column is the server's, copied from the doc comment on each opcode in [`fs`] and
-    /// checked against the server's behaviour by `fs-server`'s own tests. It is here because a proxy
+    /// checked against the server's behaviour by `fs_server`'s own tests. It is here because a proxy
     /// that knows a verb mutates can refuse it without having to know what mutating means.
     pub const TABLE: [Verb; (LAST - FIRST + 1) as usize] = [
         // OPEN's requirement is "READ or WRITE", the one any-of in the contract, so it is the one
@@ -1260,7 +1260,7 @@ pub mod nameset {
     ///
     /// There is a second reason, and it is the one that decides the *shape* of the failure: `caps rm
     /// *.txt` prints the set before anything runs, and a grant nobody can read is a grant nobody
-    /// checked. Exceeding this is a **refusal at the prompt** (`capsh::Refusal::TooManyNames`), never
+    /// checked. Exceeding this is a **refusal at the prompt** (`grant_plan::Refusal::TooManyNames`), never
     /// a truncation, because a glob that quietly granted a prefix of what it matched would be the
     /// worst outcome this lane could produce.
     pub const MAX_NAMES: usize = 8;
@@ -1462,7 +1462,7 @@ pub mod xattr {
     /// filesystem, at any rights. The refusal is `EINVAL`, the same one `..` gets, because the name
     /// is not expressible rather than not permitted.
     ///
-    /// Recovery **does** see it. `redoxfs-host extract` and upstream's FUSE mount show this
+    /// Recovery **does** see it. `redoxfs_host extract` and upstream's FUSE mount show this
     /// directory as ordinary data, so a backup carries the attributes out with the files. That is a
     /// decision and not a leak (notes/host-recovery.md); the store is unnameable through the
     /// *contract*, and the contract is what confines a client.
@@ -1594,7 +1594,7 @@ pub mod xattr {
     /// first is the honest one: every interesting rule of this feature (what replaces what, when a
     /// limit is hit, what a truncated blob means) lives in [`store::set`], [`store::remove`] and [`store::get`], which are
     /// pure functions over a byte slice and therefore host-tested in milliseconds instead of under an
-    /// emulator. The second is recovery: a person holding a damaged image and the `redoxfs-host`
+    /// emulator. The second is recovery: a person holding a damaged image and the `redoxfs_host`
     /// tool can read the store, because the format is written down next to the code that makes it.
     ///
     /// **Keyed on the node, which is what makes rename free.** A rename changes a directory entry and
@@ -1819,7 +1819,7 @@ pub mod fixture {
     /// A file the image ships with (with placeholder contents) so the client can open it and write.
     pub const SCRATCH_NAME: &str = "scratch";
     /// Placeholder contents the host tool writes; overwritten by the client's write test.
-    pub const SCRATCH_INIT: &[u8] = b"(placeholder overwritten by the fs-server write test)";
+    pub const SCRATCH_INIT: &[u8] = b"(placeholder overwritten by the fs_server write test)";
     /// What the client writes to `scratch` and reads back; the host tool re-reads it after the run
     /// to prove the write reached the on-disk image and the filesystem is still consistent.
     pub const WRITE_PATTERN: &[u8] =
@@ -2329,7 +2329,7 @@ pub mod fixture {
 
     /// **The on-device crash test's vocabulary** (milestone 37, DECISIONS §34 condition 1).
     ///
-    /// The host sweep in `fs-server/tests/crash_consistency.rs` proves the property exhaustively
+    /// The host sweep in `fs_server/tests/crash_consistency.rs` proves the property exhaustively
     /// against a reconstructed platter. This is the other half: one crash driven all the way through
     /// the real stack, on its own disk, so the recovery is a real FS-server process mounting a real
     /// image that a real virtio write left half finished.

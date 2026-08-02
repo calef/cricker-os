@@ -227,7 +227,7 @@ The kernel stayed heapless (milestone 14 earned that and nothing since has neede
 but Rust `std` needs a `GlobalAlloc`, and a capability system has an obvious place to get one:
 **the process's own untyped budget.** The pair that landed:
 
-- **`crates/uheap`**: the algorithm, host-tested. First-fit, address-sorted free list with
+- **`crates/user_heap`**: the algorithm, host-tested. First-fit, address-sorted free list with
   coalescing, the same design as the milestone-4 kernel heap and for the same reason: zero
   overhead on allocated memory. The trick that makes it headerless is stated as an invariant this
   time: every block is 16-aligned with a size that is a multiple of 16, and `alloc`/`dealloc`
@@ -251,8 +251,8 @@ already had; a process that leaks just exhausts its own budget (`OutOfMemory` is
 problem, and the `alloc` OOM handler turns it into a fault the kernel reports). Honest caveats:
 the lock is a spinlock, fine while processes are single-threaded (std `thread::spawn` is phase
 two-or-later), wasteful under real contention; and first-fit is O(n) over free blocks, the same
-price the kernel heap paid, acceptable until a workload proves otherwise. Proven by `allocdemo`
-(`user/src/allocdemo.rs`), the first program in the tree linking `extern crate alloc`, spawned by
+price the kernel heap paid, acceptable until a workload proves otherwise. Proven by `allocator_exerciser`
+(`user/src/allocator_exerciser.rs`), the first program in the tree linking `extern crate alloc`, spawned by
 the test suite on both ISAs with a 96-page budget: Vec/String/BTreeMap churn, frees in arbitrary
 order, then a 128 KiB allocation that must fit in already-committed pages, proving freed memory
 is reused rather than leaked. One real bug found by the machine on the way: `load` maps a single

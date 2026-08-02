@@ -64,7 +64,7 @@
 //!   [`ENTRIES_IN_FIRST_BLOCK`] files and no more. It is used on the tiny test disk, not the
 //!   initrd, but the limit is real and nothing in the format announces it.
 //! - **No directories, no writes, no permissions.** This is a boot archive. The read-write
-//!   filesystem is the RedoxFS server in `fs-server/` (DECISIONS §34), which is a different job.
+//!   filesystem is the RedoxFS server in `fs_server/` (DECISIONS §34), which is a different job.
 
 #![no_std]
 

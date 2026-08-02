@@ -14,7 +14,7 @@
 //! capability in its cspace that names anything but the two endpoints. **The same binary, three
 //! sources, one behaviour.**
 //!
-//! The output side is the same claim, already made by `hellostd` in the protocol lane: slot 0 holds
+//! The output side is the same claim, already made by `std_exerciser` in the protocol lane: slot 0 holds
 //! an endpoint with `WRITE`, and whether the shell prints the answer or a file records it is not
 //! something this program participates in.
 //!

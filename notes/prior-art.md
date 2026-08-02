@@ -17,7 +17,7 @@ milestone design, not a one-off comparison.
    is partly someone else's demonstrates less, whatever its quality.
 
 **Pure-logic crates: prefer a maintained no_std crate, unless building it is the point.**
-The §7 crates we wrote by hand (`dtb`, `elf`, `paging`, `heap`, `caps`, ...) were the point;
+The §7 crates we wrote by hand (`dtb`, `elf`, `paging`, `heap`, `capability`, ...) were the point;
 they are also now proved or provable, so they stay. For peripheral plumbing not yet built
 (a PCI capability walker, a GPT parser, a font rasterizer), the calculus flips: a
 well-maintained kernel-agnostic crate beats a bespoke one we then have to trust anyway.

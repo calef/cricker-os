@@ -1,7 +1,7 @@
 # The compositor
 
 Milestone 33, rung two of the display ladder. One screen, several mutually distrusting clients, each
-holding a capability to its own surface. The code halves are `crates/compose` (the contract and the
+holding a capability to its own surface. The code halves are `crates/compositor` (the contract and the
 pixel arithmetic), `user/src/compositor.rs` (the compositor), and `user/src/window.rs` (a client); this is
 the prose half, the same split [framebuffer-contract.md](framebuffer-contract.md) makes for rung one
 and [terminal-contract.md](terminal-contract.md) for the terminal.
@@ -57,7 +57,7 @@ So the design inverts it. **The message says nothing; the memory says everything
 
 - **Every per-client fact lives in per-client memory.** A client's geometry, its window id, its damage
   rectangle and its sequence counter are fields in a control page that only it and the compositor map
-  (`compose::proto::ctl`). The only surface a client can describe is its own, because the only control
+  (`compositor::proto::ctl`). The only surface a client can describe is its own, because the only control
   page it can write is its own.
 - **Every privileged answer travels through privileged memory**, never through a reply. A screenshot is
   a read-only mapping of the screen. The window list is a read-only page the compositor publishes.
@@ -126,7 +126,7 @@ Three questions Unix conflates, separated here:
   the window-list page, so a holder of that page, and the kernel test, can witness a focus change
   rather than ask about it.
 
-Input reaches the focused client as `lineedit::proto::OP_BYTES` over a `CALL`: the terminal contract's
+Input reaches the focused client as `line_editor::proto::OP_BYTES` over a `CALL`: the terminal contract's
 driver half, verbatim (notes/terminal-contract.md). So a terminal is a client of this compositor
 without either contract changing, which is what rung three needs and the reason the framing was reused
 rather than reinvented.
@@ -221,7 +221,7 @@ directions are exercised against real hardware behaviour rather than one being a
 Rung one put a damage rectangle in the contract on the argument that a compositor redrawing one window
 should not pay for the whole screen. Rung two is where that becomes checkable, and it is checked twice.
 
-On the host, in microseconds: `crates/compose`'s tests poison a screen buffer, composite one window's
+On the host, in microseconds: `crates/compositor`'s tests poison a screen buffer, composite one window's
 damage, and assert that every pixel outside the rectangle still holds the poison while every pixel
 inside holds the composed picture.
 
@@ -245,7 +245,7 @@ Four witnesses, because a compositor's output is exactly the thing a guest-side 
    background alone (no client has committed yet), so it doubles as the check that an empty screen is a
    defined picture rather than whatever was in RAM;
 2. **the kernel**, reading the scanout frames through the direct map and comparing every pixel against
-   `compose::expected_screen_pixel`, which it computed from the contract;
+   `compositor::expected_screen_pixel`, which it computed from the contract;
 3. **a capture client in its own address space**, reading the screen through the read-only mapping that
    is its screenshot capability, and digesting it;
 4. **the host**, through QEMU's monitor: `cargo xtask` dumps the scanout with `screendump` beside the
@@ -325,7 +325,7 @@ distrusted component was checked".
 
 Stated plainly, because a demonstrator's honest limits are part of the deliverable:
 
-- **No window management.** The scene is a compile-time constant (`compose::SCENE`): three windows,
+- **No window management.** The scene is a compile-time constant (`compositor::SCENE`): three windows,
   fixed sizes, fixed positions, fixed stacking order. A real compositor learns its windows from clients
   that ask for surfaces and from a user who moves, resizes, raises, and closes them. Nothing here
   negotiates a surface; the kernel grants three at spawn. That is also what makes the composed screen a
@@ -355,7 +355,7 @@ Stated plainly, because a demonstrator's honest limits are part of the deliverab
 
 | piece | file |
 |---|---|
-| the contract and the pixel arithmetic, host-tested | `crates/compose/src/lib.rs` |
+| the contract and the pixel arithmetic, host-tested | `crates/compositor/src/lib.rs` |
 | the compositor | `user/src/compositor.rs` |
 | a client, with its roles and its attacks | `user/src/window.rs` |
 | the wiring (frames, endpoints, grants) | `kernel/src/user.rs` (`compositor_service`) |

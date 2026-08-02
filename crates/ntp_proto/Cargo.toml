@@ -9,7 +9,7 @@ license.workspace = true
 # resistance. Pure computation, so it compiles for the host and its tests run in milliseconds, the
 # same split `fs_proto` and `gfx_proto` make for their contracts. It owns no socket, no clock and no
 # policy: milestone 51's clock service owns the offset and the authority to set it, and the client
-# that carries these bytes over `netstack` is a later phase. See notes/ntp.md.
+# that carries these bytes over `net_stack` is a later phase. See notes/ntp.md.
 
 # `kani` is set only by `cargo kani` (script/verify), never by an ordinary build. Declaring it here
 # keeps unexpected_cfgs from flagging the `#[cfg(kani)]` proof module under -D warnings. See caps.

@@ -73,7 +73,7 @@ jobs:
       - name: Build the std overlay (the fragile part)
         run: |
           rm -rf target/cricker-farm
-          cargo xtask user-std
+          cargo xtask std-exerciser
 
       # Then the ordinary build and the host-logic tests. The QEMU suite is deliberately skipped: this
       # job answers "does it still compile and do the pure logic still hold", and a toolchain bump has

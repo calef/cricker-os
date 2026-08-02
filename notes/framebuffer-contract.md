@@ -86,7 +86,7 @@ registered whole as the driver's DMA region. Three things follow, and they are t
 right shape:
 
 1. The shadow-ring validator bounds every descriptor to `[dma_base, dma_base + dma_size)`, and the
-   surface is inside that. **`crates/dma_validate` needed no change at all**, because it bounds
+   surface is inside that. **`crates/dma_validator` needed no change at all**, because it bounds
    addresses against a region whose size is a parameter; the region got nine times bigger and the
    proof still covers it. (This was the one place the increment could have tempted a change to a
    proved crate, and it did not.)
@@ -281,7 +281,7 @@ Two predictions in the list below came out exactly as written, and one was answe
 - **Damage tracking**: the compositor flushes one rectangle per frame, and the test poisons the rest of
   the scanout and finds the poison intact. As predicted, no driver change.
 - **Input**: the keyboard's routing question turned out to be the compositor's, as predicted, and the
-  answer reuses `lineedit::proto::OP_BYTES` verbatim.
+  answer reuses `line_editor::proto::OP_BYTES` verbatim.
 - **Several surfaces**, differently: the prediction was "a compositor holding one endpoint per client
   surface needs a driver change and not a contract change". Rung two holds **one** endpoint for all its
   clients instead, because a shared endpoint carries no sender identity and per-client surfaces are
@@ -297,7 +297,7 @@ Written back here on 2026-07-30, for the same reason rung two's section exists: 
 is what happened when the next thing implemented against it. **Nothing in this rung changed.**
 
 `crates/gfx_proto` and `user/src/display.rs` are byte-for-byte the same again. The display terminal
-(`user/src/vterm.rs`) takes `painter`'s place at this seam with **exactly `painter`'s authority**: a
+(`user/src/display_terminal.rs`) takes `painter`'s place at this seam with **exactly `painter`'s authority**: a
 report endpoint, the display endpoint, and the surface frames. It draws glyphs instead of a
 coordinate pattern and calls `FLUSH` with the rectangle of cells that changed, which is what this
 note said a client does. The only addition on this side is a kernel wiring entry point
@@ -318,7 +318,7 @@ Deliberately not in rung one, each with the seam it will use:
 
 - **Font rendering and a VT state engine.** ~~They arrive as a *client* of this contract~~ **Done,
   2026-07-30**, and as predicted: a terminal draws glyphs into a surface and calls `FLUSH`, with no
-  change here. The VT engine is Rust (`crates/vt`); libghostty-vt is still an open choice and
+  change here. The VT engine is Rust (`crates/video_terminal`); libghostty-vt is still an open choice and
   notes/glyphs.md prices it now that there is a built engine to compare against.
 - **Input.** **Done, 2026-07-30.** A keyboard is a second device with its own driver and its own
   capability (`user/src/kbd.rs`, virtio-input over this same PCIe transport and behind the same IOMMU

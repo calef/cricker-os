@@ -171,7 +171,7 @@ contact with month four. The short version:
 | **Kernel shape** | **Capability microkernel** (seL4-shaped, decided at milestone 7): no `open()`, no ambient authority, drivers are EL0 processes, and since milestone 14 the kernel allocates nothing. See DECISIONS.md §10 and §14. |
 | **Execution** | **Preemptive threads with real stacks.** Not async: async assumes "I compiled everything that runs", and an operating system's whole purpose is to run code it did not compile ([§5](DECISIONS.md)). |
 | **SMP** | Four cores, per-CPU run queues, cross-core placement by inbox plus IPI. (the original plan said "one core, refactor when it hurts"; it hurt.) |
-| **Verification** | Machine-checked proofs (Kani) of the capability core: `caps`, IPC, the MMU isolation invariants. The frontier moves inward from the pure-logic crates. |
+| **Verification** | Machine-checked proofs (Kani) of the capability core: `capability`, IPC, the MMU isolation invariants. The frontier moves inward from the pure-logic crates. |
 | **Testing** | QEMU harness plus host-testable pure-logic crates from the first commit, plus benchmarks with committed baselines that fail on regression. |
 
 ## Milestones

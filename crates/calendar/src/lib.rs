@@ -8,7 +8,7 @@
 //! 51 block puts the split this way: "Timezone and calendar conversion are pure computation and
 //! belong in a host-tested library crate, not in the service."
 //!
-//! That is DECISIONS §7 and §14 applied, the same shape as `capsh` and `fs_proto`: the arithmetic is
+//! That is DECISIONS §7 and §14 applied, the same shape as `grant_plan` and `fs_proto`: the arithmetic is
 //! host-tested in milliseconds and machine-checked by Kani, and only the wiring needs QEMU.
 //!
 //! # The calendar

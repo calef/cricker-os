@@ -42,7 +42,7 @@
 pub const MAX_BYTES: u64 = 8;
 
 /// Where a request packs its opcode: bits 63:56 of the first `CALL` word, the same position
-/// `fs_proto` and `lineedit::proto` use, so the contracts read alike.
+/// `fs_proto` and `line_editor::proto` use, so the contracts read alike.
 pub const OP_SHIFT: u32 = 56;
 
 /// **Give me `n` random bytes.** The only operation. `n` is clamped to [`MAX_BYTES`] by [`want`],

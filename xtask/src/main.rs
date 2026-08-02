@@ -118,7 +118,7 @@ fn main() -> ExitCode {
             println!("{:016x}", std_inputs_stamp());
             true
         }
-        "user-std" => user_std(),
+        "std-exerciser" => std_exerciser(),
         "test" => test(),
         "bench" => bench(),
         "gdb" => gdb(),
@@ -129,7 +129,7 @@ fn main() -> ExitCode {
                 eprintln!("unknown command: {other}\n");
             }
             eprintln!(
-                "usage: cargo xtask <build|run|shell|initboot|initrd-riscv|std-src|std-stamp|user-std|test|bench|gdb|objdump|image> [--hvf]"
+                "usage: cargo xtask <build|run|shell|initboot|initrd-riscv|std-src|std-stamp|std-exerciser|test|bench|gdb|objdump|image> [--hvf]"
             );
             eprintln!(
                 "       cargo xtask bench [--riscv] [--real] [--release] [--smp] [--check] [--save]"
@@ -167,7 +167,7 @@ fn user() -> bool {
 //
 // std's Platform Abstraction Layer for cricker-os lives in patches/std-cricker (the Hermit shape:
 // a `sys` backend on the capability ABI, not a libc shim). `std-src` materializes a patched
-// rust-src into a linked `cricker-dev` toolchain; `user-std` builds the `hellostd` demo for the
+// rust-src into a linked `cricker-dev` toolchain; `std-exerciser` builds the `std_exerciser` program for the
 // custom targets with -Zbuild-std against it. See notes/std.md.
 // ===========================================================================================
 
@@ -195,10 +195,12 @@ fn farm_std_src() -> PathBuf {
     farm_dir().join("lib/rustlib/src/rust/library/std/src")
 }
 
-/// The `hellostd` ELF for a given custom-target triple. user-std is its own workspace, so its
-/// artifacts land under `user-std/target/<triple>/release/`.
-fn hellostd_elf(triple: &str) -> PathBuf {
-    workspace_root().join(format!("user-std/target/{triple}/release/hellostd"))
+/// The `std_exerciser` ELF for a given custom-target triple. std_exerciser is its own workspace, so its
+/// artifacts land under `std_exerciser/target/<triple>/release/`.
+fn std_exerciser_elf(triple: &str) -> PathBuf {
+    workspace_root().join(format!(
+        "std_exerciser/target/{triple}/release/std_exerciser"
+    ))
 }
 
 /// A cheap FNV-1a over a byte slice, folded into the running hash. No crypto, no dep: this only
@@ -223,8 +225,8 @@ fn std_inputs_stamp() -> u64 {
     let root = workspace_root();
     let mut files: Vec<PathBuf> = vec![
         root.join("crates/abi/src/lib.rs"),
-        root.join("crates/uheap/src/lib.rs"),
-        // The net PAL generates its wire constants verbatim from the netstack contract; a change to it
+        root.join("crates/user_heap/src/lib.rs"),
+        // The net PAL generates its wire constants verbatim from the net_stack contract; a change to it
         // must rebuild the farm just like a change to the ABI crate.
         root.join("crates/socket_proto/src/lib.rs"),
         // Likewise the FS-service contract: `std::fs` is a client of it (milestone 27 phase two),
@@ -370,7 +372,7 @@ fn std_apply_overlay() -> bool {
     true
 }
 
-/// Generate `abi.rs` and `uheap.rs` verbatim from the host-tested crates, so the ABI numbers and
+/// Generate `abi.rs` and `user_heap.rs` verbatim from the host-tested crates, so the ABI numbers and
 /// the heap algorithm have exactly one definition. The transform strips crate-level inner
 /// attributes (`#![no_std]`, illegal in a non-root module) and any trailing `#[cfg(test)]` module.
 fn std_generate_modules() -> bool {
@@ -381,10 +383,10 @@ fn std_generate_modules() -> bool {
             farm_std_src().join("sys/pal/cricker/abi.rs"),
         ),
         (
-            root.join("crates/uheap/src/lib.rs"),
-            farm_std_src().join("sys/alloc/cricker/uheap.rs"),
+            root.join("crates/user_heap/src/lib.rs"),
+            farm_std_src().join("sys/alloc/cricker/user_heap.rs"),
         ),
-        // The netstack socket-contract wire format, verbatim, so the net PAL cannot drift from the
+        // The net_stack socket-contract wire format, verbatim, so the net PAL cannot drift from the
         // server it talks to (same discipline as the ABI and heap crates above).
         (
             root.join("crates/socket_proto/src/lib.rs"),
@@ -514,7 +516,7 @@ fn std_patch_dispatch() -> bool {
         "cfg_select! {",
         "    target_os = \"cricker\" => {\n        mod cricker;\n        use cricker as imp;\n    }",
     ) && patch_after(
-        // net: TcpStream + outbound UdpSocket over the netstack socket contract (milestone 27 phase
+        // net: TcpStream + outbound UdpSocket over the net_stack socket contract (milestone 27 phase
         // two). The first cfg_select in connection/mod.rs is the backend dispatcher; the cricker
         // arm precedes the `_ =>` unsupported fallback that phase one used. hostname has its own
         // `_ =>` fallback to unsupported, so it needs no arm.
@@ -557,18 +559,18 @@ fn std_patch_dispatch() -> bool {
     )
 }
 
-/// **Build the `hellostd` demo for both custom targets** (milestone 27), via -Zbuild-std against
+/// **Build the `std_exerciser` program for both custom targets** (milestone 27), via -Zbuild-std against
 /// the patched `cricker-dev` toolchain. panic=abort and singlethread come from the target specs;
 /// `compiler-builtins-mem` supplies memcpy/memset for the bare target.
 ///
 /// `RUSTUP_TOOLCHAIN` is set explicitly rather than via `+cricker-dev`, because the cargo proxy
 /// that launched this xtask already exports `RUSTUP_TOOLCHAIN=nightly`, which would override a
 /// `+` selector and silently build std from the *unpatched* sysroot.
-fn user_std() -> bool {
+fn std_exerciser() -> bool {
     if !std_src() {
         return false;
     }
-    let manifest = s(workspace_root().join("user-std/Cargo.toml"));
+    let manifest = s(workspace_root().join("std_exerciser/Cargo.toml"));
     for triple in STD_TARGETS {
         let spec = s(workspace_root().join(format!("targets/{triple}.json")));
         let ok = Command::new("cargo")
@@ -588,7 +590,7 @@ fn user_std() -> bool {
             .map(|st| st.success())
             .unwrap_or(false);
         if !ok {
-            eprintln!("user-std: building hellostd for {triple} failed");
+            eprintln!("std-exerciser: building std_exerciser for {triple} failed");
             return false;
         }
     }
@@ -609,7 +611,7 @@ fn user_std() -> bool {
 /// The archive entries the kernel itself may enter as the boot program, per architecture. Everything
 /// else in the archive is loaded by init, in userspace, so it is not part of the kernel's trust root.
 /// aarch64 boots `init` (the `hello` binary's init role); riscv64's tour boots `init` (the portable
-/// `builder`) and its shell boot boots `sysinit`.
+/// `builder`) and its shell boot boots `system_initializer`.
 ///
 /// riscv64 also lists **`hello`**, which is the same program aarch64 measures as `init`: `spawn_init`
 /// enters it directly for the userspace-init tests, and `trust::require` refuses any entry the trust
@@ -617,7 +619,7 @@ fn user_std() -> bool {
 /// measured boot exists to close, so the entry is here rather than the check being relaxed there.
 fn boot_programs(arch: &str) -> &'static [&'static str] {
     match arch {
-        "riscv64" => &["init", "sysinit", "hello"],
+        "riscv64" => &["init", "system_initializer", "hello"],
         _ => &["init"],
     }
 }
@@ -647,13 +649,13 @@ fn write_measure_manifest(arch: &str, image: &[u8]) -> bool {
     );
     for name in boot_programs(arch) {
         let Some(bytes) = fs.read(name) else {
-            // Not every archive carries every boot program (the aarch64 one has no `sysinit`). A
+            // Not every archive carries every boot program (the aarch64 one has no `system_initializer`). A
             // name that is absent simply gets no measurement, and the kernel refuses to enter a
             // program it has no measurement for, so nothing is quietly waved through.
             continue;
         };
-        let digest = measure::sha256(bytes);
-        let hex = measure::hex(&digest);
+        let digest = measured_boot::sha256(bytes);
+        let hex = measured_boot::hex(&digest);
         let hex = std::str::from_utf8(&hex).expect("hex is ascii");
         text.push_str(&format!("{name} {hex}\n"));
     }
@@ -722,7 +724,7 @@ fn scanout_holds_the_pattern(ppm: &[u8]) -> Result<(), String> {
 
 /// Does this PPM hold the screen rung two's compositor composed (milestone 33)?
 ///
-/// The same check against a different definition: `compose::expected_screen_pixel` with every window
+/// The same check against a different definition: `compositor::expected_screen_pixel` with every window
 /// of the scene committed, which is the picture the kernel test predicted and the capture client
 /// digested. **This is the check a guest-side digest cannot replace.** Three witnesses inside the
 /// guest agree about the framebuffer; only the host can see what the device is actually scanning out,
@@ -730,13 +732,13 @@ fn scanout_holds_the_pattern(ppm: &[u8]) -> Result<(), String> {
 /// somewhere other than the scanout would pass all three and fail here.
 fn scanout_holds_the_composed_screen(ppm: &[u8]) -> Result<(), String> {
     scanout_matches(ppm, |x, y| {
-        compose::expected_screen_pixel(compose::SCENE.len(), x, y)
+        compositor::expected_screen_pixel(compositor::SCENE.len(), x, y)
     })
 }
 
 /// Does this PPM hold the **text** the display terminal drew (milestone 29's remaining increment)?
 ///
-/// The definition is the VT engine itself, run here on the host over `vt::script`, the same script
+/// The definition is the VT engine itself, run here on the host over `video_terminal::script`, the same script
 /// the kernel sent the terminal and the same engine the terminal drew from. So this is not "is there
 /// ink on the screen": it is every pixel of every glyph, in the right cell, in the right colour,
 /// with the cursor where the engine says it is.
@@ -746,7 +748,7 @@ fn scanout_holds_the_composed_screen(ppm: &[u8]) -> Result<(), String> {
 /// text into text nobody can read. Its negative control is
 /// `tests::the_scanout_check_rejects_text_that_is_one_letter_wrong`.
 fn scanout_holds_the_terminals_text(ppm: &[u8]) -> Result<(), String> {
-    let expect = vt::script::full_screen();
+    let expect = video_terminal::script::full_screen();
     scanout_matches(ppm, |x, y| expect.pixel(x, y))
 }
 
@@ -835,7 +837,7 @@ fn scanout_matches(ppm: &[u8], want_pixel: impl Fn(u32, u32) -> u32) -> Result<(
 ///
 /// Sent on every poll, from the start of the run. That needs no synchronization with the guest
 /// because QEMU **drops key events until a driver sets `DRIVER_OK`**, so keys pressed before the
-/// keyboard driver exists go nowhere, and once it exists the next one lands. `vt::script::HOST_KEY`
+/// keyboard driver exists go nowhere, and once it exists the next one lands. `video_terminal::script::HOST_KEY`
 /// is the one definition of which key, shared with the kernel test that asserts the byte.
 fn sendkey(sock: &str, key: &str) {
     use std::io::Write;
@@ -877,7 +879,7 @@ fn screendump(sock: &str, out: &Path) -> bool {
 /// 1. rung two's **composed screen** (milestone 33): three clients' surfaces, composited by `compositor`.
 ///    The compositor test holds it up for a few seconds precisely so this poll cannot miss it;
 /// 2. the display terminal's **text** (milestone 29's remaining increment): real glyphs from the
-///    `bitfont` table, laid out by the `vt` engine. Held up the same way, for the same reason;
+///    `bitfont` table, laid out by the `video_terminal` engine. Held up the same way, for the same reason;
 /// 3. rung one's **test pattern** (milestone 29), which then stays on the scanout until QEMU exits.
 ///
 /// All three must be seen or the run fails, and the order is part of the check: this looks for each
@@ -927,7 +929,7 @@ fn cargo_test_with_scanout_check(arch: &str, test_args: &[&str]) -> bool {
         // Press a key every poll. Harmless before the keyboard driver exists (QEMU drops the event)
         // and harmless after its test has passed (the driver ends up parked in a `CALL` nobody
         // answers), so there is nothing to time.
-        sendkey(&sock, vt::script::HOST_KEY);
+        sendkey(&sock, video_terminal::script::HOST_KEY);
         if matched.is_none()
             && screendump(&sock, &shot)
             && let Ok(bytes) = std::fs::read(&shot)
@@ -965,8 +967,8 @@ fn cargo_test_with_scanout_check(arch: &str, test_args: &[&str]) -> bool {
     match &composed {
         Some(path) => eprintln!(
             "scanout check ({arch}): the compositor's {} windows reached the DEVICE's scanout, \
-             verified pixel for pixel against compose::expected_screen_pixel ({path})",
-            compose::SCENE.len(),
+             verified pixel for pixel against compositor::expected_screen_pixel ({path})",
+            compositor::SCENE.len(),
         ),
         None => {
             eprintln!();
@@ -985,7 +987,7 @@ fn cargo_test_with_scanout_check(arch: &str, test_args: &[&str]) -> bool {
     match &text {
         Some(path) => eprintln!(
             "scanout check ({arch}): the display terminal's text reached the DEVICE's scanout, \
-             verified pixel for pixel against the vt engine run over vt::script ({path})",
+             verified pixel for pixel against the vt engine run over video_terminal::script ({path})",
         ),
         None => {
             eprintln!();
@@ -1065,29 +1067,29 @@ fn initrd_riscv() -> bool {
             "--bin",
             "driver",
             "--bin",
-            "elbench",
+            "os_primitives_benchmarker",
             "--bin",
             "coremark",
             "--bin",
-            "sysinit",
+            "system_initializer",
             "--bin",
             "console",
             "--bin",
             "input",
             "--bin",
-            "shell",
+            "swish",
             "--bin",
-            "lineedit",
+            "line_editor",
             "--bin",
             "blk",
             "--bin",
-            "allocdemo",
+            "allocator_exerciser",
             "--bin",
-            "netstack",
+            "net_stack",
             "--bin",
             "budgeter",
             "--bin",
-            "fsclient",
+            "fs_test_client",
             "--bin",
             "fs_file_caretaker",
             "--bin",
@@ -1099,11 +1101,11 @@ fn initrd_riscv() -> bool {
             "--bin",
             "spinner",
             "--bin",
-            "rootsup",
+            "root_supervisor",
             "--bin",
             "spawner",
             "--bin",
-            "subsup",
+            "sub_server_supervisor",
             "--bin",
             "flaky",
             "--bin",
@@ -1119,7 +1121,7 @@ fn initrd_riscv() -> bool {
             "--bin",
             "window",
             "--bin",
-            "vterm",
+            "display_terminal",
             "--bin",
             "kbd",
             "--bin",
@@ -1157,9 +1159,9 @@ fn initrd_riscv() -> bool {
             // failure a dirty target dir hides: parity was asserted against an artifact no
             // invocation creates.
             "--bin",
-            "credential",
+            "credentialer",
             "--bin",
-            "credcli",
+            "credentialer_test_client",
             "--target",
             RISCV_TARGET,
         ],
@@ -1175,23 +1177,23 @@ fn initrd_riscv() -> bool {
     };
     // Read each bin's ELF into an owned buffer, then pack. The archive name comes first, the bin
     // name second: `builder` is packed as `init` (the entry the kernel loads); the rest keep their
-    // names. `sysinit`/`console`/`input`/`shell` are the interactive-shell system (parity D).
+    // names. `system_initializer`/`console`/`input`/`shell` are the interactive-shell system (parity D).
     let entries: &[(&str, &str)] = &[
         ("init", "builder"),
         ("worker", "worker"),
         ("driver", "driver"),
-        ("elbench", "elbench"),
+        ("os_primitives_benchmarker", "os_primitives_benchmarker"),
         ("coremark", "coremark"),
-        ("sysinit", "sysinit"),
+        ("system_initializer", "system_initializer"),
         ("console", "console"),
         ("input", "input"),
-        ("shell", "shell"),
-        ("lineedit", "lineedit"),
+        ("swish", "swish"),
+        ("line_editor", "line_editor"),
         ("blk", "blk"),
-        ("allocdemo", "allocdemo"),
-        ("netstack", "netstack"),
+        ("allocator_exerciser", "allocator_exerciser"),
+        ("net_stack", "net_stack"),
         ("budgeter", "budgeter"),
-        ("fsclient", "fsclient"),
+        ("fs_test_client", "fs_test_client"),
         ("fs_file_caretaker", "fs_file_caretaker"),
         ("fs_subtree_caretaker", "fs_subtree_caretaker"),
         ("fs_nameset_caretaker", "fs_nameset_caretaker"),
@@ -1200,9 +1202,9 @@ fn initrd_riscv() -> bool {
         // The authority-shrinking supervision tree (milestone 22 phase B.2): an init that hands its
         // construction authority to a spawner and its restart policy to a supervisor, then drops the
         // budget. Portable, so both archives carry all four.
-        ("rootsup", "rootsup"),
+        ("root_supervisor", "root_supervisor"),
         ("spawner", "spawner"),
-        ("subsup", "subsup"),
+        ("sub_server_supervisor", "sub_server_supervisor"),
         ("flaky", "flaky"),
         // The display pair (milestone 29): the confined virtio-gpu driver and the client that draws
         // into the surface it serves. Portable, so both archives carry both.
@@ -1219,7 +1221,7 @@ fn initrd_riscv() -> bool {
         ("window", "window"),
         // The display terminal (milestone 29's text increment): one binary, two wirings. Portable,
         // so both archives carry it and both ISAs run literally the same test.
-        ("vterm", "vterm"),
+        ("display_terminal", "display_terminal"),
         // The keyboard driver (milestone 29's input). Portable, so both archives carry it.
         ("kbd", "kbd"),
         // Live component replacement (milestone 23): the operator, the two instances of the
@@ -1245,8 +1247,8 @@ fn initrd_riscv() -> bool {
         // both archives carry both: the claim is that holding the verify endpoint does not let you
         // read or write the store, and that has to hold on either instruction set or it is not a
         // claim.
-        ("credential", "credential"),
-        ("credcli", "credcli"),
+        ("credentialer", "credentialer"),
+        ("credentialer_test_client", "credentialer_test_client"),
         // The NTP client (milestone 51), with its test server and its clock-page probe as roles of
         // the same binary. Portable, so both archives carry it and both ISAs run the same tests.
         ("ntp", "ntp"),
@@ -1282,14 +1284,14 @@ fn initrd_riscv() -> bool {
     // The std demo (milestone 27), built through the cricker-dev toolchain for the riscv custom
     // target, rides along when present, exactly as on aarch64. `test` builds it first.
     if let Ok(bytes) = read_stripped(
-        &hellostd_elf("riscv64-unknown-cricker")
+        &std_exerciser_elf("riscv64-unknown-cricker")
             .display()
             .to_string(),
     ) {
-        blobs.push(("hellostd", bytes));
+        blobs.push(("std_exerciser", bytes));
     }
     // The FS server (milestone 32 phase 2), built for the riscv bare target, rides along when
-    // present, exactly as hellostd does; `test` builds it first.
+    // present, exactly as std_exerciser does; `test` builds it first.
     if let Ok(bytes) = read_stripped(&fs_server_elf(RISCV_TARGET)) {
         blobs.push(("fs_server", bytes));
     }
@@ -1358,10 +1360,10 @@ fn mkinitrd() -> bool {
             return false;
         }
     };
-    let shell = match read_stripped(&bin_elf("shell")) {
+    let swish = match read_stripped(&bin_elf("swish")) {
         Ok(bytes) => bytes,
         Err(e) => {
-            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("shell"));
+            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("swish"));
             return false;
         }
     };
@@ -1372,31 +1374,37 @@ fn mkinitrd() -> bool {
             return false;
         }
     };
-    let elbench = match read_stripped(&bin_elf("elbench")) {
+    let os_primitives_benchmarker = match read_stripped(&bin_elf("os_primitives_benchmarker")) {
         Ok(bytes) => bytes,
         Err(e) => {
-            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("elbench"));
+            eprintln!(
+                "mkinitrd: cannot read {}: {e}",
+                bin_elf("os_primitives_benchmarker")
+            );
             return false;
         }
     };
-    let lineedit = match read_stripped(&bin_elf("lineedit")) {
+    let line_editor = match read_stripped(&bin_elf("line_editor")) {
         Ok(bytes) => bytes,
         Err(e) => {
-            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("lineedit"));
+            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("line_editor"));
             return false;
         }
     };
-    let allocdemo = match read_stripped(&bin_elf("allocdemo")) {
+    let allocator_exerciser = match read_stripped(&bin_elf("allocator_exerciser")) {
         Ok(bytes) => bytes,
         Err(e) => {
-            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("allocdemo"));
+            eprintln!(
+                "mkinitrd: cannot read {}: {e}",
+                bin_elf("allocator_exerciser")
+            );
             return false;
         }
     };
-    let netstack = match read_stripped(&bin_elf("netstack")) {
+    let net_stack = match read_stripped(&bin_elf("net_stack")) {
         Ok(bytes) => bytes,
         Err(e) => {
-            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("netstack"));
+            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("net_stack"));
             return false;
         }
     };
@@ -1427,10 +1435,10 @@ fn mkinitrd() -> bool {
             return false;
         }
     };
-    let fsclient = match read_stripped(&bin_elf("fsclient")) {
+    let fs_test_client = match read_stripped(&bin_elf("fs_test_client")) {
         Ok(bytes) => bytes,
         Err(e) => {
-            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("fsclient"));
+            eprintln!("mkinitrd: cannot read {}: {e}", bin_elf("fs_test_client"));
             return false;
         }
     };
@@ -1449,9 +1457,9 @@ fn mkinitrd() -> bool {
         }
     };
     // "init" is the hello binary (the kernel loads it, init re-enters it at its remaining roles);
-    // "worker", "console", "input", "shell" are the split system binaries (19f.2-5), "lineedit" is
+    // "worker", "console", "input", "swish" are the split system binaries (19f.2-5), "line_editor" is
     // the line discipline between them (milestone 28), "coremark" is the compute workload (19e),
-    // "elbench" is the EL0 microbenchmark program (primitive suite), and "allocdemo" proves the
+    // "os_primitives_benchmarker" is the EL0 microbenchmark program (primitive suite), and "allocator_exerciser" proves the
     // user_rt heap (milestone 27). init (and the bench boot) load each by name. All are entries in
     // the one archive. The authority-shrinking supervision tree (milestone 22 phase B.2), read as a
     // group: four small portable programs that share one module, packed under their own names for
@@ -1463,9 +1471,9 @@ fn mkinitrd() -> bool {
     // one client binary with several roles, both portable.
     let mut tree: Vec<(&str, Vec<u8>)> = Vec::new();
     for name in [
-        "rootsup",
+        "root_supervisor",
         "spawner",
-        "subsup",
+        "sub_server_supervisor",
         "flaky",
         "display",
         "painter",
@@ -1473,7 +1481,7 @@ fn mkinitrd() -> bool {
         "c_shim",
         "compositor",
         "window",
-        "vterm",
+        "display_terminal",
         "kbd",
         "swapper",
         "rust_swappable",
@@ -1491,8 +1499,8 @@ fn mkinitrd() -> bool {
         "entropy",
         // The credential service and its clients (milestone 56, the credential half). Portable, so
         // both archives carry both.
-        "credential",
-        "credcli",
+        "credentialer",
+        "credentialer_test_client",
         "ntp",
         // The outlaw (milestone 19's user-test port): the privilege-boundary programs
         // kernel::user::tests used to hand-assemble. Portable, so both archives carry it.
@@ -1519,14 +1527,14 @@ fn mkinitrd() -> bool {
         ("worker", &worker),
         ("console", &console),
         ("input", &input),
-        ("shell", &shell),
-        ("lineedit", &lineedit),
+        ("swish", &swish),
+        ("line_editor", &line_editor),
         ("coremark", &coremark),
-        ("elbench", &elbench),
-        ("allocdemo", &allocdemo),
-        ("netstack", &netstack),
+        ("os_primitives_benchmarker", &os_primitives_benchmarker),
+        ("allocator_exerciser", &allocator_exerciser),
+        ("net_stack", &net_stack),
         ("budgeter", &budgeter),
-        ("fsclient", &fsclient),
+        ("fs_test_client", &fs_test_client),
         ("fs_file_caretaker", &fs_file_caretaker),
         ("fs_subtree_caretaker", &fs_subtree_caretaker),
         ("heeder", &heeder),
@@ -1535,17 +1543,17 @@ fn mkinitrd() -> bool {
     for (name, bytes) in &tree {
         files.push((name, bytes.as_slice()));
     }
-    // The std demo (milestone 27) rides along IFF it has been built (`cargo xtask user-std`, which
+    // The std demo (milestone 27) rides along IFF it has been built (`cargo xtask std-exerciser`, which
     // `test` runs). It builds through a separate toolchain and target, so an interactive `run` that
     // never built it simply ships an initrd without it; nothing loads it there.
-    let hellostd = read_stripped(
-        &hellostd_elf("aarch64-unknown-cricker")
+    let std_exerciser = read_stripped(
+        &std_exerciser_elf("aarch64-unknown-cricker")
             .display()
             .to_string(),
     )
     .ok();
-    if let Some(bytes) = &hellostd {
-        files.push(("hellostd", bytes.as_slice()));
+    if let Some(bytes) = &std_exerciser {
+        files.push(("std_exerciser", bytes.as_slice()));
     }
     // The FS server (milestone 32 phase 2) rides along IFF built (its own workspace/target; `test`
     // builds it). Absent for a plain interactive boot, which simply skips the FS-server test.
@@ -1649,19 +1657,19 @@ fn mkdisk() -> bool {
 //
 // The FS-server binary is out-of-workspace (it links the vendored engine), built for the bare
 // targets with the pure no_std core (`--no-default-features`) plus the EL0 runtime (`el0`),
-// release so the initrd stays small. The test image is made HOST-side by the redoxfs-host tool,
+// release so the initrd stays small. The test image is made HOST-side by the redoxfs_host tool,
 // the same engine the server opens it with; the server never creates. See notes/fs-server.md.
 // ===========================================================================================
 
 /// Build the FS-server ELF for `triple`. Its own workspace, so it takes `--manifest-path` and its
-/// artifacts land under `fs-server/target/`.
+/// artifacts land under `fs_server/target/`.
 fn fs_server_build(triple: &str) -> bool {
     run(
         "cargo",
         &[
             "build",
             "--manifest-path",
-            "fs-server/Cargo.toml",
+            "fs_server/Cargo.toml",
             "--bin",
             "fs_server",
             "--no-default-features",
@@ -1677,7 +1685,7 @@ fn fs_server_build(triple: &str) -> bool {
 /// The FS-server ELF path for a target triple (always the release profile; see `fs_server_build`).
 fn fs_server_elf(triple: &str) -> String {
     workspace_root()
-        .join(format!("fs-server/target/{triple}/release/fs_server"))
+        .join(format!("fs_server/target/{triple}/release/fs_server"))
         .display()
         .to_string()
 }
@@ -1691,13 +1699,13 @@ fn redoxfs_disk_path() -> String {
         .to_string()
 }
 
-/// Drive the redoxfs-host tool (its own workspace) by `--manifest-path`, quietly. Returns success.
+/// Drive the redoxfs_host tool (its own workspace) by `--manifest-path`, quietly. Returns success.
 fn redoxfs_host(args: &[&str]) -> bool {
     let mut v = vec![
         "run",
         "--quiet",
         "--manifest-path",
-        "tools/redoxfs-host/Cargo.toml",
+        "tools/redoxfs_host/Cargo.toml",
         "--",
     ];
     v.extend_from_slice(args);
@@ -1844,7 +1852,7 @@ fn redoxfs_crash_check_after_run() -> bool {
             "run",
             "--quiet",
             "--manifest-path",
-            "tools/redoxfs-host/Cargo.toml",
+            "tools/redoxfs_host/Cargo.toml",
             "--",
             "cat",
             &crash_disk_path(),
@@ -2126,7 +2134,7 @@ fn redoxfs_ls(image: &str, path: &str) -> Option<Vec<String>> {
             "run",
             "--quiet",
             "--manifest-path",
-            "tools/redoxfs-host/Cargo.toml",
+            "tools/redoxfs_host/Cargo.toml",
             "--",
             "ls",
             image,
@@ -2149,7 +2157,7 @@ fn redoxfs_reads_back(name: &str, want: &[u8]) -> bool {
             "run",
             "--quiet",
             "--manifest-path",
-            "tools/redoxfs-host/Cargo.toml",
+            "tools/redoxfs_host/Cargo.toml",
             "--",
             "cat",
             &redoxfs_disk_path(),
@@ -2288,7 +2296,7 @@ fn test() -> bool {
     // This was a hand-maintained list of twenty `-p` flags, and it drifted exactly the way a
     // hand-maintained list does. It was written because `paging`, `heap` and `slab` were silently not
     // run for four milestones; by milestone 51 it had five crates missing again, and `fs_proto`,
-    // `compose`, `vt`, `bitfont` and `capsh` carried **82 host tests that this gate never ran**. All
+    // `compositor`, `video_terminal`, `bitfont` and `grant_plan` carried **82 host tests that this gate never ran**. All
     // 82 passed when finally run, which is the point: nobody noticed because nothing failed, and a
     // gate that quietly covers less than it claims is the failure mode script/fmt's `--check` bug
     // already cost this project a day over.
@@ -2324,18 +2332,18 @@ fn test() -> bool {
     eprintln!("--- vendored redoxfs: host round trip + no_std core (both targets) ---");
     if !run(
         "cargo",
-        &["test", "--manifest-path", "tools/redoxfs-host/Cargo.toml"],
+        &["test", "--manifest-path", "tools/redoxfs_host/Cargo.toml"],
     ) {
         return false;
     }
-    // The FS server's sans-IO core (fs-server, its own workspace): open, read, write, close against
+    // The FS server's sans-IO core (fs_server, its own workspace): open, read, write, close against
     // a real RedoxFS image in memory, in milliseconds. This proves the filesystem logic for BOTH the
     // read and write paths on the host, which the on-device test can only do for reads today.
     eprintln!();
-    eprintln!("--- fs-server sans-IO core (host, its own workspace) ---");
+    eprintln!("--- fs_server sans-IO core (host, its own workspace) ---");
     if !run(
         "cargo",
-        &["test", "--manifest-path", "fs-server/Cargo.toml"],
+        &["test", "--manifest-path", "fs_server/Cargo.toml"],
     ) {
         return false;
     }
@@ -2356,10 +2364,10 @@ fn test() -> bool {
     }
 
     // Build the std demo (milestone 27) for both custom targets first, so both initrds carry it:
-    // mkinitrd (inside `user`) packs the aarch64 hellostd, initrd_riscv packs the riscv one. Outside
+    // mkinitrd (inside `user`) packs the aarch64 std_exerciser, initrd_riscv packs the riscv one. Outside
     // the leg guards below because BOTH legs need it, and the crickerfs data disk with it: it is
     // arch-neutral, and the riscv leg reads it whether or not the aarch64 leg ran.
-    if !user_std() || !mkdisk() {
+    if !std_exerciser() || !mkdisk() {
         return false;
     }
     // Attach a virtio-gpu for the display test (milestone 29). Set here, in `test`, rather than in
@@ -2578,7 +2586,7 @@ fn bench() -> bool {
 /// icount instrument, on the second architecture, so the tick counts are directly comparable to the
 /// aarch64 ones: both are the virtual timer advancing under `-icount`, which is instruction-clocked,
 /// not wall-clock. No HVF (there is no RISC-V hypervisor on this host) and no disk (the bench boot
-/// runs no virtio); it just needs the riscv initrd carrying `elbench` + `coremark`. Its baseline is a
+/// runs no virtio); it just needs the riscv initrd carrying `os_primitives_benchmarker` + `coremark`. Its baseline is a
 /// separate file, since the counts differ by ISA. `cargo xtask bench --riscv [--check|--save]`.
 fn bench_riscv(check: bool, save: bool) -> bool {
     if !initrd_riscv()
@@ -3086,7 +3094,7 @@ mod tests {
     }
 
     fn composed_rgb(x: u32, y: u32) -> (u8, u8, u8) {
-        let w = compose::expected_screen_pixel(compose::SCENE.len(), x, y);
+        let w = compositor::expected_screen_pixel(compositor::SCENE.len(), x, y);
         (
             ((w >> 16) & 0xff) as u8,
             ((w >> 8) & 0xff) as u8,
@@ -3127,9 +3135,9 @@ mod tests {
         // Every pixel is a real window pixel; only the order is wrong.
         assert!(
             scanout_holds_the_composed_screen(&ppm(|x, y| {
-                for (i, win) in compose::SCENE.iter().enumerate() {
+                for (i, win) in compositor::SCENE.iter().enumerate() {
                     if win.rect().contains(x as i32, y as i32) {
-                        let w = compose::window_pixel(
+                        let w = compositor::window_pixel(
                             i as u32,
                             (x as i32 - win.origin_x) as u32,
                             (y as i32 - win.origin_y) as u32,
@@ -3151,7 +3159,7 @@ mod tests {
         // compositor that dropped a commit, or never mapped a surface, produces.
         assert!(
             scanout_holds_the_composed_screen(&ppm(|x, y| {
-                let w = compose::expected_screen_pixel(compose::SCENE.len() - 1, x, y);
+                let w = compositor::expected_screen_pixel(compositor::SCENE.len() - 1, x, y);
                 (
                     ((w >> 16) & 0xff) as u8,
                     ((w >> 8) & 0xff) as u8,
@@ -3166,7 +3174,7 @@ mod tests {
         // rectangle math is host-tested.
         assert!(
             scanout_holds_the_composed_screen(&ppm(|x, y| composed_rgb(
-                (x + 1) % compose::SCREEN_W,
+                (x + 1) % compositor::SCREEN_W,
                 y
             )))
             .is_err(),
@@ -3185,7 +3193,7 @@ mod tests {
     }
 
     fn text_rgb(x: u32, y: u32) -> (u8, u8, u8) {
-        let w = vt::script::full_screen().pixel(x, y);
+        let w = video_terminal::script::full_screen().pixel(x, y);
         (
             ((w >> 16) & 0xff) as u8,
             ((w >> 8) & 0xff) as u8,
@@ -3208,9 +3216,10 @@ mod tests {
 
         // One letter. `glyphs_ok` against `glyphs_0k`: an `o` for a zero, which is the closest pair
         // of glyphs in the font and therefore the hardest case, deliberately.
-        let mut typo = vt::Vt::new(vt::script::COLS, vt::script::ROWS);
-        typo.feed(vt::script::GREETING_TYPO);
-        typo.feed(vt::script::TYPED);
+        let mut typo =
+            video_terminal::Vt::new(video_terminal::script::COLS, video_terminal::script::ROWS);
+        typo.feed(video_terminal::script::GREETING_TYPO);
+        typo.feed(video_terminal::script::TYPED);
         assert!(
             scanout_holds_the_terminals_text(&ppm(|x, y| {
                 let w = typo.pixel(x, y);
@@ -3226,8 +3235,9 @@ mod tests {
 
         // **The typing never arrived.** A terminal that rendered an application's output but dropped
         // the keystrokes routed to it draws a picture that is correct as far as it goes.
-        let mut no_input = vt::Vt::new(vt::script::COLS, vt::script::ROWS);
-        no_input.feed(vt::script::GREETING);
+        let mut no_input =
+            video_terminal::Vt::new(video_terminal::script::COLS, video_terminal::script::ROWS);
+        no_input.feed(video_terminal::script::GREETING);
         assert!(
             scanout_holds_the_terminals_text(&ppm(|x, y| {
                 let w = no_input.pixel(x, y);
@@ -3244,8 +3254,12 @@ mod tests {
         // **The rendition ignored.** Every glyph in the right cell, drawn in the default colours: a
         // terminal that parsed SGR as an unknown sequence and swallowed it. The picture is *nearly*
         // right, which is the point.
-        let mut plain = vt::Vt::new(vt::script::COLS, vt::script::ROWS);
-        for &b in vt::script::GREETING.iter().chain(vt::script::TYPED) {
+        let mut plain =
+            video_terminal::Vt::new(video_terminal::script::COLS, video_terminal::script::ROWS);
+        for &b in video_terminal::script::GREETING
+            .iter()
+            .chain(video_terminal::script::TYPED)
+        {
             // Strip the escape sequences by feeding only what a colour-blind terminal would keep.
             if b != 0x1b {
                 plain.feed(&[b]);
@@ -3265,7 +3279,8 @@ mod tests {
         );
 
         // A blank terminal, which is what a component that came up and drew nothing leaves.
-        let blank = vt::Vt::new(vt::script::COLS, vt::script::ROWS);
+        let blank =
+            video_terminal::Vt::new(video_terminal::script::COLS, video_terminal::script::ROWS);
         assert!(
             scanout_holds_the_terminals_text(&ppm(|x, y| {
                 let w = blank.pixel(x, y);

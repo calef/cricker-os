@@ -390,7 +390,7 @@ signal it. The driver has no interrupt handler. It has a loop:
 loop {
     wait(irq_notification);          // sleeps until the device interrupts
     let packet = read_device_fifo();
-    send(netstack_endpoint, packet);
+    send(net_stack_endpoint, packet);
     ack(irq_cap);
 }
 ```
@@ -769,17 +769,17 @@ microkernel structure was built for exactly this.
 
 **Kani** (bounded model checking for Rust), chosen over an Isabelle/HOL refinement proof (seL4's way,
 person-decades, not a solo endeavor). The experiment that earned the choice is in the tree: five
-harnesses in `crates/caps` prove the capability model's core theorems for *every* input rather than
+harnesses in `crates/capability` prove the capability model's core theorems for *every* input rather than
 sampled cases, including "`derive` never widens rights" and "userspace cannot forge a right"
 (`script/verify`, notes/verification.md). It installed and ran in minutes, and the proofs read like
 the properties they state. That is the green light.
 
-Verification spreads **inward from the capability core**: the `caps` logic now, then IPC (the
+Verification spreads **inward from the capability core**: the `capability` logic now, then IPC (the
 rendezvous and the one-shot reply), then the MMU isolation invariants. Pure-logic crates (§7) are the
 natural frontier because they already compile for the host; the proofs live behind `#[cfg(kani)]` and
 never touch an ordinary build. **(Milestone 18 delivered all three steps**: the rendezvous state
 machine is extracted and proved and the scheduler runs it; the one-shot Reply's mechanism is proved
-in `caps` and `ipc`; the MMU isolation invariants, including the user-VA gate the syscalls now call,
+in `capability` and `ipc`; the MMU isolation invariants, including the user-VA gate the syscalls now call,
 are proved in `paging`. See notes/verification.md for what each proof says and what stays on tests.)
 
 ### What this resolves and what it changes
@@ -1341,13 +1341,13 @@ kernel still programs the domain. See notes/iommu.md.
 ## 21. The terminal is a userspace component, and the kernel is out of the shell business (milestone 28)
 
 **Decided and built 2026-07-28.** Milestone 28 put the tty line discipline in userspace as a
-swappable component (`lineedit`), sitting on plain endpoints between the input/console drivers and
+swappable component (`line_editor`), sitting on plain endpoints between the input/console drivers and
 applications. Three things here are decisions, and the reason each gets recorded rather than left
 in code:
 
 - **The terminal protocol is a userspace protocol, not kernel ABI.** The opcodes
   (`OP_WRITE`/`OP_READLINE`/`OP_BYTES`), the read flags, and the shared-page convention live in
-  `lineedit::proto` and are written up in [notes/terminal-contract.md](notes/terminal-contract.md).
+  `line_editor::proto` and are written up in [notes/terminal-contract.md](notes/terminal-contract.md).
   Every request is an endpoint `CALL` served through `RECV_CAP` and answered through the one-shot
   Reply capability (§12); the kernel routes the words without reading them. **No new syscall and no
   new kernel method were added.** This is the §4 boundary held on purpose: a whole tty layer landed
@@ -1357,7 +1357,7 @@ in code:
   `shell_service` (the pre-19d.2c path) cannot host a shell that speaks the terminal contract, so
   every aarch64 interactive build (the milestone tour, `--features shell`, `--features initboot`)
   now hands off to userspace init through `boot_via_init`, the way RISC-V's `--features shell`
-  already hands off to the portable `sysinit`. `shell_service` was kept as dead code for reference at
+  already hands off to the portable `system_initializer`. `shell_service` was kept as dead code for reference at
   the time, and **milestone 41 deleted it outright on 2026-07-30**, along with `input_service`. That
   supersedes the sentence this one replaces, and the reasoning is the project's existing rule rather
   than a new one: the heap and slab crates were deleted the same way on 2026-07-27, because *the git
@@ -1397,7 +1397,7 @@ no cost to defer". A std program draws its heap from an untyped budget at slot 0
 endpoint at slot 1, reads `Instant`/`SystemTime` from the virtual counter, and gets honest
 `Unsupported` from `thread::spawn`, `fs`, and `net` until the servers that back them exist
 (milestones 30 and 32). No new syscall and no new capability method: the PAL is a client of the ABI
-as it already stands, the same surface `allocdemo` proved. `panic!` prints and faults (panic=abort;
+as it already stands, the same surface `allocator_exerciser` proved. `panic!` prints and faults (panic=abort;
 unwinding is never linked), which is this ABI's honest `abort()`.
 
 **Why now:** the first wall an application hits on cricker-os is "no std", and milestone 23's
@@ -1426,7 +1426,7 @@ chose:
 JSON with `os = "cricker"`, `panic-strategy = "abort"`, softfloat, and `singlethread = true`. That
 last one is honest for phase one, one thread of execution per process, so std uses its `no_threads`
 sync and single-`static` TLS; it flips off when `thread::spawn` becomes real. The ABI numbers and
-the heap algorithm are generated verbatim into the patched std from `crates/abi` and `crates/uheap`,
+the heap algorithm are generated verbatim into the patched std from `crates/abi` and `crates/user_heap`,
 so they have exactly one definition and cannot drift.
 
 **Accepted costs, recorded:** `SystemTime` is monotonic-since-boot rather than wall-clock (no RTC);
@@ -1437,20 +1437,20 @@ real std program (`Vec`, `String`, `HashMap`, `println!`, `Instant`) spawned as 
 checked byte for byte on both ISAs (the §19 parity gate).
 
 **Amendment (phase two, 2026-07-28): `std::net` binds to the socket contract.** `std::net::TcpStream`
-and outbound `std::net::UdpSocket` now work, backed by netstack over the §25 socket contract; the
+and outbound `std::net::UdpSocket` now work, backed by net_stack over the §25 socket contract; the
 `net honestly unsupported` line of phase one is retired. The PAL (`sys/net/connection/cricker.rs`) is
 a **pure client** of the frozen contract, no new syscall and no new capability method: it holds a
 `Stack` endpoint (slot 2) and a frame untyped (slot 3), mints a shared frame per socket, and drives
-netstack with `socket_proto` `CALL`s. The wire constants are generated verbatim from `crates/socket_proto/src/lib.rs`
+net_stack with `socket_proto` `CALL`s. The wire constants are generated verbatim from `crates/socket_proto/src/lib.rs`
 into the patched std, the same anti-drift discipline as the ABI and heap crates. A std program does
 networking only if it holds those two slots; without them `std::net` returns `Unsupported`, which is
-"no ambient network" (§10) made visible from inside a process. The same `hellostd` binary proves
+"no ambient network" (§10) made visible from inside a process. The same `std_exerciser` binary proves
 both: spawned without the net slots it runs the offline transcript, spawned with them (and a running
-netstack) it does a real UDP DNS query and a TCP echo round trip, each asserted byte for byte on both
+net_stack) it does a real UDP DNS query and a TCP echo round trip, each asserted byte for byte on both
 ISAs. Honest gaps carried as `Unsupported`: `TcpListener` (no LISTEN verb), non-blocking mode and
 timeouts (blocking-only contract), DNS resolution (`lookup_host`; numeric addresses only), and IPv6.
-One finding reported up: netstack ties a socket's local port to its socket id, so reopening a closed id
-reuses its port and can stall against slirp; the fix is ephemeral local ports in netstack, a contract-side
+One finding reported up: net_stack ties a socket's local port to its socket id, so reopening a closed id
+reuses its port and can stall against slirp; the fix is ephemeral local ports in net_stack, a contract-side
 change (notes/std.md).
 
 **Amendment (phase two, 2026-07-29): `std::fs` binds to the FS-service contract, and a path means
@@ -1490,7 +1490,7 @@ creating a file and
 truncating one (so `std::fs::write` and `File::create` are Unsupported by construction, and writing
 means opening a file the image already carries), directory iteration, `mkdir`/`unlink`/`rename`,
 symlinks and hard links, `canonicalize`, permissions, file times, locks, and `duplicate`. Proven on
-both ISAs (§19) by the same `hellostd` binary, now with three behaviours chosen by its grants alone:
+both ISAs (§19) by the same `std_exerciser` binary, now with three behaviours chosen by its grants alone:
 its stdout is compared byte for byte with the file's own bytes spliced in from the shared fixture, so
 one assertion covers disk, block server, FS server, contract, PAL, and endpoint.
 
@@ -1593,7 +1593,7 @@ the reasoning is the deliverable.
 async notification on an endpoint the foreground job watches. But the job the user most wants to
 interrupt is *running a computation*, and a running program cannot watch an endpoint: there is no
 non-blocking receive, and a blocking one would stall the very work being interrupted. So the shell
-mints a per-job shared frame (`capsh::jobframe`), maps it into the child, and writes an interrupt
+mints a per-job shared frame (`grant_plan::jobframe`), maps it into the child, and writes an interrupt
 word the child reads with a plain load *between work units*. This is "control by shared memory"
 where the model usually says "control by message", and it is honest about why: the message form
 needs a notification primitive that does not exist yet. It is granted like any capability, through
@@ -1612,11 +1612,11 @@ succeeds. The shell's watch loop retries exactly so. A pure `loop {}` spinner is
 the second `^C` on both ISAs.
 
 **The shell learns of `^C` by polling, deliberately (wait A).** The shell must watch the job and the
-`^C` at once, and with only blocking primitives it cannot block on both. It busy-polls `lineedit`'s new
+`^C` at once, and with only blocking primitives it cannot block on both. It busy-polls `line_editor`'s new
 `OP_INTRCOUNT` (an immediate reply with the running `^C` count) with `yield` between, driving the
 escalation from the count's advance. The escalation policy (first `^C` cooperative, a second `^C` or
-a grace-window timeout forcible) is host-tested in `capsh::Escalation`. Holding `^C` routing in the
-shell, not `lineedit`, is the §24 premise: job control is the shell's knowledge, and `lineedit` stays a
+a grace-window timeout forcible) is host-tested in `grant_plan::Escalation`. Holding `^C` routing in the
+shell, not `line_editor`, is the §24 premise: job control is the shell's knowledge, and `line_editor` stays a
 terminal. The clean blocking form waits for the notification primitive milestone 23's latency
 ladder forecasts; the shared flag and the poll are the honest interim, not the destination. See
 notes/grant-expression.md (the interrupt grant) and notes/terminal-contract.md (the flow).
@@ -1740,7 +1740,7 @@ Five decisions, each with its alternative on the record:
 2. **SHA-256, hand-written, one implementation for both sides.** The threat is byte substitution, so
    the hash must be collision- and preimage-resistant; a non-crypto hash (the FNV xtask uses for
    stale-input detection) would let someone craft a colliding init. Among collision-resistant options
-   SHA-256 costs the TCB least: ~100 lines of shifts and adds in `crates/measure`, no dependency, no
+   SHA-256 costs the TCB least: ~100 lines of shifts and adds in `crates/measured_boot`, no dependency, no
    allocation, no `unsafe`, and independently checkable with `shasum -a 256` anywhere. BLAKE3 (faster)
    and SHA-3 (a second permutation to audit) both buy speed we do not need for one 1.2 MB hash per
    boot. Hand-written rather than vendored, because a vendored crate is a supply-chain edge inside the
@@ -1764,7 +1764,7 @@ Five decisions, each with its alternative on the record:
    the lint gate still works and the failure lands at boot where it belongs; a *malformed* manifest is
    a hard build error, because measuring nothing silently is worse than stopping.
 
-5. **The kernel measures only the program the kernel loads.** `init` on aarch64, `init` and `sysinit`
+5. **The kernel measures only the program the kernel loads.** `init` on aarch64, `init` and `system_initializer`
    on riscv64. Every other program in the archive is loaded by init in userspace and is not measured
    today, so the chain of trust stops at init's entry. The capability-correct extension is **init
    measuring what init loads** (its own table, in userspace, trustworthy because init's own bytes are
@@ -1791,7 +1791,7 @@ Proven on both ISAs (`kernel/src/user.rs`, `measured_boot_tests`): the boot prog
 the digest in the running kernel's own `.rodata` (the end-to-end build-composition proof, nothing
 hard-coded), and one flipped bit or an unmeasured name is refused. The refusal *path* is not booted in
 a test because a real refusal halts the machine; the decision function is tested instead, and the boot
-path's only response to `Err` is `arch::halt()`. Recorded plainly. Host tests in `crates/measure`
+path's only response to `Err` is `arch::halt()`. Recorded plainly. Host tests in `crates/measured_boot`
 carry the FIPS vectors. No bench movement: the bench boot enters no boot program.
 
 ### Milestone 22 phase B.2: init gives its authority away, and the supervision tree keeps running
@@ -1802,7 +1802,7 @@ of the §14 soft spot. Recorded here with the rest of milestone 22 for the same 
 
 1. **Init's authority becomes short-lived, not merely careful.** The pre-B.2 init holds a large untyped
    budget for its whole life because it stays the system's process builder, so every process is one bug
-   in init away from being built wrong. The new root (`user/src/rootsup.rs`) holds full construction
+   in init away from being built wrong. The new root (`user/src/root_supervisor.rs`) holds full construction
    authority only long enough to build two servers, then **deletes** it (the wiring capabilities, the
    spawner's budget copy, and the root untyped). After that it cannot make a page, an address space, a
    thread, or an endpoint. The alternative (keep the budget, be careful with it) was rejected on the
@@ -1814,7 +1814,7 @@ of the §14 soft spot. Recorded here with the rest of milestone 22 for the same 
    it may spend memory, never lend it. Each instance is built in its own region split off that budget,
    which makes a reap one `Untyped::DESTROY` (§16) and, LIFO, returns the pages to the budget.
 
-3. **The supervisor holds no memory at all.** `subsup` has a request channel, a fault endpoint, and a
+3. **The supervisor holds no memory at all.** `sub_server_supervisor` has a request channel, a fault endpoint, and a
    report endpoint. It cannot build, allocate, or reap; it can only *ask*. So the split is: the
    supervisor decides **whether** to reap and rebuild, the spawner is what **can**. Policy and
    authority separated by an IPC boundary, which is the same shape as every other decision here.
@@ -1834,20 +1834,20 @@ of the §14 soft spot. Recorded here with the rest of milestone 22 for the same 
 
 - **Reaping needs the same right as building.** `DESTROY` and `RETYPE` both need `WRITE` on the region,
   so a root supervisor that can restart a dead tier-one server is a root supervisor that can build
-  processes, which is the authority the milestone exists to give away. rootsup therefore chooses to be
+  processes, which is the authority the milestone exists to give away. root_supervisor therefore chooses to be
   unable to build, and its policy for a tier-one death is "report and stop", the fail-closed floor.
   Splitting a **reap-only right** out of `WRITE` (a rights bit, or a distinct `Untyped::REAP` method)
   would let a root recover without regaining construction authority. That changes the rights model and
   the syscall surface, so it is a decision, not an implementation detail.
 - **A supervisor cannot turn a tid into a handle.** The fault message names the dead thread by tid
-  (§26.5), but nothing maps a tid to something a builder holds, so `subsup` names instances by a handle
+  (§26.5), but nothing maps a tid to something a builder holds, so `sub_server_supervisor` names instances by a handle
   the spawner issues. That is sufficient for one child at a time and insufficient in general. Options:
   a `Tcb::NAME` method (small, and discloses nothing the fault message does not already), per-child
   fault endpoints (which §26.5 rejected for needing a thread per child or a wait-any primitive), or the
   builder reporting the tid it created.
 
 **What is deliberately still open.** The tree proves the pattern with real programs on both ISAs, but
-it is **not yet the interactive boot's init**: `sysinit` and `hello`'s init role still hold their
+it is **not yet the interactive boot's init**: `system_initializer` and `hello`'s init role still hold their
 budgets for life, because they remain the shell's spawn service. That migration is the next increment
 and was not done blind in the same pass, because that boot path is hand-validated (the harness cannot
 inject keystrokes) and moving the spawn service wants an interactive confirmation, not a green unit
@@ -1869,11 +1869,11 @@ return) and were re-saved in the same commit.
 RedoxFS runs confined as a userspace FS-server component, and its interface is **capability-shaped
 from birth**. Three processes, wired by the kernel and named by nobody else: a **block server** (a
 role of the virtio driver) that serves blocks over blk IPC with the DMA confinement unchanged; an
-**FS server** (`fs-server/`, its own workspace because it links the vendored engine) that runs the
+**FS server** (`fs_server/`, its own workspace because it links the vendored engine) that runs the
 no_std RedoxFS core behind a `Disk` trait over blk IPC and allocates from its own untyped budget
 through §22's `GlobalAlloc`; and a **client** that holds only a directory capability. The contract
 and both wire protocols live in `crates/fs_proto`, host-tested, the way the terminal contract lives
-in `lineedit::proto`. Full design in notes/fs-server.md.
+in `line_editor::proto`. Full design in notes/fs-server.md.
 
 **The contract's rules, which milestone 31 will grant against.** The endpoint a client holds IS the
 directory capability: it is bound, in the server, to one directory node, and every name in an `OPEN`
@@ -1898,7 +1898,7 @@ driver discipline, and lets `used.idx` decide when a wakeup is really its own.
 
 *This paragraph is a correction* (fix/irq-delivery, 2026-07-29). It used to say the server polled the
 used ring deliberately, because "a reschedule per read overran the watchdog". It does not: with the
-WAIT path the fs-server test passes on both ISAs at the 4-core SMP boot, all of the mount's
+WAIT path the fs_server test passes on both ISAs at the 4-core SMP boot, all of the mount's
 interrupt-driven completions landing well inside the 60 s watchdog. QEMU still completes virtio-blk
 synchronously inside `NOTIFY` (notes/dma.md), so the interrupt is already pending when the server
 WAITs, and the pending-signal count (§9a) returns that WAIT at once instead of blocking on an event
@@ -1909,12 +1909,12 @@ reverse command-line order and the kernel enumerates by ascending slot.
 
 **Creation stays host-side, always.** The std-gated core APIs are exactly creation (uuid, getrandom);
 the server only ever opens an image, so entropy never becomes a userspace dependency. Test images are
-made by `tools/redoxfs-host` with the same pinned engine (roadmap §32 item 4).
+made by `tools/redoxfs_host` with the same pinned engine (roadmap §32 item 4).
 
 **Proven.** The read path is proven end to end on both ISAs (the §19 gate): a host-made image,
 mounted by the confined FS server over blk IPC, its `motd` opened through a granted directory
 capability and read back byte for byte, plus a host-tool consistency check after the run. The sans-IO
-core is host-tested for read AND write (`fs-server` lib), so the filesystem logic is proven both ways
+core is host-tested for read AND write (`fs_server` lib), so the filesystem logic is proven both ways
 independently of any device.
 
 **Amendment (2026-07-29, corrected four times in one day; THIS paragraph is the settled account, and
@@ -2081,7 +2081,7 @@ straight back, because "the server accepted my write" and "my write landed" are 
 (It was spelled `file:NAME` when this was written; milestone 47 removed the designator, and a bare
 token in a file position designates the file now. The mechanism is unchanged.) The
 boot that starts the shell wires no FS service, so the shell holds no directory to narrow, and `caps`
-says so in those words. `capsh` carries the whole vocabulary (a `FileSpec` in the manifest, a
+says so in those words. `grant_plan` carries the whole vocabulary (a `FileSpec` in the manifest, a
 `FileGrant` in the endowment, refusals both ways) and the decision is a function of what the shell
 *holds*, not of the calendar; phase 1 hardcoded that refusal, which was true when written and would
 have quietly become a lie. Wiring an FS service into the interactive boot is the remaining step, and
@@ -2168,7 +2168,7 @@ notes/scheduler.md; cross-core stress tests in `sched.rs`, `smp.rs`, and `user.r
 
 - **The wake SPLIT (the addition).** §28.2 said "wake stays local." That is right for an **IPC
   rendezvous**: the partner wakes on the waker's core, message in registers, cache warm, and the
-  serial netstack<->std pipeline stays co-located. It is wrong for a **device interrupt**, which carries
+  serial net_stack<->std pipeline stays co-located. It is wrong for a **device interrupt**, which carries
   no such locality: pinning the woken driver to the IRQ-handling core re-concentrates the pipeline
   (std_net) or lands it on a busy core. So `irq_notify` wakes LOAD-AWARE via `wake_load_aware` /
   `pick_wake_target`: the least-loaded core, ties won by the current core so a driver taking a
@@ -2187,7 +2187,7 @@ notes/scheduler.md; cross-core stress tests in `sched.rs`, `smp.rs`, and `user.r
 
 - **Correction: the hang watchdog now credits real progress, not test starts.** With migration and a
   slow-but-live workload, the old "did a new test begin in the last 60 s" heartbeat could not tell a
-  deadlock from a slow test, and it tripped std_net, which legitimately runs about 300 s in netstack's
+  deadlock from a slow test, and it tripped std_net, which legitimately runs about 300 s in net_stack's
   userspace smoltcp poll (CPU-bound, no wakes and no output for stretches over a minute). The
   watchdog now counts progress as a completed wake or a line of output OR any core running a
   non-idle thread; only a genuine lost wakeup (every thread blocked, every core on its idle thread)
@@ -2254,7 +2254,7 @@ the rings and control buffers (driver-private) and pages 1.. for the surface, re
 **A device that needs more memory gets a bigger grant, never an exemption.** The block server's
 two-page region (§27 era) was the first instance; this is the general form.
 
-**`crates/dma_validate` needed no change,** and that is a property rather than luck: it bounds
+**`crates/dma_validator` needed no change,** and that is a property rather than luck: it bounds
 `addr..addr+len` inside a region whose size is a parameter, so the region growing ninefold left the
 proof covering it. Recorded because the increment was explicitly allowed to stop and ask if the
 framebuffer's size had required touching a proved crate, and it did not.
@@ -2352,7 +2352,7 @@ is exactly the wrong thing to put in that position, and the ordering follows: pr
 
 **What is proved.** Three things, all `#[cfg(kani)]`, all in `script/verify`:
 
-1. **The validator** (`crates/dma_validate`, seven harnesses). No descriptor the kernel copies into the
+1. **The validator** (`crates/dma_validator`, seven harnesses). No descriptor the kernel copies into the
    shadow ring the device reads is ever out-of-region or indirect, for every descriptor bit pattern and
    every region: both directions (flags fully symbolic, so RX device-writes are covered), indirect
    descriptors, chains including cycles, ring-index wraparound through `u16`, overflowing address
@@ -2360,7 +2360,7 @@ is exactly the wrong thing to put in that position, and the ordering follows: pr
    mutated-after-validation (TOCTOU) case the shadow ring exists to close. Termination is part of the
    property, not an assumption: the loop bounds are set one above what the code can need, so Kani's
    unwinding assertion fails if any input could spin the walk.
-2. **The `Untyped::SPLIT` mint site** (`caps::split_never_widens_rights`). See the amendment below for
+2. **The `Untyped::SPLIT` mint site** (`capability::split_never_widens_rights`). See the amendment below for
    what the property actually is, because §16's `GRANT` change makes the naive phrasing wrong.
 3. **The IOMMU domain's page set** (`paging::domain`, six harnesses). The domain maps every whole page
    of the grant and no byte outside it, proved in both directions and format-independently, so one
@@ -2413,7 +2413,7 @@ runs unconfined by standing default.
 **Bounds, because a proof whose bounds hide the interesting case reads as stronger than a test.** The
 queue size the harnesses fix is 8, which is the kernel's own `QSIZE` and not a proof convenience:
 `setup_queue` refuses a larger ring, so no unproved configuration exists. To keep that true rather than
-merely currently-true, the ring layout constants now **live in `crates/dma_validate` and the kernel
+merely currently-true, the ring layout constants now **live in `crates/dma_validator` and the kernel
 aliases them**, because a proof about a copy of the layout proves nothing about the layout that runs.
 Every attacker-controlled value (region base and size, descriptor `addr`/`len`/`flags`/`next`, both
 ring indices) is unbounded. notes/verification.md carries the full table with each bound's
@@ -2515,7 +2515,7 @@ construction authority, or proxies the reap through something that does.
   That is enough to collect a corpse and return its pages, and it is not enough to build a process.
 - **The alternative that exists today and why this milestone did not use it.** Milestone 22 phase
   B.2's proxy: a supervisor holding no memory that asks a construction sub-server to reap
-  (`subsup` -> `spawner`). That is the right answer for a system's init, where the point is that init
+  (`sub_server_supervisor` -> `spawner`). That is the right answer for a system's init, where the point is that init
   can no longer build. It is the wrong answer here, because it moves the requirement behind an IPC hop
   and the requirement is the interesting part. **The concrete requirement, for whoever decides the
   fork: a supervisor needs exactly `DESTROY` on one region it did not create.** Neither a rights bit
@@ -2567,7 +2567,7 @@ one. The supervision relationship, not the memory, becomes the unit of authority
 
 Reaping is §16's `Untyped::DESTROY`, which requires `WRITE` on the region capability, and `WRITE`
 is also what builds a process out of that region. So a supervisor whose entire job is "notice
-`netstack` died, restart it" has to hold the authority to construct arbitrary threads and address
+`net_stack` died, restart it" has to hold the authority to construct arbitrary threads and address
 spaces. That is a large right granted for a small purpose, and it is backwards for a capability
 system: a compromised supervisor should be able to restart what it supervises and nothing else.
 
@@ -2710,7 +2710,7 @@ last one being rung one's confinement, and the reason the driver is a separate p
 three tests precisely so the flush rectangle is a value it can compare: one commit produces one flush,
 the flush is exactly the client's rectangle placed on the screen, and the poison the kernel wrote over
 the rest of the scanout between two frames is **still there** afterwards. The same property is checked on
-the host in microseconds by `crates/compose`.
+the host in microseconds by `crates/compositor`.
 
 **The picture is proved by four witnesses, one of which has to be the host.** The driver's digest of the
 frames the device read (the compositor's startup frame, which is the background alone, so an empty screen
@@ -2848,7 +2848,7 @@ that distinction is what let this be decided by measurement.
 could be crash-atomic, since a rename must move a file and its metadata together or a crash leaves
 them inconsistent (§42's territory). **RedoxFS groups arbitrary mutations into one transaction**:
 `fs.tx(|tx| …)` exposes `create_node`, `write_node`, `rename_node`, `truncate_node` and `remove_node`
-on one `Transaction`, committed together, and `fs-server` already relies on it ("existence is checked
+on one `Transaction`, committed together, and `fs_server` already relies on it ("existence is checked
 inside the same transaction as the create"). So **the layer is safe, the format stays unforked, and
 §34 stands.**
 
@@ -2900,7 +2900,7 @@ wrong:
 - **Deletion must be in the same transaction as the file's**, or a deleted file leaks its attributes
   and a later node reusing that pointer inherits them. That is a correctness bug wearing a
   housekeeping costume.
-- **Recovery sees it.** `redoxfs-host extract` and upstream's FUSE mount will show the store as
+- **Recovery sees it.** `redoxfs_host extract` and upstream's FUSE mount will show the store as
   ordinary data. That is acceptable and arguably good (the attributes come out with the backup), but
   it must be a decision rather than a surprise, and `notes/host-recovery.md` should say so.
 
@@ -2986,7 +2986,7 @@ an earlier one did not. Two further assertions make it a measurement rather than
 one; and at the last cut point `p` must be the whole workload, so a filesystem that recovered the
 initial state every time (perfectly prefix-consistent, perfectly useless) fails.
 
-**The numbers, host side, exhaustive** (`fs-server/tests/crash_consistency.rs`, 0.6 s):
+**The numbers, host side, exhaustive** (`fs_server/tests/crash_consistency.rs`, 0.6 s):
 
 | injection | fault points | result |
 |---|---|---|
@@ -3265,7 +3265,7 @@ that draws text. Bitmap rather than scalable because a rasteriser wants an alloc
 and a font file, and because a pure function is what makes the paragraph above possible at all.
 
 **Neither display contract needed a line changed, and that is now a spawn literal rather than a
-claim.** The same `vterm` binary runs in two wirings: holding rung one's display endpoint and the
+claim.** The same `display_terminal` binary runs in two wirings: holding rung one's display endpoint and the
 scanout with **exactly `painter`'s authority**, and holding rung two's doorbell and one window with
 **exactly `window`'s authority**. `display` cannot tell it from the client that painted a test pattern;
 `compositor` cannot tell it from the client that painted a coordinate function. Both contracts carry
@@ -3316,13 +3316,13 @@ honest fix is releasing a transport when its driver dies.
 OSC sequence (`ESC ]0;title BEL`, how every program sets a window title) printed the title onto the
 grid. Found on the host, in milliseconds, by the test that now feeds a title-setting sequence on
 purpose. The interoperability test found its own footing the same way: the escape sequences a display
-terminal must understand are the ones `lineedit` emits (§21), so rather than assert that from a list
+terminal must understand are the ones `line_editor` emits (§21), so rather than assert that from a list
 that could drift, the test **runs the real line discipline** and feeds its echo stream to this parser.
 
 **Deferred, and stated rather than implied:** no scrollback (the roadmap named it; it wants a ring of
 off-screen rows and a viewport, which changes the damage model), no UTF-8 (the grid holds bytes and
-the font covers basic latin), no line editing in the display terminal (`lineedit` composes in front of it
-through `OP_WRITE` with no new protocol, which the `vt` crate proves on the host by running both), no
+the font covers basic latin), no line editing in the display terminal (`line_editor` composes in front of it
+through `OP_WRITE` with no new protocol, which the `video_terminal` crate proves on the host by running both), no
 reflow (nothing resizes), a US layout's main block only, and no mouse. notes/glyphs.md carries the
 full list.
 
@@ -3428,7 +3428,7 @@ just a comment that every reader is guaranteed to read.
 `termd` was to become `linedisc`, the correct Unix term of art. Chris did not recognise the phrase and
 asked what a line discipline is, **and he built this system.** That is decisive evidence about the
 name, not about him: `linedisc` imports vocabulary from exactly the system whose model we rejected,
-which is the `-d` failure wearing a different hat. It became `lineedit`, which someone who has never
+which is the `-d` failure wearing a different hat. It became `line_editor`, which someone who has never
 read a tty manual understands immediately and which is accurate about the visible behaviour.
 
 The crate `crates/linedisc` renames too, rather than being kept as the implementer's term of art. If
@@ -3436,7 +3436,7 @@ the phrase is jargon to the system's author, it is jargon in the crate as well.
 
 ### The rule going forward
 
-- Name a component for **what it is** (`netstack`, `compositor`, `display`, `lineedit`), not for what
+- Name a component for **what it is** (`net_stack`, `compositor`, `display`, `line_editor`), not for what
   Unix would have called it.
 - **Never `-d`.** Not `netd`, not a future `logd` or `authd`.
 - Prefer a word a reader can parse without prior Unix exposure. `blk`, `spawner`, `console`, `input`,
@@ -3474,7 +3474,7 @@ concentration**: a singleton whose power is "collect any corpse anywhere". It ex
 structural gap, namely that an orphan has no owner.
 
 Here there is no gap. **A child's resources come from its supervisor's region**, which is already the
-shape of the supervision tree built in milestone 22 phase B.2: `rootsup` builds `spawner` and holds
+shape of the supervision tree built in milestone 22 phase B.2: `root_supervisor` builds `spawner` and holds
 its region; `spawner` builds children out of its own `WRITE`-only budget. Destroying `spawner`'s region
 reclaims `spawner` *and everything built from it*, in one act, through §16's object revocation. There
 is nothing left to reap individually, so the answer is **ownership rather than a reaper**.
@@ -4039,7 +4039,7 @@ Five external dependencies exist outside `vendor/`:
 | `tock-registers` | kernel | thin: an MMIO register abstraction |
 | `spin` | kernel | thin: spinlocks |
 | `smoltcp` | user | **whole subsystem**: a TCP/IP stack |
-| `redox_syscall` | fs-server | forced by the vendored engine |
+| `redox_syscall` | fs_server | forced by the vendored engine |
 
 Plus **RedoxFS**, vendored under `vendor/` with a pin and a divergence patch (§34). Against that,
 **thirty crates have no external dependencies at all.**
@@ -4480,7 +4480,7 @@ protocol crate dependency-free per §46.
 ## 52. A set of names is a namespace, and that is how a glob is granted
 
 Milestone 47's globbing lane. `crates/fs_proto`'s `nameset` and `grant` modules,
-`user/src/fs_nameset_caretaker.rs`, `kernel::user::SetGrant`, `capsh`'s expander. See
+`user/src/fs_nameset_caretaker.rs`, `kernel::user::SetGrant`, `grant_plan`'s expander. See
 `notes/glob-grant.md`.
 
 `rm old.txt` grants the directory holding one name. **`rm *.txt` grants that directory attenuated to
@@ -4509,7 +4509,7 @@ This is the honest place for `ARG_MAX` to reappear, and it reappears as a differ
 authority one grant can carry. Unix's `ARG_MAX` is a limit on how much *data* you can pass, which is
 why it produces `xargs`; ours limits how much *authority* you can package, which is a bound worth
 having rather than one to engineer around. The shell refuses an over-long expansion at the prompt
-(`capsh::Refusal::TooManyNames`), so an over-long set arriving in the kernel means the wiring built a
+(`grant_plan::Refusal::TooManyNames`), so an over-long set arriving in the kernel means the wiring built a
 grant no command line could have expressed, and it panics.
 
 ### The zero-length name means "the operand is your namespace"
@@ -4614,7 +4614,7 @@ so it was already closed, but nothing in the suite would have caught it.
 
 ## 54. Recovering a backup includes its metadata, and formatting a disk needs entropy
 
-Milestone 57. `tools/redoxfs-host`, `fs_proto::xattr::store`. See `notes/host-recovery.md`.
+Milestone 57. `tools/redoxfs_host`, `fs_proto::xattr::store`. See `notes/host-recovery.md`.
 
 ### The rule
 
@@ -4623,7 +4623,7 @@ Chris set the standard for this whole area: if he is struggling to get the data 
 failed at its job. Time Machine's Apple metadata lives in extended attributes, so on this
 deliverable the attributes are not decoration, they are part of the file.
 
-`redoxfs-host extract` reattaches them (`setxattr` on macOS, `lsetxattr` on Linux, neither following
+`redoxfs_host extract` reattaches them (`setxattr` on macOS, `lsetxattr` on Linux, neither following
 a symlink), and the evidence is **macOS's own `/usr/bin/xattr -l` reading the recovered file**,
 rather than the tool checking its own work.
 
@@ -4650,7 +4650,7 @@ on the entropy service reaching the program that does them, and on nothing else.
 
 The shape that unblocks it is `Header::new_with_uuid(size, uuid: [u8; 16])`, which does for
 randomness exactly what `create`'s existing `ctime` parameter does for time, and is upstreamable
-rather than a divergence. Weigh it against the fact that `redoxfs-host` on a Mac can partition and
+rather than a divergence. Weigh it against the fact that `redoxfs_host` on a Mac can partition and
 format the drive **today**, which is what actually gets a disk ready for the board.
 
 ### BUGS
@@ -4664,7 +4664,7 @@ format the drive **today**, which is what actually gets a disk ready for the boa
 
 ## 55. The file behind a `>` is the shell itself, because one page cannot serve two clients
 
-Milestone 50, finished 2026-08-01. `user/src/shell.rs`, `kernel::user::redirection_tests`. See
+Milestone 50, finished 2026-08-01. `user/src/swish.rs`, `kernel::user::redirection_tests`. See
 `notes/pipes.md`.
 
 **A redirected program's output goes to a file the shell writes, not to an adapter process holding
@@ -4705,7 +4705,7 @@ without opening a second session.
 What a redirected program holds is **unchanged**: one endpoint, `WRITE`, and no way to ask what is
 behind it. §51's indifference claim survives intact, because it was always a claim about what the
 *writer* holds and never about who implements the far end. And there is no change to
-`capsh::spawnproto`, to init, or to the kernel.
+`grant_plan::spawnproto`, to init, or to the kernel.
 
 The honest smaller claim: `>` still grants strictly less than Unix's fd 1, but the sentence is now
 "the program holds an endpoint and **the shell** holds the file" rather than "an adapter holds the

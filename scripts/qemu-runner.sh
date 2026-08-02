@@ -94,7 +94,7 @@ if [ -n "$CRICKER_DISK" ]; then
     # Getting this backwards silently hands the phase-1 tests the wrong disk; that is exactly the
     # bug this ordering fixes. Soft: present only when the test flow built it (cargo xtask test),
     # absent for a plain interactive boot, which just skips the FS-server test. Created host-side by
-    # tools/redoxfs-host; the server only ever opens it.
+    # tools/redoxfs_host; the server only ever opens it.
     REDOXFS_DISK="${CRICKER_DISK%.img}-redoxfs.img"
     REDOXFS_MMIO=""
     if [ -f "$REDOXFS_DISK" ]; then
@@ -135,7 +135,7 @@ GUESTFWD="guestfwd=tcp:10.0.2.9:7777-cmd:/bin/cat"
 # depended on the developer's DNS working at that instant and flaked whenever a query was dropped
 # (measured ~2.5% per query against a real resolver). TFTP is served inside libslirp, so the request
 # and its reply never leave the emulator. This is the UDP twin of the guestfwd echo peer above.
-# The fixture's name and contents are fixed and must match user/src/netcli.rs (TFTP_NAME/TFTP_BODY);
+# The fixture's name and contents are fixed and must match user/src/socket_test_client.rs (TFTP_NAME/TFTP_BODY);
 # `printf` writes it with no trailing newline so the client can assert the bytes exactly.
 TFTPDIR="$(dirname "$0")/../target/tftp"
 mkdir -p "$TFTPDIR"

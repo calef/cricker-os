@@ -157,7 +157,7 @@ same assertions over both buses (`entropy_tests` in `kernel/src/user.rs`):
 - **The count in a reply is the truth about the reply**: a three-byte request writes three bytes and
   leaves the rest of the caller's buffer alone, an oversized one is clamped and answered rather than
   refused, and an unimplemented opcode is answered with nothing rather than killing the service.
-- **A std program gets there**: `hellostd` draws two 32-byte values through `std::random` and asserts
+- **A std program gets there**: `std_exerciser` draws two 32-byte values through `std::random` and asserts
   they differ (`entropy ok` in the pinned transcript), on both ISAs.
 
 ## Honest limits

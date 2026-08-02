@@ -172,7 +172,7 @@ number worth having.
 
 ### The first EL0 numbers (cricker-os, M-series host, HVF, debug build)
 
-The `elbench` program (`user/src/elbench.rs`), spawned by the bench boot, self-times each primitive
+The `os_primitives_benchmarker` program (`user/src/os_primitives_benchmarker.rs`), spawned by the bench boot, self-times each primitive
 from EL0 and reports it as a normal bench line. So far:
 
 | primitive | HVF ns/iter | what one iteration is |
@@ -594,8 +594,8 @@ it, and the split between them is the honest part, because the two servers this 
 runs sit on opposite sides of a measurement line.
 
 **`relay_rtt`: the confined-server tax, isolated and gated.** Real services fan out: the FS server
-CALLs the block server (`client -> fs -> blk -> fs -> client`), netstack CALLs the NIC driver
-(`client -> netstack -> driver -> netstack -> client`). `relay_rtt` (kernel-side, `bench.rs`) is exactly that
+CALLs the block server (`client -> fs -> blk -> fs -> client`), net_stack CALLs the NIC driver
+(`client -> net_stack -> driver -> net_stack -> client`). `relay_rtt` (kernel-side, `bench.rs`) is exactly that
 two-hop topology, a client through a relay to a backend and back, and it sits on the icount baseline
 next to the one-hop `ipc_rtt`:
 
@@ -654,7 +654,7 @@ above; both baselines were re-saved in the commit that added it.
 the flagship: a client opens a file through a granted **directory capability** and reads a block, over
 the real confined stack (a block server driving the RedoxFS disk by DMA, the vendored RedoxFS engine
 mounting it over blk IPC on its own heap). It runs on the `--real --smp` boot, where the whole stack
-is proven by the fs-server test, and it reports:
+is proven by the fs_server test, and it reports:
 
 ```
 fs_read   ~9.8M ticks / 2000 reads   ~204 us/read   (HVF, --release --smp, stable across runs)
@@ -677,17 +677,17 @@ gating on `fs_read` would enshrine the non-determinism the 2026-07-28 lesson war
 self-skips (the `online_count() > 1` gate) everywhere but `--real --smp`, so `bench/baseline.txt`
 never sees it.
 
-**netstack's socket round trip: measured, but not as a third icount bench, and here is why.** The net
+**net_stack's socket round trip: measured, but not as a third icount bench, and here is why.** The net
 path has the same shape as the FS path (a confined server the client reaches only through a granted
-`Stack` capability), and its per-request IPC tax is the same `relay_rtt` topology. But a netstack
-*socket* round trip is even less gate-able than `fs_read`: netstack only reaches its serve loop after a
+`Stack` capability), and its per-request IPC tax is the same `relay_rtt` topology. But a net_stack
+*socket* round trip is even less gate-able than `fs_read`: net_stack only reaches its serve loop after a
 DHCP handshake, and its RECV path drives smoltcp's own retransmit and delay-ACK timers (notes/net.md),
 so the path is DHCP- and timer-driven, deterministic under neither `-icount` nor, at the socket level,
-even a warm HVF loop. So netstack's socket contract is proven and timed end to end by the existing net
+even a warm HVF loop. So net_stack's socket contract is proven and timed end to end by the existing net
 tests (`a_client_resolves_dns_through_the_socket_contract`, `a_client_echoes_over_tcp_...`, both ISAs,
 both transports), not duplicated as a bench that could only report device-and-timer latency. The bare
 EL0 round trip those build on, `ipc_rtt_el0` above, is the raw baseline; the `relay_rtt` delta is the
-confined-server tax netstack pays on top of it, the same as the FS server. Recording it this way, one
+confined-server tax net_stack pays on top of it, the same as the FS server. Recording it this way, one
 gated topology tax plus the two real servers measured where each is sound, is the honest fit to what
 the two instruments can and cannot see.
 

@@ -67,7 +67,7 @@ if [ -n "$CRICKER_DISK" ]; then
     # slots in REVERSE command-line order, and the kernel finds block devices by ascending slot, so
     # the crickerfs disk must be the LAST mmio device to keep slot 0 (find_block_device -> crickerfs,
     # the phase-1 tests), leaving RedoxFS at slot 1 (find_block_device_n(1) -> RedoxFS). Soft:
-    # present only when the test flow built it. Created host-side by tools/redoxfs-host.
+    # present only when the test flow built it. Created host-side by tools/redoxfs_host.
     REDOXFS_DISK="${CRICKER_DISK%.img}-redoxfs.img"
     REDOXFS_MMIO=""
     if [ -f "$REDOXFS_DISK" ]; then
@@ -94,7 +94,7 @@ GUESTFWD="guestfwd=tcp:10.0.2.9:7777-cmd:/bin/cat"
 
 # slirp's own TFTP server (10.0.2.2:69), which makes the gating UDP test deterministic and offline
 # instead of NAT'ing a DNS query to the host's resolver. The parity twin of the aarch64 runner's
-# block; the fixture must match user/src/netcli.rs. See the aarch64 runner for the full reasoning.
+# block; the fixture must match user/src/socket_test_client.rs. See the aarch64 runner for the full reasoning.
 TFTPDIR="$(dirname "$0")/../target/tftp"
 mkdir -p "$TFTPDIR"
 printf 'cricker-tftp!' > "$TFTPDIR/cricker"

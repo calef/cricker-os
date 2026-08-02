@@ -5,7 +5,7 @@ read it. Milestone 56's second half; the first half is [entropy](entropy.md), an
 it for every salt it uses.
 
 The contract is `crates/cred_proto`, the logic is `crates/cred`, the service is
-`user/src/credential.rs`, and its clients are `user/src/credcli.rs`.
+`user/src/credentialer.rs`, and its clients are `user/src/credentialer_test_client.rs`.
 
 ## The problem this exists to solve
 
@@ -84,7 +84,7 @@ and the amendment to §46 says depend rather than *vendor*: a vendored copy is i
 **The crate is RustCrypto's `argon2` 0.5.3**, `default-features = false`, plus `subtle` for
 constant-time comparison and `zeroize` so the library scrubs its own memory. The whole graph is
 nine crates, all RustCrypto core, and it passes `deny.toml` unchanged: advisories, licences, bans,
-sources. `argon2` was already in this tree, in the fs-server workspace, underneath RedoxFS's
+sources. `argon2` was already in this tree, in the fs_server workspace, underneath RedoxFS's
 encryption path, so the licence question had an answer before the question was asked.
 
 **Argon2id specifically**, not Argon2i or Argon2d: it is RFC 9106 §4's recommendation, it is what
@@ -144,7 +144,7 @@ Measured on the development machine (Apple Silicon, native, not under QEMU):
 | unoptimised | 25.8 ms | 66.7 ms | 135.0 ms |
 
 Which is why `Cargo.toml` compiles `cred`, `argon2`, `blake2` and `digest` at `opt-level = 2` even
-in a debug build. That is `measure`'s precedent (the measured-boot SHA-256) applied to a function
+in a debug build. That is `measured_boot`'s precedent (the measured-boot SHA-256) applied to a function
 that costs an order of magnitude more, before TCG multiplies it again. Argon2 is memory-hard on
 purpose; an unoptimised build does not make an attacker's job harder, only ours.
 

@@ -4,9 +4,9 @@ Milestone 47's globbing lane. Built 2026-07-31. [glob.md](glob.md) is the matche
 on two byte strings with no filesystem in it; this note is the layer that turns a match into an
 **authority**, and the demonstration that hangs on it.
 
-The code is `crates/capsh/src/expand.rs` (the expander and the name set, host-tested),
+The code is `crates/grant_plan/src/expand.rs` (the expander and the name set, host-tested),
 `crates/fs_proto`'s `nameset` module (the wire encoding), `user/src/fs_nameset_caretaker.rs` (the
-caretaker), `user/src/shell.rs` (`echo`, and the grant path), `user/src/rm.rs` (the namespace mode),
+caretaker), `user/src/swish.rs` (`echo`, and the grant path), `user/src/rm.rs` (the namespace mode),
 and `kernel/src/user.rs`'s `fs_service::start_granted_set` and `glob_grant_tests`.
 
 Read [dir-capability.md](dir-capability.md) first for the rights ladder and `fs_subtree_caretaker`,
@@ -29,7 +29,7 @@ The finding that makes it tractable is that this is a small change: `fs_file_car
 serves *a namespace of exactly one name*, so globbing generalizes the namespace and nothing else.
 Same caretaker shape, same `fs_proto` protocol above and below, **nothing new in the kernel**.
 
-That generalization is in the type system rather than only in the prose. `capsh::DirGrant` used to
+That generalization is in the type system rather than only in the prose. `grant_plan::DirGrant` used to
 carry `name: &[u8]`; it now carries `names: NameSet`, and a literal operand is the set of one.
 
 ## The property worth the lane
@@ -44,7 +44,7 @@ would delete, which is a coincidence of good behaviour by `rm`, not a fact about
 Here it is the same object: the shell expands once, and the names it printed are the names the
 caretaker is built from.
 
-It only means anything if both go through **one** expander, which is why `capsh::expand::Expander`
+It only means anything if both go through **one** expander, which is why `grant_plan::expand::Expander`
 exists and why both `echo` and the grant planner drive it. The guest test then checks the pairing
 from the other end: a shell rooted in the fixture's `globset` runs `echo gl-*.txt` and plans
 `rm gl-*.txt`, and reports whether the names agree. The two share the expander and **not** the
@@ -56,7 +56,7 @@ report from `0x3f` into `0x3d`.
 ## The shell expands before it plans, and that changed `plan_against`
 
 The shell expands first, which is also what Unix does, so there is no divergence to earn. The
-consequence is structural: **`capsh::plan` must see the expanded set rather than the pattern**, since
+consequence is structural: **`grant_plan::plan` must see the expanded set rather than the pattern**, since
 the endowment is the set.
 
 `plan_against` used to fill its slots by splitting a slice of tokens. It now fills them by **index**,
@@ -73,7 +73,7 @@ Two guards fall out, and both exist so authority cannot move silently:
 
 The first guard matters more than it looks, and the reason is a **correction**. The obvious argument
 for refusing an empty match is that bash's pass-the-pattern-through is harmless here because a name
-containing `*` would be refused downstream. It would not be: neither `capsh::file_name_fits` nor the
+containing `*` would be refused downstream. It would not be: neither `grant_plan::file_name_fits` nor the
 FS server's `check_component` rejects `*` (they refuse the empty name, `.`, `..`, `/`, `\`, `:` and
 NUL, and nothing else). Checked rather than remembered, and there is a host test pinning it. What
 that leaves is a worse cost: passing the pattern through would build a grant whose namespace is **a
@@ -211,7 +211,7 @@ bound came down instead of the cap going up.
 
 ## What the tests prove, and from where
 
-**Host, in milliseconds** (`cargo test -p capsh -p fs_proto`): the expander's set is what matched and
+**Host, in milliseconds** (`cargo test -p grant_plan -p fs_proto`): the expander's set is what matched and
 not what did not; an empty match and an oversized one are refusals; a matched name too long to grant
 refuses the whole expansion rather than dropping one name; the dot rule; a pattern only in the last
 component; the planner grants the set the expander produced, unnarrowed and unreordered; a literal
@@ -290,9 +290,9 @@ $ echo gl-*.rs
 Expand once and grant what was shown, from the shell's side:
 
 ```rust
-// user/src/shell.rs: one expander, two callers
+// user/src/swish.rs: one expander, two callers
 let shown = nav.expand(b"gl-*.txt")?;              // what `echo` prints
-let e = capsh::plan(&spec, holdings(&nav), Expansion::at(0, shown))?;
+let e = grant_plan::plan(&spec, holdings(&nav), Expansion::at(0, shown))?;
 assert_eq!(e.dir.unwrap().names, shown);           // and what `rm` would hold
 ```
 
@@ -321,7 +321,7 @@ Run it:
 
 ```sh
 script/test                  # both ISAs, plus the post-run host check on the image
-cargo test -p capsh          # the expander, the bound, and the empty match
+cargo test -p grant_plan          # the expander, the bound, and the empty match
 cargo test -p fs_proto       # the set encoding, and the fixture pinned against the matcher
 ```
 

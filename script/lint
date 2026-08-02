@@ -20,19 +20,19 @@ cd "$(dirname "$0")/.."
 echo "==> clippy: host crates + xtask"
 cargo clippy --workspace --exclude kernel --exclude user --exclude user_rt --all-targets -- -D warnings
 
-# The RedoxFS host tool (tools/redoxfs-host) is its own workspace, outside ours on purpose (it wraps
+# The RedoxFS host tool (tools/redoxfs_host) is its own workspace, outside ours on purpose (it wraps
 # the vendored engine, which we do not want in our gates; see Cargo.toml). Lint it on its own so our
 # code there is still held to -D warnings. The engine it depends on is external to its workspace too,
 # so clippy does not lint upstream redoxfs, only our tool.
-echo "==> clippy: redoxfs-host (its own workspace)"
-cargo clippy --manifest-path tools/redoxfs-host/Cargo.toml --all-targets -- -D warnings
+echo "==> clippy: redoxfs_host (its own workspace)"
+cargo clippy --manifest-path tools/redoxfs_host/Cargo.toml --all-targets -- -D warnings
 
-# fs-server is its own workspace too (it wraps the vendored RedoxFS engine, which we keep out of our
+# fs_server is its own workspace too (it wraps the vendored RedoxFS engine, which we keep out of our
 # gates). Only the rustdoc pass reached it before milestone 41, so its own code was never clippy'd,
 # and there was a real `deref_addrof` sitting in `second_mount` when this line was added. `-D warnings`
 # applies to local crates only, so the vendored engine's own warnings do not fail the run.
-echo "==> clippy: fs-server (its own workspace)"
-cargo clippy --manifest-path fs-server/Cargo.toml --all-targets -- -D warnings
+echo "==> clippy: fs_server (its own workspace)"
+cargo clippy --manifest-path fs_server/Cargo.toml --all-targets -- -D warnings
 
 echo "==> clippy: kernel + user + user_rt (aarch64)"
 cargo clippy -p kernel -p user -p user_rt --target aarch64-unknown-none-softfloat --all-targets -- -D warnings
@@ -131,14 +131,14 @@ echo "==> roadmap status"
 # items without a path, plus `name[24]` in a comment that markdown read as a link.
 #
 # Split three ways because the workspace is not one target: the bare crates document for aarch64
-# (riscv64 would refuse `xtask`, which needs std), `xtask` is a host tool, and fs-server is its own
+# (riscv64 would refuse `xtask`, which needs std), `xtask` is a host tool, and fs_server is its own
 # workspace.
 echo "==> rustdoc (broken intra-doc links)"
 DOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::invalid_html_tags"
 RUSTDOCFLAGS="$DOCFLAGS" cargo doc --no-deps --quiet --workspace --exclude xtask \
     --target aarch64-unknown-none-softfloat
 RUSTDOCFLAGS="$DOCFLAGS" cargo doc --no-deps --quiet -p xtask
-RUSTDOCFLAGS="$DOCFLAGS" cargo doc --no-deps --quiet --manifest-path fs-server/Cargo.toml --lib
+RUSTDOCFLAGS="$DOCFLAGS" cargo doc --no-deps --quiet --manifest-path fs_server/Cargo.toml --lib
 
 # DECISIONS.md's numbering, and that every §N cited in the tree resolves. Two concurrent milestones
 # both claimed §30 on 2026-07-30 and it was caught only because an agent noticed; 418 code comments
@@ -186,7 +186,7 @@ echo "==> naming conventions"
 #    Allowed: `asid` is Address Space IDentifier, the aarch64/RISC-V hardware term (notes/asids.md).
 #    Allowed: `cred` is the abbreviation of "credential", the same shortening `kbd` is of "keyboard".
 #    The thing it names is a store and a verifier, not a long-running process; the long-running
-#    process that holds one is spelled out in full, as `credential` (notes/credentials.md).
+#    process that holds one is spelled out in full, as `credentialer` (notes/credentials.md).
 naming_allow=" asid cred "
 named_for_a_daemon=""
 for name in \
@@ -224,7 +224,7 @@ if git -C "$(dirname "$0")/.." grep -Iilnw daemon -- \
 fi
 
 # 3. One spelling for contract crates. The tree had four spellings of "the wire contract" when this
-#    was written (`fs_proto`, `gfx_proto`, `netproto`, `lineedit::proto`); `*_proto` wins for CRATES
+#    was written (`fs_proto`, `gfx_proto`, `netproto`, `line_editor::proto`); `*_proto` wins for CRATES
 #    because it is what both of them already were, and a second habit is how the first one rots.
 for dir in "$(dirname "$0")"/../crates/*proto; do
     name="$(basename "$dir")"
@@ -260,8 +260,8 @@ esac
 #    drift would have surfaced as a C component writing to the wrong offset.
 #
 #    A module with exactly ONE consumer is fine and stays fine: that is an ordinary submodule, and
-#    the rule is about agreement between binaries, not about file layout. `vnet` and `netcli` are
-#    that case today.
+#    the rule is about agreement between binaries, not about file layout. `net_transport` and
+#    `socket_test_client` are that case today.
 #
 #    This check is the one that would have caught the whole class. It counts consumers per include
 #    target, so it fails the moment a second binary reaches for the same file.

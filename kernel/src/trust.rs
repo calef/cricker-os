@@ -1,7 +1,7 @@
 //! **The trust root: what init is allowed to be** (milestone 22 phase B.1, DECISIONS §22).
 //!
 //! The kernel loads exactly one program itself: the boot program, out of the initrd archive
-//! (`"init"` on aarch64, `"init"` or `"sysinit"` on riscv64). Everything else is init's to load.
+//! (`"init"` on aarch64, `"init"` or `"system_initializer"` on riscv64). Everything else is init's to load.
 //! That one load used to be pure trust: whatever bytes sat at `/chosen/linux,initrd-start` got
 //! parsed and entered. Since a compromised init can endow malicious children and deny the system it
 //! was meant to start, and since milestone 16b closed the DMA window a device could have used to
@@ -16,7 +16,7 @@
 //! follow-up in DECISIONS §22, not built.
 //!
 //! **It fails closed in both directions.** Wrong bytes halt, and a *missing* measurement halts too
-//! (`measure::VerifyError::Unmeasured`): a kernel built without the manifest has an empty trust root,
+//! (`measured_boot::VerifyError::Unmeasured`): a kernel built without the manifest has an empty trust root,
 //! and an empty trust root vouches for nothing. That is deliberate. The failure mode of a measured
 //! boot must never be "measure nothing and continue."
 //!
@@ -31,15 +31,15 @@ include!(concat!(env!("OUT_DIR"), "/trust_root.rs"));
 // Test-only today: the boot path calls `require`, which decides and halts. These two are the same
 // decision without the halt, which is what a test can actually assert on.
 #[cfg_attr(not(test), allow(dead_code))]
-pub fn expected(name: &str) -> Option<measure::Digest> {
-    measure::expected(TRUST_ROOT, name)
+pub fn expected(name: &str) -> Option<measured_boot::Digest> {
+    measured_boot::expected(TRUST_ROOT, name)
 }
 
 /// Measure `bytes` against the trust root's entry for `name`. The decision function, separated from
 /// the halt so tests can ask it what it thinks without ending the run.
 #[cfg_attr(not(test), allow(dead_code))]
-pub fn verify(name: &str, bytes: &[u8]) -> Result<(), measure::VerifyError> {
-    measure::verify(TRUST_ROOT, name, bytes)
+pub fn verify(name: &str, bytes: &[u8]) -> Result<(), measured_boot::VerifyError> {
+    measured_boot::verify(TRUST_ROOT, name, bytes)
 }
 
 /// **Measure the boot program, or halt.** Called with the archive entry's bytes immediately before
@@ -51,10 +51,10 @@ pub fn verify(name: &str, bytes: &[u8]) -> Result<(), measure::VerifyError> {
 /// from a hardware problem, and whoever hits this needs to know it was a *refusal*.
 #[cfg_attr(feature = "bench", allow(dead_code))]
 pub fn require(name: &str, bytes: &[u8]) {
-    let measured = measure::sha256(bytes);
-    match measure::verify_digest(TRUST_ROOT, name, &measured) {
+    let measured = measured_boot::sha256(bytes);
+    match measured_boot::verify_digest(TRUST_ROOT, name, &measured) {
         Ok(()) => {}
-        Err(measure::VerifyError::Unmeasured) => {
+        Err(measured_boot::VerifyError::Unmeasured) => {
             crate::println!();
             crate::println!(
                 "  MEASURED BOOT REFUSED: no measurement for the boot program '{name}'"
@@ -68,12 +68,12 @@ pub fn require(name: &str, bytes: &[u8]) {
             crate::println!("  halting rather than entering an unverified init.");
             crate::arch::halt();
         }
-        Err(measure::VerifyError::Mismatch) => {
+        Err(measured_boot::VerifyError::Mismatch) => {
             crate::println!();
             crate::println!(
                 "  MEASURED BOOT REFUSED: '{name}' is not the program this kernel runs"
             );
-            if let Some(want) = measure::expected(TRUST_ROOT, name) {
+            if let Some(want) = measured_boot::expected(TRUST_ROOT, name) {
                 crate::println!("    expected sha256 {}", Hex(&want));
             }
             crate::println!("    measured sha256 {}", Hex(&measured));
@@ -86,12 +86,12 @@ pub fn require(name: &str, bytes: &[u8]) {
 /// A digest as hex, for the diagnostics above. `Display` rather than a helper returning a string,
 /// because there is no allocator here and the 64 characters have to live somewhere: they live in
 /// this value's own frame while it is being formatted.
-struct Hex<'a>(&'a measure::Digest);
+struct Hex<'a>(&'a measured_boot::Digest);
 
 impl core::fmt::Display for Hex<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let text = measure::hex(self.0);
-        // SAFETY-free: `measure::hex` emits only ASCII hex digits, so this cannot fail; the
+        let text = measured_boot::hex(self.0);
+        // SAFETY-free: `measured_boot::hex` emits only ASCII hex digits, so this cannot fail; the
         // fallback keeps the diagnostic printable rather than panicking inside a boot failure.
         f.write_str(core::str::from_utf8(&text).unwrap_or("<unprintable>"))
     }

@@ -311,7 +311,7 @@ pub extern "C" fn _start(name_lo: u64, name_hi: u64, spec: u64) -> ! {
         panic!();
     }
     // A set with nothing in it is not a capability anybody meant to hand out, and the shell refuses
-    // to plan one (`capsh::Refusal::NoMatch`). If one arrives anyway the wiring is wrong, and dying
+    // to plan one (`grant_plan::Refusal::NoMatch`). If one arrives anyway the wiring is wrong, and dying
     // here is better than serving a namespace with no names in it.
     if nameset::count(&set) == 0 {
         panic!();

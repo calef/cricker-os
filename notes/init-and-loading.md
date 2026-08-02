@@ -199,13 +199,13 @@ capabilities and shared pages.
 
 ## The shell, its own binary (milestone 19f.5): the split is complete
 
-The last and most-wired program, `user/src/shell.rs`, lifted out of hello. It holds five capability
+The last and most-wired program, `user/src/swish.rs`, lifted out of hello. It holds five capability
 slots (console request/reply, the input line endpoint, and the spawn/result endpoints) and two
-shared pages, reads a line, and prints. Its consumer is init's `init_boot`, which loads `"shell"` by
+shared pages, reads a line, and prints. Its consumer is init's `init_boot`, which loads `"swish"` by
 name and starts it with `x0 = 0`.
 
 With the shell out, **hello contains none of the system's programs**. Every service is its own binary
-in the archive: `worker`, `console`, `input`, `shell`. hello keeps only init and the milestone-tour
+in the archive: `worker`, `console`, `input`, `swish`. hello keeps only init and the milestone-tour
 demo roles (the printing client, the virtio driver, the capability demos). On the `initboot` path
 init loads nothing of hello into a child at all; it builds the whole system from the four distinct
 binaries.

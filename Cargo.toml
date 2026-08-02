@@ -8,14 +8,14 @@ members = [
     "crates/asid",
     "crates/bitfont",
     "crates/calendar",
-    "crates/caps",
-    "crates/compose",
-    "crates/capsh",
+    "crates/capability",
+    "crates/compositor",
+    "crates/grant_plan",
     "crates/cred",
     "crates/cred_proto",
     "crates/clock_proto",
     "crates/crickerfs",
-    "crates/dma_validate",
+    "crates/dma_validator",
     "crates/dtb",
     "crates/elf",
     "crates/entropy_proto",
@@ -35,17 +35,17 @@ members = [
     "crates/sink_proto",
     "crates/virtio",
     "crates/intrusive",
-    "crates/lineedit",
-    "crates/measure",
+    "crates/line_editor",
+    "crates/measured_boot",
     "crates/ntp_proto",
     "crates/slots",
-    "crates/uheap",
+    "crates/user_heap",
     "crates/user_rt",
     "crates/coremark",
-    "crates/vt",
+    "crates/video_terminal",
 ]
 
-# The vendored RedoxFS engine (vendor/redoxfs) and the host tool that wraps it (tools/redoxfs-host)
+# The vendored RedoxFS engine (vendor/redoxfs) and the host tool that wraps it (tools/redoxfs_host)
 # are deliberately kept OUT of this workspace: each is its own workspace root (an empty [workspace]
 # in its Cargo.toml) and both are excluded here. This is what keeps our `-D warnings` clippy gate
 # and `cargo fmt` off upstream code we do not own, and keeps redoxfs's default features (which pull
@@ -54,7 +54,7 @@ members = [
 # vendor/README.md. Nothing in the kernel depends on redoxfs yet; that is milestone 32 phase 2.
 exclude = [
     "vendor/redoxfs",
-    "tools/redoxfs-host",
+    "tools/redoxfs_host",
 ]
 
 # Shared package metadata. Each member opts in with `license.workspace = true`, so the
@@ -70,7 +70,7 @@ license = "MIT OR Apache-2.0"
 # an unoptimized SHA-256 makes that a visible tax under TCG for no benefit, since the crate is pure
 # arithmetic with nothing a debugger would want to step through. Its correctness is pinned by host
 # tests against the published FIPS vectors, so the optimized build is not less trustworthy.
-[profile.dev.package.measure]
+[profile.dev.package.measured_boot]
 opt-level = 2
 
 # Same reason, different arithmetic (milestone 51 lane C). `ntp_proto`'s nanosecond round trip is
@@ -90,7 +90,7 @@ opt-level = 2
 opt-level = 2
 
 # The credential KDF, compiled optimized even in a debug build (milestone 56, the credential half).
-# Exactly the reasoning `measure` records above, one order of magnitude louder: Argon2id at the
+# Exactly the reasoning `measured_boot` records above, one order of magnitude louder: Argon2id at the
 # wired cost (4 MiB, three passes) is **5 ms optimised and 67 ms not**, per derivation, on this
 # machine, and every one of those milliseconds is multiplied by TCG when the credential service runs
 # under QEMU. Argon2 is memory-hard on purpose, so an unoptimised build does not make an attacker's

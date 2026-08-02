@@ -159,7 +159,7 @@ does exactly one thing: signal the notification. The driver thread wakes up.
 loop {
     wait(irq_notification);          // sleeps until the device interrupts
     let packet = read_device_fifo();
-    send(netstack_endpoint, packet);
+    send(net_stack_endpoint, packet);
     ack(irq_cap);
 }
 ```
@@ -250,7 +250,7 @@ two files that "agree" by having been edited to match are exactly that.
 
 ## A capability is a file descriptor that can point at anything
 
-`crates/caps` is the table, and it is pure logic, so it is host-tested in milliseconds. The
+`crates/capability` is the table, and it is pure logic, so it is host-tested in milliseconds. The
 mechanism is deliberately boring: a `Vec<Option<Cap>>`, indexed by a small integer, living in
 kernel memory. Userspace sees the integer. **You cannot forge slot 7 for the same reason you
 cannot forge `fd 7`: the table is not yours to write.** No cryptography. A bounds check.
@@ -388,7 +388,7 @@ opposite rights, is a **one-way pipe neither side can run backwards**. The clien
 `WRITE`-only capability: it can send and it *cannot express* receiving. Nobody had to tell it
 which end it is. It could not be the other end if it tried.
 
-This is [`caps::Rights`](../crates/caps/src/lib.rs) doing real work, and it is a distinction Unix
+This is [`capability::Rights`](../crates/capability/src/lib.rs) doing real work, and it is a distinction Unix
 does not have: a pipe fd is a pipe fd.
 
 ## The scheduler learned a third thing a thread can be

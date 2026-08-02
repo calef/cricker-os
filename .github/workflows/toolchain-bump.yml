@@ -92,7 +92,7 @@ jobs:
           # Captured because the failure text IS the deliverable when this step fails: the PR body
           # below quotes it, so the reader gets the compiler's own words rather than a link to a log
           # that expires.
-          cargo xtask user-std 2>&1 | tee /tmp/overlay-build.log
+          cargo xtask std-exerciser 2>&1 | tee /tmp/overlay-build.log
 
       # Runs whether or not the overlay built, and that is the whole point of this step.
       #

@@ -128,4 +128,4 @@ in a constant.
   written in the superblock, so a reader learns it from the image instead of from a constant every
   reader has to agree on.
 - **The archive has no directories, no writes, and no permissions.** That is the design, not a gap:
-  the read-write filesystem is the RedoxFS server in `fs-server/` (DECISIONS §34).
+  the read-write filesystem is the RedoxFS server in `fs_server/` (DECISIONS §34).

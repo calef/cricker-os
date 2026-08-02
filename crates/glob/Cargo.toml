@@ -5,7 +5,7 @@ edition = "2024"
 license.workspace = true
 
 # Milestone 47's pattern matcher, and only the matcher: a pattern and a name in, a yes or no out.
-# No filesystem access, no enumeration, no allocation, no dependency on fs_proto or capsh. The
+# No filesystem access, no enumeration, no allocation, no dependency on fs_proto or grant_plan. The
 # milestone's finding is that the interesting question is what a match *grants* (a caretaker
 # attenuated to a name set), and that is a separate lane; this is the part that is pure computation
 # and can be proved. DECISIONS §46 rule 1: it is on the verification path, so we write it.

@@ -1,0 +1,56 @@
+# Its own workspace root, deliberately NOT a member of the cricker-os workspace. It depends on the
+# vendored redoxfs (also its own workspace), and cargo forbids a member of one workspace from
+# depending on an in-tree crate that another workspace owns ("multiple workspace roots"). Keeping
+# this tool and the engine it wraps in their own workspaces is also what stops our `-D warnings`
+# clippy gate and `cargo fmt` from reaching upstream code we do not own. This tool is gated on its
+# own: script/lint, script/fmt, and cargo xtask test each invoke it by --manifest-path. See
+# vendor/README.md.
+[workspace]
+
+[package]
+name = "redoxfs_host"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+# Unpublishable by construction: it depends on ../../vendor/redoxfs by path, and crates.io forbids
+# path dependencies. Saying so is what lets cargo-deny's wildcard ban (deny.toml) tell an in-tree
+# path dep apart from a registry `version = "*"`.
+publish = false
+
+# Host-side RedoxFS image tooling (milestone 32, roadmap §32 port plan item 4): mkfs and
+# inspection stay on the host, where std, getrandom, and uuid are honest dependencies; the
+# cricker-os FS server only ever OPENS an existing image. `std` but deliberately NOT `fuse`:
+# creation and inspection need no mounted filesystem, so no macFUSE requirement rides along.
+[dependencies]
+redoxfs = { path = "../../vendor/redoxfs", default-features = false, features = ["std"] }
+
+# The attribute store's on-disk format, from the crate that defines it (milestone 57). The FS server
+# writes these blobs and this tool reads them, so what the two must agree on is a crate rather than a
+# second copy of the record layout in a comment (CLAUDE.md rule 7). A change to the record header is
+# then a compile error here instead of a recovery that quietly reads garbage. `fs_proto` is `no_std`
+# with no dependencies of its own, so it costs this build nothing; `fs_server` already takes the same
+# path dependency across the same workspace boundary, which is what shows cargo permits it.
+fs_proto = { version = "0.1.0", path = "../../crates/fs_proto" }
+
+# The same redox_syscall (lib name `syscall`) the engine uses, so an error out of `find_node` can be
+# read by its errno. Recovery needs exactly one of those. **`ENOENT` is the only error that may be
+# read as "this image has no attribute store"**; treating any other one that way is the false
+# negative that reports a file's attributes as absent when the lookup actually failed, which is the
+# same discipline the FS server's own `find_store` keeps (notes/fs-server.md).
+redox_syscall = { version = "0.9.0", default-features = false, features = ["std"] }
+
+# The host's extended-attribute calls, which `std` does not wrap: `setxattr` on macOS, `lsetxattr` on
+# Linux, with different argument lists. `libc` is already in this tool's graph (the engine's disk
+# layer uses it), so depending on it directly adds no supply-chain surface, and the alternative is
+# hand-writing platform-conditional `extern "C"` signatures. Thin architectural primitive, which is
+# the shape DECISIONS §46 accepts.
+libc = "0.2"
+
+# Test-only: the FS server's own sans-IO core, which is what **writes** the attribute store on the
+# board. The recovery test drives it to build the fixture, so the blobs this tool reads back were
+# produced by the implementation that will produce them in the field, not by a second writer in this
+# crate that could share a misunderstanding with the reader. Same argument as `import`, which uses
+# upstream's archiver rather than our own `put`, and it is the whole reason the round trip means
+# anything. Not a runtime dependency: recovery never needs the server.
+[dev-dependencies]
+fs_server = { path = "../../fs_server" }
