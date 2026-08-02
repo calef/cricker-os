@@ -1,7 +1,7 @@
 //! **The byte-sink contract** (milestone 50): one framing for *write these bytes there*.
 //!
 //! Before this crate there were four of them. std's `println!` SENT three registers on the
-//! endpoint in slot 1; `lineedit` CALLed with an opcode and a shared page; `fs_proto` CALLed with
+//! endpoint in slot 1; `line_editor` CALLed with an opcode and a shared page; `fs_proto` CALLed with
 //! a handle, an offset and a shared page; the console server took a length on one endpoint and
 //! acknowledged on another. Four shapes for one verb, which is exactly as many as it takes to make
 //! a program's output destination something the program has to *know about*. This is the one
@@ -25,7 +25,7 @@
 //! would cost a round trip on the hottest path in the system to say "all of them", which is the
 //! only answer a self-framing message has. Back-pressure is not lost by dropping the reply,
 //! because `SEND` blocks until a receiver takes the message: the rendezvous *is* the flow control,
-//! which is the property `lineedit::proto::OP_BYTES` already documented. And it is what lets the
+//! which is the property `line_editor::proto::OP_BYTES` already documented. And it is what lets the
 //! reader of a pipe be an ordinary program that does nothing but `recv`, with no reply to send and
 //! no protocol knowledge at all.
 //!
@@ -70,7 +70,7 @@
 #![no_std]
 
 /// The opcode's position in the first word: bits 63:56, the same place `fs_proto` and
-/// `lineedit::proto` put theirs. One spelling for "the wire contract" across the tree.
+/// `line_editor::proto` put theirs. One spelling for "the wire contract" across the tree.
 pub const OP_SHIFT: u32 = 56;
 
 /// **Bytes.** The low 32 bits are the count (1 to [`INLINE_MAX`]); the bytes themselves are in the

@@ -490,7 +490,7 @@ pub(crate) fn invoke(
                 // holding a spend-only (GRANT-less) untyped must not SPLIT itself a GRANT-bearing
                 // child over the same memory and manufacture the right its capability withheld.
                 // `Cap::mint_child` is that inheriting mint, and `split_never_widens_rights`
-                // (crates/caps) proves it never widens, at the one mint site outside `derive` the
+                // (crates/capability) proves it never widens, at the one mint site outside `derive` the
                 // caps proofs otherwise miss (milestone 35). Rights narrow monotonically from the
                 // delegable root budget down; init holds that root with GRANT and hands narrowed
                 // budgets on. See DECISIONS §16.

@@ -1,0 +1,25 @@
+[package]
+name = "video_terminal"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+# The VT state engine (milestone 29, notes/glyphs.md): the character grid a display terminal keeps,
+# the ANSI parser that maintains it, the damage it reports, and the pure function from grid to
+# pixels. **Sans-IO**, exactly as `line_editor` is: bytes in, state out, no endpoints, no syscalls, no
+# framebuffer. So the whole engine is host-tested in milliseconds and only the wiring needs QEMU.
+#
+# That split is also what makes the text on the screen provable. The terminal component, the
+# kernel-side test that predicts the picture, and the host-side scanout check that grades QEMU's
+# output all run THIS engine over the same script, so a disagreement is impossible by construction
+# rather than by care.
+
+[dependencies]
+bitfont = { version = "0.1.0", path = "../bitfont" }
+
+[dev-dependencies]
+# The interoperability test, and the reason it is a dev-dependency rather than a design coupling:
+# the escape sequences this engine must understand are exactly the ones the line discipline already
+# emits (DECISIONS §21). Rather than assert that from a hand-written list of sequences that could
+# drift, the test runs the real `line_editor` and feeds its echo stream to this parser.
+line_editor = { version = "0.1.0", path = "../line_editor" }

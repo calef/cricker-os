@@ -1868,7 +1868,7 @@ pub fn reclaim_region(region: u64) -> Result<(), ()> {
 /// death message. Authorization is the relationship the kernel already tracks (`Thread::fault_ep`,
 /// §26 implementation note 1) rather than a new registry: the named thread's recorded supervision
 /// endpoint must *be* the invoked one, which is why the tid needs no badge and no handle. The
-/// decision itself is `caps::reap_decision`, proved for every input in that crate.
+/// decision itself is `capability::reap_decision`, proved for every input in that crate.
 ///
 /// Then the reclaim is §16's, unchanged: `reclaim_region` on the region the TCB was retyped from,
 /// which is exactly the region name the owner would have passed to `Untyped::DESTROY`. One teardown
@@ -1887,10 +1887,10 @@ pub fn reap_supervised(ep: EpId, tid: Tid) -> Result<(), abi::Error> {
         let t = sched.threads.get(tid);
         let fault_ep = t.and_then(|t| t.fault_ep);
         let dead = t.is_some_and(|t| t.state == State::Dead);
-        match caps::reap_decision(fault_ep, ep, dead) {
-            caps::Reap::NotSupervised => return Err(abi::Error::NotSupervised),
-            caps::Reap::StillAlive => return Err(abi::Error::StillAlive),
-            caps::Reap::Permitted => {}
+        match capability::reap_decision(fault_ep, ep, dead) {
+            capability::Reap::NotSupervised => return Err(abi::Error::NotSupervised),
+            capability::Reap::StillAlive => return Err(abi::Error::StillAlive),
+            capability::Reap::Permitted => {}
         }
         // A supervised thread is always one `create_tcb` built out of a region, so this is `Some`;
         // be honest rather than unwrap, and report "nothing here to collect" if it ever is not.

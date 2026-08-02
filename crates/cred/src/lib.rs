@@ -5,7 +5,7 @@
 //! secret is checked against one, and how a record is encoded. No syscalls, no allocation, no
 //! `alloc`, so it compiles for the host and for both bare-metal targets from one source and its
 //! tests run in milliseconds. The wire contract is `cred_proto`; the service is
-//! `user/src/credential.rs`.
+//! `user/src/credentialer.rs`.
 //!
 //! # What is stored, and why it cannot be turned back into a password
 //!

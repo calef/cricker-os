@@ -25,7 +25,7 @@
 //! lays `c_shim` out in it, and §32 does not touch construction. What §32 removed is the reason a
 //! *supervisor* had to hold one. Read as a measurement: the bundling §31 recorded was two things, and
 //! only one of them was the reap. Split roles 1 and 2 into separate processes and the supervisor half
-//! would now hold nothing but endpoints, which is exactly what milestone 22's `subsup` does since
+//! would now hold nothing but endpoints, which is exactly what milestone 22's `sub_server_supervisor` does since
 //! §32. Keeping them fused here is still deliberate (§31: the requirement is visible in one program
 //! instead of hidden behind an IPC hop). See DECISIONS §31's "what the supervisor had to hold".
 //!

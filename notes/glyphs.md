@@ -5,15 +5,15 @@ read. Rung one put pixels on a screen ([framebuffer-contract.md](framebuffer-con
 two multiplexed the screen among mutually distrusting clients ([compositor.md](compositor.md)).
 Neither could show a letter.
 
-The code halves are `crates/bitfont` (the font), `crates/vt` (the grid engine, the keymap, and the
-test script), `user/src/vterm.rs` (the terminal component), and `user/src/kbd.rs` (the keyboard
+The code halves are `crates/bitfont` (the font), `crates/video_terminal` (the grid engine, the keymap, and the
+test script), `user/src/display_terminal.rs` (the terminal component), and `user/src/kbd.rs` (the keyboard
 driver). This is the prose half.
 
 ## The shape
 
 ```text
   virtio-input ──virtio (PCIe, IOMMU)──► kbd ──the input ring──► compositor ──OP_BYTES──►┌───────┐
-  (a keyboard)                                                                            │ vterm │
+  (a keyboard)                                                                            │ display_terminal │
                                                          application ──OP_WRITE──────────►└───────┘
                                                                                               │ glyphs
                                                                     its surface ◄─────────────┘
@@ -62,13 +62,13 @@ Two details the font's own tests pin, because both are invisible in review:
 
 ## The VT engine: sans-IO, and checked against the real line discipline
 
-`crates/vt` keeps the grid: bytes in, a character grid out, plus the rectangle that changed. It holds
-no endpoint, makes no syscall, and has never heard of a framebuffer, exactly as `lineedit` does for
+`crates/video_terminal` keeps the grid: bytes in, a character grid out, plus the rectangle that changed. It holds
+no endpoint, makes no syscall, and has never heard of a framebuffer, exactly as `line_editor` does for
 the serial terminal ([line-discipline.md](line-discipline.md)).
 
 **What it implements is not a guess.** The escape sequences a display terminal must understand are
 the ones the line discipline already emits (DECISIONS §21), and rather than assert that from a
-hand-written list that could drift, the crate's interoperability test **runs the real `lineedit`**
+hand-written list that could drift, the crate's interoperability test **runs the real `line_editor`**
 and feeds its echo stream to this parser: type a line, back up, insert, delete, kill, press Enter,
 press ^L, and the grid must show the line the discipline says it assembled. Two separately-correct
 components now fail together or not at all.
@@ -98,7 +98,7 @@ test that found it feeds a title-setting sequence on purpose.
 
 ## The terminal: a client at both seams, and the same binary
 
-`user/src/vterm.rs` serves the terminal contract's IPC half
+`user/src/display_terminal.rs` serves the terminal contract's IPC half
 ([terminal-contract.md](terminal-contract.md)) against a grid and a font instead of a serial line.
 One binary, two wirings, chosen by `arg0`:
 
@@ -114,7 +114,7 @@ One binary, two wirings, chosen by `arg0`:
 **That is `painter`'s authority in the first column and `window`'s in the second**, and it is the
 answer to the question this increment was asked to check: *did the framebuffer contract need
 changing to carry text?* No. Neither did the compositor's. Both carry pixels, and a terminal draws
-pixels; `display` cannot tell `vterm` from the client that painted a test pattern, and `compositor` cannot
+pixels; `display` cannot tell `display_terminal` from the client that painted a test pattern, and `compositor` cannot
 tell it from the client that painted a coordinate function. The answer is a spawn literal rather than
 an argument.
 
@@ -123,7 +123,7 @@ an argument.
 A terminal has two classes of sender: an application printing and an input source typing. DECISIONS
 §33 recorded that a process here has exactly **one blocking wait point** (one `RECV`, no wait-any,
 and two threads cannot share an address space), so telling them apart by endpoint is not available.
-They arrive on one endpoint and are told apart by opcode, which is what `lineedit` already does.
+They arrive on one endpoint and are told apart by opcode, which is what `line_editor` already does.
 
 The security consequence is stated rather than hidden: an application holding that endpoint could
 send `OP_BYTES` and forge a keystroke into **its own** terminal. It gains nothing (the bytes come
@@ -172,7 +172,7 @@ do offer a `virtio-keyboard-device` on the virtio-mmio bus. It rides PCIe so it 
 IOMMU domain the GPU does. A keyboard is the device whose DMA you would least like unconfined,
 because its buffers are where every keystroke lands.
 
-The scancode-to-byte mapping is `vt::keymap`: a US layout's main block, shifted and unshifted, as a
+The scancode-to-byte mapping is `video_terminal::keymap`: a US layout's main block, shifted and unshifted, as a
 flat table plus one bit of state (shift is *held*, so it has to be remembered between events).
 Host-tested, because a keyboard layout is data and a wrong row is exactly what a table test catches.
 Two rules there earn their tests: a **release types nothing** (the first bug every evdev driver has
@@ -184,7 +184,7 @@ This is the part that took the most care, because text is where "it looked right
 and least sufficient.
 
 **The picture is a value three parties compute without talking to each other.** The script is
-`vt::script`, a constant in the contract crate, the same move `gfx_proto::pixel` and `compose::SCENE`
+`video_terminal::script`, a constant in the contract crate, the same move `gfx_proto::pixel` and `compositor::SCENE`
 make:
 
 1. **The terminal** runs the engine over the bytes it was sent and paints what it says;
@@ -210,7 +210,7 @@ the terminal's rather than the driver's or the compositor's. It must reject:
 - a blank terminal, and the other two pictures on the same scanout.
 
 The script is chosen so a lucky pass is hard: four rows (a one-row picture hides a stride error),
-three renditions, a `\r\n` pair (what `lineedit::expand_output` puts on the wire for a Unix `\n`),
+three renditions, a `\r\n` pair (what `line_editor::expand_output` puts on the wire for a Unix `\n`),
 and descenders plus an underscore (the glyph rows a font table truncated to seven would lose).
 
 ### Ordering, and what breaks it
@@ -228,7 +228,7 @@ anything; no dump matches and the scanout check fails loudly.
 Nothing in the guest can press a key, so the **host** does: `cargo xtask` sends `sendkey` on the same
 monitor connection the scanout check already holds open, every poll, from the start of the run. That
 needs no synchronization, because QEMU drops key events until a driver sets `DRIVER_OK`.
-`vt::script::HOST_KEY` is the single definition of which key, so the side that presses and the side
+`video_terminal::script::HOST_KEY` is the single definition of which key, so the side that presses and the side
 that asserts cannot drift.
 
 The keyboard test proves the path from a **physical key event to a terminal byte**; the compositor
@@ -256,9 +256,9 @@ Stated plainly, because a demonstrator's caveats are part of the deliverable.
   have nothing to draw for most of what it decoded. When there is a font with the coverage to justify
   one, the decoder goes in the VT engine and `bitfont::glyph`'s signature becomes `char`.
 - **No line editing in the display terminal.** It renders a stream and echoes keystrokes; it does not
-  serve `OP_READLINE`. A client that wants edited lines puts `lineedit` in front of it and prints the
-  discipline's echo through `OP_WRITE`, which needs no new protocol at all, because `lineedit`'s echo
-  is exactly a byte stream this engine parses. That is not a hope: the `vt` crate proves it on the
+  serve `OP_READLINE`. A client that wants edited lines puts `line_editor` in front of it and prints the
+  discipline's echo through `OP_WRITE`, which needs no new protocol at all, because `line_editor`'s echo
+  is exactly a byte stream this engine parses. That is not a hope: the `video_terminal` crate proves it on the
   host by running both.
 - **A 16x8 grid.** The scanout is 128x64 and the font is 8x8. That is what the display ladder's
   current screen affords; the engine's maximum is 32x16 and both are constants.
@@ -294,8 +294,8 @@ history against `vttest` that we would otherwise be writing from scratch for yea
 2. **The seam is proved but the shape is not free.** §31's C seam holds *no capabilities and makes no
    syscalls*: the Rust shim holds everything and passes buffers. A VT engine fits that shape almost
    perfectly (bytes in, grid out, no IO), which is the good news, and it is not an accident: it is
-   the same sans-IO property `crates/vt` has. So the port is a shim that feeds bytes and reads cells,
-   not a rewrite of `vterm`.
+   the same sans-IO property `crates/video_terminal` has. So the port is a shim that feeds bytes and reads cells,
+   not a rewrite of `display_terminal`.
 3. **The grid readback is the actual work.** Our engine gives `pixel(x, y)` as a pure function, which
    is what makes the three-witness proof possible. libghostty-vt's C ABI gives cells; the shim would
    have to walk them and the *expected-picture* definition would have to move to the Zig side or be
@@ -303,7 +303,7 @@ history against `vttest` that we would otherwise be writing from scratch for yea
    have to be rebuilt.** That is the cost this increment discovered and could not have known before.
 4. **Their API is in flux**, so any adoption pins a version and takes the divergence-management
    discipline the vendored RedoxFS already has (DECISIONS §18's vendoring policy).
-5. **`crates/vt` would not be deleted.** It is about 1,500 lines including its tests and its keymap,
+5. **`crates/video_terminal` would not be deleted.** It is about 1,500 lines including its tests and its keymap,
    and it is the thing that makes the host-side scanout check possible; keeping it as the reference
    implementation the foreign one is *checked against* is more valuable than either alone, and it is
    a better milestone-23 demonstration too (swap the engine, run the same suite, compare the grids).
@@ -312,7 +312,7 @@ history against `vttest` that we would otherwise be writing from scratch for yea
 do it when there is a reason to want scrollback and UTF-8 rather than to want a Zig dependency. The
 milestone-23 claim is strongest when the two engines can be swapped under a suite that grades both,
 and that is only possible because the Rust one exists. If the answer is "not yet", nothing is lost:
-`vterm` is a component behind an endpoint, so swapping it later is a component change, which is the
+`display_terminal` is a component behind an endpoint, so swapping it later is a component change, which is the
 property this increment was asked to keep and did.
 
 ## Where the pieces are
@@ -320,10 +320,10 @@ property this increment was asked to keep and did.
 | piece | file |
 |---|---|
 | the font and its provenance | `crates/bitfont/src/lib.rs`, `crates/bitfont/src/glyphs.rs` |
-| the VT engine | `crates/vt/src/lib.rs` |
-| the keymap | `crates/vt/src/keymap.rs` |
-| the test script, shared by three witnesses | `crates/vt/src/script.rs` |
-| the terminal component | `user/src/vterm.rs` |
+| the VT engine | `crates/video_terminal/src/lib.rs` |
+| the keymap | `crates/video_terminal/src/keymap.rs` |
+| the test script, shared by three witnesses | `crates/video_terminal/src/script.rs` |
+| the terminal component | `user/src/display_terminal.rs` |
 | the keyboard driver | `user/src/kbd.rs` |
 | enumeration | `kernel/src/pci.rs` (`find_input_device`) |
 | the wiring | `kernel/src/user.rs` (`display_service::start_terminal`, `compositor_service::spawn_terminal`, `keyboard_service`) |

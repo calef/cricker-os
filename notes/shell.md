@@ -1,5 +1,11 @@
 # A shell at EL0
 
+**The shell's name is `swish`** (milestone 63): `user/src/swish.rs`, packed into the archive as
+`swish`, loaded by that name. This note calls it "the shell" throughout because that is what it is;
+where a path or an archive entry is meant, the spelling is `swish`. The argument for the name is in
+milestone 63's roadmap block, and the short version is that `bash`, `zsh` and `fish` are names while
+`shell` is a category.
+
 Milestone 10. The rung DECISIONS.md calls "proof the whole stack works," and it is exactly that:
 everything the user sees is a conversation between processes, and the kernel is a message router
 that touches none of it.

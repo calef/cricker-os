@@ -273,13 +273,13 @@ The unit tests exist for these. Every one is a place a real glob implementation 
 
 ## What is not in the crate
 
-- No filesystem access of any kind, no enumeration, no `fs_proto`, no `capsh`. It does not depend on
+- No filesystem access of any kind, no enumeration, no `fs_proto`, no `grant_plan`. It does not depend on
   anything, inside the tree or out.
 - No allocation. `literal` writes into a caller buffer and returns `None` rather than truncating,
   because a truncated filename is a different file and this is the path that decides what gets
   granted.
 - No `**`, no qualifiers, no POSIX classes, no locale, no case folding, no path separator.
-- **No grant.** The attenuated-to-a-name-set work, the shell's expansion, `capsh::plan` seeing the
+- **No grant.** The attenuated-to-a-name-set work, the shell's expansion, `grant_plan::plan` seeing the
   expanded set rather than the pattern, and `ARG_MAX` as a capability limit are milestone 47's
   globbing lane, built on top of this crate and written up in [glob-grant.md](glob-grant.md). This
   crate is the part with no authority in it, which is why it could be finished and proved on its own,

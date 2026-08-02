@@ -185,7 +185,7 @@ because a blanket comment is exactly how the old claim survived past being true.
 | `the_hardware_says_el0_cannot_read_the_kernels_memory` | Twin exists: `riscv_virtio_tests::the_page_tables_say_u_mode_cannot_read_the_kernels_memory`. Kept separate on purpose, because the *mechanism* is the subject: aarch64 asks the silicon (`AT S1E0R`), RISC-V has no such instruction and walks in software. Merging them would assert only what both can say. |
 | `userspace_init_delegates_an_interrupt_to_a_child` | RISC-V has no second interrupt to raise. Its only hand-assertable line is the console UART's, which `spawn_init` is already routing for the input driver, so a twin would prove delivery through whichever route was bound last rather than through the delegated capability. The property is covered by `riscv_virtio_tests::a_userspace_driver_reads_a_file_from_a_virtio_disk` (which asserts `ROUTED_IRQS` rises while a userspace driver waits on its own Irq cap) and by `sched::tests::an_interrupt_becomes_a_message`. |
 | `userspace_init_builds_a_driver_that_reads_real_hardware` | The assertion is `0xB105F00D` in the PL011's PrimeCell identification registers, and RISC-V `virt` has no PL011. That constant is what makes the test exact rather than "the read did not fault"; substituting a virtio magic number would be a different test wearing this one's name. Device delegation to a userspace driver is proved on RISC-V by the virtio-blk driver test, which is a stronger version of the same claim. |
-| 24 device / filesystem / network tests | **Twins already exist** in `riscv_virtio_tests`, which drives the same properties through the dedicated `blk` and `netstack` binaries. Running both copies would double the suite's slowest tests (including the ~300 s `std_net`) to prove nothing new. This duplication is itself worth revisiting: see the open gap below. |
+| 24 device / filesystem / network tests | **Twins already exist** in `riscv_virtio_tests`, which drives the same properties through the dedicated `blk` and `net_stack` binaries. Running both copies would double the suite's slowest tests (including the ~300 s `std_net`) to prove nothing new. This duplication is itself worth revisiting: see the open gap below. |
 
 ### Open gap: RISC-V allocates ASIDs and then throws them away
 
@@ -374,12 +374,12 @@ driver run. The virtio-mmio driver is largely portable (MMIO + virtqueues + DMA)
 ### D. Full integrated boot + interactive shell: DONE.
 
 The interactive shell runs on RISC-V, over the serial: `echo` echoes, `run 9` spawns a worker that
-computes 81. A new portable `sysinit` (the counterpart of hello's aarch64-tied `init_boot`) is loaded
+computes 81. A new portable `system_initializer` (the counterpart of hello's aarch64-tied `init_boot`) is loaded
 as the boot process and, from an untyped budget plus the NS16550 device cap and the UART Irq cap,
 builds the console server, input driver, and shell out of its own budget and wires them; the kernel
 parks. The three shell programs became arch-neutral -- the UART register layout is gated per arch
 (PL011 vs NS16550, including that the NS16550 clears its RX interrupt on read, with no ICR). The
-wiring is arch-neutral: `sysinit` maps whatever device cap the kernel grants and delegates whatever
+wiring is arch-neutral: `system_initializer` maps whatever device cap the kernel grants and delegates whatever
 Irq cap it is handed, so the same binary would drive a PL011. `--features shell` selects it (the
 riscv initboot). aarch64 keeps hello's init_boot; its shell still works. Original scope below.
 
@@ -391,7 +391,7 @@ mostly porting userspace, not proving new kernel behavior.
 
 - Port the device-specific programs to the NS16550: `console.rs` (writes the UART, ~6 PL011 register
   sites) and `input.rs` (reads RX + the UART IRQ, ~2 sites). Either parameterize the register layout
-  or ship NS16550 variants. `shell.rs` is already mostly portable (IPC, no direct hardware).
+  or ship NS16550 variants. `swish.rs` is already mostly portable (IPC, no direct hardware).
 - A riscv `spawn_init` (or a generalized one) that grants the PLIC/NS16550 equivalents of the
   GIC/PL011/IRQ capabilities aarch64's grants.
 - Wire the riscv boot to hand off to init-as-PID-1 instead of halting.
@@ -402,8 +402,8 @@ mostly porting userspace, not proving new kernel behavior.
 
 All eleven primitives plus CoreMark run on RISC-V, single-hart and SMP. `bench.rs` moved its timing
 to `arch::timer::now`/`frequency` (rdtime on riscv), the boot reaches `bench::run` under `--features
-bench`, and `initrd-riscv` packs `elbench` + `coremark`. Two fixes fell out of `spawn_el0` (the fast
-userspace spawn+reap loop): elbench's 9-instruction `CHILD_STUB` was aarch64 machine code (added the
+bench`, and `initrd-riscv` packs `os_primitives_benchmarker` + `coremark`. Two fixes fell out of `spawn_el0` (the fast
+userspace spawn+reap loop): os_primitives_benchmarker's 9-instruction `CHILD_STUB` was aarch64 machine code (added the
 riscv `li`/`ecall` version), and the `MAP_CODE` syscall never synced the icache on the userspace
 map-executable path (a correctness fix for both arches, latent until a spawn loop stressed it).
 
@@ -418,9 +418,9 @@ below.
 
 ### E (original scope). Benchmarks: M. Cross-arch numbers.
 
-aarch64 runs CoreMark and the elbench EL0 primitive suite (null syscall, context switch, IPC RTT, map,
+aarch64 runs CoreMark and the os_primitives_benchmarker EL0 primitive suite (null syscall, context switch, IPC RTT, map,
 spawn), plus cross-OS comparisons. RISC-V runs none. The workloads are userspace and mostly portable
-(`coremark` is compute; `elbench` uses `user_rt::now`, which is `rdtime` on riscv).
+(`coremark` is compute; `os_primitives_benchmarker` uses `user_rt::now`, which is `rdtime` on riscv).
 
 - Make the `bench` boot mode reachable on riscv.
 - Resolve the timing caveat honestly: `user_rt::cntfrq` is hardcoded to the QEMU virt 10 MHz timebase

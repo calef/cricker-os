@@ -18,7 +18,7 @@ does:
 | `redoxfs-resize` | grows one | No |
 | `redoxfs` (`mount.rs`) | serves an image over FUSE | Yes, and that is the path we deliberately do not take. See below |
 
-So the read side upstream ships is FUSE, and `fuse` is a feature `tools/redoxfs-host` excludes
+So the read side upstream ships is FUSE, and `fuse` is a feature `tools/redoxfs_host` excludes
 (`default-features = false, features = ["std"]`). On Linux enabling it is nearly free. On macOS it
 means macFUSE, a third-party system extension, and reduced security mode on Apple Silicon. **A
 recovery story that begins "first, reboot into recovery mode and lower your Mac's security
@@ -29,11 +29,11 @@ kernel extension, no root, identical on macOS and Linux.
 ## What the tool does
 
 ```
-redoxfs-host ls      IMAGE [PATH]     # a directory listing: kind, attributes, size, name
-redoxfs-host cat     IMAGE PATH       # one file's bytes to stdout
-redoxfs-host xattr   IMAGE PATH       # what extended attributes are on it
-redoxfs-host xattr   IMAGE PATH NAME  # one attribute's bytes to stdout
-redoxfs-host extract IMAGE PATH DEST  # a whole subtree onto the host filesystem, attributes and all
+redoxfs_host ls      IMAGE [PATH]     # a directory listing: kind, attributes, size, name
+redoxfs_host cat     IMAGE PATH       # one file's bytes to stdout
+redoxfs_host xattr   IMAGE PATH       # what extended attributes are on it
+redoxfs_host xattr   IMAGE PATH NAME  # one attribute's bytes to stdout
+redoxfs_host extract IMAGE PATH DEST  # a whole subtree onto the host filesystem, attributes and all
 ```
 
 Plus the pre-existing write side (`mkfs`, `put`) and one addition, `import IMAGE HOST_DIR`, which
@@ -83,7 +83,7 @@ The rule that follows, and it is the whole point of this note:
 
 Concretely, that means the backup's off-site copy carries one of:
 
-1. a built `redoxfs-host` binary for the host you would recover on (fine, but binaries rot across
+1. a built `redoxfs_host` binary for the host you would recover on (fine, but binaries rot across
    OS versions and architectures), or
 2. the cricker-os commit hash plus `vendor/redoxfs` at 0.9.1 and `patches/`, which is enough to
    rebuild the tool with nothing but a Rust toolchain, or
@@ -122,7 +122,7 @@ below writes with upstream's archiver rather than with our own `put`.
 
 ## How it is proven
 
-`tools/redoxfs-host/tests/recovery.rs`, and the shape of the test is the argument:
+`tools/redoxfs_host/tests/recovery.rs`, and the shape of the test is the argument:
 
 - **Every step is a separate invocation of the built binary.** Nothing is shared between the write
   and the read but the bytes in the image file: no cached `FileSystem`, no warm allocator, no
@@ -144,7 +144,7 @@ below writes with upstream's archiver rather than with our own `put`.
 
 An image written by cricker-os carries a directory in its root called **`.cricker-attrs`**, holding
 one small file per node that has extended attributes, named for that node's `TreePtr` id in hex.
-`redoxfs-host ls` shows it, `extract` copies it out, and upstream's FUSE mount would too.
+`redoxfs_host ls` shows it, `extract` copies it out, and upstream's FUSE mount would too.
 
 That the store is *visible* here is deliberate rather than a leak, and both halves are worth saying:
 
@@ -187,20 +187,20 @@ prevent: a recovery that looks complete and is not.
 A whole recovery, on a Mac, with the attributes on the other end. This is a real transcript.
 
 ```console
-$ redoxfs-host ls backup.img /
+$ redoxfs_host ls backup.img /
 dir         4096  .cricker-attrs
 dir         4096  nested
 file@         13  photo.jpg
 
-$ redoxfs-host xattr backup.img photo.jpg
+$ redoxfs_host xattr backup.img photo.jpg
          6  kind 0x43535452 'CSTR'  user.com.apple.metadata:_kMDItemUserTags
         32  kind 0x00000000  user.com.apple.FinderInfo
 
-$ redoxfs-host xattr backup.img photo.jpg user.com.apple.metadata:_kMDItemUserTags
+$ redoxfs_host xattr backup.img photo.jpg user.com.apple.metadata:_kMDItemUserTags
 Family
 
-$ redoxfs-host extract backup.img / recovered
-redoxfs-host: recovered/photo.jpg: attribute user.com.apple.metadata:_kMDItemUserTags kept its
+$ redoxfs_host extract backup.img / recovered
+redoxfs_host: recovered/photo.jpg: attribute user.com.apple.metadata:_kMDItemUserTags kept its
   6 bytes but not its type code 0x43535452; host filesystems have no field for it (see
   .cricker-attrs in the extracted tree)
 extracted / to recovered: 4 files, 3 directories, 0 symlinks, 165 bytes,
@@ -218,7 +218,7 @@ is the Mac's own addition to a freshly written file, not something out of the im
 
 ### How the reattachment is proven
 
-`tools/redoxfs-host/tests/attributes.rs`, and the shape of it is again the argument.
+`tools/redoxfs_host/tests/attributes.rs`, and the shape of it is again the argument.
 
 - **The fixture is written by `fs_server::Server`**, the sans-IO core that runs on the board, driven
   over a `DiskFile`. Not by a second writer in this crate: a reader and a writer in one crate can

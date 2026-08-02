@@ -85,7 +85,7 @@ can supply. **Decided: the surface stays narrow; the API is designed against ini
 requirements later.** What phase B builds instead, per the decisions:
 
 - **B.1** (no decisions): every kernel object gets a fixed shape. The cspace becomes a
-  const-generic array in `crates/caps`, `KernelStack`'s frame list an array, and the endpoint /
+  const-generic array in `crates/capability`, `KernelStack`'s frame list an array, and the endpoint /
   untyped-region / virtio / stack-VA tables fixed arrays.
 - **B.2**: TCBs move from `Box` to a **static pool** (BSS, MAX_THREADS slots; table slot i is
   pool slot i). Retype-from-untyped was considered and declined while the kernel is the only

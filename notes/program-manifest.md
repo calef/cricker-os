@@ -4,7 +4,7 @@ Milestone 31, phase 1. A **manifest** is a program's declared endowment: what it
 granted, written down where the shell can check a command against it before spawning anything. It
 is the SHILL idea (OSDI 2014: capability contracts for scripts) shrunk to what phase 1 needs, and
 it is milestone 23's component contract in its smallest honest form. The type and the checker live
-in `capsh` (host-tested); this note is the why and the format.
+in `grant_plan` (host-tested); this note is the why and the format.
 
 ## The problem it solves
 
@@ -26,7 +26,7 @@ Nothing was built, nothing hung. The contract was checked where you could still 
 
 ## The format
 
-A manifest declares what a program expects to be handed (`capsh::Manifest`):
+A manifest declares what a program expects to be handed (`grant_plan::Manifest`):
 
 ```rust
 struct Manifest {
@@ -81,7 +81,7 @@ refusal), with an upper bound the shell's own budget can actually back.
 
 ## The check, and its order
 
-`capsh::plan` resolves a parsed invocation against the manifest and yields either an `Endowment`
+`grant_plan::plan` resolves a parsed invocation against the manifest and yields either an `Endowment`
 (exactly what to grant) or a typed `Refusal`. The order is: the program name (a name that resolves
 to nothing is a fact about the system, and everything after it is a fact about a program that
 exists), then a flag nothing knows, then **the positional tokens placed into the slots the manifest

@@ -42,7 +42,7 @@ echo "==> Bare-metal build (aarch64)"
 cargo build --workspace --exclude xtask --target aarch64-unknown-none-softfloat
 
 # The host-logic crates. kernel and user are excluded because they are `no_std` binaries that only
-# run under QEMU; everything else (paging, elf, frames, slab, capsh, the protocol crates) is pure
+# run under QEMU; everything else (paging, elf, frames, slab, grant_plan, the protocol crates) is pure
 # logic that compiles and tests on the host in milliseconds. See CLAUDE.md on why that split exists.
 echo "==> Host tests"
 cargo test --workspace --exclude kernel --exclude user

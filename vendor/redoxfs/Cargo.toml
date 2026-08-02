@@ -12,7 +12,7 @@
 # cricker-os pin divergence: an empty [workspace] table marks this vendored crate as its own
 # workspace root, so the outer cricker-os workspace treats it as an external path dependency, not a
 # member. That is what keeps our `-D warnings` clippy gate and our `cargo fmt` gate off code we do
-# not own, while it still builds normally as redoxfs-host's dependency. See vendor/README.md.
+# not own, while it still builds normally as redoxfs_host's dependency. See vendor/README.md.
 [workspace]
 
 [package]

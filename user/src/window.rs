@@ -36,8 +36,8 @@
 #![no_std]
 #![no_main]
 
-use compose::proto::{ctl, wlist};
-use compose::status;
+use compositor::proto::{ctl, wlist};
+use compositor::status;
 use user_rt::{call, exit, invoke, recv_cap, send};
 
 /// Capability slots, by convention with kernel/src/user.rs `compositor_service`.
@@ -104,13 +104,13 @@ fn die(code: u64) -> ! {
 /// Ring the doorbell. Content-free by design: the compositor learns what changed from our control
 /// page, not from this message, because a shared endpoint's messages cannot be trusted.
 fn ring(op: u64) -> i64 {
-    let (r0, _) = call(DOORBELL, compose::proto::req(op, 0), 0);
+    let (r0, _) = call(DOORBELL, compositor::proto::req(op, 0), 0);
     r0 as i64
 }
 
 /// Set our damage rectangle and bump our sequence, then commit. The compositor reads the rectangle as
 /// untrusted input and clips it to our surface; the reply comes after the pixels are on the screen.
-fn commit(seq: &mut u32, damage: compose::Rect) {
+fn commit(seq: &mut u32, damage: compositor::Rect) {
     wr32(CTL_VA + ctl::DAMAGE_X, damage.x as u32);
     wr32(CTL_VA + ctl::DAMAGE_Y, damage.y as u32);
     wr32(CTL_VA + ctl::DAMAGE_W, damage.w);
@@ -121,7 +121,7 @@ fn commit(seq: &mut u32, damage: compose::Rect) {
     // across both ISAs, rather than arch-specific asm in a userspace program.
     core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
     wr32(CTL_VA + ctl::SEQ, *seq);
-    if ring(compose::proto::COMMIT) != 0 {
+    if ring(compositor::proto::COMMIT) != 0 {
         die(E_COMMIT);
     }
 }
@@ -131,7 +131,7 @@ pub extern "C" fn _start(role: u64, neighbour_va: u64, _arg2: u64) -> ! {
     // `HELLO` first, for one reason: its reply cannot arrive until the compositor is serving the
     // doorbell, and the compositor publishes every control page before it starts serving. So the
     // rendezvous *is* the synchronization, and no client polls for a valid control page.
-    if ring(compose::proto::HELLO) != 0 {
+    if ring(compositor::proto::HELLO) != 0 {
         die(E_HELLO);
     }
 
@@ -146,25 +146,25 @@ pub extern "C" fn _start(role: u64, neighbour_va: u64, _arg2: u64) -> ! {
     // time a scene changed. It is still checked against the largest surface the contract allows,
     // because a control page claiming more than that describes memory we were not granted, and the
     // first thing that would happen is a fault while painting our own window.
-    if w == 0 || h == 0 || w * h * 4 > compose::MAX_SURFACE_BYTES {
+    if w == 0 || h == 0 || w * h * 4 > compositor::MAX_SURFACE_BYTES {
         die(E_GEOMETRY);
     }
 
     // Paint. Every pixel is a function of the coordinates and of *which window we are*, so a surface
-    // painted by the wrong client, at the wrong offset, or not at all is visibly wrong (crates/compose
+    // painted by the wrong client, at the wrong offset, or not at all is visibly wrong (crates/compositor
     // asserts those properties on the host).
     for y in 0..h {
         for x in 0..w {
-            px_write((y * w + x) as usize, compose::window_pixel(id, x, y));
+            px_write((y * w + x) as usize, compositor::window_pixel(id, x, y));
         }
     }
 
     let mut seq = 0u32;
-    commit(&mut seq, compose::Rect::new(0, 0, w, h));
+    commit(&mut seq, compositor::Rect::new(0, 0, w, h));
 
     // Read our own surface back and digest it: the client-side witness that what we painted is what
     // is in the frames, taken after the compositor read them.
-    let digest = compose::surface_checksum(w, h, px_read);
+    let digest = compositor::surface_checksum(w, h, px_read);
 
     // --- The refusal that needs no attack: ask for something we hold no capability for. ---
     if role & ROLE_PROBE_INPUT != 0 {
@@ -182,7 +182,7 @@ pub extern "C" fn _start(role: u64, neighbour_va: u64, _arg2: u64) -> ! {
         if r0 as i64 != 0 {
             die(E_REPORT);
         }
-        let after = compose::surface_checksum(w, h, px_read);
+        let after = compositor::surface_checksum(w, h, px_read);
         send(REPORT, status::WIN_INTACT, after, digest);
         exit();
     }
@@ -194,7 +194,7 @@ pub extern "C" fn _start(role: u64, neighbour_va: u64, _arg2: u64) -> ! {
         // screenshot capability and the enumeration capability; there is no verb for either, which is
         // why this block calls nothing and asks nobody. After our own commit, so what we see includes
         // our own window and is a complete screen rather than a half-composed one.
-        let shot = compose::surface_checksum(compose::SCREEN_W, compose::SCREEN_H, |i| {
+        let shot = compositor::surface_checksum(compositor::SCREEN_W, compositor::SCREEN_H, |i| {
             // SAFETY: inside the read-only screen mapping the kernel gave this role.
             unsafe { core::ptr::read_volatile((SCREEN_VA + (i * 4) as u64) as *const u32) }
         });
@@ -216,7 +216,7 @@ pub extern "C" fn _start(role: u64, neighbour_va: u64, _arg2: u64) -> ! {
         if r0 as i64 != 0 {
             die(E_REPORT);
         }
-        commit(&mut seq, compose::SMALL_DAMAGE);
+        commit(&mut seq, compositor::SMALL_DAMAGE);
         send(REPORT, status::WIN_PAINTED, digest, seq as u64);
     }
 
@@ -260,7 +260,7 @@ pub extern "C" fn _start(role: u64, neighbour_va: u64, _arg2: u64) -> ! {
             // rendezvous, and it is the flow control for a fast source.
             // SAFETY: `svc`/`ecall`; the kernel validated the Reply capability and consumes it.
             unsafe { invoke(reply_slot, abi::reply::REPLY, 0, 0, 0) };
-            let n = lineedit::proto::len(w0);
+            let n = line_editor::proto::len(w0);
             for k in 0..n {
                 count += 1;
                 send(REPORT, status::WIN_INPUT, (bytes >> (8 * k)) & 0xff, count);

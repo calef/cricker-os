@@ -8,7 +8,7 @@
 //! Why a shared word and not an endpoint: a running computation cannot poll an endpoint (there is
 //! no non-blocking receive) and cannot block on one without stalling the work the user wants to
 //! interrupt. So the signal is memory the heeder reads with a plain load between units. See
-//! capsh::jobframe and notes/grant-expression.md.
+//! grant_plan::jobframe and notes/grant-expression.md.
 //!
 //! # The heeder's world
 //!
@@ -19,7 +19,7 @@
 #![no_std]
 #![no_main]
 
-use capsh::jobframe;
+use grant_plan::jobframe;
 use user_rt::exit;
 
 /// Where init maps the shared job frame in the child's address space. Must match the shell/init

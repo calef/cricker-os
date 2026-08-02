@@ -23,7 +23,7 @@
 #![no_main]
 
 use abi::{Error, endpoint};
-use capsh::{Prog, spawnproto};
+use grant_plan::{Prog, spawnproto};
 use user_rt::{call, cap_delete, exit, invoke, recv, recv_cap as rt_recv_cap, send, yield_now};
 
 /// Roles, as passed in `x0` by the kernel.
@@ -37,7 +37,7 @@ const SELF_CHECK: u64 = 0;
 const PRINTING: u64 = 2;
 const VIRTIO_BLK: u64 = 3;
 // Role 4 was the input driver; it is its own binary now (`user/src/input.rs`, 19f.4).
-// Role 5 was the shell; it is its own binary now (`user/src/shell.rs`, 19f.5).
+// Role 5 was the shell; it is its own binary now (`user/src/swish.rs`, 19f.5).
 // Role 6 was the worker; it is its own binary now (`user/src/worker.rs`, 19f.2). init loads each of
 // these from the archive by name; hello keeps only the milestone-tour demo roles below.
 const UNTYPED_DEMO: u64 = 7;
@@ -362,21 +362,21 @@ fn init_boot(_x1: u64, fs_rights: u64) -> ! {
     // below is written so that case takes exactly the path it took before this existed.
     const FS_EP: u64 = 5;
     const FS_PAGE: u64 = 6;
-    /// Where the shell maps the page it shares with the FS server (shell.rs FS_VA).
+    /// Where the shell maps the page it shares with the FS server (swish.rs FS_VA).
     const SH_FS_VA: u64 = 0x0060_0000;
     // Pages we split off our own budget and hand the shell, so `run --mem N` grants memory that is
-    // genuinely the shell's own (milestone 31). Must match shell.rs's SH_BUDGET_PAGES.
+    // genuinely the shell's own (milestone 31). Must match swish.rs's SH_BUDGET_PAGES.
     const SH_BUDGET_PAGES: u64 = 128;
 
-    // The VAs each program hardcodes. Console, input, lineedit, and shell are all their own
+    // The VAs each program hardcodes. Console, input, line_editor, and shell are all their own
     // binaries (19f.3-5, 28), each started with no role; the VAs must match
-    // console.rs/input.rs/lineedit.rs/shell.rs.
-    const CON_SHARED_VA: u64 = 0x0060_0000; // console reads text here; lineedit writes it
+    // console.rs/input.rs/line_editor.rs/swish.rs.
+    const CON_SHARED_VA: u64 = 0x0060_0000; // console reads text here; line_editor writes it
     const CON_UART_VA: u64 = 0x0070_0000; // console's UART mapping
-    const TERM_OUT_VA: u64 = 0x0080_0000; // lineedit reads the shell's text/prompts here
-    const TERM_IN_VA: u64 = 0x0090_0000; // lineedit delivers completed lines here
+    const TERM_OUT_VA: u64 = 0x0080_0000; // line_editor reads the shell's text/prompts here
+    const TERM_IN_VA: u64 = 0x0090_0000; // line_editor delivers completed lines here
     const IN_UART_VA: u64 = 0x00a0_0000; // input driver's UART mapping
-    const SH_OUT_VA: u64 = 0x00c0_0000; // the shell's view of the TERM_OUT frame (shell.rs OUT_VA)
+    const SH_OUT_VA: u64 = 0x00c0_0000; // the shell's view of the TERM_OUT frame (swish.rs OUT_VA)
     const LINE_VA: u64 = 0x00b0_0000; // the shell's view of the TERM_IN frame
     const DEV: u64 = abi::aspace::MAP_RO; // mode arg ignored for a DeviceFrame cap
 
@@ -394,13 +394,13 @@ fn init_boot(_x1: u64, fs_rights: u64) -> ! {
     let Ok(in_elf) = elf::Elf::parse(in_bytes) else {
         halt_forever()
     };
-    let Some(td_bytes) = program(initrd_len, "lineedit") else {
+    let Some(td_bytes) = program(initrd_len, "line_editor") else {
         halt_forever()
     };
     let Ok(td_elf) = elf::Elf::parse(td_bytes) else {
         halt_forever()
     };
-    let Some(sh_bytes) = program(initrd_len, "shell") else {
+    let Some(sh_bytes) = program(initrd_len, "swish") else {
         halt_forever()
     };
     let Ok(sh_elf) = elf::Elf::parse(sh_bytes) else {
@@ -450,15 +450,15 @@ fn init_boot(_x1: u64, fs_rights: u64) -> ! {
         (reply, abi::rights::READ),
     ];
     let td_maps: &[(u64, u64, u64)] = &[
-        (CON_SHARED_VA, con_shared, abi::aspace::MAP_RW), // lineedit fills what the console reads
+        (CON_SHARED_VA, con_shared, abi::aspace::MAP_RW), // line_editor fills what the console reads
         (TERM_OUT_VA, term_out, abi::aspace::MAP_RO),
         (TERM_IN_VA, term_in, abi::aspace::MAP_RW),
     ];
-    let Ok(lineedit) = build_child(UNTYPED, &td_elf, td_caps, td_maps) else {
+    let Ok(line_editor) = build_child(UNTYPED, &td_elf, td_caps, td_maps) else {
         halt_forever()
     };
-    check(tcb_start(lineedit, 0, 0, 0) == 0);
-    cap_delete(lineedit);
+    check(tcb_start(line_editor, 0, 0, 0) == 0);
+    cap_delete(line_editor);
 
     // 3. Input driver: waits on the UART receive interrupt, forwards raw bytes to the terminal.
     let in_caps: &[(u64, u64)] = &[(term_ep, abi::rights::WRITE), (UART_IRQ, abi::rights::READ)];
@@ -473,7 +473,7 @@ fn init_boot(_x1: u64, fs_rights: u64) -> ! {
     // tidiness: this cspace has sixteen slots, and milestone 50 added two more kernel grants (the
     // file service and its page). With them held, the shell's `build_child` had no slot left to
     // retype an address space into and failed silently, which presented as a boot that brought up
-    // the console and then printed nothing. Nothing below needs these: lineedit is the console's
+    // the console and then printed nothing. Nothing below needs these: line_editor is the console's
     // only client and it already holds its narrowed copies.
     for c in [request, reply, con_shared] {
         cap_delete(c);
@@ -559,8 +559,8 @@ fn init_boot(_x1: u64, fs_rights: u64) -> ! {
     let wc = program(initrd_len, "wc").and_then(|bytes| elf::Elf::parse(bytes).ok());
     // Indexed by Prog::id(): worker=0, budgeter=1, heeder=2, spinner=3, date=4, rm=5. The array is
     // `Prog::PROG_COUNT` long because the service indexes it with an id the shell chose; a variant
-    // added to `capsh` without a slot here would be an out-of-bounds read in init.
-    let progs: [Option<&elf::Elf>; capsh::PROG_COUNT] = [
+    // added to `grant_plan` without a slot here would be an out-of-bounds read in init.
+    let progs: [Option<&elf::Elf>; grant_plan::PROG_COUNT] = [
         worker.as_ref(),
         budgeter.as_ref(),
         heeder.as_ref(),
@@ -568,7 +568,7 @@ fn init_boot(_x1: u64, fs_rights: u64) -> ! {
         date.as_ref(),
         // `rm` has a slot and no ELF, deliberately: it is endowed a directory capability and this
         // boot wires no FS service to narrow one from, so the shell refuses the command before it
-        // gets here. See the same slot in sysinit.
+        // gets here. See the same slot in system_initializer.
         None,
         // `wc` (milestone 50): the right-hand side of a pipe. It needs no filesystem, so unlike
         // `rm` it is reachable from this prompt.
@@ -576,7 +576,7 @@ fn init_boot(_x1: u64, fs_rights: u64) -> ! {
     ];
 
     // The spawn service (milestone 31's grant expression + milestone 24's supervised jobs;
-    // capsh::spawnproto). A **normal** job: the shell sends the request and, if `--mem` rode along,
+    // grant_plan::spawnproto). A **normal** job: the shell sends the request and, if `--mem` rode along,
     // one delegated untyped; init builds the child from its own budget, endows it the result
     // endpoint (and the budget), starts it. A **supervised** (interruptible) job: the shell leads
     // the delegation with a job untyped and a shared job frame; init builds the whole child *from
@@ -650,7 +650,7 @@ fn init_boot(_x1: u64, fs_rights: u64) -> ! {
         } else {
             // Slot 0 is the output: the shared result endpoint, or the sink the shell delegated
             // (milestone 50). Slot 1 is the input source when there is one, and otherwise the
-            // `--mem` untyped; see sysinit for why that ordering is safe today and where it stops
+            // `--mem` untyped; see system_initializer for why that ordering is safe today and where it stops
             // being. The child never learns which of the three its slot 0 holds.
             let out = (sink.unwrap_or(result_ep), abi::rights::WRITE);
             let mut caps = [out; 3];

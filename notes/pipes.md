@@ -1,7 +1,7 @@
 # Pipes and redirection: `>`, `<` and `|` are one substitution
 
-*Milestone 50, the operators lane. `crates/capsh/src/line.rs`, `user/src/wc.rs`, `user/src/shell.rs`,
-`user/src/sysinit.rs`, `user/src/hello.rs`, `crates/capsh/src/spawnproto.rs`. The protocol half is
+*Milestone 50, the operators lane. `crates/grant_plan/src/line.rs`, `user/src/wc.rs`, `user/src/swish.rs`,
+`user/src/system_initializer.rs`, `user/src/hello.rs`, `crates/grant_plan/src/spawnproto.rs`. The protocol half is
 notes/sink-protocol.md and you should read that first.*
 
 **All three operators run at a real prompt on both ISAs.** `|` landed first; `>` and `<` needed a
@@ -38,7 +38,7 @@ object that was there before, held with the same right.
 
 ## The grammar, and the three rules that are not Unix's
 
-`crates/capsh/src/line.rs` splits a line into stages and the names on the ends. It is host-tested and
+`crates/grant_plan/src/line.rs` splits a line into stages and the names on the ends. It is host-tested and
 runs in milliseconds; that is where nearly all of this lane's tests are.
 
 ```text
@@ -115,7 +115,7 @@ itself.
 
 ## The wire, and the one thing init had to learn
 
-`capsh::spawnproto` grew two bits in the request word and two positions in the delegation order:
+`grant_plan::spawnproto` grew two bits in the request word and two positions in the delegation order:
 
 ```text
   w2 = mem_pages | INTERRUPTIBLE_BIT | SINK_BIT | SOURCE_BIT
@@ -196,7 +196,7 @@ process that can write the file without opening a second session.
 
 **This costs the milestone nothing, and that is the test of whether it is the right shape.** What a
 redirected program holds is unchanged: one endpoint, `WRITE`, no way to ask what is behind it. There
-is no new message, no change to `capsh::spawnproto`, and no change in init. `Sink::File` and
+is no new message, no change to `grant_plan::spawnproto`, and no change in init. `Sink::File` and
 `Source::File` still exist in the plan, because the manifest check needs them (`worker 9 > out.txt`
 is still `NotAByteStream`), and the wiring simply does not need a capability for them.
 
@@ -235,7 +235,7 @@ capability.
                                                                      v
           ── spawns init, granting the FS endpoint and the page (GRANT on both)
                                                                      |
-  init    ── builds console, lineedit, input ──────────────────────── |
+  init    ── builds console, line_editor, input ──────────────────────── |
           ── builds the shell: slot 4 = the FS endpoint (WRITE, no GRANT)
                                           + the page at 0x60_0000
           ── starts it with arg1 = the dir rights that endpoint carries
@@ -367,7 +367,7 @@ be and nothing records what that was.
 `kernel::user::pipeline_tests` wires the **real shell binary** in a role that reads a script instead
 of a keyboard, with the interactive endowment slot for slot. The kernel plays the two parties on the
 other ends: it serves the terminal contract and collects every byte the shell prints, and a second
-thread serves `capsh::spawnproto` as init.
+thread serves `grant_plan::spawnproto` as init.
 
 So the assertions are made against **what a person would see**, and the headline one is not a
 constant:
@@ -419,10 +419,10 @@ the shell.
 
 ## BUGS, named where the reader meets them
 
-- **The guest tests' init is the kernel, not `sysinit`.** It serves the same protocol, and the shell
-  cannot tell the difference, but it is not the same code: a change to `user/src/sysinit.rs` that
+- **The guest tests' init is the kernel, not `system_initializer`.** It serves the same protocol, and the shell
+  cannot tell the difference, but it is not the same code: a change to `user/src/system_initializer.rs` that
   broke the spawn path would not fail `pipeline_tests` or `redirection_tests`. The `--features
-  shell` boot is what exercises `sysinit`, and **nothing gates it**. This bit during this
+  shell` boot is what exercises `system_initializer`, and **nothing gates it**. This bit during this
   milestone's own second half, twice and expensively: the two extra kernel grants overflowed init's
   sixteen-slot cspace, and the shell's four stack pages were one deep-call short, and **both
   presented as a boot that printed nothing at all**. Each cost a manual bisect against a booted
@@ -443,7 +443,7 @@ the shell.
   init deletes its copy of the FS endpoint after building the shell, so that is the line that
   changes first.
 - **Slot 1 is the input source or the `--mem` untyped, whichever the request carries.** That is
-  unambiguous only because no manifest declares both, and `capsh` is where that stops being true. A
+  unambiguous only because no manifest declares both, and `grant_plan` is where that stops being true. A
   program endowed a budget *and* an input needs a numbered slot convention rather than an ordered
   one.
 - **A pipeline is full lockstep.** There is no buffer: every sixteen bytes is a rendezvous. Unix's

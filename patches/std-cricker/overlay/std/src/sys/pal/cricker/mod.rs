@@ -7,7 +7,7 @@
 //! slots the std runtime contract names (see `rt`): an untyped budget that pays for the heap,
 //! and an endpoint that stdout/stderr SEND to.
 //!
-//! `net` and `fs` are bound to their capability-granted servers (phase two: netstack's socket contract
+//! `net` and `fs` are bound to their capability-granted servers (phase two: net_stack's socket contract
 //! and the FS service), and each answers `Unsupported` when the program was not granted the
 //! capability that reaches its server. Everything the OS cannot honestly do yet (`process`,
 //! `thread::spawn`, ...) keeps the shared dispatch fallback rather than pretending; those PALs bind
@@ -19,7 +19,7 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 pub(crate) mod abi;
-// The netstack socket-contract wire format (opcodes, frame offsets), generated verbatim from
+// The net_stack socket-contract wire format (opcodes, frame offsets), generated verbatim from
 // `user/src/netproto.rs` by `cargo xtask std-src` so the numbers cannot drift from the server.
 // The net PAL (`sys/net`) is a client of it.
 pub(crate) mod netproto;

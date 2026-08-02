@@ -33,7 +33,7 @@ test = false
 bench = false
 
 # The input driver (milestone 19f.4): the receive half of the terminal, lifted out of hello.
-# Since milestone 28 it is a raw byte forwarder; the editing lives in lineedit.
+# Since milestone 28 it is a raw byte forwarder; the editing lives in line_editor.
 [[bin]]
 name = "input"
 path = "src/input.rs"
@@ -42,17 +42,19 @@ bench = false
 
 # The line discipline (milestone 28): the tty layer as a swappable userspace component between
 # the input/console drivers and applications. Serves the terminal contract
-# (notes/terminal-contract.md); the editing engine is the host-tested `lineedit` crate.
+# (notes/terminal-contract.md); the editing engine is the host-tested `line_editor` crate.
 [[bin]]
-name = "lineedit"
-path = "src/lineedit.rs"
+name = "line_editor"
+path = "src/line_editor.rs"
 test = false
 bench = false
 
-# The shell (milestone 19f.5): the last program lifted out of hello, and the most wired.
+# `swish` (milestone 19f.5): the shell, the last program lifted out of hello, and the most wired.
+# A swish is the shot that goes through the net touching nothing, which is least authority in one
+# word. `mkinitrd` packs it as "swish"; `system_initializer` loads it by that name.
 [[bin]]
-name = "shell"
-path = "src/shell.rs"
+name = "swish"
+path = "src/swish.rs"
 test = false
 bench = false
 
@@ -120,8 +122,8 @@ bench = false
 # builds the interactive system (console + input + shell) out of its own budget and stays as the
 # spawn service. The riscv boot loads it as the boot process; aarch64 keeps using hello's init_boot.
 [[bin]]
-name = "sysinit"
-path = "src/sysinit.rs"
+name = "system_initializer"
+path = "src/system_initializer.rs"
 test = false
 bench = false
 
@@ -138,16 +140,16 @@ bench = false
 # the untyped-backed heap in user_rt. Proves Vec/String/BTreeMap churn, free-in-any-order, and
 # reuse-without-growth against a real budget, on both ISAs.
 [[bin]]
-name = "allocdemo"
-path = "src/allocdemo.rs"
+name = "allocator_exerciser"
+path = "src/allocator_exerciser.rs"
 test = false
 bench = false
 
 # The FS-service client (milestone 32 phase 2): opens a file through a granted directory capability,
-# reads it, writes and reads back a pattern, and reports. mkinitrd packs it as "fsclient".
+# reads it, writes and reads back a pattern, and reports. mkinitrd packs it as "fs_test_client".
 [[bin]]
-name = "fsclient"
-path = "src/fsclient.rs"
+name = "fs_test_client"
+path = "src/fs_test_client.rs"
 test = false
 bench = false
 
@@ -185,19 +187,19 @@ bench = false
 # The EL0 microbenchmark program (primitive suite): self-times syscall/IPC primitives from EL0, the
 # lmbench way, so the numbers include the trap the kernel-side benchmarks skip. Run by the bench boot.
 [[bin]]
-name = "elbench"
-path = "src/elbench.rs"
+name = "os_primitives_benchmarker"
+path = "src/os_primitives_benchmarker.rs"
 test = false
 bench = false
 
 # The authority-shrinking supervision tree (milestone 22 phase B.2). Four programs, one shared module
-# (src/suptree.rs): `rootsup` is an init that hands its construction authority to `spawner` and its
-# restart policy to `subsup` and then DELETES its budget; `flaky` is the supervised sub-server that
+# (src/suptree.rs): `root_supervisor` is an init that hands its construction authority to `spawner` and its
+# restart policy to `sub_server_supervisor` and then DELETES its budget; `flaky` is the supervised sub-server that
 # crashes once so the tree has something real to keep alive. Portable, both ISAs; the kernel's
 # authority_tests drive them.
 [[bin]]
-name = "rootsup"
-path = "src/rootsup.rs"
+name = "root_supervisor"
+path = "src/root_supervisor.rs"
 test = false
 bench = false
 
@@ -208,8 +210,8 @@ test = false
 bench = false
 
 [[bin]]
-name = "subsup"
-path = "src/subsup.rs"
+name = "sub_server_supervisor"
+path = "src/sub_server_supervisor.rs"
 test = false
 bench = false
 
@@ -236,10 +238,10 @@ test = false
 bench = false
 
 # The net server (milestone 30, piece 3): smoltcp as a userspace TCP/IP stack driving the confined
-# NIC. Links `extern crate alloc` over user_rt's heap. `mkinitrd` packs it as "netstack" for both ISAs.
+# NIC. Links `extern crate alloc` over user_rt's heap. `mkinitrd` packs it as "net_stack" for both ISAs.
 [[bin]]
-name = "netstack"
-path = "src/netstack.rs"
+name = "net_stack"
+path = "src/net_stack.rs"
 test = false
 bench = false
 
@@ -283,10 +285,10 @@ bench = false
 # The display terminal (milestone 29's remaining increment): the component that makes the
 # framebuffer readable. One binary, two wirings (rung one's display endpoint, or rung two's
 # doorbell), because being a client at both seams is what proves neither contract needed to change
-# to carry text. `mkinitrd` packs it as "vterm" for both ISAs.
+# to carry text. `mkinitrd` packs it as "display_terminal" for both ISAs.
 [[bin]]
-name = "vterm"
-path = "src/vterm.rs"
+name = "display_terminal"
+path = "src/display_terminal.rs"
 test = false
 bench = false
 
@@ -381,20 +383,20 @@ bench = false
 # The credential service (milestone 56, the credential half): holds the credential store and serves
 # one question over one endpoint. Its authority to *write* the store is a second endpoint that it
 # deletes at the seal, so a client cannot be refused permission to write it; there is no object left
-# for the request to travel through. `mkinitrd` packs it as "credential" for both ISAs.
+# for the request to travel through. `mkinitrd` packs it as "credentialer" for both ISAs.
 [[bin]]
-name = "credential"
-path = "src/credential.rs"
+name = "credentialer"
+path = "src/credentialer.rs"
 test = false
 bench = false
 
 # The credential service's clients (milestone 56): the provisioner that fills the store, the honest
 # client that asks questions, and the attacker that holds the identical endowment and tries to write
 # it. One binary, three roles, because an attacker on the honest path is a fairer test of a boundary
-# than a different program failing for its own reasons. `mkinitrd` packs it as "credcli".
+# than a different program failing for its own reasons. `mkinitrd` packs it as "credentialer_test_client".
 [[bin]]
-name = "credcli"
-path = "src/credcli.rs"
+name = "credentialer_test_client"
+path = "src/credentialer_test_client.rs"
 test = false
 bench = false
 
@@ -435,11 +437,11 @@ virtio = { version = "0.1.0", path = "../crates/virtio" }
 socket_proto = { version = "0.1.0", path = "../crates/socket_proto" }
 bitfont = { version = "0.1.0", path = "../crates/bitfont" }
 calendar = { version = "0.1.0", path = "../crates/calendar" }
-capsh = { version = "0.1.0", path = "../crates/capsh" }
+grant_plan = { version = "0.1.0", path = "../crates/grant_plan" }
 clock_proto = { version = "0.1.0", path = "../crates/clock_proto" }
 cred = { version = "0.1.0", path = "../crates/cred" }
 cred_proto = { version = "0.1.0", path = "../crates/cred_proto" }
-compose = { version = "0.1.0", path = "../crates/compose" }
+compositor = { version = "0.1.0", path = "../crates/compositor" }
 coremark = { version = "0.1.0", path = "../crates/coremark" }
 crickerfs = { version = "0.1.0", path = "../crates/crickerfs" }
 elf = { version = "0.1.0", path = "../crates/elf" }
@@ -447,14 +449,14 @@ entropy_proto = { version = "0.1.0", path = "../crates/entropy_proto" }
 fs_proto = { version = "0.1.0", path = "../crates/fs_proto" }
 gfx_proto = { version = "0.1.0", path = "../crates/gfx_proto" }
 # The matcher, so the shell can ask "is this word a pattern at all" before it does anything with it.
-# Expansion itself lives in `capsh::expand`; this is only `has_magic`, which decides whether an
+# Expansion itself lives in `grant_plan::expand`; this is only `has_magic`, which decides whether an
 # arbitrary word (`echo a:b`) is text to print or a designation to resolve.
 glob = { version = "0.1.0", path = "../crates/glob" }
-lineedit = { version = "0.1.0", path = "../crates/lineedit" }
+line_editor = { version = "0.1.0", path = "../crates/line_editor" }
 ntp_proto = { version = "0.1.0", path = "../crates/ntp_proto" }
 sink_proto = { version = "0.1.0", path = "../crates/sink_proto" }
 user_rt = { version = "0.1.0", path = "../crates/user_rt" }
-vt = { version = "0.1.0", path = "../crates/vt" }
+video_terminal = { version = "0.1.0", path = "../crates/video_terminal" }
 
 # smoltcp (milestone 30, piece 3): the userspace TCP/IP stack. no_std, heap over user_rt's
 # UntypedHeap. Pinned at 0.13.1; divergence policy is the vendored-engine discipline (DECISIONS §18).
