@@ -170,9 +170,24 @@ pub extern "C" fn secondary_main(cpu_id: usize) -> ! {
     arch::timer::init();
 
     // 6. (tests only) Prove this core schedules from its OWN queue by spawning a probe onto it.
-    //    There is no migration yet (step 3c), so it runs here; it records the core it ran on.
+    //
+    //    `spawn_on(cpu::id(), ..)`, NOT `spawn`, and that is the whole point of the probe. Plain
+    //    `spawn` places by DECISIONS §28's power of two choices: the thread lands on the lighter of
+    //    two randomly sampled cores, deliberately not the spawner's. So each secondary's probe went
+    //    to a random core, several probes piled onto the same one, and the cores nobody happened to
+    //    sample never set their `RAN_ON` slot. The test then waited for a condition that could not
+    //    become true, and only passed when the random placement happened to cover every core.
+    //
+    //    It read as host slowness for a long time, because a random placement moves between runs
+    //    exactly the way a loaded runner does. Widening the wait from 10 s to 60 s changed nothing,
+    //    which is what finally separated the two: a deadline cannot fix an unreachable condition.
+    //    Second time §28 has invalidated a test's placement assumption; see the reap wait in
+    //    notes/riscv-parity-scope.md, which was a yield count until §28 broke it the same way.
+    //
+    //    The comment here used to say "there is no migration yet, so it runs here". That was true
+    //    when it was written and stopped being true at §28, with nothing to catch it.
     #[cfg(test)]
-    crate::sched::spawn(|| {
+    crate::sched::spawn_on(cpu::id(), || {
         RAN_ON[cpu::id()].store(true, Ordering::Release);
     })
     .expect("a secondary could not spawn its probe");
