@@ -34,6 +34,14 @@ cargo clippy --manifest-path tools/redoxfs_host/Cargo.toml --all-targets -- -D w
 echo "==> clippy: fs_server (its own workspace)"
 cargo clippy --manifest-path fs_server/Cargo.toml --all-targets -- -D warnings
 
+# The fuzz workspace (milestone 42), a fourth. `cargo clippy` is `cargo check` semantics, so this
+# does NOT link libFuzzer or need a sanitizer; it type-checks four fuzz targets and the four crates
+# under test, which are already built by the pass above. A fuzz target is ordinary Rust that nothing
+# else compiles, which makes it exactly the kind of code that rots: it is the one place in the tree
+# where a crate's API can change and nothing notices until somebody goes looking for a bug.
+echo "==> clippy: fuzz targets (its own workspace)"
+cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings
+
 echo "==> clippy: kernel + user + user_rt (aarch64)"
 cargo clippy -p kernel -p user -p user_rt --target aarch64-unknown-none-softfloat --all-targets -- -D warnings
 

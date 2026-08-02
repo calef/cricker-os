@@ -1,0 +1,86 @@
+# The fuzz workspace (milestone 42's second leg).
+#
+# **Its own workspace, deliberately**, the same shape as vendor/redoxfs and fs_server. A fuzz target
+# links libFuzzer's `main`, is built with a sanitizer and `-Zbuild-std`, and is not something
+# `cargo build --workspace` should ever try to produce. Keeping it out of the main workspace is what
+# lets `script/test`, `script/lint` and `script/coverage` stay exactly as fast as they were.
+#
+# **Why cargo-fuzz** (DECISIONS §46 says a dev tool is a dependency decision too). Three candidates
+# were real: cargo-fuzz/libFuzzer, cargo-afl, and honggfuzz-rs. cargo-fuzz wins here on one property
+# the other two do not have: it is in-process and coverage-guided with no external harness process,
+# so a fuzz target is a plain Rust function over `&[u8]` that the crates under test can be linked
+# into directly. Our parsers are `no_std`, pure, and take a byte slice, which is exactly the shape
+# libFuzzer wants; AFL's fork-server model buys robustness against a target that corrupts itself,
+# which a safe-Rust parser cannot do. cargo-fuzz is also the tool rustc, regex and the rest of the
+# ecosystem use, so a crash reproduces for anyone who reads this repository.
+#
+# The cost is honest and worth stating: it needs nightly (we already pin one), it needs `rust-src`
+# for `-Zbuild-std` (already in rust-toolchain.toml for the kernel), and it adds three crates to a
+# graph nothing ships. None of them enter the kernel, `user`, or any binary that boots.
+
+[package]
+name = "cricker_fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+# Spelled out rather than inherited: this is its own workspace root, so there is no
+# `[workspace.package]` to inherit from. Same dual licence as the rest of the tree.
+license = "MIT OR Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+# The crates under test. Path dependencies with no version on purpose: they resolve to the bytes in
+# this repository, which git pins harder than semver would (see deny.toml's `allow-wildcard-paths`).
+crickerfs = { path = "../crates/crickerfs" }
+dtb = { path = "../crates/dtb" }
+elf = { path = "../crates/elf" }
+gpt = { path = "../crates/gpt" }
+
+# **Overflow checks and debug assertions ON in an optimised build**, which is not cargo-fuzz's
+# default profile text but is what its CLI already does. Stated here so the profile is true whatever
+# invokes it.
+#
+# It matters more than it looks. An unchecked `a + b` that wraps is silent in a release build and a
+# panic in a dev build, and the kernel's own test builds are dev builds, so a wrapping add a
+# release-profile fuzzer waved through would still halt the kernel under `script/test`. The bug class
+# this leg exists to find (a hostile length field driving arithmetic) is exactly that class.
+[profile.release]
+debug = 1
+debug-assertions = true
+overflow-checks = true
+
+[[bin]]
+name = "dtb_walk"
+path = "fuzz_targets/dtb_walk.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "elf_parse"
+path = "fuzz_targets/elf_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "gpt_table"
+path = "fuzz_targets/gpt_table.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "crickerfs_roundtrip"
+path = "fuzz_targets/crickerfs_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+# Empty, which makes this directory a workspace root of its own rather than a member of the tree's.
+# The root Cargo.toml excludes it as well, belt and braces, the same as vendor/redoxfs.
+[workspace]

@@ -33,9 +33,10 @@ uses `cargo xtask` and that one uses `make` and the next uses `npm`.
 | `script/coverage` | Coverage for the host-logic crates, gated on an 80%-per-file line floor (a CI gate). Installs cargo-llvm-cov on first run. |
 | `script/vendor-verify` | Prove each `vendor/*.pin` tree is the published tarball (sha256) plus exactly its divergence patch, byte for byte. `--write-patch` regenerates the patch after a deliberate change. Needs network on a cold cache. |
 | `script/supply-chain` | The milestone-42 gate (a CI gate): cargo-deny (advisories, licences, bans, duplicates, sources) over each workspace against `deny.toml`, then `vendor-verify`. Needs network; installs the cargo-deny pinned in `.cargo-deny-version` if the installed one differs, because 0.19 and 0.20 spell `--config` differently and default it to different directories. |
+| `script/fuzz` | Coverage-guided fuzzing (cargo-fuzz/libFuzzer) over the parsers that read bytes we did not write: `dtb_walk`, `elf_parse`, `gpt_table`, `crickerfs_roundtrip` (a CI gate). `--time N` sets the per-target budget (default 60s, `0` runs until stopped), `--list` explains each target, and a bare target name runs one. Installs the cargo-fuzz pinned in `.cargo-fuzz-version` on absence or mismatch. See notes/fuzzing.md. |
 
-`fmt`, `lint`, `coverage`, and `supply-chain` are not part of the canonical set; they exist so the
-CI format, clippy, coverage, and supply-chain jobs are one-liners. `coverage` measures only the pure-logic host crates
+`fmt`, `lint`, `coverage`, `supply-chain`, and `fuzz` are not part of the canonical set; they exist
+so the CI format, clippy, coverage, supply-chain, and fuzz jobs are one-liners. `coverage` measures only the pure-logic host crates
 (`abi`, `capability`, `crickerfs`, `dtb`, `elf`, `frames`, `paging`, `pci`, ...): the kernel and user
 crates run under QEMU, out of reach of host instrumentation, which is the same reason DECISIONS.md
 §7 keeps the testable logic in host crates in the first place. It installs its own tool rather than

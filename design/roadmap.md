@@ -105,7 +105,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 39 | RECORDED | Repository structure for a loosely-coupled OS, and the road to a distribution | the structure has to serve the thesis, and one constraint dominates |
 | 40 | NOT-STARTED | Documentation as a system service: searchable, rendered, and installed by packages | the OS explains itself, on itself |
 | 41 | BUILT | Dead code: triage the suppressions, and un-blindfold the gate | a `-D warnings` gate with holes in a third of the kernel is not a gate |
-| 42 | PARTIAL | Supply chain and fuzzing in CI (extends the 2026-07-30 CI audit) | we confine code we did not write; an advisory against it is invisible today |
+| 42 | BUILT | Supply chain and fuzzing in CI (extends the 2026-07-30 CI audit) | we confine code we did not write, and the parsers that read what firmware and disks hand us are where a bound is a lie |
 | 43 | NOT-STARTED | A second security audit, with a different lens | the attack surface roughly doubled after the first audit was written |
 | 44 | PARTIAL | GitHub repository hardening: policy, private reporting, code scanning, pull requests | a repository with a security thesis should be able to receive a report privately |
 | 45 | BUILT | Triage the CodeQL code-scanning alerts, and decide what the tool is for | the alerts land on this project's most-used unsafe abstraction |
@@ -1690,9 +1690,24 @@ package ships no `Cargo.lock` and that ours was a deliberate addition. It ships 
 regeneration that had re-resolved 25 dependencies. Nobody had edited the filesystem, and nobody could
 have proved that either.
 
-**Still open: the fuzzing leg**, deliberately. Which parsers get harnesses, what corpus is committed,
-and how a fuzzer's findings triage against §35's three dispositions is its own design pass; bolting a
-`cargo-fuzz` job onto milestone 44's lane would have produced a job nobody reads.
+**The fuzzing leg landed 2026-08-02** (notes/fuzzing.md). Four cargo-fuzz targets over the parsers
+that read bytes from outside the trust boundary (`dtb`, `elf`, `gpt`, and a `crickerfs` round trip),
+run by `script/fuzz` and by a CI job of its own with a **sixty-second-per-target budget**, because
+fuzzing has no completion condition and so cannot be a step inside a gate anyone waits on.
+
+**Three bugs, and how each was found is the finding.** `dtb::Region::end` overflowed on a hostile
+memory map, which the kernel's boot path calls on every RAM region: **the fuzzer found that one**, in
+ten minutes, from a mutated copy of the committed QEMU device tree. `crickerfs::write_image` accepted
+a name containing a NUL, wrote it, and could never read it back, the same silent-collision family as
+the truncation bug fixed on 2026-08-01: **a round-trip property found that one**, in under a minute,
+and no totality proof could have, because nothing panicked. And `dtb::node_reg` indexed past its
+16-entry cell stack on a tree nested 17 deep: **reading the code found that one, and ten minutes of
+fuzzing did not rediscover it**, because deep recursive structure is what a mutational fuzzer is
+worst at synthesizing. All three are fixed and pinned by host tests that run in milliseconds.
+
+The question the leg was held open for is answered in the note's first section: Kani is exhaustive
+inside a bound and a fuzzer is unbounded and random, and the three cases above show the boundary
+between them is not always the bound. Sometimes it is that nobody wrote the property down.
 
 **In brief.** Three things CI does not do. **Advisories and licences**: no `cargo-audit`/`cargo-deny`, so a published advisory against a dependency is invisible, and licence obligations go unrecorded, which stops being cosmetic the moment milestone 39's distribution exists. **Vendored integrity**: `vendor/redoxfs` is pinned at 0.9.1 with a `patches/` discipline and *nothing verifies the tree equals upstream-plus-our-patches*. **Fuzzing the parse surface**: Kani proves `elf`, `dtb` and `crickerfs` under *chosen bounds*, and a fuzzer explores byte sequences past those bounds and finds panics rather than property violations, which is complementary rather than redundant. Several crates are unproved entirely and take attacker-shaped input: the `fs_proto`/`gfx_proto`/`line_editor` decoders, `grant_plan` (which parses the human's command line), `compositor` (clipping arithmetic, where its own note says off-by-one is the classic bug), and `measured_boot`, the SHA-256 behind the measured-boot trust root
 

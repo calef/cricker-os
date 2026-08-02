@@ -51,13 +51,23 @@ if [ "$installed" != "$pinned" ]; then
 fi
 
 # -A unmatched-skip: deny.toml's `[bans] skip` list is written for the workspace that needs each
-# entry, and the same file is applied to all three. A skip that is irrelevant to the workspace being
-# checked is expected, not a finding. (The mirror-image warning for licences is handled in the config
-# itself, via `unused-allowed-license`.)
-for manifest in Cargo.toml fs_server/Cargo.toml tools/redoxfs_host/Cargo.toml; do
+# entry, and the same file is applied to all four. A skip that is irrelevant to the workspace being
+# checked is expected, not a finding. (The mirror-image warning for the licence ALLOW-list is handled
+# in the config itself, via `unused-allowed-license`.)
+#
+# -A license-exception-not-encountered: the third member of that family, and it arrived with the
+# fuzz workspace. `[[licenses.exceptions]]` scopes NCSA to `libfuzzer-sys`, which exists in exactly
+# one of the four graphs, so the other three correctly report that the exception went unused. Scoping
+# the exception to one crate is the strict choice; this is what it costs.
+#
+# **fuzz/ joined the list in milestone 42's second leg**, and the reason is the same one the header
+# gives: a licence or an advisory we would refuse in the kernel is not acceptable in the tooling
+# either. It adds three crates (libfuzzer-sys, arbitrary, cc) that nothing ships, which is exactly the
+# graph a project stops looking at.
+for manifest in Cargo.toml fs_server/Cargo.toml tools/redoxfs_host/Cargo.toml fuzz/Cargo.toml; do
     echo "==> cargo-deny: $manifest"
     cargo deny --manifest-path "$manifest" --all-features --config deny.toml \
-        check -A unmatched-skip
+        check -A unmatched-skip -A license-exception-not-encountered
 done
 
 echo "==> vendored integrity"

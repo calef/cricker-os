@@ -28,8 +28,23 @@ pub struct Region {
 }
 
 impl Region {
+    /// One past the last byte, **saturating**.
+    ///
+    /// Saturating rather than plain, because this is a `pub fn` on a `pub` struct with `pub` fields
+    /// whose values came out of a blob the firmware wrote. `start + size` on a hostile pair wraps,
+    /// and under the dev profile's overflow checks that is a panic on the boot path:
+    /// `kernel/src/memory.rs`'s `place_bitmap` calls this on every RAM region the device tree
+    /// declares, before there is any way to report a failure. Found by `fuzz/fuzz_targets/dtb_walk`
+    /// on 2026-08-02; see the regression test in `tests/hostile.rs`.
+    ///
+    /// The same argument `elf::Segment::page_range` records: a type anyone can construct has to hold
+    /// on its own, whatever the parser that usually builds it has already checked.
+    ///
+    /// **A saturated end is still a lie**, which is why [`Dtb::memory_regions`] and its siblings
+    /// refuse a wrapping region outright ([`Error::RegionOverflow`]) rather than passing one out and
+    /// relying on this. This is the backstop, not the check.
     pub fn end(&self) -> u64 {
-        self.start + self.size
+        self.start.saturating_add(self.size)
     }
 }
 
@@ -46,6 +61,14 @@ pub enum Error {
     BadToken(u32),
     /// The caller's output slice was too small to hold every region found.
     TooManyRegions,
+    /// A `reg` pair whose `start + size` does not fit in 64 bits, so the region names memory that
+    /// cannot exist.
+    ///
+    /// Refused rather than clamped, and refused *here* rather than left to [`Region::end`]. A
+    /// clamped region is a lie the caller cannot detect, and the caller is `kernel/src/memory.rs`
+    /// deciding where RAM is; "the firmware's memory map is impossible" is something a boot path
+    /// should be told rather than something it should quietly work around.
+    RegionOverflow,
 }
 
 // Structure-block tokens.
@@ -305,7 +328,22 @@ impl<'a> Dtb<'a> {
                         scells[depth] = scells[depth - 1];
                     }
 
-                    if depth >= 2 && name.starts_with(prefix) && target_at.is_none() {
+                    // `(2..MAX_DEPTH)`, not `>= 2`, and the upper bound is a fix rather than
+                    // symmetry (2026-08-02). A node deeper than the cell stack was still matched
+                    // here, and the `reg` arm below then read `acells[depth - 1]`, which is an
+                    // out-of-bounds index the moment `depth` reaches 17. A device tree nested that
+                    // deep is not exotic to write, and this parser reads bytes the firmware wrote,
+                    // so it was a boot-time panic on a hostile blob. See tests/hostile.rs.
+                    //
+                    // Refusing to match is the right answer rather than clamping the index: past
+                    // `MAX_DEPTH` this walk has stopped tracking cell counts at all, so the region
+                    // it decoded would be arithmetic on the wrong widths. Not finding the node is
+                    // honest; finding it and reporting the wrong address is not. It is also exactly
+                    // what `node_reg_compatible` already does at its own END_NODE.
+                    if (2..MAX_DEPTH).contains(&depth)
+                        && name.starts_with(prefix)
+                        && target_at.is_none()
+                    {
                         target_at = Some(depth);
                     }
                 }
@@ -704,6 +742,13 @@ impl<'a> Dtb<'a> {
             // allocator an empty range to reason about.
             if size == 0 {
                 continue;
+            }
+
+            // A region that runs past the top of the address space is not a region. Refused rather
+            // than skipped, because a zero-size entry is a *legal* thing firmware writes and this is
+            // not: see `Error::RegionOverflow`.
+            if start.checked_add(size).is_none() {
+                return Err(Error::RegionOverflow);
             }
 
             *out.get_mut(n).ok_or(Error::TooManyRegions)? = Region { start, size };

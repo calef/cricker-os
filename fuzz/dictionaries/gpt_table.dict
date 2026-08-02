@@ -1,0 +1,33 @@
+# libFuzzer dictionary for the GUID partition table.
+#
+# The signature and revision gate everything, and the CRC-32 gates everything after that. A
+# dictionary cannot help with the CRC (that is what the seeds are for: a mutation that keeps a
+# fixture's array intact keeps its CRC valid), but it can put the header's fixed fields and the type
+# GUIDs on token boundaries.
+
+signature="EFI PART"
+revision_1_0="\x00\x00\x01\x00"
+header_size_92="\x5c\x00\x00\x00"
+
+# LBAs a real table uses: the primary header at 1, the array at 2, the first usable at 34.
+lba_1="\x01\x00\x00\x00\x00\x00\x00\x00"
+lba_2="\x02\x00\x00\x00\x00\x00\x00\x00"
+lba_34="\x22\x00\x00\x00\x00\x00\x00\x00"
+lba_2048="\x00\x08\x00\x00\x00\x00\x00\x00"
+
+# NumberOfPartitionEntries = 128 and SizeOfPartitionEntry = 128, the pair whose product is the
+# array length every piece of the parser's arithmetic is built on.
+entry_count_128="\x80\x00\x00\x00"
+entry_size_128="\x80\x00\x00\x00"
+u32_max="\xff\xff\xff\xff"
+u64_max="\xff\xff\xff\xff\xff\xff\xff\xff"
+
+# The protective MBR: partition type 0xEE covering the whole disk, and the 0xAA55 signature.
+mbr_type_ee="\xee"
+mbr_signature="\x55\xaa"
+
+# Type GUIDs, mixed-endian on the wire as the format requires. EFI system partition, Linux
+# filesystem data, and Apple HFS+, which are what the committed fixtures carry.
+guid_esp="\x28\x73\x2a\xc1\x1f\xf8\xd2\x11\xba\x4b\x00\xa0\xc9\x3e\xc9\x3b"
+guid_linux_data="\xaf\x3d\xc6\x0f\x83\x84\x72\x47\x8e\x79\x3d\x69\xd8\x47\x7d\xe4"
+guid_apple_hfs="\x00\x53\x46\x48\x00\x00\xaa\x11\xaa\x11\x00\x30\x65\x43\xec\xac"
