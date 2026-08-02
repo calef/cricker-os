@@ -2299,6 +2299,30 @@ manifest, the manifest grows from "what capabilities do I need" into "what do I 
 a larger claim than it makes today, and it is the sort of scope creep that is easier to accept early
 than to reverse later.
 
+#### Milestone 64 is what forces the namespace half of this milestone
+
+Recorded here as well as in 64, so neither is picked up without it.
+
+**What remains open in this milestone is the namespace machinery**: absolute paths, environment
+variables, `PATH`, and `bind`, which §50 decided and explicitly did not build because it needs "a
+mount table per process and resolution through it" beyond the per-shell roots that exist today.
+
+**None of it has a forcing use case from the shell.** `swish` works with per-shell roots; `bind` is
+a mechanism nobody currently has to have. That is why this milestone has sat IN-PROGRESS with its
+navigation half done and its namespace half designed.
+
+**Milestone 64 supplies the missing demand.** `std::fs::File::open` takes a **path**, and a `std`
+program is not a shell: it cannot be handed a root and told to `cd`. A crate that writes
+`Path::new("assets").join("x.png")` is a concrete request for per-process namespace resolution, which
+is exactly what `bind` is for. The `PATH` conclusion below, that a program namespace **is** an
+endowment, gets its first real customer at the same moment.
+
+**The sequencing this implies**, and it runs the other way from the obvious: **let 64 measure first.**
+Its probe crates will report what a real dependency actually needs, and that evidence is what this
+milestone's remaining scope should be sized against, rather than building the general namespace and
+hoping it fits. `File::open`'s resolution is then **one fork answered once**, spanning both
+milestones, instead of a PAL trick here and a design there.
+
 #### `PATH`: there is no search, because there is no ambient namespace to search
 
 The absolute-paths section above takes Plan 9's answer for paths in general; `PATH` is that same
@@ -3784,6 +3808,35 @@ before code is written. §50 chose `bind` over stored paths and §48 settled res
 `std::fs::File::open("config.toml")` finds its directory capability, or refuses to, is the same
 question one layer up. It may be that the honest answer is a program namespace (milestone 47's `PATH`
 analysis) rather than a PAL trick.
+
+#### The relationship with milestone 47, in both directions
+
+**64 needs 47, in tiers rather than all at once.**
+
+- **Tier one, a bare name against one granted directory**, needs nothing from 47's remaining work.
+  `File::open("config.toml")` where the program holds a directory capability resolves the way
+  `fs_test_client` and the caretakers already resolve names, on machinery that exists: §27's
+  contract, §47's rights ladder, §56's verb table.
+- **Tier two, anything that traverses**, needs a namespace to resolve *against*, and that is 47's
+  unbuilt half. `Path::new("assets").join("x.png")`, an absolute path, or a program wanting two
+  directories all land here.
+
+So 64 can start and get a useful distance before it blocks. It will block **sooner than tier one
+suggests**, because real crates rarely open a bare name in a single directory; they join paths.
+
+**And 47 may need 64 more than the reverse.** `bind` is a decided mechanism with no forcing use case:
+§50 records it as unbuilt, needing "a mount table per process and resolution through it", and nothing
+in the shell strictly requires one. A `std` program calling `File::open` with a path is a **concrete
+demand for exactly that machinery**. The same is true of `PATH`, where 47 concluded there is no search
+because there is no ambient namespace to search, and that a program namespace **is** an endowment.
+64 would be its first real customer.
+
+**Sequencing that follows from this.** Run 64's measurement phase first and independently: pick the
+probe crates, build them, let the failures name the work. It costs 47 nothing and produces the
+evidence for how much namespace 64 actually needs, which is the question 47's remaining scope should
+be sized against. **Then answer `File::open`'s resolution once, as a fork spanning both**, rather
+than twice. Answered inside 64's PAL it will be a trick; answered as 47's namespace it is the design
+both milestones already point at.
 
 #### BUGS
 
