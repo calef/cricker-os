@@ -71,7 +71,7 @@ coverage the project does not have.
 | `dtb_walk` | firmware (QEMU, OpenSBI, a board's ROM) | parsed **before anything else exists**, on both ISAs, from a pointer in a register; a panic here is a kernel that cannot boot and cannot say why. Kani reaches the leaf readers and not the walkers. |
 | `elf_parse` | any binary a user asks to run | the only parser that **loads what it parses**: its output becomes page-table entries. The whole-parse totality proof is recorded as intractable. |
 | `gpt_table` | a disk somebody else formatted | decides which LBA range is a filesystem. Heavily checked already, which is the point: the gap is *combinations* of hostile fields, which neither the proofs nor the single-byte mutation tests can build. |
-| `crickerfs_roundtrip` | (structured) the writer's own output | not a panic hunt. Asserts that **what goes in comes out**, which is the property `write_image`'s truncation bug violated in 2026-08-01 and its NUL bug violated until 2026-08-02. |
+| `crickerfs_roundtrip` | (structured) the writer's own output | not a panic hunt. Asserts that **what goes in comes out**, which is the property `write_image`'s truncation bug violated until 2026-08-01 and its NUL bug until 2026-08-02. |
 
 ### And the ones deliberately not fuzzed
 
