@@ -176,19 +176,59 @@ a fuzzer runs until you stop it. So it cannot be a step inside a gate somebody w
 only knob is how long the wait is, and every second of it is paid by every commit forever. `ci.yml`
 already has `cpu-matrix` as precedent for "its own runner, not a slower gate".
 
-**Why sixty seconds.** Measured rather than felt. On the developer machine (Apple Silicon, and busy
-with another lane's QEMU at the time), `dtb_walk` sustained **19,470 executions per second** over a
-ten-minute run and 25,886 over a quiet one-minute run. So a minute is 1.2 to 1.5 million inputs per
-target, and four to six million per CI run, from a seed corpus that is already past every magic-number
-check. CI's runner is a different machine and will differ; the order of magnitude is what the budget
-is chosen against.
+**Why sixty seconds.** Measured rather than felt. Ten minutes on each target, on the developer machine
+(Apple Silicon, and busy with another lane's QEMU for part of it):
 
-**What the job is for, so it is not mistaken for something else: it is a regression tripwire, not a
-search.** A minute per target from the committed seeds re-covers ground the parsers are already known
-to survive and notices when a change breaks it. Finding something genuinely new is a long run on a
-developer's machine, and that is deliberately not automated. A nightly job that finds a crash at 4am
-with no persisted corpus produces an artifact nobody can reproduce and an alert nobody dispositions,
-which is DECISIONS §35's wallpaper failure.
+| Target | Executions in 600s | Per second |
+|---|---:|---:|
+| `dtb_walk` | 11,702,017 | 19,470 |
+| `elf_parse` | 269,592,178 | 448,572 |
+| `gpt_table` | 14,532,550 | 24,180 |
+| `crickerfs_roundtrip` | 21,469,277 | 35,722 |
+| **total** | **317,296,022** | |
+
+The spread is the shape of each parser rather than noise: `elf_parse` rejects most inputs in its first
+fifteen lines and returns, while `dtb_walk` runs seven full walks over a blob for every input it
+accepts. **The slowest target is the floor, so a minute buys at least a million inputs on every
+target**, and four to six million per CI run, from a corpus already past every magic-number check.
+CI's runner is a different machine; the order of magnitude is what the budget is chosen against.
+
+None of the four crashed in those forty minutes, which is the "not yet" this note's BUGS section
+insists on rather than a result.
+
+**What the CI budget actually does**, measured the way CI does it, from a deleted corpus so nothing
+carries over:
+
+```
+$ rm -rf fuzz/corpus fuzz/artifacts && script/fuzz --time 60
+dtb_walk               1,495,284 execs    24,512/s
+elf_parse             51,234,895 execs   839,916/s
+gpt_table              1,548,246 execs    25,381/s
+crickerfs_roundtrip    1,763,965 execs    28,917/s
+==> fuzz: no crashes in 4 targets at 60s each
+```
+
+56 million inputs in four minutes of runner time.
+
+**And it is weaker than that number makes it sound**, which is worth knowing before anyone leans on
+it. The draft of this paragraph claimed the job would now catch `Region::end`'s overflow immediately
+from the seeds. That was a guess, so it got tested: both `dtb` fixes were reverted and
+`script/fuzz --time 60 dtb_walk` run from a deleted corpus. **It found nothing.** Reverted the same
+way with a fifteen-minute budget, it found the panic after **13,124,546 executions, about ten
+minutes**, which is the same order as the original discovery.
+
+So the sixty-second job is a sweep, not a guarantee, and a bug of this depth is outside it. **What
+actually keeps these two bugs from coming back is `crates/dtb/tests/hostile.rs`**, which runs in
+milliseconds on every `script/test` on both ISAs. That is the division of labour: the fuzzer finds
+things once, and a host test holds them forever. A CI fuzz job that had to catch every regression it
+ever found would need a budget nobody would pay.
+
+**What the job is for, so it is not mistaken for something else: it is a shallow sweep, not a search
+and not a guarantee.** A minute per target from the committed seeds re-covers the ground those seeds
+reach quickly, which is where a change that breaks a parser outright will show. Finding something
+genuinely new is a long run on a developer's machine, and that is deliberately not automated. A
+nightly job that finds a crash at 4am with no persisted corpus produces an artifact nobody can
+reproduce and an alert nobody dispositions, which is DECISIONS §35's wallpaper failure.
 
 **The corpus is not cached between CI runs, on purpose.** Caching it would make a run's coverage
 depend on which runs came before it, so a red run could not be reproduced from the repository alone.
@@ -215,6 +255,10 @@ returns immediately on anything the parser rejects, so a corpus of rejected inpu
 "no crashes" a working one does. `crates/elf/tests/fuzz_seed.rs` holds that seed to actually parsing,
 and to carrying this build's `e_machine`, which is a compile-time constant and would be wrong on a
 riscv64 developer machine. The other three targets seed from fixtures that already have tests.
+
+The seed's effect, measured from an empty corpus: `elf_parse` starts at `cov: 65` on its very first
+execution and is at 90 edges by input 256. Without it, that first execution is a four-byte magic check
+and nothing else.
 
 **Dictionaries are committed** (`fuzz/dictionaries/*.dict`), and they are the cheap half of a
 grammar. A device tree's structure block is a stream of 32-bit tokens; a fuzzer that has to discover
@@ -321,6 +365,11 @@ and is the obvious next step for `dtb_walk`.
 **A green fuzz run means "not yet", never "correct".** Sixty seconds of no crashes is evidence about
 sixty seconds. Nothing here is a proof, and nothing here should be quoted as one; the proofs are in
 notes/verification.md and they say what they cover.
+
+**The CI job would not re-find either `dtb` bug.** Measured, not assumed: with both fixes reverted,
+sixty seconds from the committed seeds found nothing, and fifteen minutes found the overflow after
+13.1 million executions. The job is a sweep over ground the seeds reach quickly. The regression guard
+is `crates/dtb/tests/hostile.rs`, which runs on every `script/test`.
 
 **Only panics and hangs are caught, plus whatever a target asserts.** A parser that returns the
 *wrong answer* without panicking is invisible to `dtb_walk`, `elf_parse` and `gpt_table`, because
