@@ -140,3 +140,10 @@ reader. Block 0 is a superblock (magic, a small directory of name → start-bloc
 follow, block-aligned. The driver reads block 0, walks the directory to find `motd`, and reads its
 data block. It is deliberately the least thing that is still a real filesystem, in the same spirit
 as `crates/elf`: milestone 9 is about drivers and block I/O, not filesystem design.
+
+The driver is the format's **third reader** (the kernel and `xtask` are the others), and the only one
+that walks the directory without holding the whole image: it has one block buffered, so it can see
+`crickerfs::ENTRIES_IN_FIRST_BLOCK` entries and no more. It used to restate the offsets by hand and
+was the one place that had to be found by hand when the entry layout widened on 2026-08-01. It now
+depends on `crickerfs` for them, which is CLAUDE.md's rule 7 (what two binaries must agree on is a
+crate). See [crickerfs.md](crickerfs.md).
