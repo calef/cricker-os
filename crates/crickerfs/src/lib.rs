@@ -56,6 +56,14 @@
 //!   truncated, which is the worse failure: two long names that agree in their first `NAME_LEN`
 //!   bytes become one entry, and `init` loads whichever program happened to be packed first. The
 //!   build now stops with [`Error::NameTooLong`].
+//! - **A name containing a NUL is an error too**, and for the same reason: the padding is NUL and
+//!   every reader stops at the first one, so `"a\0b"` would be written and read back as `"a"`.
+//!   [`Error::NameHasNul`]. This one survived the truncation fix because nobody thought to write a
+//!   name with a NUL in it; `fuzz/fuzz_targets/crickerfs_roundtrip` did, in under a minute.
+//! - **A duplicate name is NOT an error, and the first one wins.** [`Fs::read`] returns the first
+//!   entry whose name matches, so packing two files under one name silently hides the second. The
+//!   disk tool builds its file list from a directory listing, where names are unique by
+//!   construction, which is why this has never bitten; nothing in the format prevents it.
 //! - **[`MAX_FILES`] is a ceiling that grows with the SUITE, not with the system**, so the cost is
 //!   invisible to each branch that causes it and lands on whoever merges. Three lanes landing
 //!   together on 2026-07-30 pushed the archive from 31 files to 32 and forced a directory resize.
@@ -139,6 +147,21 @@ pub enum Error {
     /// their first `NAME_LEN` bytes would otherwise become one entry, and the loader would fetch
     /// whichever program was packed first. See the crate's BUGS section.
     NameTooLong,
+    /// A name containing a NUL byte, which the format cannot represent.
+    ///
+    /// **The same failure as [`Error::NameTooLong`], one byte wide instead of thirty-three.** A name
+    /// shorter than [`NAME_LEN`] is NUL-padded on disk and every reader stops at the first NUL, so a
+    /// name with one inside it comes back cut at that point: `"a\0b"` is written and reads back as
+    /// `"a"`, and `read("a\0b")` finds nothing at all. Two names agreeing up to their first NUL
+    /// become one entry, which is exactly the collision `NameTooLong` was introduced to stop.
+    ///
+    /// Refused rather than mangled, for the reason the crate's BUGS section gives for the other one:
+    /// an archive is a mapping, and a writer that silently changes a key has lost data.
+    ///
+    /// Found by `fuzz/fuzz_targets/crickerfs_roundtrip` on 2026-08-02, in under a minute, from the
+    /// one-file input `[("\0", [])]`. The round-trip property is what saw it; no totality proof
+    /// could have, because nothing panicked.
+    NameHasNul,
     /// A file's data runs past the end of the image.
     OutOfBounds,
     /// The image is smaller than the directory span (`DIR_BLOCKS` blocks).
@@ -265,6 +288,12 @@ pub fn write_image(files: &[(&str, &[u8])], out: &mut [u8]) -> Result<usize, Err
     for (name, _) in files {
         if name.len() > NAME_LEN {
             return Err(Error::NameTooLong);
+        }
+        // The same argument as NameTooLong, one byte wide (found by fuzzing, 2026-08-02): a name
+        // holding a NUL is a name the format cannot store, because the padding IS a NUL and every
+        // reader stops at the first one. Writing it produced an entry `read` could never match.
+        if name.as_bytes().contains(&0) {
+            return Err(Error::NameHasNul);
         }
     }
 
@@ -405,6 +434,38 @@ mod tests {
             write_image(&files, &mut img).err(),
             Some(Error::NameTooLong)
         );
+    }
+
+    /// **A name with a NUL in it is refused, not stored and then unfindable.**
+    ///
+    /// The regression for the bug `fuzz/fuzz_targets/crickerfs_roundtrip` found on 2026-08-02, whose
+    /// minimal input was a single file named `"\0"` with no contents. That name was accepted, packed
+    /// into an entry that decoded back as the empty string, and then `read("\0")` answered `None`:
+    /// data written and not readable, with nothing panicking and no test noticing. Every name below
+    /// is one the writer used to take.
+    ///
+    /// It is the same failure as the truncation bug the crate already documents, which is the point.
+    /// A round-trip property catches the whole family; an example test catches the example.
+    #[test]
+    fn a_name_with_a_nul_in_it_is_refused() {
+        let data: &[u8] = b"z";
+        for name in ["\0", "a\0b", "init\0", "\0\0"] {
+            let files: [(&str, &[u8]); 1] = [(name, data)];
+            let mut img = vec![0u8; image_size(&files)];
+            assert_eq!(
+                write_image(&files, &mut img).err(),
+                Some(Error::NameHasNul),
+                "{name:?} cannot be stored, so it must not be accepted"
+            );
+        }
+
+        // The empty name is NOT in that list and is deliberately still legal: it is representable
+        // (an all-NUL name field), it reads back as itself, and refusing it would be a policy this
+        // format has no reason to hold.
+        let files: [(&str, &[u8]); 1] = [("", data)];
+        let mut img = vec![0u8; image_size(&files)];
+        write_image(&files, &mut img).unwrap();
+        assert_eq!(Fs::parse(&img).unwrap().read(""), Some(data));
     }
 
     /// **`MAX_FILES` costs no kernel stack, and this is what keeps it that way.** `Fs` is a stack
