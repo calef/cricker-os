@@ -160,3 +160,41 @@ gh run list --repo calef/cricker-os --workflow CodeQL --limit 1 --json databaseI
   separate decision.
 - **A published advisory workflow.** GitHub advisories become useful once there is something to
   advise *about*, i.e. once there are releases (milestone 39).
+
+
+## Owed: strip 720 build artifacts from history (2026-08-02)
+
+**Not done, and queued deliberately behind the in-flight branches.** Recorded here because it has
+already been noted once in a commit message and lost.
+
+On 2026-08-02 a `git add -A` during the milestone 63 merge (`1952f8df`) committed **23,222 build
+artifacts** across three nested workspaces: `fs-server/target/` (14,405), `tools/redoxfs-host/target/`
+(8,814) and `user-std/target/` (680). The first count recorded here said 680, because that was the
+directory the first symptom pointed at and nobody counted the rest until the hardened checker named
+a second one. **The tree is 470 files.** The artifacts were 98% of the repository. They are untracked now and `.gitignore` is fixed (`/target` was **anchored**, so
+three nested workspace `target/` directories were never ignored; it is `target/` now, matching at any
+depth). **They remain in history.**
+
+| | |
+|---|---|
+| `.git` on disk | 518 MB |
+| packed | 486 MiB |
+| artifact objects in history | **many thousands**; the tracked set alone was 23,222 files |
+| largest single object | a 59 MB `libcore` rlib; four are 58 to 59 MB |
+
+Every clone pays that, including every CI job, which is why a run reported "Updating files: 76%
+(18522/24370)".
+
+### The plan, and the wrinkle
+
+`git filter-repo` over the `user-std/target/` paths, then force-push. For a solo repository with no
+other clones this is about as safe as history rewriting gets.
+
+**The wrinkle is self-inflicted**: the `main` ruleset applied the same day blocks force pushes
+(`non_fast_forward`, empty bypass list). So the sequence is: wait until nothing is in flight, remove
+that one rule, rewrite, force-push, **put the rule back, and verify it is back by attempting a force
+push and being refused.** A protection disabled for a moment is a protection that stays disabled when
+the moment is interrupted.
+
+Anything unmerged at that time has to be re-cut afterwards, which is the reason for waiting rather
+than a reason not to do it.
