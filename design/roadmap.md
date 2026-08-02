@@ -3592,8 +3592,9 @@ out: a package directory is a Rust name, and everything else is a path.
 | `subsup` | **`sub_server_supervisor`** | 21 bytes. Exact where `sub_supervisor` is ambiguous: it supervises **a sub-server**, rather than being a supervisor beneath another one. "Sub-server" is established vocabulary, 44 occurrences across `DECISIONS.md`, `supervision_proto`, the kernel and the notes, so the name is built from a word a reader has already met. |
 | `allocdemo` | **`allocator_demo`** | `alloc_demo` was proposed and corrected by Chris: `alloc` is the crate it *uses*, the allocator is what it *proves*. It wires `user_rt::heap::UntypedHeap` and shows freed memory is reusable rather than leaked. |
 | `credential` | **`credentialer`** | an agent noun in the `broker`/`swapper`/`painter` family, and a **real profession**: a credentialer verifies licenses against records they hold and never hands the record back, which is this service exactly. I argued for the plain noun on the `clock`/`entropy` resource pattern and was wrong twice: `credentialer` is not a coinage, and **this service will never give you a credential**, so naming it for the resource implies the one thing it exists to refuse. |
-| `credcli` | **`credentialer_client`** | named for whom it asks rather than what it presents, so the pair reads as a pair. |
-| `fsclient` | **`fs_client`** | `fs` is settled vocabulary (`fs_proto`, `fs_server`, the caretakers), so there is no abbreviation hiding here, only a missing underscore. |
+| `credcli` | **`credentialer_test_client`** | 24 bytes, exactly the current cap, comfortable once `NAME_LEN` moves. |
+| `fsclient` | **`fs_test_client`** | see the note below on why all three carry `test`. |
+| `netcli` | **`socket_test_client`** | a client of the socket contract (`socket_proto`), which is what its own first line claims. It drives three fixed exchanges against QEMU user-mode networking (slirp's built-in TFTP, a real DNS query that leaves the machine and is therefore non-gating, and a TCP echo round trip) and reports `OK` or a stage code so the kernel test fails loudly rather than hanging. |
 | `netstack` | **`net_stack`** | same: `net` is already this tree's word. |
 | `dma_validate` | **`dma_validator`** | it calls itself "the DMA-confinement **validator**" in its own first line; the name simply did not. |
 | `measure` | **`measured_boot`** | "measured boot" is the standard term for boot-time hashing, so this gains the guard-rail benefit too: a reader who knows secure-boot vocabulary recognises it. |
@@ -3669,6 +3670,29 @@ starts after 61 lands.**
 - **`target/` and `targets/` sit next to each other** and mean unrelated things: build output, and the
   custom target JSON specs (`aarch64-unknown-cricker.json`). Nothing enforces the distinction and one
   is gitignored while the other is tracked. Worth folding in.
+
+#### Why the three clients carry `test` (Chris, 2026-08-01)
+
+`fs_client`, `credentialer_client` and `socket_client` are **the names the real things will want**,
+and the real things are coming: milestone 55 needs an actual credentialer client for SMB
+authentication, milestone 54 needs actual socket clients, and any program that wants files is an FS
+client. Giving those names to test programs squats them, and the bill arrives later as a rename or as
+something worse like `real_fs_client`.
+
+It also fails the tenet's own test. `fs_client` predicts "a client of the FS service", not "the
+program the kernel spawns to prove the FS contract holds". The qualifier is the distinguishing fact,
+not noise.
+
+I argued the opposite first, for consistency with two names already recorded here. That was
+consistency in the wrong direction: three names consistently squatting the good ones.
+
+**`witness` was the alternative and is not a coinage**, which is worth recording since I first called
+it insider vocabulary and was wrong. It is standard in proof theory (the concrete object
+demonstrating an existential claim), in model checking (a counterexample trace, the world Kani and
+CBMC already live in here), and in cryptography (the zero-knowledge witness, Bitcoin's SegWit). The
+tree already uses it: "the extended-attribute witness", "witness pages". It was set aside because
+`client` carries real information about what the program *is* that `witness` does not, and because
+this project's stated audience arrives from Linux rather than from formal methods.
 
 #### Raise `NAME_LEN` FIRST, because one rename now depends on it
 
