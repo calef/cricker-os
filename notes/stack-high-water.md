@@ -80,6 +80,10 @@ Debug build (the test profile), QEMU `virt`, `-smp 4`, full suite (223 tests on 
 Boot paint floor: 640 bytes (aarch64), 1024 bytes (riscv64); every measured boot number is far above
 its floor, so the floor is not what is being read.
 
+A second riscv64 run (the gate run for the assertion below) reproduced its column exactly, from a
+*different boot hart*: OpenSBI's lottery booted hart 3 rather than hart 0, the report skipped the
+boot hart's unused slot as designed, and the three secondary numbers were 8448 again.
+
 Three things the table says beyond the values. **The numbers are exactly reproducible**: the two
 aarch64 runs agree byte for byte on every stack, including all three secondaries, and they were taken
 under host load averages of 33 and 9 (a concurrent cargo-mutants lane was saturating all eight cores
@@ -101,4 +105,28 @@ kernel-stack complement.
 
 ## The gate
 
-<!-- measure-then-gate: recorded after the numbers proved stable or not -->
+The numbers were stable enough to gate on immediately (identical runs under a 3.5x load difference;
+~400-byte cross-ISA spread), so the threshold assertion landed in the same milestone, checked in
+`report_high_water` after the printing so a trip always arrives with its numbers. One shared set of
+limits on both ISAs, per the parity gate:
+
+| Stack | limit | over observed max | what a trip means |
+|---|---|---|---|
+| boot | 61440 | +7224 (13%) | the suite's deepest chain grew ~7 KiB; one page left before the guard |
+| secondary | 16384 | ~2x | something new is running deep on an idle-and-traps stack that has **no guard page** |
+| thread | 14336 | +2664 | some kernel thread is 2 KiB from its guard; the FS-server incident's class |
+
+The margins are deliberately margins over *observed* depth, not fractions of the stack: the
+observed spread is a few hundred bytes, so a few thousand bytes of allowance absorbs toolchain
+drift while still failing long before the guard page would. If a nightly bump trips one of these
+with an honest, reviewed growth, raise the limit with the new measurement in hand; that is the
+gate working, not failing.
+
+## BUGS
+
+- Depth reached before `paint_boot_stack` runs (a handful of early-boot frames) and never reached
+  again is invisible, bounded below by the printed paint floor.
+- A stack whose deepest word happened to store the paint value reads one word shallow.
+- The live scans at end of suite are snapshots; a thread that deepens after being scanned is
+  under-read by that run. Reaped thread stacks are exact.
+- The instrument is `cfg(test)` only: a shell or bench boot measures nothing.

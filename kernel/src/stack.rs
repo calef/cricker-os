@@ -207,16 +207,18 @@ pub fn report_high_water() {
     );
 
     let boot_core = crate::arch::boot_cpu_id();
+    let mut max_secondary = 0u64;
     for id in 0..crate::cpu::MAX_CPUS {
         if id == boot_core || crate::smp::online_harts_mask() & (1 << id) == 0 {
             continue; // the boot core runs on the linker-script stack; its slot was never painted
         }
         let (b, t) = crate::smp::secondary_stack_span(id);
-        let used = high_water(b, t);
+        let core_used = high_water(b, t);
+        max_secondary = max_secondary.max(core_used);
         crate::println!(
-            "stack high-water: core{id}  {used}/{} bytes ({}%)",
+            "stack high-water: core{id}  {core_used}/{} bytes ({}%)",
             t - b,
-            used * 100 / (t - b),
+            core_used * 100 / (t - b),
         );
     }
 
@@ -229,6 +231,38 @@ pub fn report_high_water() {
         "stack high-water: thread {tmax}/{tsize} bytes ({}%, deepest of {} stacks)",
         tmax * 100 / tsize,
         THREAD_STACK_SCANS.load(Ordering::Relaxed),
+    );
+
+    // The gate, landed after the measurement per the milestone's measure-then-gate sequence.
+    // Checked after the printing, so a trip always comes with the numbers that explain it.
+    //
+    // The margins are justified by the measured spread, which is unusually small: two aarch64 runs
+    // agreed byte for byte on every stack under host loads of 33 and 9, and the two ISAs agree to
+    // within ~410 bytes (boot 53808/54216, secondaries 8504/8448, thread 11352/11672; see
+    // notes/stack-high-water.md). So each limit sits far above anything observed, and what it buys
+    // against that stability is an alarm that still fires BEFORE the stack actually runs out:
+    //
+    //   - boot 61440: +7.2 KiB over the observed max, and a trip still leaves a full page before
+    //     the guard. Growth lands here first (test_main runs every test body on this stack).
+    //   - secondary 16384: ~2x observed. These stacks have NO guard page (smp.rs), so this check is
+    //     the only tripwire between "deeper than expected" and silent .bss corruption.
+    //   - thread 14336: +2.6 KiB over observed, ~8x the cross-ISA spread, trips 2 KiB before the
+    //     thread guard. The tightest, deliberately: 16 KiB stacks are where recursion lives, and
+    //     the FS-server incident was exactly this class outgrowing its allowance unnoticed.
+    assert!(
+        used <= 61440,
+        "boot stack high-water {used} exceeded 61440: the suite's deepest path has grown ~7 KiB \
+         past its measured depth and is within a page of the guard (notes/stack-high-water.md)",
+    );
+    assert!(
+        max_secondary <= 16384,
+        "a secondary stack's high-water {max_secondary} exceeded 16384, ~2x anything measured; \
+         these stacks have no guard page, so do not raise this without reading smp.rs",
+    );
+    assert!(
+        tmax <= 14336,
+        "thread stack high-water {tmax} exceeded 14336: some kernel thread is within 2 KiB of its \
+         guard page (notes/stack-high-water.md)",
     );
 }
 
