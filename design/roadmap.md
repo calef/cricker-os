@@ -132,8 +132,9 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 66 | NOT-STARTED | Vaultwarden: somebody else's real application, running here | the north star for "runs real workloads". Names the gaps concretely rather than aspirationally: no TCP **listen or accept** in the socket contract, threads mostly stubs, most of `std::fs` unsupported, no async runtime, no TLS, and SQLite is a C library. Largest single item on this roadmap |
 | 67 | NOT-STARTED | `swish` the language: quoting, sequencing, and exit status | `swish` is an interactive shell without control flow. Quoting is the one that is a correctness gap rather than a convenience: **a filename with a space is currently unnameable** |
 | 68 | PARTIAL | Code-quality gates: one lint policy, and the lints that lost | Import order, `[workspace.lints]`, dependency direction, unused dependencies, spelling. Three lints were adopted, measured and **removed** on the evidence. `undocumented_unsafe_blocks` is now a GATE: all 205 undocumented blocks were read and commented. Doc examples went 5 -> 23 across nine crates, which is a start and not the standard; `missing_docs` is still not adoptable |
-| 69 | NOT-STARTED | Split `kernel/src/user.rs` by service | 15,499 lines and **46 top-level modules** in one file: a dozen `*_service` modules and ~34 test modules. The split is nearly free because the boundaries are already `mod` blocks, so moving one to its own file changes no visibility and no API |
-| 70 | NOT-STARTED | `swish`'s remaining logic in a crate, host-testable like its siblings | `coremark`, `line_editor` and `compositor` are each a crate holding the logic plus a program holding the IO. `swish` is the largest program that is not, so its dispatch, endowment preview and outcome handling are reachable only through QEMU |
+| 69 | BUILT | Split `kernel/src/user.rs` by service | 15,499 lines and **46 top-level modules** in one file: a dozen `*_service` modules and ~34 test modules. The split is nearly free because the boundaries are already `mod` blocks, so moving one to its own file changes no visibility and no API |
+| 70 | BUILT | `swish`'s remaining logic in a crate, host-testable like its siblings | `coremark`, `line_editor` and `compositor` are each a crate holding the logic plus a program holding the IO. `swish` is the largest program that is not, so its dispatch, endowment preview and outcome handling are reachable only through QEMU |
+| 71 | NOT-STARTED | The thread-start fault: a user thread dispatched with `sepc` = 0 | **Blocks all other work.** Instrumented in milestone 68's window and it has now FIRED on CI: a secondary core entered U-mode with an all-zero trap frame. Three intermittent CI failures across three tests and three CPU models trace here |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -4978,8 +4979,16 @@ leaving `user.rs` as the wiring that names them.
 
 ### 70. `swish`'s remaining logic in a crate, host-testable like its siblings
 
-**Status: NOT-STARTED.** Raised 2026-08-02, and **the finding that prompted it was wrong**, which is
+**Status: BUILT.** Raised 2026-08-02, and **the finding that prompted it was wrong**, which is
 worth recording because the corrected version is a smaller and more honest milestone.
+
+`crates/swish` holds the shell's logic and `user/src/swish.rs` keeps the IO, which took 354 lines out
+of the program and bought 36 host tests (33 unit, 3 doctests) where there had been none. What lifted:
+the routing of a typed line, the pattern-versus-text question, the expansion order, `echo`, and every
+sentence the prompt prints (the refusals, the outcome, the endowment preview, the shell's own `caps`
+table, the help). What did not, and why, is in notes/shell.md and in the crate's own `BUGS` section:
+`builtin`, `dispatch_one`, `run`, `spawn` and `pipeline` are capability movement, and lifting them
+would have needed the shell's IO restructured, which this milestone was scoped not to do.
 
 #### The correction
 
@@ -5015,3 +5024,95 @@ pair. `swish` is the largest program that is not one.
 This is an incremental tidy of a working, tested component, not a fix for a defect. It should be
 scheduled accordingly, and it should not grow into a rewrite of the shell. If lifting a function
 needs the shell's IO restructured to accommodate it, that function stays where it is.
+
+#### A gate blind spot found while raising this
+
+Milestone 69's **table row said `NOT-STARTED` while its own detail block said `BUILT`** on `main`,
+because the lane that built it updated one and not the other. `script/roadmap --check` did not catch
+it: the check validates the status VOCABULARY and that every detail block has a table row, but never
+that the two statuses AGREE. Corrected by hand on 2026-08-03.
+
+This is the third such blind spot found in two days, and they are all the same shape: the gate
+verifies that a thing is well-formed and never that it is right. `script/decisions --check` reports
+"numbering clean" for a section filed in the wrong place, and nothing checks that a source path cited
+in prose resolves to a file that exists (milestone 69 fixed 49 stale ones by hand). Each is a few
+lines to add. None is written yet, and they are listed here rather than in a tracker so the next
+person to touch these scripts finds them.
+
+### 71. The thread-start fault: a user thread dispatched with `sepc` = 0
+
+**Status: NOT-STARTED.** Raised 2026-08-03. **This blocks every other milestone**: it is a live
+correctness bug in thread dispatch, it is intermittent, and until it is understood every red CI run
+has to be argued about individually.
+
+#### The evidence, which we now have because we instrumented instead of chasing
+
+The fault was first seen on 2026-08-02 as a *hang*: a user thread whose first instruction fetch
+faulted, so whatever it was meant to serve never answered, every waiter blocked, and the run died 60
+seconds later in the lost-wakeup watchdog, arbitrarily far from the cause. It never reproduced
+locally, in nine full runs across both ISAs. Rather than keep hunting it, `enter_user` got a guard
+that converts the rare hang into a loud failure carrying its own evidence.
+
+That guard fired on CI, on the milestone-70 branch:
+
+```text
+[PANIC] panicked at kernel/src/arch/riscv64/exceptions.rs:155:5:
+thread 25769803877 on core 1 was dispatched to U-mode with sepc = 0 (user sp 0x0000000000000000).
+Its context was never built, or was built and not seen by this core.
+```
+
+Three details do the work:
+
+- **`user sp` is zero too.** This is not a bad entry point, it is an entire trap frame reading as
+  zeros. Whatever `enter_user` is looking at, nobody wrote it.
+- **Core 1**, a secondary rather than the boot core.
+- The test was `a_user_program_reaches_el0_and_returns_twice`, which is one of the simplest
+  user-entry paths in the suite.
+
+#### Where to look first, and why it is probably not the obvious thing
+
+The obvious reading of "built but not seen by this core" is a missing release/acquire pair between
+the core that builds a context and the core that dispatches it (DECISIONS rule 4: assume weak
+ordering). **That is probably not it**, and the reason is worth knowing before anyone spends a day
+on barriers: the frame is built by the thread ON ITS OWN kernel stack, in `kernel/src/user.rs`
+around the `current_kernel_stack_top()` call, and `enter_user` runs a few lines later on the same
+core with no yield in between.
+
+The likelier suspect is **where the frame is placed on riscv64**, which is already known to be
+delicate and is already commented as such:
+
+```rust
+#[cfg(target_arch = "aarch64")]
+let slot = top - size_of::<TrapFrame>() as u64;
+#[cfg(target_arch = "riscv64")]
+let slot = (crate::arch::current_sp().min(top) - size_of::<TrapFrame>() as u64) & !15;
+```
+
+aarch64 uses a **fixed** offset from the stack top. riscv64 computes the slot from the **live
+`sp`**, because its TCB entry path is shallow enough that a frame at the top would overlap and
+corrupt this function's own stack. The existing comment says exactly what that failure looks like:
+"sending the sret to a garbage sepc". `sscratch` is then armed to `frame + size` so re-entries
+rebuild at the same address.
+
+So the question to answer first is **whether the address `frame.write` targets is always the address
+`enter_user` and the trap path later read**, on every path that reaches user entry and at every
+stack depth. A slot that moves with call depth is a slot that can be written in one place and read
+in another, and an all-zero frame is what reading the wrong place looks like.
+
+Every failure so far has been on riscv64. That is consistent with the placement hypothesis and
+inconsistent with a generic ordering bug, which would be expected to show on aarch64 too.
+
+#### What is already in place
+
+- The `sepc == 0` guard in `kernel/src/arch/riscv64/exceptions.rs` and its `elr == 0` twin in the
+  aarch64 file. Keep both; they are how this became findable.
+- The frame's writability assertion, one check per exec.
+- `script/cpu-matrix` uploads per-model logs as a CI artifact on failure, which is how the evidence
+  above was recovered.
+
+#### Scope note
+
+Do not "fix" this by widening a deadline or re-running. Three CI failures on 2026-08-03 traced to
+three different tests on three different CPU models, and only one of them announced itself as this
+fault; the other two were a frame-leak wait and the lost-wakeup watchdog, which are what this bug
+looks like when the guard does not happen to catch it first.

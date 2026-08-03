@@ -4970,16 +4970,6 @@ not prove a pull request introduced nothing, and `notes/fuzzing.md` says so plai
 - **The seeds are in the tree and the corpus is not**, so a long CI sweep starts from near scratch
   each time and rediscovers shallow ground before it reaches new ground.
 
-## Reading
-
-- **The seL4 manual**, and Klein et al., *seL4: Formal Verification of an OS Kernel* (SOSP'09)
-- **Liedtke**, *On µ-Kernel Construction* (SOSP'95): why Mach was slow and why that was not a law
-- **xv6 book** (MIT, ~100pp) for how a real Unix-shaped kernel is structured. Read it as the
-  road not taken (§10), not as a template.
-- `rust-raspberrypi-OS-tutorials` for the aarch64-specific mechanics
-- OSDev wiki as a reference, not a tutorial
-- *Operating Systems: Three Easy Pieces* for the theory
-
 ## 61. A lint is adopted on evidence from this tree, not on its description
 
 Milestone 68 turned on eight candidate lints and kept five. The three that lost were not bad lints;
@@ -5036,6 +5026,14 @@ from the table rather than present with a pile of `#[allow]`s underneath them.
 
 ### BUGS
 
+`script/decisions --check` cannot see a section in the WRONG PLACE, only a missing number. §61
+itself landed below the `## Reading` closer when it was written, so the headings ran §59, §60,
+then the closer, then §61, and the gate reported "numbering clean" throughout because it tests for gaps
+(`set(range(1, max+1)) - set(seen)`) and never for order. Corrected by hand on 2026-08-03. This is
+the same well-formed-but-wrong blind spot CLAUDE.md already records for `§N` citations, which is why
+it is written down here rather than only fixed: the check that would catch it is a comparison of
+heading order against numeric order, and it does not exist yet.
+
 `missing_docs` is absent for the reason above: item coverage is 67-94% across the crates and nothing
 warns on it, so adopting it is a commitment to write the missing docs first. It belongs with the
 doc-example work in milestone 68's remaining half rather than on its own.
@@ -5054,3 +5052,13 @@ whether a batch of sites may share one sentence is not "does this code look simi
 sentence checkable at each site"**. It was, at 58 byte-identical panic-handler traps and at 73
 `invoke` calls whose contract places no obligation on the caller at all. It was not, in a test module
 where the pointers differ in what they are and when they are queued.
+
+## Reading
+
+- **The seL4 manual**, and Klein et al., *seL4: Formal Verification of an OS Kernel* (SOSP'09)
+- **Liedtke**, *On µ-Kernel Construction* (SOSP'95): why Mach was slow and why that was not a law
+- **xv6 book** (MIT, ~100pp) for how a real Unix-shaped kernel is structured. Read it as the
+  road not taken (§10), not as a template.
+- `rust-raspberrypi-OS-tutorials` for the aarch64-specific mechanics
+- OSDev wiki as a reference, not a tutorial
+- *Operating Systems: Three Easy Pieces* for the theory
