@@ -1,6 +1,6 @@
 //! **What machine is this?** One record per architecture, populated once at boot, printed at boot.
 //!
-//! Milestone 60 (design/roadmap.md). Until this crate existed, the kernel ran on what the target
+//! Milestone 60 (design/roadmap/60-isa-discovery.md). Until this crate existed, the kernel ran on what the target
 //! triple implied plus exactly one runtime measurement (the `satp.ASID` probe). Nothing read
 //! `riscv,isa-extensions`, nothing read `mmu-type`, and nothing on aarch64 read an ID register
 //! except the one `PARange` field that `TCR_EL1.IPS` needs. That is fine on an emulator, which is

@@ -11,7 +11,7 @@ not "was that bug fixed" but **"how many more of its siblings are there?"**
 The Kani proofs cover the pure-logic crates: `paging`, `frames`, `slab`, `elf`, `capability`, the
 allocators, the ring validators. That is deliberate and it is most of the interesting logic. But it
 leaves the hand-written architecture assembly as **the least-verified code in the trusted computing
-base**, and design/roadmap.md milestone 20 says so out loud. There is no tool in this project that
+base**, and milestone 20 (design/roadmap/20-portable-hal.md) says so out loud. There is no tool in this project that
 can prove `vectors.s` or `trap.s`.
 
 That matters more than the line count suggests, because the assembly is where the invariants are

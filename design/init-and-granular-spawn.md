@@ -1,6 +1,6 @@
 # Milestone 19: the init task, granular process construction, and the first real workload
 
-The working plan for milestone 19 (design/roadmap.md), and the record of its first decision,
+The working plan for milestone 19 (design/roadmap/19-real-workload.md), and the record of its first decision,
 made 2026-07-24.
 
 ## Decision 1: how init builds a process, granular, eyes open

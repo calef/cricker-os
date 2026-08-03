@@ -2878,7 +2878,7 @@ fn shell_check_answer<'a>(
     Some((&rest[..end], at + end))
 }
 
-/// The microbenchmarks (milestone 21; design/roadmap.md §21).
+/// The microbenchmarks (milestone 21; design/roadmap/21-benchmarks.md).
 ///
 /// Two instruments:
 /// - default: TCG with `-icount`, where virtual time is a deterministic function of instructions

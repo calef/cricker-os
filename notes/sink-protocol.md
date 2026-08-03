@@ -63,7 +63,7 @@ gets `EPIPE` and never the reader's reason. A destination whose failures a clien
 not a sink, it is a service, and it should be a CALL protocol like `fs_proto`.
 
 **Types.** This carries bytes. Typed pipelines are a separate and larger fork, recorded as one in
-design/roadmap.md's milestone 50 block, and nothing in this framing is a step toward one.
+design/roadmap/50-pipes-and-redirection.md, and nothing in this framing is a step toward one.
 
 **Seek, truncate, re-read, stat.** A sink appends, and that is the payoff milestone 50 claims over
 Unix. `> report.txt` hands a program strictly less than fd 1 with full file semantics does, and it
