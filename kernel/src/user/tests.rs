@@ -271,6 +271,47 @@ fn a_user_program_that_never_yields_is_preempted_anyway() {
     );
 }
 
+/// **The trap frame is where the trap path will look for it** (milestone 71).
+///
+/// The user-entry path writes a `TrapFrame` and the trap path rebuilds one, and the whole privilege
+/// boundary rests on those two being the *same address*: `stack_top - size_of::<TrapFrame>()`. That
+/// is an agreement between Rust and assembly, on two ISAs, and nothing checked it. It was wrong on
+/// RISC-V for a year: the frame was computed from the live `sp` instead, which put it 16 bytes under
+/// where `trap.s` builds an S-mode frame, so any interrupt in the window rewrote it. The symptom was
+/// a thread dispatched to U-mode with a zero entry point, intermittently, only ever on CI.
+///
+/// So read that address and wait for this thread's U-mode PC to appear in it. `spinner` is the
+/// subject because it never syscalls and never returns: anything that lands in its frame got there
+/// by the timer preempting it at EL0, which is the agreement under test. A frame built somewhere
+/// else never shows up here and the wait times out, which is precisely what the old RISC-V placement
+/// would do.
+///
+/// **The window is checked, not just the value, and the test learned that the hard way.** Its first
+/// form waited for a nonzero word and then asserted it was a user address, and it failed on RISC-V
+/// against a correct kernel: on the exec path this thread was a *kernel* thread first, and the
+/// frames of `thread_entry` and `run` occupy `[top - size, top)` until the user frame is written
+/// over them. So "nonzero" was satisfied by a live kernel frame pointer before user entry had
+/// happened at all. The condition has to name the U-mode text range, which every user program is
+/// linked into (`dump_threads` records why that base is shared).
+#[test_case]
+fn a_user_threads_trap_frame_sits_where_the_trap_path_rebuilds_it() {
+    const USER_TEXT: core::ops::Range<u64> = 0x40_0000..USER_STACK_VA;
+
+    let spinner = spawn_bare(spinner_image(), 0, 0).expect("spawn failed");
+
+    assert!(
+        wait_for(|| sched::user_pc_of(spinner).is_some_and(|pc| USER_TEXT.contains(&pc))),
+        "this thread's U-mode PC never appeared at stack_top - size_of::<TrapFrame>(), so the \
+         user-entry path and the trap path do not agree on where the frame lives (read {:#x})",
+        sched::user_pc_of(spinner).unwrap_or(0),
+    );
+
+    assert!(
+        reap_bare(spinner),
+        "the spinning user thread outlived its kill"
+    );
+}
+
 /// Forge an ELF64 header by hand, so a test can ask for something no linker would emit.
 ///
 /// A fixed buffer, since the kernel it tests has no heap (milestone 14 phase C): one ELF

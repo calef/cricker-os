@@ -134,7 +134,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 68 | PARTIAL | Code-quality gates: one lint policy, and the lints that lost | Import order, `[workspace.lints]`, dependency direction, unused dependencies, spelling. Three lints were adopted, measured and **removed** on the evidence. `undocumented_unsafe_blocks` is now a GATE: all 205 undocumented blocks were read and commented. Doc examples went 5 -> 23 across nine crates, which is a start and not the standard; `missing_docs` is still not adoptable |
 | 69 | BUILT | Split `kernel/src/user.rs` by service | 15,499 lines and **46 top-level modules** in one file: a dozen `*_service` modules and ~34 test modules. The split is nearly free because the boundaries are already `mod` blocks, so moving one to its own file changes no visibility and no API |
 | 70 | BUILT | `swish`'s remaining logic in a crate, host-testable like its siblings | `coremark`, `line_editor` and `compositor` are each a crate holding the logic plus a program holding the IO. `swish` is the largest program that is not, so its dispatch, endowment preview and outcome handling are reachable only through QEMU |
-| 71 | NOT-STARTED | The thread-start fault: a user thread dispatched with `sepc` = 0 | **Blocks all other work.** Instrumented in milestone 68's window and it has now FIRED on CI: a secondary core entered U-mode with an all-zero trap frame. Three intermittent CI failures across three tests and three CPU models trace here |
+| 71 | BUILT | The thread-start fault: a user thread dispatched with `sepc` = 0 | Frame placement, as this entry guessed. RISC-V put the frame 16 bytes under where `trap.s` builds an S-mode frame, so any interrupt in the window rewrote it and the user `sp` read the trap frame's hardwired-zero slot. Reproduced deterministically by widening the window; fixed by placing the frame at the stack top on both ISAs |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -5041,9 +5041,22 @@ person to touch these scripts finds them.
 
 ### 71. The thread-start fault: a user thread dispatched with `sepc` = 0
 
-**Status: NOT-STARTED.** Raised 2026-08-03. **This blocks every other milestone**: it is a live
-correctness bug in thread dispatch, it is intermittent, and until it is understood every red CI run
-has to be argued about individually.
+**Status: BUILT (2026-08-03), both ISAs.** Found, proved on the machine, and fixed. It was **frame placement**,
+which is where this entry said to look first, and the mechanism is exact rather than plausible:
+`current_sp()` is a real call at opt-level 0, so it returned `sp - 16` and put the frame at
+`sp - 304` while `trap.s` builds an S-mode trap frame at `sp - 288`. Sixteen bytes apart, so the user
+frame's `x[2]` sat on the trap frame's `x[0]` slot, which `trap_entry` writes as a literal zero. That
+is why `user sp` read `0x0000000000000000` and not garbage. The frame now goes at
+`top - size_of::<TrapFrame>()` on both ISAs, with the shallow TCB path handled by a reservation in
+`user_entry_trampoline` rather than a moving target. See notes/riscv-port.md.
+
+**The scope note below is upheld and one sentence of it is now wrong.** The fault does have a silent
+face: the `sepc == 0` guard fires only when `t5` happened to be 0, and otherwise the thread `sret`s
+to a garbage PC and dies quietly, so a lost-wakeup hang with no guard message really can be this bug.
+But the specific hang on `reclaim_frees_a_started_then_exited_childs_regions` is **not**: that test's
+child takes the TCB path, which runs with interrupts masked and cannot take the clobber, and the hang
+reproduces with this fix in the tree (one run in four under host load, a recipe that did not exist
+before). It is tracked as its own open item in notes/scheduler.md.
 
 #### The evidence, which we now have because we instrumented instead of chasing
 

@@ -2066,6 +2066,23 @@ pub fn current() -> Tid {
     current_tid()
 }
 
+/// **The user PC recorded in `tid`'s trap frame** (milestone 71, test support), read from the top of
+/// its kernel stack, which is the one address the trap path and the user-entry path must agree on.
+/// `None` if the name does not resolve or the thread has no kernel stack of its own.
+///
+/// This is [`dump_threads`]'s per-thread PC lookup, exposed so a test can assert the agreement
+/// rather than only a human reading a hang dump. A thread that has reached user mode reads back a
+/// user address here; a zero means nothing wrote a frame where the trap path will look for one.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn user_pc_of(tid: Tid) -> Option<u64> {
+    let guard = SCHED.lock();
+    let sched = guard.as_ref()?;
+    let t = sched.threads.get(tid)?;
+    t.stack
+        .as_ref()
+        .map(|s| crate::arch::exceptions::user_pc(s.top()))
+}
+
 /// **Postmortem: read a corpse's retained fault/exit message** (milestone 22, test support). A
 /// `Dead` thread keeps its five-word §26 message until the supervisor reaps it, so this proves the
 /// corpse's TCB still holds its fault-time state after the notification was delivered. `None` if

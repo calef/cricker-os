@@ -116,8 +116,18 @@ thread_trampoline:
 // EL0 entry address and x20 = the user stack pointer, both restored by `switch_to` on the way
 // in. We enable interrupts (a brand-new thread has no SPSR to restore, exactly as above) and
 // tail-call the Rust half, which reaps our predecessor and drops to EL0.
+//
+// RESERVE THE TRAP FRAME BEFORE THE FIRST RUST FRAME EXISTS (milestone 71, and this is the RISC-V
+// fix carried across for parity). We arrive with sp = the kernel stack top, and `enter_frame` puts
+// this thread's TrapFrame at top - 272, where `SAVE_CONTEXT` will rebuild it on every EL0 trap. The
+// entry path's own frames start at the same top, so without this they overlap the region
+// `frame.write` is about to fill. It has not bitten here (the overlapping slots happen to be dead
+// by then, and an EL1 trap builds at sp - 272 from a much lower sp, so it cannot reach this region
+// the way RISC-V's could), but "happens to be dead" is not an invariant. 272 is
+// size_of::<TrapFrame>(), asserted in exceptions.rs, and a multiple of 16 so sp stays aligned.
 .global user_entry_trampoline
 user_entry_trampoline:
+    sub     sp, sp, #272        // reserve [top-272, top) for this thread's TrapFrame
     // No early unmask here either (see thread_trampoline for the hang it caused). `finish_switch`
     // runs masked inside `user_thread_entry`; the `eret` that drops us to EL0 restores an SPSR
     // with IRQs enabled, so the EL0 thread is preemptible from its first instruction.

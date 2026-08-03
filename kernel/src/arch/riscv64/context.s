@@ -81,8 +81,19 @@ thread_trampoline:
 # Context::for_user_thread faked a frame whose ra points here, with s0 = the U-mode entry, s1 = the
 # user sp, and s2..s4 = the child's initial a0..a2. The portable `user_thread_entry` reaps our
 # predecessor and drops to U-mode.
+#
+# RESERVE THE TRAP FRAME BEFORE THE FIRST RUST FRAME EXISTS (milestone 71). We arrive with
+# sp = the kernel stack top, and `enter_frame` will put this thread's TrapFrame at top - 288 and
+# leave it there for the life of the thread: every U-mode trap lands on `stash.kernel_sp` (= top)
+# and rebuilds the frame at exactly that address. So the entry path must never own those bytes.
+# Dropping sp by a frame's worth here is what makes that true by construction, on a path that is
+# otherwise shallow enough to overlap. The alternative, computing the frame's address from the live
+# sp so it lands below the entry path, is what milestone 71 removed: it put the frame 16 bytes off
+# from where trap.s builds an S-mode frame, so any interrupt in the window rewrote it. The 288 is
+# size_of::<TrapFrame>(), asserted in exceptions.rs, and is a multiple of 16 so sp stays aligned.
 .global user_entry_trampoline
 user_entry_trampoline:
+    addi sp, sp, -288      # reserve [top-288, top) for this thread's TrapFrame
     mv   a0, s0            # the U-mode entry address
     mv   a1, s1            # the user stack pointer
     mv   a2, s2            # the child's initial a0

@@ -109,6 +109,48 @@ hard the timer IRQ stops. It did not fire for the RedoxFS livelock only because 
 `cargo` directly instead of the wrapper: **a bypassable backstop is not a backstop**, which is exactly
 why the ceiling lives in the kernel, where nothing can route around it.
 
+## OPEN: a lost wakeup on `reclaim_frees_a_started_then_exited_childs_regions` (riscv64)
+
+**It reproduces locally now, which it never did before**, and that is the useful part of this entry.
+Recipe, on an 8-core Apple Silicon host: four `sh -c 'while :; do :; done'` burners, then
+`cargo xtask test --arch riscv64` in a loop. **One failure in four runs.** Quiet, the same suite ran
+clean six times in a row (three full `script/test` runs and three `script/cpu-matrix` legs). Known
+occurrences, and the spread is the point:
+
+| When | Where | Test |
+|---|---|---|
+| 2026-08-03 | CI, `rva23s64` (PR #20) | `reclaim_frees_a_started_then_exited_childs_regions` |
+| 2026-08-03 | CI, PR #21, which changed two markdown files and **zero lines of code** | same |
+| 2026-08-03 | local, under four host burners, 1 run in 4 | same |
+| 2026-08-03 | CI, `thead-c906` (PR #23, the frame fix) | reached the watchdog with the guard silent |
+
+The docs-only occurrence is what rules out any recent milestone as the cause. The last one is on the
+branch that fixes the frame fault, which is what rules out the frame fault.
+
+**It is not milestone 71's frame-placement fault**, and the reproduction above was taken *with* that
+fix in the tree. The two were briefly conflated because the frame fault has a silent face (the guard
+sees only the `t5 == 0` subcase, so a corrupted thread usually dies quietly and its waiters hang; see
+notes/riscv-port.md). That reasoning is sound and it does not apply here: this test's child is started
+through the **TCB** path, which runs `enter_frame` with interrupts masked and cannot take the clobber.
+
+**What the dump says**, and it says much more than it used to, because RISC-V's `user_pc` was a stub
+returning 0 until milestone 71 gave the trap frame a fixed address to be read from. Every PC column
+below was `0x00000000` on this ISA a day ago:
+
+- **101 threads.** Four `Running` idle threads, one per core, and essentially everything else
+  `Blocked` with a live address space and a real U-mode PC. These are leaked subjects from earlier
+  tests, not participants in this one.
+- **109 endpoints.** Many read `senders=0 receivers=1 pending=0`, a thread blocked receiving something
+  nobody will ever send. Many others read `senders=0 receivers=0 pending=N` with N up to 8, messages
+  queued for a receiver that no longer exists.
+- Every thread has `wake_pending=false` and `on_cpu=false`, so this is not the wake-racing-switch-out
+  handoff that `finish_switch` exists to complete.
+
+The accumulation is the lead worth following first. A suite that arrives at this test holding a
+hundred blocked threads and a hundred stale endpoints is a different machine from the one the test was
+written against, and the failure is at the end of the run rather than the start. Whether the leak
+*causes* the lost wakeup or merely correlates with it is exactly the open question.
+
 ## Tests that guard this
 
 - `smp::a_batch_of_cpu_bound_work_reaches_every_core`, `smp::work_can_be_placed_on_every_core`:
