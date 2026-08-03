@@ -136,7 +136,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 70 | BUILT | `swish`'s remaining logic in a crate, host-testable like its siblings | `coremark`, `line_editor` and `compositor` are each a crate holding the logic plus a program holding the IO. `swish` is the largest program that is not, so its dispatch, endowment preview and outcome handling are reachable only through QEMU |
 | 71 | BUILT | The thread-start fault: a user thread dispatched with `sepc` = 0 | Frame placement, as this entry guessed. RISC-V put the frame 16 bytes under where `trap.s` builds an S-mode frame, so any interrupt in the window rewrote it and the user `sp` read the trap frame's hardwired-zero slot. Reproduced deterministically by widening the window; fixed by placing the frame at the stack top on both ISAs |
 | 72 | NOT-STARTED | A lost wakeup that a hundred leaked threads may be causing | Separate from 71 and proven so: it reproduces WITH that fix in the tree, and it hit a PR containing zero lines of code. **Reproduces locally at last**, 1 run in 4 under four host burners. Keeps `cpu matrix` intermittently red on every branch until fixed |
-| 73 | NOT-STARTED | Name the aarch64 files aarch64, before x86_64 makes it worse | Five files carry a riscv name while their aarch64 twin carries none, so the unnamed one reads as "the general case" and is not. A third ISA turns that from ambiguous into wrong. Scheme decided: suffix both sides. `crates/paging` is a separate defect, naming one side by ISA and the other by page-table FORMAT, and riscv64 has two formats. **`user/link.ld` is shared and must NOT be renamed** |
+| 73 | BUILT | Name the aarch64 files aarch64, before x86_64 makes it worse | Five files carried a riscv name while their aarch64 twin carried none, so the unnamed one read as "the general case" and was not. Both sides now carry the ISA, and a sixth file the entry had missed (`qemu-virt-initrd.dtb`) came with them. `user/link.ld` is genuinely shared and was NOT renamed. `crates/paging/src/aarch64.rs` is a different defect (an ISA name beside a page-table FORMAT name) and waits on Chris for the word: ARM has no one-token equivalent of `Sv39` |
 | 74 | NOT-STARTED | Cycle counters: SBI PMU on RISC-V, `PMCCNTR_EL0` on aarch64 | 16a's deliverable names "benches on real cycles via the SBI PMU extension" and **nothing implements it**, on either ISA. Both read a fixed-rate TIME counter today, not cycles. Gates milestone 25's `sel4bench`, which was deferred to hardware for exactly this |
 | 75 | NOT-STARTED | Who may read the cycle counter, and by what authority | Opening `PMCCNTR_EL0` to EL0 is not the same decision as opening `CNTVCT_EL0` was: it is **~160x finer** (~0.25 ns against ~41 ns), and the generic timer's coarseness was doing real security work. A capability is the answer this OS already has, and notes/abi.md anticipated it |
 
@@ -5197,8 +5197,40 @@ progress being made slowly for a longer timeout to rescue.
 
 ### 73. Name the aarch64 files aarch64, before x86_64 makes it worse
 
-**Status: NOT-STARTED.** Raised 2026-08-03 by Chris, from the observation that files named when this
-was an aarch64-only kernel never got renamed when RISC-V arrived and brought explicitly named twins.
+**Status: BUILT (2026-08-03), both ISAs**, for the five pairs. `crates/paging/src/aarch64.rs` is
+**deferred to Chris**, because the replacement is a name and names are his call; the proposal is in
+the section below. Raised 2026-08-03 by Chris, from the observation that files named when this was an
+aarch64-only kernel never got renamed when RISC-V arrived and brought explicitly named twins.
+
+**What landed**, and everything below this paragraph is the argument that produced it, kept as
+written:
+
+| was | is now |
+|---|---|
+| `kernel/link.ld`, `kernel/link-riscv.ld` | `kernel/link-aarch64.ld`, `kernel/link-riscv64.ld` |
+| `bench/baseline.txt` | `bench/baseline-aarch64.txt` |
+| `scripts/qemu-runner.sh` | `scripts/qemu-runner-aarch64.sh` |
+| `crates/dtb/tests/fixtures/qemu-virt.dtb`, `qemu-virt-initrd.dtb` | `qemu-aarch64-virt.dtb`, `qemu-aarch64-virt-initrd.dtb` |
+| `crates/dtb/tests/fixtures/qemu-riscv-virt.dtb`, `.dts` | `qemu-riscv64-virt.dtb`, `.dts` |
+| `crates/dtb/tests/qemu_virt.rs`, `qemu_riscv_virt.rs` | `qemu_aarch64_virt.rs`, `qemu_riscv64_virt.rs` |
+
+Three things the entry did not predict, all recorded because the next reader will meet them:
+
+- **`qemu-virt-initrd.dtb` was a sixth file**, not in the table. It has no RISC-V twin, so the
+  "suffix a file that has a named twin" rule had to be *checked* rather than applied, exactly as the
+  `user/link.ld` paragraph below demands. The check says it is aarch64-only rather than shared (it is
+  a `qemu-system-aarch64` dump), so it took the suffix. Leaving it would have produced
+  `qemu-aarch64-virt.dtb` beside `qemu-virt-initrd.dtb`, which is the defect this milestone exists to
+  remove, one directory deeper.
+- **Two files keep the family spelling**, `bench/baseline-riscv.txt` and
+  `scripts/qemu-runner-riscv.sh`, because the "two spellings get fixed" list below names only
+  `link-riscv.ld` and `qemu-riscv-virt.*`. The reason given for those two (the ISA is `riscv64`;
+  `riscv` alone is the family) applies to these as well, so the tree now spells it both ways. That is
+  a one-commit follow-up whenever Chris wants it.
+- **Both baseline files' first line was the literal `# bench/baseline.txt:`**, hardcoded in
+  `xtask::run_bench`, so the RISC-V baseline has always claimed to be the aarch64 one. Renaming
+  forced the issue: the header is now derived from the path being written, which fixes the RISC-V
+  file too. This is the only edit in the milestone that is not a path following a rename.
 
 **Inside `kernel/src/arch/` there is no problem**: the directory carries the ISA, so `aarch64/mmu.rs`
 and `riscv64/mmu.rs` are both named. Everywhere else, only one side is.
@@ -5236,7 +5268,27 @@ That makes `aarch64.rs` the file to rename, not `sv39.rs`, and it is the same se
 CLAUDE.md records for `compose` and `measure`: a thing that names itself correctly in its own first
 line while carrying a different kind of name on the outside.
 
+**This one was left alone**, and the name is Chris's. Two candidates, and the reason to raise it
+rather than pick it is that ARM has no short format name the way RISC-V does. `Sv39` is a single
+token that appears in the RISC-V privileged spec and in `satp`; the closest ARM equivalent is
+"VMSAv8-64", which names the *architecture's* memory system rather than one translation scheme, and
+the thing `aarch64.rs` actually implements is VMSAv8-64 pinned to a 4 KiB granule and a 48-bit VA,
+which ARM expresses as `TCR_EL1` field values and never gives a name of its own.
+
+| candidate | for | against |
+|---|---|---|
+| `vmsav8_64.rs`, type `Vmsav8_64` | ARM's own spelling, so a reader who knows the ARM ARM recognises it | the type name trips `non_camel_case_types` and needs an `#[allow]`, which is a smell on a public type |
+| `vmsav8.rs`, type `Vmsav8` | no lint, still ARM's vocabulary | drops the `-64`, and VMSAv8-32 exists, so it names a superset of what the file holds |
+
+The rename is otherwise mechanical: `pub mod aarch64` in `crates/paging/src/lib.rs`, the `pub use`
+beside it, and three call sites in `kernel/src/arch/aarch64/` (`mmu.rs` twice, `iommu.rs` twice) that
+reach `paging::aarch64::mair`. It is a fifteen-minute change once the word is chosen.
+
 #### One that is not a pair
+
+**Left alone by milestone 73**, deliberately: the decision below has not been made, and the name
+depends on it.
+
 
 `kernel/src/user/riscv_virtio_tests.rs` has no `virtio_tests.rs` twin; the shared virtio tests live
 inside `tests.rs`. So this is a RISC-V-only test module rather than half of a pair, and the question
