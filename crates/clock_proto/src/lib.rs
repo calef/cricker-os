@@ -621,6 +621,9 @@ mod tests {
     /// exactly the kind of arithmetic a mutant can quietly break (a `/` there made the floor
     /// microscopic, and every implausible proposal became plausible). Pin the products.
     #[test]
+    // Asserting on constants is this test's entire purpose: the constant is the thing a mutant
+    // rewrites, and the assertion is what notices (milestone 85).
+    #[allow(clippy::assertions_on_constants)]
     fn the_sanity_window_is_where_it_says() {
         assert_eq!(policy::NOT_BEFORE_NANOS, 1_767_225_600_000_000_000);
         assert_eq!(policy::NOT_AFTER_NANOS, 4_102_444_800_000_000_000);

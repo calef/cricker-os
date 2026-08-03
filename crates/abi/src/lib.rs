@@ -522,9 +522,12 @@ mod tests {
 
     /// The fault-endpoint slot is a valid slot index. Its value is `CSPACE_SLOTS - 1` by
     /// definition; what can actually be wrong (and what a mutant made wrong invisibly) is the
-    /// arithmetic putting it outside the cspace, where CAP_INSERT would refuse it and every
+    /// arithmetic putting it outside the cspace, where `CAP_INSERT` would refuse it and every
     /// supervised spawn would fail.
     #[test]
+    // Asserting on constants is this test's entire purpose: the constant is the thing a mutant
+    // rewrites, and the assertion is what notices (milestone 85).
+    #[allow(clippy::assertions_on_constants)]
     fn the_fault_slot_is_inside_the_cspace() {
         assert!(super::fault::FAULT_EP_SLOT < super::CSPACE_SLOTS);
         assert_eq!(super::fault::FAULT_EP_SLOT, super::CSPACE_SLOTS - 1);

@@ -437,8 +437,8 @@ fn a_prefix_finds_its_node_not_the_first_node() {
     assert_eq!((out[0].start, out[0].size), (0x900_0000, 0x1000));
 }
 
-/// A matched node stays matched across its children: the END_NODE bookkeeping compares depths
-/// with `==`, and `!=` clears the target at the first CHILD's close. The spec puts props before
+/// A matched node stays matched across its children: the `END_NODE` bookkeeping compares depths
+/// with `==`, and `!=` clears the target at the first `CHILD`'s close. The spec puts props before
 /// children, but this parser accepts either order, and a reg after a child is the blob that
 /// tells the two apart. That is this file's charter: blobs dtc would refuse.
 #[test]
@@ -612,7 +612,7 @@ fn initrd_reads_widths_and_refuses_the_empty_and_the_misnamed() {
 
 /// `totalsize` against the header's own length, met exactly. A claim smaller than the header
 /// cannot hold the header that makes it, and is refused even with a big buffer and in-range
-/// offsets, so nothing else can be the reason. A claim of exactly HEADER_LEN is the smallest
+/// offsets, so nothing else can be the reason. A claim of exactly `HEADER_LEN` is the smallest
 /// self-consistent one: the header checks pass and the walkers report their own truncation.
 #[test]
 fn totalsize_meets_the_header_length_exactly() {
@@ -703,7 +703,7 @@ fn a_reg_before_the_root_is_walked_past() {
 
 /// The prop walker's target may only be a matched node: not the root, which is what `||` in the
 /// match condition produces (the root's target check is the first that can pass), and not
-/// nothing, which is what an inverted END_NODE comparison produces (the first sibling to close
+/// nothing, which is what an inverted `END_NODE` comparison produces (the first sibling to close
 /// would end the search). The root and a decoy sibling carry the same property name with
 /// different values so either wrong answer is visible, not just a wrong count.
 #[test]
@@ -779,7 +779,7 @@ fn reserved_memory_honours_its_own_declared_widths() {
     assert_eq!((out[0].start, out[0].size), (0x1000, 0x2000));
 }
 
-/// `/chosen` stops meaning chosen when it closes: with the END_NODE comparison inverted the
+/// `/chosen` stops meaning chosen when it closes: with the `END_NODE` comparison inverted the
 /// walker keeps attributing properties to it, and a later sibling's `linux,initrd-end`
 /// overwrites the real one, returning an initrd of the wrong size.
 #[test]

@@ -897,8 +897,8 @@ mod tests {
         );
     }
 
-    /// **A clear F_NEXT means the `next` field is dead, whatever else the flags say.** The
-    /// descriptor is device-writable (bit 1 set, so the flag word is nonzero) with F_NEXT (bit 0)
+    /// **A clear `F_NEXT` means the `next` field is dead, whatever else the flags say.** The
+    /// descriptor is device-writable (bit 1 set, so the flag word is nonzero) with `F_NEXT` (bit 0)
     /// clear and a garbage `next` of 15 in an 8-slot queue. A correct validator ignores both; one
     /// that reads the chain bit with `|` instead of `&`, or hardcodes "has next", trips the
     /// `next >= qsize` refusal on a valid descriptor.
@@ -947,7 +947,7 @@ mod tests {
     }
 
     /// **`RING_END` is the value its formula documents: 0x100 + 6 + 8*8 = 0x146.** The used ring is
-    /// 2 (flags) + 2 (idx) + 8 bytes per element times LAYOUT_QSIZE = 8 elements + 2 (avail event).
+    /// 2 (flags) + 2 (idx) + 8 bytes per element times `LAYOUT_QSIZE` = 8 elements + 2 (avail event).
     /// Nothing else pins the value: every relation the proofs and the compile-time asserts state
     /// (`RING_END <= RING_BLOCK`, disjoint blocks) still holds for the smaller wrong values an
     /// operator slip produces, and the kernel aliases this constant, so a silent shrink would

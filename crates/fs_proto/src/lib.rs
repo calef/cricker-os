@@ -3766,7 +3766,7 @@ mod tests {
     }
 
     /// A name set, byte for byte, in an exact-fit buffer: the length-and-flag byte per record
-    /// (IS_DIR rides bit 7, above the 16-byte length), the terminator, and one byte less
+    /// (`IS_DIR` rides bit 7, above the 16-byte length), the terminator, and one byte less
     /// refused. The record cursor is `n + 1 + name.len()`, and either `+` rotting turns the
     /// layout into overlapping records with every length still adding up.
     #[test]
