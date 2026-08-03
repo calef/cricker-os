@@ -4979,3 +4979,65 @@ not prove a pull request introduced nothing, and `notes/fuzzing.md` says so plai
 - `rust-raspberrypi-OS-tutorials` for the aarch64-specific mechanics
 - OSDev wiki as a reference, not a tutorial
 - *Operating Systems: Three Easy Pieces* for the theory
+
+## 61. A lint is adopted on evidence from this tree, not on its description
+
+Milestone 68 turned on eight candidate lints and kept five. The three that lost were not bad lints;
+they are all defensible defaults that many Rust projects run. They were wrong **here**, and nothing
+short of running them over this tree and reading the output would have shown it.
+
+`cast_possible_truncation` is the clearest case. The argument for it in a kernel is strong: address
+arithmetic narrowed by an implicit `as` produces a plausible wrong address rather than a compile
+error. Then you run it and 199 of 497 hits are `u64`/`i64` to `usize`, flagged because a 32-bit
+pointer target would truncate. §19 names aarch64, riscv64 and x86_64; all three are 64-bit, and there
+is no way to tell clippy that `usize` is 64 bits for us. A gate whose output is more than half
+inapplicable trains a reader to skim, and a skimmed gate is not a gate.
+
+`items_after_statements` failed differently, and the way it failed is the more interesting one. All
+43 of its hits are the same shape:
+
+```rust
+// `aarch64_cpu` gives CNTKCTL_EL1 no named fields, so set the bit by hand: EL0VCTEN is bit 1.
+const EL0VCTEN: u64 = 1 << 1;
+CNTKCTL_EL1.set(CNTKCTL_EL1.get() | EL0VCTEN);
+```
+
+The constant sits beside its use, under the paragraph explaining it. Obeying the lint hoists all 43
+to the tops of their functions, separating each from its explanation and piling unrelated constants
+where a reader looks for the function's first action. The lint is enforcing a general rule against a
+**specific convention this project chose on purpose** (CLAUDE.md: keep the constraint next to the
+code it constrains), and the convention is better.
+
+`format_code_in_doc_comments` is the same lesson inside code rather than around it. It collapsed a
+deliberately aligned column of trailing comments in `crates/gpt`'s module example, destroying the
+call-to-destination mapping the example existed to show. A doc example is written to be read as much
+as run, so its alignment is authored meaning; a formatter cannot tell that from incidental spacing.
+
+`doc_markdown` is the counter-example that keeps this from being an argument against linting. It
+produced 416 hits, of which roughly half wanted backticks around `RedoxFS`, `PCIe`, `OpenSBI` and
+`AArch64`. Those are proper nouns, and rendering them as code tells a reader "this is an identifier
+you could type" about the name of a project. The other half were real: `TTBR0_EL1`, `BTreeMap`,
+`FRAME_SIZE`, `crates/measured_boot`. The fix was not to drop the lint but to configure it, because
+the split was legible once the hits were read. **Configure when the false positives share a cause,
+drop when they do not.**
+
+### The rule
+
+A lint goes in `[workspace.lints]` only after it has been run over this tree and its hits read. What
+gets recorded is the number, not the intention: `Cargo.toml` and `rustfmt.toml` each carry the count
+that killed the lints they exclude, so the next person to propose one finds the measurement instead
+of re-running it.
+
+The corollary matters more than the rule. Nothing goes in that table "to see what it finds", because
+`script/lint` runs `-D warnings`: adding a lint is a commitment to fix every existing violation
+first. That is the same ratchet discipline §38 applies to dead code, and it is why the two lints
+milestone 68 could not finish (`undocumented_unsafe_blocks`, 228 sites; `missing_docs`) are absent
+from the table rather than present with a pile of `#[allow]`s underneath them.
+
+### BUGS
+
+`undocumented_unsafe_blocks` is the gate this project most obviously wants and does not have: 228
+unsafe blocks carry no `SAFETY:` comment, against ~600 that do. It is scoped in the milestone-68
+roadmap entry. The reason it is not merely a matter of doing the work is recorded there too: an
+attempt to generate the comments produced a claim that was **false** at its first site, and a safety
+comment nobody can trust is worse than an absent one.

@@ -131,6 +131,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 65 | NOT-STARTED | A secrets service: hold the key, expose the operation, never the key | NTLMv2 does not verify a presented secret, it **computes with a key**, so §54's verifier shape does not fit it. Generalises the credentialer into a software HSM. Blocks milestone 55 |
 | 66 | NOT-STARTED | Vaultwarden: somebody else's real application, running here | the north star for "runs real workloads". Names the gaps concretely rather than aspirationally: no TCP **listen or accept** in the socket contract, threads mostly stubs, most of `std::fs` unsupported, no async runtime, no TLS, and SQLite is a C library. Largest single item on this roadmap |
 | 67 | NOT-STARTED | `swish` the language: quoting, sequencing, and exit status | `swish` is an interactive shell without control flow. Quoting is the one that is a correctness gap rather than a convenience: **a filename with a space is currently unnameable** |
+| 68 | PARTIAL | Code-quality gates: one lint policy, and the lints that lost | Import order, `[workspace.lints]`, dependency direction, unused dependencies, spelling. Three lints were adopted, measured and **removed** on the evidence. The unsafe-comment and doc-example halves are scoped but NOT done: 228 unsafe blocks lack a `SAFETY:` comment and the whole host workspace has 5 doctests |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -4808,3 +4809,64 @@ extension through *verification* rather than *isolation*, with no IPC cost. Wort
 other fork. It does not undercut the thesis so much as relocate the cost: the eBPF verifier is itself
 a large, subtle, repeatedly-CVE'd component, so "the verifier is the TCB" is its version of the
 problem, not an escape from it. No milestone; a reading item.
+
+### 68. Code-quality gates: one lint policy, and the lints that lost
+
+**Status: PARTIAL.** Started and largely landed 2026-08-02, from an audit of what the tree checked
+and what it did not. Two halves are deliberately unfinished and scoped below rather than rushed.
+
+#### What landed
+
+The tree had no `rustfmt.toml`, so import order was whatever each author typed, and lint selection
+lived in 19 of 39 crates repeating one `[lints.rust]` table while the other 20 said nothing. Both are
+now single decisions: `group_imports`/`imports_granularity` in `rustfmt.toml`, and
+`[workspace.lints]` with a one-line opt-in per member.
+
+Adopted: `cast_ptr_alignment`, `ptr_as_ptr`, `semicolon_if_nothing_returned`, `manual_let_else`,
+`doc_markdown`. 1,221 warnings went to zero. Three new non-clippy gates joined `script/lint`:
+**dependency direction** (nothing under `crates/` may depend on a binary, which would take it out of
+the host tests and Kani while still building), **unused dependencies** (§46 with a gate), and
+**spelling** over the prose.
+
+#### The part worth carrying off: three lints were removed on the evidence
+
+Each was enabled, measured against the real tree, and dropped, with the number recorded next to it
+in `Cargo.toml` and `rustfmt.toml` rather than silently omitted.
+
+- **`cast_possible_truncation`**: 199 of 497 hits are `u64`/`i64` to `usize`, warned about for
+  32-bit-pointer targets. §19 names aarch64, riscv64 and x86_64, all 64-bit. Over half its output is
+  about a platform that does not exist here, and clippy cannot be told otherwise.
+- **`items_after_statements`**: all 43 hits are a `const` sitting beside its use, under the comment
+  that explains it. Obeying it separates every one from its explanation.
+- **`format_code_in_doc_comments`** (rustfmt): destroyed an authored alignment column inside
+  `crates/gpt`'s module example, and emitted trailing whitespace into a doc comment.
+
+`doc_markdown` is the same story with the opposite ending: 416 hits, about half wanting backticks
+around `RedoxFS`, `PCIe` and `OpenSBI`, which are proper nouns that would then render as code a
+reader could type. `clippy.toml`'s `doc-valid-idents` takes those; the other half were real.
+
+The general rule, and the reason this milestone is worth a roadmap entry at all: **a lint that is
+right in general can be wrong for a tree, and the way to find out is to run it and read the hits.**
+Reasoning about a lint's description predicts none of these.
+
+#### What is NOT done, with counts
+
+Both remaining halves are real engineering, not mechanical, and a first attempt at automating one of
+them was reverted for producing exactly the wrong artefact.
+
+- **`undocumented_unsafe_blocks`: 228 blocks across 49 files** (crates/ 100, user/ 99, xtask/ 15,
+  kernel/ 14, so the kernel's own discipline is already good). The convention is ~67% adopted, so this
+  is a ratchet in §38's shape. It is NOT scriptable: a generated comment stamped across a test module
+  was tried, and it put "the node pointers come from `Box`ed locals" above an `unsafe impl Node`,
+  whose safety condition is that `next`/`set_next` address the same field. **A generic safety comment
+  that is occasionally false is worse than none**, because the whole point of the claim is that a
+  reader can trust it. Each site needs reading.
+- **Doc examples: 5 doctests in the entire host workspace**, and `rustdoc --show-coverage` reports
+  0.0% examples on every crate sampled (`ipc` 94.4% of items documented, 0.0% examples; `capability`
+  67.6%/0.0%). CLAUDE.md sets the FreeBSD standard explicitly ("a page without a worked example has
+  not finished explaining itself"), so this is a stated commitment the tree does not meet. A doctest
+  is documentation and a test at once, and `cargo test` already runs them, so the harness needs no
+  work; only the examples are missing.
+
+`missing_docs` belongs with the second of those (item coverage is 67–94% and no crate warns on it),
+and is best done in the same pass as the examples rather than separately.
