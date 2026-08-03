@@ -187,30 +187,78 @@ and the sibling at `sched.rs:2709`). They fail in 23 s with a named assertion, n
 dump, so the two are never confusable once you look. A 15% rate for that class under four burners is
 worth someone's attention on its own; it is not this.
 
-**Occurrences, and why the ISA column is misleading:**
+**The fix is not a rate reduction, which is the thing to check it against.** Deleting the probe means
+the child is never marked `killed`, so the conversion that reaped it has no input and cannot happen
+on any machine at any speed. That distinction matters because the observed *rates* vary wildly and
+say nothing about whether the cure works: never seen locally at first, one in four under four
+burners, and **three consecutive failures on one CI pull request** (#29, docs-only) on the shared
+runners. All three numbers are what the mechanism predicts, because the loser of the race is decided
+by how much wall clock the guest gets between the child being switched in and its `ecall`, and a
+two-core shared runner emulating four harts gives it very little. A hot rate is evidence the window
+is wide there, not evidence of a second bug.
 
-| When | Where | Test |
+**Occurrences:**
+
+| When | Where | ISA |
 |---|---|---|
-| 2026-08-03 | CI, `rva23s64` (PR #20) | `reclaim_frees_a_started_then_exited_childs_regions` |
-| 2026-08-03 | CI, PR #21, which changed two markdown files and **zero lines of code** | same |
-| 2026-08-03 | CI, `thead-c906` (PR #23, the frame fix) | reached the watchdog with the guard silent |
-| 2026-08-03 | local, under four host burners, 1 run in 4 | same |
-| 2026-08-03 | local, aarch64, widened window | same, first run |
+| 2026-08-03 | CI, `rva23s64` (PR #20) | riscv64 |
+| 2026-08-03 | CI, PR #21, which changed two markdown files and **zero lines of code** | riscv64 |
+| 2026-08-03 | CI, `thead-c906` (PR #23, the frame fix), guard silent | riscv64 |
+| 2026-08-03 | local, four host burners, 1 run in 4 | riscv64 |
+| 2026-08-03 | local, widened window, first run and every run | **aarch64** |
+| 2026-08-03 | CI, PR #29, which changed `design/roadmap.md` and nothing else | **aarch64** |
 
-Every wild occurrence is riscv64 and **none of that is a RISC-V property**. The code is portable
-`sched.rs`; the riscv64 leg just loses the race more often under TCG. The last row is the control
-that settles it, and it cost one run to take. §19 says parity is a gate; the corollary this bug
-supplies is that a failure appearing on one ISA is a *claim* about that ISA, and the way to check it
-is to widen the window on the other one rather than to reason about what is arch-specific. The
-reasoning was done here, carefully, and it pointed at RISC-V for four days.
+Every row is the same test and the same watchdog. The last one arrived in the wild, on the aarch64
+runner (`scripts/qemu-runner.sh`, `target/aarch64-unknown-none-softfloat`), while this milestone was
+being written, and it is the independent confirmation of what the widened-window control had already
+shown.
 
-### What this did not explain, and is not this bug
+### Why the first four were all riscv64, and why it is not a RISC-V property
+
+The answer is **exposure, not the ISA**, and it is countable rather than arguable. Per pull request,
+CI boots the suite seven times: once on aarch64 and once on riscv64 in `build + test`, then **five
+more riscv64 boots** in the `cpu matrix` job, which runs `script/cpu-matrix` over `rv64`,
+`sifive-u54`, `rva22s64`, `rva23s64` and `thead-c906` and deliberately does not stop at the first
+failure. **Six riscv64 rolls of the dice to one aarch64 roll.** Four riscv64 sightings before the
+first aarch64 one is what a 6:1 exposure ratio produces on its own.
+
+Two explanations offered along the way were wrong, and both are recorded because each is the kind
+that sounds right:
+
+- **"riscv64 loses the race more often under TCG."** Written in an earlier draft of this section, by
+  this milestone. Possible, unmeasured, and unnecessary once the exposure ratio is counted.
+- **"riscv64 runs first, so it failed first and the aarch64 leg never got there."** Offered while the
+  aarch64 hit was being reported, and it is backwards: `xtask test` runs the **aarch64 leg first**
+  and `return false`s on its failure, so a riscv64-only sighting is a run in which aarch64 was given
+  its chance and passed. The four riscv64 CI hits came from `cpu matrix`, which has no aarch64 leg to
+  order against.
+
+§19 says parity is a gate. The corollary this bug supplies is that a failure appearing on one ISA is
+a *claim* about that ISA, and the cheapest way to test the claim is to widen the window on the other
+one, not to reason about what is arch-specific. Careful reasoning was done here, and it pointed at
+RISC-V for four days.
+
+### The accumulation is not this bug, and the aarch64 hit does not make it one
 
 The **101 threads and 109 endpoints** were the lead everyone followed first, including this
-milestone's brief, and they are a real thing that is not this. They are blocked, so they add no
-scheduling load and no run-queue depth; 109 endpoints is a fifth of `MAX_ENDPOINTS`. The suite
-arrives at this test that way on **both** ISAs (`notes/riscv-parity-scope.md` measured the table at
-87 on each at the leak police), which is another reason it cannot explain a riscv64-looking failure.
+milestone's brief, and they are a real thing that is not this.
+
+**The A/B settles it.** Under the widened window the tree hangs with one line of test code present
+and passes with it removed, on both ISAs, deterministically, and the accumulation is **identical in
+both arms**: same tests before it, same 101 threads, same 109 endpoints. A cause you can leave in
+place while the effect disappears is not the cause. There is also a mechanism for the thing that
+does explain it, traced print by print, which the accumulation never had.
+
+It is worth saying because the aarch64 sighting reads at first like evidence *for* the accumulation:
+the leak is shared scheduler state present on both ISAs, so a second ISA failing is what you would
+predict if the leak were the cause. It is also what you would predict from portable `sched.rs` code
+and a race, which is what it turned out to be, and the two predictions are the same. **A prediction
+both hypotheses make cannot choose between them.** The A/B can, and did.
+
+The supporting reasons stand on their own too. The threads are blocked, so they add no scheduling
+load and no run-queue depth; 109 endpoints is a fifth of `MAX_ENDPOINTS`. The suite arrives at this
+test that way on **both** ISAs (`notes/riscv-parity-scope.md` measured the table at 87 on each at the
+leak police), so it never could have explained an ISA skew either.
 
 It is still worth its own milestone: 101 of `MAX_THREADS = 128` is 79% of a hard `create_tcb`
 failure, and the leak police only polices *runnable* leaks, so a blocked leak is invisible to it by
