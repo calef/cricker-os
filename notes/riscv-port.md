@@ -87,6 +87,59 @@ The port is worth doing precisely because it finds where the abstraction leaked.
    not cosmetic, and is commented as such at the definition. Only the full aarch64 test suite caught
    this; a compile-only check would have shipped it.
 
+   **And the RISC-V answer to that lesson was wrong for a year (milestone 71, 2026-08-03).** The
+   paragraph above says the frame goes at the top of the kernel stack. RISC-V did not do that. Its
+   TCB entry path (`user_entry_trampoline` -> `user_thread_entry` -> `enter_frame`) is shallow enough
+   that a frame at the top would have overlapped `enter_frame`'s own stack, so the port computed the
+   address from the **live `sp`** instead:
+
+   ```rust
+   let slot = (crate::arch::current_sp().min(top) - size_of::<TrapFrame>() as u64) & !15;
+   ```
+
+   That trades a deterministic overlap for an intermittent one, and the intermittent one is worse
+   because everything below `sp` belongs to somebody else. Two facets, both real:
+
+   - `current_sp()` is a **real call at opt-level 0** with a 16-byte frame, so it returns `sp - 16`
+     and the frame landed at `sp - 304`. `trap.s` builds an S-mode trap frame at `sp - 288`. The two
+     differ by exactly 16 bytes, so the user frame's fields sat on the trap frame's fields shifted by
+     two register slots:
+
+     | user frame field | offset | reads, after a trap | value |
+     |---|---|---|---|
+     | `x[2]`, the user `sp` | +16 | trap `x[0]` | **literally 0**, `trap_entry` does `sd zero, 0*8(sp)` |
+     | `sepc` | +256 | trap `x[30]` | `t5`, which is 0 only sometimes |
+     | `sstatus` | +280 | trap `scause` | UXL = 0, an illegal U-mode XLEN |
+
+   - any **call** from `enter_frame` after the frame is built lands in the same region. There are
+     none in the shipped code, but the investigation's own instrumentation tripped over it twice:
+     `core::hint::spin_loop()` and `ptr::write_volatile` are calls at opt-level 0, and their 48-byte
+     frames landed on the user frame's `sepc` and `stval`.
+
+   **The two faces of the fault, and why one guard cannot see both.** The `sepc == 0` guard in
+   `enter_user` fires only in the subcase where `t5` happened to be 0. Every other time the thread
+   `sret`s to a garbage PC with an illegal `sstatus`, dies on its first instruction, and never answers
+   whoever was waiting on it. That is a lost-wakeup hang carrying **no guard message at all**, which
+   is why a CI job can hang in the watchdog with the guard compiled in, live, and silent. A run that
+   does not print the guard's message is not a run in which this did not happen.
+
+   The fix is a **reservation, not a moving target**: `user_entry_trampoline` drops `sp` by a frame's
+   worth before the first Rust frame exists, so the region is off-limits to the entry path by
+   construction, and `enter_frame` uses `top - size_of::<TrapFrame>()` on both ISAs. aarch64 took the
+   same reservation: its overlapping slots only happen to be dead by the time `frame.write` runs, and
+   "happens to be dead" is not an invariant. `enter_frame` now asserts the slot is at or above the
+   live `sp`, which the old placement failed on the very first user entry.
+
+   It also unstranded two things. `user_pc` on RISC-V was a stub returning 0 **because** there was no
+   fixed address to read; it is now the aarch64 twin. And on the exec path the old placement left the
+   user thread with only the kernel stack that happened to lie below `enter_frame`'s `sp`, with
+   everything `run` and `load` had consumed stranded above the frame and never reclaimed.
+
+   How it was proved, since it had never reproduced locally in nine full runs: widening the window
+   with a **call-free** spin between `frame.write` and `enter_user` reproduced it on the first run,
+   deterministically, printing `sp 0x0 want 0x501000`. The same probe with the fix in place never
+   fired.
+
 A related, smaller **ABI leak** the traps step resolves: `syscall.rs` reads the syscall number from
 `frame.x[8]` and args from `frame.x[0..]`, the aarch64 `svc`+`x8` convention. RISC-V's `ecall` ABI
 puts the number in `a7` and args in `a0`..`a5`; the RISC-V `TrapFrame` compiles today but the index
