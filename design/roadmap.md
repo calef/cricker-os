@@ -5280,15 +5280,16 @@ which ARM expresses as `TCR_EL1` field values and never gives a name of its own.
 | `vmsav8_64.rs`, type `Vmsav8_64` | ARM's own spelling, so a reader who knows the ARM ARM recognises it | the type name trips `non_camel_case_types` and needs an `#[allow]`, which is a smell on a public type |
 | `vmsav8.rs`, type `Vmsav8` | no lint, still ARM's vocabulary | drops the `-64`, and VMSAv8-32 exists, so it names a superset of what the file holds |
 
-The rename is otherwise mechanical: `pub mod aarch64` in `crates/paging/src/lib.rs`, the `pub use`
-beside it, and three call sites in `kernel/src/arch/aarch64/` (`mmu.rs` twice, `iommu.rs` twice) that
-reach `paging::aarch64::mair`. It is a fifteen-minute change once the word is chosen.
+The rename is otherwise mechanical. `pub mod aarch64` and the `pub use Aarch64` beside it in
+`crates/paging/src/lib.rs`, then three lines of code that reach `paging::aarch64::mair` (`mmu.rs`
+once, `iommu.rs` twice), plus three comments naming the path (`mmu.rs`, `crates/paging/tests/
+mapping.rs`, and the module's own first line). Whether the type `Aarch64` follows the file is part of
+the same decision. It is a fifteen-minute change once the word is chosen.
 
 #### One that is not a pair
 
 **Left alone by milestone 73**, deliberately: the decision below has not been made, and the name
 depends on it.
-
 
 `kernel/src/user/riscv_virtio_tests.rs` has no `virtio_tests.rs` twin; the shared virtio tests live
 inside `tests.rs`. So this is a RISC-V-only test module rather than half of a pair, and the question
