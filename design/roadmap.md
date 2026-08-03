@@ -137,6 +137,8 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 71 | BUILT | The thread-start fault: a user thread dispatched with `sepc` = 0 | Frame placement, as this entry guessed. RISC-V put the frame 16 bytes under where `trap.s` builds an S-mode frame, so any interrupt in the window rewrote it and the user `sp` read the trap frame's hardwired-zero slot. Reproduced deterministically by widening the window; fixed by placing the frame at the stack top on both ISAs |
 | 72 | BUILT | A lost wakeup that a hundred leaked threads may be causing | Not the leak, and not RISC-V. One line of test code probed `reclaim_region(...).is_err()` on its own child's TCB region, which under §16 as amended **arms the kill**; the child was reaped before it could SEND. Widening the window reproduces it on aarch64 too, first run. The 101-thread accumulation is real, unrelated, and wants its own entry |
 | 73 | NOT-STARTED | Name the aarch64 files aarch64, before x86_64 makes it worse | Five files carry a riscv name while their aarch64 twin carries none, so the unnamed one reads as "the general case" and is not. A third ISA turns that from ambiguous into wrong. Scheme decided: suffix both sides. `crates/paging` is a separate defect, naming one side by ISA and the other by page-table FORMAT, and riscv64 has two formats. **`user/link.ld` is shared and must NOT be renamed** |
+| 74 | NOT-STARTED | Cycle counters: SBI PMU on RISC-V, `PMCCNTR_EL0` on aarch64 | 16a's deliverable names "benches on real cycles via the SBI PMU extension" and **nothing implements it**, on either ISA. Both read a fixed-rate TIME counter today, not cycles. Gates milestone 25's `sel4bench`, which was deferred to hardware for exactly this |
+| 75 | NOT-STARTED | Who may read the cycle counter, and by what authority | Opening `PMCCNTR_EL0` to EL0 is not the same decision as opening `CNTVCT_EL0` was: it is **~160x finer** (~0.25 ns against ~41 ns), and the generic timer's coarseness was doing real security work. A capability is the answer this OS already has, and notes/abi.md anticipated it |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -5282,3 +5284,151 @@ the tree must be byte-identical afterwards apart from the paths themselves. `lin
 `qemu-runner.sh` have 18 and 13 referencing files, several of them build scripts and CI workflow
 steps, so the risk is a missed reference that only fails on one ISA or only in CI. Grep for the bare
 stem, not just the path.
+
+### 74. Cycle counters: SBI PMU on RISC-V, `PMCCNTR_EL0` on aarch64
+
+**Status: NOT-STARTED.** Raised 2026-08-03, from an audit of what milestone 16a actually needs. Its
+deliverable includes "the benches on real cycles via the SBI PMU extension", and **nothing in the tree
+implements it.** `PMU` appears only in device-tree test fixtures and in this file.
+
+#### What we read today, and why it is not cycles
+
+Both ISAs read a **fixed-rate reference counter**, not a cycle counter:
+
+| | aarch64 | riscv64 |
+|---|---|---|
+| today | `CNTVCT_EL0` + `CNTFRQ_EL0` | the `time` CSR (`rdtime`) |
+| counts | a fixed tick, 62.5 MHz under QEMU | a fixed tick |
+| resolution | ~41 ns on real silicon | comparable |
+| the cycle counter we lack | `PMCCNTR_EL0` | SBI PMU, or the `cycle` CSR when `mcounteren` permits |
+
+notes/pmu.md already sets this out for aarch64 and calls confusing the two a category error. The
+generic timer is the OS's clock; the PMU counts CPU cycles at ~0.25 ns resolution and its rate moves
+with frequency scaling. **Two ways to measure a fast operation: one shot at high resolution (PMU,
+which is what sel4bench does) or a long loop at low resolution (the generic timer, which is what we
+do).** Both are valid and they fail under different conditions.
+
+#### Why it matters more than "another counter"
+
+The thesis claim is a cross-OS comparison, and **the literature it is compared against is denominated
+in cycles**, not nanoseconds. notes/benchmarks.md already does the conversion by hand and draws the
+honest conclusion:
+
+> At ~3.2 GHz, 705 ns is ~2,200 cycles round trip, where an L4-lineage fastpath does 300 to 600. Per
+> cycle we are 4 to 7 times heavier, and honestly so.
+
+That paragraph is currently arithmetic performed on a nanosecond measurement using an assumed clock
+rate. Measuring cycles directly turns the project's most-cited number from a derived figure into a
+read one, and it is the number a reader from the L4 world will look for first.
+
+#### Two things block on it
+
+- **16a** cannot deliver "benches on real cycles" without it.
+- **Milestone 25's `sel4bench`** is built and booting but was deferred to real hardware precisely
+  because it times single operations through `PMCCNTR_EL0`, which neither QEMU-TCG nor Apple HVF
+  provides. notes/pmu.md's last section explains why virtualization keeps the PMU out of reach: the
+  generic timer is architected state a hypervisor must present, and the PMU is not.
+
+#### Parity makes this two ISAs, not one
+
+§19 is a gate, and it bites here in an unobvious direction. The milestone reads as RISC-V work because
+16a is the RISC-V board, but **`PMCCNTR_EL0` is equally unimplemented**, so a RISC-V-only cycle
+counter would create a parity gap in the one subsystem whose entire purpose is cross-machine
+comparison. Both sides are small and they are not symmetrical in shape:
+
+- **aarch64**: enable the counter (`PMCR_EL0`), open it to EL0 (`PMUSERENR_EL0`), read `PMCCNTR_EL0`.
+  Register writes, no firmware call. **Whether that EL0 opening happens at all is milestone 75's
+  decision, not this one's**, and the aarch64 half should not land until it is answered: the counter
+  is ~160x finer than the one §10 already excepted, so it does not inherit that exception.
+- **riscv64**: the SBI PMU extension (EID `0x504D55`), which discovers counters, configures an event,
+  and starts and stops it. The tree already makes SBI calls (`SBI_HSM_EID`, `SBI_IPI_EID`,
+  `SBI_RFENCE_EID`, SBI TIME), so the plumbing exists and this is a fourth extension rather than new
+  machinery.
+
+#### What can be done before the board, and what cannot
+
+**Buildable now:** both drivers, the `Isa`-style capability probe, the benchmark harness change, and
+the aarch64 path end to end (Apple Silicon has a real PMU; whether macOS lets a guest reach it is the
+open question notes/pmu.md raises).
+
+**Not verifiable until silicon:** the RISC-V numbers. QEMU-TCG models an instruction counter that has
+nothing to do with cycles, so a green test under emulation proves the plumbing and says nothing about
+the measurement. Say so in the note rather than publishing an emulated cycle count.
+
+#### Scope note
+
+**Do not turn this into a profiling framework.** One counter, read before and after, on two ISAs. The
+PMU can count dozens of events and the temptation to expose them generically should wait for a second
+consumer, which is CLAUDE.md's rule against speculative trait-ification. `sel4bench` comparability is
+the requirement; anything beyond it is scope.
+
+### 75. Who may read the cycle counter, and by what authority
+
+**Status: NOT-STARTED.** Carved out of milestone 74 on 2026-08-03, at Chris's direction, because it
+is a decision rather than a driver and it should not be settled inside a benchmarking milestone by a
+bullet point.
+
+#### The question
+
+Milestone 74 needs EL0 to read a cycle counter. On aarch64 the mechanism is `PMUSERENR_EL0`, and
+reaching for it looks like precedent: the kernel already opens `CNTVCT_EL0` to EL0 through
+`CNTKCTL_EL1.EL0VCTEN`, and notes/abi.md argues that exception carefully. **The claim to examine is
+that the second opening inherits the first one's argument.** It does not, and the reason is a number.
+
+#### Why it is not the same decision
+
+The existing argument, from notes/abi.md, is sound and worth quoting because the new case tests
+exactly where it stops:
+
+> It is an exception made with eyes open. A monotonic counter grants no authority to *affect*
+> anything, only to observe the passage of time, so it does not mint the kind of ambient authority
+> §10 rejects (which was about *reaching resources* you were not handed). What it does cost is a
+> timing side channel, and that is a real cost every OS offering userspace timing accepts.
+
+Both halves still hold for the PMU: it is a read, and it affects nothing. What changes is the size of
+the cost that was accepted:
+
+| | generic timer, open today | PMU cycle counter |
+|---|---|---|
+| resolution | **~41 ns** (24 MHz) | **~0.25 ns** |
+| ratio | | roughly **160x finer** |
+
+**The generic timer's coarseness is doing security work, whether or not it was chosen for that.** A
+41 ns tick blunts a large class of cache-timing measurement simply by being unable to see it; a
+quarter-nanosecond counter is the instrument those attacks want. So "we already accepted a timing
+side channel" is true and is not the same as "we already accepted this one". A decision to grant the
+finer one should be made on its own evidence, and recorded, rather than inherited.
+
+#### Three options, and the second is the one this OS is for
+
+1. **Ambient, like the generic timer.** Open it to every EL0 program. Simplest, matches Linux, and
+   spends the §10 exception a second time on a much better side channel.
+2. **A capability.** The benchmark harness holds a token that permits the read; nothing else can. This
+   is the answer the whole system is built to give, and **notes/abi.md already anticipated it**: "A
+   stricter build could revoke even this and route time through a capability; we have not, and this
+   note is the record of that." The consumer is narrow (the primitive suite and `sel4bench`
+   comparability), which is what makes gating cheap here and would not have been true for the wall
+   clock.
+3. **Kernel-mediated.** EL0 asks the kernel to time an operation; the counter never opens. Strongest,
+   and it defeats the purpose, because the measurement then includes the syscall it is trying to
+   measure. Recorded so it is visibly rejected rather than overlooked.
+
+Option 2 costs a capability type, a grant in the spawn path, and a trap-and-check on the register
+read. It also produces a demonstration the project can use: **a fine-grained timer is exactly the
+resource a capability system should be able to hand out deliberately**, and it would be the first one
+whose justification is a side channel rather than a resource.
+
+#### Parity, and a caveat about where this bites
+
+RISC-V's equivalent is `scounteren`'s cycle bit, and the kernel already manipulates `scounteren` for
+`rdtime`. So the same decision applies on both ISAs and lands in the same two files (§19). One
+asymmetry worth knowing before designing: on RISC-V the counter may also be reachable through SBI PMU
+without any CSR opening at all, so "closed to EL0" and "unreadable" are not the same statement there.
+
+#### Scope note
+
+This is a decision milestone. It should produce a `DECISIONS` section and a short implementation, not
+a security framework. If option 2 is chosen it must **not** grow into a general "sensitive register"
+capability class on one consumer, which is CLAUDE.md's rule against speculative abstraction. Milestone
+74 should not land its aarch64 half until this is answered, because the wrong answer is the one that
+is hardest to walk back: an ambient opening, once shipped, is a thing programs come to depend on.
