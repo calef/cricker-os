@@ -1843,6 +1843,16 @@ fn reap_region_objects(base: u64, end: u64) -> Result<(), ()> {
 ///
 /// Must run outside any `Drop`, because the reap takes `SCHED` (see `reap_region_objects`); the
 /// `unpin` + `destroy` that follow are `SCHED`-free.
+///
+/// # BUGS
+///
+/// **`Err` is destructive, and it does not read that way at a call site.** A refusal caused by a
+/// live thread arms DECISIONS §16's kill on *every* live thread in the region, so the first call
+/// dooms them and the owner's retry reclaims. That is the point (§24's `^C` escalation is built on
+/// it), but it makes `reclaim_region(r).is_err()` unusable as a question: asking it kills the
+/// answer. A caller that wants to know whether a region is busy without ending what is in it has no
+/// such call today. Milestone 72 traced an intermittent lost-wakeup hang to one line of test code
+/// that used the refusal as a probe; see `user::tests::reclaim_frees_a_started_then_exited_childs_regions`.
 pub fn reclaim_region(region: u64) -> Result<(), ()> {
     // A region carved into children cannot be reclaimed: its child regions own part of its run and
     // free those pages themselves. The owner must destroy the children first. Refuse before any

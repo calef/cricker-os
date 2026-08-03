@@ -109,47 +109,104 @@ hard the timer IRQ stops. It did not fire for the RedoxFS livelock only because 
 `cargo` directly instead of the wrapper: **a bypassable backstop is not a backstop**, which is exactly
 why the ceiling lives in the kernel, where nothing can route around it.
 
-## OPEN: a lost wakeup on `reclaim_frees_a_started_then_exited_childs_regions` (riscv64)
+## CLOSED: the lost wakeup on `reclaim_frees_a_started_then_exited_childs_regions`
 
-**It reproduces locally now, which it never did before**, and that is the useful part of this entry.
-Recipe, on an 8-core Apple Silicon host: four `sh -c 'while :; do :; done'` burners, then
-`cargo xtask test --arch riscv64` in a loop. **One failure in four runs.** Quiet, the same suite ran
-clean six times in a row (three full `script/test` runs and three `script/cpu-matrix` legs). Known
-occurrences, and the spread is the point:
+**A refused region reclaim killed the child the test was waiting for.** One line of test code, no
+kernel defect, and not a RISC-V defect either: reproduced on aarch64 the moment the window was
+widened. Milestone 72, 2026-08-03.
+
+### What it was
+
+The test opened by probing the refusal:
+
+```rust
+crate::sched::start_tcb(tid, [0; 3]).expect("start");
+// "Ready but not yet run ... The refusal leaves the region untouched."
+assert!(crate::sched::reclaim_region(tcb_region).is_err());
+let got = crate::sched::ipc_recv(report)[0];   // waits for the child's SEND
+```
+
+That comment was true when it was written and stopped being true when DECISIONS §16 was amended.
+A refused reclaim is **not** passive any more: `reap_region_objects` sets `killed = true` on every
+live thread in the region and *then* returns `Err`, so the owner's retry can tear a runaway down.
+§24's `^C` escalation is built on exactly that. So the probe marked the child `killed`, and
+`schedule()` converts a killed thread to a corpse at its next preemption:
+
+```rust
+if t.killed && t.state == State::Running { t.state = State::Finished; }
+```
+
+From there it is a plain race between the child's nine instructions and its own core's next timer
+tick. Win it and the child SENDs, the test passes, and the armed kill is harmless because the child
+was about to exit anyway. Lose it and the child is reaped **without ever sending**, `ipc_recv`
+blocks forever, every core falls to idle, and the 60 s heartbeat fires. Host load widens the window
+because a descheduled vCPU thread comes back with its timer interrupt already pending, which is why
+four burners moved it from "never seen locally" to one run in four.
+
+### How it was proved, since a one-in-four race is not evidence
+
+**Widen the window instead of waiting for it** (the method milestone 71 used on the frame fault).
+A call-free three-instruction delay loop in front of `REPORT_STUB`, sized to span several ticks:
+
+```text
+riscv64   lui t0, 0x4000 ; addi t0, t0, -1 ; bne t0, x0, -4
+aarch64   mov x5, #0x4000000 ; subs x5, x5, #1 ; b.ne -4
+```
+
+With the probe in place that hangs the watchdog on the **first run and every run**, on both ISAs.
+With the probe removed the same widened child passes. Temporary prints in the two suspect lines
+caught the whole chain in order:
+
+```text
+[M72] child tid=0xe00000065 started
+[M72] ARM kill tid=0xe00000065 state=Running
+[M72] reclaim(tcb_region) -> Err(())
+[M72] CONVERT killed->Finished tid=0xe00000065
+WATCHDOG: no progress for ~60 s. Every core idle, every thread blocked: a lost-wakeup hang.
+```
+
+The forced dump matched the four wild occurrences exactly: **101 threads, 109 endpoints**, every
+thread `wake_pending=false on_cpu=false`, all four inboxes empty. Same fingerprint, same hang.
+
+### The fix, and what it costs
+
+The probe is deleted. Nothing else changed. The refusal's own behaviour is proved by
+`user::force_kill_tests::destroy_force_kills_a_runaway_and_reclaims_its_region`, which points the
+destructive call at a runaway that is *meant* to die, and that is the only subject it can honestly
+be pointed at. `reclaim_region` now carries a `BUGS` section saying so where a caller meets it.
+
+**Occurrences, and why the ISA column is misleading:**
 
 | When | Where | Test |
 |---|---|---|
 | 2026-08-03 | CI, `rva23s64` (PR #20) | `reclaim_frees_a_started_then_exited_childs_regions` |
 | 2026-08-03 | CI, PR #21, which changed two markdown files and **zero lines of code** | same |
-| 2026-08-03 | local, under four host burners, 1 run in 4 | same |
 | 2026-08-03 | CI, `thead-c906` (PR #23, the frame fix) | reached the watchdog with the guard silent |
+| 2026-08-03 | local, under four host burners, 1 run in 4 | same |
+| 2026-08-03 | local, aarch64, widened window | same, first run |
 
-The docs-only occurrence is what rules out any recent milestone as the cause. The last one is on the
-branch that fixes the frame fault, which is what rules out the frame fault.
+Every wild occurrence is riscv64 and **none of that is a RISC-V property**. The code is portable
+`sched.rs`; the riscv64 leg just loses the race more often under TCG. The last row is the control
+that settles it, and it is the reason §19 parity work should not have started here.
 
-**It is not milestone 71's frame-placement fault**, and the reproduction above was taken *with* that
-fix in the tree. The two were briefly conflated because the frame fault has a silent face (the guard
-sees only the `t5 == 0` subcase, so a corrupted thread usually dies quietly and its waiters hang; see
-notes/riscv-port.md). That reasoning is sound and it does not apply here: this test's child is started
-through the **TCB** path, which runs `enter_frame` with interrupts masked and cannot take the clobber.
+### What this did not explain, and is not this bug
 
-**What the dump says**, and it says much more than it used to, because RISC-V's `user_pc` was a stub
-returning 0 until milestone 71 gave the trap frame a fixed address to be read from. Every PC column
-below was `0x00000000` on this ISA a day ago:
+The **101 threads and 109 endpoints** were the lead everyone followed first, including this
+milestone's brief, and they are a real thing that is not this. They are blocked, so they add no
+scheduling load and no run-queue depth; 109 endpoints is a fifth of `MAX_ENDPOINTS`. The suite
+arrives at this test that way on **both** ISAs (`notes/riscv-parity-scope.md` measured the table at
+87 on each at the leak police), which is another reason it cannot explain a riscv64-looking failure.
 
-- **101 threads.** Four `Running` idle threads, one per core, and essentially everything else
-  `Blocked` with a live address space and a real U-mode PC. These are leaked subjects from earlier
-  tests, not participants in this one.
-- **109 endpoints.** Many read `senders=0 receivers=1 pending=0`, a thread blocked receiving something
-  nobody will ever send. Many others read `senders=0 receivers=0 pending=N` with N up to 8, messages
-  queued for a receiver that no longer exists.
-- Every thread has `wake_pending=false` and `on_cpu=false`, so this is not the wake-racing-switch-out
-  handoff that `finish_switch` exists to complete.
+It is still worth its own milestone: 101 of `MAX_THREADS = 128` is 79% of a hard `create_tcb`
+failure, and the leak police only polices *runnable* leaks, so a blocked leak is invisible to it by
+construction. Nothing today would warn before the suite hit the wall.
 
-The accumulation is the lead worth following first. A suite that arrives at this test holding a
-hundred blocked threads and a hundred stale endpoints is a different machine from the one the test was
-written against, and the failure is at the end of the run rather than the start. Whether the leak
-*causes* the lost wakeup or merely correlates with it is exactly the open question.
+### The general lesson
+
+**A call that returns `Err` may still have done something.** `reclaim_region(r).is_err()` reads like
+a question and is an act; the test used it as a question and the comment beside it asserted the
+opposite of the truth. When a semantic is amended, the amendment lands in the function it changed,
+and every caller that encoded the old semantic in a *comment* keeps compiling.
 
 ## Tests that guard this
 
