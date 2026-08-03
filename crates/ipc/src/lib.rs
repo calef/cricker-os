@@ -377,12 +377,26 @@ mod verification {
 
 #[cfg(test)]
 mod tests {
+    //! Every `unsafe` call below satisfies the same two obligations, stated once here rather than
+    //! re-derived at each of the twenty-odd sites.
+    //!
+    //! **The node outlives the endpoint.** Each test declares its nodes before its `Endpoint`, and
+    //! Rust drops locals in reverse declaration order, so `e` is destroyed first. A node parked on a
+    //! queue when the test ends is therefore still valid when the endpoint goes away, which is the
+    //! "stays valid for as long as it may be queued" half of `send`/`recv`'s contract.
+    //!
+    //! **The node is on no queue when it is passed.** This is the half that is NOT free, because
+    //! several tests reuse one receiver node: it holds only because a `recv` that returns `Signal`
+    //! or `FromSender` never queues its argument. Where a site depends on that, its own comment
+    //! says so.
+
     use super::*;
 
     struct N {
         next: Option<NonNull<N>>,
     }
 
+    // SAFETY: `next` and `set_next` read and write the same `next` field and nothing else, which is the whole of the `Node` contract.
     unsafe impl Node for N {
         fn next(&self) -> Option<NonNull<Self>> {
             self.next
@@ -404,8 +418,10 @@ mod tests {
         let sp = NonNull::from(&mut *s);
         let mut e: Endpoint<N> = Endpoint::new();
 
+        // SAFETY: `sp` is a live node, on no queue (see the module note).
         assert_eq!(unsafe { e.send(sp) }, Send::Blocked); // nobody waiting: park the sender
         assert_eq!(
+            // SAFETY: as above.
             unsafe { e.recv(NonNull::from(&mut *r)) },
             Recv::FromSender(sp)
         ); // receiver collects it
@@ -418,8 +434,10 @@ mod tests {
         let rp = NonNull::from(&mut *r);
         let mut e: Endpoint<N> = Endpoint::new();
 
+        // SAFETY: `rp` is a live node, on no queue (see the module note).
         assert_eq!(unsafe { e.recv(rp) }, Recv::Blocked);
         assert_eq!(
+            // SAFETY: as above.
             unsafe { e.send(NonNull::from(&mut *s)) },
             Send::Rendezvous(rp)
         ); // sender meets the waiter
@@ -432,13 +450,18 @@ mod tests {
         let (ap, bp) = (NonNull::from(&mut *a), NonNull::from(&mut *b));
         let mut e: Endpoint<N> = Endpoint::new();
 
+        // SAFETY: `ap` and `bp` are live nodes, each on no queue (see the module note).
         assert_eq!(unsafe { e.send(ap) }, Send::Blocked);
+        // SAFETY: as above.
         assert_eq!(unsafe { e.send(bp) }, Send::Blocked);
         assert_eq!(
+            // SAFETY: as above.
             unsafe { e.recv(NonNull::from(&mut *r)) },
             Recv::FromSender(ap)
         );
+        // SAFETY: as above; the previous `recv` returned `FromSender`, so `r` was never queued and is still on no queue.
         assert_eq!(
+            // SAFETY: as above.
             unsafe { e.recv(NonNull::from(&mut *r)) },
             Recv::FromSender(bp)
         );
@@ -452,8 +475,11 @@ mod tests {
 
         assert_eq!(e.signal(), None); // counted
         assert_eq!(e.signal(), None);
+        // SAFETY: `r` is a live node, on no queue (see the module note). The first two calls drain counted signals and never queue it; only the third parks it.
         assert_eq!(unsafe { e.recv(NonNull::from(&mut *r)) }, Recv::Signal);
+        // SAFETY: as above.
         assert_eq!(unsafe { e.recv(NonNull::from(&mut *r)) }, Recv::Signal);
+        // SAFETY: as above.
         assert_eq!(unsafe { e.recv(NonNull::from(&mut *r)) }, Recv::Blocked);
     }
 
@@ -468,7 +494,9 @@ mod tests {
         // Via `default()`: the kernel retypes endpoint pages through it, not through `new()`.
         let mut e: Endpoint<N> = Endpoint::default();
 
+        // SAFETY: `ap` and `bp` are live nodes, each on no queue (see the module note).
         assert_eq!(unsafe { e.send(ap) }, Send::Blocked);
+        // SAFETY: as above.
         assert_eq!(unsafe { e.send(bp) }, Send::Blocked);
         assert!(!e.is_idle(), "parked senders hold the endpoint live");
 
@@ -479,6 +507,7 @@ mod tests {
 
         // The other queue drains through the same path: a receiver can be parked too.
         let rp = NonNull::from(&mut *r);
+        // SAFETY: `rp` is a live node, on no queue (see the module note); `drain_waiters` emptied the queues above.
         assert_eq!(unsafe { e.recv(rp) }, Recv::Blocked);
         drained.clear();
         e.drain_waiters(|w| drained.push(w));
@@ -514,22 +543,28 @@ mod tests {
         let mut e: Endpoint<N> = Endpoint::new();
 
         for p in [ap, bp, cp] {
+            // SAFETY: `ap`, `bp` and `cp` are live nodes, each on no queue (see the module note).
             assert_eq!(unsafe { e.send(p) }, Send::Blocked);
         }
+        // SAFETY: `bp` is compared by pointer and never dereferenced; the senders that get re-queued are the same live locals.
         assert!(unsafe { e.remove_sender(bp) }, "b was queued");
         assert_eq!(e.debug_counts().0, 2, "exactly one sender left the queue");
         assert_eq!(
+            // SAFETY: as above.
             unsafe { e.recv(NonNull::from(&mut *r)) },
             Recv::FromSender(ap)
         );
         assert_eq!(
+            // SAFETY: as above.
             unsafe { e.recv(NonNull::from(&mut *r)) },
             Recv::FromSender(cp)
         );
+        // SAFETY: as above.
         assert_eq!(unsafe { e.recv(NonNull::from(&mut *r)) }, Recv::Blocked);
 
         // Not queued (already collected, the ordinary case): a no-op that says so.
         let mut e2: Endpoint<N> = Endpoint::new();
+        // SAFETY: `ap` is not queued on `e2` at all, and `remove_sender` only compares pointers, so nothing is dereferenced.
         assert!(!unsafe { e2.remove_sender(ap) });
         assert!(e2.is_idle());
     }
@@ -543,9 +578,12 @@ mod tests {
         let ap = NonNull::from(&mut *a);
         let mut e: Endpoint<N> = Endpoint::new();
 
+        // SAFETY: `ap` is a live node, on no queue (see the module note).
         assert_eq!(unsafe { e.send(ap) }, Send::Blocked);
+        // SAFETY: `ap` is compared by pointer, never dereferenced.
         assert!(unsafe { e.remove_sender(ap) });
         assert!(e.is_idle(), "the endpoint still holds a sender");
+        // SAFETY: as above.
         assert_eq!(unsafe { e.recv(NonNull::from(&mut *r)) }, Recv::Blocked);
         // And it can be used again afterwards: push, pop, no ghost.
         assert!(e.one_queue_invariant());
@@ -558,6 +596,7 @@ mod tests {
         let rp = NonNull::from(&mut *r);
         let mut e: Endpoint<N> = Endpoint::new();
 
+        // SAFETY: `rp` is a live node, on no queue (see the module note).
         assert_eq!(unsafe { e.recv(rp) }, Recv::Blocked);
         assert_eq!(e.signal(), Some(rp)); // the waiter, dequeued
         assert!(e.one_queue_invariant());
