@@ -139,6 +139,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 73 | NOT-STARTED | Name the aarch64 files aarch64, before x86_64 makes it worse | Five files carry a riscv name while their aarch64 twin carries none, so the unnamed one reads as "the general case" and is not. A third ISA turns that from ambiguous into wrong. Scheme decided: suffix both sides. `crates/paging` is a separate defect, naming one side by ISA and the other by page-table FORMAT, and riscv64 has two formats. **`user/link.ld` is shared and must NOT be renamed** |
 | 74 | NOT-STARTED | Cycle counters: SBI PMU on RISC-V, `PMCCNTR_EL0` on aarch64 | 16a's deliverable names "benches on real cycles via the SBI PMU extension" and **nothing implements it**, on either ISA. Both read a fixed-rate TIME counter today, not cycles. Gates milestone 25's `sel4bench`, which was deferred to hardware for exactly this |
 | 75 | NOT-STARTED | Who may read the cycle counter, and by what authority | Opening `PMCCNTR_EL0` to EL0 is not the same decision as opening `CNTVCT_EL0` was: it is **~160x finer** (~0.25 ns against ~41 ns), and the generic timer's coarseness was doing real security work. A capability is the answer this OS already has, and notes/abi.md anticipated it |
+| 76 | NOT-STARTED | Split the roadmap: `design/roadmap/README.md` as index, one file per milestone | 5,375 lines and 64 blocks in one file. FOUR structural defects landed today that the gate reported clean, including **eight milestone blocks filed under an essay about seL4**. A split makes those impossible rather than detectable, and removes the conflict #19 and #20 hit |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -5445,3 +5446,83 @@ a security framework. If option 2 is chosen it must **not** grow into a general 
 capability class on one consumer, which is CLAUDE.md's rule against speculative abstraction. Milestone
 74 should not land its aarch64 half until this is answered, because the wrong answer is the one that
 is hardest to walk back: an ambient opening, once shipped, is a thing programs come to depend on.
+### 76. Split the roadmap: `design/roadmap/README.md` as index, one file per milestone
+
+**Status: NOT-STARTED.** Raised 2026-08-03 by Chris, after a discussion of whether the roadmap should
+move to GitHub issues at all. It should not, and the reasons are recorded below because the question
+will come back. What it should do is stop being one 5,375-line file.
+
+#### Why not issues, since that was the alternative considered
+
+The friction was real: every roadmap edit takes a branch, a PR and a merge. Three arguments against
+moving were made and **two of them did not survive checking**, which is worth recording so nobody
+re-runs them:
+
+- *"It would break thousands of validated citations."* **False.** `script/roadmap --check` reads one
+  file and its prose check is scoped to that same file, so of 2,179 `milestone N` citations in the
+  tree, the ~1,988 in code comments are validated by nothing today.
+- *"The gates would need network calls."* **Mostly false.** `DECISIONS.md` was never part of the
+  proposal, so `script/decisions --check` is untouched. Only `script/roadmap --check` would need the
+  API, and the prose checks would simply stop covering roadmap text rather than start calling out.
+- *"Consumption."* **This one holds, and it decides it.** The roadmap is read constantly, locally, by
+  grep and awk, and by every lane, offline, at the commit it is working from. Answering "what is
+  needed before the board" was one `awk` across 64 detail blocks. Against an API that is a fetch of
+  the whole corpus, which to work with efficiently would be written to disk and grepped: the file,
+  rebuilt. `git log -p` showing how an argument evolved has no equivalent either.
+
+#### Why one file is nonetheless the wrong shape
+
+Four structural defects landed in the documentation on 2026-08-03 alone, and **every gate reported
+clean through all four**:
+
+1. §61 was appended below `DECISIONS.md`'s `## Reading` closer.
+2. Milestone 69's table row said `NOT-STARTED` while its own detail block said `BUILT`.
+3. A prose line wrapped so that `## Reading, §61` began a line, rendering as an H2 nobody wrote.
+4. **Milestones 68 through 75 are all filed under `## The rival worth understanding, not building`**,
+   an essay about seL4, because `cat >>` appends to the end of a file and the `##` sections are
+   interleaved among the `### N.` blocks.
+
+The fourth is eight instances of one mistake, made by the integrator, invisible to
+`script/roadmap --check` because it verifies that a block **has** a table row and never **where** the
+block sits. That is the same well-formed-but-wrong blind spot CLAUDE.md already records for citations.
+
+A split does not detect those. It makes three of the four impossible: there are no sections to file a
+block under, the filename is the identity, and `cat >>` into `design/roadmap/74-cycle-counters.md`
+can only add text to milestone 74.
+
+It also removes a conflict that already happened: **PR #19 and PR #20 collided on `design/roadmap.md`**
+solely because each marked its own milestone `BUILT`.
+
+#### The shape (Chris, 2026-08-03)
+
+- `design/roadmap/README.md` holds the table and the surrounding prose. GitHub renders a directory's
+  README automatically, so browsing to `design/roadmap/` shows the index, and this is the pattern
+  `notes/README.md` already sets, which `script/lint` already enforces ("every notes/*.md must appear
+  in notes/README.md").
+- `design/roadmap/74-cycle-counters.md` per milestone. Hyphenated, per CLAUDE.md's rule for ordinary
+  markdown. Numbers run 12 to 76 today and one block is sub-lettered (`20a`), so `20a-name-the-seams.md`
+  is the shape for those.
+- The three `##` essays currently interleaved among the blocks are design prose, not milestones, and
+  become their own files under `design/`: "One decision this roadmap still forces", "The display
+  ladder", and "The rival worth understanding, not building".
+
+#### What the gate must grow
+
+`script/roadmap --check` reads a directory instead of a file, and gains **the check whose absence let
+defect 2 through**: a milestone's status in the index and in its own file must agree. It should also
+keep the existing checks, which stay meaningful across files: the status vocabulary, every file having
+an index row, and every `milestone N` referenced in prose resolving.
+
+While the numbering is under the microscope, the prose check is worth widening past the roadmap's own
+text to the whole tree, since that is where the ~1,988 unvalidated citations are. That is a separate
+decision with a real cost (a stale citation in a code comment becomes a build failure), so it is
+raised here and not assumed.
+
+#### Scope note
+
+**File moves, no content edits**, with milestone 69's proof obligation: reassembling the files must
+reproduce the original byte for byte, apart from the fixed placement of blocks 68 to 75. **Twenty-nine files**
+outside the roadmap link to `design/roadmap.md`, including `README.md`, `SECURITY.md`,
+`DECISIONS.md`, several crates and several design notes; every one must land on the index. Relative links inside the blocks point
+at `../notes/`, which becomes `../../notes/` one directory down, and `script/lint` already checks that
+every relative markdown link resolves, so a missed one fails loudly rather than quietly.
