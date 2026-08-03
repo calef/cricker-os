@@ -38,6 +38,12 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [The device tree](device-tree.md): the machine describing itself. Everything in it is
   big-endian, and the width of an address is declared by the *parent* node. Those are the
   two things most likely to be silently wrong.
+- [ISA discovery](isa-discovery.md): milestone 60, one record per architecture for what the machine
+  actually is, populated once at boot and printed at boot. Why RISC-V needs a parser and aarch64
+  needs only a decoder (ARM never removed the CPU's self-description; RISC-V did, on purpose), how
+  many call sites genuinely vary and which two of the four candidates dropped out, the three shapes
+  that would have broken on the VisionFive 2, and the two things the machine corrected after the
+  host tests were green.
 - [The UART](uart.md): the serial port, and why every kernel learns to drive one first.
   What "asynchronous" actually means (there is no clock wire), and a line-by-line read of
   our own PL011 driver.
@@ -557,6 +563,15 @@ in the code or the conversation doesn't make sense, it belongs here.
   **macOS writes no partition names at all**, and the clearest case yet of the enumerate-versus-prove
   rule: four exhaustive corruption sweeps, one of them 4.2 million cases, beside seven Kani harnesses
   for the claims that cannot be counted.
+- [Block devices: what is attached, and what holding one means](block-devices.md): milestone 57's
+  block-device lane, which is where `crates/gpt` stopped being wired to nothing. The guest reads a
+  partition table **`sgdisk` wrote** off a virtio-blk device, backup half included, and the only real
+  arithmetic (a GPT counts in 512-byte blocks, the block service moves 4096) lives host-tested in
+  `gpt::span`. The design claim is the split: a **read-only roster page** says what drives are
+  attached, an **endpoint** says you may read and write one of them, and the roster deliberately
+  carries no capacity because a size is a fact about a device you hold. The negative control is what
+  makes that a claim: the same program writes to the roster's exact address and dies. Also the three
+  surprises, including a latent `user/link.ld` bug that only a program with no `.data` could hit.
 - [Prior art and reuse](prior-art.md): where to look before building (Redox, rCore, Tock,
   Hubris, seL4, Fuchsia) and the rule that decides build-vs-reuse: the reuse boundary is the
   TCB boundary. Inside it, always build; userspace components, actively prefer porting,

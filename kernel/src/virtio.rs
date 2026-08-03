@@ -82,6 +82,22 @@ pub fn find_block_device() -> Option<VirtioMmioDevice> {
     find_by_device_id(DEVICE_ID_BLOCK)
 }
 
+/// How many virtio block devices are on the mmio bus (milestone 57's roster).
+///
+/// The same walk [`find_block_device_n`] does, counted rather than stopped, so the roster's
+/// ordinals and the ordinal a wiring passes to `find_block_device_n` are the same numbers by
+/// construction. Reads two ID registers per slot and nothing else: enumeration is not bring-up.
+#[cfg_attr(not(test), allow(dead_code))] // disk_service is the caller, and its tests drive it
+pub fn count_block_devices() -> usize {
+    let mut n = 0;
+    for slot in 0..SLOTS {
+        if read_reg(slot, REG_MAGIC) == MAGIC && read_reg(slot, REG_DEVICE_ID) == DEVICE_ID_BLOCK {
+            n += 1;
+        }
+    }
+    n
+}
+
 /// Scan the bus for the first virtio network device. `None` if there is no NIC attached.
 pub fn find_net_device() -> Option<VirtioMmioDevice> {
     find_by_device_id(DEVICE_ID_NET)
@@ -456,7 +472,13 @@ struct Device {
 /// the five and the most annoying, because the entropy service is wired **once per device per boot**
 /// (`entropy_service::ensure`) precisely so that a second one cannot reset the device under the
 /// first, and it still costs two slots that are never released. The fifth receipt.
-const MAX_DEVICES: usize = 29;
+///
+/// **30 for milestone 57's disk surveyor**, which brings up a block server on a fourth disk (the
+/// GPT-partitioned image) so that reading a partition table cannot disturb any filesystem test. The
+/// sixth receipt, and by now the pattern is not a coincidence: every milestone that wires one more
+/// confined device costs a slot forever, because a transport is never unregistered. The fix is an
+/// unregister on process death, not a seventh bump.
+const MAX_DEVICES: usize = 30;
 
 /// The device table, fixed. `get`/`get_mut` mirror the slice API the call sites already used.
 struct Devices {

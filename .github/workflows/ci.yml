@@ -208,7 +208,29 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Needs history to diff against the base for the scope check below.
+          fetch-depth: 0
+
+      # The same predicate the proofs and the cpu matrix use, for the same reason: a markdown
+      # change cannot move an instruction count. Steps are guarded rather than the job, so a
+      # doc-only run reports green instead of gambling on how a skipped required check is treated.
+      - name: Does this change need the tripwire?
+        id: scope
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          [ -n "$base" ] || base="$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)"
+          changed="$(git diff --name-only "$base" HEAD)"
+          echo "changed files:"; echo "$changed" | sed 's/^/  /'
+          if [ -z "$(printf '%s\n' "$changed" | grep -vE '^(notes/|design/|[A-Z_]+\.md$)' || true)" ]; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            echo "==> documentation only; no instruction count can be affected"
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: Swatinem/rust-cache@v2
+        if: steps.scope.outputs.needed == 'true'
       # Milestone 21's stated requirement is to catch "the *introduction* of performance problems
       # proximate to the changes that introduce them", and a tripwire that only fires on a
       # developer's laptop cannot do that. icount was chosen for determinism precisely so this is
@@ -229,18 +251,24 @@ jobs:
       # script/bootstrap on purpose, because bootstrap skips its apt install when QEMU is already on
       # PATH, which is how the built one wins.
       - name: Cache QEMU
+        if: steps.scope.outputs.needed == 'true'
         uses: actions/cache@v6
         with:
           path: ~/.cache/cricker-qemu
           key: qemu-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.qemu-version') }}
       - name: Build QEMU if the cache missed
+        if: steps.scope.outputs.needed == 'true'
         run: script/ci-qemu
       - name: Put it on PATH
+        if: steps.scope.outputs.needed == 'true'
         run: echo "$HOME/.cache/cricker-qemu/bin" >> "$GITHUB_PATH"
 
       - run: script/bootstrap
+        if: steps.scope.outputs.needed == 'true'
       - run: script/bench --check
+        if: steps.scope.outputs.needed == 'true'
       - run: script/bench --riscv --check
+        if: steps.scope.outputs.needed == 'true'
 
   supply-chain:
     name: supply chain (advisories, licences, vendored integrity)
@@ -281,7 +309,29 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Needs history to diff against the base for the scope check below.
+          fetch-depth: 0
+
+      # The same predicate the proofs and the cpu matrix use, for the same reason: a markdown
+      # change cannot alter what a parser accepts. Steps are guarded rather than the job, so a
+      # doc-only run reports green instead of gambling on how a skipped required check is treated.
+      - name: Does this change need the sweep?
+        id: scope
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          [ -n "$base" ] || base="$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)"
+          changed="$(git diff --name-only "$base" HEAD)"
+          echo "changed files:"; echo "$changed" | sed 's/^/  /'
+          if [ -z "$(printf '%s\n' "$changed" | grep -vE '^(notes/|design/|[A-Z_]+\.md$)' || true)" ]; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            echo "==> documentation only; no parser can be affected"
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: Swatinem/rust-cache@v2
+        if: steps.scope.outputs.needed == 'true'
       # No install step: `script/fuzz` installs the version pinned in `.cargo-fuzz-version` when the
       # one on PATH does not match, exactly as it does on a developer's machine. That is the opposite
       # trade from the supply-chain and coverage jobs, which take a prebuilt binary because they
@@ -321,23 +371,50 @@ jobs:
       # the repository alone. Every run starts from exactly the committed seeds and the two fixture
       # directories, which is the same starting point a developer gets.
       - run: script/fuzz --time 60
+        if: steps.scope.outputs.needed == 'true'
 
   coverage:
     name: coverage (host crates)
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Needs history to diff against the base for the scope check below.
+          fetch-depth: 0
+
+      # The same predicate the proofs and the cpu matrix use, for the same reason: a markdown
+      # change cannot change what a test executes. Steps are guarded rather than the job, so a
+      # doc-only run reports green instead of gambling on how a skipped required check is treated.
+      - name: Does this change need the measurement?
+        id: scope
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          [ -n "$base" ] || base="$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)"
+          changed="$(git diff --name-only "$base" HEAD)"
+          echo "changed files:"; echo "$changed" | sed 's/^/  /'
+          if [ -z "$(printf '%s\n' "$changed" | grep -vE '^(notes/|design/|[A-Z_]+\.md$)' || true)" ]; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            echo "==> documentation only; no coverage can be affected"
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install llvm-tools (pinned nightly)
+        if: steps.scope.outputs.needed == 'true'
         run: rustup toolchain install nightly --profile minimal --component llvm-tools
       - uses: taiki-e/install-action@v2.85.5
+        if: steps.scope.outputs.needed == 'true'
         with:
           tool: cargo-llvm-cov
       - uses: Swatinem/rust-cache@v2
+        if: steps.scope.outputs.needed == 'true'
       # Measures the pure-logic host crates only; the kernel/user crates run under QEMU, out of
       # reach of host instrumentation. Gates on the 80%-per-file line-coverage floor (the floor
       # lives in script/coverage, next to the check itself); the report is still published below.
       - run: script/coverage
+        if: steps.scope.outputs.needed == 'true'
       - name: Publish the summary to the run
+        if: steps.scope.outputs.needed == 'true'
         run: |
           {
             echo '### Coverage: host-logic crates'
@@ -346,6 +423,7 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload the lcov + HTML report
+        if: steps.scope.outputs.needed == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: coverage-report

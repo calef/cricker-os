@@ -553,6 +553,97 @@ impl<'a> Dtb<'a> {
         }
     }
 
+    /// Property `name` on **every** node whose name starts with `prefix`, in tree order.
+    ///
+    /// [`node_prop`](Self::node_prop) answers for the first matching node and stops, which is right
+    /// for a device that appears once. It is wrong for `cpu@`, and milestone 60 is where that
+    /// mattered: a heterogeneous RISC-V machine describes each hart as its own `cpu@` node with its
+    /// own `riscv,isa`, so a kernel that reads the first one and then schedules onto any hart has
+    /// read the wrong node. The JH7110 on a VisionFive 2 is exactly that machine.
+    ///
+    /// `out[i]` is `None` when the *i*th matching node exists but has no such property, which is a
+    /// different answer from "there is no *i*th node" and one the caller needs: it is how "this hart
+    /// does not describe itself" is told apart from "there is no such hart".
+    ///
+    /// Returns the number of matching **nodes**, which may exceed `out.len()`; entries past the end
+    /// are counted and not written, so a caller can see that it under-provisioned instead of
+    /// silently reading half a machine.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # fn f(dt: &dtb::Dtb<'_>) -> Result<(), dtb::Error> {
+    /// let mut isa = [None; 8];
+    /// let harts = dt.node_props(b"cpu@", b"riscv,isa", &mut isa)?;
+    /// assert!(harts <= isa.len(), "more harts than slots: widen the array");
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn node_props(
+        &self,
+        prefix: &[u8],
+        name: &[u8],
+        out: &mut [Option<&'a [u8]>],
+    ) -> Result<usize, Error> {
+        let mut depth = 0usize;
+        // The depth of the node currently being read, `None` when the walk is outside every match.
+        // Nested matches are impossible by construction: a node only becomes the target while there
+        // is no target, so a `cpu@0/cpu@1` (which no binding produces) reads as one node.
+        let mut target_at: Option<usize> = None;
+        let mut matched = 0usize;
+        let mut at = self.off_struct;
+
+        for slot in out.iter_mut() {
+            *slot = None;
+        }
+
+        loop {
+            let token = be32(self.bytes, at)?;
+            at += 4;
+
+            match token {
+                FDT_BEGIN_NODE => {
+                    let nm = self.cstr(at)?;
+                    at += align4(nm.len() + 1);
+                    depth += 1;
+                    if depth >= 2 && nm.starts_with(prefix) && target_at.is_none() {
+                        target_at = Some(depth);
+                        matched += 1;
+                    }
+                }
+
+                FDT_END_NODE => {
+                    if target_at == Some(depth) {
+                        target_at = None;
+                    }
+                    depth = depth.saturating_sub(1);
+                }
+
+                FDT_PROP => {
+                    let len = be32(self.bytes, at)? as usize;
+                    let name_off = be32(self.bytes, at + 4)? as usize;
+                    let value_at = at + 8;
+                    at = value_at + align4(len);
+
+                    if target_at == Some(depth)
+                        && self.cstr(self.off_strings + name_off)? == name
+                        && let Some(slot) = out.get_mut(matched - 1)
+                    {
+                        *slot = Some(
+                            self.bytes
+                                .get(value_at..value_at + len)
+                                .ok_or(Error::Truncated)?,
+                        );
+                    }
+                }
+
+                FDT_NOP => {}
+                FDT_END => return Ok(matched),
+                other => return Err(Error::BadToken(other)),
+            }
+        }
+    }
+
     /// The regions carved out by the `/reserved-memory` node's children.
     ///
     /// This is the *other* place firmware advertises memory the OS must not touch, distinct from the

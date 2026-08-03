@@ -29,9 +29,10 @@ use core::ffi::c_void;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use aarch64_cpu::asm::barrier;
-use aarch64_cpu::registers::{
-    ID_AA64MMFR0_EL1, MAIR_EL1, SCTLR_EL1, TCR_EL1, TTBR0_EL1, TTBR1_EL1,
-};
+// `ID_AA64MMFR0_EL1` used to be read right here, for `TCR_EL1.IPS`. It is read once at boot now,
+// into the ISA record (milestone 60), which also checks the two fields beside `PARange` that this
+// file was assuming.
+use aarch64_cpu::registers::{MAIR_EL1, SCTLR_EL1, TCR_EL1, TTBR0_EL1, TTBR1_EL1};
 use paging::aarch64::mair;
 use paging::{Aarch64, Flags, Half, MapError, Mapper, PAGE_SIZE, PageTable};
 
@@ -444,7 +445,12 @@ unsafe fn install(root: u64) {
     //
     //   IPS            -> how many physical address bits this CPU actually has. Read it
     //                     from the hardware rather than guessing; a value larger than the
-    //                     implementation supports is UNPREDICTABLE.
+    //                     implementation supports is UNPREDICTABLE. It comes from the ISA
+    //                     record now (milestone 60), which read `ID_AA64MMFR0_EL1` once at
+    //                     boot; this was the only field of that register anyone was reading,
+    //                     while the 4 KiB granule below and the ASID width were assumed out
+    //                     of the same word. `arch::isa::init` refuses the boot if the granule
+    //                     is absent, so `TG0`/`TG1` below are a checked assumption now.
     TCR_EL1.write(
         TCR_EL1::T0SZ.val(16)
             + TCR_EL1::TG0::KiB_4
@@ -472,7 +478,7 @@ unsafe fn install(root: u64) {
             + TCR_EL1::ORGN1::WriteBack_ReadAlloc_WriteAlloc_Cacheable
             + TCR_EL1::IRGN1::WriteBack_ReadAlloc_WriteAlloc_Cacheable
             + TCR_EL1::EPD1::EnableTTBR1Walks
-            + TCR_EL1::IPS.val(ID_AA64MMFR0_EL1.read(ID_AA64MMFR0_EL1::PARange)),
+            + TCR_EL1::IPS.val(super::isa::get().pa_range as u64),
     );
 
     TTBR1_EL1.set_baddr(root);

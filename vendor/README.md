@@ -24,6 +24,21 @@ and priced it is notes/redoxfs-audit.md).
      never ride into our builds. `tools/redoxfs_host` is a separate own-workspace crate for the
      same reason; a cricker-os *member* cannot depend on an in-tree crate that another workspace
      owns without a "multiple workspace roots" error, so both live outside.
+  3. `src/header.rs`: `Header::update_hash` made `pub`. **This is the first divergence that changes
+     what upstream OFFERS rather than fixing a build, and the distinction is worth keeping**, because
+     the two age differently: 1 and 2 drop when upstream fixes them, while this one must be
+     re-applied forever and can conflict if upstream changes the method.
+
+     Why it is needed: `Header::new` is `#[cfg(feature = "std")]` purely because it calls
+     `uuid::Uuid::new_v4()`, so a `no_std` caller cannot use it. Every `Header` field is already
+     `pub`, so we can BUILD one and source the uuid from our own entropy service; what we could not
+     do is finish it, because an unhashed header is an invalid filesystem. So this exposes an
+     existing method rather than adding an API.
+
+     Chosen over adding a `new_with_uuid` constructor deliberately (Chris, 2026-08-03: the minimum
+     viable divergence). A visibility change on an existing method is the smallest thing that
+     unblocks `mkfs` on the target, and far less likely to conflict on a pin bump than a new
+     constructor whose name and signature upstream might choose differently.
 - Everything else is byte-identical to the published package, including files we do not use
   (`Makefile`, `test.sh`, upstream CI configs) and `Cargo.lock`.
 - **Proved rather than asserted, since 2026-07-30:** `script/vendor-verify` fetches the published

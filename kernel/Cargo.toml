@@ -34,6 +34,10 @@ grant_plan = { version = "0.1.0", path = "../crates/grant_plan" }
 # `compatible` and names the binding with these constants, and its clock tests read the shared page
 # through the same seqlock the service publishes with, so no party has its own copy of the layout.
 clock_proto = { version = "0.1.0", path = "../crates/clock_proto" }
+# The block-device roster (milestone 57). The kernel writes the page and the surveyor reads it, and
+# the kernel's own tests read it back through this crate rather than by trusting the count the
+# program sent home, so no party has its own copy of the layout.
+block_roster = { version = "0.1.0", path = "../crates/block_roster" }
 # The compositor contract (milestone 33): the kernel wires the scene and its tests predict the
 # composed screen from the same definition the compositor and its clients paint from.
 compositor = { version = "0.1.0", path = "../crates/compositor" }
@@ -56,6 +60,11 @@ elf = { version = "0.1.0", path = "../crates/elf" }
 frames = { version = "0.1.0", path = "../crates/frames" }
 intrusive = { version = "0.1.0", path = "../crates/intrusive" }
 ipc = { version = "0.1.0", path = "../crates/ipc" }
+# What machine is this (milestone 60). The kernel reads the device tree and the ID registers; every
+# decoding of what it finds lives in the crate, host-tested against a real device tree and against
+# words a real part reports, because a parser proved only inside a booting kernel is a parser proved
+# by nothing that runs in milliseconds.
+isa = { version = "0.1.0", path = "../crates/isa" }
 # The terminal contract's IPC framing (DECISIONS §21): the kernel's display-terminal tests play both
 # an application (OP_WRITE) and an input driver (OP_BYTES), so they speak the same protocol the
 # serial terminal's clients and drivers do rather than a second one invented for a test.

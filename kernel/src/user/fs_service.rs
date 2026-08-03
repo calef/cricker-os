@@ -217,7 +217,14 @@ fn wire_servers(
 /// (block-server-private), page 1 for the 4096-byte data buffer. Page 1 is ALSO the block page
 /// shared with the FS server, so the device DMAs a whole filesystem block straight into the FS
 /// server's page, one request per block, no copy.
-fn spawn_block_server(
+/// Bring one virtio-mmio block device up under a confined userspace block server, and hand back the
+/// three things a client needs: the request endpoint, the readiness endpoint, and the physical
+/// frame of the page the transfers land in.
+///
+/// `pub(super)` because milestone 57's `disk_service` wires a fourth disk the same way. The FS
+/// server is no longer the only thing that wants "a block device, served over IPC, by a process
+/// that owns the DMA and nothing else".
+pub(super) fn spawn_block_server(
     blk_image: &'static [u8],
     dev: crate::virtio::VirtioMmioDevice,
 ) -> (EpId, EpId, u64) {

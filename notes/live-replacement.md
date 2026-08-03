@@ -175,13 +175,20 @@ three systems, which fragmented the frame allocator badly enough that a *later, 
 not get init's own eight-megabyte region. The failure surfaced nowhere near its cause, which is the
 usual signature of a leak.
 
-### BUGS: the frame-hygiene `debug_assert!` is a race, and it fires on CI
+### BUGS: the frame-hygiene `debug_assert!` was a race, and it fired on CI
 
-`run_swap` ends with `debug_assert!(before >= memory::free_frames())`, where `before` is the free
-count sampled at the top of the run. **It intermittently fails on the `sifive-u54` cpu-matrix leg**,
+**Removed 2026-08-03**, in the change this section said it deserved. By that day it had failed the
+cpu matrix on `main` twice (once on `rv64`, the control model) and once on a Dependabot PR whose
+diff touched only workflow files, so the analysis below had been confirmed at the rate it predicted
+and the assertion was costing red CI runs on innocent changes. The rest of this section is the
+analysis as recorded at the time, kept because the failure shape (a wait or an assertion written
+against something wider than the property) recurs in this tree.
+
+`run_swap` ended with `debug_assert!(before >= memory::free_frames())`, where `before` was the free
+count sampled at the top of the run. **It intermittently failed on the `sifive-u54` cpu-matrix leg**,
 with the outgoing instance's expected device fault printed just above it. Found 2026-08-03 during
-milestone 72; not fixed, because the analysis says the assertion is the defect and that deserves its
-own change rather than riding on an unrelated one.
+milestone 72; not fixed on that branch, because the analysis says the assertion is the defect and
+that deserves its own change rather than riding on an unrelated one.
 
 **Intermittent, and the rate is worth writing down** so the next sighting is not read as a
 regression: on the one branch where it has been watched closely it went success, success, **failure**,

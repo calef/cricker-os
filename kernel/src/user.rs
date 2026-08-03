@@ -1304,6 +1304,36 @@ pub mod virtio_service;
 #[cfg_attr(not(test), allow(dead_code))] // spawned only by the phase-2 test
 pub mod fs_service;
 
+/// **The block-device roster and the disk surveyor** (milestone 57, notes/block-devices.md).
+///
+/// Two authorities that every other operating system hands out as one: a **read-only mapping**
+/// listing what block devices exist, and a **block-service endpoint** for exactly one of them. A
+/// program with the first can see the machine's disks and open none of them; a program with the
+/// second was handed one disk and has no way to name a second.
+///
+/// The kernel's part is small and stops early: scan the buses, write the page, confine one device
+/// under a block server, spawn. It never reads a partition table. Every byte of GPT judgement is in
+/// `crates/gpt`, whose tests run on the host against tables `sgdisk` and macOS `diskutil` wrote.
+///
+/// Arch-neutral, like the clock and entropy wirings: one portable binary over one host-tested
+/// contract, so **both ISAs run literally the same test** (DECISIONS §19).
+#[cfg_attr(not(test), allow(dead_code))] // the tests are its only caller today
+pub mod disk_service;
+
+/// **Reading a real disk's partition table, and the difference between listing and holding**
+/// (milestone 57).
+///
+/// The first test is the half of the milestone that is not optional: which blocks of a device are a
+/// filesystem is written in the partition table and nowhere else, so this reads one off a virtio-blk
+/// device. The table was written by `sgdisk`, in C++, by people who never heard of this project;
+/// that provenance is what makes the parse worth asserting.
+///
+/// The second is the negative control the first would be weaker without. The roster is a read-only
+/// mapping, so a program that knows exactly where it is still cannot add a device to it or turn an
+/// entry into a handle. `lsblk` plus `parted` cannot make that claim.
+#[cfg(test)]
+mod disk_tests;
+
 /// **Play an application printing to a display terminal**: put `text` in its output page and
 /// `OP_WRITE` it.
 ///

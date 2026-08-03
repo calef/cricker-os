@@ -150,7 +150,6 @@ fn spawn_swapper(role: u64) -> (sched::EpId, u64, u64) {
 /// background, and a test that leaves work running is a test that fails somebody else. The
 /// operator's `RPT_LOG` is always its last word, so that is the stop condition.
 fn run_swap(role: u64) -> ([[u64; 5]; MAX_REPORTS], usize) {
-    let before = memory::free_frames();
     let (report, budget, tcb_region) = spawn_swapper(role);
     let mut msgs = [[0u64; 5]; MAX_REPORTS];
     let mut n = 0;
@@ -225,9 +224,10 @@ fn run_swap(role: u64) -> ([[u64; 5]; MAX_REPORTS], usize) {
     // per-CPU run queues (DECISIONS §28) runs when the core the operator died on next schedules,
     // and the boot thread yielding here cannot force that. So this is hygiene, deliberately not
     // asserted on: what this milestone is responsible for is the swap system's own memory,
-    // which is what the assertion above covers. `before` is kept for the same reason it is
-    // taken: a reader comparing it against the reclaim above can see the two agree.
-    debug_assert!(before >= memory::free_frames());
+    // which is what the assertion above covers. A `debug_assert!` against a free-frame count
+    // sampled at the top of the run stood here until 2026-08-03 and flaked on CI, because the
+    // only thing that could trip it was an *earlier* test's teardown landing mid-run, which is
+    // nothing this test is responsible for. See the BUGS section of notes/live-replacement.md.
     let _ = sched::reclaim_region(tcb_region);
     (msgs, n)
 }
