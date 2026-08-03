@@ -2700,6 +2700,46 @@ mod tests {
         assert_ne!(dir::explain(2), dir::explain(dir::EPERM));
     }
 
+    /// **Every errno this contract names has its own sentence.** The test above proves the
+    /// sentences are facts rather than policies; this one proves the map is not degenerate. The
+    /// errno is a *decision* about what the holder learns, so two errnos sharing a sentence, or one
+    /// falling through to the fallback, would print a true-sounding wrong explanation at the one
+    /// place a human meets the refusal. Pairwise distinctness, with the fallback in the set, makes
+    /// either failure visible.
+    #[test]
+    fn every_explained_errno_has_its_own_sentence() {
+        let fallback = dir::explain(-1);
+        assert_eq!(
+            fallback,
+            dir::explain(0),
+            "the fallback must not depend on the number"
+        );
+        let mut seen = std::collections::BTreeSet::new();
+        seen.insert(fallback);
+        for errno in [
+            2,
+            dir::EPERM,
+            dir::EROFS,
+            dir::EISDIR,
+            dir::ENOTDIR,
+            17,
+            dir::ENOTEMPTY,
+            9,
+            24,
+            dir::EINVAL,
+            xattr::ENODATA,
+            xattr::ERANGE,
+            xattr::E2BIG,
+            xattr::ENOSPC,
+            xattr::ENOTSUP,
+        ] {
+            assert!(
+                seen.insert(dir::explain(errno)),
+                "errno {errno} shares its sentence with another, or fell through to the fallback"
+            );
+        }
+    }
+
     #[test]
     fn errors_are_negated_errnos_and_invert() {
         // The boundary convention: -errno on the wire, invertible, and successes read as no error.
@@ -2733,6 +2773,19 @@ mod tests {
         assert!(
             !grant::fits(b"seventeen-bytes!!"),
             "a name past the limit must be refused where it is packed, not truncated silently",
+        );
+    }
+
+    /// **`pack_name` stops at the limit even when the caller did not.** [`grant::fits`] is the
+    /// caller's check and `pack_name` does not repeat it, so it must stay total on input it was
+    /// told not to receive: a 17-byte name packs as its 16-byte prefix rather than indexing `hi`
+    /// off its end.
+    #[test]
+    fn pack_name_stops_at_the_limit_even_when_the_caller_did_not() {
+        assert!(!grant::fits(b"sixteen-bytes!!!X"));
+        assert_eq!(
+            grant::pack_name(b"sixteen-bytes!!!X"),
+            grant::pack_name(b"sixteen-bytes!!!"),
         );
     }
 
@@ -2937,6 +2990,27 @@ mod tests {
             assert!(seen <= 1, "a cut at {cut} produced a torn entry");
         }
         assert_eq!(dirent::iter(&page[..n]).count(), 2);
+    }
+
+    /// **A 255-byte name fills the length byte exactly, and 256 is refused.** The boundary is
+    /// load-bearing because `encode` writes `name.len() as u8`: a check that let 256 through would
+    /// write a length byte of 0, and the far side would read an empty name followed by 256 bytes of
+    /// somebody else's records.
+    #[test]
+    fn a_dirent_name_fills_the_length_byte_exactly_or_is_refused() {
+        let mut page = [0u8; 512];
+        let longest = [b'n'; 255];
+        let n = dirent::encode(&mut page, &longest, false).expect("255 fits a length byte");
+        assert_eq!(n, dirent::record_len(255));
+        let (name, is_dir) = dirent::iter(&page[..n]).next().expect("readable");
+        assert_eq!(name, &longest[..]);
+        assert!(!is_dir);
+        let over = [b'n'; 256];
+        assert_eq!(
+            dirent::encode(&mut page, &over, false),
+            None,
+            "a length byte cannot say 256"
+        );
     }
 
     /// The escape bits must not overlap, for the reason the per-file ones must not: the test asserts
@@ -3174,6 +3248,18 @@ mod tests {
         // the reader run off the end of the set and into whatever followed it.
         let mut tight = [0u8; 8];
         assert_eq!(nameset::encode(&[(b"one.txt", false)], &mut tight), None);
+        // The fit check runs before the record's first byte is laid, so a single-record refusal
+        // leaves the buffer clean. (Refusing a later record can leave earlier ones behind; the
+        // `None` is what the caller must honour either way.) Without this, a refusal could still
+        // have scribbled most of a capability into a buffer somebody reuses.
+        assert_eq!(
+            tight, [0u8; 8],
+            "a refused encode left partial capability bytes behind"
+        );
+        // A buffer too short for even the record is the same refusal, not a slice panic: the one
+        // check covers the record and the terminator together.
+        let mut shorter = [0u8; 7];
+        assert_eq!(nameset::encode(&[(b"one.txt", false)], &mut shorter), None);
     }
 
     // --- Extended attributes (milestone 57) ---
@@ -3535,5 +3621,256 @@ mod tests {
                 "two node ids share a store file"
             );
         }
+    }
+
+    /// **One record's exact bytes, as the format doc publishes them.** Recovery tooling reads this
+    /// layout without this crate, so the bytes are the contract, not the code: a one-byte name
+    /// length, four bytes of kind and two of value length, little-endian, then the name, then the
+    /// value. The round-trip tests cannot pin this, because a writer and reader that agreed on a
+    /// wrong header width would pass them together.
+    #[test]
+    fn an_attribute_record_lays_out_exactly_as_published() {
+        use xattr::store;
+        assert_eq!(store::RECORD_HEADER, 7);
+        let mut out = scratch();
+        let n = store::set(&[], b"ab", 0x0102_0304, b"xyz", &mut out).expect("set");
+        assert_eq!(n, store::record_len(2, 3));
+        assert_eq!(
+            &out[..n],
+            &[
+                2, 0x04, 0x03, 0x02, 0x01, 3, 0, b'a', b'b', b'x', b'y', b'z'
+            ],
+        );
+    }
+
+    /// **An exactly-sized buffer is enough, and a short one refuses rather than crashes.** `set`'s
+    /// doc sizes the caller's buffer at `blob.len() + record_len(...)`, so "exactly enough" has to
+    /// mean enough; and the FS server hands `set` a buffer it sized itself, so a one-byte error
+    /// there must come back [`xattr::ENOSPC`] instead of tearing down the serve loop on a slice
+    /// bound.
+    #[test]
+    fn a_record_that_exactly_fits_is_written_and_a_short_buffer_refuses() {
+        use xattr::store;
+        let n = store::record_len(1, 1);
+        let mut exact = vec![0u8; n];
+        assert_eq!(store::set(&[], b"n", xattr::RAW, b"v", &mut exact), Ok(n));
+        let mut short = vec![0u8; n - 1];
+        assert_eq!(
+            store::set(&[], b"n", xattr::RAW, b"v", &mut short),
+            Err(xattr::ENOSPC),
+        );
+    }
+    // The tests from here down each pin something milestone 85's mutation run showed nothing
+    // pinned. The equivalences (every `|` over disjoint masked fields, where `^` cannot differ)
+    // are recorded in notes/mutation-testing.md rather than tested.
+
+    /// The directory rights and the two named bundles, as numbers. `ALL` and `REMOVE_TREE` are
+    /// built with `|`, and a mutant that made one an `&` collapsed the bundle to zero: a mount
+    /// whose root carries nothing, with every test still green.
+    #[test]
+    fn the_rights_are_the_bits_they_say() {
+        assert_eq!(
+            [
+                dir::ENUMERATE,
+                dir::READ,
+                dir::WRITE,
+                dir::CREATE,
+                dir::REMOVE,
+                dir::DESCEND
+            ],
+            [1, 2, 4, 8, 16, 32]
+        );
+        assert_eq!(dir::ALL, 63);
+        assert_eq!(dir::REMOVE_TREE, 1 | 16 | 32);
+    }
+
+    /// The two Verb predicates the caretakers key off, pinned per verb rather than by example. A
+    /// `carries_len` that answered true (or false) for everything, and a `mutates` that lost a
+    /// bit, would misroute requests in three programs at once, which is the table's own BUGS
+    /// entry.
+    #[test]
+    fn the_verb_predicates_partition_the_table_as_documented() {
+        // Operand::None: the length field means nothing.
+        let no_len = ["CLOSE", "FSTAT", "TRUNCATE", "READDIR", "LISTXATTR"];
+        // needs_all intersects WRITE | CREATE | REMOVE.
+        let mutating = [
+            "WRITE",
+            "CREATE",
+            "TRUNCATE",
+            "MKDIR",
+            "RENAME",
+            "UNLINK",
+            "RMDIR",
+            "SETXATTR",
+            "REMOVEXATTR",
+        ];
+        for v in &verb::TABLE {
+            assert_eq!(
+                v.carries_len(),
+                !no_len.contains(&v.name),
+                "{}: carries_len",
+                v.name
+            );
+            assert_eq!(
+                v.mutates(),
+                mutating.contains(&v.name),
+                "{}: mutates",
+                v.name
+            );
+        }
+    }
+
+    /// A directory entry at both of its limits: the longest encodable name in an exact-fit
+    /// buffer, one byte over either limit refused, and the flag byte pinned.
+    #[test]
+    fn a_dirent_encodes_at_its_limits_and_not_past_them() {
+        let name = vec![b'n'; 255];
+        let mut out = vec![0u8; dirent::record_len(255)];
+        assert_eq!(dirent::encode(&mut out, &name, true), Some(257));
+        assert_eq!(out[0], dirent::IS_DIR);
+        assert_eq!(out[1], 255);
+        let mut short = vec![0u8; 256];
+        assert_eq!(
+            dirent::encode(&mut short, &name, true),
+            None,
+            "a buffer one byte short"
+        );
+        let long = vec![b'n'; 256];
+        let mut out = vec![0u8; dirent::record_len(256)];
+        assert_eq!(
+            dirent::encode(&mut out, &long, false),
+            None,
+            "a name one byte too long"
+        );
+    }
+
+    /// The per-file grant words, byte for byte: the rights bits, the spec word, and a name packed
+    /// across the two argument words. The seventeen-byte case is the one that matters: the copy
+    /// loop's bound is `i < MAX_NAME`, and `<=` there is an out-of-bounds write the caller's
+    /// `fits` check never reaches.
+    #[test]
+    fn grant_words_pack_exactly() {
+        assert_eq!([grant::READ, grant::WRITE], [1, 2]);
+        let w = grant::spec(5, grant::WRITE);
+        assert_eq!(w, 5 | (2 << 8));
+        assert_eq!(grant::spec_len(w), 5);
+        assert_eq!(grant::spec_rights(w), grant::WRITE);
+
+        let (lo, hi) = grant::pack_name(b"abcdefghij");
+        assert_eq!(lo, u64::from_le_bytes(*b"abcdefgh"));
+        assert_eq!(hi, u64::from_le_bytes(*b"ij\0\0\0\0\0\0"));
+        // Seventeen bytes: the packer stops at MAX_NAME rather than indexing past hi.
+        let (lo17, hi17) = grant::pack_name(b"abcdefghijklmnopq");
+        assert_eq!(lo17, u64::from_le_bytes(*b"abcdefgh"));
+        assert_eq!(hi17, u64::from_le_bytes(*b"ijklmnop"));
+    }
+
+    /// A name set, byte for byte, in an exact-fit buffer: the length-and-flag byte per record
+    /// (IS_DIR rides bit 7, above the 16-byte length), the terminator, and one byte less
+    /// refused. The record cursor is `n + 1 + name.len()`, and either `+` rotting turns the
+    /// layout into overlapping records with every length still adding up.
+    #[test]
+    fn a_nameset_lays_out_byte_for_byte() {
+        let names: [(&[u8], bool); 2] = [(b"ab", false), (b"cde", true)];
+        let mut out = [0u8; 8];
+        assert_eq!(nameset::encode(&names, &mut out), Some(8));
+        assert_eq!(
+            out,
+            [2, b'a', b'b', 3 | nameset::IS_DIR, b'c', b'd', b'e', 0]
+        );
+        let mut short = [0u8; 7];
+        assert_eq!(nameset::encode(&names, &mut short), None);
+    }
+
+    /// Every witness verdict module is distinct single bits. Both ends of each QEMU test build
+    /// their words from these same constants, so a shifted-to-zero bit is invisible at runtime:
+    /// the claim it carried silently stops being checked. Distinct powers of two here is the
+    /// whole defence.
+    #[test]
+    fn the_witness_bits_are_distinct_single_bits() {
+        fn all_distinct_bits(bits: &[u64]) {
+            for (i, &a) in bits.iter().enumerate() {
+                assert!(a.is_power_of_two(), "bit {i} is {a:#x}, not a single bit");
+                for &b in &bits[i + 1..] {
+                    assert_ne!(a, b, "two claims share bit {a:#x}");
+                }
+            }
+        }
+        all_distinct_bits(&[
+            fixture::escape::SECOND_FILE,
+            fixture::escape::WROTE,
+            fixture::escape::TRUNCATED,
+            fixture::escape::CREATED,
+            fixture::escape::FORGED_HANDLE,
+            fixture::escape::GRANTED_READ_FAILED,
+            fixture::escape::WROTE_ATTR,
+            fixture::escape::GRANTED_ATTRS_FAILED,
+        ]);
+        all_distinct_bits(&[
+            fixture::dirscape::REACHED_PARENT,
+            fixture::dirscape::REACHED_SIBLING,
+            fixture::dirscape::WALKED_UP,
+            fixture::dirscape::WIDENED,
+            fixture::dirscape::ENUMERATED,
+            fixture::dirscape::DESCENDED,
+            fixture::dirscape::CREATED,
+            fixture::dirscape::WROTE,
+            fixture::dirscape::RENAMED,
+            fixture::dirscape::ENUMERATED_A_STRANGER,
+            fixture::dirscape::FORGED_HANDLE,
+            fixture::dirscape::GRANTED_ACCESS_FAILED,
+            fixture::dirscape::MADE_A_DIR,
+            fixture::dirscape::OPENED_ITS_OWN,
+            fixture::dirscape::READ_ATTRS,
+            fixture::dirscape::SET_AN_ATTR,
+            fixture::dirscape::REACHED_AN_UNMATCHED_NAME,
+        ]);
+        all_distinct_bits(&[
+            fixture::navscape::PWD_IS_ROOT,
+            fixture::navscape::CLAMPED_AT_ROOT,
+            fixture::navscape::WALKED_UP,
+            fixture::navscape::ABSOLUTE_REFUSED,
+            fixture::navscape::REACHED_INNER,
+            fixture::navscape::REACHED_SECRET,
+            fixture::navscape::LISTED,
+            fixture::navscape::SAW_INNER,
+            fixture::navscape::SAW_SECRET,
+            fixture::navscape::DESCENDED,
+            fixture::navscape::RETURNED,
+            fixture::navscape::CREATED,
+            fixture::navscape::MADE_DIR,
+            fixture::navscape::UNLINKED,
+            fixture::navscape::HOLDER_KEPT_READING,
+            fixture::navscape::NAME_GONE_AFTER_UNLINK,
+            fixture::navscape::UNLINK_REFUSED_A_DIRECTORY,
+            fixture::navscape::NAVIGATION_FAILED,
+            fixture::navscape::RMDIR_REFUSED_NON_EMPTY,
+            fixture::navscape::RMDIR_REMOVED_EMPTY,
+        ]);
+        all_distinct_bits(&[
+            fixture::globscape::EXPANDED,
+            fixture::globscape::AGREED,
+            fixture::globscape::EXCLUDED_A_STRANGER,
+            fixture::globscape::NO_MATCH_REFUSED,
+            fixture::globscape::PATTERN_IN_PATH_REFUSED,
+            fixture::globscape::TEXT_UNTOUCHED,
+            fixture::globscape::GLOB_FAILED,
+        ]);
+        all_distinct_bits(&[
+            fixture::attrs::SET_AND_READ_BACK,
+            fixture::attrs::LISTED,
+            fixture::attrs::SURVIVED_RENAME,
+            fixture::attrs::GONE_AFTER_REMOVE,
+            fixture::attrs::GONE_AFTER_UNLINK,
+            fixture::attrs::OVERSIZE_REFUSED,
+            fixture::attrs::STORE_UNNAMEABLE,
+            fixture::attrs::STORE_UNLISTED,
+            fixture::attrs::ATTRS_FAILED,
+        ]);
+        assert_eq!(
+            fixture::attrs::EXPECTED,
+            255,
+            "the eight required claims, bits 0 through 7"
+        );
     }
 }
