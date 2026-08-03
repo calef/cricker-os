@@ -136,10 +136,11 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 70 | BUILT | `swish`'s remaining logic in a crate, host-testable like its siblings | `coremark`, `line_editor` and `compositor` are each a crate holding the logic plus a program holding the IO. `swish` is the largest program that is not, so its dispatch, endowment preview and outcome handling are reachable only through QEMU |
 | 71 | BUILT | The thread-start fault: a user thread dispatched with `sepc` = 0 | Frame placement, as this entry guessed. RISC-V put the frame 16 bytes under where `trap.s` builds an S-mode frame, so any interrupt in the window rewrote it and the user `sp` read the trap frame's hardwired-zero slot. Reproduced deterministically by widening the window; fixed by placing the frame at the stack top on both ISAs |
 | 72 | NOT-STARTED | A lost wakeup that a hundred leaked threads may be causing | Separate from 71 and proven so: it reproduces WITH that fix in the tree, and it hit a PR containing zero lines of code. **Reproduces locally at last**, 1 run in 4 under four host burners. Keeps `cpu matrix` intermittently red on every branch until fixed |
-| 73 | NOT-STARTED | Name the aarch64 files aarch64, before x86_64 makes it worse | Five files carry a riscv name while their aarch64 twin carries none, so the unnamed one reads as "the general case" and is not. A third ISA turns that from ambiguous into wrong. Scheme decided: suffix both sides. `crates/paging` is a separate defect, naming one side by ISA and the other by page-table FORMAT, and riscv64 has two formats. **`user/link.ld` is shared and must NOT be renamed** |
+| 73 | NOT-STARTED | Name the aarch64 files aarch64, before x86_64 makes it worse | Five files carry a riscv name while their aarch64 twin carries none, so the unnamed one reads as "the general case" and is not. A third ISA turns that from ambiguous into wrong. Scheme decided: suffix both sides. `crates/paging` moved OUT to milestone 77, because a second aarch64 configuration is likely and that makes it a restructure rather than a rename. **`user/link.ld` is shared and must NOT be renamed** |
 | 74 | NOT-STARTED | Cycle counters: SBI PMU on RISC-V, `PMCCNTR_EL0` on aarch64 | 16a's deliverable names "benches on real cycles via the SBI PMU extension" and **nothing implements it**, on either ISA. Both read a fixed-rate TIME counter today, not cycles. Gates milestone 25's `sel4bench`, which was deferred to hardware for exactly this |
 | 75 | NOT-STARTED | Who may read the cycle counter, and by what authority | Opening `PMCCNTR_EL0` to EL0 is not the same decision as opening `CNTVCT_EL0` was: it is **~160x finer** (~0.25 ns against ~41 ns), and the generic timer's coarseness was doing real security work. A capability is the answer this OS already has, and notes/abi.md anticipated it |
 | 76 | NOT-STARTED | Split the roadmap: `design/roadmap/README.md` as index, one file per milestone | 5,375 lines and 64 blocks in one file. FOUR structural defects landed today that the gate reported clean, including **eight milestone blocks filed under an essay about seL4**. A split makes those impossible rather than detectable, and removes the conflict #19 and #20 hit. Also widens the citation check tree-wide (free: zero unresolved today) and backfills milestones 1 to 11 from the first commit, dropping the `n >= 12` floor |
+| 77 | NOT-STARTED | `crates/paging`: a module per ISA, a type per page-table configuration | `Aarch64` names an ISA while describing a configuration, beside `Sv39` which names one properly. A second aarch64 configuration is expected, so the fix is room for siblings on both sides rather than a rename. **Waits for that configuration**, because it names the axis |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -5221,21 +5222,12 @@ unnamed file among two named siblings is ambiguous; among three it is a claim th
 because "the default" will mean whichever ISA the reader started from. §19 names x86_64 as a declared
 target, so this is a dated problem, not a hypothetical one.
 
-#### `crates/paging` is a different defect, and the worse one
+#### `crates/paging` left this milestone (2026-08-03)
 
-It has `aarch64.rs` and `sv39.rs`. Those are not asymmetric names for the same thing, they are **two
-different naming axes**: one an ISA, the other a page-table format. Both files say so in their own
-first line, `aarch64.rs` opening "The aarch64 page-table format: four levels, 4 KiB pages, 48-bit
-virtual addresses", which is VMSAv8-64 described without being named.
-
-**The format axis is the correct one, and RISC-V proves it**: `mmu-type` distinguishes Sv39 from Sv48
-(milestone 60), so a `riscv64.rs` could not hold both, while `sv39.rs` and a future `sv48.rs` sit
-beside each other exactly right. A crate whose whole value is being format-generic should file its
-formats by format.
-
-That makes `aarch64.rs` the file to rename, not `sv39.rs`, and it is the same self-contradiction
-CLAUDE.md records for `compose` and `measure`: a thing that names itself correctly in its own first
-line while carrying a different kind of name on the outside.
+It was raised here as an asymmetry: `aarch64.rs` beside `sv39.rs`, one an ISA and one a page-table
+format. It is real, but it is not a rename, and milestone 77 carries it now. The short reason is that
+Chris expects a **second aarch64 configuration**, which turns "rename the file" into "make room for a
+sibling on both sides", and that is a restructure with 174 call sites behind it.
 
 #### One that is not a pair
 
@@ -5579,3 +5571,73 @@ outside the roadmap link to `design/roadmap.md`, including `README.md`, `SECURIT
 `DECISIONS.md`, several crates and several design notes; every one must land on the index. Relative links inside the blocks point
 at `../notes/`, which becomes `../../notes/` one directory down, and `script/lint` already checks that
 every relative markdown link resolves, so a missed one fails loudly rather than quietly.
+
+### 77. `crates/paging`: a module per ISA, a type per page-table configuration
+
+**Status: NOT-STARTED**, and deliberately **waiting for a trigger**. Split out of milestone 73 on
+2026-08-03 once it stopped being a rename.
+
+#### What is wrong, stated precisely
+
+`crates/paging` exports two implementations of one `PageFormat` trait:
+
+| type | `LEVELS` | granule | VA bits |
+|---|---|---|---|
+| `Sv39` | 3 | 4 KiB | 39 |
+| `Aarch64` | 4 | 4 KiB | 48 |
+
+Both are **configurations**. `Sv39` names one; `Aarch64` names an architecture while describing one.
+A reader meeting `paging::Aarch64` beside `paging::Sv39` has to know that the first is not the general
+aarch64 case in order to read the second correctly.
+
+#### The asymmetry is not ours, which is why the obvious fix is wrong
+
+**RISC-V enumerates its configurations and names each one**: Sv39, Sv48, Sv57. The name *is* the
+configuration. **ARM parameterises instead**: there is one format, and the level count and VA width
+fall out of `TCR_EL1.T0SZ` and the granule field. The 4 KiB, 48-bit, 4-level arrangement has no short
+ARM name; you describe it.
+
+So renaming `aarch64.rs` to `vmsav8_64.rs` trades a name that is under-specific for one that is
+**over**-specific: VMSAv8-64 also covers the 16 KiB and 64 KiB granule configurations this file does
+not implement. And renaming `sv39.rs` to `riscv64.rs` is worse, because Sv48 would then have nowhere
+to live, and CLAUDE.md is explicit that a standard term a reader already knows is the best name
+available.
+
+#### The shape, when it is time
+
+A module per ISA, which is rule 1's shape and what `kernel/src/arch/<isa>/` has done since milestone 1:
+
+```
+crates/paging/src/
+  aarch64/mod.rs      the aarch64 configurations
+  riscv64/mod.rs      pub struct Sv39;   (and Sv48, milestone 60)
+  domain.rs
+  lib.rs              trait PageFormat
+```
+
+**The module carries the ISA and the type carries the configuration**, so each architecture names its
+configurations in its own vocabulary without the flat namespace forcing them into one list. The
+asymmetry stops being visible: you never see `Sv39` beside `Aarch64` again, which is the whole of what
+made it jarring.
+
+#### Why this WAITS, and what the trigger is
+
+**We do not know the second aarch64 configuration yet.** Apple Silicon's native 16 KiB granule is the
+best guess (milestone 24's Virtualization.framework board would meet it), but a VA-width change
+(52-bit, LPA2) varies `LEVELS` and `SPLIT_SHIFT` instead, and those two possibilities want different
+names. `Granule4K` is a false claim if what actually varies is the VA width.
+
+CLAUDE.md's rule applies directly, and milestone 60's entry states it for this exact situation: **do
+not build a chip abstraction on one configuration; the second one should tell us what the abstraction
+is.** Doing this early means renaming 174 call sites across 16 files twice if the guess is wrong, and
+the current name blocks nothing until a sibling actually exists.
+
+So the trigger is the arrival of a second aarch64 configuration, and the deliverable until then is
+this entry plus a comment in `crates/paging/src/lib.rs` pointing at it, so the next reader who notices
+the asymmetry finds the reasoning instead of filing it again.
+
+#### Scope note
+
+When it happens: module move, type rename, and every call site. `Aarch64` and `Sv39` appear **174
+times across 16 files**, including `kernel/src/arch/*/mmu.rs`, both `iommu.rs` files, and
+`crates/paging/tests/mapping.rs`. No behaviour change, and milestone 69's proof obligation applies.
