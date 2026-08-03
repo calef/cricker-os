@@ -114,10 +114,18 @@ why the ceiling lives in the kernel, where nothing can route around it.
 **It reproduces locally now, which it never did before**, and that is the useful part of this entry.
 Recipe, on an 8-core Apple Silicon host: four `sh -c 'while :; do :; done'` burners, then
 `cargo xtask test --arch riscv64` in a loop. **One failure in four runs.** Quiet, the same suite ran
-clean six times in a row (three full `script/test` runs and three `script/cpu-matrix` legs). CI has hit
-it on `rva23s64` and, on 2026-08-03, on a pull request that changed `DECISIONS.md` and
-`design/roadmap.md` and **zero lines of code**, which is what rules out any recent milestone as the
-cause.
+clean six times in a row (three full `script/test` runs and three `script/cpu-matrix` legs). Known
+occurrences, and the spread is the point:
+
+| When | Where | Test |
+|---|---|---|
+| 2026-08-03 | CI, `rva23s64` (PR #20) | `reclaim_frees_a_started_then_exited_childs_regions` |
+| 2026-08-03 | CI, PR #21, which changed two markdown files and **zero lines of code** | same |
+| 2026-08-03 | local, under four host burners, 1 run in 4 | same |
+| 2026-08-03 | CI, `thead-c906` (PR #23, the frame fix) | reached the watchdog with the guard silent |
+
+The docs-only occurrence is what rules out any recent milestone as the cause. The last one is on the
+branch that fixes the frame fault, which is what rules out the frame fault.
 
 **It is not milestone 71's frame-placement fault**, and the reproduction above was taken *with* that
 fix in the tree. The two were briefly conflated because the frame fault has a silent face (the guard
