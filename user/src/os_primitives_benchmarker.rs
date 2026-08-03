@@ -226,7 +226,7 @@ const SPAWN_PAGE: u64 = 4096;
 /// the spawner writes it into one shared frame and aliases that frame into each child. Hand-assembled
 /// machine code, arch-gated: aarch64 `movz`/`svc`, RISC-V `li`/`ecall`.
 ///
-/// aarch64: x0=slot 0, x1=SEND, x2=1, x8=SYS_INVOKE, svc; then x8=SYS_EXIT, svc.
+/// aarch64: x0=slot 0, x1=SEND, x2=1, `x8=SYS_INVOKE`, svc; then `x8=SYS_EXIT`, svc.
 #[cfg(target_arch = "aarch64")]
 const CHILD_STUB: [u32; 9] = [
     0xD280_0000,
@@ -389,7 +389,7 @@ fn null_syscall() {
 fn panic(_: &core::panic::PanicInfo) -> ! {
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        core::arch::asm!("brk #0", options(nostack, nomem))
+        core::arch::asm!("brk #0", options(nostack, nomem));
     };
     #[cfg(target_arch = "riscv64")]
     unsafe {

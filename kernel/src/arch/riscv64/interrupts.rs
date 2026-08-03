@@ -26,7 +26,7 @@ pub fn disable() -> bool {
     let prev: usize;
     // SAFETY: clears the interrupt-enable bit and reports the prior value. No memory effect.
     unsafe {
-        asm!("csrrci {}, sstatus, 2", out(reg) prev, options(nomem, nostack, preserves_flags))
+        asm!("csrrci {}, sstatus, 2", out(reg) prev, options(nomem, nostack, preserves_flags));
     };
     prev & SIE != 0
 }

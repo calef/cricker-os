@@ -196,7 +196,7 @@ pub mod tcb {
     /// on the TCB cap and `WRITE` on the aspace cap. Only an unstarted (embryo) TCB.
     pub const CONFIGURE: u64 = 0;
 
-    /// `invoke(cap, CAP_INSERT, cap_slot, rights, target)` -> child_slot. Copy the capability in
+    /// `invoke(cap, CAP_INSERT, cap_slot, rights, target)` -> `child_slot`. Copy the capability in
     /// the caller's `cap_slot`, narrowed to `rights`, into the child's cspace, returning the slot
     /// it landed in. The child's whole initial authority is built this way, one grant at a time,
     /// before it runs. Needs `WRITE` on the TCB cap and `GRANT` on the inserted capability.

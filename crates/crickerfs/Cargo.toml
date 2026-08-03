@@ -6,7 +6,5 @@ license.workspace = true
 
 [dependencies]
 
-# `kani` is set only by `cargo kani` (script/verify), never by an ordinary build. Declaring it
-# keeps unexpected_cfgs from flagging the `#[cfg(kani)]` proof module under -D warnings.
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+[lints]
+workspace = true

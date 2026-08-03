@@ -50,7 +50,7 @@ const UART_BASE: usize = crate::arch::mmu::phys_to_virt(UART_PHYS) as usize;
 /// `write_str`, because the UART is written **one byte at a time** and the two writers would splice
 /// into each other mid-word.
 ///
-/// SAFETY: UART_BASE is the documented UART address on QEMU `virt`, and nothing else in the kernel
+/// SAFETY: `UART_BASE` is the documented UART address on QEMU `virt`, and nothing else in the kernel
 /// touches it.
 static CONSOLE: IrqSafeMutex<ConsoleUart> =
     IrqSafeMutex::new(rank::CONSOLE, unsafe { ConsoleUart::new(UART_BASE) });

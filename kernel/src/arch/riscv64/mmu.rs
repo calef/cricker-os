@@ -94,7 +94,7 @@ const fn boot_table() -> BootTable {
 static BOOT_PAGE_TABLE: BootTable = boot_table();
 
 /// The physical address of the virtio-mmio transport window on QEMU's `virt` machine. The `virt`
-/// board lays out 8 virtio-mmio slots of 0x1000 each starting at 0x1000_1000, growing downward by
+/// board lays out 8 virtio-mmio slots of 0x1000 each starting at `0x1000_1000`, growing downward by
 /// slot; this base and the count below describe that window for the driver layer.
 pub const VIRTIO_MMIO_BASE: u64 = 0x1000_1000;
 /// The size of the virtio-mmio window (8 slots of 0x1000).
@@ -117,7 +117,7 @@ pub const PCI_ECAM_BASE: u64 = 0x3000_0000;
 pub const PCI_ECAM_BUSES: u16 = 1;
 pub const PCI_ECAM_MAPPED: u64 = PCI_ECAM_BUSES as u64 * 0x10_0000;
 
-/// Where BARs get placed. QEMU `virt` reserves 0x4000_0000..0x8000_0000 as the 32-bit PCI memory
+/// Where BARs get placed. QEMU `virt` reserves `0x4000_0000..0x8000_0000` as the 32-bit PCI memory
 /// window, but with `-bios default` nobody has programmed a BAR before us (OpenSBI does no PCI),
 /// so the kernel assigns them itself, bumping from this base. We map only a 2 MB slice: a virtio
 /// function's register BAR is 16 KB, so this bounds the kernel's page-table spend while leaving
@@ -147,7 +147,7 @@ pub(crate) fn phys_to_ptr(pa: u64) -> *mut PageTable {
 }
 
 /// Build the kernel's fine-grained Sv39 tables and switch `satp` to them, replacing the coarse RWX
-/// boot table (BOOT_PAGE_TABLE) that `boot.s` installed. The new tables are W^X: `.text` executable
+/// boot table (`BOOT_PAGE_TABLE`) that `boot.s` installed. The new tables are W^X: `.text` executable
 /// and read-only, `.rodata` read-only, everything else non-executable, the guard page unmapped.
 ///
 /// We are already running in the high half on the boot table; the fine table maps the same kernel
@@ -367,7 +367,7 @@ where
 
 /// The page-table format this architecture's IOMMU walks: the RISC-V IOMMU's single-stage
 /// (`iosatp`) translation is Sv39, the same format the CPU uses. The portable DMA-domain seam
-/// (kernel/src/iommu.rs, paging::domain) builds device domains through this alias; its registers
+/// (kernel/src/iommu.rs, `paging::domain`) builds device domains through this alias; its registers
 /// live in a BAR inside the PCI window mapped above, so no extra MMIO region is needed here.
 pub type DmaFormat = Sv39;
 

@@ -685,7 +685,7 @@ impl Vt {
                 1 => self.attr = Attr::new(self.attr.fg() | 8, self.attr.bg(), self.attr.reverse()),
                 7 => self.attr = Attr::new(self.attr.fg(), self.attr.bg(), true),
                 22 => {
-                    self.attr = Attr::new(self.attr.fg() & 7, self.attr.bg(), self.attr.reverse())
+                    self.attr = Attr::new(self.attr.fg() & 7, self.attr.bg(), self.attr.reverse());
                 }
                 27 => self.attr = Attr::new(self.attr.fg(), self.attr.bg(), false),
                 30..=37 => {

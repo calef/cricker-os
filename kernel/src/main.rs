@@ -198,7 +198,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
                     drivers::plic::init(
                         arch::mmu::phys_to_virt(plic_phys) as usize,
                         arch::irq::boot_s_context(),
-                    )
+                    );
                 };
             }
             match user::initrd() {
@@ -238,7 +238,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
                     drivers::plic::init(
                         arch::mmu::phys_to_virt(plic_phys) as usize,
                         arch::irq::boot_s_context(),
-                    )
+                    );
                 };
                 arch::exceptions::enable_external();
             }
@@ -441,7 +441,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
                 drivers::plic::init(
                     arch::mmu::phys_to_virt(plic_phys) as usize,
                     arch::irq::boot_s_context(),
-                )
+                );
             };
 
             let started = user::initrd()
@@ -487,7 +487,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
             None => {
                 println!(
                     "  virtio      : no block device attached (pass CRICKER_DISK to attach one)"
-                )
+                );
             }
         }
 

@@ -143,7 +143,7 @@ pub struct LineDisc {
     hist: [([u8; LINE_MAX], usize); HIST],
     hist_count: usize,
     hist_next: usize,
-    /// `Some(k)`: showing the k-th most recent history entry (k in 1..=hist_count).
+    /// `Some(k)`: showing the k-th most recent history entry (k in `1..=hist_count`).
     browse: Option<usize>,
     stash: ([u8; LINE_MAX], usize, usize),
     prompt: [u8; PROMPT_MAX],
@@ -892,7 +892,7 @@ mod tests {
         assert_eq!(d.line(), b"axb");
     }
 
-    /// start_line paints the prompt and any type-ahead, and the completed line includes the
+    /// `start_line` paints the prompt and any type-ahead, and the completed line includes the
     /// type-ahead: bytes that arrived before the read are not lost.
     #[test]
     fn start_line_shows_type_ahead() {

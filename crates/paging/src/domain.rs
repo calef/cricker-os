@@ -16,7 +16,7 @@
 //! through. That is the whole confinement, now in hardware: the domain is an allow-list of frames,
 //! expressed as a page table. The driver's ABI does not change, because IOVA == PA means the
 //! addresses it computes still name the right memory. (Both `virt` boards place RAM in the low half:
-//! aarch64 at 0x4000_0000, riscv at 0x8000_0000, both far below either format's [`Half`] split.)
+//! aarch64 at `0x4000_0000`, riscv at `0x8000_0000`, both far below either format's [`Half`] split.)
 //!
 //! # The RISC-V U-bit, stated once
 //!

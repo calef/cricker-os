@@ -6,7 +6,7 @@
 //! interrupt (slot 0), a report endpoint to send what it reads (slot 1), and a device-typed mapping
 //! of the NS16550's registers at [`UART_VA`]. From those, and nothing else, it services the device.
 //!
-//! The loop is the seL4 IRQHandler protocol:
+//! The loop is the seL4 `IRQHandler` protocol:
 //!
 //! 1. `WAIT` on the `Irq` capability. This blocks until the kernel delivers the UART interrupt as a
 //!    message (the interrupt the driver owns by capability, not by privilege).
@@ -75,7 +75,7 @@ fn read_uart() -> u8 {
 fn panic(_: &core::panic::PanicInfo) -> ! {
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        core::arch::asm!("brk #0", options(nostack, nomem))
+        core::arch::asm!("brk #0", options(nostack, nomem));
     };
     #[cfg(target_arch = "riscv64")]
     unsafe {

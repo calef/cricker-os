@@ -217,7 +217,7 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
     // notes/fs-server.md records as the cost of a dead server on a blocking contract.
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        core::arch::asm!("brk #0", options(nostack, nomem))
+        core::arch::asm!("brk #0", options(nostack, nomem));
     };
     #[cfg(target_arch = "riscv64")]
     unsafe {

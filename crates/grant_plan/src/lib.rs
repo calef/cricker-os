@@ -1,4 +1,4 @@
-//! **grant_plan: the grant-expression logic of the capability shell** (milestone 31, phase 1).
+//! **`grant_plan`: the grant-expression logic of the capability shell** (milestone 31, phase 1).
 //!
 //! This crate is the pure logic behind the shell's one idea: on a cricker-os command line,
 //! *designation is authorization* (Mark Miller's principle). Naming a resource in a command is

@@ -5,9 +5,9 @@
 //! and 2), and a real, reused TCP/IP stack (smoltcp, not hand-built) runs it entirely at EL0. The
 //! kernel knows nothing about TCP, UDP, or DHCP; it owns only the DMA confinement.
 //!
-//! net_stack brings the NIC up, runs DHCP to completion (reporting the lease), then serves a
+//! `net_stack` brings the NIC up, runs DHCP to completion (reporting the lease), then serves a
 //! capability-shaped socket contract on a `Stack` endpoint (DECISIONS §25, notes/net.md,
-//! crates/socket_proto/src/lib.rs): a socket is a socket id, per-connection bytes cross in a shared frame the
+//! `crates/socket_proto/src/lib.rs)`: a socket is a socket id, per-connection bytes cross in a shared frame the
 //! client delegates, and every operation is one message. Phase one is single-threaded and
 //! synchronous, one exchange per request; the server blocks on the `Stack` endpoint between
 //! requests and drives the network inside handling one.
@@ -56,8 +56,8 @@ static HEAP: user_rt::heap::UntypedHeap = user_rt::heap::UntypedHeap::new();
 /// Our MAC. Locally administered; slirp routes DHCP regardless.
 const MAC: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
 
-/// Where a client's shared frame for socket `sid` is mapped in net_stack's address space. Above the DMA
-/// page (0x90_0000) and well below the heap (1 GiB).
+/// Where a client's shared frame for socket `sid` is mapped in `net_stack`'s address space. Above the DMA
+/// page (`0x90_0000`) and well below the heap (1 GiB).
 fn socket_va(sid: usize) -> u64 {
     0x0000_0000_00A0_0000 + sid as u64 * 0x1000
 }
@@ -89,9 +89,9 @@ struct Sock {
     local_port: u16,
 }
 
-/// The private ephemeral-port range net_stack allocates local ports from, and a **rotating** allocator
+/// The private ephemeral-port range `net_stack` allocates local ports from, and a **rotating** allocator
 /// over it. The local port must be independent of the socket id: deriving it from the id (the
-/// original bug, found by the std::net PAL) means reopening a just-closed id reuses the exact port,
+/// original bug, found by the `std::net` PAL) means reopening a just-closed id reuses the exact port,
 /// and a TCP connect on a 4-tuple whose slirp flow has not yet cleared stalls in the bounded poll
 /// forever. Advancing monotonically hands out a fresh port each open, so a closed connection's port
 /// is not reused until the whole range has cycled; ports a live socket still holds are skipped
@@ -504,7 +504,7 @@ fn tcp_send(
 fn panic(_: &core::panic::PanicInfo) -> ! {
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        core::arch::asm!("brk #0", options(nostack, nomem))
+        core::arch::asm!("brk #0", options(nostack, nomem));
     };
     #[cfg(target_arch = "riscv64")]
     unsafe {

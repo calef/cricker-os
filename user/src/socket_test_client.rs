@@ -317,10 +317,10 @@ fn tcp_echo() -> ! {
 }
 
 /// **Regression: reusing a socket id is safe.** Open a TCP socket on id 0, connect to the echo peer,
-/// close it, then reopen the *same* id and connect again. Before net_stack assigned ephemeral local ports
+/// close it, then reopen the *same* id and connect again. Before `net_stack` assigned ephemeral local ports
 /// independent of the socket id, the reopen reused the exact local port, and the second connect on a
-/// 4-tuple whose slirp flow had not yet cleared stalled net_stack's bounded poll forever (found by the
-/// std::net PAL, notes/net.md). With the rotating allocator the reopen gets a fresh port, so both
+/// 4-tuple whose slirp flow had not yet cleared stalled `net_stack`'s bounded poll forever (found by the
+/// `std::net` PAL, notes/net.md). With the rotating allocator the reopen gets a fresh port, so both
 /// connects complete.
 fn tcp_reopen() -> ! {
     attach_frame(0);

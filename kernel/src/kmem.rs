@@ -27,7 +27,7 @@ use frames::FRAME_SIZE;
 use crate::sync::{IrqSafeMutex, rank};
 
 /// The carve: 768 pages (3 MiB). Endpoints (one page each, ~60 across a full test run), live
-/// kernel stacks (4 pages x up to MAX_THREADS), TCB pages (19c.2), and slack. Exhaustion fails
+/// kernel stacks (4 pages x up to `MAX_THREADS`), TCB pages (19c.2), and slack. Exhaustion fails
 /// the spawn or create cleanly, the same contract as every budget since milestone 11; raising
 /// this constant is the fix if the image ever legitimately needs more.
 const KERNEL_OBJ_PAGES: u64 = 768;
@@ -41,7 +41,7 @@ struct Pool {
     free_len: usize,
 }
 
-/// Rank note: taken alone or under SCHED (create_endpoint holds SCHED, then this, then the
+/// Rank note: taken alone or under SCHED (`create_endpoint` holds SCHED, then this, then the
 /// region lock: 60 -> 59 -> 58, a legal descent). Shares 59 with INBOX and MAPPINGS, with which
 /// it is never nested: inboxes are scheduling traffic, the mapping registry is user-space
 /// bookkeeping, and this is the kernel shopping for its own pages.

@@ -18,7 +18,7 @@
 //! but both are more code inside the boundary we are trying to keep small. Speed is not the
 //! constraint: this runs once, over a few hundred kilobytes, before the first user instruction.
 //!
-//! **One implementation, both sides.** The build (xtask, on the host) and the kernel (no_std, at
+//! **One implementation, both sides.** The build (xtask, on the host) and the kernel (`no_std`, at
 //! boot) hash through *this* crate, so there is exactly one definition of the measurement and no
 //! chance of a host/target disagreement quietly turning into a boot failure. That is the same
 //! discipline `crickerfs` gets: one parser for the archive whether it is on a disk or in RAM. The

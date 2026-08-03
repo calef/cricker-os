@@ -158,7 +158,7 @@ pub mod rank {
     /// RISC-V IOMMU's device directory and queues, whichever this arch has. A pure leaf: `attach`
     /// and `take_fault` do register and in-memory-queue work and lock nothing beneath them, and
     /// the DMA domain's page-table frames are allocated *before* this lock is taken (see
-    /// crate::iommu::confine), so the lock is never held across an allocation. Below VIRTIO
+    /// `crate::iommu::confine`), so the lock is never held across an allocation. Below VIRTIO
     /// because a PCI device is confined from the same bring-up path that registers its transport,
     /// though the two locks are never actually nested (confine runs before DEVICES is taken).
     pub const IOMMU: u32 = 54;
@@ -173,7 +173,7 @@ pub mod rank {
     /// where their mapping logs are. **Above UNTYPED**, because recording a mapping retypes a
     /// log page from the paying space's region under this lock. Never held together with SCHED
     /// in either order: the capability sweep (SCHED) and the unmap sweep (this) run one after
-    /// the other, and the reaper drops address spaces outside SCHED (see finish_switch).
+    /// the other, and the reaper drops address spaces outside SCHED (see `finish_switch`).
     pub const MAPPINGS: u32 = 59;
 
     /// The kernel's own page tables (`mmu::map_page` / `unmap_page`).
@@ -181,7 +181,7 @@ pub mod rank {
     /// Single-core, `kernel_mapper()` needed no lock: the callers happened not to race. SMP breaks
     /// that (two cores spawning threads both mutate the shared TTBR1 tables), so mapping is now
     /// serialized. **Below the scheduler** (a `KernelStack`'s `Drop` unmaps from under `reap`, which
-    /// holds SCHED) and **below STACK_VA** (a stack's `new` maps pages), and **above the allocators**
+    /// holds SCHED) and **below `STACK_VA`** (a stack's `new` maps pages), and **above the allocators**
     /// (mapping allocates intermediate page-table frames). See DECISIONS.md §11.
     pub const KERNEL_MMU: u32 = 45;
 

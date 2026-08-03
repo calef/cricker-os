@@ -398,7 +398,7 @@ pub const NOTE_BROKER_DONE: u64 = 4;
 pub fn fail() -> ! {
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        core::arch::asm!("brk #0", options(nostack, nomem))
+        core::arch::asm!("brk #0", options(nostack, nomem));
     };
     #[cfg(target_arch = "riscv64")]
     unsafe {

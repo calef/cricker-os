@@ -49,7 +49,7 @@ const QSIZE: u16 = 8;
 const RX_Q: u64 = 0;
 const TX_Q: u64 = 1;
 
-/// The 12-byte modern virtio-net header in front of every frame (VIRTIO_F_VERSION_1 negotiated).
+/// The 12-byte modern virtio-net header in front of every frame (`VIRTIO_F_VERSION_1` negotiated).
 const NET_HDR_LEN: u64 = 12;
 
 // The DMA-page layout: each queue's rings at the kernel's per-queue stride (RING_BLOCK = 0x200,
@@ -109,7 +109,7 @@ fn mw(off: u64, v: u32) {
 fn barrier() {
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        core::arch::asm!("dmb ish", options(nostack, nomem, preserves_flags))
+        core::arch::asm!("dmb ish", options(nostack, nomem, preserves_flags));
     };
     #[cfg(target_arch = "riscv64")]
     unsafe {
@@ -334,7 +334,7 @@ impl phy::RxToken for VnetRxToken {
 }
 
 /// Carries a raw pointer to the device rather than a borrow, so a receive token and a transmit
-/// token can coexist (both are returned from one `&mut self` call). net_stack is single-threaded, and
+/// token can coexist (both are returned from one `&mut self` call). `net_stack` is single-threaded, and
 /// the device outlives any token within a poll, so the deref in `consume` is sound.
 pub struct VnetTxToken {
     dev: *mut VirtioNet,

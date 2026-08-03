@@ -428,6 +428,9 @@ path = "src/wc.rs"
 test = false
 bench = false
 
+[lints]
+workspace = true
+
 [dependencies]
 abi = { version = "0.1.0", path = "../crates/abi" }
 c_seam = { version = "0.1.0", path = "../crates/c_seam" }

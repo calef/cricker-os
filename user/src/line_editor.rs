@@ -1,4 +1,4 @@
-//! **line_editor: the line discipline as a userspace component** (milestone 28).
+//! **`line_editor`: the line discipline as a userspace component** (milestone 28).
 //!
 //! The layer Unix builds into the kernel as the tty line discipline is here a process. It sits
 //! between the raw input driver and the application, and between the application and the console
@@ -35,19 +35,19 @@
 use line_editor::{Event, LINE_MAX, LineDisc, PROMPT_MAX, Sink, proto};
 use user_rt::{recv, recv_cap, reply, send};
 
-/// The terminal endpoint (slot 0): clients CALL requests here; we serve it with RECV_CAP.
+/// The terminal endpoint (slot 0): clients CALL requests here; we serve it with `RECV_CAP`.
 const TERM: u64 = 0;
 /// The console server's request endpoint (slot 1): we SEND a byte count on it.
 const CONREQ: u64 = 1;
 /// The console server's reply endpoint (slot 2): we RECV its ack here. The console speaks the
 /// pre-§12 two-endpoint protocol (it serves with plain RECV, which cannot answer a CALL), so
-/// this hop is SEND+RECV, not CALL. Safe with one console client, and line_editor is that client.
+/// this hop is SEND+RECV, not CALL. Safe with one console client, and `line_editor` is that client.
 const CONREP: u64 = 2;
 
 /// The console's shared page, mapped read/write: we fill it, the console prints it. The same
 /// frame the console server reads at its own `SHARED_VA`; must match the wiring (init).
 const CONOUT_VA: u64 = 0x0060_0000;
-/// The client's output page, mapped read-only: OP_WRITE text and OP_READLINE prompts arrive
+/// The client's output page, mapped read-only: `OP_WRITE` text and `OP_READLINE` prompts arrive
 /// here, written by the client at its own VA for this frame.
 const APP_OUT_VA: u64 = 0x0080_0000;
 /// The client's input page, mapped read/write: completed lines are delivered here for the
@@ -258,7 +258,7 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
     // hot-swap story (milestone 23) is what makes this honest rather than reckless.
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        core::arch::asm!("brk #0", options(nostack, nomem))
+        core::arch::asm!("brk #0", options(nostack, nomem));
     };
     #[cfg(target_arch = "riscv64")]
     unsafe {

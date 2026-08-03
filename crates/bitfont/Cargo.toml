@@ -14,4 +14,7 @@ license.workspace = true
 # public-domain VGA fonts). See src/glyphs.rs for the provenance and why a public-domain font was the
 # right pick for bits that get compiled into every image.
 
+[lints]
+workspace = true
+
 [dependencies]

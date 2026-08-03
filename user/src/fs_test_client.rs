@@ -139,7 +139,7 @@ fn read(handle: u64, offset: u64, n: usize) -> usize {
 /// Iterations for the timed read loop (`ROLE_BENCH`). Warmup pays the OPEN and the first cold read;
 /// the timed loop then reads the same block over and over, so it measures the FS-server file-IPC
 /// contract (client CALL, server dispatch, handle validation, engine read, copy into the shared page,
-/// reply), warm, not disk latency. Self-timed, reported home like os_primitives_benchmarker's primitives.
+/// reply), warm, not disk latency. Self-timed, reported home like `os_primitives_benchmarker`'s primitives.
 const BENCH_ITERS: u64 = 2000;
 const BENCH_WARMUP: u64 = 64;
 
@@ -1053,7 +1053,7 @@ fn probe_payload() -> [u8; PROBE_LEN] {
 
 /// **The FS-server read benchmark** (the userspace-server tax, DECISIONS §32). Open `motd` once, then
 /// time a loop of reads of its first block and report `[ticks, iters]` on the report endpoint, the
-/// os_primitives_benchmarker shape. The kernel's bench boot prints it as `fs_read`; against the bare `ipc_rtt_el0`
+/// `os_primitives_benchmarker` shape. The kernel's bench boot prints it as `fs_read`; against the bare `ipc_rtt_el0`
 /// round trip, the difference is what the FS-server contract costs above a raw endpoint call. It is a
 /// `--real`-only magnitude (the mount is device-driven, not deterministic under icount); see
 /// notes/benchmarks.md and kernel/src/bench.rs.
@@ -1133,7 +1133,7 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
     // A failed check is a dead client: fault, and the kernel reports it, failing the test.
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        core::arch::asm!("brk #0", options(nostack, nomem))
+        core::arch::asm!("brk #0", options(nostack, nomem));
     };
     #[cfg(target_arch = "riscv64")]
     unsafe {

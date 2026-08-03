@@ -198,7 +198,7 @@ fn farm_std_src() -> PathBuf {
     farm_dir().join("lib/rustlib/src/rust/library/std/src")
 }
 
-/// The `std_exerciser` ELF for a given custom-target triple. std_exerciser is its own workspace, so its
+/// The `std_exerciser` ELF for a given custom-target triple. `std_exerciser` is its own workspace, so its
 /// artifacts land under `std_exerciser/target/<triple>/release/`.
 fn std_exerciser_elf(triple: &str) -> PathBuf {
     workspace_root().join(format!(
@@ -1702,7 +1702,7 @@ fn redoxfs_disk_path() -> String {
         .to_string()
 }
 
-/// Drive the redoxfs_host tool (its own workspace) by `--manifest-path`, quietly. Returns success.
+/// Drive the `redoxfs_host` tool (its own workspace) by `--manifest-path`, quietly. Returns success.
 fn redoxfs_host(args: &[&str]) -> bool {
     let mut v = vec![
         "run",

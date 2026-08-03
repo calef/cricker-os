@@ -1,4 +1,4 @@
-//! **user_rt**: the tiny EL0 runtime shared by cricker-os userspace programs (milestone 19f.6).
+//! **`user_rt`**: the tiny EL0 runtime shared by cricker-os userspace programs (milestone 19f.6).
 //!
 //! One syscall wrapper (`invoke`) and the three things every program builds on it: `send`, `recv`,
 //! and `exit`. That is the whole crate. It exists because milestones 19f.2-5 split the userspace
@@ -341,7 +341,7 @@ pub fn cap_delete(slot: u64) {
 }
 
 /// The virtual counter, `CNTVCT_EL0`: a monotonic tick count for self-timing. Readable at EL0 only
-/// because the kernel opened `CNTKCTL_EL1.EL0VCTEN` (see kernel timer::init and notes/abi.md); the
+/// because the kernel opened `CNTKCTL_EL1.EL0VCTEN` (see kernel `timer::init` and notes/abi.md); the
 /// read is a plain register move, no syscall. Pair with [`cntfrq`] to turn tick deltas into seconds.
 #[cfg(target_arch = "aarch64")]
 pub fn now() -> u64 {

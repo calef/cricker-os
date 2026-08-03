@@ -12,6 +12,9 @@ test = false
 bench = false
 doctest = false
 
+[lints]
+workspace = true
+
 [dependencies]
 abi = { version = "0.1.0", path = "../abi" }
 user_heap = { version = "0.1.0", path = "../user_heap" }

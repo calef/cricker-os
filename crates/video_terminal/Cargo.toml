@@ -14,6 +14,9 @@ license.workspace = true
 # output all run THIS engine over the same script, so a disagreement is impossible by construction
 # rather than by care.
 
+[lints]
+workspace = true
+
 [dependencies]
 bitfont = { version = "0.1.0", path = "../bitfont" }
 

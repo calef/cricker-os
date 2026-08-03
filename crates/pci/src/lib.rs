@@ -33,7 +33,7 @@ impl Bdf {
     }
 
     /// The **PCIe requester id**: the 16-bit `bus:8 | dev:5 | fn:3` a function stamps on every
-    /// memory transaction it issues, and the key an IOMMU (SMMUv3 StreamID, RISC-V IOMMU device_id)
+    /// memory transaction it issues, and the key an IOMMU (SMMUv3 `StreamID`, RISC-V IOMMU `device_id`)
     /// looks a device up by. Both `virt` boards publish an identity `iommu-map` in the device tree,
     /// so this number is exactly the id the IOMMU sees. See kernel/src/iommu.rs (milestone 16b).
     pub fn requester_id(self) -> u32 {

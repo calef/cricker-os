@@ -55,7 +55,7 @@
 //! **The IANA time zone database is explicitly out of scope, and not just "not yet".** tzdata is a
 //! ~450 KB compiled ruleset that changes several times a year, which makes it a *data distribution*
 //! problem (who ships it, who updates it, which capability lets a program read it) rather than a
-//! calendar problem. It also cannot be answered correctly without it: "America/Los_Angeles" is not
+//! calendar problem. It also cannot be answered correctly without it: `America/Los_Angeles` is not
 //! an offset, it is a function from instants to offsets with 100+ years of political history in it,
 //! and a hardcoded "-08:00" would be wrong for a third of the year. So: no zone names, no DST, no
 //! `TZ` variable. A program that needs local time is given an offset by whatever knows one. If the
@@ -298,9 +298,8 @@ impl Civil {
         if year < MIN_YEAR || year > MAX_YEAR {
             return Err(Error::OutOfRange);
         }
-        let len = match days_in_month(year, month) {
-            Some(len) => len,
-            None => return Err(Error::BadMonth),
+        let Some(len) = days_in_month(year, month) else {
+            return Err(Error::BadMonth);
         };
         if day == 0 || day > len {
             return Err(Error::BadDay);
@@ -467,9 +466,8 @@ impl DateTime {
     /// offset differs from the UTC bound by less than a day. That edge is the only place a caller
     /// can be surprised, and it is why this returns a `Result` where [`DateTime::new`] does not.
     pub const fn from_unix(secs: i64, offset: UtcOffset) -> Result<DateTime, Error> {
-        let local = match secs.checked_add(offset.seconds()) {
-            Some(local) => local,
-            None => return Err(Error::OutOfRange),
+        let Some(local) = secs.checked_add(offset.seconds()) else {
+            return Err(Error::OutOfRange);
         };
         match Civil::from_unix(local) {
             Ok(civil) => Ok(DateTime { civil, offset }),

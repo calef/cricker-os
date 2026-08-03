@@ -12,10 +12,10 @@
 //! Linux allocates ASIDs by *generation*: processes outnumber ASIDs (256 or 65536), so on
 //! exhaustion it bumps a generation counter, flushes everything once, and lazily re-assigns.
 //! That machinery guards one case: more live address spaces than ASID numbers. **Our own bounds
-//! make that case unreachable**: milestone 14 fixed concurrent address spaces at MAX_SPACES
+//! make that case unreachable**: milestone 14 fixed concurrent address spaces at `MAX_SPACES`
 //! (160), below even the smallest hardware ASID space (8-bit, 256). So each address space keeps
 //! one ASID for its whole life, allocation is a bitmap scan, and the rollover path that could
-//! never be honestly exercised was never built. If MAX_SPACES ever outgrows 255, the fix is one
+//! never be honestly exercised was never built. If `MAX_SPACES` ever outgrows 255, the fix is one
 //! TCR bit (16-bit ASIDs) before it is ever a new algorithm.
 //!
 //! # The invariant the caller keeps
@@ -28,7 +28,7 @@
 #![cfg_attr(not(test), no_std)]
 
 /// One more than the largest ASID we hand out. 8-bit ASIDs: every aarch64 implementation has at
-/// least these, and 255 usable numbers exceed MAX_SPACES (160) with room.
+/// least these, and 255 usable numbers exceed `MAX_SPACES` (160) with room.
 pub const ASIDS: usize = 256;
 
 /// The allocator: one bit per ASID, set = in use. ASID 0 is born allocated and is never freed:
@@ -45,7 +45,7 @@ impl Allocator {
         Self { bitmap }
     }
 
-    /// Claim a free ASID. `None` only if all 255 are live, which MAX_SPACES makes unreachable
+    /// Claim a free ASID. `None` only if all 255 are live, which `MAX_SPACES` makes unreachable
     /// in the kernel; the type is honest anyway.
     pub fn alloc(&mut self) -> Option<u16> {
         for (i, word) in self.bitmap.iter_mut().enumerate() {

@@ -124,7 +124,7 @@ pub extern "C" fn _start(_x0: u64, _x1: u64, _x2: u64) -> ! {
     }
 }
 
-/// Read everything in the FIFO and forward it, up to 8 bytes per OP_BYTES message, packed
+/// Read everything in the FIFO and forward it, up to 8 bytes per `OP_BYTES` message, packed
 /// little-endian in the second word. The CALL blocks until the discipline has taken the bytes;
 /// the FIFO fills while we wait, and we drain what accumulated on return.
 fn drain() {
@@ -147,7 +147,7 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
     // A driver bug is a dead driver: fault, and let the kernel turn it into a kill.
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        core::arch::asm!("brk #0", options(nostack, nomem))
+        core::arch::asm!("brk #0", options(nostack, nomem));
     };
     #[cfg(target_arch = "riscv64")]
     unsafe {

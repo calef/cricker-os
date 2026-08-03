@@ -1,4 +1,4 @@
-//! **user_heap**: the userspace heap algorithm, as pure logic (milestone 27).
+//! **`user_heap`**: the userspace heap algorithm, as pure logic (milestone 27).
 //!
 //! A first-fit, address-sorted free list with coalescing, the same shape the kernel's original
 //! milestone-4 heap had (notes/heap.md) and for the same reason: zero overhead on allocated
@@ -218,7 +218,14 @@ impl Heap {
             }
         }
 
-        let node = start as *mut FreeBlock;
+        // Alignment is an invariant of this allocator, not an accident: every block it hands out
+        // or reclaims is `MIN_ALIGN`-aligned, and `MIN_ALIGN >= align_of::<FreeBlock>()`. clippy
+        // sees only `*mut u8 -> *mut FreeBlock` and cannot see the invariant.
+        #[allow(
+            clippy::cast_ptr_alignment,
+            reason = "start is MIN_ALIGN-aligned by this allocator's own construction"
+        )]
+        let node = start.cast::<FreeBlock>();
         // SAFETY: the freed range is ours and big enough for a node (>= MIN_ALIGN bytes).
         unsafe {
             (*node).size = new_size;

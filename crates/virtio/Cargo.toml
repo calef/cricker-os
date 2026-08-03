@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 license.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 abi = { version = "0.1.0", path = "../abi" }
 # The archive format, rather than a second copy of its offsets. This driver reads the crickerfs

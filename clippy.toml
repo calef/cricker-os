@@ -1,0 +1,51 @@
+# Clippy configuration (milestone 68). Lint SELECTION lives in Cargo.toml's [workspace.lints];
+# this file is only for the knobs clippy exposes to configuration rather than to lint levels.
+
+# `doc_markdown` demands backticks around anything that looks like an identifier. In a tree whose
+# documentation is a deliverable that is mostly right and occasionally very wrong, because the
+# heuristic is "has interior capitals or an underscore" and prose about an operating system is full
+# of proper nouns that match: RedoxFS, PCIe, OpenSBI, AArch64.
+#
+# Backticking those would be a REGRESSION, not a fix. `RedoxFS` renders as code, which says "this is
+# an identifier you could type", when it is the name of a project. The distinction the lint cannot
+# make is the one that matters: an identifier names something in this program, a proper noun names
+# something in the world.
+#
+# So the allowlist below is proper nouns and deliberate prose capitalisations ONLY. Everything else
+# clippy flagged (registers like TTBR0_EL1, types like BTreeMap, constants like FRAME_SIZE, paths
+# like crates/measured_boot) got real backticks in the source, because the lint was right about them.
+# Roughly 200 of each, which is the honest split and the reason this list is not longer.
+#
+# `".."` means "extend clippy's defaults", not "replace them". Without it, the built-in list
+# (GitHub, OAuth, TeX, ...) is discarded and those start warning.
+doc-valid-idents = [
+    "..",
+    # Projects, products and vendors.
+    "RedoxFS",
+    "CoreMark",
+    "OpenSBI",
+    "VisionFive",
+    "CodeQL",
+    "RustCrypto",
+    "AppleDouble",
+    "PrimeCell",
+    # Hardware and protocol names as the specifications spell them. These are the field's words,
+    # and CLAUDE.md's naming tenet says a term a reader already knows from outside costs them
+    # nothing; rendering it as code costs them the recognition.
+    "PCIe",
+    "SMMUv3",
+    "GICv2",
+    "NTPv4",
+    "INTx",
+    "AArch64",
+    "SError",
+    "CNodes",
+    # Deliberate capitalisation inside prose, where the case IS the emphasis. "Address Space
+    # IDentifier" spells out an acronym; "UNassigned" and "CALLed" stress a word mid-sentence.
+    # A formatter cannot tell these from an identifier, which is exactly why they are listed.
+    "IDentifier",
+    "UNassigned",
+    "CALLed",
+    "CoW",
+    "NxN",
+]

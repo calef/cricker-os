@@ -244,7 +244,7 @@ mod tests {
 
     /// `iter` yields each live entry paired with the very name that resolves to it, and skips the
     /// dead. This is what lets object revocation find every object backed by a region and then
-    /// remove it by name (an AddressSpace, unlike a Thread, does not carry its own name).
+    /// remove it by name (an `AddressSpace`, unlike a Thread, does not carry its own name).
     #[test]
     fn iter_yields_names_that_resolve_to_their_entry() {
         let mut t: Table<&str, 4> = Table::new();

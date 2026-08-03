@@ -18,7 +18,7 @@
 //!   child never frees to global" is the no-double-free crux: a page reaches the allocator only when
 //!   the root that owns it is destroyed, and each root owns one contiguous run from one allocation.
 //!
-//! Everything here works in **page units** (a watermark and page counts), so it is FRAME_SIZE- and
+//! Everything here works in **page units** (a watermark and page counts), so it is `FRAME_SIZE`- and
 //! address-agnostic; the kernel supplies the base addresses and does the byte arithmetic and the I/O.
 
 #![no_std]

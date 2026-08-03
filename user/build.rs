@@ -69,14 +69,11 @@ fn compile_c_component(manifest_dir: &Path) {
         }
     };
 
-    let clang = match resolve_clang() {
-        Some(c) => c,
-        None => {
-            // A hard error, not a warning. A silently missing C component would produce a `c_shim`
-            // that fails to link with a bare "undefined symbol: c_seam_transform", which tells a
-            // reader nothing about what to install.
-            panic!("{}", CLANG_HELP);
-        }
+    let Some(clang) = resolve_clang() else {
+        // A hard error, not a warning. A silently missing C component would produce a `c_shim`
+        // that fails to link with a bare "undefined symbol: c_seam_transform", which tells a
+        // reader nothing about what to install.
+        panic!("{}", CLANG_HELP);
     };
 
     for (source, bin) in C_SOURCES {

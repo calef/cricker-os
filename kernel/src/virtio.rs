@@ -21,7 +21,7 @@ const SLOTS: u64 = VIRTIO_SLOTS;
 
 /// "virt", little-endian, at offset 0x000 of every slot.
 const MAGIC: u32 = 0x7472_6976;
-/// DeviceID at offset 0x008. 0 means "empty slot"; the virtio device-type numbers we route: 1 is a
+/// `DeviceID` at offset 0x008. 0 means "empty slot"; the virtio device-type numbers we route: 1 is a
 /// network card, 2 is a block device, 4 is an entropy source.
 const DEVICE_ID_NET: u32 = 1;
 const DEVICE_ID_BLOCK: u32 = 2;
@@ -613,7 +613,7 @@ fn validate_and_shadow(
 pub enum TransportError {
     /// No such device id.
     NoDevice,
-    /// The queue does not fit in the DMA region, or QUEUE_NUM_MAX is too small.
+    /// The queue does not fit in the DMA region, or `QUEUE_NUM_MAX` is too small.
     BadQueue,
     /// **A descriptor pointed outside the driver's DMA region.** The device was NOT told to go.
     DmaEscape,

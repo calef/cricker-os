@@ -213,7 +213,7 @@ pub fn enable_software_interrupts() {
     const SSIE: u64 = 1 << 1;
     // SAFETY: sets a `sie` bit; takes effect under sstatus.SIE. No memory effect.
     unsafe {
-        core::arch::asm!("csrs sie, {}", in(reg) SSIE, options(nomem, nostack, preserves_flags))
+        core::arch::asm!("csrs sie, {}", in(reg) SSIE, options(nomem, nostack, preserves_flags));
     };
 }
 /// `scause` exception code for `ecall` taken from U-mode: the syscall.
@@ -290,7 +290,7 @@ pub fn enable_external() {
     const SEIE: u64 = 1 << 9;
     // SAFETY: setting sie.SEIE only unmasks the external-interrupt source; it takes effect under SIE.
     unsafe {
-        core::arch::asm!("csrs sie, {}", in(reg) SEIE, options(nomem, nostack, preserves_flags))
+        core::arch::asm!("csrs sie, {}", in(reg) SEIE, options(nomem, nostack, preserves_flags));
     };
 }
 

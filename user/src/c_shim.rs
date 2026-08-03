@@ -153,8 +153,12 @@ pub unsafe extern "C" fn malloc(n: usize) -> *mut u8 {
     }
     // SAFETY: `base` owns `MALLOC_HDR + n` bytes, 16-aligned, so the header write is in bounds and
     // aligned for a `usize`.
+    #[allow(
+        clippy::cast_ptr_alignment,
+        reason = "malloc_layout requests MALLOC_HDR (16) alignment, which exceeds align_of::<usize>()"
+    )]
     unsafe {
-        (base as *mut usize).write(n);
+        base.cast::<usize>().write(n);
         base.add(MALLOC_HDR)
     }
 }
@@ -167,9 +171,13 @@ pub unsafe extern "C" fn free(p: *mut u8) {
         return;
     }
     // SAFETY: `p` came from `malloc`, so `p - MALLOC_HDR` is the base and holds the size.
+    #[allow(
+        clippy::cast_ptr_alignment,
+        reason = "base is the 16-aligned pointer malloc returned, so it is aligned for a usize"
+    )]
     unsafe {
         let base = p.sub(MALLOC_HDR);
-        let n = (base as *const usize).read();
+        let n = base.cast::<usize>().read();
         if let Some(layout) = malloc_layout(n) {
             HEAP.dealloc(base, layout);
         }
@@ -183,7 +191,7 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
     #[cfg(target_arch = "aarch64")]
     // SAFETY: a deliberate trap; the kernel kills this thread.
     unsafe {
-        core::arch::asm!("brk #0", options(nostack, nomem))
+        core::arch::asm!("brk #0", options(nostack, nomem));
     };
     #[cfg(target_arch = "riscv64")]
     // SAFETY: a deliberate trap; the kernel kills this thread.

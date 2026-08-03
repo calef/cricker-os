@@ -214,7 +214,7 @@ fn recv_cap(slot: u64) -> (u64, u64) {
 /// **The Call/Reply server, milestone 12.** Holds `RECV` on a request endpoint (slot 0) and a report
 /// endpoint (slot 1). It answers one caller it was never individually wired to, then proves the
 /// reply capability is one-shot by trying to use it a second time and reporting that the kernel
-/// refused. See kernel/src/user.rs call_service.
+/// refused. See kernel/src/user.rs `call_service`.
 fn call_server() -> ! {
     const EP: u64 = 0;
     const REPORT: u64 = 1;
@@ -245,7 +245,7 @@ fn call_client() -> ! {
 /// 1). It retypes a page, maps it, then `REVOKE`s it: the kernel unmaps the page and deletes every
 /// capability to it, this process's own included, so a second operation on the frame slot finds
 /// nothing there. Reports 1 if REVOKE succeeded and the slot is now empty. See kernel/src/user.rs
-/// revoke_service.
+/// `revoke_service`.
 fn revoke_demo() -> ! {
     const UNTYPED: u64 = 0; // retype + page tables
     const REPORT: u64 = 1;
@@ -271,7 +271,7 @@ fn revoke_demo() -> ! {
     exit();
 }
 
-/// Where the kernel maps the initrd into init (must match user.rs INITRD_VA).
+/// Where the kernel maps the initrd into init (must match user.rs `INITRD_VA`).
 const INITRD_VA: u64 = 0x2000_0000;
 
 /// The bytes of the program named `name` in the initrd (milestone 19f). The initrd is a crickerfs
@@ -337,7 +337,7 @@ const CHILD_WORD: u64 = 0xC0FFEE;
 /// of its own budget through the granular verbs (retype an address space, copy each segment into
 /// retyped frames and map them in, retype a TCB, endow it, configure, start). The child reports
 /// a word home; receiving it proves init parsed a real ELF and built a running process, with the
-/// kernel never touching the child's bytes. See kernel/src/user.rs spawn_init.
+/// kernel never touching the child's bytes. See kernel/src/user.rs `spawn_init`.
 fn init(initrd_len: u64) -> ! {
     init_build(initrd_len, false)
 }
@@ -362,7 +362,7 @@ fn init_boot(_x1: u64, fs_rights: u64) -> ! {
     // below is written so that case takes exactly the path it took before this existed.
     const FS_EP: u64 = 5;
     const FS_PAGE: u64 = 6;
-    /// Where the shell maps the page it shares with the FS server (swish.rs FS_VA).
+    /// Where the shell maps the page it shares with the FS server (swish.rs `FS_VA`).
     const SH_FS_VA: u64 = 0x0060_0000;
     // Pages we split off our own budget and hand the shell, so `run --mem N` grants memory that is
     // genuinely the shell's own (milestone 31). Must match swish.rs's SH_BUDGET_PAGES.
@@ -900,12 +900,9 @@ fn init_build(initrd_len: u64, device: bool) -> ! {
         send(REPORT, 0, 0, 0);
         exit();
     };
-    let elf = match elf::Elf::parse(init_bytes) {
-        Ok(e) => e,
-        Err(_) => {
-            send(REPORT, 0, 0, 0);
-            exit();
-        }
+    let Ok(elf) = elf::Elf::parse(init_bytes) else {
+        send(REPORT, 0, 0, 0);
+        exit();
     };
 
     // The child's authority: its report endpoint at slot 0 (WRITE). A driver also gets the UART.
@@ -964,7 +961,7 @@ fn child() -> ! {
 /// Build a child process from `elf`, out of `untyped`. `caps` are inserted into the child's cspace
 /// at slots 0, 1, ... in order (each `(init_slot, rights)`: the capability init holds in
 /// `init_slot`, narrowed to `rights`). `maps` are extra pages mapped into the child before it
-/// starts (each `(child_va, init_slot, mode)`: init's Frame or DeviceFrame cap, mapped at
+/// starts (each `(child_va, init_slot, mode)`: init's Frame or `DeviceFrame` cap, mapped at
 /// `child_va` with a `MAP_*` mode) -- how init hands a driver its registers and a shared buffer
 /// (19d.2). Returns the child's TCB slot, ready to start. This is init's ELF loader, mirroring the
 /// kernel's `map_segments` but driven entirely through the granular verbs.
@@ -1088,18 +1085,18 @@ fn build_child(
 
 /// init's ever-advancing scratch window: where it temporarily maps each child frame to fill it.
 /// Persistent across every `build_child` call because init never unmaps these; a per-call reset
-/// collides with a prior child's mappings. Starts below the initrd (0x2000_0000), room for
+/// collides with a prior child's mappings. Starts below the initrd (`0x2000_0000`), room for
 /// thousands of pages before it reaches it.
 static SCRATCH_NEXT: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0x1000_0000);
 
-/// init's own budget lives in slot 0 (both spawn_init paths grant it there). `build_child` uses it
+/// init's own budget lives in slot 0 (both `spawn_init` paths grant it there). `build_child` uses it
 /// for its scratch mappings regardless of which untyped a child is built from, so tearing a
 /// supervised child's region down never frees init's own page tables (milestone 24).
 const INIT_BUDGET: u64 = 0;
 
 /// Where a supervised (interruptible) child maps its shared job frame (milestone 24). Below the ELF
-/// load address (0x40_0000) and the stack; must match heeder.rs / spinner.rs's JOB_FRAME_VA.
+/// load address (`0x40_0000`) and the stack; must match heeder.rs / spinner.rs's `JOB_FRAME_VA`.
 const CHILD_JOBFRAME_VA: u64 = 0x0030_0000;
 
 /// Retype a kernel object (endpoint | aspace | tcb) out of `untyped`; returns its cap slot.
@@ -1220,7 +1217,7 @@ fn ep_user() -> ! {
 /// capability held `WRITE | GRANT` (slot 1). It passes the resource on, narrowed to `WRITE` so the
 /// receiver can use it but not lend it further. The whole point of a capability system, in four
 /// lines: authority a process holds, handed to another process, at runtime, with less power than it
-/// arrived with. See kernel/src/user.rs delegation_service.
+/// arrived with. See kernel/src/user.rs `delegation_service`.
 fn granter() -> ! {
     const CHANNEL: u64 = 0;
     const RESOURCE: u64 = 1;
@@ -1361,7 +1358,7 @@ fn fail() -> ! {
     #[cfg(target_arch = "aarch64")]
     // SAFETY: `brk` raises a breakpoint the kernel turns into a fault. That is the point.
     unsafe {
-        core::arch::asm!("brk #0", options(nostack, nomem))
+        core::arch::asm!("brk #0", options(nostack, nomem));
     };
     #[cfg(target_arch = "riscv64")]
     // SAFETY: `ebreak` raises a breakpoint the kernel turns into a fault. That is the point.

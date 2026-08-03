@@ -146,7 +146,7 @@ pub const fn pixel_at(i: usize) -> u32 {
 /// FNV-1a is chosen for being a few lines, having no table, and mixing position into the result: the
 /// same multiset of pixels in a different order gives a different digest, which is the property that
 /// makes a rotated or mirrored surface fail. It is not a cryptographic hash and nothing here needs
-/// one; the measured-boot path (crates/measured_boot) is where that requirement lives.
+/// one; the measured-boot path (`crates/measured_boot`) is where that requirement lives.
 pub fn checksum(mut read: impl FnMut(usize) -> u32) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325; // FNV-1a 64-bit offset basis
     for i in 0..PIXELS {

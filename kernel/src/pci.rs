@@ -221,7 +221,7 @@ fn bring_up(bdf: Bdf, device_type: u32) -> Option<PciVirtioDevice> {
     // Size every BAR, then place the unassigned ones from the shared cursor (the IOMMU function
     // draws from the same cursor on riscv, so the two cannot overlap).
     let mut bars = pci::read_bars(bdf, &mut |b, o| cfg_read32(b, o), &mut |b, o, v| {
-        cfg_write32(b, o, v)
+        cfg_write32(b, o, v);
     });
     if !place_bars(bdf, &mut bars) {
         return None;
@@ -315,7 +315,7 @@ pub fn init_iommu() {
     let Some(bdf) = found else { return };
 
     let mut bars = pci::read_bars(bdf, &mut |b, o| cfg_read32(b, o), &mut |b, o, v| {
-        cfg_write32(b, o, v)
+        cfg_write32(b, o, v);
     });
     if !place_bars(bdf, &mut bars) {
         crate::println!("  pci: could not place the IOMMU's BAR; leaving the IOMMU off");

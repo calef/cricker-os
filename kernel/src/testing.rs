@@ -123,7 +123,7 @@ pub fn note_progress() {
 }
 
 /// Is any online core running a real thread (not its idle fallback)? A lost-wakeup hang leaves every
-/// core parked on idle; a slow-but-live test (a userspace CPU-bound loop like std_net's smoltcp
+/// core parked on idle; a slow-but-live test (a userspace CPU-bound loop like `std_net`'s smoltcp
 /// poll) always has one running. Read-only across the per-CPU blocks; racy by nature, which a
 /// heartbeat sampled once per tick tolerates.
 fn any_core_running_real_work() -> bool {

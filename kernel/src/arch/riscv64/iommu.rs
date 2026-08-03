@@ -20,7 +20,7 @@
 //! IOMMU, so the pre-init window fails closed by architecture here; the SMMU needed an explicit
 //! `GBPA.ABORT` for the same posture. Sv39 single-stage translation requires the U bit on every
 //! leaf (a device does not "request supervisor privilege"), which is why the seam builds domains
-//! with user_data flags; see paging::domain.
+//! with `user_data` flags; see `paging::domain`.
 
 use crate::arch::mmu::phys_to_virt;
 use crate::sync::{IrqSafeMutex, rank};
@@ -85,7 +85,7 @@ pub struct Fault {
 struct Iommu {
     base: u64,
     ddt: u64,
-    /// Extended (64-byte) device contexts, because the QEMU device reports MSI_FLAT. The base
+    /// Extended (64-byte) device contexts, because the QEMU device reports `MSI_FLAT`. The base
     /// format is 32 bytes; both are handled, decided once at init from the capabilities register.
     dc_bytes: u64,
     cq: u64,

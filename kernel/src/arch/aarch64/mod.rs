@@ -154,7 +154,7 @@ pub fn current_sp() -> u64 {
     let sp: u64;
     // SAFETY: reads a register. No side effects.
     unsafe {
-        core::arch::asm!("mov {}, sp", out(reg) sp, options(nomem, nostack, preserves_flags))
+        core::arch::asm!("mov {}, sp", out(reg) sp, options(nomem, nostack, preserves_flags));
     };
     sp
 }

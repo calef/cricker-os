@@ -10,4 +10,7 @@ license.workspace = true
 # and the kernel-side test share ONE definition and cannot drift. The same split `fs_proto` makes
 # for the filesystem contract and `line_editor::proto` for the terminal's.
 
+[lints]
+workspace = true
+
 [dependencies]

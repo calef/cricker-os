@@ -32,8 +32,8 @@ const RESULT: u64 = 0;
 const BUDGET: u64 = 1;
 
 const PAGE: u64 = 4096;
-/// Where we start mapping. Well clear of our own segments (linked at 0x40_0000) and stack
-/// (0x50_0000): a fresh, page-aligned, low-half window with room to grow.
+/// Where we start mapping. Well clear of our own segments (linked at `0x40_0000`) and stack
+/// (`0x50_0000)`: a fresh, page-aligned, low-half window with room to grow.
 const SPEND_BASE: u64 = 0x1000_0000;
 
 #[unsafe(no_mangle)]
@@ -65,7 +65,7 @@ pub extern "C" fn _start(_x0: u64, _x1: u64, _x2: u64) -> ! {
 fn panic(_: &core::panic::PanicInfo) -> ! {
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        core::arch::asm!("brk #0", options(nostack, nomem))
+        core::arch::asm!("brk #0", options(nostack, nomem));
     };
     #[cfg(target_arch = "riscv64")]
     unsafe {

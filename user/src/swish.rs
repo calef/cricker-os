@@ -31,12 +31,12 @@
 //!
 //! It holds, by convention (init granted them in this order):
 //!
-//! - slot 0: the terminal endpoint (CALL: OP_WRITE / OP_READLINE).
-//! - slot 1: a spawn endpoint (direct init to start a program; grant_plan::spawnproto).
+//! - slot 0: the terminal endpoint (CALL: `OP_WRITE` / `OP_READLINE`).
+//! - slot 1: a spawn endpoint (direct init to start a program; `grant_plan::spawnproto`).
 //! - slot 2: a result endpoint (receive a spawned program's answer).
 //! - slot 3: an untyped budget, the memory it grants with `--mem`.
 //!
-//! and two pages shared with the terminal: OUT_VA (we write text and prompts) and LINE_VA
+//! and two pages shared with the terminal: `OUT_VA` (we write text and prompts) and `LINE_VA`
 //! (completed lines arrive). No role selector; the syscall runtime comes from `user_rt`.
 
 #![no_std]
@@ -68,7 +68,7 @@ const SPAWN: u64 = 1; // SEND a spawn request to init
 const RESULT: u64 = 2; // RECV a spawned program's answer
 const BUDGET: u64 = 3; // our own untyped; SPLIT a grant off it for `--mem`
 
-/// The budget init granted us at boot (must match system_initializer / hello init_boot's SH_BUDGET_PAGES).
+/// The budget init granted us at boot (must match `system_initializer` / hello `init_boot`'s `SH_BUDGET_PAGES`).
 /// We cannot query how much remains (there is no such syscall), so `caps` prints the initial grant.
 const SH_BUDGET_PAGES: u64 = 128;
 
@@ -590,7 +590,7 @@ fn get_page(n: usize, out: &mut [u8]) {
     }
 }
 
-/// Print through the terminal: write the text into the shared page, CALL OP_WRITE. The reply
+/// Print through the terminal: write the text into the shared page, CALL `OP_WRITE`. The reply
 /// means the bytes are on the wire and the page is ours again.
 fn print(s: &[u8]) {
     let n = s.len().min(4096);
@@ -622,9 +622,9 @@ fn print_num(mut v: u64) {
     print(&digits[i..]);
 }
 
-/// Read a command line: stage the prompt, CALL OP_READLINE, and block until the terminal has a
+/// Read a command line: stage the prompt, CALL `OP_READLINE`, and block until the terminal has a
 /// line for us. The editing (cursor keys, history, backspace) happens entirely on the far side;
-/// we get the finished line in LINE_VA and its length and flags in the reply.
+/// we get the finished line in `LINE_VA` and its length and flags in the reply.
 fn read_line(prompt: &[u8], out: &mut [u8]) -> (usize, u64) {
     stage(prompt, prompt.len());
     let (len, flags) = call(TERM, proto::req(proto::OP_READLINE, prompt.len() as u64), 0);
@@ -1459,12 +1459,9 @@ fn run_pipeline(
 
     // One region for the whole pipeline, so a line costs one SPLIT and one DESTROY however many
     // stages it has. Each joint's endpoint is a page retyped out of it.
-    let region = match untyped_split(PIPE_REGION_PAGES) {
-        Some(r) => r,
-        None => {
-            print(b"  this shell's memory budget is exhausted; nothing left to grant\n");
-            return;
-        }
+    let Some(region) = untyped_split(PIPE_REGION_PAGES) else {
+        print(b"  this shell's memory budget is exhausted; nothing left to grant\n");
+        return;
     };
     let mut pipes = [0u64; line::MAX_STAGES];
     let mut minted = 0usize;
@@ -2013,20 +2010,14 @@ static CONSUMED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::
 fn spawn_interruptible(e: Endowment) {
     // Mint the job's resources. RETYPE the shared frame first, then SPLIT the construction budget,
     // so the budget is the top of our watermark and DESTROY returns its pages cleanly (LIFO).
-    let job_fr = match retype_frame() {
-        Some(s) => s,
-        None => {
-            print(b"  this shell's memory budget is exhausted; nothing left to grant\n");
-            return;
-        }
+    let Some(job_fr) = retype_frame() else {
+        print(b"  this shell's memory budget is exhausted; nothing left to grant\n");
+        return;
     };
-    let job_ut = match untyped_split(JOB_UNTYPED_PAGES) {
-        Some(s) => s,
-        None => {
-            cap_delete(job_fr);
-            print(b"  this shell's memory budget is exhausted; nothing left to grant\n");
-            return;
-        }
+    let Some(job_ut) = untyped_split(JOB_UNTYPED_PAGES) else {
+        cap_delete(job_fr);
+        print(b"  this shell's memory budget is exhausted; nothing left to grant\n");
+        return;
     };
 
     // Map the shared frame into our own space so we can signal the job and read its status.
@@ -2204,7 +2195,7 @@ fn delegate(slot: u64, rights: u64) {
     };
 }
 
-/// Ask the terminal how many `^C` it has seen (a non-blocking poll; see proto::OP_INTRCOUNT).
+/// Ask the terminal how many `^C` it has seen (a non-blocking poll; see `proto::OP_INTRCOUNT`).
 fn intr_count() -> u64 {
     call(TERM, proto::req(proto::OP_INTRCOUNT, 0), 0).0
 }
@@ -2620,7 +2611,7 @@ fn line<'a>(buf: &'a mut [u8; 32], verb: &[u8], name: &([u8; 16], usize)) -> &'a
 fn panic(_: &core::panic::PanicInfo) -> ! {
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        core::arch::asm!("brk #0", options(nostack, nomem))
+        core::arch::asm!("brk #0", options(nostack, nomem));
     };
     #[cfg(target_arch = "riscv64")]
     unsafe {

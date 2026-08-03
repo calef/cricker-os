@@ -318,7 +318,7 @@ pub fn tcb_start(tcb: u64, a0: u64, a1: u64, a2: u64) -> bool {
 pub fn fail() -> ! {
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        core::arch::asm!("brk #0", options(nostack, nomem))
+        core::arch::asm!("brk #0", options(nostack, nomem));
     };
     #[cfg(target_arch = "riscv64")]
     unsafe {

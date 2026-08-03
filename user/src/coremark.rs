@@ -38,7 +38,7 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
     // A compute bug is a dead workload: fault, and let the kernel turn it into a kill.
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        core::arch::asm!("brk #0", options(nostack, nomem))
+        core::arch::asm!("brk #0", options(nostack, nomem));
     };
     #[cfg(target_arch = "riscv64")]
     unsafe {

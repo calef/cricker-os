@@ -70,8 +70,8 @@ const S_DRIVER: u32 = 2;
 const S_DRIVER_OK: u32 = 4;
 const S_FEATURES_OK: u32 = 8;
 
-/// VIRTIO_F_VERSION_1 (feature bit 32) and VIRTIO_F_ACCESS_PLATFORM (bit 33), both in the high
-/// feature word. ACCESS_PLATFORM is offered only when the device sits behind an IOMMU, and is
+/// `VIRTIO_F_VERSION_1` (feature bit 32) and `VIRTIO_F_ACCESS_PLATFORM` (bit 33), both in the high
+/// feature word. `ACCESS_PLATFORM` is offered only when the device sits behind an IOMMU, and is
 /// acked only when offered, exactly as the disk and net drivers do it: our DMA domain is an identity
 /// map, so accepting it changes no address we compute, it only tells the device we know we are
 /// translated.
@@ -165,7 +165,7 @@ fn barrier() {
     // SAFETY: a barrier has no operands and cannot be unsound.
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        core::arch::asm!("dmb ish", options(nostack, nomem, preserves_flags))
+        core::arch::asm!("dmb ish", options(nostack, nomem, preserves_flags));
     };
     // SAFETY: as above.
     #[cfg(target_arch = "riscv64")]
@@ -538,7 +538,7 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
     #[cfg(target_arch = "aarch64")]
     // SAFETY: a deliberate trap; this function never returns.
     unsafe {
-        core::arch::asm!("brk #0", options(nostack, nomem))
+        core::arch::asm!("brk #0", options(nostack, nomem));
     };
     #[cfg(target_arch = "riscv64")]
     // SAFETY: as above.

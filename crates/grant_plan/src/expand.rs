@@ -282,9 +282,8 @@ impl<'a> Expander<'a> {
 pub fn magic_component(token: &[u8]) -> Result<bool, Refusal> {
     let parsed = nav::path(token).map_err(crate::nav_refusal)?;
     let steps = parsed.steps();
-    let (last, lead) = match steps.split_last() {
-        Some(v) => v,
-        None => return Ok(false),
+    let Some((last, lead)) = steps.split_last() else {
+        return Ok(false);
     };
     for step in lead {
         if let Step::Down(name) = step

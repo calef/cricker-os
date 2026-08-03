@@ -20,9 +20,9 @@
 //!   then: root_supervisor deletes its untyped and becomes a RECV loop on its own supervision endpoint.
 //! ```
 //!
-//! After the handoff root_supervisor cannot build a process, cannot endow anyone with memory, and cannot
+//! After the handoff `root_supervisor` cannot build a process, cannot endow anyone with memory, and cannot
 //! reach the sub-servers' internals. What is left of it is a supervisor so small it essentially
-//! cannot fail: receive a death, report it, stop. A compromised root_supervisor at that point can lie about
+//! cannot fail: receive a death, report it, stop. A compromised `root_supervisor` at that point can lie about
 //! deaths on one endpoint. That is the entire blast radius.
 //!
 //! The restart policy is `sub_server_supervisor`'s, in userspace, and the kernel never relaunches anything

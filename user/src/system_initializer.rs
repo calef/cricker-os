@@ -51,7 +51,7 @@ const CHILD_STACK_VA: u64 = 0x0050_0000;
 const CHILD_STACK_PAGES: u64 = 8;
 
 /// Where a supervised (interruptible) child maps its shared job frame (milestone 24). Below the ELF
-/// load address (0x40_0000) and the stack; must match heeder.rs / spinner.rs's JOB_FRAME_VA.
+/// load address (`0x40_0000`) and the stack; must match heeder.rs / spinner.rs's `JOB_FRAME_VA`.
 const CHILD_JOBFRAME_VA: u64 = 0x0030_0000;
 
 /// Pages of untyped we split off our own budget and hand the shell (milestone 31), so the shell can
@@ -261,7 +261,7 @@ fn opt_cap(slot: u64) -> Option<u64> {
 /// shell directs; it inserts only what the shell endows, so a spawned program can reach nothing the
 /// command line did not name.
 ///
-/// Two shapes (grant_plan::spawnproto). A **normal** job: the shell sends the request and, if `--mem`
+/// Two shapes (`grant_plan::spawnproto`). A **normal** job: the shell sends the request and, if `--mem`
 /// rode along, one delegated untyped; we build the child from our own budget, endow it the result
 /// endpoint (and the budget), and start it. A **supervised** (interruptible) job: the shell leads
 /// the delegation with a job untyped and a shared job frame; we build the whole child *from that
@@ -550,7 +550,7 @@ fn must0(r: i64) {
 fn fail() -> ! {
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        core::arch::asm!("brk #0", options(nostack, nomem))
+        core::arch::asm!("brk #0", options(nostack, nomem));
     };
     #[cfg(target_arch = "riscv64")]
     unsafe {
