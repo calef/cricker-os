@@ -1,0 +1,46 @@
+#!/bin/sh
+# script/gates: run every gate a pull request must pass, in one command.
+#
+# Why this exists: the gates are three separate scripts, and on 2026-08-03 a change was pushed after
+# running two of them. The third, `script/fmt --check`, then failed in CI for a reason that had
+# nothing to do with the change, which is the most expensive kind of red check: it costs a full CI
+# cycle and a human deciding whether the failure is real. Three commands is two too many to remember
+# at the moment you are about to push.
+#
+# What it runs, and why only these three. These are the checks a developer can run locally in
+# minutes and that gate every pull request. Deliberately NOT the whole CI surface: `script/verify`
+# (Kani, ~47 minutes), `script/cpu-matrix` (five QEMU CPU models), `script/fuzz`, `script/coverage`,
+# `script/bench` and `script/supply-chain` all belong in CI, and a wrapper that ran them is a wrapper
+# nobody would use. A gate people skip is not a gate.
+#
+# Cheapest first, so a formatting slip costs twenty seconds rather than ten minutes. See
+# notes/scripts.md.
+
+set -e
+cd "$(dirname "$0")/.."
+
+case "$1" in
+    "") ;;
+    *)
+        echo "script/gates: unknown argument '$1' (it takes none)" >&2
+        echo "  To FORMAT rather than check, run script/fmt. This script never writes." >&2
+        exit 2
+        ;;
+esac
+
+# `--check` rather than a plain format, deliberately. This script is a question, not an edit: it must
+# be safe to run against a tree you are about to push, and a wrapper that silently rewrote your files
+# would be a surprising thing to have run. `script/fmt` with no argument is the one that writes.
+echo "==> script/fmt --check"
+script/fmt --check
+
+echo
+echo "==> script/lint"
+script/lint
+
+echo
+echo "==> script/test"
+script/test
+
+echo
+echo "gates: fmt, lint and test all pass"
