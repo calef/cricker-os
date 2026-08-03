@@ -6114,14 +6114,18 @@ The requirements, each traced to something this tree already does:
   hardware was fixed at point of purchase and is not worth selecting for. A plug is $15 and works
   on anything.
 
-**The selection: a used Dell OptiPlex 7050 Micro with the factory serial module**, i5-7500T
-preferred over the more common i5-6500T (newer platform, same price band; take the 6500T if the
-price is right). It is the only candidate surveyed that meets every requirement at desktop-core
-speed. The runners-up and why not: HP EliteDesk 800 G3 Mini (equivalent, decide on price), Dell
-Wyse 5070 (cheapest, but Atom-class cores and a Realtek NIC with weaker documentation), used PC
-Engines apu2 (serial-first and coreboot are attractive, but EOL and slow Jaguar cores). All-in
-around $120: the machine, a USB-to-RS232 adapter and null-modem cable for the dev side, and the
-smart plug. If netboot iteration becomes worth it, cordoba hosts the PXE/TFTP end.
+**The selection: a used Dell OptiPlex 7050 Micro plus the serial module bought separately**,
+i5-7500T preferred over the more common i5-6500T (newer platform, same price band; take the 6500T
+if the price is right). It is the only candidate surveyed that meets every requirement at
+desktop-core speed. Surveyed 2026-08-03: none of 36 live listings advertised the serial module, so
+do not hunt for a factory-configured unit; the module is Dell P/N **C4PDJ** (fits 3050/7040/7050
+MFF, snaps into the rear punch-out, cables to a motherboard header; check the listing includes the
+cable), $10-20 on its own. The runners-up and why not: HP EliteDesk 800 G3 Mini (equivalent, decide
+on price), Dell Wyse 5070 (cheapest, but Atom-class cores and a Realtek NIC with weaker
+documentation), used PC Engines apu2 (serial-first and coreboot are attractive, but EOL and slow
+Jaguar cores). All-in around $175 at surveyed prices ($129 machine, the module, a USB-to-RS232
+adapter and null-modem cable for the dev side, and the smart plug). If netboot iteration becomes
+worth it, cordoba hosts the PXE/TFTP end.
 
 #### Scope note
 
