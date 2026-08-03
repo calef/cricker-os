@@ -7,6 +7,7 @@
 //!
 //!     cargo xtask run      boot the kernel (the milestone tour), print to this terminal
 //!     cargo xtask shell    boot straight to the interactive shell (add --hvf for the real core)
+//!     cargo xtask shell-check  boot that same shell, type at it, and check what it answered
 //!     cargo xtask test     host tests (milliseconds), then the kernel under QEMU
 //!     cargo xtask gdb      boot paused, waiting for a debugger on :1234
 //!     cargo xtask objdump  disassemble the kernel
@@ -119,6 +120,7 @@ fn main() -> ExitCode {
             true
         }
         "std-exerciser" => std_exerciser(),
+        "shell-check" => shell_check(),
         "test" => test(),
         "bench" => bench(),
         "gdb" => gdb(),
@@ -129,8 +131,9 @@ fn main() -> ExitCode {
                 eprintln!("unknown command: {other}\n");
             }
             eprintln!(
-                "usage: cargo xtask <build|run|shell|initboot|initrd-riscv|std-src|std-stamp|std-exerciser|test|bench|gdb|objdump|image> [--hvf]"
+                "usage: cargo xtask <build|run|shell|shell-check|initboot|initrd-riscv|std-src|std-stamp|std-exerciser|test|bench|gdb|objdump|image> [--hvf]"
             );
+            eprintln!("       cargo xtask shell-check [--arch aarch64|riscv64]");
             eprintln!(
                 "       cargo xtask bench [--riscv] [--real] [--release] [--smp] [--check] [--save]"
             );
@@ -2456,6 +2459,308 @@ fn test() -> bool {
     // Both images: the shared fixture (the write persisted, the filesystem still parses) and the
     // crash test's own disk (milestone 37: after a kill mid-transaction, `cut` is one payload whole).
     redoxfs_check_after_run() && redoxfs_crash_check_after_run()
+}
+
+/// **Boot the `--features shell` system and type at it** (milestone 50, notes/pipes.md).
+///
+/// # Why this exists
+///
+/// Everything else that exercises the shell wires it from **the kernel**, which serves the spawn
+/// protocol in place of `user/src/system_initializer.rs`. The shell cannot tell the difference, and
+/// that is the problem: a change to init that broke the spawn path fails nothing. The interactive
+/// boot is the only thing that runs the real init, and until this verb existed nothing ran the
+/// interactive boot.
+///
+/// It bit milestone 50 three times in one session and **all three presented as a boot that printed
+/// nothing at all**: a virtual-address collision between the shell's terminal page and the page six
+/// FS clients map, init's sixteen-slot cspace overflowing when the kernel handed it two more grants,
+/// and four stack pages being one deep call short of the redirection path. Each cost a manual bisect
+/// against a live prompt. Each is caught here in one boot.
+///
+/// # What it types, and why those lines
+///
+/// The lines answer each other rather than a constant, which is the shape the milestone's guest
+/// tests already have:
+///
+/// ```text
+/// echo hello world | wc      -> 1 2 12   the bytes went through a real spawned process
+/// echo hello world > gate    -> nothing  the same bytes into a file the shell backs
+/// wc < gate                  -> 1 2 12   ... and they are the same bytes
+/// echo hello world >> gate   -> nothing
+/// wc < gate                  -> 2 4 24   ... exactly twice, so `>>` kept the first line
+/// ```
+///
+/// One line would meet the BUGS entry that asked for this. Five is still seconds, and it walks the
+/// whole endowment: a spawn through the real init, the FS service the real init narrowed into the
+/// shell, and both redirection operators.
+fn shell_check() -> bool {
+    let legs = match flag_value("--arch").as_deref() {
+        None => ArchLegs::Both,
+        Some("aarch64") => ArchLegs::Aarch64,
+        Some("riscv64") => ArchLegs::Riscv64,
+        Some(other) => {
+            eprintln!("shell-check: --arch {other} is not an architecture (aarch64 or riscv64)");
+            return false;
+        }
+    };
+    // TCG only. This boot never exits (the shell loops on its prompt), so it is killed rather than
+    // waited on, and there is nothing HVF would buy a gate that spends its time in QEMU's serial.
+    unsafe { std::env::remove_var("CRICKER_ACCEL") };
+    if legs.aarch64() && !shell_check_leg(false) {
+        return false;
+    }
+    if legs.riscv64() && !shell_check_leg(true) {
+        return false;
+    }
+    true
+}
+
+/// The text this gate types and what each line must answer. `None` is a line whose answer is
+/// checked by a later one rather than by itself, which is every line that writes a file.
+///
+/// `hello world` plus the newline `echo` adds is twelve bytes; the append arm is exactly twice
+/// that. The numbers are spelled out here rather than derived because this is a **boot** gate: if
+/// the arithmetic and the boot were both wrong, deriving one from the other would hide it.
+const SHELL_CHECK_SCRIPT: [(&str, Option<&str>); 6] = [
+    ("echo hello world | wc", Some("1 2 12")),
+    ("echo hello world > gate.txt", None),
+    ("wc < gate.txt", Some("1 2 12")),
+    ("echo hello world >> gate.txt", None),
+    ("wc < gate.txt", Some("2 4 24")),
+    ("echo shell-boot-gate-done", Some("shell-boot-gate-done")),
+];
+
+/// How long to wait for the banner, for one line's echo, and for the whole transcript. Generous:
+/// under TCG on a loaded machine a cold boot to the prompt is seconds, and a gate that flakes on a
+/// busy laptop is a gate people learn to ignore.
+const SHELL_CHECK_BOOT_SECS: u64 = 120;
+const SHELL_CHECK_LINE_SECS: u64 = 30;
+
+/// One architecture's leg of [`shell_check`].
+fn shell_check_leg(riscv: bool) -> bool {
+    use std::io::{Read, Write};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    let arch = if riscv { "riscv64" } else { "aarch64" };
+    eprintln!();
+    eprintln!("--- shell-check ({arch}): boot `--features shell` and type at the prompt ---");
+
+    // The same build the interactive boot takes, because a gate that builds something else is
+    // gating something else. The FS server first (`user()` packs the initrd by reading the ELF off
+    // disk), then the RedoxFS image, because the runner attaches the disk only when the file is
+    // there and `<` and `>` need one.
+    let target = if riscv { RISCV_TARGET } else { TARGET };
+    let built = if riscv {
+        fs_server_build(RISCV_TARGET) && mkdisk() && mkredoxfs() && initrd_riscv()
+    } else {
+        fs_server_build(TARGET) && mkredoxfs() && mkdisk() && user()
+    } && run(
+        "cargo",
+        &[
+            "build",
+            "-p",
+            "kernel",
+            "--features",
+            "shell",
+            "--target",
+            target,
+        ],
+    );
+    if !built {
+        return false;
+    }
+
+    // The runner directly rather than through `cargo run`, so the process this owns **is** QEMU
+    // (the runner script `exec`s it). A `cargo run` in between would leave the emulator alive when
+    // the kill lands on cargo, which is the leak CLAUDE.md's QEMU rule exists about.
+    let mut cmd = Command::new(if riscv {
+        "scripts/qemu-runner-riscv.sh"
+    } else {
+        RUNNER
+    });
+    cmd.arg(format!("target/{target}/{}/kernel", profile_dir()));
+    cmd.env(
+        "CRICKER_INITRD",
+        if riscv {
+            riscv_initrd_path()
+        } else {
+            initrd_path()
+        },
+    );
+    cmd.env("CRICKER_DISK", disk_path());
+    cmd.stdin(std::process::Stdio::piped());
+    cmd.stdout(std::process::Stdio::piped());
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("shell-check: failed to start the runner: {e}");
+            return false;
+        }
+    };
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let mut stdout = child.stdout.take().expect("piped stdout");
+
+    // A reader thread rather than blocking reads on this one, because every wait below needs a
+    // deadline: a boot that hangs is exactly the failure this gate is for, and a gate that hangs
+    // with it reports nothing.
+    let seen = Arc::new(Mutex::new(String::new()));
+    let collector = Arc::clone(&seen);
+    let reader = std::thread::spawn(move || {
+        let mut buf = [0u8; 1024];
+        while let Ok(n) = stdout.read(&mut buf) {
+            if n == 0 {
+                return;
+            }
+            // The terminal's own carriage returns are the line editor's, not content. Dropped so
+            // the checks below can be about what a person reads.
+            let text = String::from_utf8_lossy(&buf[..n]).replace('\r', "");
+            collector.lock().expect("transcript lock").push_str(&text);
+        }
+    });
+
+    // Poll for a needle **after `from`** with a deadline, `from` being how long the transcript was
+    // when the thing we are waiting for was asked for.
+    //
+    // The position matters because this gate deliberately types `wc < gate.txt` twice. A
+    // whole-transcript search finds the first one's echo instantly and the wait returns before the
+    // second line has been read at all, which then types the line after it into a prompt that has
+    // not appeared. That is exactly what the first version of this did.
+    let wait_after = |from: usize, needle: &str, secs: u64| -> bool {
+        let deadline = Instant::now() + Duration::from_secs(secs);
+        while Instant::now() < deadline {
+            if seen.lock().expect("transcript lock")[from..].contains(needle) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        false
+    };
+    let mark = || seen.lock().expect("transcript lock").len();
+
+    // **Wait for the prompt to come back before typing the next line**, and this is not politeness.
+    // The line editor echoes a character the moment it arrives, whether or not the shell has asked
+    // for a line yet, so typing ahead produces a transcript in which a command's echo appears
+    // *before* the `$ ` that should introduce it. The first version of this gate typed ahead and
+    // then failed to find its own echo, which is a bug in the gate rather than in the shell.
+    //
+    // A transcript ending in the bare prompt is the unambiguous "ready": the prompt is out and
+    // nothing has been echoed since.
+    let wait_for_prompt = |secs: u64| -> bool {
+        let deadline = Instant::now() + Duration::from_secs(secs);
+        while Instant::now() < deadline {
+            if seen.lock().expect("transcript lock").ends_with("$ ") {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        false
+    };
+
+    // Everything below must reach the kill, so failures are recorded rather than returned.
+    let mut failed: Vec<String> = Vec::new();
+    // The banner is the first claim: init built the console, the line editor, the input driver and
+    // the shell, and gave the shell every capability it needs to say hello. A boot that dies in any
+    // of that prints nothing, which is the symptom all three of this milestone's bugs shared.
+    if !wait_after(0, "cricker-os capability shell", SHELL_CHECK_BOOT_SECS) {
+        failed.push(format!(
+            "no prompt banner within {SHELL_CHECK_BOOT_SECS}s: the `--features shell` boot never \
+             reached a shell"
+        ));
+    } else {
+        for (line, _) in SHELL_CHECK_SCRIPT {
+            if !wait_for_prompt(SHELL_CHECK_LINE_SECS) {
+                failed.push(format!(
+                    "the prompt never came back to take `{line}`; the line before it did not finish"
+                ));
+                break;
+            }
+            let at = mark();
+            if writeln!(stdin, "{line}").is_err() || stdin.flush().is_err() {
+                failed.push(format!("could not type `{line}` at the prompt"));
+                break;
+            }
+            if !wait_after(at, &format!("{line}\n"), SHELL_CHECK_LINE_SECS) {
+                failed.push(format!("the prompt never echoed `{line}`"));
+                break;
+            }
+        }
+        // One more, for the last line: every other answer is bounded by the next line's wait, and
+        // the last one has no next line. Without this the transcript is read while the final
+        // command is still running.
+        if failed.is_empty() && !wait_for_prompt(SHELL_CHECK_LINE_SECS) {
+            failed.push("the prompt never came back after the last line".to_string());
+        }
+    }
+
+    let transcript = seen.lock().expect("transcript lock").clone();
+    if failed.is_empty() {
+        // Walked in order with a moving cursor, not searched. The script types `wc < gate.txt`
+        // twice on purpose and the two answers are the whole point of the append arm, so a search
+        // that found either one would read the same answer for both lines and pass a `>>` that had
+        // truncated.
+        let mut cursor = 0usize;
+        for (line, want) in SHELL_CHECK_SCRIPT {
+            match shell_check_answer(&transcript, cursor, line) {
+                Some((answer, next)) => {
+                    cursor = next;
+                    if let Some(want) = want
+                        && !answer.contains(want)
+                    {
+                        failed.push(format!(
+                            "`{line}` answered {:?}, wanted {want:?}",
+                            answer.trim()
+                        ));
+                    }
+                }
+                None => failed.push(format!("`{line}` produced no answer at all")),
+            }
+        }
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = reader.join();
+
+    if failed.is_empty() {
+        eprintln!("shell-check ({arch}): the prompt booted, piped, redirected and appended");
+        return true;
+    }
+    eprintln!();
+    eprintln!("--- shell-check ({arch}) transcript ---");
+    eprintln!("{transcript}");
+    eprintln!("--- shell-check ({arch}) FAILED ---");
+    for f in &failed {
+        eprintln!("  {f}");
+    }
+    false
+}
+
+/// **What the prompt printed in response to the first `line` at or after `from`**, plus where to
+/// resume looking. `None` when that line is not in the transcript at all.
+///
+/// `kernel::user::pipeline_service::answer` does this inside the guest and this does it on the
+/// host, for the same reason: an assertion should be able to name the command it is about instead
+/// of counting lines.
+fn shell_check_answer<'a>(
+    transcript: &'a str,
+    from: usize,
+    line: &str,
+) -> Option<(&'a str, usize)> {
+    let echo = format!("$ {line}\n");
+    let at = from + transcript[from..].find(&echo)? + echo.len();
+    let rest = &transcript[at..];
+    // The answer runs to the next prompt, which is always at the start of a line, and `rest` begins
+    // at one because the echo consumed its own newline. So a command that printed nothing has an
+    // empty answer rather than swallowing the line after it, which is the case `>` and `>>` are
+    // and which the first version of this got wrong.
+    let end = if rest.starts_with("$ ") {
+        0
+    } else {
+        rest.find("\n$ ").map(|e| e + 1).unwrap_or(rest.len())
+    };
+    Some((&rest[..end], at + end))
 }
 
 /// The microbenchmarks (milestone 21; design/roadmap.md §21).
