@@ -147,7 +147,7 @@ completes a virtio request inside `NOTIFY`, so the fast path never blocks in pra
 ## What is proven, and where
 
 Four kernel tests, not arch-gated and not transport-gated, so aarch64 and riscv64 run literally the
-same assertions over both buses (`entropy_tests` in `kernel/src/user.rs`):
+same assertions over both buses (`kernel/src/user/entropy_tests.rs`):
 
 - **512 bytes across a refill boundary, all 64 words distinct and none zero**, over mmio and over
   PCIe. A stuck device, a buffer served twice, and a driver reading a stale used ring all present

@@ -607,7 +607,7 @@ fn coremark_compute() {
 /// number a microkernel skeptic asks for about a filesystem in userspace: a client opens a file
 /// through a granted *directory capability* and reads a block, over the real confined stack, a block
 /// server driving the RedoxFS disk by DMA and an FS server (the vendored RedoxFS engine, `no_std`, on
-/// its own heap) mounting it over blk IPC. `kernel/src/user.rs::fs_service` wires all three; the
+/// its own heap) mounting it over blk IPC. `kernel/src/user/fs_service.rs` wires all three; the
 /// client (`user/src/fs_test_client.rs`, `ROLE_BENCH`) times a warm read loop and reports `[ticks, iters]`.
 ///
 /// **Why it is `--real`-only and never gates, unlike the primitives.** The FS server's mount is

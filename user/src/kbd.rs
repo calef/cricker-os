@@ -40,7 +40,7 @@
 use abi::{irq, virtio};
 use user_rt::{call, invoke, send};
 
-/// Capability slots, by convention with kernel/src/user.rs `keyboard_service`.
+/// Capability slots, by convention with `kernel/src/user/keyboard_service.rs`.
 const REPORT: u64 = 0;
 const IRQ: u64 = 1;
 const VIRTIO: u64 = 2;

@@ -323,7 +323,7 @@ parts we did not write are proven elsewhere.
 
 ## What is proven, and where
 
-Six kernel tests (`ntp_tests` in `kernel/src/user.rs`), not arch-gated: one portable binary, so
+Six kernel tests (`kernel/src/user/ntp_tests.rs`), not arch-gated: one portable binary, so
 aarch64 and riscv64 run literally the same assertions. The suite went from 181 to 187 tests on
 aarch64 and 152 to 158 on riscv64.
 

@@ -40,7 +40,7 @@ use compositor::proto::{ctl, wlist};
 use compositor::status;
 use user_rt::{call, exit, invoke, recv_cap, send};
 
-/// Capability slots, by convention with kernel/src/user.rs `compositor_service`.
+/// Capability slots, by convention with `kernel/src/user/compositor_service.rs`.
 const REPORT: u64 = 0;
 const DOORBELL: u64 = 1;
 const INPUT: u64 = 2;

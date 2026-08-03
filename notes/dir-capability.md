@@ -9,9 +9,9 @@ program being confined.
 The contract lives with its code in `crates/fs_proto` (the `dir` and `dirent` modules, and the
 `OPENDIR`/`READDIR`/`MKDIR`/`RENAME` verbs in `fs`). The engine-side implementation is
 `fs_server/src/lib.rs`; the caretaker is `user/src/fs_subtree_caretaker.rs`; the wiring and the
-attacks are `kernel/src/user.rs` (`fs_service::start_granted_dir` and `dir_capability_tests`). This
-note is the argument around them. Read [fs-server.md](fs-server.md) first for the contract this
-extends.
+attacks are `kernel/src/user/fs_service.rs`'s `start_granted_dir` and
+`kernel/src/user/dir_capability_tests.rs`. This note is the argument around them. Read
+[fs-server.md](fs-server.md) first for the contract this extends.
 
 What milestone 47 goes on to build (`cd`, `pwd`, `ls`, `mkdir`, `rm`, globbing, completion) is the
 easy part once this exists, and it is deliberately not here. The five commands are built:
@@ -411,7 +411,7 @@ Known limitations, next to the feature rather than only in a tracker.
 Grant a subtree to a confined program, read-only, and attack it:
 
 ```rust
-// kernel/src/user.rs, dir_capability_tests
+// kernel/src/user/dir_capability_tests.rs
 let report = fs_service::start_granted_dir(
     blk_server_image(),
     program("fs_server").unwrap(),

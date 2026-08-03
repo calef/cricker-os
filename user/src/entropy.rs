@@ -57,13 +57,13 @@ use abi::{endpoint, irq, virtio};
 use entropy_proto as proto;
 use user_rt::{exit, invoke, recv_cap, reply, send};
 
-/// Capability slots, by convention with kernel/src/user.rs `entropy_service`.
+/// Capability slots, by convention with `kernel/src/user/entropy_service.rs`.
 const REQ: u64 = 0;
 const IRQ: u64 = 1;
 const VIRTIO: u64 = 2;
 const READY: u64 = 3;
 
-/// Where the kernel maps this service's DMA page. Must match kernel/src/user.rs `entropy_service`.
+/// Where the kernel maps this service's DMA page. Must match `kernel/src/user/entropy_service.rs`.
 const DMA_VA: u64 = 0x0000_0000_0090_0000;
 
 // virtio-mmio register offsets. The §18 transport seam speaks this vocabulary on both buses, so

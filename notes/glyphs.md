@@ -326,7 +326,7 @@ property this increment was asked to keep and did.
 | the terminal component | `user/src/display_terminal.rs` |
 | the keyboard driver | `user/src/kbd.rs` |
 | enumeration | `kernel/src/pci.rs` (`find_input_device`) |
-| the wiring | `kernel/src/user.rs` (`display_service::start_terminal`, `compositor_service::spawn_terminal`, `keyboard_service`) |
-| the tests | `kernel/src/user.rs` (`display_tests`, `compositor_tests`) |
+| the wiring | `kernel/src/user/display_service.rs` (`start_terminal`), `kernel/src/user/compositor_service.rs` (`spawn_terminal`), `kernel/src/user/keyboard_service.rs` |
+| the tests | `kernel/src/user/display_tests.rs`, `kernel/src/user/compositor_tests.rs` |
 | the host-side text check and its negative control | `xtask/src/main.rs` |
 | the device lines | `scripts/qemu-runner.sh`, `scripts/qemu-runner-riscv.sh` (`CRICKER_KBD`) |

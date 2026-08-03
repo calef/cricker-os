@@ -358,7 +358,7 @@ Stated plainly, because a demonstrator's honest limits are part of the deliverab
 | the contract and the pixel arithmetic, host-tested | `crates/compositor/src/lib.rs` |
 | the compositor | `user/src/compositor.rs` |
 | a client, with its roles and its attacks | `user/src/window.rs` |
-| the wiring (frames, endpoints, grants) | `kernel/src/user.rs` (`compositor_service`) |
-| the tests | `kernel/src/user.rs` (`compositor_tests`) |
+| the wiring (frames, endpoints, grants) | `kernel/src/user/compositor_service.rs` |
+| the tests | `kernel/src/user/compositor_tests.rs` |
 | the host-side scanout check and its negative control | `xtask/src/main.rs` |
 | the display driver it flushes to, unchanged | `user/src/display.rs` |

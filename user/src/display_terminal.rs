@@ -62,7 +62,7 @@ use line_editor::proto;
 use user_rt::{call, invoke, recv_cap, send};
 use video_terminal::status::{MODE_DISPLAY, MODE_WINDOW};
 
-/// Capability slots, by convention with kernel/src/user.rs `display_service` and
+/// Capability slots, by convention with `kernel/src/user/display_service.rs` and
 /// `compositor_service`.
 const REPORT: u64 = 0;
 /// The endpoint this terminal presents through: the display driver in [`MODE_DISPLAY`], the
