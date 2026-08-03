@@ -64,18 +64,25 @@ jobs:
       # notes/repo-hardening.md names as the single most likely way to get this wrong. Skipping the
       # STEP keeps the check green; skipping the JOB would have been a coin flip on how GitHub
       # treats a skipped required check.
+      # The decision is computed by `script/verify --affected-since`, not by a path list here,
+      # so it lives where a developer can run it (notes/scripts.md: a command living only in YAML
+      # has no witness). The proofs are a function of the harness crates and their transitive
+      # dependencies; the script asks cargo for that closure and skips only when every changed
+      # file is provably outside it (docs, workflow files other than this one, or crates like
+      # `kernel` and `user` that no proof ever compiles). Anything it cannot attribute runs the
+      # proofs by default. Note: on non-doc changes the script invokes `cargo metadata`, which
+      # installs the pinned toolchain; a minute spent deciding is fine against the 42 it can save,
+      # and doc-only changes never reach cargo.
       - name: Does this change need the proofs?
         id: scope
         run: |
           base="${{ github.event.pull_request.base.sha }}"
           [ -n "$base" ] || base="$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)"
-          changed="$(git diff --name-only "$base" HEAD)"
-          echo "changed files:"; echo "$changed" | sed 's/^/  /'
-          # Everything a proof cannot see: prose, and the roadmap. Note `script/` is NOT here,
-          # because script/verify decides which harnesses run.
-          if [ -z "$(printf '%s\n' "$changed" | grep -vE '^(notes/|design/|[A-Z_]+\.md$)' || true)" ]; then
+          scope="$(script/verify --affected-since "$base")"
+          echo "$scope"
+          if [ "$(echo "$scope" | tail -1)" = "verify-scope: not-needed" ]; then
             echo "needed=false" >> "$GITHUB_OUTPUT"
-            echo "==> documentation only; the proofs cannot be affected"
+            echo "==> nothing in this change can reach a proof"
           else
             echo "needed=true" >> "$GITHUB_OUTPUT"
           fi
