@@ -180,6 +180,7 @@ fn from_ptr_agrees_with_from_bytes() {
     // The boot path's actual entry: the machine hands the kernel a bare pointer, and from_ptr
     // must learn the blob's length from the blob itself before it can build the checked slice
     // that everything else parses. Prove the pointer path lands on the same tree.
+    // SAFETY: `QEMU_VIRT` is a `'static` blob compiled into the test binary, so the pointer is valid for any `'a`, which is exactly what `from_ptr` asks for.
     let via_ptr = unsafe { Dtb::from_ptr(QEMU_VIRT.as_ptr()) }.expect("should parse");
     assert_eq!(via_ptr.total_size(), QEMU_VIRT.len());
 

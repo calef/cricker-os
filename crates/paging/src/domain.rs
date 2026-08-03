@@ -506,6 +506,7 @@ mod tests {
             )
             .expect("domain build failed");
         }
+        // SAFETY: `root` is the table the domain build above just populated, and `phys_to_ptr` is this test's own identity map over the frames it allocated, so every physical address the mapper walks is one it can read.
         let m = unsafe {
             Mapper::<fn() -> Option<u64>, _, Sv39>::new(root, Half::Low, || None, phys_to_ptr)
         };

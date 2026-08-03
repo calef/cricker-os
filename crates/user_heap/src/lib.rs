@@ -182,6 +182,7 @@ impl Heap {
             if block.as_ptr() as usize > addr {
                 break;
             }
+            // SAFETY: `block` came from `*link` on the line above, so it is a live free-list node; taking a raw pointer to its `next` field does not read through it.
             link = unsafe { &raw mut (*block.as_ptr()).next };
         }
 

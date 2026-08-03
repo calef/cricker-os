@@ -131,7 +131,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 65 | NOT-STARTED | A secrets service: hold the key, expose the operation, never the key | NTLMv2 does not verify a presented secret, it **computes with a key**, so §54's verifier shape does not fit it. Generalises the credentialer into a software HSM. Blocks milestone 55 |
 | 66 | NOT-STARTED | Vaultwarden: somebody else's real application, running here | the north star for "runs real workloads". Names the gaps concretely rather than aspirationally: no TCP **listen or accept** in the socket contract, threads mostly stubs, most of `std::fs` unsupported, no async runtime, no TLS, and SQLite is a C library. Largest single item on this roadmap |
 | 67 | NOT-STARTED | `swish` the language: quoting, sequencing, and exit status | `swish` is an interactive shell without control flow. Quoting is the one that is a correctness gap rather than a convenience: **a filename with a space is currently unnameable** |
-| 68 | PARTIAL | Code-quality gates: one lint policy, and the lints that lost | Import order, `[workspace.lints]`, dependency direction, unused dependencies, spelling. Three lints were adopted, measured and **removed** on the evidence. The unsafe-comment and doc-example halves are scoped but NOT done: 228 unsafe blocks lack a `SAFETY:` comment and the whole host workspace has 5 doctests |
+| 68 | PARTIAL | Code-quality gates: one lint policy, and the lints that lost | Import order, `[workspace.lints]`, dependency direction, unused dependencies, spelling. Three lints were adopted, measured and **removed** on the evidence. `undocumented_unsafe_blocks` is now a GATE: all 205 undocumented blocks were read and commented. The doc-example half is scoped but NOT done: 5 doctests in the whole host workspace |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -4854,13 +4854,8 @@ Reasoning about a lint's description predicts none of these.
 Both remaining halves are real engineering, not mechanical, and a first attempt at automating one of
 them was reverted for producing exactly the wrong artefact.
 
-- **`undocumented_unsafe_blocks`: 228 blocks across 49 files** (crates/ 100, user/ 99, xtask/ 15,
-  kernel/ 14, so the kernel's own discipline is already good). The convention is ~67% adopted, so this
-  is a ratchet in §38's shape. It is NOT scriptable: a generated comment stamped across a test module
-  was tried, and it put "the node pointers come from `Box`ed locals" above an `unsafe impl Node`,
-  whose safety condition is that `next`/`set_next` address the same field. **A generic safety comment
-  that is occasionally false is worse than none**, because the whole point of the claim is that a
-  reader can trust it. Each site needs reading.
+- **Doc examples**, below. The unsafe half is DONE and is now a gate; see "What closing the unsafe
+  half taught" further down.
 - **Doc examples: 5 doctests in the entire host workspace**, and `rustdoc --show-coverage` reports
   0.0% examples on every crate sampled (`ipc` 94.4% of items documented, 0.0% examples; `capability`
   67.6%/0.0%). CLAUDE.md sets the FreeBSD standard explicitly ("a page without a worked example has
@@ -4870,3 +4865,38 @@ them was reverted for producing exactly the wrong artefact.
 
 `missing_docs` belongs with the second of those (item coverage is 67–94% and no crate warns on it),
 and is best done in the same pass as the examples rather than separately.
+
+#### What closing the unsafe half taught
+
+All 205 blocks are commented and `undocumented_unsafe_blocks` is in `[workspace.lints]`, so the
+convention is now enforced rather than followed. The useful finding is what the sites turned out to
+be, because it is not what the raw count suggested.
+
+**Three quarters of them were genuinely uniform**, and the uniformity was a fact about the system
+rather than an excuse:
+
+- **58 panic-handler traps**, byte-identical `asm!("brk #0", options(nostack, nomem))` or its
+  `ebreak` twin, in EL0 programs.
+- **73 `invoke` syscalls.** `user_rt::invoke` is the only unsafe function in the EL0 runtime, and its
+  contract is that there is no caller obligation: *"the kernel validates the capability and the
+  method before acting; the caller is trusting the kernel, not the other way around."* An
+  `unsafe { invoke(..) }` is unsafe because it is inline asm, not because a bad slot could break
+  anything. **That is the capability model showing through the type system**, and it is why one
+  sentence is honest at all 73 sites.
+
+**The remaining quarter was the real work**, and each site's comment says something a reader could
+not have guessed: intrusive-queue link ownership (including a drop-order fact, that a test's nodes
+are declared before the queue so they outlive it); allocator alignment invariants; virtio ring
+aliasing, where the read side is the driver's memory and the write side is a kernel-private shadow;
+`env::set_var` in `xtask`, unsafe since edition 2024, sound only because the one thread it ever
+spawns copies pipe bytes and never reads the environment.
+
+**The test that decides whether a batch may share a comment** is whether the sentence is checkable
+at each site. For a trap in a panic handler it is, because it is literally the same site 58 times.
+For a test module's pointers it is not, which is what the reverted generic pass got wrong.
+
+One regression is worth recording because nothing else would have caught it: adding an
+`#[allow(clippy::cast_ptr_alignment)]` above an `unsafe` block silently **separated an existing
+`SAFETY:` comment from its block**, and clippy then reported the block as undocumented. An attribute
+between a comment and the item it describes breaks the association. The fix is ordering: attribute
+first, then the comment, then the block.

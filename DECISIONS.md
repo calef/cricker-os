@@ -5036,8 +5036,21 @@ from the table rather than present with a pile of `#[allow]`s underneath them.
 
 ### BUGS
 
-`undocumented_unsafe_blocks` is the gate this project most obviously wants and does not have: 228
-unsafe blocks carry no `SAFETY:` comment, against ~600 that do. It is scoped in the milestone-68
-roadmap entry. The reason it is not merely a matter of doing the work is recorded there too: an
-attempt to generate the comments produced a claim that was **false** at its first site, and a safety
-comment nobody can trust is worse than an absent one.
+`missing_docs` is absent for the reason above: item coverage is 67-94% across the crates and nothing
+warns on it, so adopting it is a commitment to write the missing docs first. It belongs with the
+doc-example work in milestone 68's remaining half rather than on its own.
+
+`undocumented_unsafe_blocks` WAS the standing example here and is now a gate: all 205 undocumented
+blocks were read and commented, and the lint is in `[workspace.lints]`. The episode that produced
+this section's rule is worth keeping anyway, because it is about safety comments rather than about
+lints. An attempt to GENERATE the comments stamped "the node pointers come from `Box`ed locals" onto
+an `unsafe impl Node`, whose safety condition is that `next`/`set_next` address the same field. It
+was reverted.
+
+**A safety comment is an assertion, not a formality.** Its entire value is that the next reader can
+rely on it instead of re-deriving the argument, so one that is plausible and wrong is worse than an
+absent one: absence prompts a check, and a confident falsehood prevents it. The workable test for
+whether a batch of sites may share one sentence is not "does this code look similar" but **"is the
+sentence checkable at each site"**. It was, at 58 byte-identical panic-handler traps and at 73
+`invoke` calls whose contract places no obligation on the caller at all. It was not, in a test module
+where the pointers differ in what they are and when they are queued.

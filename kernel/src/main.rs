@@ -259,6 +259,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
             let (pa, flags) = arch::mmu::translate(test_va).expect("translate found nothing");
             // SAFETY: we just mapped this VA read/write.
             unsafe { (test_va as *mut u64).write_volatile(0xc0ffee) };
+            // SAFETY: the same VA the line above just wrote through, still mapped read/write; this reads back what it stored.
             let readback = unsafe { (test_va as *const u64).read_volatile() };
             let freed = arch::mmu::unmap_page(test_va).expect("unmap_page failed");
             println!(

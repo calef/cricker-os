@@ -77,12 +77,15 @@ const TFTP_BODY: &[u8] = b"cricker-tftp!";
 const DNS_ATTEMPTS: u32 = 3;
 
 fn w8(va: u64, v: u8) {
+    // SAFETY: `va` addresses a field inside a shared frame this process has mapped. Volatile because the peer writes the same frame, so a cached read would be a stale one.
     unsafe { core::ptr::write_volatile(va as *mut u8, v) }
 }
 fn w16le(va: u64, v: u16) {
+    // SAFETY: `va` addresses a field inside a shared frame this process has mapped. Volatile because the peer writes the same frame, so a cached read would be a stale one.
     unsafe { core::ptr::write_volatile(va as *mut u16, v) }
 }
 fn r8(va: u64) -> u8 {
+    // SAFETY: `va` addresses a field inside a shared frame this process has mapped. Volatile because the peer writes the same frame, so a cached read would be a stale one.
     unsafe { core::ptr::read_volatile(va as *const u8) }
 }
 

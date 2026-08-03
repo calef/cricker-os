@@ -44,6 +44,7 @@ pub fn exit(code: u32) -> ! {
     // SAFETY: an MMIO store to the finisher register through the direct map (mapped device-typed by
     // mmu::map_everything). The write exits QEMU, so nothing after it runs.
     let reg = super::mmu::phys_to_virt(SIFIVE_TEST_PHYS) as *mut u32;
+    // SAFETY: as the comment above says: an MMIO store to the finisher register through the direct map, which `mmu::map_everything` mapped device-typed. The write exits QEMU, so nothing after it runs.
     unsafe { core::ptr::write_volatile(reg, word) };
 
     // The finisher terminates the guest; if it somehow does not, stop rather than run on.

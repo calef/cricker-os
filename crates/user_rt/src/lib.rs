@@ -40,6 +40,7 @@ pub mod heap;
 #[cfg(target_arch = "aarch64")]
 pub unsafe fn invoke(cap: u64, method: u64, a0: u64, a1: u64, a2: u64) -> i64 {
     let ret: i64;
+    // SAFETY: the `svc` traps to the kernel. The register constraints name the ABI (DECISIONS §10): `x8` the syscall number, `x0..x3` the arguments, `x0` the result. `asm!` is unsafe because the compiler cannot check that, not because a caller can get it wrong.
     unsafe {
         core::arch::asm!(
             "svc #0",
@@ -64,6 +65,7 @@ pub unsafe fn invoke(cap: u64, method: u64, a0: u64, a1: u64, a2: u64) -> i64 {
 #[cfg(target_arch = "riscv64")]
 pub unsafe fn invoke(cap: u64, method: u64, a0: u64, a1: u64, a2: u64) -> i64 {
     let ret: i64;
+    // SAFETY: the `ecall` traps to the kernel. The register constraints name the ABI (DECISIONS §10): `a7` the syscall number, `a0..a4` the arguments, `a0` the result. `asm!` is unsafe because the compiler cannot check that, not because a caller can get it wrong.
     unsafe {
         core::arch::asm!(
             "ecall",
@@ -399,6 +401,7 @@ pub fn exit() -> ! {
         core::arch::asm!("svc #0", in("x8") abi::SYS_EXIT, in("x0") 0u64, options(nostack, nomem));
     }
     #[cfg(target_arch = "riscv64")]
+    // SAFETY: `ecall` with SYS_EXIT traps to the kernel, which never returns to this thread. The options promise it touches neither memory nor the stack.
     unsafe {
         core::arch::asm!("ecall", in("a7") abi::SYS_EXIT, in("a0") 0u64, options(nostack, nomem));
     }

@@ -606,6 +606,7 @@ pub fn flush_asid(asid: u16) {
 /// afterwards.
 #[cfg_attr(not(test), allow(dead_code))]
 pub unsafe fn activate_user(ttbr: u64) {
+    // SAFETY: this function's own `# Safety` contract is exactly the one this call needs; it forwards, it does not weaken.
     unsafe { set_ttbr0(ttbr) };
 }
 

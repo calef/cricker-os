@@ -389,6 +389,7 @@ fn null_syscall() {
         );
     }
     #[cfg(target_arch = "riscv64")]
+    // SAFETY: `ecall` with the benchmark's null-syscall number: it traps to the kernel, which returns immediately. This is the measurement, and the options promise it touches neither memory nor the stack.
     unsafe {
         core::arch::asm!(
             "ecall",

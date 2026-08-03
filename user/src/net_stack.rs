@@ -70,12 +70,15 @@ fn instant() -> Instant {
 
 // Absolute-VA access to a mapped shared frame (little-endian for the length and port fields).
 fn a_r8(va: u64) -> u8 {
+    // SAFETY: `va` addresses a field inside a shared frame this process has mapped. Volatile because the peer writes the same frame, so a cached read would be a stale one.
     unsafe { core::ptr::read_volatile(va as *const u8) }
 }
 fn a_r16(va: u64) -> u16 {
+    // SAFETY: `va` addresses a field inside a shared frame this process has mapped. Volatile because the peer writes the same frame, so a cached read would be a stale one.
     unsafe { core::ptr::read_volatile(va as *const u16) }
 }
 fn a_w16(va: u64, v: u16) {
+    // SAFETY: `va` addresses a field inside a shared frame this process has mapped. Volatile because the peer writes the same frame, so a cached read would be a stale one.
     unsafe { core::ptr::write_volatile(va as *mut u16, v) }
 }
 
@@ -436,6 +439,7 @@ fn sock_recv(
             .unwrap_or(0)
     };
     for (i, &b) in buf[..n].iter().enumerate() {
+        // SAFETY: the payload area of this socket's mapped shared frame; `n` is the byte count smoltcp just produced into `buf`, which is sized to that frame's payload capacity.
         unsafe {
             core::ptr::write_volatile((sk.va + OFF_PAYLOAD + i as u64) as *mut u8, b);
         }

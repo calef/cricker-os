@@ -237,6 +237,7 @@ mod tests {
         tag: u32,
     }
 
+    // SAFETY: `next` and `set_next` are plain field storage and touch nothing else, which is the whole of the `Node` contract.
     unsafe impl Node for N {
         fn next(&self) -> Option<NonNull<Self>> {
             self.next
@@ -256,6 +257,7 @@ mod tests {
         let mut q: Fifo<N> = Fifo::new();
         assert!(q.is_empty());
 
+        // SAFETY: `a`, `b` and `c` are live `Box`ed locals declared BEFORE `q`, so they outlive it (locals drop in reverse), and none is on a queue yet.
         unsafe {
             q.push_back(NonNull::from(&mut *a));
             q.push_back(NonNull::from(&mut *b));
@@ -264,6 +266,7 @@ mod tests {
         assert_eq!(q.len(), 3);
 
         let tags: Vec<u32> = core::iter::from_fn(|| q.pop_front())
+            // SAFETY: `p` was just popped, so it is one of the live locals above and is no longer linked.
             .map(|p| unsafe { (*p.as_ptr()).tag })
             .collect();
         assert_eq!(tags, vec![1, 2, 3]);
@@ -277,15 +280,20 @@ mod tests {
         let (mut a, mut b) = (node(1), node(2));
         let mut q: Fifo<N> = Fifo::new();
 
+        // SAFETY: `a` is a live local declared before `q`, on no queue.
         unsafe { q.push_back(NonNull::from(&mut *a)) };
+        // SAFETY: `p` was just popped from `q`, so it is `a`, still live.
         assert_eq!(q.pop_front().map(|p| unsafe { (*p.as_ptr()).tag }), Some(1));
         assert!(q.pop_front().is_none());
 
+        // SAFETY: `b` has never been queued; `a` was popped above, which is exactly what makes re-pushing it legal.
         unsafe {
             q.push_back(NonNull::from(&mut *b));
             q.push_back(NonNull::from(&mut *a)); // popped above, so it may be queued again
         }
+        // SAFETY: just popped, so still one of the live locals.
         assert_eq!(q.pop_front().map(|p| unsafe { (*p.as_ptr()).tag }), Some(2));
+        // SAFETY: as above.
         assert_eq!(q.pop_front().map(|p| unsafe { (*p.as_ptr()).tag }), Some(1));
         assert!(q.is_empty());
     }
@@ -295,11 +303,13 @@ mod tests {
     fn a_popped_node_carries_no_link() {
         let (mut a, mut b) = (node(1), node(2));
         let mut q: Fifo<N> = Fifo::new();
+        // SAFETY: `a` and `b` are live locals declared before `q`, neither on a queue.
         unsafe {
             q.push_back(NonNull::from(&mut *a));
             q.push_back(NonNull::from(&mut *b));
         }
         let p = q.pop_front().unwrap();
+        // SAFETY: `p` was just popped, so it is live and unlinked; that it is unlinked is what this test asserts.
         assert!(unsafe { (*p.as_ptr()).next() }.is_none());
     }
 }

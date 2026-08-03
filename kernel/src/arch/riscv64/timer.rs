@@ -128,6 +128,7 @@ pub fn init() {
     // the same reason: the cross-OS primitive suite needs userspace self-timing to be comparable to
     // lmbench. CY (cycle) and IR (instret) stay closed.
     const TM: u64 = 1 << 1;
+    // SAFETY: `csrs` sets a bit in a supervisor CSR and touches no memory, which the options state. Enabling the EL0 counter read is the intent (the userspace self-timing seam).
     unsafe { asm!("csrs scounteren, {}", in(reg) TM, options(nomem, nostack, preserves_flags)) };
 }
 

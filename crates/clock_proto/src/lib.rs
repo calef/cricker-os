@@ -161,6 +161,7 @@ pub struct ClockPage {
 // SAFETY: the whole point of the page is that several address spaces share it; every access below
 // goes through atomics, so there is no non-atomic aliasing to protect against.
 unsafe impl Send for ClockPage {}
+// SAFETY: as for `Send` above: the page is shared by construction and every access goes through atomics, so there is no non-atomic aliasing to protect against.
 unsafe impl Sync for ClockPage {}
 
 impl ClockPage {

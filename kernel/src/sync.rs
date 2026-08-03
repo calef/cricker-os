@@ -271,6 +271,7 @@ pub struct IrqSafeMutex<T> {
 
 // SAFETY: same reasoning as any mutex. The lock provides the exclusion.
 unsafe impl<T: Send> Sync for IrqSafeMutex<T> {}
+// SAFETY: as for `Sync` directly above: the lock provides the exclusion.
 unsafe impl<T: Send> Send for IrqSafeMutex<T> {}
 
 impl<T> IrqSafeMutex<T> {
@@ -324,6 +325,7 @@ impl<T> IrqSafeMutex<T> {
     /// half-finished, and that its data may be inconsistent. That is an acceptable trade
     /// when the alternative is a silent hang, and an unacceptable one at any other time.
     pub unsafe fn force_unlock(&self) {
+        // SAFETY: this function's own `# Safety` contract is exactly the one this call needs; it forwards, it does not weaken.
         unsafe { self.inner.force_unlock() }
     }
 }

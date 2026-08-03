@@ -113,6 +113,7 @@ pub fn quiet_uart_interrupt() {
 ///
 /// See sync.rs, and DECISIONS.md §9.
 pub unsafe fn force_unlock() {
+    // SAFETY: this function's own `# Safety` contract is exactly the one this call needs; it forwards, it does not weaken.
     unsafe { CONSOLE.force_unlock() }
 }
 

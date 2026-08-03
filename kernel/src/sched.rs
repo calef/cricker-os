@@ -476,6 +476,7 @@ fn place_on(target: usize, thread: core::ptr::NonNull<Thread>) {
     } else {
         // SAFETY: as above; the inbox mutex serializes access to the link.
         let mut inbox = cpu::inbox_of(target).lock();
+        // SAFETY: the live Ready thread named in the comment above, on no other queue, and the inbox lock is held across the push.
         unsafe { inbox.push_back(thread) };
         // Mirror the target's inbox depth so it counts as load (DECISIONS §28); under the lock, so
         // the store is serialised with any concurrent drain.
@@ -559,6 +560,7 @@ pub fn serve_steal_request() {
         // SAFETY: a live Ready thread we just popped, on no other queue; the inbox mutex serialises
         // the handoff and orders our pop before the requester's drain (the `place_on` discipline).
         let mut inbox = cpu::inbox_of(requester).lock();
+        // SAFETY: the live Ready thread named in the comment above, on no other queue, and the inbox lock is held across the push.
         unsafe { inbox.push_back(t) };
         cpu::of(requester).note_inbox_len(inbox.len());
         crate::arch::irq::send_reschedule(requester);

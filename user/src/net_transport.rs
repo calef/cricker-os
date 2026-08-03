@@ -82,15 +82,19 @@ fn tx_buf(i: usize) -> u64 {
 // Raw DMA-page and device-register access. The DMA page is one contiguous physical frame mapped at
 // DMA_VA, so a physical address the device needs is `dma_phys + offset`.
 fn r8(off: u64) -> u8 {
+    // SAFETY: `DMA_VA` is the base of the single contiguous DMA frame this process mapped at startup, and callers pass offsets inside it. Volatile because the device reads and writes the same memory.
     unsafe { core::ptr::read_volatile((DMA_VA + off) as *const u8) }
 }
 fn r16(off: u64) -> u16 {
+    // SAFETY: `DMA_VA` is the base of the single contiguous DMA frame this process mapped at startup, and callers pass offsets inside it. Volatile because the device reads and writes the same memory.
     unsafe { core::ptr::read_volatile((DMA_VA + off) as *const u16) }
 }
 fn r32(off: u64) -> u32 {
+    // SAFETY: `DMA_VA` is the base of the single contiguous DMA frame this process mapped at startup, and callers pass offsets inside it. Volatile because the device reads and writes the same memory.
     unsafe { core::ptr::read_volatile((DMA_VA + off) as *const u32) }
 }
 fn w8(off: u64, v: u8) {
+    // SAFETY: `DMA_VA` is the base of the single contiguous DMA frame this process mapped at startup, and callers pass offsets inside it. Volatile because the device reads and writes the same memory.
     unsafe { core::ptr::write_volatile((DMA_VA + off) as *mut u8, v) }
 }
 fn w16(off: u64, v: u16) {
@@ -113,10 +117,15 @@ fn mw(off: u64, v: u32) {
 
 fn barrier() {
     #[cfg(target_arch = "aarch64")]
+    // SAFETY: a barrier: no operands, and the options say it touches neither memory nor the
+    // stack, so it cannot break an invariant. It orders the descriptor writes against the
+    // device's reads, which is the whole reason this function exists.
     unsafe {
         core::arch::asm!("dmb ish", options(nostack, nomem, preserves_flags));
     };
     #[cfg(target_arch = "riscv64")]
+    // SAFETY: the RISC-V twin of the barrier above. `fence` carries no `nomem`, deliberately:
+    // ordering memory is precisely its job.
     unsafe {
         core::arch::asm!("fence", options(nostack, preserves_flags))
     };
@@ -124,6 +133,7 @@ fn barrier() {
 
 fn write_desc(desc_base: u64, i: u64, addr: u64, len: u32, flags: u16, next: u16) {
     let b = desc_base + i * 16;
+    // SAFETY: `DMA_VA` is the base of the single contiguous DMA frame this process mapped at startup, and callers pass offsets inside it. Volatile because the device reads and writes the same memory.
     unsafe {
         core::ptr::write_volatile((DMA_VA + b) as *mut u64, addr);
         core::ptr::write_volatile((DMA_VA + b + 8) as *mut u32, len);
