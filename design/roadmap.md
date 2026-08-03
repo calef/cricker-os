@@ -142,6 +142,13 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 76 | NOT-STARTED | Split the roadmap: `design/roadmap/README.md` as index, one file per milestone | 5,375 lines and 64 blocks in one file. FOUR structural defects landed today that the gate reported clean, including **eight milestone blocks filed under an essay about seL4**. A split makes those impossible rather than detectable, and removes the conflict #19 and #20 hit. Also widens the citation check tree-wide (free: zero unresolved today) and backfills milestones 1 to 11 from the first commit, dropping the `n >= 12` floor |
 | 77 | NOT-STARTED | `crates/paging`: a module per ISA, a type per page-table configuration | `Aarch64` names an ISA while describing a configuration, beside `Sv39` which names one properly. A second aarch64 configuration is expected, so the fix is room for siblings on both sides rather than a rename. **Waits for that configuration**, because it names the axis |
 | 78 | NOT-STARTED | The load-sensitive assertions, and the three that measure the wrong thing | **Seven** distinct failures in one day on PRs that changed no code, two of them documentation only, and one reproduces off CI. Three report a NEGATIVE discrepancy, so they are not slow-machine timeouts. For the two that ARE timing, the answer is likely the icount instrument this project already owns, not a wider bound |
+| 79 | NOT-STARTED | Miri over the host crates | The method is pure logic in host-testable crates, and Miri checks exactly those tests for the undefined behaviour Kani is not asked about and fuzzing cannot see. The pinned nightly already ships it. Weekly, not per-PR, because the cost is runtime |
+| 80 | NOT-STARTED | Loom: the hand-rolled atomic protocols, model-checked | TCG explores almost none of the orderings real silicon will, so an acquire/release mistake passes every gate this tree has and first appears on hardware. The board lands ~2026-08-21. One protocol as a pilot, then decide |
+| 81 | NOT-STARTED | An HVF leg: the test suite on the physical core | `CRICKER_ACCEL=hvf` exists and bench uses it; nothing runs `script/test` there as a habit. GitHub's hosted runners cannot (no nested virtualization), so this is a merge-time gate on the integrator's machine, not a PR check. aarch64 only |
+| 82 | NOT-STARTED | `unsafe_op_in_unsafe_fn`: the obligation moves inside the fn | 33 `unsafe fn`s get their bodies' unsafety for free, so one signature can hide several distinct invariants. Explicit interior blocks put milestone 68's SAFETY-comment lint on each one. A ratchet in §38's shape |
+| 83 | NOT-STARTED | A mechanical rule-1 lint | CLAUDE.md's first rule (architecture-specific code lives under `arch/`) is enforced by nothing, and one violation exists today: `user/tests.rs` reads `SPSel` by raw `asm!`. `script/lint` learns the grep; the violation moves |
+| 84 | NOT-STARTED | Stack high-water: measure kernel stack depth | The FS-server stack overflow already happened once, and nothing since bounds depth on any kernel stack. Paint at boot, read the mark at suite end, assert headroom. Works identically on every ISA and covers every path the suite takes |
+| 85 | NOT-STARTED | Mutation testing over the host crates | Coverage reports what ran; cargo-mutants reports whether a test would notice a change, which is the claim the suite actually makes. A weekly, time-boxed job with a recorded baseline, not a PR gate |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -5813,3 +5820,165 @@ are a list to check against the same question and mostly to leave alone.
 The honest cost of leaving this open, and the reason it is worth doing: every red check in this
 repository currently needs a human to decide "known or real", and on 2026-08-03 that judgement was
 made at least six times and got the wrong answer twice.
+
+### 79. Miri over the host crates
+
+**Status: NOT-STARTED.** Raised 2026-08-03, from a survey of what analysis the tree runs against what
+it could. Milestones 79 to 85 all come from that survey.
+
+This project's method is pure logic in host-testable crates, and Miri interprets exactly those tests
+while checking the rules nothing else here checks: aliasing, pointer provenance, uninitialized reads.
+Kani proves the properties it is asked about; fuzzing sees crashes; clippy sees shapes. None of them
+sees a `&mut` that aliases, and in a tree with 224 `unsafe` occurrences under `crates/` that class is
+live. The pinned nightly already ships Miri as a rustup component, so the toolchain cost is one line
+in `script/bootstrap`.
+
+The work: a `script/miri` front door delegating to `cargo xtask miri`, which runs `cargo miri test`
+over the host-testable crates. The first full run is most of the milestone: triage every finding,
+fix what is real, and record what is not in the note this milestone writes.
+
+#### Scope note
+
+Miri is an interpreter, roughly two orders of magnitude slower than native. The exhaustive suites
+(`ntp_proto` runs its entire 10^9-value domain, `gpt` does 460,000 table validations) cannot run
+under it as-is; the honest treatment is to exclude or sample them and say so, because "Miri-clean"
+then means "the sampled paths are clean". Cadence is a weekly scheduled workflow plus on-demand,
+not per-PR. `-Zmiri-strict-provenance` is a later ratchet to consider once the default run is clean.
+
+### 80. Loom: the hand-rolled atomic protocols, model-checked
+
+**Status: NOT-STARTED.** Raised 2026-08-03, same survey as 79.
+
+CLAUDE.md's fourth rule says assume weak memory ordering, and no gate in this tree can currently
+falsify a violation of it. QEMU's TCG executes guest atomics conservatively and explores almost none
+of the orderings the architecture permits, so an acquire that should be an acquire-release passes
+`script/test`, the cpu matrix, and every CI leg, then fails on real silicon at a rate and location
+that will not reproduce under emulation. The VisionFive 2 arrives ~2026-08-21; this class of bug is
+the worst thing it could find, because a board failure with no emulator reproduction is a debugging
+session with no instrument.
+
+Loom runs a concurrent test on the host and exhaustively explores interleavings and the reorderings
+the C11 model permits, including relaxed-ordering surprises. The precondition is the project's own
+rule: the protocol under test must be pure logic in a host-reachable crate, with its atomics behind
+`cfg(loom)` type aliases, and no `asm!` fences in the path (loom cannot model those, which is a
+forcing function in the same direction rule 7 already pushes).
+
+The work is a pilot on **one** protocol, chosen for being hand-rolled rather than spin-locked;
+candidates are the per-CPU run-queue handoff (DECISIONS §28), the reaper handoff, and the IPC sender
+queue. Deliverables: the protocol lifted (if needed) into a host-testable form, loom tests over it,
+and a note recording the method and whether the second protocol is worth the retrofit.
+
+#### Scope note
+
+Loom models C11, not the ARM or RISC-V memory model, so it narrows the gap rather than closing it;
+litmus-level confidence would need herd7-style tooling and is not this milestone. Milestone 81 is
+the complementary leg: real silicon executing the real orderings, unsearched but genuine.
+
+### 81. An HVF leg: the test suite on the physical core
+
+**Status: NOT-STARTED.** Raised 2026-08-03, same survey as 79.
+
+The infrastructure exists and is used one-sidedly: `CRICKER_ACCEL=hvf` runs the kernel on the
+physical Apple Silicon core, `script/bench --real` and `script/server --hvf` use it, and `script/test`
+has never run there as a habit. That leaves the suite's only execution environments emulated ones,
+while a machine with real caches, real reordering, and a real GIC sits under the emulator the whole
+time. Until the board arrives this is the only real silicon this project can test on at all.
+
+Per-PR is not an option: GitHub's hosted macOS arm64 runners are themselves virtual machines and do
+not expose nested virtualization, so HVF is unavailable there. A self-hosted runner on the dev
+machine would close that gap and is deliberately not part of this milestone; it couples CI to a
+laptop that sleeps. The shape that fits: **a merge-time gate on the integrator's machine**, in the
+same breath as the relink-and-prune habits CLAUDE.md already assigns to merges.
+
+The work: wire `--hvf` through `script/test`/`cargo xtask test` (today it is an env var the runner
+script reads), run the full aarch64 suite under it, and fix or honestly record what differs. Timer
+behaviour will differ, because under HVF guest time is host time and no icount instrument exists;
+part of the milestone is learning which tests that perturbs, which feeds milestone 78's per-assertion
+work rather than competing with it. Then document the habit where merge duties are documented.
+
+#### Scope note
+
+HVF covers aarch64 only, with `-cpu host` mandatory, so it is one machine and no model variation;
+the cpu matrix keeps its job. riscv64 has no equivalent until the board lands. If the suite proves
+green and fast under HVF, a nightly local run is a cheap follow-on; a required PR check is not, for
+the runner reason above.
+
+### 82. `unsafe_op_in_unsafe_fn`: the obligation moves inside the fn
+
+**Status: NOT-STARTED.** Raised 2026-08-03, same survey as 79.
+
+An `unsafe fn` body is one implicit unsafe block, so a function with three distinct unsafe
+operations carries three distinct invariants under a single signature, and milestone 68's
+`undocumented_unsafe_blocks` lint cannot see any of them: it fires on blocks, and there are no
+blocks. The lint `unsafe_op_in_unsafe_fn` removes the implicitness, each interior operation gets an
+explicit `unsafe {}` block, and each block then owes the SAFETY comment the existing lint enforces.
+The two lints compose into the property this kernel actually wants: **every unsafe operation sits
+next to the written invariant that makes it sound**, whether or not its enclosing fn is unsafe.
+
+The tree has 33 `unsafe fn`s across `kernel/`, `crates/`, and `user/`, so this is a bounded
+burn-down, not a campaign. Per the lint-policy comment in the workspace `Cargo.toml`, adding the
+lint is a decision to fix every violation first: the milestone is the fixes, with the one-line
+`[workspace.lints.rust]` addition landing last. Rust's 2024 edition makes this lint warn-by-default,
+so this is also alignment with where the language is going rather than a house rule.
+
+### 83. A mechanical rule-1 lint
+
+**Status: NOT-STARTED.** Raised 2026-08-03, same survey as 79, which found the violation.
+
+CLAUDE.md's first rule, all architecture-specific code under `kernel/src/arch/`, is what makes the
+x86_64 port a new directory instead of a diff across every file, and it is enforced by discipline
+alone. The discipline has already slipped once: `kernel/src/user/tests.rs` reads `SPSel` with a raw
+`asm!` outside `arch/`. One violation in a tree this size is a good record, and also exactly how the
+second one arrives.
+
+The work is small: `script/lint` gains a check that fails on `asm!`, `global_asm!`, or `core::arch::`
+in `kernel/src/` outside `kernel/src/arch/`, with no allowlist; and the existing violation moves
+behind an arch helper (name provisional, and Chris's to make, per the naming rule).
+
+#### Scope note
+
+Kernel only, deliberately. Crates like `user_rt` legitimately hold `asm!` in per-ISA modules, so the
+rule there would be "asm lives in the ISA-suffixed module", which is a different check with its own
+false-positive surface. Whether it is worth writing is a question for after this one has run for a
+while.
+
+### 84. Stack high-water: measure kernel stack depth
+
+**Status: NOT-STARTED.** Raised 2026-08-03, same survey as 79.
+
+A kernel stack overflow does not fault helpfully; it scribbles. This tree has had one (the FS-server
+stack bug, notes/crickerfs.md), it was found the expensive way, and nothing since measures depth on
+any kernel stack. The claim "the stacks are big enough" is currently an argument, and the project's
+standard is to measure instead.
+
+The instrument is the classic one because the classic one is right: paint every kernel-owned stack
+with a pattern at boot, and at the end of the test suite scan each for the deepest overwritten byte
+and report it through the test channel. The first run is measurement only. Once the numbers are
+seen, the threshold becomes an assertion with the margin the numbers justify, the same
+measure-then-gate sequence the icount tripwire used. Runs identically on every ISA, and covers
+whatever the suite actually exercises, interrupt nesting included.
+
+#### Scope note
+
+A watermark sees only exercised paths; an unexercised deep path stays invisible, which is the same
+limit coverage has. The static complement (`-Zemit-stack-sizes`, worst-case frame accounting) breaks
+on indirect calls, so it lands as an advisory report if it lands at all. And the check must not
+become load-bearing the way milestone 78's assertions did: depth is a property of the code and the
+suite, not of the host, so this one should be immune to runner noise by construction.
+
+### 85. Mutation testing over the host crates
+
+**Status: NOT-STARTED.** Raised 2026-08-03, same survey as 79.
+
+The coverage job answers "did this line run under a test"; it cannot answer "would any test notice
+if this line were wrong", and the second question is the one a test suite exists for. cargo-mutants
+answers it by mutating the code and re-running the tests, and the survivors, mutations no test
+caught, are a worklist sorted by exactly the property this project cares about. The exhaustive
+suites (`ntp_proto`, `gpt`) should score near-perfectly, which is itself a calibration check on the
+tool; the interesting results will be in the middle of the tree.
+
+The work: one full, time-boxed run over the host crates; triage every survivor into either a test
+worth writing or an exclusion recorded in `.cargo/mutants.toml` with a reason (config, not a code
+dependency, per §46); a note recording the baseline; then a weekly scheduled workflow that reports
+against that baseline. A report, not a gate, until the weekly numbers prove stable enough that a
+new survivor deserves to fail something.
