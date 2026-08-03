@@ -132,8 +132,8 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 66 | NOT-STARTED | Vaultwarden: somebody else's real application, running here | the north star for "runs real workloads". Names the gaps concretely rather than aspirationally: no TCP **listen or accept** in the socket contract, threads mostly stubs, most of `std::fs` unsupported, no async runtime, no TLS, and SQLite is a C library. Largest single item on this roadmap |
 | 67 | NOT-STARTED | `swish` the language: quoting, sequencing, and exit status | `swish` is an interactive shell without control flow. Quoting is the one that is a correctness gap rather than a convenience: **a filename with a space is currently unnameable** |
 | 68 | PARTIAL | Code-quality gates: one lint policy, and the lints that lost | Import order, `[workspace.lints]`, dependency direction, unused dependencies, spelling. Three lints were adopted, measured and **removed** on the evidence. `undocumented_unsafe_blocks` is now a GATE: all 205 undocumented blocks were read and commented. Doc examples went 5 -> 23 across nine crates, which is a start and not the standard; `missing_docs` is still not adoptable |
-| 69 | NOT-STARTED | Split `kernel/src/user.rs` by service | 15,499 lines and **46 top-level modules** in one file: a dozen `*_service` modules and ~34 test modules. The split is nearly free because the boundaries are already `mod` blocks, so moving one to its own file changes no visibility and no API |
-| 70 | NOT-STARTED | `swish`'s remaining logic in a crate, host-testable like its siblings | `coremark`, `line_editor` and `compositor` are each a crate holding the logic plus a program holding the IO. `swish` is the largest program that is not, so its dispatch, endowment preview and outcome handling are reachable only through QEMU |
+| 69 | BUILT | Split `kernel/src/user.rs` by service | 15,499 lines and **46 top-level modules** in one file: a dozen `*_service` modules and ~34 test modules. The split is nearly free because the boundaries are already `mod` blocks, so moving one to its own file changes no visibility and no API |
+| 70 | BUILT | `swish`'s remaining logic in a crate, host-testable like its siblings | `coremark`, `line_editor` and `compositor` are each a crate holding the logic plus a program holding the IO. `swish` is the largest program that is not, so its dispatch, endowment preview and outcome handling are reachable only through QEMU |
 | 71 | NOT-STARTED | The thread-start fault: a user thread dispatched with `sepc` = 0 | **Blocks all other work.** Instrumented in milestone 68's window and it has now FIRED on CI: a secondary core entered U-mode with an all-zero trap frame. Three intermittent CI failures across three tests and three CPU models trace here |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
@@ -4916,8 +4916,20 @@ first, then the comment, then the block.
 
 ### 69. Split `kernel/src/user.rs` by service
 
-**Status: NOT-STARTED.** Raised 2026-08-02, from a question about whether thousand-line files are an
-antipattern in Rust. The general answer is no, and this file is the exception that proves why.
+**Status: BUILT (2026-08-02), both ISAs.** Raised 2026-08-02, from a question about whether
+thousand-line files are an antipattern in Rust. The general answer is no, and this file is the
+exception that proves why.
+
+All 46 top-level modules moved to `kernel/src/user/<name>.rs`; `user.rs` went from **15,499 lines to
+1,993**, and the largest file left in the tree from that split is `user/tests.rs` at 2,306. Nothing
+gained visibility: not one `pub`, `pub(crate)` or `use` was added or widened, which the section below
+predicted and which was then checked mechanically rather than by eye. Re-inlining every new file back
+into `user.rs` and running `rustfmt` over the result reproduces the pre-split file **byte for byte**,
+so the only content change in the whole milestone is `rustfmt` reflowing about 90 lines that gained
+four columns of width when they lost a level of indentation.
+
+The declaration each module left behind keeps its own doc comment and its own `#[cfg]`/`#[cfg_attr]`
+attributes, so `user.rs` reads as an annotated index of the services and `rustdoc` is unchanged.
 
 #### Why file length is usually the wrong metric here
 
@@ -4967,8 +4979,16 @@ leaving `user.rs` as the wiring that names them.
 
 ### 70. `swish`'s remaining logic in a crate, host-testable like its siblings
 
-**Status: NOT-STARTED.** Raised 2026-08-02, and **the finding that prompted it was wrong**, which is
+**Status: BUILT.** Raised 2026-08-02, and **the finding that prompted it was wrong**, which is
 worth recording because the corrected version is a smaller and more honest milestone.
+
+`crates/swish` holds the shell's logic and `user/src/swish.rs` keeps the IO, which took 354 lines out
+of the program and bought 36 host tests (33 unit, 3 doctests) where there had been none. What lifted:
+the routing of a typed line, the pattern-versus-text question, the expansion order, `echo`, and every
+sentence the prompt prints (the refusals, the outcome, the endowment preview, the shell's own `caps`
+table, the help). What did not, and why, is in notes/shell.md and in the crate's own `BUGS` section:
+`builtin`, `dispatch_one`, `run`, `spawn` and `pipeline` are capability movement, and lifting them
+would have needed the shell's IO restructured, which this milestone was scoped not to do.
 
 #### The correction
 
@@ -5004,6 +5024,20 @@ pair. `swish` is the largest program that is not one.
 This is an incremental tidy of a working, tested component, not a fix for a defect. It should be
 scheduled accordingly, and it should not grow into a rewrite of the shell. If lifting a function
 needs the shell's IO restructured to accommodate it, that function stays where it is.
+
+#### A gate blind spot found while raising this
+
+Milestone 69's **table row said `NOT-STARTED` while its own detail block said `BUILT`** on `main`,
+because the lane that built it updated one and not the other. `script/roadmap --check` did not catch
+it: the check validates the status VOCABULARY and that every detail block has a table row, but never
+that the two statuses AGREE. Corrected by hand on 2026-08-03.
+
+This is the third such blind spot found in two days, and they are all the same shape: the gate
+verifies that a thing is well-formed and never that it is right. `script/decisions --check` reports
+"numbering clean" for a section filed in the wrong place, and nothing checks that a source path cited
+in prose resolves to a file that exists (milestone 69 fixed 49 stale ones by hand). Each is a few
+lines to add. None is written yet, and they are listed here rather than in a tracker so the next
+person to touch these scripts finds them.
 
 ### 71. The thread-start fault: a user thread dispatched with `sepc` = 0
 

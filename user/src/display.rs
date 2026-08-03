@@ -43,7 +43,7 @@
 use gfx_proto as gfx;
 use user_rt::{exit, invoke, recv_cap, send};
 
-/// Capability slots, by convention with kernel/src/user.rs `display_service`.
+/// Capability slots, by convention with `kernel/src/user/display_service.rs`.
 const REPORT: u64 = 0;
 const IRQ: u64 = 1;
 const VIRTIO: u64 = 2;
@@ -129,7 +129,7 @@ const RESOURCE_ID: u32 = 1;
 const SCANOUT_ID: u32 = 0;
 
 /// The entry role that attacks its own confinement instead of serving (see [`run_backing_escape`]).
-/// Must match kernel/src/user.rs `display_service::ROLE_BACKING_ESCAPE`.
+/// Must match `ROLE_BACKING_ESCAPE` in `kernel/src/user/display_service.rs`.
 const ROLE_BACKING_ESCAPE: u64 = 1;
 
 /// Failure codes reported to the spawner, so a bring-up failure names its step instead of hanging.

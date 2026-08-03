@@ -1,0 +1,35 @@
+[package]
+name = "swish"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+# The shell's logic, lifted out of `user/src/swish.rs` so it is host-testable and Kani-reachable
+# while the program keeps the IO (milestone 70). The same pair `coremark`, `line_editor` and
+# `compositor` already are, and CLAUDE.md's reason for letting a crate and a program share a name:
+# the crate IS that program's logic, and splitting the names would hide the relationship.
+#
+# What lives here is everything the shell decides or renders with no capability in hand: the routing
+# of a typed line, the pattern-versus-text question, the expansion order, and every sentence the user
+# reads. What stays in the program is everything that needs a capability: the terminal page, the
+# spawn channel, the FS requests, the pipe endpoints.
+
+[lints]
+workspace = true
+
+[dependencies]
+# The parser, the manifests and the planner. Everything this crate renders is one of `grant_plan`'s
+# values (`Refusal`, `Endowment`, `Line`), which is why the split lands here: `grant_plan` decides
+# what a line means and this decides what the user is told about it.
+grant_plan = { version = "0.1.0", path = "../grant_plan" }
+
+# `dir::explain`, the filesystem's half of a refusal. `grant_plan` deliberately keeps this a dev
+# dependency so a command line can be checked without linking the filesystem contract; the shell
+# links it either way, because `Say::Failed` carries an errno that only `fs_proto` can put a sentence
+# to, and inventing a friendlier word for it here is exactly what must not happen.
+fs_proto = { version = "0.1.0", path = "../fs_proto" }
+
+# `has_magic`, and only that. Whether an arbitrary word is a pattern at all is asked before anything
+# treats it as a path, so `echo a:b` prints text instead of being refused as a name. Expansion itself
+# is `grant_plan::expand`; this crate moved the dependency off `user`, which no longer uses it.
+glob = { version = "0.1.0", path = "../glob" }

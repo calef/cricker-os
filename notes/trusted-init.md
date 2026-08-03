@@ -133,7 +133,7 @@ Two consequences worth knowing:
   equals one-shot; a flipped bit changes the digest; accept / mismatch / unmeasured are the three
   verdicts, and both an unknown name and an empty root are refusals; hex round-trips and malformed
   hex does not parse as zeros.
-- **Both ISAs** (`kernel/src/user.rs`, `measured_boot_tests`):
+- **Both ISAs** (`kernel/src/user/measured_boot_tests.rs`):
   - `the_boot_program_measures_to_the_compiled_in_trust_root` is the end-to-end build-composition
     proof. Nothing in it is hard-coded: the digest comes out of the running kernel's own `.rodata`
     and the bytes come out of the archive QEMU loaded into RAM, and they have to agree. If the build
@@ -219,7 +219,7 @@ rebuild, the spawner is what **can**. Policy and authority, separated by an IPC 
 
 ### What is proven, both ISAs
 
-`kernel/src/user.rs`, `authority_tests`:
+`kernel/src/user/authority_tests.rs`:
 
 - `init_drops_its_construction_authority_and_cannot_build_again`. After the handoff, root_supervisor tries the
   two primitives that build things (retype a page, retype a kernel object) and reports the result from

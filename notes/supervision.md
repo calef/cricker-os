@@ -86,7 +86,7 @@ supervision tree where a supervisor holding *no memory at all* applies bounded-r
 sub-server a construction server builds, and init has deleted the authority it would need to interfere.
 That is what this mechanism exists for, and it is proven on both ISAs in `authority_tests`.
 
-Cross-ISA kernel tests (`kernel/src/user.rs`, `supervision_tests`): a child built holding a fault
+Cross-ISA kernel tests (`kernel/src/user/supervision_tests.rs`): a child built holding a fault
 endpoint crashes on a null load, the supervisor receives `(FAULT, tid, pc, addr)` with the right tid
 and address, the corpse still holds its fault message after delivery, revocation reaps it, and a
 fresh child runs in its place; a second test drives the clean-exit path and asserts the `EXIT` event.

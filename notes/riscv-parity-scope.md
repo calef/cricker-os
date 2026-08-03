@@ -61,7 +61,7 @@ new kernel work rather than porting userspace.
 
 RISC-V now boots the kernel test harness and passes **51 portable tests** (`cargo xtask test` runs
 both arches: aarch64 116, riscv64 51). The gap is the aarch64-specific tests, gated off riscv: the
-userspace-exec suite in `user.rs` (37 tests driving hand-written aarch64 programs through `exec`), the
+userspace-exec suite in `kernel/src/user/tests.rs` (37 tests driving hand-written aarch64 programs through `exec`), the
 SMP tests (workstream A), and the two SGI interrupt tests. Three real things surfaced: the
 `sifive_test` finisher (`0x10_0000`) had to be mapped device-typed and reached through the direct map
 (the boot tour halts via `wfi` and never exercised `semihosting::exit` under paging); the timer

@@ -171,7 +171,7 @@ UART, ack), and holds nothing else. Same shape as the worker split: every consum
 hello at the console role now loads `"console"` and starts it with `x0 = 0`. There were three, in
 two domains:
 
-- the kernel-side `console_service::start` (`user.rs`), used by the milestone-8 tour and the
+- the kernel-side `console_service::start` (`kernel/src/user/console_service.rs`), used by the milestone-8 tour and the
   pre-initboot shell;
 - init's `init_console` (the userspace-built-console test) and the `init_boot` console child.
 

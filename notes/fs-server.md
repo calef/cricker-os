@@ -34,7 +34,7 @@ which is milestone 23's hot-swap claim in component form.
 - **The client** (`user/src/fs_test_client.rs`) is the program a milestone-31 shell will be: it holds only
   a directory capability and opens files by name under it.
 
-The kernel wires all three (`kernel/src/user.rs::fs_service`), handing each a `Spawn` literal that
+The kernel wires all three (`kernel/src/user/fs_service.rs`), handing each a `Spawn` literal that
 is its entire authority. The kernel never sees a filesystem operation, an opcode, or a byte of file
 data.
 

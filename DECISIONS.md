@@ -1711,7 +1711,7 @@ are amendments to §26, not a new section, per its own "no new section" intent.
    three-word IPC pads the top two with zero, so `user_rt::recv` and every existing program are
    unchanged; only a supervisor reads `w3`/`w4`. This is the message-format convention made real.
 
-Proven on both ISAs (`kernel/src/user.rs`, `supervision_tests`): a child crashes and its supervisor
+Proven on both ISAs (`kernel/src/user/supervision_tests.rs`): a child crashes and its supervisor
 receives `(FAULT, tid, pc, addr)`, the corpse survives with its state until revocation reaps it, a
 respawned child runs, and a clean exit reports `EXIT`. See notes/supervision.md and notes/abi.md §5.
 
@@ -1787,7 +1787,7 @@ better. The natural sequence if it is ever wanted: signature verification *in ad
 measured root (so the hash stays the floor if key handling fails), and the verification code proved
 under §18's toolchain before it is trusted.
 
-Proven on both ISAs (`kernel/src/user.rs`, `measured_boot_tests`): the boot program in RAM measures to
+Proven on both ISAs (`kernel/src/user/measured_boot_tests.rs`): the boot program in RAM measures to
 the digest in the running kernel's own `.rodata` (the end-to-end build-composition proof, nothing
 hard-coded), and one flipped bit or an unmeasured name is refused. The refusal *path* is not booted in
 a test because a real refusal halts the machine; the decision function is tested instead, and the boot
@@ -2152,7 +2152,7 @@ milestone 23's swap-under-load demo.
 
 The three parts shipped as ratified, with one addition the machine forced and two corrections worth
 recording. Code in `kernel/src/sched.rs` and `kernel/src/cpu.rs`; scheduler note in
-notes/scheduler.md; cross-core stress tests in `sched.rs`, `smp.rs`, and `user.rs`.
+notes/scheduler.md; cross-core stress tests in `sched.rs`, `smp.rs`, and `user/tests.rs`.
 
 - **Spawn placement, as built.** `spawn` calls `pick_spawn_target`: two samples of a per-core
   xorshift PRNG index the online cores, and the lighter by `runnable()` (a relaxed mirror of run

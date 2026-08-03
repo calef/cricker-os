@@ -37,7 +37,7 @@
 //!   [`fs_proto::fs::ROOT`] and be back at the image root. The handle is the authority; the endpoint
 //!   is the boundary. That is the whole argument for this process existing.
 //!
-//! # Capability contract (kernel/src/user.rs `fs_service::start_granted_dir`)
+//! # Capability contract (`kernel/src/user/fs_service.rs`, `start_granted_dir`)
 //!
 //! - **slot 0**: the FS-service endpoint, `WRITE`. The directory capability being attenuated.
 //! - **slot 1**: the narrowed endpoint, `READ`. The confined program `CALL`s here; this endpoint IS

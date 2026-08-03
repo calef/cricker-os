@@ -20,7 +20,7 @@ use abi::irq;
 use fs_proto::blk;
 use user_rt::{exit, invoke, send};
 
-// The kernel maps the DMA page at this fixed VA (must match kernel/src/user.rs virtio_service).
+// The kernel maps the DMA page at this fixed VA (must match kernel/src/user/virtio_service.rs).
 // The device REGISTERS are NOT mapped: we drive the device through a `Virtio` capability (slot 2),
 // so we cannot point it outside this DMA region. See kernel/src/virtio.rs.
 const DMA_VA: u64 = 0x0000_0000_0090_0000;
@@ -902,7 +902,7 @@ const BLK_REQ: u64 = 0;
 /// Where the kernel maps the page shared with the FS server (the block buffer). Distinct from the
 /// DMA region, which the FS server must never see, and from [`DMA_VA`].
 ///
-/// The block server's DMA region is **two contiguous pages** (kernel/src/user.rs `fs_service`):
+/// The block server's DMA region is **two contiguous pages** (`kernel/src/user/fs_service.rs`):
 /// page 0 holds the rings, request header, and status (block-server-private), and page 1 is the
 /// 4096-byte data buffer, which IS the page shared with the FS server. So one virtio request moves a
 /// whole filesystem block (eight sectors) and the device DMAs it straight into the FS server's page,
@@ -912,7 +912,7 @@ const BLK_OFF_DATA: u64 = 0x1000;
 const BLK_DATA_LEN: u32 = 4096;
 
 /// The block server's readiness endpoint (slot 3): SEND once after the device is up, so the test
-/// can tell a device-bring-up hang from a first-read hang. See kernel/src/user.rs `fs_service`.
+/// can tell a device-bring-up hang from a first-read hang. See `kernel/src/user/fs_service.rs`.
 const BLK_READY: u64 = 3;
 
 /// virtio-mmio device-config window; virtio-blk's capacity (u64, in 512-byte sectors) is at its
