@@ -23,6 +23,17 @@ on:
 permissions:
   contents: read
 
+# Mirrors ci.yml's group, and must: without it, splitting this job out would have QUIETLY CHANGED
+# behaviour. `ci.yml` cancels an in-flight run when a branch is pushed again, so the old Kani run
+# died with it. A separate workflow with no group would keep running against the superseded commit,
+# burning a runner for ~47 minutes on a SHA nobody will merge, and reporting a check against it.
+#
+# The group name differs from ci.yml's on purpose. Sharing one would make a push cancel the OTHER
+# workflow too, which is the coupling this split exists to remove.
+concurrency:
+  group: verify-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || 'tip' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   verify:
     name: verify (Kani proofs)
