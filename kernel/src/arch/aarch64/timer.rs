@@ -190,6 +190,16 @@ pub fn missed_ticks() -> u64 {
     MISSED_TICKS[cpu::id()].load(Ordering::Relaxed)
 }
 
+/// This core's next armed deadline: `CNTV_CVAL_EL0`, the grid cell [`rearm`] advances from.
+///
+/// Exposed so the drift test can assert the re-arm law directly (deadlines advance by exactly one
+/// interval per delivered tick) instead of inferring it from a wall-clock tick rate, which a
+/// descheduled emulator falsifies. The register is banked per core, like the counter.
+#[cfg_attr(not(test), allow(dead_code))] // this file's tests are the callers
+pub fn deadline() -> u64 {
+    CNTV_CVAL_EL0.get()
+}
+
 /// Why a miss happened, kept only in test builds.
 ///
 /// `missed_ticks()` says a deadline was already past when the handler re-armed. It does not say by
@@ -322,33 +332,83 @@ mod tests {
         );
     }
 
-    /// Ticks arrive at roughly the rate we asked for.
+    /// Ticks arrive at the configured rate, proven by the grid rather than by the wall clock.
     ///
     /// This is the test that caught the drift. We re-armed with `CNTV_TVAL_EL0` (a *relative*
     /// countdown), so every period was `interval + handler latency`, the lateness compounded,
     /// and 100 Hz became about 70 Hz. Silently. `CNTV_CVAL_EL0` puts the deadlines on a fixed
     /// grid and the rate is right.
+    ///
+    /// The original assertion compared delivered ticks against elapsed counter time, one period
+    /// of slack either way. That measures the emulator as much as the re-arm: the test runner
+    /// passes no `-icount`, so `CNTVCT_EL0` follows host time, and a host that deschedules the
+    /// vCPU for a few periods coalesces ticks into exactly the deficit the TVAL defect produced.
+    /// It failed a quiet-window gate run on 2026-08-03 as "22 ticks in 25 periods" while the
+    /// host compiled beside QEMU, the same shape its riscv64 twin kept failing CI with, and no
+    /// margin separates "our re-arm is late" from "the emulator was not running"
+    /// (notes/load-sensitive-assertions.md).
+    ///
+    /// So assert the re-arm LAW instead, the property this test exists for: over a window in
+    /// which no miss was recorded, [`rearm`] moved `CNTV_CVAL_EL0` by **exactly one interval per
+    /// delivered tick**. The TVAL defect fails this on the first tick (each re-arm lands late by
+    /// the handler latency, so the sum overshoots the grid); a descheduled emulator cannot fail
+    /// it, because a deschedule long enough to slip the grid is counted by `MISSED_TICKS` and
+    /// the window is retried. Kept in lockstep with the riscv64 twin, whose grid is software
+    /// (`DEADLINE`) because SBI's `set_timer` is write-only where CVAL reads back.
     #[test_case]
     fn ticks_arrive_at_the_configured_rate() {
         use crate::arch::timer;
 
-        let t0 = timer::ticks();
-        let c0 = timer::now();
+        // A consistent (ticks, missed, deadline, counter) snapshot without masking: a tick
+        // between the reads would skew them, so re-read until the tick count brackets the others
+        // unchanged. The core id is in the bracket too: the statics and CVAL are per core, and a
+        // snapshot pair taken on two cores compares unrelated grids.
+        let snapshot = || loop {
+            let core = crate::cpu::id();
+            let t = timer::ticks();
+            let m = timer::missed_ticks();
+            let d = timer::deadline();
+            let c = timer::now();
+            if timer::ticks() == t && crate::cpu::id() == core {
+                break (core, t, m, d, c);
+            }
+        };
 
-        timer::spin_for(timer::frequency() / 4); // a quarter of a second, by the counter
+        // A miss re-anchors the grid, which is correct behaviour (`rearm`'s safety valve), so a
+        // window containing one proves nothing about the law either way: retry it. Eight
+        // quarter-second windows all containing a miss is not load, it is either a pathological
+        // host or a handler genuinely slower than a tick period, and both deserve a red run.
+        let mut attempts = 0;
+        let (elapsed_ticks, deadline_delta, expected) = loop {
+            let (k0, t0, m0, d0, c0) = snapshot();
+            timer::spin_for(timer::frequency() / 4); // a quarter of a second, by the counter
+            let (k1, t1, m1, d1, c1) = snapshot();
 
-        let elapsed_ticks = timer::ticks() - t0;
-        let elapsed_counter = timer::now() - c0;
+            if k0 == k1 && m0 == m1 && t1 - t0 >= 2 {
+                break (t1 - t0, d1 - d0, (c1 - c0) / timer::interval());
+            }
+            attempts += 1;
+            assert!(
+                attempts < 8,
+                "no miss-free measurement window in eight tries: either the host is too \
+                 contended to observe the grid, or the handler is slower than a whole tick \
+                 period (see the_handler_keeps_up_when_no_lock_is_held)"
+            );
+        };
 
-        // How many ticks *should* have fired in that much counter time?
-        let expected = elapsed_counter / timer::interval();
+        assert_eq!(
+            deadline_delta,
+            elapsed_ticks * timer::interval(),
+            "timer drift: {elapsed_ticks} ticks moved CNTV_CVAL_EL0 off the grid. Re-arming with \
+             a RELATIVE countdown (TVAL) instead of an absolute deadline (CVAL) does exactly this."
+        );
 
-        // Allow one either way: we may start or stop mid-period.
+        // The one wall-clock bound a contended host cannot falsify: descheduling only DROPS
+        // ticks, so more ticks than elapsed periods (plus one for starting mid-period) means the
+        // timer is firing faster than the grid, which is `rearm`'s spin-forever failure mode.
         assert!(
-            elapsed_ticks + 1 >= expected && elapsed_ticks <= expected + 1,
-            "timer drift: {elapsed_ticks} ticks in {expected} periods. \
-             Re-arming with a RELATIVE countdown (TVAL) instead of an absolute deadline (CVAL) \
-             does exactly this."
+            elapsed_ticks <= expected + 1,
+            "{elapsed_ticks} ticks in {expected} periods: the timer fires faster than configured"
         );
     }
 
