@@ -278,6 +278,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "isa"
+version = "0.1.0"
+dependencies = [
+ "dtb",
+]
+
+[[package]]
 name = "kernel"
 version = "0.1.0"
 dependencies = [

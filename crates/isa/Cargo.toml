@@ -1,0 +1,14 @@
+[package]
+name = "isa"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+# The device tree is the RISC-V source of truth for what the machine is, because RISC-V has no
+# CPUID, so the riscv64 half of this crate reads it. The aarch64 half needs nothing: its facts come
+# from architected ID registers, which the kernel reads and hands here as raw words.
+dtb = { version = "0.1.0", path = "../dtb" }
+
+[lints]
+workspace = true

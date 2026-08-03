@@ -25,6 +25,7 @@ members = [
     "crates/glob",
     "crates/gpt",
     "crates/ipc",
+    "crates/isa",
     "crates/paging",
     "crates/pci",
     "crates/regions",

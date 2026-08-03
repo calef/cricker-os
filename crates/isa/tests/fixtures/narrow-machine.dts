@@ -1,0 +1,35 @@
+/dts-v1/;
+
+/*
+ * A machine this kernel cannot run on, written by hand so the refusal path has a witness.
+ *
+ * RV32 with an Sv32 MMU is a real and common RISC-V configuration; it is simply not ours, and
+ * `missing_requirements` has to say so rather than boot a kernel whose every pointer is the wrong
+ * width. There is no `a` extension either, so the required-extension report has something to name
+ * as well.
+ *
+ * Regenerate with:
+ *
+ *     dtc -I dts -O dtb -o crates/isa/tests/fixtures/narrow-machine.dtb \
+ *                          crates/isa/tests/fixtures/narrow-machine.dts
+ */
+
+/ {
+	#address-cells = <2>;
+	#size-cells = <2>;
+	compatible = "cricker,isa-test";
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		cpu@0 {
+			device_type = "cpu";
+			reg = <0>;
+			compatible = "riscv";
+			riscv,isa-base = "rv32i";
+			riscv,isa-extensions = "i", "m", "c", "zicsr";
+			mmu-type = "riscv,sv32";
+		};
+	};
+};
