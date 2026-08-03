@@ -603,3 +603,200 @@ fn initrd_reads_widths_and_refuses_the_empty_and_the_misnamed() {
         "the props only mean initrd inside /chosen"
     );
 }
+
+// The tests above came from the baseline run's survivor list; the ones below close the gaps that
+// list still had after them. Several survivors dodge the earlier tests by coincidence of shape
+// (a device that is a direct child of the root never reads the inherited cell slots; a matched
+// node that is the first child never meets a foreign END_NODE), so each test here names the shape
+// that was still missing.
+
+/// `totalsize` against the header's own length, met exactly. A claim smaller than the header
+/// cannot hold the header that makes it, and is refused even with a big buffer and in-range
+/// offsets, so nothing else can be the reason. A claim of exactly HEADER_LEN is the smallest
+/// self-consistent one: the header checks pass and the walkers report their own truncation.
+#[test]
+fn totalsize_meets_the_header_length_exactly() {
+    let blob = minimal_tree();
+
+    let mut short = patched(&blob, 4, 39);
+    for off in [8, 12, 16] {
+        short = patched(&short, off, 0);
+    }
+    assert_eq!(Dtb::from_bytes(&short).err(), Some(Error::Truncated));
+
+    let mut bare = patched(&blob, 4, 40);
+    for off in [8, 12, 16] {
+        bare = patched(&bare, off, 8);
+    }
+    assert!(Dtb::from_bytes(&bare).is_ok());
+}
+
+/// The root cannot be a device for the name walker either (`compatible_respects_the_root...`
+/// pins the other walker): a `reg` on the root must not come back for a name the tree does not
+/// contain. The last `&&` of the match condition becoming `||` targets the root, whose empty
+/// name matches nothing, the moment the walk begins.
+#[test]
+fn a_roots_reg_is_never_a_named_devices() {
+    let mut b = Blob::new();
+    b.begin_node(b"");
+    b.prop(b"#address-cells", &2u32.to_be_bytes());
+    b.prop(b"#size-cells", &2u32.to_be_bytes());
+    let mut reg = Vec::new();
+    reg.extend(cell32(0));
+    reg.extend(cell32(0xBEEF));
+    reg.extend(cell32(0x10));
+    b.prop(b"reg", &reg);
+    b.end_node();
+    let blob = b.finish();
+    let dt = Dtb::from_bytes(&blob).unwrap();
+
+    let mut out = [Region { start: 0, size: 0 }; 2];
+    assert_eq!(dt.node_reg(b"absent@", &mut out), Ok(0));
+}
+
+/// The compatible walker inherits cell widths through a silent intermediary, the same
+/// three-generation rule `cell_widths_are_inherited...` pins for the name walker; the earlier
+/// compatible test's device sits directly under the root, so the inherited slots were never the
+/// ones read. The size's high cell is nonzero, so a decode with anything but the inherited 1/2
+/// finds no pair at all or reports a size of 1.
+#[test]
+fn compatible_inherits_cell_widths_through_a_silent_bus() {
+    let mut b = Blob::new();
+    b.begin_node(b"");
+    b.prop(b"#address-cells", &1u32.to_be_bytes());
+    b.prop(b"#size-cells", &2u32.to_be_bytes());
+    b.begin_node(b"bus");
+    b.begin_node(b"dev@2000");
+    let mut reg = Vec::new();
+    reg.extend(cell32(0x2000));
+    reg.extend(cell32(0x1));
+    reg.extend(cell32(0x2000));
+    b.prop(b"reg", &reg);
+    b.prop(b"compatible", b"cricker,testdev\0");
+    b.end_node();
+    b.end_node();
+    b.end_node();
+    let blob = b.finish();
+    let dt = Dtb::from_bytes(&blob).unwrap();
+
+    let mut out = [Region { start: 0, size: 0 }; 2];
+    assert_eq!(dt.node_reg_compatible(b"cricker,testdev", &mut out), Ok(1));
+    assert_eq!((out[0].start, out[0].size), (0x2000, 0x1_0000_2000));
+}
+
+/// A `reg` before any node has no parent to decode against, and the `depth >= 2` guard on the
+/// compatible walker's `reg` arm is what separates "walk past it" from indexing the cell stack
+/// at depth minus one, which underflows at zero. Nothing writes such a blob; this parser reads
+/// blobs nothing should have written.
+#[test]
+fn a_reg_before_the_root_is_walked_past() {
+    let mut b = Blob::new();
+    b.prop(b"reg", &reg64(0x1000, 0x100));
+    b.begin_node(b"");
+    b.end_node();
+    let blob = b.finish();
+    let dt = Dtb::from_bytes(&blob).unwrap();
+
+    let mut out = [Region { start: 0, size: 0 }; 2];
+    assert_eq!(dt.node_reg_compatible(b"absent", &mut out), Ok(0));
+}
+
+/// The prop walker's target may only be a matched node: not the root, which is what `||` in the
+/// match condition produces (the root's target check is the first that can pass), and not
+/// nothing, which is what an inverted END_NODE comparison produces (the first sibling to close
+/// would end the search). The root and a decoy sibling carry the same property name with
+/// different values so either wrong answer is visible, not just a wrong count.
+#[test]
+fn node_prop_ignores_the_root_and_survives_a_closing_sibling() {
+    let mut b = Blob::new();
+    b.begin_node(b"");
+    b.prop(b"status", b"root\0");
+    b.begin_node(b"decoy");
+    b.prop(b"status", b"decoy\0");
+    b.end_node();
+    b.begin_node(b"uart@100");
+    b.prop(b"status", b"okay\0");
+    b.end_node();
+    b.end_node();
+    let blob = b.finish();
+    let dt = Dtb::from_bytes(&blob).unwrap();
+
+    assert_eq!(dt.node_prop(b"uart@", b"status"), Ok(Some(&b"okay\0"[..])));
+}
+
+/// `/reserved-memory` children default to the ROOT's cell widths, read at depth 1 and nowhere
+/// else. The riscv fixture's root declares 2/2, which the defaults already are, so the depth-1
+/// gate and both of its match arms were deletable invisibly; a 1/1 root is the tree that
+/// notices.
+#[test]
+fn reserved_memory_defaults_to_the_roots_cell_widths() {
+    let mut b = Blob::new();
+    b.begin_node(b"");
+    b.prop(b"#address-cells", &1u32.to_be_bytes());
+    b.prop(b"#size-cells", &1u32.to_be_bytes());
+    b.begin_node(b"reserved-memory");
+    b.begin_node(b"fw@80000000");
+    let mut reg = Vec::new();
+    reg.extend(cell32(0x8000_0000));
+    reg.extend(cell32(0x4_0000));
+    b.prop(b"reg", &reg);
+    b.end_node();
+    b.end_node();
+    b.end_node();
+    let blob = b.finish();
+    let dt = Dtb::from_bytes(&blob).unwrap();
+
+    let mut out = [Region { start: 0, size: 0 }; 4];
+    assert_eq!(dt.reserved_memory_regions(&mut out), Ok(1));
+    assert_eq!((out[0].start, out[0].size), (0x8000_0000, 0x4_0000));
+}
+
+/// And `/reserved-memory` may override those widths for its own children, which the fixture
+/// never does. The child's `compatible` sits before its `reg` because the decode condition
+/// requires child depth AND the name `reg`: with `||` the compatible string's sixteen bytes
+/// decode as two plausible extra regions, and the count says so.
+#[test]
+fn reserved_memory_honours_its_own_declared_widths() {
+    let mut b = Blob::new();
+    b.begin_node(b"");
+    b.begin_node(b"reserved-memory");
+    b.prop(b"#address-cells", &1u32.to_be_bytes());
+    b.prop(b"#size-cells", &1u32.to_be_bytes());
+    b.begin_node(b"pool@1000");
+    b.prop(b"compatible", b"shared-dma-pool\0");
+    let mut reg = Vec::new();
+    reg.extend(cell32(0x1000));
+    reg.extend(cell32(0x2000));
+    b.prop(b"reg", &reg);
+    b.end_node();
+    b.end_node();
+    b.end_node();
+    let blob = b.finish();
+    let dt = Dtb::from_bytes(&blob).unwrap();
+
+    let mut out = [Region { start: 0, size: 0 }; 4];
+    assert_eq!(dt.reserved_memory_regions(&mut out), Ok(1));
+    assert_eq!((out[0].start, out[0].size), (0x1000, 0x2000));
+}
+
+/// `/chosen` stops meaning chosen when it closes: with the END_NODE comparison inverted the
+/// walker keeps attributing properties to it, and a later sibling's `linux,initrd-end`
+/// overwrites the real one, returning an initrd of the wrong size.
+#[test]
+fn initrd_properties_after_chosen_closes_do_not_count() {
+    let mut b = Blob::new();
+    b.begin_node(b"");
+    b.begin_node(b"chosen");
+    b.prop(b"linux,initrd-start", &0x4800_0000u64.to_be_bytes());
+    b.prop(b"linux,initrd-end", &0x4802_0000u64.to_be_bytes());
+    b.end_node();
+    b.begin_node(b"leftover");
+    b.prop(b"linux,initrd-end", &0x4BAD_0000u64.to_be_bytes());
+    b.end_node();
+    b.end_node();
+    let blob = b.finish();
+    let dt = Dtb::from_bytes(&blob).unwrap();
+
+    let r = dt.initrd().unwrap().expect("the real range from /chosen");
+    assert_eq!((r.start, r.size), (0x4800_0000, 0x2_0000));
+}
