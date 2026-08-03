@@ -153,6 +153,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 87 | NOT-STARTED | The x86_64 bare-metal machine | Milestone 19's third ISA needs what milestone 16's second needed: a dedicated, brickable board, selected before the port so the requirements drive the purchase. Selected: a used OptiPlex 7050 Micro plus the C4PDJ serial module, ~$194 all-in; every new option cost $150-350 more at real prices. QEMU emulates `igb` and `e1000e`, not `igc`, so the 7050's I219 keeps the one-driver property with no caveats |
 | 88 | NOT-STARTED | cricker-os on rented silicon: Oracle's free tier first, Graviton metal for the PMU | "Here is the image, rerun it on your own free account" is a credibility claim no desk machine can make, at $0 recurring. OCI's A1 VMs are KVM with virtio, which this tree already drives; the PMU stage stays Graviton `.metal` by the hour, unblocking milestone 25's deferred `sel4bench`. Costs a UEFI boot path and an ACPI front door, both shared with optional milestone 24 |
 | 89 | NOT-STARTED | Scaleway EM-RV1: a second RISC-V implementation, rented | Real riscv64 silicon (T-Head TH1520, C910 cores) at EUR 0.042/hour, the vendor-quirk cousin of the cpu matrix's `thead-c906` model. A second implementation's answers to the questions QEMU cannot vary (the `satp.ASID` probe above all), independent of the VisionFive 2's arrival. Whether a custom kernel can boot there at all is the first fact to establish |
+| 90 | NOT-STARTED | A guard page under the per-CPU secondary stacks | Milestone 84's instrument found the asymmetry: the boot stack and every thread stack sit above a guard page, and the per-CPU secondaries sit above `.bss`, so a deep secondary silently corrupts kernel data. The high-water assertion is the only tripwire today, and it is `cfg(test)`: a release build has nothing. Move the stacks over a hole and prove the hole by walking the tables |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -6283,3 +6284,32 @@ Sequenced after the VisionFive 2's first results on purpose: the board is bought
 data point, which only becomes interpretable once there is a first. The hourly price makes the
 feasibility probe (stage one) reasonable any time; the rest waits. Nothing here regresses QEMU or
 the board path, same parity rule as everything else (§19).
+
+### 90. A guard page under the per-CPU secondary stacks
+
+**Status: NOT-STARTED.** Raised 2026-08-03, from milestone 84's stack inventory, which found the
+asymmetry rather than assumed the symmetry: the boot stack has a guard page below it, every
+dynamic thread stack has a guard page below it, and the per-CPU secondary stacks are a plain
+array in `.bss` with kernel data directly beneath. A secondary that runs deep does not fault; it
+scribbles.
+
+Milestone 84's high-water assertion (secondary limit 16 KiB against 64 KiB stacks) is the only
+tripwire, and it is honest about its own reach: the instrument is `cfg(test)`, so a release build
+carries no protection at all, and the assertion fires after the damage on the run that finally
+goes deep, not before it. A guard page fails the first overflowing access instead, at the cost of
+one unmapped page of address space per CPU and zero physical frames.
+
+The work: move the secondary stacks out of `.bss` into a dedicated region with an unmapped page
+below each stack, on both ISAs (§19; the mechanism is the same one the boot stack already uses,
+so this is extending an existing pattern, not inventing one). Prove the guard exists by walking
+the page tables in a test and asserting the mapping is absent, not by overflowing a kernel stack
+on purpose: a test that faults the kernel to pass would be a test the suite cannot survive.
+Milestone 84's numbers say the secondaries run at 12% (8.5 KiB of 64), so the guard is insurance,
+not a fix for a near-miss; the honest framing is that this closes the one place where the
+kernel's stack story says "trust the tripwire" instead of "the MMU catches it".
+
+#### Scope note
+
+Sizing stays as it is: 64 KiB per secondary was not the finding, the missing guard was. If the
+region move makes shrinking cheap, record the option; do not take it here. The thread-stack and
+boot-stack guards are prior art in this tree; cite where the pattern lives when extending it.
