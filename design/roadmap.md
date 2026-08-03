@@ -5331,6 +5331,34 @@ which every directory and target string in the tree already agrees with:
 A free win falls out: `kernel/src/user/tests.rs` globs `scripts/qemu-runner*.sh`, which matches both
 files today only because one of them is unsuffixed. It becomes `qemu-runner-*.sh` and is exact.
 
+#### The fixture keeps hyphens and its test file takes underscores, and that is not a slip
+
+At a glance the last row looks inconsistent: `qemu-riscv-virt.dts` becomes `qemu-riscv64-virt.dts`
+while `qemu_riscv_virt.rs` becomes `qemu_riscv64_virt.rs`, two separators in one rename. **The tree is
+18 for 18 on this split already**, so the milestone preserves a convention rather than introducing
+one:
+
+| kind | form | the files |
+|---|---|---|
+| fixtures and data files | hyphens, 8 of 8 | `qemu-riscv-virt.dtb`, `qemu-riscv-virt.dts`, `qemu-virt.dtb`, `qemu-virt-initrd.dtb`, `apple-64m.head`, `apple-64m.tail`, `sgdisk-64m.head`, `sgdisk-64m.tail` |
+| Rust test files | `snake_case`, 10 of 10 | `hostile.rs`, `qemu_virt.rs`, `qemu_riscv_virt.rs`, `qemu_virt_dtb.rs`, `fuzz_seed.rs`, `real_disks.rs`, `mapping.rs`, `allocator.rs`, `table.rs`, `heap.rs` |
+
+Two reasons, and both are better than "the table in CLAUDE.md says so".
+
+**A `.rs` file's stem becomes a Cargo target name.** `cargo test --test qemu_riscv64_virt` is a name
+you type at an identifier, so it takes Rust's convention the same way a crate or a module does.
+Nothing in the tree ever types a fixture's name; the fixture is reached through `include_bytes!`.
+
+**Device tree sources are hyphenated everywhere outside this repository.** Linux's
+`arch/arm64/boot/dts/` is entirely `bcm2711-rpi-4-b.dts` in shape, and `dtc` users read that form
+before they read ours. That is CLAUDE.md's own guard rail about form: a name whose shape a reader
+already knows from outside costs them nothing, which is the same reason we do not respell
+`supply-chain`.
+
+This is the "one rule per domain, and each domain's own" table applied one level down, not a new
+tier. The property it keys on is stable: a file either is a Cargo target or is bytes that a target
+reads.
+
 #### DO NOT rename `user/link.ld`
 
 There are three linker scripts, not two, and the third is a trap. `user/link.ld` is **genuinely
