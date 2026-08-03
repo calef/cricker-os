@@ -821,17 +821,30 @@ fn enter_frame(entry: u64, user_sp: u64, arg0: u64, arg1: u64, arg2: u64) -> ! {
     let top = crate::sched::current_kernel_stack_top()
         .expect("a user thread needs a kernel stack of its own to be trapped onto");
 
-    // Where the trap frame goes. aarch64 puts it at the very top of the kernel stack: its entry
-    // paths are deep enough that this function's own frame is already well below it. RISC-V's TCB
-    // entry path (trampoline -> user_thread_entry -> enter_frame) is shallow, so a frame at the top
-    // would OVERLAP and corrupt this function's stack (the `frame` pointer itself) as `frame.write`
-    // runs, sending the sret to a garbage sepc. Put it just below the live `sp` instead; `sscratch`
-    // is armed to `frame + size`, so every re-entry rebuilds it at the same spot. See
-    // notes/riscv-port.md.
-    #[cfg(target_arch = "aarch64")]
+    // **The frame goes at the very top of the kernel stack, on both ISAs, and it must be ABOVE the
+    // live `sp`.** Everything below `sp` belongs to somebody else: a callee's frame, and on a trap
+    // the 288/272 bytes the vector subtracts from `sp` to build its own frame. An object parked
+    // there is not stored, it is lent.
+    //
+    // RISC-V used to compute this from the live `sp` instead (`(current_sp().min(top) - size) & !15`),
+    // because its TCB entry path is shallow and a frame at the top would have overlapped this
+    // function's own stack. That traded a deterministic overlap for an intermittent one, and
+    // milestone 71 caught it: `current_sp()` is a real call at opt-level 0, so it returned
+    // `sp - 16`, which put the frame at `sp - 304` while `trap.s` builds an S-mode trap frame at
+    // `sp - 288`. The two differ by exactly 16 bytes, so the user frame's `x[2]` (the user `sp`)
+    // sat precisely on the trap frame's `x[0]` slot, which `trap.s` writes as a literal zero. Any
+    // timer interrupt taken between building the frame and consuming it therefore rewrote the whole
+    // frame: user `sp` read 0 every time, `sepc` read whatever `t5` held, and `sstatus` read the
+    // trap's `scause` (whose UXL bits are 0, an illegal U-mode XLEN). When `t5` happened to be 0 the
+    // `sepc == 0` guard in `enter_user` fired; when it did not, the thread `sret`ed to a garbage PC,
+    // died on its first instruction, and never answered whoever was waiting on it, which is a
+    // lost-wakeup hang with no guard message. See notes/riscv-port.md.
+    //
+    // The shallow-path problem the old code was avoiding is real, and the fix for it is a
+    // reservation rather than a moving target: `user_entry_trampoline` (both ISAs) drops `sp` by a
+    // frame's worth before the first Rust frame exists, so this region is off-limits to the entry
+    // path by construction. See arch/*/context.s.
     let slot = top - size_of::<TrapFrame>() as u64;
-    #[cfg(target_arch = "riscv64")]
-    let slot = (crate::arch::current_sp().min(top) - size_of::<TrapFrame>() as u64) & !15;
     let frame = slot as *mut TrapFrame;
 
     // And prove it, rather than trusting the reasoning above. This is one check, once per
@@ -839,6 +852,17 @@ fn enter_frame(entry: u64, user_sp: u64, arg0: u64, arg1: u64, arg2: u64) -> ! {
     assert!(
         mmu::translate(frame as u64).is_some_and(|(_, f)| f.is_writable()),
         "the user's TrapFrame at {frame:p} is not in writable memory",
+    );
+
+    // **The invariant the milestone 71 fault violated**, checked rather than reasoned about. A slot
+    // at or below the live `sp` is one a callee or a trap will build over, and the old RISC-V
+    // placement failed this on the very first user entry. Necessary rather than sufficient: this
+    // function's own frame sits *above* `sp` and is not covered, which is what the trampoline
+    // reservation handles. Cheap enough to keep: one comparison per exec.
+    assert!(
+        slot >= crate::arch::current_sp(),
+        "the user's TrapFrame at {frame:p} is below the live sp: a callee frame or a trap frame \
+         will be built over it",
     );
 
     // SAFETY: `frame` is 16-byte-aligned writable kernel stack (a KernelStack top is page

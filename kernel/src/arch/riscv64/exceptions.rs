@@ -33,6 +33,13 @@ pub struct TrapFrame {
     pub sstatus: u64,
 }
 
+// If this fails, `trap_entry` and `TrapFrame` have drifted apart and the Rust side is about to read
+// the wrong bytes. The aarch64 twin has carried this check since the port; RISC-V went without it
+// until milestone 71, which is when the number stopped being confined to trap.s: the two
+// `addi sp, sp, -288` in trap.s, the `addi sp, sp, 288` in trap_return, and the frame reservation
+// in `user_entry_trampoline` all spell 288 by hand.
+const _: () = assert!(size_of::<TrapFrame>() == 288);
+
 impl TrapFrame {
     /// The syscall number the caller passed. RISC-V `ecall` ABI: register `a7` (`x17`). The portable
     /// dispatcher reads it here so it never names a register directly. This, with `arg`/`set_arg`, is
@@ -161,11 +168,20 @@ fn entered_user_with_no_entry_point(user_sp: u64) -> ! {
     )
 }
 
-/// Diagnostic stub (the watchdog dump's EL0-PC column): the riscv trap frame is not at a fixed
-/// stack offset (it rides below the live sp via sscratch), so return 0 rather than misread it. The
-/// aarch64 dump carries the real PC, which is the ISA the FS hang reproduces on.
-pub fn user_pc(_stack_top: u64) -> u64 {
-    0
+/// **Diagnostic: the U-mode PC of a thread, from the `TrapFrame` at the top of its kernel stack.**
+/// The twin of aarch64's `user_pc`, and the watchdog dump's U-mode-PC column.
+///
+/// This was a stub returning 0 until milestone 71, and the reason it was a stub is the bug that
+/// milestone fixed: the frame did not live at a fixed stack offset, it rode below whatever the live
+/// `sp` happened to be, so there was no address to read. Now it sits at `stack_top - 288` on this
+/// ISA exactly as it does on aarch64, both on first entry and on every trap after it, so the dump
+/// can say *where* a wedged thread is rather than only that it is wedged. Meaningless for a pure
+/// kernel thread, which never builds one.
+pub fn user_pc(stack_top: u64) -> u64 {
+    let frame = (stack_top - size_of::<TrapFrame>() as u64) as *const TrapFrame;
+    // SAFETY: a diagnostic read of the frame `trap_entry` writes at the stack top. Volatile because
+    // the owning thread is running on another core while we read, and this must not be hoisted.
+    unsafe { core::ptr::read_volatile(&raw const (*frame).sepc) }
 }
 
 /// Interrupts routed to a userspace handler (delegated IRQs). Bumped by the trap dispatcher.
