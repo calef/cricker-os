@@ -30,9 +30,12 @@ the 4 OCPUs can be split across at most two instances.
 image that boots via UEFI, so the kernel needs a boot path it does not have (an EFI stub or a
 bootloader stage). Server aarch64 VMs describe the machine with **ACPI, not a device tree**,
 which is a new discovery front door (milestone 60 built the DTB one). None of this is wasted
-motion: the UEFI work is what optional milestone 24 (Virtualization.framework) also needs, and it
-is provider-neutral by construction, so Graviton, Azure and Google's Ampere shapes become
-reachable with the same boot path.
+motion: the UEFI work is shared with optional milestone 24's EFI variant (corrected 2026-08-03;
+an earlier draft said 24 "needs" it, but 24 also has a UEFI-free path via VZ's Linux boot
+protocol, recorded in its file), and it is provider-neutral by construction, so Graviton, Azure
+and Google's Ampere shapes become reachable with the same boot path. One cross-reference the
+stages should honor: if stage 2 finds OCI's serial console is virtio-console rather than a
+16550, the driver it forces is milestone 24's named artifact; build it once.
 
 **The staging that keeps it honest**, each stage a deliverable on its own:
 
