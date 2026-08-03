@@ -269,23 +269,22 @@ mod tests {
         );
     }
 
-    /// **The machine offers more address space than the kernel takes.**
+    /// **The machine offers at least the address space the kernel takes.**
     ///
-    /// QEMU `virt` declares `mmu-type = "riscv,sv57"` and we run Sv39. Recorded as a test rather
-    /// than only a comment because it is the concrete gap between what the hardware is and what the
-    /// kernel assumes, and because the day this stops being true (a board declaring exactly Sv39)
-    /// is the day the assumption stops being free.
+    /// The default QEMU `virt` CPU declares `mmu-type = "riscv,sv57"` and we run Sv39; that gap is
+    /// visible in every boot's summary line. An earlier version of this test asserted the Sv57 half
+    /// too, and the first cpu-matrix run after it merged proved that half was a claim about one
+    /// QEMU model, not about the machine: `sifive-u54` and `rva22s64` both declare exactly Sv39
+    /// (measured from their boot summaries, 2026-08-03), so "wide enough" is the entire truth on
+    /// both. This milestone's own name is "read the machine instead of assuming it"; the assertion
+    /// that remains is the one every conforming machine must satisfy, and the one a board
+    /// declaring less than Sv39 would fail, which is the day this stops being free.
     #[test_case]
-    fn the_declared_mmu_is_wide_enough_and_then_some() {
+    fn the_declared_mmu_is_wide_enough() {
         let mmu = get().mmu;
         assert!(
             mmu >= isa::riscv64::MmuType::Sv39,
             "we are running Sv39 on it"
-        );
-        assert_eq!(
-            mmu,
-            isa::riscv64::MmuType::Sv57,
-            "and QEMU virt offers two levels more"
         );
     }
 
