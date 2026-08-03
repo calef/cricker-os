@@ -135,6 +135,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 69 | BUILT | Split `kernel/src/user.rs` by service | 15,499 lines and **46 top-level modules** in one file: a dozen `*_service` modules and ~34 test modules. The split is nearly free because the boundaries are already `mod` blocks, so moving one to its own file changes no visibility and no API |
 | 70 | BUILT | `swish`'s remaining logic in a crate, host-testable like its siblings | `coremark`, `line_editor` and `compositor` are each a crate holding the logic plus a program holding the IO. `swish` is the largest program that is not, so its dispatch, endowment preview and outcome handling are reachable only through QEMU |
 | 71 | BUILT | The thread-start fault: a user thread dispatched with `sepc` = 0 | Frame placement, as this entry guessed. RISC-V put the frame 16 bytes under where `trap.s` builds an S-mode frame, so any interrupt in the window rewrote it and the user `sp` read the trap frame's hardwired-zero slot. Reproduced deterministically by widening the window; fixed by placing the frame at the stack top on both ISAs |
+| 72 | NOT-STARTED | A lost wakeup that a hundred leaked threads may be causing | Separate from 71 and proven so: it reproduces WITH that fix in the tree, and it hit a PR containing zero lines of code. **Reproduces locally at last**, 1 run in 4 under four host burners. Keeps `cpu matrix` intermittently red on every branch until fixed |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -5129,3 +5130,64 @@ Do not "fix" this by widening a deadline or re-running. Three CI failures on 202
 three different tests on three different CPU models, and only one of them announced itself as this
 fault; the other two were a frame-leak wait and the lost-wakeup watchdog, which are what this bug
 looks like when the guard does not happen to catch it first.
+
+### 72. A lost wakeup that a hundred leaked threads may be causing
+
+**Status: NOT-STARTED.** Raised 2026-08-03, split out of milestone 71 once the two were proved
+separate. The full dump analysis, the reproduction recipe and the occurrence table live in
+notes/scheduler.md under "OPEN: a lost wakeup"; this entry is the plan, not a second copy of the
+evidence.
+
+#### Why it is its own milestone
+
+It was briefly conflated with the thread-start fault, and the two pieces of evidence that separate
+them are worth repeating because each rules out a different thing:
+
+- It hit **PR #21, which changed two markdown files and zero lines of code.** That rules out any
+  recent milestone as the cause.
+- It hit **PR #23, the branch that fixes the frame fault**, with the milestone-71 guard silent. That
+  rules out the frame fault.
+
+The conflation was reasonable while it lasted: the frame fault has a silent face, so a corrupted
+thread usually dies quietly and its waiters hang, which looks exactly like this. What breaks the
+resemblance is the path. This test's child is started through the **TCB** path, which runs
+`enter_frame` with interrupts masked and cannot take that clobber.
+
+#### It reproduces now, which changes what this milestone is
+
+Four `sh -c 'while :; do :; done'` burners on an 8-core host, then `cargo xtask test --arch riscv64`
+in a loop: **one failure in four.** Quiet, the same suite ran clean six times running. Until
+2026-08-03 this bug had never been seen outside CI, so the work here is debugging rather than hunting.
+
+#### The lead, and it is not the wakeup
+
+The dump says the suite arrives at this test holding **101 threads and 109 endpoints**, nearly all
+blocked, most of them leaked subjects from *earlier* tests rather than participants in this one. Many
+endpoints read `senders=0 receivers=1`, a thread waiting for something nobody will send; many others
+read `pending=N` up to 8, messages queued for a receiver that no longer exists. Every thread has
+`wake_pending=false` and `on_cpu=false`, so this is **not** the wake-racing-switch-out handoff that
+`finish_switch` exists to complete, which is the first thing anyone would suspect and it is already
+ruled out.
+
+**So the first question is the accumulation, not the wakeup.** A suite that reaches this test with a
+hundred stale threads and a hundred stale endpoints is a different machine from the one the test was
+written against, and the failure comes at the end of a run rather than the start. Whether the leak
+causes the lost wakeup or merely correlates with it is the open question, and answering it in that
+order is likely cheaper than instrumenting the wakeup path directly.
+
+#### An instrument that did not exist yesterday
+
+RISC-V's `user_pc` returned 0 as a stub **because the trap frame had no fixed address to read from**.
+Milestone 71 gave it one, so every hang dump on this ISA now carries real U-mode PCs where it carried
+zeros. The next person to look at this has evidence the last person did not.
+
+#### Scope note
+
+This keeps `cpu matrix` intermittently red on every branch until it is fixed, so a red matrix run is
+currently not a signal about the branch it appears on. That is a standing tax on the repository and
+the main argument for taking this before the board prerequisites (milestones 60 and 57), even though
+the board lands ~2026-08-21.
+
+Do not fix it by widening a deadline or by retrying. The watchdog it trips is the lost-wakeup
+heartbeat, which fires only when **every core is idle and every thread is blocked**; there is no
+progress being made slowly for a longer timeout to rescue.

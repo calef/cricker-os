@@ -5053,6 +5053,89 @@ sentence checkable at each site"**. It was, at 58 byte-identical panic-handler t
 `invoke` calls whose contract places no obligation on the caller at all. It was not, in a test module
 where the pointers differ in what they are and when they are queued.
 
+## 62. Nothing of yours lives below the live stack pointer
+
+Milestone 71 spent a day on a bug whose whole content is one sentence: **an object parked below the
+live `sp` is not yours.** Everything under `sp` belongs to a callee's frame, or to the trap vector,
+which subtracts 288 bytes on RISC-V and 272 on aarch64 to build its own frame the instant an
+interrupt arrives.
+
+The kernel placed a user thread's `TrapFrame` there on purpose:
+
+```rust
+let slot = (crate::arch::current_sp().min(top) - size_of::<TrapFrame>() as u64) & !15;
+```
+
+and the comment above it explained why, convincingly: RISC-V's TCB entry path is shallow, so a frame
+at the stack top would have overlapped the placing function's own frame. Both halves of that
+reasoning were right. The conclusion was still wrong, because "below `sp`" is not a free region, it
+is the region with the most contention in the kernel.
+
+**What made it hard to see is worth more than the rule.** `current_sp()` is a real call at
+opt-level 0 with a 16-byte frame, so it returned `sp - 16` and the user frame landed 16 bytes below
+where the trap frame would be built. Sixteen bytes is two register slots, so every field read as a
+different field of the trap frame:
+
+| user field | aliases | reads as |
+|---|---|---|
+| `x[2]`, the user `sp` | trap `x[0]` | **literally 0**, because `trap_entry` does `sd zero, 0*8(sp)` |
+| `sepc` | trap `x[30]` | `t5`, which is zero only sometimes |
+| `sstatus` | trap `scause` | `UXL = 0`, an illegal U-mode XLEN |
+
+That table is why the fault presented as `user sp 0x0000000000000000` **exactly** rather than as
+garbage, and it is why the guard added to catch it saw only a third of the cases: it tested `sepc`,
+which aliased a register that happened to be nonzero most of the time. **A guard on one field of a
+corrupted structure reports a fraction of the corruption**, and its silence is not evidence.
+
+### The rule
+
+A structure the hardware will return to lives **above** the live `sp`, at a fixed offset from the
+stack top, and the space is reserved so no frame can be built over it. Fixed, because an address
+computed from `sp` moves with call depth and with optimization level, which turns a placement bug
+into an intermittent one that reproduces on CI and never locally.
+
+The corollary, learned twice on the way: **instrumentation near a stack boundary must be call-free.**
+The first two probes written to reproduce this were `spin_loop()` and `write_volatile`, both real
+calls at opt-level 0, and both reproduced their own frames clobbering the trap frame rather than the
+defect under test. Check the disassembly for `jalr` in the hot path before trusting a probe.
+
+## 63. The line between a program and its crate is "does this need a capability"
+
+Milestone 70 lifted `swish`'s logic into `crates/swish` and had to decide, function by function, what
+went. The rule that fell out is the one to reuse: **logic that needs no capability goes in the crate;
+anything that moves or exercises authority stays in the program.**
+
+That is not a restatement of "pure versus impure". Matching a glob against a directory listing is
+pure, but *reading* the directory needs a capability, so `expand` takes the directory read as a
+callback and the matching moves out. The seam is authority, not IO, and in a capability system those
+are the same question asked precisely.
+
+Applied, it moved `route`, the pattern and expansion decisions, and every sentence the prompt prints,
+with 33 host tests behind them. It left `builtin`, `dispatch_one`, `run`, `spawn`, `pipeline` and the
+file sinks, all of which are capability movement. **The test is not whether a function is testable in
+principle but whether the crate would have to be handed authority to test it.**
+
+`coremark`, `line_editor`, `compositor` and now `swish` are each a crate and a program sharing a
+name, which says exactly this: the crate is that program's logic, and the program is its authority.
+
+## 64. A per-file coverage number counts where tests are written, not what they reach
+
+`user/src/swish.rs` had **zero** `#[cfg(test)]` blocks, and that was first reported here as "the
+shell is untested". It was not. The shell was covered by ~28 QEMU integration cases driving the real
+binary, and by 93 host tests in `crates/grant_plan`, which already held its parsing and navigation.
+
+0% was a true fact about a **file** and a false claim about a **component**, and the milestone it
+prompted came out smaller and differently shaped once that was checked.
+
+This matters here more than in most codebases, because this project deliberately splits logic from
+IO across crate boundaries (§63 above). That split is what makes per-file coverage misleading: the
+tests live in the crate, the file that has none is the one holding the syscalls, and a metric that
+counts per file will always report the healthy arrangement as the broken one.
+
+Coverage is still worth measuring. What is not worth doing is reading a per-file number as a
+statement about a subsystem without first asking which file the tests would be in if the design were
+right.
+
 ## Reading
 
 - **The seL4 manual**, and Klein et al., *seL4: Formal Verification of an OS Kernel* (SOSP'09)
