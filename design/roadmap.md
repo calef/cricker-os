@@ -141,7 +141,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 75 | NOT-STARTED | Who may read the cycle counter, and by what authority | Opening `PMCCNTR_EL0` to EL0 is not the same decision as opening `CNTVCT_EL0` was: it is **~160x finer** (~0.25 ns against ~41 ns), and the generic timer's coarseness was doing real security work. A capability is the answer this OS already has, and notes/abi.md anticipated it |
 | 76 | NOT-STARTED | Split the roadmap: `design/roadmap/README.md` as index, one file per milestone | 5,375 lines and 64 blocks in one file. FOUR structural defects landed today that the gate reported clean, including **eight milestone blocks filed under an essay about seL4**. A split makes those impossible rather than detectable, and removes the conflict #19 and #20 hit. Also widens the citation check tree-wide (free: zero unresolved today) and backfills milestones 1 to 11 from the first commit, dropping the `n >= 12` floor |
 | 77 | NOT-STARTED | `crates/paging`: a module per ISA, a type per page-table configuration | `Aarch64` names an ISA while describing a configuration, beside `Sv39` which names one properly. A second aarch64 configuration is expected, so the fix is room for siblings on both sides rather than a rename. **Waits for that configuration**, because it names the axis |
-| 78 | NOT-STARTED | The load-sensitive assertions, and the three that measure the wrong thing | Five distinct failures in one day on PRs that changed no code, two of them documentation only. **Three report a NEGATIVE discrepancy**, so they are not slow-machine timeouts: they are waits written against something wider than the property. 39 such sites across 7 files |
+| 78 | NOT-STARTED | The load-sensitive assertions, and the three that measure the wrong thing | **Six** distinct failures in one day on PRs that changed no code, two of them documentation only, and one reproduces off CI. Three report a NEGATIVE discrepancy, so they are not slow-machine timeouts. For the two that ARE timing, the answer is likely the icount instrument this project already owns, not a wider bound |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -5645,10 +5645,16 @@ one that was a real bug. What is left is a family, and it is not one problem.
 | address-space frames | `user/tests.rs:1746` | "**-52** frames did not come back", and separately "-19" |
 | timer drift | `arch/riscv64/timer.rs:254` | ticks within one period either way |
 | placement probe | `smp.rs:343` | 60 s wait for work to run where it was placed |
+| handler latency | `arch/aarch64/timer.rs:323` | `left: 3, right: 2`, missed ticks rose during a quiet window |
 
 `notes/cpu-models.md` already records three of these as load-sensitive with the evidence that settles
 it, including the case where the control model `rv64` failed too, which is what proves the failures
 are not model-specific.
+
+**One of them reproduces off CI.** On 2026-08-03 a local `script/test` on an aarch64 dev machine hit
+`user/tests.rs:1746` with "**-19** frames did not come back", the same value the milestone-71 lane saw.
+That matters because it removes the easy explanation: this family is not an artefact of GitHub's
+runners, and a quiet machine is not a defence against it.
 
 #### The split that makes this two problems, not one
 
@@ -5666,6 +5672,27 @@ an earlier test completing late, or a thread the baseline counted exiting during
 The 72 lane named this shape, and `notes/riscv-parity-scope.md` apparently records it twice already.
 Milestone 72's own postscript is the clearest instance: removing a destructive probe changed which
 threads were alive at a later test's baseline, and the count moved.
+
+#### The instrument this project already owns
+
+**The test runner passes no `-icount`. Only the bench does.** So in `script/test`, guest `CNTVCT_EL0`
+follows host time, and a QEMU process the host descheduled makes the guest observe a missed deadline
+that says nothing about our handler. The two timing assertions cannot distinguish "our code is slow"
+from "the emulator was not running", and no margin fixes that: widening changes how often you notice,
+not what is being measured.
+
+Under `-icount shift=0,sleep=off`, which the bench already uses, **virtual time is a deterministic
+function of instructions executed**, so host scheduling cannot advance it at all. That removes the
+confound rather than tolerating it.
+
+So the likely answer for the two genuinely-timing assertions is **not a wider bound but a different
+instrument**: move the property to the icount tripwire, where "the handler takes fewer than N
+instructions" is a claim a contended runner cannot falsify. That would make them **stronger** than
+they are today, not weaker, which is the test of whether this milestone did its job.
+
+Worth checking before committing to it: icount is slower and changes what the suite measures, so this
+may be right for the timer assertions and wrong for the placement probe, whose subject is genuinely
+cross-core wall clock. Decide per assertion, as below.
 
 #### What the fix is not
 
