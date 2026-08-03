@@ -1269,6 +1269,119 @@ mod tests {
         assert!(a < b && b < c);
         assert!(a.to_unix() < b.to_unix() && b.to_unix() < c.to_unix());
     }
+
+    // The tests from here down each pin something milestone 85's mutation run showed nothing
+    // pinned. See notes/mutation-testing.md.
+
+    /// The parser's edges the refusal table above did not reach: a fraction that runs off the end
+    /// of the input (the digit scan's bound could become `<=` and read one past), an offset whose
+    /// colon is elsewhere than checked (the `expect` index could become `i - 3`, which lands on the
+    /// seconds colon and is ':' in EVERY well-formed input, so garbage like `+05300` parsed), and
+    /// the last legal offset minute.
+    #[test]
+    fn parser_edges_the_mutation_run_found() {
+        assert_eq!(
+            DateTime::parse_rfc3339("2026-07-30T12:34:56.5"),
+            Err(Error::Syntax),
+            "input ends inside the fraction"
+        );
+        assert_eq!(
+            DateTime::parse_rfc3339("2026-07-30T12:34:56+05300"),
+            Err(Error::Syntax),
+            "six bytes of offset, colon in the wrong place"
+        );
+        let ok = DateTime::parse_rfc3339("2026-07-30T12:34:56+05:59").unwrap();
+        assert_eq!(ok.offset().minutes(), 5 * 60 + 59, ":59 is the last legal offset minute");
+    }
+
+    /// A known Sunday, absolutely, not relative to another weekday: the cycle test above proves
+    /// the weekdays rotate, and rotation is preserved by deleting one match arm and letting the
+    /// wildcard eat it.
+    #[test]
+    fn the_epoch_week_lands_on_the_right_days() {
+        let sunday = Civil::new(1970, 1, 4, 0, 0, 0).unwrap();
+        assert_eq!(sunday.weekday(), Weekday::Sunday);
+        let epoch = Civil::new(1970, 1, 1, 0, 0, 0).unwrap();
+        assert_eq!(epoch.weekday(), Weekday::Thursday);
+    }
+
+    /// Zero is "0": the sign branch in the Unix format is `value < 0`, and `<=` would print "-0",
+    /// which is not a timestamp anything reads back.
+    #[test]
+    fn unix_zero_formats_without_a_sign() {
+        let epoch = Civil::new(1970, 1, 1, 0, 0, 0).unwrap();
+        assert_eq!(epoch.format(Format::Unix).as_str(), "0");
+    }
+
+    /// `Formatted` speaks for itself through three impls, and each has to say the same thing: a
+    /// replaced body returning "" or Ok(()) would print nothing, silently, everywhere a timestamp
+    /// is shown.
+    #[test]
+    fn formatted_says_the_same_thing_three_ways() {
+        use core::fmt::Write;
+
+        /// This crate is `no_std` with no allocator even under test, so catching what `{}` and
+        /// `{:?}` actually emit takes a fixed buffer that implements `fmt::Write`.
+        struct Sink {
+            buf: [u8; 64],
+            len: usize,
+        }
+        impl Sink {
+            fn new() -> Sink {
+                Sink { buf: [0; 64], len: 0 }
+            }
+        }
+        impl Write for Sink {
+            fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                let end = self.len + s.len();
+                self.buf[self.len..end].copy_from_slice(s.as_bytes());
+                self.len = end;
+                Ok(())
+            }
+        }
+        impl Sink {
+            fn as_str(&self) -> &str {
+                core::str::from_utf8(&self.buf[..self.len]).unwrap()
+            }
+        }
+
+        let f = Civil::new(2026, 7, 30, 12, 34, 56)
+            .unwrap()
+            .format(Format::Rfc3339);
+        assert_eq!(f.as_str(), "2026-07-30T12:34:56Z");
+        assert_eq!(f.as_ref(), f.as_str());
+
+        let mut shown = Sink::new();
+        write!(shown, "{f}").unwrap();
+        assert_eq!(shown.as_str(), "2026-07-30T12:34:56Z");
+
+        let mut debugged = Sink::new();
+        write!(debugged, "{f:?}").unwrap();
+        assert_eq!(debugged.as_str(), "\"2026-07-30T12:34:56Z\"");
+    }
+
+    /// Every refusal has words, and its own words: two variants sharing a message would make a
+    /// refusal ambiguous at the one place it is read, a shell with no allocator.
+    #[test]
+    fn every_error_has_its_own_message() {
+        const ALL: &[Error] = &[
+            Error::OutOfRange,
+            Error::BadMonth,
+            Error::BadDay,
+            Error::BadHour,
+            Error::BadMinute,
+            Error::BadSecond,
+            Error::BadOffset,
+            Error::LeapSecond,
+            Error::Syntax,
+        ];
+        for (i, a) in ALL.iter().enumerate() {
+            assert!(!a.as_str().is_empty());
+            for b in &ALL[i + 1..] {
+                assert_ne!(a.as_str(), b.as_str());
+            }
+        }
+    }
 }
 
 /// **The machine-checked half** (`script/verify`, notes/verification.md).

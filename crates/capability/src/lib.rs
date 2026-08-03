@@ -693,4 +693,49 @@ mod tests {
         assert_eq!(cs.insert(cap), Ok(1));
         assert_eq!(cs.insert(cap).err(), Some(Error::NoFreeSlot));
     }
+
+    /// The rights bits are the syscall wire format: delegation names them in a register, and
+    /// `from_bits` is what turns the register back into authority. Milestone 85's mutation run
+    /// showed the exact values were pinned nowhere (WRITE's `1 << 1` could become `1 >> 1`, zero,
+    /// and delegating WRITE would delegate nothing), and `from_bits` could OR instead of mask, so
+    /// undefined bits became defined rights.
+    #[test]
+    fn rights_bits_are_the_wire_format() {
+        assert_eq!(
+            [Rights::READ.bits(), Rights::WRITE.bits(), Rights::GRANT.bits()],
+            [1, 2, 4]
+        );
+        // Undefined bits are dropped, never reinterpreted.
+        assert_eq!(Rights::from_bits(!Rights::ALL.bits()), Rights::NONE);
+        // Defined bits come back as exactly the rights they name.
+        assert_eq!(
+            Rights::from_bits(0b101),
+            Rights::READ.union(Rights::GRANT)
+        );
+        // Union is a union, not a toggle: adding a right twice cannot remove it.
+        assert_eq!(Rights::READ.union(Rights::READ), Rights::READ);
+    }
+
+    /// `insert_at` is how a supervisor reserves the fault slot, so what matters is that the
+    /// capability lands in THAT slot, the slot comes back as the receipt, and an occupied slot
+    /// refuses rather than replaces (two things must never share the slot the kernel reads at
+    /// START).
+    #[test]
+    fn insert_at_fills_exactly_the_named_slot() {
+        let mut cs: CSpace<Obj, 4> = CSpace::new();
+        let cap = Cap {
+            object: Obj::Frame(7),
+            rights: Rights::READ,
+        };
+        assert_eq!(cs.insert_at(2, cap), Ok(2));
+        assert_eq!(cs.get(2).unwrap().object, Obj::Frame(7));
+        assert!(!cs.is_empty());
+        // The other slots are still empty, so it did not spray.
+        assert_eq!(cs.get(0).err(), Some(Error::NoSuchSlot));
+        // Occupied refuses; out of range is a different answer, as everywhere.
+        assert_eq!(cs.insert_at(2, cap).err(), Some(Error::NoFreeSlot));
+        assert_eq!(cs.insert_at(9, cap).err(), Some(Error::NoSuchSlot));
+        // len is the table's size in slots, not its population.
+        assert_eq!(cs.len(), 4);
+    }
 }
