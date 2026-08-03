@@ -131,7 +131,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 65 | NOT-STARTED | A secrets service: hold the key, expose the operation, never the key | NTLMv2 does not verify a presented secret, it **computes with a key**, so §54's verifier shape does not fit it. Generalises the credentialer into a software HSM. Blocks milestone 55 |
 | 66 | NOT-STARTED | Vaultwarden: somebody else's real application, running here | the north star for "runs real workloads". Names the gaps concretely rather than aspirationally: no TCP **listen or accept** in the socket contract, threads mostly stubs, most of `std::fs` unsupported, no async runtime, no TLS, and SQLite is a C library. Largest single item on this roadmap |
 | 67 | NOT-STARTED | `swish` the language: quoting, sequencing, and exit status | `swish` is an interactive shell without control flow. Quoting is the one that is a correctness gap rather than a convenience: **a filename with a space is currently unnameable** |
-| 68 | PARTIAL | Code-quality gates: one lint policy, and the lints that lost | Import order, `[workspace.lints]`, dependency direction, unused dependencies, spelling. Three lints were adopted, measured and **removed** on the evidence. `undocumented_unsafe_blocks` is now a GATE: all 205 undocumented blocks were read and commented. The doc-example half is scoped but NOT done: 5 doctests in the whole host workspace |
+| 68 | PARTIAL | Code-quality gates: one lint policy, and the lints that lost | Import order, `[workspace.lints]`, dependency direction, unused dependencies, spelling. Three lints were adopted, measured and **removed** on the evidence. `undocumented_unsafe_blocks` is now a GATE: all 205 undocumented blocks were read and commented. Doc examples went 5 -> 23 across nine crates, which is a start and not the standard; `missing_docs` is still not adoptable |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -4854,8 +4854,18 @@ Reasoning about a lint's description predicts none of these.
 Both remaining halves are real engineering, not mechanical, and a first attempt at automating one of
 them was reverted for producing exactly the wrong artefact.
 
-- **Doc examples**, below. The unsafe half is DONE and is now a gate; see "What closing the unsafe
-  half taught" further down.
+- **Doc examples.** 5 doctests in the whole host workspace became 23, and nine crates went from
+  0.0% example coverage to somewhere between 2.4% and 25%. That is a real start and explicitly not
+  the FreeBSD standard CLAUDE.md sets: **28 host crates still have no example at all.** The crates
+  done first were the ones where an example carries an argument rather than a signature (`capability`
+  showing that intersection is the only transfer operation, `measured_boot` showing that an
+  unmeasured name fails CLOSED, `regions` showing the two refusals that are not about the budget).
+  The ones left are mostly parsers that need a real fixture to demonstrate (`elf`, `dtb`,
+  `crickerfs`, `gpt`), which is more work per example, not less valuable.
+- **`missing_docs`** is still not adoptable, and the number says why: item coverage runs from
+  **36.4%** (`socket_proto`) to 100%, with `pci` at 48.9% and `intrusive` at 50%. Adding it to
+  `[workspace.lints]` is a commitment to write several hundred item docs first, which is §61's rule
+  and not a formality.
 - **Doc examples: 5 doctests in the entire host workspace**, and `rustdoc --show-coverage` reports
   0.0% examples on every crate sampled (`ipc` 94.4% of items documented, 0.0% examples; `capability`
   67.6%/0.0%). CLAUDE.md sets the FreeBSD standard explicitly ("a page without a worked example has

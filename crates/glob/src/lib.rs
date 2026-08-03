@@ -157,6 +157,31 @@
 //! assert_eq!(literal(br"a\*b", &mut buf), Some(&b"a*b"[..]));
 //! assert_eq!(literal(b"*.txt", &mut buf), None); // it has magic; expand it instead
 //! ```
+//!
+//! # Examples
+//!
+//! ```
+//! use glob::{matches, has_magic};
+//!
+//! assert!(matches(b"*.rs", b"main.rs"));
+//! assert!(!matches(b"*.rs", b"main.c"));
+//! assert!(matches(b"src/?????.rs", b"src/hello.rs"));
+//! assert!(matches(b"[abc]at", b"cat"));
+//!
+//! // A pattern with no metacharacters is just a name, which callers use to skip the walk.
+//! assert!(has_magic(b"*.rs"));
+//! assert!(!has_magic(b"Cargo.toml"));
+//! ```
+//!
+//! A leading dot is special, the way a shell user expects, and [`matches_with`] is how you opt out:
+//!
+//! ```
+//! use glob::{matches, matches_with, Dot};
+//!
+//! assert!(!matches(b"*", b".config"));                       // `*` does not list dotfiles
+//! assert!(matches(b".*", b".config"));                       // an explicit dot does
+//! assert!(matches_with(b"*", b".config", Dot::Ordinary));    // ... unless you ask otherwise
+//! ```
 
 #![no_std]
 

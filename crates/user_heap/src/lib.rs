@@ -20,6 +20,50 @@
 //! `Layout`, so the pair always agrees on how many bytes a pointer owns without storing it
 //! anywhere. Front padding for over-aligned requests lands on the same grid, so every remainder
 //! is itself a legal free block and no sliver is ever silently leaked.
+//!
+//! # Examples
+//!
+//! The heap manages ranges someone else donates; it never maps a page. That split is what lets an
+//! example run on the host at all:
+//!
+//! ```
+//! use core::alloc::Layout;
+//! use user_heap::{Heap, MIN_ALIGN, effective_size};
+//!
+//! // A 16-aligned arena. On a real process this would be pages mapped out of the untyped budget.
+//! #[repr(align(4096))]
+//! struct Arena([u8; 4096]);
+//! let mut arena = Box::new(Arena([0; 4096]));
+//!
+//! let mut h = Heap::new();
+//! // SAFETY: the arena is exclusively ours and outlives `h`.
+//! unsafe { h.add_region(arena.0.as_mut_ptr(), arena.0.len()) };
+//! assert_eq!(h.free_bytes(), 4096);
+//! assert_eq!(h.block_count(), 1);
+//!
+//! let p = h.alloc(Layout::from_size_align(100, 8).unwrap()).unwrap();
+//! assert!(p.as_ptr().addr().is_multiple_of(MIN_ALIGN));
+//!
+//! // SAFETY: `p` came from this heap with this layout, and is freed once.
+//! unsafe { h.dealloc(p, Layout::from_size_align(100, 8).unwrap()) };
+//!
+//! // Everything freed coalesces back to one block. That is the invariant, not a nicety:
+//! // without it a long-lived process fragments to death.
+//! assert_eq!(h.block_count(), 1);
+//! assert_eq!(h.free_bytes(), 4096);
+//! ```
+//!
+//! Sizes round up to the 16-byte grid, which is what makes the allocator headerless: `alloc` and
+//! `dealloc` both recompute the same number from the `Layout`, so nothing has to be stored.
+//!
+//! ```
+//! use core::alloc::Layout;
+//! use user_heap::{MIN_ALIGN, effective_size};
+//!
+//! assert_eq!(effective_size(Layout::from_size_align(1, 1).unwrap()), MIN_ALIGN);
+//! assert_eq!(effective_size(Layout::from_size_align(16, 1).unwrap()), 16);
+//! assert_eq!(effective_size(Layout::from_size_align(17, 1).unwrap()), 32);
+//! ```
 
 #![no_std]
 

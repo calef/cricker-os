@@ -24,6 +24,21 @@
 //! invalidates by ASID (`tlbi aside1is`) in `AddressSpace::drop`, *before* calling
 //! [`free`](Allocator::free). This crate proves the numbers are managed soundly; the flush is
 //! the kernel's half of the contract, stated at the call site.
+//!
+//! # Examples
+//!
+//! ```
+//! use asid::Allocator;
+//!
+//! let mut a = Allocator::new();
+//! let first = a.alloc().expect("a fresh allocator has one to give");
+//! let second = a.alloc().expect("and another");
+//! assert_ne!(first, second, "two live address spaces never share an ASID");
+//!
+//! // Freeing puts it back in circulation.
+//! a.free(first);
+//! assert!(a.alloc().is_some());
+//! ```
 
 #![cfg_attr(not(test), no_std)]
 

@@ -26,6 +26,39 @@
 //! are the published FIPS 180-4 vectors and not self-consistency checks.
 //!
 //! See notes/trusted-init.md and DECISIONS §22.
+//!
+//! # Examples
+//!
+//! ```
+//! use measured_boot::sha256;
+//!
+//! // The FIPS 180-4 vector for "abc", which is what pins this implementation.
+//! let d = sha256(b"abc");
+//! assert_eq!(
+//!     d[..4],
+//!     [0xba, 0x78, 0x16, 0xbf],
+//! );
+//! // The empty input is the other classic vector, and the one an off-by-one padding bug fails.
+//! assert_eq!(sha256(b"")[..4], [0xe3, 0xb0, 0xc4, 0x42]);
+//! ```
+//!
+//! Verification is a lookup by name and a comparison, and the two ways it can fail are distinct
+//! on purpose: a component nobody measured is a different problem from one that changed.
+//!
+//! ```
+//! use measured_boot::{Measurement, sha256, verify, VerifyError};
+//!
+//! let root = [Measurement { name: "init", digest: sha256(b"the real init") }];
+//!
+//! assert!(verify(&root, "init", b"the real init").is_ok());
+//! assert_eq!(verify(&root, "init", b"a tampered init"), Err(VerifyError::Mismatch));
+//!
+//! // A name the trust root says nothing about is a REFUSAL, not a pass. An empty or stale root
+//! // must fail closed, or the check evaporates the first time someone skips the build step that
+//! // fills it in.
+//! assert_eq!(verify(&root, "stowaway", b"anything"), Err(VerifyError::Unmeasured));
+//! assert_eq!(verify(&[], "init", b"the real init"), Err(VerifyError::Unmeasured));
+//! ```
 
 #![no_std]
 

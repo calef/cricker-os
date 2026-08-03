@@ -15,6 +15,37 @@
 //! Allocation-free since milestone 14 phase B.1: the table is a const-generic array, so a
 //! cspace's size is part of its type and creating one cannot touch a heap. The kernel picks the
 //! size once (16, in kernel/src/cap.rs); the tests and proofs pick small ones.
+//!
+//! # Examples
+//!
+//! Rights are a lattice, and the only operation that ever runs on the transfer path is
+//! **intersection**: a capability you pass on can never carry more than you held. That is the
+//! monotonicity the whole model rests on, so it is what an example should show.
+//!
+//! ```
+//! use capability::Rights;
+//!
+//! let held = Rights::READ.union(Rights::WRITE);
+//! assert!(held.allows(Rights::READ));
+//! assert!(!held.allows(Rights::GRANT));
+//!
+//! // Handing it on with a mask can only ever narrow it.
+//! let passed_on = held.intersect(Rights::READ.union(Rights::GRANT));
+//! assert_eq!(passed_on, Rights::READ);
+//! assert!(passed_on.is_subset_of(held));
+//! ```
+//!
+//! There is no operation that widens, which is worth stating as code because it is a claim about
+//! what is *absent*:
+//!
+//! ```
+//! use capability::Rights;
+//!
+//! let read_only = Rights::READ;
+//! // The best you can do with ALL on the other side is get back what you already had.
+//! assert_eq!(read_only.intersect(Rights::ALL), read_only);
+//! assert!(!read_only.intersect(Rights::ALL).allows(Rights::WRITE));
+//! ```
 
 #![no_std]
 
