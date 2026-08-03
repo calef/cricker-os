@@ -362,10 +362,12 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
     // kernel turns into a kill is the honest signal if one ever does, and it fails the waiting test
     // rather than reporting a status nobody computed.
     #[cfg(target_arch = "aarch64")]
+    // SAFETY: `brk` traps; the kernel turns a trap from userspace into a kill.
     unsafe {
         core::arch::asm!("brk #0", options(nostack, nomem));
     };
     #[cfg(target_arch = "riscv64")]
+    // SAFETY: `ebreak` traps; the kernel turns a trap from userspace into a kill.
     unsafe {
         core::arch::asm!("ebreak", options(nostack, nomem))
     };

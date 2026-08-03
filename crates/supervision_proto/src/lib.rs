@@ -317,10 +317,12 @@ pub fn tcb_start(tcb: u64, a0: u64, a1: u64, a2: u64) -> bool {
 /// the pc and the process dies where the mistake was.
 pub fn fail() -> ! {
     #[cfg(target_arch = "aarch64")]
+    // SAFETY: `brk` traps; the kernel turns a trap from userspace into a kill.
     unsafe {
         core::arch::asm!("brk #0", options(nostack, nomem));
     };
     #[cfg(target_arch = "riscv64")]
+    // SAFETY: `ebreak` traps; the kernel turns a trap from userspace into a kill.
     unsafe {
         core::arch::asm!("ebreak", options(nostack, nomem))
     };

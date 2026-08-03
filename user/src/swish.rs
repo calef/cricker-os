@@ -2610,10 +2610,12 @@ fn line<'a>(buf: &'a mut [u8; 32], verb: &[u8], name: &([u8; 16], usize)) -> &'a
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     #[cfg(target_arch = "aarch64")]
+    // SAFETY: `brk` traps; the kernel turns a trap from userspace into a kill.
     unsafe {
         core::arch::asm!("brk #0", options(nostack, nomem));
     };
     #[cfg(target_arch = "riscv64")]
+    // SAFETY: `ebreak` traps; the kernel turns a trap from userspace into a kill.
     unsafe {
         core::arch::asm!("ebreak", options(nostack, nomem))
     };
