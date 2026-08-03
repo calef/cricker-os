@@ -1,6 +1,7 @@
 # 76. Split the roadmap: `design/roadmap/README.md` as index, one file per milestone
 
-**Status: NOT-STARTED.** Raised 2026-08-03 by Chris, after a discussion of whether the roadmap should
+**Status: BUILT (2026-08-03, the day it was raised; the postscript below says why it jumped the
+queue).** Raised 2026-08-03 by Chris, after a discussion of whether the roadmap should
 move to GitHub issues at all. It should not, and the reasons are recorded below because the question
 will come back. What it should do is stop being one 5,375-line file.
 
@@ -131,3 +132,33 @@ outside the roadmap link to `design/roadmap.md`, including `README.md`, `SECURIT
 `DECISIONS.md`, several crates and several design notes; every one must land on the index. Relative links inside the blocks point
 at `../notes/`, which becomes `../../notes/` one directory down, and `script/lint` already checks that
 every relative markdown link resolves, so a missed one fails loudly rather than quietly.
+
+## Postscript: why it jumped the queue, and what the build found (2026-08-03)
+
+Raised in the morning, bumped to the front the same day, Chris's call. The single file did not
+wait for the split: nine milestone entries landed in it in one day (a postscript to 78, and 79
+through 87), it passed 6,200 lines, and it produced repeated merge conflicts between same-day
+pull requests (#46 against #47, then the #52/#53 supersede sequence), which is exactly the
+conflict class this entry's own rationale predicted. The entry was still NOT-STARTED while its
+motivating failure was recurring, so it stopped queueing.
+
+The build held to the scope note, with the differences recorded:
+
+- The proof obligation was met in the strong form: a reassembly script inverted every mechanical
+  adjustment (heading promotion, inserted status lines, deepened links, the phrase fixes where
+  prose named the old single-file geometry, the linkified table) and reproduced the pre-split
+  file byte for byte, all 468,082 bytes, before the old file was deleted.
+- "Twenty-nine files link to the old path" was undercounted the way tree-spanning counts usually
+  are: the merged tree had 44 live references across 34 files. Taken from grep at build time, per
+  CLAUDE.md.
+- The backup-server ladder essay was a fourth interleaved essay this entry's list of three
+  missed (it is `###`-level, so the survey of `##` headings did not see it); it moved to
+  `design/` with the others.
+- Every milestone file now opens with a machine-checked `**Status:` line mirroring its index
+  row, which is the agreement check the gate needed; where an old block narrated status in prose,
+  the prose stays as narrative below the line.
+
+The status-agreement check, the one-milestone-per-file checks, and the tree-wide citation check
+were each proven against injected defects (a pasted `### N.` block, a second H1, a flipped
+status, a stray file, a rowless file, two files claiming one number, a citation to a milestone
+that does not exist): seven injections, seven failures reported, none missed.
