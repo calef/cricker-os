@@ -14,7 +14,7 @@
 #      degradation the CRICKER_DISK check exists to prevent.
 #
 #   2. *Is it the exact pinned version?* A warning. Benchmark numbers are icount instruction counts,
-#      so a different QEMU can legitimately shift them, and `bench/baseline.txt` was recorded against
+#      so a different QEMU can legitimately shift them, and `bench/baseline-aarch64.txt` was recorded against
 #      the pinned one. But Homebrew cannot install an arbitrary older QEMU, so demanding an exact
 #      match locally would be a rule nobody could follow. Loud and non-fatal is the honest setting.
 #
@@ -54,7 +54,7 @@ fi
 if [ "$have" != "$want" ]; then
     echo "qemu-check: WARNING: QEMU $have on PATH, but .qemu-version pins $want."
     echo "  Every device this project needs is present, so the tests will run."
-    echo "  What can differ is the BENCHMARKS: bench/baseline.txt holds icount instruction counts"
+    echo "  What can differ is the BENCHMARKS: bench/baseline-aarch64.txt holds icount instruction counts"
     echo "  recorded against $want, and a different QEMU can move them (the check has a 10% tolerance)."
     echo
     echo "  Pick one, deliberately:"

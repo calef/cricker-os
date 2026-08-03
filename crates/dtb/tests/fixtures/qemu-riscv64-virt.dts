@@ -1,6 +1,6 @@
 // The RISC-V virt board's device tree, with one honest caveat.
 //
-// Dumped from the machine itself (see qemu_riscv_virt.rs for the exact commands), then the
+// Dumped from the machine itself (see qemu_riscv64_virt.rs for the exact commands), then the
 // /reserved-memory node was added BY HAND, modeled on the edit OpenSBI makes before passing the
 // tree on: dumpdtb captures QEMU's tree before OpenSBI runs, but the tree our kernel actually
 // receives in a1 has OpenSBI's firmware regions in it, and reserved_memory_regions() exists

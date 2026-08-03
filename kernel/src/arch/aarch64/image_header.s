@@ -42,10 +42,10 @@ _start:
 
     .quad   0x80000                 // text_offset: 512 KiB into RAM.
                                     // RAM base 0x4000_0000 + 0x8_0000 = 0x4008_0000,
-                                    // which is exactly where link.ld puts us. The two
+                                    // which is exactly where link-aarch64.ld puts us. The two
                                     // numbers have to agree or nothing works.
 
-    .quad   __image_size            // image_size: computed by link.ld as
+    .quad   __image_size            // image_size: computed by link-aarch64.ld as
                                     // __stack_top - __image_start, so it covers .bss
                                     // AND the boot stack. This matters: it is how the
                                     // bootloader knows not to drop the device tree on

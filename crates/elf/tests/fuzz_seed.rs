@@ -8,7 +8,7 @@
 //!
 //! That is the silent degradation this test exists to make loud, and it costs a millisecond. The
 //! other three targets seed from fixtures that already have tests of their own
-//! (`crates/dtb/tests/qemu_virt.rs`, `crates/gpt/tests/real_disks.rs`); this seed had none, because
+//! (`crates/dtb/tests/qemu_aarch64_virt.rs`, `crates/gpt/tests/real_disks.rs`); this seed had none, because
 //! it has no other reason to exist.
 //!
 //! Regenerate it with the script in notes/fuzzing.md if a deliberate tightening of `parse` makes it

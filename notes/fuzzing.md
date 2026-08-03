@@ -149,7 +149,7 @@ anyone can construct has to hold on its own. That second argument is not new her
 `elf::Segment::page_range` already carries it in a comment.
 
 **Found by the fuzzer**, in about ten minutes from a cold corpus, starting from a mutated copy of the
-committed `qemu-virt.dtb`. Nobody had thought to look at `end()`.
+committed `qemu-aarch64-virt.dtb`. Nobody had thought to look at `end()`.
 
 ### 3. `crickerfs::write_image` accepted a name it could not store
 

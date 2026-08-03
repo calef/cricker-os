@@ -1,4 +1,4 @@
-# bench/baseline.txt: deterministic icount tick counts (cargo xtask bench --save).
+# bench/baseline-riscv.txt: deterministic icount tick counts (cargo xtask bench --save).
 # Recorded against the QEMU pinned in .qemu-version. icount counts guest instructions, so the
 # emulator version is part of what these numbers mean: script/qemu-check warns when the QEMU on
 # PATH is not the pinned one, precisely because that is when a baseline comparison stops being

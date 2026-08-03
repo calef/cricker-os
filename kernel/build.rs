@@ -11,8 +11,8 @@ fn main() {
     // address; riscv links at the OpenSBI payload address). The linker script is arch-specific, so
     // it is selected here rather than hard-coded. See notes/riscv-port.md.
     let (link_script, boot_asm) = match arch.as_str() {
-        "aarch64" => ("link.ld", "src/arch/aarch64/boot.s"),
-        "riscv64" => ("link-riscv.ld", "src/arch/riscv64/boot.s"),
+        "aarch64" => ("link-aarch64.ld", "src/arch/aarch64/boot.s"),
+        "riscv64" => ("link-riscv64.ld", "src/arch/riscv64/boot.s"),
         other => panic!("cricker-os has no linker script for target arch {other}"),
     };
 

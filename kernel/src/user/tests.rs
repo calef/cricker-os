@@ -1095,7 +1095,7 @@ fn the_fs_servers_stack_still_has_headroom() {
 fn a_userspace_driver_completes_a_dhcp_round_trip_over_virtio_net() {
     let Some(report) = virtio_service::start_net(init_image()) else {
         // No NIC on this run (a bare boot). The test runners always attach one, so this
-        // branch is not the parity gate. See scripts/qemu-runner*.sh (CRICKER_NET).
+        // branch is not the parity gate. See scripts/qemu-runner-*.sh (CRICKER_NET).
         crate::println!("    (no virtio-net device attached; skipping)");
         return;
     };

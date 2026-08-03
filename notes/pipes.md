@@ -612,7 +612,7 @@ harness gets wrong quietly:
   rather than run over the whole transcript. An unanchored search found the first answer for both
   lines, and would have passed a `>>` that truncated.
 
-It drives `scripts/qemu-runner.sh` directly rather than `cargo run`, so the process it owns **is**
+It drives `scripts/qemu-runner-aarch64.sh` directly rather than `cargo run`, so the process it owns **is**
 QEMU (the runner `exec`s it) and the kill lands on the emulator instead of on cargo. It is not part
 of `script/test`, because it builds a second kernel and boots it twice.
 

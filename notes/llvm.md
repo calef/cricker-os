@@ -49,7 +49,7 @@ LLVM IR, better
    │  LLVM aarch64 backend: instruction selection, register allocation, scheduling
    ▼
 aarch64 machine code (.o)
-   │  rust-lld  +  our link.ld
+   │  rust-lld  +  our link-aarch64.ld
    ▼
 kernel.elf
    │  llvm-objcopy
@@ -96,7 +96,7 @@ you.
 without installing a cross-binutils toolchain. It is cross-target by design; GNU `ld` is not.
 
 **`llvm-objcopy` makes the flat image.** We resolve it out of the rustup sysroot in
-`scripts/qemu-runner.sh`. See [boot-protocol.md](boot-protocol.md).
+`scripts/qemu-runner-aarch64.sh`. See [boot-protocol.md](boot-protocol.md).
 
 **LLVM's integrated assembler parses our `.s` files.** `global_asm!` hands the text to LLVM,
 not to GNU `as`. That is exactly why `image_header.s` writes `.long 0x644d5241` instead of

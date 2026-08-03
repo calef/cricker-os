@@ -37,7 +37,7 @@ fi
 # modern virtio (version 2). Without a disk the kernel simply finds no block device and says so.
 #
 # A SET CRICKER_DISK naming a missing file is an error, not a silent no-op; see the same check in
-# qemu-runner.sh for why (it very likely manufactured the false parity-C blocker).
+# qemu-runner-aarch64.sh for why (it very likely manufactured the false parity-C blocker).
 DISK=""
 if [ -n "$CRICKER_DISK" ] && [ ! -f "$CRICKER_DISK" ]; then
     echo "qemu-runner-riscv: CRICKER_DISK=$CRICKER_DISK does not exist (run mkdisk first)" >&2

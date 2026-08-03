@@ -2,7 +2,7 @@
 # script/bench: the performance microbenchmarks (milestone 21). Two instruments:
 #
 #   script/bench             deterministic icount counts (TCG); the regression currency
-#   script/bench --check     diff against bench/baseline.txt; FAILS on >10% drift
+#   script/bench --check     diff against bench/baseline-aarch64.txt; FAILS on >10% drift
 #   script/bench --save      rewrite the baseline (do it in the commit that moved the numbers)
 #   script/bench --real      HVF: natively on the Apple Silicon core; per-core magnitudes, no gating
 #   script/bench --real --smp  HVF on 4 harts; adds the multi-hart throughput bench (smp_throughput)

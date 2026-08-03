@@ -312,7 +312,7 @@ fn net_demo(sock: UdpSocket) {
 /// fixture the runners planted, and require the first data packet: opcode 3, block 1, the fixture's
 /// bytes exactly. The fixture is one short block, so the whole file arrives in that packet.
 ///
-/// The name and body must match what `scripts/qemu-runner*.sh` writes into `target/tftp`.
+/// The name and body must match what `scripts/qemu-runner-*.sh` writes into `target/tftp`.
 fn udp_ok(sock: &UdpSocket) -> bool {
     const TFTP_SERVER: &str = "10.0.2.2:69";
     const TFTP_NAME: &[u8] = b"cricker";

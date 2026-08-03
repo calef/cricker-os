@@ -184,7 +184,7 @@ Two directories, on purpose, and the split is by audience.
   names even where a different word would be more descriptive: the entire value is that the command
   is the same in every repo that follows the pattern.
 - **`scripts/`** is the helper drawer: `.sh` extension, called by other scripts and by `xtask`, not
-  by people (`qemu-bounded.sh`, `qemu-runner.sh`, `qemu-runner-riscv.sh`).
+  by people (`qemu-bounded.sh`, `qemu-runner-aarch64.sh`, `qemu-runner-riscv.sh`).
 
 Every `script/` entry needs a row in [scripts.md](scripts.md); `script/lint` fails without one, and
 fails in the other direction too if `README.md` names a script that does not exist.
