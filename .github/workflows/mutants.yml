@@ -1,0 +1,113 @@
+name: mutation testing
+
+# **Would any test notice if this line were wrong?** Asked weekly, of every host crate.
+#
+# The coverage job answers "did this line run"; cargo-mutants answers the question that suite
+# actually exists for, by rewriting one function at a time and rerunning the tests. A survivor is a
+# place the code could be wrong with every test staying green. The baseline this reports against
+# lives in .cargo/mutants-baseline.txt, with the prose (what each survivor means, and the triage
+# rule for new ones) in notes/mutation-testing.md.
+#
+# **A report, not a gate**, per roadmap 85: the full run costs hours, so it cannot sit on a merge,
+# and a new survivor is a worklist entry, not a defect in whatever commit happened to precede the
+# weekly cron. It becomes a gate only if these numbers prove stable enough that a new survivor
+# deserves to fail something; that decision is on the record there, not here.
+#
+# Weekly rather than per-push for cost, sharded four ways for wall clock: the full run is ~6,000
+# mutants, each one a build plus a test run. Shards split the mutant list, not the crates, so the
+# four jobs finish together instead of one carrying fs_proto alone.
+
+on:
+  schedule:
+    # 05:00 UTC Monday: after the weekend's quiet, before the toolchain-drift daily at 07:00.
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+
+# Least privilege for GITHUB_TOKEN, the same decision every workflow here makes: this reads the
+# source, runs the tests, and writes nothing but its own artifacts and summary.
+permissions:
+  contents: read
+
+# A queued weekly run has nothing to say that the newer one will not say better.
+concurrency:
+  group: mutants
+  cancel-in-progress: true
+
+jobs:
+  mutants:
+    name: "mutants (shard ${{ matrix.shard }}/4)"
+    runs-on: ubuntu-24.04-arm
+    # A generous box around a run whose cost moves with the tree. Four shards of ~1,500 mutants
+    # each; the shard re-runs its own baseline build first. Well under the 6-hour job ceiling so a
+    # hang fails loudly instead of billing five silent hours.
+    timeout-minutes: 240
+    strategy:
+      # One shard failing (a flaky test, a runner death) should not scrap the other three quarters
+      # of the report.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      # A prebuilt binary rather than `cargo install`, the same trade the supply-chain and coverage
+      # jobs make. The version comes from .cargo-mutants-version so this and script/mutants cannot
+      # disagree; cargo-mutants changes which mutants it GENERATES between versions, so an unpinned
+      # tool would move the weekly numbers with nothing in the tree having changed.
+      - name: Read the pinned cargo-mutants version
+        id: mutants
+        run: echo "version=$(cat .cargo-mutants-version)" >> "$GITHUB_OUTPUT"
+      - uses: taiki-e/install-action@v2.85.5
+        with:
+          tool: cargo-mutants@${{ steps.mutants.outputs.version }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run this shard of the mutants
+        run: script/mutants --shard ${{ matrix.shard }}/4
+
+      # Uploaded even when the step above hiccups: a partial report beats none, and the report job
+      # below states which shards it actually saw.
+      - name: Upload this shard's outcomes
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutants-shard-${{ matrix.shard }}
+          path: |
+            mutants.out/*.txt
+            mutants.out/outcomes.json
+          if-no-files-found: warn
+
+  report:
+    name: report against the baseline
+    needs: mutants
+    # `always()`: three shards of survivors are still a report worth publishing when the fourth
+    # died; the summary names the shards it aggregated.
+    if: always()
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download every shard's outcomes
+        uses: actions/download-artifact@v7
+        with:
+          pattern: mutants-shard-*
+          path: shards
+      - name: Publish the per-crate report
+        run: |
+          set -- shards/mutants-shard-*
+          {
+            echo '### Mutation testing: host crates'
+            echo
+            echo "aggregated from: $* (of 4 shards)"
+            echo
+            echo '```'
+            script/mutants --report "$@"
+            echo '```'
+            echo
+            echo 'Baseline: `.cargo/mutants-baseline.txt`; triage rule and survivor prose:'
+            echo '`notes/mutation-testing.md`. A survivor here is a worklist entry, not a failure.'
+          } >> "$GITHUB_STEP_SUMMARY"
