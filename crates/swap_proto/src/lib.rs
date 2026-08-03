@@ -84,7 +84,7 @@ pub const QUEUE_FULL: u64 = 0x4655_4c4c; // "FULL"
 
 // ===========================================================================================
 // The report protocol. Every process holds a WRITE view of one report endpoint and says what it did
-// on it; the kernel test is the receiver. Mirrored in kernel/src/user.rs (`live_swap_tests`), the
+// on it; the kernel test is the receiver. Mirrored in kernel/src/user/live_swap_tests.rs, the
 // same convention `authority_tests` and `c_seam_tests` follow: userspace owns the definition.
 // ===========================================================================================
 

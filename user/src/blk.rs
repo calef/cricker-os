@@ -19,7 +19,7 @@
 // they are `user_rt`'s (same signatures) plus the local `check`.
 pub use user_rt::{invoke, send};
 
-/// Role numbers, matching kernel/src/user.rs `virtio_service` (and hello's dispatch).
+/// Role numbers, matching `kernel/src/user/virtio_service.rs` (and hello's dispatch).
 const VIRTIO_BLK: u64 = 3;
 const VIRTIO_ATTACK: u64 = 8;
 const VIRTIO_ATTACK_INDIRECT: u64 = 13;

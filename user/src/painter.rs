@@ -28,7 +28,7 @@
 use gfx_proto as gfx;
 use user_rt::{call, exit, send};
 
-/// Capability slots, by convention with kernel/src/user.rs `display_service`.
+/// Capability slots, by convention with `kernel/src/user/display_service.rs`.
 const REPORT: u64 = 0;
 const DISPLAY: u64 = 1;
 

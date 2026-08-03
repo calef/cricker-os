@@ -91,7 +91,7 @@ const CLOCK_SLOT: u64 = 1;
 /// `date_tests::CLOCK_VA`.
 const CLOCK_VA: u64 = 0x00c0_0000;
 
-// The `a0` format selector. Must match kernel/src/user.rs's `date_tests`. Zero is `Human` so that a
+// The `a0` format selector. Must match kernel/src/user/date_tests.rs. Zero is `Human` so that a
 // spawn that passes no arguments at all gets the default a person wants.
 const FMT_HUMAN: u64 = 0;
 const FMT_RFC3339: u64 = 1;

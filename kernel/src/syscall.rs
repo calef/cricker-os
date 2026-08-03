@@ -90,7 +90,7 @@ pub fn dispatch(frame: &mut TrapFrame) {
 ///
 /// `pub(crate)` so kernel tests in other modules can drive **this** path rather than a
 /// re-implementation of it: an authorization test that calls `sched` directly proves the helper, not
-/// the boundary. See `user.rs`'s `reap_tests`.
+/// the boundary. See `user/reap_tests.rs`.
 pub(crate) fn invoke(
     frame: &mut TrapFrame,
     slot: u64,

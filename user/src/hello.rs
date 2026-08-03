@@ -60,7 +60,7 @@ const IRQ_CHILD: u64 = 26;
 // 23-25 and 27-29 are init roles, declared below with their functions.
 const VIRTIO_BLK_WRITE: u64 = 30;
 const VIRTIO_BLK_WRITE_ABANDON: u64 = 31;
-/// The virtio-net driver (milestone 30); matches kernel/src/user.rs `virtio_service` and blk.rs.
+/// The virtio-net driver (milestone 30); matches `kernel/src/user/virtio_service.rs` and blk.rs.
 const VIRTIO_NET: u64 = 40;
 const VIRTIO_BLK_SERVER: u64 = 32;
 
@@ -218,7 +218,7 @@ fn recv_cap(slot: u64) -> (u64, u64) {
 /// **The Call/Reply server, milestone 12.** Holds `RECV` on a request endpoint (slot 0) and a report
 /// endpoint (slot 1). It answers one caller it was never individually wired to, then proves the
 /// reply capability is one-shot by trying to use it a second time and reporting that the kernel
-/// refused. See kernel/src/user.rs `call_service`.
+/// refused. See `kernel/src/user/call_service.rs`.
 fn call_server() -> ! {
     const EP: u64 = 0;
     const REPORT: u64 = 1;
@@ -1236,7 +1236,7 @@ fn ep_user() -> ! {
 /// capability held `WRITE | GRANT` (slot 1). It passes the resource on, narrowed to `WRITE` so the
 /// receiver can use it but not lend it further. The whole point of a capability system, in four
 /// lines: authority a process holds, handed to another process, at runtime, with less power than it
-/// arrived with. See kernel/src/user.rs `delegation_service`.
+/// arrived with. See `kernel/src/user/delegation_service.rs`.
 fn granter() -> ! {
     const CHANNEL: u64 = 0;
     const RESOURCE: u64 = 1;
@@ -1254,7 +1254,7 @@ fn receiver() -> ! {
     const CHANNEL: u64 = 0;
     const REPORT: u64 = 1;
     const LOOPBACK: u64 = 2;
-    const USED_WORD: u64 = 0x5A; // must match kernel/src/user.rs delegation_service::USED_WORD
+    const USED_WORD: u64 = 0x5A; // must match USED_WORD in kernel/src/user/delegation_service.rs
 
     // Receive the delegated capability. It lands in a fresh slot of our own cspace; RECV_CAP tells
     // us which one. We were never told the slot in advance: the kernel chose it and named it to us.

@@ -342,6 +342,6 @@ Deliberately not in rung one, each with the seam it will use:
 | the display driver | `user/src/display.rs` |
 | the client that draws | `user/src/painter.rs` |
 | enumeration | `kernel/src/pci.rs` (`find_gpu_device`) |
-| the spawn wiring | `kernel/src/user.rs` (`display_service`) |
-| the tests | `kernel/src/user.rs` (`display_tests`) |
+| the spawn wiring | `kernel/src/user/display_service.rs` |
+| the tests | `kernel/src/user/display_tests.rs` |
 | the device lines | `scripts/qemu-runner.sh`, `scripts/qemu-runner-riscv.sh` (`CRICKER_GPU`) |

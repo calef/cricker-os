@@ -43,7 +43,7 @@ use compositor::{Rect, SCENE};
 use gfx_proto as gfx;
 use user_rt::{call, invoke, recv_cap, send};
 
-/// Capability slots, by convention with kernel/src/user.rs `compositor_service`.
+/// Capability slots, by convention with `kernel/src/user/compositor_service.rs`.
 const REPORT: u64 = 0;
 const DISPLAY: u64 = 1;
 const DOORBELL: u64 = 2;

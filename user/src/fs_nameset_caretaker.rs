@@ -42,7 +42,7 @@
 //! that is right rather than a gap: the pattern selected top-level names, and what is under a
 //! directory it selected was never a question the pattern asked.
 //!
-//! # Capability contract (kernel/src/user.rs `fs_service::start_granted_set`)
+//! # Capability contract (`kernel/src/user/fs_service.rs`, `start_granted_set`)
 //!
 //! - **slot 0**: the FS-service endpoint, `WRITE`. The directory capability being attenuated.
 //! - **slot 1**: the narrowed endpoint, `READ`. Holding it is holding the set.
