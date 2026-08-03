@@ -123,6 +123,20 @@ The port is worth doing precisely because it finds where the abstraction leaked.
    is why a CI job can hang in the watchdog with the guard compiled in, live, and silent. A run that
    does not print the guard's message is not a run in which this did not happen.
 
+   **Which threads were exposed, which is narrower than it looks.** The clobber needs an interrupt,
+   and the two user-entry paths differ on that. A thread started through the TCB surface arrives at
+   `user_entry_trampoline` from `schedule()`, which masked interrupts and does not restore them
+   before the `sret`, and `user_thread_entry` never unmasks (unlike `thread_entry`, which does, right
+   after `finish_switch`). So the TCB path ran `enter_frame` with `sstatus.SIE` clear and could not be
+   hit. The **exec** path could: `spawn` makes an ordinary kernel thread, `thread_entry` enables
+   interrupts, and that thread later becomes a user process through `run` -> `enter_frame`. Every
+   `spawn_bare` subject and `spawn_init` is on that path.
+
+   The two paths are not distinguishable from a panic message, and an early reading of this
+   investigation got it wrong by trying: a TCB child configured at `CODE_VA` 0x40_0000 with
+   `STACK_VA + FRAME_SIZE` and an exec child at an ELF base of 0x40_0000 with `USER_STACK_TOP` print
+   **the same two numbers**. Read the path from the test, not from the entry and stack values.
+
    The fix is a **reservation, not a moving target**: `user_entry_trampoline` drops `sp` by a frame's
    worth before the first Rust frame exists, so the region is off-limits to the entry path by
    construction, and `enter_frame` uses `top - size_of::<TrapFrame>()` on both ISAs. aarch64 took the
@@ -139,6 +153,18 @@ The port is worth doing precisely because it finds where the abstraction leaked.
    with a **call-free** spin between `frame.write` and `enter_user` reproduced it on the first run,
    deterministically, printing `sp 0x0 want 0x501000`. The same probe with the fix in place never
    fired.
+
+   **BUGS.** This closes the `sepc == 0` fault. It does **not** close every lost-wakeup hang in the
+   RISC-V suite, and one of them is on the record as surviving this reasoning: a documentation-only
+   PR (#21, zero lines of code) hung the watchdog on
+   `reclaim_frees_a_started_then_exited_childs_regions`, with the guard compiled in and silent. That
+   test's child is started through the **TCB** path, which is the one that runs `enter_frame` with
+   interrupts masked and therefore cannot take the clobber described above. Its child is
+   `REPORT_STUB`, a `SEND` to an endpoint the test is `ipc_recv`ing on, so a hang there reads as an
+   IPC rendezvous that missed rather than as a frame that was overwritten. Treat it as a separate
+   open item until something says otherwise. What the section above does settle is the *inference*:
+   a silent run is not a run in which the frame fault did not happen, because the guard sees only
+   the `t5 == 0` subcase.
 
 A related, smaller **ABI leak** the traps step resolves: `syscall.rs` reads the syscall number from
 `frame.x[8]` and args from `frame.x[0..]`, the aarch64 `svc`+`x8` convention. RISC-V's `ecall` ABI
