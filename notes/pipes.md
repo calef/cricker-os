@@ -1,14 +1,20 @@
 # Pipes and redirection: `>`, `<` and `|` are one substitution
 
 *Milestone 50, the operators lane. `crates/grant_plan/src/line.rs`, `user/src/wc.rs`, `user/src/swish.rs`,
-`user/src/system_initializer.rs`, `user/src/hello.rs`, `crates/grant_plan/src/spawnproto.rs`. The protocol half is
-notes/sink-protocol.md and you should read that first.*
+`user/src/system_initializer.rs`, `user/src/hello.rs`, `crates/grant_plan/src/spawnproto.rs`,
+`script/shell-check`. The protocol half is notes/sink-protocol.md and you should read that first.*
 
-**All three operators run at a real prompt on both ISAs.** `|` landed first; `>` and `<` needed a
+**All four operators run at a real prompt on both ISAs.** `|` landed first; `>` and `<` needed a
 boot in which one shell holds both a filesystem and a spawn channel, and building that turned up a
 reason the file end of a redirection cannot be a separate process. That finding is the section
 ["The file behind a `>` is this shell"](#the-file-behind-a--is-this-shell-and-that-was-not-the-plan),
-and it is the most reusable thing in this note.
+and it is the most reusable thing in this note. `>>` came last and is the cheapest of the four,
+which is that finding paying out: the shell already holds the file, so append is one bit about how
+it opens one.
+
+`2>` is **not** built, and the reason is the interesting half of this note's second half: this
+system has no ambient anything, so there is no second stream for a `2` to name. See
+["`2>`: an open fork"](#2-an-open-fork-and-the-question-is-not-the-operator).
 
 ## What this lane had to add, which was less than it looks
 
@@ -43,7 +49,7 @@ runs in milliseconds; that is where nearly all of this lane's tests are.
 
 ```text
 line  := stage ('|' stage)*
-stage := <command words> ('<' name | '>' name)*
+stage := <command words> ('<' name | '>' name | '>>' name)*
 ```
 
 Three refusals that bash does not make, each because a line should mean what it looks like:
@@ -212,6 +218,132 @@ answer when the client is **not** the shell, which is what `sink_tests` measures
 - Every byte crosses the shell's address space twice. There is no benchmark for this.
 - A `>` cannot outlive the line, because the thing writing the file is the prompt.
 
+### And what it pays for: `>>` is one bit, in one process
+
+`>>` is the first thing built on that shape, and it is the test of it. Because the shell backs the
+file, append is **a decision the shell makes when it opens one**, and everything else is untouched:
+
+```text
+  >   CREATE the name; if it exists, OPEN and TRUNCATE it        offset starts at 0
+  >>  CREATE the name; if it exists, OPEN and FSTAT it           offset starts at the size
+```
+
+That is the whole diff on the wiring side. `FileOut` already carried an absolute running offset,
+because the FS contract's `WRITE` names a position rather than advancing a cursor, so "append" is an
+**initial value** rather than a mode the filesystem has to hold. There is no `O_APPEND`, and there
+is nothing for one to mean: a sink has no seek, so every writer appends already and the only
+question a `>` ever answered was what happens to the bytes that were there first.
+
+What the child holds does not move, and `grant_plan` asserts that rather than asserting it in prose:
+`append_and_truncate_plan_the_same_endowment` plans `date > f` and `date >> f` and compares the two
+endowments whole, with the one differing field made equal. They designate the same `FileGrant`, and
+the mode rides **beside** `Sink::File` rather than inside the grant, because the grant is the
+authority and the open mode is not part of it.
+
+`>>` is also the reason the truncate is worth stating out loud. `>` empties the file **before the
+command runs**, which is what makes `ls > out.txt` report one more name than the `ls` before it did,
+and a `>` that had quietly appended to whatever the last run left behind would have been `>>`
+wearing `>`'s spelling.
+
+Two rules fall out and neither needed code. **`>>` inherits every rule `>` has**, because it is the
+same operator: the tail of the pipeline only, one per stage, one name, and a name that is not a
+pattern. And **there is no here-document**: `<<` is refused, because the second `<` is read as the
+operator it is and there is then no name after it. The message is about the missing name where the
+mistake was a missing feature, which is a wording gap and is in this note's BUGS.
+
+## `2>`: an open fork, and the question is not the operator
+
+**Not built, deliberately.** `>>` was an implementation task and `2>` is not, and the difference is
+worth stating because it is the same difference this project keeps meeting: one is a spelling for
+something the system already has, and the other would create the thing it is a spelling for.
+
+### There is no second stream today, and that is a fact rather than an omission
+
+A cricker-os program holds **one** output endpoint, in slot 0, placed there by its spawner. Its
+diagnostics travel on it, in-band with everything else:
+
+```text
+  date: the time is unknown: this process holds no clock capability
+```
+
+is `date` writing sink messages on the same endpoint it would have written a timestamp to
+(`user/src/date.rs`'s `line`). `rm`'s header says the same thing in its own words: "slot 1: a report
+endpoint, `WRITE`. Diagnostics and `-v` lines as framed text". One channel, two kinds of thing on it,
+and no way to tell them apart at the far end.
+
+So `date > when.txt` on a machine with no clock writes the complaint **into the file**, which is
+exactly the loss `2>` exists to prevent on Unix.
+
+### But the half that hurts most on Unix is already separated here
+
+The thing a person usually reaches for `2>` to save is **the shell's own refusals**, and those never
+enter a redirection here. `wc < nosuch.txt` is `Say::Failed` printed by the prompt; `worker 9 >
+out.txt` is `Refusal::NotAByteStream` printed by the prompt; a spawn that fails is
+`spawnproto::SPAWN_FAILED` printed by the prompt. All of it goes to the terminal, always, because
+the shell is a different process from the thing being redirected and its output was never in the
+substituted slot.
+
+That is not a small residue. It is most of what fd 2 carries in a Unix shell session, and it is
+separated here **by process boundary rather than by convention**, which is the stronger separation:
+there is no `2>&1` that could merge them back by accident.
+
+What remains is a program's own diagnostics, which today are indistinguishable from its output.
+
+### Why fd 2 exists on Unix, and why that reason does not transfer
+
+Unix needs a *numbered convention* because a process cannot ask its parent for a channel. Every
+process gets three descriptors by inheritance, so what fd 2 is has to be agreed in advance by
+everybody, forever. **Nothing here is ambient.** A program holds an endpoint because init put one in
+a slot, and init put it there because the shell's plan said to, and the plan came from a manifest
+that already declares what kind of output the program has (`OutputSpec`). The mechanism for "this
+program has a second thing to say" is therefore a **declaration**, not a number.
+
+### The two shapes it could take, and what each costs
+
+**A second endpoint in a second slot.** The direct translation. It costs a `spawnproto` bit (there
+are 29 free in that word), a delegation position, an init branch, a slot in every child, a manifest
+declaration, and an edit to every program that has anything to say. It also doubles §51's claim: a
+writer holding two endpoints must be able to tell them apart, which it does by slot number rather
+than by asking, so indifference survives *technically*. What does not survive is the sentence "a
+program's output is an endpoint", which becomes "a program's outputs are endpoints, and which is
+which is a convention" and is Unix's fd numbering with a capability underneath.
+
+The concrete blocker is smaller and more annoying: **slot 1 already means two things.** It is the
+input source or the `--mem` untyped, whichever the request carried, and that is unambiguous only
+because no manifest declares both (this note's BUGS has carried the entry since the milestone
+landed). A third stream makes an ordered slot convention untenable and forces a numbered one first.
+
+**An opcode on the one endpoint.** `sink_proto` puts the operation in the top byte of the request
+word, so `OP_BYTES = 0` and `OP_EOF = 1` leave 254 spellings free. A third, "these bytes are a
+diagnostic", would carry the distinction on the wire the writer already holds: no second capability,
+no second slot, no spawnproto change, no init change, and §51 intact word for word. The **reader**
+then decides, so `2> name` would name where the shell sends the diag messages it is already
+receiving, and `date > out.txt` would print its complaint to the terminal and write nothing to the
+file.
+
+Its cost is real and it is in the middle of a pipeline. `a | b`: `a`'s diagnostics arrive at `b`,
+which is a `wc` that would count them, and the answer has to be a rule (`wc` drops what it cannot
+read? every reader forwards diags upstream?). Unix's answer is that fd 2 bypasses the pipe entirely,
+and that is exactly the property one endpoint cannot express. Attaching a rule to it is a protocol
+design task, not a wiring one.
+
+### Why this is Chris's call
+
+Both shapes are defensible and they commit to different things. The first says a program can have
+several output capabilities and the model should name them; the second says a program has one
+output capability and the *contract* on it should be richer. That choice constrains everything
+downstream: a logging service, a supervisor collecting a child's complaints, and whatever milestone
+40's documentation service does with a component's diagnostics.
+
+And there is a real third answer: **do nothing**, on the grounds that in-band diagnostics on one
+stream is what a program with one thing to say should do, and that the separation the shell already
+gives (its refusals never enter a redirection) is the part that was worth having. That is the
+current state and it is not obviously wrong.
+
+Inventing the convention before a program has two things to say would be inventing it rather than
+discovering it, which is the same argument milestone 50 made about `InputSpec` and got right by
+waiting.
+
 ## SIGPIPE, and why the pipeline gets its own region
 
 Deleting every capability that names an endpoint does **not** destroy the endpoint: the object lives
@@ -315,6 +447,31 @@ names on it from an earlier test run (`10 10 77` rather than `8 8 57`). The numb
 and still internally consistent is the better demonstration: nothing here is a constant anybody
 pinned.
 
+And `>>`, at the same prompt. `date` writes one line of 66 bytes, so two of them is 132:
+
+```text
+$ caps date >> when.txt
+  date would grant the new process, and nothing else:
+    cap 0  endpoint  result   report its answer back
+    (clock: this shell holds none to delegate, so it will report the time
+     as unknown. the clock is init's to endow; no token on the line can.)
+    output   when.txt  (this shell writes the bytes there; the program holds
+             an endpoint and cannot seek, truncate, re-read or stat)
+             this shell keeps what is already in it and writes after it
+    arg    (none)
+  reading the command is reading its whole authority.
+$ date > when.txt
+$ date >> when.txt
+$ wc < when.txt
+  2 22 132
+```
+
+Read the `caps` output rather than the counts. **The last line of the `output` row is the only thing
+`>>` changes**, and it is a sentence about *this shell*, not about `date`: the `cap 0` row above it
+is identical to the one `date > when.txt` prints, and so is everything else, because the two
+spellings hand the child the same endpoint with the same right. That is the property `>>` was built
+to be a test of, printed where a person meets it.
+
 And the same at a prompt with no filesystem, which is the same binary:
 
 ```text
@@ -417,17 +574,53 @@ The pair of witnesses is the capability argument made twice with one binary:
 slot 4 is empty, and this writes the file because slot 4 holds a directory. Neither is a branch in
 the shell.
 
+## The gate for the boot itself, which is what runs the real init
+
+The guest tests above wire the shell **from the kernel**: it serves the terminal contract and, on a
+second thread, `grant_plan::spawnproto` in place of init. The shell cannot tell the difference, and
+that is the problem. `user/src/system_initializer.rs` is not the same code, so a change that broke
+the real spawn path failed nothing, and the `--features shell` boot is the only thing that runs it.
+
+That cost this milestone three manual bisects, and **all three presented as a boot that printed
+nothing at all**: the shell's terminal page colliding with `FILE_VA_CLIENT`, init's sixteen-slot
+cspace overflowing when the kernel handed it two more grants, and four stack pages being one deep
+call short of the redirection path.
+
+`script/shell-check` closes it. It boots that system on both ISAs, types five lines at the prompt,
+and reads the answers back:
+
+```text
+echo hello world | wc      -> 1 2 12   the bytes went through a real spawned process
+echo hello world > gate    -> nothing  the same bytes into a file the shell backs
+wc < gate                  -> 1 2 12   ... and they are the same bytes
+echo hello world >> gate   -> nothing
+wc < gate                  -> 2 4 24   ... exactly twice, so `>>` kept the first line
+```
+
+One line would have caught all three bugs. Five is still seconds, and it walks the whole endowment:
+a spawn through the real init, the FS service the real init narrowed into the shell, and both
+redirection operators.
+
+**Two things the machine corrected while it was being written**, and both are the kind of thing a
+harness gets wrong quietly:
+
+- **The line editor echoes a character the moment it arrives**, whether or not the shell has asked
+  for a line yet. So a harness that types ahead produces a transcript in which a command's echo
+  appears *before* the `$ ` that should introduce it, and then fails to find its own echo. The gate
+  waits for the transcript to **end** in a bare prompt, which is the unambiguous "ready".
+- **The script types `wc < gate.txt` twice on purpose**, so every search is anchored at a cursor
+  rather than run over the whole transcript. An unanchored search found the first answer for both
+  lines, and would have passed a `>>` that truncated.
+
+It drives `scripts/qemu-runner.sh` directly rather than `cargo run`, so the process it owns **is**
+QEMU (the runner `exec`s it) and the kill lands on the emulator instead of on cargo. It is not part
+of `script/test`, because it builds a second kernel and boots it twice.
+
 ## BUGS, named where the reader meets them
 
-- **The guest tests' init is the kernel, not `system_initializer`.** It serves the same protocol, and the shell
-  cannot tell the difference, but it is not the same code: a change to `user/src/system_initializer.rs` that
-  broke the spawn path would not fail `pipeline_tests` or `redirection_tests`. The `--features
-  shell` boot is what exercises `system_initializer`, and **nothing gates it**. This bit during this
-  milestone's own second half, twice and expensively: the two extra kernel grants overflowed init's
-  sixteen-slot cspace, and the shell's four stack pages were one deep-call short, and **both
-  presented as a boot that printed nothing at all**. Each cost a manual bisect against a booted
-  prompt. A gate that boots `--features shell` and types one line would have caught both in
-  seconds, and it is the most valuable test this milestone did not write.
+- **`script/shell-check` is not in `script/test` or in CI.** It is the only gate on the real init and
+  nothing runs it automatically, which is a weaker version of the gap it closed. Wiring it into the
+  CI test job is a one-line change and is deliberately not taken here.
 - **`user/src/sink.rs`'s file and source roles are no longer on the shell's path.** They are still
   the right shape for an adapter whose client is not the shell, and `sink_tests` still proves them
   against a real image, but nothing at the prompt builds one. The source role also still opens the
@@ -450,10 +643,13 @@ the shell.
   64 KB pipe buffer lets a producer run ahead; this does not, and nothing here has been benchmarked
   against a Unix pipeline. If buffering earns its place it arrives as a component that speaks the
   sink contract on both sides and is inserted into the chain.
-- **No `>>`, no `2>`.** Every sink this contract can build appends already (a sink has no seek), so
-  `>` and `>>` would differ only in whether the file is emptied first, which is the sink's wiring
-  rather than the writer's business. `2>` needs a second output slot, and inventing that convention
-  before a program has two things to say would be inventing it rather than discovering it.
+- **No `2>`, and it is an open fork rather than a missing feature.** A program holds one output
+  endpoint and its diagnostics ride it in-band, so `date > when.txt` on a clockless machine writes
+  the complaint into the file. The section above weighs the two shapes an answer could take and says
+  why neither is a lane's to pick.
+- **No here-document, and `<<` says the wrong thing about why.** It is refused as "a redirection
+  needs a name", because the second `<` is read as the operator it is. The refusal is right and the
+  sentence is about the wrong thing.
 - **No quoting anywhere in this shell**, so a file whose name contains `>` cannot be named. That is
   a gap in the tokenizer, not in the operators.
 - **`wc` has no `-l`, `-w` or `-c`.** It prints all three, because selecting among them is
