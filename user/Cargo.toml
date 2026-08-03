@@ -366,7 +366,7 @@ bench = false
 # the whole point is that those are two authorities rather than one. Its second role is the negative
 # control: it writes to the roster's address and dies. `mkinitrd` packs it for both ISAs.
 #
-# NOTE (lane, 2026-08-03): `disk_surveyor` is a PROVISIONAL name; program names are Chris's call.
+# A surveyor maps land they do not own, which is the split this program exists to demonstrate.
 [[bin]]
 name = "disk_surveyor"
 path = "src/disk_surveyor.rs"

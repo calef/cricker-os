@@ -9,7 +9,7 @@ Two things came out of it, and the second is the one worth arguing about.
 
 ## 1. The machine reads a table it did not write
 
-`disk_surveyor` (provisional name) holds a block-service endpoint, reads LBA 0 through 33 of the
+`disk_surveyor` holds a block-service endpoint, reads LBA 0 through 33 of the
 disk behind it, hands the bytes to `crates/gpt`, and reports what is there. Then it reads the 33
 blocks at the far end and checks the backup table against the primary. The kernel never sees a
 partition table; every byte of judgement happens in a userspace crate whose tests run on the host.
@@ -62,10 +62,16 @@ This is the design claim, and milestone 57's entry has been making it since 2026
 > instructions carry a "confirm the target device path before proceeding" warning precisely because
 > the tool cannot enforce it. **Here the warning is structural**: the tool was handed one disk.
 
-`crates/block_roster` (provisional name) is the listing half. One page, written by the kernel at
-wiring time from its own mmio and PCIe scans, mapped **read-only** into whichever program was
-granted it. A program without the mapping has nowhere to look, and the refusal is "you hold no such
-capability" rather than a permission check.
+`crates/block_roster` is the listing half. One page, written by the kernel at wiring time from its
+own mmio and PCIe scans, mapped **read-only** into whichever program was granted it. A program
+without the mapping has nowhere to look, and the refusal is "you hold no such capability" rather
+than a permission check.
+
+**It is deliberately not a `*_proto`.** Ten crates in `crates/` carry that suffix and describe
+messages two programs exchange; this one describes bytes at an address, written once and thereafter
+only read. The distinction is the authority claim restated rather than a filing convention: a
+protocol has a server, and a server is something that can be asked, confused, or persuaded, whereas
+there is nothing here to ask. It is also why this page needs no seqlock where the clock page does.
 
 The precedent it follows is the compositor's window enumeration (DECISIONS §33): a **read-only
 mapping, not a verb**. There is no request to forge, no server to confuse, and nothing to authorize
@@ -136,8 +142,9 @@ a test that shares a fixture couples its result to whether some other test ran f
   task. design/roadmap.md's milestone 57 entry has the shape of the fix
   (`Header::new_with_uuid(size, uuid: [u8; 16])`, the same injection upstream already uses for
   `ctime`) and why it is Chris's call.
-- **No hot plug.** The roster is written once and never again, so it needs no seqlock, unlike the
-  clock page. A hot-plug story would change `block_roster` rather than its readers.
+- **No hot plug.** The roster is written once and never again. A hot-plug story would change
+  `block_roster` (a published-page discipline, the way `clock_proto` has one) rather than its
+  readers.
 - **No partition-aware mount.** Nothing yet opens a filesystem *at* a partition's offset. The blk
   wire protocol has no base-block field, so a partition capability (an endpoint bound to a window of
   a disk, the way a directory capability is bound to a subtree) has nowhere to live yet. That is the

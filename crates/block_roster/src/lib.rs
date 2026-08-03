@@ -26,6 +26,24 @@
 //! server to confuse, and nothing to authorize at read time, because the authorization happened
 //! when the mapping was made.
 //!
+//! # This is not a `*_proto`, and the difference is the whole design
+//!
+//! Ten crates in `crates/` end in `_proto` and describe **messages two programs exchange**:
+//! `fs_proto`, `sink_proto`, `clock_proto` and the rest. This one is not among them, and a reader
+//! scanning the directory should not expect a protocol here. It describes **bytes at an address**,
+//! written once by the kernel at wiring time and thereafter only read.
+//!
+//! That is not a naming detail, it is the authority claim restated: a protocol has a server, and a
+//! server is something that can be asked, confused, or persuaded. There is nothing here to ask. The
+//! decision about who may see the machine's disks was made when the mapping was created, and a
+//! program either holds the page or has nowhere to look.
+//!
+//! It also has a consequence the `_proto` crates carry and this one does not: **no seqlock.** The
+//! clock page needs one because the clock service republishes it (`clock_proto::ClockPage`); this
+//! page never changes after the mapping exists, so a reader needs no protocol for reading it
+//! consistently. Hot plug would change that, and it would be a change to this crate rather than to
+//! its readers.
+//!
 //! # The page
 //!
 //! ```text
@@ -114,10 +132,8 @@ pub const fn capacity_of(len: usize) -> usize {
 
 /// Lay a roster into `page`. Fails if the page cannot hold `devices`.
 ///
-/// The kernel is the only caller. It writes the page before any program can see it and never writes
-/// it again, so a reader needs no seqlock: unlike the clock page (`clock_proto`), nothing here
-/// changes after the mapping exists. A hot-plug story would change that, and would be a change to
-/// this crate rather than to the reader.
+/// The kernel is the only caller, and it writes the page before any program can see it. See the
+/// crate header for what that buys the reader.
 pub fn write(page: &mut [u8], devices: &[Device]) -> Result<(), Full> {
     let capacity = capacity_of(page.len());
     if devices.len() > capacity {
