@@ -14,7 +14,7 @@
 //!   prints the same numbers every run. But they are NOT stable across *different* binaries: adding
 //!   unrelated live code shifts even untouched benchmarks by several percent, non-uniformly, because
 //!   the compiler remakes whole-crate inlining and monomorphization decisions (notes/benchmarks.md
-//!   has the measurement). So `bench/baseline.txt` + `--check` is a **coarse tripwire** (10%) for a
+//!   has the measurement). So `bench/baseline-aarch64.txt` + `--check` is a **coarse tripwire** (10%) for a
 //!   gross regression, not a fine attributor. Magnitudes are fiction anyway (TCG models no caches);
 //!   the `--real` medians are the fine signal.
 //! - **HVF (`--real`):** the kernel runs natively on the host core; real caches, real TLBs, the
@@ -616,7 +616,7 @@ fn coremark_compute() {
 /// the instruction clock), so an icount baseline for it would enshrine exactly the non-determinism the
 /// 2026-07-28 lesson warns against. So it runs only on the `--real --smp` boot (HVF, where the whole
 /// stack is proven by the `fs_server` test), self-skipping everywhere else via the same
-/// `online_count() > 1` gate as the throughput bench, so `bench/baseline.txt` never sees it.
+/// `online_count() > 1` gate as the throughput bench, so `bench/baseline-aarch64.txt` never sees it.
 ///
 /// **What the number means: whole-path cost, dominated by the device.** ~204 us/read (HVF,
 /// `--release --smp`). A read is **not** served warm from a cache: it goes to the block server, which
@@ -687,7 +687,7 @@ fn fs_read() {
 //      does the default `--real` run (per-core magnitudes; see xtask's `bench`), so it runs ONLY on
 //      the `--real --smp` boot (HVF, 4 harts), which the harness already forbids from
 //      `--check`/`--save`. Everywhere else `online_count()` is 1 and it is skipped outright, so it
-//      never touches `bench/baseline.txt`.
+//      never touches `bench/baseline-aarch64.txt`.
 //   2. Under `-icount` all vCPUs share one virtual clock (again the 2026-07-28 finding), so a
 //      wall-clock throughput number is not even defined there; and TCG serialises vCPUs onto one
 //      host thread, so there is no real parallelism to measure. Only HVF gives each core its own

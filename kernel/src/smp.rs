@@ -24,7 +24,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::cpu::{self, MAX_CPUS};
 use crate::{arch, println};
 
-/// 64 KiB per secondary, matching core 0's boot stack (link.ld).
+/// 64 KiB per secondary, matching core 0's boot stack (link-aarch64.ld).
 ///
 /// No guard page yet: in step 2 a secondary only runs [`secondary_main`] and idles, so it
 /// barely touches its stack. A guard page arrives with step 3, when secondaries run real work
@@ -32,7 +32,7 @@ use crate::{arch, println};
 /// notes/stack.md.
 const SECONDARY_STACK_SIZE: usize = 64 * 1024;
 
-/// One boot stack per core. Slot 0 is unused (core 0 has its own from link.ld); slots
+/// One boot stack per core. Slot 0 is unused (core 0 has its own from link-aarch64.ld); slots
 /// `1..MAX_CPUS` belong to the secondaries.
 ///
 /// **The `UnsafeCell` is load-bearing, and not for interior mutability the usual way.** An

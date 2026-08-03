@@ -10,7 +10,7 @@
 use dtb::{Dtb, Region};
 use pci::intx_irq;
 
-const QEMU_RISCV_VIRT: &[u8] = include_bytes!("../../dtb/tests/fixtures/qemu-riscv-virt.dtb");
+const QEMU_RISCV_VIRT: &[u8] = include_bytes!("../../dtb/tests/fixtures/qemu-riscv64-virt.dtb");
 
 /// The ECAM window the kernel maps (`PCI_ECAM_BASE`) is where the machine says its
 /// `pci-host-ecam-generic` bridge lives.
@@ -63,7 +63,7 @@ fn the_intx_swizzle_matches_the_interrupt_map() {
     }
 }
 
-const QEMU_AARCH64_VIRT: &[u8] = include_bytes!("../../dtb/tests/fixtures/qemu-virt.dtb");
+const QEMU_AARCH64_VIRT: &[u8] = include_bytes!("../../dtb/tests/fixtures/qemu-aarch64-virt.dtb");
 
 /// The aarch64 ECAM window the kernel maps is the machine's **highmem** ECAM: the node is named
 /// `pcie@10000000` (the low MMIO base) but its `reg` is `0x40_1000_0000`, and trusting the name

@@ -8,12 +8,12 @@ xtask = "run --quiet --package xtask --"
 # It is a script rather than a bare qemu invocation because QEMU only follows the
 # Linux arm64 boot protocol (and only hands us a device tree) for a flat `Image`, not
 # for an ELF. The script strips the ELF to a flat binary first. See
-# scripts/qemu-runner.sh and notes/boot-protocol.md.
+# scripts/qemu-runner-aarch64.sh and notes/boot-protocol.md.
 [target.aarch64-unknown-none-softfloat]
-runner = "scripts/qemu-runner.sh"
+runner = "scripts/qemu-runner-aarch64.sh"
 
 # RISC-V (milestone 20). Unlike aarch64, QEMU's virt machine boots a riscv ELF directly via
 # `-kernel` (OpenSBI in `-bios` hands off in S-mode), so the runner needs no flat-binary step.
-# See scripts/qemu-runner-riscv.sh and notes/riscv-port.md.
+# See scripts/qemu-runner-riscv64.sh and notes/riscv-port.md.
 [target.riscv64imac-unknown-none-elf]
-runner = "scripts/qemu-runner-riscv.sh"
+runner = "scripts/qemu-runner-riscv64.sh"

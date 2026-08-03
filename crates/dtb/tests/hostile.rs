@@ -13,7 +13,7 @@
 //!     name at the bottom is structure a mutational fuzzer will not synthesize from a corpus of real
 //!     device trees, which are three deep.
 //!   * The `Region::end` overflow was found by **the fuzzer**, in about ten minutes, from a mutated
-//!     copy of the committed `qemu-virt.dtb`. Nobody had thought to look at it.
+//!     copy of the committed `qemu-aarch64-virt.dtb`. Nobody had thought to look at it.
 //!
 //! That is the argument for having both, stated as evidence rather than as a slogan. See
 //! notes/fuzzing.md.

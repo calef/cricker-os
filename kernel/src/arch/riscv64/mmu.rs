@@ -58,7 +58,7 @@ fn current_root_pa() -> u64 {
 /// The base of the kernel's virtual address space: the Sv39 high half (bits 63:38 all one, the sign
 /// extension of bit 38 = 1). Chosen exactly like aarch64's base so `VA = PA | KERNEL_VA_BASE` is
 /// exact and a kernel VA shares its physical address's page-table indices. Matched to
-/// `KERNEL_VA_BASE` in link-riscv.ld, and the kernel runs here from `boot.s`'s high-half jump on.
+/// `KERNEL_VA_BASE` in link-riscv64.ld, and the kernel runs here from `boot.s`'s high-half jump on.
 pub const KERNEL_VA_BASE: u64 = 0xffff_ffc0_0000_0000;
 
 /// The boot page table: a single Sv39 root that maps the low physical range (to survive turning
@@ -438,7 +438,7 @@ where
 
     // The guard page must NOT be mapped, or the stack-overflow protection is silently off and we
     // would only find out during an overflow, which is when it is no use. The aarch64 `verify` has
-    // always checked this; riscv reached the same layout (link-riscv.ld reserves the page) without
+    // always checked this; riscv reached the same layout (link-riscv64.ld reserves the page) without
     // ever asserting it.
     assert!(
         m.translate(stack_guard()).is_none(),
@@ -871,7 +871,7 @@ mod tests {
 
     /// **The guard page must not be mapped.** That is its entire job.
     ///
-    /// link-riscv.ld has reserved the page since the port landed, and `map_everything` skips it by
+    /// link-riscv64.ld has reserved the page since the port landed, and `map_everything` skips it by
     /// mapping `.data..bss_end` and `stack_bottom..stack_top` as two ranges with a hole between
     /// them. Nothing asserted the hole was where it was supposed to be, so a linker-script edit that
     /// moved `__stack_guard` would have left the stack still mapped and the protection silently

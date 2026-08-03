@@ -395,7 +395,7 @@ fn a_client_of_the_stable_endpoint_cannot_become_its_server() {
 /// endpoint's sender queue and the next server drains it) but it is stopped until then. For a
 /// channel that cannot afford that, `broker` takes custody. The price is one extra hop on
 /// every request in the steady state, which is why it is chosen per channel and never by
-/// default; `broker_rtt` in bench/baseline.txt is that price.
+/// default; `broker_rtt` in bench/baseline-aarch64.txt is that price.
 ///
 /// What this proves that the direct test does not: there is a window here in which the backend
 /// **does not exist** (it was quiesced, it died, and its corpse was collected before the

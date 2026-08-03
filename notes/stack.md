@@ -165,7 +165,7 @@ rather than on some later victim. But it is a mitigation, not a fix.
 
 **The fix is the guard page at milestone 4.** An unmapped page below `__stack_bottom` means
 the MMU faults on the *first* byte written past the end, before any damage. Precise, free
-at runtime, impossible to miss. That is the whole reason `link.ld` carries a TODO about it.
+at runtime, impossible to miss. That is the whole reason `link-aarch64.ld` carries a TODO about it.
 
 ## `bl` does *not* push the return address (this is not x86)
 

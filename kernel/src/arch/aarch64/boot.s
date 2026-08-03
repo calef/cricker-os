@@ -2,7 +2,7 @@
 //
 // # We are linked HIGH but loaded LOW
 //
-// link.ld places the kernel at 0xffff_0000_4008_0000 (virtual) but tells the loader to put
+// link-aarch64.ld places the kernel at 0xffff_0000_4008_0000 (virtual) but tells the loader to put
 // the bytes at 0x4008_0000 (physical). So every absolute address the compiler baked into
 // this binary is a virtual address that **does not work yet**, and the code that turns the
 // MMU on is inside that binary.

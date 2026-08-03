@@ -1,6 +1,6 @@
 //! Parse the RISC-V virt board's device tree, the second machine we boot on.
 //!
-//! The aarch64 twin of this file (`qemu_virt.rs`) explains why these run on the host. This one
+//! The aarch64 twin of this file (`qemu_aarch64_virt.rs`) explains why these run on the host. This one
 //! exists because the riscv boot path leans on two parser features the aarch64 tree never
 //! exercises: a device nested under `/soc` (the PLIC), and the `/reserved-memory` node OpenSBI
 //! uses to fence off its own firmware. Without these tests, both paths were only ever executed
@@ -10,14 +10,14 @@
 //! Regenerate the fixture with:
 //!
 //!     qemu-system-riscv64 -machine virt,dumpdtb=f.dtb -nographic
-//!     dtc -I dtb -O dts f.dtb -o crates/dtb/tests/fixtures/qemu-riscv-virt.dts
+//!     dtc -I dtb -O dts f.dtb -o crates/dtb/tests/fixtures/qemu-riscv64-virt.dts
 //!     (re-add the /reserved-memory node; see the comment in the .dts for why it is hand-added)
-//!     dtc -I dts -O dtb crates/dtb/tests/fixtures/qemu-riscv-virt.dts \
-//!         -o crates/dtb/tests/fixtures/qemu-riscv-virt.dtb
+//!     dtc -I dts -O dtb crates/dtb/tests/fixtures/qemu-riscv64-virt.dts \
+//!         -o crates/dtb/tests/fixtures/qemu-riscv64-virt.dtb
 
 use dtb::{Dtb, Region};
 
-const QEMU_RISCV_VIRT: &[u8] = include_bytes!("fixtures/qemu-riscv-virt.dtb");
+const QEMU_RISCV_VIRT: &[u8] = include_bytes!("fixtures/qemu-riscv64-virt.dtb");
 
 #[test]
 fn finds_the_ram() {

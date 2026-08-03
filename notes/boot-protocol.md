@@ -41,14 +41,14 @@ cargo xtask image
 
 **`text_offset` and the linker script must agree.** QEMU loads the image at
 `RAM_base + text_offset`. RAM starts at `0x4000_0000` on `virt`, and `text_offset` is
-`0x8_0000`, so we land at `0x4008_0000`. That is exactly where `link.ld` puts us. **These are
+`0x8_0000`, so we land at `0x4008_0000`. That is exactly where `link-aarch64.ld` puts us. **These are
 two independent numbers that have to match**, and nothing checks them for you.
 
 **`image_size` must cover `.bss` and the stack, not just the file.** The flat binary stops
 after `.data`, because `.bss` occupies no file bytes ([elf.md](elf.md)). But `image_size` is
 a statement about *memory*, not about the file. Understate it and the bootloader will happily
 place the device tree blob on top of our `.bss` or our boot stack, and we'll destroy it the
-first time we push a stack frame. So `link.ld` computes it as `__stack_top - __image_start`.
+first time we push a stack frame. So `link-aarch64.ld` computes it as `__stack_top - __image_start`.
 
 **`code0` must not touch `x0`.** The entry point is the first byte of the image, so `code0`
 executes before anything else in the kernel. Ours is a single `b _boot`, which leaves the
@@ -64,7 +64,7 @@ That is why `cargo xtask image` exists, and why there are two tests.
 
 ## Why the tests boot the same way the real thing does
 
-`.cargo/config.toml` points cargo's runner at `scripts/qemu-runner.sh`, which strips the ELF
+`.cargo/config.toml` points cargo's runner at `scripts/qemu-runner-aarch64.sh`, which strips the ELF
 to a flat binary before launching QEMU. So `cargo test` and `cargo xtask run` take **the
 identical boot path.**
 

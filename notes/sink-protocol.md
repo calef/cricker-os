@@ -176,7 +176,7 @@ takes some messages, destroys the region, and the writer reports that its next S
 
 `println!` is on the ABI fastpath and `relay_rtt` / `call_reply` price exactly the kind of hop this
 lane could have added. It added none, and the numbers say so rather than the argument doing it.
-Deterministic icount ticks against `bench/baseline.txt`, on the pinned QEMU:
+Deterministic icount ticks against `bench/baseline-aarch64.txt`, on the pinned QEMU:
 
 | | aarch64 | riscv64 |
 |---|---|---|

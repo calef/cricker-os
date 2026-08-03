@@ -451,7 +451,7 @@ the watchdogs: see the per-test ceiling discussion in [scheduler.md](scheduler.m
 ## BUGS: this is a GICv2 driver, and an aarch64 board port is a new interrupt controller
 
 Named here because this is where a reader meets the feature, and until 2026-08-01 the fact lived
-only in a comment inside `scripts/qemu-runner.sh`, which is the last place someone choosing a board
+only in a comment inside `scripts/qemu-runner-aarch64.sh`, which is the last place someone choosing a board
 would look.
 
 `kernel/src/drivers/gic.rs` implements **GICv2 and only GICv2**. The QEMU runner pins

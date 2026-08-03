@@ -16,7 +16,7 @@ uses `cargo xtask` and that one uses `make` and the next uses `npm`.
 | `script/decisions` | Index DECISIONS.md; `--check` enforces unique section numbers and that every `§N` cited anywhere in the tree resolves. Gated in `script/lint`. |
 | `script/test` | Host-logic crates, then the kernel under QEMU on **both** ISAs. The gate. |
 | `script/verify` | The machine-checked proofs (Kani) over the pure-logic crates. Not in `bootstrap`: Kani pulls its own toolchain and a CBMC backend, so it is installed only where it is used. |
-| `script/bench` | icount microbenchmarks; `--check` fails on >10% drift from `bench/baseline.txt`, `--save` rewrites it, `--real` runs under HVF for magnitudes. |
+| `script/bench` | icount microbenchmarks; `--check` fails on >10% drift from `bench/baseline-aarch64.txt`, `--save` rewrites it, `--real` runs under HVF for magnitudes. |
 | `script/roadmap` | Index the milestones; `--check` validates the status vocabulary and catches a block with no row, or a milestone cited in prose the table does not carry. Gated in `lint`. |
 | `script/initboot` | Boot straight into userspace init, skipping the milestone tour. |
 | `script/qemu-check` | Is the QEMU on PATH the one `.qemu-version` pins, and does it carry the devices the suite needs? **Fails** on a missing device (that would gut a test silently), **warns** on a version mismatch (Homebrew cannot install an arbitrary older QEMU, and an unfollowable rule is worse than none). Called by `bootstrap` and by `ci-qemu`. |
@@ -55,10 +55,10 @@ duplicated to get it. If you prefer typing `cargo xtask …`, it all still works
 ## Two things that are deliberately the way they are
 
 **`script/` (singular) vs `scripts/` (plural).** The normalized entry points are in `script/`,
-GitHub's convention. The older `scripts/` (plural) holds `qemu-runner.sh` and `qemu-bounded.sh`,
+GitHub's convention. The older `scripts/` (plural) holds `qemu-runner-aarch64.sh` and `qemu-bounded.sh`,
 which are internal plumbing that cargo and the scripts call, not things you run by hand. Two
 directories an `s` apart is a little awkward, but each follows its own convention, and keeping the
-runner where cargo already expects it (`.cargo/config.toml` points at `scripts/qemu-runner.sh`)
+runner where cargo already expects it (`.cargo/config.toml` points at `scripts/qemu-runner-aarch64.sh`)
 was cheaper than moving it.
 
 **`bootstrap` installs system packages.** Running `script/bootstrap` will `brew install qemu` on

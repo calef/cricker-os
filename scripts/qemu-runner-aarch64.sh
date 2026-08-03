@@ -32,8 +32,8 @@ HOST="$(rustc -vV | awk '/^host:/{print $2}')"
 OBJCOPY="$SYSROOT/lib/rustlib/$HOST/bin/llvm-objcopy"
 
 if [ ! -x "$OBJCOPY" ]; then
-    echo "qemu-runner: cannot find llvm-objcopy at $OBJCOPY" >&2
-    echo "qemu-runner: is the llvm-tools component installed? (rust-toolchain.toml pins it)" >&2
+    echo "qemu-runner-aarch64: cannot find llvm-objcopy at $OBJCOPY" >&2
+    echo "qemu-runner-aarch64: is the llvm-tools component installed? (rust-toolchain.toml pins it)" >&2
     exit 1
 fi
 
@@ -59,7 +59,7 @@ fi
 # false "riscv virt has no mmio disk" record in notes/riscv-parity-scope.md.
 DISK=""
 if [ -n "$CRICKER_DISK" ] && [ ! -f "$CRICKER_DISK" ]; then
-    echo "qemu-runner: CRICKER_DISK=$CRICKER_DISK does not exist (run mkdisk first)" >&2
+    echo "qemu-runner-aarch64: CRICKER_DISK=$CRICKER_DISK does not exist (run mkdisk first)" >&2
     exit 1
 fi
 if [ -n "$CRICKER_DISK" ]; then
@@ -82,7 +82,7 @@ if [ -n "$CRICKER_DISK" ]; then
     # IOMMU in front of it on this machine, so it takes no such flag.
     PCI_DISK="${CRICKER_DISK%.img}-pci.img"
     if [ ! -f "$PCI_DISK" ]; then
-        echo "qemu-runner: $PCI_DISK does not exist (run mkdisk first; it writes both images)" >&2
+        echo "qemu-runner-aarch64: $PCI_DISK does not exist (run mkdisk first; it writes both images)" >&2
         exit 1
     fi
     # The RedoxFS image (milestone 32 phase 2), the SECOND mmio block device. It is placed on the
@@ -243,7 +243,7 @@ fi
 if [ "$CRICKER_ACCEL" = "hvf" ]; then
     MACHINE="virt,accel=hvf,gic-version=2"
     if [ -n "$CRICKER_CPU" ] && [ "$CRICKER_CPU" != "host" ]; then
-        echo "qemu-runner: CRICKER_CPU=$CRICKER_CPU cannot apply under HVF (the guest runs the physical core; -cpu host is mandatory)" >&2
+        echo "qemu-runner-aarch64: CRICKER_CPU=$CRICKER_CPU cannot apply under HVF (the guest runs the physical core; -cpu host is mandatory)" >&2
         exit 1
     fi
     CPU="host"

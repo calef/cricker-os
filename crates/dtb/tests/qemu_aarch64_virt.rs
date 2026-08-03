@@ -6,14 +6,14 @@
 //! Regenerate the fixture with:
 //!
 //!     qemu-system-aarch64 -machine virt,dumpdtb=f.dtb -cpu cortex-a72 -nographic
-//!     dtc -I dtb -O dtb -o crates/dtb/tests/fixtures/qemu-virt.dtb f.dtb
+//!     dtc -I dtb -O dtb -o crates/dtb/tests/fixtures/qemu-aarch64-virt.dtb f.dtb
 //!
 //! (The `dtc` round-trip is not cosmetic: QEMU pads its dump out to a full megabyte
 //! and says so in the header, so the raw dump is a 1 MB file describing 7 KB of tree.)
 
 use dtb::{Dtb, Error, Region};
 
-const QEMU_VIRT: &[u8] = include_bytes!("fixtures/qemu-virt.dtb");
+const QEMU_VIRT: &[u8] = include_bytes!("fixtures/qemu-aarch64-virt.dtb");
 
 #[test]
 fn parses_the_header() {
@@ -89,7 +89,7 @@ fn refuses_to_overflow_the_callers_slice() {
 
 // --- /chosen and the initrd ---
 
-const QEMU_VIRT_INITRD: &[u8] = include_bytes!("fixtures/qemu-virt-initrd.dtb");
+const QEMU_VIRT_INITRD: &[u8] = include_bytes!("fixtures/qemu-aarch64-virt-initrd.dtb");
 
 #[test]
 fn finds_the_initrd() {
@@ -197,7 +197,7 @@ fn from_ptr_agrees_with_from_bytes() {
 #[test]
 fn no_reserved_memory_node_is_zero_regions() {
     // aarch64 virt has no /reserved-memory node (that path matters on riscv, where OpenSBI
-    // adds one; see qemu_riscv_virt.rs). Walking the whole tree and finding none must be
+    // adds one; see qemu_riscv64_virt.rs). Walking the whole tree and finding none must be
     // zero regions, not an error: this is the answer the aarch64 boot gets every time.
     let dtb = Dtb::from_bytes(QEMU_VIRT).unwrap();
     let mut regs = [Region { start: 0, size: 0 }; 2];

@@ -19,7 +19,7 @@
 //! instant anything touches it. Precise, free at runtime, and impossible to miss.
 //!
 //! We can't do that yet, because we have no MMU. That's milestone 4, and the TODO is
-//! recorded in link.ld.
+//! recorded in link-aarch64.ld.
 //!
 //! Until then, a canary. It is strictly worse than a guard page: it detects the damage
 //! *after* it has happened rather than preventing it, and only if the overflow actually

@@ -1,6 +1,6 @@
 # Benchmarks with teeth
 
-*(Milestone 21. `script/bench`, `kernel/src/bench.rs`, and `bench/baseline.txt`.)*
+*(Milestone 21. `script/bench`, `kernel/src/bench.rs`, and `bench/baseline-aarch64.txt`.)*
 
 ## Why two instruments
 
@@ -16,7 +16,7 @@ that make each possible exclude the other:
 | job | regression gating: `--check` fails on >2% drift from the committed baseline | knowing what a path actually costs |
 
 The gating story answers "identify the introduction of performance problems proximate to the
-changes that introduce them" structurally: `bench/baseline.txt` is committed, `--check` fails on
+changes that introduce them" structurally: `bench/baseline-aarch64.txt` is committed, `--check` fails on
 drift, and updating the baseline (`--save`) is a deliberate act made **in the commit that moved
 the numbers**. The baseline's git history is the performance record, each delta beside its cause.
 
@@ -467,7 +467,7 @@ different on purpose, so this section is where the difference is written down.
 Run them with `script/bench --real --smp` (HVF, 4 harts). Plain `--real` is single-hart on purpose
 (per-core primitive magnitudes; see the refresh section below), so `smp_throughput` self-skips there.
 
-**They never gate, and never touch `bench/baseline.txt`.** Two structural reasons. First, they run
+**They never gate, and never touch `bench/baseline-aarch64.txt`.** Two structural reasons. First, they run
 only when `online_count() > 1`, which is only the `--real --smp` boot; under the icount instrument
 (`-smp 1`) and the default single-hart `--real` run, `smp_throughput` returns immediately, so no
 `smp_*` line is ever emitted there and the committed baseline never sees them (verified: `--check`
@@ -674,7 +674,7 @@ instead, where it is measurable; `fs_read` is what a real file read actually cos
 disk the way it would be on any OS. And it is `--real`-only and never gated for the same reason the
 number is large: the mount and every read are interrupt-driven, not deterministic under `-icount`, so
 gating on `fs_read` would enshrine the non-determinism the 2026-07-28 lesson warns against. It
-self-skips (the `online_count() > 1` gate) everywhere but `--real --smp`, so `bench/baseline.txt`
+self-skips (the `online_count() > 1` gate) everywhere but `--real --smp`, so `bench/baseline-aarch64.txt`
 never sees it.
 
 **net_stack's socket round trip: measured, but not as a third icount bench, and here is why.** The net

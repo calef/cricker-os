@@ -249,12 +249,12 @@ is the thread's or the hart's.** `tp` is the hart's.
 
 - **Target:** `riscv64imac-unknown-none-elf`, the integer-only target, the analog of aarch64's
   `-softfloat` (no FP state in the kernel). It runs on QEMU virt's rv64gc CPU (imac is a subset).
-- **Linker:** `link-riscv.ld`. RAM base is `0x8000_0000`; OpenSBI loads the payload at `0x8020_0000`.
+- **Linker:** `link-riscv64.ld`. RAM base is `0x8000_0000`; OpenSBI loads the payload at `0x8020_0000`.
   It links **high and loads low** (`AT()`), like the aarch64 script: the kernel lives in the Sv39
   high half, and `boot.s` does the higher-half transition. (An earlier cut linked low / bare-mode for
   the first boot+console; that was replaced when high-half landed.)
 - **Wiring:** `build.rs` selects the linker script by `CARGO_CFG_TARGET_ARCH`; `.cargo/config.toml`
-  adds a `[target.riscv64imac-unknown-none-elf] runner` pointing at a new `scripts/qemu-runner-riscv.sh`
+  adds a `[target.riscv64imac-unknown-none-elf] runner` pointing at a new `scripts/qemu-runner-riscv64.sh`
   (`qemu-system-riscv64 -machine virt -bios default -kernel <elf> -smp N -serial stdio ...`); `xtask`'s
   hardcoded `TARGET` becomes arch-parameterized; `rust-toolchain.toml` lists the target.
 

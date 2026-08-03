@@ -950,7 +950,7 @@ pub fn print_summary() {
 
 // --- what the linker told us ---
 //
-// Each of these is a section boundary, page-aligned by link.ld precisely so that each can
+// Each of these is a section boundary, page-aligned by link-aarch64.ld precisely so that each can
 // carry its own MMU permissions. Permissions are per-page: a section that shares a page with
 // another section cannot have its own.
 

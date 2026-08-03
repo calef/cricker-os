@@ -14,7 +14,7 @@
 //!     cargo xtask image    build the flat arm64 Image and dump its header
 //!
 //! Note that `run` and `test` do NOT invoke QEMU themselves. They just call cargo,
-//! which invokes `scripts/qemu-runner.sh` via the runner setting in
+//! which invokes `scripts/qemu-runner-aarch64.sh` via the runner setting in
 //! `.cargo/config.toml`. That script is the single source of truth for how the kernel
 //! gets booted, so there is exactly one place to get the QEMU flags wrong.
 
@@ -23,10 +23,10 @@ use std::process::{Command, ExitCode};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const TARGET: &str = "aarch64-unknown-none-softfloat";
-const RUNNER: &str = "scripts/qemu-runner.sh";
+const RUNNER: &str = "scripts/qemu-runner-aarch64.sh";
 
 /// The RISC-V target, for the second-architecture initrd (milestone 20). The kernel itself is built
-/// and run through cargo + `scripts/qemu-runner-riscv.sh` directly, not this xtask; this const exists
+/// and run through cargo + `scripts/qemu-runner-riscv64.sh` directly, not this xtask; this const exists
 /// only so `initrd-riscv` builds the userspace archive for the matching target.
 const RISCV_TARGET: &str = "riscv64imac-unknown-none-elf";
 
@@ -1584,7 +1584,7 @@ fn mkinitrd() -> bool {
     write_measure_manifest("aarch64", &img)
 }
 
-/// The packed initrd archive ([`initrd_path`]) is what `scripts/qemu-runner.sh` passes to QEMU as
+/// The packed initrd archive ([`initrd_path`]) is what `scripts/qemu-runner-aarch64.sh` passes to QEMU as
 /// `-initrd` (milestone 19f); the raw user ELF ([`user_elf`]) is only the input `mkinitrd` packs.
 ///
 /// **Deliberately the same road Linux's initramfs travels**, now literally an archive like theirs.
@@ -2623,7 +2623,7 @@ fn shell_check_leg(riscv: bool) -> bool {
     // (the runner script `exec`s it). A `cargo run` in between would leave the emulator alive when
     // the kill lands on cargo, which is the leak CLAUDE.md's QEMU rule exists about.
     let mut cmd = Command::new(if riscv {
-        "scripts/qemu-runner-riscv.sh"
+        "scripts/qemu-runner-riscv64.sh"
     } else {
         RUNNER
     });
@@ -2816,7 +2816,7 @@ fn shell_check_answer<'a>(
 /// Two instruments:
 /// - default: TCG with `-icount`, where virtual time is a deterministic function of instructions
 ///   executed. Counts are exact and reproducible; `--check` diffs them against
-///   `bench/baseline.txt` and fails on drift, `--save` rewrites the baseline (a deliberate act,
+///   `bench/baseline-aarch64.txt` and fails on drift, `--save` rewrites the baseline (a deliberate act,
 ///   committed alongside whatever changed the numbers).
 /// - `--real`: HVF, natively on the host core. Real caches and TLBs, statistical numbers,
 ///   reported in nanoseconds, never gating.
@@ -2931,7 +2931,7 @@ fn bench() -> bool {
         real,
         check,
         save,
-        workspace_root().join("bench/baseline.txt"),
+        workspace_root().join("bench/baseline-aarch64.txt"),
     )
 }
 
@@ -2959,7 +2959,7 @@ fn bench_riscv(check: bool, save: bool) -> bool {
         return false;
     }
 
-    let mut cmd = Command::new("scripts/qemu-runner-riscv.sh");
+    let mut cmd = Command::new("scripts/qemu-runner-riscv64.sh");
     cmd.arg(format!("target/{RISCV_TARGET}/debug/kernel"));
     // icount pins virtual time (rdtime) to the instruction stream; sleep=off so it never waits on the
     // wall clock. This is what makes the riscv counts deterministic and comparable to aarch64's.
@@ -2979,7 +2979,7 @@ fn bench_riscv(check: bool, save: bool) -> bool {
         false,
         check,
         save,
-        workspace_root().join("bench/baseline-riscv.txt"),
+        workspace_root().join("bench/baseline-riscv64.txt"),
     )
 }
 
@@ -3062,8 +3062,15 @@ fn run_bench(
     }
 
     if save {
-        let mut out = String::from(
-            "# bench/baseline.txt: deterministic icount tick counts (cargo xtask bench --save).
+        // The header names the file it is in. It used to be the literal `bench/baseline.txt` for
+        // both baselines, so the riscv one claimed to be the aarch64 one; deriving it from the path
+        // makes the two agree with themselves (milestone 73).
+        let stem = baseline_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("baseline.txt");
+        let mut out = format!(
+            "# bench/{stem}: deterministic icount tick counts (cargo xtask bench --save).
 # Recorded against the QEMU pinned in .qemu-version. icount counts guest instructions, so the
 # emulator version is part of what these numbers mean: script/qemu-check warns when the QEMU on
 # PATH is not the pinned one, precisely because that is when a baseline comparison stops being

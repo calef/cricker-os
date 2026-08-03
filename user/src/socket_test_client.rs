@@ -66,7 +66,7 @@ const ECHO_PORT: u16 = 7777;
 const DNS_TXID: u16 = 0x1234;
 
 /// The fixture the runners put in slirp's TFTP directory, and its exact contents. Both sides are
-/// fixed so the round trip is asserted byte for byte (see scripts/qemu-runner*.sh).
+/// fixed so the round trip is asserted byte for byte (see scripts/qemu-runner-*.sh).
 const TFTP_NAME: &[u8] = b"cricker";
 const TFTP_BODY: &[u8] = b"cricker-tftp!";
 

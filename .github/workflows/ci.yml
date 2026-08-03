@@ -275,7 +275,7 @@ jobs:
       # possible: it counts guest instructions, not wall time, so a shared runner's noise does not
       # move it.
       #
-      # If CI's counts and bench/baseline.txt disagree by more than the 10% tolerance, the fix is a
+      # If CI's counts and bench/baseline-aarch64.txt disagree by more than the 10% tolerance, the fix is a
       # CI-specific baseline, NOT a wider tolerance: widening it to make the job green would delete
       # the only thing the job does. The baseline was committed from an aarch64 macOS host against
       # Homebrew's QEMU, and this runs aarch64 Linux against Ubuntu's, so some drift is expected and

@@ -464,7 +464,7 @@ Two earlier decisions paid forward, and the starting point is cleaner for it:
 What has no SMP story, the four gaps:
 
 1. **Secondary bring-up: none.** Cores 1..n park in `wfi` at `boot.s` with no wake path. No PSCI.
-2. **Per-CPU storage: none.** `TPIDR_EL1` is unused; there is one boot stack in `link.ld`.
+2. **Per-CPU storage: none.** `TPIDR_EL1` is unused; there is one boot stack in `link-aarch64.ld`.
 3. **`HELD_RANK` is a single global** (sync.rs). A second core clobbers it and the lock-rank
    assertion starts firing on phantom violations.
 4. **`SGIR` / `ITARGETSR` are hardcoded to core 0** (gic.rs).
@@ -584,7 +584,7 @@ lock masks *my* timer." The clean starting point (`IrqSafeMutex` already a real 
 
 ### Testing
 
-`-smp 4` in `qemu-runner.sh`. New invariants, each proving something one core could not: a shared
+`-smp 4` in `qemu-runner-aarch64.sh`. New invariants, each proving something one core could not: a shared
 counter incremented by threads on multiple cores under a lock sums **exactly** (cross-core mutual
 exclusion); a spawned thread runs on a core other than the spawner (the inbox/SGI path actually
 delivers work); an IPC send on one core wakes a receiver that runs on another; the per-CPU rank
@@ -3535,7 +3535,7 @@ peer, and the kernel's rendezvous is anonymous in both directions. So the stable
 *is* the endpoint object, and a swap is a change in **who is parked in `RECV_CAP` on it**. Nothing
 stands in the data path, so the steady-state cost of the mechanism is **zero**: the same
 `call_reply` path, instruction for instruction, and the benchmark for the swap's steady state is
-`call_reply` itself (bench/baseline.txt; notes/benchmarks.md).
+`call_reply` itself (bench/baseline-aarch64.txt; notes/benchmarks.md).
 
 Two properties fall out that a forwarding broker would have had to reimplement:
 
