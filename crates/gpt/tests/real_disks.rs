@@ -439,7 +439,7 @@ fn a_hybrid_mbr_is_refused_by_name() {
 /// between two disks of the same size. Two 64 MiB images with identical geometry is the case where
 /// a lazier check (sizes match, so it must be fine) would say yes.
 #[test]
-fn one_disks_primary_with_anothers_backup_is_caught() {
+fn one_disks_primary_with_a_foreign_backup_is_caught() {
     let (header, array) = primary(SGDISK_HEAD);
     let table = Gpt::parse(header, array).unwrap();
     let (apple_array, apple_header) = backup(APPLE_TAIL);

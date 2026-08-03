@@ -1767,7 +1767,7 @@ mod tests {
     /// the parent's or the sibling's, and it says which are directories so a reader need not open
     /// every one to find out.
     #[test]
-    fn a_listing_holds_exactly_the_directorys_own_names() {
+    fn a_listing_holds_exactly_the_names_in_that_directory() {
         let mut srv = server_with_tree();
         let sub = srv
             .open_dir(fs_proto::fs::ROOT as u32, "sub", dir::ALL)

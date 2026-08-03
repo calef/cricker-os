@@ -85,6 +85,39 @@ else
     esac
 fi
 
+# cargo-machete, for script/lint's unused-dependency gate (§46: a dependency is a decision). Comes
+# from cargo rather than a package manager because it is a cargo subcommand and there is no OS
+# packaging worth the branch; `--locked` so a fresh install cannot pick up a dependency resolution
+# nobody tested.
+if command -v cargo-machete >/dev/null 2>&1; then
+    echo "==> cargo-machete present"
+else
+    echo "==> Installing cargo-machete"
+    cargo install cargo-machete --locked
+fi
+
+# typos, for script/lint's spelling gate over the prose (the documentation is a deliverable here).
+# Homebrew calls it `typos-cli` and the binary `typos`, which is the sort of mismatch that wastes an
+# afternoon, so both names appear here on purpose.
+if command -v typos >/dev/null 2>&1; then
+    echo "==> typos present: $(typos --version)"
+else
+    echo "==> Installing typos"
+    case "$os" in
+    Darwin)
+        brew install typos-cli
+        ;;
+    Linux)
+        # Not in Ubuntu's archive; cargo is the portable route and CI takes it too.
+        cargo install typos-cli --locked
+        ;;
+    *)
+        echo "bootstrap: unknown OS '$os'; install typos by hand." >&2
+        exit 1
+        ;;
+    esac
+fi
+
 # Whichever way QEMU got here, it has to be one this project can actually use. The check is separate
 # so it can be re-run any time (a `brew upgrade` months from now is exactly when it matters), and it
 # fails only on a MISSING DEVICE; a version that merely differs from the pin is a loud warning, since

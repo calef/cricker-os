@@ -11518,7 +11518,7 @@ mod c_seam_tests {
 ///
 /// The flagship the roadmap points at, and the thing to notice about it is what the kernel does not
 /// contain. There is no component object, no swap syscall, no naming service, and no
-/// livecycle-aware anything: `swapper` is an unprivileged process with a budget, one device
+/// lifecycle-aware anything: `swapper` is an unprivileged process with a budget, one device
 /// capability and four endpoints, and the swap is the composition of mechanisms that already
 /// existed for their own reasons. What milestone 23 needed the kernel to grow is exactly one thing:
 /// `Frame::REVOKE` now answers on a `DeviceFrame`, with take-back semantics (§41).

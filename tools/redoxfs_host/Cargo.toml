@@ -54,3 +54,10 @@ libc = "0.2"
 # anything. Not a runtime dependency: recovery never needs the server.
 [dev-dependencies]
 fs_server = { path = "../../fs_server" }
+
+# cargo-machete (script/lint) reports `redox_syscall` unused here and is wrong: the crate's LIB name
+# is `syscall`, so every real use reads `use syscall::error::...` and a name-based scan cannot see
+# it. Recorded as an ignore rather than left to be rediscovered, since the answer is the same every
+# time and the alternative is a gate somebody learns to skip.
+[package.metadata.cargo-machete]
+ignored = ["redox_syscall"]
