@@ -318,10 +318,15 @@ impl<'a> Gpt<'a> {
         let backup_reserved = array_blocks
             .checked_add(1)
             .ok_or(Error::TableOverlapsUsable)?;
+        // `>=`, not `>`: `block_count - backup_reserved` IS the backup array's first block (it is
+        // what `backup_entry_lba` computes), so a last_usable_lba equal to it puts one usable
+        // block inside the backup array. The `>` this shipped with accepted that header, and no
+        // test noticed until milestone 85's mutation run reported `> with >=` as a survivor: the
+        // mutant was the fix. See notes/mutation-testing.md.
         if header.entry_array_lba <= PRIMARY_HEADER_LBA
             || primary_end > header.first_usable_lba
             || block_count < backup_reserved
-            || header.last_usable_lba > block_count - backup_reserved
+            || header.last_usable_lba >= block_count - backup_reserved
         {
             return Err(Error::TableOverlapsUsable);
         }

@@ -506,3 +506,131 @@ fn the_documentation_sample_is_a_valid_disk() {
     table.check_protective_mbr(&disk[..512]).unwrap();
     assert_eq!(table.partitions().count(), 1);
 }
+
+// =================================================================================================
+// The layout guards, boundary by boundary. Milestone 85's mutation run showed the suite could not
+// tell `>` from `>=` in any of `parse`'s range checks: `real_disks.rs` corrupts one byte at a time,
+// so every corrupt header dies at the CRC before the layout logic ever runs, and every table
+// `build` makes is TIGHT (array against usable range, usable range against backup array), so the
+// comparisons below were never exercised one side at a time. These tests forge headers with a
+// VALID CRC and one layout lie each. One of the survivors was not a missing test but a missing `=`:
+// `parse` accepted last_usable_lba equal to the backup array's first block. See
+// notes/mutation-testing.md.
+
+/// Recompute the header CRC after a patch, so the forgery reaches the layout checks.
+fn reforge(block: &mut [u8]) {
+    let hsize = u32::from_le_bytes(block[12..16].try_into().unwrap()) as usize;
+    block[16..20].fill(0);
+    let crc = gpt::crc::crc32(&block[..hsize]);
+    block[16..20].copy_from_slice(&crc.to_le_bytes());
+}
+
+/// Parse a tight, empty table whose header has been patched and re-CRCed.
+fn parse_patched(patch: impl FnOnce(&mut [u8])) -> Result<(), Error> {
+    let disk = build(&[]).unwrap();
+    let mut block: [u8; BLOCK] = disk.header().try_into().unwrap();
+    patch(&mut block);
+    reforge(&mut block);
+    Gpt::parse(&block, &disk.array).map(|_| ())
+}
+
+fn set_u64(block: &mut [u8], offset: usize, value: u64) {
+    block[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+}
+
+// UEFI 2.10 §5.3.2 header field offsets.
+const ALTERNATE_LBA: usize = 32;
+const FIRST_USABLE_LBA: usize = 40;
+const LAST_USABLE_LBA: usize = 48;
+
+/// The tight table `build` makes, in numbers the tests below patch around: array at LBA 2..=33,
+/// usable at 34..=131038, backup array at 131039..=131070, backup header at 131071.
+const PRIMARY_END: u64 = 34;
+const BACKUP_ARRAY_FIRST: u64 = BLOCKS - 33;
+
+#[test]
+fn a_one_block_usable_range_is_a_range_and_a_backwards_one_is_not() {
+    // first == last is one usable block, which is legal.
+    assert_eq!(
+        parse_patched(|b| set_u64(b, LAST_USABLE_LBA, PRIMARY_END)).err(),
+        None
+    );
+    // first > last is no range at all.
+    assert_eq!(
+        parse_patched(|b| set_u64(b, LAST_USABLE_LBA, PRIMARY_END - 1)).err(),
+        Some(Error::UsableRange {
+            first: PRIMARY_END,
+            last: PRIMARY_END - 1
+        })
+    );
+}
+
+#[test]
+fn the_usable_range_may_start_after_the_table_but_not_inside_it() {
+    // Slack between the primary table and the usable range is legal; every table `build` makes is
+    // tight, so without this a `>` here could rot into `<` unnoticed.
+    assert_eq!(
+        parse_patched(|b| set_u64(b, FIRST_USABLE_LBA, 2048)).err(),
+        None
+    );
+    // A usable range that starts on the entry array's last block is an overlap.
+    assert_eq!(
+        parse_patched(|b| set_u64(b, FIRST_USABLE_LBA, PRIMARY_END - 1)).err(),
+        Some(Error::TableOverlapsUsable)
+    );
+}
+
+#[test]
+fn a_disk_with_no_room_for_the_backup_is_refused() {
+    // alternate_lba says the disk is 11 blocks; the backup array alone needs 33.
+    assert_eq!(
+        parse_patched(|b| {
+            set_u64(b, ALTERNATE_LBA, 10);
+            set_u64(b, FIRST_USABLE_LBA, PRIMARY_END);
+            set_u64(b, LAST_USABLE_LBA, PRIMARY_END);
+        })
+        .err(),
+        Some(Error::TableOverlapsUsable)
+    );
+}
+
+/// The bug the mutation run found: `block_count - backup_reserved` is the backup array's first
+/// block, and the check was `>`, so equality (one usable block INSIDE the backup array) parsed
+/// clean. A partition placed on that block would overwrite the backup entry array.
+#[test]
+fn the_usable_range_stops_before_the_backup_array() {
+    // The tight maximum, one below the backup array, is legal (this is what `create` emits).
+    assert_eq!(
+        parse_patched(|b| set_u64(b, LAST_USABLE_LBA, BACKUP_ARRAY_FIRST - 1)).err(),
+        None
+    );
+    // Equal to the backup array's first block: refused, since the fix.
+    assert_eq!(
+        parse_patched(|b| set_u64(b, LAST_USABLE_LBA, BACKUP_ARRAY_FIRST)).err(),
+        Some(Error::TableOverlapsUsable)
+    );
+    // Past it, likewise.
+    assert_eq!(
+        parse_patched(|b| set_u64(b, LAST_USABLE_LBA, BACKUP_ARRAY_FIRST + 1)).err(),
+        Some(Error::TableOverlapsUsable)
+    );
+}
+
+#[test]
+fn the_entry_array_shape_guards_are_exact() {
+    // Empty is not a shape: there is no entry count to derive.
+    assert_eq!(
+        Gpt::create(DISK, BLOCK, BLOCKS, &[], &mut []).err(),
+        Some(Error::EntryArrayShape { have: 0 })
+    );
+    // Longer than an entry but not a whole number of them.
+    assert_eq!(
+        Gpt::create(DISK, BLOCK, BLOCKS, &[], &mut [0u8; 200]).err(),
+        Some(Error::EntryArrayShape { have: 200 })
+    );
+    // Exactly one entry is the smallest legal array, and it holds exactly one partition.
+    let one = Entry::new(types::CRICKER_DATA, PART, 2048, 4096);
+    let mut array = [0u8; entry::SIZE];
+    let table = Gpt::create(DISK, BLOCK, BLOCKS, &[one], &mut array).unwrap();
+    assert_eq!(table.partitions().count(), 1);
+}
