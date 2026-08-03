@@ -144,7 +144,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 78 | NOT-STARTED | The load-sensitive assertions, and the three that measure the wrong thing | **Seven** distinct failures in one day on PRs that changed no code, two of them documentation only, and one reproduces off CI. Three report a NEGATIVE discrepancy, so they are not slow-machine timeouts. For the two that ARE timing, the answer is likely the icount instrument this project already owns, not a wider bound |
 | 79 | NOT-STARTED | Miri over the host crates | The method is pure logic in host-testable crates, and Miri checks exactly those tests for the undefined behaviour Kani is not asked about and fuzzing cannot see. The pinned nightly already ships it. Weekly, not per-PR, because the cost is runtime |
 | 80 | NOT-STARTED | Loom: the hand-rolled atomic protocols, model-checked | TCG explores almost none of the orderings real silicon will, so an acquire/release mistake passes every gate this tree has and first appears on hardware. The board lands ~2026-08-21. One protocol as a pilot, then decide |
-| 81 | NOT-STARTED | An HVF leg: the test suite on the physical core | `CRICKER_ACCEL=hvf` exists and bench uses it; nothing runs `script/test` there as a habit. GitHub's hosted runners cannot (no nested virtualization), so this is a merge-time gate on the integrator's machine, not a PR check. aarch64 only |
+| 81 | NOT-STARTED | An HVF leg: the test suite on the physical core | `CRICKER_ACCEL=hvf` exists and bench uses it; nothing runs `script/test` there as a habit. GitHub's hosted runners cannot (no nested virtualization), so the leg rides `script/gates`: it runs wherever HVF exists and skips loudly where it does not. aarch64 only |
 | 82 | NOT-STARTED | `unsafe_op_in_unsafe_fn`: the obligation moves inside the fn | 33 `unsafe fn`s get their bodies' unsafety for free, so one signature can hide several distinct invariants. Explicit interior blocks put milestone 68's SAFETY-comment lint on each one. A ratchet in §38's shape |
 | 83 | NOT-STARTED | A mechanical rule-1 lint | CLAUDE.md's first rule (architecture-specific code lives under `arch/`) is enforced by nothing, and one violation exists today: `user/tests.rs` reads `SPSel` by raw `asm!`. `script/lint` learns the grep; the violation moves |
 | 84 | NOT-STARTED | Stack high-water: measure kernel stack depth | The FS-server stack overflow already happened once, and nothing since bounds depth on any kernel stack. Paint at boot, read the mark at suite end, assert headroom. Works identically on every ISA and covers every path the suite takes |
@@ -5884,24 +5884,37 @@ has never run there as a habit. That leaves the suite's only execution environme
 while a machine with real caches, real reordering, and a real GIC sits under the emulator the whole
 time. Until the board arrives this is the only real silicon this project can test on at all.
 
-Per-PR is not an option: GitHub's hosted macOS arm64 runners are themselves virtual machines and do
-not expose nested virtualization, so HVF is unavailable there. A self-hosted runner on the dev
-machine would close that gap and is deliberately not part of this milestone; it couples CI to a
-laptop that sleeps. The shape that fits: **a merge-time gate on the integrator's machine**, in the
-same breath as the relink-and-prune habits CLAUDE.md already assigns to merges.
+Per-PR in hosted CI is not an option: GitHub's macOS arm64 runners are themselves virtual machines
+and do not expose nested virtualization, so HVF is unavailable there. A self-hosted runner on the
+dev machine would close that gap and is deliberately not part of this milestone; it couples CI to a
+laptop that sleeps.
+
+**The delivery vehicle is `script/gates`** (Chris, 2026-08-03), not a new script and not a habit a
+human has to remember. `script/gates` already exists for exactly this reason: it is the one command
+a person or an agent runs before pushing, and it was created because "three commands is two too many
+to remember at the moment you are about to push". An HVF leg that lived anywhere else would be a
+fourth command, which is the failure gates was built to end. So gates grows a final leg: when the
+host has HVF (macOS on Apple Silicon with a capable QEMU), run the aarch64 suite again under it;
+when it does not, **skip loudly**, one line saying what was skipped and why, so a CI transcript can
+never be misread as having had silicon coverage. Every lane on this machine then carries the leg for
+free, and the integrator's merge run does too, through the same wrapper.
 
 The work: wire `--hvf` through `script/test`/`cargo xtask test` (today it is an env var the runner
 script reads), run the full aarch64 suite under it, and fix or honestly record what differs. Timer
 behaviour will differ, because under HVF guest time is host time and no icount instrument exists;
 part of the milestone is learning which tests that perturbs, which feeds milestone 78's per-assertion
-work rather than competing with it. Then document the habit where merge duties are documented.
+work rather than competing with it. Then the gates leg, and notes/scripts.md.
 
 #### Scope note
 
 HVF covers aarch64 only, with `-cpu host` mandatory, so it is one machine and no model variation;
-the cpu matrix keeps its job. riscv64 has no equivalent until the board lands. If the suite proves
-green and fast under HVF, a nightly local run is a cheap follow-on; a required PR check is not, for
-the runner reason above.
+the cpu matrix keeps its job. riscv64 has no equivalent until the board lands, so the leg's honest
+name is "the aarch64 suite on real silicon", not "the suite on real silicon".
+
+Gates' charter is checks that run locally in minutes, so the leg must be timed before it is added:
+native execution should beat TCG comfortably, but that is a number to measure, not assume. If it
+proves slow, the fallback is a `--full` flag rather than silent omission, and the skip-loudly line
+says which mode ran.
 
 ### 82. `unsafe_op_in_unsafe_fn`: the obligation moves inside the fn
 
