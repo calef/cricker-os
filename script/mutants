@@ -1,0 +1,148 @@
+#!/bin/sh
+# script/mutants: mutation testing over the host crates (milestone 85). See notes/mutation-testing.md.
+#
+# Coverage answers "did this line run under a test"; this answers the question coverage cannot,
+# "would any test NOTICE if this line were wrong". cargo-mutants rewrites one function at a time
+# (replace a return value, delete an arm, flip an operator), reruns the mutated package's tests, and
+# a mutant the suite fails to kill is a survivor: a place where the code could be wrong and every
+# test would stay green. The survivors are the product; each one is either a test worth writing or
+# an exclusion worth recording in .cargo/mutants.toml with its reason.
+#
+#   script/mutants                        full run over the host crates (hours; see the note)
+#   script/mutants --shard 1/4            one quarter of the mutants, for splitting across jobs
+#   script/mutants -p gpt -p ntp_proto    just those packages
+#   script/mutants --list                 enumerate the mutants without running anything
+#   script/mutants --report [DIR...]      per-crate table from finished run output, vs the baseline
+#   script/mutants --save-baseline [DIR...]  rewrite .cargo/mutants-baseline.txt from run output
+#
+# **A report, not a gate**, deliberately (roadmap 85): the full run costs hours, and a survivor is a
+# worklist entry rather than a defect in the commit that happened to trigger the run. So survivors
+# and timeouts exit 0 here, loudly; only a broken run (unmutated tree failing its own tests, tool
+# error) fails. The weekly `mutation testing` workflow runs this sharded and publishes the report.
+#
+# Scope: `--workspace` minus the exclusions in .cargo/mutants.toml, which are the crates whose lines
+# cannot execute on the host (the same set script/coverage exempts, for the same reason). Timeouts
+# are cargo-mutants' auto timeouts, derived from the baseline build and test times per package.
+#
+# Not part of script/gates or script/test, on purpose: both are gates a developer waits on, and this
+# is neither fast nor a gate.
+
+set -e
+cd "$(dirname "$0")/.."
+
+baseline_file=".cargo/mutants-baseline.txt"
+
+usage() {
+    cat <<'EOF'
+usage: script/mutants [--report [DIR...]] [--save-baseline [DIR...]] [cargo-mutants args...]
+
+  --report         summarize finished run output (default mutants.out) against the baseline
+  --save-baseline  rewrite .cargo/mutants-baseline.txt from finished run output
+  anything else    forwarded to `cargo mutants --workspace` (e.g. --shard 2/4, -p gpt, --list)
+EOF
+}
+
+# Turn one or more mutants.out directories into per-crate counts: "crate caught missed timeout
+# unviable" lines, sorted by crate. The outcome files each hold one mutant per line, starting with
+# its source path, so the crate is the path component before /src/.
+counts() {
+    for dir in "$@"; do
+        for kind in caught missed timeout unviable; do
+            [ -f "$dir/$kind.txt" ] || continue
+            sed "s|^|$kind |" "$dir/$kind.txt"
+        done
+    done | awk '
+        {
+            path = $2
+            sub(/\/src\/.*/, "", path)
+            n = split(path, part, "/")
+            crate = part[n]
+            crates[crate] = 1
+            count[$1 "/" crate]++
+        }
+        END {
+            for (c in crates)
+                printf "%s %d %d %d %d\n", c,
+                    count["caught/" c], count["missed/" c],
+                    count["timeout/" c], count["unviable/" c]
+        }
+    ' | sort
+}
+
+report() {
+    [ $# -gt 0 ] || set -- mutants.out
+    for dir in "$@"; do
+        if [ ! -d "$dir" ]; then
+            echo "script/mutants: no run output at $dir (run script/mutants first)" >&2
+            exit 2
+        fi
+    done
+    echo "crate                    caught  missed  timeout  unviable  (baseline missed)"
+    counts "$@" | while read -r crate caught missed timeout unviable; do
+        base="-"
+        if [ -f "$baseline_file" ]; then
+            base="$(awk -v c="$crate" '$1 == c { print $3 }' "$baseline_file")"
+            [ -n "$base" ] || base="new"
+        fi
+        printf "%-24s %6d  %6d  %7d  %8d  %s\n" \
+            "$crate" "$caught" "$missed" "$timeout" "$unviable" "$base"
+    done
+    echo
+    # The survivors themselves, because the counts say how many and these say where. Each line is
+    # a function the tests would not notice being wrong; the triage rule is in the note.
+    for dir in "$@"; do
+        for kind in missed timeout; do
+            [ -s "$dir/$kind.txt" ] || continue
+            echo "== $kind ($dir):"
+            sed 's/^/  /' "$dir/$kind.txt"
+        done
+    done
+}
+
+case "$1" in
+    --report) shift; report "$@"; exit 0 ;;
+    --save-baseline)
+        shift
+        [ $# -gt 0 ] || set -- mutants.out
+        { echo "# Written by script/mutants --save-baseline: crate caught missed timeout unviable."
+          echo "# The prose baseline, and what each survivor means, is notes/mutation-testing.md."
+          counts "$@"
+        } > "$baseline_file"
+        echo "==> baseline written to $baseline_file"
+        exit 0
+        ;;
+    -h|--help) usage; exit 0 ;;
+esac
+
+# The version is PINNED in .cargo-mutants-version, the same discipline as .cargo-deny-version and
+# .cargo-fuzz-version, and for cargo-deny's recorded reason: a tool whose verdict people compare
+# week over week has to be the same tool everywhere. cargo-mutants in particular changes which
+# mutants it GENERATES between versions, and a count that moves because the tool moved is
+# indistinguishable from a count that moved because the tests got worse.
+pinned="$(cat .cargo-mutants-version)"
+installed="$(cargo mutants --version 2>/dev/null | awk '{print $2}')"
+if [ "$installed" != "$pinned" ]; then
+    echo "==> Installing cargo-mutants $pinned (have: ${installed:-none})"
+    cargo install --locked "cargo-mutants@$pinned"
+fi
+
+# -j 4: cargo-mutants parallelism is per MUTANT (each job builds and tests its own tree copy), and
+# the tool's own guidance is that beyond about four jobs the incremental builds contend rather than
+# scale. The jobserver (on by default) caps total compiler tasks at NCPUS across all jobs.
+#
+# Exit codes are the tool's verdict, not the script's: 2 means mutants survived and 3 means some
+# timed out, and both are the report this exists to produce. Everything else (1 usage, 4 the
+# unmutated tree failing its own tests) is a broken run and stays fatal.
+rc=0
+cargo mutants --workspace -j 4 "$@" || rc=$?
+case "$rc" in
+    0) echo "==> mutants: every mutant caught" ;;
+    2|3) echo "==> mutants: survivors found (exit $rc); a report, not a gate. Triage per the note:" ;;
+    *) echo "==> mutants: run FAILED (exit $rc): this is a broken run, not a survivor count" >&2
+       exit "$rc" ;;
+esac
+
+# A bare --list (or --version and friends) produces no outcome files; only report on a real run.
+if [ -f mutants.out/caught.txt ] || [ -f mutants.out/missed.txt ]; then
+    report mutants.out
+fi

@@ -1,0 +1,38 @@
+# cargo-mutants configuration (milestone 85). Read automatically by `cargo mutants`; driven here by
+# script/mutants. The tool version is pinned in .cargo-mutants-version, the same discipline as
+# .cargo-deny-version and .cargo-fuzz-version. Config, not a code dependency (DECISIONS §46): nothing
+# in the tree links against cargo-mutants, it only reads our source and runs our tests.
+#
+# Every exclusion below is a crate whose lines cannot execute on the host, so no host test could ever
+# catch a mutant in it; a "missed" there would measure the wrong thing. The list deliberately mirrors
+# script/coverage's exclusions, because both tools answer questions only a host-executed line can
+# answer. Keep the two lists in step, and keep this list to things that physically cannot run here,
+# never to things that are merely untested.
+
+exclude_globs = [
+    # QEMU-only, no_std, bare-metal. The same three every host gate excludes (script/drift,
+    # script/lint, xtask's host-test pass): they do not compile for the host at all.
+    "kernel/**",
+    "user/**",
+    "crates/user_rt/**",     # EL0 syscall runtime, aarch64/riscv64 inline asm
+
+    # Compile for the host but cannot execute there: thin wrappers over user_rt's syscalls (build a
+    # child, quiesce a component). Excluded from the coverage run for the same reason and only that
+    # reason (see script/coverage).
+    "crates/supervision_proto/**",
+    "crates/swap_proto/**",
+
+    # Driver whose entry points each orchestrate a live virtio device; two volatile ops per
+    # thousand lines of orchestration. Its security-critical logic lives in crates/dma_validator
+    # (milestone 35), which IS mutated. Same exemption, same wording, as the coverage floor.
+    "crates/virtio/**",
+
+    # Host tooling, not shipped code. xtask drives cargo and QEMU; its "tests" are the gates it
+    # runs, so a mutant here is caught by CI going red, not by a unit suite. Mutating it would
+    # spend hours measuring the build system instead of the OS.
+    "xtask/**",
+]
+
+# Mutants that generate wrong-but-plausible values for trait impls the tests only exercise
+# incidentally. Nothing excluded by default; entries arrive with reasons or not at all.
+exclude_re = []

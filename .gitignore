@@ -14,3 +14,7 @@ target/
 
 # macOS finder junk, tracked once by accident.
 .DS_Store
+
+# cargo-mutants scratch output (script/mutants). Unanchored: shard runs may write it in subdirs.
+mutants.out/
+mutants.out.old/
