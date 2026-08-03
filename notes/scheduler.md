@@ -139,9 +139,13 @@ if t.killed && t.state == State::Running { t.state = State::Finished; }
 From there it is a plain race between the child's nine instructions and its own core's next timer
 tick. Win it and the child SENDs, the test passes, and the armed kill is harmless because the child
 was about to exit anyway. Lose it and the child is reaped **without ever sending**, `ipc_recv`
-blocks forever, every core falls to idle, and the 60 s heartbeat fires. Host load widens the window
-because a descheduled vCPU thread comes back with its timer interrupt already pending, which is why
-four burners moved it from "never seen locally" to one run in four.
+blocks forever, every core falls to idle, and the 60 s heartbeat fires.
+
+Why host load moved it from "never seen locally" to one run in four is not measured here, but the
+likely mechanism is that a vCPU thread the host deschedules comes back with its guest timer deadline
+already past, so the tick lands at the first instruction it executes rather than ten milliseconds of
+guest work later. The window is wall clock, not instruction count, and an oversubscribed host is
+what turns those into different numbers.
 
 ### How it was proved, since a one-in-four race is not evidence
 
@@ -187,7 +191,10 @@ be pointed at. `reclaim_region` now carries a `BUGS` section saying so where a c
 
 Every wild occurrence is riscv64 and **none of that is a RISC-V property**. The code is portable
 `sched.rs`; the riscv64 leg just loses the race more often under TCG. The last row is the control
-that settles it, and it is the reason §19 parity work should not have started here.
+that settles it, and it cost one run to take. §19 says parity is a gate; the corollary this bug
+supplies is that a failure appearing on one ISA is a *claim* about that ISA, and the way to check it
+is to widen the window on the other one rather than to reason about what is arch-specific. The
+reasoning was done here, carefully, and it pointed at RISC-V for four days.
 
 ### What this did not explain, and is not this bug
 
