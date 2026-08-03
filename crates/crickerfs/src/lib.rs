@@ -373,6 +373,20 @@ mod tests {
         assert_eq!(fs.read("big").unwrap().len(), 600);
     }
 
+    /// **The two derived capacity constants are the values their docs claim.** Nothing else pins
+    /// them: every other test compares an image against the same constant it was built from, so an
+    /// operator slip in the formula moves both sides together and no round trip notices. The values
+    /// are load-bearing outside this crate (the EL0 blk driver stops at `ENTRIES_IN_FIRST_BLOCK`;
+    /// the initrd build fails at `MAX_FILES`), so a wrong one is a wrong bound in another program.
+    /// A deliberate resize of `DIR_BLOCKS` or `ENTRY_LEN` updates this test in the same commit.
+    #[test]
+    fn the_capacity_constants_are_the_documented_values() {
+        // (BLOCK - HEADER_LEN) / ENTRY_LEN = (512 - 12) / 40 = 12. The doc comment says 12.
+        assert_eq!(ENTRIES_IN_FIRST_BLOCK, 12);
+        // (DIR_BLOCKS * BLOCK - HEADER_LEN) / ENTRY_LEN = (3072 - 12) / 40 = 3060 / 40 = 76.
+        assert_eq!(MAX_FILES, 76);
+    }
+
     #[test]
     fn bad_magic_is_refused() {
         // A full-directory-sized image so the truncation guard passes and the magic check rejects it.
@@ -383,6 +397,50 @@ mod tests {
     #[test]
     fn a_truncated_image_is_refused() {
         assert_eq!(Fs::parse(&[0u8; 10]).err(), Some(Error::Truncated));
+    }
+
+    /// **One byte under the directory span is `Truncated`, at the exact boundary.** The guard must
+    /// compare against the full `DIR_BLOCKS * BLOCK` = 3072 bytes; the 10-byte test above is under
+    /// every plausible mis-computation of that span (a `+` slip gives 518), so only a
+    /// just-under-the-line image proves the multiplication. A guard that let 3071 bytes through
+    /// would report `BadMagic` here instead, and would let entry reads run off a short image.
+    #[test]
+    fn an_image_one_byte_under_the_directory_span_is_truncated() {
+        let img = vec![0u8; DIR_BLOCKS * BLOCK - 1];
+        assert_eq!(Fs::parse(&img).err(), Some(Error::Truncated));
+    }
+
+    /// **A file whose last byte is the image's last byte is legal, in the writer and the reader.**
+    /// Both bounds checks are `end > len`, and every other test ends its data short of a block
+    /// boundary, so the accept side of the exact-fit case was untested in both directions: a check
+    /// hardened to `>=` would refuse a valid archive whose final file is block-sized. One block of
+    /// data after a 6-block directory ends at byte 3584 == image length exactly.
+    #[test]
+    fn a_file_ending_exactly_at_the_image_end_round_trips() {
+        let body = vec![0x5au8; BLOCK];
+        let files: [(&str, &[u8]); 1] = [("exact", &body)];
+        let mut img = vec![0u8; image_size(&files)];
+        let n = write_image(&files, &mut img).unwrap();
+        assert_eq!(n, img.len());
+        let fs = Fs::parse(&img).unwrap();
+        assert_eq!(fs.read("exact"), Some(&body[..]));
+    }
+
+    /// `is_empty` had no caller in the tests at all, so all three of its mutations (constant true,
+    /// constant false, inverted comparison) were invisible. Both sides pin it to `len() == 0`.
+    #[test]
+    fn an_empty_archive_is_empty_and_a_packed_one_is_not() {
+        let none: [(&str, &[u8]); 0] = [];
+        let mut img = vec![0u8; image_size(&none)];
+        write_image(&none, &mut img).unwrap();
+        let fs = Fs::parse(&img).unwrap();
+        assert!(fs.is_empty());
+        assert_eq!(fs.len(), 0);
+
+        let files: [(&str, &[u8]); 1] = [("motd", b"hi")];
+        let mut img = vec![0u8; image_size(&files)];
+        write_image(&files, &mut img).unwrap();
+        assert!(!Fs::parse(&img).unwrap().is_empty());
     }
 
     #[test]
