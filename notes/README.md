@@ -606,6 +606,11 @@ in the code or the conversation doesn't make sense, it belongs here.
   suite against `sifive-u54`, the RVA profiles and `thead-c906` (211 tests, all five green), the
   preflight that proves `-cpu` is enforced rather than merely advertised, what the narrow models
   would have caught, and the one test written for the board that no CPU model can exercise.
+- [Load-sensitive assertions](load-sensitive-assertions.md): the milestone 78 verdicts. Five
+  assertions failed pull requests that changed no executable code; the direction of a failure is
+  the diagnosis (a slow machine produces a deficit, never a surplus), so the three that fired on
+  negative counts were measuring their neighbours, not their subject. What each was rescoped to,
+  the one left alone and why, and the honest cost of the `<=` trade.
 - [Scoping a PCIe transport](pcie-transport-scope.md): a PCI root complex (ECAM enumeration, BARs,
   virtio-pci capability parsing, INTx via the PLIC) so a virtio disk can be driven over PCIe, the
   transport QEMU's riscv `virt` and real hardware use. Portable (both boards are ECAM-generic); the
