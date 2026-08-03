@@ -183,6 +183,11 @@ with the outgoing instance's expected device fault printed just above it. Found 
 milestone 72; not fixed, because the analysis says the assertion is the defect and that deserves its
 own change rather than riding on an unrelated one.
 
+**Intermittent, and the rate is worth writing down** so the next sighting is not read as a
+regression: on the one branch where it has been watched closely it went success, success, **failure**,
+success across four completed `cpu matrix` jobs, on a diff that changes no executable line in this
+file's neighbourhood. One failure in four is what this looks like.
+
 **It contradicts the comment directly above it**, which says the property is "hygiene, deliberately
 not asserted on". Both were written in the same commit, so one has been wrong since milestone 23.
 
