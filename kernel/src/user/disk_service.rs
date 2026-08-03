@@ -71,7 +71,10 @@ pub struct Wiring {
 /// mmio first, in slot order, then PCIe. That ordering is a promise to the roster's reader: an
 /// mmio device's `ordinal` is the same number `virtio::find_block_device_n` counts by, so a listing
 /// and a wiring cannot disagree about which disk is which.
-fn devices() -> ([block_roster::Device; block_roster::capacity_of(FRAME_SIZE as usize)], usize) {
+fn devices() -> (
+    [block_roster::Device; block_roster::capacity_of(FRAME_SIZE as usize)],
+    usize,
+) {
     let mut out = [block_roster::Device {
         ordinal: 0,
         transport: block_roster::TRANSPORT_MMIO,

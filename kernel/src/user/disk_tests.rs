@@ -78,7 +78,10 @@ fn the_disk_surveyor_reads_a_table_gptfdisk_wrote() {
         "four mmio disks are attached when this test runs (crickerfs, RedoxFS, the crash image, \
          and the GPT image); the roster names {mmio}",
     );
-    assert_eq!(pci, 1, "one virtio-blk-pci disk is attached (§18's transport)");
+    assert_eq!(
+        pci, 1,
+        "one virtio-blk-pci disk is attached (§18's transport)"
+    );
     assert_eq!(total, mmio + pci, "every device is on one bus or the other");
 
     // And the kernel's own read of the same frame agrees, computed through the same contract crate
@@ -92,7 +95,10 @@ fn the_disk_surveyor_reads_a_table_gptfdisk_wrote() {
     let [flags, partitions, cricker_first_lba, ..] = crate::sched::ipc_recv(w.report);
     for (bit, what) in [
         (F_ROSTER, "the roster page read as a roster"),
-        (F_SIZE, "the block service reported a whole number of blocks"),
+        (
+            F_SIZE,
+            "the block service reported a whole number of blocks",
+        ),
         (F_MBR, "LBA 0 holds a protective MBR covering the disk"),
         (F_PRIMARY, "the primary header and entry array parsed"),
         (F_BACKUP, "the backup table agrees with the primary"),

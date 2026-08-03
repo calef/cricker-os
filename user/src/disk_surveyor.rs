@@ -69,7 +69,9 @@
 
 use block_roster::{Roster, TRANSPORT_MMIO, TRANSPORT_PCI};
 use fs_proto::{blk, req};
-use gpt::{Gpt, guid::types, span::Span};
+use gpt::Gpt;
+use gpt::guid::types;
+use gpt::span::Span;
 use user_rt::{call, send};
 
 /// Slot 0: where the verdict goes. An endpoint with `WRITE`.
@@ -124,7 +126,7 @@ pub const F_CRICKER: u64 = 1 << 5;
 pub const F_NAMES: u64 = 1 << 6;
 
 /// The probe's announcement, so a fault that never reached the write is distinguishable from the
-/// write being refused. Must match kernel/src/user/disk_tests.rs.
+/// write being refused. Must match `kernel/src/user/disk_tests.rs`.
 pub const R_PROBING: u64 = 0x50_0B_11_46;
 
 #[unsafe(no_mangle)]
@@ -160,7 +162,7 @@ fn survey() -> ! {
     // carries no capacity, because a size is a fact about the device rather than about the machine
     // having one (crates/block_roster).
     let size = call(BLK, req(blk::SIZE), 0).0 as i64;
-    if size > 0 && size as u64 % LBA == 0 {
+    if size > 0 && (size as u64).is_multiple_of(LBA) {
         flags |= F_SIZE;
         let block_count = size as u64 / LBA;
         flags |= read_table(block_count, &mut partitions, &mut cricker_first_lba);
@@ -259,7 +261,7 @@ fn read_span(span: Span, into: &mut [u8]) -> bool {
                 BLK_PAGE as *const u8,
                 into.as_mut_ptr().add(at),
                 blk::BLOCK_SIZE,
-            )
+            );
         };
     }
     true
@@ -280,10 +282,11 @@ fn probe() -> ! {
     user_rt::exit()
 }
 
-/// The roster page, read-only.
-///
-/// SAFETY: a page the kernel mapped into this process at spawn, of exactly `fs_proto::PAGE` bytes.
+/// The roster page, read-only. Its contents are checked by `block_roster::Roster::read`, which
+/// refuses a page nobody wrote and a count larger than the page can hold.
 fn roster_page() -> &'static [u8] {
+    // SAFETY: a page the kernel mapped into this process at spawn, of exactly `fs_proto::PAGE`
+    // bytes, and never written by anybody after that (the roster is built once at wiring time).
     unsafe { core::slice::from_raw_parts(ROSTER_VA as *const u8, fs_proto::PAGE) }
 }
 
