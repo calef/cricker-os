@@ -67,6 +67,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # script/mutants runs -j 2, and that bound is load-bearing here too: each job holds a full
+      # tree copy with its own target/, and the run that established the baseline OOM-killed a
+      # 16 GiB machine at -j 4. These runners have no more headroom than that.
       - name: Run this shard of the mutants
         run: script/mutants --shard ${{ matrix.shard }}/4
 

@@ -126,15 +126,21 @@ if [ "$installed" != "$pinned" ]; then
     cargo install --locked "cargo-mutants@$pinned"
 fi
 
-# -j 4: cargo-mutants parallelism is per MUTANT (each job builds and tests its own tree copy), and
-# the tool's own guidance is that beyond about four jobs the incremental builds contend rather than
-# scale. The jobserver (on by default) caps total compiler tasks at NCPUS across all jobs.
+# -j 2, and the number is a scar, not a guess. cargo-mutants parallelism is per MUTANT: each job
+# holds a full copy of the tree with its own target/ and runs its own rustc and test binaries. At
+# -j 4 the baseline run took the development machine (8 cores, 16 GiB) to zero free memory and the
+# OOM killer took the session with it; at -j 2 the same run is slower and finishes. CI runners have
+# no more memory than that machine, so the bound is not a local tuning. Raise it only with the
+# memory headroom measured first. The jobserver (on by default) still caps compiler tasks at NCPUS.
+#
+# `--iterate` is worth knowing when resuming a long run: it skips mutants a previous mutants.out
+# already caught, so a killed run resumes instead of repaying hours.
 #
 # Exit codes are the tool's verdict, not the script's: 2 means mutants survived and 3 means some
 # timed out, and both are the report this exists to produce. Everything else (1 usage, 4 the
 # unmutated tree failing its own tests) is a broken run and stays fatal.
 rc=0
-cargo mutants --workspace -j 4 "$@" || rc=$?
+cargo mutants --workspace -j 2 "$@" || rc=$?
 case "$rc" in
     0) echo "==> mutants: every mutant caught" ;;
     2|3) echo "==> mutants: survivors found (exit $rc); a report, not a gate. Triage per the note:" ;;
