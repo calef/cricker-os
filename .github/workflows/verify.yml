@@ -1,0 +1,86 @@
+# Kani proofs, deliberately in their OWN workflow rather than as a job in ci.yml.
+#
+# Not organisation: GitHub will not let you re-run a failed job while any job in the SAME workflow is
+# still running. Kani takes ~47 minutes and `build + test` takes ~3, so a flaky `build + test` could
+# not be retried until Kani finished, and on 2026-08-03 that turned several three-minute retries into
+# forty-minute waits. Splitting the slowest job out means every other job can be retried the moment it
+# fails.
+#
+# The check NAME is unchanged (`verify (Kani proofs)`), because that is the string the repository
+# ruleset requires. Moving a job between workflows keeps its name, so the required check keeps
+# matching; renaming it here would silently stop satisfying the rule.
+#
+# The triggers must mirror ci.yml exactly, or a pull request gets no verify check at all and blocks
+# forever on a rule nothing can satisfy.
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: verify (Kani proofs)
+    runs-on: ubuntu-24.04-arm
+    # Kani pulls its own toolchain and a CBMC backend, so this is the slowest thing CI runs: ~47
+    # minutes against `build + test`'s ~3. 106 harnesses across 19 crates as of 2026-07-31, counted
+    # from the merged tree rather than from a lane. The 60-minute budget is the number that matters.
+    timeout-minutes: 60
+    steps:
+      # Full history, because the skip decision below diffs against the merge base.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # **Skip the proving when the change provably cannot reach a proof.**
+      #
+      # Measured 2026-08-02: this job is 43 minutes, of which 42 are `script/verify`; every other
+      # job in this workflow finishes inside 8. Installing Kani is 10 seconds because rust-cache
+      # already holds it, so there is nothing to win in setup. The only lever is not running it.
+      #
+      # The rule is an ALLOW-list of things that cannot matter, not a deny-list of things that can,
+      # because the failure modes are not symmetric. Skipping a proof that was needed is a broken
+      # `main`; running one that was not is 42 wasted minutes. So anything not listed here runs the
+      # proofs, and a new directory is covered by default.
+      #
+      # **The job still runs and still reports success**, and that is deliberate rather than
+      # incidental. A required check that never reports blocks the merge forever, which
+      # notes/repo-hardening.md names as the single most likely way to get this wrong. Skipping the
+      # STEP keeps the check green; skipping the JOB would have been a coin flip on how GitHub
+      # treats a skipped required check.
+      - name: Does this change need the proofs?
+        id: scope
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          [ -n "$base" ] || base="$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)"
+          changed="$(git diff --name-only "$base" HEAD)"
+          echo "changed files:"; echo "$changed" | sed 's/^/  /'
+          # Everything a proof cannot see: prose, and the roadmap. Note `script/` is NOT here,
+          # because script/verify decides which harnesses run.
+          if [ -z "$(printf '%s\n' "$changed" | grep -vE '^(notes/|design/|[A-Z_]+\.md$)' || true)" ]; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            echo "==> documentation only; the proofs cannot be affected"
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.scope.outputs.needed == 'true'
+      # Kani is deliberately NOT in script/bootstrap (it pulls its own nightly and CBMC, which the
+      # test job would pay for and never use), so install it here, in the one job that needs it.
+      - name: Install Kani
+        if: steps.scope.outputs.needed == 'true'
+        run: |
+          cargo install --locked kani-verifier
+          cargo kani setup
+      # The proofs ARE the thesis (DECISIONS §14). Before 2026-07-30 they ran only on a developer's
+      # machine, which meant a change could break a proof and CI would report success.
+      - name: script/verify
+        if: steps.scope.outputs.needed == 'true'
+        run: script/verify
+
