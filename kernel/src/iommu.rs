@@ -20,7 +20,6 @@
 //! device is denied by default. The window between "the bus grants Bus-Master Enable" and "the
 //! kernel confines the device" is therefore closed by the hardware, not by careful ordering.
 
-use crate::arch::mmu::{DmaFormat, phys_to_virt};
 use paging::domain::{DmaRegion, build_identity_domain};
 
 // The fault-reporting surface, re-exported as the portable interface. `take_fault` is drained by
@@ -29,6 +28,7 @@ use paging::domain::{DmaRegion, build_identity_domain};
 // fields without ever naming the type, so both re-exports are allowed to be locally unused.
 #[allow(unused_imports)]
 pub use crate::arch::iommu::{Fault, take_fault};
+use crate::arch::mmu::{DmaFormat, phys_to_virt};
 
 /// Is an IOMMU present and initialized on this machine? False on a `virt` boot without
 /// `iommu=smmuv3` (aarch64) or without a `riscv-iommu-pci` function (riscv), where the kernel

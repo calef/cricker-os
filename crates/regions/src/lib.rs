@@ -18,8 +18,36 @@
 //!   child never frees to global" is the no-double-free crux: a page reaches the allocator only when
 //!   the root that owns it is destroyed, and each root owns one contiguous run from one allocation.
 //!
-//! Everything here works in **page units** (a watermark and page counts), so it is FRAME_SIZE- and
+//! Everything here works in **page units** (a watermark and page counts), so it is `FRAME_SIZE`- and
 //! address-agnostic; the kernel supplies the base addresses and does the byte arithmetic and the I/O.
+//!
+//! # Examples
+//!
+//! ```
+//! use regions::split_new_watermark;
+//!
+//! // A 100-page parent that has spent 40: carving 10 more moves the watermark to 50.
+//! assert_eq!(split_new_watermark(100, 40, 10), Some(50));
+//!
+//! // Exactly exhausting the budget is fine.
+//! assert_eq!(split_new_watermark(100, 90, 10), Some(100));
+//!
+//! // One page beyond it is not. A child can never be bigger than what is left.
+//! assert_eq!(split_new_watermark(100, 90, 11), None);
+//! ```
+//!
+//! The two refusals that are not about the budget at all, and are the reason this is a function
+//! rather than a subtraction written at the call site:
+//!
+//! ```
+//! use regions::split_new_watermark;
+//!
+//! // An empty carve would mint a zero-page region, which is not a thing.
+//! assert_eq!(split_new_watermark(100, 40, 0), None);
+//!
+//! // And a wrap would forge budget out of arithmetic.
+//! assert_eq!(split_new_watermark(100, 40, u64::MAX), None);
+//! ```
 
 #![no_std]
 

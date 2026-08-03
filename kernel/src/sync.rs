@@ -46,10 +46,11 @@
 //!
 //! See notes/locking.md and DECISIONS.md §9.
 
-use crate::arch::interrupts;
 use core::mem::ManuallyDrop;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::Ordering;
+
+use crate::arch::interrupts;
 
 /// # Lock ranking: the rule from DECISIONS.md §9, enforced by the machine
 ///
@@ -157,7 +158,7 @@ pub mod rank {
     /// RISC-V IOMMU's device directory and queues, whichever this arch has. A pure leaf: `attach`
     /// and `take_fault` do register and in-memory-queue work and lock nothing beneath them, and
     /// the DMA domain's page-table frames are allocated *before* this lock is taken (see
-    /// crate::iommu::confine), so the lock is never held across an allocation. Below VIRTIO
+    /// `crate::iommu::confine`), so the lock is never held across an allocation. Below VIRTIO
     /// because a PCI device is confined from the same bring-up path that registers its transport,
     /// though the two locks are never actually nested (confine runs before DEVICES is taken).
     pub const IOMMU: u32 = 54;
@@ -172,7 +173,7 @@ pub mod rank {
     /// where their mapping logs are. **Above UNTYPED**, because recording a mapping retypes a
     /// log page from the paying space's region under this lock. Never held together with SCHED
     /// in either order: the capability sweep (SCHED) and the unmap sweep (this) run one after
-    /// the other, and the reaper drops address spaces outside SCHED (see finish_switch).
+    /// the other, and the reaper drops address spaces outside SCHED (see `finish_switch`).
     pub const MAPPINGS: u32 = 59;
 
     /// The kernel's own page tables (`mmu::map_page` / `unmap_page`).
@@ -180,7 +181,7 @@ pub mod rank {
     /// Single-core, `kernel_mapper()` needed no lock: the callers happened not to race. SMP breaks
     /// that (two cores spawning threads both mutate the shared TTBR1 tables), so mapping is now
     /// serialized. **Below the scheduler** (a `KernelStack`'s `Drop` unmaps from under `reap`, which
-    /// holds SCHED) and **below STACK_VA** (a stack's `new` maps pages), and **above the allocators**
+    /// holds SCHED) and **below `STACK_VA`** (a stack's `new` maps pages), and **above the allocators**
     /// (mapping allocates intermediate page-table frames). See DECISIONS.md §11.
     pub const KERNEL_MMU: u32 = 45;
 
@@ -270,6 +271,7 @@ pub struct IrqSafeMutex<T> {
 
 // SAFETY: same reasoning as any mutex. The lock provides the exclusion.
 unsafe impl<T: Send> Sync for IrqSafeMutex<T> {}
+// SAFETY: as for `Sync` directly above: the lock provides the exclusion.
 unsafe impl<T: Send> Send for IrqSafeMutex<T> {}
 
 impl<T> IrqSafeMutex<T> {
@@ -323,6 +325,7 @@ impl<T> IrqSafeMutex<T> {
     /// half-finished, and that its data may be inconsistent. That is an acceptable trade
     /// when the alternative is a silent hang, and an unacceptable one at any other time.
     pub unsafe fn force_unlock(&self) {
+        // SAFETY: this function's own `# Safety` contract is exactly the one this call needs; it forwards, it does not weaken.
         unsafe { self.inner.force_unlock() }
     }
 }

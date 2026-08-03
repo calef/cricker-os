@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 license.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 
 # The matcher, and only the matcher. `glob` is a total function on two byte strings with no

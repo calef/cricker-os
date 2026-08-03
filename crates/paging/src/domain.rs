@@ -16,7 +16,7 @@
 //! through. That is the whole confinement, now in hardware: the domain is an allow-list of frames,
 //! expressed as a page table. The driver's ABI does not change, because IOVA == PA means the
 //! addresses it computes still name the right memory. (Both `virt` boards place RAM in the low half:
-//! aarch64 at 0x4000_0000, riscv at 0x8000_0000, both far below either format's [`Half`] split.)
+//! aarch64 at `0x4000_0000`, riscv at `0x8000_0000`, both far below either format's [`Half`] split.)
 //!
 //! # The RISC-V U-bit, stated once
 //!
@@ -353,11 +353,12 @@ mod verification {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::{Aarch64, Sv39};
     use std::alloc::{Layout, alloc_zeroed};
     use std::cell::RefCell;
     use std::vec::Vec;
+
+    use super::*;
+    use crate::{Aarch64, Sv39};
 
     // A SYNTHETIC physical address space, and the reason it exists is a CI failure worth recording.
     //
@@ -505,6 +506,7 @@ mod tests {
             )
             .expect("domain build failed");
         }
+        // SAFETY: `root` is the table the domain build above just populated, and `phys_to_ptr` is this test's own identity map over the frames it allocated, so every physical address the mapper walks is one it can read.
         let m = unsafe {
             Mapper::<fn() -> Option<u64>, _, Sv39>::new(root, Half::Low, || None, phys_to_ptr)
         };

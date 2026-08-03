@@ -116,7 +116,7 @@ pub fn set_percpu(ptr: usize) {
     let stash_ptr = stash as *const TrapStash as usize;
     // SAFETY: `sscratch` now names this hart's stash; trap.s reads it as `&TrapStash` on every trap.
     unsafe {
-        asm!("csrw sscratch, {}", in(reg) stash_ptr, options(nomem, nostack, preserves_flags))
+        asm!("csrw sscratch, {}", in(reg) stash_ptr, options(nomem, nostack, preserves_flags));
     };
 }
 
@@ -155,7 +155,7 @@ pub fn percpu_matches_hart() -> bool {
 /// (Hart State Management) extension's `sbi_hart_start(hartid, start_addr, opaque)`. The firmware
 /// starts the target hart at `entry` (a physical address) in S-mode with paging off, `a0` = its hart
 /// id and `a1` = `context`. Returns the SBI error (0 = success; a hart QEMU did not create, when
-/// `-smp` is smaller than MAX_CPUS, returns a nonzero error rather than hanging). See boot.s
+/// `-smp` is smaller than `MAX_CPUS`, returns a nonzero error rather than hanging). See boot.s
 /// `secondary_boot`.
 pub fn psci_cpu_on(target_hart: u64, entry: u64, context: u64) -> i64 {
     const SBI_HSM_EID: usize = 0x0048_534D; // "HSM"

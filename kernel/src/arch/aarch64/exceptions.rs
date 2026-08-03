@@ -12,14 +12,16 @@
 //!
 //! See notes/exceptions.md.
 
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+use aarch64_cpu::asm::barrier;
+use aarch64_cpu::registers::{ESR_EL1, FAR_EL1, VBAR_EL1};
+use tock_registers::interfaces::{Readable, Writeable};
+
 use super::timer;
 use crate::arch::{UserFault, UserFaultAccess};
 use crate::drivers::gic;
 use crate::println;
-use aarch64_cpu::asm::barrier;
-use aarch64_cpu::registers::{ESR_EL1, FAR_EL1, VBAR_EL1};
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use tock_registers::interfaces::{Readable, Writeable};
 
 /// The interrupted CPU state, as saved by `SAVE_CONTEXT` in `vectors.s`.
 ///
@@ -70,8 +72,8 @@ impl TrapFrame {
     /// `x0`..`x2`. The arch side of the userspace-entry seam (notes/riscv-port.md, leak #3):
     /// portable `user.rs` asks for "a user-entry frame" and never names `elr`/`spsr`/`sp_el0`.
     ///
-    /// `spsr = 0` is the `SPSR_EL1` value for "return to EL0t, AArch64, interrupts unmasked":
-    /// `M[4]=0` (AArch64), `M[3:0]=0` (EL0t, the only stack EL0 has), `DAIF=0` (IRQs on the moment we
+    /// `spsr = 0` is the `SPSR_EL1` value for "return to `EL0t`, AArch64, interrupts unmasked":
+    /// `M[4]=0` (AArch64), `M[3:0]=0` (`EL0t`, the only stack EL0 has), `DAIF=0` (IRQs on the moment we
     /// land, so a tight-loop user thread is still preemptible, per DECISIONS §5). Zero looks like a
     /// bug and is not.
     /// The syscall number the caller passed. aarch64 ABI: register `x8` (DECISIONS §10). The
@@ -168,7 +170,7 @@ fn entered_user_with_no_entry_point(sp_el0: u64) -> ! {
     )
 }
 
-/// **Diagnostic: the EL0 PC of a thread from the TrapFrame at the top of its kernel stack.** A
+/// **Diagnostic: the EL0 PC of a thread from the `TrapFrame` at the top of its kernel stack.** A
 /// thread that trapped from EL0 (a syscall, or a timer preemption while spinning) left its frame at
 /// `stack_top - size_of::<TrapFrame>()`, where `elr` is its EL0 PC. Used by the watchdog dump to say
 /// *where* each thread is, not just its scheduler state. Meaningless for a pure kernel thread.
@@ -274,7 +276,7 @@ pub fn init() {
 ///
 /// `extern "C"` because assembly calls it: `frame` arrives in `x0`, `index` in `x1`,
 /// per AAPCS64. See notes/registers.md.
-/// Vector slot 5: Current EL, SP_ELx, IRQ. **The kernel being interrupted.**
+/// Vector slot 5: Current EL, `SP_ELx`, IRQ. **The kernel being interrupted.**
 const VECTOR_IRQ_CURRENT: u64 = 5;
 /// Vector slot 9: Lower EL, AArch64, IRQ. Userspace being interrupted. Milestone 7.
 const VECTOR_IRQ_LOWER: u64 = 9;
@@ -425,7 +427,7 @@ fn classify(esr: u64) -> UserFault {
 /// # Why this can simply call `sched::exit()`
 ///
 /// We are inside the exception handler, standing on the faulting thread's **kernel** stack,
-/// with its TrapFrame just below us. `exit()` marks the thread `Finished` and calls
+/// with its `TrapFrame` just below us. `exit()` marks the thread `Finished` and calls
 /// `schedule()`, which switches to somebody else and **never comes back**. `exception_restore`
 /// is never reached, the `eret` never happens, and the user program is simply not resumed.
 ///
@@ -664,18 +666,19 @@ mod tests {
     ///
     /// `brk #0` raises a synchronous exception. To reach the line after it, every
     /// single piece of milestone 2 has to be correct: the vector table is where
-    /// VBAR_EL1 says, slot 4 (Current EL, SP_ELx, Synchronous) fires, SAVE_CONTEXT
-    /// writes a frame that matches `TrapFrame`, Rust decodes ESR_EL1 and recognizes
+    /// `VBAR_EL1` says, slot 4 (Current EL, `SP_ELx`, Synchronous) fires, `SAVE_CONTEXT`
+    /// writes a frame that matches `TrapFrame`, Rust decodes `ESR_EL1` and recognizes
     /// EC 0x3c, it advances ELR past the `brk` (which the hardware does NOT do for
-    /// us, unlike `svc`), RESTORE_CONTEXT puts the machine back, and `eret` returns
+    /// us, unlike `svc`), `RESTORE_CONTEXT` puts the machine back, and `eret` returns
     /// to exactly the right address.
     ///
     /// Get any of that wrong and you don't get a failing assertion. You get an
     /// infinite loop, or a crash. So arriving here at all is most of the test.
     #[test_case]
     fn breakpoint_is_caught_and_execution_resumes() {
-        use crate::arch::exceptions::BRK_COUNT;
         use core::sync::atomic::Ordering;
+
+        use crate::arch::exceptions::BRK_COUNT;
 
         let before = BRK_COUNT.load(Ordering::Relaxed);
 
@@ -695,7 +698,7 @@ mod tests {
     /// intact, which is a different claim. Put a known value in a register, take an
     /// exception, read it back.
     ///
-    /// A bug in SAVE_CONTEXT/RESTORE_CONTEXT (a wrong offset, a swapped pair) would
+    /// A bug in `SAVE_CONTEXT/RESTORE_CONTEXT` (a wrong offset, a swapped pair) would
     /// scramble registers while still returning perfectly happily to the right
     /// address. That is the nastiest possible failure: it corrupts a caller's state
     /// and blames a completely innocent piece of code, thousands of instructions

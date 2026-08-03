@@ -131,6 +131,9 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 65 | NOT-STARTED | A secrets service: hold the key, expose the operation, never the key | NTLMv2 does not verify a presented secret, it **computes with a key**, so §54's verifier shape does not fit it. Generalises the credentialer into a software HSM. Blocks milestone 55 |
 | 66 | NOT-STARTED | Vaultwarden: somebody else's real application, running here | the north star for "runs real workloads". Names the gaps concretely rather than aspirationally: no TCP **listen or accept** in the socket contract, threads mostly stubs, most of `std::fs` unsupported, no async runtime, no TLS, and SQLite is a C library. Largest single item on this roadmap |
 | 67 | NOT-STARTED | `swish` the language: quoting, sequencing, and exit status | `swish` is an interactive shell without control flow. Quoting is the one that is a correctness gap rather than a convenience: **a filename with a space is currently unnameable** |
+| 68 | PARTIAL | Code-quality gates: one lint policy, and the lints that lost | Import order, `[workspace.lints]`, dependency direction, unused dependencies, spelling. Three lints were adopted, measured and **removed** on the evidence. `undocumented_unsafe_blocks` is now a GATE: all 205 undocumented blocks were read and commented. Doc examples went 5 -> 23 across nine crates, which is a start and not the standard; `missing_docs` is still not adoptable |
+| 69 | NOT-STARTED | Split `kernel/src/user.rs` by service | 15,499 lines and **46 top-level modules** in one file: a dozen `*_service` modules and ~34 test modules. The split is nearly free because the boundaries are already `mod` blocks, so moving one to its own file changes no visibility and no API |
+| 70 | NOT-STARTED | `swish`'s remaining logic in a crate, host-testable like its siblings | `coremark`, `line_editor` and `compositor` are each a crate holding the logic plus a program holding the IO. `swish` is the largest program that is not, so its dispatch, endowment preview and outcome handling are reachable only through QEMU |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -4808,3 +4811,195 @@ extension through *verification* rather than *isolation*, with no IPC cost. Wort
 other fork. It does not undercut the thesis so much as relocate the cost: the eBPF verifier is itself
 a large, subtle, repeatedly-CVE'd component, so "the verifier is the TCB" is its version of the
 problem, not an escape from it. No milestone; a reading item.
+
+### 68. Code-quality gates: one lint policy, and the lints that lost
+
+**Status: PARTIAL.** Started and largely landed 2026-08-02, from an audit of what the tree checked
+and what it did not. Two halves are deliberately unfinished and scoped below rather than rushed.
+
+#### What landed
+
+The tree had no `rustfmt.toml`, so import order was whatever each author typed, and lint selection
+lived in 19 of 39 crates repeating one `[lints.rust]` table while the other 20 said nothing. Both are
+now single decisions: `group_imports`/`imports_granularity` in `rustfmt.toml`, and
+`[workspace.lints]` with a one-line opt-in per member.
+
+Adopted: `cast_ptr_alignment`, `ptr_as_ptr`, `semicolon_if_nothing_returned`, `manual_let_else`,
+`doc_markdown`. 1,221 warnings went to zero. Three new non-clippy gates joined `script/lint`:
+**dependency direction** (nothing under `crates/` may depend on a binary, which would take it out of
+the host tests and Kani while still building), **unused dependencies** (§46 with a gate), and
+**spelling** over the prose.
+
+#### The part worth carrying off: three lints were removed on the evidence
+
+Each was enabled, measured against the real tree, and dropped, with the number recorded next to it
+in `Cargo.toml` and `rustfmt.toml` rather than silently omitted.
+
+- **`cast_possible_truncation`**: 199 of 497 hits are `u64`/`i64` to `usize`, warned about for
+  32-bit-pointer targets. §19 names aarch64, riscv64 and x86_64, all 64-bit. Over half its output is
+  about a platform that does not exist here, and clippy cannot be told otherwise.
+- **`items_after_statements`**: all 43 hits are a `const` sitting beside its use, under the comment
+  that explains it. Obeying it separates every one from its explanation.
+- **`format_code_in_doc_comments`** (rustfmt): destroyed an authored alignment column inside
+  `crates/gpt`'s module example, and emitted trailing whitespace into a doc comment.
+
+`doc_markdown` is the same story with the opposite ending: 416 hits, about half wanting backticks
+around `RedoxFS`, `PCIe` and `OpenSBI`, which are proper nouns that would then render as code a
+reader could type. `clippy.toml`'s `doc-valid-idents` takes those; the other half were real.
+
+The general rule, and the reason this milestone is worth a roadmap entry at all: **a lint that is
+right in general can be wrong for a tree, and the way to find out is to run it and read the hits.**
+Reasoning about a lint's description predicts none of these.
+
+#### What is NOT done, with counts
+
+Both remaining halves are real engineering, not mechanical, and a first attempt at automating one of
+them was reverted for producing exactly the wrong artefact.
+
+- **Doc examples.** 5 doctests in the whole host workspace became 23, and nine crates went from
+  0.0% example coverage to somewhere between 2.4% and 25%. That is a real start and explicitly not
+  the FreeBSD standard CLAUDE.md sets: **28 host crates still have no example at all.** The crates
+  done first were the ones where an example carries an argument rather than a signature (`capability`
+  showing that intersection is the only transfer operation, `measured_boot` showing that an
+  unmeasured name fails CLOSED, `regions` showing the two refusals that are not about the budget).
+  The ones left are mostly parsers that need a real fixture to demonstrate (`elf`, `dtb`,
+  `crickerfs`, `gpt`), which is more work per example, not less valuable.
+- **`missing_docs`** is still not adoptable, and the number says why: item coverage runs from
+  **36.4%** (`socket_proto`) to 100%, with `pci` at 48.9% and `intrusive` at 50%. Adding it to
+  `[workspace.lints]` is a commitment to write several hundred item docs first, which is §61's rule
+  and not a formality.
+- **Doc examples: 5 doctests in the entire host workspace**, and `rustdoc --show-coverage` reports
+  0.0% examples on every crate sampled (`ipc` 94.4% of items documented, 0.0% examples; `capability`
+  67.6%/0.0%). CLAUDE.md sets the FreeBSD standard explicitly ("a page without a worked example has
+  not finished explaining itself"), so this is a stated commitment the tree does not meet. A doctest
+  is documentation and a test at once, and `cargo test` already runs them, so the harness needs no
+  work; only the examples are missing.
+
+`missing_docs` belongs with the second of those (item coverage is 67–94% and no crate warns on it),
+and is best done in the same pass as the examples rather than separately.
+
+#### What closing the unsafe half taught
+
+All 205 blocks are commented and `undocumented_unsafe_blocks` is in `[workspace.lints]`, so the
+convention is now enforced rather than followed. The useful finding is what the sites turned out to
+be, because it is not what the raw count suggested.
+
+**Three quarters of them were genuinely uniform**, and the uniformity was a fact about the system
+rather than an excuse:
+
+- **58 panic-handler traps**, byte-identical `asm!("brk #0", options(nostack, nomem))` or its
+  `ebreak` twin, in EL0 programs.
+- **73 `invoke` syscalls.** `user_rt::invoke` is the only unsafe function in the EL0 runtime, and its
+  contract is that there is no caller obligation: *"the kernel validates the capability and the
+  method before acting; the caller is trusting the kernel, not the other way around."* An
+  `unsafe { invoke(..) }` is unsafe because it is inline asm, not because a bad slot could break
+  anything. **That is the capability model showing through the type system**, and it is why one
+  sentence is honest at all 73 sites.
+
+**The remaining quarter was the real work**, and each site's comment says something a reader could
+not have guessed: intrusive-queue link ownership (including a drop-order fact, that a test's nodes
+are declared before the queue so they outlive it); allocator alignment invariants; virtio ring
+aliasing, where the read side is the driver's memory and the write side is a kernel-private shadow;
+`env::set_var` in `xtask`, unsafe since edition 2024, sound only because the one thread it ever
+spawns copies pipe bytes and never reads the environment.
+
+**The test that decides whether a batch may share a comment** is whether the sentence is checkable
+at each site. For a trap in a panic handler it is, because it is literally the same site 58 times.
+For a test module's pointers it is not, which is what the reverted generic pass got wrong.
+
+One regression is worth recording because nothing else would have caught it: adding an
+`#[allow(clippy::cast_ptr_alignment)]` above an `unsafe` block silently **separated an existing
+`SAFETY:` comment from its block**, and clippy then reported the block as undocumented. An attribute
+between a comment and the item it describes breaks the association. The fix is ordering: attribute
+first, then the comment, then the block.
+
+### 69. Split `kernel/src/user.rs` by service
+
+**Status: NOT-STARTED.** Raised 2026-08-02, from a question about whether thousand-line files are an
+antipattern in Rust. The general answer is no, and this file is the exception that proves why.
+
+#### Why file length is usually the wrong metric here
+
+In Java the one-public-class-per-file rule is compiler-enforced; in Rails, autoloading maps paths to
+constants. Both make size a proxy for "too many responsibilities". Rust has neither: a file **is** a
+module, the module is the privacy boundary, and the standard library ships multi-thousand-line files
+that are one coherent thing. This tree also comments far more heavily than production code by policy
+and keeps unit tests in-file, which inflates counts for good reasons. `crates/glob` is 1,173 lines of
+which **54% are tests**; `crates/calendar` is 1,578 at 43%. Shrinking either would make it worse.
+
+#### What makes `user.rs` different
+
+It is **15,499 lines holding 46 top-level modules**: roughly a dozen `pub mod *_service` blocks
+(`console`, `virtio`, `fs`, `display`, `compositor`, `keyboard`, `clock`, `entropy`, `credential`,
+`ntp`, `untyped`, `pipeline`) and roughly 34 `#[cfg(test)]` modules, interleaved. `fs_service` alone
+is 1,217 lines and the top-level `tests` module is 2,320.
+
+The test that matters is not the line count but this: **to change the NTP service you open the file
+where the compositor lives.** That is ten responsibilities in one place, and no amount of Rust
+module semantics makes it one.
+
+#### Why this split is unusually cheap
+
+The standard argument against splitting a Rust file is that it forces you to widen visibility: items
+private to the module become `pub(crate)` merely to be reachable, and a long file is traded for a
+leakier API.
+
+**That argument does not apply, because the boundaries already exist as `mod` blocks.** A child
+module can see its ancestors' private items whether it is written inline or in its own file, so
+
+```rust
+pub mod fs_service;          // was: pub mod fs_service { ... }
+```
+
+is semantically identical to what is there now: no visibility change, no API change, and `use
+super::*` inside keeps working. This is a file move, not a refactor, which is what separates it from
+the speculative restructuring CLAUDE.md warns against.
+
+#### The one real cost, and the scheduling consequence
+
+`user.rs` is the kernel's service-wiring file and nearly every milestone touches it, so the diff
+conflicts with anything in flight. **Do it while the tree is quiet**, in one pass, and do not
+interleave it with feature work. Splitting it across two lanes would be worse than not splitting it.
+
+Suggested shape: `kernel/src/user/` with one file per service and each service's tests beside it,
+leaving `user.rs` as the wiring that names them.
+
+### 70. `swish`'s remaining logic in a crate, host-testable like its siblings
+
+**Status: NOT-STARTED.** Raised 2026-08-02, and **the finding that prompted it was wrong**, which is
+worth recording because the corrected version is a smaller and more honest milestone.
+
+#### The correction
+
+`user/src/swish.rs` is 2,625 lines with **zero `#[cfg(test)]` blocks**, and that was first reported
+as "the shell is untested". It is not. The shell is covered twice over:
+
+- **~28 QEMU integration `test_case`s** across five kernel test modules (`shell_navigation_tests`,
+  `pipeline_tests`, `redirection_tests`, `glob_grant_tests`, `rm_program_tests`), which spawn the
+  real binary and drive it.
+- **93 host unit tests in `crates/grant_plan`**, which already holds swish's parsing, navigation and
+  grant-planning logic. `swish.rs` imports `grant_plan::{expand, line, nav}` and `line_editor::proto`
+  rather than reimplementing any of it.
+
+So 0% was a fact about one **file**, not about a component, and a file-level metric said something
+false about the system. That is the general lesson: coverage measured per file counts where tests are
+*written*, not what they *reach*.
+
+#### The real gap, which is narrower
+
+What is left in `swish.rs` is mostly IO glue, and some of it is logic that a host test could reach if
+it were lifted: `builtin` and `dispatch`, `outcome`'s interpretation of a spawn result, `preview`'s
+rendering of an endowment, `refuse`'s mapping from a `Refusal` to what the user reads, `print_num`.
+Today every one of those is exercised only by booting QEMU, which is slow, coarse, and cannot easily
+provoke the error paths.
+
+CLAUDE.md already names the pattern this should follow: **a crate and a program may share a name, and
+it says something when they do** (the crate is the logic, lifted so it is host-testable and
+Kani-reachable; the program keeps the IO). `coremark`, `line_editor` and `compositor` are each that
+pair. `swish` is the largest program that is not one.
+
+#### Scope note
+
+This is an incremental tidy of a working, tested component, not a fix for a defect. It should be
+scheduled accordingly, and it should not grow into a rewrite of the shell. If lifting a function
+needs the shell's IO restructured to accommodate it, that function stays where it is.

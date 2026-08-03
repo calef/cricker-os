@@ -32,12 +32,10 @@
 #![no_std]
 #![no_main]
 
-use user_rt::{call, send};
-
 // A source file shared by several binaries through `#[path]`, and each uses a different slice of it,
 // so the unused halves are expected (§38).
-
 use swap_proto::client_checks as ck;
+use user_rt::{call, send};
 
 /// What `swapper` endowed us with, in order. The attacker gets the same three, deliberately.
 const SVC: u64 = 0; // WRITE: we may ask. We may not answer.

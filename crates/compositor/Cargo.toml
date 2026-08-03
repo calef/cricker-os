@@ -14,6 +14,9 @@ license.workspace = true
 # Clipping and damage-rectangle intersection are where compositors have their bugs, and they are
 # arithmetic, so they belong in a crate whose tests run in milliseconds rather than in an emulator.
 
+[lints]
+workspace = true
+
 [dependencies]
 # The screen IS the framebuffer contract's surface: rung two composites into the same shared frames
 # rung one painted, and flushes through the same display IPC. Depending on gfx_proto rather than

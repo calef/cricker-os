@@ -28,6 +28,44 @@
 //!
 //! Pure logic. Bytes in, frame numbers out. No hardware, no `unsafe`. Its tests run on
 //! the host in milliseconds instead of booting an emulator.
+//!
+//! # Examples
+//!
+//! The wiring an early boot does: name the span, hand it a bitmap, then declare what is real RAM
+//! and what inside it is already spoken for.
+//!
+//! ```
+//! use frames::{FrameAllocator, Frame, FRAME_SIZE};
+//!
+//! const BASE: u64 = 0x4000_0000;
+//! const TOTAL: usize = 64;                      // 64 frames of address space
+//! let mut bitmap = [0u8; FrameAllocator::bitmap_bytes(TOTAL)];
+//! let mut fa = FrameAllocator::new(BASE, TOTAL, &mut bitmap);
+//!
+//! // Nothing is free until someone says so: an allocator starts owning nothing.
+//! assert_eq!(fa.stats().free(), 0);
+//!
+//! fa.mark_free(BASE, TOTAL as u64 * FRAME_SIZE);        // all of it is real RAM
+//! fa.mark_used(BASE, 4 * FRAME_SIZE);                   // ... but the first four hold the kernel
+//! assert_eq!(fa.stats().free(), TOTAL - 4);
+//!
+//! let f = fa.alloc().expect("60 frames are free");
+//! assert!(f.addr() >= BASE + 4 * FRAME_SIZE, "never hands back the kernel's own frames");
+//! assert_eq!(fa.stats().free(), TOTAL - 5);
+//!
+//! fa.free(f);
+//! assert_eq!(fa.stats().free(), TOTAL - 4);
+//! ```
+//!
+//! A frame is an address that is known to be aligned, which is the point of the newtype:
+//!
+//! ```
+//! use frames::{Frame, FRAME_SIZE};
+//!
+//! // `containing` rounds down to the frame an arbitrary address falls in.
+//! assert_eq!(Frame::containing(0x4000_0FFF).addr(), 0x4000_0000);
+//! assert_eq!(Frame::containing(0x4000_1000).addr(), 0x4000_1000);
+//! ```
 
 #![cfg_attr(not(test), no_std)]
 

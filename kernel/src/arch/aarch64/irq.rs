@@ -47,7 +47,7 @@ fn target_cpu(intid: u32) -> usize {
 ///
 /// Called by the `Irq` capability's ACK, after a userspace driver has serviced its device: the IRQ
 /// handler masked the source when it fired (so a level-triggered device would not re-fire in a storm
-/// before the driver quieted it), and this brings it back. seL4's IRQHandler protocol, the aarch64
+/// before the driver quieted it), and this brings it back. seL4's `IRQHandler` protocol, the aarch64
 /// half.
 ///
 /// SPI lines are spread across the online cores (see [`target_cpu`]) so a device's completion
@@ -70,7 +70,7 @@ pub fn init() {
         crate::drivers::gic::init(
             crate::arch::mmu::phys_to_virt(gicd),
             crate::arch::mmu::phys_to_virt(gicc),
-        )
+        );
     };
 }
 

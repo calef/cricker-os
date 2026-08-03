@@ -4,7 +4,6 @@
 //! pointer, so we mint a fresh one per call rather than keeping a
 //! `static mut CONSOLE`. The real state lives in the hardware, not in our memory.
 
-use crate::sync::{IrqSafeMutex, rank};
 use core::fmt::Write;
 
 // The early console UART, selected by architecture at compile time. Two concrete drivers, not a
@@ -16,6 +15,7 @@ use core::fmt::Write;
 use crate::drivers::ns16550::Ns16550 as ConsoleUart;
 #[cfg(target_arch = "aarch64")]
 use crate::drivers::pl011::Pl011 as ConsoleUart;
+use crate::sync::{IrqSafeMutex, rank};
 
 /// The console UART's **physical** address on QEMU's `virt` machine.
 #[cfg(target_arch = "aarch64")]
@@ -50,7 +50,7 @@ const UART_BASE: usize = crate::arch::mmu::phys_to_virt(UART_PHYS) as usize;
 /// `write_str`, because the UART is written **one byte at a time** and the two writers would splice
 /// into each other mid-word.
 ///
-/// SAFETY: UART_BASE is the documented UART address on QEMU `virt`, and nothing else in the kernel
+/// SAFETY: `UART_BASE` is the documented UART address on QEMU `virt`, and nothing else in the kernel
 /// touches it.
 static CONSOLE: IrqSafeMutex<ConsoleUart> =
     IrqSafeMutex::new(rank::CONSOLE, unsafe { ConsoleUart::new(UART_BASE) });
@@ -113,6 +113,7 @@ pub fn quiet_uart_interrupt() {
 ///
 /// See sync.rs, and DECISIONS.md §9.
 pub unsafe fn force_unlock() {
+    // SAFETY: this function's own `# Safety` contract is exactly the one this call needs; it forwards, it does not weaken.
     unsafe { CONSOLE.force_unlock() }
 }
 

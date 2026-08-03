@@ -1,6 +1,6 @@
 //! Parse the RISC-V virt board's device tree, the second machine we boot on.
 //!
-//! The aarch64 twin of this file (qemu_virt.rs) explains why these run on the host. This one
+//! The aarch64 twin of this file (`qemu_virt.rs`) explains why these run on the host. This one
 //! exists because the riscv boot path leans on two parser features the aarch64 tree never
 //! exercises: a device nested under `/soc` (the PLIC), and the `/reserved-memory` node OpenSBI
 //! uses to fence off its own firmware. Without these tests, both paths were only ever executed
@@ -37,7 +37,7 @@ fn finds_the_ram() {
 
 /// The PLIC sits under `/soc`, not at the top level, and its `reg` must be decoded with the
 /// cell counts `/soc` declares (2/2), not the PLIC's own `#address-cells = <0>` (which applies
-/// to the PLIC's *children*). This is the exact confusion node_reg's per-depth stack exists to
+/// to the PLIC's *children*). This is the exact confusion `node_reg`'s per-depth stack exists to
 /// prevent; get it wrong and the decoded address is garbage, silently.
 #[test]
 fn finds_the_plic_nested_under_soc() {

@@ -18,22 +18,20 @@
 //! spawner used to issue is gone too: the kernel stamps a tid on the death message, and §32
 //! authorizes that tid relative to the endpoint it arrived on.
 //!
-//! init is not involved in any of this, and cannot be: by the time the first death arrives, root_supervisor
+//! init is not involved in any of this, and cannot be: by the time the first death arrives, `root_supervisor`
 //! has deleted the construction budget it would need. See notes/trusted-init.md.
 
 #![no_std]
 #![no_main]
 
-use user_rt::{recv, send};
-
 // Each binary in the tree compiles the shared module but uses a different slice of it (the sub-server
 // builds nothing, the supervisor holds no memory), so the unused halves are expected, not dead.
-
 use supervision_proto::{
     REP_BUILT, REPORT_FAILED, REPORT_SUP_GAVE_UP, REPORT_SUP_SAW_DEATH, REQ_BUILD,
 };
+use user_rt::{recv, send};
 
-/// What root_supervisor endowed us with, in order. Notice what is missing: memory.
+/// What `root_supervisor` endowed us with, in order. Notice what is missing: memory.
 const REQ: u64 = 0; // WRITE: ask the spawner to build or reap
 const REP: u64 = 1; // READ: its answers
 const FAULT: u64 = 2; // READ: our child's deaths, kernel-stamped

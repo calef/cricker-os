@@ -226,7 +226,7 @@ const SPAWN_PAGE: u64 = 4096;
 /// the spawner writes it into one shared frame and aliases that frame into each child. Hand-assembled
 /// machine code, arch-gated: aarch64 `movz`/`svc`, RISC-V `li`/`ecall`.
 ///
-/// aarch64: x0=slot 0, x1=SEND, x2=1, x8=SYS_INVOKE, svc; then x8=SYS_EXIT, svc.
+/// aarch64: x0=slot 0, x1=SEND, x2=1, `x8=SYS_INVOKE`, svc; then `x8=SYS_EXIT`, svc.
 #[cfg(target_arch = "aarch64")]
 const CHILD_STUB: [u32; 9] = [
     0xD280_0000,
@@ -264,7 +264,11 @@ fn spawn_bench() -> ! {
     // One shared code frame, retyped from our OWN untyped so destroying a child never frees it. Map
     // it writable in our own space, write the child stub once, and keep the cap to alias into every
     // child. The kernel makes the icache coherent when we later map it as CODE into a child.
+    // SAFETY: `invoke` traps to the kernel, which validates the capability and the method
+    // before acting (user_rt's contract). A caller cannot break an invariant by passing a
+    // bad slot or method; it gets an error back.
     let code_frame = unsafe { invoke(SP_UNTYPED, abi::untyped::RETYPE, 0, 0, 0) } as u64;
+    // SAFETY: as above: the kernel validates the capability and the method.
     unsafe { invoke(code_frame, abi::frame::MAP, SPAWN_SCRATCH_VA, 1, SP_UNTYPED) };
     // SAFETY: SPAWN_SCRATCH_VA is a page we just mapped read/write into our own address space.
     unsafe {
@@ -292,7 +296,9 @@ fn spawn_bench() -> ! {
 #[inline(never)]
 fn spawn_one(code_frame: u64) {
     // The child's own region, so it is independently reclaimable.
+    // SAFETY: as above: the kernel validates the capability and the method.
     let child_ut = unsafe { invoke(SP_UNTYPED, abi::untyped::SPLIT, CHILD_PAGES, 0, 0) } as u64;
+    // SAFETY: as above: the kernel validates the capability and the method.
     let aspace = unsafe {
         invoke(
             child_ut,
@@ -303,6 +309,7 @@ fn spawn_one(code_frame: u64) {
         )
     } as u64;
     // Alias the shared code frame as the child's code; a stack from the child's own region.
+    // SAFETY: as above: the kernel validates the capability and the method.
     unsafe {
         invoke(
             aspace,
@@ -312,7 +319,9 @@ fn spawn_one(code_frame: u64) {
             abi::aspace::MAP_CODE,
         )
     };
+    // SAFETY: as above: the kernel validates the capability and the method.
     let stack = unsafe { invoke(child_ut, abi::untyped::RETYPE, 0, 0, 0) } as u64;
+    // SAFETY: as above: the kernel validates the capability and the method.
     unsafe {
         invoke(
             aspace,
@@ -326,7 +335,9 @@ fn spawn_one(code_frame: u64) {
 
     // The thread: give it CHILD_DONE (narrowed to WRITE) in its slot 0, configure (which consumes
     // the aspace cap), and start. The child drops to EL0, SENDs its done word, and exits.
+    // SAFETY: as above: the kernel validates the capability and the method.
     let tcb = unsafe { invoke(child_ut, abi::untyped::RETYPE_OBJ, abi::objtype::TCB, 0, 0) } as u64;
+    // SAFETY: as above: the kernel validates the capability and the method.
     unsafe {
         invoke(
             tcb,
@@ -336,6 +347,7 @@ fn spawn_one(code_frame: u64) {
             0,
         )
     };
+    // SAFETY: as above: the kernel validates the capability and the method.
     unsafe {
         invoke(
             tcb,
@@ -345,12 +357,14 @@ fn spawn_one(code_frame: u64) {
             aspace,
         )
     };
+    // SAFETY: as above: the kernel validates the capability and the method.
     unsafe { invoke(tcb, abi::tcb::START, 0, 0, 0) };
 
     // Wait for the child to run and signal, then reclaim its region. The retry covers the sliver
     // between the child's SEND and its SYS_EXIT: DESTROY refuses a region with a still-live thread,
     // so yield until the child has finished exiting.
     let _ = recv(SP_CHILD_DONE);
+    // SAFETY: as above: the kernel validates the capability and the method.
     while unsafe { invoke(child_ut, abi::untyped::DESTROY, 0, 0, 0) } != 0 {
         yield_now();
     }
@@ -375,6 +389,7 @@ fn null_syscall() {
         );
     }
     #[cfg(target_arch = "riscv64")]
+    // SAFETY: `ecall` with the benchmark's null-syscall number: it traps to the kernel, which returns immediately. This is the measurement, and the options promise it touches neither memory nor the stack.
     unsafe {
         core::arch::asm!(
             "ecall",
@@ -388,10 +403,12 @@ fn null_syscall() {
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     #[cfg(target_arch = "aarch64")]
+    // SAFETY: `brk` traps; the kernel turns a trap from userspace into a kill.
     unsafe {
-        core::arch::asm!("brk #0", options(nostack, nomem))
+        core::arch::asm!("brk #0", options(nostack, nomem));
     };
     #[cfg(target_arch = "riscv64")]
+    // SAFETY: `ebreak` traps; the kernel turns a trap from userspace into a kill.
     unsafe {
         core::arch::asm!("ebreak", options(nostack, nomem))
     };

@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 license.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 # Typed wrappers over aarch64 system registers, so we write
 # `SCTLR_EL1.modify(SCTLR_EL1::M::Enable)` instead of hand-rolling `msr` and getting

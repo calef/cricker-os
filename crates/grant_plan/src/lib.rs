@@ -1,4 +1,4 @@
-//! **grant_plan: the grant-expression logic of the capability shell** (milestone 31, phase 1).
+//! **`grant_plan`: the grant-expression logic of the capability shell** (milestone 31, phase 1).
 //!
 //! This crate is the pure logic behind the shell's one idea: on a cricker-os command line,
 //! *designation is authorization* (Mark Miller's principle). Naming a resource in a command is
@@ -1590,8 +1590,9 @@ impl Default for Escalation {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use expand::{Expander, MAX_NAMES};
+
+    use super::*;
 
     /// Plan a line with **nothing expanded**, which is every line that has no pattern on it. The two
     /// shims shadow the real functions so the tests below read as they did before the globbing lane,

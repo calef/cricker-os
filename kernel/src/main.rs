@@ -198,7 +198,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
                     drivers::plic::init(
                         arch::mmu::phys_to_virt(plic_phys) as usize,
                         arch::irq::boot_s_context(),
-                    )
+                    );
                 };
             }
             match user::initrd() {
@@ -238,7 +238,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
                     drivers::plic::init(
                         arch::mmu::phys_to_virt(plic_phys) as usize,
                         arch::irq::boot_s_context(),
-                    )
+                    );
                 };
                 arch::exceptions::enable_external();
             }
@@ -259,6 +259,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
             let (pa, flags) = arch::mmu::translate(test_va).expect("translate found nothing");
             // SAFETY: we just mapped this VA read/write.
             unsafe { (test_va as *mut u64).write_volatile(0xc0ffee) };
+            // SAFETY: the same VA the line above just wrote through, still mapped read/write; this reads back what it stored.
             let readback = unsafe { (test_va as *const u64).read_volatile() };
             let freed = arch::mmu::unmap_page(test_va).expect("unmap_page failed");
             println!(
@@ -441,7 +442,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
                 drivers::plic::init(
                     arch::mmu::phys_to_virt(plic_phys) as usize,
                     arch::irq::boot_s_context(),
-                )
+                );
             };
 
             let started = user::initrd()
@@ -487,7 +488,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
             None => {
                 println!(
                     "  virtio      : no block device attached (pass CRICKER_DISK to attach one)"
-                )
+                );
             }
         }
 
@@ -612,8 +613,9 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
 
             // The whole argument, executable.
             {
-                use crate::arch::timer;
                 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+                use crate::arch::timer;
 
                 static HOSTILE: AtomicU64 = AtomicU64::new(0);
                 static POLITE: AtomicU64 = AtomicU64::new(0);
@@ -656,9 +658,10 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
 
             // 7a. EL0.
             {
+                use core::sync::atomic::Ordering;
+
                 use crate::arch::exceptions::SVC_COUNT;
                 use crate::arch::timer;
-                use core::sync::atomic::Ordering;
 
                 println!();
                 println!("  and now the other side of the boundary:");

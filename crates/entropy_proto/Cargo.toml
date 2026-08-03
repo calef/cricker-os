@@ -10,4 +10,7 @@ license.workspace = true
 # clients, the std PAL and the kernel-side tests share ONE definition and cannot drift. The same
 # split `fs_proto` makes for the filesystem contract and `clock_proto` for the wall clock.
 
+[lints]
+workspace = true
+
 [dependencies]

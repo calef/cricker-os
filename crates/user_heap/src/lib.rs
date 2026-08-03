@@ -1,4 +1,4 @@
-//! **user_heap**: the userspace heap algorithm, as pure logic (milestone 27).
+//! **`user_heap`**: the userspace heap algorithm, as pure logic (milestone 27).
 //!
 //! A first-fit, address-sorted free list with coalescing, the same shape the kernel's original
 //! milestone-4 heap had (notes/heap.md) and for the same reason: zero overhead on allocated
@@ -20,6 +20,50 @@
 //! `Layout`, so the pair always agrees on how many bytes a pointer owns without storing it
 //! anywhere. Front padding for over-aligned requests lands on the same grid, so every remainder
 //! is itself a legal free block and no sliver is ever silently leaked.
+//!
+//! # Examples
+//!
+//! The heap manages ranges someone else donates; it never maps a page. That split is what lets an
+//! example run on the host at all:
+//!
+//! ```
+//! use core::alloc::Layout;
+//! use user_heap::{Heap, MIN_ALIGN, effective_size};
+//!
+//! // A 16-aligned arena. On a real process this would be pages mapped out of the untyped budget.
+//! #[repr(align(4096))]
+//! struct Arena([u8; 4096]);
+//! let mut arena = Box::new(Arena([0; 4096]));
+//!
+//! let mut h = Heap::new();
+//! // SAFETY: the arena is exclusively ours and outlives `h`.
+//! unsafe { h.add_region(arena.0.as_mut_ptr(), arena.0.len()) };
+//! assert_eq!(h.free_bytes(), 4096);
+//! assert_eq!(h.block_count(), 1);
+//!
+//! let p = h.alloc(Layout::from_size_align(100, 8).unwrap()).unwrap();
+//! assert!(p.as_ptr().addr().is_multiple_of(MIN_ALIGN));
+//!
+//! // SAFETY: `p` came from this heap with this layout, and is freed once.
+//! unsafe { h.dealloc(p, Layout::from_size_align(100, 8).unwrap()) };
+//!
+//! // Everything freed coalesces back to one block. That is the invariant, not a nicety:
+//! // without it a long-lived process fragments to death.
+//! assert_eq!(h.block_count(), 1);
+//! assert_eq!(h.free_bytes(), 4096);
+//! ```
+//!
+//! Sizes round up to the 16-byte grid, which is what makes the allocator headerless: `alloc` and
+//! `dealloc` both recompute the same number from the `Layout`, so nothing has to be stored.
+//!
+//! ```
+//! use core::alloc::Layout;
+//! use user_heap::{MIN_ALIGN, effective_size};
+//!
+//! assert_eq!(effective_size(Layout::from_size_align(1, 1).unwrap()), MIN_ALIGN);
+//! assert_eq!(effective_size(Layout::from_size_align(16, 1).unwrap()), 16);
+//! assert_eq!(effective_size(Layout::from_size_align(17, 1).unwrap()), 32);
+//! ```
 
 #![no_std]
 
@@ -182,6 +226,7 @@ impl Heap {
             if block.as_ptr() as usize > addr {
                 break;
             }
+            // SAFETY: `block` came from `*link` on the line above, so it is a live free-list node; taking a raw pointer to its `next` field does not read through it.
             link = unsafe { &raw mut (*block.as_ptr()).next };
         }
 
@@ -218,7 +263,14 @@ impl Heap {
             }
         }
 
-        let node = start as *mut FreeBlock;
+        // Alignment is an invariant of this allocator, not an accident: every block it hands out
+        // or reclaims is `MIN_ALIGN`-aligned, and `MIN_ALIGN >= align_of::<FreeBlock>()`. clippy
+        // sees only `*mut u8 -> *mut FreeBlock` and cannot see the invariant.
+        #[allow(
+            clippy::cast_ptr_alignment,
+            reason = "start is MIN_ALIGN-aligned by this allocator's own construction"
+        )]
+        let node = start.cast::<FreeBlock>();
         // SAFETY: the freed range is ours and big enough for a node (>= MIN_ALIGN bytes).
         unsafe {
             (*node).size = new_size;

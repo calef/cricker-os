@@ -4,7 +4,7 @@
 //! emulator (DECISIONS.md §7). Nothing in here knows what a page table is. It answers one
 //! question: *what does this file want me to put where, and with what permissions?*
 //!
-//! Deliberately narrow. We parse **static, little-endian, aarch64, ET_EXEC** binaries and
+//! Deliberately narrow. We parse **static, little-endian, aarch64, `ET_EXEC`** binaries and
 //! nothing else. No dynamic linking, no relocations, no interpreter, no PIE. Every one of those
 //! is a real feature and every one of them is also a way for a file to ask us to do something
 //! surprising, and we would rather say "no" in eleven lines than "maybe" in a thousand.

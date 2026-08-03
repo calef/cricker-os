@@ -170,6 +170,9 @@ pub fn build_child_space(
     for k in 0..CHILD_STACK_PAGES {
         let stack_frame = retype_frame_from(build_ut)?;
         let va = CHILD_STACK_VA - k * PAGE;
+        // SAFETY: `invoke` traps to the kernel, which validates the capability and the method
+        // before acting (user_rt's contract). A caller cannot break an invariant by passing a
+        // bad slot or method; it gets an error back.
         if unsafe {
             invoke(
                 aspace,
@@ -205,6 +208,7 @@ pub fn build_child_space(
     }
 
     for &(va, our_slot, mode) in endow.maps {
+        // SAFETY: as above: the kernel validates the capability and the method.
         if unsafe { invoke(aspace, abi::aspace::MAP_INTO, va, our_slot, mode) } != 0 {
             return Err(());
         }
@@ -212,6 +216,7 @@ pub fn build_child_space(
 
     let tcb = retype_obj_from(build_ut, abi::objtype::TCB)?;
     for &(our_slot, rights) in endow.caps {
+        // SAFETY: as above: the kernel validates the capability and the method.
         if unsafe { invoke(tcb, abi::tcb::CAP_INSERT, our_slot, rights, 0) } < 0 {
             return Err(());
         }
@@ -219,6 +224,7 @@ pub fn build_child_space(
     if let Some(fault) = endow.fault {
         // The spawn-slot convention: target slot `n + 1` means "slot n", so the supervision endpoint
         // lands in the reserved last slot rather than wherever first-free fell.
+        // SAFETY: as above: the kernel validates the capability and the method.
         if unsafe {
             invoke(
                 tcb,
@@ -239,6 +245,7 @@ pub fn build_child_space(
 /// capability is **consumed** by the kernel here, so this is the moment after which the builder can
 /// no longer shape the child's memory.
 pub fn configure_child(tcb: u64, aspace: u64, entry: u64) -> Result<(), ()> {
+    // SAFETY: as above: the kernel validates the capability and the method.
     if unsafe {
         invoke(
             tcb,
@@ -267,6 +274,7 @@ fn fill_and_map(
 ) -> Result<(), ()> {
     let frame = retype_frame_from(build_ut)?;
     let scratch = SCRATCH_NEXT.fetch_add(PAGE, core::sync::atomic::Ordering::Relaxed);
+    // SAFETY: as above: the kernel validates the capability and the method.
     if unsafe { invoke(frame, abi::frame::MAP, scratch, 1, own_ut) } != 0 {
         return Err(());
     }
@@ -276,6 +284,7 @@ fn fill_and_map(
     if let Some((at, bytes)) = src {
         dst[at..at + bytes.len()].copy_from_slice(bytes);
     }
+    // SAFETY: as above: the kernel validates the capability and the method.
     if unsafe { invoke(aspace, abi::aspace::MAP_INTO, va, frame, mode) } != 0 {
         return Err(());
     }
@@ -284,11 +293,13 @@ fn fill_and_map(
 }
 
 pub fn retype_obj_from(ut: u64, objtype: u64) -> Result<u64, ()> {
+    // SAFETY: as above: the kernel validates the capability and the method.
     let r = unsafe { invoke(ut, abi::untyped::RETYPE_OBJ, objtype, 0, 0) };
     if r < 0 { Err(()) } else { Ok(r as u64) }
 }
 
 pub fn retype_frame_from(ut: u64) -> Result<u64, ()> {
+    // SAFETY: as above: the kernel validates the capability and the method.
     let r = unsafe { invoke(ut, abi::untyped::RETYPE, 0, 0, 0) };
     if r < 0 { Err(()) } else { Ok(r as u64) }
 }
@@ -297,6 +308,7 @@ pub fn retype_frame_from(ut: u64) -> Result<u64, ()> {
 /// reclaims. `Err` carries the negated error code, which is how the dropped-authority proof reports
 /// *why* a retype from a deleted budget failed.
 pub fn untyped_split(ut: u64, pages: u64) -> Result<u64, i64> {
+    // SAFETY: as above: the kernel validates the capability and the method.
     let r = unsafe { invoke(ut, abi::untyped::SPLIT, pages, 0, 0) };
     if r < 0 { Err(r) } else { Ok(r as u64) }
 }
@@ -306,10 +318,12 @@ pub fn untyped_split(ut: u64, pages: u64) -> Result<u64, i64> {
 /// and the only one that can tear down a *live* thread (§16's amendment arms the kill). A supervisor
 /// collecting a dead child wants `user_rt::reap` instead (§32).
 pub fn untyped_destroy(ut: u64) -> bool {
+    // SAFETY: as above: the kernel validates the capability and the method.
     unsafe { invoke(ut, abi::untyped::DESTROY, 0, 0, 0) == 0 }
 }
 
 pub fn tcb_start(tcb: u64, a0: u64, a1: u64, a2: u64) -> bool {
+    // SAFETY: as above: the kernel validates the capability and the method.
     unsafe { invoke(tcb, abi::tcb::START, a0, a1, a2) == 0 }
 }
 
@@ -317,10 +331,12 @@ pub fn tcb_start(tcb: u64, a0: u64, a1: u64, a2: u64) -> bool {
 /// the pc and the process dies where the mistake was.
 pub fn fail() -> ! {
     #[cfg(target_arch = "aarch64")]
+    // SAFETY: `brk` traps; the kernel turns a trap from userspace into a kill.
     unsafe {
-        core::arch::asm!("brk #0", options(nostack, nomem))
+        core::arch::asm!("brk #0", options(nostack, nomem));
     };
     #[cfg(target_arch = "riscv64")]
+    // SAFETY: `ebreak` traps; the kernel turns a trap from userspace into a kill.
     unsafe {
         core::arch::asm!("ebreak", options(nostack, nomem))
     };

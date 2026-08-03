@@ -20,9 +20,9 @@
 //!   then: root_supervisor deletes its untyped and becomes a RECV loop on its own supervision endpoint.
 //! ```
 //!
-//! After the handoff root_supervisor cannot build a process, cannot endow anyone with memory, and cannot
+//! After the handoff `root_supervisor` cannot build a process, cannot endow anyone with memory, and cannot
 //! reach the sub-servers' internals. What is left of it is a supervisor so small it essentially
-//! cannot fail: receive a death, report it, stop. A compromised root_supervisor at that point can lie about
+//! cannot fail: receive a death, report it, stop. A compromised `root_supervisor` at that point can lie about
 //! deaths on one endpoint. That is the entire blast radius.
 //!
 //! The restart policy is `sub_server_supervisor`'s, in userspace, and the kernel never relaunches anything
@@ -31,12 +31,10 @@
 #![no_std]
 #![no_main]
 
-use user_rt::{cap_delete, invoke, recv, send};
-
 // Each binary in the tree compiles the shared module but uses a different slice of it (the sub-server
 // builds nothing, the supervisor holds no memory), so the unused halves are expected, not dead.
-
 use supervision_proto::{Endow, REPORT_FAILED, REPORT_INIT_DROPPED, REPORT_SUP_SAW_DEATH};
+use user_rt::{cap_delete, invoke, recv, send};
 
 /// Where the kernel maps the initrd archive, read-only. Must match the kernel's spawn path.
 const INITRD_VA: u64 = 0x2000_0000;
@@ -158,7 +156,11 @@ pub extern "C" fn _start(_a0: u64, initrd_len: u64, _a2: u64) -> ! {
     // And prove it, from the inside, on the two primitives that build things: retype a page, and
     // retype a kernel object. Both must now fail with `NoSuchSlot` (-1), which is what
     // no-ambient-authority feels like: there is nothing there, and no way to name what used to be.
+    // SAFETY: `invoke` traps to the kernel, which validates the capability and the method
+    // before acting (user_rt's contract). A caller cannot break an invariant by passing a
+    // bad slot or method; it gets an error back.
     let frame = unsafe { invoke(ROOT_UT, abi::untyped::RETYPE, 0, 0, 0) };
+    // SAFETY: as above: the kernel validates the capability and the method.
     let object = unsafe { invoke(ROOT_UT, abi::untyped::RETYPE_OBJ, abi::objtype::TCB, 0, 0) };
     send(
         REPORT,

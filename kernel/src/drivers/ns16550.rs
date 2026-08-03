@@ -112,7 +112,7 @@ impl Ns16550 {
     /// (notes/interrupts.md, "Testing it with no device on RISC-V").
     ///
     /// It is 16550 architecture, not a QEMU behaviour, so it should carry to any 16550-compatible
-    /// part (the VisionFive 2's UART is a DesignWare 8250). Nothing in this kernel drives transmit
+    /// part (the VisionFive 2's UART is a `DesignWare` 8250). Nothing in this kernel drives transmit
     /// by interrupt (the console polls `LSR`), so an asserted THRE line has no other consumer.
     ///
     /// Test builds only: a production caller would be a transmit-interrupt console, which this is

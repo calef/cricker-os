@@ -10,9 +10,10 @@
 //! (`MTU`); a demonstrator with a single-page DMA region cannot post full 1514-byte buffers, and
 //! that is a recorded caveat, not a bug (see notes/net.md).
 
-use abi::{irq, virtio};
 use alloc::vec;
 use alloc::vec::Vec;
+
+use abi::{irq, virtio};
 use smoltcp::phy::{self, Device, DeviceCapabilities, Medium};
 use smoltcp::time::Instant;
 use user_rt::invoke;
@@ -48,7 +49,7 @@ const QSIZE: u16 = 8;
 const RX_Q: u64 = 0;
 const TX_Q: u64 = 1;
 
-/// The 12-byte modern virtio-net header in front of every frame (VIRTIO_F_VERSION_1 negotiated).
+/// The 12-byte modern virtio-net header in front of every frame (`VIRTIO_F_VERSION_1` negotiated).
 const NET_HDR_LEN: u64 = 12;
 
 // The DMA-page layout: each queue's rings at the kernel's per-queue stride (RING_BLOCK = 0x200,
@@ -81,25 +82,34 @@ fn tx_buf(i: usize) -> u64 {
 // Raw DMA-page and device-register access. The DMA page is one contiguous physical frame mapped at
 // DMA_VA, so a physical address the device needs is `dma_phys + offset`.
 fn r8(off: u64) -> u8 {
+    // SAFETY: `DMA_VA` is the base of the single contiguous DMA frame this process mapped at startup, and callers pass offsets inside it. Volatile because the device reads and writes the same memory.
     unsafe { core::ptr::read_volatile((DMA_VA + off) as *const u8) }
 }
 fn r16(off: u64) -> u16 {
+    // SAFETY: `DMA_VA` is the base of the single contiguous DMA frame this process mapped at startup, and callers pass offsets inside it. Volatile because the device reads and writes the same memory.
     unsafe { core::ptr::read_volatile((DMA_VA + off) as *const u16) }
 }
 fn r32(off: u64) -> u32 {
+    // SAFETY: `DMA_VA` is the base of the single contiguous DMA frame this process mapped at startup, and callers pass offsets inside it. Volatile because the device reads and writes the same memory.
     unsafe { core::ptr::read_volatile((DMA_VA + off) as *const u32) }
 }
 fn w8(off: u64, v: u8) {
+    // SAFETY: `DMA_VA` is the base of the single contiguous DMA frame this process mapped at startup, and callers pass offsets inside it. Volatile because the device reads and writes the same memory.
     unsafe { core::ptr::write_volatile((DMA_VA + off) as *mut u8, v) }
 }
 fn w16(off: u64, v: u16) {
+    // SAFETY: `invoke` traps to the kernel, which validates the capability and the method
+    // before acting (user_rt's contract). A caller cannot break an invariant by passing a
+    // bad slot or method; it gets an error back.
     unsafe { core::ptr::write_volatile((DMA_VA + off) as *mut u16, v) }
 }
 
 fn mr(off: u64) -> u32 {
+    // SAFETY: as above: the kernel validates the capability and the method.
     unsafe { invoke(VIRTIO, virtio::READ_REG, off, 0, 0) as u32 }
 }
 fn mw(off: u64, v: u32) {
+    // SAFETY: as above: the kernel validates the capability and the method.
     unsafe {
         invoke(VIRTIO, virtio::WRITE_REG, off, v as u64, 0);
     }
@@ -107,10 +117,15 @@ fn mw(off: u64, v: u32) {
 
 fn barrier() {
     #[cfg(target_arch = "aarch64")]
+    // SAFETY: a barrier: no operands, and the options say it touches neither memory nor the
+    // stack, so it cannot break an invariant. It orders the descriptor writes against the
+    // device's reads, which is the whole reason this function exists.
     unsafe {
-        core::arch::asm!("dmb ish", options(nostack, nomem, preserves_flags))
+        core::arch::asm!("dmb ish", options(nostack, nomem, preserves_flags));
     };
     #[cfg(target_arch = "riscv64")]
+    // SAFETY: the RISC-V twin of the barrier above. `fence` carries no `nomem`, deliberately:
+    // ordering memory is precisely its job.
     unsafe {
         core::arch::asm!("fence", options(nostack, preserves_flags))
     };
@@ -118,6 +133,7 @@ fn barrier() {
 
 fn write_desc(desc_base: u64, i: u64, addr: u64, len: u32, flags: u16, next: u16) {
     let b = desc_base + i * 16;
+    // SAFETY: `DMA_VA` is the base of the single contiguous DMA frame this process mapped at startup, and callers pass offsets inside it. Volatile because the device reads and writes the same memory.
     unsafe {
         core::ptr::write_volatile((DMA_VA + b) as *mut u64, addr);
         core::ptr::write_volatile((DMA_VA + b + 8) as *mut u32, len);
@@ -163,10 +179,12 @@ impl VirtioNet {
 
         // Set up both queues through the kernel; it programs each queue's ring addresses.
         assert_eq!(
+            // SAFETY: as above: the kernel validates the capability and the method.
             unsafe { invoke(VIRTIO, virtio::SETUP_QUEUE, QSIZE as u64, RX_Q, 0) },
             0,
         );
         assert_eq!(
+            // SAFETY: as above: the kernel validates the capability and the method.
             unsafe { invoke(VIRTIO, virtio::SETUP_QUEUE, QSIZE as u64, TX_Q, 0) },
             0,
         );
@@ -333,7 +351,7 @@ impl phy::RxToken for VnetRxToken {
 }
 
 /// Carries a raw pointer to the device rather than a borrow, so a receive token and a transmit
-/// token can coexist (both are returned from one `&mut self` call). net_stack is single-threaded, and
+/// token can coexist (both are returned from one `&mut self` call). `net_stack` is single-threaded, and
 /// the device outlives any token within a poll, so the deref in `consume` is sound.
 pub struct VnetTxToken {
     dev: *mut VirtioNet,

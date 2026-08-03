@@ -25,17 +25,17 @@
 //!
 //! See notes/mmu.md and notes/page-tables.md.
 
-use crate::memory;
-use crate::println;
-use aarch64_cpu::asm::barrier;
+use core::ffi::c_void;
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use aarch64_cpu::asm::barrier;
 use aarch64_cpu::registers::{
     ID_AA64MMFR0_EL1, MAIR_EL1, SCTLR_EL1, TCR_EL1, TTBR0_EL1, TTBR1_EL1,
 };
-use core::ffi::c_void;
 use paging::aarch64::mair;
 use paging::{Aarch64, Flags, Half, MapError, Mapper, PAGE_SIZE, PageTable};
+
+use crate::{memory, println};
 
 /// This architecture's page-table format. Portable code that must name the format (the user-VA gate
 /// in syscall.rs, the user `Mapper` in user.rs) refers to it as `arch::mmu::Format`, so the choice
@@ -279,7 +279,7 @@ where
 
 /// The page-table format this architecture's IOMMU walks: the SMMUv3 stage-1 translates with
 /// VMSAv8-64, the same format the CPU (and therefore every process address space here) uses. The
-/// portable DMA-domain seam (kernel/src/iommu.rs, paging::domain) builds device domains through
+/// portable DMA-domain seam (kernel/src/iommu.rs, `paging::domain`) builds device domains through
 /// this alias, which is what makes the seam one piece of code over two ISAs.
 pub type DmaFormat = Aarch64;
 
@@ -294,7 +294,7 @@ pub const VIRTIO_IRQ_BASE: u32 = 48;
 pub const VIRTIO_SLOT_STRIDE: u64 = 0x200;
 pub const VIRTIO_SLOTS: u64 = 32;
 
-/// The PCIe ECAM window on QEMU's aarch64 `virt`: the **highmem** ECAM at 0x40_1000_0000 (the
+/// The PCIe ECAM window on QEMU's aarch64 `virt`: the **highmem** ECAM at `0x40_1000_0000` (the
 /// machine's `pcie@10000000` node names the low MMIO base; its `reg` is the high window, 4 KB
 /// per function, 1 MB per bus). As on riscv we map (and enumerate) bus 0 only; QEMU `virt` is a
 /// flat root complex, and widening is one constant. The pci crate's fixture test holds this base
@@ -303,7 +303,7 @@ pub const PCI_ECAM_BASE: u64 = 0x40_1000_0000;
 pub const PCI_ECAM_BUSES: u16 = 1;
 pub const PCI_ECAM_MAPPED: u64 = PCI_ECAM_BUSES as u64 * 0x10_0000;
 
-/// Where BARs get placed: the 32-bit PCI memory window starts at 0x1000_0000 (per the machine's
+/// Where BARs get placed: the 32-bit PCI memory window starts at `0x1000_0000` (per the machine's
 /// `ranges`). Nobody has programmed a BAR before us (we boot without EDK2, so there is no PCI
 /// firmware), and the kernel places them itself, exactly as on riscv. A 2 MB mapped slice bounds
 /// the page-table spend.
@@ -512,9 +512,9 @@ unsafe fn install(root: u64) {
 /// **"Nobody is home" is a page table, not a control bit.** A low address from EL1 walks this,
 /// finds a zeroed descriptor, and takes a translation fault, which is exactly the protection
 /// we want while there is no userspace. And swapping a user address space in or out is then a
-/// single `msr ttbr0_el1`, with no read-modify-write of TCR_EL1 on the context-switch path.
+/// single `msr ttbr0_el1`, with no read-modify-write of `TCR_EL1` on the context-switch path.
 ///
-/// One frame, spent once, to keep TCR_EL1 out of the hot path forever.
+/// One frame, spent once, to keep `TCR_EL1` out of the hot path forever.
 static RESERVED_TTBR0: AtomicU64 = AtomicU64::new(0);
 
 /// Allocate and install the empty TTBR0 root. Called at the end of `init`.
@@ -606,6 +606,7 @@ pub fn flush_asid(asid: u16) {
 /// afterwards.
 #[cfg_attr(not(test), allow(dead_code))]
 pub unsafe fn activate_user(ttbr: u64) {
+    // SAFETY: this function's own `# Safety` contract is exactly the one this call needs; it forwards, it does not weaken.
     unsafe { set_ttbr0(ttbr) };
 }
 
@@ -819,7 +820,7 @@ pub fn switch_user_root(ttbr: u64) {
 /// `kernel_mapper()` reads and writes the shared TTBR1 tables (walk, and read-modify-write to
 /// allocate an intermediate table on the way down). On one core the callers never raced; on SMP two
 /// cores spawning threads both map into these tables at once, which would corrupt them. This lock
-/// makes `map_page`/`unmap_page` mutually exclusive. See sync::rank::KERNEL_MMU for its place in the
+/// makes `map_page`/`unmap_page` mutually exclusive. See `sync::rank::KERNEL_MMU` for its place in the
 /// order (below the scheduler, above the allocators it calls).
 static KERNEL_MMU: crate::sync::IrqSafeMutex<()> =
     crate::sync::IrqSafeMutex::new(crate::sync::rank::KERNEL_MMU, ());
@@ -1082,11 +1083,11 @@ mod tests {
 
     /// **The guard page must not be mapped.** That is its entire job.
     ///
-    /// Verified at boot too (mmu::verify panics if it's mapped), but stated here as well
+    /// Verified at boot too (`mmu::verify` panics if it's mapped), but stated here as well
     /// because it is the thing that closes the milestone 3 incident, and a protection you
     /// only discover is missing *during* a stack overflow is no protection at all.
     ///
-    /// Proven by deliberate overflow: FAR_EL1 comes back as exactly this address.
+    /// Proven by deliberate overflow: `FAR_EL1` comes back as exactly this address.
     #[test_case]
     fn the_guard_page_is_a_hole() {
         use crate::arch::mmu;
@@ -1110,7 +1111,7 @@ mod tests {
 
     /// W^X, checked against the tables the hardware is actually walking.
     ///
-    /// Not a copy of what we intended: `translate` reads TTBR0_EL1 back out of the CPU and
+    /// Not a copy of what we intended: `translate` reads `TTBR0_EL1` back out of the CPU and
     /// walks from there.
     #[test_case]
     fn kernel_text_is_executable_and_not_writable() {
@@ -1214,8 +1215,9 @@ mod tests {
     /// 0xBBBB.
     #[test_case]
     fn unmap_invalidates_the_tlb() {
-        use crate::arch::mmu::{self, phys_to_virt};
         use paging::Flags;
+
+        use crate::arch::mmu::{self, phys_to_virt};
 
         const PATTERN_A: u64 = 0xaaaa_aaaa_aaaa_aaaa;
         const PATTERN_B: u64 = 0xbbbb_bbbb_bbbb_bbbb;
@@ -1268,8 +1270,9 @@ mod tests {
     /// Changing a mapping is forced through break-before-make.
     #[test_case]
     fn the_kernel_mapper_refuses_to_overwrite() {
-        use crate::arch::mmu;
         use paging::{Flags, MapError};
+
+        use crate::arch::mmu;
 
         let va = mmu::KERNEL_VA_BASE | 0xfe00_0000;
         let f = crate::memory::alloc().unwrap();

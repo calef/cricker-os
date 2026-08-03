@@ -200,7 +200,7 @@ mod tests {
     }
 
     /// **The MAIR value agrees with the slot numbers.** Slot 0 = 0x00 (Device-nGnRnE), slot 1 = 0xff
-    /// (Normal WB). The AttrIndx in a descriptor is an index into this register; if the two disagree
+    /// (Normal WB). The `AttrIndx` in a descriptor is an index into this register; if the two disagree
     /// the UART gets mapped cacheable and the machine behaves like it is haunted.
     #[test]
     fn mair_value_matches_the_slots() {

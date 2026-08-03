@@ -40,11 +40,12 @@
 //! the lock. The claim/complete handshake stays lock-free on purpose: it is the external-interrupt
 //! hot path, and it cannot race, because a context belongs to exactly one hart and the handler
 //! claims and completes against its own context with interrupts masked throughout. It also does not
-//! share a word with the enable bits (different 0x2000 and 0x20_0000 blocks), so serializing one
+//! share a word with the enable bits (different 0x2000 and `0x20_0000` blocks), so serializing one
 //! does not drag in the other.
 
-use crate::sync::{IrqSafeMutex, rank};
 use core::sync::atomic::{AtomicUsize, Ordering};
+
+use crate::sync::{IrqSafeMutex, rank};
 
 /// The PLIC's MMIO base (a kernel virtual address in the direct map), stored by [`init`].
 static PLIC_BASE: AtomicUsize = AtomicUsize::new(0);

@@ -168,7 +168,7 @@ fn barrier() {
     #[cfg(target_arch = "aarch64")]
     // SAFETY: a barrier; no memory is accessed.
     unsafe {
-        core::arch::asm!("dmb ish", options(nostack, nomem, preserves_flags))
+        core::arch::asm!("dmb ish", options(nostack, nomem, preserves_flags));
     };
     #[cfg(target_arch = "riscv64")]
     // SAFETY: as above.
@@ -414,7 +414,7 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
     #[cfg(target_arch = "aarch64")]
     // SAFETY: a deliberate trap; this function never returns.
     unsafe {
-        core::arch::asm!("brk #0", options(nostack, nomem))
+        core::arch::asm!("brk #0", options(nostack, nomem));
     };
     #[cfg(target_arch = "riscv64")]
     // SAFETY: as above.

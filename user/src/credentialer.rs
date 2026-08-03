@@ -81,6 +81,7 @@ extern crate alloc;
 
 use alloc::vec;
 use alloc::vec::Vec;
+
 use cred::{Block, Cost, Store, Verdict};
 use cred_proto as proto;
 use user_rt::{call, cap_delete, exit, recv_cap, reply, send};
@@ -98,7 +99,7 @@ const READY: u64 = 4;
 
 /// The provisioner's page. Plaintext secrets cross it; nothing but the provisioner maps it.
 const PROV_VA: u64 = 0x0000_0000_00e0_0000;
-/// A client's page. Must match user/src/credentialer_test_client.rs.
+/// A client's page. Must match `user/src/credentialer_test_client.rs`.
 const VERIFY_VA: u64 = 0x0000_0000_00e1_0000;
 
 /// How many identities the store holds. Three, because Chris's existing setup serves three family
@@ -299,7 +300,7 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
     #[cfg(target_arch = "aarch64")]
     // SAFETY: a trap instruction; no memory is accessed.
     unsafe {
-        core::arch::asm!("brk #0", options(nostack, nomem))
+        core::arch::asm!("brk #0", options(nostack, nomem));
     };
     #[cfg(target_arch = "riscv64")]
     // SAFETY: as above.

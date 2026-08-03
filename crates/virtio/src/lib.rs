@@ -18,8 +18,7 @@
 
 use abi::irq;
 use fs_proto::blk;
-use user_rt::exit;
-use user_rt::{invoke, send};
+use user_rt::{exit, invoke, send};
 
 // The kernel maps the DMA page at this fixed VA (must match kernel/src/user.rs virtio_service).
 // The device REGISTERS are NOT mapped: we drive the device through a `Virtio` capability (slot 2),
@@ -105,7 +104,7 @@ fn barrier() {
     // SAFETY: a barrier has no operands and cannot be unsound.
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        core::arch::asm!("dmb ish", options(nostack, nomem, preserves_flags))
+        core::arch::asm!("dmb ish", options(nostack, nomem, preserves_flags));
     };
     // SAFETY: as above; a fence only constrains ordering.
     #[cfg(target_arch = "riscv64")]
@@ -378,7 +377,7 @@ pub fn run_attack_indirect(dma_phys: u64) -> ! {
 /// Find a file in the crickerfs directory sitting in the block-0 buffer, returning its start
 /// block. The format is `crickerfs`'s and the offsets come from that crate rather than being
 /// restated here: header (magic 8, count u32), then entries of
-/// { name\[NAME_LEN\], start_block u32, len u32 }.
+/// { name\[`NAME_LEN`\], `start_block` u32, len u32 }.
 ///
 /// **Only the entries inside block 0 are visible**, because block 0 is all this driver has
 /// buffered. That is `crickerfs::ENTRIES_IN_FIRST_BLOCK`, not the archive's whole `count`, and
@@ -475,6 +474,9 @@ fn complete_block(used_before: u16) {
         // the controller, which the kernel masked when it fired. SAFETY: `svc`.
         let istatus = mr(INTERRUPT_STATUS);
         mw(INTERRUPT_ACK, istatus);
+        // SAFETY: `invoke` traps to the kernel, which validates the capability and the method
+        // before acting (user_rt's contract). A caller cannot break an invariant by passing a
+        // bad slot or method; it gets an error back.
         unsafe { invoke(IRQ, irq::ACK, 0, 0, 0) };
 
         barrier();
@@ -545,7 +547,7 @@ const NET_RX_Q: u64 = 0;
 const NET_TX_Q: u64 = 1;
 
 /// The modern virtio-net header, prepended to every frame in both directions. 12 bytes because we
-/// negotiate VIRTIO_F_VERSION_1 (the `num_buffers` field is then always present).
+/// negotiate `VIRTIO_F_VERSION_1` (the `num_buffers` field is then always present).
 const NET_HDR_LEN: u64 = 12;
 
 // Our DMA-page layout for the net driver. The queue rings follow the kernel's per-queue stride
@@ -637,6 +639,7 @@ fn init_net() {
     // Both queues, through the kernel: it programs each queue's ring addresses to that queue's block
     // in our DMA region, so we never choose them. SAFETY: `svc`.
     assert!(unsafe { invoke(VIRTIO, abi::virtio::SETUP_QUEUE, QSIZE as u64, NET_RX_Q, 0) } == 0);
+    // SAFETY: as above: the kernel validates the capability and the method.
     assert!(unsafe { invoke(VIRTIO, abi::virtio::SETUP_QUEUE, QSIZE as u64, NET_TX_Q, 0) } == 0);
 
     mw(
@@ -892,7 +895,7 @@ pub fn run_net(dma_phys: u64) -> ! {
 // block driver is as confined as a reading one. See notes/fs-server.md and notes/dma.md.
 // ---------------------------------------------------------------------------------------------
 
-/// The block server's request endpoint (slot 0): the FS server CALLs here; this role RECV_CAPs the
+/// The block server's request endpoint (slot 0): the FS server CALLs here; this role `RECV_CAPs` the
 /// request plus the one-shot Reply that names the caller. IRQ (1) and VIRTIO (2) are as every role.
 const BLK_REQ: u64 = 0;
 
@@ -909,7 +912,7 @@ const BLK_OFF_DATA: u64 = 0x1000;
 const BLK_DATA_LEN: u32 = 4096;
 
 /// The block server's readiness endpoint (slot 3): SEND once after the device is up, so the test
-/// can tell a device-bring-up hang from a first-read hang. See kernel/src/user.rs fs_service.
+/// can tell a device-bring-up hang from a first-read hang. See kernel/src/user.rs `fs_service`.
 const BLK_READY: u64 = 3;
 
 /// virtio-mmio device-config window; virtio-blk's capacity (u64, in 512-byte sectors) is at its
@@ -969,9 +972,11 @@ fn complete_blk(used_before: u16) {
     // already pending and the kernel's pending-signal count (DECISIONS §9a) returns this WAIT at once
     // rather than blocking on an event already over. See notes/dma.md.
     loop {
+        // SAFETY: as above: the kernel validates the capability and the method.
         unsafe { invoke(IRQ, irq::WAIT, 0, 0, 0) };
         let istatus = mr(INTERRUPT_STATUS);
         mw(INTERRUPT_ACK, istatus);
+        // SAFETY: as above: the kernel validates the capability and the method.
         unsafe { invoke(IRQ, irq::ACK, 0, 0, 0) };
         barrier();
         if dma_read::<u16>(OFF_USED + 2) != used_before {

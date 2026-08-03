@@ -40,6 +40,7 @@
 // the module is compiled once per binary and no single binary is meant to use all of it (§38).
 
 use core::alloc::{GlobalAlloc, Layout};
+
 use user_rt::heap::UntypedHeap;
 use user_rt::send;
 
@@ -80,6 +81,7 @@ pub extern "C" fn _start(_a0: u64, attempt: u64, _a2: u64) -> ! {
         // mapped read/write for us, and `len` is its true length; the C is handed the truth and
         // misbehaves anyway. The kernel is what makes that survivable.
         c_seam::ATTEMPT_OVERRUN => unsafe { c_seam_overrun(grant, len) },
+        // SAFETY: as above: the same true grant and true length, handed to the C that deliberately runs wild. The kernel is what makes that survivable.
         c_seam::ATTEMPT_WILD => unsafe { c_seam_wild(grant, len) },
         // The honest path. The result also lands in the grant, so the checker reads it out of shared
         // memory rather than trusting a number we forwarded.
@@ -150,10 +152,14 @@ pub unsafe extern "C" fn malloc(n: usize) -> *mut u8 {
     if base.is_null() {
         return core::ptr::null_mut();
     }
+    #[allow(
+        clippy::cast_ptr_alignment,
+        reason = "malloc_layout requests MALLOC_HDR (16) alignment, which exceeds align_of::<usize>()"
+    )]
     // SAFETY: `base` owns `MALLOC_HDR + n` bytes, 16-aligned, so the header write is in bounds and
     // aligned for a `usize`.
     unsafe {
-        (base as *mut usize).write(n);
+        base.cast::<usize>().write(n);
         base.add(MALLOC_HDR)
     }
 }
@@ -165,10 +171,14 @@ pub unsafe extern "C" fn free(p: *mut u8) {
     if p.is_null() {
         return;
     }
+    #[allow(
+        clippy::cast_ptr_alignment,
+        reason = "base is the 16-aligned pointer malloc returned, so it is aligned for a usize"
+    )]
     // SAFETY: `p` came from `malloc`, so `p - MALLOC_HDR` is the base and holds the size.
     unsafe {
         let base = p.sub(MALLOC_HDR);
-        let n = (base as *const usize).read();
+        let n = base.cast::<usize>().read();
         if let Some(layout) = malloc_layout(n) {
             HEAP.dealloc(base, layout);
         }
@@ -182,7 +192,7 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
     #[cfg(target_arch = "aarch64")]
     // SAFETY: a deliberate trap; the kernel kills this thread.
     unsafe {
-        core::arch::asm!("brk #0", options(nostack, nomem))
+        core::arch::asm!("brk #0", options(nostack, nomem));
     };
     #[cfg(target_arch = "riscv64")]
     // SAFETY: a deliberate trap; the kernel kills this thread.

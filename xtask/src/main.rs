@@ -198,7 +198,7 @@ fn farm_std_src() -> PathBuf {
     farm_dir().join("lib/rustlib/src/rust/library/std/src")
 }
 
-/// The `std_exerciser` ELF for a given custom-target triple. std_exerciser is its own workspace, so its
+/// The `std_exerciser` ELF for a given custom-target triple. `std_exerciser` is its own workspace, so its
 /// artifacts land under `std_exerciser/target/<triple>/release/`.
 fn std_exerciser_elf(triple: &str) -> PathBuf {
     workspace_root().join(format!(
@@ -899,6 +899,10 @@ fn cargo_test_with_scanout_check(arch: &str, test_args: &[&str]) -> bool {
     let _ = std::fs::remove_file(&composed_shot);
     let _ = std::fs::remove_file(&text_shot);
 
+    // SAFETY: `set_var`/`remove_var` became unsafe in edition 2024 because they race other
+    // threads. xtask is single-threaded here: this runs on the main thread before the child
+    // that reads it is spawned, and the only thread xtask ever starts (the transcript reader
+    // in shell_check_leg) copies pipe bytes into a String and never touches the environment.
     unsafe { std::env::set_var("CRICKER_GPU_MON", &sock) };
     let mut child = match Command::new("cargo").args(test_args).spawn() {
         Ok(c) => c,
@@ -1592,6 +1596,10 @@ fn mkinitrd() -> bool {
 /// If `--hvf` was passed, boot under Apple's Hypervisor.framework instead of TCG.
 fn maybe_hvf() {
     if std::env::args().any(|a| a == "--hvf") {
+        // SAFETY: `set_var`/`remove_var` became unsafe in edition 2024 because they race other
+        // threads. xtask is single-threaded here: this runs on the main thread before the child
+        // that reads it is spawned, and the only thread xtask ever starts (the transcript reader
+        // in shell_check_leg) copies pipe bytes into a String and never touches the environment.
         unsafe { std::env::set_var("CRICKER_ACCEL", "hvf") };
         eprintln!("--- on the real Apple Silicon core via Hypervisor.framework ---");
     }
@@ -1702,7 +1710,7 @@ fn redoxfs_disk_path() -> String {
         .to_string()
 }
 
-/// Drive the redoxfs_host tool (its own workspace) by `--manifest-path`, quietly. Returns success.
+/// Drive the `redoxfs_host` tool (its own workspace) by `--manifest-path`, quietly. Returns success.
 fn redoxfs_host(args: &[&str]) -> bool {
     let mut v = vec![
         "run",
@@ -2284,14 +2292,26 @@ fn test() -> bool {
     match flag_value("--cpu") {
         Some(model) => {
             eprintln!("--- CPU model: {model} (CRICKER_CPU) ---");
+            // SAFETY: `set_var`/`remove_var` became unsafe in edition 2024 because they race other
+            // threads. xtask is single-threaded here: this runs on the main thread before the child
+            // that reads it is spawned, and the only thread xtask ever starts (the transcript reader
+            // in shell_check_leg) copies pipe bytes into a String and never touches the environment.
             unsafe { std::env::set_var("CRICKER_CPU", model) };
         }
+        // SAFETY: `set_var`/`remove_var` became unsafe in edition 2024 because they race other
+        // threads. xtask is single-threaded here: this runs on the main thread before the child
+        // that reads it is spawned, and the only thread xtask ever starts (the transcript reader
+        // in shell_check_leg) copies pipe bytes into a String and never touches the environment.
         None => unsafe { std::env::remove_var("CRICKER_CPU") },
     }
 
     // Tests always run under TCG. They exit via semihosting, which QEMU only intercepts in the
     // TCG path; under HVF the `hlt #0xf000` traps to the guest and the harness hangs. TCG is also
     // the right place for reproducible tests: deterministic, and identical on any host.
+    // SAFETY: `set_var`/`remove_var` became unsafe in edition 2024 because they race other
+    // threads. xtask is single-threaded here: this runs on the main thread before the child
+    // that reads it is spawned, and the only thread xtask ever starts (the transcript reader
+    // in shell_check_leg) copies pipe bytes into a String and never touches the environment.
     unsafe { std::env::remove_var("CRICKER_ACCEL") };
     eprintln!("--- host tests (pure logic, no emulator) ---");
     // Every host crate, by asking cargo which ones those are instead of listing them.
@@ -2378,15 +2398,27 @@ fn test() -> bool {
     // the icount instrument measures, so the GPU is a test-leg device only. Both ISA legs get it,
     // because parity is the gate (§19), and the display test ASSERTS the device is present rather
     // than skipping, so a leg that lost this line fails loudly.
+    // SAFETY: `set_var`/`remove_var` became unsafe in edition 2024 because they race other
+    // threads. xtask is single-threaded here: this runs on the main thread before the child
+    // that reads it is spawned, and the only thread xtask ever starts (the transcript reader
+    // in shell_check_leg) copies pipe bytes into a String and never touches the environment.
     unsafe { std::env::set_var("CRICKER_GPU", "1") };
     // And a virtio keyboard (milestone 29's input), on the same terms and for the same reason: a
     // test-leg device only, on both ISA legs, and the keyboard test ASSERTS one is present rather
     // than skipping, so a leg that lost this line fails loudly instead of quietly proving nothing.
+    // SAFETY: `set_var`/`remove_var` became unsafe in edition 2024 because they race other
+    // threads. xtask is single-threaded here: this runs on the main thread before the child
+    // that reads it is spawned, and the only thread xtask ever starts (the transcript reader
+    // in shell_check_leg) copies pipe bytes into a String and never touches the environment.
     unsafe { std::env::set_var("CRICKER_KBD", "1") };
     // And two virtio-rng devices, one per transport (milestone 56, the entropy half), on the same
     // terms again: a test-leg device only, both ISA legs, and the entropy tests ASSERT a device on
     // each bus rather than skipping. Out of the benchmark boot for the same reason as the GPU: it
     // shares the runner, and a device the instrument did not measure last time is drift.
+    // SAFETY: `set_var`/`remove_var` became unsafe in edition 2024 because they race other
+    // threads. xtask is single-threaded here: this runs on the main thread before the child
+    // that reads it is spawned, and the only thread xtask ever starts (the transcript reader
+    // in shell_check_leg) copies pipe bytes into a String and never touches the environment.
     unsafe { std::env::set_var("CRICKER_RNG", "1") };
 
     if legs.aarch64() {
@@ -2439,8 +2471,20 @@ fn test() -> bool {
         if !mkredoxfs() || !mkredoxfs_crash() {
             return false;
         }
+        // SAFETY: `set_var`/`remove_var` became unsafe in edition 2024 because they race other
+        // threads. xtask is single-threaded here: this runs on the main thread before the child
+        // that reads it is spawned, and the only thread xtask ever starts (the transcript reader
+        // in shell_check_leg) copies pipe bytes into a String and never touches the environment.
         unsafe { std::env::set_var("CRICKER_INITRD", riscv_initrd_path()) };
+        // SAFETY: `set_var`/`remove_var` became unsafe in edition 2024 because they race other
+        // threads. xtask is single-threaded here: this runs on the main thread before the child
+        // that reads it is spawned, and the only thread xtask ever starts (the transcript reader
+        // in shell_check_leg) copies pipe bytes into a String and never touches the environment.
         unsafe { std::env::set_var("CRICKER_DISK", disk_path()) };
+        // SAFETY: `set_var`/`remove_var` became unsafe in edition 2024 because they race other
+        // threads. xtask is single-threaded here: this runs on the main thread before the child
+        // that reads it is spawned, and the only thread xtask ever starts (the transcript reader
+        // in shell_check_leg) copies pipe bytes into a String and never touches the environment.
         unsafe { std::env::set_var("CRICKER_NET", "1") }; // a virtio-net NIC for the net test (m30)
         if !cargo_test_with_scanout_check(
             "riscv64",
@@ -2505,6 +2549,10 @@ fn shell_check() -> bool {
     };
     // TCG only. This boot never exits (the shell loops on its prompt), so it is killed rather than
     // waited on, and there is nothing HVF would buy a gate that spends its time in QEMU's serial.
+    // SAFETY: `set_var`/`remove_var` became unsafe in edition 2024 because they race other
+    // threads. xtask is single-threaded here: this runs on the main thread before the child
+    // that reads it is spawned, and the only thread xtask ever starts (the transcript reader
+    // in shell_check_leg) copies pipe bytes into a String and never touches the environment.
     unsafe { std::env::remove_var("CRICKER_ACCEL") };
     if legs.aarch64() && !shell_check_leg(false) {
         return false;
@@ -3290,10 +3338,22 @@ fn kernel_elf() -> String {
 fn cargo(args: &[&str]) -> bool {
     // The runner needs to know where the initrd is. Set it for every cargo invocation; the
     // script ignores it when the file is not there (which is any build before `user` exists).
+    // SAFETY: `set_var`/`remove_var` became unsafe in edition 2024 because they race other
+    // threads. xtask is single-threaded here: this runs on the main thread before the child
+    // that reads it is spawned, and the only thread xtask ever starts (the transcript reader
+    // in shell_check_leg) copies pipe bytes into a String and never touches the environment.
     unsafe { std::env::set_var("CRICKER_INITRD", initrd_path()) };
+    // SAFETY: `set_var`/`remove_var` became unsafe in edition 2024 because they race other
+    // threads. xtask is single-threaded here: this runs on the main thread before the child
+    // that reads it is spawned, and the only thread xtask ever starts (the transcript reader
+    // in shell_check_leg) copies pipe bytes into a String and never touches the environment.
     unsafe { std::env::set_var("CRICKER_DISK", disk_path()) };
     // Attach a virtio-net NIC too (milestone 30): slirp needs no host file, so it is always on for
     // tests, and the net driver's DHCP round-trip test exercises it.
+    // SAFETY: `set_var`/`remove_var` became unsafe in edition 2024 because they race other
+    // threads. xtask is single-threaded here: this runs on the main thread before the child
+    // that reads it is spawned, and the only thread xtask ever starts (the transcript reader
+    // in shell_check_leg) copies pipe bytes into a String and never touches the environment.
     unsafe { std::env::set_var("CRICKER_NET", "1") };
 
     run("cargo", args)

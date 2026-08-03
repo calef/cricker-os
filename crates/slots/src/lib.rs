@@ -28,6 +28,40 @@
 //!   because "never" is not the same as 2^32, but this is not a bound anything will meet.
 //! - **Insert scans for a free slot, O(N).** Spawn-rate work, not switch-rate work. The switch
 //!   path only ever does `get`/`get_mut`, which are O(1).
+//!
+//! # Examples
+//!
+//! A name is a slot index plus a generation, so a name never refers to a later occupant of the
+//! same slot. That is the property worth showing:
+//!
+//! ```
+//! use slots::Table;
+//!
+//! let mut t: Table<&str, 4> = Table::new();
+//! let a = t.insert_with(|_name| "first").unwrap();
+//! assert_eq!(t.get(a), Some(&"first"));
+//! assert_eq!(t.len(), 1);
+//!
+//! // Remove it, then fill the same slot again.
+//! assert_eq!(t.remove(a), Some("first"));
+//! let b = t.insert_with(|_name| "second").unwrap();
+//!
+//! // The old name does NOT resolve to the new occupant.
+//! assert_ne!(a, b);
+//! assert_eq!(t.get(a), None);
+//! assert_eq!(t.get(b), Some(&"second"));
+//! ```
+//!
+//! The table is fixed-size, so a full one refuses rather than allocating:
+//!
+//! ```
+//! use slots::Table;
+//!
+//! let mut t: Table<u32, 2> = Table::new();
+//! assert!(t.insert_with(|_| 1).is_some());
+//! assert!(t.insert_with(|_| 2).is_some());
+//! assert!(t.insert_with(|_| 3).is_none(), "a full table refuses");
+//! ```
 
 #![cfg_attr(not(test), no_std)]
 
@@ -244,7 +278,7 @@ mod tests {
 
     /// `iter` yields each live entry paired with the very name that resolves to it, and skips the
     /// dead. This is what lets object revocation find every object backed by a region and then
-    /// remove it by name (an AddressSpace, unlike a Thread, does not carry its own name).
+    /// remove it by name (an `AddressSpace`, unlike a Thread, does not carry its own name).
     #[test]
     fn iter_yields_names_that_resolve_to_their_entry() {
         let mut t: Table<&str, 4> = Table::new();

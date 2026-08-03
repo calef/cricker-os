@@ -26,11 +26,12 @@
 //! that made the old check possible, `mmu::user_can_read`, is kept for the next syscall that does
 //! take a user pointer.
 
+use abi::Error;
+
 use crate::arch::exceptions::TrapFrame;
 use crate::arch::mmu;
 use crate::cap::{Object, Rights};
 use crate::sched;
-use abi::Error;
 
 /// Called from the `svc` arm of `exception_dispatch`.
 pub fn dispatch(frame: &mut TrapFrame) {

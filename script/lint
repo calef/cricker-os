@@ -418,6 +418,68 @@ echo "==> shellcheck"
 # break the emulator. Raising to note level means restructuring that assembly with `set --` (the
 # pattern script/fmt uses) rather than blanket-disabling the rule, and that is a change to the script
 # every test run depends on, so it is not worth bundling here.
+# Dependency direction: nothing under crates/ may depend on a BINARY (kernel, user, xtask).
+#
+# This is the method, not a tidiness rule. The whole approach is "pure logic in crates that compile
+# for the host, plus Kani harnesses over them" (CLAUDE.md), and both halves die the moment a crate
+# reaches upward: `kernel` and `user` only build for aarch64/riscv64, so a crate that depends on
+# either stops compiling for the host, and a crate that does not compile for the host is unreachable
+# by `cargo test` and by `cargo kani`. The crate would still BUILD, in the bare-metal pass, so
+# nothing existing would fail. It would simply stop being verifiable, quietly.
+#
+# That is the same failure Rule 7 retired for `#[path]` modules, one level out: an arrangement that
+# compiles fine and opts out of the tests and the proofs. Zero violations today; this is a ratchet,
+# the same shape as the shellcheck gate below.
+#
+# `user_rt` is deliberately NOT in the forbidden set even though it is EL0 syscall `asm!`: it lives
+# in crates/ and is a legitimate dependency for other EL0 crates.
+echo "==> dependency direction"
+upward=""
+for f in crates/*/Cargo.toml; do
+    # Match a dependency KEY at the start of a line (`kernel = ...`, `kernel.workspace = ...`) or a
+    # path dependency naming one of the binary directories. Not a bare grep for the word, which
+    # would hit every prose comment mentioning the kernel, and these files are full of those.
+    hit=$(grep -nE '^[[:space:]]*(kernel|user|xtask)[[:space:]]*(=|\.)|path[[:space:]]*=[[:space:]]*"\.\./\.\./(kernel|user|xtask)"' "$f" || true)
+    [ -n "$hit" ] && upward="$upward
+$f:$hit"
+done
+if [ -n "$upward" ]; then
+    echo "lint: a crate under crates/ depends on a binary, which takes it out of host tests and Kani:" >&2
+    echo "$upward" >&2
+    echo "" >&2
+    echo "Move the shared definition INTO crates/ and depend on it from both sides (Rule 7)." >&2
+    exit 1
+fi
+echo "dependency direction: $(ls -d crates/*/ | wc -l | tr -d ' ') crates, none depends on a binary"
+
+# Unused dependencies. DECISIONS §46 says taking a dependency is a decision, not a convenience; a
+# dependency nothing uses is that decision left un-revisited, and it still costs build time, audit
+# surface and a line in the supply-chain report. Our workspace was clean when this was added, so
+# like the two checks above it is a ratchet.
+#
+# Scoped to OUR packages by naming them, rather than run at the tree root: cargo-machete recurses,
+# and at the root it reports vendor/redoxfs, whose manifest we keep byte-identical to its pin
+# (vendor/README.md) and therefore cannot annotate. A gate that reports things you are forbidden to
+# fix is a gate people learn to skip.
+echo "==> unused dependencies"
+if ! command -v cargo-machete >/dev/null 2>&1; then
+    echo "lint: cargo-machete not found; run script/bootstrap (it installs it)." >&2
+    exit 1
+fi
+cargo machete crates kernel user xtask fs_server tools/redoxfs_host >/dev/null
+echo "unused dependencies: none in our packages"
+
+# Spelling, over prose AND code. The documentation is part of the deliverable here, so a typo in a
+# note is a defect in the product. Configuration and the honest assessment of what this found are in
+# _typos.toml.
+echo "==> spelling"
+if ! command -v typos >/dev/null 2>&1; then
+    echo "lint: typos not found; run script/bootstrap (it installs it)." >&2
+    exit 1
+fi
+typos
+echo "spelling: clean"
+
 if ! command -v shellcheck >/dev/null 2>&1; then
     echo "lint: shellcheck not found; run script/bootstrap (it installs it)." >&2
     exit 1

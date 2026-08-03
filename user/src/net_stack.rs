@@ -5,9 +5,9 @@
 //! and 2), and a real, reused TCP/IP stack (smoltcp, not hand-built) runs it entirely at EL0. The
 //! kernel knows nothing about TCP, UDP, or DHCP; it owns only the DMA confinement.
 //!
-//! net_stack brings the NIC up, runs DHCP to completion (reporting the lease), then serves a
+//! `net_stack` brings the NIC up, runs DHCP to completion (reporting the lease), then serves a
 //! capability-shaped socket contract on a `Stack` endpoint (DECISIONS §25, notes/net.md,
-//! crates/socket_proto/src/lib.rs): a socket is a socket id, per-connection bytes cross in a shared frame the
+//! `crates/socket_proto/src/lib.rs)`: a socket is a socket id, per-connection bytes cross in a shared frame the
 //! client delegates, and every operation is one message. Phase one is single-threaded and
 //! synchronous, one exchange per request; the server blocks on the `Stack` endpoint between
 //! requests and drives the network inside handling one.
@@ -25,8 +25,9 @@
 
 extern crate alloc;
 
-use abi::{frame as fr, irq};
 use alloc::vec;
+
+use abi::{frame as fr, irq};
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
 use smoltcp::socket::{dhcpv4, tcp, udp};
 use smoltcp::time::Instant;
@@ -55,8 +56,8 @@ static HEAP: user_rt::heap::UntypedHeap = user_rt::heap::UntypedHeap::new();
 /// Our MAC. Locally administered; slirp routes DHCP regardless.
 const MAC: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
 
-/// Where a client's shared frame for socket `sid` is mapped in net_stack's address space. Above the DMA
-/// page (0x90_0000) and well below the heap (1 GiB).
+/// Where a client's shared frame for socket `sid` is mapped in `net_stack`'s address space. Above the DMA
+/// page (`0x90_0000`) and well below the heap (1 GiB).
 fn socket_va(sid: usize) -> u64 {
     0x0000_0000_00A0_0000 + sid as u64 * 0x1000
 }
@@ -69,12 +70,15 @@ fn instant() -> Instant {
 
 // Absolute-VA access to a mapped shared frame (little-endian for the length and port fields).
 fn a_r8(va: u64) -> u8 {
+    // SAFETY: `va` addresses a field inside a shared frame this process has mapped. Volatile because the peer writes the same frame, so a cached read would be a stale one.
     unsafe { core::ptr::read_volatile(va as *const u8) }
 }
 fn a_r16(va: u64) -> u16 {
+    // SAFETY: `va` addresses a field inside a shared frame this process has mapped. Volatile because the peer writes the same frame, so a cached read would be a stale one.
     unsafe { core::ptr::read_volatile(va as *const u16) }
 }
 fn a_w16(va: u64, v: u16) {
+    // SAFETY: `va` addresses a field inside a shared frame this process has mapped. Volatile because the peer writes the same frame, so a cached read would be a stale one.
     unsafe { core::ptr::write_volatile(va as *mut u16, v) }
 }
 
@@ -88,9 +92,9 @@ struct Sock {
     local_port: u16,
 }
 
-/// The private ephemeral-port range net_stack allocates local ports from, and a **rotating** allocator
+/// The private ephemeral-port range `net_stack` allocates local ports from, and a **rotating** allocator
 /// over it. The local port must be independent of the socket id: deriving it from the id (the
-/// original bug, found by the std::net PAL) means reopening a just-closed id reuses the exact port,
+/// original bug, found by the `std::net` PAL) means reopening a just-closed id reuses the exact port,
 /// and a TCP connect on a 4-tuple whose slirp flow has not yet cleared stalls in the bounded poll
 /// forever. Advancing monotonically hands out a fresh port each open, so a closed connection's port
 /// is not reused until the whole range has cycled; ports a live socket still holds are skipped
@@ -192,6 +196,9 @@ fn server(dma_phys: u64) -> ! {
                 // from net_stack's untyped; the mapping outlives the cap, so drop the cap after. ATTACH
                 // is a SEND_CAP, so there is no reply cap to answer on.
                 let va = socket_va(sid);
+                // SAFETY: `invoke` traps to the kernel, which validates the capability and the method
+                // before acting (user_rt's contract). A caller cannot break an invariant by passing a
+                // bad slot or method; it gets an error back.
                 let r = unsafe { invoke(cap_slot, fr::MAP, va, 1, UNTYPED) };
                 cap_delete(cap_slot);
                 if r >= 0 {
@@ -327,6 +334,7 @@ fn wait_for_nic(
     sockets: &mut SocketSet,
 ) {
     if iface.poll_delay(instant(), sockets).is_none() {
+        // SAFETY: as above: the kernel validates the capability and the method.
         unsafe {
             invoke(IRQ, irq::WAIT, 0, 0, 0);
         }
@@ -431,6 +439,7 @@ fn sock_recv(
             .unwrap_or(0)
     };
     for (i, &b) in buf[..n].iter().enumerate() {
+        // SAFETY: the payload area of this socket's mapped shared frame; `n` is the byte count smoltcp just produced into `buf`, which is sized to that frame's payload capacity.
         unsafe {
             core::ptr::write_volatile((sk.va + OFF_PAYLOAD + i as u64) as *mut u8, b);
         }
@@ -502,10 +511,12 @@ fn tcp_send(
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     #[cfg(target_arch = "aarch64")]
+    // SAFETY: `brk` traps; the kernel turns a trap from userspace into a kill.
     unsafe {
-        core::arch::asm!("brk #0", options(nostack, nomem))
+        core::arch::asm!("brk #0", options(nostack, nomem));
     };
     #[cfg(target_arch = "riscv64")]
+    // SAFETY: `ebreak` traps; the kernel turns a trap from userspace into a kill.
     unsafe {
         core::arch::asm!("ebreak", options(nostack, nomem))
     };

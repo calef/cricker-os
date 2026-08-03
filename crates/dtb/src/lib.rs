@@ -114,6 +114,7 @@ impl<'a> Dtb<'a> {
     /// makes that survivable: a wrong pointer almost certainly fails it.
     pub unsafe fn from_ptr(ptr: *const u8) -> Result<Self, Error> {
         // Read just enough to learn how long the thing claims to be.
+        // SAFETY: the caller's contract is that `ptr` points at a blob valid for `'a`. This reads only the fixed-size header, which is the deliberate leap of faith the magic check on the next line exists to catch.
         let header = unsafe { core::slice::from_raw_parts(ptr, HEADER_LEN) };
         let magic = be32(header, 0)?;
         if magic != MAGIC {
@@ -121,6 +122,7 @@ impl<'a> Dtb<'a> {
         }
         let total = be32(header, 4)? as usize;
 
+        // SAFETY: the magic checked out, so `ptr` really is a blob, and `total` is the length it declares for itself; the caller's contract covers the whole of it for `'a`.
         let bytes = unsafe { core::slice::from_raw_parts(ptr, total) };
         Self::from_bytes(bytes)
     }

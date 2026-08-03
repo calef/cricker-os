@@ -9,11 +9,12 @@
 //! §7). What's left here is the part that can only happen on the real machine: the
 //! **bootstrap**.
 
+use dtb::{Dtb, Region};
+use frames::{FRAME_SIZE, Frame, FrameAllocator, Stats};
+
 use crate::arch::mmu::{phys_to_virt, virt_to_phys};
 use crate::println;
 use crate::sync::{IrqSafeMutex, rank};
-use dtb::{Dtb, Region};
-use frames::{FRAME_SIZE, Frame, FrameAllocator, Stats};
 
 /// The frame allocator.
 ///
@@ -309,7 +310,7 @@ pub fn is_frame_used(frame: Frame) -> Option<bool> {
 
 /// Where the interrupt controller is, as the device tree describes it.
 ///
-/// (distributor, cpu_interface), both **physical**. Stashed at `init` because that is the only
+/// (distributor, `cpu_interface`), both **physical**. Stashed at `init` because that is the only
 /// moment we have the device tree parsed, and milestone 5 needs it much later.
 #[cfg_attr(target_arch = "riscv64", allow(dead_code))] // riscv has a PLIC, not a GIC
 pub fn gic_regions() -> Option<((u64, u64), (u64, u64))> {

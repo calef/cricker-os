@@ -189,6 +189,17 @@ jobs:
       - name: Install clang (the C component's compiler) and shellcheck
         run: sudo apt-get update && sudo apt-get install -y clang shellcheck
       - uses: Swatinem/rust-cache@v2
+      # cargo-machete (unused dependencies) and typos (spelling), both new gates in script/lint.
+      # `cargo install` rather than the runner image, for the reason above: a gate that depends on
+      # whatever the image happens to ship is a gate that can vanish without a diff. `--locked`
+      # pins each tool's own dependency resolution. Neither is in Ubuntu's archive.
+      #
+      # These land AFTER rust-cache so the cache restores first; the installs are then usually a
+      # no-op against the cached ~/.cargo/bin.
+      - name: Install the lint tools (cargo-machete, typos)
+        run: |
+          command -v cargo-machete >/dev/null || cargo install cargo-machete --locked
+          command -v typos        >/dev/null || cargo install typos-cli     --locked
       - run: script/lint
 
   verify:

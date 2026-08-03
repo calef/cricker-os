@@ -54,7 +54,7 @@ impl Blob {
         self
     }
 
-    /// FDT_BEGIN_NODE plus the node's name, NUL-terminated and padded to four bytes.
+    /// `FDT_BEGIN_NODE` plus the node's name, NUL-terminated and padded to four bytes.
     fn begin_node(&mut self, name: &[u8]) -> &mut Self {
         self.token(1);
         self.structure.extend_from_slice(name);
@@ -69,7 +69,7 @@ impl Blob {
         self.token(2)
     }
 
-    /// FDT_PROP: a length, a name offset, then the value padded to four bytes.
+    /// `FDT_PROP`: a length, a name offset, then the value padded to four bytes.
     fn prop(&mut self, name: &[u8], value: &[u8]) -> &mut Self {
         let name_off = self.string(name);
         self.token(3);

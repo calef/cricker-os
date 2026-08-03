@@ -61,11 +61,13 @@
 // so a test that stops exercising one is a gate failure instead of silence. (The header comment
 // this replaces predicted callers in "milestone 6 and 8", both long since shipped without them.)
 
+use core::sync::atomic::{AtomicU64, Ordering};
+
+use aarch64_cpu::registers::{CNTFRQ_EL0, CNTKCTL_EL1, CNTV_CTL_EL0, CNTV_CVAL_EL0, CNTVCT_EL0};
+use tock_registers::interfaces::{Readable, Writeable};
+
 use crate::cpu::{self, MAX_CPUS};
 use crate::drivers::gic;
-use aarch64_cpu::registers::{CNTFRQ_EL0, CNTKCTL_EL1, CNTV_CTL_EL0, CNTV_CVAL_EL0, CNTVCT_EL0};
-use core::sync::atomic::{AtomicU64, Ordering};
-use tock_registers::interfaces::{Readable, Writeable};
 
 /// The EL1 **virtual** timer, as a GIC interrupt ID.
 ///

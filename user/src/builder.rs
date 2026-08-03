@@ -95,6 +95,9 @@ fn build_and_start(elf: &elf::Elf, n: u64) -> Result<(), ()> {
         while va < end {
             let frame = retype_frame()?;
             // Map the frame writable in our own space at `scratch`, fill it, then hand it over.
+            // SAFETY: `invoke` traps to the kernel, which validates the capability and the method
+            // before acting (user_rt's contract). A caller cannot break an invariant by passing a
+            // bad slot or method; it gets an error back.
             if unsafe { invoke(frame, abi::frame::MAP, scratch, 1, UNTYPED) } != 0 {
                 return Err(());
             }
@@ -112,6 +115,7 @@ fn build_and_start(elf: &elf::Elf, n: u64) -> Result<(), ()> {
                 dst[d..d + len].copy_from_slice(&seg.data[s..s + len]);
             }
             // Into the child at the segment's own VA, with the segment's permissions.
+            // SAFETY: as above: the kernel validates the capability and the method.
             if unsafe { invoke(aspace, abi::aspace::MAP_INTO, va, frame, mode) } != 0 {
                 return Err(());
             }
@@ -123,6 +127,7 @@ fn build_and_start(elf: &elf::Elf, n: u64) -> Result<(), ()> {
 
     // A one-page stack for the child, mapped just below CHILD_STACK_TOP.
     let stack_frame = retype_frame()?;
+    // SAFETY: as above: the kernel validates the capability and the method.
     if unsafe {
         invoke(
             aspace,
@@ -140,9 +145,11 @@ fn build_and_start(elf: &elf::Elf, n: u64) -> Result<(), ()> {
     // The thread, its one capability (the report endpoint, narrowed to WRITE, lands as slot 0),
     // configured at the ELF's entry with the stack top, then started with `n` in its second arg.
     let tcb = retype_obj(abi::objtype::TCB)?;
+    // SAFETY: as above: the kernel validates the capability and the method.
     if unsafe { invoke(tcb, abi::tcb::CAP_INSERT, REPORT, abi::rights::WRITE, 0) } < 0 {
         return Err(());
     }
+    // SAFETY: as above: the kernel validates the capability and the method.
     if unsafe {
         invoke(
             tcb,
@@ -156,6 +163,7 @@ fn build_and_start(elf: &elf::Elf, n: u64) -> Result<(), ()> {
         return Err(());
     }
     // START's arguments become the child's a0/a1/a2; the worker reads its input from a1.
+    // SAFETY: as above: the kernel validates the capability and the method.
     if unsafe { invoke(tcb, abi::tcb::START, 0, n, 0) } != 0 {
         return Err(());
     }
@@ -165,12 +173,14 @@ fn build_and_start(elf: &elf::Elf, n: u64) -> Result<(), ()> {
 
 /// Retype a kernel object out of our untyped budget; returns the slot its capability landed in.
 fn retype_obj(objtype: u64) -> Result<u64, ()> {
+    // SAFETY: as above: the kernel validates the capability and the method.
     let r = unsafe { invoke(UNTYPED, abi::untyped::RETYPE_OBJ, objtype, 0, 0) };
     if r < 0 { Err(()) } else { Ok(r as u64) }
 }
 
 /// Retype a page of our budget into a Frame capability; returns its cap slot.
 fn retype_frame() -> Result<u64, ()> {
+    // SAFETY: as above: the kernel validates the capability and the method.
     let r = unsafe { invoke(UNTYPED, abi::untyped::RETYPE, 0, 0, 0) };
     if r < 0 { Err(()) } else { Ok(r as u64) }
 }
@@ -187,10 +197,12 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
     // No channel we can trust here: signal the only honest way, a fault the kernel turns into a
     // kill. aarch64 `brk`, RISC-V `ebreak`; this program is built for both.
     #[cfg(target_arch = "aarch64")]
+    // SAFETY: `brk` traps; the kernel turns a trap from userspace into a kill.
     unsafe {
-        core::arch::asm!("brk #0", options(nostack, nomem))
+        core::arch::asm!("brk #0", options(nostack, nomem));
     };
     #[cfg(target_arch = "riscv64")]
+    // SAFETY: `ebreak` traps; the kernel turns a trap from userspace into a kill.
     unsafe {
         core::arch::asm!("ebreak", options(nostack, nomem))
     };

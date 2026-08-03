@@ -2,7 +2,7 @@
 //!
 //! The module keeps the aarch64 name (`arch::semihosting::exit`) because it is the arch contract the
 //! test harness calls, but the mechanism is different: not ARM semihosting, but QEMU virt's
-//! `sifive_test` finisher, an MMIO word at 0x10_0000 that exits QEMU. Writing `PASS` exits 0;
+//! `sifive_test` finisher, an MMIO word at `0x10_0000` that exits QEMU. Writing `PASS` exits 0;
 //! writing `FAIL | (code << 16)` exits non-zero. That maps exactly onto our success/failure codes,
 //! so the harness works unchanged. The finisher is reached through the kernel's direct map (paging is
 //! on by the time any test runs; `mmu::map_everything` maps this page device-typed). See
@@ -44,6 +44,7 @@ pub fn exit(code: u32) -> ! {
     // SAFETY: an MMIO store to the finisher register through the direct map (mapped device-typed by
     // mmu::map_everything). The write exits QEMU, so nothing after it runs.
     let reg = super::mmu::phys_to_virt(SIFIVE_TEST_PHYS) as *mut u32;
+    // SAFETY: as the comment above says: an MMIO store to the finisher register through the direct map, which `mmu::map_everything` mapped device-typed. The write exits QEMU, so nothing after it runs.
     unsafe { core::ptr::write_volatile(reg, word) };
 
     // The finisher terminates the guest; if it somehow does not, stop rather than run on.

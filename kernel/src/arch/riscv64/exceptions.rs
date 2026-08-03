@@ -8,8 +8,9 @@
 //! through `TrapFrame::{syscall_nr, arg, set_arg}` (see this module's `impl`), so `ecall`'s a7/a0..a5
 //! map correctly without `syscall.rs` naming a register.
 
-use crate::arch::{UserFault, UserFaultAccess};
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+use crate::arch::{UserFault, UserFaultAccess};
 
 /// The registers saved on a trap. `x` is the RISC-V general-register file `x0`..`x31` (`x[0]` is the
 /// hardwired zero); the trap CSRs follow. `#[repr(C)]` because the trap-entry assembly (the traps
@@ -212,7 +213,7 @@ pub fn enable_software_interrupts() {
     const SSIE: u64 = 1 << 1;
     // SAFETY: sets a `sie` bit; takes effect under sstatus.SIE. No memory effect.
     unsafe {
-        core::arch::asm!("csrs sie, {}", in(reg) SSIE, options(nomem, nostack, preserves_flags))
+        core::arch::asm!("csrs sie, {}", in(reg) SSIE, options(nomem, nostack, preserves_flags));
     };
 }
 /// `scause` exception code for `ecall` taken from U-mode: the syscall.
@@ -289,7 +290,7 @@ pub fn enable_external() {
     const SEIE: u64 = 1 << 9;
     // SAFETY: setting sie.SEIE only unmasks the external-interrupt source; it takes effect under SIE.
     unsafe {
-        core::arch::asm!("csrs sie, {}", in(reg) SEIE, options(nomem, nostack, preserves_flags))
+        core::arch::asm!("csrs sie, {}", in(reg) SEIE, options(nomem, nostack, preserves_flags));
     };
 }
 
@@ -541,8 +542,9 @@ mod tests {
     /// and step 2 rather than 4. Stepping 4 would resume in the middle of the next instruction.
     #[test_case]
     fn breakpoint_is_caught_and_execution_resumes() {
-        use crate::arch::exceptions::BRK_COUNT;
         use core::sync::atomic::Ordering;
+
+        use crate::arch::exceptions::BRK_COUNT;
 
         let before = BRK_COUNT.load(Ordering::Relaxed);
 

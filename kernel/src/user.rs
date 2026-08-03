@@ -37,13 +37,14 @@
 //! capabilities, and the syscall surface gets designed against a capability table at 7d, in one
 //! piece, on purpose. Not accreted here because it was convenient.
 
+use elf::Elf;
+use frames::{FRAME_SIZE, Frame};
+use paging::{Flags, Half, MapError, Mapper};
+
 use crate::arch::exceptions::{TrapFrame, enter_user};
 use crate::arch::mmu::{self, phys_to_ptr};
 use crate::arch::sync_icache;
 use crate::memory;
-use elf::Elf;
-use frames::{FRAME_SIZE, Frame};
-use paging::{Flags, Half, MapError, Mapper};
 
 /// Where a user program's stack goes. One page, and `sp` starts at the top of it: stacks grow down.
 ///
@@ -203,7 +204,7 @@ static ASIDS: crate::sync::IrqSafeMutex<asid::Allocator> =
 
 /// The most user-built address spaces alive at once (milestone 19b). They are immortal until
 /// 19c wires process death, so this bounds creations for now; the revocation registry's
-/// MAX_SPACES (160) leaves room for all of them beside the exec-built spaces.
+/// `MAX_SPACES` (160) leaves room for all of them beside the exec-built spaces.
 const MAX_USER_SPACES: usize = 32;
 
 /// **The user-aspace registry** (milestone 19b): the kernel-side records behind
@@ -504,8 +505,8 @@ pub struct Spawn<'a> {
 }
 
 /// Where the kernel maps the initrd read-only into init's address space (milestone 19d): init
-/// reads the ELF to parse it here. High enough not to collide with init's own segments (0x40_0000)
-/// or its stack (0x50_0000).
+/// reads the ELF to parse it here. High enough not to collide with init's own segments (`0x40_0000`)
+/// or its stack (`0x50_0000`).
 #[cfg_attr(not(test), allow(dead_code))] // becomes the boot path at 19d.2; test-driven until then
 pub const INITRD_VA: u64 = 0x2000_0000;
 
@@ -521,7 +522,7 @@ pub const INITRD_VA: u64 = 0x2000_0000;
 /// arrives down the *software*-interrupt arm, never touching `irq_route`), so it names the console
 /// UART's own line, which is the one interrupt this ISA can assert by hand. That makes it the same
 /// number as [`UART_RX_INTID`] there, deliberately; [`spawn_init`] binds the route once and grants
-/// two capabilities naming it. See `sched::tests`' DELIVERY_IRQ, which reached the same conclusion.
+/// two capabilities naming it. See `sched::tests`' `DELIVERY_IRQ`, which reached the same conclusion.
 #[cfg_attr(not(test), allow(dead_code))]
 #[cfg(target_arch = "aarch64")]
 pub const INIT_TEST_SGI: u32 = 3;
@@ -1513,11 +1514,11 @@ pub mod virtio_service {
     }
 
     /// The heap budget the net server (smoltcp) draws from, in pages: the socket set, per-frame
-    /// transmit buffers, and caches, plus the program's own page tables. net_stack caps its heap at 128
+    /// transmit buffers, and caches, plus the program's own page tables. `net_stack` caps its heap at 128
     /// pages, so 192 leaves headroom without being unbounded.
     const NET_SERVER_BUDGET_PAGES: u64 = 192;
     /// smoltcp builds packets on the stack; one mapped stack page is not enough. Eight extra keeps
-    /// the poll loop clear (allocator_exerciser needed three for `alloc` collections; smoltcp asks more).
+    /// the poll loop clear (`allocator_exerciser` needed three for `alloc` collections; smoltcp asks more).
     const NET_SERVER_STACK_PAGES: u64 = 8;
 
     /// Start the **net server** (milestone 30, piece 3): the `net_stack` binary, which runs smoltcp over
@@ -1558,7 +1559,7 @@ pub mod virtio_service {
     /// endpoint, plus an untyped budget for the heap, extra stack pages, and a **`Stack` endpoint**
     /// (slot 4) where clients' socket-contract requests arrive. `net_stack` is its own binary (loaded by
     /// name), so no role selector is passed. Returns `(report endpoint, stack endpoint)`; a caller
-    /// that has no client (the phase-A DHCP tests) ignores the stack, and net_stack simply blocks on it.
+    /// that has no client (the phase-A DHCP tests) ignores the stack, and `net_stack` simply blocks on it.
     fn wire_net_server(
         image: &'static [u8],
         transport: crate::virtio::Transport,
@@ -1642,7 +1643,7 @@ pub mod virtio_service {
     /// **Spawn the net server and a client of its socket contract** (milestone 30, piece 3 phase B).
     /// Both are the `net_stack` binary (`image`): the server is entry role 0, the client is a nonzero
     /// role (the client rides in the same binary to keep the initrd under its 15-file directory
-    /// limit). They share a `Stack` endpoint: net_stack holds `READ` (it serves), the client holds
+    /// limit). They share a `Stack` endpoint: `net_stack` holds `READ` (it serves), the client holds
     /// `WRITE` (it requests). The client also gets its own untyped (to mint and delegate the shared
     /// frame) and a report endpoint. `cli_arg` selects which exchange the client drives (UDP DNS or
     /// TCP echo). Returns the client's report endpoint, or `None` if no NIC is attached.
@@ -1725,7 +1726,7 @@ pub mod virtio_service {
     /// **Spawn the net server and a `std::net` client** (milestone 27 phase two): the same
     /// `std_exerciser` std binary, but now given the network, so its `UdpSocket::bind` probe succeeds
     /// and it drives a real UDP DNS query and a TCP echo round trip through `std::net`, whose PAL
-    /// binds to this same net_stack socket contract. net_stack is `net_stack_image` (entry role 0, holding the
+    /// binds to this same `net_stack` socket contract. `net_stack` is `net_stack_image` (entry role 0, holding the
     /// NIC and `READ` on the `Stack` endpoint); `std_image` is the ordinary std ELF given the std
     /// slot convention (heap untyped at 0, stdout at 1) plus the two net slots (the `Stack`
     /// endpoint `WRITE` at 2, an untyped budget for its per-socket shared frames at 3). Over the
@@ -2167,7 +2168,7 @@ pub mod fs_service {
                 mmu::phys_to_virt(dma) as *mut u8,
                 0,
                 2 * FRAME_SIZE as usize,
-            )
+            );
         };
         let blk_shared = dma + FRAME_SIZE; // page 1 of the region is the shared block page
 
@@ -2253,7 +2254,7 @@ pub mod fs_service {
     /// It also gets a DEEP stack. `run` maps one stack page (enough for the shallow programs), but
     /// RedoxFS recurses through its tree and htree and commits transactions on the stack, and one
     /// 4 KiB page overflows immediately (the first `open` faults ~4.2 KiB down). So map extra stack
-    /// pages below USER_STACK_VA out of fresh frames. These are shared-style mappings (not freed on
+    /// pages below `USER_STACK_VA` out of fresh frames. These are shared-style mappings (not freed on
     /// death), a one-time cost per FS server a boot starts.
     fn spawn_fs_server(fs_server_image: &'static [u8], cfg: FsServer) {
         let budget =
@@ -2919,7 +2920,7 @@ pub mod fs_service {
                 encoded.as_ptr(),
                 mmu::phys_to_virt(set_phys) as *mut u8,
                 n,
-            )
+            );
         };
 
         let (lo, hi) = fs_proto::grant::pack_name(dir.as_bytes());
@@ -3369,7 +3370,7 @@ pub mod display_service {
     }
 
     /// Where the display terminal maps the page an application writes text into. Must match
-    /// user/src/display_terminal.rs `OUT_VA`.
+    /// `user/src/display_terminal.rs` `OUT_VA`.
     const OUT_VA_TERM: u64 = 0x0000_0000_0068_0000;
 
     /// What the kernel keeps after wiring a display terminal onto the scanout.
@@ -3426,7 +3427,7 @@ pub mod display_service {
             .addr();
         // SAFETY: a fresh frame, direct-mapped, owned by nobody yet.
         unsafe {
-            core::ptr::write_bytes(mmu::phys_to_virt(out) as *mut u8, 0, FRAME_SIZE as usize)
+            core::ptr::write_bytes(mmu::phys_to_virt(out) as *mut u8, 0, FRAME_SIZE as usize);
         };
 
         let term_report = crate::sched::create_endpoint();
@@ -3564,10 +3565,11 @@ pub mod display_service {
 ///   either, and a client without the mapping has nothing to ask and nowhere to look.
 #[cfg_attr(not(test), allow(dead_code))] // spawned only by the milestone-33 tests
 pub mod compositor_service {
+    use compositor::SCENE;
+
     use super::*;
     use crate::cap::{Rights, endpoint_cap};
     use crate::sched::EpId;
-    use compositor::SCENE;
 
     // The compositor's address space. Must match user/src/compositor.rs.
     const SCREEN_VA: u64 = 0x0000_0000_0080_0000;
@@ -3912,7 +3914,7 @@ pub mod compositor_service {
                 core::ptr::write_volatile(
                     (base + compositor::proto::ring::TAIL) as *mut u32,
                     self.ring_tail,
-                )
+                );
             };
             let w0 = compositor::proto::req(compositor::proto::COMMIT, 0);
             crate::sched::ipc_call(self.doorbell, [w0, 0]);
@@ -3963,7 +3965,7 @@ pub mod compositor_service {
                 .addr();
             // SAFETY: a fresh frame, direct-mapped, owned by nobody yet.
             unsafe {
-                core::ptr::write_bytes(mmu::phys_to_virt(out) as *mut u8, 0, FRAME_SIZE as usize)
+                core::ptr::write_bytes(mmu::phys_to_virt(out) as *mut u8, 0, FRAME_SIZE as usize);
             };
 
             let frames = SCENE[i].frames() as u64;
@@ -4131,7 +4133,7 @@ pub mod keyboard_service {
             .addr();
         // SAFETY: as above.
         unsafe {
-            core::ptr::write_bytes(mmu::phys_to_virt(ring) as *mut u8, 0, FRAME_SIZE as usize)
+            core::ptr::write_bytes(mmu::phys_to_virt(ring) as *mut u8, 0, FRAME_SIZE as usize);
         };
 
         let irq_ep = crate::sched::create_endpoint();
@@ -4282,7 +4284,7 @@ pub mod clock_service {
                 mmu::phys_to_virt(page_phys) as *mut u8,
                 0,
                 FRAME_SIZE as usize,
-            )
+            );
         };
 
         let report = crate::sched::create_endpoint();
@@ -4392,8 +4394,9 @@ pub mod clock_service {
 /// these tests** rather than two copies that can drift (DECISIONS §19, parity is a gate).
 #[cfg(test)]
 mod clock_tests {
-    use super::*;
     use clock_proto::{policy, propose, state, status};
+
+    use super::*;
 
     /// Start the service and take its startup report. `[RPT_READY, state, wall_nanos]`.
     fn start() -> (clock_service::Wiring, [u64; 5]) {
@@ -4759,7 +4762,7 @@ mod date_tests {
             .addr();
         // SAFETY: freshly allocated, named through the direct map, owned by nobody else.
         unsafe {
-            core::ptr::write_bytes(mmu::phys_to_virt(blank) as *mut u8, 0, FRAME_SIZE as usize)
+            core::ptr::write_bytes(mmu::phys_to_virt(blank) as *mut u8, 0, FRAME_SIZE as usize);
         };
 
         let out = spawn_date(Some(blank), FMT_HUMAN, 0, PROVENANCE);
@@ -5039,8 +5042,9 @@ pub mod entropy_service {
 /// that the count in a reply is honoured so a caller cannot be handed zeros it mistakes for entropy.
 #[cfg(test)]
 mod entropy_tests {
-    use super::*;
     use entropy_service::Bus;
+
+    use super::*;
 
     /// Reach the service on `bus`, wiring it if this is the first test to ask, and check its
     /// startup report when this call is the one that wired it.
@@ -5246,7 +5250,7 @@ pub mod credential_service {
     /// conclude it was overlooked.
     const _NO_CLIENT_BUDGET: () = ();
 
-    /// The `credentialer_test_client` roles; must match user/src/credentialer_test_client.rs.
+    /// The `credentialer_test_client` roles; must match `user/src/credentialer_test_client.rs`.
     pub const ROLE_HONEST: u64 = 0;
     pub const ROLE_ATTACKER: u64 = 1;
     pub const ROLE_PROVISIONER: u64 = 2;
@@ -5443,7 +5447,7 @@ pub mod credential_service {
     }
 
     /// Unpack the `k`th reply code from a `credentialer_test_client` report's second word. One byte per code; see
-    /// user/src/credentialer_test_client.rs `Codes`.
+    /// `user/src/credentialer_test_client.rs` `Codes`.
     pub const fn nth(packed: u64, k: u32) -> u64 {
         (packed >> (8 * k)) & 0xff
     }
@@ -5465,8 +5469,9 @@ pub mod credential_service {
 ///   the strongest form of "the reply carried no data" that a test can check.
 #[cfg(test)]
 mod credential_tests {
-    use super::*;
     use credential_service as cs;
+
+    use super::*;
 
     /// Wire the whole system once: the entropy service, the credential service, and the
     /// provisioner that fills and seals the store. Returns the wiring, the provisioner's report,
@@ -5960,11 +5965,13 @@ pub mod ntp_service {
 /// Not arch-gated: one portable binary, the same assertions on aarch64 and riscv64 (DECISIONS §19).
 #[cfg(test)]
 mod ntp_tests {
+    use core::sync::atomic::Ordering;
+
+    use clock_proto::{NANOS_PER_SEC, policy, state, status};
+    use ntp_service::{ATTEMPTS, reject, rpt, srv};
+
     use super::*;
     use crate::arch::exceptions::USER_FAULTS;
-    use clock_proto::{NANOS_PER_SEC, policy, state, status};
-    use core::sync::atomic::Ordering;
-    use ntp_service::{ATTEMPTS, reject, rpt, srv};
 
     /// Bounded by wall clock rather than by a yield count: since DECISIONS §28 the work a test
     /// spawns runs on other cores, so a yield on an idle core elapses no real time. Two seconds is
@@ -6443,7 +6450,7 @@ pub mod alloc_service {
     pub const BUDGET_PAGES: u64 = 96;
 
     /// `load` maps one stack page, which suits the hand-sized programs; `alloc` collections
-    /// (BTreeMap nodes, the fmt machinery behind `assert!`) burn more than 4 KiB of stack, so
+    /// (`BTreeMap` nodes, the fmt machinery behind `assert!`) burn more than 4 KiB of stack, so
     /// map three more pages below it. The demo found this the honest way: a data abort at
     /// 0x4ffff8, one word below the mapped page.
     const EXTRA_STACK_PAGES: u64 = 3;
@@ -6542,16 +6549,18 @@ mod heap_tests {
 /// `cargo xtask` looks for both in that order. See notes/compositor.md.
 #[cfg(test)]
 mod compositor_tests {
-    use super::*;
-    use crate::arch::exceptions::USER_FAULTS;
-    use crate::sched;
+    use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
     use compositor::proto::wlist;
     use compositor::{Rect, SCENE, status};
     use compositor_service::{
         ROLE_CAPTURE, ROLE_INPUT, ROLE_PROBE_INPUT, ROLE_PROBE_NEIGHBOUR, ROLE_PROBE_SCREEN,
         ROLE_SMALL_DAMAGE, ROLE_VICTIM, Wiring,
     };
-    use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+    use super::*;
+    use crate::arch::exceptions::USER_FAULTS;
+    use crate::sched;
 
     /// Spin until `cond`, bounded by wall clock rather than by a yield count: since DECISIONS §28 the
     /// work a test spawns runs on *other* cores, so a yield on an idle core returns at once and a fixed
@@ -7278,9 +7287,10 @@ mod compositor_tests {
 /// copies of it that can drift (DECISIONS §19: parity is a gate).
 #[cfg(test)]
 mod display_tests {
+    use gfx_proto as gfx;
+
     use super::*;
     use crate::sched;
-    use gfx_proto as gfx;
 
     /// **A confined userspace driver puts a known pattern in a scanout framebuffer.**
     ///
@@ -7288,7 +7298,7 @@ mod display_tests {
     ///
     /// The pattern is a per-coordinate function ([`gfx_proto::pixel`]), not a fill, and the digest is
     /// position sensitive, so a blank, stale, shifted, transposed, or truncated surface cannot pass
-    /// (crates/gfx_proto's host tests assert exactly those properties of the pattern itself). Two
+    /// (`crates/gfx_proto`'s host tests assert exactly those properties of the pattern itself). Two
     /// independent witnesses report it, from two different address spaces: the **client** digests the
     /// surface after the flush through its own mapping, and the **driver** digests it through a
     /// different mapping after the device reported the transfer complete. The kernel compares both
@@ -8171,7 +8181,7 @@ mod std_tests {
 /// pass authority it holds to another process, narrowing it on the way, and only if it was trusted
 /// to (`GRANT`). This wires the smallest scenario that exercises all three: a *granter* delegates a
 /// resource capability to a *receiver* over a channel, narrowed to `WRITE` (no `GRANT`); the
-/// receiver uses it and then cannot pass it on. See user/src/hello.rs granter()/receiver().
+/// receiver uses it and then cannot pass it on. See user/src/hello.rs `granter()/receiver()`.
 /// **Frame capabilities: shared memory a process holds, maps, and delegates.**
 ///
 /// The payoff of delegation applied to memory. A *producer* retypes a page out of its own untyped
@@ -8179,7 +8189,7 @@ mod std_tests {
 /// *consumer*, which maps the same physical page and reads what the producer wrote. The kernel
 /// copies nothing and pre-arranges nothing: the two processes compose the sharing themselves, and
 /// the read-only narrowing means the consumer can look but not write. See user/src/hello.rs
-/// frame_producer()/frame_consumer().
+/// `frame_producer()/frame_consumer()`.
 // Test scaffolding: the `tests` module below is the only caller, and it runs on both ISAs now
 // (milestone 19's user-test port). This wiring was already portable; it was compiled out on riscv64
 // only because its consumer was.
@@ -8308,7 +8318,7 @@ pub mod delegation_service {
 /// **Milestone 19a: a process mints an endpoint from its own memory, at EL0.** The maker holds
 /// an untyped budget and a channel; the peer holds the channel and a report line. Everything
 /// else, the endpoint itself included, is created at runtime by the maker out of its own pages
-/// and delegated. See user/src/hello.rs ep_maker()/ep_user().
+/// and delegated. See user/src/hello.rs `ep_maker()/ep_user()`.
 // Test scaffolding: the `tests` module below is the only caller, and it runs on both ISAs now
 // (milestone 19's user-test port). This wiring was already portable; it was compiled out on riscv64
 // only because its consumer was.
@@ -8367,7 +8377,7 @@ pub mod retype_ep_service {
 }
 
 /// **Milestone 19b: a process builds an address space, at EL0.** One role: an untyped budget
-/// and a report line; everything else it constructs. See user/src/hello.rs aspace_builder().
+/// and a report line; everything else it constructs. See user/src/hello.rs `aspace_builder()`.
 // Test scaffolding: the `tests` module below is the only caller, and it runs on both ISAs now
 // (milestone 19's user-test port). This wiring was already portable; it was compiled out on riscv64
 // only because its consumer was.
@@ -8407,7 +8417,7 @@ pub mod aspace_service {
 
 /// **Milestone 12: Call/Reply, at EL0.** One request endpoint, a server that answers a caller it was
 /// never wired to, and the one-shot reply capability proven across the boundary. See
-/// user/src/hello.rs call_server()/call_client().
+/// user/src/hello.rs `call_server()/call_client()`.
 // Test scaffolding: the `tests` module below is the only caller, and it runs on both ISAs now
 // (milestone 19's user-test port). This wiring was already portable; it was compiled out on riscv64
 // only because its consumer was.
@@ -8468,7 +8478,7 @@ pub mod call_service {
 
 /// **Milestone 13: revoke a frame, at EL0.** One process with an untyped budget retypes a frame,
 /// maps it, revokes it, and reports whether the revoke deleted its own capability. See
-/// user/src/hello.rs revoke_demo().
+/// user/src/hello.rs `revoke_demo()`.
 // Test scaffolding: the `tests` module below is the only caller, and it runs on both ISAs now
 // (milestone 19's user-test port). This wiring was already portable; it was compiled out on riscv64
 // only because its consumer was.
@@ -8527,11 +8537,8 @@ pub mod revoke_service {
 /// gained. See notes/riscv-parity-scope.md.
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::arch::exceptions::{SVC_COUNT, USER_FAULTS, last_user_fault};
-    use crate::arch::timer;
-    use crate::arch::{UserFault, UserFaultAccess};
-    use crate::sched;
+    use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
     // The std-transcript and FS-readiness assertions live with the std tests so both ISAs share one
     // copy; see `std_tests`. Most of them are used only by the device/FS tests below, which have
     // RISC-V twins in `riscv_virtio_tests` and are gated to aarch64 here.
@@ -8540,7 +8547,10 @@ mod tests {
         assert_a_kill_mid_transaction_recovers, assert_attrs, assert_fs_service_ready,
         assert_std_transcript, std_fs_expected,
     };
-    use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use super::*;
+    use crate::arch::exceptions::{SVC_COUNT, USER_FAULTS, last_user_fault};
+    use crate::arch::{UserFault, UserFaultAccess, timer};
+    use crate::sched;
 
     /// **The `hello` binary's ELF bytes**, pulled out of the initrd archive by name (milestone 19f).
     /// This is the binary carrying the milestone 7-19 role catalogue: the printing client, the
@@ -8638,7 +8648,7 @@ mod tests {
         program("net_stack").expect("no net_stack program in the initrd archive")
     }
 
-    /// The net client's test selectors and its success word, matching user/src/socket_test_client.rs. The
+    /// The net client's test selectors and its success word, matching `user/src/socket_test_client.rs`. The
     /// client is a nonzero entry role of the `net_stack` binary, so it needs no image of its own.
     #[cfg(target_arch = "aarch64")]
     const NET_TEST_UDP_DNS: u64 = 1;
@@ -9115,14 +9125,14 @@ mod tests {
                     // SAFETY: the shared frame is ours via the direct map; the client wrote `len`
                     // bytes before sending. Single-threaded capture.
                     let src = crate::arch::mmu::phys_to_virt(shared) as *const u8;
-                    let dst = &raw mut BUF as *mut u8;
+                    let dst = (&raw mut BUF).cast::<u8>();
                     for i in 0..len as usize {
                         // SAFETY: both pointers are in range; BUF is 128 bytes and len <= 128.
                         unsafe {
                             core::ptr::write_volatile(
                                 dst.add(i),
                                 core::ptr::read_volatile(src.add(i)),
-                            )
+                            );
                         };
                     }
                     LEN.store(len, Ordering::SeqCst);
@@ -9168,7 +9178,7 @@ mod tests {
 
         let len = LEN.load(Ordering::SeqCst) as usize;
         // SAFETY: written by the server thread, which stopped touching BUF once CAPTURED.
-        let got = unsafe { core::slice::from_raw_parts(&raw const BUF as *const u8, len) };
+        let got = unsafe { core::slice::from_raw_parts((&raw const BUF).cast::<u8>(), len) };
         assert_eq!(
             got, FIRST_LINE,
             "the wrong bytes arrived through shared memory"
@@ -9251,13 +9261,10 @@ mod tests {
     fn a_userspace_driver_reads_a_file_from_a_virtio_disk() {
         use crate::arch::exceptions::ROUTED_IRQS;
 
-        let report = match virtio_service::start(init_image()) {
-            Some(r) => r,
-            None => {
-                // No disk attached to this run. Nothing to test; do not fail.
-                crate::println!("    (no virtio disk attached; skipping)");
-                return;
-            }
+        let Some(report) = virtio_service::start(init_image()) else {
+            // No disk attached to this run. Nothing to test; do not fail.
+            crate::println!("    (no virtio disk attached; skipping)");
+            return;
         };
 
         let irqs_before = ROUTED_IRQS.load(Ordering::Relaxed);
@@ -9297,16 +9304,13 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn std_fs_reads_a_file_through_a_granted_directory_capability() {
-        let (readiness, report) = match fs_service::start_std(
+        let Some((readiness, report)) = fs_service::start_std(
             init_image(),
             program("fs_server").expect("no fs_server program in the initrd archive"),
             std_exerciser_image(),
-        ) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no RedoxFS disk attached; skipping)");
-                return;
-            }
+        ) else {
+            crate::println!("    (no RedoxFS disk attached; skipping)");
+            return;
         };
         assert_fs_service_ready(readiness);
 
@@ -9329,18 +9333,15 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn the_fs_server_serves_redoxfs_over_a_capability_contract() {
-        let (readiness, report) = match fs_service::start(
+        let Some((readiness, report)) = fs_service::start(
             init_image(),
             program("fs_server").expect("no fs_server program in the initrd archive"),
             program("fs_test_client").expect("no fs_test_client program in the initrd archive"),
             0, // the end-to-end proof role, not the benchmark loop
-        ) {
-            Some(r) => r,
-            None => {
-                // No RedoxFS disk attached to this run. Nothing to test; do not fail.
-                crate::println!("    (no RedoxFS disk attached; skipping)");
-                return;
-            }
+        ) else {
+            // No RedoxFS disk attached to this run. Nothing to test; do not fail.
+            crate::println!("    (no RedoxFS disk attached; skipping)");
+            return;
         };
 
         // The two servers' readiness sentinels, if this test is the one that wired them (the
@@ -9468,7 +9469,7 @@ mod tests {
     /// verdict bitmap. `None` when no RedoxFS disk is attached (nothing to test; do not fail).
     #[cfg(target_arch = "aarch64")]
     fn attack_a_grant(rights: u64, writable: bool) -> Option<u64> {
-        let report = match fs_service::start_granted(
+        let Some(report) = fs_service::start_granted(
             init_image(),
             program("fs_server").expect("no fs_server program in the initrd archive"),
             program("fs_file_caretaker")
@@ -9486,12 +9487,9 @@ mod tests {
                 role: 2, // ROLE_ATTACKER
                 arg: writable as u64,
             },
-        ) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no RedoxFS disk attached; skipping)");
-                return None;
-            }
+        ) else {
+            crate::println!("    (no RedoxFS disk attached; skipping)");
+            return None;
         };
         // The two handshakes happened inside `start_granted`, before this attacker existed: they
         // are what makes the caretaker's own staged request safe on a page all three share.
@@ -9541,7 +9539,7 @@ mod tests {
     /// legibly. What was not legible was anything downstream: the std client sat blocked on a `CALL`
     /// nobody would ever answer, and since other tests had left processes spinning on other cores,
     /// the no-progress heartbeat saw a healthy system. The only instrument that fired was the
-    /// per-test wall-clock ceiling, so a 368-byte overflow presented as "std_fs takes 914 seconds".
+    /// per-test wall-clock ceiling, so a 368-byte overflow presented as "`std_fs` takes 914 seconds".
     /// A number nobody can defend is a number that will be wrong again; this one now has a witness.
     /// **A kill mid-transaction, on the real device** (milestone 37, DECISIONS §34 condition 1).
     /// The host sweep proves the property over every fault point against a reconstructed platter;
@@ -9599,14 +9597,11 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn a_userspace_driver_completes_a_dhcp_round_trip_over_virtio_net() {
-        let report = match virtio_service::start_net(init_image()) {
-            Some(r) => r,
-            None => {
-                // No NIC on this run (a bare boot). The test runners always attach one, so this
-                // branch is not the parity gate. See scripts/qemu-runner*.sh (CRICKER_NET).
-                crate::println!("    (no virtio-net device attached; skipping)");
-                return;
-            }
+        let Some(report) = virtio_service::start_net(init_image()) else {
+            // No NIC on this run (a bare boot). The test runners always attach one, so this
+            // branch is not the parity gate. See scripts/qemu-runner*.sh (CRICKER_NET).
+            crate::println!("    (no virtio-net device attached; skipping)");
+            return;
         };
 
         let yiaddr = sched::ipc_recv(report)[0] as u32;
@@ -9636,12 +9631,9 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn a_userspace_driver_completes_a_dhcp_round_trip_over_virtio_net_pci() {
-        let report = match virtio_service::start_net_pci(init_image()) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no virtio-net-pci device attached; skipping)");
-                return;
-            }
+        let Some(report) = virtio_service::start_net_pci(init_image()) else {
+            crate::println!("    (no virtio-net-pci device attached; skipping)");
+            return;
         };
 
         let yiaddr = sched::ipc_recv(report)[0] as u32;
@@ -9666,12 +9658,9 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn the_net_server_acquires_a_dhcp_lease_over_smoltcp() {
-        let report = match virtio_service::start_net_server(net_stack_image()) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no virtio-net device attached; skipping)");
-                return;
-            }
+        let Some(report) = virtio_service::start_net_server(net_stack_image()) else {
+            crate::println!("    (no virtio-net device attached; skipping)");
+            return;
         };
         let addr = sched::ipc_recv(report)[0] as u32;
         assert_eq!(
@@ -9690,12 +9679,9 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn the_net_server_acquires_a_dhcp_lease_over_smoltcp_pci() {
-        let report = match virtio_service::start_net_server_pci(net_stack_image()) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no virtio-net-pci device attached; skipping)");
-                return;
-            }
+        let Some(report) = virtio_service::start_net_server_pci(net_stack_image()) else {
+            crate::println!("    (no virtio-net-pci device attached; skipping)");
+            return;
         };
         let addr = sched::ipc_recv(report)[0] as u32;
         assert_eq!(
@@ -9709,7 +9695,7 @@ mod tests {
     /// client process holds a `Stack` endpoint and its own untyped, mints a shared frame, delegates
     /// it, opens a UDP socket by id, sends a datagram, and reads the reply back through the same
     /// frame. No ambient network: the client acts only through the capability it was granted, and the
-    /// bytes cross in the shared frame, never in a message. Proves the whole path, client to net_stack to
+    /// bytes cross in the shared frame, never in a message. Proves the whole path, client to `net_stack` to
     /// smoltcp to the confined NIC, over the mmio transport.
     ///
     /// The peer is **slirp's own TFTP server** (10.0.2.2:69), served inside libslirp, so the exchange
@@ -9724,14 +9710,12 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn a_client_completes_a_udp_round_trip_through_the_socket_contract() {
-        let report =
-            match virtio_service::start_net_stack(net_stack_image(), NET_TEST_UDP_TFTP, false) {
-                Some(r) => r,
-                None => {
-                    crate::println!("    (no virtio-net device attached; skipping)");
-                    return;
-                }
-            };
+        let Some(report) =
+            virtio_service::start_net_stack(net_stack_image(), NET_TEST_UDP_TFTP, false)
+        else {
+            crate::println!("    (no virtio-net device attached; skipping)");
+            return;
+        };
         let verdict = sched::ipc_recv(report)[0];
         assert_eq!(
             verdict, NET_CLIENT_OK,
@@ -9747,14 +9731,12 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn a_client_completes_a_udp_round_trip_through_the_socket_contract_pci() {
-        let report =
-            match virtio_service::start_net_stack(net_stack_image(), NET_TEST_UDP_TFTP, true) {
-                Some(r) => r,
-                None => {
-                    crate::println!("    (no virtio-net-pci device attached; skipping)");
-                    return;
-                }
-            };
+        let Some(report) =
+            virtio_service::start_net_stack(net_stack_image(), NET_TEST_UDP_TFTP, true)
+        else {
+            crate::println!("    (no virtio-net-pci device attached; skipping)");
+            return;
+        };
         let verdict = sched::ipc_recv(report)[0];
         assert_eq!(
             verdict, NET_CLIENT_OK,
@@ -9776,14 +9758,12 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn a_client_resolves_a_real_dns_name_when_the_host_resolver_answers() {
-        let report =
-            match virtio_service::start_net_stack(net_stack_image(), NET_TEST_UDP_DNS, false) {
-                Some(r) => r,
-                None => {
-                    crate::println!("    (no virtio-net device attached; skipping)");
-                    return;
-                }
-            };
+        let Some(report) =
+            virtio_service::start_net_stack(net_stack_image(), NET_TEST_UDP_DNS, false)
+        else {
+            crate::println!("    (no virtio-net device attached; skipping)");
+            return;
+        };
         let verdict = sched::ipc_recv(report)[0];
         if verdict == NET_CLIENT_NO_ANSWER {
             crate::println!(
@@ -9802,7 +9782,7 @@ mod tests {
     /// socket by id, connects to slirp's guestfwd echo peer (10.0.2.9:7777, piped to `/bin/cat`),
     /// sends a payload, receives the echo, and closes. The full round trip, handshake through
     /// bidirectional data to teardown, deterministic and zero-host-setup (nothing outlives QEMU),
-    /// through the client, net_stack, smoltcp, and the confined NIC.
+    /// through the client, `net_stack`, smoltcp, and the confined NIC.
     // RISC-V twin: `riscv_virtio_tests::a_client_echoes_over_tcp_through_the_socket_contract`. Gated here rather than run twice: that
     // module drives the same property through the dedicated `blk`/`net_stack` binaries, and a
     // second copy through hello's roles would double the suite's slowest tests to prove
@@ -9810,14 +9790,12 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn a_client_echoes_over_tcp_through_the_socket_contract() {
-        let report =
-            match virtio_service::start_net_stack(net_stack_image(), NET_TEST_TCP_ECHO, false) {
-                Some(r) => r,
-                None => {
-                    crate::println!("    (no virtio-net device attached; skipping)");
-                    return;
-                }
-            };
+        let Some(report) =
+            virtio_service::start_net_stack(net_stack_image(), NET_TEST_TCP_ECHO, false)
+        else {
+            crate::println!("    (no virtio-net device attached; skipping)");
+            return;
+        };
         let verdict = sched::ipc_recv(report)[0];
         assert_eq!(
             verdict, NET_CLIENT_OK,
@@ -9833,14 +9811,12 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn a_client_echoes_over_tcp_through_the_socket_contract_pci() {
-        let report =
-            match virtio_service::start_net_stack(net_stack_image(), NET_TEST_TCP_ECHO, true) {
-                Some(r) => r,
-                None => {
-                    crate::println!("    (no virtio-net-pci device attached; skipping)");
-                    return;
-                }
-            };
+        let Some(report) =
+            virtio_service::start_net_stack(net_stack_image(), NET_TEST_TCP_ECHO, true)
+        else {
+            crate::println!("    (no virtio-net-pci device attached; skipping)");
+            return;
+        };
         let verdict = sched::ipc_recv(report)[0];
         assert_eq!(
             verdict, NET_CLIENT_OK,
@@ -9850,7 +9826,7 @@ mod tests {
 
     /// **Regression: reusing a socket id is safe** (the ephemeral-port fix). A client opens a TCP
     /// socket on id 0, connects to the echo peer, closes it, then reopens the same id and connects
-    /// again. net_stack derived the local port from the socket id, so the reopen reused the exact port and
+    /// again. `net_stack` derived the local port from the socket id, so the reopen reused the exact port and
     /// the second connect stalled on a slirp flow that had not cleared; the rotating allocator hands
     /// the reopen a fresh port, so both connects complete. The client reports OK only if they do.
     // RISC-V twin: `riscv_virtio_tests::a_reopened_socket_id_connects_again_over_tcp`. Gated here rather than run twice: that
@@ -9860,14 +9836,12 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn a_reopened_socket_id_connects_again_over_tcp() {
-        let report =
-            match virtio_service::start_net_stack(net_stack_image(), NET_TEST_TCP_REOPEN, false) {
-                Some(r) => r,
-                None => {
-                    crate::println!("    (no virtio-net device attached; skipping)");
-                    return;
-                }
-            };
+        let Some(report) =
+            virtio_service::start_net_stack(net_stack_image(), NET_TEST_TCP_REOPEN, false)
+        else {
+            crate::println!("    (no virtio-net device attached; skipping)");
+            return;
+        };
         let verdict = sched::ipc_recv(report)[0];
         assert_eq!(
             verdict, NET_CLIENT_OK,
@@ -9890,7 +9864,7 @@ mod tests {
 
     /// **`std::net` end to end over the socket contract** (milestone 27 phase two): the `std_exerciser`
     /// std binary, given the network, does a real UDP DNS query and a TCP echo round trip through
-    /// `std::net::{UdpSocket, TcpStream}`, whose PAL binds to net_stack's contract. The program never
+    /// `std::net::{UdpSocket, TcpStream}`, whose PAL binds to `net_stack`'s contract. The program never
     /// sees a capability or a socket id; it writes to a socket and reads from it. This closes the
     /// `net honestly unsupported` gap from phase one: std's networking runs on the native ABI,
     /// reaching the same path the hand-written client does through std's blocking API. Its stdout
@@ -9902,12 +9876,10 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn std_net_runs_over_the_socket_contract() {
-        let report = match virtio_service::start_net_std(net_stack_image(), std_exerciser_image()) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no virtio-net device attached; skipping)");
-                return;
-            }
+        let Some(report) = virtio_service::start_net_std(net_stack_image(), std_exerciser_image())
+        else {
+            crate::println!("    (no virtio-net device attached; skipping)");
+            return;
         };
 
         assert_std_transcript(report, STD_NET_EXPECTED, "std net");
@@ -10016,12 +9988,9 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn the_kernel_refuses_a_dma_descriptor_that_escapes_the_drivers_region() {
-        let report = match virtio_service::start_attacker(init_image()) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no virtio disk attached; skipping)");
-                return;
-            }
+        let Some(report) = virtio_service::start_attacker(init_image()) else {
+            crate::println!("    (no virtio disk attached; skipping)");
+            return;
         };
         let refused = sched::ipc_recv(report)[0];
         assert_eq!(
@@ -10044,12 +10013,9 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn the_kernel_refuses_an_indirect_descriptor_escape() {
-        let report = match virtio_service::start_attacker_indirect(init_image()) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no virtio disk attached; skipping)");
-                return;
-            }
+        let Some(report) = virtio_service::start_attacker_indirect(init_image()) else {
+            crate::println!("    (no virtio disk attached; skipping)");
+            return;
         };
         let refused = sched::ipc_recv(report)[0];
         assert_eq!(
@@ -10074,12 +10040,9 @@ mod tests {
     fn a_userspace_driver_reads_a_file_over_the_pcie_transport() {
         use crate::arch::exceptions::ROUTED_IRQS;
 
-        let report = match virtio_service::start_pci(init_image()) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no virtio-pci disk on the bus; skipping)");
-                return;
-            }
+        let Some(report) = virtio_service::start_pci(init_image()) else {
+            crate::println!("    (no virtio-pci disk on the bus; skipping)");
+            return;
         };
 
         let irqs_before = ROUTED_IRQS.load(Ordering::Relaxed);
@@ -10109,12 +10072,9 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn a_userspace_driver_writes_a_block_and_reads_it_back() {
-        let report = match virtio_service::start_writer(init_image()) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no virtio disk attached; skipping)");
-                return;
-            }
+        let Some(report) = virtio_service::start_writer(init_image()) else {
+            crate::println!("    (no virtio disk attached; skipping)");
+            return;
         };
         let word = sched::ipc_recv(report)[0];
         assert_eq!(
@@ -10134,12 +10094,9 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     #[test_case]
     fn a_userspace_driver_writes_a_block_over_the_pcie_transport() {
-        let report = match virtio_service::start_writer_pci(init_image()) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no virtio-pci disk on the bus; skipping)");
-                return;
-            }
+        let Some(report) = virtio_service::start_writer_pci(init_image()) else {
+            crate::println!("    (no virtio-pci disk on the bus; skipping)");
+            return;
         };
         let word = sched::ipc_recv(report)[0];
         assert_eq!(
@@ -10167,12 +10124,9 @@ mod tests {
     #[test_case]
     fn a_driver_killed_mid_write_leaves_the_device_and_transport_sane() {
         let faults = USER_FAULTS.load(Ordering::Relaxed);
-        let report = match virtio_service::start_write_abandoner(init_image()) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no virtio disk attached; skipping)");
-                return;
-            }
+        let Some(report) = virtio_service::start_write_abandoner(init_image()) else {
+            crate::println!("    (no virtio disk attached; skipping)");
+            return;
         };
 
         // 1 = the kernel validated the write and rang the device; the request is genuinely in
@@ -10711,7 +10665,7 @@ mod tests {
     /// loop neither leaks memory nor exhausts the region table. This is the property "spawn's
     /// prerequisite" was always about: not retype (that had shipped), but reclamation, so a workload
     /// can come and go over and over. A few iterations under TCG is enough to catch any per-cycle
-    /// leak; the real magnitudes wait on the EL0 lat_proc benchmark.
+    /// leak; the real magnitudes wait on the EL0 `lat_proc` benchmark.
     #[test_case]
     fn spawn_to_reap_repeats_without_leaking() {
         const CODE_VA: u64 = 0x40_0000;
@@ -10810,7 +10764,7 @@ mod tests {
     /// capability minted for it by another process works when it invokes it), and the receiver
     /// *cannot pass it on* because it was handed the capability without `GRANT`. This is the
     /// operation that makes the capability model composable by processes instead of brokered by the
-    /// kernel at spawn. See user/src/hello.rs and user::delegation_service.
+    /// kernel at spawn. See user/src/hello.rs and `user::delegation_service`.
     #[test_case]
     fn a_capability_can_be_delegated_over_ipc_and_grant_gates_re_delegation() {
         let image = init_image();
@@ -10883,7 +10837,7 @@ mod tests {
     /// is genuinely shared, and the kernel copied nothing), and the consumer *cannot* map that page
     /// writable, because it was handed the frame with `READ` alone. This is §10's "shared memory
     /// carries data" done by the processes rather than wired by the kernel at spawn. See
-    /// user/src/hello.rs and user::frame_service.
+    /// user/src/hello.rs and `user::frame_service`.
     #[test_case]
     fn a_frame_capability_shares_a_page_and_a_read_only_view_cannot_write_it() {
         let image = init_image();
@@ -11007,7 +10961,7 @@ mod force_kill_tests {
 /// part is the fault endpoint phase A already built.
 ///
 /// The kernel spawns `root_supervisor` the way it spawns init: the archive mapped read-only, one untyped
-/// budget, one report endpoint. root_supervisor then builds a construction sub-server and a supervisor, hands
+/// budget, one report endpoint. `root_supervisor` then builds a construction sub-server and a supervisor, hands
 /// each exactly what it needs, and **deletes its own budget**. From then on the tree runs without it:
 /// the sub-server crashes, its supervisor hears about it, reaps it through the spawner, and asks for a
 /// replacement, which runs and exits cleanly. init could not have done any of that, and that is what
@@ -11025,7 +10979,7 @@ mod authority_tests {
     const REPORT_SUP_GAVE_UP: u64 = 4;
     const REPORT_FAILED: u64 = 9;
 
-    /// Pages in root_supervisor's construction budget. It builds two servers out of this, splits the
+    /// Pages in `root_supervisor`'s construction budget. It builds two servers out of this, splits the
     /// spawner's budget from it, and then deletes it; the spawner's split is the only memory the tree
     /// spends afterwards.
     const ROOT_BUDGET_PAGES: u64 = 1024;
@@ -11034,7 +10988,7 @@ mod authority_tests {
     /// process in the tree holds a WRITE view of.
     ///
     /// Deliberately the same endowment `spawn_init` gives (`INITRD_VA`, an untyped in slot 0, a report
-    /// endpoint in slot 1) so what is being tested is root_supervisor's *choices*, not a privileged shortcut.
+    /// endpoint in slot 1) so what is being tested is `root_supervisor`'s *choices*, not a privileged shortcut.
     fn spawn_tree() -> sched::EpId {
         let (initrd_start, initrd_len) = memory::initrd_region().expect("no initrd region");
         let initrd_pages = initrd_len.div_ceil(FRAME_SIZE);
@@ -11154,7 +11108,7 @@ mod authority_tests {
 
     /// **init drops its construction authority, and the drop is real.**
     ///
-    /// root_supervisor builds its two servers, deletes the wiring capabilities and then the untyped budget
+    /// `root_supervisor` builds its two servers, deletes the wiring capabilities and then the untyped budget
     /// itself, and immediately tries the two primitives that build things: retype a page, and retype a
     /// kernel object. Both must fail, and they must fail with `NoSuchSlot` (there is nothing there)
     /// rather than `NotPermitted` (there is something there and you may not use it), because the
@@ -11286,7 +11240,7 @@ mod c_seam_tests {
     use super::*;
     use crate::sched;
 
-    /// The report protocol, matching crates/c_seam. Userspace owns the definition; the test
+    /// The report protocol, matching `crates/c_seam`. Userspace owns the definition; the test
     /// mirrors it, the same convention `authority_tests` and the net client's selectors follow.
     const RPT_RAN: u64 = 1;
     const RPT_DEATH: u64 = 2;
@@ -11308,7 +11262,7 @@ mod c_seam_tests {
     /// What the honest attempt must report: all of the above, plus a correct answer.
     const CONFINED_AND_CORRECT: u64 = CONFINED | OUTPUT_CORRECT;
 
-    /// The attempts, matching crates/c_seam.
+    /// The attempts, matching `crates/c_seam`.
     const ATTEMPTS: usize = 3;
     const ATTEMPT_HONEST: u64 = 2;
 
@@ -11564,7 +11518,7 @@ mod c_seam_tests {
 ///
 /// The flagship the roadmap points at, and the thing to notice about it is what the kernel does not
 /// contain. There is no component object, no swap syscall, no naming service, and no
-/// livecycle-aware anything: `swapper` is an unprivileged process with a budget, one device
+/// lifecycle-aware anything: `swapper` is an unprivileged process with a budget, one device
 /// capability and four endpoints, and the swap is the composition of mechanisms that already
 /// existed for their own reasons. What milestone 23 needed the kernel to grow is exactly one thing:
 /// `Frame::REVOKE` now answers on a `DeviceFrame`, with take-back semantics (§41).
@@ -12137,9 +12091,10 @@ mod measured_boot_tests {
 /// only sender on the fault endpoint, so the tid the supervisor reads is trustworthy without a badge.
 #[cfg(test)]
 mod supervision_tests {
+    use abi::fault::{EVENT_EXIT, EVENT_FAULT, FAULT_EP_SLOT};
+
     use super::*;
     use crate::sched;
-    use abi::fault::{EVENT_EXIT, EVENT_FAULT, FAULT_EP_SLOT};
 
     pub(super) const CODE_VA: u64 = 0x40_0000;
     pub(super) const STACK_VA: u64 = 0x50_0000;
@@ -12357,13 +12312,14 @@ mod supervision_tests {
 /// back down and it can spend those pages again, while the supervisor's cspace does not grow.
 #[cfg(test)]
 mod reap_tests {
+    use abi::Error;
+    use abi::fault::{EVENT_EXIT, EVENT_FAULT};
+
     use super::supervision_tests::{FAULT_STUB, REPORT_STUB, REPORT_WORD, build_child_in};
     use crate::arch::exceptions::TrapFrame;
     use crate::cap::{Object, Rights};
     use crate::sched;
     use crate::syscall::invoke;
-    use abi::Error;
-    use abi::fault::{EVENT_EXIT, EVENT_FAULT};
 
     /// The builder's whole budget. Room for three instances plus slack, so the LIFO return-of-pages
     /// (§16) can be watched happening more than once.
@@ -12780,10 +12736,11 @@ mod reap_tests {
 /// parity gate (DECISIONS §19) is met by literally the same test running twice.
 #[cfg(test)]
 mod dir_capability_tests {
-    use super::*;
-    use crate::sched;
     use fs_proto::dir;
     use fs_proto::fixture::dirscape as esc;
+
+    use super::*;
+    use crate::sched;
 
     /// The binary carrying the block server's role. One `cfg`, in `fs_service`, because the boot
     /// path needs the same answer this module's tests do.
@@ -12798,7 +12755,7 @@ mod dir_capability_tests {
     ///
     /// `None` when no RedoxFS disk is attached (nothing to test; do not fail).
     fn attack_a_subtree(rights: u64, run: u64) -> Option<u64> {
-        let report = match fs_service::start_granted_dir(
+        let Some(report) = fs_service::start_granted_dir(
             blk_server_image(),
             program("fs_server").expect("no fs_server program in the initrd archive"),
             program("fs_subtree_caretaker")
@@ -12812,12 +12769,9 @@ mod dir_capability_tests {
                 arg2: 0,
                 stack_pages: 0,
             },
-        ) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no RedoxFS disk attached; skipping)");
-                return None;
-            }
+        ) else {
+            crate::println!("    (no RedoxFS disk attached; skipping)");
+            return None;
         };
         // Both handshakes happened inside `start_granted_dir`, before this attacker existed. That
         // ordering is the fix for the startup clobber `fs_service::wait_for_caretaker` records.
@@ -12987,7 +12941,7 @@ mod dir_capability_tests {
     /// caretaker one hop up holds a capability that could open it.
     #[test_case]
     fn a_name_set_capability_reads_its_attributes_and_still_names_only_its_set() {
-        let report = match fs_service::start_granted_set(
+        let Some(report) = fs_service::start_granted_set(
             blk_server_image(),
             program("fs_server").expect("no fs_server program in the initrd archive"),
             program("fs_nameset_caretaker")
@@ -13003,12 +12957,9 @@ mod dir_capability_tests {
                 arg2: 0,
                 stack_pages: 0,
             },
-        ) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no RedoxFS disk attached; skipping)");
-                return;
-            }
+        ) else {
+            crate::println!("    (no RedoxFS disk attached; skipping)");
+            return;
         };
         let [tag, v, ..] = sched::ipc_recv(report);
         assert_eq!(
@@ -13036,10 +12987,11 @@ mod dir_capability_tests {
 /// them, and the thing being confined is a shell.
 #[cfg(test)]
 mod shell_navigation_tests {
-    use super::*;
-    use crate::sched;
     use fs_proto::dir;
     use fs_proto::fixture::{navscape as nb, tree};
+
+    use super::*;
+    use crate::sched;
 
     /// The `swish` binary's navigating role (`user/src/swish.rs`).
     const ROLE_NAVIGATE: u64 = 1;
@@ -13218,11 +13170,12 @@ mod shell_navigation_tests {
 /// program decides which.
 #[cfg(test)]
 mod rm_program_tests {
-    use super::*;
-    use crate::sched;
     use fs_proto::dir;
     use fs_proto::fixture::{VERDICT, rm as rr, tree};
     use grant_plan::rmopt;
+
+    use super::*;
+    use crate::sched;
 
     /// The most messages one run may send before the harness stops reading. A `rm` that never sent
     /// its verdict would otherwise hang the boot; this turns it into a failed assertion.
@@ -13411,10 +13364,11 @@ mod rm_program_tests {
 /// literally the authority it would transfer, and nothing else in the directory moves.
 #[cfg(test)]
 mod glob_grant_tests {
-    use super::*;
-    use crate::sched;
     use fs_proto::dir;
     use fs_proto::fixture::{VERDICT, globscape as gb, rm as rr, tree};
+
+    use super::*;
+    use crate::sched;
 
     /// The `swish` binary's globbing role (`user/src/swish.rs`).
     const ROLE_GLOB: u64 = 2;
@@ -13587,14 +13541,15 @@ mod glob_grant_tests {
 /// DMA, and the kernel's DMA confinement, on the second ISA.
 #[cfg(all(test, target_arch = "riscv64"))]
 mod riscv_virtio_tests {
-    use super::*;
+    use core::sync::atomic::Ordering;
+
     // Shared with the aarch64 module so both ISAs assert a std transcript the same way.
     use super::std_tests::{
         assert_a_kill_mid_transaction_recovers, assert_attrs, assert_fs_service_ready,
         assert_std_transcript, std_fs_expected,
     };
+    use super::*;
     use crate::sched;
-    use core::sync::atomic::Ordering;
 
     /// The `blk` driver's ELF bytes from the riscv initrd archive. Absent means the initrd was
     /// built without it (or the aarch64 archive was handed to a riscv boot, the mix-up the xtask
@@ -13608,7 +13563,7 @@ mod riscv_virtio_tests {
         program("net_stack").expect("no net_stack program in the initrd archive")
     }
 
-    /// The net client's test selectors and success word, matching user/src/socket_test_client.rs. The client is
+    /// The net client's test selectors and success word, matching `user/src/socket_test_client.rs`. The client is
     /// a nonzero entry role of the `net_stack` binary, so it needs no image of its own.
     const NET_TEST_UDP_DNS: u64 = 1;
     const NET_TEST_TCP_ECHO: u64 = 2;
@@ -13739,13 +13694,10 @@ mod riscv_virtio_tests {
     fn a_userspace_driver_reads_a_file_from_a_virtio_disk() {
         use crate::arch::exceptions::ROUTED_IRQS;
 
-        let report = match virtio_service::start(blk_image()) {
-            Some(r) => r,
-            None => {
-                // No disk attached to this run. Nothing to test; do not fail.
-                crate::println!("    (no virtio disk attached; skipping)");
-                return;
-            }
+        let Some(report) = virtio_service::start(blk_image()) else {
+            // No disk attached to this run. Nothing to test; do not fail.
+            crate::println!("    (no virtio disk attached; skipping)");
+            return;
         };
 
         let irqs_before = ROUTED_IRQS.load(Ordering::Relaxed);
@@ -13769,17 +13721,14 @@ mod riscv_virtio_tests {
     /// the portable `blk` binary here instead of hello.
     #[test_case]
     fn the_fs_server_serves_redoxfs_over_a_capability_contract() {
-        let (readiness, report) = match fs_service::start(
+        let Some((readiness, report)) = fs_service::start(
             blk_image(),
             program("fs_server").expect("no fs_server program in the initrd archive"),
             program("fs_test_client").expect("no fs_test_client program in the initrd archive"),
             0, // the end-to-end proof role, not the benchmark loop
-        ) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no RedoxFS disk attached; skipping)");
-                return;
-            }
+        ) else {
+            crate::println!("    (no RedoxFS disk attached; skipping)");
+            return;
         };
 
         assert_fs_service_ready(readiness);
@@ -13806,16 +13755,13 @@ mod riscv_virtio_tests {
     /// refused every path that would leave that directory. See the aarch64 twin for what it proves.
     #[test_case]
     fn std_fs_reads_a_file_through_a_granted_directory_capability() {
-        let (readiness, report) = match fs_service::start_std(
+        let Some((readiness, report)) = fs_service::start_std(
             blk_image(),
             program("fs_server").expect("no fs_server program in the initrd archive"),
             program("std_exerciser").expect("no std_exerciser program in the initrd archive"),
-        ) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no RedoxFS disk attached; skipping)");
-                return;
-            }
+        ) else {
+            crate::println!("    (no RedoxFS disk attached; skipping)");
+            return;
         };
         assert_fs_service_ready(readiness);
 
@@ -13862,7 +13808,7 @@ mod riscv_virtio_tests {
     /// The riscv half of the aarch64 twin's helper; the only difference is the block-server binary
     /// (the portable `blk` here, the PL011-tied `hello` there).
     fn attack_a_grant(rights: u64, writable: bool) -> Option<u64> {
-        let report = match fs_service::start_granted(
+        let Some(report) = fs_service::start_granted(
             blk_image(),
             program("fs_server").expect("no fs_server program in the initrd archive"),
             program("fs_file_caretaker")
@@ -13878,12 +13824,9 @@ mod riscv_virtio_tests {
                 role: 2, // ROLE_ATTACKER
                 arg: writable as u64,
             },
-        ) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no RedoxFS disk attached; skipping)");
-                return None;
-            }
+        ) else {
+            crate::println!("    (no RedoxFS disk attached; skipping)");
+            return None;
         };
         // The two handshakes happened inside `start_granted`, before this attacker existed: they
         // are what makes the caretaker's own staged request safe on a page all three share.
@@ -13931,12 +13874,9 @@ mod riscv_virtio_tests {
     /// confinement, with the completion delivered via the PLIC. Parity with the aarch64 net test.
     #[test_case]
     fn a_userspace_driver_completes_a_dhcp_round_trip_over_virtio_net() {
-        let report = match virtio_service::start_net(blk_image()) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no virtio-net device attached; skipping)");
-                return;
-            }
+        let Some(report) = virtio_service::start_net(blk_image()) else {
+            crate::println!("    (no virtio-net device attached; skipping)");
+            return;
         };
 
         let yiaddr = sched::ipc_recv(report)[0] as u32;
@@ -13953,12 +13893,9 @@ mod riscv_virtio_tests {
     /// The riscv net round trip over PCIe, behind the RISC-V IOMMU (milestone 30, §20).
     #[test_case]
     fn a_userspace_driver_completes_a_dhcp_round_trip_over_virtio_net_pci() {
-        let report = match virtio_service::start_net_pci(blk_image()) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no virtio-net-pci device attached; skipping)");
-                return;
-            }
+        let Some(report) = virtio_service::start_net_pci(blk_image()) else {
+            crate::println!("    (no virtio-net-pci device attached; skipping)");
+            return;
         };
 
         let yiaddr = sched::ipc_recv(report)[0] as u32;
@@ -13973,12 +13910,9 @@ mod riscv_virtio_tests {
     /// (milestone 30, piece 3). A reused userspace TCP/IP stack, driving a kernel-confined device.
     #[test_case]
     fn the_net_server_acquires_a_dhcp_lease_over_smoltcp() {
-        let report = match virtio_service::start_net_server(net_stack_image()) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no virtio-net device attached; skipping)");
-                return;
-            }
+        let Some(report) = virtio_service::start_net_server(net_stack_image()) else {
+            crate::println!("    (no virtio-net device attached; skipping)");
+            return;
         };
         let addr = sched::ipc_recv(report)[0] as u32;
         assert_eq!(
@@ -13991,12 +13925,9 @@ mod riscv_virtio_tests {
     /// The riscv net server over PCIe, behind the RISC-V IOMMU (milestone 30, §20).
     #[test_case]
     fn the_net_server_acquires_a_dhcp_lease_over_smoltcp_pci() {
-        let report = match virtio_service::start_net_server_pci(net_stack_image()) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no virtio-net-pci device attached; skipping)");
-                return;
-            }
+        let Some(report) = virtio_service::start_net_server_pci(net_stack_image()) else {
+            crate::println!("    (no virtio-net-pci device attached; skipping)");
+            return;
         };
         let addr = sched::ipc_recv(report)[0] as u32;
         assert_eq!(
@@ -14012,14 +13943,12 @@ mod riscv_virtio_tests {
     /// the aarch64 twin for why the old DNS-based version was environment-dependent.
     #[test_case]
     fn a_client_completes_a_udp_round_trip_through_the_socket_contract() {
-        let report =
-            match virtio_service::start_net_stack(net_stack_image(), NET_TEST_UDP_TFTP, false) {
-                Some(r) => r,
-                None => {
-                    crate::println!("    (no virtio-net device attached; skipping)");
-                    return;
-                }
-            };
+        let Some(report) =
+            virtio_service::start_net_stack(net_stack_image(), NET_TEST_UDP_TFTP, false)
+        else {
+            crate::println!("    (no virtio-net device attached; skipping)");
+            return;
+        };
         let verdict = sched::ipc_recv(report)[0];
         assert_eq!(
             verdict, NET_CLIENT_OK,
@@ -14030,14 +13959,12 @@ mod riscv_virtio_tests {
     /// The riscv UDP round trip over PCIe, behind the RISC-V IOMMU.
     #[test_case]
     fn a_client_completes_a_udp_round_trip_through_the_socket_contract_pci() {
-        let report =
-            match virtio_service::start_net_stack(net_stack_image(), NET_TEST_UDP_TFTP, true) {
-                Some(r) => r,
-                None => {
-                    crate::println!("    (no virtio-net-pci device attached; skipping)");
-                    return;
-                }
-            };
+        let Some(report) =
+            virtio_service::start_net_stack(net_stack_image(), NET_TEST_UDP_TFTP, true)
+        else {
+            crate::println!("    (no virtio-net-pci device attached; skipping)");
+            return;
+        };
         let verdict = sched::ipc_recv(report)[0];
         assert_eq!(
             verdict, NET_CLIENT_OK,
@@ -14049,14 +13976,12 @@ mod riscv_virtio_tests {
     /// upstream is the host's resolver, so a non-answer is skipped and only a malformed reply fails.
     #[test_case]
     fn a_client_resolves_a_real_dns_name_when_the_host_resolver_answers() {
-        let report =
-            match virtio_service::start_net_stack(net_stack_image(), NET_TEST_UDP_DNS, false) {
-                Some(r) => r,
-                None => {
-                    crate::println!("    (no virtio-net device attached; skipping)");
-                    return;
-                }
-            };
+        let Some(report) =
+            virtio_service::start_net_stack(net_stack_image(), NET_TEST_UDP_DNS, false)
+        else {
+            crate::println!("    (no virtio-net device attached; skipping)");
+            return;
+        };
         let verdict = sched::ipc_recv(report)[0];
         if verdict == NET_CLIENT_NO_ANSWER {
             crate::println!(
@@ -14075,14 +14000,12 @@ mod riscv_virtio_tests {
     /// send, receive the echo, close, the full round trip through the confined NIC.
     #[test_case]
     fn a_client_echoes_over_tcp_through_the_socket_contract() {
-        let report =
-            match virtio_service::start_net_stack(net_stack_image(), NET_TEST_TCP_ECHO, false) {
-                Some(r) => r,
-                None => {
-                    crate::println!("    (no virtio-net device attached; skipping)");
-                    return;
-                }
-            };
+        let Some(report) =
+            virtio_service::start_net_stack(net_stack_image(), NET_TEST_TCP_ECHO, false)
+        else {
+            crate::println!("    (no virtio-net device attached; skipping)");
+            return;
+        };
         let verdict = sched::ipc_recv(report)[0];
         assert_eq!(
             verdict, NET_CLIENT_OK,
@@ -14093,14 +14016,12 @@ mod riscv_virtio_tests {
     /// The riscv TCP echo round trip over PCIe, behind the RISC-V IOMMU.
     #[test_case]
     fn a_client_echoes_over_tcp_through_the_socket_contract_pci() {
-        let report =
-            match virtio_service::start_net_stack(net_stack_image(), NET_TEST_TCP_ECHO, true) {
-                Some(r) => r,
-                None => {
-                    crate::println!("    (no virtio-net-pci device attached; skipping)");
-                    return;
-                }
-            };
+        let Some(report) =
+            virtio_service::start_net_stack(net_stack_image(), NET_TEST_TCP_ECHO, true)
+        else {
+            crate::println!("    (no virtio-net-pci device attached; skipping)");
+            return;
+        };
         let verdict = sched::ipc_recv(report)[0];
         assert_eq!(
             verdict, NET_CLIENT_OK,
@@ -14112,14 +14033,12 @@ mod riscv_virtio_tests {
     /// ephemeral-port fix). See the aarch64 twin for the finding.
     #[test_case]
     fn a_reopened_socket_id_connects_again_over_tcp() {
-        let report =
-            match virtio_service::start_net_stack(net_stack_image(), NET_TEST_TCP_REOPEN, false) {
-                Some(r) => r,
-                None => {
-                    crate::println!("    (no virtio-net device attached; skipping)");
-                    return;
-                }
-            };
+        let Some(report) =
+            virtio_service::start_net_stack(net_stack_image(), NET_TEST_TCP_REOPEN, false)
+        else {
+            crate::println!("    (no virtio-net device attached; skipping)");
+            return;
+        };
         let verdict = sched::ipc_recv(report)[0];
         assert_eq!(
             verdict, NET_CLIENT_OK,
@@ -14139,16 +14058,14 @@ mod riscv_virtio_tests {
     /// **`std::net` end to end over the socket contract, on the second ISA** (milestone 27 phase
     /// two): the riscv twin of the aarch64 std-net test. The `std_exerciser` std binary, given the
     /// network, does a real UDP DNS query and a TCP echo round trip through `std::net`, whose PAL
-    /// binds to net_stack's contract, proving std's networking runs on the native ABI on both
+    /// binds to `net_stack`'s contract, proving std's networking runs on the native ABI on both
     /// architectures (the §19 parity gate). Its stdout is reassembled and compared byte for byte.
     #[test_case]
     fn std_net_runs_over_the_socket_contract() {
-        let report = match virtio_service::start_net_std(net_stack_image(), std_exerciser_image()) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no virtio-net device attached; skipping)");
-                return;
-            }
+        let Some(report) = virtio_service::start_net_std(net_stack_image(), std_exerciser_image())
+        else {
+            crate::println!("    (no virtio-net device attached; skipping)");
+            return;
         };
 
         assert_std_transcript(report, STD_NET_EXPECTED, "std net");
@@ -14158,12 +14075,9 @@ mod riscv_virtio_tests {
     /// the device is never rung. The attacker reports `1` (refused).
     #[test_case]
     fn the_kernel_refuses_a_dma_descriptor_that_escapes_the_drivers_region() {
-        let report = match virtio_service::start_attacker(blk_image()) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no virtio disk attached; skipping)");
-                return;
-            }
+        let Some(report) = virtio_service::start_attacker(blk_image()) else {
+            crate::println!("    (no virtio disk attached; skipping)");
+            return;
         };
         let refused = sched::ipc_recv(report)[0];
         assert_eq!(
@@ -14177,12 +14091,9 @@ mod riscv_virtio_tests {
     /// subtle case needs its own test.
     #[test_case]
     fn the_kernel_refuses_an_indirect_descriptor_escape() {
-        let report = match virtio_service::start_attacker_indirect(blk_image()) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no virtio disk attached; skipping)");
-                return;
-            }
+        let Some(report) = virtio_service::start_attacker_indirect(blk_image()) else {
+            crate::println!("    (no virtio disk attached; skipping)");
+            return;
         };
         let refused = sched::ipc_recv(report)[0];
         assert_eq!(
@@ -14203,12 +14114,9 @@ mod riscv_virtio_tests {
     fn a_userspace_driver_reads_a_file_over_the_pcie_transport() {
         use crate::arch::exceptions::ROUTED_IRQS;
 
-        let report = match virtio_service::start_pci(blk_image()) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no virtio-pci disk on the bus; skipping)");
-                return;
-            }
+        let Some(report) = virtio_service::start_pci(blk_image()) else {
+            crate::println!("    (no virtio-pci disk on the bus; skipping)");
+            return;
         };
 
         let irqs_before = ROUTED_IRQS.load(Ordering::Relaxed);
@@ -14229,12 +14137,9 @@ mod riscv_virtio_tests {
     /// what the report certifies.
     #[test_case]
     fn a_userspace_driver_writes_a_block_and_reads_it_back() {
-        let report = match virtio_service::start_writer(blk_image()) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no virtio disk attached; skipping)");
-                return;
-            }
+        let Some(report) = virtio_service::start_writer(blk_image()) else {
+            crate::println!("    (no virtio disk attached; skipping)");
+            return;
         };
         let word = sched::ipc_recv(report)[0];
         assert_eq!(
@@ -14247,12 +14152,9 @@ mod riscv_virtio_tests {
     /// The write round trip over the PCIe transport, on the second ISA.
     #[test_case]
     fn a_userspace_driver_writes_a_block_over_the_pcie_transport() {
-        let report = match virtio_service::start_writer_pci(blk_image()) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no virtio-pci disk on the bus; skipping)");
-                return;
-            }
+        let Some(report) = virtio_service::start_writer_pci(blk_image()) else {
+            crate::println!("    (no virtio-pci disk on the bus; skipping)");
+            return;
         };
         let word = sched::ipc_recv(report)[0];
         assert_eq!(
@@ -14270,12 +14172,9 @@ mod riscv_virtio_tests {
         use crate::arch::exceptions::USER_FAULTS;
 
         let faults = USER_FAULTS.load(Ordering::Relaxed);
-        let report = match virtio_service::start_write_abandoner(blk_image()) {
-            Some(r) => r,
-            None => {
-                crate::println!("    (no virtio disk attached; skipping)");
-                return;
-            }
+        let Some(report) = virtio_service::start_write_abandoner(blk_image()) else {
+            crate::println!("    (no virtio disk attached; skipping)");
+            return;
         };
 
         assert_eq!(
@@ -14318,10 +14217,11 @@ mod riscv_virtio_tests {
 ///   this test; what it is not is the same *code*, and that gap is named in notes/pipes.md's BUGS.
 #[cfg(test)]
 pub mod pipeline_service {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
     use crate::cap::{Rights, endpoint_cap, untyped_cap};
     use crate::sched::EpId;
-    use core::sync::atomic::{AtomicUsize, Ordering};
 
     /// The `swish` binary's pipeline role (`user/src/swish.rs`).
     const ROLE_PIPELINE: u64 = 3;
@@ -14331,7 +14231,7 @@ pub mod pipeline_service {
     const LINE_VA: u64 = 0x0000_0000_00b0_0000;
 
     /// The budget the shell mints its pipes out of. Each pipeline splits a region off this and
-    /// gives it back, so one number covers a script of several lines; it matches system_initializer's grant.
+    /// gives it back, so one number covers a script of several lines; it matches `system_initializer`'s grant.
     const SH_BUDGET_PAGES: u64 = 128;
 
     /// Pages of stack **below** the one `run` maps. A shell needs more than a hand-sized program
@@ -14891,9 +14791,10 @@ mod pipeline_tests {
 /// architecture-specific, so the parity gate (DECISIONS §19) is met by the same test running twice.
 #[cfg(test)]
 mod redirection_tests {
-    use super::*;
     use fs_proto::dir;
     use pipeline_service::{answer, counts};
+
+    use super::*;
 
     /// The last line `user/src/swish.rs`'s redirection role prints. Must match `REDIRECT_DONE`.
     const DONE: &[u8] = b"== redirections done\n";
@@ -15149,10 +15050,11 @@ mod redirection_tests {
 /// set.
 #[cfg(test)]
 mod sink_tests {
+    use sink_proto::fixture;
+
     use super::*;
     use crate::cap::{Rights, endpoint_cap};
     use crate::sched::EpId;
-    use sink_proto::fixture;
 
     /// `user/src/sink.rs`'s writer role. Its `arg1` is how many times to write the transcript, with
     /// 0 meaning "until the sink stops taking it".

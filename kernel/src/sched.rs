@@ -33,10 +33,11 @@
 //!    and without it the first thread you spawn can never be preempted, which would be a
 //!    cooperative scheduler with extra steps.
 
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+
 use crate::cpu;
 use crate::sync::{IrqSafeMutex, rank};
 use crate::thread::{Context, QuotaToken, State, Thread, Tid, switch_to};
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// How many times we have actually taken the CPU away from a thread. The number that says
 /// preemption is real.
@@ -240,7 +241,7 @@ pub type EpId = u64;
 /// [`create_endpoint`] carves another, so this is a batch size and nothing else.
 ///
 /// It used to be a ceiling, and it was the wrong shape of number, because it grew with the SUITE
-/// rather than with the system: 64 lasted until the 27+28 merge, 96 until supervision and std::net
+/// rather than with the system: 64 lasted until the 27+28 merge, 96 until supervision and `std::net`
 /// merged the same day, 128 until milestone 33's compositor tests, which wire 26 endpoints across
 /// four scenes (a display, a doorbell, a report per client, an input endpoint per focusable client)
 /// and wanted 160. Every parallel branch fit on its own, and the union
@@ -475,6 +476,7 @@ fn place_on(target: usize, thread: core::ptr::NonNull<Thread>) {
     } else {
         // SAFETY: as above; the inbox mutex serializes access to the link.
         let mut inbox = cpu::inbox_of(target).lock();
+        // SAFETY: the live Ready thread named in the comment above, on no other queue, and the inbox lock is held across the push.
         unsafe { inbox.push_back(thread) };
         // Mirror the target's inbox depth so it counts as load (DECISIONS §28); under the lock, so
         // the store is serialised with any concurrent drain.
@@ -558,6 +560,7 @@ pub fn serve_steal_request() {
         // SAFETY: a live Ready thread we just popped, on no other queue; the inbox mutex serialises
         // the handoff and orders our pop before the requester's drain (the `place_on` discipline).
         let mut inbox = cpu::inbox_of(requester).lock();
+        // SAFETY: the live Ready thread named in the comment above, on no other queue, and the inbox lock is held across the push.
         unsafe { inbox.push_back(t) };
         cpu::of(requester).note_inbox_len(inbox.len());
         crate::arch::irq::send_reschedule(requester);
@@ -661,13 +664,10 @@ pub fn spawn_with_quota<F: FnOnce() + Send + 'static>(
         }
     }
 
-    let mut thread = match Thread::spawn(f) {
-        Some(t) => t,
-        None => {
-            // Out of kernel memory. Give the reserved slot back, since no thread will hold it.
-            budget.fetch_add(1, Ordering::Relaxed);
-            return None;
-        }
+    let Some(mut thread) = Thread::spawn(f) else {
+        // Out of kernel memory. Give the reserved slot back, since no thread will hold it.
+        budget.fetch_add(1, Ordering::Relaxed);
+        return None;
     };
     thread.quota = Some(QuotaToken::new(budget)); // returned to `budget` when the thread is reaped
 
@@ -1174,7 +1174,7 @@ pub fn create_endpoint() -> EpId {
 /// core displaces it. That is what makes this load-aware without thrashing. A driver that takes a
 /// completion interrupt every request (the block server through a RedoxFS mount) wakes on the same
 /// affinity core each time and, since that core is no more loaded than any other while it is the
-/// only work, stays there. When a core does pile up (the std_net RX path landing beside real work),
+/// only work, stays there. When a core does pile up (the `std_net` RX path landing beside real work),
 /// a strictly-lighter core pulls the driver off it, so the pipeline stops re-concentrating. A full
 /// scan is fine: device IRQs are not the spawn hot path and `MAX_CPUS` is small.
 fn pick_wake_target() -> usize {
@@ -1197,7 +1197,7 @@ fn pick_wake_target() -> usize {
 /// A **device-interrupt** wake (DECISIONS §28.2): load-aware, not local. Where [`wake`] queues a
 /// rendezvous partner on the waker's own core (message in registers, cache warm), an interrupt
 /// carries no such locality, and pinning the driver to the IRQ core re-concentrates the pipeline
-/// (the std_net lesson). So place it on [`pick_wake_target`]'s choice. Returns `Some(target)` when
+/// (the `std_net` lesson). So place it on [`pick_wake_target`]'s choice. Returns `Some(target)` when
 /// that is a *remote* core, so the caller sends the reschedule SGI after releasing SCHED; `None`
 /// when it stayed local or the wake was parked. Caller holds the lock.
 fn wake_load_aware(sched: &mut Scheduler, tid: Tid) -> Option<usize> {
@@ -2048,7 +2048,7 @@ pub fn adopt_address_space(space: crate::user::AddressSpace) {
 ///
 /// `None` for the boot thread, which runs on the stack `boot.s` set up and does not own it.
 ///
-/// A user thread's TrapFrame is not an ordinary local. It must sit at exactly the address the
+/// A user thread's `TrapFrame` is not an ordinary local. It must sit at exactly the address the
 /// vector table's `SAVE_CONTEXT` will rebuild it at when the user traps in, because `eret`
 /// leaves `SP_EL1` pointing just past it and the hardware does not consult our intentions.
 pub fn current_kernel_stack_top() -> Option<u64> {

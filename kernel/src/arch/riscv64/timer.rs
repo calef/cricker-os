@@ -19,9 +19,10 @@
 //! `interval + latency`, the lateness compounds, and the configured rate is not the delivered rate.
 //! Nothing caught it because this ISA had no timer tests. See notes/riscv-arch-tests.md.
 
-use crate::cpu::{self, MAX_CPUS};
 use core::arch::asm;
 use core::sync::atomic::{AtomicU64, Ordering};
+
+use crate::cpu::{self, MAX_CPUS};
 
 /// The S-mode timer interrupt cause (`scause` = 5, the Supervisor timer interrupt). The RISC-V
 /// analog of aarch64's per-CPU timer INTID.
@@ -127,6 +128,7 @@ pub fn init() {
     // the same reason: the cross-OS primitive suite needs userspace self-timing to be comparable to
     // lmbench. CY (cycle) and IR (instret) stay closed.
     const TM: u64 = 1 << 1;
+    // SAFETY: `csrs` sets a bit in a supervisor CSR and touches no memory, which the options state. Enabling the EL0 counter read is the intent (the userspace self-timing seam).
     unsafe { asm!("csrs scounteren, {}", in(reg) TM, options(nomem, nostack, preserves_flags)) };
 }
 

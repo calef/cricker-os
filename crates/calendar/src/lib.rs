@@ -55,7 +55,7 @@
 //! **The IANA time zone database is explicitly out of scope, and not just "not yet".** tzdata is a
 //! ~450 KB compiled ruleset that changes several times a year, which makes it a *data distribution*
 //! problem (who ships it, who updates it, which capability lets a program read it) rather than a
-//! calendar problem. It also cannot be answered correctly without it: "America/Los_Angeles" is not
+//! calendar problem. It also cannot be answered correctly without it: `America/Los_Angeles` is not
 //! an offset, it is a function from instants to offsets with 100+ years of political history in it,
 //! and a hardcoded "-08:00" would be wrong for a third of the year. So: no zone names, no DST, no
 //! `TZ` variable. A program that needs local time is given an offset by whatever knows one. If the
@@ -67,6 +67,47 @@
 //! No durations or calendar arithmetic ("one month later"), because the caller that wants them does
 //! not exist yet and month arithmetic has no single correct answer (what is one month after
 //! January 31?). No `strftime`. See [`Format`] for that argument.
+//!
+//! # Examples
+//!
+//! The two conversions are inverses, which is the property the whole crate exists to get right:
+//!
+//! ```
+//! use calendar::{Civil, Weekday};
+//!
+//! // The Unix epoch, as a civil date. 1970-01-01 was a Thursday.
+//! let epoch = Civil::from_unix(0).unwrap();
+//! assert_eq!((epoch.year(), epoch.month(), epoch.day()), (1970, 1, 1));
+//! assert_eq!(epoch.weekday(), Weekday::Thursday);
+//! assert_eq!(epoch.to_unix(), 0);
+//!
+//! // And round-tripping an arbitrary instant.
+//! let d = Civil::new(2026, 8, 2, 12, 30, 15).unwrap();
+//! assert_eq!(Civil::from_unix(d.to_unix()).unwrap(), d);
+//! ```
+//!
+//! Timestamps before the epoch are the case a truncating division gets wrong, so they are worth
+//! showing rather than asserting:
+//!
+//! ```
+//! use calendar::Civil;
+//!
+//! // One second before the epoch is the last second of 1969, not the first of 1970.
+//! let d = Civil::from_unix(-1).unwrap();
+//! assert_eq!((d.year(), d.month(), d.day()), (1969, 12, 31));
+//! assert_eq!((d.hour(), d.minute(), d.second()), (23, 59, 59));
+//! ```
+//!
+//! Every field is validated separately, so a caller can say what it did not like:
+//!
+//! ```
+//! use calendar::{Civil, Error};
+//!
+//! assert_eq!(Civil::new(2026, 13, 1, 0, 0, 0), Err(Error::BadMonth));
+//! // 2026 is not a leap year, so there is no 29 February.
+//! assert_eq!(Civil::new(2026, 2, 29, 0, 0, 0), Err(Error::BadDay));
+//! assert!(Civil::new(2024, 2, 29, 0, 0, 0).is_ok());
+//! ```
 
 #![no_std]
 
@@ -298,9 +339,8 @@ impl Civil {
         if year < MIN_YEAR || year > MAX_YEAR {
             return Err(Error::OutOfRange);
         }
-        let len = match days_in_month(year, month) {
-            Some(len) => len,
-            None => return Err(Error::BadMonth),
+        let Some(len) = days_in_month(year, month) else {
+            return Err(Error::BadMonth);
         };
         if day == 0 || day > len {
             return Err(Error::BadDay);
@@ -467,9 +507,8 @@ impl DateTime {
     /// offset differs from the UTC bound by less than a day. That edge is the only place a caller
     /// can be surprised, and it is why this returns a `Result` where [`DateTime::new`] does not.
     pub const fn from_unix(secs: i64, offset: UtcOffset) -> Result<DateTime, Error> {
-        let local = match secs.checked_add(offset.seconds()) {
-            Some(local) => local,
-            None => return Err(Error::OutOfRange),
+        let Some(local) = secs.checked_add(offset.seconds()) else {
+            return Err(Error::OutOfRange);
         };
         match Civil::from_unix(local) {
             Ok(civil) => Ok(DateTime { civil, offset }),

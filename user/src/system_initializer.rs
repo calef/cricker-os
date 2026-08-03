@@ -51,7 +51,7 @@ const CHILD_STACK_VA: u64 = 0x0050_0000;
 const CHILD_STACK_PAGES: u64 = 8;
 
 /// Where a supervised (interruptible) child maps its shared job frame (milestone 24). Below the ELF
-/// load address (0x40_0000) and the stack; must match heeder.rs / spinner.rs's JOB_FRAME_VA.
+/// load address (`0x40_0000`) and the stack; must match heeder.rs / spinner.rs's `JOB_FRAME_VA`.
 const CHILD_JOBFRAME_VA: u64 = 0x0030_0000;
 
 /// Pages of untyped we split off our own budget and hand the shell (milestone 31), so the shell can
@@ -261,7 +261,7 @@ fn opt_cap(slot: u64) -> Option<u64> {
 /// shell directs; it inserts only what the shell endows, so a spawned program can reach nothing the
 /// command line did not name.
 ///
-/// Two shapes (grant_plan::spawnproto). A **normal** job: the shell sends the request and, if `--mem`
+/// Two shapes (`grant_plan::spawnproto`). A **normal** job: the shell sends the request and, if `--mem`
 /// rode along, one delegated untyped; we build the child from our own budget, endow it the result
 /// endpoint (and the budget), and start it. A **supervised** (interruptible) job: the shell leads
 /// the delegation with a job untyped and a shared job frame; we build the whole child *from that
@@ -434,6 +434,9 @@ fn build_child(
         while va < end {
             let frame = retype_frame_from(build_ut)?;
             let scratch = SCRATCH_NEXT.fetch_add(PAGE, core::sync::atomic::Ordering::Relaxed);
+            // SAFETY: `invoke` traps to the kernel, which validates the capability and the method
+            // before acting (user_rt's contract). A caller cannot break an invariant by passing a
+            // bad slot or method; it gets an error back.
             if unsafe { invoke(frame, abi::frame::MAP, scratch, 1, UNTYPED) } != 0 {
                 return Err(());
             }
@@ -450,6 +453,7 @@ fn build_child(
                 let len = (hi - lo) as usize;
                 dst[d..d + len].copy_from_slice(&seg.data[s..s + len]);
             }
+            // SAFETY: as above: the kernel validates the capability and the method.
             if unsafe { invoke(aspace, abi::aspace::MAP_INTO, va, frame, mode) } != 0 {
                 return Err(());
             }
@@ -461,6 +465,7 @@ fn build_child(
     for k in 0..CHILD_STACK_PAGES {
         let stack_frame = retype_frame_from(build_ut)?;
         let va = CHILD_STACK_VA - k * PAGE;
+        // SAFETY: as above: the kernel validates the capability and the method.
         if unsafe {
             invoke(
                 aspace,
@@ -477,6 +482,7 @@ fn build_child(
     }
 
     for &(va, our_slot, mode) in maps {
+        // SAFETY: as above: the kernel validates the capability and the method.
         if unsafe { invoke(aspace, abi::aspace::MAP_INTO, va, our_slot, mode) } != 0 {
             return Err(());
         }
@@ -484,10 +490,12 @@ fn build_child(
 
     let tcb = retype_obj_from(build_ut, abi::objtype::TCB)?;
     for &(our_slot, rights) in caps {
+        // SAFETY: as above: the kernel validates the capability and the method.
         if unsafe { invoke(tcb, abi::tcb::CAP_INSERT, our_slot, rights, 0) } < 0 {
             return Err(());
         }
     }
+    // SAFETY: as above: the kernel validates the capability and the method.
     if unsafe {
         invoke(
             tcb,
@@ -508,6 +516,7 @@ fn retype_obj(objtype: u64) -> Result<u64, ()> {
 }
 
 fn retype_obj_from(ut: u64, objtype: u64) -> Result<u64, ()> {
+    // SAFETY: as above: the kernel validates the capability and the method.
     let r = unsafe { invoke(ut, abi::untyped::RETYPE_OBJ, objtype, 0, 0) };
     if r < 0 { Err(()) } else { Ok(r as u64) }
 }
@@ -517,6 +526,7 @@ fn retype_frame() -> Result<u64, ()> {
 }
 
 fn retype_frame_from(ut: u64) -> Result<u64, ()> {
+    // SAFETY: as above: the kernel validates the capability and the method.
     let r = unsafe { invoke(ut, abi::untyped::RETYPE, 0, 0, 0) };
     if r < 0 { Err(()) } else { Ok(r as u64) }
 }
@@ -524,11 +534,13 @@ fn retype_frame_from(ut: u64) -> Result<u64, ()> {
 /// Carve `pages` off our own untyped into a new child untyped we can delegate (milestone 31). The
 /// SPLIT grants us full rights on the child, including GRANT, so we can hand a memory budget on.
 fn untyped_split(pages: u64) -> Result<u64, ()> {
+    // SAFETY: as above: the kernel validates the capability and the method.
     let r = unsafe { invoke(UNTYPED, abi::untyped::SPLIT, pages, 0, 0) };
     if r < 0 { Err(()) } else { Ok(r as u64) }
 }
 
 fn tcb_start(tcb: u64, a0: u64, a1: u64, a2: u64) -> i64 {
+    // SAFETY: as above: the kernel validates the capability and the method.
     unsafe { invoke(tcb, abi::tcb::START, a0, a1, a2) }
 }
 
@@ -549,10 +561,12 @@ fn must0(r: i64) {
 
 fn fail() -> ! {
     #[cfg(target_arch = "aarch64")]
+    // SAFETY: `brk` traps; the kernel turns a trap from userspace into a kill.
     unsafe {
-        core::arch::asm!("brk #0", options(nostack, nomem))
+        core::arch::asm!("brk #0", options(nostack, nomem));
     };
     #[cfg(target_arch = "riscv64")]
+    // SAFETY: `ebreak` traps; the kernel turns a trap from userspace into a kill.
     unsafe {
         core::arch::asm!("ebreak", options(nostack, nomem))
     };

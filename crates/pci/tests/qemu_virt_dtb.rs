@@ -12,7 +12,7 @@ use pci::intx_irq;
 
 const QEMU_RISCV_VIRT: &[u8] = include_bytes!("../../dtb/tests/fixtures/qemu-riscv-virt.dtb");
 
-/// The ECAM window the kernel maps (PCI_ECAM_BASE) is where the machine says its
+/// The ECAM window the kernel maps (`PCI_ECAM_BASE`) is where the machine says its
 /// `pci-host-ecam-generic` bridge lives.
 #[test]
 fn the_ecam_window_matches_the_machine() {
@@ -66,7 +66,7 @@ fn the_intx_swizzle_matches_the_interrupt_map() {
 const QEMU_AARCH64_VIRT: &[u8] = include_bytes!("../../dtb/tests/fixtures/qemu-virt.dtb");
 
 /// The aarch64 ECAM window the kernel maps is the machine's **highmem** ECAM: the node is named
-/// `pcie@10000000` (the low MMIO base) but its `reg` is 0x40_1000_0000, and trusting the name
+/// `pcie@10000000` (the low MMIO base) but its `reg` is `0x40_1000_0000`, and trusting the name
 /// instead of the `reg` is exactly the mistake this witness exists to catch.
 #[test]
 fn the_aarch64_ecam_window_matches_the_machine() {

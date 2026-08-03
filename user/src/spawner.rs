@@ -2,7 +2,7 @@
 //!
 //! Where init's process-construction authority went. It holds one untyped budget (WRITE only, so it
 //! may spend memory but never lend it), a request channel, and **one program image** copied into its
-//! address space by root_supervisor. It does not hold the initrd, so "build me program X" is not a thing that
+//! address space by `root_supervisor`. It does not hold the initrd, so "build me program X" is not a thing that
 //! can be asked of it: the only program it can name is the one it was handed.
 //!
 //! Each instance is built in its **own region** split off the budget, which keeps one instance's
@@ -27,22 +27,20 @@
 #![no_std]
 #![no_main]
 
-use user_rt::{cap_delete, recv, send};
-
 // Each binary in the tree compiles the shared module but uses a different slice of it (the sub-server
 // builds nothing, the supervisor holds no memory), so the unused halves are expected, not dead. This
 // is the one shape where a blanket allow is the honest one: no single binary uses all of it (§38).
-
 use supervision_proto::{Endow, REP_BUILT, REP_FAILED, REQ_BUILD};
+use user_rt::{cap_delete, recv, send};
 
-/// The capabilities root_supervisor endowed us with, in order.
+/// The capabilities `root_supervisor` endowed us with, in order.
 const REQ: u64 = 0; // READ: build/reap requests arrive here
 const REP: u64 = 1; // WRITE: answers go back here
 const BUDGET: u64 = 2; // WRITE: the memory every instance is made of
 const REPORT: u64 = 3; // WRITE|GRANT: so each instance can report for itself
 const CHILDFAULT: u64 = 4; // READ|GRANT: so each instance is born supervised
 
-/// Where root_supervisor copied the one program image we may build. Must match root_supervisor.rs.
+/// Where `root_supervisor` copied the one program image we may build. Must match `root_supervisor.rs`.
 const IMAGE_VA: u64 = 0x3000_0000;
 
 /// Pages per instance region: enough for the sub-server's segments, its stack, its address-space

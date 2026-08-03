@@ -1,0 +1,80 @@
+# Spell checking for the prose (milestone 68). The documentation is a deliverable here, not a
+# by-product, so a typo in DECISIONS.md or a note is a defect in the thing being shipped.
+#
+# The honest result of turning it on, because it argues against overselling this gate: of 213
+# findings outside vendor/, exactly ONE was a real misspelling (`livecycle` for `lifecycle`, in a
+# kernel doc comment). Two more were test names wanting an apostrophe they could not have and were
+# renamed. Everything else was hardware mnemonics, deliberate prose, or a word the checker had split.
+#
+# That is still worth keeping, but as a RATCHET rather than a discovery: the tree was already clean,
+# and the value is that the next `hlep` typed into a note fails a gate instead of shipping. A gate
+# whose first run finds one bug is a gate that was never going to find many, and saying so here is
+# cheaper than someone re-deriving it in six months.
+#
+# Run by script/lint. See notes/scripts.md.
+
+[files]
+# The vendored engine is kept byte-identical to its pin (vendor/README.md), so its typos are not
+# ours to fix and a gate that reports them is a gate that gets ignored. Same for patches, which are
+# diffs against upstream text, and for lockfiles, which are generated.
+extend-exclude = ["vendor/", "patches/", "*.lock", "target/"]
+
+# The allowlist is almost entirely HARDWARE, and that is the honest characterisation rather than an
+# excuse: a spell checker aimed at an operating system meets register mnemonics constantly, and they
+# are chosen by specification authors who were not optimising for English. Each entry below is a
+# real name in a real document, not a word we decided to spell unusually.
+[default.extend-words]
+# RISC-V supervisor registers (the privileged spec). `sie` is Supervisor Interrupt Enable, and at 76
+# occurrences it is the single loudest false positive in the tree.
+sie = "sie"
+SIE = "SIE"
+# 16550 UART registers: Transmitter Holding Register, and its Empty flag.
+THR = "THR"
+THRE = "THRE"
+# The aarch64 page-descriptor field, spelled `AttrIndx` in the ARM ARM.
+Indx = "Indx"
+# Virtual Address Space, abbreviated in code and comments throughout the paging notes.
+vas = "vas"
+Vas = "Vas"
+VAS = "VAS"
+# "AB-BA deadlock", the standard name for the lock-ordering failure §-many discusses.
+BA = "BA"
+# IST, a timezone abbreviation in the calendar crate's tables.
+ist = "ist"
+# The `mis-` prefix, hyphenated: "mis-reported", "mis-citation". The checker sees the fragment.
+mis = "mis"
+
+# The four below are all one failure mode: the checker splits a word and then reports the fragment.
+# Worth listing individually rather than loosening the checker, because each is a different way it
+# happens and a future one will look like these.
+#
+# `**I**nner` -- markdown bold inside a word, in the mmu.rs table that spells out `tlbi vaae1is`.
+nner = "nner"
+# `CLOSEs` -- a verbed constant, "Drop CLOSEs the handle".
+CLOS = "CLOS"
+# `"helXY"` -- a deliberately truncated string in a video_terminal wrapping test.
+hel = "hel"
+# `reclaim_frees_a_started_then_exited_childs_regions` -- a test NAME, cited by that name in
+# sched.rs, user.rs and three notes. Grammatically it wants an apostrophe it cannot have; renaming
+# it would churn five files to satisfy a spell checker, which is the tail wagging the dog.
+childs = "childs"
+
+[default.extend-identifiers]
+# Deliberate capitalisation inside prose, where the case is the emphasis: "Address Space
+# IDentifier". Same list as clippy.toml's doc-valid-idents, for the same reason.
+IDentifier = "IDentifier"
+# Valid variant spellings, not errors. British/American and -able/-eable splits are style, and this
+# tree already chose; a checker should not relitigate that.
+Writeable = "Writeable"
+requeueing = "requeueing"
+unparseable = "unparseable"
+# Proper nouns: a chip vendor and a Rust TUI crate.
+Synopsys = "Synopsys"
+ratatui = "ratatui"
+# A misspelling ON PURPOSE, and the one entry here that would be a bug to "fix": grant_plan's parser
+# test feeds `parse(b"hlep")` to prove an unknown word becomes a Run command rather than a builtin.
+# Correcting it would delete the test's subject.
+hlep = "hlep"
+# Deliberate wordplay in a gpt test comment: "it is just what everybody does, and here are two
+# everybodies".
+everybodies = "everybodies"

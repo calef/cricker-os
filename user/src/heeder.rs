@@ -8,7 +8,7 @@
 //! Why a shared word and not an endpoint: a running computation cannot poll an endpoint (there is
 //! no non-blocking receive) and cannot block on one without stalling the work the user wants to
 //! interrupt. So the signal is memory the heeder reads with a plain load between units. See
-//! grant_plan::jobframe and notes/grant-expression.md.
+//! `grant_plan::jobframe` and notes/grant-expression.md.
 //!
 //! # The heeder's world
 //!
@@ -23,7 +23,7 @@ use grant_plan::jobframe;
 use user_rt::exit;
 
 /// Where init maps the shared job frame in the child's address space. Must match the shell/init
-/// wiring (below the ELF load address 0x40_0000 and the stack).
+/// wiring (below the ELF load address `0x40_0000` and the stack).
 const JOB_FRAME_VA: usize = 0x0030_0000;
 
 fn load(off: usize) -> u64 {
@@ -59,10 +59,12 @@ pub extern "C" fn _start(_x0: u64, _x1: u64, _x2: u64) -> ! {
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     #[cfg(target_arch = "aarch64")]
+    // SAFETY: `brk` traps; the kernel turns a trap from userspace into a kill.
     unsafe {
-        core::arch::asm!("brk #0", options(nostack, nomem))
+        core::arch::asm!("brk #0", options(nostack, nomem));
     };
     #[cfg(target_arch = "riscv64")]
+    // SAFETY: `ebreak` traps; the kernel turns a trap from userspace into a kill.
     unsafe {
         core::arch::asm!("ebreak", options(nostack, nomem))
     };

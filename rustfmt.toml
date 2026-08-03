@@ -1,0 +1,54 @@
+# rustfmt configuration. There was none until milestone 68, so the tree was formatted by rustfmt's
+# defaults, which leave import order entirely to whoever typed the `use` line. See notes/scripts.md
+# for how this is applied (script/fmt, which reaches all four workspaces).
+#
+# Every option below is nightly-only, which is affordable here for a reason that does not generalise:
+# the toolchain is PINNED to a nightly in rust-toolchain.toml because the kernel needs
+# custom_test_frameworks. A project on stable would be trading a real portability cost for this;
+# we are not, because there is no stable build to lose.
+
+# Required before rustfmt will honour any of the options below on a nightly toolchain. Without it
+# they are silently IGNORED rather than rejected, which is the failure mode worth knowing: the file
+# looks applied, `--check` passes, and nothing is grouped.
+unstable_features = true
+
+# Imports, in three blocks: std, external crates, then this crate. This is the one that pays for
+# itself daily. A reader scanning a kernel file wants to know instantly whether a name comes from
+# core, from a vendored dependency, or from us, and in a no_std tree that distinction carries real
+# weight: `core::ptr` and `crate::paging` are different kinds of claim.
+group_imports = "StdExternalCrate"
+
+# Collapse `use` trees to one line per module. The tree had both spellings, sometimes in the same
+# file, because nothing chose.
+imports_granularity = "Module"
+
+# DELIBERATELY ABSENT: `wrap_comments`.
+#
+# It is the option a reader of this file will expect next, so the reason it is not here belongs
+# here rather than in a commit message. This kernel is commented far more heavily than production
+# code, on purpose (CLAUDE.md), and those comments carry register dumps, ASCII diagrams, markdown
+# tables, and pasted fault output where column alignment is the meaning. `wrap_comments` reflows on
+# width alone and would destroy all of it, turning a legible `esr`/`far`/`sp` dump into prose.
+#
+# The general shape: a formatter may own code, because code has one correct rendering. It may not
+# own prose, because prose does not.
+
+# DELIBERATELY ABSENT: `format_code_in_doc_comments`.
+#
+# This one was ENABLED first and then removed on the evidence, which is why it is recorded rather
+# than merely omitted. It looked like the natural partner to this milestone's doctests: an example
+# is compiled and run, so it is code, and code here is formatted.
+#
+# Running it over the tree showed otherwise. In `crates/gpt`'s module example it collapsed a
+# deliberately aligned column of trailing comments:
+#
+#     table.write_backup_header(&mut block)?;  // to table.backup_header_lba()
+#     let bytes = table.entry_array();          // to LBA 2 and to table.backup_entry_lba()
+#
+# into single-spaced lines, destroying the visual mapping from call to destination that was the
+# point of the example. It also emitted a trailing-whitespace line into the doc comment.
+#
+# So this is the `wrap_comments` argument one level in, and the surprise is that it reaches INSIDE
+# code: a doc example is written to be read as much as run, and its alignment is authored meaning,
+# not incidental spacing. A formatter cannot tell those apart.
+

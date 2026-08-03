@@ -71,6 +71,85 @@ exclude = [
 [workspace.package]
 license = "MIT OR Apache-2.0"
 
+# Lint policy, in ONE place (milestone 68). Before this, 19 of 39 crates carried a `[lints.rust]`
+# table and every one of them said the same thing (`unexpected_cfgs` for `cfg(kani)`), while the
+# other 20 said nothing, so whether a crate was linted at all depended on whether someone had
+# remembered. A member opts in with `[lints] workspace = true`, which is one line and cannot drift.
+#
+# These are WARNINGS here and errors in practice: script/lint runs `-D warnings`. So adding a lint
+# to this table is a decision to fix every existing violation first, which is the same ratchet
+# discipline DECISIONS §38 applies to dead code. Nothing goes in this table "to see what it finds".
+[workspace.lints.rust]
+# `cfg(kani)` is set by the model checker, not by cargo, so without this every Kani-gated module is
+# an "unexpected cfg" warning. Was duplicated across 19 crates; now stated once.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
+[workspace.lints.clippy]
+# --- The one this project most obviously wanted. Every `unsafe` block states the invariant that
+# makes it sound, in a `// SAFETY:` comment the compiler will not let you forget. 205 blocks were
+# missing one when milestone 68 started, against ~600 that already had one, so this is a ratchet in
+# §38's shape rather than a new convention.
+#
+# It is worth the noise it makes because of what this kernel IS: `unsafe` is where a capability
+# system's guarantees are actually kept or broken, and a claim nobody wrote down is a claim nobody
+# can check. The counterpart rule, learned the hard way in this milestone, is that a comment here is
+# a load-bearing assertion and not a formality: a generated pass produced one that was FALSE at its
+# first site, and was reverted. See DECISIONS §61's BUGS note.
+undocumented_unsafe_blocks = "warn"
+# --- The pointer casts. Both are about a raw pointer being reinterpreted, which in a kernel is
+# how a real fault gets built: `cast_ptr_alignment` catches a `*const u8` becoming a `*const u64`
+# that the hardware will then fault on, and `ptr_as_ptr` forces `.cast()` so a constness change
+# cannot ride along invisibly inside an `as`.
+cast_ptr_alignment = "warn"
+ptr_as_ptr = "warn"
+
+# DELIBERATELY ABSENT: `cast_possible_truncation`.
+#
+# It was enabled first and dropped on the measurement, which is why it is recorded here rather than
+# simply left out. The case for it is real: this kernel does address arithmetic, and a u64 physical
+# address narrowed to u32 by an implicit `as` produces a plausible wrong address rather than an
+# error.
+#
+# The tree says otherwise. Of 497 hits, **199 are `u64`/`i64` to `usize`**, warned about because
+# they "may truncate on targets with 32-bit wide pointers". This project has no such target and will
+# not have one: §19 names aarch64, riscv64 and x86_64, and all three are 64-bit. So more than half
+# the lint's output is about a platform that does not exist here, and clippy cannot be told that
+# `usize` is 64 bits for us.
+#
+# The remaining ~300 are genuine narrowings, and a lint that can only reach them behind 199 false
+# ones is a lint that trains a reader to skim. If the fixed-width half is ever worth gating on its
+# own, the shape would be `try_from` at the sites that matter, not a blanket the whole tree has to
+# `#[allow]` its way out of.
+
+# --- Readability. Both have exactly one defensible rendering, so leaving them to taste just means
+# the tree carries both spellings. `manual_let_else` is the one that changes how code reads rather
+# than how it looks: a four-line `match` whose only job is to bind or bail becomes one line that
+# says so.
+semicolon_if_nothing_returned = "warn"
+manual_let_else = "warn"
+
+# DELIBERATELY ABSENT: `items_after_statements`.
+#
+# The third lint enabled and then dropped on the evidence. The argument for it is that a `fn` or
+# `const` declared halfway down a body reads as executable code on first pass and is not.
+#
+# All 43 hits in this tree are the same shape, and it is a shape this codebase chose on purpose:
+#
+#     // `aarch64_cpu` gives CNTKCTL_EL1 no named fields, so set the bit by hand: EL0VCTEN is bit 1.
+#     const EL0VCTEN: u64 = 1 << 1;
+#     CNTKCTL_EL1.set(CNTKCTL_EL1.get() | EL0VCTEN);
+#
+# The constant sits beside its use, under the comment that explains it. Obeying the lint would hoist
+# all 43 to the tops of their functions, separating each from the paragraph that says what it is and
+# piling unrelated constants where a reader looks for the function's first action. That trades a
+# real explanation for a formal rule, and this tree's whole commenting convention (CLAUDE.md) is
+# built on keeping the constraint next to the code it constrains.
+
+# --- Docs. This tree leans unusually hard on rustdoc (CLAUDE.md's FreeBSD standard), and
+# `doc_markdown` catches the failure that makes docs look careless: an identifier written as bare
+# prose where it should be `code`, which rustdoc then renders as an English word.
+doc_markdown = "warn"
+
 # The measured-boot hash is compiled optimized even in a debug build (milestone 22 phase B.1). init is
 # a 1.2 MB ELF and the kernel hashes it before every boot, including six times per aarch64 test run;
 # an unoptimized SHA-256 makes that a visible tax under TCG for no benefit, since the crate is pure

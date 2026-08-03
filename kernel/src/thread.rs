@@ -24,11 +24,13 @@
 //! ahead of any caller precisely so the discipline (break-before-make, an un-ignorable TLB
 //! flush) would be right the first time.
 
-use crate::arch::mmu::{self, KERNEL_VA_BASE};
-use crate::sync::{IrqSafeMutex, rank};
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+
 use frames::FRAME_SIZE;
 use paging::Flags;
+
+use crate::arch::mmu::{self, KERNEL_VA_BASE};
+use crate::sync::{IrqSafeMutex, rank};
 
 pub type Tid = u64;
 
@@ -69,7 +71,7 @@ static FREE_STACK_VAS: IrqSafeMutex<FreeVas> = IrqSafeMutex::new(rank::STACK_VA,
 /// A fixed stack of reusable stack-VA ranges (milestone 14 phase B.1). Bounded by construction:
 /// a range is pushed only when a thread dies and popped when one spawns, so the free count can
 /// never exceed the most threads that ever lived at once, which the scheduler caps at
-/// MAX_THREADS (= 128; sched.rs). The array is sized to that bound, and the debug assert is the
+/// `MAX_THREADS` (= 128; sched.rs). The array is sized to that bound, and the debug assert is the
 /// cross-check.
 struct FreeVas {
     vas: [u64; 128],
@@ -474,7 +476,7 @@ impl Thread {
     /// Same shape as `boot`: no stack of its own (it runs on the core's `smp` boot stack), a null
     /// context filled by the first `switch_to` away from it, `Running`. This becomes that core's
     /// idle thread, so it is never in a run queue; the scheduler falls back to it when the core's
-    /// queue is empty. See smp.rs and sched::adopt_secondary_idle.
+    /// queue is empty. See smp.rs and `sched::adopt_secondary_idle`.
     pub fn adopt_current() -> Self {
         Thread {
             id: UNNAMED, // named at insert, like every thread
@@ -516,13 +518,13 @@ impl Thread {
             assert!(
                 size_of::<F>() <= 1024,
                 "spawn closure captures more than 1 KiB; pass a reference to static state instead"
-            )
+            );
         };
         const {
             assert!(
                 align_of::<F>() <= 16,
                 "spawn closure over-aligned for a stack slot"
-            )
+            );
         };
 
         let stack = KernelStack::new()?;
@@ -644,7 +646,7 @@ extern "C" fn user_thread_entry(entry: u64, user_sp: u64, arg0: u64, arg1: u64, 
 extern "C" fn call_closure<F: FnOnce()>(closure: *mut ()) {
     // SAFETY: `closure` is the `F` that `Thread::spawn` placed on this very stack, and this is
     // the single read of it: the slot is dead bytes afterward, above `sp`, touched by nobody.
-    let f = unsafe { (closure as *mut F).read() };
+    let f = unsafe { closure.cast::<F>().read() };
     f();
 }
 

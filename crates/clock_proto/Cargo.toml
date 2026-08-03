@@ -10,4 +10,7 @@ license.workspace = true
 # service, its readers, the std PAL and the kernel-side tests share ONE definition and cannot drift.
 # The same split `fs_proto` makes for the filesystem contract and `gfx_proto` for the framebuffer.
 
+[lints]
+workspace = true
+
 [dependencies]

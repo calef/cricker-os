@@ -32,9 +32,8 @@
 //! - slot 2: an untyped budget (to mint and map the shared frame)
 
 use abi::{endpoint, frame as fr, rights, untyped as ut};
-use user_rt::{call, exit, invoke, send};
-
 use socket_proto::*;
+use user_rt::{call, exit, invoke, send};
 
 const REPORT: u64 = 0;
 const STACK: u64 = 1;
@@ -78,12 +77,15 @@ const TFTP_BODY: &[u8] = b"cricker-tftp!";
 const DNS_ATTEMPTS: u32 = 3;
 
 fn w8(va: u64, v: u8) {
+    // SAFETY: `va` addresses a field inside a shared frame this process has mapped. Volatile because the peer writes the same frame, so a cached read would be a stale one.
     unsafe { core::ptr::write_volatile(va as *mut u8, v) }
 }
 fn w16le(va: u64, v: u16) {
+    // SAFETY: `va` addresses a field inside a shared frame this process has mapped. Volatile because the peer writes the same frame, so a cached read would be a stale one.
     unsafe { core::ptr::write_volatile(va as *mut u16, v) }
 }
 fn r8(va: u64) -> u8 {
+    // SAFETY: `va` addresses a field inside a shared frame this process has mapped. Volatile because the peer writes the same frame, so a cached read would be a stale one.
     unsafe { core::ptr::read_volatile(va as *const u8) }
 }
 
@@ -318,10 +320,10 @@ fn tcp_echo() -> ! {
 }
 
 /// **Regression: reusing a socket id is safe.** Open a TCP socket on id 0, connect to the echo peer,
-/// close it, then reopen the *same* id and connect again. Before net_stack assigned ephemeral local ports
+/// close it, then reopen the *same* id and connect again. Before `net_stack` assigned ephemeral local ports
 /// independent of the socket id, the reopen reused the exact local port, and the second connect on a
-/// 4-tuple whose slirp flow had not yet cleared stalled net_stack's bounded poll forever (found by the
-/// std::net PAL, notes/net.md). With the rotating allocator the reopen gets a fresh port, so both
+/// 4-tuple whose slirp flow had not yet cleared stalled `net_stack`'s bounded poll forever (found by the
+/// `std::net` PAL, notes/net.md). With the rotating allocator the reopen gets a fresh port, so both
 /// connects complete.
 fn tcp_reopen() -> ! {
     attach_frame(0);

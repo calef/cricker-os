@@ -5,8 +5,9 @@
 //! sibling, and everything above `arch::` should be untouched. See
 //! notes/portability.md and DECISIONS.md §4.
 
-use aarch64_cpu::registers::TPIDR_EL1;
 use core::arch::global_asm;
+
+use aarch64_cpu::registers::TPIDR_EL1;
 use tock_registers::interfaces::{Readable, Writeable};
 
 pub mod context;
@@ -153,7 +154,7 @@ pub fn current_sp() -> u64 {
     let sp: u64;
     // SAFETY: reads a register. No side effects.
     unsafe {
-        core::arch::asm!("mov {}, sp", out(reg) sp, options(nomem, nostack, preserves_flags))
+        core::arch::asm!("mov {}, sp", out(reg) sp, options(nomem, nostack, preserves_flags));
     };
     sp
 }

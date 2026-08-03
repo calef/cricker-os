@@ -118,7 +118,8 @@ fn reply(slot: u64, r0: i64) {
 ///   capability is not a directory and the request does not *mean* anything here, which is a
 ///   different statement from `EACCES`'s "you were denied" (there is no policy to have said yes).
 fn serve(handle: u64, name: &[u8], writable: bool) -> ! {
-    use fs_proto::verb::{self, file_grant::Policy};
+    use fs_proto::verb::file_grant::Policy;
+    use fs_proto::verb::{self};
 
     loop {
         let (w0, reply_slot, w1) = recv_cap(CLIENT);
@@ -215,10 +216,12 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
     // kernel reaps it legibly. Its client then blocks on a call nobody answers, which
     // notes/fs-server.md records as the cost of a dead server on a blocking contract.
     #[cfg(target_arch = "aarch64")]
+    // SAFETY: `brk` traps; the kernel turns a trap from userspace into a kill.
     unsafe {
-        core::arch::asm!("brk #0", options(nostack, nomem))
+        core::arch::asm!("brk #0", options(nostack, nomem));
     };
     #[cfg(target_arch = "riscv64")]
+    // SAFETY: `ebreak` traps; the kernel turns a trap from userspace into a kill.
     unsafe {
         core::arch::asm!("ebreak", options(nostack, nomem))
     };

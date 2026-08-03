@@ -11,10 +11,10 @@
 //!
 //! Software talks to an SMMUv3 almost entirely through **memory**, not registers:
 //!
-//! - The **stream table** maps a StreamID (for PCIe: the requester id, bus/dev/fn) to a Stream
+//! - The **stream table** maps a `StreamID` (for PCIe: the requester id, bus/dev/fn) to a Stream
 //!   Table Entry. The STE says what happens to that device's transactions: abort, bypass, or
 //!   translate via a **context descriptor**.
-//! - The **context descriptor** (CD) is the SMMU's copy of what TTBR0_EL1 + TCR_EL1 + MAIR_EL1
+//! - The **context descriptor** (CD) is the SMMU's copy of what `TTBR0_EL1` + `TCR_EL1` + `MAIR_EL1`
 //!   are to the CPU: the table root, the size/granule geometry, the ASID, the memory-attribute
 //!   palette. Stage-1 translation through a CD walks the same descriptor format the CPU walks,
 //!   which is why the `paging` crate builds the tables.
@@ -81,7 +81,7 @@ const CMD_CFGI_CD: u32 = 0x05;
 const CMD_TLBI_NSNH_ALL: u32 = 0x30;
 const CMD_SYNC: u32 = 0x46;
 
-/// One recorded fault, in portable terms. `code` is the SMMU event type (0x10 is F_TRANSLATION,
+/// One recorded fault, in portable terms. `code` is the SMMU event type (0x10 is `F_TRANSLATION`,
 /// the "no mapping for that IOVA" event the confinement test expects). Read today only by the
 /// confinement test; a production fault handler is future work, hence dead outside the test build.
 #[cfg_attr(not(test), allow(dead_code))]

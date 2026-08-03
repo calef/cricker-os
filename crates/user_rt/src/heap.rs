@@ -22,8 +22,8 @@
 //!   every other slot. There is no ambient memory to fall back on: no untyped granted, no heap.
 //! - **Where the heap lives** is a virtual range the program promises not to use for anything
 //!   else. [`DEFAULT_BASE`] (1 GiB) clears every VA convention in the tree today (program text at
-//!   0x40_0000, stacks, the shared pages, init's scratch at 0x1000_0000, the initrd at
-//!   0x2000_0000).
+//!   `0x40_0000`, stacks, the shared pages, init's scratch at `0x1000_0000`, the initrd at
+//!   `0x2000_0000`).
 //! - **`max_bytes`** caps growth so a leak exhausts the heap, visibly, before it silently eats
 //!   the budget the program also builds children from. The untyped itself is the hard ceiling
 //!   either way: `MAP` returns `OutOfMemory` when the region is spent, and the allocator reports
@@ -172,7 +172,7 @@ impl UntypedHeap {
             unsafe {
                 inner
                     .heap
-                    .add_region(start as *mut u8, (got * PAGE) as usize)
+                    .add_region(start as *mut u8, (got * PAGE) as usize);
             };
         }
         // Only a fresh contiguous run at least as big as the request guarantees the retry

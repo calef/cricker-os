@@ -24,9 +24,10 @@
 //! fixed table; notes/tcb.md records why retype earns nothing while the kernel is the only
 //! payer). What remains heap-backed is the revocation database, phase C's work.
 
+use frames::{FRAME_SIZE, Frame};
+
 use crate::memory;
 use crate::sync::{IrqSafeMutex, rank};
-use frames::{FRAME_SIZE, Frame};
 
 /// One untyped region: a run of physical pages, and how far into it we have retyped.
 #[derive(Clone, Copy)]

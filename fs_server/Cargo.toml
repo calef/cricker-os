@@ -83,3 +83,10 @@ fs_proto = { version = "0.1.0", path = "../crates/fs_proto" }
 # the host, so they are absent from the host test build.
 user_rt = { version = "0.1.0", path = "../crates/user_rt", optional = true }
 abi = { version = "0.1.0", path = "../crates/abi", optional = true }
+
+# cargo-machete (script/lint) reports `redox_syscall` unused here and is wrong: the crate's LIB name
+# is `syscall`, so every real use reads `use syscall::error::...` and a name-based scan cannot see
+# it. Recorded as an ignore rather than left to be rediscovered, since the answer is the same every
+# time and the alternative is a gate somebody learns to skip.
+[package.metadata.cargo-machete]
+ignored = ["redox_syscall"]

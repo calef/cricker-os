@@ -23,6 +23,7 @@ extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
+
 use user_rt::{exit, send};
 
 const UNTYPED: u64 = 0;
@@ -97,10 +98,12 @@ pub extern "C" fn _start(_x0: u64, _x1: u64, _x2: u64) -> ! {
 fn panic(_: &core::panic::PanicInfo) -> ! {
     // A wrong answer is a dead workload: fault, let the kernel report it. Same shape as worker.rs.
     #[cfg(target_arch = "aarch64")]
+    // SAFETY: `brk` traps; the kernel turns a trap from userspace into a kill.
     unsafe {
-        core::arch::asm!("brk #0", options(nostack, nomem))
+        core::arch::asm!("brk #0", options(nostack, nomem));
     };
     #[cfg(target_arch = "riscv64")]
+    // SAFETY: `ebreak` traps; the kernel turns a trap from userspace into a kill.
     unsafe {
         core::arch::asm!("ebreak", options(nostack, nomem))
     };

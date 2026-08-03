@@ -21,7 +21,7 @@ const SLOTS: u64 = VIRTIO_SLOTS;
 
 /// "virt", little-endian, at offset 0x000 of every slot.
 const MAGIC: u32 = 0x7472_6976;
-/// DeviceID at offset 0x008. 0 means "empty slot"; the virtio device-type numbers we route: 1 is a
+/// `DeviceID` at offset 0x008. 0 means "empty slot"; the virtio device-type numbers we route: 1 is a
 /// network card, 2 is a block device, 4 is an entropy source.
 const DEVICE_ID_NET: u32 = 1;
 const DEVICE_ID_BLOCK: u32 = 2;
@@ -549,18 +549,22 @@ fn reg_write(mmio_phys: u64, off: u64, v: u32) {
 /// Read `n` bytes from a physical address in the DMA region, through the direct map. Used by the
 /// validator to walk the driver's descriptor table and available ring.
 fn dma_read16(phys: u64) -> u16 {
+    // SAFETY: `phys` lies in the DMA region, which `mmu::map_everything` covers, so `phys_to_virt` names mapped memory. Volatile because this is the DRIVER's memory: the validator must read what is there now, not a value the compiler cached.
     unsafe { core::ptr::read_volatile(mmu::phys_to_virt(phys) as *const u16) }
 }
 fn dma_read64(phys: u64) -> u64 {
+    // SAFETY: `phys` lies in the DMA region, which `mmu::map_everything` covers, so `phys_to_virt` names mapped memory. Volatile because this is the DRIVER's memory: the validator must read what is there now, not a value the compiler cached.
     unsafe { core::ptr::read_volatile(mmu::phys_to_virt(phys) as *const u64) }
 }
 
 /// Write into the kernel-private shadow ring, through the direct map. The shadow page is a
 /// kernel-owned frame, so this is a plain store to memory only the kernel names.
 fn dma_write16(phys: u64, v: u16) {
+    // SAFETY: the shadow ring is a kernel-owned frame reached through the direct map, so this is an ordinary store to memory only the kernel names.
     unsafe { core::ptr::write_volatile(mmu::phys_to_virt(phys) as *mut u16, v) }
 }
 fn dma_write64(phys: u64, v: u64) {
+    // SAFETY: the shadow ring is a kernel-owned frame reached through the direct map, so this is an ordinary store to memory only the kernel names.
     unsafe { core::ptr::write_volatile(mmu::phys_to_virt(phys) as *mut u64, v) }
 }
 
@@ -613,7 +617,7 @@ fn validate_and_shadow(
 pub enum TransportError {
     /// No such device id.
     NoDevice,
-    /// The queue does not fit in the DMA region, or QUEUE_NUM_MAX is too small.
+    /// The queue does not fit in the DMA region, or `QUEUE_NUM_MAX` is too small.
     BadQueue,
     /// **A descriptor pointed outside the driver's DMA region.** The device was NOT told to go.
     DmaEscape,
@@ -855,15 +859,19 @@ mod tests {
     // and the fake shadow region below, since they take absolute addresses. Passed to
     // `validate_and_shadow` as `&dyn Fn` (function items coerce).
     fn r16(p: u64) -> u16 {
+        // SAFETY: `phys` lies in the DMA region, which `mmu::map_everything` covers, so `phys_to_virt` names mapped memory. Volatile because this is the DRIVER's memory: the validator must read what is there now, not a value the compiler cached.
         unsafe { core::ptr::read_volatile(mmu::phys_to_virt(p) as *const u16) }
     }
     fn r64(p: u64) -> u64 {
+        // SAFETY: `phys` lies in the DMA region, which `mmu::map_everything` covers, so `phys_to_virt` names mapped memory. Volatile because this is the DRIVER's memory: the validator must read what is there now, not a value the compiler cached.
         unsafe { core::ptr::read_volatile(mmu::phys_to_virt(p) as *const u64) }
     }
     fn w16(p: u64, v: u16) {
+        // SAFETY: the shadow ring is a kernel-owned frame reached through the direct map, so this is an ordinary store to memory only the kernel names.
         unsafe { core::ptr::write_volatile(mmu::phys_to_virt(p) as *mut u16, v) }
     }
     fn w64(p: u64, v: u64) {
+        // SAFETY: the shadow ring is a kernel-owned frame reached through the direct map, so this is an ordinary store to memory only the kernel names.
         unsafe { core::ptr::write_volatile(mmu::phys_to_virt(p) as *mut u64, v) }
     }
 

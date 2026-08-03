@@ -29,7 +29,7 @@ use crate::arch::mmu;
 use crate::sync::{IrqSafeMutex, rank};
 
 /// One recorded mapping: `va` in the owning space maps `phys`. `phys == 0` is a tombstone (RAM
-/// starts at 0x4000_0000 on this board, so no real frame is 0).
+/// starts at `0x4000_0000` on this board, so no real frame is 0).
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct LogEntry {
@@ -62,7 +62,7 @@ struct SpaceLog {
 }
 
 /// The most concurrently-live address spaces the registry can track: every user thread has one
-/// (bounded by MAX_THREADS = 128), plus headroom for the tests' bare `AddressSpace`s.
+/// (bounded by `MAX_THREADS` = 128), plus headroom for the tests' bare `AddressSpace`s.
 const MAX_SPACES: usize = 160;
 
 /// **The registry of live address spaces.** Fixed (milestone 14 phase C): the records themselves
@@ -260,9 +260,10 @@ pub fn revoke_region(base: u64, size: u64) {
 
 #[cfg(test)]
 mod tests {
+    use paging::Flags;
+
     use super::*;
     use crate::user::AddressSpace;
-    use paging::Flags;
 
     /// **Revocation unmaps a shared page from every address space that held it.** Two address
     /// spaces map one physical page; after `revoke_frame` neither maps it. This is the property
