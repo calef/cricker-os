@@ -209,6 +209,13 @@ pub mod rank {
     /// should not be named after one ISA's controller.
     pub const IRQ_CONTROLLER: u32 = 20;
 
+    /// The ISA record (milestone 60): what the machine said it is, written once at boot.
+    ///
+    /// A leaf, and above the console because the boot print reads it and then prints. It copies the
+    /// record out and releases before the first `println!`, so the two are never actually nested,
+    /// but the ordering is stated rather than relied on to stay accidental.
+    pub const ISA: u32 = 12;
+
     pub const CONSOLE: u32 = 10;
 
     /// Holding nothing.

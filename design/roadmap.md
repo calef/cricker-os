@@ -123,7 +123,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 57 | PARTIAL | Partitioning and formatting a real drive, and extended attributes | you cannot find a partition without reading the table, and all of it is testable in QEMU before the board lands. Built: the host recovery tool (`ls`/`cat`/`extract`/`xattr`), `crates/gpt`, the **extended-attribute layer**, and (2026-08-03) **reading a real table on the target** plus **block-device enumeration**, which is a read-only roster page. What is left is the **write** half, and it is one decision rather than a task: partitioning and on-target `mkfs` both need randomness, and the `mkfs` half needs a new divergence from the RedoxFS pin |
 | 58 | NOT-STARTED | RISC-V TLB shootdown, and the flush that makes ASIDs pointless | every riscv context switch discards the whole TLB; the fix needs a **software** shootdown protocol, because `sfence.vma` does not broadcast |
 | 59 | BUILT | The CPU-model matrix: stop testing against one generous emulator | `-cpu rv64` enables nearly every ratified extension; the board is an RV64GC U74. `script/cpu-matrix` runs the riscv64 suite across five models and all 211 tests pass on every one, so we are already portable to the board's ISA. The ASID test written *for* the board is the gap no model can exercise |
-| 60 | NOT-STARTED | ISA discovery: read the machine instead of assuming it | nothing reads `riscv,isa-extensions`; RISC-V has no `CPUID`, so the device tree plus targeted probes are the architected answer. One `Isa` record, built at boot, printed at boot |
+| 60 | BUILT | ISA discovery: read the machine instead of assuming it | one `Isa` record per ISA, built at boot, printed at boot, in `crates/isa`. RISC-V parses the device tree (there is no `CPUID`) and keeps its `satp.ASID` probe; aarch64 decodes `MIDR_EL1` and `ID_AA64MMFR*`, because ARM never removed the CPU's self-description. **Four call sites vary, not the predicted five or six**, and two of the entry's four candidates dropped out. QEMU `virt` declares Sv57 while we run Sv39 |
 | 61 | BUILT | The caretakers: one verb table, and names that say what you get | **built, both ISAs.** The rename landed first (532 tokens, not four filenames); `fs_proto::verb` is one row per opcode and a verb with no row is a compile error; all three caretakers forward the four extended-attribute verbs, proven by three witnesses each with a control that must fail |
 | 62 | NOT-STARTED | Tests that assert on time: make a red run mean something | ~19 bounded spins (`for _ in 0..N { yield_now() }`) and wall-clock assertions flake under load. Four separate lanes and the integrator hit them on 2026-08-01; the CPU matrix multiplies the exposure fivefold |
 | 63 | BUILT | Directory and package names: one spelling per thing | **built, both ISAs.** Eight crates, fourteen programs and modules, and the three violating directories renamed to the spellings settled in review; `fs-server` is `fs_server`, `user-std`/`hellostd` is `std_exerciser` twice, and the shell has a name (`swish`). The tables below keep the old spellings on purpose, because they are the record of the decision |
@@ -3247,9 +3247,13 @@ lands (~2026-08-21).
 
 ### 60. ISA discovery: read the machine instead of assuming it
 
-**Status: NOT-STARTED.** The gap found while answering milestone 59's question: **nothing in the tree
-reads the ISA.** No `riscv,isa`, no `riscv,isa-extensions`, no `mmu-type`. We run on what the target
-triple implies plus exactly one runtime probe.
+**Status: BUILT, both ISAs.** The gap found while answering milestone 59's question was that
+**nothing in the tree read the ISA**: no `riscv,isa`, no `riscv,isa-extensions`, no `mmu-type`, and
+on aarch64 only the one `ID_AA64MMFR0_EL1.PARange` field `TCR_EL1.IPS` needs. One `Isa` record per
+architecture now, in [`crates/isa`](../crates/isa) with the kernel halves in
+`kernel/src/arch/*/isa.rs`, populated once at boot and printed at boot. See
+[notes/isa-discovery.md](../notes/isa-discovery.md). The rest of this entry is the brief it was
+built to; what it found is at the bottom.
 
 #### Why the device tree, and why there is no shortcut
 
@@ -3303,6 +3307,35 @@ implemented` on every model**, including `sifive-u54`. The one place we already 
 differ is the one place no emulator can tell us about, so discovery's value is not the branching, it
 is being able to say what the machine is instead of assuming it. See
 [notes/cpu-models.md](../notes/cpu-models.md).
+
+#### What it found, 2026-08-03
+
+**Four call sites vary, and two of this entry's four candidates dropped out.** Real: the ASID width
+on both ISAs (`crates/asid` assumes 8 and RISC-V guarantees none); `TCR_EL1.IPS` from `PARange`,
+which predates the milestone and is now read once into the record; and two refusals, riscv64's
+Sv39-or-stop and aarch64's 4 KiB granule. Not real: **TLB flush strategy varies nowhere**, because
+the unconditional `sfence.vma` is unconditional by design and removing it is its own milestone; and
+**IOMMU presence is already discovered**, by the `smmuv3@` node and by PCI enumeration, so the record
+would add a second way to ask one question. A fifth call site was never reached.
+
+**aarch64 is covered, not scoped out**, and doing both is what produced the sharpest finding.
+**ARM has a tier this entry's list is missing**: `MIDR_EL1` and the `ID_AA64*` space are the CPU
+describing *itself*, architected and mandatory, so the aarch64 half is a decoder where the RISC-V
+half is a parser over a property firmware wrote. RISC-V removed that tier on purpose. There is no
+trait between them and should not be one until a second real board says what the abstraction is.
+
+**Two corrections from the machine, both after the host tests were green.** The SBI spec version is
+24 bits of minor and 7 of major, not 16 and 16, so QEMU's `0x0300_0000` (SBI 3.0) decoded as 0.0 and
+the boot line called firmware that had answered perfectly well silent. And **QEMU `virt` declares
+`mmu-type = "riscv,sv57"`**: the machine we have developed on for two milestones is two page-table
+levels *wider* than the kernel, which is the opposite of the failure this entry was written to
+anticipate.
+
+**Three shapes that would have broken on the VisionFive 2**, all now covered by host tests: the
+deprecated `riscv,isa` string (the modern properties are Linux 6.6 and later), `g` as an
+abbreviation for `imafd_zicsr_zifencei` rather than an extension name, and the trap that requiring
+`zicsr`/`zifencei` would **refuse to boot on that board**, because both were carved out of base `I`
+in 2019 and an older string simply does not list them. `m`, `a` and `c` are what gate instead.
 
 ### 61. The caretakers: one verb table, and names that say what you get
 
@@ -5876,6 +5909,20 @@ are a list to check against the same question and mostly to leave alone.
 The honest cost of leaving this open, and the reason it is worth doing: every red check in this
 repository currently needs a human to decide "known or real", and on 2026-08-03 that judgement was
 made at least six times and got the wrong answer twice.
+
+#### Postscript, 2026-08-03: the frame-hygiene assertion is gone
+
+Removed the same day this milestone was raised (#46), after it failed the cpu matrix twice more on
+`main`, once on `rv64`, the control model, and once on a Dependabot PR that touched only workflow
+files. That is a deletion, and the paragraph above says deletion is not the fix, so the difference
+is worth stating plainly. The 72 lane rightly declined to delete a check it could not explain; by
+removal time the explanation was complete (the BUGS section of notes/live-replacement.md: only
+frames arriving from outside the run could trip it, with a measured margin of two frames). And the
+assertion this milestone asks for, one scoped to the property the test is responsible for, was
+already standing twelve lines above it: the budget reclaim must succeed and must return exactly
+`SWAPPER_BUDGET_PAGES`. The global count added no coverage on top of that, only the exposure to
+neighbours. One of the five is done; the reaper count, the address-space frames and the two timing
+assertions remain, and the status stays NOT-STARTED for them.
 
 ### 79. Miri over the host crates
 

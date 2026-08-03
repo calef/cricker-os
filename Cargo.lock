@@ -282,6 +282,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "isa"
+version = "0.1.0"
+dependencies = [
+ "dtb",
+]
+
+[[package]]
 name = "kernel"
 version = "0.1.0"
 dependencies = [
@@ -307,6 +314,7 @@ dependencies = [
  "grant_plan",
  "intrusive",
  "ipc",
+ "isa",
  "line_editor",
  "measured_boot",
  "ntp_proto",
