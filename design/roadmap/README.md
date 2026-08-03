@@ -89,16 +89,19 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 11 | BUILT | [Untyped memory, and the number that proves the kernel stops allocating](11-untyped-memory.md) | a process cannot make the kernel allocate, so it cannot exhaust it |
 | 12 | BUILT | [Call/Reply IPC: a one-shot reply capability](12-call-reply-ipc.md) | the IPC the TCB must get right |
 | 13 | BUILT | [Capability revocation + untyped reclamation](13-capability-revocation.md) | safe teardown, a TCB property |
-| 26 | BUILT | [Object revocation: tear a process back down](26-object-revocation.md) | the teardown half of "run real workloads": a process can be reaped, not just built |
-| 18 | BUILT | [Verify the capability core, then spread inward](18-verify-capability-core.md) | the verification itself |
 | 14 | BUILT | [Kernel objects from untyped: remove the kernel heap](14-kernel-objects-from-untyped.md) | removes the kernel heap: the prerequisite for "small enough to verify" |
 | 15 | BUILT | [Tagged address spaces (ASIDs)](15-asids.md) | a context switch stops flushing every translation |
-| 21 | BUILT | [Performance measurement: benchmarks with teeth](21-benchmarks.md) | perf claims become measurements, and regressions surface next to their cause |
 | 16 | PARTIAL | [Real hardware + IOMMU-backed driver isolation, **RISC-V first**](16-real-hardware-iommu.md) | isolation in hardware, under real workloads |
-| 19 | BUILT | [Run a real workload](19-real-workload.md) | the "runs real workloads" half of the thesis |
 | 17 | OPTIONAL | [Multikernel-leaning scheduler (research, optional)](17-multikernel-scheduler.md) | optional; not on the thesis path |
+| 18 | BUILT | [Verify the capability core, then spread inward](18-verify-capability-core.md) | the verification itself |
+| 19 | BUILT | [Run a real workload](19-real-workload.md) | the "runs real workloads" half of the thesis |
 | 20 | BUILT | [A portable HAL, proven on a second architecture](20-portable-hal.md) | the "portable verified core" claim |
+| 21 | BUILT | [Performance measurement: benchmarks with teeth](21-benchmarks.md) | perf claims become measurements, and regressions surface next to their cause |
+| 22 | PARTIAL | [Trusted init: verify it, and shrink what a broken one can do](22-trusted-init.md) | closes the thesis's own soft spot: init is the privileged *unverified* component |
+| 23 | PARTIAL | [A capability-routed component OS with live replacement](23-component-os-live-replacement.md) | the flagship payoff, and a product ambition |
 | 24 | OPTIONAL | [A second aarch64 *board*: Virtualization.framework (optional)](24-second-aarch64-board.md) | proves the `arch/` **board** boundary on a second machine of the same ISA; optional |
+| 25 | PARTIAL | [Cross-OS performance comparison (extends 21)](25-cross-os-comparison.md) | turns perf claims into cross-OS numbers |
+| 26 | BUILT | [Object revocation: tear a process back down](26-object-revocation.md) | the teardown half of "run real workloads": a process can be reaped, not just built |
 | 27 | BUILT | [Rust `std` on the native ABI](27-rust-std.md) | widens "runs real workloads" by orders of magnitude |
 | 28 | BUILT | [A solid terminal: the line discipline as a component](28-line-discipline.md) | a terminal with real behaviour, which 27's stdio semantics need |
 | 29 | BUILT | [A display terminal (framebuffer, virtio-gpu)](29-display-terminal.md) | the first pixels the demonstrator ever puts on a screen, and then the first letters |
@@ -107,9 +110,6 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 32 | BUILT | [A real filesystem: RedoxFS behind a capability FS server](32-redoxfs-fs-server.md) | the flagship userspace-reuse story: a real filesystem we did not write, confined |
 | 33 | BUILT | [A compositor: one screen, mutually distrusting clients](33-compositor.md) | the canonical multiplexer of one device among mutually distrusting clients |
 | 34 | NOT-STARTED | [GPU acceleration via virtio-gpu 3D (the display ladder's rung four)](34-gpu-acceleration.md) | how every VM gets a GPU without a hardware driver |
-| 25 | PARTIAL | [Cross-OS performance comparison (extends 21)](25-cross-os-comparison.md) | turns perf claims into cross-OS numbers |
-| 22 | PARTIAL | [Trusted init: verify it, and shrink what a broken one can do](22-trusted-init.md) | closes the thesis's own soft spot: init is the privileged *unverified* component |
-| 23 | PARTIAL | [A capability-routed component OS with live replacement](23-component-os-live-replacement.md) | the flagship payoff, and a product ambition |
 | 35 | BUILT | [Prove the DMA-confinement boundary (extends 18)](35-dma-confinement-proof.md) | closes the one isolation boundary we test instead of prove |
 | 36 | BUILT | [A foreign-language component, seam first (spike; feeds 29 and 23)](36-foreign-component.md) | the thesis in one assertion: unverified foreign code, confined and restarted |
 | 37 | BUILT | [Prove RedoxFS's crash consistency (DECISIONS §34, condition 1)](37-redoxfs-crash-consistency.md) | decides whether §34's "primary filesystem" label is earned |
