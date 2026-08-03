@@ -5513,10 +5513,31 @@ defect 2 through**: a milestone's status in the index and in its own file must a
 keep the existing checks, which stay meaningful across files: the status vocabulary, every file having
 an index row, and every `milestone N` referenced in prose resolving.
 
-While the numbering is under the microscope, the prose check is worth widening past the roadmap's own
-text to the whole tree, since that is where the ~1,988 unvalidated citations are. That is a separate
-decision with a real cost (a stale citation in a code comment becomes a build failure), so it is
-raised here and not assumed.
+#### And the prose check widens to the whole tree (Chris, 2026-08-03)
+
+Today `script/roadmap --check` validates `milestone N` references **only inside `design/roadmap.md`**.
+`script/decisions --check` already does the tree-wide version for its own citations, via `git grep`.
+So two citation schemes of identical shape and identical risk get opposite treatment:
+
+| citation | validated | occurrences in code |
+|---|---|---|
+| `§N` into `DECISIONS.md` | **tree-wide** | 817 |
+| `milestone N` into the roadmap | **roadmap.md only** | ~1,988 |
+
+The objection to closing that gap is that a stale citation in a code comment becomes a build failure.
+Chris's answer: **that is the feature.** The documentation is versioned with the code so it cannot
+describe a system that no longer exists, and a comment pointing at a milestone that was renumbered or
+never existed is exactly the drift the gate is for. It is the same argument DECISIONS §61 makes about
+lints, and the same one CLAUDE.md makes about citations being invisible when well-formed and wrong.
+
+**It costs nothing to adopt: the tree passes today.** Checking every `milestone N` occurrence outside
+`vendor/` and `patches/` against the table, for N >= 12, produced **zero unresolved citations**. So
+this is a ratchet in §38's shape and not a cleanup, and it can ship with the gate rewrite rather than
+waiting behind it.
+
+Two details for whoever implements it. The existing `n >= 12` floor stays, because milestones below 12
+predate the table and live in git history and `DECISIONS.md`. And the regex must keep matching
+`milestone 16a` as 16, since sub-lettered blocks exist (`20a`).
 
 #### Scope note
 
