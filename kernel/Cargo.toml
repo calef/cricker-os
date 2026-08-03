@@ -34,6 +34,10 @@ grant_plan = { version = "0.1.0", path = "../crates/grant_plan" }
 # `compatible` and names the binding with these constants, and its clock tests read the shared page
 # through the same seqlock the service publishes with, so no party has its own copy of the layout.
 clock_proto = { version = "0.1.0", path = "../crates/clock_proto" }
+# The block-device roster (milestone 57). The kernel writes the page and the surveyor reads it, and
+# the kernel's own tests read it back through this crate rather than by trusting the count the
+# program sent home, so no party has its own copy of the layout.
+block_roster = { version = "0.1.0", path = "../crates/block_roster" }
 # The compositor contract (milestone 33): the kernel wires the scene and its tests predict the
 # composed screen from the same definition the compositor and its clients paint from.
 compositor = { version = "0.1.0", path = "../crates/compositor" }

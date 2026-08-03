@@ -20,6 +20,11 @@
 //! It also allocates nothing and has no `unsafe`. The entry array is a caller-supplied buffer, so a
 //! kernel can hand it a stack array and a userspace tool can hand it a `Vec`.
 //!
+//! [`span`] does not break that rule and is worth saying why: it computes *where* to read, and
+//! arithmetic between two block sizes is exactly the kind of thing this crate is for. A GPT counts
+//! in 512-byte logical blocks; the block service a cricker-os program holds moves 4096 bytes per
+//! request. Somebody has to reconcile those, and doing it in a driver means doing it three times.
+//!
 //! # What a GPT actually is, in the order the bytes appear
 //!
 //! ```text
@@ -101,6 +106,7 @@ pub mod crc;
 pub mod entry;
 pub mod guid;
 pub mod header;
+pub mod span;
 
 use crc::crc32;
 pub use entry::Entry;

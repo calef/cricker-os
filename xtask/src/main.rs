@@ -1169,6 +1169,9 @@ fn initrd_riscv() -> bool {
             "credentialer",
             "--bin",
             "credentialer_test_client",
+            // The disk surveyor (milestone 57), portable like the rest.
+            "--bin",
+            "disk_surveyor",
             "--target",
             RISCV_TARGET,
         ],
@@ -1247,6 +1250,10 @@ fn initrd_riscv() -> bool {
         // formats it, and neither half knows which instruction set it is on.
         ("date", "date"),
         ("rm", "rm"),
+        // The disk surveyor (milestone 57): reads the block-device roster it was granted and the
+        // partition table of the one disk it holds. Portable, so both archives carry it and both
+        // ISAs read literally the same table off literally the same image.
+        ("disk_surveyor", "disk_surveyor"),
         // The entropy service (milestone 56). Portable, so both archives carry it: it holds the
         // virtio-rng driver, and the wiring tells it which bus the device came off.
         ("entropy", "entropy"),
@@ -1500,6 +1507,10 @@ fn mkinitrd() -> bool {
         // `rm` (milestone 47's rmdir lane): the first program endowed a directory capability.
         // Portable, so both archives carry it.
         "rm",
+        // The disk surveyor (milestone 57): the block-device roster and the partition table of the
+        // one disk it holds. Portable, so both archives carry it and both ISAs read literally the
+        // same table off literally the same image.
+        "disk_surveyor",
         // The nameset caretaker (milestone 47's globbing lane): a directory capability attenuated
         // to the names a pattern matched. Portable, so both archives carry it.
         "fs_nameset_caretaker",
@@ -1847,6 +1858,61 @@ fn mkredoxfs_crash() -> bool {
     let initial = initial.display().to_string();
     redoxfs_host(&["mkfs", &img, "16"])
         && redoxfs_host(&["put", &img, fs_proto::fixture::crash::NAME, &initial])
+}
+
+/// Where the GPT-partitioned test image is written. The runners derive exactly this name from
+/// `CRICKER_DISK` (`${CRICKER_DISK%.img}-gpt.img`), so the two stay in lockstep.
+fn gpt_disk_path() -> String {
+    workspace_root()
+        .join("target/crickerfs-gpt.img")
+        .display()
+        .to_string()
+}
+
+/// Build the milestone-57 test disk: a 64 MiB image whose partition table **`sgdisk` wrote**.
+///
+/// The point of this image is its provenance. `crates/gpt` can lay out a table, and a disk it laid
+/// out would test the reader against the writer, which is the weakest test available: every mistake
+/// made on the way out is made symmetrically on the way in. So the bytes come from the committed
+/// fixture in `crates/gpt/tests/fixtures/`, produced by `sgdisk` 1.0.10 (gptfdisk, C++), and the
+/// guest reads a table this project did not write. The regeneration commands are at the top of
+/// `crates/gpt/tests/real_disks.rs`.
+///
+/// The fixture is the first 34 and last 33 blocks of a 64 MiB disk, which is exactly the primary
+/// table and the backup table with the 64 MiB of nothing between them left out. Reconstituting it is
+/// therefore the head, a run of zeros, and the tail. Nothing is put in the partitions: what is under
+/// test is finding them.
+fn mkgptdisk() -> bool {
+    const BLOCK: usize = 512;
+    const BLOCKS: usize = 131_072; // 64 MiB
+    let dir = workspace_root().join("crates/gpt/tests/fixtures");
+    let (Ok(head), Ok(tail)) = (
+        std::fs::read(dir.join("sgdisk-64m.head")),
+        std::fs::read(dir.join("sgdisk-64m.tail")),
+    ) else {
+        eprintln!("mkgptdisk: cannot read the sgdisk fixtures");
+        return false;
+    };
+    if head.len() != 34 * BLOCK || tail.len() != 33 * BLOCK {
+        eprintln!(
+            "mkgptdisk: the fixtures are {} and {} bytes; expected {} and {}",
+            head.len(),
+            tail.len(),
+            34 * BLOCK,
+            33 * BLOCK,
+        );
+        return false;
+    }
+    let mut img = std::vec![0u8; BLOCKS * BLOCK];
+    img[..head.len()].copy_from_slice(&head);
+    let at = BLOCKS * BLOCK - tail.len();
+    img[at..].copy_from_slice(&tail);
+    let path = gpt_disk_path();
+    if let Err(e) = std::fs::write(&path, &img) {
+        eprintln!("mkgptdisk: could not write {path}: {e}");
+        return false;
+    }
+    true
 }
 
 /// After a test run, reopen the **crash** image with the host tool and confirm the property holds
@@ -2426,7 +2492,8 @@ fn test() -> bool {
         eprintln!("--- kernel tests, aarch64 (QEMU) ---");
         // The FS server (milestone 32 phase 2), for the aarch64 bare target, before `user()` so
         // mkinitrd packs it; then the RedoxFS test images the runner attaches as extra mmio disks.
-        if !fs_server_build(TARGET) || !user() || !mkredoxfs() || !mkredoxfs_crash() {
+        if !fs_server_build(TARGET) || !user() || !mkredoxfs() || !mkredoxfs_crash() || !mkgptdisk()
+        {
             return false;
         }
         // `cargo()` only exports the env the runner needs; the test itself runs under the scanout
@@ -2468,7 +2535,7 @@ fn test() -> bool {
         // cross-boot write failure it separates out is real, and notes/fs-server.md carries it as a
         // tracked open item with the exact recipe to reproduce it (run one leg, then the other,
         // without regenerating in between).
-        if !mkredoxfs() || !mkredoxfs_crash() {
+        if !mkredoxfs() || !mkredoxfs_crash() || !mkgptdisk() {
             return false;
         }
         // SAFETY: `set_var`/`remove_var` became unsafe in edition 2024 because they race other

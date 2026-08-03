@@ -81,7 +81,16 @@ if [ -n "$CRICKER_DISK" ]; then
     if [ -f "$CRASH_DISK" ]; then
         CRASH_MMIO="-drive file=$CRASH_DISK,if=none,format=raw,id=hd3 -device virtio-blk-device,drive=hd3"
     fi
-    DISK="-global virtio-mmio.force-legacy=false $CRASH_MMIO $REDOXFS_MMIO -drive file=$CRICKER_DISK,if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 -drive file=$PCI_DISK,if=none,format=raw,id=hd1 -device virtio-blk-pci,drive=hd1,disable-legacy=on,iommu_platform=on"
+    # The GPT-partitioned image (milestone 57), the fourth mmio block device, at slot 3, and first on
+    # the command line for the same reversal reason. The twin of the aarch64 runner's block; see it
+    # for why the bytes come from the `sgdisk` fixture rather than from our own writer. `virt` here
+    # has eight mmio transports and this run uses six of them (four disks, a NIC, an RNG).
+    GPT_DISK_IMG="${CRICKER_DISK%.img}-gpt.img"
+    GPT_MMIO=""
+    if [ -f "$GPT_DISK_IMG" ]; then
+        GPT_MMIO="-drive file=$GPT_DISK_IMG,if=none,format=raw,id=hd4 -device virtio-blk-device,drive=hd4"
+    fi
+    DISK="-global virtio-mmio.force-legacy=false $GPT_MMIO $CRASH_MMIO $REDOXFS_MMIO -drive file=$CRICKER_DISK,if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 -drive file=$PCI_DISK,if=none,format=raw,id=hd1 -device virtio-blk-pci,drive=hd1,disable-legacy=on,iommu_platform=on"
 fi
 
 # A virtio-net NIC on QEMU user-mode (slirp) networking when CRICKER_NET is set (milestone 30), the

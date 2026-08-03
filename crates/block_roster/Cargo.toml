@@ -1,0 +1,18 @@
+[package]
+name = "block_roster"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+# The block-device roster of milestone 57 (notes/block-devices.md): the read-only page layout that
+# answers "what drives are attached", written once by the kernel and read by whichever program was
+# granted the mapping. Pure logic, host-tested, no_std, dependency-free, so the kernel and the
+# program share ONE definition and cannot drift. The same split `fs_proto` makes for the filesystem
+# contract and `clock_proto` for the wall clock.
+#
+# NOTE (lane, 2026-08-03): `block_roster` is a PROVISIONAL name. Crate names are Chris's call.
+
+[lints]
+workspace = true
+
+[dependencies]
