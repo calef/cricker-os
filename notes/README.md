@@ -61,6 +61,10 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [The stack, `sp`, and `x30`](stack.md): the stack is just RAM plus an agreement. Why
   `bl` doesn't push, why `sp` must be 16-byte aligned, and why there's one `sp` per
   exception level.
+- [Stack high-water](stack-high-water.md): milestone 84. Paint every kernel-owned stack, scan
+  after the suite, report the deepest byte. The inventory (boot, secondary, thread stacks; no
+  separate interrupt stacks on either ISA), the measured numbers, and the honest limits of a
+  watermark.
 - [Reading aarch64 assembly](reading-assembly.md): five rules that decode almost
   everything, the addressing-mode table, and a line-by-line walkthrough of `boot.s`.
   **Start here if a code block looks like noise.**

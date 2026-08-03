@@ -2202,6 +2202,24 @@ pub fn runnable_non_idle_count(&exclude: &Tid) -> usize {
 /// `Blocked` forever with nothing to wake it; this shows which thread, and the `on_cpu`/`wake_pending`
 /// flags that would reveal a botched wake-before-switch-out handoff. Takes SCHED, which is free when
 /// the hang is a blocked thread (not a lock deadlock). Used by the test watchdog.
+/// Feed every live thread's stack into the high-water accounting (milestone 84). Long-lived
+/// service threads (the FS server, the shape of the incident that motivated the measurement) are
+/// never reaped, so their stacks are only visible here, not in `KernelStack`'s `Drop`. A thread may
+/// be running on another core while its stack is scanned; the scan reads a snapshot, and a racing
+/// deepening is at worst under-reported by this run (see `stack::high_water`).
+#[cfg(test)]
+pub fn scan_live_thread_stacks() {
+    let mut guard = SCHED.lock();
+    let Some(sched) = guard.as_mut() else {
+        return;
+    };
+    for t in sched.threads.iter_mut() {
+        if let Some(s) = t.stack.as_ref() {
+            crate::stack::note_thread_stack_use(crate::stack::high_water(s.bottom(), s.top()));
+        }
+    }
+}
+
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn dump_threads() {
     let mut guard = SCHED.lock();
