@@ -30,9 +30,12 @@ the 4 OCPUs can be split across at most two instances.
 image that boots via UEFI, so the kernel needs a boot path it does not have (an EFI stub or a
 bootloader stage). Server aarch64 VMs describe the machine with **ACPI, not a device tree**,
 which is a new discovery front door (milestone 60 built the DTB one). None of this is wasted
-motion: the UEFI work is what optional milestone 24 (Virtualization.framework) also needs, and it
-is provider-neutral by construction, so Graviton, Azure and Google's Ampere shapes become
-reachable with the same boot path.
+motion: the UEFI work is shared with optional milestone 24's EFI variant (corrected 2026-08-03;
+an earlier draft said 24 "needs" it, but 24 also has a UEFI-free path via VZ's Linux boot
+protocol, recorded in its file), and it is provider-neutral by construction, so Graviton, Azure
+and Google's Ampere shapes become reachable with the same boot path. One cross-reference the
+stages should honor: if stage 2 finds OCI's serial console is virtio-console rather than a
+16550, the driver it forces is milestone 24's named artifact; build it once.
 
 **The staging that keeps it honest**, each stage a deliverable on its own:
 
@@ -40,7 +43,9 @@ reachable with the same boot path.
 2. The always-free A1 shape: custom image imported, a byte on the OCI serial console. This is the
    milestone's "printed a byte over serial" moment, at $0.
 3. The bench suite against Linux on the identical free shape, published with the image, so the
-   reader's rerun is also $0.
+   reader's rerun is also $0. This stage also owes milestone 17 its gate: the `smp_throughput`
+   scaling curve across hart counts (finished at stage 4's 64-core metal) is the measurement that
+   decides whether the SCHED lock ever gets partitioned (notes/sched-lock-inventory.md).
 4. Graviton `.metal` by the hour, for the PMU: the `sel4bench` comparison milestone 25 deferred.
    The only paid stage, used in bursts.
 5. Stretch, each its own decision later: virtio networking on the A1 instance with the drivers

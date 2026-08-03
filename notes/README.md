@@ -61,6 +61,10 @@ in the code or the conversation doesn't make sense, it belongs here.
 - [The stack, `sp`, and `x30`](stack.md): the stack is just RAM plus an agreement. Why
   `bl` doesn't push, why `sp` must be 16-byte aligned, and why there's one `sp` per
   exception level.
+- [Stack high-water](stack-high-water.md): milestone 84. Paint every kernel-owned stack, scan
+  after the suite, report the deepest byte. The inventory (boot, secondary, thread stacks; no
+  separate interrupt stacks on either ISA), the measured numbers, and the honest limits of a
+  watermark.
 - [Reading aarch64 assembly](reading-assembly.md): five rules that decode almost
   everything, the addressing-mode table, and a line-by-line walkthrough of `boot.s`.
   **Start here if a code block looks like noise.**
@@ -606,6 +610,11 @@ in the code or the conversation doesn't make sense, it belongs here.
   suite against `sifive-u54`, the RVA profiles and `thead-c906` (211 tests, all five green), the
   preflight that proves `-cpu` is enforced rather than merely advertised, what the narrow models
   would have caught, and the one test written for the board that no CPU model can exercise.
+- [Load-sensitive assertions](load-sensitive-assertions.md): the milestone 78 verdicts. Five
+  assertions failed pull requests that changed no executable code; the direction of a failure is
+  the diagnosis (a slow machine produces a deficit, never a surplus), so the three that fired on
+  negative counts were measuring their neighbours, not their subject. What each was rescoped to,
+  the one left alone and why, and the honest cost of the `<=` trade.
 - [Scoping a PCIe transport](pcie-transport-scope.md): a PCI root complex (ECAM enumeration, BARs,
   virtio-pci capability parsing, INTx via the PLIC) so a virtio disk can be driven over PCIe, the
   transport QEMU's riscv `virt` and real hardware use. Portable (both boards are ECAM-generic); the
@@ -638,3 +647,4 @@ Topics we've touched but not yet documented. Add as they come up:
 
 - The GIC (interrupt controller)
 - virtio
+- [The SCHED lock inventory](sched-lock-inventory.md): what the one remaining scheduler lock protects, by temperature; milestone 17's denominator, gated on 88's curve and 80's method.

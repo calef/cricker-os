@@ -196,7 +196,13 @@ through SBI, so it works on both.
   green matrix under load is conclusive and a red one is not. Before you diagnose a model, re-run it
   quiet, and check `top` rather than only the load average. The CI job is five sequential QEMU runs
   where `test` does one, so it is five times the existing exposure to a noisy runner rather than a
-  new kind of risk. If it flakes there, the fix is those tests' timing budgets, not dropping a model.
+  new kind of risk.
+
+  An earlier version of this paragraph ended "the fix is those tests' timing budgets", and that was
+  wrong for most of the family: several of these assertions failed with counts *below* their
+  baselines, which no timing budget explains and no widening fixes. Milestone 78 rescoped them; the
+  per-assertion verdicts and the deficit-versus-surplus diagnostic are in
+  notes/load-sensitive-assertions.md. Dropping a model is still not the fix.
 
 ## Where it sits in CI
 
