@@ -167,6 +167,12 @@ fn rearm(interval: u64) {
 
     if next <= now {
         MISSED_TICKS[cpu::id()].fetch_add(1, Ordering::Relaxed);
+        // Test builds only: keep the numbers, so a failure says HOW LATE rather than only that it
+        // was late. Two relaxed stores, no branch on the hot path, and nothing printed: this runs in
+        // interrupt context and DECISIONS §9's rule (handlers record and defer) applies to
+        // diagnostics too.
+        #[cfg(test)]
+        miss_detail::record(now, next);
         next = now + interval;
     }
 
@@ -182,6 +188,47 @@ static MISSED_TICKS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_C
 #[cfg_attr(not(test), allow(dead_code))] // this file's tests are the callers
 pub fn missed_ticks() -> u64 {
     MISSED_TICKS[cpu::id()].load(Ordering::Relaxed)
+}
+
+/// Why a miss happened, kept only in test builds.
+///
+/// `missed_ticks()` says a deadline was already past when the handler re-armed. It does not say by
+/// how much, and the difference matters: **a few hundred cycles late is a slow handler, and a whole
+/// tick period late is the emulator having been descheduled.** Without the numbers those two look
+/// identical in a panic message, which is the position milestone 78 records the suite being in.
+///
+/// The last miss only, plus a count. A burst records once and reports the final pair, which is
+/// enough to tell the two cases apart and cheaper than a ring buffer in interrupt context.
+#[cfg(test)]
+pub mod miss_detail {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    use crate::cpu::{self, MAX_CPUS};
+
+    static NOW: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+    static NEXT: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+    static COUNT: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+
+    /// Record the counter and the deadline it had already passed. Called from `rearm`, in
+    /// interrupt context, so this is three relaxed stores and nothing else.
+    pub fn record(now: u64, next: u64) {
+        let id = cpu::id();
+        NOW[id].store(now, Ordering::Relaxed);
+        NEXT[id].store(next, Ordering::Relaxed);
+        COUNT[id].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// This core's last miss as `(now, next, count)`. `now - next` is how late the re-arm was, in
+    /// counter ticks; compare it against `timer::interval()` to tell a slow handler from a
+    /// descheduled emulator.
+    pub fn last() -> (u64, u64, u64) {
+        let id = cpu::id();
+        (
+            NOW[id].load(Ordering::Relaxed),
+            NEXT[id].load(Ordering::Relaxed),
+            COUNT[id].load(Ordering::Relaxed),
+        )
+    }
 }
 
 /// Called from the IRQ handler. **Must re-arm**, or the interrupt line stays high forever and
@@ -319,11 +366,26 @@ mod tests {
 
         let before = timer::missed_ticks();
         timer::spin_for(timer::interval() * 5);
+        let after = timer::missed_ticks();
 
+        // The numbers, not just the fact. `now - next` is how late the re-arm was: a few hundred
+        // counter ticks is a slow handler and is our bug; a whole `interval` or more is the
+        // emulator having been descheduled, which says nothing about this kernel. The test runner
+        // passes no `-icount`, so guest time follows host time and both are possible. Milestone 78
+        // decides what this assertion should measure; until then it at least reports which it saw.
+        let (now, next, misses) = super::miss_detail::last();
         assert_eq!(
-            timer::missed_ticks(),
+            after,
             before,
-            "the timer handler is taking longer than a whole tick period, with no lock held"
+            "the timer handler is taking longer than a whole tick period, with no lock held. \
+             missed {} -> {}; last miss re-armed {} counter ticks late against an interval of {} \
+             ({} misses recorded on this core). Late by much more than one interval means the \
+             emulator was descheduled, not that the handler is slow.",
+            before,
+            after,
+            now.saturating_sub(next),
+            timer::interval(),
+            misses,
         );
     }
 
