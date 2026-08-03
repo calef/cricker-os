@@ -132,6 +132,8 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 66 | NOT-STARTED | Vaultwarden: somebody else's real application, running here | the north star for "runs real workloads". Names the gaps concretely rather than aspirationally: no TCP **listen or accept** in the socket contract, threads mostly stubs, most of `std::fs` unsupported, no async runtime, no TLS, and SQLite is a C library. Largest single item on this roadmap |
 | 67 | NOT-STARTED | `swish` the language: quoting, sequencing, and exit status | `swish` is an interactive shell without control flow. Quoting is the one that is a correctness gap rather than a convenience: **a filename with a space is currently unnameable** |
 | 68 | PARTIAL | Code-quality gates: one lint policy, and the lints that lost | Import order, `[workspace.lints]`, dependency direction, unused dependencies, spelling. Three lints were adopted, measured and **removed** on the evidence. `undocumented_unsafe_blocks` is now a GATE: all 205 undocumented blocks were read and commented. Doc examples went 5 -> 23 across nine crates, which is a start and not the standard; `missing_docs` is still not adoptable |
+| 69 | NOT-STARTED | Split `kernel/src/user.rs` by service | 15,499 lines and **46 top-level modules** in one file: a dozen `*_service` modules and ~34 test modules. The split is nearly free because the boundaries are already `mod` blocks, so moving one to its own file changes no visibility and no API |
+| 70 | NOT-STARTED | `swish`'s remaining logic in a crate, host-testable like its siblings | `coremark`, `line_editor` and `compositor` are each a crate holding the logic plus a program holding the IO. `swish` is the largest program that is not, so its dispatch, endowment preview and outcome handling are reachable only through QEMU |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -4910,3 +4912,94 @@ One regression is worth recording because nothing else would have caught it: add
 `SAFETY:` comment from its block**, and clippy then reported the block as undocumented. An attribute
 between a comment and the item it describes breaks the association. The fix is ordering: attribute
 first, then the comment, then the block.
+
+### 69. Split `kernel/src/user.rs` by service
+
+**Status: NOT-STARTED.** Raised 2026-08-02, from a question about whether thousand-line files are an
+antipattern in Rust. The general answer is no, and this file is the exception that proves why.
+
+#### Why file length is usually the wrong metric here
+
+In Java the one-public-class-per-file rule is compiler-enforced; in Rails, autoloading maps paths to
+constants. Both make size a proxy for "too many responsibilities". Rust has neither: a file **is** a
+module, the module is the privacy boundary, and the standard library ships multi-thousand-line files
+that are one coherent thing. This tree also comments far more heavily than production code by policy
+and keeps unit tests in-file, which inflates counts for good reasons. `crates/glob` is 1,173 lines of
+which **54% are tests**; `crates/calendar` is 1,578 at 43%. Shrinking either would make it worse.
+
+#### What makes `user.rs` different
+
+It is **15,499 lines holding 46 top-level modules**: roughly a dozen `pub mod *_service` blocks
+(`console`, `virtio`, `fs`, `display`, `compositor`, `keyboard`, `clock`, `entropy`, `credential`,
+`ntp`, `untyped`, `pipeline`) and roughly 34 `#[cfg(test)]` modules, interleaved. `fs_service` alone
+is 1,217 lines and the top-level `tests` module is 2,320.
+
+The test that matters is not the line count but this: **to change the NTP service you open the file
+where the compositor lives.** That is ten responsibilities in one place, and no amount of Rust
+module semantics makes it one.
+
+#### Why this split is unusually cheap
+
+The standard argument against splitting a Rust file is that it forces you to widen visibility: items
+private to the module become `pub(crate)` merely to be reachable, and a long file is traded for a
+leakier API.
+
+**That argument does not apply, because the boundaries already exist as `mod` blocks.** A child
+module can see its ancestors' private items whether it is written inline or in its own file, so
+
+```rust
+pub mod fs_service;          // was: pub mod fs_service { ... }
+```
+
+is semantically identical to what is there now: no visibility change, no API change, and `use
+super::*` inside keeps working. This is a file move, not a refactor, which is what separates it from
+the speculative restructuring CLAUDE.md warns against.
+
+#### The one real cost, and the scheduling consequence
+
+`user.rs` is the kernel's service-wiring file and nearly every milestone touches it, so the diff
+conflicts with anything in flight. **Do it while the tree is quiet**, in one pass, and do not
+interleave it with feature work. Splitting it across two lanes would be worse than not splitting it.
+
+Suggested shape: `kernel/src/user/` with one file per service and each service's tests beside it,
+leaving `user.rs` as the wiring that names them.
+
+### 70. `swish`'s remaining logic in a crate, host-testable like its siblings
+
+**Status: NOT-STARTED.** Raised 2026-08-02, and **the finding that prompted it was wrong**, which is
+worth recording because the corrected version is a smaller and more honest milestone.
+
+#### The correction
+
+`user/src/swish.rs` is 2,625 lines with **zero `#[cfg(test)]` blocks**, and that was first reported
+as "the shell is untested". It is not. The shell is covered twice over:
+
+- **~28 QEMU integration `test_case`s** across five kernel test modules (`shell_navigation_tests`,
+  `pipeline_tests`, `redirection_tests`, `glob_grant_tests`, `rm_program_tests`), which spawn the
+  real binary and drive it.
+- **93 host unit tests in `crates/grant_plan`**, which already holds swish's parsing, navigation and
+  grant-planning logic. `swish.rs` imports `grant_plan::{expand, line, nav}` and `line_editor::proto`
+  rather than reimplementing any of it.
+
+So 0% was a fact about one **file**, not about a component, and a file-level metric said something
+false about the system. That is the general lesson: coverage measured per file counts where tests are
+*written*, not what they *reach*.
+
+#### The real gap, which is narrower
+
+What is left in `swish.rs` is mostly IO glue, and some of it is logic that a host test could reach if
+it were lifted: `builtin` and `dispatch`, `outcome`'s interpretation of a spawn result, `preview`'s
+rendering of an endowment, `refuse`'s mapping from a `Refusal` to what the user reads, `print_num`.
+Today every one of those is exercised only by booting QEMU, which is slow, coarse, and cannot easily
+provoke the error paths.
+
+CLAUDE.md already names the pattern this should follow: **a crate and a program may share a name, and
+it says something when they do** (the crate is the logic, lifted so it is host-testable and
+Kani-reachable; the program keeps the IO). `coremark`, `line_editor` and `compositor` are each that
+pair. `swish` is the largest program that is not one.
+
+#### Scope note
+
+This is an incremental tidy of a working, tested component, not a fix for a defect. It should be
+scheduled accordingly, and it should not grow into a rewrite of the shell. If lifting a function
+needs the shell's IO restructured to accommodate it, that function stays where it is.
