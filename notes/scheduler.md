@@ -187,6 +187,14 @@ and the sibling at `sched.rs:2709`). They fail in 23 s with a named assertion, n
 dump, so the two are never confusable once you look. A 15% rate for that class under four burners is
 worth someone's attention on its own; it is not this.
 
+**The local aarch64 rate is not measurable with this recipe, and that is worth knowing before
+someone tries.** Ten pre-fix aarch64 runs under the same four burners gave **0 hangs**, which sounds
+like "rarer on aarch64" and is not evidence of anything: **five of the ten died earlier in the boot**
+on the bounded-yield contention flakes, before the suite ever reached this test. The aarch64 leg is
+much more prone to those under burners than riscv64 is (5 in 10 against 3 in 20), so the burners
+break the instrument before they exercise it. The aarch64 evidence that counts is the widened-window
+control and the wild CI hit, neither of which needs a rate.
+
 **The fix is not a rate reduction, which is the thing to check it against.** Deleting the probe means
 the child is never marked `killed`, so the conversion that reaped it has no input and cannot happen
 on any machine at any speed. That distinction matters because the observed *rates* vary wildly and

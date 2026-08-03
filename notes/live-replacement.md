@@ -175,6 +175,47 @@ three systems, which fragmented the frame allocator badly enough that a *later, 
 not get init's own eight-megabyte region. The failure surfaced nowhere near its cause, which is the
 usual signature of a leak.
 
+### BUGS: the frame-hygiene `debug_assert!` is a race, and it fires on CI
+
+`run_swap` ends with `debug_assert!(before >= memory::free_frames())`, where `before` is the free
+count sampled at the top of the run. **It intermittently fails on the `sifive-u54` cpu-matrix leg**,
+with the outgoing instance's expected device fault printed just above it. Found 2026-08-03 during
+milestone 72; not fixed, because the analysis says the assertion is the defect and that deserves its
+own change rather than riding on an unrelated one.
+
+**It contradicts the comment directly above it**, which says the property is "hygiene, deliberately
+not asserted on". Both were written in the same commit, so one has been wrong since milestone 23.
+
+**The comment is the one that is right, though not for the reason it gives.** The scenario the
+comment describes, the operator's own address space and TCB coming home late through the ordinary
+reaper, satisfies the assertion either way: those frames were allocated *after* `before` was taken,
+so returning them can only bring the count back up *toward* the baseline, never past it. The
+assertion can only fire on frames arriving from **outside the run**, which is an earlier test's
+teardown landing mid-run. That is the "a wait written against something wider than the property"
+shape notes/riscv-parity-scope.md records twice already, in its `thread_count()` form.
+
+**Measured, because the margin is the whole story.** On a quiet machine the run ends two frames
+*below* its baseline, every time, on all three live-swap tests:
+
+```text
+[M72b] baseline at entry=21987, after settling=21987, drift=0
+[M72b] before=21987 now=21985 delta=-2
+```
+
+Two frames of headroom, and the baseline does not drift on a quiet machine. So any three frames
+arriving from an earlier test's in-flight teardown trip it, and a loaded CI runner is exactly where
+that happens.
+
+**What is not demonstrated**: which teardown supplied them. Eight `script/cpu-matrix sifive-u54` runs
+under four host burners did not reproduce it, and neither did forcing a two-second settle at either
+end of the run. The direction is established (frames arrive from outside the run) and the source is
+not.
+
+**Do not read the fault beside it as an anomaly.** The CI log shows
+`user thread N killed: scause 0xd ... stval 0x0000000003100005` immediately before the panic, and
+`0x3100005` is `DEV_VA + 5`. That is the outgoing instance dying on the device it no longer has,
+which is the control this whole milestone rests on and which the test asserts on directly.
+
 ## What this does not yet demonstrate
 
 - **State handoff**, which is where the real engineering is. The component here is near-stateless by
