@@ -4732,12 +4732,15 @@ each internally consistent, is stronger evidence than a pinned expectation could
 
 ### BUGS
 
-- **Nothing gates the `--features shell` boot**, and this is the most valuable test milestone 50 did
-  not write. It bit twice in one session, both times presenting as *a boot that printed nothing*,
-  and cost a manual bisect against a live prompt each time. The three causes were a virtual-address
-  collision, init's sixteen-slot cspace overflowing, and four stack pages being too few. A gate that
-  boots the shell and types one line catches all three in seconds. It needs a bounded-QEMU harness
-  driving stdin, which is a new piece of `xtask` rather than a test.
+- ~~**Nothing gates the `--features shell` boot.**~~ **CLOSED 2026-08-02 by `script/shell-check`**,
+  which milestone 50 wrote when it finished `>>` (§59). It boots the interactive system on both ISAs,
+  types five lines, and reads the answers, and it is the only thing in the tree that runs the real
+  `system_initializer`. The entry stands as written otherwise, because its argument is what got it
+  built: it bit twice in one session, both times presenting as *a boot that printed nothing*, and
+  cost a manual bisect against a live prompt each time. The three causes were a virtual-address
+  collision, init's sixteen-slot cspace overflowing, and four stack pages being too few. Milestone
+  50 then hit the same shape a third time, which is what made the gate worth its cost rather than
+  merely worth wanting.
 - **The interactive shell holds the image root unnarrowed.** Defensible for the machine's own
   prompt, and still a default nobody decided on the record.
 - **`rm` remains unreachable from the prompt.** The refusal is no longer "you hold no such
@@ -4908,6 +4911,64 @@ which is the parity discipline (§19) failing at the level of an estimate rather
 - **Nothing checks that a name fits before a rename lands.** `script/lint` gates many things; the
   archive limit is not one of them, and it was hit twice in one session by names that were settled
   before anyone counted bytes.
+
+## 59. Append is an open mode, so `>>` costs a character and a flag
+
+Milestone 50 finished the prompt's operators: `|`, `<`, `>` and now `>>`, on both ISAs.
+
+**`>>` needed no new machinery at all, and that is the interesting part.** §55 decided that the file
+behind a redirect is opened and written by *the shell itself*, because one page cannot serve two
+clients. Append inherits that decision whole: it is a flag on the open the shell already performs. No
+manifest field, no `spawnproto` bit, no init change, and nothing added to the syscall surface, which
+is the test §55 was really making. **An operator that fits in the existing model is evidence the
+model was drawn in the right place**; one that had required a new capability would have said §55 was
+wrong.
+
+The guest test asserts the appended file is **exactly twice** the length of the truncated one in all
+three counts, rather than checking what `echo` prints. That makes it a claim about the operator
+instead of a claim about a program's output.
+
+**`2>` is deliberately absent, and it is a design fork rather than missing work.** There is no second
+output stream in this system. Adding one is a decision about what a program's error channel *is* in a
+capability OS (a second sink capability? a distinguished slot? a convention?), and it belongs in the
+model before it belongs in the parser. `notes/pipes.md` carries the analysis.
+
+### BUGS
+
+- **The shell is the only writer, so `>` cannot redirect a program that writes through its own file
+  capability.** Nothing does today. The day something does, §55 is the section that has to move, not
+  this one.
+
+## 60. Fuzzing complements the proofs, and the parsers are exactly where it wins
+
+Milestone 42 put `cargo-fuzz` over the four parsers that read bytes we did not write: `dtb_walk`,
+`elf_parse`, `gpt_table`, `crickerfs_roundtrip`. Those four are the tree's actual trust boundary;
+everything else parses bytes this system wrote itself.
+
+**It is not a weaker Kani, it is a different instrument, and the split is about bounds.** Kani proves
+a property exhaustively over a *bounded* input; fuzzing searches an *unbounded* input space shallowly.
+A parser's whole difficulty is unbounded length, which is precisely the bound Kani must fix to be
+tractable, so the parsers were the gap the proofs could not cover rather than a place nobody had got
+to yet. §46's rule that we write what is on the verification path is what put this logic in
+host-testable crates, and that is why the fuzzers could reach it at all.
+
+**The justification is empirical, not aesthetic: it found three real defects in its first sitting.**
+Two panics in `dtb` on a hostile device tree, which is boot-path code parsing bytes the *firmware*
+wrote; and `crickerfs` writing a name containing a NUL that could then never be read back, from the
+one-file input `[("\0", [])]`, in under a minute. Each is fixed with a regression test beside the
+fix, so the finding survives whether or not anyone reruns the fuzzer. **A found bug is a permanent
+test, not a permanent fuzzing job.**
+
+The CI job is a **time-boxed sweep on a fixed budget per target, not a regression tripwire.** It does
+not prove a pull request introduced nothing, and `notes/fuzzing.md` says so plainly, including that
+`gpt_table` barely reaches `check_backup`.
+
+### BUGS
+
+- **Coverage is stated, not measured.** The note records where each target reaches by reading the
+  code, and a target whose corpus stops covering a branch will not say so.
+- **The seeds are in the tree and the corpus is not**, so a long CI sweep starts from near scratch
+  each time and rediscovers shallow ground before it reaches new ground.
 
 ## Reading
 
