@@ -179,6 +179,14 @@ The probe is deleted. Nothing else changed. The refusal's own behaviour is prove
 destructive call at a runaway that is *meant* to die, and that is the only subject it can honestly
 be pointed at. `reclaim_region` now carries a `BUGS` section saying so where a caller meets it.
 
+**Confirmed under the original recipe**: four host burners, the riscv64 leg twenty times,
+**0 watchdog hangs**. Three of the twenty failed on something else, and all three are the
+bounded-yield-under-contention class this file already documents further down
+(`a_thread_that_never_yields_is_preempted_anyway`, `a_blocked_waiter_wakes_with_an_error_when_its_endpoint_is_revoked`,
+and the sibling at `sched.rs:2709`). They fail in 23 s with a named assertion, not at 60 s with a
+dump, so the two are never confusable once you look. A 15% rate for that class under four burners is
+worth someone's attention on its own; it is not this.
+
 **Occurrences, and why the ISA column is misleading:**
 
 | When | Where | Test |
@@ -271,6 +279,13 @@ runs**, every one of them in a module that executes before any of that milestone
 already ruled the diff out structurally. The confirmation was cheaper than the reasoning:
 **unmodified `origin/main`, same machine, same minute, failed too** (a fourth test, the reaper's
 count). Meanwhile a QEMU from another worktree had been holding **200% of the host for 43 minutes**.
+
+**Measured again on 2026-08-03**, because milestone 72's confirmation loop ran the recipe that
+provokes them: four host burners, riscv64 twenty times, **three failures, all from this list**
+(`a_thread_that_never_yields_is_preempted_anyway`,
+`a_blocked_waiter_wakes_with_an_error_when_its_endpoint_is_revoked`, and the sibling at
+`sched.rs:2709`). 15% under load, 0% quiet. They are distinguishable from a real hang at a glance:
+these fail in about 23 s with a named assertion, a lost wakeup fails at 60 s with a thread dump.
 
 Two things follow. A run that fails one of these is not evidence about the branch until it has been
 seen on a quiet machine or contradicted by a control run, and a control run costs ten minutes and
