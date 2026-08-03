@@ -151,6 +151,8 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 85 | NOT-STARTED | Mutation testing over the host crates | Coverage reports what ran; cargo-mutants reports whether a test would notice a change, which is the claim the suite actually makes. A weekly, time-boxed job with a recorded baseline, not a PR gate |
 | 86 | NOT-STARTED | `time`: the shell times a command | The second prefix-word command after `caps`, so the grammar is proven, and `date` already built the clock story. The design question is whose clock it is: the shell's, so a child that holds no clock capability can still be timed, which is the Unix behaviour and the leaning |
 | 87 | NOT-STARTED | The x86_64 bare-metal machine | Milestone 19's third ISA needs what milestone 16's second needed: a dedicated, brickable board, selected before the port so the requirements drive the purchase. Selected: a used OptiPlex 7050 Micro plus the C4PDJ serial module, ~$194 all-in; every new option cost $150-350 more at real prices. QEMU emulates `igb` and `e1000e`, not `igc`, so the 7050's I219 keeps the one-driver property with no caveats |
+| 88 | NOT-STARTED | cricker-os on rented silicon: Oracle's free tier first, Graviton metal for the PMU | "Here is the image, rerun it on your own free account" is a credibility claim no desk machine can make, at $0 recurring. OCI's A1 VMs are KVM with virtio, which this tree already drives; the PMU stage stays Graviton `.metal` by the hour, unblocking milestone 25's deferred `sel4bench`. Costs a UEFI boot path and an ACPI front door, both shared with optional milestone 24 |
+| 89 | NOT-STARTED | Scaleway EM-RV1: a second RISC-V implementation, rented | Real riscv64 silicon (T-Head TH1520, C910 cores) at EUR 0.042/hour, the vendor-quirk cousin of the cpu matrix's `thead-c906` model. A second implementation's answers to the questions QEMU cannot vary (the `satp.ASID` probe above all), independent of the VisionFive 2's arrival. Whether a custom kernel can boot there at all is the first fact to establish |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -6195,3 +6197,89 @@ This milestone is the machine, the serial link proven, and nothing else; the por
 milestone 19's remaining scope and is not gated on this purchase, because the port starts under
 QEMU TCG the way riscv64 did. Buying early is cheap insurance against the VisionFive 2 pattern
 (ordered 2026-07, arrives ~2026-08-21) of the board being the long pole.
+
+### 88. cricker-os on rented silicon: Oracle's free tier first, Graviton metal for the PMU
+
+**Status: NOT-STARTED.** Raised 2026-08-03, from the observation that several open milestones are
+hardware-gated and a cloud instance is hardware without a purchase. Oracle-first is Chris's call
+(2026-08-03): the always-free A1 shape (4 Ampere cores, 24 GB) makes the recurring cost zero, so
+the rented-silicon story starts with no bill to watch.
+
+**What this buys that no machine on the desk can.** Every benchmark in this tree so far runs on
+hardware the reader has to take our word about. A cloud instance is the same silicon for everyone:
+"cricker-os against Linux on the same free shape, here is the image, rerun it on your own free
+account" is a credibility claim no desk machine can make, and it is the demonstrator thesis
+(DECISIONS §14) applied to the *audience* rather than the code. Second, an always-free instance
+can stay up, which opens a door no burst rental does: a public, always-on cricker-os demo
+instance, its own decision later because exposing this kernel to the internet is a security
+posture question, not a deployment step. Third, milestone 25's deferred `sel4bench` needs a real
+PMU, no VM exposes one, and Graviton `.metal` rents one by the hour; that stage stays AWS.
+
+**Why Oracle is friendlier to this kernel than EC2, and the honest unknowns.** OCI's A1 VMs are
+KVM guests with paravirtualized devices, and this tree already drives virtio-net and virtio-blk
+over the PCIe transport (DECISIONS §18), so the existing drivers plausibly work where EC2 would
+demand a new ENA driver on day one. "Plausibly" is load-bearing: whether A1's launch mode
+presents virtio to a custom non-Linux image, which UART its serial console emulates, and whether
+the custom-image import path (QCOW2) accepts an arbitrary UEFI payload are all facts to measure
+on arrival, not assume. The known caveats, recorded so nobody rediscovers them: always-free A1
+capacity is famously scarce in popular regions, Oracle reclaims idle always-free instances unless
+the account is upgraded to pay-as-you-go (which keeps the free tier free but adds a card), and
+the 4 OCPUs can be split across at most two instances.
+
+**What it costs in engineering, named up front.** No cloud takes a kernel image; it takes a disk
+image that boots via UEFI, so the kernel needs a boot path it does not have (an EFI stub or a
+bootloader stage). Server aarch64 VMs describe the machine with **ACPI, not a device tree**,
+which is a new discovery front door (milestone 60 built the DTB one). None of this is wasted
+motion: the UEFI work is what optional milestone 24 (Virtualization.framework) also needs, and it
+is provider-neutral by construction, so Graviton, Azure and Google's Ampere shapes become
+reachable with the same boot path.
+
+**The staging that keeps it honest**, each stage a deliverable on its own:
+
+1. Boot under UEFI locally (QEMU `virt` with AAVMF firmware), serial byte out. No cloud yet.
+2. The always-free A1 shape: custom image imported, a byte on the OCI serial console. This is the
+   milestone's "printed a byte over serial" moment, at $0.
+3. The bench suite against Linux on the identical free shape, published with the image, so the
+   reader's rerun is also $0.
+4. Graviton `.metal` by the hour, for the PMU: the `sel4bench` comparison milestone 25 deferred.
+   The only paid stage, used in bursts.
+5. Stretch, each its own decision later: virtio networking on the A1 instance with the drivers
+   the tree already has, and the public demo instance question.
+
+#### Scope note
+
+Nothing here retires the VisionFive 2 or the milestone 87 machine: aarch64 cloud has no IOMMU
+control from inside a VM and no physical peripherals; it complements the boards, it does not
+replace them. (RISC-V rental is milestone 89's subject, not this one's.) Nothing in this
+milestone may regress the QEMU boot: DTB stays the first-class discovery path, ACPI is a second
+front door beside it, gated by the same parity rule as everything else (§19).
+
+### 89. Scaleway EM-RV1: a second RISC-V implementation, rented
+
+**Status: NOT-STARTED.** Raised 2026-08-03 alongside milestone 88, when the cloud-hardware survey
+turned up the one thing "cloud has no RISC-V" was wrong about: Scaleway rents real riscv64
+silicon (Elastic Metal RV1: T-Head TH1520, four C910 cores, 16 GB, 128 GB eMMC) at EUR 0.042 an
+hour or EUR 15.99 a month.
+
+**What a second implementation is for.** The cpu matrix's BUGS note records the questions QEMU
+structurally cannot answer: no `-cpu` value varies the `satp.ASID` width, so
+`the_hardware_has_at_least_the_asid_bits_the_allocator_assumes` has never run its failing branch,
+and `thead-c906`'s non-standard page-table attribute bits (`xtheadmae`) are advertised by the
+model but never exercised. The TH1520's C910 cores are that vendor family on real silicon. One
+board answers these questions once; a second implementation tells us whether the answer was the
+architecture's or that board's. This is the same reasoning as the cpu matrix itself, one rung up:
+from "five QEMU models" to "two vendors' silicon".
+
+**What is honestly unknown, and it is the first stage:** whether EM-RV1 boots a custom kernel at
+all. It is a Scaleway Labs product with a curated image list; the boot mechanism (U-Boot? UEFI?
+iPXE?), serial console access, and any custom-image path are facts to establish with one
+EUR 0.042 hour before anything else is planned. If the answer is "Linux images only", this
+milestone closes as RECORDED with that finding, and the outcome is worth exactly one hour.
+
+#### Scope note
+
+Sequenced after the VisionFive 2's first results on purpose: the board is bought, arrives
+~2026-08-21, and answers the U74's questions directly; this milestone's value is the *second*
+data point, which only becomes interpretable once there is a first. The hourly price makes the
+feasibility probe (stage one) reasonable any time; the rest waits. Nothing here regresses QEMU or
+the board path, same parity rule as everything else (§19).
