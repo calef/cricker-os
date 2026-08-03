@@ -1,0 +1,69 @@
+/dts-v1/;
+
+/*
+ * A hand-written device tree, NOT a dump from any board.
+ *
+ * It exists to exercise the three shapes `isa::riscv64::Isa::from_device_tree` has to cope with,
+ * in one tree, because no single real machine has all three:
+ *
+ *   cpu@0  the deprecated `riscv,isa` string, narrow (no FPU), and no `riscv,isa-base`
+ *   cpu@1  the deprecated string, wide, spelled with the `g` abbreviation
+ *   cpu@2  the post-Linux-6.6 `riscv,isa-extensions` stringlist plus `riscv,isa-base`
+ *
+ * The narrow-core-beside-wide-cores shape is modelled on a heterogeneous RISC-V SoC (the JH7110 on
+ * a VisionFive 2 pairs application cores with a small monitor core), but the values here are
+ * invented. When that board arrives, dump its real tree and add it beside this one; do not edit
+ * this file to claim it is the board.
+ *
+ * Regenerate with:
+ *
+ *     dtc -I dts -O dtb -o crates/isa/tests/fixtures/mixed-cpus.dtb \
+ *                          crates/isa/tests/fixtures/mixed-cpus.dts
+ */
+
+/ {
+	#address-cells = <2>;
+	#size-cells = <2>;
+	compatible = "cricker,isa-test";
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		timebase-frequency = <4000000>;
+
+		cpu@0 {
+			device_type = "cpu";
+			reg = <0>;
+			status = "okay";
+			compatible = "riscv";
+			riscv,isa = "rv64imac";
+			mmu-type = "riscv,sv39";
+		};
+
+		cpu@1 {
+			device_type = "cpu";
+			reg = <1>;
+			status = "okay";
+			compatible = "riscv";
+			riscv,isa = "rv64gc_sstc";
+			mmu-type = "riscv,sv48";
+		};
+
+		cpu@2 {
+			device_type = "cpu";
+			reg = <2>;
+			status = "okay";
+			compatible = "riscv";
+			riscv,isa-base = "rv64i";
+			riscv,isa-extensions = "i", "m", "a", "f", "d", "c", "zicsr", "zifencei", "zicbom", "svinval";
+			riscv,isa = "rv64imafdc_zicsr_zifencei_zicbom_svinval";
+			mmu-type = "riscv,sv57";
+		};
+
+		cpu-map {
+			cluster0 {
+				core0 { cpu = <1>; };
+			};
+		};
+	};
+};
