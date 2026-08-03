@@ -2703,13 +2703,24 @@ Four things came out of it that were not in the plan below.
   `SEND` after its reader finished would stay blocked forever. The shell splits a region per
   pipeline and `DESTROY`s it, and that is what turns a dead reader into `Gone`.
 
-**Still open here, and named honestly in notes/pipes.md's BUGS**: `>` and `<` parse, plan, preview
-and refuse correctly but **cannot run at the interactive prompt**, because no boot yet gives one
-shell both a filesystem and a spawn channel. Both mechanisms are proven against a real RedoxFS image
-in `sink_tests` (a program writing into a file sink, and the same `wc` reading a pipe and a file and
-answering identically), so what is missing is wiring in `system_initializer` rather than design. Also still
-open: buffering (a pipeline is full lockstep and has not been benchmarked against a Unix pipe),
-`>>`, `2>`, and the terminal's own sink adapter.
+**The append lane finished it 2026-08-02** (`line::Mode`, `swish`'s `open_sink`,
+`cargo xtask shell-check`). `>>` is the cheapest of the four operators and that is DECISIONS §55
+paying out: the shell already backs the file, so append is one bit about how it opens one, and
+`grant_plan` asserts that `date > f` and `date >> f` plan to endowments equal in every other field.
+That lane also built the gate notes/pipes.md named as the milestone's most valuable missing test:
+`script/shell-check` boots `--features shell` on both ISAs and types at the prompt, which is the
+only thing in the tree that runs the real `system_initializer`.
+
+**Still open here, and named honestly in notes/pipes.md's BUGS**: buffering (a pipeline is full
+lockstep and has not been benchmarked against a Unix pipe), the terminal's own sink adapter, and
+**`2>`, which is a design fork rather than a task**. This system has no ambient anything, so a
+program holds one output endpoint and its diagnostics ride it in-band; a second stream is either a
+second capability in a second slot (Unix's fd numbering with a capability underneath, and it forces
+a numbered slot convention first) or a second opcode on the one endpoint (§51 intact, but a
+diagnostic then flows down a `|` into a `wc` that would count it). notes/pipes.md weighs both. What
+is already separated is the half that hurts most on Unix: the shell's own refusals never enter a
+redirection, because the shell is a different process and its output was never in the substituted
+slot.
 
 The paragraphs below are the design as it stood before either lane; where they differ from the two
 notes, the notes are what was built.

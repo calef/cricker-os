@@ -2126,7 +2126,7 @@ mod tests {
         let (a, b, c) = (plain[0].unwrap(), piped[0].unwrap(), filed[0].unwrap());
         assert_eq!(a.sink, line::Sink::Report);
         assert_eq!(b.sink, line::Sink::Pipe);
-        assert!(matches!(c.sink, line::Sink::File(g) if g.name.as_bytes() == b"report.txt"));
+        assert!(matches!(c.sink, line::Sink::File(g, _) if g.name.as_bytes() == b"report.txt"));
         // And everything else is identical, which is the claim. Compared field by field rather than
         // by clearing `sink` and comparing wholes, so a field added later has to be thought about.
         for other in [b, c] {
@@ -2142,6 +2142,30 @@ mod tests {
         }
     }
 
+    /// **`>>` changes nothing about the endowment, which is what makes it a shell-side open mode.**
+    ///
+    /// The stronger version of the test above: `date > f` and `date >> f` plan to endowments that
+    /// are equal in every field including the `FileGrant` the sink names, and differ only in a
+    /// [`line::Mode`] the child has no way to observe. Append is not a second capability, and
+    /// nothing about what `date` holds records which operator was typed.
+    #[test]
+    fn append_and_truncate_plan_the_same_endowment() {
+        let (trunc, _) = plan_line(b"date > report.txt", WITH_DIR).unwrap();
+        let (app, _) = plan_line(b"date >> report.txt", WITH_DIR).unwrap();
+        let (t, a) = (trunc[0].unwrap(), app[0].unwrap());
+        let (line::Sink::File(tg, tm), line::Sink::File(ag, am)) = (t.sink, a.sink) else {
+            panic!("a redirection did not plan to a file sink");
+        };
+        assert_eq!(tg, ag, "the two spellings designate the same file");
+        assert_eq!((tm, am), (line::Mode::Truncate, line::Mode::Append));
+        // Everything else, compared through the whole value with the one differing field made
+        // equal. Cheaper than the field-by-field comparison above and sound here because the only
+        // thing that may differ is inside `sink`.
+        let mut a_flat = a;
+        a_flat.sink = t.sink;
+        assert_eq!(t, a_flat, "`>>` changed something other than the open mode");
+    }
+
     /// The joints of a pipeline are pipes, its head reads and its tail writes. Three stages, so the
     /// middle one is a real middle and not an end wearing a disguise.
     #[test]
@@ -2154,7 +2178,7 @@ mod tests {
         assert_eq!(p[1].unwrap().sink, line::Sink::Pipe);
         assert_eq!(p[2].unwrap().source, line::Source::Pipe);
         assert!(
-            matches!(p[2].unwrap().sink, line::Sink::File(g) if g.name.as_bytes() == b"out.txt")
+            matches!(p[2].unwrap().sink, line::Sink::File(g, _) if g.name.as_bytes() == b"out.txt")
         );
     }
 
@@ -2244,7 +2268,7 @@ mod tests {
             cwd: deeper,
         };
         let (p, _) = plan_line(b"date > old/report.txt", holds).unwrap();
-        let line::Sink::File(g) = p[0].unwrap().sink else {
+        let line::Sink::File(g, _) = p[0].unwrap().sink else {
             panic!("not a file sink")
         };
         assert_eq!(g.name.as_bytes(), b"report.txt");
@@ -2268,7 +2292,7 @@ mod tests {
         let line::Source::File(i) = p[0].unwrap().source else {
             panic!()
         };
-        let line::Sink::File(o) = p[0].unwrap().sink else {
+        let line::Sink::File(o, _) = p[0].unwrap().sink else {
             panic!()
         };
         assert!(!i.writable);

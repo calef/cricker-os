@@ -730,6 +730,8 @@ const PIPELINE_DONE: &[u8] = b"== pipelines done\n";
 ///   printed. One builtin, two destinations.
 /// - `date` and `date > date.txt` are one unmodified program sent two places, and `wc < date.txt`
 ///   has to report the length of what `date` printed.
+/// - The last two files are **the same two commands with one operator changed**, so what `>>` does
+///   is measured against what `>` does rather than against a constant.
 fn redirecting(rights: u64) -> ! {
     let mut nav = Nav::rooted_at(DIR_TERMINAL, rights);
     for line in [
@@ -741,6 +743,18 @@ fn redirecting(rights: u64) -> ! {
         b"date",
         b"date > date.txt",
         b"wc < date.txt",
+        // `>` twice keeps the second line only; `>>` keeps both. Same commands, same order, one
+        // character different, and the two answers are each other's control.
+        b"echo one > trunc.txt",
+        b"echo two > trunc.txt",
+        b"wc < trunc.txt",
+        b"echo one > app.txt",
+        b"echo two >> app.txt",
+        b"wc < app.txt",
+        // And `>>` creates a name that is not there, so it is not "open then seek": there is
+        // nothing to open. Nothing between this and the count writes to it.
+        b"echo one >> fresh.txt",
+        b"wc < fresh.txt",
         // And the refusals a directory does not rescue.
         b"wc < nosuch.txt",
         b"worker 9 > out.txt",
@@ -762,7 +776,7 @@ const REDIRECT_DONE: &[u8] = b"== redirections done\n";
 fn interactive(rights: u64) -> ! {
     print(b"\ncricker-os capability shell. naming a resource in a command IS granting it.\n");
     print(b"commands: help, echo <text>, caps [command], cd, pwd, ls, mkdir, rm, wc,\n");
-    print(b"          <prog> [--mem N] [arg]   and the operators  >  <  |\n");
+    print(b"          <prog> [--mem N] [arg]   and the operators  >  >>  <  |\n");
 
     // Whether the navigation builtins and the redirection operators have anything to name is
     // decided here, by one capability. A boot that wired no FS service starts this program with
@@ -927,6 +941,7 @@ fn help() {
     print(
         b"  a > name                a's output becomes a file it can append to and nothing else\n",
     );
+    print(b"  a >> name               the same, without emptying the file first\n");
     print(b"  a < name                a file's bytes become a's input\n");
     print(
         b"  echo hello | wc         a builtin can lead a pipeline: this shell writes the bytes\n",
@@ -1260,11 +1275,21 @@ fn preview(e: Endowment) {
         // is not the file. Its slot 0 is this shell's result endpoint either way; `>` is where the
         // shell puts the bytes, not something the child was handed. So a redirected program still
         // cannot seek, truncate, re-read or stat, and this is where a reader can see why.
-        line::Sink::File(g) => {
+        line::Sink::File(g, mode) => {
             print(b"    output   ");
             print(g.name.as_bytes());
             print(b"  (this shell writes the bytes there; the program holds\n");
             print(b"             an endpoint and cannot seek, truncate, re-read or stat)\n");
+            // The one line where `>` and `>>` differ, and it is about the shell rather than about
+            // the child: whichever was typed, what the child holds is the same endpoint. Printed
+            // because it is the only visible consequence of the operator, and because a person
+            // about to overwrite a file should be able to see that from the preview.
+            print(if matches!(mode, line::Mode::Append) {
+                b"             this shell keeps what is already in it and writes after it\n"
+                    .as_slice()
+            } else {
+                b"             this shell empties it first, before the command runs\n".as_slice()
+            });
         }
     }
     match e.source {
@@ -1400,9 +1425,9 @@ fn run_pipeline(
 
     // The files first, before any process exists. A line whose file cannot be opened must not
     // half-run, and `>` truncates here, which is where a person expects it: `date > f` empties `f`
-    // even if `date` then says nothing.
+    // even if `date` then says nothing. `>>` is the same call with the emptying left out.
     let mut sink = match out {
-        Some(g) => match open_sink(nav, g) {
+        Some(g) => match open_sink(nav, g, l.mode()) {
             Ok(f) => Some(f),
             Err(s) => return say(s),
         },
@@ -1650,26 +1675,44 @@ fn open_at(nav: &Nav, at: Cwd, tmp: &mut [u64; nav::MAX_DEPTH]) -> Result<(u64, 
     Ok((handle, n))
 }
 
-/// **Open the file behind a `>`**, creating it if it is not there and emptying it if it is.
+/// **Open the file behind a `>` or a `>>`**, creating it if it is not there.
 ///
 /// `CREATE` is create, not create-or-open (DECISIONS §27), so the fallback is explicit and is the
-/// same one `user/src/sink.rs` makes: on any refusal, open the existing name and truncate it. Stated
-/// rather than inferred, because a `>` that appended to whatever a previous run left behind would be
-/// `>>` wearing `>`'s spelling.
-fn open_sink(nav: &mut Nav, g: grant_plan::FileGrant) -> Result<FileOut, Say> {
+/// same one `user/src/sink.rs` makes: on any refusal, open the existing name. What happens next is
+/// the whole of `>` versus `>>`, and it happens **here, in the shell**, because the shell is what
+/// backs the file (DECISIONS §55). The child is wired identically either way and has no message it
+/// could send to find out which.
+///
+/// - `>` ([`line::Mode::Truncate`]) truncates, and does it **before the command runs**, which is
+///   why `ls > out.txt` reports one more name than the `ls` before it did.
+/// - `>>` ([`line::Mode::Append`]) asks the file how big it is and starts writing there. `FSTAT`
+///   rather than a seek flag, because [`FileOut`] already carries its own running offset: every
+///   write it makes names an absolute position, so "append" is an initial value and not a mode the
+///   filesystem has to hold.
+fn open_sink(nav: &mut Nav, g: grant_plan::FileGrant, mode: line::Mode) -> Result<FileOut, Say> {
     let mut tmp = [0u64; nav::MAX_DEPTH];
     let (dir_handle, opened) = open_at(nav, g.dir, &mut tmp)?;
     let name = g.name.as_bytes();
+    let dir = nav.dir.unwrap_or(DIR);
     let mut handle = nav.name_call(fs::CREATE, dir_handle, name, 0);
+    // A file this shell just created is empty, so neither operator has anything to do to it. Only
+    // the name that was already there needs a decision.
+    let mut off = 0u64;
     if handle < 0 {
         handle = nav.name_call(fs::OPEN, dir_handle, name, 0);
         if handle >= 0 {
-            let r = call(
-                nav.dir.unwrap_or(DIR),
-                fs::req(fs::TRUNCATE, handle as u64, 0),
-                0,
-            )
-            .0 as i64;
+            let r = match mode {
+                line::Mode::Truncate => {
+                    call(dir, fs::req(fs::TRUNCATE, handle as u64, 0), 0).0 as i64
+                }
+                line::Mode::Append => {
+                    let size = call(dir, fs::req(fs::FSTAT, handle as u64, 0), 0).0 as i64;
+                    if size >= 0 {
+                        off = size as u64;
+                    }
+                    size
+                }
+            };
             if r < 0 {
                 nav.close(handle as u64);
                 handle = r;
@@ -1683,9 +1726,9 @@ fn open_sink(nav: &mut Nav, g: grant_plan::FileGrant) -> Result<FileOut, Say> {
         return Err(Say::Failed(-handle as i32));
     }
     Ok(FileOut {
-        dir: nav.dir.unwrap_or(DIR),
+        dir,
         handle: handle as u64,
-        off: 0,
+        off,
         buf: [0; FILE_CHUNK],
         n: 0,
         failed: 0,
