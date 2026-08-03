@@ -37,10 +37,11 @@ jobs:
   mutants:
     name: "mutants (shard ${{ matrix.shard }}/4)"
     runs-on: ubuntu-24.04-arm
-    # A generous box around a run whose cost moves with the tree. Four shards of ~1,500 mutants
-    # each; the shard re-runs its own baseline build first. Well under the 6-hour job ceiling so a
-    # hang fails loudly instead of billing five silent hours.
-    timeout-minutes: 240
+    # A generous box around a run whose cost moves with the tree. Four shards of ~1,400 mutants
+    # each; the shard re-runs its own baseline build first, and a few mutants (dtb's walker, the
+    # calendar parser) legitimately burn their whole auto-timeout, two minutes and change apiece.
+    # Under the 6-hour job ceiling so a hang still fails loudly rather than billing silent hours.
+    timeout-minutes: 330
     strategy:
       # One shard failing (a flaky test, a runner death) should not scrap the other three quarters
       # of the report.
