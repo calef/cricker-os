@@ -2686,8 +2686,9 @@ mod tests {
         static COUNTS: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
         static STOP: AtomicBool = AtomicBool::new(false);
 
-        for c in &COUNTS {
-            crate::sched::spawn(move || {
+        let mut tids = [0 as crate::thread::Tid; 3];
+        for (t, c) in tids.iter_mut().zip(&COUNTS) {
+            *t = crate::sched::spawn(move || {
                 while !STOP.load(Ordering::SeqCst) {
                     c.fetch_add(1, Ordering::SeqCst);
                     crate::sched::yield_now();
@@ -2696,18 +2697,23 @@ mod tests {
             .expect("spawn failed");
         }
 
-        // Let them run.
-        for _ in 0..300 {
-            crate::sched::yield_now();
-        }
+        // Wait ON the property (every thread has run), clock-bounded, rather than asserting after
+        // a fixed 300 yields. A yield count is not a duration: §28 scatters these threads across
+        // cores, and on a contended host this core can burn its yields before a starved vCPU has
+        // run its thread at all, which failed a gate run once as "thread {i} never ran" and passed
+        // on the re-run. Widening a wait on the property itself only delays noticing (the smp.rs
+        // wait_for argument); the watchdog stays the backstop for a genuine starvation.
+        let all_ran = || COUNTS.iter().all(|c| c.load(Ordering::SeqCst) > 0);
+        let ran = wait_for(all_ran);
         STOP.store(true, Ordering::SeqCst);
-        for _ in 0..20 {
-            crate::sched::yield_now();
-        }
+        assert!(ran, "a spawned thread never ran");
 
-        for (i, c) in COUNTS.iter().enumerate() {
-            assert!(c.load(Ordering::SeqCst) > 0, "thread {i} never ran");
-        }
+        // Wait for the exits, so three threads mid-teardown are not what a later test's frame or
+        // thread accounting finds in flight.
+        assert!(
+            wait_for(|| tids.iter().all(|&t| !crate::sched::thread_present(t))),
+            "the round-robin threads were never reaped"
+        );
     }
 
     /// **THE TEST.**
@@ -2797,17 +2803,25 @@ mod tests {
     /// kernel has something called a reaper, and this is why.
     #[test_case]
     fn a_finished_thread_is_reaped_and_its_memory_returned() {
-        let threads_before = crate::sched::thread_count();
-
+        // Reaping is proven per thread, by `thread_present` on the Tids THIS test spawned, not by
+        // the global table headcount returning to a baseline. `thread_count()` is the size of the
+        // whole table, so a neighbour's teardown finishing late moves it: it failed on CI as
+        // "left: 5, right: 6", a count BELOW its baseline, which eight reaped threads cannot
+        // produce but one baseline-counted thread exiting mid-test does. Same shape as the
+        // `reclaim_frees_a_started_then_exited_childs_regions` fix; see
+        // notes/load-sensitive-assertions.md.
         fn batch_of_eight() {
-            let before = crate::sched::thread_count();
-            for _ in 0..8 {
-                crate::sched::spawn(|| {}).expect("spawn failed");
+            let mut tids = [0 as crate::thread::Tid; 8];
+            for t in &mut tids {
+                *t = crate::sched::spawn(|| {}).expect("spawn failed");
             }
             // Let them all run and exit, and let the reaper catch up. Clock-bounded, not yield-bounded:
             // §28 can place these on other cores, and a Finished thread is only removed when its own
             // core switches away from it, so no number of yields *here* can make that happen.
-            wait_for(|| crate::sched::thread_count() <= before);
+            assert!(
+                wait_for(|| tids.iter().all(|&t| !crate::sched::thread_present(t))),
+                "finished threads were never reaped"
+            );
         }
 
         // The FIRST batch legitimately costs a couple of frames: the stack area is a fresh
@@ -2816,28 +2830,41 @@ mod tests {
         // mapping but leaves the intermediate tables standing (see the TODO on `paging::unmap`).
         batch_of_eight();
 
-        assert_eq!(
-            crate::sched::thread_count(),
-            threads_before,
-            "finished threads were never reaped"
+        // Sample the frame baseline only once it has STOPPED MOVING: a reaped thread's stack
+        // frames are freed by `finish_switch` on whatever core reaps it, a beat after the thread
+        // leaves the table, so reading `used` the instant the Tids are gone races the first
+        // batch's own frees. Two agreeing samples a yield apart mean nothing is in flight, and
+        // `wait_for`'s deadline keeps a genuinely unstable allocator a failure rather than a spin.
+        let used = || crate::memory::stats().unwrap().used;
+        let mut last = used();
+        assert!(
+            wait_for(|| {
+                crate::sched::yield_now();
+                let prev = core::mem::replace(&mut last, used());
+                prev == last
+            }),
+            "frame accounting never settled after the first batch"
         );
+        let before = last;
 
-        // The SECOND batch must cost EXACTLY NOTHING. The page tables exist, and the dead
+        // The SECOND batch must allocate NOTHING it keeps. The page tables exist, and the dead
         // threads' virtual address ranges went back on the free list, so eight new threads land
         // in the same addresses with the same tables.
         //
         // If this ever regresses, the kernel leaks two frames of page tables per 2 MiB of stack
         // address space consumed, forever, and threads come and go.
-        let before = crate::memory::stats().unwrap().used;
         batch_of_eight();
-        let after = crate::memory::stats().unwrap().used;
 
-        assert_eq!(
-            after,
-            before,
+        // `<=`, not `==`, and the direction is the argument: a leak leaves `used` ABOVE `before`
+        // and never comes back, so the wait times out and fails. A neighbour's late teardown
+        // landing in this window can only FREE frames, pushing `used` below `before`, and holding
+        // still is not a property this test can demand of the rest of the machine. Sensitivity to
+        // the milestone-6 bug is unchanged: every leaked frame keeps `used() <= before` false.
+        assert!(
+            wait_for(|| used() <= before),
             "a second batch of eight threads leaked {} frames: stack address ranges are not \
              being reused, so page tables accumulate forever",
-            after.saturating_sub(before)
+            used().saturating_sub(before)
         );
     }
 
