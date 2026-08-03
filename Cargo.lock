@@ -437,6 +437,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "swish"
+version = "0.1.0"
+dependencies = [
+ "fs_proto",
+ "glob",
+ "grant_plan",
+]
+
+[[package]]
 name = "syn"
 version = "2.0.119"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -514,7 +523,6 @@ dependencies = [
  "entropy_proto",
  "fs_proto",
  "gfx_proto",
- "glob",
  "grant_plan",
  "line_editor",
  "ntp_proto",
@@ -523,6 +531,7 @@ dependencies = [
  "socket_proto",
  "supervision_proto",
  "swap_proto",
+ "swish",
  "user_rt",
  "video_terminal",
  "virtio",
