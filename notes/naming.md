@@ -222,7 +222,7 @@ Three places, and the distinction is what the document is *for*, not what it is 
 | `DECISIONS.md` | the decision, and the argument that settled it | numbered `§N`, append-only |
 | `notes/` | what exists, and what building it taught us | a running glossary, indexed in `notes/README.md` |
 
-`design/roadmap.md` is the exception that proves the split: it lives in `design/` because a milestone
+`design/roadmap/` is the exception that proves the split: it lives in `design/` because a milestone
 block is an argument for doing something, not a record of having done it, even after the milestone
 ships and the block gains a "Built" line.
 

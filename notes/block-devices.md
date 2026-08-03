@@ -139,7 +139,7 @@ a test that shares a fixture couples its result to whether some other test ran f
 - **It does not `mkfs` on the target.** Same wall, one crate over: `redoxfs`'s `Header::new` stamps a
   v4 UUID, so `FileSystem::create` is `std`-gated for exactly the reason the GPT crate refuses a
   GUID. Un-gating it is a new divergence from the vendored pin, which is a decision rather than a
-  task. design/roadmap.md's milestone 57 entry has the shape of the fix
+  task. design/roadmap/57-partitioning-and-xattrs.md has the shape of the fix
   (`Header::new_with_uuid(size, uuid: [u8; 16])`, the same injection upstream already uses for
   `ctime`) and why it is Chris's call.
 - **No hot plug.** The roster is written once and never again. A hot-plug story would change

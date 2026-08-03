@@ -106,7 +106,7 @@ else's kernel:
 
 ## The convention
 
-Every milestone design block in design/roadmap.md carries a **"Prior art"** section. The
+Every milestone file in design/roadmap/ carries a **"Prior art"** section. The
 convention, from here on: that section covers *reuse* too, answering three questions before
 building: is there **code to use**, a **design to copy**, or a **mistake to avoid**, in the
 ecosystems above? The build-vs-reuse call gets recorded with its reason, the same as any

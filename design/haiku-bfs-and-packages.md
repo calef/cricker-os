@@ -96,6 +96,6 @@ installed. Do not let the resemblance suggest Haiku solved a security problem it
 ## See also
 
 - Milestone 57 (partitioning, formatting, extended attributes) and milestone 39 (repository structure
-  and the road to a distribution), in `design/roadmap.md`.
+  and the road to a distribution), in `design/roadmap/39-repository-structure.md`.
 - DECISIONS §34 for why RedoxFS, and its 2026-07-30 amendment for the xattr mechanism.
 - Milestone 47's `PATH` and globbing sections for the namespace and name-set arguments this leans on.

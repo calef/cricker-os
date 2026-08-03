@@ -233,7 +233,7 @@ Stated plainly, because a demonstrator's docs are part of the deliverable:
   worse than refusing. Milestone 55's entropy work is where a caller gets one.
 
   **This turns out to be the same wall `mkfs` on the target hits, and that is worth knowing**
-  (measured 2026-08-01, design/roadmap.md's milestone 57 block). RedoxFS stamps a v4 UUID into a
+  (measured 2026-08-01, design/roadmap/57-partitioning-and-xattrs.md). RedoxFS stamps a v4 UUID into a
   fresh header with `uuid::Uuid::new_v4()`, so `FileSystem::create` is `std`-gated for the same
   reason this crate refuses to invent a GUID: an identifier that has to be unique needs randomness,
   and neither a `no_std` engine nor a pure-computation crate has any. Partitioning a real drive from

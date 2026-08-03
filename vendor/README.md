@@ -6,7 +6,7 @@ dependency) is what lets the pin carry a patch and keeps the build hermetic.
 
 ## redoxfs 0.9.1
 
-The on-disk engine for milestone 32's FS server (design/roadmap.md §32; the audit that chose
+The on-disk engine for milestone 32's FS server (design/roadmap/32-redoxfs-fs-server.md; the audit that chose
 and priced it is notes/redoxfs-audit.md).
 
 - **Source:** the published crates.io package `redoxfs-0.9.1.crate`,

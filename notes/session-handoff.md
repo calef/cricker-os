@@ -2,7 +2,7 @@
 
 A restart point, written so a fresh session resumes without re-deriving state. Delete or
 overwrite once its contents are stale; this is a working note, not a permanent record. The
-permanent records are DECISIONS.md, design/roadmap.md, and the notes/ they point to.
+permanent records are DECISIONS.md, design/roadmap/, and the notes/ they point to.
 
 ## Why this exists
 
@@ -74,7 +74,7 @@ service), §28 (SMP placement) + amendment, §16 amendment (SPLIT rights inherit
 5. **Milestone 23** (the flagship): capability-routed component OS with live replacement. All
    prerequisites now exist (revocation, supervision, dedicated binaries, components with real
    state: net_stack under open connections, the FS server). Console hot-swap is instance one.
-6. **The display ladder** (roadmap "The display ladder"): 29 (VT terminal over virtio-gpu) ->
+6. **The display ladder** (design/display-ladder.md): 29 (VT terminal over virtio-gpu) ->
    33 (compositor component) -> apps on the std PAL -> 34 (virtio-gpu 3D). Chris's stated
    destination is "something like COSMIC driving a GPU." Rung 5 (bare-metal BXE 3D) is struck.
 
