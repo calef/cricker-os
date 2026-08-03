@@ -375,7 +375,8 @@ mod tests {
         // decides what this assertion should measure; until then it at least reports which it saw.
         let (now, next, misses) = super::miss_detail::last();
         assert_eq!(
-            after, before,
+            after,
+            before,
             "the timer handler is taking longer than a whole tick period, with no lock held. \
              missed {} -> {}; last miss re-armed {} counter ticks late against an interval of {} \
              ({} misses recorded on this core). Late by much more than one interval means the \
