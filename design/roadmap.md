@@ -141,6 +141,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 75 | NOT-STARTED | Who may read the cycle counter, and by what authority | Opening `PMCCNTR_EL0` to EL0 is not the same decision as opening `CNTVCT_EL0` was: it is **~160x finer** (~0.25 ns against ~41 ns), and the generic timer's coarseness was doing real security work. A capability is the answer this OS already has, and notes/abi.md anticipated it |
 | 76 | NOT-STARTED | Split the roadmap: `design/roadmap/README.md` as index, one file per milestone | 5,375 lines and 64 blocks in one file. FOUR structural defects landed today that the gate reported clean, including **eight milestone blocks filed under an essay about seL4**. A split makes those impossible rather than detectable, and removes the conflict #19 and #20 hit. Also widens the citation check tree-wide (free: zero unresolved today) and backfills milestones 1 to 11 from the first commit, dropping the `n >= 12` floor |
 | 77 | NOT-STARTED | `crates/paging`: a module per ISA, a type per page-table configuration | `Aarch64` names an ISA while describing a configuration, beside `Sv39` which names one properly. A second aarch64 configuration is expected, so the fix is room for siblings on both sides rather than a rename. **Waits for that configuration**, because it names the axis |
+| 78 | NOT-STARTED | The load-sensitive assertions, and the three that measure the wrong thing | Five distinct failures in one day on PRs that changed no code, two of them documentation only. **Three report a NEGATIVE discrepancy**, so they are not slow-machine timeouts: they are waits written against something wider than the property. 39 such sites across 7 files |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -5708,3 +5709,72 @@ the asymmetry finds the reasoning instead of filing it again.
 When it happens: module move, type rename, and every call site. `Aarch64` and `Sv39` appear **174
 times across 16 files**, including `kernel/src/arch/*/mmu.rs`, both `iommu.rs` files, and
 `crates/paging/tests/mapping.rs`. No behaviour change, and milestone 69's proof obligation applies.
+
+### 78. The load-sensitive assertions, and the three that measure the wrong thing
+
+**Status: NOT-STARTED.** Raised 2026-08-03 after a day in which five distinct assertions failed on
+pull requests that changed no executable code, two of them documentation only. Milestone 72 fixed the
+one that was a real bug. What is left is a family, and it is not one problem.
+
+#### The day's evidence
+
+| assertion | site | what it reported |
+|---|---|---|
+| reaper count | `sched.rs:2819` | `left: 5, right: 6`, message "finished threads were never reaped" |
+| frame hygiene | `user/live_swap_tests.rs:230` | `before >= free_frames()`, margin measured at 2 frames |
+| address-space frames | `user/tests.rs:1746` | "**-52** frames did not come back", and separately "-19" |
+| timer drift | `arch/riscv64/timer.rs:254` | ticks within one period either way |
+| placement probe | `smp.rs:343` | 60 s wait for work to run where it was placed |
+
+`notes/cpu-models.md` already records three of these as load-sensitive with the evidence that settles
+it, including the case where the control model `rv64` failed too, which is what proves the failures
+are not model-specific.
+
+#### The split that makes this two problems, not one
+
+**Two are genuinely timing.** Timer drift and the placement probe measure how fast something happened,
+and a contended runner is slower than a quiet one. Their margins are a judgement about how slow is
+acceptable, and widening them trades sensitivity for noise honestly.
+
+**Three are not, and this is the finding.** The reaper count, the frame hygiene check and the
+address-space frame count all report a **negative** discrepancy: fewer threads than the baseline, more
+free frames than at the start, minus fifty-two frames. **A slow machine does not produce a negative
+count.** These are not timeouts at all. They are waits written against something wider than the
+property under test, so state arriving from *outside* the measured window trips them: a teardown from
+an earlier test completing late, or a thread the baseline counted exiting during the batch.
+
+The 72 lane named this shape, and `notes/riscv-parity-scope.md` apparently records it twice already.
+Milestone 72's own postscript is the clearest instance: removing a destructive probe changed which
+threads were alive at a later test's baseline, and the count moved.
+
+#### What the fix is not
+
+**Not wider margins.** Widening a bound that fires on a negative discrepancy hides the defect rather
+than fixing it, and this project already carries a scar for exactly that shape: DECISIONS §61 records
+three lints dropped because they were measuring the wrong thing, and the same reasoning applies to an
+assertion.
+
+**Not deleting the assertion**, either. Milestone 72's lane declined to delete
+`live_swap_tests.rs:230` precisely because it could not make it fire and would not remove a check it
+did not understand. That was the right call and it is the standard here.
+
+#### What the fix probably is
+
+For each of the three, decide **what property the test is actually responsible for** and assert that
+instead. The reaper test wants "the frames this batch allocated came back", not "the global thread
+count returned to a number another test also influences". A per-test accounting scoped to the objects
+that test created is immune to a neighbour's late teardown by construction, where a global count can
+never be.
+
+That is a per-assertion decision, so the deliverable is three small changes with three arguments, not
+a framework.
+
+#### Scope note
+
+**39 sites across 7 files** match the shape (`wait_for`, or an assertion against `free_frames`,
+`thread_count` or `used()`). Do not touch all 39. The five with evidence are the milestone; the rest
+are a list to check against the same question and mostly to leave alone.
+
+The honest cost of leaving this open, and the reason it is worth doing: every red check in this
+repository currently needs a human to decide "known or real", and on 2026-08-03 that judgement was
+made at least six times and got the wrong answer twice.
