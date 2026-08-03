@@ -94,6 +94,13 @@ fn stack_top(id: usize) -> u64 {
     base + (id as u64 + 1) * SECONDARY_STACK_SIZE as u64
 }
 
+/// Core `id`'s stack slot as `(bottom, top)`, for the high-water report (milestone 84). The boot
+/// core's slot exists but was never painted and never used; the report skips it.
+#[cfg(test)]
+pub fn secondary_stack_span(id: usize) -> (u64, u64) {
+    (stack_top(id) - SECONDARY_STACK_SIZE as u64, stack_top(id))
+}
+
 unsafe extern "C" {
     /// The physical-mode entry every secondary starts at. Defined in boot.s.
     fn secondary_boot();
@@ -108,6 +115,16 @@ pub fn bring_up_secondaries() {
     // Record the boot core as online before starting anyone, so a TLB shootdown from here on names
     // it. (Secondaries add their own bits as they come up.)
     ONLINE_MASK.fetch_or(1 << cpu::id(), Ordering::Release);
+
+    // Paint every secondary's stack before any CPU_ON, while the slots are still untouched `.bss`,
+    // so no live frame can be painted over (milestone 84). Whole slots: nothing has run on them.
+    #[cfg(test)]
+    for id in 0..MAX_CPUS {
+        if id != cpu::id() {
+            let (b, t) = secondary_stack_span(id);
+            crate::stack::paint(b, t);
+        }
+    }
 
     // The entry point PSCI needs is PHYSICAL: the core starts with its MMU off. Cast the
     // function item through a pointer (not straight to an integer, which the compiler warns on).

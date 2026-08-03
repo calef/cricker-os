@@ -136,6 +136,10 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         // Memory: parse the device tree OpenSBI handed us (via its high-half alias) for RAM, and
         // bring up the frame allocator. Portable code, reached through the real phys_to_virt now.
         stack::init();
+        // Paint the boot stack's unused region for the high-water report (milestone 84), before
+        // memory::init and everything after it can push frames into it.
+        #[cfg(test)]
+        stack::paint_boot_stack();
         memory::init(dtb);
         let f = memory::alloc().expect("no frame from the allocator");
         println!(
@@ -531,6 +535,10 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
 
     arch::init();
     stack::init();
+    // Paint the boot stack's unused region for the high-water report (milestone 84), before
+    // memory::init and everything after it can push frames into it.
+    #[cfg(test)]
+    stack::paint_boot_stack();
 
     // Now that faults are reportable, go find out how much RAM we actually have. A bug
     // in here is a fault, and a fault is now legible rather than fatal-and-silent.
