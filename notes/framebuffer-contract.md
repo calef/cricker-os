@@ -344,4 +344,4 @@ Deliberately not in rung one, each with the seam it will use:
 | enumeration | `kernel/src/pci.rs` (`find_gpu_device`) |
 | the spawn wiring | `kernel/src/user/display_service.rs` |
 | the tests | `kernel/src/user/display_tests.rs` |
-| the device lines | `scripts/qemu-runner-aarch64.sh`, `scripts/qemu-runner-riscv.sh` (`CRICKER_GPU`) |
+| the device lines | `scripts/qemu-runner-aarch64.sh`, `scripts/qemu-runner-riscv64.sh` (`CRICKER_GPU`) |

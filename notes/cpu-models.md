@@ -24,7 +24,7 @@ script/test --arch riscv64 --cpu sifive-u54    # one model, by hand
 CRICKER_CPU=sifive-u54 cargo run -p kernel --target riscv64imac-unknown-none-elf
 ```
 
-`--cpu` reaches the QEMU runners as `CRICKER_CPU`, which both `scripts/qemu-runner-riscv.sh` and
+`--cpu` reaches the QEMU runners as `CRICKER_CPU`, which both `scripts/qemu-runner-riscv64.sh` and
 `scripts/qemu-runner-aarch64.sh` read. Unset, they use what they always used: `rv64` on riscv64,
 `cortex-a72` on aarch64. Nothing that existed before this flag changed its meaning.
 

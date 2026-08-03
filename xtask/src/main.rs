@@ -26,7 +26,7 @@ const TARGET: &str = "aarch64-unknown-none-softfloat";
 const RUNNER: &str = "scripts/qemu-runner-aarch64.sh";
 
 /// The RISC-V target, for the second-architecture initrd (milestone 20). The kernel itself is built
-/// and run through cargo + `scripts/qemu-runner-riscv.sh` directly, not this xtask; this const exists
+/// and run through cargo + `scripts/qemu-runner-riscv64.sh` directly, not this xtask; this const exists
 /// only so `initrd-riscv` builds the userspace archive for the matching target.
 const RISCV_TARGET: &str = "riscv64imac-unknown-none-elf";
 
@@ -2623,7 +2623,7 @@ fn shell_check_leg(riscv: bool) -> bool {
     // (the runner script `exec`s it). A `cargo run` in between would leave the emulator alive when
     // the kill lands on cargo, which is the leak CLAUDE.md's QEMU rule exists about.
     let mut cmd = Command::new(if riscv {
-        "scripts/qemu-runner-riscv.sh"
+        "scripts/qemu-runner-riscv64.sh"
     } else {
         RUNNER
     });
@@ -2959,7 +2959,7 @@ fn bench_riscv(check: bool, save: bool) -> bool {
         return false;
     }
 
-    let mut cmd = Command::new("scripts/qemu-runner-riscv.sh");
+    let mut cmd = Command::new("scripts/qemu-runner-riscv64.sh");
     cmd.arg(format!("target/{RISCV_TARGET}/debug/kernel"));
     // icount pins virtual time (rdtime) to the instruction stream; sleep=off so it never waits on the
     // wall clock. This is what makes the riscv counts deterministic and comparable to aarch64's.
@@ -2979,7 +2979,7 @@ fn bench_riscv(check: bool, save: bool) -> bool {
         false,
         check,
         save,
-        workspace_root().join("bench/baseline-riscv.txt"),
+        workspace_root().join("bench/baseline-riscv64.txt"),
     )
 }
 

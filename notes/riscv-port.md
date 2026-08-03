@@ -250,7 +250,7 @@ is the thread's or the hart's.** `tp` is the hart's.
   high half, and `boot.s` does the higher-half transition. (An earlier cut linked low / bare-mode for
   the first boot+console; that was replaced when high-half landed.)
 - **Wiring:** `build.rs` selects the linker script by `CARGO_CFG_TARGET_ARCH`; `.cargo/config.toml`
-  adds a `[target.riscv64imac-unknown-none-elf] runner` pointing at a new `scripts/qemu-runner-riscv.sh`
+  adds a `[target.riscv64imac-unknown-none-elf] runner` pointing at a new `scripts/qemu-runner-riscv64.sh`
   (`qemu-system-riscv64 -machine virt -bios default -kernel <elf> -smp N -serial stdio ...`); `xtask`'s
   hardcoded `TARGET` becomes arch-parameterized; `rust-toolchain.toml` lists the target.
 

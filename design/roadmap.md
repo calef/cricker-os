@@ -136,9 +136,11 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 70 | BUILT | `swish`'s remaining logic in a crate, host-testable like its siblings | `coremark`, `line_editor` and `compositor` are each a crate holding the logic plus a program holding the IO. `swish` is the largest program that is not, so its dispatch, endowment preview and outcome handling are reachable only through QEMU |
 | 71 | BUILT | The thread-start fault: a user thread dispatched with `sepc` = 0 | Frame placement, as this entry guessed. RISC-V put the frame 16 bytes under where `trap.s` builds an S-mode frame, so any interrupt in the window rewrote it and the user `sp` read the trap frame's hardwired-zero slot. Reproduced deterministically by widening the window; fixed by placing the frame at the stack top on both ISAs |
 | 72 | NOT-STARTED | A lost wakeup that a hundred leaked threads may be causing | Separate from 71 and proven so: it reproduces WITH that fix in the tree, and it hit a PR containing zero lines of code. **Reproduces locally at last**, 1 run in 4 under four host burners. Keeps `cpu matrix` intermittently red on every branch until fixed |
-| 73 | BUILT | Name the aarch64 files aarch64, before x86_64 makes it worse | Five files carried a riscv name while their aarch64 twin carried none, so the unnamed one read as "the general case" and was not. Both sides now carry the ISA, and a sixth file the entry had missed (`qemu-virt-initrd.dtb`) came with them. `user/link.ld` is genuinely shared and was NOT renamed. `crates/paging/src/aarch64.rs` is a different defect (an ISA name beside a page-table FORMAT name) and waits on Chris for the word: ARM has no one-token equivalent of `Sv39` |
+| 73 | BUILT | Name the aarch64 files aarch64, before x86_64 makes it worse | Five files carried a riscv name while their aarch64 twin carried none, so the unnamed one read as "the general case" and was not. Both sides now carry the ISA, and a sixth file the entry had missed (`qemu-virt-initrd.dtb`) came with them. `user/link.ld` is genuinely shared and was NOT renamed, nor was `riscv_virtio_tests.rs`, which has no twin. `crates/paging` moved OUT to milestone 77 |
 | 74 | NOT-STARTED | Cycle counters: SBI PMU on RISC-V, `PMCCNTR_EL0` on aarch64 | 16a's deliverable names "benches on real cycles via the SBI PMU extension" and **nothing implements it**, on either ISA. Both read a fixed-rate TIME counter today, not cycles. Gates milestone 25's `sel4bench`, which was deferred to hardware for exactly this |
 | 75 | NOT-STARTED | Who may read the cycle counter, and by what authority | Opening `PMCCNTR_EL0` to EL0 is not the same decision as opening `CNTVCT_EL0` was: it is **~160x finer** (~0.25 ns against ~41 ns), and the generic timer's coarseness was doing real security work. A capability is the answer this OS already has, and notes/abi.md anticipated it |
+| 76 | NOT-STARTED | Split the roadmap: `design/roadmap/README.md` as index, one file per milestone | 5,375 lines and 64 blocks in one file. FOUR structural defects landed today that the gate reported clean, including **eight milestone blocks filed under an essay about seL4**. A split makes those impossible rather than detectable, and removes the conflict #19 and #20 hit. Also widens the citation check tree-wide (free: zero unresolved today) and backfills milestones 1 to 11 from the first commit, dropping the `n >= 12` floor |
+| 77 | NOT-STARTED | `crates/paging`: a module per ISA, a type per page-table configuration | `Aarch64` names an ISA while describing a configuration, beside `Sv39` which names one properly. A second aarch64 configuration is expected, so the fix is room for siblings on both sides rather than a rename. **Waits for that configuration**, because it names the axis |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -5208,13 +5210,13 @@ written:
 | was | is now |
 |---|---|
 | `kernel/link.ld`, `kernel/link-riscv.ld` | `kernel/link-aarch64.ld`, `kernel/link-riscv64.ld` |
-| `bench/baseline.txt` | `bench/baseline-aarch64.txt` |
-| `scripts/qemu-runner.sh` | `scripts/qemu-runner-aarch64.sh` |
+| `bench/baseline.txt`, `bench/baseline-riscv.txt` | `bench/baseline-aarch64.txt`, `bench/baseline-riscv64.txt` |
+| `scripts/qemu-runner.sh`, `scripts/qemu-runner-riscv.sh` | `scripts/qemu-runner-aarch64.sh`, `scripts/qemu-runner-riscv64.sh` |
 | `crates/dtb/tests/fixtures/qemu-virt.dtb`, `qemu-virt-initrd.dtb` | `qemu-aarch64-virt.dtb`, `qemu-aarch64-virt-initrd.dtb` |
 | `crates/dtb/tests/fixtures/qemu-riscv-virt.dtb`, `.dts` | `qemu-riscv64-virt.dtb`, `.dts` |
 | `crates/dtb/tests/qemu_virt.rs`, `qemu_riscv_virt.rs` | `qemu_aarch64_virt.rs`, `qemu_riscv64_virt.rs` |
 
-Three things the entry did not predict, all recorded because the next reader will meet them:
+Two things the entry did not predict, both recorded because the next reader will meet them:
 
 - **`qemu-virt-initrd.dtb` was a sixth file**, not in the table. It has no RISC-V twin, so the
   "suffix a file that has a named twin" rule had to be *checked* rather than applied, exactly as the
@@ -5222,15 +5224,17 @@ Three things the entry did not predict, all recorded because the next reader wil
   a `qemu-system-aarch64` dump), so it took the suffix. Leaving it would have produced
   `qemu-aarch64-virt.dtb` beside `qemu-virt-initrd.dtb`, which is the defect this milestone exists to
   remove, one directory deeper.
-- **Two files keep the family spelling**, `bench/baseline-riscv.txt` and
-  `scripts/qemu-runner-riscv.sh`, because the "two spellings get fixed" list below names only
-  `link-riscv.ld` and `qemu-riscv-virt.*`. The reason given for those two (the ISA is `riscv64`;
-  `riscv` alone is the family) applies to these as well, so the tree now spells it both ways. That is
-  a one-commit follow-up whenever Chris wants it.
 - **Both baseline files' first line was the literal `# bench/baseline.txt:`**, hardcoded in
   `xtask::run_bench`, so the RISC-V baseline has always claimed to be the aarch64 one. Renaming
   forced the issue: the header is now derived from the path being written, which fixes the RISC-V
   file too. This is the only edit in the milestone that is not a path following a rename.
+
+**And an instruction that enumerated instead of stating its rule cost a round trip.** The first pass
+was told "two spellings get fixed: `link-riscv.ld` and `qemu-riscv-virt.*`", followed it exactly, and
+correctly left `baseline-riscv.txt` and `qemu-runner-riscv.sh` alone, which produced
+`baseline-aarch64.txt` beside `baseline-riscv.txt`: a *new* inconsistency, created by the milestone
+that exists to remove one. A list cannot be checked for completeness by the person applying it; a rule
+can. The rule is in the section below, and it is the thing to carry forward.
 
 **Inside `kernel/src/arch/` there is no problem**: the directory carries the ISA, so `aarch64/mmu.rs`
 and `riscv64/mmu.rs` are both named. Everywhere else, only one side is.
@@ -5252,39 +5256,19 @@ unnamed file among two named siblings is ambiguous; among three it is a claim th
 because "the default" will mean whichever ISA the reader started from. §19 names x86_64 as a declared
 target, so this is a dated problem, not a hypothetical one.
 
-#### `crates/paging` is a different defect, and the worse one
+#### `crates/paging` left this milestone (2026-08-03)
 
-It has `aarch64.rs` and `sv39.rs`. Those are not asymmetric names for the same thing, they are **two
-different naming axes**: one an ISA, the other a page-table format. Both files say so in their own
-first line, `aarch64.rs` opening "The aarch64 page-table format: four levels, 4 KiB pages, 48-bit
-virtual addresses", which is VMSAv8-64 described without being named.
+It was raised here as an asymmetry: `aarch64.rs` beside `sv39.rs`, one an ISA and one a page-table
+format. It is real, but it is not a rename, and milestone 77 carries it now. The short reason is that
+Chris expects a **second aarch64 configuration**, which turns "rename the file" into "make room for a
+sibling on both sides", and that is a restructure with 174 call sites behind it.
 
-**The format axis is the correct one, and RISC-V proves it**: `mmu-type` distinguishes Sv39 from Sv48
-(milestone 60), so a `riscv64.rs` could not hold both, while `sv39.rs` and a future `sv48.rs` sit
-beside each other exactly right. A crate whose whole value is being format-generic should file its
-formats by format.
-
-That makes `aarch64.rs` the file to rename, not `sv39.rs`, and it is the same self-contradiction
-CLAUDE.md records for `compose` and `measure`: a thing that names itself correctly in its own first
-line while carrying a different kind of name on the outside.
-
-**This one was left alone**, and the name is Chris's. Two candidates, and the reason to raise it
-rather than pick it is that ARM has no short format name the way RISC-V does. `Sv39` is a single
-token that appears in the RISC-V privileged spec and in `satp`; the closest ARM equivalent is
-"VMSAv8-64", which names the *architecture's* memory system rather than one translation scheme, and
-the thing `aarch64.rs` actually implements is VMSAv8-64 pinned to a 4 KiB granule and a 48-bit VA,
-which ARM expresses as `TCR_EL1` field values and never gives a name of its own.
-
-| candidate | for | against |
-|---|---|---|
-| `vmsav8_64.rs`, type `Vmsav8_64` | ARM's own spelling, so a reader who knows the ARM ARM recognises it | the type name trips `non_camel_case_types` and needs an `#[allow]`, which is a smell on a public type |
-| `vmsav8.rs`, type `Vmsav8` | no lint, still ARM's vocabulary | drops the `-64`, and VMSAv8-32 exists, so it names a superset of what the file holds |
-
-The rename is otherwise mechanical. `pub mod aarch64` and the `pub use Aarch64` beside it in
-`crates/paging/src/lib.rs`, then three lines of code that reach `paging::aarch64::mair` (`mmu.rs`
-once, `iommu.rs` twice), plus three comments naming the path (`mmu.rs`, `crates/paging/tests/
-mapping.rs`, and the module's own first line). Whether the type `Aarch64` follows the file is part of
-the same decision. It is a fifteen-minute change once the word is chosen.
+Milestone 73 touched nothing under `crates/paging`, and one finding is worth carrying to 77: ARM has
+no short format name the way RISC-V does. `Sv39` is a single token in the privileged spec and in
+`satp`; the nearest ARM equivalent, "VMSAv8-64", names the architecture's memory system rather than
+one translation scheme, and the configuration `aarch64.rs` actually implements (4 KiB granule,
+48-bit VA) is expressed in `TCR_EL1` fields and never given a name of its own. That is the same
+observation 77 starts from, arrived at independently.
 
 #### One that is not a pair
 
@@ -5322,11 +5306,19 @@ hyphenated command names and `qemu-runner/aarch64.sh` stops looking like a thing
 all five pairs beats two rules split by file kind, which is the same argument that killed the two-tier
 program-naming scheme: a convention with a branch is a convention someone gets wrong.
 
-**Two spellings get fixed on the way**, because the ISA is `riscv64` and `riscv` alone is the family,
-which every directory and target string in the tree already agrees with:
+**The suffix is the ISA, so it is `riscv64` and never bare `riscv`.** `riscv` is the *family*;
+`riscv64` is the thing the kernel compiles for, which every directory and target string in the tree
+already agrees with (`kernel/src/arch/riscv64/`, `riscv64imac-unknown-none-elf`). Stated as a rule,
+because it applies to every file this milestone touches rather than to a list someone has to keep
+complete: **wherever a pair carries `-aarch64`, its twin carries `-riscv64`.** Four files were already
+suffixed and all four were respelled (`link-riscv.ld`, `baseline-riscv.txt`, `qemu-runner-riscv.sh`,
+`qemu-riscv-virt.*`).
 
-- `link-riscv.ld` becomes `link-riscv64.ld`
-- `qemu-riscv-virt.*` becomes `qemu-riscv64-virt.*`
+**It does not reach a file with no twin.** `notes/riscv-port.md`, `notes/riscv-parity-scope.md`,
+`notes/riscv-arch-tests.md` and `kernel/src/user/riscv_virtio_tests.rs` all name an ISA and none of
+them is half of a pair, so none was touched. That is the same rule as the `user/link.ld` paragraph
+below, in its other direction: suffix a file that has a named twin, not every file that mentions an
+architecture.
 
 A free win falls out: `kernel/src/user/tests.rs` globs `scripts/qemu-runner*.sh`, which matches both
 files today only because one of them is unsuffixed. It becomes `qemu-runner-*.sh` and is exact.
@@ -5526,3 +5518,206 @@ a security framework. If option 2 is chosen it must **not** grow into a general 
 capability class on one consumer, which is CLAUDE.md's rule against speculative abstraction. Milestone
 74 should not land its aarch64 half until this is answered, because the wrong answer is the one that
 is hardest to walk back: an ambient opening, once shipped, is a thing programs come to depend on.
+### 76. Split the roadmap: `design/roadmap/README.md` as index, one file per milestone
+
+**Status: NOT-STARTED.** Raised 2026-08-03 by Chris, after a discussion of whether the roadmap should
+move to GitHub issues at all. It should not, and the reasons are recorded below because the question
+will come back. What it should do is stop being one 5,375-line file.
+
+#### Why not issues, since that was the alternative considered
+
+The friction was real: every roadmap edit takes a branch, a PR and a merge. Three arguments against
+moving were made and **two of them did not survive checking**, which is worth recording so nobody
+re-runs them:
+
+- *"It would break thousands of validated citations."* **False.** `script/roadmap --check` reads one
+  file and its prose check is scoped to that same file, so of 2,179 `milestone N` citations in the
+  tree, the ~1,988 in code comments are validated by nothing today.
+- *"The gates would need network calls."* **Mostly false.** `DECISIONS.md` was never part of the
+  proposal, so `script/decisions --check` is untouched. Only `script/roadmap --check` would need the
+  API, and the prose checks would simply stop covering roadmap text rather than start calling out.
+- *"Consumption."* **This one holds, and it decides it.** The roadmap is read constantly, locally, by
+  grep and awk, and by every lane, offline, at the commit it is working from. Answering "what is
+  needed before the board" was one `awk` across 64 detail blocks. Against an API that is a fetch of
+  the whole corpus, which to work with efficiently would be written to disk and grepped: the file,
+  rebuilt. `git log -p` showing how an argument evolved has no equivalent either.
+
+#### Why one file is nonetheless the wrong shape
+
+Four structural defects landed in the documentation on 2026-08-03 alone, and **every gate reported
+clean through all four**:
+
+1. §61 was appended below `DECISIONS.md`'s `## Reading` closer.
+2. Milestone 69's table row said `NOT-STARTED` while its own detail block said `BUILT`.
+3. A prose line wrapped so that `## Reading, §61` began a line, rendering as an H2 nobody wrote.
+4. **Milestones 68 through 75 are all filed under `## The rival worth understanding, not building`**,
+   an essay about seL4, because `cat >>` appends to the end of a file and the `##` sections are
+   interleaved among the `### N.` blocks.
+
+The fourth is eight instances of one mistake, made by the integrator, invisible to
+`script/roadmap --check` because it verifies that a block **has** a table row and never **where** the
+block sits. That is the same well-formed-but-wrong blind spot CLAUDE.md already records for citations.
+
+A split does not detect those. It makes three of the four impossible: there are no sections to file a
+block under, the filename is the identity, and `cat >>` into `design/roadmap/74-cycle-counters.md`
+can only add text to milestone 74.
+
+It also removes a conflict that already happened: **PR #19 and PR #20 collided on `design/roadmap.md`**
+solely because each marked its own milestone `BUILT`.
+
+#### The shape (Chris, 2026-08-03)
+
+- `design/roadmap/README.md` holds the table and the surrounding prose. GitHub renders a directory's
+  README automatically, so browsing to `design/roadmap/` shows the index, and this is the pattern
+  `notes/README.md` already sets, which `script/lint` already enforces ("every notes/*.md must appear
+  in notes/README.md").
+- `design/roadmap/74-cycle-counters.md` per milestone. Hyphenated, per CLAUDE.md's rule for ordinary
+  markdown. Numbers run 12 to 76 today and one block is sub-lettered (`20a`), so `20a-name-the-seams.md`
+  is the shape for those.
+- The three `##` essays currently interleaved among the blocks are design prose, not milestones, and
+  become their own files under `design/`: "One decision this roadmap still forces", "The display
+  ladder", and "The rival worth understanding, not building".
+
+#### What the gate must grow
+
+`script/roadmap --check` reads a directory instead of a file, and gains **the check whose absence let
+defect 2 through**: a milestone's status in the index and in its own file must agree. It should also
+keep the existing checks, which stay meaningful across files: the status vocabulary, every file having
+an index row, and every `milestone N` referenced in prose resolving.
+
+#### And the prose check widens to the whole tree (Chris, 2026-08-03)
+
+Today `script/roadmap --check` validates `milestone N` references **only inside `design/roadmap.md`**.
+`script/decisions --check` already does the tree-wide version for its own citations, via `git grep`.
+So two citation schemes of identical shape and identical risk get opposite treatment:
+
+| citation | validated | occurrences in code |
+|---|---|---|
+| `§N` into `DECISIONS.md` | **tree-wide** | 817 |
+| `milestone N` into the roadmap | **roadmap.md only** | ~1,988 |
+
+The objection to closing that gap is that a stale citation in a code comment becomes a build failure.
+Chris's answer: **that is the feature.** The documentation is versioned with the code so it cannot
+describe a system that no longer exists, and a comment pointing at a milestone that was renumbered or
+never existed is exactly the drift the gate is for. It is the same argument DECISIONS §61 makes about
+lints, and the same one CLAUDE.md makes about citations being invisible when well-formed and wrong.
+
+**It costs nothing to adopt: the tree passes today.** Checking every `milestone N` occurrence outside
+`vendor/` and `patches/` against the table, for N >= 12, produced **zero unresolved citations**. So
+this is a ratchet in §38's shape and not a cleanup, and it can ship with the gate rewrite rather than
+waiting behind it.
+
+Two details for whoever implements it. The existing `n >= 12` floor stays, because milestones below 12
+predate the table and live in git history and `DECISIONS.md`. And the regex must keep matching
+`milestone 16a` as 16, since sub-lettered blocks exist (`20a`).
+
+#### Backfill milestones 1 to 11, and drop the `n >= 12` floor (Chris, 2026-08-03)
+
+The floor exists because the table started at 12 when it moved out of `DECISIONS.md`, not because the
+early history is lost. It is not lost. **The original plan survives verbatim in the first commit**,
+`b7f10e7` ("Record architecture decisions and the milestone plan", 2026-07-12), as a `## Milestones`
+table in `DECISIONS.md` carrying 1 through 10 with a title and a "what it teaches" column. Milestone
+11 was added two days later in `491f23d` as "Untyped memory: the kernel stops allocating".
+
+So 304 live citations to milestones 1 to 11 are unvalidated for a reason that stopped being true.
+Backfilling them and removing the floor takes the gate from 1,875 checked citations to all 2,179.
+
+**Record the outcomes, not the plans, and the reason is that they differ.** Most of the early
+milestones have a commit that titles them, and those titles say what actually happened:
+
+- "Milestone 2: exception vectors, and a fault that tells you what it was"
+- "Milestone 3: hand out physical memory, and detect a smashed stack"
+- "Milestone 5: the GIC and the timer. The kernel is preemptible."
+- "Milestone 11: untyped memory, and the number that proves the kernel stops allocating"
+
+Where plan and outcome disagree, the disagreement is the history worth keeping. **Milestone 8 was
+planned as "virtio-blk driver + read-only filesystem" and landed as "the console driver leaves the
+kernel"; virtio-blk moved to 9**, which had been "Processes: spawn, exit, wait". A backfill that
+copied the original table would record a plan that was overtaken and silently misdate the driver work.
+
+Two need reconstruction rather than copying, because no commit titles them: **milestone 1** (the
+earliest commits predate the convention, though "Boot to Rust on QEMU virt and print to the PL011
+UART" is the commit and matches the plan exactly) and **milestone 7**, the capability decision point,
+which is the densest citation target in the tree at 79 references and whose outcome is DECISIONS §10
+rather than a single commit.
+
+Mark all eleven `BUILT`. They are, and the evidence is the kernel.
+
+#### Scope note
+
+**File moves, no content edits**, with milestone 69's proof obligation: reassembling the files must
+reproduce the original byte for byte, apart from the fixed placement of blocks 68 to 75. **Twenty-nine files**
+outside the roadmap link to `design/roadmap.md`, including `README.md`, `SECURITY.md`,
+`DECISIONS.md`, several crates and several design notes; every one must land on the index. Relative links inside the blocks point
+at `../notes/`, which becomes `../../notes/` one directory down, and `script/lint` already checks that
+every relative markdown link resolves, so a missed one fails loudly rather than quietly.
+
+### 77. `crates/paging`: a module per ISA, a type per page-table configuration
+
+**Status: NOT-STARTED**, and deliberately **waiting for a trigger**. Split out of milestone 73 on
+2026-08-03 once it stopped being a rename.
+
+#### What is wrong, stated precisely
+
+`crates/paging` exports two implementations of one `PageFormat` trait:
+
+| type | `LEVELS` | granule | VA bits |
+|---|---|---|---|
+| `Sv39` | 3 | 4 KiB | 39 |
+| `Aarch64` | 4 | 4 KiB | 48 |
+
+Both are **configurations**. `Sv39` names one; `Aarch64` names an architecture while describing one.
+A reader meeting `paging::Aarch64` beside `paging::Sv39` has to know that the first is not the general
+aarch64 case in order to read the second correctly.
+
+#### The asymmetry is not ours, which is why the obvious fix is wrong
+
+**RISC-V enumerates its configurations and names each one**: Sv39, Sv48, Sv57. The name *is* the
+configuration. **ARM parameterises instead**: there is one format, and the level count and VA width
+fall out of `TCR_EL1.T0SZ` and the granule field. The 4 KiB, 48-bit, 4-level arrangement has no short
+ARM name; you describe it.
+
+So renaming `aarch64.rs` to `vmsav8_64.rs` trades a name that is under-specific for one that is
+**over**-specific: VMSAv8-64 also covers the 16 KiB and 64 KiB granule configurations this file does
+not implement. And renaming `sv39.rs` to `riscv64.rs` is worse, because Sv48 would then have nowhere
+to live, and CLAUDE.md is explicit that a standard term a reader already knows is the best name
+available.
+
+#### The shape, when it is time
+
+A module per ISA, which is rule 1's shape and what `kernel/src/arch/<isa>/` has done since milestone 1:
+
+```
+crates/paging/src/
+  aarch64/mod.rs      the aarch64 configurations
+  riscv64/mod.rs      pub struct Sv39;   (and Sv48, milestone 60)
+  domain.rs
+  lib.rs              trait PageFormat
+```
+
+**The module carries the ISA and the type carries the configuration**, so each architecture names its
+configurations in its own vocabulary without the flat namespace forcing them into one list. The
+asymmetry stops being visible: you never see `Sv39` beside `Aarch64` again, which is the whole of what
+made it jarring.
+
+#### Why this WAITS, and what the trigger is
+
+**We do not know the second aarch64 configuration yet.** Apple Silicon's native 16 KiB granule is the
+best guess (milestone 24's Virtualization.framework board would meet it), but a VA-width change
+(52-bit, LPA2) varies `LEVELS` and `SPLIT_SHIFT` instead, and those two possibilities want different
+names. `Granule4K` is a false claim if what actually varies is the VA width.
+
+CLAUDE.md's rule applies directly, and milestone 60's entry states it for this exact situation: **do
+not build a chip abstraction on one configuration; the second one should tell us what the abstraction
+is.** Doing this early means renaming 174 call sites across 16 files twice if the guess is wrong, and
+the current name blocks nothing until a sibling actually exists.
+
+So the trigger is the arrival of a second aarch64 configuration, and the deliverable until then is
+this entry plus a comment in `crates/paging/src/lib.rs` pointing at it, so the next reader who notices
+the asymmetry finds the reasoning instead of filing it again.
+
+#### Scope note
+
+When it happens: module move, type rename, and every call site. `Aarch64` and `Sv39` appear **174
+times across 16 files**, including `kernel/src/arch/*/mmu.rs`, both `iommu.rs` files, and
+`crates/paging/tests/mapping.rs`. No behaviour change, and milestone 69's proof obligation applies.

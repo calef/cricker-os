@@ -40,7 +40,7 @@ fi
 # qemu-runner-aarch64.sh for why (it very likely manufactured the false parity-C blocker).
 DISK=""
 if [ -n "$CRICKER_DISK" ] && [ ! -f "$CRICKER_DISK" ]; then
-    echo "qemu-runner-riscv: CRICKER_DISK=$CRICKER_DISK does not exist (run mkdisk first)" >&2
+    echo "qemu-runner-riscv64: CRICKER_DISK=$CRICKER_DISK does not exist (run mkdisk first)" >&2
     exit 1
 fi
 if [ -n "$CRICKER_DISK" ]; then
@@ -59,7 +59,7 @@ if [ -n "$CRICKER_DISK" ]; then
     # IOMMU in front of it and takes no such flag.
     PCI_DISK="${CRICKER_DISK%.img}-pci.img"
     if [ ! -f "$PCI_DISK" ]; then
-        echo "qemu-runner-riscv: $PCI_DISK does not exist (run mkdisk first; it writes both images)" >&2
+        echo "qemu-runner-riscv64: $PCI_DISK does not exist (run mkdisk first; it writes both images)" >&2
         exit 1
     fi
     # The RedoxFS image (milestone 32 phase 2), the SECOND mmio block device. Placed BEFORE the

@@ -467,7 +467,7 @@ map-executable path (a correctness fix for both arches, latent until a spawn loo
 
 **And the numbers are now comparable.** `cargo xtask bench --riscv` runs the same suite on riscv under
 the same deterministic `-icount` instrument (single hart, so an idle `wfi` cannot jump virtual time to
-the timer and inflate the spawn primitives), with its own baseline (`bench/baseline-riscv.txt`) for
+the timer and inflate the spawn primitives), with its own baseline (`bench/baseline-riscv64.txt`) for
 `--check`/`--save`. The comparable metric is **ns/iter**: under `-icount shift=0` virtual time advances
 ~1 ns/instruction, and ns/iter divides out each arch's timer frequency (aarch64 CNTFRQ vs riscv's
 10 MHz), so it is frequency-normalized instructions-per-primitive. CoreMark lands within ~7% across
