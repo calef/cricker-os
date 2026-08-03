@@ -151,14 +151,41 @@ fn the_virtual_address_range_is_reported_not_assumed() {
     );
 }
 
-/// A vendor code ARM has not published prints as a number, not as a guess. Apple's `0x61` is in
-/// the list because this project is developed on one, and an unlisted code has to survive.
+/// **Every published vendor is reachable by its code, and an unpublished one is not guessed at.**
+///
+/// The boot line names the vendor, and it is the first thing somebody bringing up a board reads.
+/// The shadowing this guards against was possible while the lookup was a `match`: two arms with the
+/// same code compile, and the second is unreachable forever with no warning. The table's own
+/// `const` assertion catches the duplicate; this catches a row the lookup cannot reach.
+///
+/// The codes go in through `MIDR_EL1[31:24]` rather than through the field directly, so this also
+/// holds `decode`'s shift to the table. A decoder off by a byte would report every vendor as
+/// unpublished, which reads like a missing entry rather than a broken shift.
 #[test]
-fn an_unknown_implementer_is_not_guessed_at() {
+fn every_implementer_is_reachable_through_midr() {
+    for row in &IMPLEMENTERS {
+        let cpu = Isa::decode((row.code as u64) << 24, 0, 0);
+        assert_eq!(cpu.implementer, row.code, "MIDR_EL1[31:24] is the code");
+        assert_eq!(
+            cpu.implementer_name(),
+            Some(row.name),
+            "code {:#04x} does not reach {}",
+            row.code,
+            row.name
+        );
+    }
+
+    // The two this project actually meets: QEMU's cortex-a72, and the Apple Silicon it is
+    // developed on.
+    assert_eq!(Isa::decode(A72.0, 0, 0).implementer_name(), Some("Arm"));
     assert_eq!(
         Isa::decode(0x6100_0000, 0, 0).implementer_name(),
         Some("Apple")
     );
+
+    // And codes ARM has not assigned. Reported as a number, because a name here would be a guess
+    // about who made the chip somebody is trying to bring a kernel up on.
     assert_eq!(Isa::decode(0x0700_0000, 0, 0).implementer_name(), None);
     assert_eq!(Isa::decode(0x0700_0000, 0, 0).implementer, 0x07);
+    assert_eq!(Isa::decode(0xff00_0000, 0, 0).implementer_name(), None);
 }

@@ -70,6 +70,70 @@ fn the_base_prefix_is_decoded_and_skipped() {
     assert_eq!(parse_isa_string(b"rv32imac"), parse_isa_string(b"rv64imac"));
 }
 
+/// **What the boot line prints is the device tree's own spelling, and it parses back.**
+///
+/// `Base::name`'s doc says it is "deliberately spelled as the device tree spells it", and nothing
+/// checked that. It matters because the whole deliverable of this milestone is a line a reader
+/// trusts: someone who sees `rv64i` on the console and greps a device tree for it should find the
+/// same string, and someone who sees `sv39` should be able to write it into a `mmu-type`.
+///
+/// A round trip is the honest way to check a name, because it holds the printer and the parser to
+/// each other rather than to a copy of the answer written into a test.
+#[test]
+fn every_printed_name_parses_back_to_itself() {
+    for base in [Base::Rv32, Base::Rv64, Base::Rv128] {
+        assert_eq!(
+            Base::from_isa_string(base.name().as_bytes()),
+            base,
+            "{} does not parse back",
+            base.name()
+        );
+    }
+    // The exception, and it has to be one: there is no string a device tree could carry that means
+    // "this tree did not say", so `Unknown` prints an English phrase rather than a spelling.
+    assert_eq!(Base::Unknown.name(), "unknown");
+    assert_eq!(Base::from_isa_string(b"unknown"), Base::Unknown);
+
+    for mmu in [
+        MmuType::None,
+        MmuType::Sv32,
+        MmuType::Sv39,
+        MmuType::Sv48,
+        MmuType::Sv57,
+    ] {
+        assert_eq!(
+            MmuType::from_property(mmu.name().as_bytes()),
+            mmu,
+            "{} does not parse back",
+            mmu.name()
+        );
+    }
+    assert_eq!(MmuType::Unknown.name(), "not declared");
+    assert_eq!(MmuType::from_property(b"not declared"), MmuType::Unknown);
+}
+
+/// **The base ordering exists for one comparison, and this is it.**
+///
+/// `Isa::from_device_tree` keeps the *narrowest* base any hart declares, because a machine whose
+/// harts disagree can only run code every hart can execute. The ordering is by address width, which
+/// is not the order the variants happen to be declared in, so the `Ord` impl is hand-written and
+/// therefore capable of being wrong.
+///
+/// `Unknown` at the bottom is the load-bearing part: it is what makes "the tree did not say"
+/// lose to any hart that did say, instead of winning and reporting an unknown machine.
+#[test]
+fn bases_order_by_address_width() {
+    assert!(Base::Unknown < Base::Rv32);
+    assert!(Base::Rv32 < Base::Rv64);
+    assert!(Base::Rv64 < Base::Rv128);
+    assert_eq!(Base::Rv64.cmp(&Base::Rv64), core::cmp::Ordering::Equal);
+    assert_eq!(
+        [Base::Rv128, Base::Rv32, Base::Rv64].iter().min(),
+        Some(&Base::Rv32),
+        "narrowest wins, which is what the hart loop asks for"
+    );
+}
+
 #[test]
 fn mmu_type_tolerates_a_missing_vendor_prefix() {
     assert_eq!(MmuType::from_property(b"riscv,sv39\0"), MmuType::Sv39);
@@ -137,8 +201,79 @@ fn sbi_extension_ids_match_the_specification() {
     assert_eq!(EID_HSM, 0x0048_534D, "\"HSM\"");
     assert_eq!(EID_BASE, 0x10, "the base extension is a number, not a tag");
 
+    // The same four again through `eid` at **runtime**, which is the only way to exercise it: every
+    // caller in the crate is a `const` initializer, so the compiler folds it and nothing ever runs
+    // the loop. Const evaluation and runtime evaluation are two implementations of one function in
+    // this language, and this is the cheapest place to hold them to each other.
+    assert_eq!(eid("TIME"), EID_TIME);
+    assert_eq!(eid("sPI"), EID_IPI);
+    assert_eq!(eid("RFNC"), EID_RFENCE);
+    assert_eq!(eid("HSM"), EID_HSM);
+
     for row in &SBI_TABLE {
         assert!(row.eid != 0, "{} has no extension id", row.name);
         assert!(!row.why.is_empty(), "{} has no call site", row.name);
     }
+}
+
+/// **Every firmware in the registry is reachable by its id, and an unassigned id is not guessed at.**
+///
+/// The boot line names the firmware, and a wrong name there is a wrong fact in the place a reader
+/// trusts most. The shadowing this guards against was possible while the lookup was a `match`: two
+/// arms with the same id compile, and the second is unreachable forever with no warning.
+#[test]
+fn every_sbi_implementation_is_reachable_by_its_id() {
+    for row in &IMPLEMENTATIONS {
+        let sbi = Sbi {
+            impl_id: row.id,
+            ..Sbi::default()
+        };
+        assert_eq!(
+            sbi.impl_name(),
+            Some(row.name),
+            "id {} does not reach {}",
+            row.id,
+            row.name
+        );
+    }
+
+    // Past the end of the registry. Reported as a number by the boot line rather than as the last
+    // row it happened to be near.
+    let unassigned = Sbi {
+        impl_id: IMPLEMENTATIONS.len() as u32,
+        ..Sbi::default()
+    };
+    assert_eq!(unassigned.impl_name(), None);
+    assert_eq!(
+        Sbi {
+            impl_id: 9999,
+            ..Sbi::default()
+        }
+        .impl_name(),
+        None
+    );
+}
+
+/// **Accumulating probe answers one at a time builds the same set the requirement check wants.**
+///
+/// This is what `arch::isa::probe_sbi` does: start empty, `union` in each extension the firmware
+/// says it has, then hand the result to `missing_requirements`. Worth its own test because the
+/// kernel's version of this loop is the half of SBI discovery no host test can run, so the set
+/// arithmetic under it should be proved somewhere that does not need an emulator.
+#[test]
+fn probing_one_extension_at_a_time_accumulates() {
+    let mut acc = SbiExtensions::NONE;
+    assert!(acc.is_empty());
+
+    for row in &SBI_TABLE {
+        assert!(!acc.contains(row.bit), "not yet probed");
+        acc = acc.union(row.bit);
+        assert!(acc.contains(row.bit));
+    }
+
+    assert_eq!(
+        acc, SBI_REQUIRED,
+        "all four is exactly what the kernel calls"
+    );
+    assert!(SBI_REQUIRED.difference(acc).is_empty());
 }

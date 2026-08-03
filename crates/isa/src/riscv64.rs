@@ -183,6 +183,12 @@ pub struct Row {
     pub why: &'static str,
 }
 
+/// The one function in this crate that a coverage report will always show as unreached, and
+/// deliberately so: every caller below is a `const` initializer, so the compiler folds it and the
+/// body never executes at runtime. Left uncalled rather than given a test, because the only
+/// assertion available (`bit(3)` is `1 << 3`) restates the body and proves nothing. Contrast
+/// [`eid`], which is also const-only and *is* tested, because there the thing that can be wrong is
+/// the tag rather than the arithmetic.
 const fn bit(n: u32) -> Extensions {
     Extensions(1 << n)
 }
@@ -374,7 +380,7 @@ pub const SBI_HSM: SbiExtensions = SbiExtensions(1 << 3);
 /// firmware about an extension that does not exist, gets "no", and the kernel refuses to boot on
 /// correct firmware. Deriving it makes the tag the only thing anyone can get wrong, and a wrong tag
 /// is legible.
-const fn eid(tag: &str) -> usize {
+pub const fn eid(tag: &str) -> usize {
     let b = tag.as_bytes();
     let mut acc = 0usize;
     let mut i = 0;
@@ -474,18 +480,67 @@ impl Sbi {
     /// The name of the firmware, for the boot line. The ids are assigned in the SBI specification's
     /// implementation-id registry; unknown ones print as a number rather than a guess.
     pub fn impl_name(self) -> Option<&'static str> {
-        match self.impl_id {
-            0 => Some("BBL"),
-            1 => Some("OpenSBI"),
-            2 => Some("Xvisor"),
-            3 => Some("KVM"),
-            4 => Some("RustSBI"),
-            5 => Some("Diosix"),
-            6 => Some("Coffer"),
-            _ => None,
+        let mut i = 0;
+        while i < IMPLEMENTATIONS.len() {
+            if IMPLEMENTATIONS[i].id == self.impl_id {
+                return Some(IMPLEMENTATIONS[i].name);
+            }
+            i += 1;
         }
+        None
     }
 }
+
+/// One row of [`IMPLEMENTATIONS`].
+pub struct Implementation {
+    /// The id `sbi_get_impl_id` returns.
+    pub id: u32,
+    pub name: &'static str,
+}
+
+/// **The SBI implementations the specification has assigned ids to.**
+///
+/// A table rather than a `match`, for the same reason [`TABLE`] and
+/// [`crate::aarch64::IMPLEMENTERS`] are tables: a duplicated key in a `match` is legal and silent
+/// and makes the second arm unreachable, while a duplicate here is the compile error below. Ids are
+/// sequential from zero, so the assertion also catches a row inserted in the wrong place.
+pub const IMPLEMENTATIONS: [Implementation; 7] = [
+    Implementation { id: 0, name: "BBL" },
+    Implementation {
+        id: 1,
+        name: "OpenSBI",
+    },
+    Implementation {
+        id: 2,
+        name: "Xvisor",
+    },
+    Implementation { id: 3, name: "KVM" },
+    Implementation {
+        id: 4,
+        name: "RustSBI",
+    },
+    Implementation {
+        id: 5,
+        name: "Diosix",
+    },
+    Implementation {
+        id: 6,
+        name: "Coffer",
+    },
+];
+
+// The registry assigns these sequentially, so "row i has id i" is both the duplicate check and a
+// check that nobody inserted a row in the middle and shifted the rest off their real ids.
+const _: () = {
+    let mut i = 0;
+    while i < IMPLEMENTATIONS.len() {
+        assert!(
+            IMPLEMENTATIONS[i].id as usize == i,
+            "IMPLEMENTATIONS is out of order or has a gap; the registry assigns ids sequentially"
+        );
+        i += 1;
+    }
+};
 
 /// **What this RISC-V machine is.** One record, populated once at boot, printed at boot.
 ///

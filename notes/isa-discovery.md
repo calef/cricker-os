@@ -165,9 +165,39 @@ tell us what the abstraction is, if there is one.
 
 ## Naming
 
-The crate is `isa`, which is an abbreviation, and it is in the group `DECISIONS.md` §39 protects:
-a standard term of art a reader already knows from outside this project, like `elf`, `dtb` and
-`pci`. It is provisional until Chris settles it.
+The crate is `isa`, settled by Chris on 2026-08-03. It is an abbreviation, and it is in the group
+`DECISIONS.md` §39 protects rather than the group it rejects: a standard term of art a reader
+already knows from outside this project, like `elf`, `dtb` and `pci`. Renaming it would cost a
+reader the recognition the tenet exists to buy.
+
+## Four lookup tables, and why none of them is a `match`
+
+`TABLE` (extensions), `SBI_TABLE`, `IMPLEMENTATIONS` (SBI firmware) and `aarch64::IMPLEMENTERS`
+(chip vendors) are all arrays with a `const` assertion over them, and all four could have been a
+`match`. The reason they are not is a bug class a `match` cannot be checked for: **a duplicated key
+compiles, silently, and makes the second arm unreachable forever.** In a vendor table that is a chip
+whose name can never be printed; in the extension table it would be a fact the kernel can never
+report. As arrays the duplicate is a compile error, and the lookup being a loop over data means a
+test can walk the rows rather than copy them into a test file, which is the difference between
+checking a table and restating it.
+
+The SBI extension ids go one better and are **derived** from their tags (`eid("TIME")`), so the only
+thing anybody can get wrong is a four-character string rather than a hex constant. That one is worth
+the extra step because a mistyped id probes an extension that does not exist, gets "no", and refuses
+to boot on correct firmware. The vendor codes are not derivable: most are the ASCII of the vendor's
+initial and enough are not (`0x50`, `0x56`, `0xc0`) that the rule would have more exceptions than
+cases.
+
+## One line nothing covers, on purpose
+
+`bit(n)`, the helper that turns an index into an `Extensions` bit. Every caller is a `const`
+initializer, so the compiler folds it and the body never runs; a coverage report will always show it
+unreached. The only assertion available is that `bit(3)` is `1 << 3`, which restates the body, so it
+has a comment saying why it is uncovered instead of a test that moves a number.
+
+`eid` is the instructive contrast. It is const-only too, and it *is* called at runtime by a test,
+because there the thing that can be wrong is the tag rather than the arithmetic, and const
+evaluation and runtime evaluation are two implementations of one function that should agree.
 
 ## BUGS
 

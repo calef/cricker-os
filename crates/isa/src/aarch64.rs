@@ -153,22 +153,108 @@ impl Isa {
     /// The vendor name for [`implementer`](Isa::implementer), or `None` for a code ARM has not
     /// published. Printing the number is better than printing a guess.
     pub fn implementer_name(&self) -> Option<&'static str> {
-        match self.implementer {
-            0x41 => Some("Arm"),
-            0x42 => Some("Broadcom"),
-            0x43 => Some("Cavium"),
-            0x44 => Some("DEC"),
-            0x46 => Some("Fujitsu"),
-            0x49 => Some("Infineon"),
-            0x4d => Some("Motorola/Freescale"),
-            0x4e => Some("NVIDIA"),
-            0x50 => Some("AppliedMicro"),
-            0x51 => Some("Qualcomm"),
-            0x56 => Some("Marvell"),
-            0x61 => Some("Apple"),
-            0x69 => Some("Intel"),
-            0xc0 => Some("Ampere"),
-            _ => None,
+        let mut i = 0;
+        while i < IMPLEMENTERS.len() {
+            if IMPLEMENTERS[i].code == self.implementer {
+                return Some(IMPLEMENTERS[i].name);
+            }
+            i += 1;
         }
+        None
     }
 }
+
+/// One row of [`IMPLEMENTERS`].
+pub struct Implementer {
+    /// The code ARM assigned, as it appears in `MIDR_EL1[31:24]`.
+    pub code: u8,
+    pub name: &'static str,
+}
+
+/// **The vendor codes ARM has published**, from the registry in the ARM ARM's `MIDR_EL1` section.
+///
+/// A table rather than a `match`, for the same reason [`crate::riscv64::TABLE`] is one: a duplicated
+/// key in a `match` is legal, silent, and makes the second arm unreachable forever, while a
+/// duplicate here is the compile error asserted below. The lookup is a loop over data, so a test can
+/// walk the rows instead of restating them, which is the difference between checking a table and
+/// copying it into a test file.
+///
+/// Most of these are the ASCII of the vendor's initial (`0x41` is `A` for Arm) and enough are not
+/// (`0x50`, `0x56`, `0xc0`) that deriving them would be a rule with more exceptions than cases.
+/// Contrast [`crate::riscv64::EID_TIME`], where deriving from the tag *is* honest and removes the
+/// only thing anyone can get wrong.
+pub const IMPLEMENTERS: [Implementer; 14] = [
+    Implementer {
+        code: 0x41,
+        name: "Arm",
+    },
+    Implementer {
+        code: 0x42,
+        name: "Broadcom",
+    },
+    Implementer {
+        code: 0x43,
+        name: "Cavium",
+    },
+    Implementer {
+        code: 0x44,
+        name: "DEC",
+    },
+    Implementer {
+        code: 0x46,
+        name: "Fujitsu",
+    },
+    Implementer {
+        code: 0x49,
+        name: "Infineon",
+    },
+    Implementer {
+        code: 0x4d,
+        name: "Motorola/Freescale",
+    },
+    Implementer {
+        code: 0x4e,
+        name: "NVIDIA",
+    },
+    Implementer {
+        code: 0x50,
+        name: "AppliedMicro",
+    },
+    Implementer {
+        code: 0x51,
+        name: "Qualcomm",
+    },
+    Implementer {
+        code: 0x56,
+        name: "Marvell",
+    },
+    Implementer {
+        code: 0x61,
+        name: "Apple",
+    },
+    Implementer {
+        code: 0x69,
+        name: "Intel",
+    },
+    Implementer {
+        code: 0xc0,
+        name: "Ampere",
+    },
+];
+
+// A code listed twice would shadow whichever row came second, and the shadowed vendor would be
+// unreportable for as long as the table lived. Cheaper as a compile error than as a test.
+const _: () = {
+    let mut i = 0;
+    while i < IMPLEMENTERS.len() {
+        let mut j = i + 1;
+        while j < IMPLEMENTERS.len() {
+            assert!(
+                IMPLEMENTERS[i].code != IMPLEMENTERS[j].code,
+                "two rows of IMPLEMENTERS share a code"
+            );
+            j += 1;
+        }
+        i += 1;
+    }
+};
