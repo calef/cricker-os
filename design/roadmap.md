@@ -150,7 +150,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 84 | NOT-STARTED | Stack high-water: measure kernel stack depth | The FS-server stack overflow already happened once, and nothing since bounds depth on any kernel stack. Paint at boot, read the mark at suite end, assert headroom. Works identically on every ISA and covers every path the suite takes |
 | 85 | NOT-STARTED | Mutation testing over the host crates | Coverage reports what ran; cargo-mutants reports whether a test would notice a change, which is the claim the suite actually makes. A weekly, time-boxed job with a recorded baseline, not a PR gate |
 | 86 | NOT-STARTED | `time`: the shell times a command | The second prefix-word command after `caps`, so the grammar is proven, and `date` already built the clock story. The design question is whose clock it is: the shell's, so a child that holds no clock capability can still be timed, which is the Unix behaviour and the leaning |
-| 87 | NOT-STARTED | The x86_64 bare-metal machine | Milestone 19's third ISA needs what milestone 16's second needed: a dedicated, brickable board, selected before the port so the requirements drive the purchase. Selected: a new Protectli VP2430 with coreboot, $300 configured, ~$345 all-in. The i226 NICs are the recorded tax (QEMU emulates `igb` and `e1000e`, not `igc`); open firmware is what the money buys |
+| 87 | NOT-STARTED | The x86_64 bare-metal machine | Milestone 19's third ISA needs what milestone 16's second needed: a dedicated, brickable board, selected before the port so the requirements drive the purchase. Selected: a used OptiPlex 7050 Micro plus the C4PDJ serial module, ~$194 all-in; every new option cost $150-350 more at real prices. QEMU emulates `igb` and `e1000e`, not `igc`, so the 7050's I219 keeps the one-driver property with no caveats |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -6166,27 +6166,28 @@ The requirements, each traced to something this tree already does:
 - **Remote power cycling** by smart plug, not by management firmware. A plug is $15 and works on
   anything.
 
-**The selection: a new Protectli VP2430, with coreboot chosen at order** (Chris, 2026-08-03, after
-weighing the used-market risk and finding the configured price at $300). N150 (four Gracemont
-cores), four i226-V NICs, DDR5 SO-DIMM, 32GB boot eMMC on-board, console cable included; the COM
-connector is USB-C-shaped but carries the SuperIO UART's RS-232, so from the kernel it should be
-legacy COM1 (confirm the 0x3F8 decode and the firmware's VT-d exposure on arrival, and correct
-this entry if the machine disagrees). What the price buys over the alternatives: a real vendor
-with published datasheets and a knowledge base, and **open-source firmware**, which is the
-strategically aligned choice for a kernel that already carries `measured_boot` and will someday
-want to own its x86 boot chain rather than trust a BIOS it cannot read.
+**The selection: a used Dell OptiPlex 7050 Micro plus the Dell C4PDJ serial module** (Chris,
+2026-08-03, settled after a full pass over the new market): i5-7500T with 16GB was $129 with the
+module at $35, ~$194 all-in with the dev-side serial gear and the smart plug. The used-hardware
+risk was weighed deliberately and priced: eBay's money-back guarantee bounds "does it work" to
+return friction, and at real configured prices every new machine cost $150-350 more. The 7050
+keeps the fastest cores in the field and the I219 NIC in QEMU's `e1000e` family, so the
+one-driver-spans-emulator-and-silicon property holds with no caveats. The module is Dell P/N
+**C4PDJ** (fits 3050/7040/7050 MFF, snaps into the rear punch-out, cables to a motherboard
+header; check the listing includes the cable); used units essentially never ship with it, so buy
+it separately rather than hunting for a factory-configured unit.
 
-The market at selection time, so the next reader knows what was weighed: a used OptiPlex 7050
-Micro (i5-7500T, 16GB, $129) plus the Dell C4PDJ serial module ($35) was the value pick at ~$194
-all-in, keeps the faster cores and the QEMU-emulated I219, and remains **the recorded fallback**
-if the VP2430 disappoints; Chris ruled the used-hardware risk out on purpose. Configured
-industrial N100 boxes on Amazon ran $500-730 and are dominated by the VP2430 at every point. A
-used PC Engines apu2 deserves a correction from the first draft of this entry: its i210 NICs are
-`igb` family, so QEMU's igb model gives it the one-driver property this entry originally credited
-only to the 7050; it stays a runner-up for its EOL status and slow Jaguar cores, not its NIC.
-All-in for the selection, about $345: the machine configured, a USB-to-RS232 adapter and
-null-modem cable for the dev side, and the smart plug. If netboot iteration becomes worth it,
-cordoba hosts the PXE/TFTP end.
+The market at selection time, so the next reader knows what was weighed. The closest contender
+was a **new Protectli VP2430** ($300 configured with coreboot): a real vendor with published
+datasheets, open-source firmware aligned with `measured_boot`'s future on x86, console cable
+included, but i226-V NICs in the `igc` family QEMU does not emulate, and $150 over the used
+route; it stays **the recorded alternative** if the used machine disappoints or when open
+firmware becomes the point. Configured industrial N100 boxes on Amazon ran $500-730 and are
+dominated by the VP2430 at every point. A used PC Engines apu2 deserves a correction from the
+first draft of this entry: its i210 NICs are `igb` family, so QEMU's igb model gives it the
+one-driver property this entry originally credited only to the 7050; it stays a runner-up for its
+EOL status and slow Jaguar cores, not its NIC. If netboot iteration becomes worth it, cordoba
+hosts the PXE/TFTP end.
 
 #### Scope note
 
