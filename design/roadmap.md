@@ -120,7 +120,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 54 | NOT-STARTED | A network file service a Mac can actually mount | the first real workload with a real user, and the security claim backup servers deserve |
 | 55 | NOT-STARTED | Time Machine: SMB3 with Apple's extensions, and mDNS | **likely the largest single piece of work in the project**, and the one that must be scoped before it is started |
 | 56 | BUILT | Secrets, credentials, and the entropy to make them safe | **built 2026-08-01**: entropy (§44), the Argon2id crypto taken as a dependency per §46, and the credentialer, a store with no getter that verifies and never reads back (§54). The thesis-level gap it named, that *a secret is still a bearer token where a capability is an unforgeable reference*, is **milestone 65's** subject: hold the key, expose the operation |
-| 57 | PARTIAL | Partitioning and formatting a real drive, and extended attributes | you cannot find a partition without reading the table, and **we have no partition-table code at all**; all of it is testable in QEMU before the board lands. The host recovery tool (`ls`/`cat`/`extract`), `crates/gpt` and the **extended-attribute layer** are built; on-target `mkfs` and block-device enumeration are not |
+| 57 | PARTIAL | Partitioning and formatting a real drive, and extended attributes | you cannot find a partition without reading the table, and all of it is testable in QEMU before the board lands. Built: the host recovery tool (`ls`/`cat`/`extract`/`xattr`), `crates/gpt`, the **extended-attribute layer**, and (2026-08-03) **reading a real table on the target** plus **block-device enumeration**, which is a read-only roster page. What is left is the **write** half, and it is one decision rather than a task: partitioning and on-target `mkfs` both need randomness, and the `mkfs` half needs a new divergence from the RedoxFS pin |
 | 58 | NOT-STARTED | RISC-V TLB shootdown, and the flush that makes ASIDs pointless | every riscv context switch discards the whole TLB; the fix needs a **software** shootdown protocol, because `sfence.vma` does not broadcast |
 | 59 | BUILT | The CPU-model matrix: stop testing against one generous emulator | `-cpu rv64` enables nearly every ratified extension; the board is an RV64GC U74. `script/cpu-matrix` runs the riscv64 suite across five models and all 211 tests pass on every one, so we are already portable to the board's ISA. The ASID test written *for* the board is the gap no model can exercise |
 | 60 | NOT-STARTED | ISA discovery: read the machine instead of assuming it | nothing reads `riscv,isa-extensions`; RISC-V has no `CPUID`, so the device tree plus targeted probes are the architected answer. One `Isa` record, built at boot, printed at boot |
@@ -4518,10 +4518,16 @@ milestone 55's critical path, because provisioning at boot is enough to authenti
 
 ### 57. Partitioning and formatting a real drive, and extended attributes
 
-**In brief.** Chris's router setup is `parted` then `mkfs.ext4` then three mounted partitions. We have
-**no equivalent of the first step at all**, and the second only as a host tool. Plus the xattr gap
-milestone 55 surfaced. **Nearly all of this is testable in QEMU against virtio-blk with no board**, so
-it is schedulable before 2026-08-21 rather than waiting on hardware.
+**In brief.** Chris's router setup is `parted` then `mkfs.ext4` then three mounted partitions. Plus
+the xattr gap milestone 55 surfaced. **Nearly all of this is testable in QEMU against virtio-blk with
+no board**, so it is schedulable before 2026-08-21 rather than waiting on hardware.
+
+**Status, taken from the tree on 2026-08-03 rather than from this entry.** The reading half is done
+end to end: `crates/gpt` parses and writes tables, `disk_surveyor` reads a real one off a virtio-blk
+device on both ISAs, `crates/block_roster` answers "what drives are attached" as a read-only mapping,
+the extended-attribute layer and its host recovery half are built, and `tools/redoxfs_host` extracts.
+**What is left is writing on the target**, and both halves of it are gated on the same thing:
+randomness. See the corrected table below, which used to say "the tools, none of which exist".
 
 #### Extended attributes: decided in direction, open in mechanism
 
@@ -4594,20 +4600,36 @@ agree, so a whole contract addition reached none of them and nothing failed.
   directly and bypass the layer. **Here nothing can**: all access goes through `fs_proto`, so a layer
   above the filesystem is as authoritative as the filesystem. A genuine capability-system advantage.
 
-**The check that decides it, and it is small: does RedoxFS let us group a file write and a metadata
+**The check that decided it, and it was small: does RedoxFS let us group a file write and a metadata
 write into one transaction?** If yes, layering is safe and much cheaper. If no, atomicity between a
 file and its metadata cannot hold across a crash (§42's exact territory, and a rename must move both
-together), and the format extension is the only correct answer. **Do this check before committing
-either way.**
+together), and the format extension is the only correct answer.
 
-#### The tools, none of which exist
+**Answered yes, 2026-07-31, before the layer was built** (notes/xattr.md): `fs.tx(|tx| …)` groups
+arbitrary mutations into one commit, so the file write and the attribute write land together and a
+delete removes both or neither. Milestone 37's crash sweep then measured it rather than inheriting
+it. This paragraph read as an open question until 2026-08-03; it is not one.
+
+#### The tools
+
+**This table was written 2026-07-30 saying "none of which exist" and was wrong within a day.** It
+is corrected here on 2026-08-03 from the tree rather than from the plan, and the correction is
+itself the finding: three of its four rows had landed and the entry still read as though nothing
+had. Take a status from the merged tree.
 
 | Need | Status | Note |
 |---|---|---|
-| **GPT parsing** | **None** | Mandatory even if we never write one: you cannot find a partition on a real disk without reading the table |
-| GPT writing | None | The `mkpart` equivalent. Protective MBR, header, entry array, two CRC32s, backup header at the last LBA |
-| `mkfs` on the target | Host only | `redoxfs_host mkfs IMAGE SIZE_MIB` is a std host tool; the FS server is `no_std` |
-| Block device enumeration | None | "What drives are attached", which is enumeration again and bounded by capabilities exactly as milestone 47's globbing and completion are |
+| **GPT parsing** | **Built** 2026-07-30 | `crates/gpt`, proved against tables `sgdisk` and macOS `diskutil` wrote. Mandatory even if we never write one: you cannot find a partition on a real disk without reading the table |
+| GPT writing | **Built** 2026-07-30 | `Gpt::create`, `write_primary_header`, `write_backup_header`, `mbr::write`. Re-emitting `sgdisk`'s table reproduces its bytes exactly. What it will not do is invent a unique GUID, which is the row below |
+| **Reading a table on the target** | **Built** 2026-08-03 | `disk_surveyor` over the block service, both ISAs, against an image built from the `sgdisk` fixture. notes/block-devices.md |
+| Block device enumeration | **Built** 2026-08-03 | `crates/block_roster`: a read-only page the kernel writes, listing what is attached and deliberately **not** how big it is. Listing and holding are different authorities, and the negative control writes to the roster and dies |
+| Partitioning **on** the target | Blocked on entropy | `Gpt::create` is proved and needs a unique GUID per partition. A GUID that is not random is not unique; the entropy service is where a caller gets one. **No pin divergence needed**, so this is the cheaper of the two write halves |
+| `mkfs` on the target | Blocked on entropy **and a pin divergence** | The finding below. Not blocked on `std`, which is what it looked like |
+
+**What remains is the write half, and both halves of it are the same wall**: an identifier that must
+be unique needs randomness, and neither `crates/gpt` nor a `no_std` RedoxFS has any. The difference
+between the two is that partitioning needs only plumbing (an entropy endpoint into the program that
+does it) while `mkfs` also needs a change inside `vendor/redoxfs`, which is a decision.
 
 #### Finding 2026-08-01: `mkfs` on the target is blocked on **entropy**, not on `std`
 
@@ -4652,8 +4674,10 @@ fixtures; re-emitting `sgdisk`'s table reproduces its bytes exactly, and so does
 scratch. Two findings landed in notes/gpt.md: **macOS writes no GPT partition names at all**, so
 nothing may identify a partition by its label, and the two tools disagree about the protective MBR's
 CHS fields, which is why those are not validated. The cricker-os partition type GUID is DECISIONS §45.
-What remains on this milestone is unchanged: the transaction check for xattrs, `mkfs` on the target,
-block-device enumeration, and the host extraction tool.
+That sentence used to end "what remains on this milestone is unchanged: the transaction check for
+xattrs, `mkfs` on the target, block-device enumeration, and the host extraction tool", and by
+2026-08-03 three of those four were done and the fourth had turned out to be a decision. The list
+now lives in the table above, corrected from the tree.
 
 #### The capability shape is the demonstration
 
@@ -4665,6 +4689,21 @@ enforce it. **Here the warning is structural**: the tool was handed one disk.
 
 That also makes it a natural place for milestone 47's `enumerate` right to earn itself: listing
 attached devices and holding one of them are different authorities.
+
+**Built 2026-08-03, and it did not become an `enumerate` *right*** (notes/block-devices.md). The
+prediction that it would was reasonable and the tree said otherwise: `dir::ENUMERATE` is a bit in a
+capability a server checks, and a device listing has no server to check it. So the listing is a
+**read-only mapping** instead, `crates/block_roster`, which is the compositor's window-enumeration
+shape (DECISIONS §33) rather than the filesystem's. There is nothing to authorize at read time
+because the authorization happened when the mapping was made, and a program that holds no mapping
+has nowhere to look rather than a request that gets refused.
+
+Two consequences worth recording. The roster carries **no capacity**, because a size is a fact about
+a device you hold and you get it from `blk::SIZE`, which takes the endpoint; answering it in the
+listing would quietly make the listing the more powerful of the two authorities, and it would mean
+bringing a PCIe function up on behalf of a `ls`. And the negative control is what turns this from a
+description into a claim: the same binary, given the roster and no disk, writes to the roster's exact
+address and dies.
 
 #### Reading the drive from a MacBook or a Linux host: BUILT 2026-07-30
 
@@ -4704,7 +4743,7 @@ Three paths, and they are not equally good:
 
 | Path | Cost | Verdict |
 |---|---|---|
-| **Extend `tools/redoxfs_host` with `ls` / `cat` / `extract`** | Small; the engine already links there with `std` | **Do this first.** No FUSE, no kernel extension, no root, identical on macOS and Linux. The thing you want at 2am with a dead board. Check whether upstream's `redoxfs-ar` already covers it |
+| **Extend `tools/redoxfs_host` with `ls` / `cat` / `extract`** | Small; the engine already links there with `std` | **DONE 2026-07-30**, plus `import`, `mkfs`, `put` and (2026-08-01) `xattr`. No FUSE, no kernel extension, no root, identical on macOS and Linux. The thing you want at 2am with a dead board. Upstream's `redoxfs-ar` did not cover it: it only writes |
 | **Linux mount via the `fuse` feature** | A feature flag | Nearly free, and upstream maintains it: it is how Redox developers work with images |
 | **macOS mount via macFUSE** | A third-party system extension plus reduced security mode on Apple Silicon | Works, genuinely awkward. **Optional convenience, not the recovery story** |
 
@@ -4742,11 +4781,26 @@ And if Time Machine encryption *is* enabled, recovery then depends on that passw
 the "can I get my data" risk rather than removing it, so the password belongs wherever the family's
 other credentials live rather than only in one Keychain.
 
-**Sequencing.** The GPT crate and the transaction check are independent of everything and can start
-now. The host extraction tool was likewise independent and was the cheapest credibility win on this
-milestone; **it is done** (2026-07-30), which is why the milestone's row now reads PARTIAL. `mkfs` on
-the target wants the block-device path settled. Real drives arrive with milestone 53. **Effort: not estimated**, though the GPT crate alone looks like one lane on the history-calibrated
-scale.
+**Sequencing, rewritten 2026-08-03 because everything it sequenced has happened.** The GPT crate
+(2026-07-30), the transaction check (2026-07-31, answered yes), the host extraction tool
+(2026-07-30, the cheapest credibility win here), the extended-attribute layer and its recovery half
+(2026-07-31 and 2026-08-01), and the block-device path with a real table read on the target
+(2026-08-03) are all done. Real drives arrive with milestone 53; the board arrives around
+2026-08-21.
+
+**What is left is one decision and one small piece of plumbing behind it**, and they are not the
+same size:
+
+- **Partitioning on the target** needs an entropy endpoint in the program that does it, and nothing
+  else. `Gpt::create` is built and proved. No pin divergence. This is a lane.
+- **`mkfs` on the target** needs that plus `Header::new_with_uuid` inside `vendor/redoxfs`, which is
+  a new entry in `vendor/redoxfs.divergence.patch` and a new file in `patches/` for upstream
+  submission. §46's rule makes that Chris's call, and the honest alternative is still on the table:
+  `redoxfs_host` on a Mac formats the drive today, which is what actually gets a disk ready for the
+  board, and the target-side version is then a capability demonstration rather than a prerequisite.
+
+**Effort: not estimated.** The GPT crate turned out to be about one lane on the history-calibrated
+scale, and so did the block-device lane.
 
 
 ## The display ladder (recorded 2026-07-28, Chris's direction)

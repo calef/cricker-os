@@ -1,0 +1,20 @@
+[package]
+name = "block_roster"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+# The block-device roster of milestone 57 (notes/block-devices.md): the read-only page layout that
+# answers "what drives are attached", written once by the kernel and read by whichever program was
+# granted the mapping. Pure logic, host-tested, no_std, dependency-free, so the kernel and the
+# program share ONE definition and cannot drift.
+#
+# NOT a `*_proto`, and the name is deliberate. The ten wire contracts in this directory describe
+# messages two programs exchange; this describes bytes at an address, written once by the kernel and
+# thereafter only read. There is no request, no reply, no server, and nothing to authorize at read
+# time. A reader scanning `crates/` meets it beside `fs_proto` and should not expect a protocol.
+
+[lints]
+workspace = true
+
+[dependencies]

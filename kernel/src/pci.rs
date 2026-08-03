@@ -180,6 +180,27 @@ pub fn find_rng_device() -> Option<PciVirtioDevice> {
     bring_up(bdf, pci::VIRTIO_TYPE_ENTROPY)
 }
 
+/// How many modern virtio-blk functions are on the bus (milestone 57's roster).
+///
+/// **Counting is not bringing up.** [`find_block_device`] resolves a transport, which means sizing
+/// and assigning BARs and enabling memory decoding: side effects a *listing* has no business
+/// causing, and ones that would disturb whichever driver already owns the function. This reads
+/// config space and nothing else, which is all a roster is entitled to know
+/// (`crates/block_roster`).
+pub fn count_block_devices() -> usize {
+    let mut n = 0;
+    pci::enumerate(
+        PCI_ECAM_BUSES,
+        &mut |b, o| cfg_read32(b, o),
+        &mut |_, vendor, device| {
+            if vendor == pci::VIRTIO_VENDOR && device == pci::VIRTIO_BLK_MODERN {
+                n += 1;
+            }
+        },
+    );
+    n
+}
+
 /// Enumerate the bus for the first function matching `modern`, warning (once) if only a
 /// `transitional` (legacy) twin is present, since we drive modern only. `kind` names the device for
 /// that warning. `transitional` is `None` for a device type that has no legacy id at all

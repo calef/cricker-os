@@ -38,8 +38,15 @@ SECTIONS
     } :data
 
     /* .bss is in the `data` segment but occupies NO space in the file. That is what makes
-     * p_memsz > p_filesz, and the loader has to zero the difference. See crates/elf. */
-    .bss : {
+     * p_memsz > p_filesz, and the loader has to zero the difference. See crates/elf.
+     *
+     * ALIGN(4096) here is not tidiness, it is the same rule the sections above follow, and it was
+     * missing. A program with .bss and an EMPTY .data (nothing initialized and non-zero) gets its
+     * .data collapsed by the linker, so the `data` PT_LOAD begins at .bss, which without this
+     * alignment starts wherever .rodata happened to end. The two segments then share a page and the
+     * loader refuses the program with SegmentsOverlap. Found by milestone 57's disk_surveyor, whose
+     * 44 KiB of table buffers are all bss; every earlier program happened to have some .data. */
+    .bss : ALIGN(4096) {
         *(.bss .bss.*)
         *(COMMON)
     } :data

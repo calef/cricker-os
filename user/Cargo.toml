@@ -361,6 +361,18 @@ path = "src/rm.rs"
 test = false
 bench = false
 
+# `disk_surveyor` (milestone 57): what drives are attached, and how the one it holds is divided up.
+# It holds a read-only roster mapping (the listing) and a block-service endpoint (the one disk), and
+# the whole point is that those are two authorities rather than one. Its second role is the negative
+# control: it writes to the roster's address and dies. `mkinitrd` packs it for both ISAs.
+#
+# A surveyor maps land they do not own, which is the split this program exists to demonstrate.
+[[bin]]
+name = "disk_surveyor"
+path = "src/disk_surveyor.rs"
+test = false
+bench = false
+
 # The keyboard driver (milestone 29's input): a confined userspace virtio-input driver whose whole
 # power to inject a keystroke is the mapping of the compositor's input ring, not the doorbell every
 # client holds. `mkinitrd` packs it as "kbd" for both ISAs.
@@ -439,6 +451,8 @@ swap_proto = { version = "0.1.0", path = "../crates/swap_proto" }
 virtio = { version = "0.1.0", path = "../crates/virtio" }
 socket_proto = { version = "0.1.0", path = "../crates/socket_proto" }
 bitfont = { version = "0.1.0", path = "../crates/bitfont" }
+block_roster = { version = "0.1.0", path = "../crates/block_roster" }
+gpt = { version = "0.1.0", path = "../crates/gpt" }
 calendar = { version = "0.1.0", path = "../crates/calendar" }
 grant_plan = { version = "0.1.0", path = "../crates/grant_plan" }
 clock_proto = { version = "0.1.0", path = "../crates/clock_proto" }
