@@ -165,9 +165,13 @@ The port is worth doing precisely because it finds where the abstraction leaked.
    does settle is the *inference*: a silent run is not a run in which the frame fault did not happen,
    because the guard sees only the `t5 == 0` subcase.
 
-   That hang is now **reproducible locally**, one run in four under host load, and it reproduces with
-   this fix in the tree. It is tracked as its own open item in notes/scheduler.md, with the recipe and
-   the thread dump; the dump is legible only because `user_pc` stopped returning 0 here.
+   **That hang is closed, and it was never a RISC-V bug** (milestone 72). One line of test code
+   probed `reclaim_region(...).is_err()` on the child's own TCB region, which under DECISIONS §16 as
+   amended *arms the kill* on the child; the child was then reaped at its next preemption, before it
+   could `SEND`. Widening the window reproduces it on **aarch64** just as deterministically, which is
+   the control that rules the ISA out. Full account in notes/scheduler.md. The dump that made it
+   legible is still owed to `user_pc` no longer returning 0 here, which is the one thing this section
+   can claim.
 
 A related, smaller **ABI leak** the traps step resolves: `syscall.rs` reads the syscall number from
 `frame.x[8]` and args from `frame.x[0..]`, the aarch64 `svc`+`x8` convention. RISC-V's `ecall` ABI
