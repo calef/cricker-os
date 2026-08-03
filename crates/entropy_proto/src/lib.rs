@@ -119,6 +119,17 @@ mod tests {
         assert_eq!(want(w), 5);
     }
 
+    /// Pins the wire layout as an exact word, with an opcode that is not `GET`. `GET` is 1, so an
+    /// `op` that ignored its input and answered 1 would pass every round trip built from it; this
+    /// is the one place the shift is checked against a number the protocol does not define.
+    #[test]
+    fn the_request_word_layout_is_exact() {
+        let w = req(0x7f, 5);
+        assert_eq!(w, 0x7f00_0000_0000_0005);
+        assert_eq!(op(w), 0x7f);
+        assert_eq!(want(w), 5);
+    }
+
     /// A client asking for more than one reply can carry is answered with a full reply, not an
     /// error. The clamp lives in the contract so the server and the caller agree on it without
     /// either one enforcing it.
