@@ -143,6 +143,13 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
             f.addr(),
         );
 
+        // What machine is this (milestone 60). Before the MMU, because this is where a machine that
+        // cannot run us says so and stops, and building fine-grained tables the hardware will not
+        // walk is a worse place to find out. It reads the same device tree `memory::init` just
+        // parsed, then asks OpenSBI what it implements. The summary prints after paging, because
+        // one of the numbers in it is measured by `mmu::init`.
+        arch::isa::init(dtb);
+
         // Replace the coarse RWX boot table with fine-grained W^X Sv39 kernel tables. We keep
         // running (and printing) across the satp switch, which proves the fine map covers this code.
         arch::mmu::init();
@@ -150,6 +157,10 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
             "  paging      : fine-grained W^X Sv39 tables installed, satp switched (paging on: {})",
             arch::mmu::is_enabled(),
         );
+
+        // And say what the machine is. Here rather than in the tour below, so the test, shell and
+        // bench boots report it too: it is the line whoever brings up a board reads first.
+        arch::isa::print_summary();
 
         // The scheduler comes up before the tour (and, in a test build, before the tests): both
         // need threads to switch between, and preemption needs somewhere to go. aarch64 brings it
@@ -525,6 +536,13 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
     // in here is a fault, and a fault is now legible rather than fatal-and-silent.
     memory::init(dtb);
 
+    // What machine is this (milestone 60). Three `mrs` reads, and the reason they happen HERE is
+    // the line below: `mmu::init` takes `TCR_EL1.IPS` from this record and builds tables on a 4 KiB
+    // granule this checks the part actually has. A machine that cannot run us says so and stops,
+    // rather than turning the MMU on and faulting on the next instruction fetch with no console
+    // line to explain it.
+    arch::isa::init(dtb);
+
     // And now the sketchiest moment in the kernel. The instant SCTLR_EL1.M is set, the very
     // next instruction is fetched through the MMU. See arch/aarch64/mmu.rs.
     arch::mmu::init();
@@ -571,6 +589,7 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
         println!();
         println!("cricker-os");
         println!("  exception level : EL{}", CurrentEL.read(CurrentEL::EL));
+        arch::isa::print_summary();
         println!("  stack top       : {:#018x}", stack_top());
         println!("  device tree     : {dtb:#018x}");
         memory::print_summary();

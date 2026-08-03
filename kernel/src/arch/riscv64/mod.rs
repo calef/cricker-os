@@ -16,6 +16,7 @@ pub mod exceptions;
 pub mod interrupts;
 pub mod iommu;
 pub mod irq;
+pub mod isa;
 pub mod mmu;
 pub mod semihosting;
 pub mod timer;

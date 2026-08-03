@@ -12,6 +12,12 @@ use isa::aarch64::*;
 /// change to what every boot of this project prints.
 const A72: (u64, u64, u64) = (0x410f_d083, 0x0000_0000_0000_1124, 0);
 
+/// Assemble an `ID_AA64MMFR0_EL1` from the four fields this decoder reads, so a test below says
+/// which field it is setting instead of leaving a reader to count shifts across a bare expression.
+fn mmfr0(tgran4: u64, tgran64: u64, tgran16: u64, asid_bits: u64, pa_range: u64) -> u64 {
+    (tgran4 << 28) | (tgran64 << 24) | (tgran16 << 20) | (asid_bits << 4) | pa_range
+}
+
 #[test]
 fn a_cortex_a72_decodes_to_a_cortex_a72() {
     let cpu = Isa::decode(A72.0, A72.1, A72.2);
@@ -53,9 +59,8 @@ fn a_cortex_a72_decodes_to_a_cortex_a72() {
 /// that catches it in the other.
 #[test]
 fn the_sixteen_kib_granule_field_is_inverted() {
-    // TGran4 = 0b0000 (yes), TGran64 = 0b1111 (no), TGran16 = 0b0001 (yes).
-    let mmfr0 = (0b0000 << 28) | (0b1111 << 24) | (0b0001 << 20) | (0b0010 << 4) | 0b0101;
-    let cpu = Isa::decode(0, mmfr0, 0);
+    // 4 KiB yes, 64 KiB no, 16 KiB yes, 16-bit ASIDs, 48-bit PA.
+    let cpu = Isa::decode(0, mmfr0(0b0000, 0b1111, 0b0001, 0b0010, 0b0101), 0);
 
     assert!(cpu.granules.k4);
     assert!(
@@ -69,13 +74,14 @@ fn the_sixteen_kib_granule_field_is_inverted() {
 /// **A machine with no 4 KiB granule cannot run this kernel**, and the record has to say so rather
 /// than let `mmu::init` build tables the hardware will not walk.
 ///
-/// No shipping ARMv8 part is like this; it is architecturally permitted, and the check costs one
+/// No shipping `ARMv8` part is like this; it is architecturally permitted, and the check costs one
 /// comparison at boot. The same argument as the RISC-V ASID probe: the cheap check is worth having
 /// on the day some core somewhere takes the option.
 #[test]
 fn a_machine_without_the_4k_granule_is_refused() {
-    let mmfr0 = (0b1111u64 << 28) | (0b0000 << 24) | (0b0001 << 20) | (0b0010 << 4) | 0b0101;
-    let missing = Isa::decode(0, mmfr0, 0).missing_requirements();
+    // 4 KiB no, 64 KiB yes, 16 KiB yes, 16-bit ASIDs, 48-bit PA.
+    let missing =
+        Isa::decode(0, mmfr0(0b1111, 0b0000, 0b0001, 0b0010, 0b0101), 0).missing_requirements();
 
     assert!(missing.any());
     assert!(missing.granule_4k);
@@ -95,8 +101,8 @@ fn a_machine_without_the_4k_granule_is_refused() {
 /// architected, and the only way to get it wrong is to trust an encoding ARM never defined.
 #[test]
 fn a_reserved_asid_encoding_is_refused_rather_than_rounded() {
-    let mmfr0 = (0b0001u64 << 4) | 0b0101; // ASIDBits = 1, which ARM does not define
-    let cpu = Isa::decode(0, mmfr0, 0);
+    // ASIDBits = 0b0001, which ARM does not define. Everything else is a normal part.
+    let cpu = Isa::decode(0, mmfr0(0b0000, 0b0000, 0b0001, 0b0001, 0b0101), 0);
 
     assert_eq!(cpu.asid_bits, 0);
     assert!(cpu.missing_requirements().asid_bits);

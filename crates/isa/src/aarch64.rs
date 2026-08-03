@@ -88,7 +88,7 @@ impl Isa {
     /// against words captured from real parts.
     ///
     /// The field positions are the ARM ARM's (D19.2 in DDI 0487): `MIDR_EL1` is
-    /// implementer[31:24] / variant[23:20] / architecture[19:16] / partnum[15:4] / revision[3:0],
+    /// `implementer` 31:24, `variant` 23:20, `architecture` 19:16, `partnum` 15:4, `revision` 3:0,
     /// and the `ID_AA64MMFR*` fields are 4 bits each at the offsets named below.
     pub fn decode(midr_el1: u64, mmfr0_el1: u64, mmfr2_el1: u64) -> Isa {
         let f = |reg: u64, shift: u32| ((reg >> shift) & 0xf) as u8;

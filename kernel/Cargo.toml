@@ -56,6 +56,11 @@ elf = { version = "0.1.0", path = "../crates/elf" }
 frames = { version = "0.1.0", path = "../crates/frames" }
 intrusive = { version = "0.1.0", path = "../crates/intrusive" }
 ipc = { version = "0.1.0", path = "../crates/ipc" }
+# What machine is this (milestone 60). The kernel reads the device tree and the ID registers; every
+# decoding of what it finds lives in the crate, host-tested against a real device tree and against
+# words a real part reports, because a parser proved only inside a booting kernel is a parser proved
+# by nothing that runs in milliseconds.
+isa = { version = "0.1.0", path = "../crates/isa" }
 # The terminal contract's IPC framing (DECISIONS §21): the kernel's display-terminal tests play both
 # an application (OP_WRITE) and an input driver (OP_BYTES), so they speak the same protocol the
 # serial terminal's clients and drivers do rather than a second one invented for a test.

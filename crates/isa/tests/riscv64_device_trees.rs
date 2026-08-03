@@ -31,6 +31,7 @@ fn parse_tree(bytes: &[u8]) -> Isa {
 /// them all for the same uninteresting reason.
 fn parse(bytes: &[u8]) -> Isa {
     let mut cpu = parse_tree(bytes);
+    cpu.sbi.spec_major = 2;
     cpu.sbi.extensions = SBI_REQUIRED;
     cpu
 }
@@ -160,10 +161,12 @@ fn narrow_machine_is_refused() {
 fn sbi_requirements_are_separate_from_the_tree() {
     let mut cpu = parse_tree(QEMU_VIRT);
     assert!(
-        cpu.missing_requirements().sbi.contains(SBI_RFENCE),
-        "an unfilled record has no SBI at all, which is the honest default"
+        !cpu.sbi.answered(),
+        "a record filled from the tree alone has heard nothing from firmware"
     );
 
+    // SBI v2.0, with everything.
+    cpu.sbi.spec_major = 2;
     cpu.sbi.extensions = SBI_REQUIRED;
     assert!(
         !cpu.missing_requirements().any(),
@@ -176,6 +179,25 @@ fn sbi_requirements_are_separate_from_the_tree() {
     let missing = cpu.missing_requirements();
     assert!(missing.sbi.contains(SBI_RFENCE));
     assert!(!missing.sbi.contains(SBI_TIME));
+}
+
+/// **Firmware too old to be asked is not firmware that failed.**
+///
+/// SBI v0.1 predates the base extension, so `probe_extension` cannot run and every answer comes
+/// back empty. Treating that as "no RFENCE" would refuse to boot on a machine whose firmware may
+/// well have it. The same rule as a device tree that does not describe its ISA: report the silence,
+/// do not manufacture a failure out of it.
+#[test]
+fn firmware_that_cannot_be_asked_is_not_a_failure() {
+    let mut cpu = parse_tree(QEMU_VIRT);
+    cpu.sbi = Sbi::default();
+
+    assert!(!cpu.sbi.answered());
+    assert!(
+        cpu.missing_requirements().sbi.is_empty(),
+        "nothing to report: the question never got through"
+    );
+    assert!(!cpu.missing_requirements().any());
 }
 
 /// A tree with no CPU node at all. The kernel is running, so silence is not evidence of a machine

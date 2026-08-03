@@ -441,9 +441,14 @@ pub const SBI_REQUIRED: SbiExtensions = {
 pub struct Sbi {
     /// SBI spec version, from `sbi_get_spec_version`. `0.0` means the base extension itself did not
     /// answer, which no conforming firmware does.
+    ///
+    /// **The minor number is 24 bits wide, not 16**, and the major is the seven bits above it. That
+    /// is a lopsided split and it is the specification's; a decoder that assumes the obvious 16/16
+    /// reads QEMU's `0x0300_0000` (SBI 3.0) as version 0.0 and concludes the firmware never
+    /// answered. This one did, on the machine, after the host tests were green.
     pub spec_major: u8,
-    pub spec_minor: u16,
-    /// `sbi_get_impl_id`. 1 is OpenSBI, 0 is BBL, 4 is RustSBI; see [`Sbi::impl_name`].
+    pub spec_minor: u32,
+    /// `sbi_get_impl_id`. 1 is `OpenSBI`, 0 is BBL, 4 is `RustSBI`; see [`Sbi::impl_name`].
     pub impl_id: u32,
     /// `sbi_get_impl_version`. The implementation's own encoding, printed raw because only the
     /// implementation knows how to read it.
@@ -452,6 +457,20 @@ pub struct Sbi {
 }
 
 impl Sbi {
+    /// **Did the base extension answer at all?**
+    ///
+    /// No conforming firmware reports spec version 0.0, so a zero here means the `ecall` went
+    /// nowhere: SBI v0.1 (2019) predates the base extension, and firmware that old cannot be asked
+    /// what it implements.
+    ///
+    /// This is the same rule the device-tree half follows, one source over: **silence is not
+    /// evidence of absence.** Refusing to boot because a probe could not run would refuse on a
+    /// machine that works, so [`Isa::missing_requirements`] skips the SBI check entirely when this
+    /// is false, and the boot line says the four extensions are unverified rather than present.
+    pub fn answered(self) -> bool {
+        self.spec_major != 0 || self.spec_minor != 0
+    }
+
     /// The name of the firmware, for the boot line. The ids are assigned in the SBI specification's
     /// implementation-id registry; unknown ones print as a number rather than a guess.
     pub fn impl_name(self) -> Option<&'static str> {
@@ -513,7 +532,8 @@ pub struct Missing {
     pub extensions: Extensions,
     /// The tree declares an MMU narrower than Sv39. `false` when it declares nothing.
     pub mmu: bool,
-    /// Required SBI extensions (see [`SBI_REQUIRED`]) the firmware does not implement.
+    /// Required SBI extensions (see [`SBI_REQUIRED`]) the firmware says it does not implement.
+    /// Empty when the base extension did not answer at all (see [`Sbi::answered`]).
     pub sbi: SbiExtensions,
 }
 
@@ -540,7 +560,11 @@ impl Isa {
                 REQUIRED.difference(self.common)
             },
             mmu: self.mmu != MmuType::Unknown && self.mmu < MmuType::Sv39,
-            sbi: SBI_REQUIRED.difference(self.sbi.extensions),
+            sbi: if self.sbi.answered() {
+                SBI_REQUIRED.difference(self.sbi.extensions)
+            } else {
+                SbiExtensions::NONE
+            },
         }
     }
 

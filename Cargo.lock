@@ -309,6 +309,7 @@ dependencies = [
  "grant_plan",
  "intrusive",
  "ipc",
+ "isa",
  "line_editor",
  "measured_boot",
  "ntp_proto",
