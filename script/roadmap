@@ -83,7 +83,8 @@ for i, line in enumerate(index.split("\n"), start=1):
         problems.append(f"milestone {num} has two index rows (line {i})")
     if status not in VOCAB:
         problems.append(f"milestone {num}: status {status!r} is not in the vocabulary (line {i})")
-    if not re.fullmatch(rf"{num}-[a-z0-9][a-z0-9-]*\.md", target):
+    # Single-digit milestones zero-pad their filenames (01-first-boot.md) so the directory sorts.
+    if not re.fullmatch(rf"0?{num}-[a-z0-9][a-z0-9-]*\.md", target):
         problems.append(f"milestone {num}: row links to {target!r}, not to its own file")
     elif not os.path.exists(os.path.join(d, target)):
         problems.append(f"milestone {num}: row links to {target!r}, which does not exist")
@@ -156,8 +157,9 @@ for line in grep.stdout.splitlines():
     loc = ":".join(line.split(":", 2)[:2])
     for m in re.finditer(r"[Mm]ilestone (\d+)", line.split(":", 2)[2]):
         n = int(m.group(1))
-        # Milestones below 12 predate the table (the early history lives in git and DECISIONS).
-        if n >= 12 and n not in rows:
+        # No floor: milestones 1 to 11 were backfilled from the first commits on 2026-08-03,
+        # so every citation back to the first instruction resolves or fails the gate.
+        if n not in rows:
             problems.append(f"{loc}: cites milestone {n}, which has no index row")
 
 # ---- report ------------------------------------------------------------------

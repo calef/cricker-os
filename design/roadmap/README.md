@@ -1,6 +1,7 @@
 # Post-v1 milestone roadmap
 
-The eleven milestones in DECISIONS.md were the plan, and they are done. This is the roadmap past
+The eleven milestones in DECISIONS.md were the plan, and they are done; rows 1 to 11 record them,
+backfilled 2026-08-03 from the first commits' history (milestone 76). The rest is the roadmap past
 them. It began (see the git history of `design/roadmap.md`, this directory's predecessor) as an uncommitted `design/` proposal drawn from the
 architecture discussion comparing Windows NT, macOS/XNU, and Linux. It now has a **committed
 destination**: DECISIONS §14, a verified-Rust capability microkernel that runs real workloads. That
@@ -75,6 +76,17 @@ besides, being built for dated release grouping; these are capability-shaped and
 
 | #  | Status | Milestone | Why it matters (§14) |
 |----|--------|-----------|----------------------|
+| 1 | BUILT | [Boot to Rust on QEMU `virt`, and print to the PL011 UART](01-first-boot.md) | the first instruction; freestanding Rust, the linker script, and a test harness on day one |
+| 2 | BUILT | [Exception vectors, and a fault that tells you what it was](02-exception-vectors.md) | faults, interrupts, and syscalls are one mechanism; this is the plumbing for all three |
+| 3 | BUILT | [Hand out physical memory, and detect a smashed stack](03-frame-allocator.md) | where RAM actually comes from, and the allocator allocates itself first |
+| 4 | BUILT | [MMU on: page tables, the kernel heap, the high half](04-mmu-and-heap.md) | virtual memory with W^X and a guard page; the heap milestone 14 later removed on purpose |
+| 5 | BUILT | [The GIC and the timer: the kernel is preemptible](05-gic-and-timer.md) | the preemption source, and the locking discipline becomes load-bearing |
+| 6 | BUILT | [Threads, the context switch, and preemption](06-threads-and-preemption.md) | a hostile loop that never yields is preempted anyway, DECISIONS §5 made executable |
+| 7 | BUILT | [User mode: EL0, capabilities, the ELF loader, and IPC](07-user-mode.md) | the actual OS boundary, and the §10 decision made deliberately at the parked decision point |
+| 8 | BUILT | [The console driver leaves the kernel](08-console-leaves-the-kernel.md) | the microkernel thesis, executable: no user-reachable path touches kernel UART code |
+| 9 | BUILT | [A virtio-blk driver at EL0, and an interrupt becomes a message](09-virtio-blk-at-el0.md) | userspace drivers: MMIO by capability, IRQ as message, the kernel touches no DMA |
+| 10 | BUILT | [A shell at EL0, and processes spawned on command](10-shell-and-spawn.md) | proof the whole stack works: every keystroke is a conversation between processes |
+| 11 | BUILT | [Untyped memory, and the number that proves the kernel stops allocating](11-untyped-memory.md) | a process cannot make the kernel allocate, so it cannot exhaust it |
 | 12 | BUILT | [Call/Reply IPC: a one-shot reply capability](12-call-reply-ipc.md) | the IPC the TCB must get right |
 | 13 | BUILT | [Capability revocation + untyped reclamation](13-capability-revocation.md) | safe teardown, a TCB property |
 | 26 | BUILT | [Object revocation: tear a process back down](26-object-revocation.md) | the teardown half of "run real workloads": a process can be reaped, not just built |
