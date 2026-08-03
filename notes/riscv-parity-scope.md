@@ -309,6 +309,41 @@ its frames, so every later free-frame baseline in the suite may shift. That is p
 change that needs a full run on both ISAs to believe, and it is why it does not belong bolted onto a
 test-portability lane.
 
+### CORRECTED 2026-08-02: most of this was a placement bug, not host load
+
+**The section below is kept because its measurement is sound and its conclusion was wrong**, and the
+way it was wrong is the useful part.
+
+`every_secondary_runs_scheduled_work` was failing because each secondary's probe was spawned with
+plain `sched::spawn`, which places by **§28's power of two choices**: the lighter of two randomly
+sampled cores, deliberately not the spawner's. The probes scattered, and any core nobody sampled
+never set its `RAN_ON` slot. **The test was waiting on a condition that could not become true**, and
+passed only when the random placement happened to cover every core. Fixed by spawning the probe with
+`spawn_on(cpu::id(), ..)`, which is what the test always meant.
+
+**Why "host-load sensitive" was a believable wrong answer.** A random placement moves between runs
+*exactly* the way a contended runner does. On 2026-08-02 it failed three pull requests in a row on
+three different RISC-V CPU models, and that wandering was read as evidence about the host. It is
+equally the signature of nondeterministic placement, and nothing in the failure distinguishes them.
+
+**What distinguished them was a fix that did not work.** Widening the wait from 10 s to 60 s changed
+nothing. A deadline cannot fix an unreachable condition, so the failure surviving a 6x wider bound
+ruled out slowness in a way no amount of re-running could have. The corroboration was in the same
+logs the whole time: `a_batch_of_cpu_bound_work_reaches_every_core` and `all_secondaries_came_online`
+**pass** in the runs where this fails, so the cores are online and running work and only the per-core
+attribution breaks.
+
+**This is the second time §28 has invalidated a placement assumption in a test**, and both are in this
+file. The reap wait above was a yield count until §28's cross-core placement broke it. The shape is
+worth naming: a test that spawns a thread and then asserts something about *where* it ran is relying
+on placement, and §28 made placement random. `sched::spawn` is now the wrong call in any test whose
+subject is a particular core; `spawn_on` is the one that means what such a test says.
+
+The load sensitivity below is **real and separately measured**, and the 60 s bound was kept for it.
+It was the wrong explanation for this failure, not a wrong measurement.
+
+---
+
 ### The suite's deadline tests are host-load sensitive, on `main`, today
 
 Worth recording separately because it was nearly misattributed. `kernel::smp::tests` uses a ten-second
