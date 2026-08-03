@@ -434,6 +434,9 @@ fn build_child(
         while va < end {
             let frame = retype_frame_from(build_ut)?;
             let scratch = SCRATCH_NEXT.fetch_add(PAGE, core::sync::atomic::Ordering::Relaxed);
+            // SAFETY: `invoke` traps to the kernel, which validates the capability and the method
+            // before acting (user_rt's contract). A caller cannot break an invariant by passing a
+            // bad slot or method; it gets an error back.
             if unsafe { invoke(frame, abi::frame::MAP, scratch, 1, UNTYPED) } != 0 {
                 return Err(());
             }
@@ -450,6 +453,7 @@ fn build_child(
                 let len = (hi - lo) as usize;
                 dst[d..d + len].copy_from_slice(&seg.data[s..s + len]);
             }
+            // SAFETY: as above: the kernel validates the capability and the method.
             if unsafe { invoke(aspace, abi::aspace::MAP_INTO, va, frame, mode) } != 0 {
                 return Err(());
             }
@@ -461,6 +465,7 @@ fn build_child(
     for k in 0..CHILD_STACK_PAGES {
         let stack_frame = retype_frame_from(build_ut)?;
         let va = CHILD_STACK_VA - k * PAGE;
+        // SAFETY: as above: the kernel validates the capability and the method.
         if unsafe {
             invoke(
                 aspace,
@@ -477,6 +482,7 @@ fn build_child(
     }
 
     for &(va, our_slot, mode) in maps {
+        // SAFETY: as above: the kernel validates the capability and the method.
         if unsafe { invoke(aspace, abi::aspace::MAP_INTO, va, our_slot, mode) } != 0 {
             return Err(());
         }
@@ -484,10 +490,12 @@ fn build_child(
 
     let tcb = retype_obj_from(build_ut, abi::objtype::TCB)?;
     for &(our_slot, rights) in caps {
+        // SAFETY: as above: the kernel validates the capability and the method.
         if unsafe { invoke(tcb, abi::tcb::CAP_INSERT, our_slot, rights, 0) } < 0 {
             return Err(());
         }
     }
+    // SAFETY: as above: the kernel validates the capability and the method.
     if unsafe {
         invoke(
             tcb,
@@ -508,6 +516,7 @@ fn retype_obj(objtype: u64) -> Result<u64, ()> {
 }
 
 fn retype_obj_from(ut: u64, objtype: u64) -> Result<u64, ()> {
+    // SAFETY: as above: the kernel validates the capability and the method.
     let r = unsafe { invoke(ut, abi::untyped::RETYPE_OBJ, objtype, 0, 0) };
     if r < 0 { Err(()) } else { Ok(r as u64) }
 }
@@ -517,6 +526,7 @@ fn retype_frame() -> Result<u64, ()> {
 }
 
 fn retype_frame_from(ut: u64) -> Result<u64, ()> {
+    // SAFETY: as above: the kernel validates the capability and the method.
     let r = unsafe { invoke(ut, abi::untyped::RETYPE, 0, 0, 0) };
     if r < 0 { Err(()) } else { Ok(r as u64) }
 }
@@ -524,11 +534,13 @@ fn retype_frame_from(ut: u64) -> Result<u64, ()> {
 /// Carve `pages` off our own untyped into a new child untyped we can delegate (milestone 31). The
 /// SPLIT grants us full rights on the child, including GRANT, so we can hand a memory budget on.
 fn untyped_split(pages: u64) -> Result<u64, ()> {
+    // SAFETY: as above: the kernel validates the capability and the method.
     let r = unsafe { invoke(UNTYPED, abi::untyped::SPLIT, pages, 0, 0) };
     if r < 0 { Err(()) } else { Ok(r as u64) }
 }
 
 fn tcb_start(tcb: u64, a0: u64, a1: u64, a2: u64) -> i64 {
+    // SAFETY: as above: the kernel validates the capability and the method.
     unsafe { invoke(tcb, abi::tcb::START, a0, a1, a2) }
 }
 

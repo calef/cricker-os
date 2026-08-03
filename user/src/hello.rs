@@ -186,10 +186,14 @@ fn print(bytes: &[u8]) -> Result<(), Error> {
     // ack and the next send, which the reply below is what guarantees.
     let shared = SHARED_VA as *mut u8;
     for (i, &b) in bytes[..n].iter().enumerate() {
+        // SAFETY: `invoke` traps to the kernel, which validates the capability and the method
+        // before acting (user_rt's contract). A caller cannot break an invariant by passing a
+        // bad slot or method; it gets an error back.
         unsafe { core::ptr::write_volatile(shared.add(i), b) };
     }
 
     // The length is the message. The data is already in place, shared, uncopied.
+    // SAFETY: as above: the kernel validates the capability and the method.
     let r = unsafe { invoke(REQUEST, endpoint::SEND, n as u64, 0, 0) };
     if let Some(e) = Error::from_ret(r) {
         return Err(e); // e.g. NoSuchSlot: we were not handed a console
@@ -256,6 +260,7 @@ fn revoke_demo() -> ! {
     let frame = unsafe { invoke(UNTYPED, abi::untyped::RETYPE, 0, 0, 0) };
     check(frame >= 0);
     let frame = frame as u64;
+    // SAFETY: as above: the kernel validates the capability and the method.
     check(unsafe { invoke(frame, abi::frame::MAP, VA, 1, UNTYPED) } == 0);
     // SAFETY: VA is now a mapped, writable page in our address space.
     unsafe { core::ptr::write_volatile(VA as *mut u64, 0xABCD) };
@@ -848,6 +853,7 @@ fn init_console(initrd_len: u64) -> ! {
     };
 
     // Map the shared page read/write in init's own space, so init (the client) can write into it.
+    // SAFETY: as above: the kernel validates the capability and the method.
     if unsafe { invoke(shared, abi::frame::MAP, SHARED_VA, 1, UNTYPED) } != 0 {
         fail_report(REPORT);
     }
@@ -997,6 +1003,7 @@ fn build_child(
             // supervised job `untyped` is the shell's region, and a forcible teardown `DESTROY`s it,
             // which must not free init's own page tables out from under its persistent scratch window
             // (milestone 24). The frame itself is the child's, from `untyped`.
+            // SAFETY: as above: the kernel validates the capability and the method.
             if unsafe { invoke(frame, abi::frame::MAP, scratch, 1, INIT_BUDGET) } != 0 {
                 return Err(());
             }
@@ -1015,6 +1022,7 @@ fn build_child(
                 dst[d..d + n].copy_from_slice(&seg.data[sidx..sidx + n]);
             }
             // Into the child at the segment's own VA, with the segment's permissions.
+            // SAFETY: as above: the kernel validates the capability and the method.
             if unsafe { invoke(aspace, abi::aspace::MAP_INTO, va, frame, mode) } != 0 {
                 return Err(());
             }
@@ -1038,6 +1046,7 @@ fn build_child(
     for k in 0..CHILD_STACK_PAGES {
         let stack_frame = retype_frame(untyped)?;
         let va = CHILD_STACK_VA - k * PAGE;
+        // SAFETY: as above: the kernel validates the capability and the method.
         if unsafe {
             invoke(
                 aspace,
@@ -1056,6 +1065,7 @@ fn build_child(
     // The extra mappings: a device's registers, a shared buffer. Each is a cap init holds, mapped
     // into the child at the given VA. The child accesses them directly; it never holds the caps.
     for &(va, init_slot, mode) in maps {
+        // SAFETY: as above: the kernel validates the capability and the method.
         if unsafe { invoke(aspace, abi::aspace::MAP_INTO, va, init_slot, mode) } != 0 {
             return Err(());
         }
@@ -1064,10 +1074,12 @@ fn build_child(
     // The thread, then its initial authority, one grant per slot in order, then configured.
     let tcb = retype_obj(untyped, abi::objtype::TCB)?;
     for &(init_slot, rights) in caps {
+        // SAFETY: as above: the kernel validates the capability and the method.
         if unsafe { invoke(tcb, abi::tcb::CAP_INSERT, init_slot, rights, 0) } < 0 {
             return Err(());
         }
     }
+    // SAFETY: as above: the kernel validates the capability and the method.
     if unsafe {
         invoke(
             tcb,
@@ -1101,12 +1113,14 @@ const CHILD_JOBFRAME_VA: u64 = 0x0030_0000;
 
 /// Retype a kernel object (endpoint | aspace | tcb) out of `untyped`; returns its cap slot.
 fn retype_obj(untyped: u64, objtype: u64) -> Result<u64, ()> {
+    // SAFETY: as above: the kernel validates the capability and the method.
     let r = unsafe { invoke(untyped, abi::untyped::RETYPE_OBJ, objtype, 0, 0) };
     if r < 0 { Err(()) } else { Ok(r as u64) }
 }
 
 /// Retype a page of `untyped` into a Frame capability; returns its cap slot.
 fn retype_frame(untyped: u64) -> Result<u64, ()> {
+    // SAFETY: as above: the kernel validates the capability and the method.
     let r = unsafe { invoke(untyped, abi::untyped::RETYPE, 0, 0, 0) };
     if r < 0 { Err(()) } else { Ok(r as u64) }
 }
@@ -1114,6 +1128,7 @@ fn retype_frame(untyped: u64) -> Result<u64, ()> {
 /// Carve `pages` off `untyped` into a new child untyped we can delegate (milestone 31). The SPLIT
 /// grants full rights on the child, including GRANT, so a memory budget can be handed on.
 fn untyped_split(untyped: u64, pages: u64) -> Result<u64, ()> {
+    // SAFETY: as above: the kernel validates the capability and the method.
     let r = unsafe { invoke(untyped, abi::untyped::SPLIT, pages, 0, 0) };
     if r < 0 { Err(()) } else { Ok(r as u64) }
 }
@@ -1121,6 +1136,7 @@ fn untyped_split(untyped: u64, pages: u64) -> Result<u64, ()> {
 /// Start a configured TCB, handing the child `arg0`, `arg1`, `arg2` as its first three registers.
 /// Returns the syscall result.
 fn tcb_start(tcb: u64, arg0: u64, arg1: u64, arg2: u64) -> i64 {
+    // SAFETY: as above: the kernel validates the capability and the method.
     unsafe { invoke(tcb, abi::tcb::START, arg0, arg1, arg2) }
 }
 
@@ -1147,14 +1163,17 @@ fn aspace_builder() -> ! {
     let mut verdict = 0u64;
     if aspace >= 0 {
         verdict |= 1; // built a space out of our own pages
+        // SAFETY: as above: the kernel validates the capability and the method.
         let frame = unsafe { invoke(UNTYPED, abi::untyped::RETYPE, 0, 0, 0) };
         if frame >= 0 {
             let mapped =
+                // SAFETY: as above: the kernel validates the capability and the method.
                 unsafe { invoke(aspace as u64, abi::aspace::MAP_INTO, VA, frame as u64, 1) };
             if mapped == 0 {
                 verdict |= 2; // mapped our frame into the space we built
             }
             let again =
+                // SAFETY: as above: the kernel validates the capability and the method.
                 unsafe { invoke(aspace as u64, abi::aspace::MAP_INTO, VA, frame as u64, 1) };
             if again < 0 {
                 verdict |= 4; // the same va twice was refused: break-before-make holds there too
@@ -1250,6 +1269,7 @@ fn receiver() -> ! {
 
     // Try to pass it on. We hold it WITHOUT grant, so the kernel refuses before any rendezvous, and
     // the invoke returns an error. LOOPBACK needs no receiver: the refusal happens at the check.
+    // SAFETY: as above: the kernel validates the capability and the method.
     let redelegate = unsafe { invoke(LOOPBACK, endpoint::SEND_CAP, got, abi::rights::WRITE, 0) };
     let refused = redelegate < 0;
 

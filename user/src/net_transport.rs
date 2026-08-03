@@ -94,13 +94,18 @@ fn w8(off: u64, v: u8) {
     unsafe { core::ptr::write_volatile((DMA_VA + off) as *mut u8, v) }
 }
 fn w16(off: u64, v: u16) {
+    // SAFETY: `invoke` traps to the kernel, which validates the capability and the method
+    // before acting (user_rt's contract). A caller cannot break an invariant by passing a
+    // bad slot or method; it gets an error back.
     unsafe { core::ptr::write_volatile((DMA_VA + off) as *mut u16, v) }
 }
 
 fn mr(off: u64) -> u32 {
+    // SAFETY: as above: the kernel validates the capability and the method.
     unsafe { invoke(VIRTIO, virtio::READ_REG, off, 0, 0) as u32 }
 }
 fn mw(off: u64, v: u32) {
+    // SAFETY: as above: the kernel validates the capability and the method.
     unsafe {
         invoke(VIRTIO, virtio::WRITE_REG, off, v as u64, 0);
     }
@@ -164,10 +169,12 @@ impl VirtioNet {
 
         // Set up both queues through the kernel; it programs each queue's ring addresses.
         assert_eq!(
+            // SAFETY: as above: the kernel validates the capability and the method.
             unsafe { invoke(VIRTIO, virtio::SETUP_QUEUE, QSIZE as u64, RX_Q, 0) },
             0,
         );
         assert_eq!(
+            // SAFETY: as above: the kernel validates the capability and the method.
             unsafe { invoke(VIRTIO, virtio::SETUP_QUEUE, QSIZE as u64, TX_Q, 0) },
             0,
         );

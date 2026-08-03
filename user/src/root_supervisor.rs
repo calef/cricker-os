@@ -156,7 +156,11 @@ pub extern "C" fn _start(_a0: u64, initrd_len: u64, _a2: u64) -> ! {
     // And prove it, from the inside, on the two primitives that build things: retype a page, and
     // retype a kernel object. Both must now fail with `NoSuchSlot` (-1), which is what
     // no-ambient-authority feels like: there is nothing there, and no way to name what used to be.
+    // SAFETY: `invoke` traps to the kernel, which validates the capability and the method
+    // before acting (user_rt's contract). A caller cannot break an invariant by passing a
+    // bad slot or method; it gets an error back.
     let frame = unsafe { invoke(ROOT_UT, abi::untyped::RETYPE, 0, 0, 0) };
+    // SAFETY: as above: the kernel validates the capability and the method.
     let object = unsafe { invoke(ROOT_UT, abi::untyped::RETYPE_OBJ, abi::objtype::TCB, 0, 0) };
     send(
         REPORT,

@@ -193,6 +193,9 @@ fn server(dma_phys: u64) -> ! {
                 // from net_stack's untyped; the mapping outlives the cap, so drop the cap after. ATTACH
                 // is a SEND_CAP, so there is no reply cap to answer on.
                 let va = socket_va(sid);
+                // SAFETY: `invoke` traps to the kernel, which validates the capability and the method
+                // before acting (user_rt's contract). A caller cannot break an invariant by passing a
+                // bad slot or method; it gets an error back.
                 let r = unsafe { invoke(cap_slot, fr::MAP, va, 1, UNTYPED) };
                 cap_delete(cap_slot);
                 if r >= 0 {
@@ -328,6 +331,7 @@ fn wait_for_nic(
     sockets: &mut SocketSet,
 ) {
     if iface.poll_delay(instant(), sockets).is_none() {
+        // SAFETY: as above: the kernel validates the capability and the method.
         unsafe {
             invoke(IRQ, irq::WAIT, 0, 0, 0);
         }

@@ -474,6 +474,9 @@ fn complete_block(used_before: u16) {
         // the controller, which the kernel masked when it fired. SAFETY: `svc`.
         let istatus = mr(INTERRUPT_STATUS);
         mw(INTERRUPT_ACK, istatus);
+        // SAFETY: `invoke` traps to the kernel, which validates the capability and the method
+        // before acting (user_rt's contract). A caller cannot break an invariant by passing a
+        // bad slot or method; it gets an error back.
         unsafe { invoke(IRQ, irq::ACK, 0, 0, 0) };
 
         barrier();
@@ -636,6 +639,7 @@ fn init_net() {
     // Both queues, through the kernel: it programs each queue's ring addresses to that queue's block
     // in our DMA region, so we never choose them. SAFETY: `svc`.
     assert!(unsafe { invoke(VIRTIO, abi::virtio::SETUP_QUEUE, QSIZE as u64, NET_RX_Q, 0) } == 0);
+    // SAFETY: as above: the kernel validates the capability and the method.
     assert!(unsafe { invoke(VIRTIO, abi::virtio::SETUP_QUEUE, QSIZE as u64, NET_TX_Q, 0) } == 0);
 
     mw(
@@ -968,9 +972,11 @@ fn complete_blk(used_before: u16) {
     // already pending and the kernel's pending-signal count (DECISIONS §9a) returns this WAIT at once
     // rather than blocking on an event already over. See notes/dma.md.
     loop {
+        // SAFETY: as above: the kernel validates the capability and the method.
         unsafe { invoke(IRQ, irq::WAIT, 0, 0, 0) };
         let istatus = mr(INTERRUPT_STATUS);
         mw(INTERRUPT_ACK, istatus);
+        // SAFETY: as above: the kernel validates the capability and the method.
         unsafe { invoke(IRQ, irq::ACK, 0, 0, 0) };
         barrier();
         if dma_read::<u16>(OFF_USED + 2) != used_before {
