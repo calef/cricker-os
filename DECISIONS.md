@@ -5027,8 +5027,8 @@ from the table rather than present with a pile of `#[allow]`s underneath them.
 ### BUGS
 
 `script/decisions --check` cannot see a section in the WRONG PLACE, only a missing number. §61
-itself landed below the `## Reading` closer when it was written, so the headings read `...§59, §60,
-## Reading, §61`, and the gate reported "numbering clean" the whole time because it tests for gaps
+itself landed below the `## Reading` closer when it was written, so the headings ran §59, §60,
+then the closer, then §61, and the gate reported "numbering clean" throughout because it tests for gaps
 (`set(range(1, max+1)) - set(seen)`) and never for order. Corrected by hand on 2026-08-03. This is
 the same well-formed-but-wrong blind spot CLAUDE.md already records for `§N` citations, which is why
 it is written down here rather than only fixed: the check that would catch it is a comparison of
