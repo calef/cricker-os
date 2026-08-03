@@ -950,4 +950,95 @@ mod tests {
              readable with a stopwatch",
         );
     }
+    // The tests from here down each pin something milestone 85's mutation run showed nothing
+    // pinned. See notes/mutation-testing.md.
+
+    /// The length guards, boundary by boundary: every existing test used either a short name or
+    /// one past the limit, so `>` could rot to `>=` (refusing the longest legal identity) with
+    /// nothing failing. A 64-byte identity and a 256-byte secret are legal, in `derive`, in
+    /// `decode`, and in `verify`.
+    #[test]
+    fn the_longest_identity_and_secret_are_legal() {
+        let cost = cheap();
+        let mut mem = scratch(cost);
+        let id = [b'i'; MAX_IDENTITY];
+        let secret = [b's'; MAX_SECRET];
+        let r = Record::derive(&id, &secret, [7u8; SALT_LEN], cost, &mut mem).unwrap();
+        assert_eq!(r.identity(), &id);
+        let back = Record::decode(&r.encode()).unwrap();
+        assert_eq!(back.identity(), &id);
+
+        let mut s = Store::<3>::new(cost, [7u8; SALT_LEN], [9u8; TAG_LEN]);
+        s.put(&id, &secret, [7u8; SALT_LEN], &mut mem).unwrap();
+        assert_eq!(s.verify(&id, &secret, &mut mem), Ok(Verdict::Match));
+        // One past each limit is already covered elsewhere; empty plus over-long together also
+        // pin the guard's `||` (an `&&` there accepts both).
+        assert_eq!(
+            Record::derive(
+                &id,
+                &[b's'; MAX_SECRET + 1],
+                [7u8; SALT_LEN],
+                cost,
+                &mut mem
+            )
+            .err(),
+            Some(Error::Secret)
+        );
+        assert_eq!(
+            Record::derive(
+                &[b'i'; MAX_IDENTITY + 1],
+                &secret,
+                [7u8; SALT_LEN],
+                cost,
+                &mut mem
+            )
+            .err(),
+            Some(Error::Identity)
+        );
+    }
+
+    /// The cost accessors and the memory ceiling. `MAX_M_KIB` is `1024 * 1024`, and a mutant that
+    /// turned the multiply into a divide (ceiling: one KiB) refused every real cost with nothing
+    /// failing; the accessors are how the service echoes a store's policy and returned what they
+    /// liked.
+    #[test]
+    fn the_cost_is_what_it_says_up_to_the_real_ceiling() {
+        let c = Cost::new(256, 3, 2).unwrap();
+        assert_eq!((c.m_kib(), c.t(), c.p()), (256, 3, 2));
+        // The ceiling itself is a legal cost (validation only; nothing allocates a gibibyte here).
+        assert!(Cost::new(Cost::MAX_M_KIB, 1, 1).is_some());
+        assert!(Cost::new(Cost::MAX_M_KIB + 1, 1, 1).is_none());
+        // blocks() answers from the real params, not some default: 256 KiB at p=1 is 256 blocks
+        // (Argon2 rounds m down to a multiple of 4p, which 256 already is).
+        assert_eq!(Cost::new(256, 1, 1).unwrap().blocks(), 256);
+    }
+
+    /// `Store::is_empty` flips exactly once, at the first insert.
+    #[test]
+    fn a_store_is_empty_until_it_is_not() {
+        let cost = cheap();
+        let mut mem = scratch(cost);
+        let mut s = Store::<3>::new(cost, [7u8; SALT_LEN], [9u8; TAG_LEN]);
+        assert!(s.is_empty());
+        s.put(b"chris", b"secret", [5u8; SALT_LEN], &mut mem)
+            .unwrap();
+        assert!(!s.is_empty());
+    }
+
+    /// The hand-written `Debug` exists to redact, so the test asserts both halves of that: it
+    /// says something (a mutant replacing the body with `Ok(())` printed nothing, silently), and
+    /// what it says is the redaction, never the salt or the tag bytes.
+    #[test]
+    fn debug_prints_the_redaction_and_nothing_secret() {
+        let cost = cheap();
+        let mut mem = scratch(cost);
+        let r = Record::derive(b"chris", b"secret", [0xA5u8; SALT_LEN], cost, &mut mem).unwrap();
+        let shown = format!("{r:?}");
+        assert!(shown.contains("chris"));
+        assert!(shown.contains("<redacted>"));
+        assert!(
+            !shown.contains("165"),
+            "a salt byte (0xA5) leaked into Debug"
+        );
+    }
 }

@@ -1291,7 +1291,11 @@ mod tests {
             "six bytes of offset, colon in the wrong place"
         );
         let ok = DateTime::parse_rfc3339("2026-07-30T12:34:56+05:59").unwrap();
-        assert_eq!(ok.offset().minutes(), 5 * 60 + 59, ":59 is the last legal offset minute");
+        assert_eq!(
+            ok.offset().minutes(),
+            5 * 60 + 59,
+            ":59 is the last legal offset minute"
+        );
     }
 
     /// A known Sunday, absolutely, not relative to another weekday: the cycle test above proves
@@ -1328,7 +1332,10 @@ mod tests {
         }
         impl Sink {
             fn new() -> Sink {
-                Sink { buf: [0; 64], len: 0 }
+                Sink {
+                    buf: [0; 64],
+                    len: 0,
+                }
             }
         }
         impl Write for Sink {

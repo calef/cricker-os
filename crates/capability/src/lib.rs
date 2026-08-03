@@ -702,16 +702,17 @@ mod tests {
     #[test]
     fn rights_bits_are_the_wire_format() {
         assert_eq!(
-            [Rights::READ.bits(), Rights::WRITE.bits(), Rights::GRANT.bits()],
+            [
+                Rights::READ.bits(),
+                Rights::WRITE.bits(),
+                Rights::GRANT.bits()
+            ],
             [1, 2, 4]
         );
         // Undefined bits are dropped, never reinterpreted.
         assert_eq!(Rights::from_bits(!Rights::ALL.bits()), Rights::NONE);
         // Defined bits come back as exactly the rights they name.
-        assert_eq!(
-            Rights::from_bits(0b101),
-            Rights::READ.union(Rights::GRANT)
-        );
+        assert_eq!(Rights::from_bits(0b101), Rights::READ.union(Rights::GRANT));
         // Union is a union, not a toggle: adding a right twice cannot remove it.
         assert_eq!(Rights::READ.union(Rights::READ), Rights::READ);
     }
