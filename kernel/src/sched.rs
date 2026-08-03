@@ -33,10 +33,11 @@
 //!    and without it the first thread you spawn can never be preempted, which would be a
 //!    cooperative scheduler with extra steps.
 
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+
 use crate::cpu;
 use crate::sync::{IrqSafeMutex, rank};
 use crate::thread::{Context, QuotaToken, State, Thread, Tid, switch_to};
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// How many times we have actually taken the CPU away from a thread. The number that says
 /// preemption is real.

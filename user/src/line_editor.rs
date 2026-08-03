@@ -32,8 +32,7 @@
 #![no_std]
 #![no_main]
 
-use line_editor::proto;
-use line_editor::{Event, LINE_MAX, LineDisc, PROMPT_MAX, Sink};
+use line_editor::{Event, LINE_MAX, LineDisc, PROMPT_MAX, Sink, proto};
 use user_rt::{recv, recv_cap, reply, send};
 
 /// The terminal endpoint (slot 0): clients CALL requests here; we serve it with RECV_CAP.

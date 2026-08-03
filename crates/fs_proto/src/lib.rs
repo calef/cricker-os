@@ -2374,7 +2374,8 @@ mod tests {
     // The crate is `no_std`, so its own tests have to say where the allocating types come from. They
     // are here only to build fixtures; nothing under test allocates.
     extern crate std;
-    use std::{format, vec, vec::Vec};
+    use std::vec::Vec;
+    use std::{format, vec};
 
     /// **Every verb in the contract has a row, and the row agrees with the opcode's own doc.**
     ///

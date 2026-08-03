@@ -269,10 +269,11 @@ pub fn parse_hex(text: &str) -> Option<Digest> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::string::ToString;
     use std::vec;
     use std::vec::Vec;
+
+    use super::*;
 
     /// The published FIPS 180-4 / NIST CAVS vectors, **not** self-consistency checks. Both sides of
     /// the boot check hash through this one implementation, so an implementation that agreed only

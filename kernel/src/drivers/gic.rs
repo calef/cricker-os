@@ -37,10 +37,11 @@
 //! Get the comparison backwards and you get a machine that takes no interrupts and gives you
 //! no clue why.
 
-use crate::sync::{IrqSafeMutex, rank};
 use tock_registers::interfaces::{Readable, Writeable};
 use tock_registers::registers::{ReadOnly, ReadWrite, WriteOnly};
 use tock_registers::{register_bitfields, register_structs};
+
+use crate::sync::{IrqSafeMutex, rank};
 
 register_bitfields! {
     u32,

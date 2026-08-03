@@ -9,11 +9,12 @@
 //! §7). What's left here is the part that can only happen on the real machine: the
 //! **bootstrap**.
 
+use dtb::{Dtb, Region};
+use frames::{FRAME_SIZE, Frame, FrameAllocator, Stats};
+
 use crate::arch::mmu::{phys_to_virt, virt_to_phys};
 use crate::println;
 use crate::sync::{IrqSafeMutex, rank};
-use dtb::{Dtb, Region};
-use frames::{FRAME_SIZE, Frame, FrameAllocator, Stats};
 
 /// The frame allocator.
 ///

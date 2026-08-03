@@ -1590,8 +1590,9 @@ impl Default for Escalation {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use expand::{Expander, MAX_NAMES};
+
+    use super::*;
 
     /// Plan a line with **nothing expanded**, which is every line that has no pattern on it. The two
     /// shims shadow the real functions so the tests below read as they did before the globbing lane,

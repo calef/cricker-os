@@ -118,7 +118,8 @@ fn reply(slot: u64, r0: i64) {
 ///   capability is not a directory and the request does not *mean* anything here, which is a
 ///   different statement from `EACCES`'s "you were denied" (there is no policy to have said yes).
 fn serve(handle: u64, name: &[u8], writable: bool) -> ! {
-    use fs_proto::verb::{self, file_grant::Policy};
+    use fs_proto::verb::file_grant::Policy;
+    use fs_proto::verb::{self};
 
     loop {
         let (w0, reply_slot, w1) = recv_cap(CLIENT);

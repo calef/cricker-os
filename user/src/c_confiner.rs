@@ -36,17 +36,15 @@
 #![no_std]
 #![no_main]
 
-use user_rt::{cap_delete, invoke, recv_fault, send};
-
 // A source file shared by several binaries through `#[path]`, and each uses a different slice of it,
 // so the unused halves are expected. This is the one shape where a blanket allow is the honest one:
 // the module is compiled once per binary and no single binary is meant to use all of it (§38).
 
 // The loader, shared with the milestone-22 supervision tree. `Endow.maps` and `Endow.fault` are the
 // two parts this milestone leans on: a child born with shared pages and born supervised.
-
 use c_seam::checks;
 use supervision_proto::Endow;
+use user_rt::{cap_delete, invoke, recv_fault, send};
 
 /// Where the kernel maps the initrd archive, read-only. Must match the kernel's spawn path.
 const INITRD_VA: u64 = 0x2000_0000;

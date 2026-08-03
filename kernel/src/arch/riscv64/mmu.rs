@@ -8,11 +8,13 @@
 //! address-space model (`share_kernel_half`), and TLB maintenance (`sfence.vma`). See
 //! notes/riscv-port.md.
 
-use crate::memory;
 use core::arch::asm;
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicU64, Ordering};
+
 use paging::{Flags, Half, MapError, Mapper, PAGE_SIZE, PageTable, Sv39};
+
+use crate::memory;
 
 /// This architecture's page-table format. Portable code names it as `arch::mmu::Format` (see the
 /// aarch64 module's alias for why), so the user-VA gate and the user `Mapper` land on Sv39 here.
@@ -1009,8 +1011,9 @@ mod tests {
     /// 0xBBBB.
     #[test_case]
     fn unmap_invalidates_the_tlb() {
-        use crate::arch::mmu::{self, phys_to_virt};
         use paging::Flags;
+
+        use crate::arch::mmu::{self, phys_to_virt};
 
         const PATTERN_A: u64 = 0xaaaa_aaaa_aaaa_aaaa;
         const PATTERN_B: u64 = 0xbbbb_bbbb_bbbb_bbbb;
@@ -1068,8 +1071,9 @@ mod tests {
     /// record that it ever existed. The mapper makes it unrepresentable rather than merely unwise.
     #[test_case]
     fn the_kernel_mapper_refuses_to_overwrite() {
-        use crate::arch::mmu;
         use paging::{Flags, MapError};
+
+        use crate::arch::mmu;
 
         let va = mmu::phys_to_virt(0x1_0100_0000);
         let f = crate::memory::alloc().unwrap();

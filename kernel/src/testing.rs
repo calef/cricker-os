@@ -8,9 +8,10 @@
 //! Set up on day one on purpose. The alternative is debugging by `println!` for a
 //! year (DECISIONS.md §7).
 
+use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+
 use crate::arch::semihosting;
 use crate::{print, println};
-use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
 // The hang watchdog: **two independent mechanisms, because there are two ways a test never
 // finishes.** Both run off the timer IRQ, so they cost a couple of atomic loads per tick and cannot

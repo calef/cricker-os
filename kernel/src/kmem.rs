@@ -22,8 +22,9 @@
 //! this carve because **the kernel is its creator**; an init-created TCB's memory comes from
 //! init's untyped because init is. One principle, two payers, no third regime.
 
-use crate::sync::{IrqSafeMutex, rank};
 use frames::FRAME_SIZE;
+
+use crate::sync::{IrqSafeMutex, rank};
 
 /// The carve: 768 pages (3 MiB). Endpoints (one page each, ~60 across a full test run), live
 /// kernel stacks (4 pages x up to MAX_THREADS), TCB pages (19c.2), and slack. Exhaustion fails

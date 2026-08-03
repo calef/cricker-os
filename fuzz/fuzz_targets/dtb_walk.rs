@@ -21,9 +21,8 @@
 
 #![no_main]
 
-use libfuzzer_sys::fuzz_target;
-
 use dtb::{Dtb, Region};
+use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
     let Ok(dtb) = Dtb::from_bytes(data) else {

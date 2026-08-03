@@ -28,9 +28,9 @@
 //! division. Warmup iterations run untimed before each measurement so thread spawn and first
 //! rendezvous costs land outside the window.
 
-use crate::println;
-use crate::sched;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+use crate::{println, sched};
 
 /// Iterations per benchmark. Fixed and part of the output, so a baseline is self-describing.
 const YIELD_ITERS: u64 = 2000;

@@ -42,13 +42,11 @@
 #![no_std]
 #![no_main]
 
-use user_rt::{cap_delete, invoke, recv, recv_fault, send};
-
 // Two shared modules: the swap system's protocol and the supervision tree's loader. Each binary
 // uses a different slice of both, so the unused halves are expected (§38).
-
 use supervision_proto::Endow;
 use swap_proto::log_checks as lc;
+use user_rt::{cap_delete, invoke, recv, recv_fault, send};
 
 /// Where the kernel maps the initrd archive, read-only. Must match the kernel's spawn path.
 const INITRD_VA: u64 = 0x2000_0000;

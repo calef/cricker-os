@@ -7,9 +7,9 @@
 //! Our answer: say what went wrong, then stop the machine. Under `cargo test`, a
 //! panic is a failing test, so we exit QEMU with a failure status instead.
 
-use crate::arch;
-use crate::println;
 use core::panic::PanicInfo;
+
+use crate::{arch, println};
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {

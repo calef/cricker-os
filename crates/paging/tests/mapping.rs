@@ -7,8 +7,9 @@
 //!
 //! Runs in milliseconds. No emulator, no hardware, no MMU.
 
-use paging::{Aarch64, Flags, Half, MapError, Mapper, PAGE_SIZE, PageFormat, PageTable};
 use std::cell::Cell;
+
+use paging::{Aarch64, Flags, Half, MapError, Mapper, PAGE_SIZE, PageFormat, PageTable};
 
 /// This host test suite drives the aarch64 format specifically (the format-neutral `Mapper`
 /// behaviour is identical for Sv39; the aarch64 encoding is what these older tests pin). The Sv39

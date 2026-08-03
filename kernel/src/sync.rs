@@ -46,10 +46,11 @@
 //!
 //! See notes/locking.md and DECISIONS.md §9.
 
-use crate::arch::interrupts;
 use core::mem::ManuallyDrop;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::Ordering;
+
+use crate::arch::interrupts;
 
 /// # Lock ranking: the rule from DECISIONS.md §9, enforced by the machine
 ///

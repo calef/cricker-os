@@ -612,8 +612,9 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
 
             // The whole argument, executable.
             {
-                use crate::arch::timer;
                 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+                use crate::arch::timer;
 
                 static HOSTILE: AtomicU64 = AtomicU64::new(0);
                 static POLITE: AtomicU64 = AtomicU64::new(0);
@@ -656,9 +657,10 @@ pub extern "C" fn kernel_main(dtb: usize) -> ! {
 
             // 7a. EL0.
             {
+                use core::sync::atomic::Ordering;
+
                 use crate::arch::exceptions::SVC_COUNT;
                 use crate::arch::timer;
-                use core::sync::atomic::Ordering;
 
                 println!();
                 println!("  and now the other side of the boundary:");

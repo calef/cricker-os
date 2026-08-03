@@ -25,8 +25,9 @@
 
 extern crate alloc;
 
-use abi::{frame as fr, irq};
 use alloc::vec;
+
+use abi::{frame as fr, irq};
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
 use smoltcp::socket::{dhcpv4, tcp, udp};
 use smoltcp::time::Instant;

@@ -32,9 +32,8 @@
 //! - slot 2: an untyped budget (to mint and map the shared frame)
 
 use abi::{endpoint, frame as fr, rights, untyped as ut};
-use user_rt::{call, exit, invoke, send};
-
 use socket_proto::*;
+use user_rt::{call, exit, invoke, send};
 
 const REPORT: u64 = 0;
 const STACK: u64 = 1;

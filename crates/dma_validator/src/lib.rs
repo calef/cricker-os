@@ -262,8 +262,9 @@ pub const fn queue_block(q: u16) -> u64 {
 // =============================================================================================
 #[cfg(kani)]
 mod verification {
-    use super::*;
     use core::cell::RefCell;
+
+    use super::*;
 
     /// The queue size the proofs fix. Concrete so the bounded loops unroll to a known depth; it is
     /// the kernel's real `QSIZE`, so the proof is over the configuration that ships.

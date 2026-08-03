@@ -10,9 +10,10 @@
 //! (`MTU`); a demonstrator with a single-page DMA region cannot post full 1514-byte buffers, and
 //! that is a recorded caveat, not a bug (see notes/net.md).
 
-use abi::{irq, virtio};
 use alloc::vec;
 use alloc::vec::Vec;
+
+use abi::{irq, virtio};
 use smoltcp::phy::{self, Device, DeviceCapabilities, Medium};
 use smoltcp::time::Instant;
 use user_rt::invoke;

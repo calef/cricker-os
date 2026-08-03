@@ -19,9 +19,10 @@
 //! `interval + latency`, the lateness compounds, and the configured rate is not the delivered rate.
 //! Nothing caught it because this ISA had no timer tests. See notes/riscv-arch-tests.md.
 
-use crate::cpu::{self, MAX_CPUS};
 use core::arch::asm;
 use core::sync::atomic::{AtomicU64, Ordering};
+
+use crate::cpu::{self, MAX_CPUS};
 
 /// The S-mode timer interrupt cause (`scause` = 5, the Supervisor timer interrupt). The RISC-V
 /// analog of aarch64's per-CPU timer INTID.

@@ -3,6 +3,7 @@
 //! the grow-at-top pattern `user_rt::heap` relies on.
 
 use core::alloc::Layout;
+
 use user_heap::{Heap, MIN_ALIGN, effective_size};
 
 /// A 16-aligned arena on the host stack-of-the-test; the heap only ever sees pointers into it.

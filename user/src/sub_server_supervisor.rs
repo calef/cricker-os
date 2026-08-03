@@ -24,14 +24,12 @@
 #![no_std]
 #![no_main]
 
-use user_rt::{recv, send};
-
 // Each binary in the tree compiles the shared module but uses a different slice of it (the sub-server
 // builds nothing, the supervisor holds no memory), so the unused halves are expected, not dead.
-
 use supervision_proto::{
     REP_BUILT, REPORT_FAILED, REPORT_SUP_GAVE_UP, REPORT_SUP_SAW_DEATH, REQ_BUILD,
 };
+use user_rt::{recv, send};
 
 /// What root_supervisor endowed us with, in order. Notice what is missing: memory.
 const REQ: u64 = 0; // WRITE: ask the spawner to build or reap

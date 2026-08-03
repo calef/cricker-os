@@ -19,9 +19,10 @@
 //! `spawn_balanced` that round-robined placement, and milestone 41 deleted it, because §28 left it
 //! with no caller and a doc comment claiming a test used it that had already moved to plain `spawn`.
 
+use core::sync::atomic::{AtomicUsize, Ordering};
+
 use crate::cpu::{self, MAX_CPUS};
 use crate::{arch, println};
-use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// 64 KiB per secondary, matching core 0's boot stack (link.ld).
 ///

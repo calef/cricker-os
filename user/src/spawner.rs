@@ -27,13 +27,11 @@
 #![no_std]
 #![no_main]
 
-use user_rt::{cap_delete, recv, send};
-
 // Each binary in the tree compiles the shared module but uses a different slice of it (the sub-server
 // builds nothing, the supervisor holds no memory), so the unused halves are expected, not dead. This
 // is the one shape where a blanket allow is the honest one: no single binary uses all of it (§38).
-
 use supervision_proto::{Endow, REP_BUILT, REP_FAILED, REQ_BUILD};
+use user_rt::{cap_delete, recv, send};
 
 /// The capabilities root_supervisor endowed us with, in order.
 const REQ: u64 = 0; // READ: build/reap requests arrive here

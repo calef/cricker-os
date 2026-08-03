@@ -993,8 +993,9 @@ impl<T: BlockIo> Disk for BlockDisk<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use redoxfs::DiskMemory;
+
+    use super::*;
 
     /// A [`BlockIo`] over an in-memory image, so the exact chunking the EL0 binary uses is exercised
     /// on the host. Byte for byte it must behave like `DiskMemory`.

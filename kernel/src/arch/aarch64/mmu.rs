@@ -25,17 +25,17 @@
 //!
 //! See notes/mmu.md and notes/page-tables.md.
 
-use crate::memory;
-use crate::println;
-use aarch64_cpu::asm::barrier;
+use core::ffi::c_void;
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use aarch64_cpu::asm::barrier;
 use aarch64_cpu::registers::{
     ID_AA64MMFR0_EL1, MAIR_EL1, SCTLR_EL1, TCR_EL1, TTBR0_EL1, TTBR1_EL1,
 };
-use core::ffi::c_void;
 use paging::aarch64::mair;
 use paging::{Aarch64, Flags, Half, MapError, Mapper, PAGE_SIZE, PageTable};
+
+use crate::{memory, println};
 
 /// This architecture's page-table format. Portable code that must name the format (the user-VA gate
 /// in syscall.rs, the user `Mapper` in user.rs) refers to it as `arch::mmu::Format`, so the choice
@@ -1214,8 +1214,9 @@ mod tests {
     /// 0xBBBB.
     #[test_case]
     fn unmap_invalidates_the_tlb() {
-        use crate::arch::mmu::{self, phys_to_virt};
         use paging::Flags;
+
+        use crate::arch::mmu::{self, phys_to_virt};
 
         const PATTERN_A: u64 = 0xaaaa_aaaa_aaaa_aaaa;
         const PATTERN_B: u64 = 0xbbbb_bbbb_bbbb_bbbb;
@@ -1268,8 +1269,9 @@ mod tests {
     /// Changing a mapping is forced through break-before-make.
     #[test_case]
     fn the_kernel_mapper_refuses_to_overwrite() {
-        use crate::arch::mmu;
         use paging::{Flags, MapError};
+
+        use crate::arch::mmu;
 
         let va = mmu::KERNEL_VA_BASE | 0xfe00_0000;
         let f = crate::memory::alloc().unwrap();

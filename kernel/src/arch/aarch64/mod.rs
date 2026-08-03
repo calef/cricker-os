@@ -5,8 +5,9 @@
 //! sibling, and everything above `arch::` should be untouched. See
 //! notes/portability.md and DECISIONS.md §4.
 
-use aarch64_cpu::registers::TPIDR_EL1;
 use core::arch::global_asm;
+
+use aarch64_cpu::registers::TPIDR_EL1;
 use tock_registers::interfaces::{Readable, Writeable};
 
 pub mod context;

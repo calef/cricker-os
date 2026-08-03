@@ -28,9 +28,8 @@
 
 #![no_main]
 
-use libfuzzer_sys::fuzz_target;
-
 use gpt::Gpt;
+use libfuzzer_sys::fuzz_target;
 
 /// The block size the fixtures use, and the one every disk this project has met uses. 4K-native
 /// disks exist and `Gpt::parse` takes the block size from the header block's length, so a second

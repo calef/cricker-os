@@ -93,8 +93,6 @@
 use abi::{endpoint, frame as fr, rights, untyped as ut};
 use clock_proto::propose;
 use ntp_proto::{Packet, Query, Reject, Short, Timestamp, leap, mode};
-use user_rt::{call, cap_delete, cntfrq, exit, invoke, now, recv_cap, reply, send, yield_now};
-
 // The socket contract, verbatim from the file `net_stack` compiles, so the client and the test
 // server cannot drift from the real server's idea of the wire format.
 // An NTP client speaks the UDP half of the contract and never the TCP half, so the rest of the
@@ -102,6 +100,7 @@ use user_rt::{call, cap_delete, cntfrq, exit, invoke, now, recv_cap, reply, send
 // does is that the two cannot drift, and a per-consumer subset would throw that away.
 #[allow(dead_code)]
 use socket_proto::*;
+use user_rt::{call, cap_delete, cntfrq, exit, invoke, now, recv_cap, reply, send, yield_now};
 
 // =================================================================================================
 // The roles, the slots, and the words this program reports.

@@ -18,8 +18,7 @@
 
 use abi::irq;
 use fs_proto::blk;
-use user_rt::exit;
-use user_rt::{invoke, send};
+use user_rt::{exit, invoke, send};
 
 // The kernel maps the DMA page at this fixed VA (must match kernel/src/user.rs virtio_service).
 // The device REGISTERS are NOT mapped: we drive the device through a `Virtio` capability (slot 2),

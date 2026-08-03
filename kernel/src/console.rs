@@ -4,7 +4,6 @@
 //! pointer, so we mint a fresh one per call rather than keeping a
 //! `static mut CONSOLE`. The real state lives in the hardware, not in our memory.
 
-use crate::sync::{IrqSafeMutex, rank};
 use core::fmt::Write;
 
 // The early console UART, selected by architecture at compile time. Two concrete drivers, not a
@@ -16,6 +15,7 @@ use core::fmt::Write;
 use crate::drivers::ns16550::Ns16550 as ConsoleUart;
 #[cfg(target_arch = "aarch64")]
 use crate::drivers::pl011::Pl011 as ConsoleUart;
+use crate::sync::{IrqSafeMutex, rank};
 
 /// The console UART's **physical** address on QEMU's `virt` machine.
 #[cfg(target_arch = "aarch64")]

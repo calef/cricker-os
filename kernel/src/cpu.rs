@@ -12,11 +12,13 @@
 //! piece of the per-CPU machinery. The block grows in step 3 to hold this core's run queue,
 //! `current`, idle thread, reschedule flag, and migration inbox.
 
-use crate::sync::{IrqSafeMutex, rank};
-use crate::thread::{Thread, Tid};
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+
 use intrusive::Fifo;
+
+use crate::sync::{IrqSafeMutex, rank};
+use crate::thread::{Thread, Tid};
 
 /// A `current`/`idle` slot holding no thread. Tids are small integers from 0 up, so `u64::MAX`
 /// can never collide with a real one.
@@ -260,8 +262,9 @@ pub fn of(id: usize) -> &'static PerCpu {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use core::sync::atomic::Ordering;
+
+    use super::*;
 
     /// Whatever core this runs on set up its per-CPU pointer, and `current()` reaches that core's
     /// block and no other.

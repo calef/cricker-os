@@ -31,12 +31,10 @@
 #![no_std]
 #![no_main]
 
-use user_rt::{cap_delete, invoke, recv, send};
-
 // Each binary in the tree compiles the shared module but uses a different slice of it (the sub-server
 // builds nothing, the supervisor holds no memory), so the unused halves are expected, not dead.
-
 use supervision_proto::{Endow, REPORT_FAILED, REPORT_INIT_DROPPED, REPORT_SUP_SAW_DEATH};
+use user_rt::{cap_delete, invoke, recv, send};
 
 /// Where the kernel maps the initrd archive, read-only. Must match the kernel's spawn path.
 const INITRD_VA: u64 = 0x2000_0000;

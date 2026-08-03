@@ -12,14 +12,16 @@
 //!
 //! See notes/exceptions.md.
 
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+use aarch64_cpu::asm::barrier;
+use aarch64_cpu::registers::{ESR_EL1, FAR_EL1, VBAR_EL1};
+use tock_registers::interfaces::{Readable, Writeable};
+
 use super::timer;
 use crate::arch::{UserFault, UserFaultAccess};
 use crate::drivers::gic;
 use crate::println;
-use aarch64_cpu::asm::barrier;
-use aarch64_cpu::registers::{ESR_EL1, FAR_EL1, VBAR_EL1};
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use tock_registers::interfaces::{Readable, Writeable};
 
 /// The interrupted CPU state, as saved by `SAVE_CONTEXT` in `vectors.s`.
 ///
@@ -674,8 +676,9 @@ mod tests {
     /// infinite loop, or a crash. So arriving here at all is most of the test.
     #[test_case]
     fn breakpoint_is_caught_and_execution_resumes() {
-        use crate::arch::exceptions::BRK_COUNT;
         use core::sync::atomic::Ordering;
+
+        use crate::arch::exceptions::BRK_COUNT;
 
         let before = BRK_COUNT.load(Ordering::Relaxed);
 

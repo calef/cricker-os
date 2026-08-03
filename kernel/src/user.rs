@@ -37,13 +37,14 @@
 //! capabilities, and the syscall surface gets designed against a capability table at 7d, in one
 //! piece, on purpose. Not accreted here because it was convenient.
 
+use elf::Elf;
+use frames::{FRAME_SIZE, Frame};
+use paging::{Flags, Half, MapError, Mapper};
+
 use crate::arch::exceptions::{TrapFrame, enter_user};
 use crate::arch::mmu::{self, phys_to_ptr};
 use crate::arch::sync_icache;
 use crate::memory;
-use elf::Elf;
-use frames::{FRAME_SIZE, Frame};
-use paging::{Flags, Half, MapError, Mapper};
 
 /// Where a user program's stack goes. One page, and `sp` starts at the top of it: stacks grow down.
 ///
@@ -3564,10 +3565,11 @@ pub mod display_service {
 ///   either, and a client without the mapping has nothing to ask and nowhere to look.
 #[cfg_attr(not(test), allow(dead_code))] // spawned only by the milestone-33 tests
 pub mod compositor_service {
+    use compositor::SCENE;
+
     use super::*;
     use crate::cap::{Rights, endpoint_cap};
     use crate::sched::EpId;
-    use compositor::SCENE;
 
     // The compositor's address space. Must match user/src/compositor.rs.
     const SCREEN_VA: u64 = 0x0000_0000_0080_0000;
@@ -4392,8 +4394,9 @@ pub mod clock_service {
 /// these tests** rather than two copies that can drift (DECISIONS §19, parity is a gate).
 #[cfg(test)]
 mod clock_tests {
-    use super::*;
     use clock_proto::{policy, propose, state, status};
+
+    use super::*;
 
     /// Start the service and take its startup report. `[RPT_READY, state, wall_nanos]`.
     fn start() -> (clock_service::Wiring, [u64; 5]) {
@@ -5039,8 +5042,9 @@ pub mod entropy_service {
 /// that the count in a reply is honoured so a caller cannot be handed zeros it mistakes for entropy.
 #[cfg(test)]
 mod entropy_tests {
-    use super::*;
     use entropy_service::Bus;
+
+    use super::*;
 
     /// Reach the service on `bus`, wiring it if this is the first test to ask, and check its
     /// startup report when this call is the one that wired it.
@@ -5465,8 +5469,9 @@ pub mod credential_service {
 ///   the strongest form of "the reply carried no data" that a test can check.
 #[cfg(test)]
 mod credential_tests {
-    use super::*;
     use credential_service as cs;
+
+    use super::*;
 
     /// Wire the whole system once: the entropy service, the credential service, and the
     /// provisioner that fills and seals the store. Returns the wiring, the provisioner's report,
@@ -5960,11 +5965,13 @@ pub mod ntp_service {
 /// Not arch-gated: one portable binary, the same assertions on aarch64 and riscv64 (DECISIONS §19).
 #[cfg(test)]
 mod ntp_tests {
+    use core::sync::atomic::Ordering;
+
+    use clock_proto::{NANOS_PER_SEC, policy, state, status};
+    use ntp_service::{ATTEMPTS, reject, rpt, srv};
+
     use super::*;
     use crate::arch::exceptions::USER_FAULTS;
-    use clock_proto::{NANOS_PER_SEC, policy, state, status};
-    use core::sync::atomic::Ordering;
-    use ntp_service::{ATTEMPTS, reject, rpt, srv};
 
     /// Bounded by wall clock rather than by a yield count: since DECISIONS §28 the work a test
     /// spawns runs on other cores, so a yield on an idle core elapses no real time. Two seconds is
@@ -6542,16 +6549,18 @@ mod heap_tests {
 /// `cargo xtask` looks for both in that order. See notes/compositor.md.
 #[cfg(test)]
 mod compositor_tests {
-    use super::*;
-    use crate::arch::exceptions::USER_FAULTS;
-    use crate::sched;
+    use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
     use compositor::proto::wlist;
     use compositor::{Rect, SCENE, status};
     use compositor_service::{
         ROLE_CAPTURE, ROLE_INPUT, ROLE_PROBE_INPUT, ROLE_PROBE_NEIGHBOUR, ROLE_PROBE_SCREEN,
         ROLE_SMALL_DAMAGE, ROLE_VICTIM, Wiring,
     };
-    use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+    use super::*;
+    use crate::arch::exceptions::USER_FAULTS;
+    use crate::sched;
 
     /// Spin until `cond`, bounded by wall clock rather than by a yield count: since DECISIONS §28 the
     /// work a test spawns runs on *other* cores, so a yield on an idle core returns at once and a fixed
@@ -7278,9 +7287,10 @@ mod compositor_tests {
 /// copies of it that can drift (DECISIONS §19: parity is a gate).
 #[cfg(test)]
 mod display_tests {
+    use gfx_proto as gfx;
+
     use super::*;
     use crate::sched;
-    use gfx_proto as gfx;
 
     /// **A confined userspace driver puts a known pattern in a scanout framebuffer.**
     ///
@@ -8527,11 +8537,8 @@ pub mod revoke_service {
 /// gained. See notes/riscv-parity-scope.md.
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::arch::exceptions::{SVC_COUNT, USER_FAULTS, last_user_fault};
-    use crate::arch::timer;
-    use crate::arch::{UserFault, UserFaultAccess};
-    use crate::sched;
+    use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
     // The std-transcript and FS-readiness assertions live with the std tests so both ISAs share one
     // copy; see `std_tests`. Most of them are used only by the device/FS tests below, which have
     // RISC-V twins in `riscv_virtio_tests` and are gated to aarch64 here.
@@ -8540,7 +8547,10 @@ mod tests {
         assert_a_kill_mid_transaction_recovers, assert_attrs, assert_fs_service_ready,
         assert_std_transcript, std_fs_expected,
     };
-    use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use super::*;
+    use crate::arch::exceptions::{SVC_COUNT, USER_FAULTS, last_user_fault};
+    use crate::arch::{UserFault, UserFaultAccess, timer};
+    use crate::sched;
 
     /// **The `hello` binary's ELF bytes**, pulled out of the initrd archive by name (milestone 19f).
     /// This is the binary carrying the milestone 7-19 role catalogue: the printing client, the
@@ -12137,9 +12147,10 @@ mod measured_boot_tests {
 /// only sender on the fault endpoint, so the tid the supervisor reads is trustworthy without a badge.
 #[cfg(test)]
 mod supervision_tests {
+    use abi::fault::{EVENT_EXIT, EVENT_FAULT, FAULT_EP_SLOT};
+
     use super::*;
     use crate::sched;
-    use abi::fault::{EVENT_EXIT, EVENT_FAULT, FAULT_EP_SLOT};
 
     pub(super) const CODE_VA: u64 = 0x40_0000;
     pub(super) const STACK_VA: u64 = 0x50_0000;
@@ -12357,13 +12368,14 @@ mod supervision_tests {
 /// back down and it can spend those pages again, while the supervisor's cspace does not grow.
 #[cfg(test)]
 mod reap_tests {
+    use abi::Error;
+    use abi::fault::{EVENT_EXIT, EVENT_FAULT};
+
     use super::supervision_tests::{FAULT_STUB, REPORT_STUB, REPORT_WORD, build_child_in};
     use crate::arch::exceptions::TrapFrame;
     use crate::cap::{Object, Rights};
     use crate::sched;
     use crate::syscall::invoke;
-    use abi::Error;
-    use abi::fault::{EVENT_EXIT, EVENT_FAULT};
 
     /// The builder's whole budget. Room for three instances plus slack, so the LIFO return-of-pages
     /// (§16) can be watched happening more than once.
@@ -12780,10 +12792,11 @@ mod reap_tests {
 /// parity gate (DECISIONS §19) is met by literally the same test running twice.
 #[cfg(test)]
 mod dir_capability_tests {
-    use super::*;
-    use crate::sched;
     use fs_proto::dir;
     use fs_proto::fixture::dirscape as esc;
+
+    use super::*;
+    use crate::sched;
 
     /// The binary carrying the block server's role. One `cfg`, in `fs_service`, because the boot
     /// path needs the same answer this module's tests do.
@@ -13036,10 +13049,11 @@ mod dir_capability_tests {
 /// them, and the thing being confined is a shell.
 #[cfg(test)]
 mod shell_navigation_tests {
-    use super::*;
-    use crate::sched;
     use fs_proto::dir;
     use fs_proto::fixture::{navscape as nb, tree};
+
+    use super::*;
+    use crate::sched;
 
     /// The `swish` binary's navigating role (`user/src/swish.rs`).
     const ROLE_NAVIGATE: u64 = 1;
@@ -13218,11 +13232,12 @@ mod shell_navigation_tests {
 /// program decides which.
 #[cfg(test)]
 mod rm_program_tests {
-    use super::*;
-    use crate::sched;
     use fs_proto::dir;
     use fs_proto::fixture::{VERDICT, rm as rr, tree};
     use grant_plan::rmopt;
+
+    use super::*;
+    use crate::sched;
 
     /// The most messages one run may send before the harness stops reading. A `rm` that never sent
     /// its verdict would otherwise hang the boot; this turns it into a failed assertion.
@@ -13411,10 +13426,11 @@ mod rm_program_tests {
 /// literally the authority it would transfer, and nothing else in the directory moves.
 #[cfg(test)]
 mod glob_grant_tests {
-    use super::*;
-    use crate::sched;
     use fs_proto::dir;
     use fs_proto::fixture::{VERDICT, globscape as gb, rm as rr, tree};
+
+    use super::*;
+    use crate::sched;
 
     /// The `swish` binary's globbing role (`user/src/swish.rs`).
     const ROLE_GLOB: u64 = 2;
@@ -13587,14 +13603,15 @@ mod glob_grant_tests {
 /// DMA, and the kernel's DMA confinement, on the second ISA.
 #[cfg(all(test, target_arch = "riscv64"))]
 mod riscv_virtio_tests {
-    use super::*;
+    use core::sync::atomic::Ordering;
+
     // Shared with the aarch64 module so both ISAs assert a std transcript the same way.
     use super::std_tests::{
         assert_a_kill_mid_transaction_recovers, assert_attrs, assert_fs_service_ready,
         assert_std_transcript, std_fs_expected,
     };
+    use super::*;
     use crate::sched;
-    use core::sync::atomic::Ordering;
 
     /// The `blk` driver's ELF bytes from the riscv initrd archive. Absent means the initrd was
     /// built without it (or the aarch64 archive was handed to a riscv boot, the mix-up the xtask
@@ -14318,10 +14335,11 @@ mod riscv_virtio_tests {
 ///   this test; what it is not is the same *code*, and that gap is named in notes/pipes.md's BUGS.
 #[cfg(test)]
 pub mod pipeline_service {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
     use crate::cap::{Rights, endpoint_cap, untyped_cap};
     use crate::sched::EpId;
-    use core::sync::atomic::{AtomicUsize, Ordering};
 
     /// The `swish` binary's pipeline role (`user/src/swish.rs`).
     const ROLE_PIPELINE: u64 = 3;
@@ -14891,9 +14909,10 @@ mod pipeline_tests {
 /// architecture-specific, so the parity gate (DECISIONS §19) is met by the same test running twice.
 #[cfg(test)]
 mod redirection_tests {
-    use super::*;
     use fs_proto::dir;
     use pipeline_service::{answer, counts};
+
+    use super::*;
 
     /// The last line `user/src/swish.rs`'s redirection role prints. Must match `REDIRECT_DONE`.
     const DONE: &[u8] = b"== redirections done\n";
@@ -15149,10 +15168,11 @@ mod redirection_tests {
 /// set.
 #[cfg(test)]
 mod sink_tests {
+    use sink_proto::fixture;
+
     use super::*;
     use crate::cap::{Rights, endpoint_cap};
     use crate::sched::EpId;
-    use sink_proto::fixture;
 
     /// `user/src/sink.rs`'s writer role. Its `arg1` is how many times to write the transcript, with
     /// 0 meaning "until the sink stops taking it".

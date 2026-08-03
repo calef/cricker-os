@@ -51,12 +51,11 @@
 
 #![cfg_attr(not(test), no_std)]
 
-use argon2::{Algorithm, Argon2, Params, Version};
-use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
-
 /// The memory-hard scratch unit, re-exported so a caller can size its buffer without naming our
 /// dependency. One [`Block`] is 1 KiB, which is also Argon2's `m_cost` unit.
 pub use argon2::Block;
+use argon2::{Algorithm, Argon2, Params, Version};
+use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 
 /// Salt length, in bytes. RFC 9106 §4 recommends 16, and Argon2's own minimum is 8.
 pub const SALT_LEN: usize = 16;

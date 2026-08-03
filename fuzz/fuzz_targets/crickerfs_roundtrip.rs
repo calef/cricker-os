@@ -25,9 +25,8 @@
 
 #![no_main]
 
-use libfuzzer_sys::fuzz_target;
-
 use crickerfs::{Fs, MAX_FILES, NAME_LEN, image_size, write_image};
+use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|files: Vec<(String, Vec<u8>)>| {
     // The writer's own limits, applied here so the target explores the accepted region rather than

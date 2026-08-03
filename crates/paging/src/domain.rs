@@ -353,11 +353,12 @@ mod verification {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::{Aarch64, Sv39};
     use std::alloc::{Layout, alloc_zeroed};
     use std::cell::RefCell;
     use std::vec::Vec;
+
+    use super::*;
+    use crate::{Aarch64, Sv39};
 
     // A SYNTHETIC physical address space, and the reason it exists is a CI failure worth recording.
     //

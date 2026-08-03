@@ -43,8 +43,9 @@
 //! share a word with the enable bits (different 0x2000 and 0x20_0000 blocks), so serializing one
 //! does not drag in the other.
 
-use crate::sync::{IrqSafeMutex, rank};
 use core::sync::atomic::{AtomicUsize, Ordering};
+
+use crate::sync::{IrqSafeMutex, rank};
 
 /// The PLIC's MMIO base (a kernel virtual address in the direct map), stored by [`init`].
 static PLIC_BASE: AtomicUsize = AtomicUsize::new(0);

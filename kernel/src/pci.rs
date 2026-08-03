@@ -12,11 +12,13 @@
 //! INTx lines route to the PLIC (32..35), on aarch64 to GIC SPIs (INTIDs 35..38); each arch's
 //! constants say so, and host-run witnesses hold them against the machine's own device tree.
 
+use core::sync::atomic::{AtomicU64, Ordering};
+
+use pci::{Bar, Bdf, VirtioCap};
+
 use crate::arch::mmu::{
     self, PCI_BAR_BASE, PCI_BAR_MAPPED, PCI_ECAM_BASE, PCI_ECAM_BUSES, PCI_IRQ_BASE,
 };
-use core::sync::atomic::{AtomicU64, Ordering};
-use pci::{Bar, Bdf, VirtioCap};
 
 /// The shared bump cursor for kernel-assigned BARs. With `-bios default` the kernel is the PCI
 /// firmware (OpenSBI does no PCI setup), so every BAR arrives zero and the kernel places it. More

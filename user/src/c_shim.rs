@@ -40,6 +40,7 @@
 // the module is compiled once per binary and no single binary is meant to use all of it (§38).
 
 use core::alloc::{GlobalAlloc, Layout};
+
 use user_rt::heap::UntypedHeap;
 use user_rt::send;
 

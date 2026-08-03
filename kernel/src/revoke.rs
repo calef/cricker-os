@@ -260,9 +260,10 @@ pub fn revoke_region(base: u64, size: u64) {
 
 #[cfg(test)]
 mod tests {
+    use paging::Flags;
+
     use super::*;
     use crate::user::AddressSpace;
-    use paging::Flags;
 
     /// **Revocation unmaps a shared page from every address space that held it.** Two address
     /// spaces map one physical page; after `revoke_frame` neither maps it. This is the property

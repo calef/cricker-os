@@ -24,11 +24,13 @@
 //! ahead of any caller precisely so the discipline (break-before-make, an un-ignorable TLB
 //! flush) would be right the first time.
 
-use crate::arch::mmu::{self, KERNEL_VA_BASE};
-use crate::sync::{IrqSafeMutex, rank};
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+
 use frames::FRAME_SIZE;
 use paging::Flags;
+
+use crate::arch::mmu::{self, KERNEL_VA_BASE};
+use crate::sync::{IrqSafeMutex, rank};
 
 pub type Tid = u64;
 

@@ -102,11 +102,10 @@ pub mod entry;
 pub mod guid;
 pub mod header;
 
+use crc::crc32;
 pub use entry::Entry;
 pub use guid::Guid;
 pub use header::Header;
-
-use crc::crc32;
 
 /// The smallest logical block a GPT disk can have, and what almost every disk reports.
 pub const MIN_BLOCK_SIZE: usize = 512;
@@ -749,7 +748,8 @@ pub mod mbr {
 /// Not behind `#[cfg(test)]`: rustdoc examples compile against the public API, so a helper only the
 /// tests can see is a helper the documentation cannot use.
 pub mod testing {
-    use crate::{ENTRY_ARRAY_BYTES, Entry, Gpt, Guid, guid::types};
+    use crate::guid::types;
+    use crate::{ENTRY_ARRAY_BYTES, Entry, Gpt, Guid};
 
     /// A 64 MiB, 512-byte-block disk carrying one cricker-os data partition, as a contiguous
     /// buffer: LBA 0 is at offset 0, so slicing by `lba * 512` gets any block.
@@ -860,8 +860,9 @@ impl core::fmt::Display for Error {
 // =================================================================================================
 #[cfg(kani)]
 mod verification {
-    use super::*;
     use guid::types;
+
+    use super::*;
 
     /// The buffer length the CRC harnesses quantify over. **Measured, not guessed**; the timings
     /// are in notes/gpt.md. CRC-32 is a shift-and-xor over every bit of the input, so the formula
