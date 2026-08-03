@@ -222,7 +222,12 @@ rather than as the implementation, so the proof is not the code compared against
 Stated plainly, because a demonstrator's docs are part of the deliverable:
 
 - **No I/O, by design.** Somebody still has to read LBA 1. That is the block-device lane of
-  milestone 57, and it is separate on purpose.
+  milestone 57, and it is separate on purpose. **Built 2026-08-03** (notes/block-devices.md):
+  `disk_surveyor` reads the table off a virtio-blk device, backup half included, on both ISAs. The
+  crate gained one module for it, `gpt::span`, which computes *where* to read when the disk's
+  logical block (512) and the block service's transfer unit (4096) are different numbers. That is
+  arithmetic, not I/O, and it lives here because three open-coded divisions in a driver is how an
+  off-by-one gets blamed on a CRC.
 - **No unique GUID generation.** `Entry::new` takes both GUIDs from the caller. A GUID that is not
   random is not unique, this crate has no randomness, and inventing one from a counter would be
   worse than refusing. Milestone 55's entropy work is where a caller gets one.

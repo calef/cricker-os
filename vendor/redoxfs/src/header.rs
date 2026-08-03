@@ -135,7 +135,8 @@ impl Header {
         None
     }
 
-    fn update_hash(&mut self, cipher_opt: Option<&Xts128<Aes128>>) {
+    // cricker-os pin divergence: `pub` so a no_std caller can finish a Header it built itself.
+    pub fn update_hash(&mut self, cipher_opt: Option<&Xts128<Aes128>>) {
         self.hash = self.create_hash().into();
         // Make sure to do this second, it relies on the hash being up to date
         self.encrypted_hash = self.create_encrypted_hash(cipher_opt);

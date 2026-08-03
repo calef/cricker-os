@@ -66,6 +66,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "block_roster"
+version = "0.1.0"
+
+[[package]]
 name = "byteorder"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -278,6 +282,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "isa"
+version = "0.1.0"
+dependencies = [
+ "dtb",
+]
+
+[[package]]
 name = "kernel"
 version = "0.1.0"
 dependencies = [
@@ -285,6 +296,7 @@ dependencies = [
  "abi",
  "asid",
  "bitfont",
+ "block_roster",
  "calendar",
  "capability",
  "clock_proto",
@@ -302,6 +314,7 @@ dependencies = [
  "grant_plan",
  "intrusive",
  "ipc",
+ "isa",
  "line_editor",
  "measured_boot",
  "ntp_proto",
@@ -511,6 +524,7 @@ version = "0.1.0"
 dependencies = [
  "abi",
  "bitfont",
+ "block_roster",
  "c_seam",
  "calendar",
  "clock_proto",
@@ -523,6 +537,7 @@ dependencies = [
  "entropy_proto",
  "fs_proto",
  "gfx_proto",
+ "gpt",
  "grant_plan",
  "line_editor",
  "ntp_proto",

@@ -120,10 +120,10 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 54 | NOT-STARTED | A network file service a Mac can actually mount | the first real workload with a real user, and the security claim backup servers deserve |
 | 55 | NOT-STARTED | Time Machine: SMB3 with Apple's extensions, and mDNS | **likely the largest single piece of work in the project**, and the one that must be scoped before it is started |
 | 56 | BUILT | Secrets, credentials, and the entropy to make them safe | **built 2026-08-01**: entropy (§44), the Argon2id crypto taken as a dependency per §46, and the credentialer, a store with no getter that verifies and never reads back (§54). The thesis-level gap it named, that *a secret is still a bearer token where a capability is an unforgeable reference*, is **milestone 65's** subject: hold the key, expose the operation |
-| 57 | PARTIAL | Partitioning and formatting a real drive, and extended attributes | you cannot find a partition without reading the table, and **we have no partition-table code at all**; all of it is testable in QEMU before the board lands. The host recovery tool (`ls`/`cat`/`extract`), `crates/gpt` and the **extended-attribute layer** are built; on-target `mkfs` and block-device enumeration are not |
+| 57 | PARTIAL | Partitioning and formatting a real drive, and extended attributes | you cannot find a partition without reading the table, and all of it is testable in QEMU before the board lands. Built: the host recovery tool (`ls`/`cat`/`extract`/`xattr`), `crates/gpt`, the **extended-attribute layer**, and (2026-08-03) **reading a real table on the target** plus **block-device enumeration**, which is a read-only roster page. What is left is the **write** half, and it is one decision rather than a task: partitioning and on-target `mkfs` both need randomness, and the `mkfs` half needs a new divergence from the RedoxFS pin |
 | 58 | NOT-STARTED | RISC-V TLB shootdown, and the flush that makes ASIDs pointless | every riscv context switch discards the whole TLB; the fix needs a **software** shootdown protocol, because `sfence.vma` does not broadcast |
 | 59 | BUILT | The CPU-model matrix: stop testing against one generous emulator | `-cpu rv64` enables nearly every ratified extension; the board is an RV64GC U74. `script/cpu-matrix` runs the riscv64 suite across five models and all 211 tests pass on every one, so we are already portable to the board's ISA. The ASID test written *for* the board is the gap no model can exercise |
-| 60 | NOT-STARTED | ISA discovery: read the machine instead of assuming it | nothing reads `riscv,isa-extensions`; RISC-V has no `CPUID`, so the device tree plus targeted probes are the architected answer. One `Isa` record, built at boot, printed at boot |
+| 60 | BUILT | ISA discovery: read the machine instead of assuming it | one `Isa` record per ISA, built at boot, printed at boot, in `crates/isa`. RISC-V parses the device tree (there is no `CPUID`) and keeps its `satp.ASID` probe; aarch64 decodes `MIDR_EL1` and `ID_AA64MMFR*`, because ARM never removed the CPU's self-description. **Four call sites vary, not the predicted five or six**, and two of the entry's four candidates dropped out. QEMU `virt` declares Sv57 while we run Sv39 |
 | 61 | BUILT | The caretakers: one verb table, and names that say what you get | **built, both ISAs.** The rename landed first (532 tokens, not four filenames); `fs_proto::verb` is one row per opcode and a verb with no row is a compile error; all three caretakers forward the four extended-attribute verbs, proven by three witnesses each with a control that must fail |
 | 62 | NOT-STARTED | Tests that assert on time: make a red run mean something | ~19 bounded spins (`for _ in 0..N { yield_now() }`) and wall-clock assertions flake under load. Four separate lanes and the integrator hit them on 2026-08-01; the CPU matrix multiplies the exposure fivefold |
 | 63 | BUILT | Directory and package names: one spelling per thing | **built, both ISAs.** Eight crates, fourteen programs and modules, and the three violating directories renamed to the spellings settled in review; `fs-server` is `fs_server`, `user-std`/`hellostd` is `std_exerciser` twice, and the shell has a name (`swish`). The tables below keep the old spellings on purpose, because they are the record of the decision |
@@ -149,6 +149,8 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 83 | NOT-STARTED | A mechanical rule-1 lint | CLAUDE.md's first rule (architecture-specific code lives under `arch/`) is enforced by nothing, and one violation exists today: `user/tests.rs` reads `SPSel` by raw `asm!`. `script/lint` learns the grep; the violation moves |
 | 84 | NOT-STARTED | Stack high-water: measure kernel stack depth | The FS-server stack overflow already happened once, and nothing since bounds depth on any kernel stack. Paint at boot, read the mark at suite end, assert headroom. Works identically on every ISA and covers every path the suite takes |
 | 85 | NOT-STARTED | Mutation testing over the host crates | Coverage reports what ran; cargo-mutants reports whether a test would notice a change, which is the claim the suite actually makes. A weekly, time-boxed job with a recorded baseline, not a PR gate |
+| 86 | NOT-STARTED | `time`: the shell times a command | The second prefix-word command after `caps`, so the grammar is proven, and `date` already built the clock story. The design question is whose clock it is: the shell's, so a child that holds no clock capability can still be timed, which is the Unix behaviour and the leaning |
+| 87 | NOT-STARTED | The x86_64 bare-metal machine | Milestone 19's third ISA needs what milestone 16's second needed: a dedicated, brickable board, selected before the port so the requirements drive the purchase. Selected: a used OptiPlex 7050 Micro plus the C4PDJ serial module, ~$194 all-in; every new option cost $150-350 more at real prices. QEMU emulates `igb` and `e1000e`, not `igc`, so the 7050's I219 keeps the one-driver property with no caveats |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -3245,9 +3247,13 @@ lands (~2026-08-21).
 
 ### 60. ISA discovery: read the machine instead of assuming it
 
-**Status: NOT-STARTED.** The gap found while answering milestone 59's question: **nothing in the tree
-reads the ISA.** No `riscv,isa`, no `riscv,isa-extensions`, no `mmu-type`. We run on what the target
-triple implies plus exactly one runtime probe.
+**Status: BUILT, both ISAs.** The gap found while answering milestone 59's question was that
+**nothing in the tree read the ISA**: no `riscv,isa`, no `riscv,isa-extensions`, no `mmu-type`, and
+on aarch64 only the one `ID_AA64MMFR0_EL1.PARange` field `TCR_EL1.IPS` needs. One `Isa` record per
+architecture now, in [`crates/isa`](../crates/isa) with the kernel halves in
+`kernel/src/arch/*/isa.rs`, populated once at boot and printed at boot. See
+[notes/isa-discovery.md](../notes/isa-discovery.md). The rest of this entry is the brief it was
+built to; what it found is at the bottom.
 
 #### Why the device tree, and why there is no shortcut
 
@@ -3301,6 +3307,35 @@ implemented` on every model**, including `sifive-u54`. The one place we already 
 differ is the one place no emulator can tell us about, so discovery's value is not the branching, it
 is being able to say what the machine is instead of assuming it. See
 [notes/cpu-models.md](../notes/cpu-models.md).
+
+#### What it found, 2026-08-03
+
+**Four call sites vary, and two of this entry's four candidates dropped out.** Real: the ASID width
+on both ISAs (`crates/asid` assumes 8 and RISC-V guarantees none); `TCR_EL1.IPS` from `PARange`,
+which predates the milestone and is now read once into the record; and two refusals, riscv64's
+Sv39-or-stop and aarch64's 4 KiB granule. Not real: **TLB flush strategy varies nowhere**, because
+the unconditional `sfence.vma` is unconditional by design and removing it is its own milestone; and
+**IOMMU presence is already discovered**, by the `smmuv3@` node and by PCI enumeration, so the record
+would add a second way to ask one question. A fifth call site was never reached.
+
+**aarch64 is covered, not scoped out**, and doing both is what produced the sharpest finding.
+**ARM has a tier this entry's list is missing**: `MIDR_EL1` and the `ID_AA64*` space are the CPU
+describing *itself*, architected and mandatory, so the aarch64 half is a decoder where the RISC-V
+half is a parser over a property firmware wrote. RISC-V removed that tier on purpose. There is no
+trait between them and should not be one until a second real board says what the abstraction is.
+
+**Two corrections from the machine, both after the host tests were green.** The SBI spec version is
+24 bits of minor and 7 of major, not 16 and 16, so QEMU's `0x0300_0000` (SBI 3.0) decoded as 0.0 and
+the boot line called firmware that had answered perfectly well silent. And **QEMU `virt` declares
+`mmu-type = "riscv,sv57"`**: the machine we have developed on for two milestones is two page-table
+levels *wider* than the kernel, which is the opposite of the failure this entry was written to
+anticipate.
+
+**Three shapes that would have broken on the VisionFive 2**, all now covered by host tests: the
+deprecated `riscv,isa` string (the modern properties are Linux 6.6 and later), `g` as an
+abbreviation for `imafd_zicsr_zifencei` rather than an extension name, and the trap that requiring
+`zicsr`/`zifencei` would **refuse to boot on that board**, because both were carved out of base `I`
+in 2019 and an older string simply does not list them. `m`, `a` and `c` are what gate instead.
 
 ### 61. The caretakers: one verb table, and names that say what you get
 
@@ -4517,10 +4552,16 @@ milestone 55's critical path, because provisioning at boot is enough to authenti
 
 ### 57. Partitioning and formatting a real drive, and extended attributes
 
-**In brief.** Chris's router setup is `parted` then `mkfs.ext4` then three mounted partitions. We have
-**no equivalent of the first step at all**, and the second only as a host tool. Plus the xattr gap
-milestone 55 surfaced. **Nearly all of this is testable in QEMU against virtio-blk with no board**, so
-it is schedulable before 2026-08-21 rather than waiting on hardware.
+**In brief.** Chris's router setup is `parted` then `mkfs.ext4` then three mounted partitions. Plus
+the xattr gap milestone 55 surfaced. **Nearly all of this is testable in QEMU against virtio-blk with
+no board**, so it is schedulable before 2026-08-21 rather than waiting on hardware.
+
+**Status, taken from the tree on 2026-08-03 rather than from this entry.** The reading half is done
+end to end: `crates/gpt` parses and writes tables, `disk_surveyor` reads a real one off a virtio-blk
+device on both ISAs, `crates/block_roster` answers "what drives are attached" as a read-only mapping,
+the extended-attribute layer and its host recovery half are built, and `tools/redoxfs_host` extracts.
+**What is left is writing on the target**, and both halves of it are gated on the same thing:
+randomness. See the corrected table below, which used to say "the tools, none of which exist".
 
 #### Extended attributes: decided in direction, open in mechanism
 
@@ -4593,20 +4634,36 @@ agree, so a whole contract addition reached none of them and nothing failed.
   directly and bypass the layer. **Here nothing can**: all access goes through `fs_proto`, so a layer
   above the filesystem is as authoritative as the filesystem. A genuine capability-system advantage.
 
-**The check that decides it, and it is small: does RedoxFS let us group a file write and a metadata
+**The check that decided it, and it was small: does RedoxFS let us group a file write and a metadata
 write into one transaction?** If yes, layering is safe and much cheaper. If no, atomicity between a
 file and its metadata cannot hold across a crash (§42's exact territory, and a rename must move both
-together), and the format extension is the only correct answer. **Do this check before committing
-either way.**
+together), and the format extension is the only correct answer.
 
-#### The tools, none of which exist
+**Answered yes, 2026-07-31, before the layer was built** (notes/xattr.md): `fs.tx(|tx| …)` groups
+arbitrary mutations into one commit, so the file write and the attribute write land together and a
+delete removes both or neither. Milestone 37's crash sweep then measured it rather than inheriting
+it. This paragraph read as an open question until 2026-08-03; it is not one.
+
+#### The tools
+
+**This table was written 2026-07-30 saying "none of which exist" and was wrong within a day.** It
+is corrected here on 2026-08-03 from the tree rather than from the plan, and the correction is
+itself the finding: three of its four rows had landed and the entry still read as though nothing
+had. Take a status from the merged tree.
 
 | Need | Status | Note |
 |---|---|---|
-| **GPT parsing** | **None** | Mandatory even if we never write one: you cannot find a partition on a real disk without reading the table |
-| GPT writing | None | The `mkpart` equivalent. Protective MBR, header, entry array, two CRC32s, backup header at the last LBA |
-| `mkfs` on the target | Host only | `redoxfs_host mkfs IMAGE SIZE_MIB` is a std host tool; the FS server is `no_std` |
-| Block device enumeration | None | "What drives are attached", which is enumeration again and bounded by capabilities exactly as milestone 47's globbing and completion are |
+| **GPT parsing** | **Built** 2026-07-30 | `crates/gpt`, proved against tables `sgdisk` and macOS `diskutil` wrote. Mandatory even if we never write one: you cannot find a partition on a real disk without reading the table |
+| GPT writing | **Built** 2026-07-30 | `Gpt::create`, `write_primary_header`, `write_backup_header`, `mbr::write`. Re-emitting `sgdisk`'s table reproduces its bytes exactly. What it will not do is invent a unique GUID, which is the row below |
+| **Reading a table on the target** | **Built** 2026-08-03 | `disk_surveyor` over the block service, both ISAs, against an image built from the `sgdisk` fixture. notes/block-devices.md |
+| Block device enumeration | **Built** 2026-08-03 | `crates/block_roster`: a read-only page the kernel writes, listing what is attached and deliberately **not** how big it is. Listing and holding are different authorities, and the negative control writes to the roster and dies |
+| Partitioning **on** the target | Blocked on entropy | `Gpt::create` is proved and needs a unique GUID per partition. A GUID that is not random is not unique; the entropy service is where a caller gets one. **No pin divergence needed**, so this is the cheaper of the two write halves |
+| `mkfs` on the target | Blocked on entropy **and a pin divergence** | The finding below. Not blocked on `std`, which is what it looked like |
+
+**What remains is the write half, and both halves of it are the same wall**: an identifier that must
+be unique needs randomness, and neither `crates/gpt` nor a `no_std` RedoxFS has any. The difference
+between the two is that partitioning needs only plumbing (an entropy endpoint into the program that
+does it) while `mkfs` also needs a change inside `vendor/redoxfs`, which is a decision.
 
 #### Finding 2026-08-01: `mkfs` on the target is blocked on **entropy**, not on `std`
 
@@ -4651,8 +4708,10 @@ fixtures; re-emitting `sgdisk`'s table reproduces its bytes exactly, and so does
 scratch. Two findings landed in notes/gpt.md: **macOS writes no GPT partition names at all**, so
 nothing may identify a partition by its label, and the two tools disagree about the protective MBR's
 CHS fields, which is why those are not validated. The cricker-os partition type GUID is DECISIONS §45.
-What remains on this milestone is unchanged: the transaction check for xattrs, `mkfs` on the target,
-block-device enumeration, and the host extraction tool.
+That sentence used to end "what remains on this milestone is unchanged: the transaction check for
+xattrs, `mkfs` on the target, block-device enumeration, and the host extraction tool", and by
+2026-08-03 three of those four were done and the fourth had turned out to be a decision. The list
+now lives in the table above, corrected from the tree.
 
 #### The capability shape is the demonstration
 
@@ -4664,6 +4723,21 @@ enforce it. **Here the warning is structural**: the tool was handed one disk.
 
 That also makes it a natural place for milestone 47's `enumerate` right to earn itself: listing
 attached devices and holding one of them are different authorities.
+
+**Built 2026-08-03, and it did not become an `enumerate` *right*** (notes/block-devices.md). The
+prediction that it would was reasonable and the tree said otherwise: `dir::ENUMERATE` is a bit in a
+capability a server checks, and a device listing has no server to check it. So the listing is a
+**read-only mapping** instead, `crates/block_roster`, which is the compositor's window-enumeration
+shape (DECISIONS §33) rather than the filesystem's. There is nothing to authorize at read time
+because the authorization happened when the mapping was made, and a program that holds no mapping
+has nowhere to look rather than a request that gets refused.
+
+Two consequences worth recording. The roster carries **no capacity**, because a size is a fact about
+a device you hold and you get it from `blk::SIZE`, which takes the endpoint; answering it in the
+listing would quietly make the listing the more powerful of the two authorities, and it would mean
+bringing a PCIe function up on behalf of a `ls`. And the negative control is what turns this from a
+description into a claim: the same binary, given the roster and no disk, writes to the roster's exact
+address and dies.
 
 #### Reading the drive from a MacBook or a Linux host: BUILT 2026-07-30
 
@@ -4703,7 +4777,7 @@ Three paths, and they are not equally good:
 
 | Path | Cost | Verdict |
 |---|---|---|
-| **Extend `tools/redoxfs_host` with `ls` / `cat` / `extract`** | Small; the engine already links there with `std` | **Do this first.** No FUSE, no kernel extension, no root, identical on macOS and Linux. The thing you want at 2am with a dead board. Check whether upstream's `redoxfs-ar` already covers it |
+| **Extend `tools/redoxfs_host` with `ls` / `cat` / `extract`** | Small; the engine already links there with `std` | **DONE 2026-07-30**, plus `import`, `mkfs`, `put` and (2026-08-01) `xattr`. No FUSE, no kernel extension, no root, identical on macOS and Linux. The thing you want at 2am with a dead board. Upstream's `redoxfs-ar` did not cover it: it only writes |
 | **Linux mount via the `fuse` feature** | A feature flag | Nearly free, and upstream maintains it: it is how Redox developers work with images |
 | **macOS mount via macFUSE** | A third-party system extension plus reduced security mode on Apple Silicon | Works, genuinely awkward. **Optional convenience, not the recovery story** |
 
@@ -4741,11 +4815,26 @@ And if Time Machine encryption *is* enabled, recovery then depends on that passw
 the "can I get my data" risk rather than removing it, so the password belongs wherever the family's
 other credentials live rather than only in one Keychain.
 
-**Sequencing.** The GPT crate and the transaction check are independent of everything and can start
-now. The host extraction tool was likewise independent and was the cheapest credibility win on this
-milestone; **it is done** (2026-07-30), which is why the milestone's row now reads PARTIAL. `mkfs` on
-the target wants the block-device path settled. Real drives arrive with milestone 53. **Effort: not estimated**, though the GPT crate alone looks like one lane on the history-calibrated
-scale.
+**Sequencing, rewritten 2026-08-03 because everything it sequenced has happened.** The GPT crate
+(2026-07-30), the transaction check (2026-07-31, answered yes), the host extraction tool
+(2026-07-30, the cheapest credibility win here), the extended-attribute layer and its recovery half
+(2026-07-31 and 2026-08-01), and the block-device path with a real table read on the target
+(2026-08-03) are all done. Real drives arrive with milestone 53; the board arrives around
+2026-08-21.
+
+**What is left is one decision and one small piece of plumbing behind it**, and they are not the
+same size:
+
+- **Partitioning on the target** needs an entropy endpoint in the program that does it, and nothing
+  else. `Gpt::create` is built and proved. No pin divergence. This is a lane.
+- **`mkfs` on the target** needs that plus `Header::new_with_uuid` inside `vendor/redoxfs`, which is
+  a new entry in `vendor/redoxfs.divergence.patch` and a new file in `patches/` for upstream
+  submission. §46's rule makes that Chris's call, and the honest alternative is still on the table:
+  `redoxfs_host` on a Mac formats the drive today, which is what actually gets a disk ready for the
+  board, and the target-side version is then a capability demonstration rather than a prerequisite.
+
+**Effort: not estimated.** The GPT crate turned out to be about one lane on the history-calibrated
+scale, and so did the block-device lane.
 
 
 ## The display ladder (recorded 2026-07-28, Chris's direction)
@@ -5821,6 +5910,20 @@ The honest cost of leaving this open, and the reason it is worth doing: every re
 repository currently needs a human to decide "known or real", and on 2026-08-03 that judgement was
 made at least six times and got the wrong answer twice.
 
+#### Postscript, 2026-08-03: the frame-hygiene assertion is gone
+
+Removed the same day this milestone was raised (#46), after it failed the cpu matrix twice more on
+`main`, once on `rv64`, the control model, and once on a Dependabot PR that touched only workflow
+files. That is a deletion, and the paragraph above says deletion is not the fix, so the difference
+is worth stating plainly. The 72 lane rightly declined to delete a check it could not explain; by
+removal time the explanation was complete (the BUGS section of notes/live-replacement.md: only
+frames arriving from outside the run could trip it, with a measured margin of two frames). And the
+assertion this milestone asks for, one scoped to the property the test is responsible for, was
+already standing twelve lines above it: the budget reclaim must succeed and must return exactly
+`SWAPPER_BUDGET_PAGES`. The global count added no coverage on top of that, only the exposure to
+neighbours. One of the five is done; the reaper count, the address-space frames and the two timing
+assertions remain, and the status stays NOT-STARTED for them.
+
 ### 79. Miri over the host crates
 
 **Status: NOT-STARTED.** Raised 2026-08-03, from a survey of what analysis the tree runs against what
@@ -5995,3 +6098,100 @@ worth writing or an exclusion recorded in `.cargo/mutants.toml` with a reason (c
 dependency, per §46); a note recording the baseline; then a weekly scheduled workflow that reports
 against that baseline. A report, not a gate, until the weekly numbers prove stable enough that a
 new survivor deserves to fail something.
+
+### 86. `time`: the shell times a command
+
+**Status: NOT-STARTED.** Raised 2026-08-03, prompted by timing a forty-minute proof run on the host
+and noticing this OS has no way to ask the same question.
+
+`time wc log.txt` runs the command exactly as typed and reports how long it took. The name is the
+standard term and stays: `time`, `nice` and `env` are the prefix-word idiom `caps <command>` already
+cites as its precedent, and this is the second prefix word, so the grammar it needs is proven in the
+shell rather than new. The tail is a real command through the same `RunSpec`/`plan_against` path,
+which keeps "what you time is what you run" true the same way `caps` keeps it for inspection.
+
+**The one design question is whose clock it is, and the leaning is the shell's.** `date` established
+the clock story: a read-only clock-page mapping, endowed, with an honest refusal when the holder has
+none. If `time` reads the shell's own clock capability, a child that holds no clock at all can still
+be timed, which is the Unix behaviour (the timed program does not know it is being timed and needs
+nothing to permit it); timing is then something an observer does with its own authority, which is
+the capability-model answer too, since the child's wall-clock duration is observable to anyone who
+can watch it start and stop. The alternative, delegating a clock to the child, would make `time` a
+grant and change what the child can do, which is a different tool. Decide it on the record in
+`DECISIONS.md` when built; this block records the leaning and the reason.
+
+What the number means is bounded by what the shell can see: wall clock between spawn and the exit
+arriving on the supervision endpoint, on the clock page's resolution. Not CPU time, which is the
+scheduler's knowledge and unqueried today; if that arrives later it is an extension of the same
+command, not a rival. A worked `EXAMPLES` entry and the resolution caveat go in the man-page-shaped
+docs, per the FreeBSD standard.
+
+#### Scope note
+
+Timing a command that holds no clock is the whole point, so the milestone includes the case where
+the *shell* holds no clock either, and the refusal should be `date`'s, worded for the prefix
+position. Host tests cover the plan and the arithmetic; the QEMU test is one timed spawn asserting
+the duration is positive and sane, not a latency benchmark, which is `bench`'s job.
+
+### 87. The x86_64 bare-metal machine
+
+**Status: NOT-STARTED.** Raised 2026-08-03. The selection is made and recorded here; the milestone
+completes when the machine is on the desk and has printed a byte over serial.
+
+Milestone 19 names x86_64 as the third ISA, and the second ISA's lesson (milestone 16, the
+VisionFive 2) is that the board should be chosen and ordered before the port needs it, from
+requirements the port derives rather than from specs. Bare-metal bring-up is a loop of hang,
+power-cycle, retry, so the machine must be dedicated and consequence-free; cordoba is disqualified
+for bare metal on exactly those grounds (it is the production server, and a 2013 desktop board has
+no BMC, no serial-over-LAN, no remote power), though it remains the KVM and VT-d *virtualized* test
+host for the same port.
+
+The requirements, each traced to something this tree already does:
+
+- **A real 16550 COM port.** Early bring-up output exists before anything else works, and QEMU's
+  q35 machine emulates the same legacy UART, so one driver spans emulator and silicon. This is the
+  NS16550/PL011 pattern both existing ISAs follow, and it eliminates most modern consumer hardware.
+- **VT-d**, because IOMMU-backed driver isolation (milestone 16) is a parity theme (§19), and the
+  x86 side of the DMA-confinement story needs real hardware eventually.
+- **A NIC QEMU can stand in for.** QEMU 11.0.2 (checked against the pinned binary, not the docs)
+  emulates two modern Intel families: `e1000e` (I217/I218/I219) and `igb` (82576, whose driver
+  family covers i210/i211/i350). It does **not** emulate `igc` (i225/i226), and upstream has
+  nothing in flight. An i226 machine is therefore acceptable but taxed: the driver core gets
+  written against QEMU's `igb` (igc is igb's descendant, so rings and descriptors carry over) and
+  the igc deltas are ported on hardware. A minimal driver is 1,500-3,000 lines against Intel's
+  public datasheet; the plumbing around it (PCI decode, DMA confinement, the userspace net server)
+  already exists.
+- **Four real cores** for the per-CPU scheduler, and any Intel core has the PMU that milestone 25's
+  `sel4bench` comparison was deferred to real hardware for.
+- **Remote power cycling** by smart plug, not by management firmware. A plug is $15 and works on
+  anything.
+
+**The selection: a used Dell OptiPlex 7050 Micro plus the Dell C4PDJ serial module** (Chris,
+2026-08-03, settled after a full pass over the new market): i5-7500T with 16GB was $129 with the
+module at $35, ~$194 all-in with the dev-side serial gear and the smart plug. The used-hardware
+risk was weighed deliberately and priced: eBay's money-back guarantee bounds "does it work" to
+return friction, and at real configured prices every new machine cost $150-350 more. The 7050
+keeps the fastest cores in the field and the I219 NIC in QEMU's `e1000e` family, so the
+one-driver-spans-emulator-and-silicon property holds with no caveats. The module is Dell P/N
+**C4PDJ** (fits 3050/7040/7050 MFF, snaps into the rear punch-out, cables to a motherboard
+header; check the listing includes the cable); used units essentially never ship with it, so buy
+it separately rather than hunting for a factory-configured unit.
+
+The market at selection time, so the next reader knows what was weighed. The closest contender
+was a **new Protectli VP2430** ($300 configured with coreboot): a real vendor with published
+datasheets, open-source firmware aligned with `measured_boot`'s future on x86, console cable
+included, but i226-V NICs in the `igc` family QEMU does not emulate, and $150 over the used
+route; it stays **the recorded alternative** if the used machine disappoints or when open
+firmware becomes the point. Configured industrial N100 boxes on Amazon ran $500-730 and are
+dominated by the VP2430 at every point. A used PC Engines apu2 deserves a correction from the
+first draft of this entry: its i210 NICs are `igb` family, so QEMU's igb model gives it the
+one-driver property this entry originally credited only to the 7050; it stays a runner-up for its
+EOL status and slow Jaguar cores, not its NIC. If netboot iteration becomes worth it, cordoba
+hosts the PXE/TFTP end.
+
+#### Scope note
+
+This milestone is the machine, the serial link proven, and nothing else; the port itself is
+milestone 19's remaining scope and is not gated on this purchase, because the port starts under
+QEMU TCG the way riscv64 did. Buying early is cheap insurance against the VisionFive 2 pattern
+(ordered 2026-07, arrives ~2026-08-21) of the board being the long pole.

@@ -112,7 +112,19 @@ if [ -n "$CRICKER_DISK" ]; then
     if [ -f "$CRASH_DISK" ]; then
         CRASH_MMIO="-drive file=$CRASH_DISK,if=none,format=raw,id=hd3 -device virtio-blk-device,drive=hd3"
     fi
-    DISK="-global virtio-mmio.force-legacy=false $CRASH_MMIO $REDOXFS_MMIO -drive file=$CRICKER_DISK,if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 -drive file=$PCI_DISK,if=none,format=raw,id=hd1 -device virtio-blk-pci,drive=hd1,disable-legacy=on,iommu_platform=on"
+    # The GPT-partitioned image (milestone 57), the FOURTH mmio block device, at slot 3. It goes
+    # FIRST on the command line because the slot assignment is the reverse of command-line order, so
+    # the four land at crickerfs=0, redoxfs=1, crash=2, gpt=3, which is what `find_block_device_n`
+    # counts and what `disk_service::GPT_DISK` asks for. This one carries no filesystem at all: the
+    # bytes are the `sgdisk` fixture from crates/gpt/tests/fixtures, so the guest reads a partition
+    # table written by gptfdisk rather than by us. Soft, like the others: present only when the test
+    # flow built it (cargo xtask test).
+    GPT_DISK_IMG="${CRICKER_DISK%.img}-gpt.img"
+    GPT_MMIO=""
+    if [ -f "$GPT_DISK_IMG" ]; then
+        GPT_MMIO="-drive file=$GPT_DISK_IMG,if=none,format=raw,id=hd4 -device virtio-blk-device,drive=hd4"
+    fi
+    DISK="-global virtio-mmio.force-legacy=false $GPT_MMIO $CRASH_MMIO $REDOXFS_MMIO -drive file=$CRICKER_DISK,if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0 -drive file=$PCI_DISK,if=none,format=raw,id=hd1 -device virtio-blk-pci,drive=hd1,disable-legacy=on,iommu_platform=on"
 fi
 
 # Attach a virtio-net NIC on QEMU user-mode (slirp) networking when CRICKER_NET is set (milestone
