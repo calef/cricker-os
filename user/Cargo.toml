@@ -451,13 +451,14 @@ elf = { version = "0.1.0", path = "../crates/elf" }
 entropy_proto = { version = "0.1.0", path = "../crates/entropy_proto" }
 fs_proto = { version = "0.1.0", path = "../crates/fs_proto" }
 gfx_proto = { version = "0.1.0", path = "../crates/gfx_proto" }
-# The matcher, so the shell can ask "is this word a pattern at all" before it does anything with it.
-# Expansion itself lives in `grant_plan::expand`; this is only `has_magic`, which decides whether an
-# arbitrary word (`echo a:b`) is text to print or a designation to resolve.
-glob = { version = "0.1.0", path = "../crates/glob" }
 line_editor = { version = "0.1.0", path = "../crates/line_editor" }
 ntp_proto = { version = "0.1.0", path = "../crates/ntp_proto" }
 sink_proto = { version = "0.1.0", path = "../crates/sink_proto" }
+# The shell's own logic (milestone 70): the routing of a typed line, the pattern-versus-text
+# question, and every sentence the prompt prints. `user/src/swish.rs` is the same program it was and
+# keeps all the IO; what moved is what a host test can reach. `glob` left this manifest in the same
+# change, because `has_magic` was reached only from the function that moved.
+swish = { version = "0.1.0", path = "../crates/swish" }
 user_rt = { version = "0.1.0", path = "../crates/user_rt" }
 video_terminal = { version = "0.1.0", path = "../crates/video_terminal" }
 

@@ -107,3 +107,47 @@ a named ELF from the crickerfs filesystem (milestone 9) and exec it. The pieces 
 the disk driver reads files, the ELF loader runs arbitrary binaries, and wiring `run <file>` to
 them is the natural next step. What milestone 10 proves is the harder half: a process, spawned on a
 typed command, running at EL0, reporting back, and exiting.
+
+## The program and the crate (milestone 70)
+
+`swish` is now two things with one name: the program at `user/src/swish.rs` and the crate at
+`crates/swish`. The crate holds what the shell **decides or renders**; the program holds everything
+that needs a capability. That is the same pair `coremark`, `line_editor` and `compositor` already
+are, and the reason for the shared name is in CLAUDE.md: splitting them would hide the relationship.
+
+The line between them is one question. **If a function needs a capability, it stays in the
+program.** Routing a typed line, deciding whether a word is a pattern or text, and every sentence
+the prompt prints need none, so they moved; the terminal page, the spawn channel, the filesystem
+requests and the pipe endpoints did not.
+
+Two functions in the crate take the shell's directory read as a callback, `expand`, rather than
+losing it. Matching a pattern is pure and lives in `grant_plan::expand`; only *reading* the
+directory needs a capability. So `swish::echo` and `swish::expansion` are host-testable end to end
+against a fixture directory, which is what makes `echo *.txt` and `caps rm *.txt` provably render
+the same set.
+
+### What did not move, and why
+
+- `builtin` and `dispatch_one`. Every arm is a request to the filesystem server (`cd`, `ls`,
+  `mkdir`) or a print. `swish::route` lifts the decision they sit under, which is the half with a
+  bug behind it; the arms belong with the wiring.
+- `run`. Its body is two calls into `grant_plan`, both already host-tested there, wrapped around a
+  choice between two spawn paths. Lifting it would move the spawn decision away from the only code
+  that can act on it.
+- `spawn`, `pipeline`, the file sinks and sources, the interruptible job path. Capability movement,
+  all of it.
+
+### The finding that prompted this was wrong, and the correction is the useful part
+
+The milestone was raised as "the shell is untested": `user/src/swish.rs` had 2,625 lines and zero
+`#[cfg(test)]` blocks. It was covered twice over the whole time, by about 28 QEMU integration
+`test_case`s (`shell_navigation_tests`, `pipeline_tests`, `redirection_tests`, `glob_grant_tests`,
+`rm_program_tests`) and by 93 host tests in `crates/grant_plan`, which already held its parsing,
+navigation and grant planning.
+
+So 0% was a fact about a **file**, not about a component. Coverage measured per file counts where
+tests are *written*, never what they *reach*, and in a tree whose whole method is "pure logic in
+crates, IO in programs" that metric will read zero for every program by construction. The real gap
+was narrower and worth closing anyway: the error paths QEMU cannot easily provoke. `caps` refusing a
+pipeline whose first stage has no bytes to pipe, a pattern the shell holds no directory to expand, a
+spawn that failed under a program whose report would otherwise print a number.

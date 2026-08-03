@@ -133,7 +133,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 67 | NOT-STARTED | `swish` the language: quoting, sequencing, and exit status | `swish` is an interactive shell without control flow. Quoting is the one that is a correctness gap rather than a convenience: **a filename with a space is currently unnameable** |
 | 68 | PARTIAL | Code-quality gates: one lint policy, and the lints that lost | Import order, `[workspace.lints]`, dependency direction, unused dependencies, spelling. Three lints were adopted, measured and **removed** on the evidence. `undocumented_unsafe_blocks` is now a GATE: all 205 undocumented blocks were read and commented. Doc examples went 5 -> 23 across nine crates, which is a start and not the standard; `missing_docs` is still not adoptable |
 | 69 | NOT-STARTED | Split `kernel/src/user.rs` by service | 15,499 lines and **46 top-level modules** in one file: a dozen `*_service` modules and ~34 test modules. The split is nearly free because the boundaries are already `mod` blocks, so moving one to its own file changes no visibility and no API |
-| 70 | NOT-STARTED | `swish`'s remaining logic in a crate, host-testable like its siblings | `coremark`, `line_editor` and `compositor` are each a crate holding the logic plus a program holding the IO. `swish` is the largest program that is not, so its dispatch, endowment preview and outcome handling are reachable only through QEMU |
+| 70 | BUILT | `swish`'s remaining logic in a crate, host-testable like its siblings | `coremark`, `line_editor` and `compositor` are each a crate holding the logic plus a program holding the IO. `swish` is the largest program that is not, so its dispatch, endowment preview and outcome handling are reachable only through QEMU |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -4978,8 +4978,16 @@ leaving `user.rs` as the wiring that names them.
 
 ### 70. `swish`'s remaining logic in a crate, host-testable like its siblings
 
-**Status: NOT-STARTED.** Raised 2026-08-02, and **the finding that prompted it was wrong**, which is
+**Status: BUILT.** Raised 2026-08-02, and **the finding that prompted it was wrong**, which is
 worth recording because the corrected version is a smaller and more honest milestone.
+
+`crates/swish` holds the shell's logic and `user/src/swish.rs` keeps the IO, which took 354 lines out
+of the program and bought 36 host tests (33 unit, 3 doctests) where there had been none. What lifted:
+the routing of a typed line, the pattern-versus-text question, the expansion order, `echo`, and every
+sentence the prompt prints (the refusals, the outcome, the endowment preview, the shell's own `caps`
+table, the help). What did not, and why, is in notes/shell.md and in the crate's own `BUGS` section:
+`builtin`, `dispatch_one`, `run`, `spawn` and `pipeline` are capability movement, and lifting them
+would have needed the shell's IO restructured, which this milestone was scoped not to do.
 
 #### The correction
 

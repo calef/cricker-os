@@ -42,14 +42,15 @@
 #![no_std]
 #![no_main]
 
-use fs_proto::{dir, dirent, fs};
-use grant_plan::expand::{Expander, Expansion, NameSet};
+use fs_proto::{dirent, fs};
+use grant_plan::expand::{Expander, NameSet};
 use grant_plan::line::{self, Line, Source};
 use grant_plan::nav::{self, Cwd, Refused, Step};
 use grant_plan::{
-    Action, Command, Endowment, Escalation, Prog, Refusal, RunSpec, Streams, jobframe, spawnproto,
+    Action, Command, Endowment, Escalation, Refusal, RunSpec, Streams, jobframe, spawnproto,
 };
 use line_editor::proto;
+use swish::{Route, Say};
 use user_rt::{call, cap_delete, exit, invoke, recv, send, yield_now};
 
 // Pages shared with the terminal (must match the wiring in init).
@@ -132,27 +133,6 @@ struct Nav {
     /// `handles[i]` is the directory capability for level `i + 1`; level 0 is [`fs::ROOT`], the
     /// capability the endpoint itself designates.
     handles: [u64; nav::MAX_DEPTH],
-}
-
-/// What a builtin has to say. A value rather than a print, because the printing half belongs to the
-/// interactive prompt and the navigating witness (which has no terminal) runs the same builtins.
-enum Say {
-    /// It worked and there is nothing to add.
-    Nothing,
-    /// The name could not be navigated, and nothing was sent.
-    Refused(Refused),
-    /// The filesystem refused, with this errno. Rendered by `fs_proto::dir::explain`, which keeps
-    /// the sentence next to the decision that chose the number.
-    Failed(i32),
-    /// This shell holds no directory capability, so there is nothing to name.
-    NoDirectory,
-    /// The verb needs an operand and got none.
-    NeedsAName,
-    /// **A designation this shell cannot back**, in `grant_plan`'s vocabulary. It arrives here because
-    /// expansion happens *before* planning, so a pattern that matched nothing (or too much) is
-    /// refused before there is a program to attribute it to, and `echo` can reach the same refusals
-    /// with no program on the line at all.
-    Cannot(Refusal),
 }
 
 /// A resolved path lead: the directory handle it designates, plus the temporary capabilities opened
@@ -480,90 +460,22 @@ impl Nav {
     }
 }
 
-/// **Whether this token is a designation to resolve rather than a word to print.**
-///
-/// `glob::has_magic` first, deliberately: an `echo` word is arbitrary text (`a:b` is not a path and
-/// must not be refused as one), so nothing asks whether a token is a *nameable* path until it is
-/// established that it is a pattern at all. Once it is, a pattern anywhere but the last component is
-/// refused, because selecting directories to walk is an authority question (notes/glob.md).
-fn is_pattern(token: &[u8]) -> Result<bool, Refusal> {
-    if !glob::has_magic(token) {
-        return Ok(false);
-    }
-    grant_plan::expand::magic_component(token)
+// `is_pattern`, `expansion`, `write_set` and `echo` moved to the `swish` crate in milestone 70:
+// each is a decision or a rendering with no capability in it, and each is now host-tested there.
+// What is left below is the shell's IO: reading a directory, and putting bytes on a terminal.
+//
+// The two wrappers here are the seam. The crate's versions take the directory read as a callback,
+// because matching a pattern is pure and only *reading* the directory needs a capability; these
+// bind that callback to this shell's [`Nav`] so every call site reads exactly as it did before.
+
+/// [`swish::expansion`], against the directory this shell holds.
+fn expansion(nav: &mut Nav, spec: &RunSpec) -> Result<grant_plan::expand::Expansion, Say> {
+    swish::expansion(spec, &mut |token| nav.expand(token))
 }
 
-/// **Expand the invocation's pattern operand, before anything is planned.**
-///
-/// The shell expands and then plans, which is what Unix does, so there is no divergence to earn.
-/// What is different is the consequence: the planner must see the **set** rather than the pattern,
-/// because the endowment is the set. Only the first pattern is expanded, and that is not a
-/// limitation being hidden: no manifest declares two name slots, so a second operand of any kind is
-/// already an unplaceable token and a refusal.
-fn expansion(nav: &mut Nav, spec: &RunSpec) -> Result<Expansion, Say> {
-    for (i, token) in spec.positionals().iter().enumerate() {
-        match is_pattern(token) {
-            Ok(false) => continue,
-            Ok(true) => return Ok(Expansion::at(i, nav.expand(token)?)),
-            Err(r) => return Err(Say::Cannot(r)),
-        }
-    }
-    Ok(Expansion::none())
-}
-
-/// Write a set as `echo` shows it and as `caps` previews it: the names, one space apart, in the
-/// order the directory yielded them. One renderer, so what is displayed in the two places cannot
-/// differ in a way that hides a difference in the authority.
-fn write_set(set: &NameSet, out: &mut dyn FnMut(&[u8])) {
-    for (i, (name, _)) in set.iter().enumerate() {
-        if i > 0 {
-            out(b" ");
-        }
-        out(name);
-    }
-}
-
-/// **`echo`, which expands.** The half of milestone 47's globbing demonstration that costs no
-/// authority: `echo *.txt` prints literally what `rm *.txt` would transfer.
-///
-/// Words with no magic in them are copied through **byte for byte, spacing included**, so `echo
-/// two  spaces` still prints its two spaces. Only a word that is a pattern is replaced by what it
-/// designates, which keeps `echo` a text command everywhere it was one before.
-///
-/// `out` is a callback for [`Nav::ls`]'s reason: the prompt prints, and the guest witness (which has
-/// no terminal) collects, and both run this exact function rather than a reimplementation of it.
+/// [`swish::echo`], against the directory this shell holds.
 fn echo(nav: &mut Nav, text: &[u8], out: &mut dyn FnMut(&[u8])) -> Say {
-    let mut i = 0;
-    while i < text.len() {
-        let space = i;
-        while i < text.len() && text[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        if i > space {
-            out(&text[space..i]);
-        }
-        let word = i;
-        while i < text.len() && !text[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        if i == word {
-            continue;
-        }
-        let token = &text[word..i];
-        match is_pattern(token) {
-            Ok(false) => out(token),
-            Ok(true) => match nav.expand(token) {
-                Ok(set) => write_set(&set, out),
-                // A pattern that matched nothing stops the line rather than printing itself. That is
-                // the same answer `rm` gets, and it has to be: if `echo` printed the pattern where
-                // `rm` refuses, the two would disagree about what the line designates, which is the
-                // one thing this pairing exists to rule out.
-                Err(s) => return s,
-            },
-            Err(r) => return Say::Cannot(r),
-        }
-    }
-    Say::Nothing
+    swish::echo(text, &mut |token| nav.expand(token), out)
 }
 
 /// The local buffer one `READDIR` round is decoded from. The shared page is sixteen times larger, so
@@ -608,18 +520,8 @@ fn stage(s: &[u8], n: usize) {
 }
 
 /// Print a small unsigned number in base 10.
-fn print_num(mut v: u64) {
-    let mut digits = [0u8; 20];
-    let mut i = digits.len();
-    loop {
-        i -= 1;
-        digits[i] = b'0' + (v % 10) as u8;
-        v /= 10;
-        if v == 0 {
-            break;
-        }
-    }
-    print(&digits[i..]);
+fn print_num(v: u64) {
+    swish::write_num(v, &mut print);
 }
 
 /// Read a command line: stage the prompt, CALL `OP_READLINE`, and block until the terminal has a
@@ -829,17 +731,15 @@ fn builtin(nav: &mut Nav, cmd: &[u8], each: &mut dyn FnMut(&[u8], bool)) -> Opti
 /// A line with no `>`, `<` or `|` takes exactly the path it took before those existed, which is
 /// deliberate: the operators must not make an ordinary command more expensive or more complicated,
 /// because an ordinary command is nearly every command.
+/// The routing itself is [`swish::route`], host-tested there, including the one ordering with a bug
+/// behind it: `caps` is answered **before** the line is split, or `caps date | wc` would lose the
+/// pipe. What is left here is which capability each answer reaches for.
 fn dispatch(nav: &mut Nav, cmd: &[u8]) {
-    // **`caps` is asked before the line is split**, because its operand *is* a command line and it
-    // has to see the operators to preview what they do. `caps date | wc` must print two stages;
-    // splitting first would hand it the word `date` and lose the rest.
-    if let Command::Caps(tail) = grant_plan::parse(cmd) {
-        return caps(nav, tail);
-    }
-    match line::split(cmd) {
-        Ok(l) if l.is_plain() => dispatch_one(nav, l.stages()[0]),
-        Ok(l) => pipeline(nav, l),
-        Err(r) => say(Say::Cannot(r)),
+    match swish::route(cmd) {
+        Route::Caps(tail) => caps(nav, tail),
+        Route::One(stage) => dispatch_one(nav, stage),
+        Route::Pipeline(l) => pipeline(nav, l),
+        Route::Cannot(r) => say(Say::Cannot(r)),
     }
 }
 
@@ -885,68 +785,18 @@ fn print_pwd(nav: &Nav) {
         say(Say::NoDirectory);
         return;
     }
-    let mut buf = [0u8; nav::RENDER_MAX];
-    let n = nav.cwd.render(&mut buf);
-    print(b"  ");
-    print(&buf[..n]);
-    print(b"\n");
+    swish::write_pwd(&nav.cwd, &mut print);
 }
 
 /// Print what a builtin had to say. Every line is a statement about a name or a capability, never
-/// about a policy: `fs_proto::dir::explain` keeps the filesystem's half next to the decision that
-/// chose the errno, so this function does not get to invent a friendlier word for a refusal.
+/// about a policy, and the wording is [`swish::write_say`]'s so a host test can hold it: this shell
+/// does not get to invent a friendlier word for a refusal.
 fn say(s: Say) {
-    match s {
-        Say::Nothing => {}
-        Say::Refused(r) => {
-            print(b"  ");
-            print(r.message().as_bytes());
-            print(b"\n");
-        }
-        Say::Failed(errno) => {
-            print(b"  ");
-            print(dir::explain(errno).as_bytes());
-            print(b"\n");
-        }
-        Say::NoDirectory => {
-            print(b"  this shell holds no directory capability; there is nothing here to name\n");
-        }
-        Say::NeedsAName => print(b"  name what you mean: this verb takes one\n"),
-        Say::Cannot(r) => {
-            print(b"  ");
-            print(r.message().as_bytes());
-            print(b"\n");
-        }
-    }
+    swish::write_say(s, &mut print);
 }
 
 fn help() {
-    print(b"  help                    this text\n");
-    print(b"  echo <text>             print <text>\n");
-    print(b"  caps                    print this shell's whole endowment\n");
-    print(b"  caps <command>          preview what that command would grant\n");
-    print(b"  cd [path]               move inside the directory you hold ('cd' is your root)\n");
-    print(b"  pwd                     where you are, relative to YOUR root\n");
-    print(b"  ls [path]               list a directory you can reach\n");
-    print(b"  mkdir <path>            make a directory\n");
-    print(b"  rm [-rfv] <path>        a PROGRAM, granted the directory holding what you name\n");
-    print(b"  worker <n>              spawn a process that returns n*n\n");
-    print(b"  budgeter --mem N        grant a process N pages from this shell's budget\n");
-    print(b"  date                    print the wall-clock time\n");
-    print(b"  wc                      count lines, words and bytes on its INPUT\n");
-    print(b"  <prog> <name>           grant a process one file, and only that file\n");
-    print(b"\n  operators (milestone 50). > and | are the same mechanism: a different\n");
-    print(b"  capability in a program's output slot, which it cannot look behind.\n");
-    print(b"  a | b                   a's output becomes b's input; the pipe is an endpoint\n");
-    print(
-        b"  a > name                a's output becomes a file it can append to and nothing else\n",
-    );
-    print(b"  a >> name               the same, without emptying the file first\n");
-    print(b"  a < name                a file's bytes become a's input\n");
-    print(
-        b"  echo hello | wc         a builtin can lead a pipeline: this shell writes the bytes\n",
-    );
-    print(b"\n  naming a resource grants it; a program that names nothing can touch nothing.\n");
+    swish::write_help(&mut print);
 }
 
 /// Resolve an invocation, then either refuse it at the prompt (a mismatch the manifest caught) or
@@ -970,28 +820,10 @@ fn run(nav: &mut Nav, spec: RunSpec) {
     }
 }
 
-/// Print a refusal in the capability model's voice. The fixed half is `grant_plan`'s (host-tested so the
-/// wording cannot drift); the shell supplies the program name where one helps.
+/// Print a refusal in the capability model's voice, which is [`swish::write_refusal`]'s job: the
+/// fixed half is `grant_plan`'s and the program name is supplied where one helps.
 fn refuse(spec: RunSpec, refusal: Refusal) {
-    print(b"  ");
-    // A named-but-unresolvable program, or an un-grantable resource, name the offending thing. A
-    // line of nothing but flags (`--mem 16`) names no program at all, and printing an empty name
-    // followed by a colon would be worse than printing the bare refusal.
-    match refusal {
-        Refusal::NoSuchProgram if !spec.prog.is_empty() => {
-            print(spec.prog);
-            print(b": ");
-        }
-        Refusal::NoSuchProgram => {}
-        _ => {
-            if let Some(p) = Prog::from_name(spec.prog) {
-                print(p.name().as_bytes());
-                print(b": ");
-            }
-        }
-    }
-    print(refusal.message().as_bytes());
-    print(b"\n");
+    swish::write_refusal(&spec, refusal, &mut print);
 }
 
 /// Grant and spawn. The one moment authority moves: split any memory grant off our own budget,
@@ -1105,211 +937,25 @@ const MAX_TEXT_CHUNKS: usize = 32;
 
 /// Report what the spawned program did, in terms of the grant it was given.
 fn outcome(e: Endowment, answer: u64) {
-    if answer == spawnproto::SPAWN_FAILED {
-        print(b"  could not spawn (init is out of memory)\n");
-        return;
-    }
-    match e.prog {
-        Prog::Worker => {
-            print(b"  a process at EL0 computed ");
-            print_num(e.arg);
-            print(b"*");
-            print_num(e.arg);
-            print(b" = ");
-            print_num(answer);
-            print(b"\n");
-        }
-        Prog::Budgeter => {
-            print(b"  the process mapped ");
-            print_num(answer);
-            print(b" pages out of the ");
-            print_num(e.mem_pages);
-            print(b"-page budget you granted (the rest paid for its page tables)\n");
-        }
-        // Supervised jobs report through the job frame and the interruptible path, not here; `date`
-        // answers in text and is drained by `report_text` before this is reached. `rm` is
-        // unreachable from this prompt at all (a directory grant needs a caretaker this shell
-        // cannot build, and `spawn` says so), and when it is reachable it will report the way
-        // `date` does: diagnostics as text, then an exit status.
-        Prog::Heeder | Prog::Spinner | Prog::Date | Prog::Rm | Prog::Wc => {}
-    }
+    swish::write_outcome(&e, answer, &mut print);
 }
 
 /// Print the shell's whole endowment, or, with a tail, preview what that command would grant. This
 /// is the introspection that makes "reading one literal tells you a process's authority" real.
+///
+/// The preview is [`swish::write_caps`], and it moved there because **nothing about it needs a
+/// capability**: it renders what a line *would* grant, so it is the one command in this shell whose
+/// entire meaning is checkable without a machine to run it on. What is left here is the directory
+/// read a pattern needs and the terminal to print to.
 fn caps(nav: &mut Nav, tail: &[u8]) {
-    let tail = grant_plan::trim(tail);
-    if tail.is_empty() {
-        print(b"  this shell holds, and nothing else:\n");
-        print(b"    cap 0  endpoint  terminal   read lines, write text\n");
-        print(b"    cap 1  endpoint  spawn      direct init to start a program\n");
-        print(b"    cap 2  endpoint  result     read a spawned program's answer\n");
-        print(b"    cap 3  untyped   ");
-        print_num(SH_BUDGET_PAGES);
-        print(b" pages  the memory it grants with --mem (initial)\n");
-        if holdings(nav).dir {
-            print(
-                b"    cap 4  endpoint  directory  the files it can narrow into per-file grants\n",
-            );
-        } else {
-            print(b"    (no directory capability: a name on the line has nothing to narrow)\n");
-        }
-        print(b"    (no clock: 'date' spawned from here holds no clock capability, and says so)\n");
-        print(b"  it can name no devices and no other process. authority is what it holds.\n");
-        return;
-    }
-    // **A whole line, operators included** (milestone 50), because what a pipeline grants is not the
-    // sum of what its stages grant read one at a time: which slot holds what depends on where the
-    // stage is. Previewing the line the user would run is the only preview worth having.
-    let l = match line::split(tail) {
-        Ok(l) => l,
-        Err(r) => return say(Say::Cannot(r)),
-    };
-    let out = match l.output {
-        Some(t) => match grant_plan::redirect_target(t, holdings(nav), true) {
-            Ok(g) => Some(g),
-            Err(r) => return say(Say::Cannot(r)),
-        },
-        None => None,
-    };
-    let inp = match l.input {
-        Some(t) => match grant_plan::redirect_target(t, holdings(nav), false) {
-            Ok(g) => Some(g),
-            Err(r) => return say(Say::Cannot(r)),
-        },
-        None => None,
-    };
-    for (i, stage) in l.stages().iter().enumerate() {
-        // Only a program invocation carries a grant to preview; `caps help` has nothing to say.
-        let Command::Run(spec) = grant_plan::parse(stage) else {
-            print(b"  caps previews a command's grant; try: caps budgeter --mem 16\n");
-            return;
-        };
-        let expanded = match expansion(nav, &spec) {
-            Ok(e) => e,
-            Err(Say::Cannot(r)) => return refuse(spec, r),
-            Err(said) => return say(said),
-        };
-        let streams = Streams {
-            sink: l.sink_for(i, out),
-            source: l.source_for(i, inp),
-        };
-        match grant_plan::plan_stage(&spec, holdings(nav), expanded, streams) {
-            Err(refusal) => return refuse(spec, refusal),
-            Ok(e) => preview(e),
-        }
-    }
-}
-
-/// Print the endowment a resolved invocation would hand the new process.
-fn preview(e: Endowment) {
-    print(b"  ");
-    print(e.prog.name().as_bytes());
-    print(b" would grant the new process, and nothing else:\n");
-    print(b"    cap 0  endpoint  result   report its answer back\n");
-    if e.mem_pages > 0 {
-        print(b"    cap 1  untyped   ");
-        print_num(e.mem_pages);
-        print(b" pages  split from this shell's budget\n");
-    }
-    // A file endowment reads as one line naming the file and the direction, because that IS the
-    // whole authority: an endpoint served by a file caretaker that will answer for this name and no
-    // other. The direction comes from the program's manifest, not from anything typed, which is why
-    // it is worth printing: the line you typed plus this table is the child's complete authority.
-    if let Some(g) = e.file {
-        print(b"    cap 2  endpoint  file     ");
-        print(g.name.as_bytes());
-        print(if g.writable {
-            b"  (read+write, and nothing else on the disk)\n".as_slice()
-        } else {
-            b"  (read-only, and nothing else on the disk)\n".as_slice()
-        });
-    }
-    // **A directory endowment is the subtree at risk, printed before anything happens**, which is
-    // the argument for `rm` being a program rather than a builtin: a builtin would have run with
-    // this shell's entire endowment and there would have been nothing to print. The `-r` line is
-    // the load-bearing half, because typing that option is what widens the capability from "may
-    // take a name out of this directory" to "may walk everything under it".
-    if let Some(g) = e.dir {
-        print(b"    cap 2  endpoint  dir      ");
-        let mut buf = [0u8; nav::RENDER_MAX];
-        let n = g.dir.render(&mut buf);
-        print(&buf[..n]);
-        print(b"  (the directory holding ");
-        // **The names, all of them, and this is the point of previewing a set at all.** `caps rm
-        // *.txt` prints exactly what `echo *.txt` prints, because both render the same expansion:
-        // the authority about to move is on the screen before anything moves it, which is a claim
-        // Unix cannot make about its own `rm`.
-        write_set(&g.names, &mut print);
-        print(b")\n");
-        if g.subtree {
-            print(b"           ...and everything under it: -r grants the walk\n");
-        } else {
-            print(b"           ...and nothing under it: no -r, so it cannot even look\n");
-        }
-    }
-    // `date`'s authority is a read-only mapping of the clock page, and it is **init's to endow, not
-    // this shell's**: it is not designated on the line and no token could designate it. Saying so
-    // here is the point of `caps` being the sole visibility surface. The day the shell is granted a
-    // clock to delegate, this line becomes a cap row, and until then the preview must not let a
-    // reader believe the command line is the whole story.
-    if matches!(e.prog, Prog::Date) {
-        print(b"    (clock: this shell holds none to delegate, so it will report the time\n");
-        print(b"     as unknown. the clock is init's to endow; no token on the line can.)\n");
-    }
-    // **Where its output goes**, which is the demonstration this milestone owes: the destination
-    // is a capability rather than an integer with a convention attached, so `caps` can name it. On
-    // Unix the same question has no answer at this point, because fd 1 is whatever the shell's fd 1
-    // happened to be and nothing records what that was.
-    match e.sink {
-        line::Sink::Report => print(
-            b"    output   this shell's result endpoint (it reads the bytes and prints them)\n",
-        ),
-        line::Sink::Pipe => {
-            print(
-                b"    output   an endpoint into the next stage. no file, no buffer, no object:\n",
-            );
-            print(b"             the rendezvous IS the pipe\n");
-        }
-        // The row names the file, and the parenthesis names what the program actually holds, which
-        // is not the file. Its slot 0 is this shell's result endpoint either way; `>` is where the
-        // shell puts the bytes, not something the child was handed. So a redirected program still
-        // cannot seek, truncate, re-read or stat, and this is where a reader can see why.
-        line::Sink::File(g, mode) => {
-            print(b"    output   ");
-            print(g.name.as_bytes());
-            print(b"  (this shell writes the bytes there; the program holds\n");
-            print(b"             an endpoint and cannot seek, truncate, re-read or stat)\n");
-            // The one line where `>` and `>>` differ, and it is about the shell rather than about
-            // the child: whichever was typed, what the child holds is the same endpoint. Printed
-            // because it is the only visible consequence of the operator, and because a person
-            // about to overwrite a file should be able to see that from the preview.
-            print(if matches!(mode, line::Mode::Append) {
-                b"             this shell keeps what is already in it and writes after it\n"
-                    .as_slice()
-            } else {
-                b"             this shell empties it first, before the command runs\n".as_slice()
-            });
-        }
-    }
-    match e.source {
-        line::Source::None => {}
-        line::Source::Pipe => print(b"    input    the previous stage's output\n"),
-        line::Source::File(g) => {
-            print(b"    input    ");
-            print(g.name.as_bytes());
-            print(b"  (this shell reads it and streams it in; the program\n");
-            print(b"             holds an endpoint, not a file)\n");
-        }
-    }
-    print(b"    arg    ");
-    if matches!(e.prog, Prog::Worker) {
-        print_num(e.arg);
-        print(b"\n");
-    } else {
-        print(b"(none)\n");
-    }
-    print(b"  reading the command is reading its whole authority.\n");
+    let holdings = holdings(nav);
+    swish::write_caps(
+        tail,
+        SH_BUDGET_PAGES,
+        holdings,
+        &mut |token| nav.expand(token),
+        &mut print,
+    );
 }
 
 /// Carve `pages` off our own untyped budget (slot 3) into a delegatable child untyped. `None` when
@@ -2489,7 +2135,7 @@ fn globbing(spec: u64) -> ! {
         match expansion(&mut nav, &rspec) {
             Ok(e) => match grant_plan::plan(&rspec, holdings(&nav), e) {
                 Ok(endow) => match endow.dir {
-                    Some(g) => write_set(&g.names, &mut |b| granted.push(b)),
+                    Some(g) => swish::write_set(&g.names, &mut |b| granted.push(b)),
                     None => v |= gb::GLOB_FAILED,
                 },
                 Err(_) => v |= gb::GLOB_FAILED,
