@@ -113,6 +113,6 @@ the names this run has already taken away.
 
 - DECISIONS §47 (the directory-capability keystone and its six rights), §48 (navigation, and why `rm`
   was a builtin before this), §42 (a filesystem declares what it offers and must be truthful).
-- Milestone 47's "`rmdir` and `rm -r`: Unix already made the safe choice" in `design/roadmap.md`.
+- Milestone 47's "`rmdir` and `rm -r`: Unix already made the safe choice" in `design/roadmap/47-navigation-and-naming.md`.
 - `notes/dir-capability.md` for the rights ladder and `fs_subtree_caretaker`, and
   `notes/glob-grant.md` for the nameset caretaker a pattern operand is served by.

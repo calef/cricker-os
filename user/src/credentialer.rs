@@ -103,7 +103,7 @@ const PROV_VA: u64 = 0x0000_0000_00e0_0000;
 const VERIFY_VA: u64 = 0x0000_0000_00e1_0000;
 
 /// How many identities the store holds. Three, because Chris's existing setup serves three family
-/// members with separate passwords (design/roadmap.md, milestone 56), and a store sized to the
+/// members with separate passwords (design/roadmap/56-secrets-and-entropy.md), and a store sized to the
 /// requirement makes "the fourth is refused" a thing the tests can show rather than a branch
 /// nothing reaches.
 const CAPACITY: usize = 3;
