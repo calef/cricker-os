@@ -634,3 +634,14 @@ fn the_entry_array_shape_guards_are_exact() {
     let table = Gpt::create(DISK, BLOCK, BLOCKS, &[one], &mut array).unwrap();
     assert_eq!(table.partitions().count(), 1);
 }
+
+/// `check_protective_mbr` is a thin wrapper over `mbr::validate`, and every other call in the
+/// suite hands it a good block, so a body replaced with `Ok(())` passed (a milestone 85
+/// survivor). One bad block through the wrapper is what pins the plumbing.
+#[test]
+fn a_wrong_mbr_is_refused_through_the_wrapper_too() {
+    let disk = build(&[]).unwrap();
+    let table = Gpt::parse(disk.header(), &disk.array).unwrap();
+    let zeros = [0u8; BLOCK];
+    assert!(table.check_protective_mbr(&zeros).is_err());
+}
