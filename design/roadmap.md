@@ -141,7 +141,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 75 | NOT-STARTED | Who may read the cycle counter, and by what authority | Opening `PMCCNTR_EL0` to EL0 is not the same decision as opening `CNTVCT_EL0` was: it is **~160x finer** (~0.25 ns against ~41 ns), and the generic timer's coarseness was doing real security work. A capability is the answer this OS already has, and notes/abi.md anticipated it |
 | 76 | NOT-STARTED | Split the roadmap: `design/roadmap/README.md` as index, one file per milestone | 5,375 lines and 64 blocks in one file. FOUR structural defects landed today that the gate reported clean, including **eight milestone blocks filed under an essay about seL4**. A split makes those impossible rather than detectable, and removes the conflict #19 and #20 hit. Also widens the citation check tree-wide (free: zero unresolved today) and backfills milestones 1 to 11 from the first commit, dropping the `n >= 12` floor |
 | 77 | NOT-STARTED | `crates/paging`: a module per ISA, a type per page-table configuration | `Aarch64` names an ISA while describing a configuration, beside `Sv39` which names one properly. A second aarch64 configuration is expected, so the fix is room for siblings on both sides rather than a rename. **Waits for that configuration**, because it names the axis |
-| 78 | NOT-STARTED | The load-sensitive assertions, and the three that measure the wrong thing | **Six** distinct failures in one day on PRs that changed no code, two of them documentation only, and one reproduces off CI. Three report a NEGATIVE discrepancy, so they are not slow-machine timeouts. For the two that ARE timing, the answer is likely the icount instrument this project already owns, not a wider bound |
+| 78 | NOT-STARTED | The load-sensitive assertions, and the three that measure the wrong thing | **Seven** distinct failures in one day on PRs that changed no code, two of them documentation only, and one reproduces off CI. Three report a NEGATIVE discrepancy, so they are not slow-machine timeouts. For the two that ARE timing, the answer is likely the icount instrument this project already owns, not a wider bound |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -5780,10 +5780,18 @@ one that was a real bug. What is left is a family, and it is not one problem.
 | timer drift | `arch/riscv64/timer.rs:254` | ticks within one period either way |
 | placement probe | `smp.rs:343` | 60 s wait for work to run where it was placed |
 | handler latency | `arch/aarch64/timer.rs:323` | `left: 3, right: 2`, missed ticks rose during a quiet window |
+| round-robin fairness | `sched.rs:2709` | `thread {i} never ran`, one thread of several had not been scheduled |
 
 `notes/cpu-models.md` already records three of these as load-sensitive with the evidence that settles
 it, including the case where the control model `rv64` failed too, which is what proves the failures
 are not model-specific.
+
+**A seventh, found by a lane on 2026-08-03 and reported rather than absorbed.** `sched.rs:2709`,
+`threads_round_robin`, asserting every spawned thread ran at least once. It failed on one
+`script/gates` run and passed on the immediate re-run, with two full `script/test` runs either side of
+it green. The lane judged it pre-existing on grounds worth repeating, because they are the right shape
+for this call: its own code runs before the scheduler exists, does three register reads and an
+`ecall`, and holds a leaf lock nothing else takes. It could not have starved a thread.
 
 **One of them reproduces off CI.** On 2026-08-03 a local `script/test` on an aarch64 dev machine hit
 `user/tests.rs:1746` with "**-19** frames did not come back", the same value the milestone-71 lane saw.
