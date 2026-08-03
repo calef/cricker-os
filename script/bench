@@ -9,7 +9,7 @@
 #
 # --real is single-hart by default so the primitive magnitudes are per-core (the cross-OS comparison
 # reads them that way); --smp boots the whole machine for the aggregate-throughput bench.
-# See design/roadmap.md milestone 21 and notes/benchmarks.md.
+# See design/roadmap/21-benchmarks.md and notes/benchmarks.md.
 
 set -e
 cd "$(dirname "$0")/.."

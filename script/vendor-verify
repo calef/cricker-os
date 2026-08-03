@@ -30,7 +30,7 @@
 #
 # Only tracked files are compared, so a stray `target/` from building the vendored crate in place is
 # correctly ignored: the question is what we committed, not what is lying around. See
-# notes/scripts.md and design/roadmap.md's milestone 42.
+# notes/scripts.md and design/roadmap/42-supply-chain-and-fuzzing.md.
 
 set -e
 

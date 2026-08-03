@@ -4,7 +4,7 @@
 # crates.io package below, plus exactly the changes in the divergence patch, and nothing else.
 # Milestone 32's headline is "a real filesystem we did not write, running confined", and that is
 # only worth as much as our ability to say what we are actually running. See vendor/README.md for
-# the prose account and design/roadmap.md's milestone 42 for why this is a gate.
+# the prose account and design/roadmap/42-supply-chain-and-fuzzing.md for why this is a gate.
 #
 # Format: `key = value`, one per line, `#` comments. Deliberately not TOML: this is five fields and
 # a stdlib-only parser, and adding a dependency to the integrity checker would be funny in the

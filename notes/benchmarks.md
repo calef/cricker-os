@@ -329,7 +329,7 @@ seL4 number would mean either rewriting sel4bench to our method (CNTVCT plus bat
 on its measurement core) or giving it a real PMU.
 
 **So the seL4 comparison is deferred to real hardware**, which also aligns with the planned second-board
-port (design/roadmap.md milestone 24): a Raspberry Pi has a real PMU, sel4bench runs on it natively, and
+port (design/roadmap/24-second-aarch64-board.md): a Raspberry Pi has a real PMU, sel4bench runs on it natively, and
 it is the board cricker-os is heading toward anyway. The build recipe, reproducible when a Pi is on hand
 (rebuild with the Pi `PLATFORM` instead of `qemu-arm-virt`), via the official seL4 Podman image:
 

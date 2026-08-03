@@ -7,7 +7,7 @@
 //! owns the QEMU process, watches for `bench: done`, and terminates it. One exit mechanism,
 //! accelerator-independent.
 //!
-//! # The two instruments (design/roadmap.md §21)
+//! # The two instruments (design/roadmap/21-benchmarks.md)
 //!
 //! - **icount (default):** QEMU virtual time is a deterministic function of instructions
 //!   executed, so these counter deltas are *exact and reproducible per binary*: the same kernel

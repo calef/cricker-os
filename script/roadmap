@@ -1,6 +1,7 @@
 #!/bin/sh
 #
-# Validate and report the milestone status table in design/roadmap.md.
+# Validate and report the milestone roadmap in design/roadmap/ (index: README.md, one file per
+# milestone).
 #
 # Why this exists: milestone status used to be prose in the detail blocks, phrased a dozen different
 # ways, and a status sweep on 2026-07-30 mis-reported EIGHT milestones because no two blocks said
@@ -8,65 +9,170 @@
 # having no table row and no block at all. Both failures are cheap to catch mechanically and expensive
 # to catch by reading, which is the definition of something that belongs in a script.
 #
+# Why a directory instead of the old single design/roadmap.md (milestone 76): four structural defects
+# landed in one day, 2026-08-03, and the single-file gate reported clean through all four, because it
+# verified that a block HAS a table row and never WHERE the block sits or whether the row and the
+# block agree. Eight milestone blocks were filed under an essay about seL4; milestone 69's row said
+# NOT-STARTED while its block said BUILT. The split makes the filing defects impossible (the filename
+# is the identity, and `cat >>` into 74-cycle-counters.md can only add text to milestone 74), and this
+# script checks the one the split alone cannot prevent: the status in the index and in the milestone's
+# own file must agree.
+#
+# What is checked, and which defect each check answers:
+#   - every index row links to a milestone file that exists, and every milestone file has an index
+#     row (the milestone-34 class);
+#   - the status vocabulary, in the index AND in each file's own Status line, and the two must agree
+#     (the milestone-69 class);
+#   - each file holds exactly one milestone: one H1, on line 1, whose number matches the filename
+#     (the filed-under-an-essay class, and the appended-past-the-closer class);
+#   - two files claiming one milestone number is fatal, for the reason script/decisions records: as
+#     two files it would merge clean and silently where one file makes it a visible text conflict;
+#   - every `milestone N` citation TREE-WIDE resolves to an index row (vendor/ and patches/ excluded:
+#     other people's text). The old gate checked only the roadmap's own prose, so ~1,988 citations in
+#     code comments were validated by nothing. A citation to a milestone that never existed is drift,
+#     and failing the build on it is the point: the docs are versioned with the code so they cannot
+#     describe a system that does not exist.
+#
+# Deliberately NOT checked: row title == file title (rows abbreviate on purpose), and whether a
+# citation that resolves points where its author meant (well-formed-but-wrong is invisible here, the
+# same blind spot CLAUDE.md records for §N citations; check by content after any renumber).
+#
+# Lettered milestones (20a) are addenda: the file needs its base row to exist, but carries no row of
+# its own and therefore no status line to compare.
+#
 # With no arguments it prints the normalized status report. `--check` validates and exits non-zero on
-# a problem, which is what a gate wants. See design/roadmap.md's status vocabulary.
+# a problem, which is what a gate wants. See design/roadmap/README.md's status vocabulary.
 
 set -e
 
 ROOT="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
-ROADMAP="$ROOT/design/roadmap.md"
 
-exec python3 - "$ROADMAP" "${1:-}" <<'PY'
+exec python3 - "$ROOT" "${1:-}" <<'PY'
+import os
 import re
+import subprocess
 import sys
 
-path, mode = sys.argv[1], sys.argv[2]
-text = open(path).read()
-lines = text.split("\n")
+root, mode = sys.argv[1], sys.argv[2]
+d = os.path.join(root, "design", "roadmap")
+index_path = os.path.join(d, "README.md")
 
 VOCAB = ["BUILT", "PARTIAL", "IN-PROGRESS", "NOT-STARTED", "OPTIONAL", "RECORDED"]
 
-rows = {}
 problems = []
 
-for i, line in enumerate(lines, start=1):
-    m = re.match(r"^\| (\d+) \| ([A-Z-]+) \| ([^|]+)\|", line)
-    if not m:
+# ---- the index ---------------------------------------------------------------
+rows = {}
+try:
+    index = open(index_path).read()
+except FileNotFoundError:
+    print(f"roadmap: {index_path} not found", file=sys.stderr)
+    sys.exit(1)
+
+ROW = re.compile(r"^\| (\d+) \| ([A-Z-]+) \| \[((?:\\\||[^\]])+)\]\(([^)]+)\) \|")
+for i, line in enumerate(index.split("\n"), start=1):
+    if not re.match(r"^\| \d+ \| ", line):
         continue
-    num, status, title = int(m.group(1)), m.group(2), m.group(3).strip()
+    m = ROW.match(line)
+    if not m:
+        problems.append(f"index line {i} looks like a milestone row but does not parse "
+                        f"(number | STATUS | [title](file) | why): {line[:60]}...")
+        continue
+    num, status, title, target = int(m.group(1)), m.group(2), m.group(3), m.group(4)
     if num in rows:
-        problems.append(f"milestone {num} has two table rows (line {i})")
+        problems.append(f"milestone {num} has two index rows (line {i})")
     if status not in VOCAB:
         problems.append(f"milestone {num}: status {status!r} is not in the vocabulary (line {i})")
-    rows[num] = (status, title, i)
+    # Single-digit milestones zero-pad their filenames (01-first-boot.md) so the directory sorts.
+    if not re.fullmatch(rf"0?{num}-[a-z0-9][a-z0-9-]*\.md", target):
+        problems.append(f"milestone {num}: row links to {target!r}, not to its own file")
+    elif not os.path.exists(os.path.join(d, target)):
+        problems.append(f"milestone {num}: row links to {target!r}, which does not exist")
+    rows[num] = (status, title, target)
 
 if not rows:
-    problems.append("no milestone rows found: has the table format changed?")
+    problems.append("no milestone rows found in the index: has the table format changed?")
 
-# Every block heading must have a row, and every referenced milestone number must have a row. The
-# second check is the one that caught milestone 34, which the display ladder pointed at while the
-# table did not carry it.
-blocks = {int(m.group(1)) for m in re.finditer(r"^### (\d+)[a-z]?\.", text, re.M)}
-for n in sorted(blocks - set(rows)):
-    problems.append(f"milestone {n} has a detail block but no table row")
+# ---- the files ---------------------------------------------------------------
+FNAME = re.compile(r"(\d+)([a-z]?)-[a-z0-9][a-z0-9-]*\.md")
+ids = {}
+for fname in sorted(os.listdir(d)):
+    if fname == "README.md":
+        continue
+    m = FNAME.fullmatch(fname)
+    if not m:
+        problems.append(f"{fname}: not the index and not a milestone file "
+                        f"(expected <number>[letter]-<slug>.md); nothing else lives here")
+        continue
+    num, letter = int(m.group(1)), m.group(2)
+    mid = f"{num}{letter}"
+    if mid in ids:
+        problems.append(f"milestone {mid} is claimed by two files: {ids[mid]} and {fname} "
+                        f"(as one file this is a visible conflict; as two it merges silently)")
+        continue
+    ids[mid] = fname
 
-for m in re.finditer(r"milestone (\d+)", text):
-    n = int(m.group(1))
-    # Milestones below 12 predate this table (the early history lives in git and DECISIONS).
-    if n >= 12 and n not in rows:
-        problems.append(f"milestone {n} is referenced in prose but has no table row")
+    if num not in rows:
+        problems.append(f"{fname}: no index row for milestone {num}")
+    elif not letter and rows[num][2] != fname:
+        problems.append(f"{fname}: the index row for milestone {num} links to {rows[num][2]}")
 
-# Informational rather than fatal: a row without a block is a gap in the record, not a broken record.
-no_block = sorted(set(rows) - blocks)
+    lines = open(os.path.join(d, fname)).read().split("\n")
+    h = re.match(rf"# ({num}{letter})\. \S", lines[0] if lines else "")
+    if not h:
+        problems.append(f"{fname}: line 1 must be '# {mid}. <title>' (found {lines[0][:40]!r})")
+    fence = False
+    for n, l in enumerate(lines[1:], start=2):
+        if l.lstrip().startswith("```"):
+            fence = not fence
+        elif not fence and l.startswith("# "):
+            problems.append(f"{fname}:{n}: a second H1: one file is one milestone, and appended "
+                            f"text belongs under it, not beside it")
+        elif not fence and re.match(r"#{2,6} \d+[a-z]?\. ", l):
+            # The exact shape of the 2026-08-03 defect: a whole `### N.` block pasted into
+            # something that already existed. No legitimate subheading is numbered like a milestone.
+            problems.append(f"{fname}:{n}: a milestone-shaped heading ({l[:40]!r}) inside another "
+                            f"milestone's file")
 
+    if not letter and num in rows:
+        first = next((l for l in lines[1:] if l.strip()), "")
+        sm = re.match(r"\*\*Status: ([A-Z-]+)\b", first)
+        if not sm:
+            problems.append(f"{fname}: the first line after the title must be '**Status: <token>'"
+                            f" (found {first[:40]!r})")
+        elif sm.group(1) != rows[num][0]:
+            problems.append(f"milestone {num}: file says {sm.group(1)}, index says {rows[num][0]} "
+                            f"(the defect the 2026-08-03 split exists to catch)")
+
+# A row whose file is missing is already reported by the row's link check above.
+
+# ---- citations, tree-wide ----------------------------------------------------
+# `milestone 16a` must resolve as 16: sub-lettered blocks exist. Case-insensitive on the M because
+# prose starts sentences with it. vendor/ and patches/ are other people's text.
+grep = subprocess.run(
+    ["git", "-C", root, "grep", "-I", "-n", "-E", "[Mm]ilestone [0-9]+",
+     "--", ":!vendor/", ":!patches/"],
+    capture_output=True, text=True)
+for line in grep.stdout.splitlines():
+    loc = ":".join(line.split(":", 2)[:2])
+    for m in re.finditer(r"[Mm]ilestone (\d+)", line.split(":", 2)[2]):
+        n = int(m.group(1))
+        # No floor: milestones 1 to 11 were backfilled from the first commits on 2026-08-03,
+        # so every citation back to the first instruction resolves or fails the gate.
+        if n not in rows:
+            problems.append(f"{loc}: cites milestone {n}, which has no index row")
+
+# ---- report ------------------------------------------------------------------
 if mode == "--check":
     for p in sorted(set(problems)):
         print(f"roadmap: {p}", file=sys.stderr)
     if problems:
         sys.exit(1)
-    print(f"roadmap: {len(rows)} milestones, status vocabulary clean")
-    if no_block:
-        print(f"roadmap: note: rows with no detail block: {', '.join(map(str, no_block))}")
+    lettered = sorted(i for i in ids if not i.isdigit())
+    print(f"roadmap: {len(rows)} milestones, {len(ids)} files, status vocabulary clean, "
+          f"index and files agree, every tree-wide citation resolves")
+    if lettered:
+        print(f"roadmap: lettered addenda: {', '.join(lettered)}")
     sys.exit(0)
 
 by_status = {}
@@ -82,8 +188,6 @@ for status in VOCAB:
         print(f"  {n:>3}  {title[:76]}")
 
 print(f"\ntotal: {len(rows)} milestones")
-if no_block:
-    print(f"rows with no detail block: {', '.join(map(str, no_block))}")
 for p in sorted(set(problems)):
     print(f"PROBLEM: {p}")
 PY

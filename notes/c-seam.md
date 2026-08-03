@@ -89,7 +89,7 @@ is not.
 
 ## The libc question, answered by tier
 
-The roadmap's milestone-36 block records three tiers of C dependency (design/roadmap.md, "The line
+The roadmap's milestone-36 file records three tiers of C dependency (design/roadmap/36-foreign-component.md, "The line
 this does not cross"):
 
 1. **Freestanding.** No libc at all, fixed buffers, no allocation. libghostty-vt and littlefs are
