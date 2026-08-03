@@ -135,7 +135,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 69 | BUILT | Split `kernel/src/user.rs` by service | 15,499 lines and **46 top-level modules** in one file: a dozen `*_service` modules and ~34 test modules. The split is nearly free because the boundaries are already `mod` blocks, so moving one to its own file changes no visibility and no API |
 | 70 | BUILT | `swish`'s remaining logic in a crate, host-testable like its siblings | `coremark`, `line_editor` and `compositor` are each a crate holding the logic plus a program holding the IO. `swish` is the largest program that is not, so its dispatch, endowment preview and outcome handling are reachable only through QEMU |
 | 71 | BUILT | The thread-start fault: a user thread dispatched with `sepc` = 0 | Frame placement, as this entry guessed. RISC-V put the frame 16 bytes under where `trap.s` builds an S-mode frame, so any interrupt in the window rewrote it and the user `sp` read the trap frame's hardwired-zero slot. Reproduced deterministically by widening the window; fixed by placing the frame at the stack top on both ISAs |
-| 72 | NOT-STARTED | A lost wakeup that a hundred leaked threads may be causing | Separate from 71 and proven so: it reproduces WITH that fix in the tree, and it hit a PR containing zero lines of code. **Reproduces locally at last**, 1 run in 4 under four host burners. Keeps `cpu matrix` intermittently red on every branch until fixed |
+| 72 | BUILT | A lost wakeup that a hundred leaked threads may be causing | Not the leak, and not RISC-V. One line of test code probed `reclaim_region(...).is_err()` on its own child's TCB region, which under §16 as amended **arms the kill**; the child was reaped before it could SEND. Widening the window reproduces it on aarch64 too, first run. The 101-thread accumulation is real, unrelated, and wants its own entry |
 | 73 | NOT-STARTED | Name the aarch64 files aarch64, before x86_64 makes it worse | Five files carry a riscv name while their aarch64 twin carries none, so the unnamed one reads as "the general case" and is not. A third ISA turns that from ambiguous into wrong. Scheme decided: suffix both sides. `crates/paging` moved OUT to milestone 77, because a second aarch64 configuration is likely and that makes it a restructure rather than a rename. **`user/link.ld` is shared and must NOT be renamed** |
 | 74 | NOT-STARTED | Cycle counters: SBI PMU on RISC-V, `PMCCNTR_EL0` on aarch64 | 16a's deliverable names "benches on real cycles via the SBI PMU extension" and **nothing implements it**, on either ISA. Both read a fixed-rate TIME counter today, not cycles. Gates milestone 25's `sel4bench`, which was deferred to hardware for exactly this |
 | 75 | NOT-STARTED | Who may read the cycle counter, and by what authority | Opening `PMCCNTR_EL0` to EL0 is not the same decision as opening `CNTVCT_EL0` was: it is **~160x finer** (~0.25 ns against ~41 ns), and the generic timer's coarseness was doing real security work. A capability is the answer this OS already has, and notes/abi.md anticipated it |
@@ -5138,64 +5138,51 @@ looks like when the guard does not happen to catch it first.
 
 ### 72. A lost wakeup that a hundred leaked threads may be causing
 
-**Status: NOT-STARTED.** Raised 2026-08-03, split out of milestone 71 once the two were proved
-separate. The full dump analysis, the reproduction recipe and the occurrence table live in
-notes/scheduler.md under "OPEN: a lost wakeup"; this entry is the plan, not a second copy of the
-evidence.
+**Status: BUILT** (2026-08-03). The title is the hypothesis this milestone started with, and it was
+wrong, which is why it is kept. The hang was **one line of test code**. It was not the leaked
+threads, and it was not RISC-V. Full account, evidence and method in notes/scheduler.md under
+"CLOSED: the lost wakeup"; this entry is what changed and what is left.
 
-#### Why it is its own milestone
+#### What it was
 
-It was briefly conflated with the thread-start fault, and the two pieces of evidence that separate
-them are worth repeating because each rules out a different thing:
+`user::tests::reclaim_frees_a_started_then_exited_childs_regions` opened by probing
+`reclaim_region(tcb_region).is_err()` on its own child's TCB region, over a comment reading "the
+refusal leaves the region untouched". DECISIONS §16 was later amended so that a refusal is **not**
+passive: it arms the kill on every live thread in the region, so an owner's retry can tear a runaway
+down (§24's `^C` escalation needs that). The comment kept compiling; the child did not survive. The
+scheduler converts a killed thread to a corpse at its next preemption, so whenever the timer beat the
+child's nine instructions, the child was reaped **without ever sending**, the test's `ipc_recv` never
+returned, and every core fell to idle: the 60 s lost-wakeup heartbeat, exactly as reported.
 
-- It hit **PR #21, which changed two markdown files and zero lines of code.** That rules out any
-  recent milestone as the cause.
-- It hit **PR #23, the branch that fixes the frame fault**, with the milestone-71 guard silent. That
-  rules out the frame fault.
+The fix is deleting the probe. The refusal's own behaviour is proved by
+`force_kill_tests::destroy_force_kills_a_runaway_and_reclaims_its_region`, which points the
+destructive call at a runaway that is meant to die, the only subject it can honestly be pointed at.
+`reclaim_region` now carries a `BUGS` section saying `Err` is destructive, where a caller meets it.
 
-The conflation was reasonable while it lasted: the frame fault has a silent face, so a corrupted
-thread usually dies quietly and its waiters hang, which looks exactly like this. What breaks the
-resemblance is the path. This test's child is started through the **TCB** path, which runs
-`enter_frame` with interrupts masked and cannot take that clobber.
+#### How a one-in-four race was turned into a proof
 
-#### It reproduces now, which changes what this milestone is
+Widening the window rather than waiting for it, the method milestone 71 used on the frame fault: a
+call-free three-instruction delay loop in front of `REPORT_STUB` guarantees a preemption before the
+`SEND`. With the probe present that hangs the watchdog on the first run and every run; with the probe
+gone the same widened child passes. The forced dump matched all four wild occurrences exactly (101
+threads, 109 endpoints, every thread `wake_pending=false on_cpu=false`, all four inboxes empty).
 
-Four `sh -c 'while :; do :; done'` burners on an 8-core host, then `cargo xtask test --arch riscv64`
-in a loop: **one failure in four.** Quiet, the same suite ran clean six times running. Until
-2026-08-03 this bug had never been seen outside CI, so the work here is debugging rather than hunting.
+#### The parity answer is a control, not an argument (§19)
 
-#### The lead, and it is not the wakeup
+Every wild occurrence was riscv64, and **none of that is a RISC-V property**. The code is portable
+`sched.rs`. Running the widened window on aarch64 hangs it identically on the first run, which is the
+control that rules the ISA out; the riscv64 leg simply lost the race more often under TCG. A defect
+that presents on one ISA is not thereby an ISA defect, and the cheap way to find out is to widen the
+window on the other one.
 
-The dump says the suite arrives at this test holding **101 threads and 109 endpoints**, nearly all
-blocked, most of them leaked subjects from *earlier* tests rather than participants in this one. Many
-endpoints read `senders=0 receivers=1`, a thread waiting for something nobody will send; many others
-read `pending=N` up to 8, messages queued for a receiver that no longer exists. Every thread has
-`wake_pending=false` and `on_cpu=false`, so this is **not** the wake-racing-switch-out handoff that
-`finish_switch` exists to complete, which is the first thing anyone would suspect and it is already
-ruled out.
+#### What is left, and it is a separate milestone
 
-**So the first question is the accumulation, not the wakeup.** A suite that reaches this test with a
-hundred stale threads and a hundred stale endpoints is a different machine from the one the test was
-written against, and the failure comes at the end of a run rather than the start. Whether the leak
-causes the lost wakeup or merely correlates with it is the open question, and answering it in that
-order is likely cheaper than instrumenting the wakeup path directly.
-
-#### An instrument that did not exist yesterday
-
-RISC-V's `user_pc` returned 0 as a stub **because the trap frame had no fixed address to read from**.
-Milestone 71 gave it one, so every hang dump on this ISA now carries real U-mode PCs where it carried
-zeros. The next person to look at this has evidence the last person did not.
-
-#### Scope note
-
-This keeps `cpu matrix` intermittently red on every branch until it is fixed, so a red matrix run is
-currently not a signal about the branch it appears on. That is a standing tax on the repository and
-the main argument for taking this before the board prerequisites (milestones 60 and 57), even though
-the board lands ~2026-08-21.
-
-Do not fix it by widening a deadline or by retrying. The watchdog it trips is the lost-wakeup
-heartbeat, which fires only when **every core is idle and every thread is blocked**; there is no
-progress being made slowly for a longer timeout to rescue.
+The **101 threads and 109 endpoints** were this milestone's stated lead, and they are not this bug:
+blocked threads add no scheduling load, and 109 endpoints is a fifth of `MAX_ENDPOINTS`. The suite
+accumulates them equally on both ISAs. But 101 of `MAX_THREADS = 128` is 79% of the way to a hard
+`create_tcb` failure, and `thread_leak_police` polices only **runnable** leaks, so a blocked leak is
+invisible to it by construction. Nothing would warn before the suite hit the wall. That wants its own
+entry, with the evidence recorded in notes/scheduler.md.
 
 ### 73. Name the aarch64 files aarch64, before x86_64 makes it worse
 

@@ -2057,11 +2057,31 @@ fn a_process_can_build_start_and_run_a_child_thread() {
 /// **Object revocation, piece 3: a started thread and its bound address space are reclaimed
 /// after it exits.** Build and start a child as above, but carve its code and stack from the
 /// *same* region as its address space, so one region holds the child's whole world (root,
-/// tables, code, stack) and its TCB is in another. Two properties: while the child is still
-/// runnable, reclaiming its region is refused (a live thread occupies it, and its owner must let
-/// it finish); once it has run, exited, and been reaped, both regions reclaim and the free-frame
-/// count returns *exactly* to baseline. The bound address space died with the thread (the `Drop`
-/// chain), leaving its region object-free for `reclaim_region` to unpin and free.
+/// tables, code, stack) and its TCB is in another. Once the child has run, exited, and been
+/// reaped, both regions reclaim and the free-frame count returns *exactly* to baseline. The bound
+/// address space died with the thread (the `Drop` chain), leaving its region object-free for
+/// `reclaim_region` to unpin and free.
+///
+/// # This test used to probe the refusal first, and that probe was killing its own child
+///
+/// Milestone 72. It opened by asserting `reclaim_region(tcb_region).is_err()` while the child was
+/// still runnable, over a comment reading "the refusal leaves the region untouched". That comment
+/// went stale when DECISIONS §16 was amended: a refused reclaim is **not** passive, it *arms the
+/// kill* on every live thread in the region so the owner's retry can tear a runaway down (§24's
+/// `^C` escalation depends on it). So the probe marked this child `killed`, and `schedule()`
+/// converts a killed thread to a corpse at its next preemption. Win the race and the child reaches
+/// its `SEND` first and the test passes; lose it and the child is reaped without ever sending, the
+/// `ipc_recv` below never returns, and the machine goes fully idle: the intermittent lost-wakeup
+/// hang that kept `cpu-matrix` red on branches that could not have caused it.
+///
+/// Proved by widening the window rather than by waiting for the race: a call-free delay loop in
+/// front of `REPORT_STUB` guarantees a preemption before the `SEND`, and with the probe present
+/// that hangs the watchdog on **both** ISAs, first run, every run. It is not a RISC-V defect; the
+/// riscv64 leg simply lost the race more often. With the probe gone the same widened child passes.
+///
+/// The refusal itself is not lost coverage: `force_kill_tests` proves refuse-then-arm-then-reclaim
+/// directly, on a runaway that is *meant* to die, which is the only subject a destructive probe can
+/// honestly be pointed at.
 #[test_case]
 fn reclaim_frees_a_started_then_exited_childs_regions() {
     const CODE_VA: u64 = 0x40_0000;
@@ -2105,12 +2125,8 @@ fn reclaim_frees_a_started_then_exited_childs_regions() {
         .expect("configure");
     crate::sched::start_tcb(tid, [0; 3]).expect("start");
 
-    // Ready but not yet run (single core, we have not yielded): reclaiming its region must be
-    // refused while a live thread occupies it. The refusal leaves the region untouched.
-    assert!(
-        crate::sched::reclaim_region(tcb_region).is_err(),
-        "reclaim must refuse a region that still holds a live thread",
-    );
+    // **Nothing may touch `tcb_region` between here and the child's report.** A refused
+    // `reclaim_region` arms §16's kill on the child and dooms it; see this test's own note above.
 
     // Let it run: it SENDs the word and exits. Receiving proves it reached EL0.
     let got = crate::sched::ipc_recv(report)[0];
