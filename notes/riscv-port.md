@@ -161,10 +161,13 @@ The port is worth doing precisely because it finds where the abstraction leaked.
    test's child is started through the **TCB** path, which is the one that runs `enter_frame` with
    interrupts masked and therefore cannot take the clobber described above. Its child is
    `REPORT_STUB`, a `SEND` to an endpoint the test is `ipc_recv`ing on, so a hang there reads as an
-   IPC rendezvous that missed rather than as a frame that was overwritten. Treat it as a separate
-   open item until something says otherwise. What the section above does settle is the *inference*:
-   a silent run is not a run in which the frame fault did not happen, because the guard sees only
-   the `t5 == 0` subcase.
+   IPC rendezvous that missed rather than as a frame that was overwritten. What the section above
+   does settle is the *inference*: a silent run is not a run in which the frame fault did not happen,
+   because the guard sees only the `t5 == 0` subcase.
+
+   That hang is now **reproducible locally**, one run in four under host load, and it reproduces with
+   this fix in the tree. It is tracked as its own open item in notes/scheduler.md, with the recipe and
+   the thread dump; the dump is legible only because `user_pc` stopped returning 0 here.
 
 A related, smaller **ABI leak** the traps step resolves: `syscall.rs` reads the syscall number from
 `frame.x[8]` and args from `frame.x[0..]`, the aarch64 `svc`+`x8` convention. RISC-V's `ecall` ABI

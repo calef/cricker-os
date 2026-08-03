@@ -844,6 +844,12 @@ fn enter_frame(entry: u64, user_sp: u64, arg0: u64, arg1: u64, arg2: u64) -> ! {
     // reservation rather than a moving target: `user_entry_trampoline` (both ISAs) drops `sp` by a
     // frame's worth before the first Rust frame exists, so this region is off-limits to the entry
     // path by construction. See arch/*/context.s.
+    //
+    // `thread_trampoline` deliberately does NOT reserve, and the asymmetry is the point. Only the
+    // TCB path can be shallow; the exec path reaches here through `run` and the ELF loader, so its
+    // frames are always far below the stack top, and reserving would spend a frame's worth on every
+    // kernel thread to insure against a depth that cannot happen. If that ever stops being true, the
+    // assertion below is what says so.
     let slot = top - size_of::<TrapFrame>() as u64;
     let frame = slot as *mut TrapFrame;
 
