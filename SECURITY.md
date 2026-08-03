@@ -80,7 +80,7 @@ down, which makes them roadmap items rather than reports.
 - **"It is not production-ready."** Correct. There is no user authentication, no ASLR, no secure
   boot chain to firmware, no network security of any kind, and the shell is a demo. See
   notes/why-not-general-purpose.md.
-- **A hardening feature that is on the roadmap.** design/roadmap.md is the list of what is missing
+- **A hardening feature that is on the roadmap.** design/roadmap/README.md is the list of what is missing
   and in what order. A missing feature that appears there is a roadmap item; a *defence that is
   claimed to exist and does not work* is a vulnerability, and that distinction is the whole test.
 - **Anything that requires already being init.** init is privileged and unverified, and DECISIONS

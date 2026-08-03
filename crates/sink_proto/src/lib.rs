@@ -59,7 +59,7 @@
 //! sink; it is a service, and it should be a `CALL` protocol like `fs_proto`.
 //!
 //! **Types.** This carries bytes. A method implies an object with a type, and typed pipelines are a
-//! separate and larger fork (design/roadmap.md's milestone 50 block records it as one); nothing in
+//! separate and larger fork (design/roadmap/50-pipes-and-redirection.md records it as one); nothing in
 //! this framing should be read as a step toward one.
 //!
 //! **Seeking, truncating, re-reading, or stat.** A sink appends. That is the payoff milestone 50

@@ -61,7 +61,7 @@
 //! - **It does not write.** Partitioning a disk from cricker-os needs a unique GUID per partition,
 //!   which needs randomness, which this program is not endowed with. `crates/gpt` refuses to invent
 //!   one and notes/gpt.md says why. That is milestone 57's remaining half and it is a decision
-//!   rather than a task; see design/roadmap.md.
+//!   rather than a task; see design/roadmap/57-partitioning-and-xattrs.md.
 //! - **No hot plug.** The roster is written once at wiring time and never again.
 
 #![no_std]

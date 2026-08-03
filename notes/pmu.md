@@ -71,7 +71,7 @@ is commonly left unvirtualized:
 
 Either way a single-shot cycle measurement has no usable clock. This is why `sel4bench` (single-shot,
 PMU) cannot produce numbers on this Mac while our bench (long loop, generic timer) can, and it is the
-same constraint design/roadmap.md flags for any plan that wants real cycle counts: they wait on real
+same constraint design/roadmap/74-cycle-counters.md flags for any plan that wants real cycle counts: they wait on real
 silicon. A Raspberry Pi has a real PMU because it *is* real silicon, not a guest, which is where the
 seL4 comparison goes (milestone 24).
 
