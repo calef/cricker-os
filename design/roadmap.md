@@ -136,6 +136,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 70 | BUILT | `swish`'s remaining logic in a crate, host-testable like its siblings | `coremark`, `line_editor` and `compositor` are each a crate holding the logic plus a program holding the IO. `swish` is the largest program that is not, so its dispatch, endowment preview and outcome handling are reachable only through QEMU |
 | 71 | BUILT | The thread-start fault: a user thread dispatched with `sepc` = 0 | Frame placement, as this entry guessed. RISC-V put the frame 16 bytes under where `trap.s` builds an S-mode frame, so any interrupt in the window rewrote it and the user `sp` read the trap frame's hardwired-zero slot. Reproduced deterministically by widening the window; fixed by placing the frame at the stack top on both ISAs |
 | 72 | NOT-STARTED | A lost wakeup that a hundred leaked threads may be causing | Separate from 71 and proven so: it reproduces WITH that fix in the tree, and it hit a PR containing zero lines of code. **Reproduces locally at last**, 1 run in 4 under four host burners. Keeps `cpu matrix` intermittently red on every branch until fixed |
+| 73 | NOT-STARTED | Name the aarch64 files aarch64, before x86_64 makes it worse | Five files carry a riscv name while their aarch64 twin carries none, so the unnamed one reads as "the general case" and is not. A third ISA turns that from ambiguous into wrong. `crates/paging` is worse than asymmetric: it names one side by ISA and the other by page-table FORMAT, and riscv64 has two formats |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -5191,3 +5192,70 @@ the board lands ~2026-08-21.
 Do not fix it by widening a deadline or by retrying. The watchdog it trips is the lost-wakeup
 heartbeat, which fires only when **every core is idle and every thread is blocked**; there is no
 progress being made slowly for a longer timeout to rescue.
+
+### 73. Name the aarch64 files aarch64, before x86_64 makes it worse
+
+**Status: NOT-STARTED.** Raised 2026-08-03 by Chris, from the observation that files named when this
+was an aarch64-only kernel never got renamed when RISC-V arrived and brought explicitly named twins.
+
+**Inside `kernel/src/arch/` there is no problem**: the directory carries the ISA, so `aarch64/mmu.rs`
+and `riscv64/mmu.rs` are both named. Everywhere else, only one side is.
+
+#### The five pairs
+
+| RISC-V, named | aarch64, unnamed | references |
+|---|---|---|
+| `kernel/link-riscv.ld` | `kernel/link.ld` | 18 |
+| `bench/baseline-riscv.txt` | `bench/baseline.txt` | 13 |
+| `scripts/qemu-runner-riscv.sh` | `scripts/qemu-runner.sh` | 13 |
+| `crates/dtb/tests/fixtures/qemu-riscv-virt.dtb`, `.dts` | `qemu-virt.dtb`, `.dts` | 4 |
+| `crates/dtb/tests/qemu_riscv_virt.rs` | `crates/dtb/tests/qemu_virt.rs` | 2 |
+
+The cost today is small and real: `scripts/qemu-runner.sh` reads as the runner and it is one of two, so
+a reader looking for "the RISC-V one" finds it by suffix and then has to infer that the unsuffixed
+file is the other ISA rather than something shared. **The cost after x86_64 is different in kind.** An
+unnamed file among two named siblings is ambiguous; among three it is a claim that is actively false,
+because "the default" will mean whichever ISA the reader started from. §19 names x86_64 as a declared
+target, so this is a dated problem, not a hypothetical one.
+
+#### `crates/paging` is a different defect, and the worse one
+
+It has `aarch64.rs` and `sv39.rs`. Those are not asymmetric names for the same thing, they are **two
+different naming axes**: one an ISA, the other a page-table format. Both files say so in their own
+first line, `aarch64.rs` opening "The aarch64 page-table format: four levels, 4 KiB pages, 48-bit
+virtual addresses", which is VMSAv8-64 described without being named.
+
+**The format axis is the correct one, and RISC-V proves it**: `mmu-type` distinguishes Sv39 from Sv48
+(milestone 60), so a `riscv64.rs` could not hold both, while `sv39.rs` and a future `sv48.rs` sit
+beside each other exactly right. A crate whose whole value is being format-generic should file its
+formats by format.
+
+That makes `aarch64.rs` the file to rename, not `sv39.rs`, and it is the same self-contradiction
+CLAUDE.md records for `compose` and `measure`: a thing that names itself correctly in its own first
+line while carrying a different kind of name on the outside.
+
+#### One that is not a pair
+
+`kernel/src/user/riscv_virtio_tests.rs` has no `virtio_tests.rs` twin; the shared virtio tests live
+inside `tests.rs`. So this is a RISC-V-only test module rather than half of a pair, and the question
+is whether the name should say "riscv-only test" or whether the aarch64 cases should be broken out to
+match. Decide before renaming, because the answer changes the name.
+
+#### Naming is Chris's call, and this milestone is a proposal
+
+CLAUDE.md is explicit that names are his. So the deliverable of the *first* half of this milestone is
+a proposed name for each file with the argument for it, not a branch full of renames. Two candidate
+schemes for the pairs, and they are not equivalent:
+
+- **Suffix both** (`link-aarch64.ld` beside `link-riscv.ld`). Smallest diff, keeps the existing shape,
+  and `link-riscv.ld` would want to become `link-riscv64.ld` for consistency with the target triples.
+- **Name by target triple** (`link-aarch64-unknown-cricker.ld`). Matches `targets/*.json` exactly and
+  is unambiguous forever, at the cost of long filenames in build scripts.
+
+#### Scope note
+
+**Renames only. No behaviour, no content edits.** The proof obligation is the one milestone 69 met:
+the tree must be byte-identical afterwards apart from the paths themselves. `link.ld` and
+`qemu-runner.sh` have 18 and 13 referencing files, several of them build scripts and CI workflow
+steps, so the risk is a missed reference that only fails on one ISA or only in CI. Grep for the bare
+stem, not just the path.
