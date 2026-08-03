@@ -43,7 +43,9 @@ stages should honor: if stage 2 finds OCI's serial console is virtio-console rat
 2. The always-free A1 shape: custom image imported, a byte on the OCI serial console. This is the
    milestone's "printed a byte over serial" moment, at $0.
 3. The bench suite against Linux on the identical free shape, published with the image, so the
-   reader's rerun is also $0.
+   reader's rerun is also $0. This stage also owes milestone 17 its gate: the `smp_throughput`
+   scaling curve across hart counts (finished at stage 4's 64-core metal) is the measurement that
+   decides whether the SCHED lock ever gets partitioned (notes/sched-lock-inventory.md).
 4. Graviton `.metal` by the hour, for the PMU: the `sel4bench` comparison milestone 25 deferred.
    The only paid stage, used in bursts.
 5. Stretch, each its own decision later: virtio networking on the A1 instance with the drivers
