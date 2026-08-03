@@ -388,3 +388,15 @@ Two consequences:
   early.
 
   **After any session that ran QEMU, check `pgrep -x qemu-system-aarch64` and clean up.**
+
+  **That check is not sufficient after you kill a harness, and on 2026-08-02 it took four attempts
+  to notice.** Killing a loop script does not kill its descendants: `pkill -f hunt-...` left
+  `cargo xtask test` running, which kept starting fresh QEMUs. So every check honestly reported "no
+  qemu" and the next command found one holding `target/crickerfs.img`, which then failed unrelated
+  test runs with `Failed to get "write" lock` and looked like a bug in the code under test.
+
+  Two habits fix it. **Ask who holds the file, not whether a process matches a name**:
+  `lsof target/crickerfs.img` names the holder even when your pattern does not. And **kill the tree
+  at its root**: walk `ps -o pid,ppid,command` up to the harness and kill that, or the loop simply
+  starts another child. `pgrep -l qemu` is also worth preferring to `pgrep -x qemu-system-aarch64`,
+  because it matches both architectures and does not depend on getting the full name right.
