@@ -74,16 +74,16 @@ benefits without naming this cost is not being honest.
 
 Two things here reduce it, and neither eliminates it:
 
-- The contracts are **small and written down**. `crates/fs_proto` is a few hundred lines with host
-  tests, not an implicit agreement between two large components.
+- The contracts are **written down and separately compiled**, rather than being an implicit agreement
+  between two large components. They are not all small: `fs_proto` is 3,539 lines. What matters is
+  that the agreement has a name and a test suite, not that it is short.
 - The contracts are **testable independently of their implementations**, so "does this component
   satisfy the contract" is a question with a mechanical answer, which is the beginning of a
   conformance suite.
 
 What is missing is that **no contract carries a version today**. Every crate in the tree is `0.1.0`,
-which milestone 39 already flagged. That is free to fix now and expensive to retrofit once a second
-implementation of any contract exists, because at that point a version has to be inferred rather than
-declared.
+which milestone 39 already flagged. The section below explains why fixing that is neither free nor
+urgent, and what the actual trigger is.
 
 ## What the strain looks like, measured
 
@@ -100,24 +100,51 @@ on both ISAs is this project's credibility mechanism. It is an argument that mil
 should be re-read against current numbers before its recommendation is executed, because the thing it
 measured is moving quickly.
 
-## What to do now, which is very little
+## What to do now, and the recommendation this note got wrong
 
 The monorepo is right today. One team, contracts and implementations co-evolving, atomic changes
 across both. Splitting now buys decoupling nothing external needs.
 
-Two things are cheap now and expensive later, and both are option-preserving rather than committing:
+**An earlier draft of this note recommended two things "cheap now and expensive later": versioning the
+wire contracts, and turning the manifest into an artifact. That recommendation was wrong, and it is
+recorded here rather than deleted because the reasoning is the useful part.**
 
-1. **Version the wire contracts.** They are the compatibility surface and the one thing that cannot be
-   retrofitted cleanly.
-2. **Let the manifest become an artifact** rather than a static Rust table, so it can travel with a
-   binary that was not compiled in this tree. That is the difference between "our programs" and
-   "programs".
+**Versioning is not cheap, because the request words are full.** `fs_proto` packs its first word to
+capacity:
 
-Everything past that should wait. CLAUDE.md's rule against speculative abstraction applies with
-force, and the specific trap is visible: `crickerfs` is already a primitive package format, and it
-would be easy to grow it into a real one before knowing what it must carry. **The second independent
-implementation of a contract is what should tell us what packaging metadata needs**, and there is not
-one yet.
+```text
+  op      bits 63:56      (OP_SHIFT = 56)
+  handle  bits 55:40
+  len     bits 39:0
+```
+
+`sink_proto` and `gfx_proto` use the same `OP_SHIFT = 56` layout. So a version field has nowhere to
+go: it means stealing bits from a live field, adding a word to every message, or introducing a
+connect-time handshake. The handshake is almost certainly right, since a version is negotiated once
+per connection rather than restated on every request, and that makes this **a protocol design question
+rather than a mechanical bump**. Ten contracts, `fs_proto` alone at 3,539 lines, each with tests.
+
+The one existing precedent points the same way and is not ours: `ntp_proto` has `VERSION: u8 = 4`,
+which is NTP's own wire version inherited from the RFC.
+
+**And neither has a consumer.** Every component in this tree compiles together from one source, so a
+version mismatch is currently unrepresentable, and the manifest is a static Rust table because every
+program that reads it is compiled beside it. Recommending both anyway contradicted this note's own
+next paragraph, and CLAUDE.md's rule against building an abstraction before its requirements are
+known. The rule was right and the recommendation was not.
+
+### The trigger, which is what should be recorded instead
+
+The irreversible step is not the absence of a version. It is **shipping a binary to someone who cannot
+rebuild it**, because from that moment a version has to be inferred rather than declared. Nothing has
+been shipped.
+
+> When a component is first built outside this tree, or a binary is first distributed to someone who
+> cannot rebuild it, the wire contracts need versions and the manifest needs to be an artifact. Until
+> then neither has a consumer, and the shape of both should be decided by that consumer's requirements.
+
+The specific trap to avoid in the meantime is visible: `crickerfs` is already a primitive package
+format, and it would be easy to grow it into a real one before knowing what it must carry.
 
 ## See also
 
