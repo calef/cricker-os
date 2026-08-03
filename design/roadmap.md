@@ -150,6 +150,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 84 | NOT-STARTED | Stack high-water: measure kernel stack depth | The FS-server stack overflow already happened once, and nothing since bounds depth on any kernel stack. Paint at boot, read the mark at suite end, assert headroom. Works identically on every ISA and covers every path the suite takes |
 | 85 | NOT-STARTED | Mutation testing over the host crates | Coverage reports what ran; cargo-mutants reports whether a test would notice a change, which is the claim the suite actually makes. A weekly, time-boxed job with a recorded baseline, not a PR gate |
 | 86 | NOT-STARTED | `time`: the shell times a command | The second prefix-word command after `caps`, so the grammar is proven, and `date` already built the clock story. The design question is whose clock it is: the shell's, so a child that holds no clock capability can still be timed, which is the Unix behaviour and the leaning |
+| 87 | NOT-STARTED | The x86_64 bare-metal machine | Milestone 19's third ISA needs what milestone 16's second needed: a dedicated, brickable board, selected before the port so the requirements drive the purchase. A used OptiPlex 7050 Micro with the factory serial module: real 16550 COM matching QEMU's q35, VT-d for the IOMMU story, an I219 NIC in the same driver family QEMU emulates, ~$120 all-in |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -6084,3 +6085,47 @@ Timing a command that holds no clock is the whole point, so the milestone includ
 the *shell* holds no clock either, and the refusal should be `date`'s, worded for the prefix
 position. Host tests cover the plan and the arithmetic; the QEMU test is one timed spawn asserting
 the duration is positive and sane, not a latency benchmark, which is `bench`'s job.
+
+### 87. The x86_64 bare-metal machine
+
+**Status: NOT-STARTED.** Raised 2026-08-03. The selection is made and recorded here; the milestone
+completes when the machine is on the desk and has printed a byte over serial.
+
+Milestone 19 names x86_64 as the third ISA, and the second ISA's lesson (milestone 16, the
+VisionFive 2) is that the board should be chosen and ordered before the port needs it, from
+requirements the port derives rather than from specs. Bare-metal bring-up is a loop of hang,
+power-cycle, retry, so the machine must be dedicated and consequence-free; cordoba is disqualified
+for bare metal on exactly those grounds (it is the production server, and a 2013 desktop board has
+no BMC, no serial-over-LAN, no remote power), though it remains the KVM and VT-d *virtualized* test
+host for the same port.
+
+The requirements, each traced to something this tree already does:
+
+- **A real 16550 COM port.** Early bring-up output exists before anything else works, and QEMU's
+  q35 machine emulates the same legacy UART, so one driver spans emulator and silicon. This is the
+  NS16550/PL011 pattern both existing ISAs follow, and it eliminates most modern consumer hardware.
+- **VT-d**, because IOMMU-backed driver isolation (milestone 16) is a parity theme (§19), and the
+  x86 side of the DMA-confinement story needs real hardware eventually.
+- **An Intel I219-class NIC**: QEMU emulates `e1000e`, the same driver family, so the NIC repeats
+  the serial-port trick one layer up.
+- **Four real cores** for the per-CPU scheduler, and any Intel core has the PMU that milestone 25's
+  `sel4bench` comparison was deferred to real hardware for.
+- **Remote power cycling** by smart plug, not by management firmware: AMT capability on this
+  hardware was fixed at point of purchase and is not worth selecting for. A plug is $15 and works
+  on anything.
+
+**The selection: a used Dell OptiPlex 7050 Micro with the factory serial module**, i5-7500T
+preferred over the more common i5-6500T (newer platform, same price band; take the 6500T if the
+price is right). It is the only candidate surveyed that meets every requirement at desktop-core
+speed. The runners-up and why not: HP EliteDesk 800 G3 Mini (equivalent, decide on price), Dell
+Wyse 5070 (cheapest, but Atom-class cores and a Realtek NIC with weaker documentation), used PC
+Engines apu2 (serial-first and coreboot are attractive, but EOL and slow Jaguar cores). All-in
+around $120: the machine, a USB-to-RS232 adapter and null-modem cable for the dev side, and the
+smart plug. If netboot iteration becomes worth it, cordoba hosts the PXE/TFTP end.
+
+#### Scope note
+
+This milestone is the machine, the serial link proven, and nothing else; the port itself is
+milestone 19's remaining scope and is not gated on this purchase, because the port starts under
+QEMU TCG the way riscv64 did. Buying early is cheap insurance against the VisionFive 2 pattern
+(ordered 2026-07, arrives ~2026-08-21) of the board being the long pole.
