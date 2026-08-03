@@ -5876,6 +5876,20 @@ The honest cost of leaving this open, and the reason it is worth doing: every re
 repository currently needs a human to decide "known or real", and on 2026-08-03 that judgement was
 made at least six times and got the wrong answer twice.
 
+#### Postscript, 2026-08-03: the frame-hygiene assertion is gone
+
+Removed the same day this milestone was raised (#46), after it failed the cpu matrix twice more on
+`main`, once on `rv64`, the control model, and once on a Dependabot PR that touched only workflow
+files. That is a deletion, and the paragraph above says deletion is not the fix, so the difference
+is worth stating plainly. The 72 lane rightly declined to delete a check it could not explain; by
+removal time the explanation was complete (the BUGS section of notes/live-replacement.md: only
+frames arriving from outside the run could trip it, with a measured margin of two frames). And the
+assertion this milestone asks for, one scoped to the property the test is responsible for, was
+already standing twelve lines above it: the budget reclaim must succeed and must return exactly
+`SWAPPER_BUDGET_PAGES`. The global count added no coverage on top of that, only the exposure to
+neighbours. One of the five is done; the reaper count, the address-space frames and the two timing
+assertions remain, and the status stays NOT-STARTED for them.
+
 ### 79. Miri over the host crates
 
 **Status: NOT-STARTED.** Raised 2026-08-03, from a survey of what analysis the tree runs against what
