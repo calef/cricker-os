@@ -161,9 +161,7 @@ fn wait_for(mut done: impl FnMut() -> bool) -> bool {
 #[cfg(target_arch = "aarch64")]
 #[test_case]
 fn el1_runs_on_sp_el1() {
-    let spsel: u64;
-    // SAFETY: reading SPSel has no side effects.
-    unsafe { core::arch::asm!("mrs {}, spsel", out(reg) spsel, options(nostack, nomem)) };
+    let spsel = crate::arch::spsel();
 
     assert_eq!(
         spsel & 1,
