@@ -137,6 +137,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 71 | BUILT | The thread-start fault: a user thread dispatched with `sepc` = 0 | Frame placement, as this entry guessed. RISC-V put the frame 16 bytes under where `trap.s` builds an S-mode frame, so any interrupt in the window rewrote it and the user `sp` read the trap frame's hardwired-zero slot. Reproduced deterministically by widening the window; fixed by placing the frame at the stack top on both ISAs |
 | 72 | NOT-STARTED | A lost wakeup that a hundred leaked threads may be causing | Separate from 71 and proven so: it reproduces WITH that fix in the tree, and it hit a PR containing zero lines of code. **Reproduces locally at last**, 1 run in 4 under four host burners. Keeps `cpu matrix` intermittently red on every branch until fixed |
 | 73 | NOT-STARTED | Name the aarch64 files aarch64, before x86_64 makes it worse | Five files carry a riscv name while their aarch64 twin carries none, so the unnamed one reads as "the general case" and is not. A third ISA turns that from ambiguous into wrong. Scheme decided: suffix both sides. `crates/paging` is a separate defect, naming one side by ISA and the other by page-table FORMAT, and riscv64 has two formats. **`user/link.ld` is shared and must NOT be renamed** |
+| 74 | NOT-STARTED | Cycle counters: SBI PMU on RISC-V, `PMCCNTR_EL0` on aarch64 | 16a's deliverable names "benches on real cycles via the SBI PMU extension" and **nothing implements it**, on either ISA. Both read a fixed-rate TIME counter today, not cycles. Gates milestone 25's `sel4bench`, which was deferred to hardware for exactly this |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -5295,3 +5296,80 @@ the tree must be byte-identical afterwards apart from the paths themselves. `lin
 `qemu-runner.sh` have 18 and 13 referencing files, several of them build scripts and CI workflow
 steps, so the risk is a missed reference that only fails on one ISA or only in CI. Grep for the bare
 stem, not just the path.
+
+### 74. Cycle counters: SBI PMU on RISC-V, `PMCCNTR_EL0` on aarch64
+
+**Status: NOT-STARTED.** Raised 2026-08-03, from an audit of what milestone 16a actually needs. Its
+deliverable includes "the benches on real cycles via the SBI PMU extension", and **nothing in the tree
+implements it.** `PMU` appears only in device-tree test fixtures and in this file.
+
+#### What we read today, and why it is not cycles
+
+Both ISAs read a **fixed-rate reference counter**, not a cycle counter:
+
+| | aarch64 | riscv64 |
+|---|---|---|
+| today | `CNTVCT_EL0` + `CNTFRQ_EL0` | the `time` CSR (`rdtime`) |
+| counts | a fixed tick, 62.5 MHz under QEMU | a fixed tick |
+| resolution | ~41 ns on real silicon | comparable |
+| the cycle counter we lack | `PMCCNTR_EL0` | SBI PMU, or the `cycle` CSR when `mcounteren` permits |
+
+notes/pmu.md already sets this out for aarch64 and calls confusing the two a category error. The
+generic timer is the OS's clock; the PMU counts CPU cycles at ~0.25 ns resolution and its rate moves
+with frequency scaling. **Two ways to measure a fast operation: one shot at high resolution (PMU,
+which is what sel4bench does) or a long loop at low resolution (the generic timer, which is what we
+do).** Both are valid and they fail under different conditions.
+
+#### Why it matters more than "another counter"
+
+The thesis claim is a cross-OS comparison, and **the literature it is compared against is denominated
+in cycles**, not nanoseconds. notes/benchmarks.md already does the conversion by hand and draws the
+honest conclusion:
+
+> At ~3.2 GHz, 705 ns is ~2,200 cycles round trip, where an L4-lineage fastpath does 300 to 600. Per
+> cycle we are 4 to 7 times heavier, and honestly so.
+
+That paragraph is currently arithmetic performed on a nanosecond measurement using an assumed clock
+rate. Measuring cycles directly turns the project's most-cited number from a derived figure into a
+read one, and it is the number a reader from the L4 world will look for first.
+
+#### Two things block on it
+
+- **16a** cannot deliver "benches on real cycles" without it.
+- **Milestone 25's `sel4bench`** is built and booting but was deferred to real hardware precisely
+  because it times single operations through `PMCCNTR_EL0`, which neither QEMU-TCG nor Apple HVF
+  provides. notes/pmu.md's last section explains why virtualization keeps the PMU out of reach: the
+  generic timer is architected state a hypervisor must present, and the PMU is not.
+
+#### Parity makes this two ISAs, not one
+
+§19 is a gate, and it bites here in an unobvious direction. The milestone reads as RISC-V work because
+16a is the RISC-V board, but **`PMCCNTR_EL0` is equally unimplemented**, so a RISC-V-only cycle
+counter would create a parity gap in the one subsystem whose entire purpose is cross-machine
+comparison. Both sides are small and they are not symmetrical in shape:
+
+- **aarch64**: enable the counter (`PMCR_EL0`), open it to EL0 (`PMUSERENR_EL0`), read `PMCCNTR_EL0`.
+  Register writes, no firmware call. The EL0 opening is the same eyes-open exception to §10 that
+  `CNTKCTL_EL1.EL0VCTEN` already is, and it deserves the same treatment in notes/abi.md rather than a
+  quiet second precedent.
+- **riscv64**: the SBI PMU extension (EID `0x504D55`), which discovers counters, configures an event,
+  and starts and stops it. The tree already makes SBI calls (`SBI_HSM_EID`, `SBI_IPI_EID`,
+  `SBI_RFENCE_EID`, SBI TIME), so the plumbing exists and this is a fourth extension rather than new
+  machinery.
+
+#### What can be done before the board, and what cannot
+
+**Buildable now:** both drivers, the `Isa`-style capability probe, the benchmark harness change, and
+the aarch64 path end to end (Apple Silicon has a real PMU; whether macOS lets a guest reach it is the
+open question notes/pmu.md raises).
+
+**Not verifiable until silicon:** the RISC-V numbers. QEMU-TCG models an instruction counter that has
+nothing to do with cycles, so a green test under emulation proves the plumbing and says nothing about
+the measurement. Say so in the note rather than publishing an emulated cycle count.
+
+#### Scope note
+
+**Do not turn this into a profiling framework.** One counter, read before and after, on two ISAs. The
+PMU can count dozens of events and the temptation to expose them generically should wait for a second
+consumer, which is CLAUDE.md's rule against speculative trait-ification. `sel4bench` comparability is
+the requirement; anything beyond it is scope.
