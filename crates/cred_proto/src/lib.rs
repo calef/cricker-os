@@ -252,6 +252,20 @@ mod tests {
         assert_eq!(secret_len(w), 260);
     }
 
+    /// **The wire layout, pinned as one exact number.** The serve loop on the far side of the
+    /// endpoint decodes this word with its own copy of these shifts, so the bit positions are the
+    /// contract, not an implementation detail a refactor may move. The opcode is `SEAL` on
+    /// purpose: `PUT` and `VERIFY` are both 1, and a test that only ever builds opcode 1 cannot
+    /// tell a working `op` from one that returns a constant.
+    #[test]
+    fn the_request_word_is_the_documented_bit_layout() {
+        let w = req(provision::SEAL, MAX_IDENTITY, MAX_SECRET);
+        assert_eq!(w, 0x0200_0000_0040_0100);
+        assert_eq!(op(w), provision::SEAL);
+        assert_eq!(id_len(w), MAX_IDENTITY);
+        assert_eq!(secret_len(w), MAX_SECRET);
+    }
+
     #[test]
     fn place_and_read_are_inverses() {
         let mut page = [0xAAu8; PAGE];
@@ -316,6 +330,18 @@ mod tests {
         assert!(read(&small, req(verify::VERIFY, 1, 1)).is_none());
     }
 
+    /// A page of exactly `SECRET_OFF + MAX_SECRET` bytes is the smallest the fixed layout fits,
+    /// and both ends must accept it: the size check refuses a page the layout runs off, not a
+    /// page with no slack after it.
+    #[test]
+    fn the_smallest_page_the_layout_fits_is_accepted_at_both_ends() {
+        let mut page = [0u8; SECRET_OFF + MAX_SECRET];
+        let w = place(&mut page, b"id", b"secret", verify::VERIFY).unwrap();
+        let (id, secret) = read(&page, w).unwrap();
+        assert_eq!(id, b"id");
+        assert_eq!(secret, b"secret");
+    }
+
     #[test]
     fn an_empty_identity_or_secret_never_becomes_a_request() {
         let mut page = [0u8; PAGE];
@@ -340,11 +366,14 @@ mod tests {
     }
 
     #[test]
-    fn wipe_clears_the_whole_request_area() {
+    fn wipe_clears_the_whole_request_area_and_nothing_past_it() {
         let mut page = [0xFFu8; PAGE];
         place(&mut page, b"identity", b"secret", verify::VERIFY).unwrap();
         wipe(&mut page);
         assert!(page[..SECRET_OFF + MAX_SECRET].iter().all(|&b| b == 0));
+        // The rest of the page is not wipe's to clear: the frame is shared, and a wipe whose
+        // bound has grown is a wipe scribbling on state it was never told about.
+        assert!(page[SECRET_OFF + MAX_SECRET..].iter().all(|&b| b == 0xFF));
     }
 
     /// **The property the whole error story rests on**: no reply code collides with any error the
