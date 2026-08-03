@@ -1170,4 +1170,48 @@ mod verification {
         kani::cover!(body[1] == b'-');
         kani::cover!(matches_with(&plain, &name, Dot::Ordinary));
     }
+    // Milestone 85 survivors. The step count is the DoS-bound contract (Kani proves it against
+    // cost_bound), but no test pinned any actual count, so the += lines that build it could all
+    // rot; and no test used an escape inside a range, so that parse's index arithmetic was free
+    // to misread. See notes/mutation-testing.md.
+
+    /// Each syntactic extra costs exactly what it scans: a negation marker one step, an escape
+    /// one step, a range's tail its two bytes, a trailing star one step. Asserted as differences
+    /// between near-identical matches rather than absolute totals, so the pins survive unrelated
+    /// counting changes while still catching a += that became -= or *=.
+    #[test]
+    fn each_class_feature_costs_its_own_scan() {
+        let steps = |p: &[u8], n: &[u8]| match_steps(p, n, Dot::Special).1;
+        assert_eq!(
+            steps(b"[!b]", b"a"),
+            steps(b"[b]", b"b") + 1,
+            "negation marker"
+        );
+        assert_eq!(steps(b"[\\b]", b"b"), steps(b"[b]", b"b") + 1, "escape");
+        assert_eq!(
+            steps(b"[a-c]", b"b"),
+            steps(b"[ac]", b"a") + 1,
+            "range tail"
+        );
+        assert_eq!(
+            steps(b"ab**", b"ab"),
+            steps(b"ab*", b"ab") + 1,
+            "trailing star"
+        );
+    }
+
+    /// An escaped `]` as a range's high end: `[A-\]]` is the range 0x41..=0x5D. The parse has to
+    /// take the byte AFTER the backslash as the endpoint and resume AFTER the escape, and both
+    /// indices were mutable without any test noticing.
+    #[test]
+    fn an_escaped_bracket_can_end_a_range() {
+        assert!(matches(b"[A-\\]]", b"["), "0x5B is inside A..=0x5D");
+        assert!(matches(b"[A-\\]]", b"]"), "the endpoint itself is inside");
+        assert!(!matches(b"[A-\\]]", b"^"), "0x5E is one past the endpoint");
+        // A plain range followed by a literal, so the resume index shows in what comes next.
+        assert!(matches(b"[a-c]d", b"bd"));
+        assert!(!matches(b"[a-c]d", b"bx"));
+        // A class that ends in a bare escape is unterminated, never a read past the end.
+        assert!(!matches(b"[a-\\", b"b"));
+    }
 }
