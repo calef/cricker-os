@@ -217,3 +217,27 @@ fn bitmap_sizing() {
     assert_eq!(FrameAllocator::frames_in(0x800_0000), 32768);
     assert_eq!(FrameAllocator::bitmap_bytes(32768), 4096);
 }
+
+/// Milestone 85 survivors: `is_used` could return `Some(true)` unconditionally, `index_of` could
+/// refuse the base frame (`<` rotting to `<=`), and `frame_range` could turn a zero-size range
+/// into one frame (its guard's `||` rotting to `&&` makes `mark_used(addr, 0)` round the empty
+/// range up). The base frame and the empty range are the boundaries no other test touched.
+#[test]
+fn the_base_frame_and_the_empty_range_are_exact() {
+    let mut bits = [0u8; 8];
+    let mut a = allocator(&mut bits);
+
+    // The base frame is ours to answer for, free until allocated.
+    assert_eq!(a.is_used(Frame::from_addr(BASE)), Some(false));
+    // One byte below it is not ours at all: None, never a verdict.
+    assert_eq!(a.is_used(Frame::from_addr(BASE - FRAME_SIZE)), None);
+
+    // A zero-size range touches no frame, wherever it starts.
+    a.mark_used(BASE + 100, 0);
+    a.mark_used(BASE, 0);
+    assert_eq!(a.is_used(Frame::from_addr(BASE)), Some(false));
+
+    // And an allocated frame answers true, so Some(false) above is not a stuck constant.
+    let f = a.alloc().unwrap();
+    assert_eq!(a.is_used(f), Some(true));
+}
