@@ -139,7 +139,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 73 | NOT-STARTED | Name the aarch64 files aarch64, before x86_64 makes it worse | Five files carry a riscv name while their aarch64 twin carries none, so the unnamed one reads as "the general case" and is not. A third ISA turns that from ambiguous into wrong. Scheme decided: suffix both sides. `crates/paging` is a separate defect, naming one side by ISA and the other by page-table FORMAT, and riscv64 has two formats. **`user/link.ld` is shared and must NOT be renamed** |
 | 74 | NOT-STARTED | Cycle counters: SBI PMU on RISC-V, `PMCCNTR_EL0` on aarch64 | 16a's deliverable names "benches on real cycles via the SBI PMU extension" and **nothing implements it**, on either ISA. Both read a fixed-rate TIME counter today, not cycles. Gates milestone 25's `sel4bench`, which was deferred to hardware for exactly this |
 | 75 | NOT-STARTED | Who may read the cycle counter, and by what authority | Opening `PMCCNTR_EL0` to EL0 is not the same decision as opening `CNTVCT_EL0` was: it is **~160x finer** (~0.25 ns against ~41 ns), and the generic timer's coarseness was doing real security work. A capability is the answer this OS already has, and notes/abi.md anticipated it |
-| 76 | NOT-STARTED | Split the roadmap: `design/roadmap/README.md` as index, one file per milestone | 5,375 lines and 64 blocks in one file. FOUR structural defects landed today that the gate reported clean, including **eight milestone blocks filed under an essay about seL4**. A split makes those impossible rather than detectable, and removes the conflict #19 and #20 hit |
+| 76 | NOT-STARTED | Split the roadmap: `design/roadmap/README.md` as index, one file per milestone | 5,375 lines and 64 blocks in one file. FOUR structural defects landed today that the gate reported clean, including **eight milestone blocks filed under an essay about seL4**. A split makes those impossible rather than detectable, and removes the conflict #19 and #20 hit. Also widens the citation check tree-wide (free: zero unresolved today) and backfills milestones 1 to 11 from the first commit, dropping the `n >= 12` floor |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -5538,6 +5538,38 @@ waiting behind it.
 Two details for whoever implements it. The existing `n >= 12` floor stays, because milestones below 12
 predate the table and live in git history and `DECISIONS.md`. And the regex must keep matching
 `milestone 16a` as 16, since sub-lettered blocks exist (`20a`).
+
+#### Backfill milestones 1 to 11, and drop the `n >= 12` floor (Chris, 2026-08-03)
+
+The floor exists because the table started at 12 when it moved out of `DECISIONS.md`, not because the
+early history is lost. It is not lost. **The original plan survives verbatim in the first commit**,
+`b7f10e7` ("Record architecture decisions and the milestone plan", 2026-07-12), as a `## Milestones`
+table in `DECISIONS.md` carrying 1 through 10 with a title and a "what it teaches" column. Milestone
+11 was added two days later in `491f23d` as "Untyped memory: the kernel stops allocating".
+
+So 304 live citations to milestones 1 to 11 are unvalidated for a reason that stopped being true.
+Backfilling them and removing the floor takes the gate from 1,875 checked citations to all 2,179.
+
+**Record the outcomes, not the plans, and the reason is that they differ.** Most of the early
+milestones have a commit that titles them, and those titles say what actually happened:
+
+- "Milestone 2: exception vectors, and a fault that tells you what it was"
+- "Milestone 3: hand out physical memory, and detect a smashed stack"
+- "Milestone 5: the GIC and the timer. The kernel is preemptible."
+- "Milestone 11: untyped memory, and the number that proves the kernel stops allocating"
+
+Where plan and outcome disagree, the disagreement is the history worth keeping. **Milestone 8 was
+planned as "virtio-blk driver + read-only filesystem" and landed as "the console driver leaves the
+kernel"; virtio-blk moved to 9**, which had been "Processes: spawn, exit, wait". A backfill that
+copied the original table would record a plan that was overtaken and silently misdate the driver work.
+
+Two need reconstruction rather than copying, because no commit titles them: **milestone 1** (the
+earliest commits predate the convention, though "Boot to Rust on QEMU virt and print to the PL011
+UART" is the commit and matches the plan exactly) and **milestone 7**, the capability decision point,
+which is the densest citation target in the tree at 79 references and whose outcome is DECISIONS §10
+rather than a single commit.
+
+Mark all eleven `BUILT`. They are, and the evidence is the kernel.
 
 #### Scope note
 
