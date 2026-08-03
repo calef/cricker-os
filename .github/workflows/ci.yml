@@ -68,7 +68,7 @@ jobs:
       # script/bootstrap on purpose, because bootstrap skips its apt install when QEMU is already on
       # PATH, which is how the built one wins.
       - name: Cache QEMU
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/cricker-qemu
           key: qemu-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.qemu-version') }}
@@ -123,7 +123,7 @@ jobs:
       # same reason (bootstrap skips its apt install when QEMU is already on PATH).
       - name: Cache QEMU
         if: steps.scope.outputs.needed == 'true'
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/cricker-qemu
           key: qemu-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.qemu-version') }}
@@ -252,7 +252,7 @@ jobs:
       # PATH, which is how the built one wins.
       - name: Cache QEMU
         if: steps.scope.outputs.needed == 'true'
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/cricker-qemu
           key: qemu-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.qemu-version') }}
@@ -288,13 +288,13 @@ jobs:
       - name: Read the pinned cargo-deny version
         id: deny
         run: echo "version=$(cat .cargo-deny-version)" >> "$GITHUB_OUTPUT"
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@v2.85.5
         with:
           tool: cargo-deny@${{ steps.deny.outputs.version }}
       # The published .crate tarballs script/vendor-verify hashes. Keyed on the pin files, so
       # changing a pin correctly misses the cache and refetches. A miss costs one HTTP request.
       - name: Cache the vendored tarballs
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/cricker-vendor
           key: cricker-vendor-${{ hashFiles('vendor/*.pin') }}
@@ -402,7 +402,7 @@ jobs:
       - name: Install llvm-tools (pinned nightly)
         if: steps.scope.outputs.needed == 'true'
         run: rustup toolchain install nightly --profile minimal --component llvm-tools
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@v2.85.5
         if: steps.scope.outputs.needed == 'true'
         with:
           tool: cargo-llvm-cov
