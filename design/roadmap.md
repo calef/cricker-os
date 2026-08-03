@@ -134,6 +134,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 68 | PARTIAL | Code-quality gates: one lint policy, and the lints that lost | Import order, `[workspace.lints]`, dependency direction, unused dependencies, spelling. Three lints were adopted, measured and **removed** on the evidence. `undocumented_unsafe_blocks` is now a GATE: all 205 undocumented blocks were read and commented. Doc examples went 5 -> 23 across nine crates, which is a start and not the standard; `missing_docs` is still not adoptable |
 | 69 | NOT-STARTED | Split `kernel/src/user.rs` by service | 15,499 lines and **46 top-level modules** in one file: a dozen `*_service` modules and ~34 test modules. The split is nearly free because the boundaries are already `mod` blocks, so moving one to its own file changes no visibility and no API |
 | 70 | NOT-STARTED | `swish`'s remaining logic in a crate, host-testable like its siblings | `coremark`, `line_editor` and `compositor` are each a crate holding the logic plus a program holding the IO. `swish` is the largest program that is not, so its dispatch, endowment preview and outcome handling are reachable only through QEMU |
+| 71 | NOT-STARTED | The thread-start fault: a user thread dispatched with `sepc` = 0 | **Blocks all other work.** Instrumented in milestone 68's window and it has now FIRED on CI: a secondary core entered U-mode with an all-zero trap frame. Three intermittent CI failures across three tests and three CPU models trace here |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -5003,3 +5004,81 @@ pair. `swish` is the largest program that is not one.
 This is an incremental tidy of a working, tested component, not a fix for a defect. It should be
 scheduled accordingly, and it should not grow into a rewrite of the shell. If lifting a function
 needs the shell's IO restructured to accommodate it, that function stays where it is.
+
+### 71. The thread-start fault: a user thread dispatched with `sepc` = 0
+
+**Status: NOT-STARTED.** Raised 2026-08-03. **This blocks every other milestone**: it is a live
+correctness bug in thread dispatch, it is intermittent, and until it is understood every red CI run
+has to be argued about individually.
+
+#### The evidence, which we now have because we instrumented instead of chasing
+
+The fault was first seen on 2026-08-02 as a *hang*: a user thread whose first instruction fetch
+faulted, so whatever it was meant to serve never answered, every waiter blocked, and the run died 60
+seconds later in the lost-wakeup watchdog, arbitrarily far from the cause. It never reproduced
+locally, in nine full runs across both ISAs. Rather than keep hunting it, `enter_user` got a guard
+that converts the rare hang into a loud failure carrying its own evidence.
+
+That guard fired on CI, on the milestone-70 branch:
+
+```text
+[PANIC] panicked at kernel/src/arch/riscv64/exceptions.rs:155:5:
+thread 25769803877 on core 1 was dispatched to U-mode with sepc = 0 (user sp 0x0000000000000000).
+Its context was never built, or was built and not seen by this core.
+```
+
+Three details do the work:
+
+- **`user sp` is zero too.** This is not a bad entry point, it is an entire trap frame reading as
+  zeros. Whatever `enter_user` is looking at, nobody wrote it.
+- **Core 1**, a secondary rather than the boot core.
+- The test was `a_user_program_reaches_el0_and_returns_twice`, which is one of the simplest
+  user-entry paths in the suite.
+
+#### Where to look first, and why it is probably not the obvious thing
+
+The obvious reading of "built but not seen by this core" is a missing release/acquire pair between
+the core that builds a context and the core that dispatches it (DECISIONS rule 4: assume weak
+ordering). **That is probably not it**, and the reason is worth knowing before anyone spends a day
+on barriers: the frame is built by the thread ON ITS OWN kernel stack, in `kernel/src/user.rs`
+around the `current_kernel_stack_top()` call, and `enter_user` runs a few lines later on the same
+core with no yield in between.
+
+The likelier suspect is **where the frame is placed on riscv64**, which is already known to be
+delicate and is already commented as such:
+
+```rust
+#[cfg(target_arch = "aarch64")]
+let slot = top - size_of::<TrapFrame>() as u64;
+#[cfg(target_arch = "riscv64")]
+let slot = (crate::arch::current_sp().min(top) - size_of::<TrapFrame>() as u64) & !15;
+```
+
+aarch64 uses a **fixed** offset from the stack top. riscv64 computes the slot from the **live
+`sp`**, because its TCB entry path is shallow enough that a frame at the top would overlap and
+corrupt this function's own stack. The existing comment says exactly what that failure looks like:
+"sending the sret to a garbage sepc". `sscratch` is then armed to `frame + size` so re-entries
+rebuild at the same address.
+
+So the question to answer first is **whether the address `frame.write` targets is always the address
+`enter_user` and the trap path later read**, on every path that reaches user entry and at every
+stack depth. A slot that moves with call depth is a slot that can be written in one place and read
+in another, and an all-zero frame is what reading the wrong place looks like.
+
+Every failure so far has been on riscv64. That is consistent with the placement hypothesis and
+inconsistent with a generic ordering bug, which would be expected to show on aarch64 too.
+
+#### What is already in place
+
+- The `sepc == 0` guard in `kernel/src/arch/riscv64/exceptions.rs` and its `elr == 0` twin in the
+  aarch64 file. Keep both; they are how this became findable.
+- The frame's writability assertion, one check per exec.
+- `script/cpu-matrix` uploads per-model logs as a CI artifact on failure, which is how the evidence
+  above was recovered.
+
+#### Scope note
+
+Do not "fix" this by widening a deadline or re-running. Three CI failures on 2026-08-03 traced to
+three different tests on three different CPU models, and only one of them announced itself as this
+fault; the other two were a frame-leak wait and the lost-wakeup watchdog, which are what this bug
+looks like when the guard does not happen to catch it first.
