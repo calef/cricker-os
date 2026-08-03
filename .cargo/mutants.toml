@@ -33,6 +33,13 @@ exclude_globs = [
     "xtask/**",
 ]
 
-# Mutants that generate wrong-but-plausible values for trait impls the tests only exercise
-# incidentally. Nothing excluded by default; entries arrive with reasons or not at all.
-exclude_re = []
+# Matched against mutant names ("replace X with Y in path::fn"). Entries arrive with reasons or
+# not at all.
+exclude_re = [
+    # The Kani harness modules. Every one of the tree's 18 `mod verification` blocks sits behind
+    # `#[cfg(kani)]`, so `cargo test` never compiles them: a mutant there always "survives", and the
+    # first full run reported dozens of exactly that (every one of calendar's harnesses, mutated to
+    # `()`, "missed"). Their checker is script/verify, not the test suite, and mutating the proof
+    # rather than the code under proof measures nothing this baseline is for.
+    "verification::",
+]
