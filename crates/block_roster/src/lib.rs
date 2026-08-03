@@ -337,4 +337,19 @@ mod tests {
         write(&mut page, &[]).unwrap();
         assert_eq!(&page[..8], b"blkrostr");
     }
+
+    /// A page of exactly `HEADER_BYTES` is the smallest roster there is: room for the header,
+    /// zero devices, and it must read back as that rather than being refused as short. Milestone
+    /// 85's mutation run showed `read`'s length guard could rot from `<` to `<=` unnoticed
+    /// because every test used a whole 4096-byte page.
+    #[test]
+    fn a_header_only_page_is_an_empty_roster_not_a_short_one() {
+        let mut page = [0u8; HEADER_BYTES];
+        write(&mut page, &[]).unwrap();
+        let roster = Roster::read(&page).expect("header-only is a valid roster");
+        assert_eq!(roster.iter().count(), 0);
+        assert_eq!(capacity_of(HEADER_BYTES), 0);
+        // One byte shorter really is short.
+        assert_eq!(Roster::read(&page[..HEADER_BYTES - 1]).map(|_| ()), None);
+    }
 }
