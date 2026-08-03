@@ -643,3 +643,4 @@ Topics we've touched but not yet documented. Add as they come up:
 
 - The GIC (interrupt controller)
 - virtio
+- [The SCHED lock inventory](sched-lock-inventory.md): what the one remaining scheduler lock protects, by temperature; milestone 17's denominator, gated on 88's curve and 80's method.

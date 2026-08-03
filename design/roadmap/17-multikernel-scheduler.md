@@ -17,3 +17,13 @@ system, message-passing between cores) is the honest research answer for NUMA an
 This is a direction, not a commitment: keeping the one lock is a perfectly honest choice at the
 current scale, and worth saying so rather than feeling the machine is owed a message-passing thread
 table.
+
+**Sequencing, recorded 2026-08-03.** The inventory of what the lock actually protects, function by
+function with a temperature classification, is in notes/sched-lock-inventory.md; its three
+structural findings (the hot set is IPC; CSpace operations partition for free if anything does;
+the §13 revocation sweeps are what partitioning makes expensive) are the shape any design here
+starts from. This milestone is gated on evidence two others produce: **milestone 88** provides the
+first machine with enough harts for the `smp_throughput` curve to bend (no machine this kernel has
+run on exceeds ten), and **milestone 80** provides the method, because a design that replaces the
+lock with messages wants its protocol born loom-checked. Until 88's curve shows the lock in the
+data, the answer to this milestone is the one already written above: the one lock, on purpose.
