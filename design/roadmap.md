@@ -151,6 +151,7 @@ besides, being built for dated release grouping; these are capability-shaped and
 | 85 | NOT-STARTED | Mutation testing over the host crates | Coverage reports what ran; cargo-mutants reports whether a test would notice a change, which is the claim the suite actually makes. A weekly, time-boxed job with a recorded baseline, not a PR gate |
 | 86 | NOT-STARTED | `time`: the shell times a command | The second prefix-word command after `caps`, so the grammar is proven, and `date` already built the clock story. The design question is whose clock it is: the shell's, so a child that holds no clock capability can still be timed, which is the Unix behaviour and the leaning |
 | 87 | NOT-STARTED | The x86_64 bare-metal machine | Milestone 19's third ISA needs what milestone 16's second needed: a dedicated, brickable board, selected before the port so the requirements drive the purchase. Selected: a used OptiPlex 7050 Micro plus the C4PDJ serial module, ~$194 all-in; every new option cost $150-350 more at real prices. QEMU emulates `igb` and `e1000e`, not `igc`, so the 7050's I219 keeps the one-driver property with no caveats |
+| 88 | NOT-STARTED | cricker-os on Graviton: rented silicon, and the demo anyone can rerun | "Here is the AMI, rerun it yourself" is a credibility claim no desk machine can make, and 64-core metal with a real PMU unblocks milestone 25's deferred `sel4bench` without waiting for a board. Costs a UEFI boot path and an ACPI front door, both shared with optional milestone 24. Complements the boards; cloud has no RISC-V, no VM-side IOMMU control |
 
 The order §14 sets: **verify the core and make it verifiable first** (18 and 14, the thesis), then the
 road to running real workloads on real machines (15, 21, 16, 19; 25 extends 21 into cross-OS
@@ -6195,3 +6196,52 @@ This milestone is the machine, the serial link proven, and nothing else; the por
 milestone 19's remaining scope and is not gated on this purchase, because the port starts under
 QEMU TCG the way riscv64 did. Buying early is cheap insurance against the VisionFive 2 pattern
 (ordered 2026-07, arrives ~2026-08-21) of the board being the long pole.
+
+### 88. cricker-os on Graviton: rented silicon, and the demo anyone can rerun
+
+**Status: NOT-STARTED.** Raised 2026-08-03, from the observation that several open milestones are
+hardware-gated and a cloud instance is hardware without a purchase.
+
+**What this buys that no machine on the desk can.** Every benchmark in this tree so far runs on
+hardware the reader has to take our word about. A Graviton instance is the same silicon for
+everyone: "cricker-os against Linux on c7g.large, here is the AMI, rerun it yourself" is a
+credibility claim no desk machine can make, and it is the demonstrator thesis (DECISIONS §14)
+applied to the *audience* rather than the code. Second, scale: QEMU boots this kernel with a
+handful of harts and the largest Graviton metal machines have 64 physical cores, which turns the
+per-CPU scheduler (§28) and the weak-memory discipline from "designed for" into "measured at".
+Third, milestone 25's deferred `sel4bench` needs a real PMU, and `.metal` instances expose one;
+that comparison need not wait for a board if it can rent one by the hour.
+
+**What it costs in engineering, named up front.** EC2 does not take a kernel image; it takes an
+AMI that boots via UEFI, so the kernel needs a boot path it does not have (an EFI stub or a
+bootloader stage). aarch64 EC2 describes the machine with **ACPI, not a device tree**, which is a
+new discovery front door (milestone 60 built the DTB one). The NIC is ENA and the disk is NVMe,
+both new drivers, though NVMe is a standard worth having anyway and the serial console is the
+first goal, not networking. Which UART the Nitro serial console emulates is a fact to measure on
+arrival, not assume. None of this is wasted motion: the UEFI work is what optional milestone 24
+(Virtualization.framework) also needs, so the two share a prerequisite.
+
+**The staging that keeps it honest**, each stage a deliverable on its own:
+
+1. Boot under UEFI locally (QEMU `virt` with AAVMF firmware), serial byte out. No AWS yet.
+2. Smallest Graviton VM, custom AMI, a byte on the EC2 serial console. This is the milestone's
+   "printed a byte over serial" moment.
+3. The bench suite against Linux on the identical instance type, published with the AMI id.
+4. `.metal` and the PMU: the `sel4bench` comparison milestone 25 deferred.
+5. Stretch, its own decision later: ENA and a real network service on rented silicon.
+
+**Cost shape:** small VMs are cents per hour and metal is a few dollars per hour, used in bursts;
+there is nothing to own, power, or house. The trade against owned hardware is that nothing here
+retires the VisionFive 2 or the milestone 87 machine: cloud has no RISC-V worth renting yet, no
+IOMMU control from inside a VM, and no physical peripherals; it complements the boards, it does
+not replace them.
+
+#### Scope note
+
+AWS-first because Graviton is the largest aarch64 fleet and the `.metal` PMU story is documented,
+but the UEFI+ACPI work is provider-neutral by construction: Azure's and Google's Ampere instances
+and Oracle's free-tier A1 shapes become reachable with the same boot path, and which providers
+allow a custom aarch64 image outside a marketplace listing is a fact to verify per provider, not
+assume. Nothing in this milestone may regress the QEMU boot: DTB stays the first-class discovery
+path, ACPI is a second front door beside it, gated by the same parity rule as everything else
+(§19).
