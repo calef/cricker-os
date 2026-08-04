@@ -932,6 +932,88 @@ mod tests {
         assert!(long > short);
         assert!(short > 0);
     }
+
+    // ---- what mutation testing found (milestone 85) -------------------------------------------
+    //
+    // The first pass at these two wrote them inside `#[cfg(kani)] mod verification`, which
+    // `cargo test` never compiles, so neither had ever run when they were reported as killing
+    // anything. See notes/mutation-testing.md.
+
+    /// **Each syntactic extra costs exactly what it scans**: a negation marker one step, an escape
+    /// one step, a range's tail its two bytes, a trailing star one step. The step count is the
+    /// DoS-bound contract, and Kani only proves it stays under [`cost_bound`], which a counter
+    /// stuck at zero would also satisfy; these say what it actually counts.
+    ///
+    /// Asserted as differences between near-identical matches rather than as absolute totals, so
+    /// the pins survive a deliberate change to the accounting while still catching a `+=` that
+    /// rotted into `-=` or `*=`.
+    ///
+    /// **The range is asserted twice and the second one is the one that bites.** At the head of a
+    /// one-member class every arithmetic mutation of `scanned += after_hi - after_lo` hides behind
+    /// a coincidence: `scanned` is 2 there and the tail is 2 bytes, so `2 + 2` and `2 * 2` agree,
+    /// and `4 - 2` and `4 / 2` agree too. One member in front of the range separates all four.
+    #[test]
+    fn each_class_feature_costs_its_own_scan() {
+        let steps = |p: &[u8], n: &[u8]| match_steps(p, n, Dot::Special).1;
+        assert_eq!(
+            steps(b"[!b]", b"a"),
+            steps(b"[b]", b"b") + 1,
+            "negation marker"
+        );
+        assert_eq!(steps(b"[\\b]", b"b"), steps(b"[b]", b"b") + 1, "escape");
+        assert_eq!(
+            steps(b"[a-c]", b"b"),
+            steps(b"[ac]", b"a") + 1,
+            "range tail"
+        );
+        assert_eq!(
+            steps(b"[xa-c]", b"b"),
+            steps(b"[xac]", b"c") + 1,
+            "range tail, past the coincidence at the head of the class"
+        );
+        assert_eq!(
+            steps(b"ab**", b"ab"),
+            steps(b"ab*", b"ab") + 1,
+            "trailing star"
+        );
+    }
+
+    /// An escaped `]` as a range's high end: `[A-\]]` is the range 0x41..=0x5D. The parse has to
+    /// take the byte AFTER the backslash as the endpoint and resume AFTER the escape, and both
+    /// indices were mutable without any test noticing.
+    #[test]
+    fn an_escaped_bracket_can_end_a_range() {
+        assert!(matches(b"[A-\\]]", b"["), "0x5B is inside A..=0x5D");
+        assert!(matches(b"[A-\\]]", b"]"), "the endpoint itself is inside");
+        assert!(!matches(b"[A-\\]]", b"^"), "0x5E is one past the endpoint");
+        // A plain range followed by a literal, so the resume index shows in what comes next.
+        assert!(matches(b"[a-c]d", b"bd"));
+        assert!(!matches(b"[a-c]d", b"bx"));
+        // A class that ends in a bare escape is unterminated, never a read past the end.
+        assert!(!matches(b"[a-\\", b"b"));
+    }
+
+    /// **A range covers its interior and nothing else**, which is the half of the parse no step
+    /// count can see.
+    ///
+    /// `scanned += after_hi - after_lo` charges exactly the bytes a range skips, so a resume index
+    /// that lands *inside* the range costs the same total: the loop re-scans one at a time what it
+    /// should have stepped over, and the ledger balances. What does not balance is membership.
+    /// Both ways of landing short widen the class, and a wider class is a larger grant, which is
+    /// the one direction this crate is not allowed to be wrong in.
+    #[test]
+    fn a_range_admits_neither_its_hyphen_nor_a_reversed_endpoint() {
+        // Resuming at the `-` would re-read it as an ordinary member. It is punctuation here, and
+        // the `[a-]` and `[-a]` spellings above are where a hyphen *is* a member.
+        assert!(!matches(b"[a-c]", b"-"));
+        assert!(matches(b"[a-c]", b"b"));
+
+        // Resuming at the high endpoint would re-read it as an ordinary member, which is invisible
+        // for a range that contains it. A reversed range contains neither end, so it is the
+        // spelling that tells the two apart.
+        assert!(!matches(b"[z-a]", b"a"));
+        assert!(!matches(b"[z-a]", b"z"));
+    }
 }
 
 // ---- machine-checked proofs ------------------------------------------------------------------
@@ -1169,49 +1251,5 @@ mod verification {
         // as well as about `[ab]`.
         kani::cover!(body[1] == b'-');
         kani::cover!(matches_with(&plain, &name, Dot::Ordinary));
-    }
-    // Milestone 85 survivors. The step count is the DoS-bound contract (Kani proves it against
-    // cost_bound), but no test pinned any actual count, so the += lines that build it could all
-    // rot; and no test used an escape inside a range, so that parse's index arithmetic was free
-    // to misread. See notes/mutation-testing.md.
-
-    /// Each syntactic extra costs exactly what it scans: a negation marker one step, an escape
-    /// one step, a range's tail its two bytes, a trailing star one step. Asserted as differences
-    /// between near-identical matches rather than absolute totals, so the pins survive unrelated
-    /// counting changes while still catching a += that became -= or *=.
-    #[test]
-    fn each_class_feature_costs_its_own_scan() {
-        let steps = |p: &[u8], n: &[u8]| match_steps(p, n, Dot::Special).1;
-        assert_eq!(
-            steps(b"[!b]", b"a"),
-            steps(b"[b]", b"b") + 1,
-            "negation marker"
-        );
-        assert_eq!(steps(b"[\\b]", b"b"), steps(b"[b]", b"b") + 1, "escape");
-        assert_eq!(
-            steps(b"[a-c]", b"b"),
-            steps(b"[ac]", b"a") + 1,
-            "range tail"
-        );
-        assert_eq!(
-            steps(b"ab**", b"ab"),
-            steps(b"ab*", b"ab") + 1,
-            "trailing star"
-        );
-    }
-
-    /// An escaped `]` as a range's high end: `[A-\]]` is the range 0x41..=0x5D. The parse has to
-    /// take the byte AFTER the backslash as the endpoint and resume AFTER the escape, and both
-    /// indices were mutable without any test noticing.
-    #[test]
-    fn an_escaped_bracket_can_end_a_range() {
-        assert!(matches(b"[A-\\]]", b"["), "0x5B is inside A..=0x5D");
-        assert!(matches(b"[A-\\]]", b"]"), "the endpoint itself is inside");
-        assert!(!matches(b"[A-\\]]", b"^"), "0x5E is one past the endpoint");
-        // A plain range followed by a literal, so the resume index shows in what comes next.
-        assert!(matches(b"[a-c]d", b"bd"));
-        assert!(!matches(b"[a-c]d", b"bx"));
-        // A class that ends in a bare escape is unterminated, never a read past the end.
-        assert!(!matches(b"[a-\\", b"b"));
     }
 }
